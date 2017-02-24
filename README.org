@@ -1,0 +1,20 @@
+#+STARTUP: showall
+#+TITLE: Dotfiles
+
+* Current projects
+
+- [[~/src/github.com/kirillrdy/vidos/README.org][Vidos]]
+- Nadeshiko
+- libkanji
+
+| Name     | Language |
+|----------+----------|
+| Vidos    | Go       |
+| Libkanji | Go       |
+|          |          |
+
+
+* Dragonflybsd setup
+** need to restore my dwm setup
+Liberation Mono fonts
+* resurrect vim
