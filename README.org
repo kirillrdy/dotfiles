@@ -13,6 +13,9 @@
 | Libkanji | Go       |
 |          |          |
 
+* Current TODO
+** vagrant for FreeBSD
+
 
 * Dragonflybsd setup
 ** need to restore my dwm setup
