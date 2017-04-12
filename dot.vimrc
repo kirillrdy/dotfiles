@@ -6,14 +6,11 @@ Plug 'scrooloose/syntastic'
 Plug 'fatih/vim-go'
 Plug 'phildawes/racer'
 Plug 'tpope/vim-fugitive'
-Plug 'junegunn/gv.vim'
 Plug 'altercation/vim-colors-solarized'
 Plug 'kchmck/vim-coffee-script'
-Plug 'junegunn/fzf.vim'
 Plug 'scrooloose/nerdtree'
-Plug 'jceb/vim-orgmode'
-Plug 'rust-lang/rust.vim'
 Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
+Plug 'junegunn/fzf.vim'
 
 call plug#end()
 
@@ -28,6 +25,10 @@ set noswapfile
 set number
 set relativenumber
 
+if executable('ag')
+  let g:ackprg = 'ag --vimgrep'
+endif
+
 " The Silver Searcher
 if executable('ag')
   " Use ag over grep
@@ -41,11 +42,4 @@ if executable('ag')
 endif
 
 " bind K to grep word under cursor
-"nnoremap K :grep! "\b<C-R><C-W>\b"<CR>:cw<CR>
-"
-"" bind \ (backward slash) to grep shortcut
-"command -nargs=+ -complete=file -bar Ag silent! grep! <args>|cwindow|redraw!
-"nnoremap \ :Ag<SPACE>
-"set rtp+=~/.fzf
-
-"let g:ctrlp_match_func = { 'match': 'pymatcher#PyMatch' }
+nnoremap K :Ack "\b<C-R><C-W>\b"
