@@ -42,7 +42,6 @@ func main() {
 		"git",
 		"tig",
 		"cmake",
-		"mercurial",
 		"firefox",
 		"chromium",
 		"gnome3-lite",
