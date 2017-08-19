@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-var verbose = false
+var verbose = true
 
 func execute(progname string, args ...string) {
 	log.Printf("Executing \"%v %v\"\n", progname, strings.Join(args, " "))
