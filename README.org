@@ -7,11 +7,23 @@
 - Nadeshiko
 - libkanji
 
+
 | Name     | Language |
 |----------+----------|
 | Vidos    | Go       |
 | Libkanji | Go       |
 |          |          |
+
+
+* Project ideas
+** move more stuff into web package
+** zfs tool
+** planner
+** finish vidos
+** material ui front end thingy
+** system setup golang thingy
+** jails playing
+** bhyve playing
 
 * Current TODO
 ** vagrant for FreeBSD
@@ -20,4 +32,5 @@
 * Dragonflybsd setup
 ** need to restore my dwm setup
 Liberation Mono fonts
-* resurrect vim
+* DONE resurrect vim
+  CLOSED: [2017-05-01 Mon 13:17]
