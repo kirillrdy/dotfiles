@@ -4,10 +4,11 @@ Plug 'Valloric/YouCompleteMe'
 Plug 'ctrlpvim/ctrlp.vim'
 Plug 'scrooloose/syntastic'
 Plug 'fatih/vim-go'
+Plug 'rust-lang/rust.vim'
 Plug 'phildawes/racer'
 Plug 'tpope/vim-fugitive'
-Plug 'altercation/vim-colors-solarized'
 Plug 'kchmck/vim-coffee-script'
+Plug 'iCyMind/NeoSolarized'
 Plug 'scrooloose/nerdtree'
 Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
 Plug 'junegunn/fzf.vim'
@@ -15,8 +16,8 @@ Plug 'junegunn/fzf.vim'
 call plug#end()
 
 
-set background=light
-colorscheme solarized
+set background=dark
+colorscheme NeoSolarized
 
 set tabstop=2
 set shiftwidth=2
