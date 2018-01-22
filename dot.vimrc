@@ -1,10 +1,10 @@
 call plug#begin()
 
-Plug 'Valloric/YouCompleteMe'
 Plug 'ctrlpvim/ctrlp.vim'
 Plug 'scrooloose/syntastic'
 Plug 'fatih/vim-go'
 Plug 'rust-lang/rust.vim'
+Plug 'roxma/nvim-completion-manager'
 Plug 'phildawes/racer'
 Plug 'tpope/vim-fugitive'
 Plug 'kchmck/vim-coffee-script'
@@ -14,7 +14,6 @@ Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
 Plug 'junegunn/fzf.vim'
 
 call plug#end()
-
 
 set background=dark
 colorscheme NeoSolarized
@@ -44,3 +43,5 @@ endif
 
 " bind K to grep word under cursor
 nnoremap K :Ack "\b<C-R><C-W>\b"
+inoremap <expr> <Tab> pumvisible() ? "\<C-n>" : "\<Tab>"
+inoremap <expr> <S-Tab> pumvisible() ? "\<C-p>" : "\<S-Tab>"
