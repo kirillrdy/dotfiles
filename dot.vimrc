@@ -24,11 +24,10 @@ set noswapfile
 set number
 set relativenumber
 
-if executable('ag')
-  let g:ackprg = 'ag --vimgrep'
-endif
-
 " bind K to grep word under cursor
 nnoremap K :Ag <C-R><C-W><CR>
 inoremap <expr> <Tab> pumvisible() ? "\<C-n>" : "\<Tab>"
 inoremap <expr> <S-Tab> pumvisible() ? "\<C-p>" : "\<S-Tab>"
+
+nnoremap <C-P> :GFiles<CR>
+nnoremap <C-B> :Buffers<CR>
