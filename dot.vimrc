@@ -2,12 +2,17 @@ call plug#begin()
 
 Plug 'scrooloose/syntastic'
 Plug 'fatih/vim-go'
+
+" rust
 Plug 'rust-lang/rust.vim'
+Plug 'racer-rust/vim-racer'
+Plug 'roxma/nvim-cm-racer'
+
 Plug 'roxma/nvim-completion-manager'
-Plug 'phildawes/racer'
 Plug 'tpope/vim-fugitive'
 Plug 'kchmck/vim-coffee-script'
 Plug 'iCyMind/NeoSolarized'
+Plug 'slim-template/vim-slim'
 Plug 'scrooloose/nerdtree'
 Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
 Plug 'junegunn/fzf.vim'
@@ -26,6 +31,7 @@ set relativenumber
 
 " bind K to grep word under cursor
 nnoremap K :Ag <C-R><C-W><CR>
+nnoremap L :Ag <CR>
 inoremap <expr> <Tab> pumvisible() ? "\<C-n>" : "\<Tab>"
 inoremap <expr> <S-Tab> pumvisible() ? "\<C-p>" : "\<S-Tab>"
 
