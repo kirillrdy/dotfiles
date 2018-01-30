@@ -35,5 +35,5 @@ nnoremap L :Ag <CR>
 inoremap <expr> <Tab> pumvisible() ? "\<C-n>" : "\<Tab>"
 inoremap <expr> <S-Tab> pumvisible() ? "\<C-p>" : "\<S-Tab>"
 
-nnoremap <C-P> :GFiles<CR>
+nnoremap <C-P> :GFiles --cached --others --exclude-standard<CR>
 nnoremap <C-B> :Buffers<CR>
