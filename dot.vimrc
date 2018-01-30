@@ -1,6 +1,6 @@
 call plug#begin()
 
-Plug 'scrooloose/syntastic'
+Plug 'w0rp/ale'
 Plug 'fatih/vim-go'
 
 " rust
