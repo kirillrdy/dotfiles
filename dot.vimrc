@@ -28,6 +28,8 @@ set expandtab
 set noswapfile
 set number
 set relativenumber
+set autoread
+au FocusGained * :checktime
 
 " bind K to grep word under cursor
 nnoremap K :Ag <C-R><C-W><CR>
