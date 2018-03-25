@@ -14,9 +14,7 @@ pkg install -y \
   libreoffice \
   portmaster \
   tig \
-  eog \
   rsync \
-  file-roller \
   gnome-system-monitor \
   ruby-build \
   the_silver_searcher \
