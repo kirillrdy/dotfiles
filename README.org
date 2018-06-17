@@ -34,3 +34,6 @@
 Liberation Mono fonts
 * DONE resurrect vim
   CLOSED: [2017-05-01 Mon 13:17]
+
+* some myown host resolver for nsswitch
+* fix bcrypt
