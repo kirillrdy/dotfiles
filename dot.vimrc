@@ -32,10 +32,18 @@ set autoread
 au FocusGained * :checktime
 
 " bind K to grep word under cursor
-nnoremap K :Ag <C-R><C-W><CR>
-nnoremap L :Ag <CR>
+nnoremap K :Rg <C-R><C-W><CR>
+nnoremap L :Rg <CR>
 inoremap <expr> <Tab> pumvisible() ? "\<C-n>" : "\<Tab>"
 inoremap <expr> <S-Tab> pumvisible() ? "\<C-p>" : "\<S-Tab>"
 
 nnoremap <C-P> :GFiles --cached --others --exclude-standard<CR>
 nnoremap <C-B> :Buffers<CR>
+
+" Similarly, we can apply it to fzf#vim#grep. To use ripgrep instead of ag:
+command! -bang -nargs=* Rg
+  \ call fzf#vim#grep(
+  \   'rg --column --line-number --no-heading --color=always --smart-case '.shellescape(<q-args>), 1,
+  \   <bang>0 ? fzf#vim#with_preview('up:60%')
+  \           : fzf#vim#with_preview('right:50%:hidden', '?'),
+  \   <bang>0)
