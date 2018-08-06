@@ -39,6 +39,7 @@ au FocusGained * :checktime
 " bind K to grep word under cursor
 nnoremap K :Rg <C-R><C-W><CR>
 nnoremap L :Rg <CR>
+nnoremap <F2> :NERDTreeFind <CR>
 inoremap <expr> <Tab> pumvisible() ? "\<C-n>" : "\<Tab>"
 inoremap <expr> <S-Tab> pumvisible() ? "\<C-p>" : "\<S-Tab>"
 
