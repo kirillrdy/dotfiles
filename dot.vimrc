@@ -21,6 +21,7 @@ Plug 'pangloss/vim-javascript'
 Plug 'mxw/vim-jsx'
 
 Plug 'elixir-editors/vim-elixir'
+Plug 'mhinz/vim-mix-format'
 
 call plug#end()
 
@@ -45,6 +46,8 @@ inoremap <expr> <S-Tab> pumvisible() ? "\<C-p>" : "\<S-Tab>"
 
 nnoremap <C-P> :GFiles --cached --others --exclude-standard<CR>
 nnoremap <C-B> :Buffers<CR>
+
+let g:mix_format_on_save = 1
 
 " Similarly, we can apply it to fzf#vim#grep. To use ripgrep instead of ag:
 command! -bang -nargs=* Rg
