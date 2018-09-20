@@ -25,9 +25,6 @@ Plug 'mhinz/vim-mix-format'
 
 call plug#end()
 
-set background=dark
-colorscheme NeoSolarized
-
 set tabstop=2
 set shiftwidth=2
 set expandtab
