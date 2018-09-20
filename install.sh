@@ -3,7 +3,8 @@
 cp -v dot.gitconfig ~/.gitconfig
 cp -v dot.tigrc ~/.tigrc
 mkdir -p ~/.config/nvim
-cp -v dot.vimrc ~/.config/nvim/init.vim
+cp -v init.vim ~/.config/nvim/init.vim
+cp -v ginit.vim ~/.config/nvim/ginit.vim
 cp -v dot.screenrc ~/.screenrc
 mkdir -p ~/.local/share/icons/hicolor/scalable/apps
 mkdir -p ~/.local/share/applications
