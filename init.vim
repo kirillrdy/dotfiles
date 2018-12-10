@@ -8,7 +8,7 @@ Plug 'rust-lang/rust.vim'
 Plug 'racer-rust/vim-racer'
 Plug 'roxma/nvim-cm-racer'
 
-Plug 'roxma/nvim-completion-manager'
+Plug 'Valloric/YouCompleteMe'
 Plug 'tpope/vim-fugitive'
 Plug 'kchmck/vim-coffee-script'
 Plug 'iCyMind/NeoSolarized'
@@ -39,12 +39,11 @@ au FocusGained * :checktime
 nnoremap K :Ag <C-R><C-W><CR>
 nnoremap L :Ag <CR>
 nnoremap <F2> :NERDTreeFind <CR>
-inoremap <expr> <Tab> pumvisible() ? "\<C-n>" : "\<Tab>"
-inoremap <expr> <S-Tab> pumvisible() ? "\<C-p>" : "\<S-Tab>"
 
 nnoremap <C-P> :GFiles --cached --others --exclude-standard<CR>
 nnoremap <C-B> :Buffers<CR>
 nnoremap <C-H> :History<CR>
+nnoremap <C-X> :bufdo bwipeout<CR>
 
 let g:mix_format_on_save = 1
 
