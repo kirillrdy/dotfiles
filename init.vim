@@ -19,6 +19,7 @@ Plug 'junegunn/fzf.vim'
 
 Plug 'pangloss/vim-javascript'
 Plug 'mxw/vim-jsx'
+Plug 'airblade/vim-rooter'
 
 Plug 'elixir-editors/vim-elixir'
 Plug 'mhinz/vim-mix-format'
@@ -43,6 +44,7 @@ inoremap <expr> <S-Tab> pumvisible() ? "\<C-p>" : "\<S-Tab>"
 
 nnoremap <C-P> :GFiles --cached --others --exclude-standard<CR>
 nnoremap <C-B> :Buffers<CR>
+nnoremap <C-H> :History<CR>
 
 let g:mix_format_on_save = 1
 
