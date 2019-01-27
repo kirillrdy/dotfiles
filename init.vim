@@ -36,7 +36,7 @@ set autoread
 au FocusGained * :checktime
 
 " bind K to grep word under cursor
-nnoremap K :Ag <C-R><C-W><CR>
+nnoremap <C-K> :Ag <C-R><C-W><CR>
 nnoremap L :Ag <CR>
 nnoremap <F2> :NERDTreeFind <CR>
 
