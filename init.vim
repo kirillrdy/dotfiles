@@ -46,6 +46,7 @@ nnoremap <C-H> :History<CR>
 nnoremap <C-X> :bufdo bwipeout<CR>
 
 let g:mix_format_on_save = 1
+let g:rustfmt_autosave = 1
 
 " Similarly, we can apply it to fzf#vim#grep. To use ripgrep instead of ag:
 command! -bang -nargs=* Rg
