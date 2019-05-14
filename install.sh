@@ -11,3 +11,4 @@ mkdir -p ~/.local/share/icons/hicolor/scalable/apps
 mkdir -p ~/.local/share/applications
 cp -v icons/* ~/.local/share/icons/hicolor/scalable/apps/
 cp -v org.daa.NeovimGtk.desktop ~/.local/share/applications/
+cp -v Xdefaults ~/.Xdefaults
