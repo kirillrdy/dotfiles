@@ -65,7 +65,7 @@ xterm*faceName:           terminus:pixelsize=15
 xterm*dynamicColors:      true
 xterm*utf8:               1
 xterm*eightBitInput:      false
-xterm*saveLines:          2048
+xterm*saveLines:          10000
 xterm*scrollTtyKeypress:  true
 xterm*scrollTtyOutput:    false
 xterm*scrollBar:          false
