@@ -1,3 +1,2 @@
-
 set background=dark
-colorscheme NeoSolarized
+colorscheme nord

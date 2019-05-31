@@ -26,6 +26,7 @@ Plug 'peitalin/vim-jsx-typescript'
 Plug 'elixir-editors/vim-elixir'
 Plug 'mhinz/vim-mix-format'
 Plug 'prettier/vim-prettier', { 'do': 'yarn install' }
+Plug 'arcticicestudio/nord-vim'
 
 call plug#end()
 
