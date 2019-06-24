@@ -44,6 +44,7 @@ au FocusGained * :checktime
 nnoremap <C-K> :Ag <C-R><C-W><CR>
 nnoremap L :Ag <CR>
 nnoremap <F2> :NERDTreeFind <CR>
+nnoremap <F3> :NERDTreeToggle <CR>
 
 nnoremap <C-P> :GFiles --cached --others --exclude-standard<CR>
 nnoremap <C-B> :Buffers<CR>
