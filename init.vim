@@ -1,6 +1,6 @@
 call plug#begin()
 
-Plug 'w0rp/ale'
+Plug 'dense-analysis/ale'
 Plug 'fatih/vim-go'
 
 " rust
@@ -8,7 +8,7 @@ Plug 'rust-lang/rust.vim'
 Plug 'racer-rust/vim-racer'
 Plug 'roxma/nvim-cm-racer'
 
-Plug 'Valloric/YouCompleteMe'
+"Plug 'Valloric/YouCompleteMe'
 Plug 'tpope/vim-fugitive'
 Plug 'kchmck/vim-coffee-script'
 Plug 'iCyMind/NeoSolarized'
@@ -45,14 +45,25 @@ nnoremap <C-K> :Ag <C-R><C-W><CR>
 nnoremap L :Ag <CR>
 nnoremap <F2> :NERDTreeFind <CR>
 nnoremap <F3> :NERDTreeToggle <CR>
+nnoremap <F4> :ALEFindReferences <CR>
 
 nnoremap <C-P> :GFiles --cached --others --exclude-standard<CR>
 nnoremap <C-B> :Buffers<CR>
 nnoremap <C-H> :History<CR>
 nnoremap <C-X> :bufdo bwipeout<CR>
+nnoremap <silent> gd :ALEGoToDefinition<CR>
 
-let g:mix_format_on_save = 1
-let g:rustfmt_autosave = 1
+"let g:mix_format_on_save = 1
+"let g:rustfmt_autosave = 1
+
+let g:ale_completion_enabled = 1
+let g:ale_linters = {}
+let g:ale_linters.elixir = ['credo', 'dialyxir', 'dogma', 'elixir-ls', 'mix']
+let g:ale_fixers = {'*': ['remove_trailing_lines', 'trim_whitespace']}
+let g:ale_fixers.elixir = ['mix_format']
+let g:ale_fix_on_save = 1
+
+let g:ale_elixir_elixir_ls_release = '/home/kirillvr/elixir-ls/rel'
 
 " Similarly, we can apply it to fzf#vim#grep. To use ripgrep instead of ag:
 command! -bang -nargs=* Rg
