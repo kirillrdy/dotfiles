@@ -1,31 +1,20 @@
 call plug#begin()
 
 Plug 'dense-analysis/ale'
-Plug 'fatih/vim-go'
 
 " rust
 Plug 'rust-lang/rust.vim'
 Plug 'racer-rust/vim-racer'
 Plug 'roxma/nvim-cm-racer'
 
-"Plug 'Valloric/YouCompleteMe'
 Plug 'tpope/vim-fugitive'
-Plug 'kchmck/vim-coffee-script'
-Plug 'iCyMind/NeoSolarized'
-Plug 'slim-template/vim-slim'
 Plug 'scrooloose/nerdtree'
 Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
 Plug 'junegunn/fzf.vim'
 
-Plug 'pangloss/vim-javascript'
 Plug 'mxw/vim-jsx'
 Plug 'airblade/vim-rooter'
-Plug 'leafgarland/typescript-vim'
-Plug 'peitalin/vim-jsx-typescript'
 
-Plug 'elixir-editors/vim-elixir'
-Plug 'mhinz/vim-mix-format'
-Plug 'prettier/vim-prettier', { 'do': 'yarn install' }
 Plug 'arcticicestudio/nord-vim'
 
 call plug#end()
@@ -59,8 +48,10 @@ nnoremap <silent> gd :ALEGoToDefinition<CR>
 let g:ale_completion_enabled = 1
 let g:ale_linters = {}
 let g:ale_linters.elixir = ['credo', 'dialyxir', 'dogma', 'elixir-ls', 'mix']
+let g:ale_linters.go = ['gopls', 'golint']
 let g:ale_fixers = {'*': ['remove_trailing_lines', 'trim_whitespace']}
 let g:ale_fixers.elixir = ['mix_format']
+let g:ale_fixers.go = ['gofmt']
 let g:ale_fix_on_save = 1
 
 let g:ale_elixir_elixir_ls_release = '/home/kirillvr/elixir-ls/rel'
