@@ -2,19 +2,11 @@ call plug#begin()
 
 Plug 'dense-analysis/ale'
 
-" rust
-Plug 'rust-lang/rust.vim'
-Plug 'racer-rust/vim-racer'
-Plug 'roxma/nvim-cm-racer'
-
 Plug 'tpope/vim-fugitive'
 Plug 'scrooloose/nerdtree'
 Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
 Plug 'junegunn/fzf.vim'
-
-Plug 'mxw/vim-jsx'
 Plug 'airblade/vim-rooter'
-
 Plug 'arcticicestudio/nord-vim'
 
 call plug#end()
