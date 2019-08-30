@@ -48,6 +48,9 @@ let g:ale_fix_on_save = 1
 
 let g:ale_elixir_elixir_ls_release = '/home/kirillvr/elixir-ls/rel'
 
+inoremap <silent><expr> <Tab>
+      \ pumvisible() ? "\<C-n>" : "\<TAB>"
+
 " Similarly, we can apply it to fzf#vim#grep. To use ripgrep instead of ag:
 command! -bang -nargs=* Rg
   \ call fzf#vim#grep(
