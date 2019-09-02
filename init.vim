@@ -34,9 +34,6 @@ nnoremap <C-H> :History<CR>
 nnoremap <C-X> :bufdo bwipeout<CR>
 nnoremap <silent> gd :ALEGoToDefinition<CR>
 
-"let g:mix_format_on_save = 1
-"let g:rustfmt_autosave = 1
-
 let g:ale_completion_enabled = 1
 let g:ale_linters = {}
 let g:ale_linters.elixir = ['credo', 'dialyxir', 'dogma', 'elixir-ls', 'mix']
