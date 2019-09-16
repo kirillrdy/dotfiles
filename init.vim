@@ -10,6 +10,8 @@ Plug 'airblade/vim-rooter'
 Plug 'arcticicestudio/nord-vim'
 Plug 'elixir-editors/vim-elixir'
 
+Plug 'leafgarland/typescript-vim'
+
 call plug#end()
 
 set tabstop=2
