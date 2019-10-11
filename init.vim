@@ -9,6 +9,7 @@ Plug 'junegunn/fzf.vim'
 Plug 'airblade/vim-rooter'
 Plug 'arcticicestudio/nord-vim'
 Plug 'elixir-editors/vim-elixir'
+Plug 'zah/nim.vim'
 
 Plug 'leafgarland/typescript-vim'
 
