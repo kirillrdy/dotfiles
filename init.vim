@@ -46,6 +46,7 @@ let g:ale_linters.go = ['gopls', 'golint']
 let g:ale_linters.rust = ['rls', 'cargo', 'rustc']
 let g:ale_fixers = {'*': ['remove_trailing_lines', 'trim_whitespace']}
 let g:ale_fixers.elixir = ['mix_format']
+let g:ale_fixers.typescript = ['prettier']
 let g:ale_fixers.go = ['gofmt']
 let g:ale_fixers.rust = ['rustfmt']
 let g:ale_fixers['typescript.tsx'] = ['prettier']
