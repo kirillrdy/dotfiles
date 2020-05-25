@@ -1,34 +1,15 @@
 #+STARTUP: showall
 #+TITLE: Dotfiles
 
-* Current projects
-
-- [[~/src/github.com/kirillrdy/vidos/README.org][Vidos]]
-- Nadeshiko
-- libkanji
-
-
-| Name     | Language |
-|----------+----------|
-| Vidos    | Go       |
-| Libkanji | Go       |
-|          |          |
-
-
-* Project ideas
-** move more stuff into web package
-** zfs tool
-** planner
-** finish vidos
-** material ui front end thingy
-** system setup golang thingy
-** jails playing
-** bhyve playing
-
-* Current TODO
-** vagrant for FreeBSD
-
-
-* Dragonflybsd setup
-** need to restore my dwm setup
-Liberation Mono fonts
+* FreeBSD checklist
+** android studio
+** slack
+** tilix
+** docker
+** new gnome
+** fast wifi
+** automated bhyve
+** firefox icon
+** good dev env for python
+** reproducable envs for python
+** ccache for ruby pyton builds?
