@@ -3,3 +3,5 @@
 	email = kirillrdy@gmail.com
 [push]
 	default = simple
+[pull]
+	rebase = true
