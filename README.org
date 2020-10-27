@@ -6,14 +6,9 @@
 ** slack
 ** tilix
 ** docker
-** new gnome
 ** fast wifi
 ** automated bhyve
 ** firefox icon
-** good dev env for python
-** reproducable envs for python
-** ccache for ruby pyton builds?
-** good dev env for rust
 ** trackpad
 ** brightness
 ** webcam / whereby / maybe in chrome
