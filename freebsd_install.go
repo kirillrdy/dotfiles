@@ -8,16 +8,18 @@ import (
 	"strings"
 )
 
-var verbose = true
+const verbose = true
 
 func execute(progname string, args ...string) {
 	log.Printf("Executing \"%v %v\"\n", progname, strings.Join(args, " "))
 	command := exec.Command(progname, args...)
+
 	if verbose {
 		command.Stdout = os.Stdout
 		command.Stdin = os.Stdin
 		command.Stderr = os.Stderr
 	}
+
 	err := command.Run()
 	if err != nil {
 		log.Fatal(err)
@@ -34,7 +36,7 @@ func enableRc(rcVar string) {
 }
 
 func main() {
-	//MDSN, virtual box
+	// MDSN, virtual box
 	packages := []string{
 		"xorg",
 		"vim",
