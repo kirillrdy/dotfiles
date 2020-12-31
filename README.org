@@ -4,7 +4,7 @@
 * FreeBSD checklist
 ** android studio
 ** slack
-** tilix
+** tilix ( fix lauhcher )
 ** docker
 ** fast wifi
 ** automated bhyve
