@@ -28,6 +28,7 @@ nnoremap L :Ag <CR>
 nnoremap <F2> :NERDTreeFind <CR>
 nnoremap <F3> :NERDTreeToggle <CR>
 nnoremap <F4> :ALEFindReferences <CR>
+nnoremap <F5> :ALENext <CR>
 
 nnoremap <C-P> :GFiles --cached --others --exclude-standard<CR>
 nnoremap <C-B> :Buffers<CR>
