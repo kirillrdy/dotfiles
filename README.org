@@ -4,6 +4,7 @@
 * FreeBSD checklist
 ** android studio
 ** slack
+** git auto complete
 ** automates linux chroot
 ** tilix ( fix lauhcher )
 ** docker
