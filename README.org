@@ -4,6 +4,7 @@
 * FreeBSD checklist
 ** android studio
 ** slack
+** automates linux chroot
 ** tilix ( fix lauhcher )
 ** docker
 ** fast wifi
