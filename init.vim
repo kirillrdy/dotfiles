@@ -9,6 +9,7 @@ Plug 'airblade/vim-rooter'
 Plug 'arcticicestudio/nord-vim'
 Plug 'leafgarland/typescript-vim'
 Plug 'peitalin/vim-jsx-typescript'
+Plug 'LnL7/vim-nix'
 
 call plug#end()
 
