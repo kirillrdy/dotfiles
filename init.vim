@@ -39,7 +39,7 @@ nnoremap <silent> gd :ALEGoToDefinition<CR>
 
 let g:ale_completion_enabled = 1
 let g:ale_linters = {}
-let g:ale_linters.go = ['gopls', 'golangci-lint']
+let g:ale_linters.go = ['gopls']
 let g:ale_linters.rust = ['analyzer', 'cargo', 'rustc']
 let g:ale_fixers = {'*': ['remove_trailing_lines', 'trim_whitespace']}
 let g:ale_fixers.go = ['gofmt']
