@@ -44,7 +44,10 @@ let g:ale_linters.rust = ['analyzer', 'cargo', 'rustc']
 let g:ale_fixers = {'*': ['remove_trailing_lines', 'trim_whitespace']}
 let g:ale_fixers.go = ['gofmt']
 let g:ale_fixers.rust = ['rustfmt']
+let g:ale_fixers.ruby = ['rubocop']
+let g:ale_ruby_rubocop_auto_correct_all = 1
 let g:ale_fix_on_save = 1
+
 
 inoremap <silent><expr> <Tab>
       \ pumvisible() ? "\<C-n>" : "\<TAB>"
