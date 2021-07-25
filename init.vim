@@ -24,7 +24,7 @@ set number
 set relativenumber
 set autoread
 set nowb
-set completeopt=menuone,noselect
+set completeopt=menuone
 au FocusGained * :checktime
 
 " bind K to grep word under cursor
