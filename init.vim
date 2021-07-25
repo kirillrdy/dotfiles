@@ -2,17 +2,15 @@ call plug#begin()
 
 Plug 'tpope/vim-fugitive'
 Plug 'scrooloose/nerdtree'
-Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
-Plug 'junegunn/fzf.vim'
 Plug 'airblade/vim-rooter'
 Plug 'arcticicestudio/nord-vim'
-Plug 'leafgarland/typescript-vim'
-Plug 'peitalin/vim-jsx-typescript'
-Plug 'LnL7/vim-nix'
 
 Plug 'neovim/nvim-lspconfig'
-Plug 'glepnir/lspsaga.nvim'
 Plug 'hrsh7th/nvim-compe'
+
+Plug 'nvim-lua/popup.nvim'
+Plug 'nvim-lua/plenary.nvim'
+Plug 'nvim-telescope/telescope.nvim'
 
 call plug#end()
 
@@ -24,22 +22,21 @@ set number
 set relativenumber
 set autoread
 set nowb
-set completeopt=menuone
+set completeopt=menuone,noselect
 au FocusGained * :checktime
 
-" bind K to grep word under cursor
-nnoremap <C-K> :Ag <C-R><C-W><CR>
-nnoremap L :Ag <CR>
+nnoremap <C-K> <cmd>Telescope grep_string<cr>
+nnoremap L <cmd>Telescope live_grep<cr>
 nnoremap <F2> :NERDTreeFind <CR>
 nnoremap <F3> :NERDTreeToggle <CR>
-nnoremap <F4> :ALEFindReferences <CR>
-nnoremap <F5> :ALENext <CR>
+nnoremap <F4> <cmd>Telescope lsp_document_symbols<cr>
+nnoremap <F5> <cmd>Telescope lsp_document_diagnostics<cr>
+nnoremap <silent> gd <cmd>Telescope lsp_definitions<cr>
+nnoremap <silent> gr <cmd>Telescope lsp_references<cr>
 
-nnoremap <C-P> :GFiles --cached --others --exclude-standard<CR>
-nnoremap <C-B> :Buffers<CR>
-nnoremap <C-H> :History<CR>
+nnoremap <C-P> <cmd>Telescope find_files<cr>
+nnoremap <C-B> <cmd>Telescope buffers<cr>
 nnoremap <C-X> :bufdo bwipeout<CR>
-nnoremap <silent> gd :ALEGoToDefinition<CR>
 
 inoremap <silent><expr> <Tab>
       \ pumvisible() ? "\<C-n>" : "\<TAB>"
@@ -72,7 +69,7 @@ local on_attach = function(client, bufnr)
   buf_set_keymap('n', '<space>D', '<cmd>lua vim.lsp.buf.type_definition()<CR>', opts)
   buf_set_keymap('n', '<space>rn', '<cmd>lua vim.lsp.buf.rename()<CR>', opts)
   buf_set_keymap('n', '<space>ca', '<cmd>lua vim.lsp.buf.code_action()<CR>', opts)
-  buf_set_keymap('n', 'gr', '<cmd>lua vim.lsp.buf.references()<CR>', opts)
+  -- buf_set_keymap('n', 'gr', '<cmd>lua vim.lsp.buf.references()<CR>', opts)
   buf_set_keymap('n', '<space>e', '<cmd>lua vim.lsp.diagnostic.show_line_diagnostics()<CR>', opts)
   buf_set_keymap('n', '[d', '<cmd>lua vim.lsp.diagnostic.goto_prev()<CR>', opts)
   buf_set_keymap('n', ']d', '<cmd>lua vim.lsp.diagnostic.goto_next()<CR>', opts)
@@ -92,10 +89,6 @@ for _, lsp in ipairs(servers) do
     }
   }
 end
-
-local saga = require 'lspsaga'
-saga.init_lsp_saga()
-
 
 require'compe'.setup {
   enabled = true;
@@ -132,5 +125,6 @@ require'compe'.setup {
 }
      
 EOF
-nnoremap <silent> gh :Lspsaga lsp_finder<CR>
 autocmd BufWritePre *.go lua vim.lsp.buf.formatting_sync(nil, 1000)
+autocmd BufWritePre *.rb lua vim.lsp.buf.formatting_sync(nil, 1000)
+autocmd BufWritePre *.rs lua vim.lsp.buf.formatting_sync(nil, 1000)
