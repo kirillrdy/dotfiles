@@ -34,7 +34,7 @@ nnoremap <F5> <cmd>Telescope lsp_document_diagnostics<cr>
 nnoremap <silent> gd <cmd>Telescope lsp_definitions<cr>
 nnoremap <silent> gr <cmd>Telescope lsp_references<cr>
 
-nnoremap <C-P> <cmd>Telescope find_files<cr>
+nnoremap <C-P> <cmd>Telescope git_files<cr>
 nnoremap <C-B> <cmd>Telescope buffers<cr>
 nnoremap <C-X> :bufdo bwipeout<CR>
 
