@@ -4,6 +4,7 @@ Plug 'tpope/vim-fugitive'
 Plug 'scrooloose/nerdtree'
 Plug 'airblade/vim-rooter'
 Plug 'arcticicestudio/nord-vim'
+Plug 'LnL7/vim-nix'
 
 Plug 'neovim/nvim-lspconfig'
 Plug 'hrsh7th/nvim-compe'
