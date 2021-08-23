@@ -126,6 +126,3 @@ EOF
 autocmd BufWritePre *.go lua vim.lsp.buf.formatting_sync(nil, 1000)
 autocmd BufWritePre *.rb lua vim.lsp.buf.formatting_sync(nil, 1000)
 autocmd BufWritePre *.rs lua vim.lsp.buf.formatting_sync(nil, 1000)
-
-colorscheme nord
-set background=dark
