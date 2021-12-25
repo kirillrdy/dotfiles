@@ -61,7 +61,6 @@
   hardware.opengl.driSupport32Bit = true;
 
   networking.firewall.enable = false;
-  system.stateVersion = "20.09"; # Did you read the comment?
-
+  system.stateVersion = "21.05"; # Did you read the comment?
 }
 
