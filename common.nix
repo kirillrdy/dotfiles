@@ -2,13 +2,14 @@
 , pkgs
 , hostName
 , enableNvidia ? false
+, hardwareConfiguration
 , ...
 }:
 
 {
   imports =
     [
-      /etc/nixos/hardware-configuration.nix
+      hardwareConfiguration
     ];
   nix = {
     extraOptions = ''
