@@ -3,7 +3,7 @@
 {
   imports =
     [
-      ./hardware-configuration.nix
+      /etc/nixos/hardware-configuration.nix
     ];
   nix = {
     extraOptions = ''
@@ -38,7 +38,6 @@
 
   environment.systemPackages = with pkgs; [
     chromium
-    cudatoolkit_11
     emacs
     firefox
     git
@@ -51,12 +50,10 @@
     tig
     xclip
   ];
-
   users.users.kirillvr = {
     isNormalUser = true;
     extraGroups = [ "wheel" "docker" "vboxusers" ];
   };
-
   virtualisation.virtualbox.host.enable = true;
   virtualisation.docker.enable = true;
   virtualisation.docker.storageDriver = "zfs";

@@ -49,7 +49,6 @@
     tig
     xclip
   ];
-
   users.users.kirillvr = {
     isNormalUser = true;
     extraGroups = [ "wheel" "docker" "vboxusers" ];
