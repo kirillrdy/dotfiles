@@ -2,15 +2,10 @@
 , pkgs
 , hostName
 , enableNvidia ? false
-, hardwareConfiguration
 , ...
 }:
 
 {
-  imports =
-    [
-      hardwareConfiguration
-    ];
   nix = {
     extraOptions = ''
       experimental-features = nix-command flakes
