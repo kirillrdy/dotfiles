@@ -5,27 +5,29 @@
 
 {
   imports =
-    [ (modulesPath + "/installer/scan/not-detected.nix")
+    [
+      (modulesPath + "/installer/scan/not-detected.nix")
     ];
 
   boot.initrd.availableKernelModules = [ "xhci_pci" "thunderbolt" "nvme" "usb_storage" "sd_mod" ];
   boot.initrd.kernelModules = [ ];
-  boot.kernelModules = [ "kvm-intel" ];
+  boot.kernelModules = [ ];
   boot.extraModulePackages = [ ];
 
   fileSystems."/" =
-    { device = "zroot/root";
+    {
+      device = "zroot/root";
       fsType = "zfs";
     };
 
   fileSystems."/boot" =
-    { device = "/dev/disk/by-uuid/FE6C-348A";
+    {
+      device = "/dev/disk/by-uuid/FE6C-348A";
       fsType = "vfat";
     };
 
   swapDevices =
-    [ { device = "/dev/disk/by-uuid/4a87aa69-1804-4d29-aebb-af4352d13545"; }
-    ];
+    [{ device = "/dev/disk/by-uuid/4a87aa69-1804-4d29-aebb-af4352d13545"; }];
 
   powerManagement.cpuFreqGovernor = lib.mkDefault "powersave";
 }
