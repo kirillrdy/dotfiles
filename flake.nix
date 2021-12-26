@@ -11,7 +11,10 @@
 
     nixosConfigurations.osaka = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
-      modules = [ ./osaka.nix ];
+      modules = [
+        ./hardware-configuration-osaka.nix
+        ./osaka.nix
+      ];
     };
     nixosConfigurations.shinseikai = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
