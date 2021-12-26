@@ -1,16 +1,22 @@
 { config
 , pkgs
 , hostName
+, lib
 , enableNvidia ? false
 , ...
 }:
 
 {
+  imports = [ ./hardware-configuration.nix ];
   nix = {
     extraOptions = ''
       experimental-features = nix-command flakes
     '';
   };
+
+  # TODO maybe not on desktop, check default value
+  powerManagement.cpuFreqGovernor = lib.mkDefault "powersave";
+
   nixpkgs.config.allowUnfree = true;
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;

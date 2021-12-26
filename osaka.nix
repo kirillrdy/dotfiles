@@ -1,7 +1,6 @@
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 import ./common.nix {
   hostName = "osaka";
-  hardwareConfiguration = ./hardware-configuration-osaka.nix;
-  inherit config pkgs;
+  inherit config pkgs lib;
 }
 
