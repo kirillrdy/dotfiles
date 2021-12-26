@@ -3,7 +3,6 @@
 , hostName
 , lib
 , enableNvidia ? false
-, ...
 }:
 
 {
