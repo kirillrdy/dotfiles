@@ -1,17 +1,18 @@
 {
   description = "my computers in flakes";
   inputs.nixpkgs.url = "github:nixos/nixpkgs";
-  outputs = { self, nixpkgs }:
+  inputs.awsebcli.url = "github:kirillrdy/nixpkgs/awsebcli";
+  outputs = { self, nixpkgs, awsebcli }:
     let
       shinseikai = { config, pkgs, lib, ... }:
         import ./common.nix {
-          inherit config pkgs lib;
+          inherit config pkgs lib awsebcli;
           hostName = "shinseikai";
           enableNvidia = true;
         };
       osaka = { config, pkgs, lib, ... }:
         import ./common.nix {
-          inherit config pkgs lib;
+          inherit config pkgs lib awsebcli;
           hostName = "osaka";
         };
     in

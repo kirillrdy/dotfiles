@@ -2,6 +2,7 @@
 , pkgs
 , hostName
 , lib
+, awsebcli
 , enableNvidia ? false
 }:
 
@@ -40,6 +41,7 @@
   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
 
   environment.systemPackages = with pkgs; [
+    awsebcli.legacyPackages.x86_64-linux.awsebcli
     chromium
     emacs
     firefox

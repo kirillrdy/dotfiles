@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "awsebcli": {
+      "locked": {
+        "lastModified": 1638734708,
+        "narHash": "sha256-kT+CyzUoYvP3ZmYp7B7NcAUkaO0VezPw78dqf8XISl0=",
+        "owner": "kirillrdy",
+        "repo": "nixpkgs",
+        "rev": "c48035e870e2218ac090d3b3247fd0ef88fa9002",
+        "type": "github"
+      },
+      "original": {
+        "owner": "kirillrdy",
+        "ref": "awsebcli",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1640551806,
@@ -17,6 +33,7 @@
     },
     "root": {
       "inputs": {
+        "awsebcli": "awsebcli",
         "nixpkgs": "nixpkgs"
       }
     }
