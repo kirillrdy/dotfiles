@@ -42,7 +42,6 @@
 
   environment.systemPackages = with pkgs; [
     awsebcli.legacyPackages.x86_64-linux.awsebcli
-    chromium
     emacs
     firefox
     git
