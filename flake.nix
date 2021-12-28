@@ -7,9 +7,9 @@
       nixosConfigurations.osaka = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         modules = [
-          ({ config, pkgs, lib, ... }:
+          ({ pkgs, lib, ... }:
             import ./common.nix {
-              inherit config pkgs lib awsebcli;
+              inherit pkgs lib awsebcli;
               hostName = "osaka";
             })
         ];
@@ -17,9 +17,9 @@
       nixosConfigurations.shinseikai = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         modules = [
-          ({ config, pkgs, lib, ... }:
+          ({ pkgs, lib, ... }:
             import ./common.nix {
-              inherit config pkgs lib awsebcli;
+              inherit pkgs lib awsebcli;
               hostName = "shinseikai";
               enableNvidia = true;
             })

@@ -1,5 +1,4 @@
-{ config
-, pkgs
+{ pkgs
 , hostName
 , lib
 , awsebcli
