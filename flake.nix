@@ -6,7 +6,7 @@
     {
       nixosConfigurations =
         let
-          simplesystem = hostName: enableNvidia: {
+          simplesystem = { hostName, enableNvidia ? false }: {
             system = "x86_64-linux";
             modules = [
               ({ pkgs
@@ -95,8 +95,8 @@
           };
         in
         {
-          osaka = nixpkgs.lib.nixosSystem (simplesystem "osaka" false);
-          shinseikai = nixpkgs.lib.nixosSystem (simplesystem "shinseikai" true);
+          osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; });
+          shinseikai = nixpkgs.lib.nixosSystem (simplesystem { hostName = "shinseikai"; enableNvidia = true; });
         };
     };
 }
