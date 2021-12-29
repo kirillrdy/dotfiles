@@ -4,26 +4,19 @@
   inputs.awsebcli.url = "github:kirillrdy/nixpkgs/awsebcli";
   outputs = { self, nixpkgs, awsebcli }:
     {
-      nixosConfigurations.osaka = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        modules = [
-          ({ pkgs, lib, ... }:
-            import ./common.nix {
-              inherit pkgs lib awsebcli;
-              hostName = "osaka";
-            })
-        ];
-      };
-      nixosConfigurations.shinseikai = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        modules = [
-          ({ pkgs, lib, ... }:
-            import ./common.nix {
-              inherit pkgs lib awsebcli;
-              hostName = "shinseikai";
-              enableNvidia = true;
-            })
-        ];
-      };
+      nixosConfigurations =
+        let
+          simplesystem = hostName: enableNvidia: {
+            system = "x86_64-linux";
+            modules = [
+              ({ pkgs, lib, ... }:
+                import ./common.nix { inherit pkgs lib awsebcli hostName enableNvidia; })
+            ];
+          };
+        in
+        {
+          osaka = nixpkgs.lib.nixosSystem (simplesystem "osaka" false);
+          shinseikai = nixpkgs.lib.nixosSystem (simplesystem "shinseikai" true);
+        };
     };
 }
