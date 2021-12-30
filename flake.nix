@@ -87,7 +87,7 @@
                   virtualisation.docker.storageDriver = "zfs";
                   virtualisation.docker.enableNvidia = enableNvidia;
                   hardware.opengl.driSupport32Bit = enableNvidia;
-
+                  systemd.enableUnifiedCgroupHierarchy = false;
                   networking.firewall.enable = false;
                   system.stateVersion = "21.11"; # Did you read the comment?
                 })
