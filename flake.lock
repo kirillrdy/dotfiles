@@ -2,11 +2,11 @@
   "nodes": {
     "awsebcli": {
       "locked": {
-        "lastModified": 1640636881,
-        "narHash": "sha256-7KD5k9jyu//NgHme0ol1UawRmv+DoDh/tUtUhqlnRQM=",
+        "lastModified": 1641072287,
+        "narHash": "sha256-gZzBkLM332BJ2n9I1H8lVlgqe4y5dZGlfZRjrMYCoag=",
         "owner": "kirillrdy",
         "repo": "nixpkgs",
-        "rev": "75c7fa033368d4e616022afc8eee4514a08581c5",
+        "rev": "7940aabc18fd5239f9042c1c848b4e32bcb60bbd",
         "type": "github"
       },
       "original": {
