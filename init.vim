@@ -26,6 +26,9 @@ set nowb
 set completeopt=menuone,noselect
 au FocusGained * :checktime
 
+" TODO only when in GUI
+colorscheme nord
+
 nnoremap <C-K> <cmd>Telescope grep_string<cr>
 nnoremap L <cmd>Telescope live_grep<cr>
 nnoremap <F2> :NERDTreeFind <CR>
