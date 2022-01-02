@@ -72,13 +72,15 @@
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
 
                   environment.systemPackages = with pkgs; [
+                    android-studio
+                    awscli2
                     awsebcli.legacyPackages.x86_64-linux.awsebcli
                     chromium
                     emacs
                     firefox
                     git
+                    neovide
                     neovim
-                    neovim-qt
                     peek
                     ripgrep
                     rnix-lsp
