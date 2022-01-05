@@ -29,6 +29,8 @@ au FocusGained * :checktime
 " TODO only when in GUI
 colorscheme nord
 
+noremap <C-6> <C-^>
+
 nnoremap <C-K> <cmd>Telescope grep_string<cr>
 nnoremap L <cmd>Telescope live_grep<cr>
 nnoremap <F2> :NERDTreeFind <CR>
