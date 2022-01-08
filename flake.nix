@@ -65,6 +65,9 @@
                   i18n.defaultLocale = "en_AU.UTF-8";
                   services.xserver.enable = true;
                   services.xserver.desktopManager.gnome.enable = true;
+                  services.gnome.core-utilities.enable = false;
+                  services.gnome.tracker-miners.enable = false;
+                  services.gnome.tracker.enable = false;
                   #services.xserver.displayManager.gdm.enable = true;
                   services.xserver.displayManager.autoLogin.enable = true;
                   services.xserver.displayManager.autoLogin.user = "kirillvr";
@@ -72,11 +75,11 @@
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
 
                   environment.systemPackages = with pkgs; [
-                    android-studio
                     awscli2
                     awsebcli.legacyPackages.x86_64-linux.awsebcli
                     chromium
                     emacs
+                    gnome.gnome-terminal
                     firefox
                     git
                     neovide
