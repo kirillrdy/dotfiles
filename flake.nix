@@ -26,19 +26,15 @@
                   #virtualisation.diskSize = 1024 * 10;
 
                   boot.initrd.availableKernelModules = [ "nvme" ];
-                  fileSystems."/" =
-                    {
-                      device = "zroot/root";
-                      fsType = "zfs";
-                    };
-                  fileSystems."/boot" =
-                    {
-                      device = "/dev/nvme0n1p3";
-                      fsType = "vfat";
-                    };
-                  swapDevices =
-                    [{ device = "/dev/nvme0n1p2"; }];
-
+                  fileSystems."/" = {
+                    device = "zroot/root";
+                    fsType = "zfs";
+                  };
+                  fileSystems."/boot" = {
+                    device = "/dev/nvme0n1p3";
+                    fsType = "vfat";
+                  };
+                  swapDevices = [{ device = "/dev/nvme0n1p2"; }];
                   nix = {
                     extraOptions = ''
                       experimental-features = nix-command flakes
