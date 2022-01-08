@@ -48,7 +48,7 @@
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
                   boot.kernelPackages = pkgs.linuxPackages_latest;
-                  boot.zfs.enableUnstable = true;
+                  boot.zfs.enableUnstable = false;
 
                   networking.hostId = "00000000";
                   networking.hostName = hostName;
