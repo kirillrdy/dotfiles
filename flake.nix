@@ -83,6 +83,7 @@
                     gnome.gnome-system-monitor
                     gnome.gnome-terminal
                     gnome.nautilus
+                    gnome.totem
                     neovide
                     neovim
                     obs-studio
