@@ -75,12 +75,17 @@
                     awsebcli.legacyPackages.x86_64-linux.awsebcli
                     chromium
                     emacs
-                    gnome.gnome-terminal
                     firefox
                     git
+                    gnome.baobab
+                    gnome.eog
+                    gnome.file-roller
+                    gnome.gnome-system-monitor
+                    gnome.gnome-terminal
+                    gnome.nautilus
                     neovide
                     neovim
-                    peek
+                    obs-studio
                     ripgrep
                     rnix-lsp
                     slack
