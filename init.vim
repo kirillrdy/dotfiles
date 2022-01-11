@@ -26,8 +26,9 @@ set nowb
 set completeopt=menuone,noselect
 au FocusGained * :checktime
 
-" TODO only when in GUI
-colorscheme nord
+if exists('g:neovide')
+  colorscheme nord
+en
 
 noremap <C-6> <C-^>
 
