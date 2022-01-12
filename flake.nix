@@ -80,6 +80,7 @@
                     gnome.baobab
                     gnome.eog
                     gnome.file-roller
+                    gnome.gnome-screenshot
                     gnome.gnome-system-monitor
                     gnome.gnome-terminal
                     gnome.nautilus
