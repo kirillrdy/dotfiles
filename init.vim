@@ -37,7 +37,7 @@ nnoremap L <cmd>Telescope live_grep<cr>
 nnoremap <F2> :NERDTreeFind <CR>
 nnoremap <F3> :NERDTreeToggle <CR>
 nnoremap <space>s <cmd>Telescope lsp_document_symbols<cr>
-nnoremap <space>e <cmd>Telescope lsp_document_diagnostics<cr>
+nnoremap <space>e <cmd>Telescope diagnostics<cr>
 nnoremap <silent> gd <cmd>Telescope lsp_definitions<cr>
 nnoremap <silent> gr <cmd>Telescope lsp_references<cr>
 
