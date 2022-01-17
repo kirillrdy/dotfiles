@@ -41,8 +41,7 @@
                     '';
                   };
 
-                  # TODO maybe not on desktop, check default value
-                  powerManagement.cpuFreqGovernor = lib.mkDefault "powersave";
+                  powerManagement.cpuFreqGovernor = if !enableNvidia then lib.mkDefault "powersave" else null;
 
                   nixpkgs.config.allowUnfree = true;
                   boot.loader.systemd-boot.enable = true;
