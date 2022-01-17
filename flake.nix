@@ -46,7 +46,7 @@
                   nixpkgs.config.allowUnfree = true;
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
-                  boot.kernelPackages = pkgs.linuxPackages_latest;
+                  boot.kernelPackages = pkgs.linuxPackages_5_15;
                   boot.zfs.enableUnstable = false;
 
                   networking.hostId = "00000000";
