@@ -84,6 +84,7 @@
                     gnome.gnome-terminal
                     gnome.nautilus
                     gnome.totem
+                    gnome.gnome-boxes
                     neovide
                     neovim
                     obs-studio
@@ -97,7 +98,7 @@
                     isNormalUser = true;
                     extraGroups = [ "wheel" "docker" "vboxusers" ];
                   };
-                  virtualisation.virtualbox.host.enable = true;
+                  virtualisation.libvirtd.enable = true;
                   virtualisation.docker.enable = true;
                   virtualisation.docker.storageDriver = "zfs";
                   virtualisation.docker.enableNvidia = enableNvidia;
