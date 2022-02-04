@@ -26,7 +26,7 @@ set nowb
 set completeopt=menuone,noselect
 au FocusGained * :checktime
 
-if exists('g:neovide')
+if exists('g:neovide') || exists('g:gnvim')
   colorscheme nord
 en
 
