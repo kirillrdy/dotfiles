@@ -1,7 +1,7 @@
 {
   description = "my computers in flakes";
   inputs.nixpkgs.url = "github:nixos/nixpkgs";
-  inputs.awsebcli.url = "github:kirillrdy/nixpkgs/awsebcli";
+  inputs.awsebcli.url = "github:kirillrdy/nixpkgs";
   outputs = { self, nixpkgs, awsebcli }:
     {
       nixosConfigurations =
