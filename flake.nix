@@ -6,7 +6,7 @@
     {
       nixosConfigurations =
         let
-          simplesystem = { hostName, enableNvidia ? false }: {
+          simplesystem = { hostName, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
             system = "x86_64-linux";
             modules = [
               ({ pkgs
@@ -27,14 +27,14 @@
 
                   boot.initrd.availableKernelModules = [ "nvme" ];
                   fileSystems."/" = {
-                    device = "zroot/root";
+                    device = rootPool;
                     fsType = "zfs";
                   };
                   fileSystems."/boot" = {
-                    device = "/dev/nvme0n1p3";
+                    device = bootDevice;
                     fsType = "vfat";
                   };
-                  swapDevices = [{ device = "/dev/nvme0n1p2"; }];
+                  swapDevices = [{ device = swapDevice; }];
                   nix = {
                     extraOptions = ''
                       experimental-features = nix-command flakes
@@ -112,6 +112,7 @@
         in
         {
           osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; });
+          tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice= "/dev/sda3"; swapDevice = "/dev/sda2"; });
           shinseikai = nixpkgs.lib.nixosSystem (simplesystem { hostName = "shinseikai"; enableNvidia = true; });
         };
     };
