@@ -112,7 +112,7 @@
         in
         {
           osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; });
-          tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice= "/dev/sda3"; swapDevice = "/dev/sda2"; });
+          tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice = "/dev/sda3"; swapDevice = "/dev/sda2"; });
           shinseikai = nixpkgs.lib.nixosSystem (simplesystem { hostName = "shinseikai"; enableNvidia = true; });
         };
     };
