@@ -2,11 +2,11 @@
   "nodes": {
     "awsebcli": {
       "locked": {
-        "lastModified": 1644702112,
-        "narHash": "sha256-Yv7nthc1RrL+cWw1KAAzsUQquY011uwpM797US742qo=",
+        "lastModified": 1645043527,
+        "narHash": "sha256-TCU1u4BxIAdyC2fzvAyK/7jTWDgIeTcFYM4dQnEPQbE=",
         "owner": "kirillrdy",
         "repo": "nixpkgs",
-        "rev": "909d6bf1f180f3dc3bfa18e9261c3bd8befd163a",
+        "rev": "6c1b05168f8a3fb5f296b252b411ddc7ea549554",
         "type": "github"
       },
       "original": {
@@ -17,15 +17,16 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1644704776,
-        "narHash": "sha256-7rqnXbPWQvq+oGavtZCx45YvjdSXdYw0aAy6ghcqz0c=",
+        "lastModified": 1645300134,
+        "narHash": "sha256-2R2ErEyWIOw68kXRhwO8EL+A6N2foj3nTOtiIijCElo=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "c7b7f3ae9387ece96f4f6f6080012a0b96612464",
+        "rev": "375f3d0c3cd82291eeba600cc5d55e710c1f19e8",
         "type": "github"
       },
       "original": {
         "owner": "nixos",
+        "ref": "gnome",
         "repo": "nixpkgs",
         "type": "github"
       }
