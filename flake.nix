@@ -9,11 +9,7 @@
           simplesystem = { hostName, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
             system = "x86_64-linux";
             modules = [
-              ({ pkgs
-               , lib
-               , modulesPath
-               , ...
-               }:
+              ({ pkgs, lib, modulesPath, ... }:
                 {
                   imports =
                     [
@@ -26,14 +22,8 @@
                   #virtualisation.diskSize = 1024 * 10;
 
                   boot.initrd.availableKernelModules = [ "nvme" ];
-                  fileSystems."/" = {
-                    device = rootPool;
-                    fsType = "zfs";
-                  };
-                  fileSystems."/boot" = {
-                    device = bootDevice;
-                    fsType = "vfat";
-                  };
+                  fileSystems."/" = { device = rootPool; fsType = "zfs"; };
+                  fileSystems."/boot" = { device = bootDevice; fsType = "vfat"; };
                   swapDevices = [{ device = swapDevice; }];
                   nix = {
                     extraOptions = ''
