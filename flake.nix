@@ -1,8 +1,7 @@
 {
   description = "my computers in flakes";
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/gnome";
-  inputs.awsebcli.url = "github:kirillrdy/nixpkgs";
-  outputs = { self, nixpkgs, awsebcli }:
+  inputs.nixpkgs.url = "github:kirillrdy/nixpkgs/gnome";
+  outputs = { self, nixpkgs }:
     {
       nixosConfigurations =
         let
@@ -58,11 +57,11 @@
                   services.xserver.displayManager.autoLogin.user = "kirillvr";
                   services.xserver.xkbOptions = "caps:none";
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
+                  services.tailscale.enable = false;
 
                   environment.systemPackages = with pkgs; [
                     awscli2
-                    awsebcli.legacyPackages.x86_64-linux.awsebcli
-                    chromium
+                    awsebcli
                     emacs
                     firefox
                     git
