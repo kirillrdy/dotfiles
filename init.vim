@@ -40,6 +40,7 @@ nnoremap <space>s <cmd>Telescope lsp_document_symbols<cr>
 nnoremap <space>e <cmd>Telescope diagnostics<cr>
 nnoremap <silent> gd <cmd>Telescope lsp_definitions<cr>
 nnoremap <silent> gr <cmd>Telescope lsp_references<cr>
+nnoremap <silent> gi <cmd>Telescope lsp_implementations<cr>
 
 nnoremap <C-P> <cmd>Telescope git_files<cr>
 nnoremap <C-B> <cmd>Telescope buffers<cr>
@@ -63,9 +64,7 @@ local on_attach = function(client, bufnr)
 
   -- See `:help vim.lsp.*` for documentation on any of the below functions
   buf_set_keymap('n', 'gD', '<Cmd>lua vim.lsp.buf.declaration()<CR>', opts)
-  buf_set_keymap('n', 'gd', '<Cmd>lua vim.lsp.buf.definition()<CR>', opts)
   buf_set_keymap('n', 'K', '<Cmd>lua vim.lsp.buf.hover()<CR>', opts)
-  buf_set_keymap('n', 'gi', '<cmd>lua vim.lsp.buf.implementation()<CR>', opts)
   buf_set_keymap('n', '<C-k>', '<cmd>lua vim.lsp.buf.signature_help()<CR>', opts)
   buf_set_keymap('n', '<space>wa', '<cmd>lua vim.lsp.buf.add_workspace_folder()<CR>', opts)
   buf_set_keymap('n', '<space>wr', '<cmd>lua vim.lsp.buf.remove_workspace_folder()<CR>', opts)
