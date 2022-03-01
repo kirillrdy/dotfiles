@@ -32,7 +32,7 @@ en
 
 noremap <C-6> <C-^>
 
-nnoremap <C-K> <cmd>Telescope grep_string<cr>
+nnoremap <C-G> <cmd>Telescope grep_string<cr>
 nnoremap L <cmd>Telescope live_grep<cr>
 nnoremap <F2> :NERDTreeFind <CR>
 nnoremap <F3> :NERDTreeToggle <CR>
