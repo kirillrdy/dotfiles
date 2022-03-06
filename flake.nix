@@ -59,6 +59,9 @@
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.tailscale.enable = false;
 
+                  services.pipewire.media-session.enable = true;
+                  services.pipewire.wireplumber.enable = false;
+
                   environment.systemPackages = with pkgs; [
                     awscli2
                     awsebcli
