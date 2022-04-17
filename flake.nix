@@ -65,17 +65,17 @@
                   environment.systemPackages = with pkgs; [
                     awscli2
                     awsebcli
-                    emacs
                     firefox
                     git
+                    gnome-text-editor
                     gnome.baobab
                     gnome.eog
                     gnome.file-roller
+                    gnome.gnome-boxes
                     gnome.gnome-system-monitor
                     gnome.gnome-terminal
                     gnome.nautilus
                     gnome.totem
-                    gnome.gnome-boxes
                     neovide
                     neovim
                     obs-studio
