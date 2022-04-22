@@ -47,16 +47,16 @@
                   '';
 
                   i18n.defaultLocale = "en_AU.UTF-8";
-                  services.xserver.enable = true;
-                  services.xserver.desktopManager.gnome.enable = true;
                   services.gnome.core-utilities.enable = false;
                   services.gnome.tracker-miners.enable = false;
                   services.gnome.tracker.enable = false;
-                  #services.xserver.displayManager.gdm.enable = true;
+                  services.xserver.desktopManager.gnome.enable = true;
                   services.xserver.displayManager.autoLogin.enable = true;
                   services.xserver.displayManager.autoLogin.user = "kirillvr";
-                  services.xserver.xkbOptions = "caps:none";
+                  services.xserver.displayManager.gdm.enable = true;
+                  services.xserver.enable = true;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
+                  services.xserver.xkbOptions = "caps:none";
                   services.tailscale.enable = false;
 
                   services.pipewire.media-session.enable = true;
