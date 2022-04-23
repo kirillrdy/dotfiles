@@ -107,7 +107,7 @@
           tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice = "/dev/sda3"; swapDevice = "/dev/sda2"; });
           # amd ryzen 5
           shinseikai = nixpkgs.lib.nixosSystem (simplesystem { hostName = "shinseikai"; enableNvidia = true; });
-          # legaxy, yao: T460s
+          # legacy, yao: T460s
         };
     };
 }
