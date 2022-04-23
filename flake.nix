@@ -53,7 +53,6 @@
                   services.xserver.desktopManager.gnome.enable = true;
                   services.xserver.displayManager.autoLogin.enable = true;
                   services.xserver.displayManager.autoLogin.user = "kirillvr";
-                  services.xserver.displayManager.gdm.enable = true;
                   services.xserver.enable = true;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.xserver.xkbOptions = "caps:none";
