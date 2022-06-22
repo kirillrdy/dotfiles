@@ -73,6 +73,7 @@
                     gnome.gnome-boxes
                     gnome.gnome-system-monitor
                     gnome.gnome-terminal
+                    gnome-console
                     gnome.nautilus
                     gnome.totem
                     neovide
