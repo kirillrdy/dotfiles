@@ -24,11 +24,7 @@
                   fileSystems."/" = { device = rootPool; fsType = "zfs"; };
                   fileSystems."/boot" = { device = bootDevice; fsType = "vfat"; };
                   swapDevices = [{ device = swapDevice; }];
-                  nix = {
-                    extraOptions = ''
-                      experimental-features = nix-command flakes
-                    '';
-                  };
+                  nix = { extraOptions = "experimental-features = nix-command flakes"; };
 
                   powerManagement.cpuFreqGovernor = if !enableNvidia then lib.mkDefault "powersave" else null;
 
