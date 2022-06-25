@@ -66,14 +66,13 @@
                     awsebcli
                     firefox
                     git
+                    gnome-console
                     gnome-text-editor
                     gnome.baobab
                     gnome.eog
                     gnome.file-roller
                     gnome.gnome-boxes
                     gnome.gnome-system-monitor
-                    gnome.gnome-terminal
-                    gnome-console
                     gnome.nautilus
                     gnome.totem
                     neovide
