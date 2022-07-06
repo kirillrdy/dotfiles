@@ -5,6 +5,76 @@
     {
       nixosConfigurations =
         let
+          simpleDwmSystem = { hostName, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
+            system = "x86_64-linux";
+            modules = [
+              ({ pkgs, lib, modulesPath, ... }:
+                {
+                  imports =
+                    [
+                      (modulesPath + "/installer/scan/not-detected.nix")
+                      #"${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
+                    ];
+
+                  #virtualisation.memorySize = 8000;
+                  #virtualisation.cores = 8;
+                  #virtualisation.diskSize = 1024 * 10;
+
+                  boot.initrd.availableKernelModules = [ "nvme" ];
+                  fileSystems."/" = { device = rootPool; fsType = "zfs"; };
+                  fileSystems."/boot" = { device = bootDevice; fsType = "vfat"; };
+                  swapDevices = [{ device = swapDevice; }];
+                  nix = { extraOptions = "experimental-features = nix-command flakes"; };
+
+                  powerManagement.cpuFreqGovernor = if !enableNvidia then lib.mkDefault "powersave" else null;
+
+                  nixpkgs.config.allowUnfree = true;
+                  boot.loader.systemd-boot.enable = true;
+                  boot.loader.efi.canTouchEfiVariables = true;
+                  boot.kernelPackages = pkgs.linuxPackages_5_18;
+                  boot.zfs.enableUnstable = false;
+
+                  networking.hostId = "00000000";
+                  networking.hostName = hostName;
+                  time.timeZone = "Australia/Melbourne";
+
+                  services.logind.extraConfig = ''
+                    RuntimeDirectorySize=10G
+                  '';
+
+                  i18n.defaultLocale = "en_AU.UTF-8";
+                  services.xserver.windowManager.dwm.enable = true;
+                  services.xserver.displayManager.autoLogin.enable = true;
+                  services.xserver.displayManager.autoLogin.user = "kirillvr";
+                  services.xserver.enable = true;
+                  services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
+                  services.xserver.xkbOptions = "caps:none";
+                  services.tailscale.enable = false;
+
+                  environment.systemPackages = with pkgs; [
+                    dmenu
+                    awscli2
+                    awsebcli
+                    firefox
+                    git
+                    neovide
+                    neovim
+                    obs-studio
+                    ripgrep
+                    rnix-lsp
+                    slack
+                    tig
+                    xclip
+                  ];
+                  users.users.kirillvr = {
+                    isNormalUser = true;
+                    extraGroups = [ "wheel" "docker" "vboxusers" ];
+                  };
+                  networking.firewall.enable = false;
+                  system.stateVersion = "21.11"; # Did you read the comment?
+                })
+            ];
+          };
           simplesystem = { hostName, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
             system = "x86_64-linux";
             modules = [
@@ -99,6 +169,7 @@
         {
           # Lenovo X1 gen9
           osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; });
+          osaka-dwm = nixpkgs.lib.nixosSystem (simpleDwmSystem { hostName = "osaka"; });
           # intel i7
           tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice = "/dev/sda3"; swapDevice = "/dev/sda2"; });
           # amd ryzen 5
