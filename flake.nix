@@ -124,9 +124,6 @@
                   services.xserver.xkbOptions = "caps:none";
                   services.tailscale.enable = false;
 
-                  services.pipewire.media-session.enable = true;
-                  services.pipewire.wireplumber.enable = false;
-
                   environment.systemPackages = with pkgs; [
                     awscli2
                     awsebcli
