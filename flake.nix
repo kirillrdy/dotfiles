@@ -138,6 +138,7 @@
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.totem
+                    evince
                     neovide
                     neovim
                     obs-studio
