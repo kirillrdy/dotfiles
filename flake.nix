@@ -62,7 +62,6 @@
                     awsebcli
                     firefox
                     git
-                    gnome-console
                     gnome-text-editor
                     gnome.baobab
                     gnome.eog
@@ -80,7 +79,7 @@
                     slack
                     tig
                     xclip
-                  ] ++ (if dwm then [ dmenu st xterm ] else [ ]);
+                  ] ++ (if dwm then [ acpi dmenu st xterm ] else [ gnome-console ]);
                   users.users.kirillvr = {
                     isNormalUser = true;
                     extraGroups = [ "wheel" "docker" "vboxusers" ];
