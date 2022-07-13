@@ -40,7 +40,7 @@
 
 
 xterm*geometry:           80x25
-xterm*faceName:           terminus:pixelsize=15
+xterm*faceName:           terminus:pixelsize=25
 !xterm*faceName:           terminus:bold:pixelsize=15
 !xterm*font:              -*-dina-medium-r-*-*-16-*-*-*-*-*-*-*
 xterm*dynamicColors:      true
