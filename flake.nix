@@ -79,6 +79,11 @@
                     slack
                     tig
                     xclip
+
+                    chromium
+                    nodejs
+                    rustup
+                    rust-analyzer
                   ] ++ (if dwm then [ acpi dmenu st xterm ] else [ gnome-console ]);
                   users.users.kirillvr = {
                     isNormalUser = true;
