@@ -60,6 +60,7 @@
                   environment.systemPackages = with pkgs; [
                     awscli2
                     awsebcli
+                    evince
                     firefox
                     git
                     gnome-text-editor
@@ -70,7 +71,6 @@
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.totem
-                    evince
                     neovide
                     neovim
                     obs-studio
