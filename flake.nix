@@ -82,10 +82,11 @@
                     slack
                     tig
                     xclip
-
                     chromium
                     nodejs
                     rustup
+                    clang
+                    trunk
                     rust-analyzer
                   ] ++ (if dwm then [ acpi dmenu st xterm ] else [ gnome-console ]);
                   users.users.kirillvr = {
