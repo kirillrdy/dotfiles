@@ -63,6 +63,7 @@
                   environment.systemPackages = with pkgs; [
                     awscli2
                     awsebcli
+                    docker-compose
                     evince
                     firefox
                     git
@@ -111,7 +112,7 @@
           # Lenovo T490
           apollo = nixpkgs.lib.nixosSystem (simplesystem { hostName = "apollo"; dwm = false; });
           # amd ryzen 7 1700
-          tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice = "/dev/sda3"; swapDevice = "/dev/sda2"; });
+          athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; });
           # amd ryzen 7 3700x
           wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; });
           # legacy, yao: T460s
