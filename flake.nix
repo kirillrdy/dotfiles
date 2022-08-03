@@ -5,7 +5,7 @@
     {
       nixosConfigurations =
         let
-          simplesystem = { dwm ? false, hostName, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
+          simplesystem = { hostName, enableSsh ? false, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
             system = "x86_64-linux";
             modules = [
               ({ pkgs, lib, modulesPath, ... }:
@@ -44,12 +44,15 @@
                     RuntimeDirectorySize=10G
                   '';
 
+                  services.openssh = {
+                    enable = enableSsh;
+                    passwordAuthentication = true;
+                  };
                   i18n.defaultLocale = "en_AU.UTF-8";
                   services.gnome.core-utilities.enable = false;
                   services.gnome.tracker-miners.enable = false;
                   services.gnome.tracker.enable = false;
-                  services.xserver.windowManager.dwm.enable = dwm;
-                  services.xserver.desktopManager.gnome.enable = !dwm;
+                  services.xserver.desktopManager.gnome.enable = true;
                   services.xserver.displayManager.autoLogin.enable = true;
                   services.xserver.displayManager.autoLogin.user = "rxiao";
                   services.xserver.enable = true;
@@ -100,19 +103,20 @@
                   virtualisation.docker.enable = true;
                   virtualisation.docker.storageDriver = "zfs";
                   virtualisation.docker.enableNvidia = enableNvidia;
+                  hardware.opengl.enable = true;
                   hardware.opengl.driSupport32Bit = enableNvidia;
                   systemd.enableUnifiedCgroupHierarchy = false;
                   networking.firewall.enable = false;
-                  system.stateVersion = "21.11"; # Did you read the comment?
+                  system.stateVersion = "22.05"; # Did you read the comment?
                 })
             ];
           };
         in
         {
           # Lenovo T490
-          apollo = nixpkgs.lib.nixosSystem (simplesystem { hostName = "apollo"; dwm = false; });
+          apollo = nixpkgs.lib.nixosSystem (simplesystem { hostName = "apollo"; });
           # amd ryzen 7 1700
-          athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; });
+          athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; enableSsh = true});
           # amd ryzen 7 3700x
           wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; });
           # legacy, yao: T460s
