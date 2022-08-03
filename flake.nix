@@ -51,7 +51,7 @@
                   services.xserver.windowManager.dwm.enable = dwm;
                   services.xserver.desktopManager.gnome.enable = !dwm;
                   services.xserver.displayManager.autoLogin.enable = true;
-                  services.xserver.displayManager.autoLogin.user = "kirillvr";
+                  services.xserver.displayManager.autoLogin.user = "rxiao";
                   services.xserver.enable = true;
                   services.xserver.libinput.enable = true;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
@@ -75,6 +75,8 @@
                     gnome.nautilus
                     gnome.totem
                     neovide
+                    vim
+                    jetbrains.pycharm-community
                     neovim
                     obs-studio
                     ripgrep
@@ -89,7 +91,7 @@
                     trunk
                     rust-analyzer
                   ] ++ (if dwm then [ acpi dmenu st xterm ] else [ gnome-console ]);
-                  users.users.kirillvr = {
+                  users.users.rxiao = {
                     isNormalUser = true;
                     extraGroups = [ "wheel" "docker" "vboxusers" ];
                   };
@@ -107,7 +109,7 @@
         in
         {
           # Lenovo X1 gen9
-          osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; dwm = false; });
+          apollo = nixpkgs.lib.nixosSystem (simplesystem { hostName = "apollo"; dwm = false; });
           # intel i7
           tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice = "/dev/sda3"; swapDevice = "/dev/sda2"; });
           # amd ryzen 5
