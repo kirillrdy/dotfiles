@@ -116,7 +116,7 @@
           # Lenovo T490
           apollo = nixpkgs.lib.nixosSystem (simplesystem { hostName = "apollo"; });
           # amd ryzen 7 1700
-          athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; enableSsh = true});
+          athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; enableSsh = true;});
           # amd ryzen 7 3700x
           wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; });
           # legacy, yao: T460s
