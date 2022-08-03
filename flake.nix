@@ -60,7 +60,7 @@
 
                   services.openssh = {
                     enable = enableSsh;
-                    passwordAuthentication = true;
+                    #passwordAuthentication = true;
                   };
                   i18n.defaultLocale = "en_AU.UTF-8";
                   services.gnome.core-utilities.enable = false;
