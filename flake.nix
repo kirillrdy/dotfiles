@@ -5,7 +5,13 @@
     {
       nixosConfigurations =
         let
-          simplesystem = { hostName, enableSsh ? false, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
+          simplesystem = { hostName,
+                           enableSsh ? false,
+                           enableNvidia ? false,
+                           enableCardanoDev ? false,
+                           rootPool ? "zroot/root",
+                           bootDevice ? "/dev/nvme0n1p3",
+                           swapDevice ? "/dev/nvme0n1p2" }: {
             system = "x86_64-linux";
             modules = [
               ({ pkgs, lib, modulesPath, ... }:
@@ -24,7 +30,15 @@
                   fileSystems."/" = { device = rootPool; fsType = "zfs"; };
                   fileSystems."/boot" = { device = bootDevice; fsType = "vfat"; };
                   swapDevices = [{ device = swapDevice; }];
-                  nix = { extraOptions = "experimental-features = nix-command flakes"; };
+                  nix = {
+                    extraOptions = "experimental-features = nix-command flakes";
+                  } // (if enableCardanoDev then {
+                    settings = {
+                      substituters = [ "https://hydra.iohk.io" "https://iohk.cachix.org" ];
+                      trusted-public-keys = [ "hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ=" "iohk.cachix.org-1:DpRUyj7h7V830dp/i6Nti+NEO2/nhblbov/8MW7Rqoo=" ];
+                    };
+
+                  } else {});
 
                   powerManagement.cpuFreqGovernor = if !enableNvidia then lib.mkDefault "powersave" else null;
 
@@ -116,7 +130,7 @@
           # Lenovo T490
           apollo = nixpkgs.lib.nixosSystem (simplesystem { hostName = "apollo"; });
           # amd ryzen 7 1700
-          athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; enableSsh = true;});
+          athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; enableSsh = true; enableCardanoDev = true;});
           # amd ryzen 7 3700x
           wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; });
           # legacy, yao: T460s
