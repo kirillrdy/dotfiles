@@ -94,6 +94,7 @@
                     gnome.totem
                     neovide
                     vim
+                    lm_sensors
                     jetbrains.pycharm-community
                     neovim
                     obs-studio
@@ -132,7 +133,7 @@
           # amd ryzen 7 1700
           athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; enableSsh = true; enableCardanoDev = true;});
           # amd ryzen 7 3700x
-          wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; });
+          wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; enableCardanoDev = true;});
           # legacy, yao: T460s
         };
     };
