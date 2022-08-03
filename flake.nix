@@ -108,12 +108,12 @@
           };
         in
         {
-          # Lenovo X1 gen9
+          # Lenovo T490
           apollo = nixpkgs.lib.nixosSystem (simplesystem { hostName = "apollo"; dwm = false; });
-          # intel i7
+          # amd ryzen 7 1700
           tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice = "/dev/sda3"; swapDevice = "/dev/sda2"; });
-          # amd ryzen 5
-          shinseikai = nixpkgs.lib.nixosSystem (simplesystem { hostName = "shinseikai"; enableNvidia = true; });
+          # amd ryzen 7 3700x
+          wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; });
           # legacy, yao: T460s
         };
     };
