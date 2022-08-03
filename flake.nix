@@ -94,7 +94,7 @@
                     clang
                     trunk
                     rust-analyzer
-                  ] ++ (if dwm then [ acpi dmenu st xterm ] else [ gnome-console ]);
+                    gnome-console];
                   users.users.rxiao = {
                     isNormalUser = true;
                     extraGroups = [ "wheel" "docker" "vboxusers" ];
