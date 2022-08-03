@@ -92,6 +92,7 @@
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.totem
+                    htop
                     neovide
                     vim
                     lm_sensors
