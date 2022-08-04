@@ -135,7 +135,8 @@
           athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; enableSsh = true; enableCardanoDev = true;});
           # amd ryzen 7 3700x
           wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; enableCardanoDev = true;});
-          # legacy, yao: T460s
+          # amd ryzen 3950x
+          dante = nixpkgs.lib.nixosSystem (simplesystem { hostName = "dante";  enableNvidia = true;});
         };
     };
 }
