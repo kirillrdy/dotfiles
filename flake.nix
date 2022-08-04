@@ -41,8 +41,9 @@
                   } else {});
 
                   powerManagement.cpuFreqGovernor = if !enableNvidia then lib.mkDefault "powersave" else null;
-
+                  # sound
                   sound.enable = true;
+                  nixpkgs.config.pulseaudio = true;
                   nixpkgs.config.allowUnfree = true;
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
@@ -83,8 +84,6 @@
                     pinentryFlavor = "curses";
                     enableSSHSupport = true;
                   };
-
-                  nixpkgs.config.pulseaudio = true;
 
                   environment.variables.EDITOR = "nvim";
                   environment.systemPackages = with pkgs; [
