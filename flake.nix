@@ -67,6 +67,7 @@
                   services.gnome.tracker-miners.enable = false;
                   services.gnome.tracker.enable = false;
                   services.xserver.desktopManager.gnome.enable = true;
+                  services.xserver.displayManager.gdm.enable = true;
                   services.xserver.displayManager.autoLogin.enable = true;
                   services.xserver.displayManager.autoLogin.user = "rxiao";
                   services.xserver.enable = true;
@@ -74,6 +75,15 @@
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.xserver.xkbOptions = "caps:none";
                   services.tailscale.enable = false;
+                  services.pcscd.enable = true;
+
+                  # enable gpg
+                  programs.gnupg.agent = {
+                    enable = true;
+                    pinentryFlavor = "curses";
+                    enableSSHSupport = true;
+                  };
+
                   nixpkgs.config.pulseaudio = true;
 
                   environment.variables.EDITOR = "nvim";
@@ -92,6 +102,7 @@
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.totem
+                    pinentry-curses
                     htop
                     neovide
                     vim
