@@ -114,6 +114,7 @@
                     silver-searcher
                     rnix-lsp
                     slack
+                    helix
                     tig
                     xclip
                     chromium
