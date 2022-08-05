@@ -138,6 +138,7 @@
                   system.stateVersion = "22.05"; # Did you read the comment?
                   environment.interactiveShellInit = ''
                       alias athena='ssh rxiao@192.168.50.69'
+                      alias artemis='ssh rxiao@artemis.silverpond.com.au'
                     '';
                 })
             ];
