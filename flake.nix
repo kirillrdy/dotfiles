@@ -9,6 +9,7 @@
                            enableSsh ? false,
                            enableNvidia ? false,
                            enableCardanoDev ? false,
+                           enableTailScale ? false,
                            rootPool ? "zroot/root",
                            bootDevice ? "/dev/nvme0n1p3",
                            swapDevice ? "/dev/nvme0n1p2" }: {
@@ -76,7 +77,7 @@
                   services.xserver.libinput.enable = true;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.xserver.xkbOptions = "caps:none";
-                  services.tailscale.enable = false;
+                  services.tailscale.enable = enableTailScale;
                   services.pcscd.enable = true;
 
                   # enable gpg
@@ -138,8 +139,6 @@
                   environment.interactiveShellInit = ''
                       alias athena='ssh rxiao@192.168.50.69'
                     '';
-
-
                 })
             ];
           };
@@ -152,7 +151,7 @@
           # amd ryzen 7 3700x
           wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; enableCardanoDev = true;});
           # amd ryzen 3950x
-          dante = nixpkgs.lib.nixosSystem (simplesystem { hostName = "dante";  enableNvidia = true;});
+          dante = nixpkgs.lib.nixosSystem (simplesystem { hostName = "dante";  enableNvidia = true; enableTailScale = true;});
         };
     };
 }
