@@ -105,11 +105,11 @@
                     vlc
                     pinentry-curses
                     htop
-                    neovide
                     vim
                     lm_sensors
                     jetbrains.pycharm-community
-                    neovim
+                    jetbrains.goland
+                    mendeley
                     obs-studio
                     silver-searcher
                     rnix-lsp
