@@ -123,6 +123,9 @@
                     clang
                     trunk
                     rust-analyzer
+                    gopls
+                    haskell-language-server
+                    python39Packages.python-lsp-server
                     gnome-console];
                   users.users.rxiao = {
                     isNormalUser = true;
