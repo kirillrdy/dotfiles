@@ -68,7 +68,8 @@
                   services.gnome.tracker-miners.enable = false;
                   services.gnome.tracker.enable = false;
                   services.xserver.desktopManager.gnome.enable = true;
-                  services.xserver.displayManager.gdm.enable = true;
+                  # set to true cause blank screen when boot
+                  services.xserver.displayManager.gdm.enable = false;
                   services.xserver.displayManager.autoLogin.enable = true;
                   services.xserver.displayManager.autoLogin.user = "rxiao";
                   services.xserver.enable = true;
@@ -134,6 +135,11 @@
                   systemd.enableUnifiedCgroupHierarchy = false;
                   networking.firewall.enable = false;
                   system.stateVersion = "22.05"; # Did you read the comment?
+                  environment.interactiveShellInit = ''
+                      alias athena='ssh rxiao@192.168.50.69'
+                    '';
+
+
                 })
             ];
           };
