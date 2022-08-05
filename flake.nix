@@ -102,7 +102,7 @@
                     gnome.gnome-boxes
                     gnome.gnome-system-monitor
                     gnome.nautilus
-                    gnome.totem
+                    vlc
                     pinentry-curses
                     htop
                     neovide
@@ -111,7 +111,7 @@
                     jetbrains.pycharm-community
                     neovim
                     obs-studio
-                    ripgrep
+                    silver-searcher
                     rnix-lsp
                     slack
                     tig
