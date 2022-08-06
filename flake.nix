@@ -6,10 +6,10 @@
       nixosConfigurations =
         let
           simplesystem = { hostName,
-                           enableSsh ? false,
                            enableNvidia ? false,
-                           enableCardanoDev ? false,
-                           enableTailScale ? false,
+                           work ? false,
+                           development ? false,
+                           server ? false,
                            rootPool ? "zroot/root",
                            bootDevice ? "/dev/nvme0n1p3",
                            swapDevice ? "/dev/nvme0n1p2" }: {
@@ -28,7 +28,7 @@
                   swapDevices = [{ device = swapDevice; }];
                   nix = {
                     extraOptions = "experimental-features = nix-command flakes";
-                  } // (if enableCardanoDev then {
+                  } // (if development then {
                     settings = {
                       substituters = [ "https://hydra.iohk.io" "https://iohk.cachix.org" ];
                       trusted-public-keys = [ "hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ=" "iohk.cachix.org-1:DpRUyj7h7V830dp/i6Nti+NEO2/nhblbov/8MW7Rqoo=" ];
@@ -56,7 +56,7 @@
                   '';
 
                   services.openssh = {
-                    enable = enableSsh;
+                    enable = server;
                     #passwordAuthentication = true;
                   };
                   i18n.defaultLocale = "en_AU.UTF-8";
@@ -64,15 +64,13 @@
                   services.gnome.tracker-miners.enable = false;
                   services.gnome.tracker.enable = false;
                   services.xserver.desktopManager.gnome.enable = true;
-                  # set to true cause blank screen when boot
+                  services.xserver.displayManager.gdm.autoSuspend = !server;
                   services.xserver.displayManager.gdm.enable = false;
-                  services.xserver.displayManager.autoLogin.enable = true;
-                  services.xserver.displayManager.autoLogin.user = "rxiao";
                   services.xserver.enable = true;
                   services.xserver.libinput.enable = true;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.xserver.xkbOptions = "caps:none";
-                  services.tailscale.enable = enableTailScale;
+                  services.tailscale.enable = work;
                   services.pcscd.enable = true;
 
                   # enable gpg
@@ -83,10 +81,11 @@
                   };
 
                   programs.steam = {
-                    enable = true;
-                    remotePlay.openFirewall = true; # Open ports in the firewall for Steam Remote Play
-                    dedicatedServer.openFirewall = true; # Open ports in the firewall for Source Dedicated Server
+                    enable = enableNvidia;
+                    remotePlay.openFirewall = enableNvidia; # Open ports in the firewall for Steam Remote Play
+                    dedicatedServer.openFirewall = enableNvidia; # Open ports in the firewall for Source Dedicated Server
                   };
+                  
                   programs.gnome-disks.enable = true;
                   environment.systemPackages = with pkgs; [
                     awscli2
@@ -102,6 +101,7 @@
                     gnome.gnome-boxes
                     gnome.gnome-system-monitor
                     gnome.nautilus
+                    gnome.gnome-power-manager
                     vlc
                     pinentry-curses
                     htop
@@ -120,7 +120,9 @@
                     chromium
                     nodejs
                     rustup
+                    julia-bin
                     clang
+                    taplo-lsp
                     trunk
                     rust-analyzer
                     gopls
@@ -150,9 +152,9 @@
         in
         {
           # Lenovo T490
-          apollo = nixpkgs.lib.nixosSystem (simplesystem { hostName = "apollo"; });
+          apollo = nixpkgs.lib.nixosSystem (simplesystem { hostName = "apollo"; work=true;});
           # amd ryzen 7 1700
-          athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; enableSsh = true; enableCardanoDev = true;});
+          athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; server = true;});
           # amd ryzen 7 3700x
           wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; enableCardanoDev = true;});
           # amd ryzen 3950x
