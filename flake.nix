@@ -41,6 +41,7 @@
                   sound.enable = true;
                   nixpkgs.config.pulseaudio = true;
                   nixpkgs.config.allowUnfree = true;
+                  hardware.enableAllFirmware  = true;
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
                   boot.kernelPackages = pkgs.linuxPackages_5_18;
@@ -102,12 +103,14 @@
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.gnome-power-manager
+                    qbittorrent
                     vlc
                     pinentry-curses
                     htop
                     vim
                     lm_sensors
                     jetbrains.pycharm-community
+                    smartmontools
                     jetbrains.goland
                     mendeley
                     obs-studio
@@ -122,7 +125,8 @@
                     rustup
                     julia-bin
                     clang
-                    taplo-lsp
+                    taplo-cli
+                    julia-bin
                     trunk
                     rust-analyzer
                     gopls
@@ -156,9 +160,9 @@
           # amd ryzen 7 1700
           athena = nixpkgs.lib.nixosSystem (simplesystem { hostName = "athena"; enableNvidia = true; server = true;});
           # amd ryzen 7 3700x
-          wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; enableCardanoDev = true;});
+          wotan = nixpkgs.lib.nixosSystem (simplesystem { hostName = "wotan"; enableNvidia = true; });
           # amd ryzen 3950x
-          dante = nixpkgs.lib.nixosSystem (simplesystem { hostName = "dante";  enableNvidia = true; enableTailScale = true;});
+          dante = nixpkgs.lib.nixosSystem (simplesystem { hostName = "dante";  enableNvidia = true; work = true;});
         };
     };
 }
