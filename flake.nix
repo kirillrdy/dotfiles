@@ -50,6 +50,7 @@
                   services.gnome.tracker.enable = false;
                   services.xserver.windowManager.dwm.enable = dwm;
                   services.xserver.desktopManager.gnome.enable = !dwm;
+                  services.xserver.displayManager.gdm.enable = true;
                   services.xserver.displayManager.autoLogin.enable = true;
                   services.xserver.displayManager.autoLogin.user = "kirillvr";
                   services.xserver.enable = true;
