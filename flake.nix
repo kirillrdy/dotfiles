@@ -64,6 +64,7 @@
                   environment.systemPackages = with pkgs; [
                     awscli2
                     awsebcli
+                    chromium
                     evince
                     firefox
                     git
@@ -75,20 +76,19 @@
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.totem
+                    helix
                     neovide
                     neovim
+                    nodejs
                     obs-studio
                     ripgrep
                     rnix-lsp
+                    rust-analyzer
+                    rustup
                     slack
                     tig
-                    xclip
-                    chromium
-                    nodejs
-                    rustup
-                    clang
                     trunk
-                    rust-analyzer
+                    xclip
                   ] ++ (if dwm then [ acpi dmenu st xterm ] else [ gnome-console ]);
                   users.users.kirillvr = {
                     isNormalUser = true;
