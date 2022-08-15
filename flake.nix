@@ -51,8 +51,6 @@
                   services.xserver.windowManager.dwm.enable = dwm;
                   services.xserver.desktopManager.gnome.enable = !dwm;
                   services.xserver.displayManager.gdm.enable = true;
-                  services.xserver.displayManager.autoLogin.enable = true;
-                  services.xserver.displayManager.autoLogin.user = "kirillvr";
                   services.xserver.enable = true;
                   services.xserver.libinput.enable = true;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
