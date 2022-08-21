@@ -58,12 +58,15 @@
                   services.tailscale.enable = false;
                   nixpkgs.config.pulseaudio = true;
 
+                  services.avahi.enable = true;
+                  services.avahi.nssmdns = true;
+
                   environment.variables.EDITOR = "nvim";
                   environment.systemPackages = with pkgs; [
                     awscli2
                     awsebcli
-                    chromium
                     evince
+                    ffmpeg
                     firefox
                     git
                     gnome-text-editor
