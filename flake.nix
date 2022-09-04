@@ -78,7 +78,6 @@
                   environment.variables.EDITOR = "nvim";
                   environment.systemPackages = with pkgs; [
                     awscli2
-                    awsebcli
                     evince
                     ffmpeg
                     firefox
@@ -91,18 +90,14 @@
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.totem
-                    helix
                     neovide
                     neovim
                     nodejs
                     obs-studio
                     ripgrep
                     rnix-lsp
-                    rust-analyzer
-                    rustup
                     slack
                     tig
-                    trunk
                     xclip
                   ] ++ (if dwm then [ acpi dmenu st xterm ] else [ gnome-console ]);
                   users.users.kirillvr = {
