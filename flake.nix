@@ -35,6 +35,15 @@
                   boot.kernelPackages = pkgs.linuxPackages_5_18;
                   boot.zfs.enableUnstable = false;
 
+                  fonts.fonts = with pkgs; [
+                    carlito
+                    dejavu_fonts
+                    ipafont
+                    kochi-substitute
+                    source-code-pro
+                    ttf_bitstream_vera
+                  ];
+
                   networking.hostId = "00000000";
                   networking.hostName = hostName;
                   networking.networkmanager.enable = true;
@@ -45,6 +54,11 @@
                   '';
 
                   i18n.defaultLocale = "en_AU.UTF-8";
+                  i18n.inputMethod = {
+                    enabled = "ibus";
+                    ibus.engines = with pkgs.ibus-engines; [ mozc ];
+                  };
+
                   services.gnome.core-utilities.enable = false;
                   services.gnome.tracker-miners.enable = false;
                   services.gnome.tracker.enable = false;
