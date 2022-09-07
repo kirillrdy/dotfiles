@@ -92,7 +92,6 @@
                     gnome.totem
                     neovide
                     neovim
-                    nodejs
                     obs-studio
                     ripgrep
                     rnix-lsp
