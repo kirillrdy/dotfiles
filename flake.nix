@@ -5,7 +5,7 @@
     {
       nixosConfigurations =
         let
-          simplesystem = { dwm ? false, hostName, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
+          simplesystem = { hostName, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
             system = "x86_64-linux";
             modules = [
               ({ pkgs, lib, modulesPath, ... }:
@@ -28,12 +28,9 @@
 
                   powerManagement.cpuFreqGovernor = if !enableNvidia then lib.mkDefault "powersave" else null;
 
-                  sound.enable = true;
                   nixpkgs.config.allowUnfree = true;
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
-                  boot.kernelPackages = pkgs.linuxPackages_5_18;
-                  boot.zfs.enableUnstable = false;
 
                   fonts.fonts = with pkgs; [
                     carlito
@@ -46,34 +43,22 @@
 
                   networking.hostId = "00000000";
                   networking.hostName = hostName;
-                  networking.networkmanager.enable = true;
                   time.timeZone = "Australia/Melbourne";
 
-                  services.logind.extraConfig = ''
-                    RuntimeDirectorySize=10G
-                  '';
+                  services.logind.extraConfig = "RuntimeDirectorySize=10G";
 
                   i18n.defaultLocale = "en_AU.UTF-8";
-                  i18n.inputMethod = {
-                    enabled = "ibus";
-                    ibus.engines = with pkgs.ibus-engines; [ mozc ];
-                  };
+                  i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
 
                   services.gnome.core-utilities.enable = false;
                   services.gnome.tracker-miners.enable = false;
                   services.gnome.tracker.enable = false;
-                  services.xserver.windowManager.dwm.enable = dwm;
-                  services.xserver.desktopManager.gnome.enable = !dwm;
+                  services.xserver.desktopManager.gnome.enable = true;
                   services.xserver.displayManager.gdm.enable = true;
                   services.xserver.enable = true;
-                  services.xserver.libinput.enable = true;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.xserver.xkbOptions = "caps:none";
                   services.tailscale.enable = false;
-                  nixpkgs.config.pulseaudio = true;
-
-                  services.avahi.enable = true;
-                  services.avahi.nssmdns = true;
 
                   environment.variables.EDITOR = "nvim";
                   environment.systemPackages = with pkgs; [
@@ -82,6 +67,7 @@
                     ffmpeg
                     firefox
                     git
+                    gnome-console
                     gnome-text-editor
                     gnome.baobab
                     gnome.eog
@@ -98,7 +84,7 @@
                     slack
                     tig
                     xclip
-                  ] ++ (if dwm then [ acpi dmenu st xterm ] else [ gnome-console ]);
+                  ];
                   users.users.kirillvr = {
                     isNormalUser = true;
                     extraGroups = [ "wheel" "docker" "vboxusers" ];
@@ -117,7 +103,7 @@
         in
         {
           # Lenovo X1 gen9
-          osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; dwm = false; });
+          osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; });
           # intel i7
           tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice = "/dev/sda3"; swapDevice = "/dev/sda2"; });
           # amd ryzen 5
