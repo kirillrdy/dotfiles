@@ -10,15 +10,7 @@
             modules = [
               ({ pkgs, lib, modulesPath, ... }:
                 {
-                  imports =
-                    [
-                      (modulesPath + "/installer/scan/not-detected.nix")
-                      #"${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
-                    ];
-
-                  #virtualisation.memorySize = 8000;
-                  #virtualisation.cores = 8;
-                  #virtualisation.diskSize = 1024 * 10;
+                  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
 
                   boot.initrd.availableKernelModules = [ "nvme" ];
                   fileSystems."/" = { device = rootPool; fsType = "zfs"; };
