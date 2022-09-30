@@ -24,14 +24,7 @@
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
 
-                  fonts.fonts = with pkgs; [
-                    carlito
-                    dejavu_fonts
-                    ipafont
-                    kochi-substitute
-                    source-code-pro
-                    ttf_bitstream_vera
-                  ];
+                  fonts.fonts = with pkgs; [ carlito dejavu_fonts ipafont kochi-substitute source-code-pro ttf_bitstream_vera ];
 
                   networking.hostId = "00000000";
                   networking.hostName = hostName;
