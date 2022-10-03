@@ -44,7 +44,7 @@
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.xserver.xkbOptions = "caps:none";
                   services.tailscale.enable = false;
-
+                  environment.gnome.excludePackages = [ pkgs.orca ];
                   environment.variables.EDITOR = "nvim";
                   environment.systemPackages = with pkgs; [
                     awscli2
