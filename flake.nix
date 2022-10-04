@@ -23,6 +23,7 @@
                   nixpkgs.config.allowUnfree = true;
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
+                  boot.kernelPackages = pkgs.linuxPackages_5_19;
 
                   fonts.fonts = with pkgs; [ carlito dejavu_fonts ipafont kochi-substitute source-code-pro ttf_bitstream_vera ];
 
