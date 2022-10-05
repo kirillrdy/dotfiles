@@ -72,6 +72,7 @@
                     tig
                     xclip
                     pkgs-unstable.chromium
+                    pkgs-unstable.libreoffice
                   ];
                   users.users.kirillvr = {
                     isNormalUser = true;
