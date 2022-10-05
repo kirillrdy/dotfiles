@@ -1,10 +1,12 @@
 {
   description = "my computers in flakes";
   inputs.nixpkgs.url = "github:nixos/nixpkgs";
-  outputs = { self, nixpkgs }:
+  inputs.nixpkgs-unstable.url = "nixpkgs";
+  outputs = { self, nixpkgs, nixpkgs-unstable }:
     {
       nixosConfigurations =
         let
+          pkgs-unstable = import nixpkgs-unstable { system = "x86_64-linux"; };
           simplesystem = { hostName, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
             system = "x86_64-linux";
             modules = [
@@ -69,6 +71,7 @@
                     slack
                     tig
                     xclip
+                    pkgs-unstable.chromium
                   ];
                   users.users.kirillvr = {
                     isNormalUser = true;
