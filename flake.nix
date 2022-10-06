@@ -1,12 +1,12 @@
 {
   description = "my computers in flakes";
   inputs.nixpkgs.url = "github:nixos/nixpkgs";
-  inputs.nixpkgs-unstable.url = "nixpkgs";
-  outputs = { self, nixpkgs, nixpkgs-unstable }:
+  inputs.nixpkgs-binary.url = "nixpkgs";
+  outputs = { self, nixpkgs, nixpkgs-binary }:
     {
       nixosConfigurations =
         let
-          pkgs-unstable = import nixpkgs-unstable { system = "x86_64-linux"; };
+          pkgs-binary = import nixpkgs-binary { system = "x86_64-linux"; };
           simplesystem = { hostName, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
             system = "x86_64-linux";
             modules = [
@@ -53,7 +53,7 @@
                     awscli2
                     evince
                     ffmpeg
-                    firefox
+                    pkgs-binary.firefox
                     git
                     gnome-console
                     gnome-text-editor
@@ -71,8 +71,8 @@
                     slack
                     tig
                     xclip
-                    pkgs-unstable.chromium
-                    pkgs-unstable.libreoffice
+                    pkgs-binary.chromium
+                    pkgs-binary.libreoffice
                   ];
                   users.users.kirillvr = {
                     isNormalUser = true;
