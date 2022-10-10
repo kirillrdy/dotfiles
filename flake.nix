@@ -50,6 +50,7 @@
                   environment.gnome.excludePackages = [ pkgs.orca ];
                   environment.variables.EDITOR = "nvim";
                   environment.systemPackages = with pkgs; [
+                    android-studio
                     awsebcli
                     awscli2
                     evince
