@@ -51,12 +51,10 @@
                   environment.gnome.excludePackages = [ pkgs.orca ];
                   environment.variables.EDITOR = "nvim";
                   environment.systemPackages = with pkgs; [
-                    android-studio
-                    awsebcli
                     awscli2
+                    awsebcli
                     evince
                     ffmpeg
-                    pkgs-binary.firefox
                     git
                     gnome-console
                     gnome-text-editor
@@ -69,13 +67,14 @@
                     neovide
                     neovim
                     obs-studio
+                    pkgs-binary.chromium
+                    pkgs-binary.firefox
+                    pkgs-binary.libreoffice
                     ripgrep
                     rnix-lsp
                     slack
                     tig
                     xclip
-                    pkgs-binary.chromium
-                    pkgs-binary.libreoffice
                   ];
                   users.users.kirillvr = {
                     isNormalUser = true;
