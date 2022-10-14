@@ -128,9 +128,9 @@ require'compe'.setup {
 }
      
 EOF
-autocmd BufWritePre *.go lua vim.lsp.buf.formatting_sync(nil, 1000)
-autocmd BufWritePre *.rb lua vim.lsp.buf.formatting_sync(nil, 1000)
-autocmd BufWritePre *.rs lua vim.lsp.buf.formatting_sync(nil, 1000)
-autocmd BufWritePre *.nix lua vim.lsp.buf.formatting_sync(nil, 1000)
-autocmd BufWritePre *.tsx lua vim.lsp.buf.formatting_sync(nil, 1000)
-autocmd BufWritePre *.ts lua vim.lsp.buf.formatting_sync(nil, 1000)
+autocmd BufWritePre *.go lua vim.lsp.buf.format()
+autocmd BufWritePre *.rb lua vim.lsp.buf.format()
+autocmd BufWritePre *.rs lua vim.lsp.buf.format()
+autocmd BufWritePre *.nix lua vim.lsp.buf.format()
+autocmd BufWritePre *.tsx lua vim.lsp.buf.format()
+autocmd BufWritePre *.ts lua vim.lsp.buf.format()
