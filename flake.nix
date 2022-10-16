@@ -52,6 +52,8 @@
                   environment.variables.EDITOR = "nvim";
                   environment.systemPackages = with pkgs; [
                     awscli2
+                    nixpkgs-review
+                    nix-tree
                     awsebcli
                     evince
                     ffmpeg
