@@ -63,6 +63,7 @@
                     gnome.baobab
                     gnome.eog
                     gnome.file-roller
+                    gnome.gnome-boxes
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.totem
@@ -82,6 +83,7 @@
                     isNormalUser = true;
                     extraGroups = [ "wheel" "docker" "vboxusers" ];
                   };
+                  virtualisation.libvirtd.enable = true;
                   virtualisation.docker.enable = true;
                   virtualisation.docker.storageDriver = "zfs";
                   virtualisation.docker.enableNvidia = enableNvidia;
