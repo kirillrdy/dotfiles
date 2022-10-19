@@ -51,6 +51,7 @@
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.xserver.xkbOptions = "caps:none";
                   services.tailscale.enable = false;
+                  services.openssh.enable = true;
                   environment.gnome.excludePackages = [ pkgs.orca ];
                   environment.variables.EDITOR = "nvim";
                   environment.systemPackages = with pkgs; [
