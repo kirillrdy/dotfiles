@@ -7,7 +7,7 @@
       nixosConfigurations =
         let
           pkgs-binary = import nixpkgs-binary { system = "x86_64-linux"; };
-          simplesystem = { hostName, enableNvidia ? false, rootPool ? "zroot/root", bootDevice ? "/dev/nvme0n1p3", swapDevice ? "/dev/nvme0n1p2" }: {
+          simplesystem = { hostName, enableNvidia ? false }: {
             system = "x86_64-linux";
             modules = [
               ({ pkgs, lib, modulesPath, ... }:
@@ -16,9 +16,9 @@
                   boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
 
                   boot.initrd.availableKernelModules = [ "nvme" ];
-                  fileSystems."/" = { device = rootPool; fsType = "zfs"; };
-                  fileSystems."/boot" = { device = bootDevice; fsType = "vfat"; };
-                  swapDevices = [{ device = swapDevice; }];
+                  fileSystems."/" = { device = "zroot/root"; fsType = "zfs"; };
+                  fileSystems."/boot" = { device = "/dev/nvme0n1p3"; fsType = "vfat"; };
+                  swapDevices = [{ device = "/dev/nvme0n1p2"; }];
                   nix = { extraOptions = "experimental-features = nix-command flakes"; };
 
                   powerManagement.cpuFreqGovernor = if !enableNvidia then lib.mkDefault "powersave" else null;
@@ -102,8 +102,10 @@
         {
           # Lenovo X1 gen9
           osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; });
+
           # intel i7
-          tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice = "/dev/sda3"; swapDevice = "/dev/sda2"; });
+          # Retired 20-10-2022
+          #tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice = "/dev/sda3"; swapDevice = "/dev/sda2"; });
           # amd ryzen 5
           shinseikai = nixpkgs.lib.nixosSystem (simplesystem { hostName = "shinseikai"; enableNvidia = true; });
           # legacy, yao: T460s
