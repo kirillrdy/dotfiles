@@ -58,6 +58,7 @@
                     awscli2
                     nixpkgs-review
                     nix-tree
+                    android-studio
                     awsebcli
                     evince
                     ffmpeg
