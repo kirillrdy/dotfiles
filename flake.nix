@@ -13,7 +13,7 @@
               ({ pkgs, lib, modulesPath, ... }:
                 {
                   imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
-                  #boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
+                  boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
 
                   boot.initrd.availableKernelModules = [ "nvme" ];
                   fileSystems."/" = { device = "zroot/root"; fsType = "zfs"; };
@@ -68,7 +68,7 @@
                     gnome.baobab
                     gnome.eog
                     gnome.file-roller
-                    #gnome.gnome-boxes
+                    gnome.gnome-boxes
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.totem
@@ -86,14 +86,13 @@
                   ];
                   users.users.kirillvr = {
                     isNormalUser = true;
-                    extraGroups = [ "wheel" "docker" "vboxusers" "kvm" ];
+                    extraGroups = [ "wheel" "docker" "vboxusers" ];
                   };
-                  # virtualisation.libvirtd.enable = true;
-                  # virtualisation.docker.enable = true;
-                  # virtualisation.docker.storageDriver = "zfs";
-                  # virtualisation.docker.enableNvidia = enableNvidia;
-                  #hardware.opengl.driSupport32Bit = enableNvidia;
-                  #systemd.enableUnifiedCgroupHierarchy = false;
+                  virtualisation.libvirtd.enable = true;
+                  virtualisation.docker.enable = true;
+                  virtualisation.docker.storageDriver = "zfs";
+                  virtualisation.docker.enableNvidia = enableNvidia;
+                  hardware.opengl.driSupport32Bit = enableNvidia;
                   networking.firewall.enable = false;
                   system.stateVersion = "22.11"; # Did you read the comment?
                 })
