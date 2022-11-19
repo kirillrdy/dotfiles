@@ -28,7 +28,8 @@
                   boot.loader.efi.canTouchEfiVariables = true;
                   #boot.kernelPackages = pkgs.linuxPackages_5_19;
 
-                  fonts.fonts = with pkgs; [ carlito dejavu_fonts ipafont kochi-substitute source-code-pro ttf_bitstream_vera ];
+                  fonts.enableDefaultFonts = true;
+                  fonts.fonts = with pkgs; [ kochi-substitute ];
 
                   networking.hostId = "00000000";
                   services.avahi.nssmdns = true;
