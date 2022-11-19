@@ -56,10 +56,8 @@
                   environment.gnome.excludePackages = [ pkgs.orca ];
                   environment.variables.EDITOR = "nvim";
                   environment.systemPackages = with pkgs; [
-                    awscli2
-                    nixpkgs-review
-                    nix-tree
                     android-studio
+                    awscli2
                     awsebcli
                     evince
                     ffmpeg
@@ -75,6 +73,8 @@
                     gnome.totem
                     neovide
                     neovim
+                    nix-tree
+                    nixpkgs-review
                     obs-studio
                     pkgs-binary.chromium
                     pkgs-binary.firefox
