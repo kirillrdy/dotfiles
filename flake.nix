@@ -1,12 +1,10 @@
 {
   description = "my computers in flakes";
-  inputs.nixpkgs.url = "github:nixos/nixpkgs";
-  inputs.nixpkgs-binary.url = "nixpkgs";
-  outputs = { self, nixpkgs, nixpkgs-binary }:
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/staging-next";
+  outputs = { self, nixpkgs }:
     {
       nixosConfigurations =
         let
-          pkgs-binary = import nixpkgs-binary { system = "x86_64-linux"; };
           simplesystem = { hostName, enableNvidia ? false }: {
             system = "x86_64-linux";
             modules = [
@@ -74,8 +72,7 @@
                     neovim
                     nix-tree
                     nixpkgs-review
-                    pkgs-binary.chromium
-                    pkgs-binary.firefox
+                    firefox
                     ripgrep
                     rnix-lsp
                     slack
