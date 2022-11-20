@@ -78,6 +78,10 @@
                     slack
                     tig
                     xclip
+                    rustup
+                    rust-analyzer
+                    trunk
+                    clang
                   ];
                   users.users.kirillvr = {
                     isNormalUser = true;
