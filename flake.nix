@@ -1,5 +1,6 @@
 {
   description = "my computers in flakes";
+  inputs.nixpkgs.url = "github:r-burns/nixpkgs/zfs";
   outputs = { self, nixpkgs }:
     {
       nixosConfigurations =
@@ -23,7 +24,7 @@
                   nixpkgs.config.allowUnfree = true;
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
-                  #boot.kernelPackages = pkgs.linuxPackages_5_19;
+                  boot.kernelPackages = pkgs.linuxPackages_6_0;
 
                   fonts.enableDefaultFonts = true;
                   fonts.fonts = with pkgs; [ kochi-substitute ];
