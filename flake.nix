@@ -80,6 +80,7 @@
                     xclip
                     rustup
                     rust-analyzer
+                    wasm-bindgen-cli
                     trunk
                     clang
                   ];
