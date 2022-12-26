@@ -1,6 +1,6 @@
 {
   description = "my computers in flakes";
-  inputs.nixpkgs.url = "github:r-burns/nixpkgs/zfs";
+  inputs.nixpkgs.url = "github:nixos/nixpkgs";
   outputs = { self, nixpkgs }:
     {
       nixosConfigurations =
