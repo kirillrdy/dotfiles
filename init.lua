@@ -65,7 +65,31 @@ end)
 
 local builtin = require('telescope.builtin')
 vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
+vim.keymap.set('n', '<leader>s', builtin.lsp_document_symbols, {})
+vim.keymap.set('n', '<leader>e', function() builtin.diagnostics({bufnr=0}) end, {})
+vim.keymap.set('n', 'gd', builtin.lsp_definitions, {})
+vim.keymap.set('n', 'gr', builtin.lsp_references, {})
+vim.keymap.set('n', 'gi', builtin.lsp_implementations, {})
 vim.keymap.set('n', '<C-p>', builtin.git_files, {})
 vim.keymap.set('n', '<leader>ps', function()
 	builtin.grep_string({ search = vim.fn.input("Grep > ") })
 end)
+
+local lsp = require('lsp-zero')
+lsp.preset('system-lsp')
+lsp.nvim_workspace()
+
+
+lsp.on_attach(function(client, bufnr)
+  local opts = {buffer = bufnr, remap = false}
+  vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
+  vim.keymap.set("n", "[d", vim.diagnostic.goto_next, opts)
+  vim.keymap.set("n", "]d", vim.diagnostic.goto_prev, opts)
+  vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, opts)
+  vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)
+  vim.keymap.set("n", "<leader>f", vim.lsp.buf.format, opts)
+  vim.keymap.set("i", "<C-h>", vim.lsp.buf.signature_help, opts)
+end)
+
+lsp.setup_servers({'rust_analyzer', force = true})
+lsp.setup()
