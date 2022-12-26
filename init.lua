@@ -91,5 +91,5 @@ lsp.on_attach(function(client, bufnr)
   vim.keymap.set("i", "<C-h>", vim.lsp.buf.signature_help, opts)
 end)
 
-lsp.setup_servers({'rust_analyzer', force = true})
+lsp.setup_servers({"gopls", "rust_analyzer", "tsserver","solargraph", "rnix", "pyright", force = true})
 lsp.setup()
