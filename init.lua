@@ -34,28 +34,12 @@ require('packer').startup(function(use)
   use({ 'nvim-treesitter/nvim-treesitter', run = ':TSUpdate' })
   use('nvim-treesitter/playground')
   use('tpope/vim-fugitive')
-
-  use {
-    'VonHeikemen/lsp-zero.nvim',
-    requires = {
-      -- LSP Support
-      { 'neovim/nvim-lspconfig' },
-      { 'williamboman/mason.nvim' },
-      { 'williamboman/mason-lspconfig.nvim' },
-
-      -- Autocompletion
-      { 'hrsh7th/nvim-cmp' },
-      { 'hrsh7th/cmp-buffer' },
-      { 'hrsh7th/cmp-path' },
-      { 'saadparwaiz1/cmp_luasnip' },
-      { 'hrsh7th/cmp-nvim-lsp' },
-      { 'hrsh7th/cmp-nvim-lua' },
-
-      -- Snippets
-      { 'L3MON4D3/LuaSnip' },
-      { 'rafamadriz/friendly-snippets' },
-    }
-  }
+  use 'neovim/nvim-lspconfig'
+  use 'hrsh7th/nvim-cmp'
+  use 'hrsh7th/cmp-buffer'
+  use 'hrsh7th/cmp-path'
+  use 'hrsh7th/cmp-nvim-lsp'
+  use 'hrsh7th/cmp-nvim-lua'
 end)
 
 local builtin = require('telescope.builtin')
@@ -74,11 +58,9 @@ vim.keymap.set('n', '<leader>ps', function()
   builtin.grep_string({ search = vim.fn.input("Grep > ") })
 end)
 
-local lsp = require('lsp-zero')
-lsp.preset('system-lsp')
-lsp.nvim_workspace()
+local nvim_lsp = require('lspconfig')
 
-lsp.on_attach(function(client, bufnr)
+local on_attach = function(client, bufnr)
   vim.api.nvim_create_autocmd("BufWritePre", {
     buffer = bufnr,
     callback = function() vim.lsp.buf.format() end,
@@ -91,18 +73,30 @@ lsp.on_attach(function(client, bufnr)
   vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)
   vim.keymap.set("n", "<leader>f", vim.lsp.buf.format, opts)
   vim.keymap.set("i", "<C-h>", vim.lsp.buf.signature_help, opts)
-end)
+end
 
-lsp.setup_nvim_cmp({
+local cmp = require('cmp')
+
+cmp.setup({
   sources = {
-    {name = 'nvim_lsp', keyword_length = 2},
-    {name = 'path'},
-    {name = 'buffer', keyword_length = 3},
-  }
+    { name = 'nvim_lsp', keyword_length = 2 },
+    { name = 'path' },
+    { name = 'buffer', keyword_length = 3 },
+  },
+  mapping = cmp.mapping.preset.insert({
+    ['<CR>'] = cmp.mapping.confirm({ select = false }),
+    ['<Up>'] = cmp.mapping.select_prev_item(),
+    ['<Down>'] = cmp.mapping.select_next_item(),
+    ['<C-b>'] = cmp.mapping.scroll_docs(-4),
+    ['<C-f>'] = cmp.mapping.scroll_docs(4),
+    ['<C-e>'] = cmp.mapping.abort(),
+  }),
 })
 
-lsp.setup_servers({ "gopls", "rust_analyzer", "tsserver", "solargraph", "rnix", "pyright", force = true })
-lsp.setup()
+local servers = { "gopls", "rust_analyzer", "tsserver", "solargraph", "rnix", "pyright", force = true }
+for _, server in ipairs(servers) do
+  nvim_lsp[server].setup { on_attach = on_attach }
+end
 
 require 'nvim-treesitter.configs'.setup {
   ensure_installed = { "help", "nix", "lua", "rust" },
