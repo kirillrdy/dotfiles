@@ -91,9 +91,12 @@ cmp.setup({
     ['<C-f>'] = cmp.mapping.scroll_docs(4),
     ['<C-e>'] = cmp.mapping.abort(),
   }),
+  window = {
+    documentation = cmp.config.window.bordered()
+  },
 })
 
-local servers = { "gopls", "rust_analyzer", "tsserver", "solargraph", "rnix", "pyright", force = true }
+local servers = { "gopls", "rust_analyzer", "tsserver", "solargraph", "rnix", "pyright", "sumneko_lua", force = true }
 for _, server in ipairs(servers) do
   nvim_lsp[server].setup { on_attach = on_attach }
 end
