@@ -77,8 +77,11 @@ local lsp = require('lsp-zero')
 lsp.preset('system-lsp')
 lsp.nvim_workspace()
 
-
 lsp.on_attach(function(client, bufnr)
+  vim.api.nvim_create_autocmd("BufWritePre", {
+    buffer = bufnr,
+    callback = function() vim.lsp.buf.format() end,
+  })
   local opts = { buffer = bufnr, remap = false }
   vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
   vim.keymap.set("n", "[d", vim.diagnostic.goto_next, opts)
