@@ -93,6 +93,14 @@ lsp.on_attach(function(client, bufnr)
   vim.keymap.set("i", "<C-h>", vim.lsp.buf.signature_help, opts)
 end)
 
+lsp.setup_nvim_cmp({
+  sources = {
+    {name = 'nvim_lsp', keyword_length = 2},
+    {name = 'path'},
+    {name = 'buffer', keyword_length = 3},
+  }
+})
+
 lsp.setup_servers({ "gopls", "rust_analyzer", "tsserver", "solargraph", "rnix", "pyright", force = true })
 lsp.setup()
 
