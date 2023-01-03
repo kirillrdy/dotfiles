@@ -41,6 +41,7 @@ require('packer').startup(function(use)
   use 'hrsh7th/cmp-path'
   use 'hrsh7th/cmp-nvim-lsp'
   use 'hrsh7th/cmp-nvim-lua'
+  use 'scrooloose/nerdtree'
 end)
 
 local builtin = require('telescope.builtin')
