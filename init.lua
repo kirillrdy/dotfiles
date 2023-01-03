@@ -13,6 +13,11 @@ vim.opt.termguicolors = true
 vim.opt.signcolumn = "yes"
 vim.opt.isfname:append("@-@")
 
+vim.api.nvim_create_autocmd({ "FocusGained" }, {
+  pattern = { "*" },
+  command = ":checktime",
+})
+
 vim.g.mapleader = " "
 
 require('packer').startup(function(use)
