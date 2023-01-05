@@ -12,6 +12,7 @@ vim.opt.incsearch = true
 vim.opt.termguicolors = true
 vim.opt.signcolumn = "yes"
 vim.opt.isfname:append("@-@")
+vim.opt.autoread = true;
 
 vim.api.nvim_create_autocmd({ "FocusGained" }, {
   pattern = { "*" },
