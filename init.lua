@@ -90,7 +90,7 @@ cmp.setup({
   sources = {
     { name = 'nvim_lsp', keyword_length = 2 },
     { name = 'path' },
-    { name = 'buffer', keyword_length = 3 },
+    { name = 'buffer', keyword_length = 2 },
   },
   mapping = cmp.mapping.preset.insert({
     ['<CR>'] = cmp.mapping.confirm({ select = true }),
