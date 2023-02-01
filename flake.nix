@@ -34,7 +34,7 @@
                   services.avahi.publish.enable = true;
                   services.avahi.publish.addresses = true;
                   networking.hostName = hostName;
-                  time.timeZone = "Asia/Tokyo";
+                  time.timeZone = "Australia/Melbourne";
 
                   services.logind.extraConfig = "RuntimeDirectorySize=10G";
 
