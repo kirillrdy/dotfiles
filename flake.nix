@@ -3,6 +3,11 @@
   inputs.nixpkgs.url = "github:nixos/nixpkgs";
   outputs = { self, nixpkgs }:
     {
+      packages.x86_64-linux.neovim =
+        let
+          pkgs = import nixpkgs { system = "x86_64-linux"; };
+        in
+        import ./neovim.nix { inherit pkgs; };
       nixosConfigurations =
         let
           simplesystem = { hostName, enableNvidia ? false }: {
