@@ -14,41 +14,13 @@ vim.opt.signcolumn = "yes"
 vim.opt.isfname:append("@-@")
 vim.opt.autoread = true;
 
+vim.cmd('colorscheme rose-pine')
 vim.api.nvim_create_autocmd({ "FocusGained" }, {
   pattern = { "*" },
   command = ":checktime",
 })
 
 vim.g.mapleader = " "
-
-require('packer').startup(function(use)
-  use 'wbthomason/packer.nvim'
-
-  use {
-    'nvim-telescope/telescope.nvim', tag = '0.1.0',
-    requires = { { 'nvim-lua/plenary.nvim' } }
-  }
-
-  use 'airblade/vim-rooter'
-  use({
-    'rose-pine/neovim',
-    as = 'rose-pine',
-    config = function()
-      vim.cmd('colorscheme rose-pine')
-    end
-  })
-
-  use({ 'nvim-treesitter/nvim-treesitter', run = ':TSUpdate' })
-  use('nvim-treesitter/playground')
-  use('tpope/vim-fugitive')
-  use 'neovim/nvim-lspconfig'
-  use 'hrsh7th/nvim-cmp'
-  use 'hrsh7th/cmp-buffer'
-  use 'hrsh7th/cmp-path'
-  use 'hrsh7th/cmp-nvim-lsp'
-  use 'hrsh7th/cmp-nvim-lua'
-  use 'scrooloose/nerdtree'
-end)
 
 local builtin = require('telescope.builtin')
 vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
@@ -111,8 +83,8 @@ for _, server in ipairs(servers) do
 end
 
 require 'nvim-treesitter.configs'.setup {
-  ensure_installed = { "help", "nix", "lua", "rust" },
+  -- ensure_installed = { "help", "nix", "lua", "rust" },
   sync_install = false,
-  auto_install = true,
+  -- auto_install = true,
   highlight = { enable = true, additional_vim_regex_highlighting = false },
 }

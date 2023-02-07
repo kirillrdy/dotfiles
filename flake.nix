@@ -69,7 +69,7 @@
                     gnome.nautilus
                     gnome.totem
                     neovide
-                    neovim
+                    (import ./neovim.nix { inherit pkgs; })
                     nix-tree
                     nixpkgs-review
                     firefox
