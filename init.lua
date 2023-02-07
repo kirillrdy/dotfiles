@@ -57,7 +57,6 @@ local on_attach = function(client, bufnr)
 end
 
 local cmp = require('cmp')
-
 cmp.setup({
   sources = {
     { name = 'nvim_lsp', keyword_length = 2 },
