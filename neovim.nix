@@ -5,6 +5,7 @@ pkgs.wrapNeovim pkgs.neovim-unwrapped {
       lua << EOF
       ${builtins.readFile ./init.lua}
       EOF
+      let g:rooter_patterns = ['.git']
     '';
     packages.myVimPackage = with pkgs.vimPlugins; {
       start = [
