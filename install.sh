@@ -1,6 +1,5 @@
 #!/bin/sh
 
-cp -v dot.gitconfig ~/.gitconfig
 cp -v dot.tigrc ~/.tigrc
 mkdir -p ~/.config/helix
 mkdir -p ~/.config/nvim
