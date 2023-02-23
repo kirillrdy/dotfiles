@@ -55,12 +55,16 @@
                   services.openssh.enable = true;
                   environment.gnome.excludePackages = [ pkgs.orca ];
                   environment.variables.EDITOR = "nvim";
+                  programs.git.enable = true;
+                  programs.git.config = {
+                    user.name = "Kirill Radzikhovskyy";
+                    user.email = "kirillrdy@gmail.com";
+                  };
                   environment.systemPackages = with pkgs; [
                     awscli2
                     awsebcli
                     evince
                     ffmpeg
-                    git
                     gnome-console
                     gnome-text-editor
                     gnome.baobab
