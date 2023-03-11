@@ -7,6 +7,18 @@
       packages.x86_64-darwin.neovim = import ./neovim.nix { pkgs = import nixpkgs { system = "x86_64-darwin"; }; };
       nixosConfigurations =
         let
+          substitute = "s3://wps-0000000000/nix?region=ap-southeast-2";
+          pkgs = import nixpkgs { system = "x86_64-linux"; };
+          updateScript = pkgs.writeScript "update" ''
+            #!/bin/sh
+
+            set -eu
+            set -f # disable globbing
+            export IFS=' '
+
+            echo "Uploading paths" $OUT_PATHS
+            exec nix copy --to "${substitute}" $OUT_PATHS
+          '';
           simplesystem = { hostName, enableNvidia ? false }: {
             system = "x86_64-linux";
             modules = [
@@ -19,7 +31,15 @@
                   fileSystems."/" = { device = "zroot/root"; fsType = "zfs"; };
                   fileSystems."/boot" = { device = "/dev/nvme0n1p3"; fsType = "vfat"; };
                   swapDevices = [{ device = "/dev/nvme0n1p2"; }];
-                  nix = { extraOptions = "experimental-features = nix-command flakes"; };
+                  nix = {
+                    extraOptions = ''
+                      experimental-features = nix-command flakes
+                      post-build-hook = ${updateScript}
+                    '';
+                  };
+                  nix.settings.trusted-users = [ "root" "kirillvr" ];
+                  nix.settings.substituters = [ substitute ];
+                  nix.settings.require-sigs = false;
 
                   powerManagement.cpuFreqGovernor = if !enableNvidia then lib.mkDefault "powersave" else null;
 
