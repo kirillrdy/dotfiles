@@ -81,6 +81,17 @@
                     user.email = "kirillrdy@gmail.com";
                   };
                   environment.systemPackages = with pkgs; [
+                    (writeScriptBin "everything-everywhere-all-at-once" ''
+                      set -ex
+                      while true ; do
+                      nix build -j 1 --no-link github:nixos/nixpkgs/master#awsebcli
+                      nix build -j 1 --no-link github:nixos/nixpkgs/master#python3.pkgs.fastai
+                      nix build -j 1 --no-link github:nixos/nixpkgs/staging-next#awsebcli
+                      nix build -j 1 --no-link github:nixos/nixpkgs/python-updates#awsebcli
+                      nix build -j 1 --no-link github:nixos/nixpkgs/staging#awsebcli
+                      sleep 1000
+                      done
+                    '')
                     awscli2
                     microsoft-edge
                     awsebcli
