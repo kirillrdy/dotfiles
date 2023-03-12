@@ -82,6 +82,7 @@
                   };
                   environment.systemPackages = with pkgs; [
                     awscli2
+                    microsoft-edge
                     awsebcli
                     evince
                     ffmpeg
