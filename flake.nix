@@ -132,7 +132,7 @@
                   virtualisation.docker.enableNvidia = enableNvidia;
                   hardware.opengl.driSupport32Bit = enableNvidia;
                   networking.firewall.enable = false;
-                  system.stateVersion = "22.11"; # Did you read the comment?
+                  system.stateVersion = "24.11"; # I come from the future
                 })
             ];
           };
