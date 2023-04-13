@@ -102,10 +102,7 @@
                     trunk
                     clang
                   ];
-                  users.users.kirillvr = {
-                    isNormalUser = true;
-                    extraGroups = [ "wheel" "docker" "vboxusers" ];
-                  };
+                  users.users.kirillvr = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
                   virtualisation.libvirtd.enable = true;
                   virtualisation.docker.enable = true;
                   virtualisation.docker.storageDriver = "zfs";
