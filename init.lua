@@ -24,7 +24,7 @@ vim.g.mapleader = " "
 
 local builtin = require('telescope.builtin')
 vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
-vim.keymap.set('n', '<leader>s', builtin.lsp_document_symbols, {})
+vim.keymap.set('n', '<leader>s', function() builtin.lsp_document_symbols { symbol_width = 60 } end, {})
 vim.keymap.set('n', '<leader>c', builtin.commands, {})
 vim.keymap.set('n', '<leader>e', function() builtin.diagnostics({ bufnr = 0 }) end, {})
 vim.keymap.set('n', 'gd', builtin.lsp_definitions, {})
