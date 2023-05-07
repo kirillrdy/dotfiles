@@ -104,6 +104,7 @@
                     clang
                   ];
                   users.users.kirillvr = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
+                  users.users.haru = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
                   virtualisation.libvirtd.enable = true;
                   virtualisation.docker.enable = true;
                   virtualisation.docker.storageDriver = "zfs";
