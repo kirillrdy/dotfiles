@@ -103,6 +103,8 @@
                     trunk
                     clang
                     acpi
+                    go
+                    gopls
                   ];
                   users.users.kirillvr = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
                   users.users.haru = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
