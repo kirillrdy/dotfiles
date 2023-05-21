@@ -50,6 +50,7 @@
                   services.xserver.displayManager.gdm.enable = true;
                   services.xserver.enable = true;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
+                  hardware.nvidia.open = enableNvidia;
                   services.xserver.xkbOptions = "caps:none";
                   services.tailscale.enable = false;
                   services.openssh.enable = true;
