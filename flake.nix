@@ -74,16 +74,16 @@
                       done
                     '')
                     awscli2
-                    microsoft-edge
+                    #microsoft-edge
                     awsebcli
-                    evince
+                    #evince
                     ffmpeg
                     gnome-console
                     gnome-text-editor
                     gnome.baobab
                     gnome.eog
                     gnome.file-roller
-                    gnome.gnome-boxes
+                    #gnome.gnome-boxes
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.totem
@@ -108,7 +108,7 @@
                   ];
                   users.users.kirillvr = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
                   users.users.haru = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
-                  virtualisation.libvirtd.enable = true;
+                  #virtualisation.libvirtd.enable = true;
                   virtualisation.docker.enable = true;
                   virtualisation.docker.storageDriver = "zfs";
                   virtualisation.docker.enableNvidia = enableNvidia;
