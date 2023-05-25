@@ -70,7 +70,6 @@
                       nix build -j 1 --no-link github:nixos/nixpkgs/master#python3.pkgs.mmcv
                       nix build -j 1 --no-link github:nixos/nixpkgs/staging-next#awsebcli
                       nix build -j 1 --no-link github:nixos/nixpkgs/python-updates#awsebcli
-                      nix build -j 1 --no-link github:nixos/nixpkgs/staging#awsebcli
                       sleep 1000
                       done
                     '')
