@@ -23,6 +23,7 @@
 
                   powerManagement.cpuFreqGovernor = if !enableNvidia then lib.mkDefault "powersave" else null;
 
+                  nix.settings.max-jobs = 2;
                   nixpkgs.config.allowUnfree = true;
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
