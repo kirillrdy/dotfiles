@@ -91,6 +91,7 @@
                     gnome.totem
                     neovide
                     (import ./neovim.nix { inherit pkgs; })
+                    nix-update
                     nix-tree
                     nixpkgs-review
                     firefox
