@@ -75,6 +75,7 @@
                       done
                     '')
                     awscli2
+                    file
                     #microsoft-edge
                     awsebcli
                     #evince
