@@ -14,7 +14,7 @@ vim.opt.signcolumn = "yes"
 vim.opt.isfname:append("@-@")
 vim.opt.autoread = true;
 
-vim.cmd('colorscheme rose-pine')
+vim.cmd('colorscheme tokyonight')
 vim.api.nvim_create_autocmd({ "FocusGained" }, {
   pattern = { "*" },
   command = ":checktime",

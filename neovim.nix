@@ -13,6 +13,7 @@ pkgs.wrapNeovim pkgs.neovim-unwrapped {
         plenary-nvim
         vim-rooter
         rose-pine
+        tokyonight-nvim
         nvim-treesitter.withAllGrammars
         vim-fugitive
         nvim-lspconfig
