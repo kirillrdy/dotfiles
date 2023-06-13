@@ -32,7 +32,7 @@
                   fonts.enableDefaultFonts = true;
                   fonts.fonts = with pkgs; [ kochi-substitute ];
                   services.hydra = {
-                    enable = true;
+                    enable = false;
                     hydraURL = "http://localhost:4000"; # externally visible URL
                     port = 4000;
                     notificationSender = "hydra@localhost"; # e-mail of hydra service
