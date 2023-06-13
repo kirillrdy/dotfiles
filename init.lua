@@ -76,10 +76,22 @@ cmp.setup({
   },
 })
 
-local servers = {"clangd", "pyright", "gopls", "rust_analyzer", "tsserver", "solargraph", "nil_ls", "ruff_lsp", "lua_ls", force = true }
+local servers = {"clangd", "pyright", "gopls", "rust_analyzer", "tsserver", "solargraph", "ruff_lsp", "lua_ls", force = true }
 for _, server in ipairs(servers) do
   nvim_lsp[server].setup { on_attach = on_attach }
 end
+
+require('lspconfig').nil_ls.setup {
+      on_attach = on_attach,
+      settings = {
+        ['nil'] = {
+          testSetting = 42,
+          formatting = {
+            command = { "nixpkgs-fmt" },
+          },
+        },
+      },
+    }
 
 require 'nvim-treesitter.configs'.setup {
   -- ensure_installed = { "help", "nix", "lua", "rust" },

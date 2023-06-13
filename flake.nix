@@ -103,6 +103,7 @@
                     (import ./neovim.nix { inherit pkgs; })
                     nix-update
                     nix-tree
+                    nixpkgs-fmt
                     nixpkgs-review
                     firefox
                     ripgrep
