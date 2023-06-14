@@ -93,7 +93,7 @@
                     nixpkgs-review
                     firefox
                     ripgrep
-                    rnix-lsp
+                    nil
                     slack
                     tig
                     xclip
