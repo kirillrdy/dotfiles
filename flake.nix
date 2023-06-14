@@ -68,10 +68,7 @@
                   environment.gnome.excludePackages = [ pkgs.orca ];
                   environment.variables.EDITOR = "nvim";
                   programs.git.enable = true;
-                  programs.git.config = {
-                    user.name = "Kirill Radzikhovskyy";
-                    user.email = "kirillrdy@gmail.com";
-                  };
+                  programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
                   environment.systemPackages = with pkgs; [
                     (writeScriptBin "everything-everywhere-all-at-once" ''
                       set -ex
