@@ -31,17 +31,6 @@
 
                   fonts.enableDefaultFonts = true;
                   fonts.fonts = with pkgs; [ kochi-substitute ];
-                  services.hydra = {
-                    enable = false;
-                    hydraURL = "http://localhost:4000"; # externally visible URL
-                    port = 4000;
-                    notificationSender = "hydra@localhost"; # e-mail of hydra service
-                    # a standalone hydra will require you to unset the buildMachinesFiles list to avoid using a nonexistant /etc/nix/machines
-                    buildMachinesFiles = [ ];
-                    # you will probably also want, otherwise *everything* will be built from scratch
-                    useSubstitutes = true;
-                  };
-
                   networking.hostId = "00000000";
                   services.avahi.nssmdns = true;
                   services.avahi.publish.enable = true;
