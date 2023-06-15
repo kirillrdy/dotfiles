@@ -60,49 +60,46 @@
                     (writeScriptBin "everything-everywhere-all-at-once" ''
                       set -ex
                       while true ; do
-                      nix build -j 1 --no-link github:nixos/nixpkgs/master#awsebcli
-                      nix build -j 1 --no-link github:nixos/nixpkgs/master#python3.pkgs.fastai
-                      nix build -j 1 --no-link github:nixos/nixpkgs/master#python3.pkgs.mmcv
-                      nix build -j 1 --no-link github:nixos/nixpkgs/staging-next#awsebcli
-                      nix build -j 1 --no-link github:nixos/nixpkgs/python-updates#awsebcli
+                      nix build --no-link github:nixos/nixpkgs/master#awsebcli
+                      nix build --no-link github:nixos/nixpkgs/master#python3.pkgs.fastai
+                      nix build --no-link github:nixos/nixpkgs/master#python3.pkgs.mmcv
+                      nix build --no-link github:nixos/nixpkgs/staging-next#awsebcli
+                      nix build --no-link github:nixos/nixpkgs/python-updates#awsebcli
                       sleep 1000
                       done
                     '')
+                    (import ./neovim.nix { inherit pkgs; })
+                    acpi
                     awscli2
-                    file
-                    #microsoft-edge
                     awsebcli
-                    #evince
+                    clang
                     ffmpeg
+                    file
+                    firefox
                     gnome-console
                     gnome-text-editor
                     gnome.baobab
                     gnome.eog
                     gnome.file-roller
-                    #gnome.gnome-boxes
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.totem
-                    neovide
-                    (import ./neovim.nix { inherit pkgs; })
-                    nix-update
-                    nix-tree
-                    nixpkgs-fmt
-                    nixpkgs-review
-                    firefox
-                    ripgrep
-                    nil
-                    slack
-                    tig
-                    xclip
-                    rustup
-                    rust-analyzer
-                    wasm-bindgen-cli
-                    trunk
-                    clang
-                    acpi
                     go
                     gopls
+                    neovide
+                    nil
+                    nix-tree
+                    nix-update
+                    nixpkgs-fmt
+                    nixpkgs-review
+                    ripgrep
+                    rust-analyzer
+                    rustup
+                    slack
+                    tig
+                    trunk
+                    wasm-bindgen-cli
+                    xclip
                   ];
                   users.users.kirillvr = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
                   users.users.haru = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
