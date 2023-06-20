@@ -1,6 +1,6 @@
 {
   description = "my computers in flakes";
-  inputs.nixpkgs.url = "github:nixos/nixpkgs";
+  inputs.nixpkgs.url = "github:mweinelt/nixpkgs/beta-dev-fox";
   outputs = { self, nixpkgs }:
     {
       packages.x86_64-linux.neovim = import ./neovim.nix { pkgs = import nixpkgs { system = "x86_64-linux"; }; };
@@ -27,88 +27,24 @@
                   boot.loader.efi.canTouchEfiVariables = true;
                   boot.kernelPackages = pkgs.linuxPackages_6_3;
 
-                  fonts.enableDefaultFonts = true;
-                  fonts.fonts = with pkgs; [ kochi-substitute ];
                   networking.hostId = "00000000";
-                  services.avahi.nssmdns = true;
-                  services.avahi.publish.enable = true;
-                  services.avahi.publish.addresses = true;
                   networking.hostName = hostName;
                   time.timeZone = "Australia/Melbourne";
 
-                  services.logind.extraConfig = "RuntimeDirectorySize=10G";
-
                   i18n.defaultLocale = "en_AU.UTF-8";
-                  i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
 
-                  services.gnome.core-utilities.enable = false;
-                  services.gnome.tracker-miners.enable = false;
-                  services.gnome.tracker.enable = false;
                   services.xserver.desktopManager.gnome.enable = true;
                   services.xserver.displayManager.gdm.enable = !enableNvidia;
                   services.xserver.enable = true;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
-                  hardware.nvidia.open = enableNvidia;
                   services.xserver.xkbOptions = "caps:none";
-                  services.tailscale.enable = true;
-                  services.openssh.enable = true;
-                  environment.gnome.excludePackages = [ pkgs.orca ];
-                  environment.variables.EDITOR = "nvim";
-                  programs.git.enable = true;
-                  programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
+                  services.xserver.displayManager.lightdm.enable = true;
+                  services.xserver.displayManager.autoLogin.enable = true;
+                  services.xserver.displayManager.autoLogin.user = "kirillvr";
                   environment.systemPackages = with pkgs; [
-                    (writeScriptBin "everything-everywhere-all-at-once" ''
-                      set -ex
-                      while true ; do
-                      nix build --no-link github:nixos/nixpkgs/master#awsebcli
-                      nix build --no-link github:nixos/nixpkgs/master#python3.pkgs.fastai
-                      nix build --no-link github:nixos/nixpkgs/master#python3.pkgs.mmcv
-                      nix build --no-link github:nixos/nixpkgs/staging-next#awsebcli
-                      nix build --no-link github:nixos/nixpkgs/python-updates#awsebcli
-                      sleep 1000
-                      done
-                    '')
-                    (import ./neovim.nix { inherit pkgs; })
-                    acpi
-                    awscli2
-                    awsebcli
-                    clang
-                    ffmpeg
-                    file
-                    firefox
-                    gnome-console
-                    gnome-text-editor
-                    gnome.baobab
-                    gnome.eog
-                    gnome.file-roller
-                    gnome.gnome-system-monitor
-                    gnome.nautilus
-                    gnome.totem
-                    go
-                    gopls
-                    neovide
-                    nil
-                    nix-tree
-                    nix-update
-                    nixpkgs-fmt
-                    nixpkgs-review
-                    ripgrep
-                    rust-analyzer
-                    rustup
-                    slack
-                    tig
-                    trunk
-                    wasm-bindgen-cli
-                    xclip
+                    firefox-beta
                   ];
                   users.users.kirillvr = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
-                  users.users.haru = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
-                  #virtualisation.libvirtd.enable = true;
-                  virtualisation.docker.enable = true;
-                  virtualisation.docker.storageDriver = "zfs";
-                  virtualisation.docker.enableNvidia = enableNvidia;
-                  hardware.opengl.driSupport32Bit = enableNvidia;
-                  networking.firewall.enable = false;
                   system.stateVersion = "24.11"; # I come from the future
                 })
             ];
