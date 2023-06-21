@@ -6,7 +6,7 @@
       packages.x86_64-linux.neovim = import ./neovim.nix { pkgs = import nixpkgs { system = "x86_64-linux"; }; };
       nixosConfigurations =
         let
-          simplesystem = { hostName, enableNvidia ? false }: {
+          simplesystem = { hostName, enableNvidia ? false, buildJobs ? 0 }: {
             system = "x86_64-linux";
             modules = [
               ({ pkgs, lib, modulesPath, ... }:
@@ -21,7 +21,7 @@
                     experimental-features = nix-command flakes
                   '';
 
-                  nix.settings.max-jobs = 1;
+                  nix.settings.max-jobs = buildJobs;
                   nixpkgs.config.allowUnfree = true;
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
@@ -116,7 +116,7 @@
         in
         {
           # Lenovo X1 gen9
-          osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; });
+          osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; buildJobs = 1; });
 
           # intel i7
           # Retired 20-10-2022
