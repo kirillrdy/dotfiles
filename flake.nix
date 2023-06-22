@@ -6,7 +6,7 @@
       packages.x86_64-linux.neovim = import ./neovim.nix { pkgs = import nixpkgs { system = "x86_64-linux"; }; };
       nixosConfigurations =
         let
-          simplesystem = { hostName, enableNvidia ? false, buildJobs ? 0 }: {
+          simplesystem = { hostName, enableNvidia ? false, buildJobs ? "auto" }: {
             system = "x86_64-linux";
             modules = [
               ({ pkgs, lib, modulesPath, ... }:
