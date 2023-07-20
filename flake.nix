@@ -1,6 +1,6 @@
 {
   description = "my computers in flakes";
-  inputs.nixpkgs.url = "github:mweinelt/nixpkgs/beta-dev-fox";
+  #inputs.nixpkgs.url = "github:nixos/nixpkgs";
   outputs = { self, nixpkgs }:
     {
       packages.x86_64-linux.neovim = import ./neovim.nix { pkgs = import nixpkgs { system = "x86_64-linux"; }; };
@@ -42,7 +42,7 @@
                   services.xserver.displayManager.autoLogin.enable = true;
                   services.xserver.displayManager.autoLogin.user = "kirillvr";
                   environment.systemPackages = with pkgs; [
-                    firefox-beta
+                    firefox
                   ];
                   users.users.kirillvr = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
                   system.stateVersion = "24.11"; # I come from the future
