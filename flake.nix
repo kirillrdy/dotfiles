@@ -27,8 +27,8 @@
                   boot.loader.efi.canTouchEfiVariables = true;
                   boot.kernelPackages = pkgs.linuxPackages_6_3;
 
-                  fonts.enableDefaultFonts = true;
-                  fonts.fonts = with pkgs; [ kochi-substitute ];
+                  fonts.enableDefaultPackages = true;
+                  fonts.packages = with pkgs; [ kochi-substitute ];
                   networking.hostId = "00000000";
                   services.avahi.nssmdns = true;
                   services.avahi.publish.enable = true;
