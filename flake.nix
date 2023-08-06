@@ -19,13 +19,14 @@
                   swapDevices = [{ device = "/dev/nvme0n1p2"; }];
                   nix.extraOptions = ''
                     experimental-features = nix-command flakes
+                    allow-import-from-derivation = false
                   '';
 
                   nix.settings.max-jobs = buildJobs;
                   nixpkgs.config.allowUnfree = true;
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
-                  boot.kernelPackages = pkgs.linuxPackages_6_3;
+                  boot.kernelPackages = pkgs.linuxPackages_6_1;
 
                   fonts.enableDefaultPackages = true;
                   fonts.packages = with pkgs; [ kochi-substitute ];
