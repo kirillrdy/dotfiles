@@ -75,7 +75,6 @@
                     acpi
                     awscli2
                     awsebcli
-                    clang
                     ffmpeg
                     file
                     firefox
@@ -89,20 +88,17 @@
                     gnome.totem
                     go
                     gopls
+                    lazygit
                     neovide
                     nil
                     nix-tree
                     nix-update
                     nixpkgs-fmt
                     nixpkgs-review
+                    qemu
                     ripgrep
-                    rust-analyzer
-                    rustup
                     slack
                     tig
-                    trunk
-                    wasm-bindgen-cli
-                    lazygit
                     xclip
                   ];
                   users.users.kirillvr = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
