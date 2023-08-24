@@ -87,6 +87,7 @@
                     gnome.totem
                     go
                     gopls
+                    golangci-lint-langserver
                     lazygit
                     neovide
                     nil
