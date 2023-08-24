@@ -63,8 +63,6 @@
                       set -ex
                       while true ; do
                       nix build --no-link github:nixos/nixpkgs/master#awsebcli
-                      nix build --no-link github:nixos/nixpkgs/master#python3.pkgs.fastai
-                      nix build --no-link github:nixos/nixpkgs/master#python3.pkgs.mmcv
                       nix build --no-link github:nixos/nixpkgs/staging-next#awsebcli
                       nix build --no-link github:nixos/nixpkgs/python-updates#awsebcli
                       sleep 1000
