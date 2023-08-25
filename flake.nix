@@ -38,6 +38,18 @@
                   networking.hostName = hostName;
                   time.timeZone = "Australia/Melbourne";
 
+                  systemd.services.gitlab-runner-ci = {
+                    wantedBy = [ "multi-user.target" ];
+                    after = [ "network.target" ];
+                    description = "start gitlab runner";
+                    serviceConfig = {
+                      User = "kirillvr";
+                      WorkingDirectory = "/home/kirillvr";
+                      Environment = "PATH=${pkgs.bash}/bin";
+                      ExecStart = ''${pkgs.gitlab-runner}/bin/gitlab-runner run'';
+                    };
+                  };
+
                   services.logind.extraConfig = "RuntimeDirectorySize=10G";
 
                   i18n.defaultLocale = "en_AU.UTF-8";
