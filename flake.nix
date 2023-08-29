@@ -39,6 +39,7 @@
                   time.timeZone = "Australia/Melbourne";
 
                   systemd.services.gitlab-runner-ci = {
+                    enable = enableNvidia;
                     wantedBy = [ "multi-user.target" ];
                     after = [ "network.target" ];
                     description = "start gitlab runner";
