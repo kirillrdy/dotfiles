@@ -96,8 +96,9 @@
                     gnome.gnome-system-monitor
                     gnome.nautilus
                     gnome.totem
-                    go
+                    go_1_21
                     gopls
+                    golangci-lint
                     golangci-lint-langserver
                     lazygit
                     neovide
