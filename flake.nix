@@ -60,7 +60,7 @@
                   services.gnome.tracker-miners.enable = false;
                   services.gnome.tracker.enable = false;
                   services.xserver.desktopManager.gnome.enable = true;
-                  services.xserver.displayManager.gdm.enable = !enableNvidia;
+                  services.xserver.displayManager.gdm.enable = true;
                   services.xserver.enable = true;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.xserver.xkbOptions = "caps:none";
