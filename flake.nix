@@ -68,7 +68,6 @@
                   services.openssh.enable = true;
                   environment.gnome.excludePackages = [ pkgs.orca ];
                   environment.variables.EDITOR = "nvim";
-                  environment.variables.TZ = ":/etc/localtime";
                   programs.git.enable = true;
                   programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
                   environment.systemPackages = with pkgs; [
