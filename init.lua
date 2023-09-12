@@ -85,6 +85,10 @@ nvim_lsp.sorbet.setup {
   on_attach = on_attach,
   cmd = {"bundle", "exec", "srb", "tc", "--lsp", "--disable-watchman" },
 }
+nvim_lsp.steep.setup {
+  on_attach = on_attach,
+  cmd = {"bundle", "exec", "steep", "langserver" },
+}
 nvim_lsp.nil_ls.setup {
     on_attach = on_attach,
     settings = {
