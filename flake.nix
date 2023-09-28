@@ -27,7 +27,7 @@
                   nixpkgs.config.allowUnfree = true;
                   boot.loader.systemd-boot.enable = true;
                   boot.loader.efi.canTouchEfiVariables = true;
-                  boot.kernelPackages = pkgs.linuxPackages_6_1;
+                  boot.kernelPackages = pkgs.zfs.latestCompatibleLinuxPackages;
 
                   fonts.enableDefaultPackages = true;
                   fonts.packages = with pkgs; [ kochi-substitute ];
