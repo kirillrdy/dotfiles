@@ -38,19 +38,6 @@
                   networking.hostName = hostName;
                   time.timeZone = "Australia/Melbourne";
 
-                  systemd.services.gitlab-runner-ci = {
-                    enable = enableNvidia;
-                    wantedBy = [ "multi-user.target" ];
-                    after = [ "network.target" ];
-                    description = "start gitlab runner";
-                    serviceConfig = {
-                      User = "kirillvr";
-                      WorkingDirectory = "/home/kirillvr";
-                      Environment = "PATH=${pkgs.bash}/bin";
-                      ExecStart = ''${pkgs.gitlab-runner}/bin/gitlab-runner run'';
-                    };
-                  };
-
                   services.logind.extraConfig = "RuntimeDirectorySize=10G";
 
                   i18n.defaultLocale = "en_AU.UTF-8";
@@ -96,9 +83,9 @@
                     gnome.nautilus
                     gnome.totem
                     go_1_21
-                    gopls
                     golangci-lint
                     golangci-lint-langserver
+                    gopls
                     lazygit
                     neovide
                     nil
@@ -127,16 +114,14 @@
           };
         in
         {
-          # Lenovo X1 gen9
-          osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; buildJobs = 1; });
-
-          # intel i7
-          # Retired 20-10-2022
+          # old work machine Retired 20-10-2022
           #tsuruhashi = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsuruhashi"; rootPool = "tsuruhashi/root"; bootDevice = "/dev/sda3"; swapDevice = "/dev/sda2"; });
           # amd ryzen 5
-          shinseikai = nixpkgs.lib.nixosSystem (simplesystem { hostName = "shinseikai"; enableNvidia = true; });
+          #shinseikai = nixpkgs.lib.nixosSystem (simplesystem { hostName = "shinseikai"; enableNvidia = true; });
           # legacy, yao: T460s
 
+          # Lenovo X1 gen9
+          osaka = nixpkgs.lib.nixosSystem (simplesystem { hostName = "osaka"; buildJobs = 1; });
           tsutenkaku = nixpkgs.lib.nixosSystem (simplesystem { hostName = "tsutenkaku"; enableNvidia = true; buildJobs = 3; });
         };
     };
