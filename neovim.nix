@@ -1,5 +1,4 @@
-{ pkgs }:
-pkgs.wrapNeovim pkgs.neovim-unwrapped {
+pkgs: pkgs.wrapNeovim pkgs.neovim-unwrapped {
   configure = {
     customRC = ''
       lua << EOF

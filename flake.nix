@@ -3,7 +3,7 @@
   inputs.nixpkgs.url = "github:nixos/nixpkgs";
   outputs = { self, nixpkgs }:
     {
-      packages.x86_64-linux.neovim = import ./neovim.nix { pkgs = import nixpkgs { system = "x86_64-linux"; }; };
+      packages.x86_64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-linux"; });
       nixosConfigurations =
         let
           simplesystem = { hostName, enableNvidia ? false, buildJobs ? "auto" }: {
@@ -67,7 +67,7 @@
                       sleep 1000
                       done
                     '')
-                    (import ./neovim.nix { inherit pkgs; })
+                    (import ./neovim.nix pkgs)
                     acpi
                     awscli2
                     awsebcli
@@ -85,6 +85,7 @@
                     go_1_21
                     golangci-lint
                     golangci-lint-langserver
+                    obs-studio
                     gopls
                     lazygit
                     neovide
