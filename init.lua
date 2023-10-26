@@ -81,14 +81,6 @@ for _, server in ipairs(servers) do
   nvim_lsp[server].setup { on_attach = on_attach }
 end
 
-nvim_lsp.sorbet.setup {
-  on_attach = on_attach,
-  cmd = {"bundle", "exec", "srb", "tc", "--lsp", "--disable-watchman" },
-}
-nvim_lsp.steep.setup {
-  on_attach = on_attach,
-  cmd = {"bundle", "exec", "steep", "langserver" },
-}
 nvim_lsp.nil_ls.setup {
     on_attach = on_attach,
     settings = {
@@ -102,8 +94,6 @@ nvim_lsp.nil_ls.setup {
 }
 
 require 'nvim-treesitter.configs'.setup {
-  -- ensure_installed = { "help", "nix", "lua", "rust" },
   sync_install = false,
-  -- auto_install = true,
   highlight = { enable = true, additional_vim_regex_highlighting = false },
 }
