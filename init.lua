@@ -35,9 +35,6 @@ vim.keymap.set('n', '<C-b>', builtin.buffers, {})
 vim.keymap.set('n', '<C-g>', builtin.grep_string, {})
 vim.keymap.set('n', 'L', builtin.live_grep, {})
 vim.keymap.set('n', 'z=', builtin.spell_suggest, {})
-vim.keymap.set('n', '<leader>ps', function()
-  builtin.grep_string({ search = vim.fn.input("Grep > ") })
-end)
 
 local nvim_lsp = require('lspconfig')
 
@@ -58,11 +55,7 @@ end
 
 local cmp = require('cmp')
 cmp.setup({
-  sources = {
-    { name = 'nvim_lsp', keyword_length = 2 },
-    { name = 'path' },
-    { name = 'buffer', keyword_length = 2 },
-  },
+  sources = { { name = 'nvim_lsp', keyword_length = 2 }, { name = 'path' }, { name = 'buffer', keyword_length = 2 }},
   mapping = cmp.mapping.preset.insert({
     ['<CR>'] = cmp.mapping.confirm({ select = true }),
     ['<Up>'] = cmp.mapping.select_prev_item(),
