@@ -60,19 +60,19 @@ cmp.setup({
     ['<CR>'] = cmp.mapping.confirm({ select = true }),
     ['<Up>'] = cmp.mapping.select_prev_item(),
     ['<Down>'] = cmp.mapping.select_next_item(),
-    ['<C-b>'] = cmp.mapping.scroll_docs(-4),
-    ['<C-f>'] = cmp.mapping.scroll_docs(4),
-    ['<C-e>'] = cmp.mapping.abort(),
   }),
   window = {
     documentation = cmp.config.window.bordered()
   },
 })
 
-local servers = {"clangd", "pyright", "templ", "gopls", "rust_analyzer", "tsserver", "golangci_lint_ls", "ruff_lsp", "lua_ls", force = true }
+local servers = {"clangd", "pyright", "templ", "rust_analyzer", "tsserver", "ruff_lsp", "lua_ls", force = true }
 for _, server in ipairs(servers) do
   nvim_lsp[server].setup { on_attach = on_attach }
 end
+
+nvim_lsp.gopls.setup { on_attach = on_attach, cmd_env = { GOOS = "js", GOARCH = "wasm" } }
+nvim_lsp.golangci_lint_ls.setup { on_attach = on_attach, cmd_env = { GOOS = "js", GOARCH = "wasm" } }
 
 nvim_lsp.nil_ls.setup {
     on_attach = on_attach,
