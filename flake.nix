@@ -30,11 +30,12 @@
                   boot.kernelPackages = pkgs.zfs.latestCompatibleLinuxPackages;
 
                   fonts.enableDefaultPackages = true;
-                  fonts.packages = with pkgs; [ kochi-substitute ];
+                  fonts.packages = with pkgs; [ kochi-substitute font-awesome ];
                   networking.hostId = "00000000";
                   services.avahi.nssmdns = true;
                   services.avahi.publish.enable = true;
                   services.avahi.publish.addresses = true;
+                  networking.networkmanager.enable = true;
                   networking.hostName = hostName;
                   time.timeZone = "Australia/Melbourne";
 
@@ -45,16 +46,27 @@
 
                   services.gnome.core-utilities.enable = false;
                   services.gnome.tracker-miners.enable = false;
+                  programs.hyprland.enable = true;
+                  programs.hyprland.enableNvidiaPatches = true;
+                  programs.hyprland.xwayland.enable = true;
                   services.gnome.tracker.enable = false;
-                  services.xserver.desktopManager.gnome.enable = true;
-                  services.xserver.displayManager.gdm.enable = true;
-                  services.xserver.enable = true;
+                  services.xserver.desktopManager.gnome.enable = false;
+                  services.xserver.displayManager.gdm.enable = false;
+                  services.xserver.enable = false;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.xserver.xkbOptions = "caps:none";
+                  sound.enable = true;
+                  security.rtkit.enable = true;
+                  services.pipewire.enable = true;
+                  services.pipewire.alsa.enable = true;
+                  services.pipewire.alsa.support32Bit = true;
+                  services.pipewire.pulse.enable = true;
+                  services.pipewire.jack.enable = true;
                   services.tailscale.enable = true;
                   services.openssh.enable = true;
                   environment.gnome.excludePackages = [ pkgs.orca ];
                   environment.variables.EDITOR = "nvim";
+                  environment.variables.WLR_NO_HARDWARE_CURSORS = "1";
                   programs.git.enable = true;
                   programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
                   environment.systemPackages = with pkgs; [
@@ -69,6 +81,10 @@
                     '')
                     (import ./neovim.nix pkgs)
                     acpi
+                    waybar
+                    dunst
+                    swww
+                    rofi-wayland
                     awscli2
                     awsebcli
                     ffmpeg
