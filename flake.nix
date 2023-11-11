@@ -41,17 +41,11 @@
                   services.logind.extraConfig = "RuntimeDirectorySize=10G";
 
                   i18n.defaultLocale = "en_AU.UTF-8";
-                  i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
-
-                  services.gnome.core-utilities.enable = false;
-                  services.gnome.tracker-miners.enable = false;
+                  #TODO need wayland replacement
+                  #i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
                   programs.hyprland.enable = true;
                   programs.hyprland.enableNvidiaPatches = true;
                   programs.hyprland.xwayland.enable = true;
-                  services.gnome.tracker.enable = false;
-                  services.xserver.desktopManager.gnome.enable = false;
-                  services.xserver.displayManager.gdm.enable = false;
-                  services.xserver.enable = false;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.xserver.xkbOptions = "caps:none";
                   sound.enable = true;
@@ -63,21 +57,11 @@
                   services.pipewire.jack.enable = true;
                   services.tailscale.enable = true;
                   services.openssh.enable = true;
-                  environment.gnome.excludePackages = [ pkgs.orca ];
                   environment.variables.EDITOR = "nvim";
                   environment.variables.WLR_NO_HARDWARE_CURSORS = "1";
                   programs.git.enable = true;
                   programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
                   environment.systemPackages = with pkgs; [
-                    (writeScriptBin "everything-everywhere-all-at-once" ''
-                      set -ex
-                      while true ; do
-                      nix build --no-link github:nixos/nixpkgs/master#awsebcli
-                      nix build --no-link github:nixos/nixpkgs/staging-next#awsebcli
-                      nix build --no-link github:nixos/nixpkgs/python-updates#awsebcli
-                      sleep 1000
-                      done
-                    '')
                     (import ./neovim.nix pkgs)
                     acpi
                     waybar
@@ -86,38 +70,24 @@
                     rofi-wayland
                     awscli2
                     awsebcli
-                    ffmpeg
                     file
-                    firefox
-                    gnome-console
-                    gnome-text-editor
-                    gnome.baobab
-                    gnome.eog
-                    gnome.file-roller
-                    gnome.gnome-system-monitor
-                    gnome.nautilus
-                    gnome.totem
+                    (firefox.override { cfg.speechSynthesisSupport = false; })
                     go_1_21
                     golangci-lint
                     golangci-lint-langserver
-                    obs-studio
                     gopls
-                    lazygit
                     neovide
                     nil
                     nix-tree
                     nix-update
                     nixpkgs-fmt
                     nixpkgs-review
-                    qemu
                     ripgrep
                     slack
                     tig
-                    xclip
                   ];
                   users.users.kirillvr = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
                   users.users.haru = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
-                  #virtualisation.libvirtd.enable = true;
                   virtualisation.docker.enable = true;
                   virtualisation.docker.storageDriver = "zfs";
                   virtualisation.docker.enableNvidia = enableNvidia;
