@@ -20,7 +20,6 @@
                   nix.extraOptions = ''
                     experimental-features = nix-command flakes
                     allow-import-from-derivation = false
-                    trusted-users = kirillvr
                   '';
 
                   nix.settings.max-jobs = buildJobs;
