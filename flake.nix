@@ -63,11 +63,14 @@
                   programs.git.enable = true;
                   programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
                   xdg.portal.enable = true;
+                  xdg.portal.extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
+                  xdg.portal.wlr.enable = true;
                   environment.systemPackages = with pkgs; [
                     (import ./neovim.nix pkgs)
                     acpi
                     (waybar.overrideAttrs (old: { mesonFlags = old.mesonFlags ++ [ "-Dexperimental=true" ]; }))
                     waybar
+                    brightnessctl
                     dunst
                     swww
                     rofi-wayland
@@ -80,11 +83,13 @@
                     golangci-lint
                     golangci-lint-langserver
                     gopls
+                    wl-clipboard
                     neovide
                     nil
                     nix-tree
                     nix-update
                     nixpkgs-fmt
+                    btop
                     nixpkgs-review
                     ripgrep
                     slack
