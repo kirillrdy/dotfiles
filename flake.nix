@@ -63,13 +63,16 @@
                   environment.variables.WLR_NO_HARDWARE_CURSORS = "1";
                   programs.git.enable = true;
                   programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
+                  xdg.portal.enable = true;
                   environment.systemPackages = with pkgs; [
                     (import ./neovim.nix pkgs)
                     acpi
+                    (waybar.overrideAttrs (old: { mesonFlags = old.mesonFlags ++ [ "-Dexperimental=true" ]; }))
                     waybar
                     dunst
                     swww
                     rofi-wayland
+                    kitty
                     awscli2
                     awsebcli
                     file
