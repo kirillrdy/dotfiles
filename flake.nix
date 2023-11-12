@@ -31,11 +31,12 @@
                   fonts.enableDefaultPackages = true;
                   fonts.packages = with pkgs; [ kochi-substitute font-awesome ];
                   networking.hostId = "00000000";
+                  networking.hostName = hostName;
+                  networking.networkmanager.enable = true;
                   services.avahi.nssmdns = true;
                   services.avahi.publish.enable = true;
                   services.avahi.publish.addresses = true;
-                  networking.networkmanager.enable = true;
-                  networking.hostName = hostName;
+
                   time.timeZone = "Australia/Melbourne";
 
                   services.logind.extraConfig = "RuntimeDirectorySize=10G";
