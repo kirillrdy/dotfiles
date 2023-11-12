@@ -61,6 +61,7 @@
                   services.pipewire.jack.enable = true;
                   services.tailscale.enable = true;
                   services.openssh.enable = true;
+                  programs.ssh.startAgent = true;
                   environment.variables = { EDITOR = "nvim"; } // pkgs.lib.optionalAttrs enableNvidia { WLR_NO_HARDWARE_CURSORS = "1"; };
                   programs.git.enable = true;
                   programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
