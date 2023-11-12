@@ -75,6 +75,7 @@
                     swww
                     rofi-wayland
                     kitty
+                    linuxPackages.cpupower
                     awscli2
                     awsebcli
                     file
