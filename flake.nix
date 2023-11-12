@@ -47,6 +47,7 @@
                   programs.hyprland.enable = true;
                   programs.hyprland.enableNvidiaPatches = true;
                   programs.hyprland.xwayland.enable = true;
+                  programs.nm-applet.enable = true;
                   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
                   services.xserver.xkbOptions = "caps:none";
                   sound.enable = true;
