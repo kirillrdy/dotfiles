@@ -68,6 +68,7 @@
                   xdg.portal.wlr.enable = true;
                   environment.systemPackages = with pkgs; [
                     (import ./neovim.nix pkgs)
+                    (import ./hyprland.nix pkgs)
                     acpi
                     (waybar.overrideAttrs (old: { mesonFlags = old.mesonFlags ++ [ "-Dexperimental=true" ]; }))
                     waybar
