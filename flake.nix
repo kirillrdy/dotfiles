@@ -33,6 +33,7 @@
                   networking.hostId = "00000000";
                   networking.hostName = hostName;
                   networking.networkmanager.enable = true;
+                  services.avahi.enable = true;
                   services.avahi.nssmdns = true;
                   services.avahi.publish.enable = true;
                   services.avahi.publish.addresses = true;
