@@ -21,6 +21,7 @@
                     experimental-features = nix-command flakes
                     allow-import-from-derivation = false
                   '';
+                  powerManagement.cpuFreqGovernor = "powersave";
 
                   nix.settings.max-jobs = buildJobs;
                   nixpkgs.config.allowUnfree = true;
