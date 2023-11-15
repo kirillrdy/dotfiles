@@ -30,7 +30,14 @@
                   boot.kernelPackages = pkgs.zfs.latestCompatibleLinuxPackages;
 
                   fonts.enableDefaultPackages = true;
-                  fonts.packages = with pkgs; [ kochi-substitute font-awesome ];
+                  fonts.packages = with pkgs; [
+                    kochi-substitute
+                    font-awesome
+                    cantarell-fonts
+                    dejavu_fonts
+                    source-code-pro # Default monospace font in 3.32
+                    source-sans
+                  ];
                   networking.hostId = "00000000";
                   networking.hostName = hostName;
                   networking.networkmanager.enable = true;
