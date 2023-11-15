@@ -21,7 +21,7 @@
                     experimental-features = nix-command flakes
                     allow-import-from-derivation = false
                   '';
-                  powerManagement.cpuFreqGovernor = "powersave";
+                  powerManagement.cpuFreqGovernor = if !enableNvidia then "powersave" else null;
 
                   nix.settings.max-jobs = buildJobs;
                   nixpkgs.config.allowUnfree = true;
