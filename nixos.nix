@@ -36,14 +36,10 @@
         services.logind.extraConfig = "RuntimeDirectorySize=10G";
 
         i18n.defaultLocale = "en_AU.UTF-8";
-        #TODO need wayland replacement
-        #i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
         programs.hyprland.enable = true;
         programs.hyprland.enableNvidiaPatches = true;
-        programs.hyprland.xwayland.enable = enableNvidia;
         programs.nm-applet.enable = true;
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
-        services.xserver.xkbOptions = "caps:none";
         sound.enable = true;
         security.rtkit.enable = true;
         services.pipewire.enable = true;
