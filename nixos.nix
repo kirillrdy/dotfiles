@@ -3,55 +3,47 @@
   modules = [
     ({ pkgs, lib, modulesPath, ... }:
       {
-        imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
         boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
         boot.initrd.availableKernelModules = [ "nvme" ];
+        boot.kernelPackages = pkgs.zfs.latestCompatibleLinuxPackages;
+        boot.loader.efi.canTouchEfiVariables = true;
+        boot.loader.systemd-boot.enable = true;
+        environment.variables = { EDITOR = "nvim"; } // pkgs.lib.optionalAttrs enableNvidia { WLR_NO_HARDWARE_CURSORS = "1"; };
         fileSystems."/" = { device = "zroot/root"; fsType = "zfs"; };
         fileSystems."/boot" = { device = "/dev/nvme0n1p3"; fsType = "vfat"; };
-        swapDevices = [{ device = "/dev/nvme0n1p2"; }];
-        nix.extraOptions = ''
-          experimental-features = nix-command flakes
-          allow-import-from-derivation = false
-        '';
-        powerManagement.cpuFreqGovernor = if !enableNvidia then "powersave" else null;
-
-        nix.settings.max-jobs = buildJobs;
-        nixpkgs.config.allowUnfree = true;
-        boot.loader.systemd-boot.enable = true;
-        boot.loader.efi.canTouchEfiVariables = true;
-        boot.kernelPackages = pkgs.zfs.latestCompatibleLinuxPackages;
-
         fonts.enableDefaultPackages = true;
         fonts.packages = with pkgs; [ kochi-substitute font-awesome cantarell-fonts dejavu_fonts source-code-pro source-sans ];
+        i18n.defaultLocale = "en_AU.UTF-8";
+        imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
         networking.hostId = "00000000";
         networking.hostName = hostName;
         networking.networkmanager.enable = true;
-        services.avahi.enable = true;
-        services.avahi.nssmdns = true;
-        services.avahi.publish.enable = true;
-        services.avahi.publish.addresses = true;
-
-        time.timeZone = "Australia/Melbourne";
-
-        services.logind.extraConfig = "RuntimeDirectorySize=10G";
-
-        i18n.defaultLocale = "en_AU.UTF-8";
+        nix.extraOptions = ''experimental-features = nix-command flakes'';
+        nix.settings.max-jobs = buildJobs;
+        nixpkgs.config.allowUnfree = true;
+        powerManagement.cpuFreqGovernor = if !enableNvidia then "powersave" else null;
+        programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
+        programs.git.enable = true;
         programs.hyprland.enable = true;
         programs.hyprland.enableNvidiaPatches = true;
-        services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
-        sound.enable = true;
+        programs.ssh.startAgent = true;
         security.rtkit.enable = true;
-        services.pipewire.enable = true;
+        services.avahi.enable = true;
+        services.avahi.nssmdns = true;
+        services.avahi.publish.addresses = true;
+        services.avahi.publish.enable = true;
+        services.logind.extraConfig = "RuntimeDirectorySize=10G";
+        services.openssh.enable = true;
         services.pipewire.alsa.enable = true;
         services.pipewire.alsa.support32Bit = true;
-        services.pipewire.pulse.enable = true;
+        services.pipewire.enable = true;
         services.pipewire.jack.enable = true;
+        services.pipewire.pulse.enable = true;
         services.tailscale.enable = true;
-        services.openssh.enable = true;
-        programs.ssh.startAgent = true;
-        environment.variables = { EDITOR = "nvim"; } // pkgs.lib.optionalAttrs enableNvidia { WLR_NO_HARDWARE_CURSORS = "1"; };
-        programs.git.enable = true;
-        programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
+        services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
+        sound.enable = true;
+        swapDevices = [{ device = "/dev/nvme0n1p2"; }];
+        time.timeZone = "Australia/Melbourne";
         xdg.portal.enable = true;
         xdg.portal.extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
         xdg.portal.wlr.enable = true;
