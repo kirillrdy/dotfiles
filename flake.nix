@@ -83,6 +83,7 @@
                     brightnessctl
                     dunst
                     swww
+                    networkmanagerapplet
                     rofi-wayland
                     kitty
                     linuxPackages.cpupower
