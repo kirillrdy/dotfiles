@@ -38,7 +38,6 @@
         i18n.defaultLocale = "en_AU.UTF-8";
         programs.hyprland.enable = true;
         programs.hyprland.enableNvidiaPatches = true;
-        programs.nm-applet.enable = true;
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         sound.enable = true;
         security.rtkit.enable = true;
