@@ -84,8 +84,6 @@
         users.users.haru = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
         virtualisation.docker.enable = true;
         virtualisation.docker.storageDriver = "zfs";
-        virtualisation.docker.enableNvidia = enableNvidia;
-        hardware.opengl.driSupport32Bit = enableNvidia;
         hardware.nvidia.modesetting.enable = enableNvidia;
         networking.firewall.enable = false;
         system.stateVersion = "24.11"; # I come from the future
