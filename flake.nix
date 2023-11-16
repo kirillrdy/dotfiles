@@ -103,6 +103,7 @@
                     nixpkgs-fmt
                     btop
                     nixpkgs-review
+                    pamixer
                     ripgrep
                     slack
                     tig
