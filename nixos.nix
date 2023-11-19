@@ -45,7 +45,7 @@
           (import ./neovim.nix pkgs)
           acpi
           kitty
-          awscli2
+          #awscli2
           awsebcli
           file
           (firefox.override { cfg.speechSynthesisSupport = false; })
