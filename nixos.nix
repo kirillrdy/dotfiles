@@ -43,6 +43,7 @@
         users.users.haru = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
         users.users.kirillvr = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
         virtualisation.docker.enable = true;
+        virtualisation.libvirtd.enable = true;
         virtualisation.docker.storageDriver = "zfs";
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
@@ -59,6 +60,7 @@
           neovide
           nil
           nix-tree
+          gnome.gnome-boxes
           nix-update
           nixpkgs-fmt
           btop
