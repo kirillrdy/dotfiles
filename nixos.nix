@@ -43,27 +43,25 @@
         users.users.haru = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
         users.users.kirillvr = { isNormalUser = true; extraGroups = [ "wheel" "docker" "vboxusers" ]; };
         virtualisation.docker.enable = true;
-        virtualisation.libvirtd.enable = true;
         virtualisation.docker.storageDriver = "zfs";
         environment.systemPackages = with pkgs; [
+          (firefox.override { cfg.speechSynthesisSupport = false; })
           (import ./neovim.nix pkgs)
           acpi
-          kitty
-          #awscli2
+          awscli2
           awsebcli
+          btop
           file
-          (firefox.override { cfg.speechSynthesisSupport = false; })
           go_1_21
           golangci-lint
           golangci-lint-langserver
           gopls
+          kitty
           neovide
           nil
           nix-tree
-          gnome.gnome-boxes
           nix-update
           nixpkgs-fmt
-          btop
           nixpkgs-review
           ripgrep
           slack
