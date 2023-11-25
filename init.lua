@@ -66,7 +66,7 @@ cmp.setup({
   },
 })
 
-local servers = {"clangd", "pyright", "solargraph", "rubocop", "templ", "rust_analyzer", "tsserver", "ruff_lsp", "lua_ls", force = true }
+local servers = { "zls", "clangd", "pyright", "solargraph", "rubocop", "templ", "rust_analyzer", "tsserver", "ruff_lsp", "lua_ls", force = true }
 for _, server in ipairs(servers) do
   nvim_lsp[server].setup { on_attach = on_attach }
 end
