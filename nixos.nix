@@ -27,9 +27,9 @@
         services.avahi.nssmdns = true;
         services.avahi.publish.addresses = true;
         services.avahi.publish.enable = true;
-        services.gnome.core-utilities.enable = false;
-        services.gnome.tracker-miners.enable = false;
-        services.gnome.tracker.enable = false;
+        #services.gnome.core-utilities.enable = false;
+        #services.gnome.tracker-miners.enable = false;
+        #services.gnome.tracker.enable = false;
         services.logind.extraConfig = "RuntimeDirectorySize=10G";
         services.openssh.enable = true;
         services.tailscale.enable = true;
