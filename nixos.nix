@@ -67,6 +67,8 @@
           slack
           tig
           xclip
+          zig
+          zls
         ];
       })
   ];
