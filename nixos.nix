@@ -18,7 +18,10 @@
         networking.firewall.enable = false;
         networking.hostId = "00000000";
         networking.hostName = hostName;
-        nix.extraOptions = ''experimental-features = nix-command flakes'';
+        nix.extraOptions = ''
+          experimental-features = nix-command flakes
+          allow-import-from-derivation = false
+        '';
         nix.settings.max-jobs = buildJobs;
         nixpkgs.config.allowUnfree = true;
         programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
