@@ -56,7 +56,7 @@
           awsebcli
           btop
           file
-          go_1_21
+          go
           golangci-lint
           golangci-lint-langserver
           gopls
