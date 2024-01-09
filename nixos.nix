@@ -60,6 +60,11 @@
           golangci-lint
           golangci-lint-langserver
           gopls
+          gnome.gnome-system-monitor
+          gnome.nautilus
+          gnome.totem
+          baobab
+          loupe
           kitty
           neovide
           nil
