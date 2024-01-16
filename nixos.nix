@@ -63,6 +63,7 @@
           gnome.gnome-system-monitor
           gnome.nautilus
           gnome.totem
+          gnome-text-editor
           baobab
           loupe
           kitty
