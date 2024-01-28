@@ -54,19 +54,20 @@
           acpi
           awscli2
           awsebcli
+          baobab
           btop
           file
+          gnome-text-editor
+          gnome.file-roller
+          gnome.gnome-system-monitor
+          gnome.nautilus
+          gnome.totem
           go
           golangci-lint
           golangci-lint-langserver
           gopls
-          gnome.gnome-system-monitor
-          gnome.nautilus
-          gnome.totem
-          gnome-text-editor
-          baobab
-          loupe
           kitty
+          loupe
           neovide
           nil
           nix-tree
