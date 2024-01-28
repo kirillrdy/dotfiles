@@ -23,6 +23,7 @@
           allow-import-from-derivation = false
         '';
         nix.settings.max-jobs = buildJobs;
+        #i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
         nixpkgs.config.allowUnfree = true;
         programs.git.config = { user.name = "Kirill Radzikhovskyy"; user.email = "kirillrdy@gmail.com"; };
         programs.git.enable = true;
