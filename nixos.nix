@@ -40,7 +40,7 @@
         services.xserver.desktopManager.gnome.enable = true;
         services.xserver.displayManager.gdm.enable = true;
         services.xserver.enable = true;
-        services.xserver.xkbOptions = "caps:none";
+        services.xserver.xkb.options = "caps:none";
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         swapDevices = [{ device = "/dev/nvme0n1p2"; }];
         system.stateVersion = "24.11"; # I come from the future
