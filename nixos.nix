@@ -58,6 +58,7 @@
           baobab
           btop
           file
+          gnome-console
           gnome-text-editor
           gnome.file-roller
           gnome.gnome-system-monitor
@@ -67,7 +68,6 @@
           golangci-lint
           golangci-lint-langserver
           gopls
-          kitty
           loupe
           neovide
           nil
