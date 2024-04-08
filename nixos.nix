@@ -73,7 +73,7 @@
           nil
           nix-tree
           nix-update
-          nixpkgs-fmt
+          nixfmt-rfc-style
           nixpkgs-review
           ripgrep
           slack
