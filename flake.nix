@@ -12,7 +12,7 @@
 
       # Lenovo X1 gen9
       osaka = nixpkgs.lib.nixosSystem (import ./nixos.nix { hostName = "osaka"; buildJobs = 1; });
-      tsutenkaku = nixpkgs.lib.nixosSystem (import ./nixos.nix { hostName = "tsutenkaku"; enableNvidia = true; buildJobs = 3; });
+      tsutenkaku = nixpkgs.lib.nixosSystem (import ./nixos.nix { hostName = "tsutenkaku"; enableNvidia = true; buildJobs = 1; });
     };
   };
 }
