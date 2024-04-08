@@ -93,6 +93,7 @@
         virtualisation.docker.enable = true;
         virtualisation.docker.storageDriver = "zfs";
         virtualisation.docker.enableNvidia = enableNvidia;
+        hardware.opengl.driSupport32Bit = enableNvidia;
         environment.systemPackages = with pkgs; [
           (firefox.override { cfg.speechSynthesisSupport = false; })
           (import ./neovim.nix pkgs)
