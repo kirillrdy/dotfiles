@@ -72,6 +72,7 @@
         services.xserver.xkb.options = "caps:none";
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
+        zramSwap.enable = true;
         system.stateVersion = "24.11"; # I come from the future
         time.timeZone = "Australia/Melbourne";
         users.users.haru = {
