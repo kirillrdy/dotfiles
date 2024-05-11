@@ -2,6 +2,7 @@
   hostName,
   enableNvidia ? false,
   buildJobs ? "auto",
+  gccarch ? null,
 }:
 {
   system = "x86_64-linux";
@@ -14,6 +15,15 @@
         ...
       }:
       {
+        nixpkgs.hostPlatform =
+          if gccarch == null then
+            { system = "x86_64-linux"; }
+          else
+            {
+              gcc.arch = "raptorlake";
+              gcc.tune = "raptorlake";
+              system = "x86_64-linux";
+            };
         boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
         boot.initrd.availableKernelModules = [ "nvme" ];
         boot.kernelPackages = pkgs.zfs.latestCompatibleLinuxPackages;
@@ -49,6 +59,14 @@
           allow-import-from-derivation = false
         '';
         nix.settings.max-jobs = buildJobs;
+        nix.settings.system-features = [
+          "nixos-test"
+          "benchmark"
+          "big-parallel"
+          "kvm"
+          "gccarch-${gccarch}"
+        ];
+
         #i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
         nixpkgs.config.allowUnfree = true;
         programs.git.config = {
