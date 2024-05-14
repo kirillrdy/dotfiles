@@ -20,8 +20,8 @@
             { system = "x86_64-linux"; }
           else
             {
-              gcc.arch = "raptorlake";
-              gcc.tune = "raptorlake";
+              gcc.arch = gccarch;
+              gcc.tune = gccarch;
               system = "x86_64-linux";
             };
         boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
