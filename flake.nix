@@ -17,7 +17,7 @@
           import ./nixos.nix {
             hostName = "osaka";
             buildJobs = 1;
-            gccarch = "rocketlake";
+            gccarch = "alderlake";
           }
         );
         tsutenkaku = nixpkgs.lib.nixosSystem (

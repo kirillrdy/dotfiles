@@ -64,7 +64,7 @@
           "benchmark"
           "big-parallel"
           "kvm"
-          "gccarch-${gccarch}"
+          "gccarch-alderlake"
         ];
 
         #i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
