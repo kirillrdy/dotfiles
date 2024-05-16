@@ -75,6 +75,7 @@
         };
         programs.git.enable = true;
         services.avahi.enable = true;
+        services.ollama.enable = true;
         services.avahi.nssmdns4 = true;
         services.avahi.publish.addresses = true;
         services.avahi.publish.enable = true;
