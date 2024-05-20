@@ -31,6 +31,7 @@
         boot.loader.systemd-boot.enable = true;
         environment.variables = {
           EDITOR = "nvim";
+          NEOVIDE_FORK = 1;
         };
         fileSystems."/" = {
           device = "zroot/root";
