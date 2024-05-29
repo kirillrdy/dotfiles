@@ -105,6 +105,7 @@
         };
         users.users.kirillvr = {
           isNormalUser = true;
+          initialPassword = "password";
           extraGroups = [
             "wheel"
             "docker"
