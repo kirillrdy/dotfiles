@@ -25,7 +25,7 @@
             hostName = "tsutenkaku";
             enableNvidia = true;
             buildJobs = 1;
-            gccarch = "raptorlake";
+            #gccarch = "raptorlake";
           }
         );
       };
