@@ -117,6 +117,8 @@
         virtualisation.docker.enableNvidia = enableNvidia;
         hardware.opengl.driSupport32Bit = enableNvidia;
         environment.systemPackages = with pkgs; [
+          gnomeExtensions.system-monitor
+          gnomeExtensions.freon
           (firefox.override { cfg.speechSynthesisSupport = false; })
           (import ./neovim.nix pkgs)
           acpi
