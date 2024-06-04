@@ -1,4 +1,5 @@
-pkgs: pkgs.wrapNeovim pkgs.neovim-unwrapped {
+pkgs:
+pkgs.wrapNeovim pkgs.neovim-unwrapped {
   configure = {
     customRC = ''
       lua << EOF
@@ -11,8 +12,7 @@ pkgs: pkgs.wrapNeovim pkgs.neovim-unwrapped {
         telescope-nvim
         plenary-nvim
         vim-rooter
-        rose-pine
-        tokyonight-nvim
+        nord-nvim
         nvim-treesitter.withAllGrammars
         vim-fugitive
         nvim-lspconfig
