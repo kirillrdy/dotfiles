@@ -9,13 +9,7 @@
   system = "x86_64-linux";
   modules = [
     nixtheplanet.nixosModules.macos-ventura
-    {
-      services.macos-ventura = {
-        enable = true;
-        openFirewall = true;
-        vncListenAddr = "0.0.0.0";
-      };
-    }
+    { services.macos-ventura.enable = true; }
     (
       {
         pkgs,
