@@ -3,10 +3,19 @@
   enableNvidia ? false,
   buildJobs ? "auto",
   gccarch ? null,
+  nixtheplanet,
 }:
 {
   system = "x86_64-linux";
   modules = [
+    nixtheplanet.nixosModules.macos-ventura
+    {
+      services.macos-ventura = {
+        enable = true;
+        openFirewall = true;
+        vncListenAddr = "0.0.0.0";
+      };
+    }
     (
       {
         pkgs,

@@ -1,8 +1,13 @@
 {
   description = "my computers in flakes";
+  inputs.nixtheplanet.url = "github:matthewcroughan/nixtheplanet";
   inputs.nixpkgs.url = "github:nixos/nixpkgs/master";
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      nixtheplanet,
+    }:
     {
       packages.x86_64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-linux"; });
       nixosConfigurations = {
@@ -17,6 +22,7 @@
           import ./nixos.nix {
             hostName = "osaka";
             buildJobs = 1;
+            inherit nixtheplanet;
             #gccarch = "alderlake";
           }
         );
@@ -25,6 +31,7 @@
             hostName = "tsutenkaku";
             enableNvidia = true;
             buildJobs = 1;
+            inherit nixtheplanet;
             #gccarch = "raptorlake";
           }
         );
