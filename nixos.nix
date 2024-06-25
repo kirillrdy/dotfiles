@@ -114,7 +114,7 @@
         virtualisation.docker.enable = true;
         virtualisation.docker.storageDriver = "zfs";
         virtualisation.docker.enableNvidia = enableNvidia;
-        hardware.opengl.driSupport32Bit = enableNvidia;
+        hardware.graphics.enable32Bit = enableNvidia;
         environment.systemPackages = with pkgs; [
           gnomeExtensions.system-monitor
           gnomeExtensions.freon
