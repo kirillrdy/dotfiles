@@ -3,19 +3,10 @@
   enableNvidia ? false,
   buildJobs ? "auto",
   gccarch ? null,
-  nixtheplanet,
 }:
 {
   system = "x86_64-linux";
   modules = [
-    nixtheplanet.nixosModules.macos-ventura
-    {
-      services.macos-ventura.enable = true;
-      services.macos-ventura.autoStart = false;
-      services.macos-ventura.package = nixtheplanet.legacyPackages.x86_64-linux.makeDarwinImage {
-        diskSizeBytes = 60000000000;
-      };
-    }
     (
       {
         pkgs,
