@@ -128,10 +128,10 @@
           file
           gnome-console
           gnome-text-editor
-          gnome.file-roller
-          gnome.gnome-system-monitor
-          gnome.nautilus
-          gnome.totem
+          file-roller
+          gnome-system-monitor
+          nautilus
+          totem
           go
           golangci-lint
           golangci-lint-langserver
