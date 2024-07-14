@@ -3,6 +3,7 @@
   enableNvidia ? false,
   buildJobs ? "auto",
   gccarch ? null,
+  systemFeatures ? [ ],
 }:
 {
   system = "x86_64-linux";
@@ -65,8 +66,7 @@
           "benchmark"
           "big-parallel"
           "kvm"
-          "gccarch-alderlake"
-        ];
+        ] ++ systemFeatures;
 
         #i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
         nixpkgs.config.allowUnfree = true;
