@@ -118,7 +118,7 @@
         environment.systemPackages = with pkgs; [
           gnomeExtensions.system-monitor
           gnomeExtensions.freon
-          (firefox.override { cfg.speechSynthesisSupport = false; })
+          firefox
           (import ./neovim.nix pkgs)
           acpi
           awscli2
