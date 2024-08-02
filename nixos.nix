@@ -113,7 +113,7 @@
         };
         virtualisation.docker.enable = true;
         virtualisation.docker.storageDriver = "zfs";
-        virtualisation.docker.enableNvidia = enableNvidia;
+        hardware.nvidia-container-toolkit.enable = enableNvidia;
         hardware.graphics.enable32Bit = enableNvidia;
         environment.systemPackages = with pkgs; [
           gnomeExtensions.system-monitor
