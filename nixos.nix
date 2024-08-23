@@ -119,6 +119,7 @@
           gnomeExtensions.system-monitor
           gnomeExtensions.freon
           firefox
+          (pkgs.writeScriptBin "hx" "GOOS=js GOARCH=wasm ${helix}/bin/hx -c ${./config.toml} $@")
           (import ./neovim.nix pkgs)
           acpi
           awscli2
