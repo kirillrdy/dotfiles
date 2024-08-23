@@ -116,6 +116,7 @@
         hardware.nvidia-container-toolkit.enable = enableNvidia;
         hardware.graphics.enable32Bit = enableNvidia;
         environment.systemPackages = with pkgs; [
+          kitty
           gnomeExtensions.system-monitor
           gnomeExtensions.freon
           firefox
@@ -127,7 +128,6 @@
           baobab
           btop
           file
-          gnome-console
           gnome-text-editor
           file-roller
           gnome-system-monitor
