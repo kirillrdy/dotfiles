@@ -27,7 +27,7 @@
             };
         boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
         boot.initrd.availableKernelModules = [ "nvme" ];
-        boot.kernelPackages = pkgs.zfs.latestCompatibleLinuxPackages;
+        boot.kernelPackages = pkgs.linuxPackages_6_10;
         boot.loader.efi.canTouchEfiVariables = true;
         boot.loader.systemd-boot.enable = true;
         environment.variables = {
