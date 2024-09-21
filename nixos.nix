@@ -61,6 +61,7 @@
           allow-import-from-derivation = false
         '';
         nix.settings.max-jobs = buildJobs;
+        nix.settings.trusted-users = [ "kirillvr" ];
         nix.settings.system-features = [
           "nixos-test"
           "benchmark"
