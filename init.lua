@@ -37,21 +37,23 @@ vim.keymap.set('n', '<C-g>', builtin.grep_string, {})
 vim.keymap.set('n', 'L', builtin.live_grep, {})
 vim.keymap.set('n', 'z=', builtin.spell_suggest, {})
 
-
-
-local on_attach = function(client, bufnr)
-  vim.api.nvim_create_autocmd("BufWritePre", {
-    buffer = bufnr,
-    callback = function() vim.lsp.buf.format() end,
-  })
-  local opts = { buffer = bufnr, remap = false }
-  vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
-  vim.keymap.set("n", "[d", vim.diagnostic.goto_next, opts)
-  vim.keymap.set("n", "]d", vim.diagnostic.goto_prev, opts)
-  vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, opts)
-  vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)
-  vim.keymap.set("n", "<leader>=", vim.lsp.buf.format, opts)
-  vim.keymap.set("i", "<C-h>", vim.lsp.buf.signature_help, opts)
+local on_attach = function(autoformat)
+  return function(client, bufnr)
+    if autoformat == true then
+      vim.api.nvim_create_autocmd("BufWritePre", {
+        buffer = bufnr,
+        callback = function() vim.lsp.buf.format() end,
+      })
+    end
+    local opts = { buffer = bufnr, remap = false }
+    vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
+    vim.keymap.set("n", "[d", vim.diagnostic.goto_next, opts)
+    vim.keymap.set("n", "]d", vim.diagnostic.goto_prev, opts)
+    vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, opts)
+    vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)
+    vim.keymap.set("n", "<leader>=", vim.lsp.buf.format, opts)
+    vim.keymap.set("i", "<C-h>", vim.lsp.buf.signature_help, opts)
+  end
 end
 
 local cmp = require('cmp')
@@ -70,16 +72,16 @@ cmp.setup({
 local nvim_lsp = require('lspconfig')
 local servers = { "zls", "clangd", "pyright", "rubocop", "templ", "rust_analyzer", "ruff_lsp", "lua_ls", force = true }
 for _, server in ipairs(servers) do
-  nvim_lsp[server].setup { on_attach = on_attach }
+  nvim_lsp[server].setup { on_attach = on_attach(true) }
 end
 
-local go_options = { on_attach = on_attach, cmd_env = { GOOS = "js", GOARCH = "wasm" } }
+local go_options = { on_attach = on_attach(true), cmd_env = { GOOS = "js", GOARCH = "wasm" } }
 
 nvim_lsp.gopls.setup(go_options)
 nvim_lsp.golangci_lint_ls.setup(go_options)
 
 nvim_lsp.nil_ls.setup {
-  on_attach = on_attach,
+  on_attach = on_attach(false),
   settings = {
     ['nil'] = {
       testSetting = 42,
