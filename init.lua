@@ -37,7 +37,7 @@ vim.keymap.set('n', '<C-g>', builtin.grep_string, {})
 vim.keymap.set('n', 'L', builtin.live_grep, {})
 vim.keymap.set('n', 'z=', builtin.spell_suggest, {})
 
-local nvim_lsp = require('lspconfig')
+
 
 local on_attach = function(client, bufnr)
   vim.api.nvim_create_autocmd("BufWritePre", {
@@ -67,6 +67,7 @@ cmp.setup({
   },
 })
 
+local nvim_lsp = require('lspconfig')
 local servers = { "zls", "clangd", "pyright", "rubocop", "templ", "rust_analyzer", "ruff_lsp", "lua_ls", force = true }
 for _, server in ipairs(servers) do
   nvim_lsp[server].setup { on_attach = on_attach }
