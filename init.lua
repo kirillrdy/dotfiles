@@ -72,8 +72,10 @@ for _, server in ipairs(servers) do
   nvim_lsp[server].setup { on_attach = on_attach }
 end
 
-nvim_lsp.gopls.setup { on_attach = on_attach, cmd_env = { GOOS = "js", GOARCH = "wasm" } }
-nvim_lsp.golangci_lint_ls.setup { on_attach = on_attach, cmd_env = { GOOS = "js", GOARCH = "wasm" } }
+local go_options = { on_attach = on_attach, cmd_env = { GOOS = "js", GOARCH = "wasm" } }
+
+nvim_lsp.gopls.setup go_options
+nvim_lsp.golangci_lint_ls.setup go_options
 
 nvim_lsp.nil_ls.setup {
     on_attach = on_attach,
