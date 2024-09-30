@@ -120,28 +120,28 @@
         hardware.nvidia-container-toolkit.enable = enableNvidia;
         hardware.graphics.enable32Bit = enableNvidia;
         environment.systemPackages = with pkgs; [
-          kitty
-          gnomeExtensions.system-monitor
-          gnomeExtensions.freon
-          firefox
-          (pkgs.writeScriptBin "hx" "GOOS=js GOARCH=wasm ${helix}/bin/hx -c ${./config.toml} $@")
           (import ./neovim.nix pkgs)
+          (pkgs.writeScriptBin "hx" "GOOS=js GOARCH=wasm ${helix}/bin/hx -c ${./config.toml} $@")
           acpi
           awscli2
           awsebcli
           baobab
           btop
           file
-          gnome-text-editor
           file-roller
+          firefox
           gnome-system-monitor
-          nautilus
-          totem
+          gnome-text-editor
+          gnomeExtensions.freon
+          gnomeExtensions.system-monitor
           go
           golangci-lint
           golangci-lint-langserver
           gopls
+          kitty
           loupe
+          lua-language-server
+          nautilus
           neovide
           nil
           nix-tree
@@ -151,6 +151,7 @@
           ripgrep
           slack
           tig
+          totem
           xclip
           zig
           zls
