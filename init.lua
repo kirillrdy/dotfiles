@@ -56,7 +56,7 @@ end
 
 local cmp = require('cmp')
 cmp.setup({
-  sources = { { name = 'nvim_lsp', keyword_length = 2 }, { name = 'path' }, { name = 'buffer', keyword_length = 2 }},
+  sources = { { name = 'nvim_lsp', keyword_length = 2 }, { name = 'path' }, { name = 'buffer', keyword_length = 2 } },
   mapping = cmp.mapping.preset.insert({
     ['<CR>'] = cmp.mapping.confirm({ select = true }),
     ['<Up>'] = cmp.mapping.select_prev_item(),
@@ -75,19 +75,19 @@ end
 
 local go_options = { on_attach = on_attach, cmd_env = { GOOS = "js", GOARCH = "wasm" } }
 
-nvim_lsp.gopls.setup go_options
-nvim_lsp.golangci_lint_ls.setup go_options
+nvim_lsp.gopls.setup(go_options)
+nvim_lsp.golangci_lint_ls.setup(go_options)
 
 nvim_lsp.nil_ls.setup {
-    on_attach = on_attach,
-    settings = {
-      ['nil'] = {
-        testSetting = 42,
-        formatting = {
-          command = { "nixfmt" },
-        },
+  on_attach = on_attach,
+  settings = {
+    ['nil'] = {
+      testSetting = 42,
+      formatting = {
+        command = { "nixfmt" },
       },
     },
+  },
 }
 
 require 'nvim-treesitter.configs'.setup {
