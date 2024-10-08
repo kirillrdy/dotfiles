@@ -138,7 +138,7 @@
           golangci-lint
           golangci-lint-langserver
           gopls
-          kitty
+          gnome-console
           loupe
           lua-language-server
           nautilus
