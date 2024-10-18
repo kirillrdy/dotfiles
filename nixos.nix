@@ -83,7 +83,7 @@
         services.avahi.nssmdns4 = true;
         services.avahi.publish.addresses = true;
         services.avahi.publish.enable = true;
-        services.gnome.core-utilities.enable = true;
+        services.gnome.core-utilities.enable = false;
         services.gnome.tinysparql.enable = true;
         services.gnome.localsearch.enable = true;
         services.logind.extraConfig = "RuntimeDirectorySize=10G";
@@ -142,7 +142,7 @@
           golangci-lint-langserver
           gopls
           gnome-console
-          loupe
+          #loupe
           lua-language-server
           nautilus
           neovide
