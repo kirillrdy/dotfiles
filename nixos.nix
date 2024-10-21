@@ -68,6 +68,8 @@
           "big-parallel"
           "kvm"
         ] ++ systemFeatures;
+        nixpkgs.flake.setFlakeRegistry = false;
+        nixpkgs.flake.setNixPath = false;
 
         #i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
         nixpkgs.config.allowUnfree = true;
