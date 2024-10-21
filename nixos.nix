@@ -16,9 +16,6 @@
         ...
       }:
       {
-        nixpkgs.overlays = [
-          (final: prev: { wireplumber = prev.wireplumber.override { enableDocs = false; }; })
-        ];
         nixpkgs.hostPlatform =
           if gccarch == null then
             { system = "x86_64-linux"; }
