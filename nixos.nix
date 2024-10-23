@@ -157,6 +157,7 @@
           xclip
           zig
           zls
+          terraform-ls
         ];
       }
     )
