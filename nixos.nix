@@ -29,6 +29,8 @@
         boot.initrd.availableKernelModules = [ "nvme" ];
         boot.kernelPackages = pkgs.linuxPackages_6_10;
         boot.loader.efi.canTouchEfiVariables = true;
+        services.gnome.gnome-keyring.enable = true;
+        virtualisation.waydroid.enable = true;
         boot.loader.systemd-boot.enable = true;
         environment.variables = {
           EDITOR = "nvim";
