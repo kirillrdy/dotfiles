@@ -33,6 +33,7 @@
         environment.variables = {
           EDITOR = "nvim";
           NEOVIDE_FORK = 1;
+          NIXOS_OZONE_WL = 1;
         };
         fileSystems."/" = {
           device = "zroot/root";
@@ -55,6 +56,7 @@
         imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
         networking.firewall.enable = false;
         networking.hostId = "00000000";
+        networking.networkmanager.enable = true;
         networking.hostName = hostName;
         nix.extraOptions = ''
           experimental-features = nix-command flakes
@@ -88,14 +90,40 @@
         services.logind.extraConfig = "RuntimeDirectorySize=10G";
         services.openssh.enable = true;
         services.tailscale.enable = true;
-        services.xserver.desktopManager.gnome.enable = true;
-        services.xserver.displayManager.gdm.enable = true;
+        services.xserver.desktopManager.gnome.enable = false;
+        services.xserver.displayManager.gdm.enable = false;
         services.xserver.excludePackages = [ pkgs.xterm ];
         services.xserver.displayManager.gdm.autoSuspend = false;
         services.xserver.enable = true;
+        services.displayManager.sessionPackages = [ pkgs.niri ];
         services.xserver.xkb.options = "caps:none";
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         hardware.nvidia.open = true;
+        xdg.portal = {
+          enable = true;
+          configPackages = [ pkgs.niri ];
+          # Recommended by upstream, required for screencast support
+          # https://github.com/YaLTeR/niri/wiki/Important-Software#portals
+          extraPortals = [ pkgs.xdg-desktop-portal-gnome ];
+        };
+        systemd.packages = [ pkgs.niri ];
+        security = {
+          polkit.enable = true;
+          pam.services.swaylock = { };
+        };
+
+        programs = {
+          dconf.enable = lib.mkDefault true;
+          xwayland.enable = true;
+        };
+
+        services.graphical-desktop.enable = true;
+
+        xdg.portal.wlr.enable = false;
+        # Window manager only sessions (unlike DEs) don't handle XDG
+        # autostart files, so force them to run the service
+        services.xserver.desktopManager.runXdgAutostartIfNone = true;
+
         swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
         zramSwap.enable = true;
         system.stateVersion = "24.11"; # I come from the future
@@ -125,7 +153,9 @@
           (import ./neovim.nix pkgs)
           (pkgs.writeScriptBin "hx" "GOOS=js GOARCH=wasm ${helix}/bin/hx -c ${./config.toml} $@")
           acpi
+          niri
           awscli2
+          wl-clipboard
           awsebcli
           baobab
           btop
