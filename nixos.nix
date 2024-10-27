@@ -27,7 +27,7 @@
             };
         boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
         boot.initrd.availableKernelModules = [ "nvme" ];
-        boot.kernelPackages = pkgs.linuxPackages_6_10;
+        #boot.kernelPackages = pkgs.linuxPackages_6_10;
         boot.loader.efi.canTouchEfiVariables = true;
         services.gnome.gnome-keyring.enable = true;
         virtualisation.waydroid.enable = true;
