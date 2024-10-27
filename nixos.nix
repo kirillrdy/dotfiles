@@ -1,9 +1,6 @@
 {
   hostName,
   enableNvidia ? false,
-  buildJobs ? "auto",
-  gccarch ? null,
-  systemFeatures ? [ ],
 }:
 {
   system = "x86_64-linux";
@@ -16,15 +13,6 @@
         ...
       }:
       {
-        nixpkgs.hostPlatform =
-          if gccarch == null then
-            { system = "x86_64-linux"; }
-          else
-            {
-              gcc.arch = gccarch;
-              gcc.tune = gccarch;
-              system = "x86_64-linux";
-            };
         boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
         boot.initrd.availableKernelModules = [ "nvme" ];
         #boot.kernelPackages = pkgs.linuxPackages_6_10;
@@ -64,14 +52,8 @@
           experimental-features = nix-command flakes
           allow-import-from-derivation = false
         '';
-        nix.settings.max-jobs = buildJobs;
+        nix.settings.max-jobs = 1;
         nix.settings.trusted-users = [ "kirillvr" ];
-        nix.settings.system-features = [
-          "nixos-test"
-          "benchmark"
-          "big-parallel"
-          "kvm"
-        ] ++ systemFeatures;
         nixpkgs.flake.setFlakeRegistry = false;
         nixpkgs.flake.setNixPath = false;
 
