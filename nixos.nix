@@ -23,7 +23,7 @@
         environment.variables = {
           EDITOR = "nvim";
           NEOVIDE_FORK = 1;
-          NIXOS_OZONE_WL = 1;
+          NIXOS_OZONE_WL = 1; # fixes slack
         };
         fileSystems."/" = {
           device = "zroot/root";
@@ -68,19 +68,12 @@
         services.avahi.nssmdns4 = true;
         services.avahi.publish.addresses = true;
         services.avahi.publish.enable = true;
-        services.gnome.core-utilities.enable = false;
-        services.gnome.tinysparql.enable = true;
-        services.gnome.localsearch.enable = true;
         services.logind.extraConfig = "RuntimeDirectorySize=10G";
         services.openssh.enable = true;
         services.tailscale.enable = true;
-        services.xserver.desktopManager.gnome.enable = false;
-        services.xserver.displayManager.gdm.enable = false;
         services.xserver.excludePackages = [ pkgs.xterm ];
-        services.xserver.displayManager.gdm.autoSuspend = false;
         services.xserver.enable = true;
         services.displayManager.sessionPackages = [ pkgs.niri ];
-        services.xserver.xkb.options = "caps:none";
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         hardware.nvidia.open = true;
         xdg.portal = {
@@ -112,14 +105,6 @@
         zramSwap.enable = true;
         system.stateVersion = "24.11"; # I come from the future
         time.timeZone = "Australia/Melbourne";
-        users.users.haru = {
-          isNormalUser = true;
-          extraGroups = [
-            "wheel"
-            "docker"
-            "vboxusers"
-          ];
-        };
         users.users.kirillvr = {
           isNormalUser = true;
           initialPassword = "password";
