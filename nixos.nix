@@ -17,8 +17,6 @@
         boot.initrd.availableKernelModules = [ "nvme" ];
         #boot.kernelPackages = pkgs.linuxPackages_6_10;
         boot.loader.efi.canTouchEfiVariables = true;
-        services.gnome.gnome-keyring.enable = true;
-        virtualisation.waydroid.enable = true;
         boot.loader.systemd-boot.enable = true;
         environment.variables = {
           EDITOR = "nvim";
@@ -94,8 +92,6 @@
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
           (pkgs.writeScriptBin "hx" "GOOS=js GOARCH=wasm ${helix}/bin/hx -c ${./config.toml} $@")
-          awscli2
-          wl-clipboard
           btop
           file
           firefox
@@ -113,6 +109,7 @@
           ripgrep
           slack
           tig
+          wl-clipboard
           zig
           zls
         ];
