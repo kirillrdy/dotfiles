@@ -100,6 +100,11 @@
           golangci-lint-langserver
           gopls
           lua-language-server
+          swayosd
+          pavucontrol
+          mako
+          fuzzel
+          alacritty
           neovide
           nil
           nix-tree
@@ -110,6 +115,7 @@
           slack
           tig
           wl-clipboard
+          waybar
           zig
           zls
         ];
