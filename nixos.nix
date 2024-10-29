@@ -54,9 +54,6 @@
         '';
         nix.settings.max-jobs = 1;
         nix.settings.trusted-users = [ "kirillvr" ];
-        nixpkgs.flake.setFlakeRegistry = false;
-        nixpkgs.flake.setNixPath = false;
-
         #i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
         nixpkgs.config.allowUnfree = true;
         programs.git.config = {
@@ -76,30 +73,7 @@
         services.displayManager.sessionPackages = [ pkgs.niri ];
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         hardware.nvidia.open = true;
-        xdg.portal = {
-          enable = true;
-          configPackages = [ pkgs.niri ];
-          # Recommended by upstream, required for screencast support
-          # https://github.com/YaLTeR/niri/wiki/Important-Software#portals
-          extraPortals = [ pkgs.xdg-desktop-portal-gnome ];
-        };
-        systemd.packages = [ pkgs.niri ];
-        security = {
-          polkit.enable = true;
-          pam.services.swaylock = { };
-        };
-
-        programs = {
-          dconf.enable = lib.mkDefault true;
-          xwayland.enable = true;
-        };
-
-        services.graphical-desktop.enable = true;
-
-        xdg.portal.wlr.enable = false;
-        # Window manager only sessions (unlike DEs) don't handle XDG
-        # autostart files, so force them to run the service
-        services.xserver.desktopManager.runXdgAutostartIfNone = true;
+        programs.niri.enable = true;
 
         swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
         zramSwap.enable = true;
@@ -111,7 +85,6 @@
           extraGroups = [
             "wheel"
             "docker"
-            "vboxusers"
           ];
         };
         virtualisation.docker.enable = true;
@@ -121,28 +94,16 @@
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
           (pkgs.writeScriptBin "hx" "GOOS=js GOARCH=wasm ${helix}/bin/hx -c ${./config.toml} $@")
-          acpi
-          niri
           awscli2
           wl-clipboard
-          awsebcli
-          baobab
           btop
           file
-          file-roller
           firefox
-          gnome-system-monitor
-          gnome-text-editor
-          gnomeExtensions.freon
-          gnomeExtensions.system-monitor
           go
           golangci-lint
           golangci-lint-langserver
           gopls
-          gnome-console
-          #loupe
           lua-language-server
-          nautilus
           neovide
           nil
           nix-tree
@@ -152,11 +113,8 @@
           ripgrep
           slack
           tig
-          totem
-          xclip
           zig
           zls
-          terraform-ls
         ];
       }
     )
