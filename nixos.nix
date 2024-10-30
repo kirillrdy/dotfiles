@@ -34,6 +34,7 @@
         fonts.packages = with pkgs; [
           kochi-substitute
           font-awesome
+          roboto
           cantarell-fonts
           dejavu_fonts
           source-code-pro
