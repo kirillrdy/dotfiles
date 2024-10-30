@@ -93,30 +93,31 @@
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
           (pkgs.writeScriptBin "hx" "GOOS=js GOARCH=wasm ${helix}/bin/hx -c ${./config.toml} $@")
+          alacritty
           btop
           file
           firefox
+          fuzzel
           go
           golangci-lint
           golangci-lint-langserver
           gopls
+          imv
           lua-language-server
-          swayosd
-          pavucontrol
           mako
-          fuzzel
-          alacritty
           neovide
           nil
           nix-tree
           nix-update
           nixfmt-rfc-style
           nixpkgs-review
+          pavucontrol
           ripgrep
           slack
+          swayosd
           tig
-          wl-clipboard
           waybar
+          wl-clipboard
           zig
           zls
         ];
