@@ -64,12 +64,13 @@
         services.avahi.nssmdns4 = true;
         services.avahi.publish.addresses = true;
         services.avahi.publish.enable = true;
+        services.displayManager.sessionPackages = [ pkgs.niri ];
         services.logind.extraConfig = "RuntimeDirectorySize=10G";
         services.openssh.enable = true;
+        services.power-profiles-daemon.enable = true;
         services.tailscale.enable = true;
-        services.xserver.excludePackages = [ pkgs.xterm ];
         services.xserver.enable = true;
-        services.displayManager.sessionPackages = [ pkgs.niri ];
+        services.xserver.excludePackages = [ pkgs.xterm ];
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         hardware.nvidia.open = true;
         programs.niri.enable = true;
