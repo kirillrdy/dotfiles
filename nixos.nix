@@ -60,6 +60,7 @@
           user.email = "kirillrdy@gmail.com";
         };
         programs.git.enable = true;
+        programs.ssh.startAgent = true;
         services.avahi.enable = true;
         services.avahi.nssmdns4 = true;
         services.avahi.publish.addresses = true;
