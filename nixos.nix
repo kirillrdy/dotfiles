@@ -107,6 +107,7 @@
           imv
           lua-language-server
           mako
+          swaynotificationcenter
           neovide
           nil
           nix-tree
