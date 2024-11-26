@@ -59,7 +59,10 @@
           user.name = "Kirill Radzikhovskyy";
           user.email = "kirillrdy@gmail.com";
         };
+
+        hardware.nvidia.open = true;
         programs.git.enable = true;
+        programs.niri.enable = true;
         programs.ssh.startAgent = true;
         services.avahi.enable = true;
         services.avahi.nssmdns4 = true;
@@ -73,9 +76,6 @@
         services.xserver.enable = true;
         services.xserver.excludePackages = [ pkgs.xterm ];
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
-        hardware.nvidia.open = true;
-        programs.niri.enable = true;
-
         swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
         zramSwap.enable = true;
         system.stateVersion = "24.11"; # I come from the future
@@ -94,7 +94,6 @@
         hardware.graphics.enable32Bit = enableNvidia;
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
-          (pkgs.writeScriptBin "hx" "GOOS=js GOARCH=wasm ${helix}/bin/hx -c ${./config.toml} $@")
           alacritty
           btop
           file
@@ -107,7 +106,6 @@
           imv
           lua-language-server
           mako
-          swaynotificationcenter
           neovide
           nil
           nix-tree
@@ -117,6 +115,7 @@
           pavucontrol
           ripgrep
           slack
+          swaynotificationcenter
           swayosd
           tig
           waybar
