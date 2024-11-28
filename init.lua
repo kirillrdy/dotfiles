@@ -13,6 +13,7 @@ vim.opt.termguicolors = true
 vim.opt.signcolumn = "yes"
 vim.opt.isfname:append("@-@")
 vim.opt.autoread = true;
+vim.opt.clipboard = "unnamedplus"
 
 vim.cmd('colorscheme nord')
 vim.api.nvim_create_autocmd({ "FocusGained" }, {
