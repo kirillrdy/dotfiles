@@ -46,6 +46,7 @@
         networking.firewall.enable = false;
         networking.hostId = "00000000";
         networking.networkmanager.enable = true;
+        networking.networkmanager.plugins = lib.mkForce [];
         networking.hostName = hostName;
         nix.extraOptions = ''
           experimental-features = nix-command flakes
