@@ -101,6 +101,7 @@
           firefox
           fuzzel
           go
+          google-chrome
           golangci-lint
           golangci-lint-langserver
           gopls
