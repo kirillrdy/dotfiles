@@ -13,7 +13,17 @@ pkgs.wrapNeovim pkgs.neovim-unwrapped {
         plenary-nvim
         vim-rooter
         nord-nvim
-        (nvim-treesitter.withPlugins (p: with p; [ nix ruby go python sql terraform]))
+        (nvim-treesitter.withPlugins (
+          p: with p; [
+            go
+            nix
+            python
+            ruby
+            sql
+            terraform
+            zig
+          ]
+        ))
         vim-fugitive
         nvim-lspconfig
         nvim-cmp
