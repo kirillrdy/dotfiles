@@ -133,8 +133,8 @@
           tig
           waybar
           wl-clipboard
-          zig
-          zls
+          #zig
+          #zls
         ];
       }
     )
