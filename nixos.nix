@@ -17,6 +17,7 @@
         boot.initrd.availableKernelModules = [ "nvme" ];
         boot.kernelPackages = pkgs.linuxPackages_6_12;
         boot.loader.efi.canTouchEfiVariables = true;
+        boot.zfs.package = pkgs.zfsUnstable;
         nixpkgs.localSystem = {
           gcc.arch = "rocketlake";
           gcc.tune = "rocketlake";
