@@ -54,6 +54,12 @@
         '';
         nix.settings.max-jobs = 1;
         nix.settings.trusted-users = [ "kirillvr" ];
+        nix.settings.system-features = [
+          "kvm"
+          "nixos-test"
+          "gccarch-rocketlake"
+          "big-parallel"
+        ];
         #i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
         nixpkgs.config.allowUnfree = true;
         programs.git.config = {
