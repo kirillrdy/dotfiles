@@ -15,8 +15,13 @@
       {
         boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
         boot.initrd.availableKernelModules = [ "nvme" ];
-        #boot.kernelPackages = pkgs.linuxPackages_6_10;
+        boot.kernelPackages = pkgs.linuxPackages_6_12;
         boot.loader.efi.canTouchEfiVariables = true;
+        nixpkgs.localSystem = {
+          gcc.arch = "rocketlake";
+          gcc.tune = "rocketlake";
+          system = "x86_64-linux";
+        };
         boot.loader.systemd-boot.enable = true;
         environment.variables = {
           EDITOR = "nvim";
