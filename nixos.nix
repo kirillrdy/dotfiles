@@ -113,17 +113,12 @@
           fuzzel
           go
           google-chrome
-          golangci-lint
-          golangci-lint-langserver
-          gopls
           imv
-          lua-language-server
+          mpv
           mako
           neovide
-          nil
           nix-tree
           nix-update
-          nixfmt-rfc-style
           nixpkgs-review
           pavucontrol
           ripgrep
@@ -132,9 +127,7 @@
           swayosd
           tig
           waybar
-          wl-clipboard
-          #zig
-          #zls
+          zig
         ];
       }
     )
