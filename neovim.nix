@@ -1,16 +1,6 @@
 pkgs:
 pkgs.wrapNeovim pkgs.neovim-unwrapped {
   configure = {
-    buildInputs = with pkgs; [
-      golangci-lint
-      golangci-lint-langserver
-      gopls
-      lua-language-server
-      nil
-      nixfmt-rfc-style
-      wl-clipboard
-      zls
-    ];
     customRC = ''
       lua << EOF
       ${builtins.readFile ./init.lua}
