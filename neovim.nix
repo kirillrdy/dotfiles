@@ -13,6 +13,7 @@ pkgs.wrapNeovim pkgs.neovim-unwrapped {
         plenary-nvim
         vim-rooter
         nord-nvim
+        kanagawa-nvim
         (nvim-treesitter.withPlugins (
           p: with p; [
             go

@@ -15,7 +15,7 @@ vim.opt.isfname:append("@-@")
 vim.opt.autoread = true;
 vim.opt.clipboard = "unnamedplus"
 
-vim.cmd('colorscheme nord')
+vim.cmd('colorscheme kanagawa')
 vim.api.nvim_create_autocmd({ "FocusGained" }, {
   pattern = { "*" },
   command = ":checktime",
