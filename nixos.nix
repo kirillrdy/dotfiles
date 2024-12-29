@@ -118,7 +118,6 @@
           gopls
           imv
           lua-language-server
-          mako
           neovide
           nil
           nix-tree
