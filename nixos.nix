@@ -26,6 +26,7 @@
         environment.variables = {
           EDITOR = "nvim";
           NEOVIDE_FORK = 1;
+          NIRI_CONFIG = ./config.kdl;
           NIXOS_OZONE_WL = 1; # fixes slack
         };
         fileSystems."/" = {
