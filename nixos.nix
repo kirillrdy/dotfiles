@@ -108,6 +108,7 @@
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
           alacritty
+          ghostty
           btop
           file
           firefox
