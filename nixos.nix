@@ -132,7 +132,9 @@
           swaynotificationcenter
           swayosd
           tig
-          waybar
+          (pkgs.writeScriptBin "waybar" ''
+            ${pkgs.lib.getExe pkgs.waybar} -c ${./config.jsonc} -s ${./style.css} "$@"
+          '')
           wl-clipboard
           zig
           zls
