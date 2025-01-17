@@ -107,7 +107,6 @@
         hardware.graphics.enable32Bit = enableNvidia;
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
-          alacritty
           ghostty
           btop
           file
