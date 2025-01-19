@@ -118,6 +118,7 @@
           golangci-lint-langserver
           gopls
           imv
+          mpv
           lua-language-server
           neovide
           nil
