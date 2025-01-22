@@ -107,6 +107,7 @@
         hardware.graphics.enable32Bit = enableNvidia;
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
+          awscli2
           ghostty
           btop
           file
