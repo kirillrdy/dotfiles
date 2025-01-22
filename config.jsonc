@@ -141,7 +141,8 @@
         "format-icons": ["", "", "", "", ""]
     },
     "battery#time": {
-        "format": "{time}"
+        "format": "{time}",
+        "format-full": ""
     },
     "power-profiles-daemon": {
       "format": "{icon}",
