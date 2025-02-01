@@ -73,7 +73,7 @@
           user.email = "kirillrdy@gmail.com";
         };
 
-        hardware.nvidia.open = true;
+        hardware.nvidia.open = false;
         programs.git.enable = true;
         programs.niri.enable = true;
         programs.ssh.startAgent = true;
