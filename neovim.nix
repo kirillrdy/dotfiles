@@ -17,6 +17,7 @@ pkgs.wrapNeovim pkgs.neovim-unwrapped {
         (nvim-treesitter.withPlugins (
           p: with p; [
             go
+            just
             kdl
             nix
             python
