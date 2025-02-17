@@ -19,6 +19,8 @@ pkgs.wrapNeovim pkgs.neovim-unwrapped {
             go
             just
             kdl
+            c
+            cpp
             nix
             python
             ruby
