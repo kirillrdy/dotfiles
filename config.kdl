@@ -285,6 +285,7 @@ XF86MonBrightnessUp   allow-when-locked=true { spawn "swayosd-client" "--brightn
 XF86MonBrightnessDown allow-when-locked=true { spawn "swayosd-client" "--brightness=lower"; }
 
     Mod+Q { close-window; }
+    Mod+W { toggle-column-tabbed-display; }
 
     Mod+Left  { focus-column-left; }
     Mod+Down  { focus-window-down; }
