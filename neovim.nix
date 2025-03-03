@@ -16,16 +16,18 @@ pkgs.wrapNeovim pkgs.neovim-unwrapped {
         kanagawa-nvim
         (nvim-treesitter.withPlugins (
           p: with p; [
-            go
-            just
-            kdl
             c
             cpp
+            go
+            javascript
+            just
+            kdl
             nix
             python
             ruby
             sql
             terraform
+            typescript
             zig
           ]
         ))
