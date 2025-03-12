@@ -71,7 +71,19 @@ cmp.setup({
 })
 
 local nvim_lsp = require('lspconfig')
-local servers = { "ts_ls", "zls", "clangd", "pyright", "rubocop", "templ", "rust_analyzer", "lua_ls", "terraformls", force = true }
+local servers = {
+  "ts_ls",
+  "zls",
+  "clangd",
+  "pylsp",
+  "pyright",
+  "rubocop",
+  "templ",
+  "rust_analyzer",
+  "lua_ls",
+  "terraformls",
+  force = true
+}
 for _, server in ipairs(servers) do
   nvim_lsp[server].setup { on_attach = on_attach(true) }
 end
