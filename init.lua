@@ -75,7 +75,6 @@ local servers = {
   "ts_ls",
   "zls",
   "clangd",
-  "pylsp",
   "pyright",
   "rubocop",
   "templ",
