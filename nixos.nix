@@ -70,23 +70,18 @@
         services.xserver.displayManager.gdm.enable = true;
         hardware.nvidia.open = false;
         programs.git.enable = true;
-        programs.niri.enable = true;
-        programs.ssh.startAgent = true;
         services.avahi.enable = true;
         services.avahi.nssmdns4 = true;
         services.avahi.publish.addresses = true;
         services.avahi.publish.enable = true;
-        services.displayManager.sessionPackages = [ pkgs.niri ];
         services.logind.extraConfig = "RuntimeDirectorySize=10G";
         services.openssh.enable = true;
-        services.power-profiles-daemon.enable = true;
         services.tailscale.enable = true;
-        services.xserver.enable = true;
         services.xserver.excludePackages = [ pkgs.xterm ];
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
         zramSwap.enable = true;
-        system.stateVersion = "24.11"; # I come from the future
+        system.stateVersion = "29.11"; # I come from the future
         time.timeZone = "Australia/Melbourne";
         users.users.kirillvr = {
           isNormalUser = true;
@@ -101,20 +96,20 @@
         hardware.nvidia-container-toolkit.enable = enableNvidia;
         hardware.graphics.enable32Bit = enableNvidia;
         environment.systemPackages = with pkgs; [
+          gnomeExtensions.system-monitor
+          gnomeExtensions.freon
           (import ./neovim.nix pkgs)
           awscli2
           ghostty
+          acpi
           btop
           file
           firefox
-          fuzzel
           go
           google-chrome
           golangci-lint
           #golangci-lint-langserver
           gopls
-          imv
-          mpv
           lua-language-server
           neovide
           nil
@@ -122,15 +117,9 @@
           nix-update
           nixfmt-rfc-style
           nixpkgs-review
-          pavucontrol
           ripgrep
           slack
-          swaynotificationcenter
-          swayosd
           tig
-          (pkgs.writeScriptBin "waybar" ''
-            ${pkgs.lib.getExe pkgs.waybar} -c ${./config.jsonc} -s ${./style.css} "$@"
-          '')
           wl-clipboard
           zig
           zls
