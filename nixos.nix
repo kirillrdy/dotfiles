@@ -17,17 +17,10 @@
         boot.initrd.availableKernelModules = [ "nvme" ];
         boot.kernelPackages = pkgs.linuxPackages_6_13;
         boot.loader.efi.canTouchEfiVariables = true;
-        # nixpkgs.localSystem = {
-        #   gcc.arch = "rocketlake";
-        #   gcc.tune = "rocketlake";
-        #   system = "x86_64-linux";
-        # };
         boot.loader.systemd-boot.enable = true;
         environment.variables = {
           EDITOR = "nvim";
           NEOVIDE_FORK = 1;
-          NIRI_CONFIG = ./config.kdl;
-          NIXOS_OZONE_WL = 1; # fixes slack
         };
         fileSystems."/" = {
           device = "zroot/root";
@@ -60,7 +53,11 @@
         '';
         nix.settings.max-jobs = 1;
         nix.settings.trusted-users = [ "kirillvr" ];
-        #i18n.inputMethod = { enabled = "ibus"; ibus.engines = with pkgs.ibus-engines; [ mozc ]; };
+        i18n.inputMethod = {
+          enable = true;
+          type = "ibus";
+          ibus.engines = with pkgs.ibus-engines; [ mozc ];
+        };
         nixpkgs.config.allowUnfree = true;
         programs.git.config = {
           user.name = "Kirill Radzikhovskyy";
@@ -96,19 +93,19 @@
         hardware.nvidia-container-toolkit.enable = enableNvidia;
         hardware.graphics.enable32Bit = enableNvidia;
         environment.systemPackages = with pkgs; [
-          gnomeExtensions.system-monitor
-          gnomeExtensions.freon
           (import ./neovim.nix pkgs)
-          awscli2
-          ghostty
           acpi
+          awscli2
           btop
           file
           firefox
+          ghostty
+          gnomeExtensions.freon
+          gnomeExtensions.system-monitor
           go
-          google-chrome
           golangci-lint
-          #golangci-lint-langserver
+          golangci-lint-langserver
+          google-chrome
           gopls
           lua-language-server
           neovide
