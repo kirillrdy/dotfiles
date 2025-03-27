@@ -76,6 +76,7 @@
         services.tailscale.enable = true;
         services.xserver.excludePackages = [ pkgs.xterm ];
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
+        services.xserver.xkb.options = "caps:none";
         swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
         zramSwap.enable = true;
         system.stateVersion = "29.11"; # I come from the future
