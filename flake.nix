@@ -17,6 +17,12 @@
             hostName = "osaka";
           }
         );
+	# Lenovo X1 gen13, ....
+        hagi = nixpkgs.lib.nixosSystem (
+          import ./nixos.nix {
+            hostName = "hagi";
+          }
+        );
 
         # i7-13700K, raptorlake
         tsutenkaku = nixpkgs.lib.nixosSystem (
