@@ -72,7 +72,8 @@
           user.name = "Kirill Radzikhovskyy";
           user.email = "kirillrdy@gmail.com";
         };
-
+        services.xserver.desktopManager.gnome.enable = true;
+        services.xserver.displayManager.gdm.enable = true;
         hardware.nvidia.open = false;
         programs.git.enable = true;
         programs.niri.enable = true;
