@@ -117,7 +117,7 @@
           go
           google-chrome
           golangci-lint
-          golangci-lint-langserver
+          #golangci-lint-langserver
           gopls
           imv
           mpv
