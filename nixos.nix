@@ -15,7 +15,7 @@
       {
         boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
         boot.initrd.availableKernelModules = [ "nvme" ];
-        boot.kernelPackages = pkgs.linuxPackages_6_12;
+        boot.kernelPackages = pkgs.linuxPackages_6_13;
         boot.loader.efi.canTouchEfiVariables = true;
         # nixpkgs.localSystem = {
         #   gcc.arch = "rocketlake";
