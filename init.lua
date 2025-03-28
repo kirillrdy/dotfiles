@@ -93,7 +93,7 @@ nvim_lsp.gopls.setup(go_options)
 nvim_lsp.golangci_lint_ls.setup(go_options)
 
 nvim_lsp.nil_ls.setup {
-  on_attach = on_attach(false),
+  on_attach = on_attach(true),
   settings = {
     ['nil'] = {
       testSetting = 42,
