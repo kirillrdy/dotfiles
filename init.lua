@@ -38,6 +38,8 @@ vim.keymap.set('n', '<C-g>', builtin.grep_string, {})
 vim.keymap.set('n', 'L', builtin.live_grep, {})
 vim.keymap.set('n', 'z=', builtin.spell_suggest, {})
 
+vim.diagnostic.config({ virtual_text = { current_line = true } })
+
 local on_attach = function(autoformat)
   return function(client, bufnr)
     if autoformat == true then
