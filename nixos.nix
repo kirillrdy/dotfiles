@@ -75,8 +75,8 @@
         services.fprintd.tod.enable = true;
         services.fprintd.tod.driver = pkgs.libfprint-2-tod1-goodix;
         services.logind.extraConfig = "RuntimeDirectorySize=10G";
-        services.gnome.tracker-miners.enable = false;
-        services.gnome.tracker.enable = false;
+        services.gnome.tinysparql.enable = false;
+        services.gnome.localsearch.enable = false;
         services.openssh.enable = true;
         services.tailscale.enable = true;
         services.xserver.excludePackages = [ pkgs.xterm ];
