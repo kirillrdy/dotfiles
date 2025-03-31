@@ -17,7 +17,7 @@
             hostName = "osaka";
           }
         );
-	# Lenovo X1 gen13, ....
+        # Lenovo X1 gen13, ....
         hagi = nixpkgs.lib.nixosSystem (
           import ./nixos.nix {
             hostName = "hagi";
