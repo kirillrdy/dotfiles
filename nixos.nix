@@ -71,6 +71,9 @@
         services.avahi.nssmdns4 = true;
         services.avahi.publish.addresses = true;
         services.avahi.publish.enable = true;
+        services.fprintd.enable = true;
+        services.fprintd.tod.enable = true;
+        services.fprintd.tod.driver = pkgs.libfprint-2-tod1-goodix;
         services.logind.extraConfig = "RuntimeDirectorySize=10G";
         services.openssh.enable = true;
         services.tailscale.enable = true;
