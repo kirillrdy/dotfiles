@@ -116,6 +116,7 @@
           lua-language-server
           neovide
           nil
+          ffmpeg
           nix-tree
           nix-update
           nixfmt-rfc-style
