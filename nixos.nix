@@ -107,7 +107,6 @@
           firefox
           ghostty
           gnomeExtensions.freon
-          gnomeExtensions.system-monitor
           gnomeExtensions.system-monitor-next
           go
           golangci-lint
