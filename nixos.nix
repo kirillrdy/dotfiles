@@ -38,6 +38,7 @@
           dejavu_fonts
           source-code-pro
           source-sans
+          adwaita-fonts
         ];
         hardware.nvidia.modesetting.enable = enableNvidia;
         i18n.defaultLocale = "en_AU.UTF-8";
@@ -67,6 +68,7 @@
         services.xserver.displayManager.gdm.enable = true;
         hardware.nvidia.open = false;
         programs.git.enable = true;
+        programs.ladybird.enable = true;
         services.avahi.enable = true;
         services.avahi.nssmdns4 = true;
         services.avahi.publish.addresses = true;
@@ -101,6 +103,7 @@
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
           acpi
+          gnome-tweaks
           awscli2
           btop
           file
