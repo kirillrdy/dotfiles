@@ -68,7 +68,6 @@
         services.xserver.displayManager.gdm.enable = true;
         hardware.nvidia.open = false;
         programs.git.enable = true;
-        programs.ladybird.enable = true;
         services.avahi.enable = true;
         services.avahi.nssmdns4 = true;
         services.avahi.publish.addresses = true;
