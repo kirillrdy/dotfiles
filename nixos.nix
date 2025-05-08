@@ -32,13 +32,6 @@
         };
         fonts.packages = with pkgs; [
           kochi-substitute
-          font-awesome
-          roboto
-          cantarell-fonts
-          dejavu_fonts
-          source-code-pro
-          source-sans
-          adwaita-fonts
         ];
         hardware.nvidia.modesetting.enable = enableNvidia;
         i18n.defaultLocale = "en_AU.UTF-8";

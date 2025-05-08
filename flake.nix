@@ -1,6 +1,6 @@
 {
   description = "my computers in flakes";
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/gnome";
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/staging-next";
   outputs =
     { self, nixpkgs }:
     {
