@@ -95,7 +95,6 @@
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
           acpi
-          gnome-tweaks
           awscli2
           btop
           file
