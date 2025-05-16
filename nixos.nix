@@ -1,6 +1,7 @@
 {
   hostName,
   enableNvidia ? false,
+  remoteBuilders ? [ ],
 }:
 {
   system = "x86_64-linux";
@@ -46,16 +47,8 @@
           allow-import-from-derivation = false
         '';
         nix.settings.max-jobs = 1;
-        nix.buildMachines = [
-          {
-            hostName = "tsutenkaku.local";
-            sshUser = "kirillvr";
-            system = "x86_64-linux";
-            protocol = "ssh-ng";
-            speedFactor = 2;
-          }
-        ];
-        nix.distributedBuilds = true;
+        nix.buildMachines = remoteBuilders;
+        nix.distributedBuilds = builtins.length remoteBuilders != 0;
         nix.settings.trusted-users = [ "kirillvr" ];
         i18n.inputMethod = {
           enable = true;
