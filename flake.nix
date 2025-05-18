@@ -28,6 +28,7 @@
                 system = "x86_64-linux";
                 protocol = "ssh-ng";
                 speedFactor = 2;
+                supportedFeatures = [ "big-parallel" ];
               }
             ];
           }
