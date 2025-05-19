@@ -61,7 +61,7 @@
         nix.settings.trusted-substituters =
           if bigParallel then [ ] else [ "ssh-ng://nix-ssh@tsutenkaku.local" ];
         nix.buildMachines = remoteBuilders;
-        nix.distributedBuilds = !bigParallel;
+        nix.distributedBuilds = false;
         i18n.inputMethod = {
           enable = true;
           type = "ibus";
