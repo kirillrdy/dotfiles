@@ -57,6 +57,7 @@
         ];
         nix.settings.max-jobs = 1;
         nix.settings.trusted-public-keys = [ "tsutenkaku:DcD4dlo63BptyBdjGfFQYRwbzZ6YEhDRlmnbUfIFtQU=" ];
+        nix.settings.trusted-users = [ "kirillvr" ];
         nix.settings.trusted-substituters =
           if bigParallel then [ ] else [ "ssh-ng://nix-ssh@tsutenkaku.local" ];
         nix.buildMachines = remoteBuilders;
