@@ -2,6 +2,7 @@
   hostName,
   enableNvidia ? false,
   remoteBuilders ? [ ],
+  bigParallel ? false,
 }:
 {
   system = "x86_64-linux";
@@ -45,11 +46,23 @@
         nix.extraOptions = ''
           experimental-features = nix-command flakes
           allow-import-from-derivation = false
+          secret-key-files = /root/cache-priv-key.pem
         '';
+        nix.sshServe.enable = bigParallel;
+        nix.sshServe.write = bigParallel;
+        nix.sshServe.trusted = bigParallel;
+        nix.sshServe.protocol = "ssh-ng";
+        nix.sshServe.keys = [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGX7dSiU0yWO5oGRZxwAYc2CVa7rXTBQswjFeP0nenKC root@hagi"
+        ];
         nix.settings.max-jobs = 1;
+        nix.settings.trusted-public-keys = [ "tsutenkaku:DcD4dlo63BptyBdjGfFQYRwbzZ6YEhDRlmnbUfIFtQU=" ];
+        nix.settings.substituters = [
+          "https://cache.nixos.org/"
+          "ssh-ng://nix-ssh@tsutenkaku.local"
+        ];
         nix.buildMachines = remoteBuilders;
-        nix.distributedBuilds = builtins.length remoteBuilders != 0;
-        nix.settings.trusted-users = [ "kirillvr" ];
+        nix.distributedBuilds = !bigParallel;
         i18n.inputMethod = {
           enable = true;
           type = "ibus";

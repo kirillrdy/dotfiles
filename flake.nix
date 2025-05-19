@@ -39,6 +39,7 @@
           import ./nixos.nix {
             hostName = "tsutenkaku";
             enableNvidia = true;
+            bigParallel = true;
           }
         );
       };
