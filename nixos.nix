@@ -57,10 +57,7 @@
         ];
         nix.settings.max-jobs = 1;
         nix.settings.trusted-public-keys = [ "tsutenkaku:DcD4dlo63BptyBdjGfFQYRwbzZ6YEhDRlmnbUfIFtQU=" ];
-        nix.settings.substituters = [
-          "https://cache.nixos.org/"
-          "ssh-ng://nix-ssh@tsutenkaku.local"
-        ];
+        nix.settings.substituters = [ "ssh-ng://nix-ssh@tsutenkaku.local" ];
         nix.buildMachines = remoteBuilders;
         nix.distributedBuilds = !bigParallel;
         i18n.inputMethod = {
