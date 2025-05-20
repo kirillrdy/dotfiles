@@ -81,8 +81,6 @@
         services.avahi.publish.addresses = true;
         services.avahi.publish.enable = true;
         services.fprintd.enable = true;
-        services.fprintd.tod.enable = true;
-        services.fprintd.tod.driver = pkgs.libfprint-2-tod1-goodix;
         services.logind.extraConfig = "RuntimeDirectorySize=10G";
         services.gnome.tinysparql.enable = false;
         services.gnome.localsearch.enable = false;
