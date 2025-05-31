@@ -12,7 +12,6 @@ pkgs.wrapNeovim pkgs.neovim-unwrapped {
         telescope-nvim
         plenary-nvim
         vim-rooter
-        nord-nvim
         kanagawa-nvim
         (nvim-treesitter.withPlugins (
           p: with p; [
@@ -21,7 +20,6 @@ pkgs.wrapNeovim pkgs.neovim-unwrapped {
             go
             javascript
             just
-            kdl
             nix
             python
             ruby
@@ -39,7 +37,6 @@ pkgs.wrapNeovim pkgs.neovim-unwrapped {
         cmp-nvim-lsp
         cmp-nvim-lua
         nerdtree
-        templ-vim
       ];
     };
   };
