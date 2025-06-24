@@ -46,7 +46,6 @@
         nix.extraOptions = ''
           experimental-features = nix-command flakes
           allow-import-from-derivation = false
-          secret-key-files = /root/cache-priv-key.pem
         '';
         nix.sshServe.enable = bigParallel;
         nix.sshServe.write = bigParallel;
