@@ -55,7 +55,11 @@
           "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGX7dSiU0yWO5oGRZxwAYc2CVa7rXTBQswjFeP0nenKC root@hagi"
         ];
         nix.settings.max-jobs = 1;
-        nix.settings.trusted-public-keys = [ "tsutenkaku:DcD4dlo63BptyBdjGfFQYRwbzZ6YEhDRlmnbUfIFtQU=" ];
+        nix.settings.substituters = [ "https://nix-community.cachix.org" ];
+        nix.settings.trusted-public-keys = [
+          "tsutenkaku:DcD4dlo63BptyBdjGfFQYRwbzZ6YEhDRlmnbUfIFtQU="
+          "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+        ];
         nix.settings.trusted-users = [ "kirillvr" ];
         nix.settings.trusted-substituters =
           if bigParallel then [ ] else [ "ssh-ng://nix-ssh@tsutenkaku.local" ];
