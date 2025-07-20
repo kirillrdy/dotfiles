@@ -58,6 +58,7 @@
         nix.settings.substituters = [ "https://nix-community.cachix.org" ];
         nix.settings.trusted-public-keys = [
           "tsutenkaku:DcD4dlo63BptyBdjGfFQYRwbzZ6YEhDRlmnbUfIFtQU="
+          "silverpond:DvvEdyKZvc86cR1o/a+iJxnb7JxMCBzvSTjjEQIY8+g="
           "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
         ];
         nix.settings.trusted-users = [ "kirillvr" ];
