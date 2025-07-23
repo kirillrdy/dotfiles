@@ -113,7 +113,7 @@
           (import ./neovim.nix pkgs)
           acpi
           awscli2
-          btop
+          (if enableNvidia then btop-cuda else btop)
           file
           firefox
           ghostty
