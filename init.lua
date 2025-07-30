@@ -29,6 +29,7 @@ vim.keymap.set('n', '<leader>s', function() builtin.lsp_document_symbols { symbo
 vim.keymap.set('n', '<leader>c', builtin.commands, {})
 vim.keymap.set('n', '<leader>t', builtin.treesitter, {})
 vim.keymap.set('n', '<leader>d', function() builtin.diagnostics({ bufnr = 0 }) end, {})
+vim.keymap.set('n', '<leader>D', vim.diagnostic.open_float, {})
 vim.keymap.set('n', 'gd', builtin.lsp_definitions, {})
 vim.keymap.set('n', 'gr', builtin.lsp_references, {})
 vim.keymap.set('n', 'gi', builtin.lsp_implementations, {})
