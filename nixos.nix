@@ -127,6 +127,8 @@
           lua-language-server
           neovide
           nil
+          jq
+          python3Packages.fastavro
           ffmpeg
           nix-tree
           nix-update
