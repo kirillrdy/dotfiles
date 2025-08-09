@@ -1,13 +1,9 @@
 pkgs:
 pkgs.wrapNeovimUnstable pkgs.neovim-unwrapped {
-  luaRcContent = ''
-    ${builtins.readFile ./init.lua}
-    -- let g:rooter_patterns = ['.git']
-  '';
+  luaRcContent = builtins.readFile ./init.lua;
   plugins = with pkgs.vimPlugins; [
     telescope-nvim
     plenary-nvim
-    vim-rooter
     kanagawa-nvim
     (nvim-treesitter.withPlugins (
       p: with p; [
