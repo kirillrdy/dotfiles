@@ -16,10 +16,6 @@ vim.opt.autoread = true;
 vim.opt.clipboard = "unnamedplus"
 
 vim.cmd('colorscheme kanagawa')
-vim.api.nvim_create_autocmd({ "FocusGained" }, {
-  pattern = { "*" },
-  command = ":checktime",
-})
 
 vim.g.mapleader = " "
 
@@ -41,10 +37,8 @@ vim.keymap.set('n', 'z=', builtin.spell_suggest, {})
 
 vim.diagnostic.config({ virtual_text = { current_line = true } })
 
-vim.api.nvim_create_autocmd("BufWritePre", {
-  callback = function() vim.lsp.buf.format() end,
-})
-vim.keymap.set("n", "K", vim.lsp.buf.hover, {})
+vim.api.nvim_create_autocmd("BufWritePre", { callback = function() vim.lsp.buf.format() end })
+
 vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, {})
 vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, {})
 vim.keymap.set("n", "<leader>=", vim.lsp.buf.format, {})
@@ -63,12 +57,8 @@ cmp.setup({
   },
 })
 
-local nvim_lsp = require('lspconfig')
-
-local go_options = { cmd_env = { GOOS = "js", GOARCH = "wasm" } }
-
-vim.lsp.config('gopls', go_options)
-vim.lsp.config('golangci_lint_ls', go_options)
+vim.lsp.config('gopls', { cmd_env = { GOOS = "js", GOARCH = "wasm" } })
+vim.lsp.config('golangci_lint_ls', { cmd_env = { GOOS = "js", GOARCH = "wasm" } })
 
 vim.lsp.config('nil_ls', {
   settings = {
@@ -86,12 +76,12 @@ require 'nvim-treesitter.configs'.setup {
   highlight = { enable = true, additional_vim_regex_highlighting = false },
 }
 
-vim.lsp.enable('superhtml')
-vim.lsp.enable("ts_ls")
-vim.lsp.enable("zls")
+vim.lsp.enable("golangci_lint_ls")
+vim.lsp.enable("gopls")
+vim.lsp.enable("lua_ls")
+vim.lsp.enable("nil_ls")
 vim.lsp.enable("pyright")
 vim.lsp.enable("rubocop")
-vim.lsp.enable("lua_ls")
-vim.lsp.enable("gopls")
-vim.lsp.enable("golangci_lint_ls")
-vim.lsp.enable("nil_ls")
+vim.lsp.enable("ts_ls")
+vim.lsp.enable("zls")
+vim.lsp.enable('superhtml')
