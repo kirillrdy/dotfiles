@@ -1,4 +1,4 @@
-vim.opt.nu = true
+vim.opt.number = true
 vim.opt.relativenumber = true
 vim.opt.tabstop = 2
 vim.opt.softtabstop = 2
@@ -24,6 +24,7 @@ vim.api.nvim_create_autocmd({ "FocusGained" }, {
 vim.g.mapleader = " "
 
 local builtin = require('telescope.builtin')
+vim.keymap.set('n', '<leader>f', builtin.git_files, {})
 vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
 vim.keymap.set('n', '<leader>s', function() builtin.lsp_document_symbols { symbol_width = 60 } end, {})
 vim.keymap.set('n', '<leader>c', builtin.commands, {})
@@ -33,7 +34,6 @@ vim.keymap.set('n', '<leader>D', vim.diagnostic.open_float, {})
 vim.keymap.set('n', 'gd', builtin.lsp_definitions, {})
 vim.keymap.set('n', 'gr', builtin.lsp_references, {})
 vim.keymap.set('n', 'gi', builtin.lsp_implementations, {})
-vim.keymap.set('n', '<leader>f', builtin.git_files, {})
 vim.keymap.set('n', '<leader>b', builtin.buffers, {})
 vim.keymap.set('n', '<C-g>', builtin.grep_string, {})
 vim.keymap.set('n', 'L', builtin.live_grep, {})
@@ -41,22 +41,14 @@ vim.keymap.set('n', 'z=', builtin.spell_suggest, {})
 
 vim.diagnostic.config({ virtual_text = { current_line = true } })
 
-local on_attach = function(autoformat)
-  return function(client, bufnr)
-    if autoformat == true then
-      vim.api.nvim_create_autocmd("BufWritePre", {
-        buffer = bufnr,
-        callback = function() vim.lsp.buf.format() end,
-      })
-    end
-    local opts = { buffer = bufnr, remap = false }
-    vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
-    vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, opts)
-    vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)
-    vim.keymap.set("n", "<leader>=", vim.lsp.buf.format, opts)
-    vim.keymap.set("i", "<C-h>", vim.lsp.buf.signature_help, opts)
-  end
-end
+vim.api.nvim_create_autocmd("BufWritePre", {
+  callback = function() vim.lsp.buf.format() end,
+})
+vim.keymap.set("n", "K", vim.lsp.buf.hover, {})
+vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, {})
+vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, {})
+vim.keymap.set("n", "<leader>=", vim.lsp.buf.format, {})
+vim.keymap.set("i", "<C-h>", vim.lsp.buf.signature_help, {})
 
 local cmp = require('cmp')
 cmp.setup({
@@ -72,29 +64,13 @@ cmp.setup({
 })
 
 local nvim_lsp = require('lspconfig')
-local servers = {
-  "ts_ls",
-  "zls",
-  "clangd",
-  "pyright",
-  "rubocop",
-  "templ",
-  "rust_analyzer",
-  "lua_ls",
-  "terraformls",
-  force = true
-}
-for _, server in ipairs(servers) do
-  nvim_lsp[server].setup { on_attach = on_attach(true) }
-end
 
-local go_options = { on_attach = on_attach(true), cmd_env = { GOOS = "js", GOARCH = "wasm" } }
+local go_options = { cmd_env = { GOOS = "js", GOARCH = "wasm" } }
 
-nvim_lsp.gopls.setup(go_options)
-nvim_lsp.golangci_lint_ls.setup(go_options)
+vim.lsp.config('gopls', go_options)
+vim.lsp.config('golangci_lint_ls', go_options)
 
-nvim_lsp.nil_ls.setup {
-  on_attach = on_attach(true),
+vim.lsp.config('nil_ls', {
   settings = {
     ['nil'] = {
       testSetting = 42,
@@ -102,10 +78,20 @@ nvim_lsp.nil_ls.setup {
         command = { "nixfmt" },
       },
     },
-  },
-}
+  }
+})
 
 require 'nvim-treesitter.configs'.setup {
   sync_install = false,
   highlight = { enable = true, additional_vim_regex_highlighting = false },
 }
+
+vim.lsp.enable('superhtml')
+vim.lsp.enable("ts_ls")
+vim.lsp.enable("zls")
+vim.lsp.enable("pyright")
+vim.lsp.enable("rubocop")
+vim.lsp.enable("lua_ls")
+vim.lsp.enable("gopls")
+vim.lsp.enable("golangci_lint_ls")
+vim.lsp.enable("nil_ls")

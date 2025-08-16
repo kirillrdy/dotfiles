@@ -115,6 +115,8 @@
           awscli2
           (if enableNvidia then btop-cuda else btop)
           file
+          typescript-language-server
+          superhtml
           firefox
           ghostty
           gnomeExtensions.freon
