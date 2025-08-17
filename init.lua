@@ -21,7 +21,6 @@ vim.keymap.set('n', 'L', builtin.live_grep, {})
 vim.keymap.set('n', 'z=', builtin.spell_suggest, {})
 vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, {})
 vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, {})
-vim.keymap.set("n", "<leader>=", vim.lsp.buf.format, {})
 vim.keymap.set("i", "<C-h>", vim.lsp.buf.signature_help, {})
 
 vim.diagnostic.config({ virtual_text = { current_line = true } })
@@ -42,7 +41,6 @@ cmp.setup({
 
 vim.lsp.config('gopls', { cmd_env = { GOOS = "js", GOARCH = "wasm" } })
 vim.lsp.config('golangci_lint_ls', { cmd_env = { GOOS = "js", GOARCH = "wasm" } })
-
 vim.lsp.config('nil_ls', { settings = { ['nil'] = { formatting = { command = { "nixfmt" } } } } })
 
 local lsps = { "golangci_lint_ls", "gopls", "lua_ls", "nil_ls", "pyright", "rubocop", "ts_ls", "zls", 'superhtml' }
