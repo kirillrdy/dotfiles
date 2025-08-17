@@ -10,7 +10,7 @@ vim.g.mapleader = " "
 local builtin = require('telescope.builtin')
 vim.keymap.set('n', '<leader>f', builtin.git_files, {})
 vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
-vim.keymap.set('n', '<leader>s', function() builtin.lsp_document_symbols { symbol_width = 60 } end, {})
+vim.keymap.set('n', '<leader>s', function() builtin.lsp_document_symbols { symbol_width = 50 } end, {})
 vim.keymap.set('n', '<leader>c', builtin.commands, {})
 vim.keymap.set('n', '<leader>t', builtin.treesitter, {})
 vim.keymap.set('n', '<leader>d', function() builtin.diagnostics({ bufnr = 0 }) end, {})
