@@ -1,7 +1,6 @@
 vim.opt.number = true
 vim.opt.relativenumber = true
 vim.opt.tabstop = 2
-vim.opt.softtabstop = 2
 vim.opt.shiftwidth = 2
 vim.opt.expandtab = true
 vim.opt.smartindent = true
@@ -76,12 +75,8 @@ require 'nvim-treesitter.configs'.setup {
   highlight = { enable = true, additional_vim_regex_highlighting = false },
 }
 
-vim.lsp.enable("golangci_lint_ls")
-vim.lsp.enable("gopls")
-vim.lsp.enable("lua_ls")
-vim.lsp.enable("nil_ls")
-vim.lsp.enable("pyright")
-vim.lsp.enable("rubocop")
-vim.lsp.enable("ts_ls")
-vim.lsp.enable("zls")
-vim.lsp.enable('superhtml')
+local lsps = { "golangci_lint_ls", "gopls", "lua_ls", "nil_ls", "pyright", "rubocop", "ts_ls", "zls", 'superhtml' }
+
+for _, name in ipairs(lsps) do
+  vim.lsp.enable(name)
+end
