@@ -28,15 +28,16 @@ vim.api.nvim_create_autocmd("BufWritePre", { callback = function() vim.lsp.buf.f
 
 local cmp = require('cmp')
 cmp.setup({
-        sources = { { name = 'nvim_lsp', keyword_length = 2 }, { name = 'path' }, { name = 'buffer', keyword_length = 2 } },
-        mapping = cmp.mapping.preset.insert({
-                ['<CR>'] = cmp.mapping.confirm({ select = true }),
-                ['<Up>'] = cmp.mapping.select_prev_item(),
-                ['<Down>'] = cmp.mapping.select_next_item(),
-        }),
-        window = {
-                documentation = cmp.config.window.bordered()
-        },
+	sources = { { name = 'nvim_lsp', keyword_length = 2 }, { name = 'path' }, { name = 'buffer', keyword_length = 2 } },
+	mapping = cmp.mapping.preset.insert({
+		['<CR>'] = cmp.mapping.confirm({ select = true }),
+		['<Up>'] = cmp.mapping.select_prev_item(),
+		['<Down>'] = cmp.mapping.select_next_item(),
+	}),
+	window = {
+		completion = cmp.config.window.bordered(),
+		documentation = cmp.config.window.bordered()
+	},
 })
 
 vim.lsp.config('gopls', { cmd_env = { GOOS = "js", GOARCH = "wasm" } })
@@ -45,10 +46,10 @@ vim.lsp.config('nil_ls', { settings = { ['nil'] = { formatting = { command = { "
 
 local lsps = { "golangci_lint_ls", "gopls", "lua_ls", "nil_ls", "pyright", "rubocop", "ts_ls", "zls", 'superhtml' }
 for _, name in ipairs(lsps) do
-        vim.lsp.enable(name)
+	vim.lsp.enable(name)
 end
 
 require 'nvim-treesitter.configs'.setup {
-        sync_install = false,
-        highlight = { enable = true, additional_vim_regex_highlighting = false },
+	sync_install = false,
+	highlight = { enable = true, additional_vim_regex_highlighting = false },
 }
