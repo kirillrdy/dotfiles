@@ -32,9 +32,7 @@
           device = "/dev/nvme0n1p3";
           fsType = "vfat";
         };
-        fonts.packages = with pkgs; [
-          kochi-substitute
-        ];
+        fonts.packages = with pkgs; [ kochi-substitute ];
         hardware.nvidia.modesetting.enable = enableNvidia;
         i18n.defaultLocale = "en_AU.UTF-8";
         imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
@@ -54,7 +52,7 @@
         nix.sshServe.keys = [
           "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGX7dSiU0yWO5oGRZxwAYc2CVa7rXTBQswjFeP0nenKC root@hagi"
         ];
-        nix.settings.max-jobs = 1;
+        # nix.settings.max-jobs = 1;
         nix.settings.substituters = [ "https://nix-community.cachix.org" ];
         nix.settings.trusted-public-keys = [
           "tsutenkaku:DcD4dlo63BptyBdjGfFQYRwbzZ6YEhDRlmnbUfIFtQU="
