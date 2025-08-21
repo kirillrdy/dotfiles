@@ -116,6 +116,7 @@
           typescript-language-server
           superhtml
           firefox
+          pyrefly
           ghostty
           gnomeExtensions.freon
           gnomeExtensions.system-monitor-next

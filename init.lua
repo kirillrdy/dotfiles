@@ -44,7 +44,8 @@ vim.lsp.config('gopls', { cmd_env = { GOOS = "js", GOARCH = "wasm" } })
 vim.lsp.config('golangci_lint_ls', { cmd_env = { GOOS = "js", GOARCH = "wasm" } })
 vim.lsp.config('nil_ls', { settings = { ['nil'] = { formatting = { command = { "nixfmt" } } } } })
 
-local lsps = { "golangci_lint_ls", "gopls", "lua_ls", "nil_ls", "pyright", "rubocop", "ts_ls", "zls", 'superhtml' }
+local lsps = { "pyrefly", "golangci_lint_ls", "gopls", "lua_ls", "nil_ls", "pyright", "rubocop", "ts_ls", "zls",
+	'superhtml' }
 for _, name in ipairs(lsps) do
 	vim.lsp.enable(name)
 end
