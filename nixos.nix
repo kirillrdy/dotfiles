@@ -17,7 +17,7 @@
       {
         boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
         boot.initrd.availableKernelModules = [ "nvme" ];
-        boot.kernelPackages = pkgs.linuxPackages_6_15;
+        boot.kernelPackages = pkgs.linuxPackages_6_16;
         boot.loader.efi.canTouchEfiVariables = true;
         boot.loader.systemd-boot.enable = true;
         environment.variables = {
@@ -83,7 +83,6 @@
         services.avahi.publish.addresses = true;
         services.avahi.publish.enable = true;
         services.fprintd.enable = true;
-        services.logind.extraConfig = "RuntimeDirectorySize=10G";
         services.gnome.tinysparql.enable = false;
         services.gnome.localsearch.enable = false;
         services.openssh.enable = true;
@@ -139,7 +138,7 @@
           slack
           tig
           wl-clipboard
-          zig
+          zig_0_15
           zls
         ];
       }
