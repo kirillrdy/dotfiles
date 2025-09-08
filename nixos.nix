@@ -127,7 +127,7 @@
           lua-language-server
           neovide
           nil
-          gemini-cli-bin
+          gemini-cli
           jq
           python3Packages.fastavro
           ffmpeg
