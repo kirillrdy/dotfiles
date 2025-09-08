@@ -128,6 +128,7 @@
           neovide
           nil
           gemini-cli
+          claude-code
           jq
           python3Packages.fastavro
           ffmpeg
