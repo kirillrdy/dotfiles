@@ -141,7 +141,7 @@
           tig
           wl-clipboard
           zig_0_15
-          zls
+          zls_0_15
         ];
       }
     )
