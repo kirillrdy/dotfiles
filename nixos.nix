@@ -127,7 +127,8 @@
           lua-language-server
           neovide
           nil
-          gemini-cli
+          gemini-cli-bin
+          gh
           claude-code
           jq
           python3Packages.fastavro
