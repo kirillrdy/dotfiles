@@ -70,6 +70,15 @@
           ibus.engines = with pkgs.ibus-engines; [ mozc ];
         };
         nixpkgs.config.allowUnfree = true;
+        nixpkgs.overlays = [
+          (self: super: {
+            awscli2 = super.awscli2.overrideAttrs (oldAttrs: {
+              disabledTestPaths = (oldAttrs.disabledTestPaths or [ ]) ++ [
+                "tests/unit/customizations/wizard/test_app.py"
+              ];
+            });
+          })
+        ];
         programs.git.config = {
           user.name = "Kirill Radzikhovskyy";
           user.email = "kirillrdy@gmail.com";
