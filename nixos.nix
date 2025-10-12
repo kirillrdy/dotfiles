@@ -130,6 +130,7 @@
           gemini-cli
           gh
           claude-code
+          opencode
           jq
           python3Packages.fastavro
           ffmpeg
