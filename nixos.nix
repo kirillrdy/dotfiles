@@ -119,6 +119,7 @@
           ghostty
           gnomeExtensions.freon
           gnomeExtensions.system-monitor-next
+          gnomeExtensions.battery-time
           go
           golangci-lint
           golangci-lint-langserver
