@@ -129,6 +129,7 @@
           neovide
           nil
           gemini-cli
+          opencode
           gh
           claude-code
           jq
