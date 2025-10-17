@@ -109,13 +109,9 @@
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
           acpi
-          awscli2
           (if enableNvidia then btop-cuda else btop)
           file
-          typescript-language-server
-          superhtml
           firefox
-          pyrefly
           ghostty
           gnomeExtensions.freon
           gnomeExtensions.system-monitor-next
@@ -123,7 +119,6 @@
           go
           golangci-lint
           golangci-lint-langserver
-          google-chrome
           gopls
           lua-language-server
           neovide
@@ -132,15 +127,12 @@
           opencode
           gh
           claude-code
-          jq
-          python3Packages.fastavro
           ffmpeg
           nix-tree
           nix-update
           nixfmt-rfc-style
           nixpkgs-review
           ripgrep
-          slack
           tig
           wl-clipboard
           zig_0_15
