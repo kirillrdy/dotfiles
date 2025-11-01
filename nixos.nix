@@ -60,6 +60,7 @@
           "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
         ];
         nix.settings.trusted-users = [ "kirillvr" ];
+        nix.settings.system-features = [ "gccarch-x86-64-v3" ];
         nix.settings.trusted-substituters =
           if bigParallel then [ ] else [ "ssh-ng://nix-ssh@tsutenkaku.local" ];
         nix.buildMachines = remoteBuilders;
