@@ -104,8 +104,8 @@
         };
         virtualisation.docker.enable = true;
         virtualisation.docker.storageDriver = "zfs";
-        hardware.nvidia-container-toolkit.enable = enableNvidia;
-        hardware.graphics.enable32Bit = enableNvidia;
+        hardware.nvidia-container-toolkit.enable = false;
+        hardware.graphics.enable32Bit = false;
         environment.systemPackages = with pkgs; [
           (import ./neovim.nix pkgs)
           acpi
