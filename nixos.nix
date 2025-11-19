@@ -134,6 +134,7 @@
           claude-code
           jq
           python3Packages.fastavro
+          antigravity
           ffmpeg
           nix-tree
           nix-update
