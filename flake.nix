@@ -1,6 +1,6 @@
 {
   description = "my computers in flakes";
-  inputs.nixpkgs.url = "github:nixos/nixpkgs";
+  inputs.nixpkgs.url = "github:nixos/nixpkgs?ref=pull/464084/head";
   outputs =
     { self, nixpkgs }:
     {
