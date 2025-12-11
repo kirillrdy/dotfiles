@@ -1,8 +1,6 @@
 {
   hostName,
   enableNvidia ? false,
-  remoteBuilders ? [ ],
-  bigParallel ? false,
 }:
 {
   system = "x86_64-linux";
@@ -45,25 +43,11 @@
           experimental-features = nix-command flakes
           allow-import-from-derivation = false
         '';
-        nix.sshServe.enable = bigParallel;
-        nix.sshServe.write = bigParallel;
-        nix.sshServe.trusted = bigParallel;
-        nix.sshServe.protocol = "ssh-ng";
-        nix.sshServe.keys = [
-          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGX7dSiU0yWO5oGRZxwAYc2CVa7rXTBQswjFeP0nenKC root@hagi"
-        ];
-        # nix.settings.max-jobs = 1;
-        nix.settings.substituters = [ "https://nix-community.cachix.org" ];
         nix.settings.trusted-public-keys = [
-          "tsutenkaku:DcD4dlo63BptyBdjGfFQYRwbzZ6YEhDRlmnbUfIFtQU="
           "silverpond:DvvEdyKZvc86cR1o/a+iJxnb7JxMCBzvSTjjEQIY8+g="
           "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
         ];
         nix.settings.trusted-users = [ "kirillvr" ];
-        nix.settings.trusted-substituters =
-          if bigParallel then [ ] else [ "ssh-ng://nix-ssh@tsutenkaku.local" ];
-        nix.buildMachines = remoteBuilders;
-        nix.distributedBuilds = false;
         i18n.inputMethod = {
           enable = true;
           type = "ibus";
@@ -107,42 +91,42 @@
         hardware.nvidia-container-toolkit.enable = false;
         hardware.graphics.enable32Bit = false;
         environment.systemPackages = with pkgs; [
+          (if enableNvidia then btop-cuda else btop)
           (import ./neovim.nix pkgs)
           acpi
+          antigravity-fhs
           awscli2
-          (if enableNvidia then btop-cuda else btop)
+          claude-code
+          ffmpeg
           file
-          typescript-language-server
-          superhtml
           firefox
-          pyrefly
+          gemini-cli
+          gh
           ghostty
+          gnomeExtensions.battery-time
           gnomeExtensions.freon
           gnomeExtensions.system-monitor-next
-          gnomeExtensions.battery-time
           go
           golangci-lint
           golangci-lint-langserver
           google-chrome
           gopls
+          jq
           lua-language-server
           neovide
           nil
-          gemini-cli
-          opencode
-          gh
-          claude-code
-          jq
-          python3Packages.fastavro
-          antigravity-fhs
-          ffmpeg
           nix-tree
           nix-update
           nixfmt-rfc-style
           nixpkgs-review
+          opencode
+          pyrefly
+          python3Packages.fastavro
           ripgrep
           slack
+          superhtml
           tig
+          typescript-language-server
           wl-clipboard
           zig_0_15
           zls_0_15

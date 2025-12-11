@@ -13,34 +13,15 @@
         # legacy, yao: T460s
 
         # Lenovo X1 gen9, alderlake
-        osaka = nixpkgs.lib.nixosSystem (
-          import ./nixos.nix {
-            hostName = "osaka";
-          }
-        );
+        osaka = nixpkgs.lib.nixosSystem (import ./nixos.nix { hostName = "osaka"; });
         # Lenovo X1 gen13, ....
-        hagi = nixpkgs.lib.nixosSystem (
-          import ./nixos.nix {
-            hostName = "hagi";
-            remoteBuilders = [
-              {
-                hostName = "tsutenkaku.local";
-                sshUser = "kirillvr";
-                system = "x86_64-linux";
-                protocol = "ssh-ng";
-                speedFactor = 2;
-                supportedFeatures = [ "big-parallel" ];
-              }
-            ];
-          }
-        );
+        hagi = nixpkgs.lib.nixosSystem (import ./nixos.nix { hostName = "hagi"; });
 
         # i7-13700K, raptorlake
         tsutenkaku = nixpkgs.lib.nixosSystem (
           import ./nixos.nix {
             hostName = "tsutenkaku";
             enableNvidia = true;
-            bigParallel = true;
           }
         );
       };
