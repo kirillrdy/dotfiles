@@ -60,7 +60,7 @@
         };
         services.desktopManager.gnome.enable = true;
         services.displayManager.gdm.enable = true;
-        hardware.nvidia.open = false;
+        hardware.nvidia.open = true;
         programs.git.enable = true;
         services.avahi.enable = true;
         services.avahi.nssmdns4 = true;
