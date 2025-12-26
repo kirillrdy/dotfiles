@@ -15,7 +15,8 @@
       {
         boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
         boot.initrd.availableKernelModules = [ "nvme" ];
-        boot.kernelPackages = pkgs.linuxPackages_6_17;
+        boot.kernelPackages = pkgs.linuxPackages_6_18;
+        boot.zfs.package = pkgs.zfs_2_4;
         boot.loader.efi.canTouchEfiVariables = true;
         boot.loader.systemd-boot.enable = true;
         environment.variables = {
