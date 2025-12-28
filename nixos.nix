@@ -28,7 +28,7 @@
           fsType = "zfs";
         };
         fileSystems."/boot" = {
-          device = if hostName == "tsutenkaku" then "/dev/disk/by-uuid/10C4-0EE4" else "/dev/nvme0n1p3";
+          device = "/dev/nvme0n1p3";
           fsType = "vfat";
         };
         fonts.packages = with pkgs; [ kochi-substitute ];
@@ -76,15 +76,7 @@
         services.xserver.excludePackages = [ pkgs.xterm ];
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         services.xserver.xkb.options = "caps:none";
-        swapDevices = [
-          {
-            device =
-              if hostName == "tsutenkaku" then
-                "/dev/disk/by-uuid/4d698337-3ad3-45a3-8527-6af901177a37"
-              else
-                "/dev/nvme0n1p2";
-          }
-        ];
+        swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
         zramSwap.enable = true;
         system.stateVersion = "29.11"; # I come from the future
         time.timeZone = "Australia/Melbourne";
