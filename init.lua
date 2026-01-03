@@ -50,7 +50,7 @@ for _, name in ipairs(lsps) do
 	vim.lsp.enable(name)
 end
 
-require 'nvim-treesitter.configs'.setup {
-	sync_install = false,
-	highlight = { enable = true, additional_vim_regex_highlighting = false },
-}
+vim.api.nvim_create_autocmd('FileType', {
+  pattern = { 'c', 'cpp', 'go', 'javascript', 'just', 'nix', 'lua', 'python', 'ruby', 'sql', 'terraform', 'typescript', 'zig' },
+  callback = function() vim.treesitter.start() end,
+})

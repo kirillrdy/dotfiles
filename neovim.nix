@@ -13,6 +13,7 @@ pkgs.wrapNeovimUnstable pkgs.neovim-unwrapped {
         javascript
         just
         nix
+        lua
         python
         ruby
         sql
