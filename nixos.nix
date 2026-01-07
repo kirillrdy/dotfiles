@@ -119,7 +119,7 @@
           nil
           nix-tree
           nix-update
-          nixfmt-rfc-style
+          nixfmt
           nixpkgs-review
           opencode
           pyrefly
