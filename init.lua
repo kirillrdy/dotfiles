@@ -23,8 +23,14 @@ vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, {})
 vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, {})
 vim.keymap.set("i", "<C-h>", vim.lsp.buf.signature_help, {})
 
-vim.diagnostic.config({ virtual_text = { current_line = true } })
+vim.diagnostic.config({
+  virtual_text = { current_line = true },
+  float = { border = "rounded" },
+})
 vim.api.nvim_create_autocmd("BufWritePre", { callback = function() vim.lsp.buf.format() end })
+
+vim.lsp.handlers["textDocument/hover"] = vim.lsp.with(vim.lsp.handlers.hover, { border = "rounded" })
+vim.lsp.handlers["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signatureHelp, { border = "rounded" })
 
 local cmp = require('cmp')
 cmp.setup({
@@ -35,8 +41,8 @@ cmp.setup({
 		['<Down>'] = cmp.mapping.select_next_item(),
 	}),
 	window = {
-		completion = cmp.config.window.bordered(),
-		documentation = cmp.config.window.bordered()
+		completion = cmp.config.window.bordered({ border = 'rounded' }),
+		documentation = cmp.config.window.bordered({ border = 'rounded' })
 	},
 })
 
