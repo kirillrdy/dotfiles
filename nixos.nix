@@ -31,7 +31,13 @@
           device = "/dev/nvme0n1p3";
           fsType = "vfat";
         };
-        fonts.packages = with pkgs; [ kochi-substitute ];
+        fonts.packages = with pkgs; [ 
+          kochi-substitute 
+          noto-fonts
+          noto-fonts-color-emoji
+          font-awesome
+          nerd-fonts.symbols-only
+        ];
         hardware.nvidia.modesetting.enable = enableNvidia;
         hardware.nvidia.nvidiaSettings = false;
         i18n.defaultLocale = "en_AU.UTF-8";
