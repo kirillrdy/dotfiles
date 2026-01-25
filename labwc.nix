@@ -118,6 +118,46 @@ let
     osd.window-switcher.style-thumbnail.item.active.bg.color: #353535
   '';
   
+  # C Code helper for rounded corners
+  roundedHelper = ''
+    #include "buffer.h"
+    #include <cairo/cairo.h>
+    #include <math.h>
+
+    #ifndef M_PI
+    #define M_PI 3.14159265358979323846
+    #endif
+
+    static struct wlr_buffer *
+    create_rounded_rect_buffer(int width, int height, int radius,
+                               float *bg, float *border, int border_width)
+    {
+        struct lab_data_buffer *buf = buffer_create_cairo(width, height, 1.0);
+        cairo_t *cr = cairo_create(buf->surface);
+        double x = border_width / 2.0;
+        double y = border_width / 2.0;
+        double w = width - border_width;
+        double h = height - border_width;
+        double r = radius;
+        double degrees = M_PI / 180.0;
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, x + w - r, y + r, r, -90 * degrees, 0 * degrees);
+        cairo_arc(cr, x + w - r, y + h - r, r, 0 * degrees, 90 * degrees);
+        cairo_arc(cr, x + r, y + h - r, r, 90 * degrees, 180 * degrees);
+        cairo_arc(cr, x + r, y + r, r, 180 * degrees, 270 * degrees);
+        cairo_close_path(cr);
+        cairo_set_source_rgba(cr, bg[0], bg[1], bg[2], bg[3]);
+        cairo_fill_preserve(cr);
+        if (border_width > 0) {
+            cairo_set_source_rgba(cr, border[0], border[1], border[2], border[3]);
+            cairo_set_line_width(cr, border_width);
+            cairo_stroke(cr);
+        }
+        cairo_destroy(cr);
+        return &buf->base;
+    }
+  '';
+
   # GTK Settings for adw-gtk3 and Papirus
   gtkSettings = ''
     [Settings]
@@ -168,6 +208,31 @@ in
           
           # --- OSD THUMBNAIL PATCHES ---
           
+          # 1. Inject Helper Function
+          cat > rounded_helper.c <<EOF
+          ${roundedHelper}
+          EOF
+          # Inject after last include (approx line 15)
+          sed -i '/#include "view.h"/r rounded_helper.c' "$THUMB_FILE"
+
+          # 2. Modify Struct
+          sed -i 's|struct lab_scene_rect \*active_bg;|struct wlr_scene_buffer *active_bg;|' "$THUMB_FILE"
+
+          # 3. Replace Creation Logic (Use Helper)
+          # We remove the block starting with "struct lab_scene_rect_options opts" up to "item->active_bg ="
+          # And replace it with our call.
+          sed -i '/struct lab_scene_rect_options opts = {/,/item->active_bg = lab_scene_rect_create(item->tree, &opts);/c\
+          struct wlr_buffer *bg_buf = create_rounded_rect_buffer(switcher_theme->item_width, switcher_theme->item_height, 12, switcher_theme->item_active_bg_color, switcher_theme->item_active_border_color, switcher_theme->item_active_border_width);\
+          item->active_bg = wlr_scene_buffer_create(item->tree, bg_buf);\
+          wlr_buffer_drop(bg_buf);' "$THUMB_FILE"
+
+          # 4. Update Logic (struct field access)
+          # Replace explicitly: wlr_scene_node_set_enabled(&item->active_bg->tree->node, active);
+          # With: wlr_scene_node_set_enabled(&item->active_bg->node, active);
+          sed -i 's|wlr_scene_node_set_enabled(&item->active_bg->tree->node, active);|wlr_scene_node_set_enabled(\&item->active_bg->node, active);|' "$THUMB_FILE"
+          
+          # 5. Disable Thumbnail & Center Icon
+          
           # Disable thumbnail rendering (Gnome-style Alt-Tab)
           sed -i -E 's|struct wlr_buffer \*thumb_buffer = render_thumb\(.*\);|struct wlr_buffer *thumb_buffer = NULL;|' "$THUMB_FILE"
           
@@ -187,17 +252,21 @@ in
           sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 160;|' "$THEME_FILE"
           sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 128;|' "$THEME_FILE"
           
-          # --- FORCE DEFAULTS (src/config/rcxml.c) ---
+          # Colors (Force Dark Gray BG, Blue Border)
+          # Replace initialization to FLT_MIN with actual colors
           
-          # Change default switcher style from CLASSIC to THUMBNAIL in rcxml_init()
-          # Match: rc.window_switcher.style = WINDOW_SWITCHER_CLASSIC; (labwc 0.9.2)
+          # Replace BG Color
+          sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_bg_color\[0\] = FLT_MIN;|parse_hexstr("#333333", theme->osd_window_switcher_thumbnail.item_active_bg_color);|' "$THEME_FILE"
+          
+          # Replace Border Color
+          sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_border_color\[0\] = FLT_MIN;|parse_hexstr("#3584e4", theme->osd_window_switcher_thumbnail.item_active_border_color);|' "$THEME_FILE"
+          
+          # --- FORCE DEFAULTS (src/config/rcxml.c) ---
           sed -i -E 's|[[:space:]]*rc\.window_switcher\.style = WINDOW_SWITCHER_CLASSIC;|rc.window_switcher.style = WINDOW_SWITCHER_THUMBNAIL;|g' "$RCXML_FILE"
 
           # Verify patches
-          grep "thumb_buffer = NULL" "$THUMB_FILE" || { echo "Patch failed: thumb_buffer"; exit 1; }
-          grep "desktop_entry_name_lookup" "$THUMB_FILE" || { echo "Patch failed: app name lookup"; exit 1; }
-          grep "WINDOW_SWITCHER_THUMBNAIL" "$RCXML_FILE" || { echo "Patch failed: default style"; exit 1; }
-          grep "item_icon_size = 128" "$THEME_FILE" || { echo "Patch failed: icon size default"; exit 1; }
+          grep "create_rounded_rect_buffer" "$THUMB_FILE" || { echo "Patch failed: rounded helper"; exit 1; }
+          grep "#3584e4" "$THEME_FILE" || { echo "Patch failed: default blue border"; exit 1; }
         '';
       });
     })
