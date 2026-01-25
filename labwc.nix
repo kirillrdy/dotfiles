@@ -3,30 +3,35 @@ let
   waybarConfig = {
     layer = "top";
     position = "top";
-    height = 30;
-    modules-left = [ "labwc/workspaces" "wlr/taskbar" ];
+    height = 32;
+    spacing = 4;
+    modules-left = [ "labwc/workspaces" ];
     modules-center = [ "clock" ];
-    modules-right = [ "network" "battery" "tray" ];
+    modules-right = [ "tray" "group/system" ];
     
     "labwc/workspaces" = {
         format = "{name}";
     };
-    "wlr/taskbar" = {
-        format = "{icon}";
-        on-click = "activate";
-    };
     clock = {
-        format = "{:%H:%M %d/%m/%Y}";
-        tooltip-format = "{:%Y-%m-%d %H:%M:%S}";
+        format = "{:%b %d %H:%M}";
+        tooltip-format = "<big>{:%Y %B}</big>\n<tt>{calendar}</tt>";
+    };
+    "group/system" = {
+        orientation = "horizontal";
+        modules = [ "network" "battery" ];
     };
     network = {
-        format-wifi = "{essid} ({signalStrength}%)";
-        format-ethernet = "{ipaddr}/{cidr}";
-        format-disconnected = "Disconnected";
+        format-wifi = "";
+        format-ethernet = "";
+        format-disconnected = "";
+        tooltip-format = "{essid} ({signalStrength}%)";
     };
     battery = {
         format = "{capacity}% {icon}";
         format-icons = ["" "" "" "" ""];
+    };
+    tray = {
+        spacing = 10;
     };
   };
 
@@ -34,29 +39,63 @@ let
     * {
       border: none;
       border-radius: 0;
-      font-family: "Sans Serif";
-      font-size: 14px;
+      font-family: "Cantarell", "Sans Serif";
+      font-size: 15px;
+      font-weight: bold;
       min-height: 0;
     }
+    
     window#waybar {
-      background: rgba(30, 30, 30, 0.9);
+      background: #000000;
       color: #ffffff;
     }
+    
     #workspaces button {
-      padding: 0 5px;
+      padding: 0 12px;
       background: transparent;
       color: #ffffff;
-      border-bottom: 3px solid transparent;
+      border-radius: 16px;
+      margin: 4px;
     }
+    
     #workspaces button.focused {
-      background: #64727D;
-      border-bottom: 3px solid #ffffff;
+      background: #333333;
+      box-shadow: inset 0 -2px #ffffff; /* Underline indicator like some GNOME versions or just pill? GNOME 40+ is just pill */
+      background: #333333;
+      box-shadow: none;
     }
-    #clock, #battery, #network, #tray {
-      padding: 0 10px;
-      margin: 0 4px;
-      background-color: rgba(255, 255, 255, 0.1);
-      border-radius: 4px;
+    
+    #workspaces button:hover {
+      background: #454545;
+    }
+
+    #clock {
+        padding: 0 12px;
+        margin: 4px 0;
+        border-radius: 16px;
+    }
+    #clock:hover {
+        background: #333333;
+    }
+
+    #tray {
+        margin-right: 8px;
+    }
+    
+    /* Group: System Indicators */
+    #group-system {
+        background: transparent;
+        margin: 4px;
+        padding: 0 6px;
+        border-radius: 16px;
+    }
+    
+    #group-system:hover {
+        background: #333333;
+    }
+
+    #network, #battery {
+        padding: 0 6px;
     }
   '';
 
