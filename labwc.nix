@@ -237,6 +237,7 @@ in
     export GTK_THEME=adw-gtk3
     
     # Start components
+    wlr-randr --output eDP-1 --scale 2.0
     swaybg -i ${pkgs.nixos-artwork.wallpapers.simple-dark-gray-bottom.src} -m center >/dev/null 2>&1 &
     waybar >/dev/null 2>&1 &
     nwg-dock-hyprland -d -p bottom -i 32 -w 5 >/dev/null 2>&1 &
