@@ -7,7 +7,7 @@ let
     spacing = 4;
     modules-left = [ "labwc/workspaces" ];
     modules-center = [ "clock" ];
-    modules-right = [ "tray" "group/system" ];
+    modules-right = [ "tray" "cpu" "memory" "group/system" ];
     
     "labwc/workspaces" = {
         format = "{name}";
@@ -15,6 +15,16 @@ let
     clock = {
         format = "{:%b %d %H:%M}";
         tooltip-format = "<big>{:%Y %B}</big>\n<tt>{calendar}</tt>";
+    };
+    cpu = {
+        interval = 2;
+        format = "{icon} {usage}%";
+        format-icons = [" " "▂" "▃" "▄" "▅" "▆" "▇" "█"];
+    };
+    memory = {
+        interval = 5;
+        format = " {percentage}%";
+        tooltip-format = "{used:0.1f}G/{total:0.1f}G";
     };
     "group/system" = {
         orientation = "horizontal";
@@ -69,12 +79,12 @@ let
       background: #454545;
     }
 
-    #clock {
+    #clock, #cpu, #memory {
         padding: 0 12px;
         margin: 4px 0;
         border-radius: 16px;
     }
-    #clock:hover {
+    #clock:hover, #cpu:hover, #memory:hover {
         background: #333333;
     }
 
