@@ -35,6 +35,7 @@
           kochi-substitute 
           noto-fonts
           noto-fonts-color-emoji
+          adwaita-fonts
           font-awesome
           nerd-fonts.symbols-only
         ];
@@ -151,8 +152,14 @@
           nix-update
           nixfmt
           nixpkgs-review
-          nwg-dock-hyprland
-          nwg-drawer
+          (nwg-drawer.overrideAttrs (old: {
+            postPatch = (old.postPatch or "") + ''
+              sed -i 's/if !entry.NoDisplay && (subsequenceMatch(needle, strings.ToLower(entry.NameLoc)) ||/if !entry.NoDisplay \&\& subsequenceMatch(needle, strings.ToLower(entry.NameLoc)) {/' uicomponents.go
+              sed -i '/strings.Contains.*entry.CommentLoc.*/d' uicomponents.go
+              sed -i '/strings.Contains.*entry.Comment.*/d' uicomponents.go
+              sed -i '/strings.Contains.*entry.Exec.*/d' uicomponents.go
+            '';
+          }))
           opencode
           papirus-icon-theme
           pavucontrol

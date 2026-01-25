@@ -71,7 +71,7 @@ let
     * {
       border: none;
       border-radius: 0;
-      font-family: "Cantarell", "Sans Serif";
+      font-family: "Adwaita Sans", "Sans Serif";
       font-size: 15px;
       font-weight: bold;
       min-height: 0;
@@ -163,7 +163,7 @@ let
 
       <theme>
         <cornerRadius>8</cornerRadius>
-        <font name="Sans" size="10" />
+        <font name="Adwaita Sans" size="11" />
       </theme>
 
       <windowRules>
@@ -257,6 +257,11 @@ let
     gtk-icon-theme-name=Papirus
     gtk-cursor-theme-name=Adwaita
     gtk-application-prefer-dark-theme=1
+    gtk-font-name=Adwaita Sans 11
+    gtk-xft-antialias=1
+    gtk-xft-hinting=1
+    gtk-xft-hintstyle=hintslight
+    gtk-xft-rgba=rgb
   '';
 
 in
