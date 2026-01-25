@@ -34,7 +34,6 @@
         fonts.packages = with pkgs; [ kochi-substitute ];
         hardware.nvidia.modesetting.enable = enableNvidia;
         hardware.nvidia.nvidiaSettings = false;
-        nix.settings.cores = 2;
         i18n.defaultLocale = "en_AU.UTF-8";
         imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
         networking.firewall.enable = false;
@@ -50,6 +49,7 @@
           "silverpond:DvvEdyKZvc86cR1o/a+iJxnb7JxMCBzvSTjjEQIY8+g="
           "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
         ];
+        nix.settings.cores = 2;
         nix.settings.trusted-users = [ "kirillvr" ];
         i18n.inputMethod = {
           enable = true;
