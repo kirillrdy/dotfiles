@@ -85,7 +85,6 @@ let
       </keyboard>
 
       <theme>
-        <name>Adwaita</name>
         <cornerRadius>8</cornerRadius>
         <font name="Sans" size="10" />
       </theme>
@@ -110,9 +109,10 @@ let
     osd.border.color: #454545
     
     osd.window-switcher.style-thumbnail.width.max: 80%
-    osd.window-switcher.style-thumbnail.item.width: 200
+    osd.window-switcher.style-thumbnail.item.width: 140
     osd.window-switcher.style-thumbnail.item.height: 160
-    osd.window-switcher.style-thumbnail.item.icon.size: 64
+    osd.window-switcher.style-thumbnail.item.icon.size: 128
+    osd.window-switcher.style-thumbnail.item.padding: 4
     osd.window-switcher.style-thumbnail.item.active.border.width: 2
     osd.window-switcher.style-thumbnail.item.active.border.color: #3584e4
     osd.window-switcher.style-thumbnail.item.active.bg.color: #353535
@@ -163,7 +163,8 @@ in
           # Find the file (handle potential path differences)
           THUMB_FILE=$(find . -name osd-thumbnail.c)
           RCXML_FILE=$(find . -name rcxml.c)
-          echo "Patching files: $THUMB_FILE, $RCXML_FILE"
+          THEME_FILE=$(find . -name theme.c)
+          echo "Patching files: $THUMB_FILE, $RCXML_FILE, $THEME_FILE"
           
           # --- OSD THUMBNAIL PATCHES ---
           
@@ -173,7 +174,20 @@ in
           # Center the icon vertically
           sed -i -E 's|int y = title_y - padding - icon_size.*|int y = padding + (title_y - padding - icon_size) / 2;|' "$THUMB_FILE"
           
-          # --- FORCE DEFAULTS ---
+          # Use Desktop Entry Name (App Name) instead of Window Title
+          # 1. Add declaration
+          sed -i '/#include "view.h"/a const char *desktop_entry_name_lookup(struct server *server, const char *app_id);' "$THUMB_FILE"
+          # 2. Replace title logic
+          sed -i 's|const char \*title = view_get_string_prop(view, "title");|const char *app_id = view_get_string_prop(view, "app_id"); const char *title = desktop_entry_name_lookup(server, app_id); if (!title) title = app_id;|' "$THUMB_FILE"
+          
+          # --- FORCE DEFAULTS (src/theme.c) ---
+          
+          # Change default dimensions to match GNOME (Small box, big icon)
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_width = 300;|theme->osd_window_switcher_thumbnail.item_width = 140;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 160;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 128;|' "$THEME_FILE"
+          
+          # --- FORCE DEFAULTS (src/config/rcxml.c) ---
           
           # Change default switcher style from CLASSIC to THUMBNAIL in rcxml_init()
           # Match: rc.window_switcher.style = WINDOW_SWITCHER_CLASSIC; (labwc 0.9.2)
@@ -181,7 +195,9 @@ in
 
           # Verify patches
           grep "thumb_buffer = NULL" "$THUMB_FILE" || { echo "Patch failed: thumb_buffer"; exit 1; }
+          grep "desktop_entry_name_lookup" "$THUMB_FILE" || { echo "Patch failed: app name lookup"; exit 1; }
           grep "WINDOW_SWITCHER_THUMBNAIL" "$RCXML_FILE" || { echo "Patch failed: default style"; exit 1; }
+          grep "item_icon_size = 128" "$THEME_FILE" || { echo "Patch failed: icon size default"; exit 1; }
         '';
       });
     })
