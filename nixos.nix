@@ -39,6 +39,13 @@
           font-awesome
           nerd-fonts.symbols-only
         ];
+        fonts.fontconfig = {
+          defaultFonts = {
+            serif = [ "Noto Serif" "kochi-substitute" ];
+            sansSerif = [ "Adwaita Sans" "Noto Sans" "kochi-substitute" ];
+            monospace = [ "Noto Sans Mono" "kochi-substitute" ];
+          };
+        };
         hardware.nvidia.modesetting.enable = enableNvidia;
         hardware.nvidia.nvidiaSettings = false;
         i18n.defaultLocale = "en_AU.UTF-8";
