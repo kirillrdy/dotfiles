@@ -1,0 +1,31 @@
+diff --git a/src/cycle/osd-thumbnail.c b/src/cycle/osd-thumbnail.c
+index d5a0bf3..c157df4 100644
+--- a/src/cycle/osd-thumbnail.c
++++ b/src/cycle/osd-thumbnail.c
+@@ -159,6 +159,7 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
+ 		switcher_theme->item_height, (float[4]) {0});
+ 
+ 	/* thumbnail */
++    /*
+ 	struct wlr_buffer *thumb_buffer = render_thumb(osd_output->output, view);
+ 	if (thumb_buffer) {
+ 		struct wlr_scene_buffer *thumb_scene_buffer =
+@@ -172,6 +173,7 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
+ 		wlr_scene_node_set_position(&thumb_scene_buffer->node,
+ 			thumb_box.x, thumb_box.y);
+ 	}
++    */
+ 
+ 	/* title */
+ 	item->normal_label = create_label(tree, view,
+@@ -187,7 +189,9 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
+ 		scaled_icon_buffer_create(tree, server, icon_size, icon_size);
+ 	scaled_icon_buffer_set_view(icon_buffer, view);
+ 	int x = (switcher_theme->item_width - icon_size) / 2;
+-	int y = title_y - padding - icon_size + 10; /* slide by 10px */
++	//int y = title_y - padding - icon_size + 10; /* slide by 10px */
++    int available_height = title_y - padding;
++    int y = padding + (available_height - icon_size) / 2;
+ 	wlr_scene_node_set_position(&icon_buffer->scene_buffer->node, x, y);
+ 
+ 	return item;
