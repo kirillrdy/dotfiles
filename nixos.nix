@@ -179,6 +179,7 @@
           tig
           typescript-language-server
           waybar
+          wlr-randr
           wl-clipboard
           zig_0_15
           zls_0_15
