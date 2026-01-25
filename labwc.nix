@@ -67,7 +67,7 @@ let
         <gap>5</gap>
       </core>
 
-      <windowSwitcher preview="yes" outlines="yes">
+      <windowSwitcher preview="no" outlines="no">
         <osd show="yes" style="thumbnail" output="all" thumbnailLabelFormat="%T" />
       </windowSwitcher>
 
