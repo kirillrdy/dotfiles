@@ -35,7 +35,10 @@
         hardware.nvidia.modesetting.enable = enableNvidia;
         hardware.nvidia.nvidiaSettings = false;
         i18n.defaultLocale = "en_AU.UTF-8";
-        imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+        imports = [
+          (modulesPath + "/installer/scan/not-detected.nix")
+          ./labwc.nix
+        ];
         networking.firewall.enable = false;
         networking.hostId = "00000000";
         networking.networkmanager.enable = true;
@@ -61,8 +64,9 @@
           user.name = "Kirill Radzikhovskyy";
           user.email = "kirillrdy@gmail.com";
         };
-        services.desktopManager.gnome.enable = true;
+        services.desktopManager.gnome.enable = false;
         services.displayManager.gdm.enable = true;
+        programs.labwc.enable = true;
         hardware.nvidia.open = true;
         programs.git.enable = true;
         services.avahi.enable = true;
@@ -108,6 +112,8 @@
           (if enableNvidia then btop-cuda else btop)
           (import ./neovim.nix pkgs)
           acpi
+          adw-gtk3
+          adwaita-icon-theme
           antigravity-fhs
           awscli2
           claude-code
@@ -117,10 +123,6 @@
           gemini-cli
           gh
           ghostty
-          gnomeExtensions.battery-time
-          gnomeExtensions.freon
-          gnomeExtensions.maximized-by-default-actually-reborn
-          gnomeExtensions.system-monitor-next
           go
           golangci-lint
           golangci-lint-langserver
@@ -134,14 +136,19 @@
           nix-update
           nixfmt
           nixpkgs-review
+          nwg-dock-hyprland
+          nwg-drawer
           opencode
+          papirus-icon-theme
           pyrefly
           python3Packages.fastavro
           ripgrep
           slack
           superhtml
+          swaybg
           tig
           typescript-language-server
+          waybar
           wl-clipboard
           zig_0_15
           zls_0_15
