@@ -107,6 +107,7 @@
           ghostty
           gnomeExtensions.battery-time
           gnomeExtensions.freon
+          gnomeExtensions.maximized-by-default-actually-reborn
           gnomeExtensions.system-monitor-next
           go
           golangci-lint
