@@ -28,7 +28,7 @@ let
     };
     "group/system" = {
         orientation = "horizontal";
-        modules = [ "network" "battery" ];
+        modules = [ "network" "pulseaudio" "pulseaudio#source" "battery" ];
     };
     network = {
         format-wifi = "";
@@ -39,6 +39,28 @@ let
     battery = {
         format = "{capacity}% {icon}";
         format-icons = ["" "" "" "" ""];
+    };
+    pulseaudio = {
+        format = "{volume}% {icon}";
+        format-bluetooth = "{volume}% {icon}";
+        format-bluetooth-muted = " {icon}";
+        format-muted = "";
+        format-icons = {
+            headphone = "";
+            hands-free = "";
+            headset = "";
+            phone = "";
+            portable = "";
+            car = "";
+            default = ["" "" ""];
+        };
+        on-click = "pavucontrol";
+    };
+    "pulseaudio#source" = {
+        format = "{format_source}";
+        format-source = "{volume}% ";
+        format-source-muted = "";
+        on-click = "pavucontrol";
     };
     tray = {
         spacing = 10;
@@ -104,7 +126,7 @@ let
         background: #333333;
     }
 
-    #network, #battery {
+    #network, #battery, #pulseaudio, #pulseaudio.source {
         padding: 0 6px;
     }
   '';
@@ -178,7 +200,7 @@ let
     osd.window-switcher.style-thumbnail.item.icon.size: 96
     osd.window-switcher.style-thumbnail.item.padding: 4
     osd.window-switcher.style-thumbnail.item.active.border.width: 2
-    osd.window-switcher.style-thumbnail.item.active.border.color: #3584e4
+    osd.window-switcher.style-thumbnail.item.active.border.color: #353535
     osd.window-switcher.style-thumbnail.item.active.bg.color: #353535
   '';
   
@@ -242,7 +264,7 @@ in
     export GTK_THEME=adw-gtk3
     
     # Start components
-    swaybg -i ${pkgs.nixos-artwork.wallpapers.simple-dark-gray-bottom.src} -m fill >/dev/null 2>&1 &
+    swaybg -i ${pkgs.nixos-artwork.wallpapers.simple-dark-gray-bottom.src} -m center >/dev/null 2>&1 &
     waybar >/dev/null 2>&1 &
     nwg-dock-hyprland -d -p bottom -i 32 -w 5 >/dev/null 2>&1 &
   '';
@@ -320,62 +342,12 @@ in
           sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 160;|' "$THEME_FILE"
           sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 128;|' "$THEME_FILE"
           
-          # Colors (Force Dark Gray BG, Blue Border)
+          # Colors (Force Dark Gray BG, Dark Gray Border to remove blue)
           sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_bg_color\[0\] = FLT_MIN;|parse_hexstr("#333333", theme->osd_window_switcher_thumbnail.item_active_bg_color);|' "$THEME_FILE"
-          sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_border_color\[0\] = FLT_MIN;|parse_hexstr("#3584e4", theme->osd_window_switcher_thumbnail.item_active_border_color);|' "$THEME_FILE"
-          
-          # Force OSD Main Background Color (GNOME Dark)
-          # Replace initialization to FLT_MIN
-          sed -i -E 's|theme->osd_bg_color\[0\] = FLT_MIN;|parse_hexstr("#1e1e1e", theme->osd_bg_color);|' "$THEME_FILE"
-          
-          # --- FORCE DEFAULTS (src/config/rcxml.c) ---
-          sed -i -E 's|[[:space:]]*rc\.window_switcher\.style = WINDOW_SWITCHER_CLASSIC;|rc.window_switcher.style = WINDOW_SWITCHER_THUMBNAIL;|g' "$RCXML_FILE"
-
-          # Verify patches
-          # 3. Replace Creation Logic (Use Helper)
-          sed -i '/struct lab_scene_rect_options opts = {/,/item->active_bg = lab_scene_rect_create(item->tree, &opts);/c\
-          struct wlr_buffer *bg_buf = create_rounded_rect_buffer(switcher_theme->item_width, switcher_theme->item_height, 16, switcher_theme->item_active_bg_color, switcher_theme->item_active_border_color, switcher_theme->item_active_border_width);\
-          item->active_bg = wlr_scene_buffer_create(item->tree, bg_buf);\
-          wlr_buffer_drop(bg_buf);' "$THUMB_FILE"
-
-          # 4. Update Logic (struct field access)
-          sed -i 's|wlr_scene_node_set_enabled(&item->active_bg->tree->node, active);|wlr_scene_node_set_enabled(\&item->active_bg->node, active);|' "$THUMB_FILE"
-          
-          # 5. Disable Thumbnail & Center Icon
-          sed -i -E 's|struct wlr_buffer \*thumb_buffer = render_thumb\(.*\);|struct wlr_buffer *thumb_buffer = NULL;|' "$THUMB_FILE"
-          sed -i -E 's|int y = title_y - padding - icon_size.*|int y = padding + (title_y - padding - icon_size) / 2;|' "$THUMB_FILE"
-          
-          # 6. App Name Lookup
-          sed -i '/#include "view.h"/a const char *desktop_entry_name_lookup(struct server *server, const char *app_id);' "$THUMB_FILE"
-          sed -i 's|const char \*title = view_get_string_prop(view, "title");|const char *app_id = view_get_string_prop(view, "app_id"); const char *title = desktop_entry_name_lookup(server, app_id); if (!title) title = app_id;|' "$THUMB_FILE"
-
-          # 7. Rounded OSD Container (Background) & Centering
-          sed -i '/struct lab_scene_rect_options bg_opts = {/,/wlr_scene_node_lower_to_bottom(&bg->tree->node);/c\
-          int bg_w = nr_cols * switcher_theme->item_width + 2 * padding;\
-          int bg_h = nr_rows * switcher_theme->item_height + 2 * padding;\
-          struct wlr_buffer *bg_buf_osd = create_rounded_rect_buffer(bg_w, bg_h, 16, theme->osd_bg_color, theme->osd_border_color, theme->osd_border_width);\
-          struct wlr_scene_buffer *bg_scene = wlr_scene_buffer_create(output->osd_scene.tree, bg_buf_osd);\
-          wlr_buffer_drop(bg_buf_osd);\
-          wlr_scene_node_lower_to_bottom(&bg_scene->node);' "$THUMB_FILE"
-
-          sed -i 's|bg_opts.width|bg_w|g' "$THUMB_FILE"
-          sed -i 's|bg_opts.height|bg_h|g' "$THUMB_FILE"
-          
-          # --- FORCE DEFAULTS (src/theme.c) ---
-          
-          # Dimensions
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_width = 300;|theme->osd_window_switcher_thumbnail.item_width = 120;|' "$THEME_FILE"
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 140;|' "$THEME_FILE"
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 96;|' "$THEME_FILE"
-          
-          # Colors
-          # Replace BG Color (Selected Item)
-          sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_bg_color\[0\] = FLT_MIN;|parse_hexstr("#333333", theme->osd_window_switcher_thumbnail.item_active_bg_color);|' "$THEME_FILE"
-          
-          # Replace Border Color (Selected Item - Match BG to remove blue border)
           sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_border_color\[0\] = FLT_MIN;|parse_hexstr("#333333", theme->osd_window_switcher_thumbnail.item_active_border_color);|' "$THEME_FILE"
           
           # Force OSD Main Background Color (GNOME Dark)
+          # Replace initialization to FLT_MIN
           sed -i -E 's|theme->osd_bg_color\[0\] = FLT_MIN;|parse_hexstr("#1e1e1e", theme->osd_bg_color);|' "$THEME_FILE"
 
           # Force OSD Text Color (White)

@@ -86,6 +86,13 @@
         services.gnome.localsearch.enable = false;
         services.openssh.enable = true;
         services.tailscale.enable = true;
+        security.rtkit.enable = true;
+        services.pipewire = {
+          enable = true;
+          alsa.enable = true;
+          alsa.support32Bit = true;
+          pulse.enable = true;
+        };
         services.xserver.excludePackages = [ pkgs.xterm ];
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         services.xserver.xkb.options = "caps:none";
@@ -148,6 +155,7 @@
           nwg-drawer
           opencode
           papirus-icon-theme
+          pavucontrol
           pyrefly
           python3Packages.fastavro
           ripgrep
