@@ -219,47 +219,50 @@ in
           sed -i 's|struct lab_scene_rect \*active_bg;|struct wlr_scene_buffer *active_bg;|' "$THUMB_FILE"
 
           # 3. Replace Creation Logic (Use Helper)
-          # We remove the block starting with "struct lab_scene_rect_options opts" up to "item->active_bg ="
-          # And replace it with our call.
           sed -i '/struct lab_scene_rect_options opts = {/,/item->active_bg = lab_scene_rect_create(item->tree, &opts);/c\
           struct wlr_buffer *bg_buf = create_rounded_rect_buffer(switcher_theme->item_width, switcher_theme->item_height, 12, switcher_theme->item_active_bg_color, switcher_theme->item_active_border_color, switcher_theme->item_active_border_width);\
           item->active_bg = wlr_scene_buffer_create(item->tree, bg_buf);\
           wlr_buffer_drop(bg_buf);' "$THUMB_FILE"
 
           # 4. Update Logic (struct field access)
-          # Replace explicitly: wlr_scene_node_set_enabled(&item->active_bg->tree->node, active);
-          # With: wlr_scene_node_set_enabled(&item->active_bg->node, active);
           sed -i 's|wlr_scene_node_set_enabled(&item->active_bg->tree->node, active);|wlr_scene_node_set_enabled(\&item->active_bg->node, active);|' "$THUMB_FILE"
           
           # 5. Disable Thumbnail & Center Icon
-          
-          # Disable thumbnail rendering (Gnome-style Alt-Tab)
           sed -i -E 's|struct wlr_buffer \*thumb_buffer = render_thumb\(.*\);|struct wlr_buffer *thumb_buffer = NULL;|' "$THUMB_FILE"
-          
-          # Center the icon vertically
           sed -i -E 's|int y = title_y - padding - icon_size.*|int y = padding + (title_y - padding - icon_size) / 2;|' "$THUMB_FILE"
           
-          # Use Desktop Entry Name (App Name) instead of Window Title
-          # 1. Add declaration
+          # 6. App Name Lookup
           sed -i '/#include "view.h"/a const char *desktop_entry_name_lookup(struct server *server, const char *app_id);' "$THUMB_FILE"
-          # 2. Replace title logic
           sed -i 's|const char \*title = view_get_string_prop(view, "title");|const char *app_id = view_get_string_prop(view, "app_id"); const char *title = desktop_entry_name_lookup(server, app_id); if (!title) title = app_id;|' "$THUMB_FILE"
+
+          # 7. Rounded OSD Container (Background) & Centering
+          # Replace background creation block
+          sed -i '/struct lab_scene_rect_options bg_opts = {/,/wlr_scene_node_lower_to_bottom(&bg->tree->node);/c\
+          int bg_w = nr_cols * switcher_theme->item_width + 2 * padding;\
+          int bg_h = nr_rows * switcher_theme->item_height + 2 * padding;\
+          struct wlr_buffer *bg_buf_osd = create_rounded_rect_buffer(bg_w, bg_h, 24, theme->osd_bg_color, theme->osd_border_color, theme->osd_border_width);\
+          struct wlr_scene_buffer *bg_scene = wlr_scene_buffer_create(output->osd_scene.tree, bg_buf_osd);\
+          wlr_buffer_drop(bg_buf_osd);\
+          wlr_scene_node_lower_to_bottom(&bg_scene->node);' "$THUMB_FILE"
+
+          # Update centering to use new bg_w/bg_h variables
+          sed -i 's|bg_opts.width|bg_w|g' "$THUMB_FILE"
+          sed -i 's|bg_opts.height|bg_h|g' "$THUMB_FILE"
           
           # --- FORCE DEFAULTS (src/theme.c) ---
           
-          # Change default dimensions to match GNOME (Small box, big icon)
+          # Dimensions
           sed -i 's|theme->osd_window_switcher_thumbnail.item_width = 300;|theme->osd_window_switcher_thumbnail.item_width = 140;|' "$THEME_FILE"
           sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 160;|' "$THEME_FILE"
           sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 128;|' "$THEME_FILE"
           
           # Colors (Force Dark Gray BG, Blue Border)
-          # Replace initialization to FLT_MIN with actual colors
-          
-          # Replace BG Color
           sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_bg_color\[0\] = FLT_MIN;|parse_hexstr("#333333", theme->osd_window_switcher_thumbnail.item_active_bg_color);|' "$THEME_FILE"
-          
-          # Replace Border Color
           sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_border_color\[0\] = FLT_MIN;|parse_hexstr("#3584e4", theme->osd_window_switcher_thumbnail.item_active_border_color);|' "$THEME_FILE"
+          
+          # Force OSD Main Background Color (GNOME Dark)
+          # Replace initialization to FLT_MIN
+          sed -i -E 's|theme->osd_bg_color\[0\] = FLT_MIN;|parse_hexstr("#1e1e1e", theme->osd_bg_color);|' "$THEME_FILE"
           
           # --- FORCE DEFAULTS (src/config/rcxml.c) ---
           sed -i -E 's|[[:space:]]*rc\.window_switcher\.style = WINDOW_SWITCHER_CLASSIC;|rc.window_switcher.style = WINDOW_SWITCHER_THUMBNAIL;|g' "$RCXML_FILE"
@@ -267,6 +270,7 @@ in
           # Verify patches
           grep "create_rounded_rect_buffer" "$THUMB_FILE" || { echo "Patch failed: rounded helper"; exit 1; }
           grep "#3584e4" "$THEME_FILE" || { echo "Patch failed: default blue border"; exit 1; }
+          grep "#1e1e1e" "$THEME_FILE" || { echo "Patch failed: OSD bg color"; exit 1; }
         '';
       });
     })
