@@ -270,7 +270,7 @@ in
           # Verify patches
           # 3. Replace Creation Logic (Use Helper)
           sed -i '/struct lab_scene_rect_options opts = {/,/item->active_bg = lab_scene_rect_create(item->tree, &opts);/c\
-          struct wlr_buffer *bg_buf = create_rounded_rect_buffer(switcher_theme->item_width, switcher_theme->item_height, 24, switcher_theme->item_active_bg_color, switcher_theme->item_active_border_color, switcher_theme->item_active_border_width);\
+          struct wlr_buffer *bg_buf = create_rounded_rect_buffer(switcher_theme->item_width, switcher_theme->item_height, 16, switcher_theme->item_active_bg_color, switcher_theme->item_active_border_color, switcher_theme->item_active_border_width);\
           item->active_bg = wlr_scene_buffer_create(item->tree, bg_buf);\
           wlr_buffer_drop(bg_buf);' "$THUMB_FILE"
 
@@ -289,7 +289,7 @@ in
           sed -i '/struct lab_scene_rect_options bg_opts = {/,/wlr_scene_node_lower_to_bottom(&bg->tree->node);/c\
           int bg_w = nr_cols * switcher_theme->item_width + 2 * padding;\
           int bg_h = nr_rows * switcher_theme->item_height + 2 * padding;\
-          struct wlr_buffer *bg_buf_osd = create_rounded_rect_buffer(bg_w, bg_h, 24, theme->osd_bg_color, theme->osd_border_color, theme->osd_border_width);\
+          struct wlr_buffer *bg_buf_osd = create_rounded_rect_buffer(bg_w, bg_h, 16, theme->osd_bg_color, theme->osd_border_color, theme->osd_border_width);\
           struct wlr_scene_buffer *bg_scene = wlr_scene_buffer_create(output->osd_scene.tree, bg_buf_osd);\
           wlr_buffer_drop(bg_buf_osd);\
           wlr_scene_node_lower_to_bottom(&bg_scene->node);' "$THUMB_FILE"
@@ -300,9 +300,9 @@ in
           # --- FORCE DEFAULTS (src/theme.c) ---
           
           # Dimensions
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_width = 300;|theme->osd_window_switcher_thumbnail.item_width = 140;|' "$THEME_FILE"
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 160;|' "$THEME_FILE"
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 128;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_width = 300;|theme->osd_window_switcher_thumbnail.item_width = 120;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 140;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 96;|' "$THEME_FILE"
           
           # Colors
           # Replace BG Color (Selected Item)
