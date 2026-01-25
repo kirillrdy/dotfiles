@@ -68,7 +68,7 @@
         services.avahi.nssmdns4 = true;
         services.avahi.publish.addresses = true;
         services.avahi.publish.enable = true;
-        services.fprintd.enable = true;
+        services.fprintd.enable = !enableNvidia;
         services.gnome.tinysparql.enable = false;
         services.gnome.localsearch.enable = false;
         services.openssh.enable = true;
