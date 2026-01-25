@@ -33,6 +33,7 @@
         };
         fonts.packages = with pkgs; [ kochi-substitute ];
         hardware.nvidia.modesetting.enable = enableNvidia;
+        hardware.nvidia.nvidiaSettings = false;
         nix.settings.cores = 2;
         i18n.defaultLocale = "en_AU.UTF-8";
         imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
