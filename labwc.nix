@@ -137,6 +137,21 @@ let
         <cornerRadius>8</cornerRadius>
         <font name="Sans" size="10" />
       </theme>
+
+      <windowRules>
+        <windowRule type="normal">
+          <action name="Maximize" />
+        </windowRule>
+      </windowRules>
+
+      <mouse>
+        <default />
+        <context name="Root">
+          <mousebind button="Left" action="Press"><action name="None" /></mousebind>
+          <mousebind button="Right" action="Press"><action name="None" /></mousebind>
+          <mousebind button="Middle" action="Press"><action name="None" /></mousebind>
+        </context>
+      </mouse>
     </labwc_config>
   '';
   
@@ -158,9 +173,9 @@ let
     osd.border.color: #454545
     
     osd.window-switcher.style-thumbnail.width.max: 80%
-    osd.window-switcher.style-thumbnail.item.width: 140
-    osd.window-switcher.style-thumbnail.item.height: 160
-    osd.window-switcher.style-thumbnail.item.icon.size: 128
+    osd.window-switcher.style-thumbnail.item.width: 120
+    osd.window-switcher.style-thumbnail.item.height: 140
+    osd.window-switcher.style-thumbnail.item.icon.size: 96
     osd.window-switcher.style-thumbnail.item.padding: 4
     osd.window-switcher.style-thumbnail.item.active.border.width: 2
     osd.window-switcher.style-thumbnail.item.active.border.color: #3584e4
@@ -227,7 +242,7 @@ in
     export GTK_THEME=adw-gtk3
     
     # Start components
-    swaybg -c "#242424" >/dev/null 2>&1 &
+    swaybg -i ${pkgs.nixos-artwork.wallpapers.simple-dark-gray-bottom.src} -m fill >/dev/null 2>&1 &
     waybar >/dev/null 2>&1 &
     nwg-dock-hyprland -d -p bottom -i 32 -w 5 >/dev/null 2>&1 &
   '';
