@@ -66,6 +66,8 @@
         };
         services.desktopManager.gnome.enable = false;
         services.displayManager.gdm.enable = true;
+        services.displayManager.autoLogin.enable = true;
+        services.displayManager.autoLogin.user = "kirillvr";
         programs.labwc.enable = true;
         hardware.nvidia.open = true;
         programs.git.enable = true;
