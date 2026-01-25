@@ -1,31 +1,152 @@
-diff --git a/src/cycle/osd-thumbnail.c b/src/cycle/osd-thumbnail.c
-index d5a0bf3..c157df4 100644
---- a/src/cycle/osd-thumbnail.c
-+++ b/src/cycle/osd-thumbnail.c
-@@ -159,6 +159,7 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
- 		switcher_theme->item_height, (float[4]) {0});
+diff --git a/src/osd/osd-thumbnail.c b/src/osd/osd-thumbnail.c
+index 24505a31..947f95a0 100644
+--- a/src/osd/osd-thumbnail.c
++++ b/src/osd/osd-thumbnail.c
+@@ -14,13 +14,51 @@
+ #include "scaled-buffer/scaled-icon-buffer.h"
+ #include "theme.h"
+ #include "view.h"
++#include "buffer.h"
++#include <cairo/cairo.h>
++#include <math.h>
++
++#ifndef M_PI
++#define M_PI 3.14159265358979323846
++#endif
++
++static struct wlr_buffer *
++create_rounded_rect_buffer(int width, int height, int radius,
++                           float *bg, float *border, int border_width)
++{
++    struct lab_data_buffer *buf = buffer_create_cairo(width, height, 1.0);
++    cairo_t *cr = cairo_create(buf->surface);
++    double x = border_width / 2.0;
++    double y = border_width / 2.0;
++    double w = width - border_width;
++    double h = height - border_width;
++    double r = radius;
++    double degrees = M_PI / 180.0;
++    cairo_new_sub_path(cr);
++    cairo_arc(cr, x + w - r, y + r, r, -90 * degrees, 0 * degrees);
++    cairo_arc(cr, x + w - r, y + h - r, r, 0 * degrees, 90 * degrees);
++    cairo_arc(cr, x + r, y + h - r, r, 90 * degrees, 180 * degrees);
++    cairo_arc(cr, x + r, y + r, r, 180 * degrees, 270 * degrees);
++    cairo_close_path(cr);
++    cairo_set_source_rgba(cr, bg[0], bg[1], bg[2], bg[3]);
++    cairo_fill_preserve(cr);
++    if (border_width > 0) {
++        cairo_set_source_rgba(cr, border[0], border[1], border[2], border[3]);
++        cairo_set_line_width(cr, border_width);
++        cairo_stroke(cr);
++    }
++    cairo_destroy(cr);
++    return &buf->base;
++}
++
++const char *desktop_entry_name_lookup(struct server *server, const char *app_id);
+ 
+ struct osd_thumbnail_scene_item {
+ 	struct view *view;
+ 	struct wlr_scene_tree *tree;
+ 	struct scaled_font_buffer *normal_title;
+ 	struct scaled_font_buffer *active_title;
+-	struct lab_scene_rect *active_bg;
++	struct wlr_scene_buffer *active_bg;
+ };
+ 
+ static void
+@@ -129,18 +167,15 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
+ 	item->view = view;
+ 
+ 	/* background for selected item */
+-	struct lab_scene_rect_options opts = {
+-		.border_colors = (float *[1]) { switcher_theme->item_active_border_color },
+-		.nr_borders = 1,
+-		.border_width = switcher_theme->item_active_border_width,
+-		.bg_color = switcher_theme->item_active_bg_color,
+-		.width = switcher_theme->item_width,
+-		.height = switcher_theme->item_height,
+-	};
+-	item->active_bg = lab_scene_rect_create(item->tree, &opts);
++	struct wlr_buffer *bg_buf = create_rounded_rect_buffer(
++		switcher_theme->item_width, switcher_theme->item_height, 12,
++		switcher_theme->item_active_bg_color,
++		switcher_theme->item_active_border_color, 0);
++	item->active_bg = wlr_scene_buffer_create(item->tree, bg_buf);
++	wlr_buffer_drop(bg_buf);
  
  	/* thumbnail */
-+    /*
- 	struct wlr_buffer *thumb_buffer = render_thumb(osd_output->output, view);
+-	struct wlr_buffer *thumb_buffer = render_thumb(output, view);
++	struct wlr_buffer *thumb_buffer = NULL; // render_thumb(output, view);
  	if (thumb_buffer) {
  		struct wlr_scene_buffer *thumb_scene_buffer =
-@@ -172,6 +173,7 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
- 		wlr_scene_node_set_position(&thumb_scene_buffer->node,
- 			thumb_box.x, thumb_box.y);
+ 			wlr_scene_buffer_create(item->tree, thumb_buffer);
+@@ -155,7 +190,10 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
  	}
-+    */
  
  	/* title */
- 	item->normal_label = create_label(tree, view,
-@@ -187,7 +189,9 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
- 		scaled_icon_buffer_create(tree, server, icon_size, icon_size);
+-	const char *title = view_get_string_prop(view, "title");
++	const char *app_id = view_get_string_prop(view, "app_id");
++	const char *title = desktop_entry_name_lookup(server, app_id);
++	if (!title) title = app_id;
++
+ 	if (title) {
+ 		item->normal_title = create_title(item->tree, switcher_theme,
+ 			title, theme->osd_label_text_color,
+@@ -171,7 +209,7 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
+ 		item->tree, server, icon_size, icon_size);
  	scaled_icon_buffer_set_view(icon_buffer, view);
  	int x = (switcher_theme->item_width - icon_size) / 2;
 -	int y = title_y - padding - icon_size + 10; /* slide by 10px */
-+	//int y = title_y - padding - icon_size + 10; /* slide by 10px */
-+    int available_height = title_y - padding;
-+    int y = padding + (available_height - icon_size) / 2;
++	int y = padding + (title_y - padding - icon_size) / 2;
  	wlr_scene_node_set_position(&icon_buffer->scene_buffer->node, x, y);
  
  	return item;
+@@ -240,22 +278,18 @@ osd_thumbnail_create(struct output *output, struct wl_array *views)
+ 	}
+ 
+ 	/* background */
+-	struct lab_scene_rect_options bg_opts = {
+-		.border_colors = (float *[1]) { theme->osd_border_color },
+-		.nr_borders = 1,
+-		.border_width = theme->osd_border_width,
+-		.bg_color = theme->osd_bg_color,
+-		.width = nr_cols * switcher_theme->item_width + 2 * padding,
+-		.height = nr_rows * switcher_theme->item_height + 2 * padding,
+-	};
+-	struct lab_scene_rect *bg =
+-		lab_scene_rect_create(output->osd_scene.tree, &bg_opts);
+-	wlr_scene_node_lower_to_bottom(&bg->tree->node);
++	int bg_w = nr_cols * switcher_theme->item_width + 2 * padding;
++	int bg_h = nr_rows * switcher_theme->item_height + 2 * padding;
++	struct wlr_buffer *bg_buf_osd = create_rounded_rect_buffer(
++		bg_w, bg_h, 24, theme->osd_bg_color, theme->osd_border_color, 0);
++	struct wlr_scene_buffer *bg_scene = wlr_scene_buffer_create(output->osd_scene.tree, bg_buf_osd);
++	wlr_buffer_drop(bg_buf_osd);
++	wlr_scene_node_lower_to_bottom(&bg_scene->node);
+ 
+ 	/* center */
+ 	struct wlr_box usable = output_usable_area_in_layout_coords(output);
+-	int lx = usable.x + (usable.width - bg_opts.width) / 2;
+-	int ly = usable.y + (usable.height - bg_opts.height) / 2;
++	int lx = usable.x + (usable.width - bg_w) / 2;
++	int ly = usable.y + (usable.height - bg_h) / 2;
+ 	wlr_scene_node_set_position(&output->osd_scene.tree->node, lx, ly);
+ }
+ 
+@@ -265,7 +299,7 @@ osd_thumbnail_update(struct output *output)
+ 	struct osd_thumbnail_scene_item *item;
+ 	wl_array_for_each(item, &output->osd_scene.items) {
+ 		bool active = (item->view == output->server->osd_state.cycle_view);
+-		wlr_scene_node_set_enabled(&item->active_bg->tree->node, active);
++		wlr_scene_node_set_enabled(&item->active_bg->node, active);
+ 		wlr_scene_node_set_enabled(
+ 			&item->active_title->scene_buffer->node, active);
+ 		wlr_scene_node_set_enabled(
+@@ -276,4 +310,4 @@ osd_thumbnail_update(struct output *output)
+ struct osd_impl osd_thumbnail_impl = {
+ 	.create = osd_thumbnail_create,
+ 	.update = osd_thumbnail_update,
+-};
++};
+\ No newline at end of file

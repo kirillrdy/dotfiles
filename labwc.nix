@@ -41,8 +41,8 @@ let
         format-icons = ["" "" "" "" ""];
     };
     pulseaudio = {
-        format = "{volume}% {icon}";
-        format-bluetooth = "{volume}% {icon}";
+        format = "{icon}";
+        format-bluetooth = "{icon}";
         format-bluetooth-muted = " {icon}";
         format-muted = "";
         format-icons = {
@@ -55,12 +55,14 @@ let
             default = ["" "" ""];
         };
         on-click = "pavucontrol";
+        tooltip-format = "{volume}%";
     };
     "pulseaudio#source" = {
         format = "{format_source}";
-        format-source = "{volume}% ";
+        format-source = "";
         format-source-muted = "";
         on-click = "pavucontrol";
+        tooltip-format = "{volume}%";
     };
     tray = {
         spacing = 10;
@@ -210,46 +212,6 @@ let
     osd.window-switcher.style-thumbnail.item.active.bg.color: #353535
   '';
   
-  # C Code helper for rounded corners
-  roundedHelper = ''
-    #include "buffer.h"
-    #include <cairo/cairo.h>
-    #include <math.h>
-
-    #ifndef M_PI
-    #define M_PI 3.14159265358979323846
-    #endif
-
-    static struct wlr_buffer *
-    create_rounded_rect_buffer(int width, int height, int radius,
-                               float *bg, float *border, int border_width)
-    {
-        struct lab_data_buffer *buf = buffer_create_cairo(width, height, 1.0);
-        cairo_t *cr = cairo_create(buf->surface);
-        double x = border_width / 2.0;
-        double y = border_width / 2.0;
-        double w = width - border_width;
-        double h = height - border_width;
-        double r = radius;
-        double degrees = M_PI / 180.0;
-        cairo_new_sub_path(cr);
-        cairo_arc(cr, x + w - r, y + r, r, -90 * degrees, 0 * degrees);
-        cairo_arc(cr, x + w - r, y + h - r, r, 0 * degrees, 90 * degrees);
-        cairo_arc(cr, x + r, y + h - r, r, 90 * degrees, 180 * degrees);
-        cairo_arc(cr, x + r, y + r, r, 180 * degrees, 270 * degrees);
-        cairo_close_path(cr);
-        cairo_set_source_rgba(cr, bg[0], bg[1], bg[2], bg[3]);
-        cairo_fill_preserve(cr);
-        if (border_width > 0) {
-            cairo_set_source_rgba(cr, border[0], border[1], border[2], border[3]);
-            cairo_set_line_width(cr, border_width);
-            cairo_stroke(cr);
-        }
-        cairo_destroy(cr);
-        return &buf->base;
-    }
-  '';
-
   # GTK Settings for adw-gtk3 and Papirus
   gtkSettings = ''
     [Settings]
@@ -296,55 +258,12 @@ in
       labwc = prev.labwc.overrideAttrs (old: {
         buildInputs = (old.buildInputs or []) ++ [ prev.pkgs.librsvg prev.pkgs.libsfdo ];
         
+        patches = (old.patches or []) ++ [ ./labwc-gnome-alt-tab.patch ];
+        
         postPatch = (old.postPatch or "") + ''
           # Find the file (handle potential path differences)
-          THUMB_FILE=$(find . -name osd-thumbnail.c)
           RCXML_FILE=$(find . -name rcxml.c)
           THEME_FILE=$(find . -name theme.c)
-          echo "Patching files: $THUMB_FILE, $RCXML_FILE, $THEME_FILE"
-          
-          # --- OSD THUMBNAIL PATCHES ---
-          
-          # 1. Inject Helper Function
-          cat > rounded_helper.c <<EOF
-          ${roundedHelper}
-          EOF
-          # Inject after last include (approx line 15)
-          sed -i '/#include "view.h"/r rounded_helper.c' "$THUMB_FILE"
-
-          # 2. Modify Struct
-          sed -i 's|struct lab_scene_rect \*active_bg;|struct wlr_scene_buffer *active_bg;|' "$THUMB_FILE"
-
-          # 3. Replace Creation Logic (Use Helper)
-          sed -i '/struct lab_scene_rect_options opts = {/,/item->active_bg = lab_scene_rect_create(item->tree, &opts);/c\
-          struct wlr_buffer *bg_buf = create_rounded_rect_buffer(switcher_theme->item_width, switcher_theme->item_height, 12, switcher_theme->item_active_bg_color, switcher_theme->item_active_border_color, switcher_theme->item_active_border_width);\
-          item->active_bg = wlr_scene_buffer_create(item->tree, bg_buf);\
-          wlr_buffer_drop(bg_buf);' "$THUMB_FILE"
-
-          # 4. Update Logic (struct field access)
-          sed -i 's|wlr_scene_node_set_enabled(&item->active_bg->tree->node, active);|wlr_scene_node_set_enabled(\&item->active_bg->node, active);|' "$THUMB_FILE"
-          
-          # 5. Disable Thumbnail & Center Icon
-          sed -i -E 's|struct wlr_buffer \*thumb_buffer = render_thumb\(.*\);|struct wlr_buffer *thumb_buffer = NULL;|' "$THUMB_FILE"
-          sed -i -E 's|int y = title_y - padding - icon_size.*|int y = padding + (title_y - padding - icon_size) / 2;|' "$THUMB_FILE"
-          
-          # 6. App Name Lookup
-          sed -i '/#include "view.h"/a const char *desktop_entry_name_lookup(struct server *server, const char *app_id);' "$THUMB_FILE"
-          sed -i 's|const char \*title = view_get_string_prop(view, "title");|const char *app_id = view_get_string_prop(view, "app_id"); const char *title = desktop_entry_name_lookup(server, app_id); if (!title) title = app_id;|' "$THUMB_FILE"
-
-          # 7. Rounded OSD Container (Background) & Centering
-          # Replace background creation block
-          sed -i '/struct lab_scene_rect_options bg_opts = {/,/wlr_scene_node_lower_to_bottom(&bg->tree->node);/c\
-          int bg_w = nr_cols * switcher_theme->item_width + 2 * padding;\
-          int bg_h = nr_rows * switcher_theme->item_height + 2 * padding;\
-          struct wlr_buffer *bg_buf_osd = create_rounded_rect_buffer(bg_w, bg_h, 24, theme->osd_bg_color, theme->osd_border_color, theme->osd_border_width);\
-          struct wlr_scene_buffer *bg_scene = wlr_scene_buffer_create(output->osd_scene.tree, bg_buf_osd);\
-          wlr_buffer_drop(bg_buf_osd);\
-          wlr_scene_node_lower_to_bottom(&bg_scene->node);' "$THUMB_FILE"
-
-          # Update centering to use new bg_w/bg_h variables
-          sed -i 's|bg_opts.width|bg_w|g' "$THUMB_FILE"
-          sed -i 's|bg_opts.height|bg_h|g' "$THUMB_FILE"
           
           # --- FORCE DEFAULTS (src/theme.c) ---
           
@@ -368,7 +287,6 @@ in
           sed -i -E 's|[[:space:]]*rc\.window_switcher\.style = WINDOW_SWITCHER_CLASSIC;|rc.window_switcher.style = WINDOW_SWITCHER_THUMBNAIL;|g' "$RCXML_FILE"
 
           # Verify patches
-          grep "create_rounded_rect_buffer" "$THUMB_FILE" || { echo "Patch failed: rounded helper"; exit 1; }
           grep "#1e1e1e" "$THEME_FILE" || { echo "Patch failed: OSD bg color"; exit 1; }
           grep "#ffffff" "$THEME_FILE" || { echo "Patch failed: OSD text color"; exit 1; }
         '';
