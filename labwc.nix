@@ -153,6 +153,12 @@ let
         <keybind key="W-Right"><action name="SnapToEdge" direction="right" /></keybind>
         <keybind key="W-Up"><action name="SnapToEdge" direction="top" /></keybind>
         <keybind key="W-Down"><action name="SnapToEdge" direction="bottom" /></keybind>
+
+        <!-- Volume control -->
+        <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+" /></keybind>
+        <keybind key="XF86AudioLowerVolume"><action name="Execute" command="wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-" /></keybind>
+        <keybind key="XF86AudioMute"><action name="Execute" command="wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" /></keybind>
+        <keybind key="XF86AudioMicMute"><action name="Execute" command="wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle" /></keybind>
       </keyboard>
 
       <theme>
