@@ -19,13 +19,13 @@
         boot.zfs.package = pkgs.zfs_2_4;
         boot.loader.efi.canTouchEfiVariables = true;
         boot.loader.systemd-boot.enable = true;
-        environment.variables = {
+        environment.sessionVariables = {
           EDITOR = "nvim";
-          NEOVIDE_FORK = 1;
+          NEOVIDE_FORK = "1";
           ELECTRON_OZONE_PLATFORM_HINT = "auto";
           NIXOS_OZONE_WL = "1";
           XCURSOR_THEME = "Adwaita";
-          XCURSOR_SIZE = "32";
+          XCURSOR_SIZE = "24";
         };
         fileSystems."/" = {
           device = "zroot/root";
