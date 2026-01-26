@@ -22,6 +22,10 @@
         environment.variables = {
           EDITOR = "nvim";
           NEOVIDE_FORK = 1;
+          ELECTRON_OZONE_PLATFORM_HINT = "auto";
+          NIXOS_OZONE_WL = "1";
+          XCURSOR_THEME = "Adwaita";
+          XCURSOR_SIZE = "32";
         };
         fileSystems."/" = {
           device = "zroot/root";
