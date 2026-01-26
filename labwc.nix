@@ -246,10 +246,6 @@ in
   environment.etc."xdg/labwc/rc.xml".text = labwcRc;
   environment.etc."xdg/labwc/themerc".text = labwcTheme;
   environment.etc."xdg/labwc/autostart".text = ''
-    # Set environment
-    export XCURSOR_THEME=Adwaita
-    export GTK_THEME=adw-gtk3
-    
     # Start components
     wlr-randr --output eDP-1 --scale 2.0
     swaybg -i ${pkgs.nixos-artwork.wallpapers.simple-blue.src} -m fill >/dev/null 2>&1 &
