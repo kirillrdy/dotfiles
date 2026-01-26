@@ -44,7 +44,7 @@ let
         tooltip-format = "{essid} ({signalStrength}%)";
     };
     battery = {
-        format = "{capacity}% {icon}";
+        format = "{time} {icon}";
         format-icons = ["" "" "" "" ""];
     };
     pulseaudio = {
