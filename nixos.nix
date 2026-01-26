@@ -26,6 +26,8 @@
           NIXOS_OZONE_WL = "1";
           XCURSOR_THEME = "Adwaita";
           XCURSOR_SIZE = "24";
+          XKB_DEFAULT_LAYOUT = "us";
+          XKB_DEFAULT_OPTIONS = "caps:none";
         };
         fileSystems."/" = {
           device = "zroot/root";
@@ -35,21 +37,23 @@
           device = "/dev/nvme0n1p3";
           fsType = "vfat";
         };
-        fonts.packages = with pkgs; [ 
-          noto-fonts
+        fonts.packages = with pkgs; [
           noto-fonts-cjk-sans
           noto-fonts-cjk-serif
           noto-fonts-color-emoji
           adwaita-fonts
           cantarell-fonts
+          dejavu_fonts
           font-awesome
+          source-code-pro
+          source-sans
           nerd-fonts.symbols-only
         ];
         fonts.fontconfig = {
           defaultFonts = {
-            serif = [ "Noto Serif" "Noto Serif CJK JP" ];
-            sansSerif = [ "Cantarell" "Adwaita Sans" "Noto Sans" "Noto Sans CJK JP" ];
-            monospace = [ "Noto Sans Mono" "Noto Sans CJK JP" ];
+            serif = [ "DejaVu Serif" "Source Serif Pro" "Noto Serif CJK JP" ];
+            sansSerif = [ "Cantarell" "Source Sans Pro" "DejaVu Sans" "Adwaita Sans" "Noto Sans CJK JP" ];
+            monospace = [ "Source Code Pro" "DejaVu Sans Mono" "Noto Sans Mono" "Noto Sans CJK JP" ];
           };
         };
         hardware.nvidia.modesetting.enable = enableNvidia;
@@ -182,6 +186,7 @@
           ripgrep
           slack
           superhtml
+          swayosd
           swaybg
           tig
           typescript-language-server

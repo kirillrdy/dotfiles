@@ -182,14 +182,14 @@ let
         <keybind key="W-Down"><action name="SnapToEdge" direction="bottom" /></keybind>
 
         <!-- Volume control -->
-        <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="sh -c 'wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 &amp;&amp; wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 6%+'" /></keybind>
-        <keybind key="XF86AudioLowerVolume"><action name="Execute" command="wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 6%-" /></keybind>
-        <keybind key="XF86AudioMute"><action name="Execute" command="wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" /></keybind>
-        <keybind key="XF86AudioMicMute"><action name="Execute" command="wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle" /></keybind>
+        <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="swayosd-client --output-volume raise" /></keybind>
+        <keybind key="XF86AudioLowerVolume"><action name="Execute" command="swayosd-client --output-volume lower" /></keybind>
+        <keybind key="XF86AudioMute"><action name="Execute" command="swayosd-client --output-volume mute-toggle" /></keybind>
+        <keybind key="XF86AudioMicMute"><action name="Execute" command="swayosd-client --input-volume mute-toggle" /></keybind>
 
         <!-- Brightness control -->
-        <keybind key="XF86MonBrightnessUp"><action name="Execute" command="brightnessctl set +5%" /></keybind>
-        <keybind key="XF86MonBrightnessDown"><action name="Execute" command="brightnessctl set 5%-" /></keybind>
+        <keybind key="XF86MonBrightnessUp"><action name="Execute" command="swayosd-client --brightness raise" /></keybind>
+        <keybind key="XF86MonBrightnessDown"><action name="Execute" command="swayosd-client --brightness lower" /></keybind>
       </keyboard>
 
       <theme>
@@ -265,7 +265,8 @@ in
     wlr-randr --output eDP-1 --scale ${toString monitorScale}
     swaybg -i ${pkgs.nixos-artwork.wallpapers.simple-blue.src} -m fill >/dev/null 2>&1 &
     waybar >/dev/null 2>&1 &
-    waycorner >/dev/null 2>&1 &
+    waycorner --config /etc/xdg/waycorner/config.toml >/dev/null 2>&1 &
+    swayosd-server >/dev/null 2>&1 &
     nwg-dock-hyprland -d -p bottom -i 32 -w 5 >/dev/null 2>&1 &
   '';
 
@@ -276,7 +277,7 @@ in
   # Waycorner Configuration (Hot Corner)
   environment.etc."xdg/waycorner/config.toml".text = ''
     [left]
-    command = "nwg-drawer"
+    command = "${pkgs.nwg-drawer}/bin/nwg-drawer"
     locations = ["top_left"]
   '';
 
