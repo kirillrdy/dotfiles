@@ -182,8 +182,8 @@ let
         <keybind key="W-Down"><action name="SnapToEdge" direction="bottom" /></keybind>
 
         <!-- Volume control -->
-        <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="swayosd-client --output-volume raise" /></keybind>
-        <keybind key="XF86AudioLowerVolume"><action name="Execute" command="swayosd-client --output-volume lower" /></keybind>
+        <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="swayosd-client --output-volume raise && canberra-gtk-play -i audio-volume-change -d 'changeVolume'" /></keybind>
+        <keybind key="XF86AudioLowerVolume"><action name="Execute" command="swayosd-client --output-volume lower && canberra-gtk-play -i audio-volume-change -d 'changeVolume'" /></keybind>
         <keybind key="XF86AudioMute"><action name="Execute" command="swayosd-client --output-volume mute-toggle" /></keybind>
         <keybind key="XF86AudioMicMute"><action name="Execute" command="swayosd-client --input-volume mute-toggle" /></keybind>
 
