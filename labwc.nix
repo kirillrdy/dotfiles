@@ -167,6 +167,8 @@ let
 
       <keyboard>
         <default />
+        <layout>us</layout>
+        <options>caps:none</options>
         <keybind key="W-Return"><action name="Execute" command="ghostty" /></keybind>
         <keybind key="Super_L"><action name="Execute" command="nwg-drawer" /></keybind>
         <keybind key="W-q"><action name="Close" /></keybind>
