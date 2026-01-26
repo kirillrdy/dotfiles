@@ -163,6 +163,7 @@
           google-chrome
           gopls
           jq
+          libcanberra-gtk3
           lua-language-server
           neovide
           nil
@@ -185,6 +186,7 @@
           python3Packages.fastavro
           ripgrep
           slack
+          sound-theme-freedesktop
           superhtml
           swayosd
           swaybg
