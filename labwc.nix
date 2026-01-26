@@ -45,7 +45,7 @@ let
     };
     battery = {
         format = "{time} {icon}";
-        format-icons = ["" "" "" "" ""];
+        format-icons = ["󰂎" "󰁺" "󰁻" "󰁼" "󰁽" "󰁾" "󰁿" "󰂀" "󰂁" "󰂂" "󰁹"];
     };
     pulseaudio = {
         format = "{icon}";
