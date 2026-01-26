@@ -241,6 +241,36 @@ let
     osd.window-switcher.style-thumbnail.item.active.bg.color: #353535
   '';
   
+  swayosdStyle = ''
+    window {
+      background: transparent;
+    }
+
+    #container {
+      background-color: alpha(#1e1e1e, 0.98);
+      border-radius: 99px;
+      padding: 16px 24px;
+      margin: 16px;
+    }
+
+    image {
+      color: #ffffff;
+      margin-right: 12px;
+    }
+
+    progressbar {
+      min-height: 6px;
+      border-radius: 99px;
+      background-color: #454545;
+    }
+
+    progressbar > trough > progress {
+      background-color: #ffffff;
+      border-radius: 99px;
+      min-height: 6px;
+    }
+  '';
+
   # GTK Settings for adw-gtk3 and Papirus
   gtkSettings = ''
     [Settings]
@@ -273,6 +303,7 @@ in
   # Configure Waybar defaults
   environment.etc."xdg/waybar/config".text = builtins.toJSON waybarConfig;
   environment.etc."xdg/waybar/style.css".text = waybarStyle;
+  environment.etc."xdg/swayosd/style.css".text = swayosdStyle;
 
   # Waycorner Configuration (Hot Corner)
   environment.etc."xdg/waycorner/config.toml".text = ''
