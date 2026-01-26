@@ -161,7 +161,7 @@
           nixpkgs-review
           (nwg-drawer.overrideAttrs (old: {
             postPatch = (old.postPatch or "") + ''
-              sed -i 's/if !entry.NoDisplay && (subsequenceMatch(needle, strings.ToLower(entry.NameLoc)) ||/if !entry.NoDisplay \&\& subsequenceMatch(needle, strings.ToLower(entry.NameLoc)) {/' uicomponents.go
+              sed -i 's/if !entry.NoDisplay && (subsequenceMatch(needle, strings.ToLower(entry.NameLoc)) ||/if !entry.NoDisplay \&\& strings.HasPrefix(strings.ToLower(entry.NameLoc), strings.ToLower(needle)) {/' uicomponents.go
               sed -i '/strings.Contains.*entry.CommentLoc.*/d' uicomponents.go
               sed -i '/strings.Contains.*entry.Comment.*/d' uicomponents.go
               sed -i '/strings.Contains.*entry.Exec.*/d' uicomponents.go
