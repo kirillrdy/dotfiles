@@ -186,11 +186,15 @@ let
         <keybind key="XF86AudioLowerVolume"><action name="Execute" command="wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 6%-" /></keybind>
         <keybind key="XF86AudioMute"><action name="Execute" command="wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" /></keybind>
         <keybind key="XF86AudioMicMute"><action name="Execute" command="wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle" /></keybind>
+
+        <!-- Brightness control -->
+        <keybind key="XF86MonBrightnessUp"><action name="Execute" command="brightnessctl set +5%" /></keybind>
+        <keybind key="XF86MonBrightnessDown"><action name="Execute" command="brightnessctl set 5%-" /></keybind>
       </keyboard>
 
       <theme>
         <cornerRadius>8</cornerRadius>
-        <font name="Adwaita Sans" size="11" />
+        <font name="Cantarell" size="11" />
       </theme>
 
       <windowRules>
@@ -244,7 +248,7 @@ let
     gtk-icon-theme-name=Papirus
     gtk-cursor-theme-name=Adwaita
     gtk-application-prefer-dark-theme=1
-    gtk-font-name=Adwaita Sans 11
+    gtk-font-name=Cantarell 11
     gtk-xft-antialias=1
     gtk-xft-hinting=1
     gtk-xft-hintstyle=hintslight

@@ -41,13 +41,14 @@
           noto-fonts-cjk-serif
           noto-fonts-color-emoji
           adwaita-fonts
+          cantarell-fonts
           font-awesome
           nerd-fonts.symbols-only
         ];
         fonts.fontconfig = {
           defaultFonts = {
             serif = [ "Noto Serif" "Noto Serif CJK JP" ];
-            sansSerif = [ "Adwaita Sans" "Noto Sans" "Noto Sans CJK JP" ];
+            sansSerif = [ "Cantarell" "Adwaita Sans" "Noto Sans" "Noto Sans CJK JP" ];
             monospace = [ "Noto Sans Mono" "Noto Sans CJK JP" ];
           };
         };
@@ -144,6 +145,7 @@
           adwaita-icon-theme
           antigravity-fhs
           awscli2
+          brightnessctl
           claude-code
           ffmpeg
           file
