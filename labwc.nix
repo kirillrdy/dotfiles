@@ -5,10 +5,15 @@ let
     position = "top";
     height = 32;
     spacing = 4;
-    modules-left = [ "labwc/workspaces" ];
+    modules-left = [ "custom/launcher" "labwc/workspaces" ];
     modules-center = [ "clock" ];
     modules-right = [ "tray" "cpu" "memory" "group/system" ];
     
+    "custom/launcher" = {
+        format = "";
+        on-click = "nwg-drawer";
+        tooltip = false;
+    };
     "labwc/workspaces" = {
         format = "{name}";
     };
@@ -101,6 +106,15 @@ let
     
     #workspaces button:hover {
       background: #454545;
+    }
+
+    #custom-launcher {
+        padding: 0 12px;
+        margin: 4px;
+        border-radius: 16px;
+    }
+    #custom-launcher:hover {
+        background: #333333;
     }
 
     #clock, #cpu, #memory {
