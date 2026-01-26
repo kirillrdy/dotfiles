@@ -154,6 +154,13 @@ let
         <gap>5</gap>
       </core>
 
+      <libinput>
+        <device category="default">
+          <naturalScroll>yes</naturalScroll>
+          <tap>no</tap>
+        </device>
+      </libinput>
+
       <windowSwitcher preview="no" outlines="no">
         <osd show="yes" style="thumbnail" output="all" thumbnailLabelFormat="%T" />
       </windowSwitcher>
