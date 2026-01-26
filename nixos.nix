@@ -92,7 +92,18 @@
         virtualisation.docker.enable = true;
         virtualisation.docker.storageDriver = "zfs";
         hardware.nvidia-container-toolkit.enable = false;
-        hardware.graphics.enable32Bit = false;
+        hardware.graphics = {
+          enable = true;
+          enable32Bit = false;
+          extraPackages = with pkgs;
+            if enableNvidia then
+              [ nvidia-vaapi-driver ]
+            else
+              [
+                intel-media-driver
+                intel-vaapi-driver
+              ];
+        };
         environment.systemPackages = with pkgs; [
           (if enableNvidia then btop-cuda else btop)
           (import ./neovim.nix pkgs)
