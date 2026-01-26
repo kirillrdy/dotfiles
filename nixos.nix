@@ -32,8 +32,9 @@
           fsType = "vfat";
         };
         fonts.packages = with pkgs; [ 
-          kochi-substitute 
           noto-fonts
+          noto-fonts-cjk-sans
+          noto-fonts-cjk-serif
           noto-fonts-color-emoji
           adwaita-fonts
           font-awesome
@@ -41,9 +42,9 @@
         ];
         fonts.fontconfig = {
           defaultFonts = {
-            serif = [ "Noto Serif" "kochi-substitute" ];
-            sansSerif = [ "Adwaita Sans" "Noto Sans" "kochi-substitute" ];
-            monospace = [ "Noto Sans Mono" "kochi-substitute" ];
+            serif = [ "Noto Serif" "Noto Serif CJK JP" ];
+            sansSerif = [ "Adwaita Sans" "Noto Sans" "Noto Sans CJK JP" ];
+            monospace = [ "Noto Sans Mono" "Noto Sans CJK JP" ];
           };
         };
         hardware.nvidia.modesetting.enable = enableNvidia;
