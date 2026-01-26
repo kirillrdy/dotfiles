@@ -261,12 +261,20 @@ in
     wlr-randr --output eDP-1 --scale ${toString monitorScale}
     swaybg -i ${pkgs.nixos-artwork.wallpapers.simple-blue.src} -m fill >/dev/null 2>&1 &
     waybar >/dev/null 2>&1 &
+    waycorner >/dev/null 2>&1 &
     nwg-dock-hyprland -d -p bottom -i 32 -w 5 >/dev/null 2>&1 &
   '';
 
   # Configure Waybar defaults
   environment.etc."xdg/waybar/config".text = builtins.toJSON waybarConfig;
   environment.etc."xdg/waybar/style.css".text = waybarStyle;
+
+  # Waycorner Configuration (Hot Corner)
+  environment.etc."xdg/waycorner/config.toml".text = ''
+    [left]
+    command = "nwg-drawer"
+    locations = ["top_left"]
+  '';
 
   # Global GTK settings
   environment.etc."gtk-3.0/settings.ini".text = gtkSettings;
