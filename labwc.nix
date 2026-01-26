@@ -32,7 +32,7 @@ let
     };
     network = {
         format-wifi = "";
-        format-ethernet = "";
+        format-ethernet = "";
         format-disconnected = "";
         tooltip-format = "{essid} ({signalStrength}%)";
     };
@@ -238,7 +238,7 @@ in
     
     # Start components
     wlr-randr --output eDP-1 --scale 2.0
-    swaybg -i ${pkgs.nixos-artwork.wallpapers.simple-dark-gray-bottom.src} -m center >/dev/null 2>&1 &
+    swaybg -i ${pkgs.nixos-artwork.wallpapers.simple-blue.src} -m fill >/dev/null 2>&1 &
     waybar >/dev/null 2>&1 &
     nwg-dock-hyprland -d -p bottom -i 32 -w 5 >/dev/null 2>&1 &
   '';
