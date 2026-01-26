@@ -1,5 +1,7 @@
-{ pkgs, ... }:
+{ pkgs, config, lib, ... }:
 let
+  monitorScale = if config.networking.hostName == "hagi" then 2.0 else 1.0;
+  
   waybarConfig = {
     layer = "top";
     position = "top";
@@ -226,9 +228,9 @@ let
     osd.border.color: #454545
     
     osd.window-switcher.style-thumbnail.width.max: 80%
-    osd.window-switcher.style-thumbnail.item.width: 120
-    osd.window-switcher.style-thumbnail.item.height: 140
-    osd.window-switcher.style-thumbnail.item.icon.size: 96
+    osd.window-switcher.style-thumbnail.item.width: 100
+    osd.window-switcher.style-thumbnail.item.height: 120
+    osd.window-switcher.style-thumbnail.item.icon.size: 64
     osd.window-switcher.style-thumbnail.item.padding: 4
     osd.window-switcher.style-thumbnail.item.active.border.width: 2
     osd.window-switcher.style-thumbnail.item.active.border.color: #353535
@@ -256,7 +258,7 @@ in
   environment.etc."xdg/labwc/themerc".text = labwcTheme;
   environment.etc."xdg/labwc/autostart".text = ''
     # Start components
-    wlr-randr --output eDP-1 --scale 2.0
+    wlr-randr --output eDP-1 --scale ${toString monitorScale}
     swaybg -i ${pkgs.nixos-artwork.wallpapers.simple-blue.src} -m fill >/dev/null 2>&1 &
     waybar >/dev/null 2>&1 &
     nwg-dock-hyprland -d -p bottom -i 32 -w 5 >/dev/null 2>&1 &
@@ -288,9 +290,9 @@ in
           # --- FORCE DEFAULTS (src/theme.c) ---
           
           # Dimensions
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_width = 300;|theme->osd_window_switcher_thumbnail.item_width = 140;|' "$THEME_FILE"
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 160;|' "$THEME_FILE"
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 128;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_width = 300;|theme->osd_window_switcher_thumbnail.item_width = 100;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 120;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 64;|' "$THEME_FILE"
           
           # Colors (Force Dark Gray BG, Dark Gray Border to remove blue)
           sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_bg_color\[0\] = FLT_MIN;|parse_hexstr("#333333", theme->osd_window_switcher_thumbnail.item_active_bg_color);|' "$THEME_FILE"
