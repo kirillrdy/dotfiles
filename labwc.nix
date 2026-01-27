@@ -190,6 +190,9 @@ let
         <!-- Brightness control -->
         <keybind key="XF86MonBrightnessUp"><action name="Execute" command="swayosd-client --brightness raise" /></keybind>
         <keybind key="XF86MonBrightnessDown"><action name="Execute" command="swayosd-client --brightness lower" /></keybind>
+        <!-- Screenshots -->
+        <keybind key="Print"><action name="Execute" command="grim - | wl-copy" /></keybind>
+        <keybind key="S-Print"><action name="Execute" command='grim -g "$(slurp)" - | wl-copy' /></keybind>
       </keyboard>
 
       <theme>
@@ -361,5 +364,8 @@ in
   ];
 
   # Install necessary packages (if not already in nixos.nix, but duplicating here ensures this module is self-contained-ish)
-  # environment.systemPackages = with pkgs; [ ... ]; 
+  environment.systemPackages = with pkgs; [
+    grim
+    slurp
+  ];
 }
