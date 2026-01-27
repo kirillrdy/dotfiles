@@ -89,7 +89,7 @@ index 24505a31..947f95a0 100644
  	}
  
  	/* title */
-+	title_y = switcher_theme->item_width - 6;
++	title_y = switcher_theme->item_width - 36;
 -	const char *title = view_get_string_prop(view, "title");
 +	const char *app_id = view_get_string_prop(view, "app_id");
 +	const char *title = app_id ? desktop_entry_name_lookup(server, app_id) : NULL;
