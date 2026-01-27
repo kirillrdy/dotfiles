@@ -263,7 +263,8 @@ let
       </keyboard>
 
       <theme>
-        <cornerRadius>8</cornerRadius>
+        <name>Adwaita-Labwc</name>
+        <cornerRadius>10</cornerRadius>
         <font name="Cantarell" size="11" />
       </theme>
 
@@ -284,32 +285,7 @@ let
     </labwc_config>
   '';
 
-  # Labwc Theme Configuration (Adwaita-like dark)
-  labwcTheme = ''
-    border.width: 0
-    window.active.border.color: #353535
-    window.inactive.border.color: #353535
-    window.active.title.bg.color: #353535
-    window.inactive.title.bg.color: #242424
-    window.active.label.text.color: #ffffff
-    window.inactive.label.text.color: #9a9a9a
-    window.active.button.unpressed.image.color: #ffffff
-    window.inactive.button.unpressed.image.color: #9a9a9a
 
-    # OSD Switcher (Thumbnail style)
-    osd.bg.color: #1e1e1e
-    osd.border.width: 1
-    osd.border.color: #454545
-
-    osd.window-switcher.style-thumbnail.width.max: 80%
-    osd.window-switcher.style-thumbnail.item.width: 148
-    osd.window-switcher.style-thumbnail.item.height: 168
-    osd.window-switcher.style-thumbnail.item.icon.size: 96
-    osd.window-switcher.style-thumbnail.item.padding: 12
-    osd.window-switcher.style-thumbnail.item.active.border.width: 0
-    osd.window-switcher.style-thumbnail.item.active.border.color: #353535
-    osd.window-switcher.style-thumbnail.item.active.bg.color: #353535
-  '';
 
   swayosdStyle = ''
     window {
@@ -355,11 +331,118 @@ let
     gtk-xft-rgba=rgb
   '';
 
+  # Custom Adwaita Theme for Labwc
+  adwaitaLabwcTheme = pkgs.stdenv.mkDerivation {
+    name = "adwaita-labwc-theme";
+    phases = [ "installPhase" ];
+    installPhase = ''
+      mkdir -p $out/share/themes/Adwaita-Labwc/openbox-3
+      cd $out/share/themes/Adwaita-Labwc/openbox-3
+
+      # --- THEME RC ---
+      cat > themerc <<EOF
+      # Adwaita-like theme for Labwc
+      # Colors based on Adwaita Dark
+      
+      border.width: 0
+      padding.width: 8
+      padding.height: 8
+      window.active.border.color: #353535
+      window.inactive.border.color: #353535
+      window.active.title.bg.color: #353535
+      window.inactive.title.bg.color: #242424
+      window.active.label.text.color: #ffffff
+      window.inactive.label.text.color: #9a9a9a
+      
+      window.active.button.unpressed.image.color: #ffffff
+      window.inactive.button.unpressed.image.color: #9a9a9a
+
+      # Button layout and style
+      window.button.width: 24
+      window.button.spacing: 8
+
+      # Button Icons (SVGs)
+      window.active.button.close.unpressed.image: close.svg
+      window.active.button.close.hover.image: close_hover.svg
+      window.active.button.maximize.unpressed.image: match.svg
+      window.active.button.maximize.hover.image: match_hover.svg
+      window.active.button.iconify.unpressed.image: iconify.svg
+      window.active.button.iconify.hover.image: iconify_hover.svg
+      
+      # For inactive, reuse unpressed or specific ones
+      window.inactive.button.close.unpressed.image: close.svg
+      window.inactive.button.maximize.unpressed.image: match.svg
+      window.inactive.button.iconify.unpressed.image: iconify.svg
+
+      # OSD Switcher (Thumbnail style)
+      osd.bg.color: #1e1e1e
+      osd.border.width: 1
+      osd.border.color: #454545
+
+      osd.window-switcher.style-thumbnail.width.max: 80%
+      osd.window-switcher.style-thumbnail.item.width: 148
+      osd.window-switcher.style-thumbnail.item.height: 168
+      osd.window-switcher.style-thumbnail.item.icon.size: 96
+      osd.window-switcher.style-thumbnail.item.padding: 12
+      osd.window-switcher.style-thumbnail.item.active.border.width: 0
+      osd.window-switcher.style-thumbnail.item.active.border.color: #353535
+      osd.window-switcher.style-thumbnail.item.active.bg.color: #353535
+      EOF
+
+      # --- ICONS ---
+      
+      # CLOSE (Normal: Transparent bg, Icon only)
+      cat > close.svg <<EOF
+      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M7 7L17 17M17 7L7 17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      EOF
+
+      # CLOSE (Hover: Red circle, White icon)
+      cat > close_hover.svg <<EOF
+      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="12" fill="#E01B24"/>
+        <path d="M7 7L17 17M17 7L7 17" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      EOF
+
+      # MAXIMIZE (Normal) - Rect
+      cat > match.svg <<EOF
+      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <rect x="6" y="6" width="12" height="12" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
+      </svg>
+      EOF
+
+      # MAXIMIZE (Hover: Grey circle)
+      cat > match_hover.svg <<EOF
+      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="12" fill="#505050"/>
+        <rect x="6" y="6" width="12" height="12" rx="2" stroke="#ffffff" stroke-width="2" fill="none"/>
+      </svg>
+      EOF
+
+      # ICONIFY (Minimize) (Normal) - Line
+      cat > iconify.svg <<EOF
+      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M6 12H18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      EOF
+
+      # ICONIFY (Hover: Grey circle)
+      cat > iconify_hover.svg <<EOF
+      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="12" fill="#505050"/>
+        <path d="M6 12H18" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      EOF
+    '';
+  };
+
 in
 {
   # Configure Labwc defaults in /etc/xdg/labwc
   environment.etc."xdg/labwc/rc.xml".text = labwcRc;
-  environment.etc."xdg/labwc/themerc".text = labwcTheme;
+
   environment.etc."xdg/labwc/autostart".text = ''
     # Start components
     wlr-randr --output eDP-1 --scale ${toString monitorScale}
@@ -437,5 +520,6 @@ in
   environment.systemPackages = with pkgs; [
     grim
     slurp
+    adwaitaLabwcTheme
   ];
 }
