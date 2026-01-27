@@ -5,6 +5,18 @@
   ...
 }:
 let
+  volumeRaise = pkgs.writeShellScript "volume-raise" ''
+    ${pkgs.swayosd}/bin/swayosd-client --output-volume raise
+    ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i audio-volume-change -d "changeVolume"
+  '';
+  volumeLower = pkgs.writeShellScript "volume-lower" ''
+    ${pkgs.swayosd}/bin/swayosd-client --output-volume lower
+    ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i audio-volume-change -d "changeVolume"
+  '';
+  volumeMute = pkgs.writeShellScript "volume-mute" ''
+    ${pkgs.swayosd}/bin/swayosd-client --output-volume mute-toggle
+  '';
+
   monitorScale = if config.networking.hostName == "hagi" then 2.0 else 1.0;
 
   waybarConfig = {
@@ -225,17 +237,17 @@ let
         <keybind key="W-Down"><action name="SnapToEdge" direction="bottom" /></keybind>
 
         <!-- Volume control -->
-        <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="swayosd-client --output-volume raise ; canberra-gtk-play -i audio-volume-change -d 'changeVolume'" /></keybind>
-        <keybind key="XF86AudioLowerVolume"><action name="Execute" command="swayosd-client --output-volume lower ; canberra-gtk-play -i audio-volume-change -d 'changeVolume'" /></keybind>
-        <keybind key="XF86AudioMute"><action name="Execute" command="swayosd-client --output-volume mute-toggle" /></keybind>
-        <keybind key="XF86AudioMicMute"><action name="Execute" command="swayosd-client --input-volume mute-toggle" /></keybind>
+        <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="${volumeRaise}" /></keybind>
+        <keybind key="XF86AudioLowerVolume"><action name="Execute" command="${volumeLower}" /></keybind>
+        <keybind key="XF86AudioMute"><action name="Execute" command="${volumeMute}" /></keybind>
+        <keybind key="XF86AudioMicMute"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --input-volume mute-toggle" /></keybind>
 
         <!-- Brightness control -->
-        <keybind key="XF86MonBrightnessUp"><action name="Execute" command="swayosd-client --brightness raise" /></keybind>
-        <keybind key="XF86MonBrightnessDown"><action name="Execute" command="swayosd-client --brightness lower" /></keybind>
+        <keybind key="XF86MonBrightnessUp"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --brightness raise" /></keybind>
+        <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --brightness lower" /></keybind>
         <!-- Screenshots -->
-        <keybind key="Print"><action name="Execute" command="grim - | wl-copy" /></keybind>
-        <keybind key="S-Print"><action name="Execute" command="grim -g &quot;$(slurp)&quot; - | wl-copy" /></keybind>
+        <keybind key="Print"><action name="Execute" command="${pkgs.grim}/bin/grim - | ${pkgs.wl-clipboard}/bin/wl-copy" /></keybind>
+        <keybind key="S-Print"><action name="Execute" command="${pkgs.grim}/bin/grim -g &quot;$(${pkgs.slurp}/bin/slurp)&quot; - | ${pkgs.wl-clipboard}/bin/wl-copy" /></keybind>
       </keyboard>
 
       <theme>
