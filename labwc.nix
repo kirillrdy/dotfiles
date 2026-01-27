@@ -94,6 +94,7 @@ let
     };
     battery = {
       format = "{icon} {time}";
+      format-charging = "⚡ {icon} {time}";
       format-time = "{H}:{m}";
       format-icons = [
         "󰂎"
@@ -411,8 +412,8 @@ in
           sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 96;|' "$THEME_FILE"
 
           # Colors (Force Dark Gray BG, Dark Gray Border to remove blue)
-          sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_bg_color\[0\] = FLT_MIN;|parse_hexstr("#333333", theme->osd_window_switcher_thumbnail.item_active_bg_color);|' "$THEME_FILE"
-          sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_border_color\[0\] = FLT_MIN;|parse_hexstr("#333333", theme->osd_window_switcher_thumbnail.item_active_border_color);|' "$THEME_FILE"
+          sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_bg_color\[0\] = FLT_MIN;|parse_hexstr("#353535", theme->osd_window_switcher_thumbnail.item_active_bg_color);|' "$THEME_FILE"
+          sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_border_color\[0\] = FLT_MIN;|parse_hexstr("#353535", theme->osd_window_switcher_thumbnail.item_active_border_color);|' "$THEME_FILE"
 
           # Force OSD Main Background Color (GNOME Dark)
           # Replace initialization to FLT_MIN
