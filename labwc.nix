@@ -94,7 +94,7 @@ let
     };
     battery = {
       format = "{icon} {time}";
-      format-time = "{H}:{M}";
+      format-time = "{H}:{m}";
       format-icons = [
         "󰂎"
         "󰁺"
