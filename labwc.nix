@@ -1,78 +1,121 @@
-{ pkgs, config, lib, ... }:
+{
+  pkgs,
+  config,
+  lib,
+  ...
+}:
 let
   monitorScale = if config.networking.hostName == "hagi" then 2.0 else 1.0;
-  
+
   waybarConfig = {
     layer = "top";
     position = "top";
     height = 32;
     spacing = 4;
-    modules-left = [ "custom/launcher" "labwc/workspaces" ];
+    modules-left = [
+      "custom/launcher"
+      "labwc/workspaces"
+    ];
     modules-center = [ "clock" ];
-    modules-right = [ "tray" "cpu" "memory" "group/system" ];
-    
+    modules-right = [
+      "tray"
+      "cpu"
+      "memory"
+      "group/system"
+    ];
+
     "custom/launcher" = {
-        format = "";
-        on-click = "nwg-drawer";
-        tooltip = false;
+      format = "";
+      on-click = "nwg-drawer";
+      tooltip = false;
     };
     "labwc/workspaces" = {
-        format = "{name}";
+      format = "{name}";
     };
     clock = {
-        format = "{:%b %d %H:%M}";
-        tooltip-format = "<big>{:%Y %B}</big>\n<tt>{calendar}</tt>";
+      format = "{:%b %d %H:%M}";
+      tooltip-format = "<big>{:%Y %B}</big>\n<tt>{calendar}</tt>";
     };
     cpu = {
-        interval = 2;
-        format = "{icon} {usage}%";
-        format-icons = [" " "▂" "▃" "▄" "▅" "▆" "▇" "█"];
+      interval = 2;
+      format = "{icon} {usage}%";
+      format-icons = [
+        " "
+        "▂"
+        "▃"
+        "▄"
+        "▅"
+        "▆"
+        "▇"
+        "█"
+      ];
     };
     memory = {
-        interval = 5;
-        format = " {percentage}%";
-        tooltip-format = "{used:0.1f}G/{total:0.1f}G";
+      interval = 5;
+      format = " {percentage}%";
+      tooltip-format = "{used:0.1f}G/{total:0.1f}G";
     };
     "group/system" = {
-        orientation = "horizontal";
-        modules = [ "network" "pulseaudio" "pulseaudio#source" "battery" ];
+      orientation = "horizontal";
+      modules = [
+        "network"
+        "pulseaudio"
+        "pulseaudio#source"
+        "battery"
+      ];
     };
     network = {
-        format-wifi = "";
-        format-ethernet = "";
-        format-disconnected = "";
-        tooltip-format = "{essid} ({signalStrength}%)";
+      format-wifi = "";
+      format-ethernet = "";
+      format-disconnected = "";
+      tooltip-format = "{essid} ({signalStrength}%)";
     };
     battery = {
-        format = "{time} {icon}";
-        format-icons = ["󰂎" "󰁺" "󰁻" "󰁼" "󰁽" "󰁾" "󰁿" "󰂀" "󰂁" "󰂂" "󰁹"];
+      format = "{time} {icon}";
+      format-icons = [
+        "󰂎"
+        "󰁺"
+        "󰁻"
+        "󰁼"
+        "󰁽"
+        "󰁾"
+        "󰁿"
+        "󰂀"
+        "󰂁"
+        "󰂂"
+        "󰁹"
+      ];
     };
     pulseaudio = {
-        format = "{icon}";
-        format-bluetooth = "{icon}";
-        format-bluetooth-muted = " {icon}";
-        format-muted = "";
-        format-icons = {
-            headphone = "";
-            hands-free = "";
-            headset = "";
-            phone = "";
-            portable = "";
-            car = "";
-            default = ["" "" ""];
-        };
-        on-click = "pavucontrol";
-        tooltip-format = "{volume}%";
+      format = "{icon}";
+      format-bluetooth = "{icon}";
+      format-bluetooth-muted = " {icon}";
+      format-muted = "";
+      format-icons = {
+        headphone = "";
+        hands-free = "";
+        headset = "";
+        phone = "";
+        portable = "";
+        car = "";
+        default = [
+          ""
+          ""
+          ""
+        ];
+      };
+      on-click = "pavucontrol";
+      tooltip-format = "{volume}%";
     };
     "pulseaudio#source" = {
-        format = "{format_source}";
-        format-source = "";
-        format-source-muted = "";
-        on-click = "pavucontrol";
-        tooltip-format = "{volume}%";
+      format = "{format_source}";
+      format-source = "";
+      format-source-muted = "";
+      on-click = "pavucontrol";
+      tooltip-format = "{volume}%";
     };
     tray = {
-        spacing = 10;
+      spacing = 10;
     };
   };
 
@@ -85,12 +128,12 @@ let
       font-weight: bold;
       min-height: 0;
     }
-    
+
     window#waybar {
       background: #000000;
       color: #ffffff;
     }
-    
+
     #workspaces button {
       padding: 0 12px;
       background: transparent;
@@ -98,14 +141,14 @@ let
       border-radius: 16px;
       margin: 4px;
     }
-    
+
     #workspaces button.focused {
       background: #333333;
       box-shadow: inset 0 -2px #ffffff; /* Underline indicator like some GNOME versions or just pill? GNOME 40+ is just pill */
       background: #333333;
       box-shadow: none;
     }
-    
+
     #workspaces button:hover {
       background: #454545;
     }
@@ -131,7 +174,7 @@ let
     #tray {
         margin-right: 8px;
     }
-    
+
     /* Group: System Indicators */
     #group-system {
         background: transparent;
@@ -139,7 +182,7 @@ let
         padding: 0 6px;
         border-radius: 16px;
     }
-    
+
     #group-system:hover {
         background: #333333;
     }
@@ -182,8 +225,8 @@ let
         <keybind key="W-Down"><action name="SnapToEdge" direction="bottom" /></keybind>
 
         <!-- Volume control -->
-        <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="swayosd-client --output-volume raise &amp;&amp; canberra-gtk-play -i audio-volume-change -d 'changeVolume'" /></keybind>
-        <keybind key="XF86AudioLowerVolume"><action name="Execute" command="swayosd-client --output-volume lower &amp;&amp; canberra-gtk-play -i audio-volume-change -d 'changeVolume'" /></keybind>
+        <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="swayosd-client --output-volume raise ; canberra-gtk-play -i audio-volume-change -d 'changeVolume'" /></keybind>
+        <keybind key="XF86AudioLowerVolume"><action name="Execute" command="swayosd-client --output-volume lower ; canberra-gtk-play -i audio-volume-change -d 'changeVolume'" /></keybind>
         <keybind key="XF86AudioMute"><action name="Execute" command="swayosd-client --output-volume mute-toggle" /></keybind>
         <keybind key="XF86AudioMicMute"><action name="Execute" command="swayosd-client --input-volume mute-toggle" /></keybind>
 
@@ -192,7 +235,7 @@ let
         <keybind key="XF86MonBrightnessDown"><action name="Execute" command="swayosd-client --brightness lower" /></keybind>
         <!-- Screenshots -->
         <keybind key="Print"><action name="Execute" command="grim - | wl-copy" /></keybind>
-        <keybind key="S-Print"><action name="Execute" command='grim -g "$(slurp)" - | wl-copy' /></keybind>
+        <keybind key="S-Print"><action name="Execute" command="grim -g &quot;$(slurp)&quot; - | wl-copy" /></keybind>
       </keyboard>
 
       <theme>
@@ -216,7 +259,7 @@ let
       </mouse>
     </labwc_config>
   '';
-  
+
   # Labwc Theme Configuration (Adwaita-like dark)
   labwcTheme = ''
     border.width: 0
@@ -233,7 +276,7 @@ let
     osd.bg.color: #1e1e1e
     osd.border.width: 1
     osd.border.color: #454545
-    
+
     osd.window-switcher.style-thumbnail.width.max: 80%
     osd.window-switcher.style-thumbnail.item.width: 100
     osd.window-switcher.style-thumbnail.item.height: 120
@@ -243,7 +286,7 @@ let
     osd.window-switcher.style-thumbnail.item.active.border.color: #353535
     osd.window-switcher.style-thumbnail.item.active.bg.color: #353535
   '';
-  
+
   swayosdStyle = ''
     window {
       background: transparent;
@@ -321,37 +364,40 @@ in
 
   # Ensure dconf is enabled so GTK apps store settings
   programs.dconf.enable = true;
-  
+
   nixpkgs.overlays = [
     (final: prev: {
       labwc = prev.labwc.overrideAttrs (old: {
-        buildInputs = (old.buildInputs or []) ++ [ prev.pkgs.librsvg prev.pkgs.libsfdo ];
-        
-        patches = (old.patches or []) ++ [ ./labwc-gnome-alt-tab.patch ];
-        
+        buildInputs = (old.buildInputs or [ ]) ++ [
+          prev.pkgs.librsvg
+          prev.pkgs.libsfdo
+        ];
+
+        patches = (old.patches or [ ]) ++ [ ./labwc-gnome-alt-tab.patch ];
+
         postPatch = (old.postPatch or "") + ''
           # Find the file (handle potential path differences)
           RCXML_FILE=$(find . -name rcxml.c)
           THEME_FILE=$(find . -name theme.c)
-          
+
           # --- FORCE DEFAULTS (src/theme.c) ---
-          
+
           # Dimensions
           sed -i 's|theme->osd_window_switcher_thumbnail.item_width = 300;|theme->osd_window_switcher_thumbnail.item_width = 100;|' "$THEME_FILE"
           sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 120;|' "$THEME_FILE"
           sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 64;|' "$THEME_FILE"
-          
+
           # Colors (Force Dark Gray BG, Dark Gray Border to remove blue)
           sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_bg_color\[0\] = FLT_MIN;|parse_hexstr("#333333", theme->osd_window_switcher_thumbnail.item_active_bg_color);|' "$THEME_FILE"
           sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_border_color\[0\] = FLT_MIN;|parse_hexstr("#333333", theme->osd_window_switcher_thumbnail.item_active_border_color);|' "$THEME_FILE"
-          
+
           # Force OSD Main Background Color (GNOME Dark)
           # Replace initialization to FLT_MIN
           sed -i -E 's|theme->osd_bg_color\[0\] = FLT_MIN;|parse_hexstr("#1e1e1e", theme->osd_bg_color);|' "$THEME_FILE"
 
           # Force OSD Text Color (White)
           sed -i -E 's|theme->osd_label_text_color\[0\] = FLT_MIN;|parse_hexstr("#ffffff", theme->osd_label_text_color);|' "$THEME_FILE"
-          
+
           # --- FORCE DEFAULTS (src/config/rcxml.c) ---
           sed -i -E 's|[[:space:]]*rc\.window_switcher\.style = WINDOW_SWITCHER_CLASSIC;|rc.window_switcher.style = WINDOW_SWITCHER_THUMBNAIL;|g' "$RCXML_FILE"
 
