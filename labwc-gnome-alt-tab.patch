@@ -55,7 +55,7 @@ index 24505a31..947f95a0 100644
  };
  
  static void
-@@ -129,18 +167,15 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
+@@ -129,18 +167,19 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
  	item->view = view;
  
  	/* background for selected item */
@@ -68,11 +68,15 @@ index 24505a31..947f95a0 100644
 -		.height = switcher_theme->item_height,
 -	};
 -	item->active_bg = lab_scene_rect_create(item->tree, &opts);
++	int margin = 6;
++	int w = switcher_theme->item_width - 2 * margin;
++	int h = switcher_theme->item_height - 2 * margin;
 +	struct wlr_buffer *bg_buf = create_rounded_rect_buffer(
-+		switcher_theme->item_width, switcher_theme->item_height, 12,
++		w > 0 ? w : 1, h > 0 ? h : 1, 12,
 +		switcher_theme->item_active_bg_color,
 +		switcher_theme->item_active_border_color, 0);
 +	item->active_bg = wlr_scene_buffer_create(item->tree, bg_buf);
++	wlr_scene_node_set_position(&item->active_bg->node, margin, margin);
 +	wlr_buffer_drop(bg_buf);
  
  	/* thumbnail */
@@ -81,19 +85,19 @@ index 24505a31..947f95a0 100644
  	if (thumb_buffer) {
  		struct wlr_scene_buffer *thumb_scene_buffer =
  			wlr_scene_buffer_create(item->tree, thumb_buffer);
-@@ -155,7 +190,10 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
+@@ -155,7 +194,10 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
  	}
  
  	/* title */
 -	const char *title = view_get_string_prop(view, "title");
 +	const char *app_id = view_get_string_prop(view, "app_id");
-+	const char *title = desktop_entry_name_lookup(server, app_id);
-+	if (!title) title = app_id;
++	const char *title = app_id ? desktop_entry_name_lookup(server, app_id) : NULL;
++	if (!title) title = app_id ? app_id : view_get_string_prop(view, "title");
 +
  	if (title) {
  		item->normal_title = create_title(item->tree, switcher_theme,
  			title, theme->osd_label_text_color,
-@@ -171,7 +209,7 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
+@@ -171,7 +213,7 @@ create_item_scene(struct wlr_scene_tree *parent, struct view *view,
  		item->tree, server, icon_size, icon_size);
  	scaled_icon_buffer_set_view(icon_buffer, view);
  	int x = (switcher_theme->item_width - icon_size) / 2;
@@ -102,7 +106,7 @@ index 24505a31..947f95a0 100644
  	wlr_scene_node_set_position(&icon_buffer->scene_buffer->node, x, y);
  
  	return item;
-@@ -240,22 +278,18 @@ osd_thumbnail_create(struct output *output, struct wl_array *views)
+@@ -240,22 +282,18 @@ osd_thumbnail_create(struct output *output, struct wl_array *views)
  	}
  
  	/* background */
@@ -134,7 +138,7 @@ index 24505a31..947f95a0 100644
  	wlr_scene_node_set_position(&output->osd_scene.tree->node, lx, ly);
  }
  
-@@ -265,7 +299,7 @@ osd_thumbnail_update(struct output *output)
+@@ -265,7 +303,7 @@ osd_thumbnail_update(struct output *output)
  	struct osd_thumbnail_scene_item *item;
  	wl_array_for_each(item, &output->osd_scene.items) {
  		bool active = (item->view == output->server->osd_state.cycle_view);
@@ -143,7 +147,7 @@ index 24505a31..947f95a0 100644
  		wlr_scene_node_set_enabled(
  			&item->active_title->scene_buffer->node, active);
  		wlr_scene_node_set_enabled(
-@@ -276,4 +310,4 @@ osd_thumbnail_update(struct output *output)
+@@ -276,4 +314,4 @@ osd_thumbnail_update(struct output *output)
  struct osd_impl osd_thumbnail_impl = {
  	.create = osd_thumbnail_create,
  	.update = osd_thumbnail_update,

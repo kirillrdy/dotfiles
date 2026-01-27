@@ -93,7 +93,8 @@ let
       tooltip-format = "{essid} ({signalStrength}%)";
     };
     battery = {
-      format = "{time} {icon}";
+      format = "{icon} {time}";
+      format-time = "{H}:{M}";
       format-icons = [
         "󰂎"
         "󰁺"
@@ -300,11 +301,11 @@ let
     osd.border.color: #454545
 
     osd.window-switcher.style-thumbnail.width.max: 80%
-    osd.window-switcher.style-thumbnail.item.width: 100
-    osd.window-switcher.style-thumbnail.item.height: 120
-    osd.window-switcher.style-thumbnail.item.icon.size: 64
-    osd.window-switcher.style-thumbnail.item.padding: 4
-    osd.window-switcher.style-thumbnail.item.active.border.width: 2
+    osd.window-switcher.style-thumbnail.item.width: 148
+    osd.window-switcher.style-thumbnail.item.height: 168
+    osd.window-switcher.style-thumbnail.item.icon.size: 96
+    osd.window-switcher.style-thumbnail.item.padding: 12
+    osd.window-switcher.style-thumbnail.item.active.border.width: 0
     osd.window-switcher.style-thumbnail.item.active.border.color: #353535
     osd.window-switcher.style-thumbnail.item.active.bg.color: #353535
   '';
@@ -405,9 +406,9 @@ in
           # --- FORCE DEFAULTS (src/theme.c) ---
 
           # Dimensions
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_width = 300;|theme->osd_window_switcher_thumbnail.item_width = 100;|' "$THEME_FILE"
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 120;|' "$THEME_FILE"
-          sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 64;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_width = 300;|theme->osd_window_switcher_thumbnail.item_width = 148;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 168;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 96;|' "$THEME_FILE"
 
           # Colors (Force Dark Gray BG, Dark Gray Border to remove blue)
           sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_bg_color\[0\] = FLT_MIN;|parse_hexstr("#333333", theme->osd_window_switcher_thumbnail.item_active_bg_color);|' "$THEME_FILE"
