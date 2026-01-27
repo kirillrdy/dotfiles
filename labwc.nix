@@ -17,6 +17,16 @@ let
     ${pkgs.swayosd}/bin/swayosd-client --output-volume mute-toggle
   '';
 
+  screenshotRegion = pkgs.writeShellScript "screenshot-region" ''
+    ${pkgs.grim}/bin/grim -g "$(${pkgs.slurp}/bin/slurp)" - | ${pkgs.wl-clipboard}/bin/wl-copy
+    ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i screen-capture -d "screenshot-region"
+  '';
+
+  screenshotFull = pkgs.writeShellScript "screenshot-full" ''
+    ${pkgs.grim}/bin/grim - | ${pkgs.wl-clipboard}/bin/wl-copy
+    ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i screen-capture -d "screenshot-full"
+  '';
+
   monitorScale = if config.networking.hostName == "hagi" then 2.0 else 1.0;
 
   waybarConfig = {
@@ -245,9 +255,9 @@ let
         <!-- Brightness control -->
         <keybind key="XF86MonBrightnessUp"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --brightness raise" /></keybind>
         <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --brightness lower" /></keybind>
-        <!-- Screenshots -->
-        <keybind key="Print"><action name="Execute" command="${pkgs.grim}/bin/grim - | ${pkgs.wl-clipboard}/bin/wl-copy" /></keybind>
-        <keybind key="S-Print"><action name="Execute" command="${pkgs.grim}/bin/grim -g &quot;$(${pkgs.slurp}/bin/slurp)&quot; - | ${pkgs.wl-clipboard}/bin/wl-copy" /></keybind>
+<!-- Screenshots -->
+        <keybind key="Print"><action name="Execute" command="${screenshotFull}" /></keybind>
+        <keybind key="S-Print"><action name="Execute" command="${screenshotRegion}" /></keybind>
       </keyboard>
 
       <theme>
