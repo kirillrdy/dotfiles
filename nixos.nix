@@ -171,7 +171,7 @@
           (if enableNvidia then btop-cuda else btop)
           (import ./neovim.nix pkgs)
           acpi
-          antigravity-fhs
+          antigravity
           awscli2
           brightnessctl
           claude-code
