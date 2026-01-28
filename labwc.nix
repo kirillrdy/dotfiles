@@ -257,8 +257,9 @@ let
             <layout>us</layout>
             <options>caps:none</options>
             <keybind key="W-Return"><action name="Execute" command="ghostty" /></keybind>
-            <keybind key="W"><action name="Execute" command="nwg-drawer" /></keybind>
+            <keybind key="Super_L" onRelease="yes"><action name="Execute" command="nwg-drawer" /></keybind>
             <keybind key="W-q"><action name="Close" /></keybind>
+            <keybind key="W-S-r"><action name="Reconfigure" /></keybind>
             
             <!-- Snap to edges -->
             <keybind key="W-Left"><action name="SnapToEdge" direction="left" /></keybind>
