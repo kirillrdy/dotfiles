@@ -102,6 +102,7 @@
         services.fprintd.enable = !enableNvidia;
         services.gnome.tinysparql.enable = false;
         services.gnome.localsearch.enable = false;
+        services.logind.lidSwitch = "suspend";
         services.openssh.enable = true;
         services.tailscale.enable = true;
         security.rtkit.enable = true;
