@@ -92,7 +92,6 @@
         services.displayManager.gdm.enable = true;
         services.displayManager.autoLogin.enable = true;
         services.displayManager.autoLogin.user = "kirillvr";
-        programs.labwc.enable = true;
         hardware.nvidia.open = true;
         programs.git.enable = true;
         services.avahi.enable = true;
@@ -146,8 +145,6 @@
           (if enableNvidia then btop-cuda else btop)
           (import ./neovim.nix pkgs)
           acpi
-          adw-gtk3
-          adwaita-icon-theme
           antigravity-fhs
           awscli2
           brightnessctl
@@ -164,7 +161,6 @@
           google-chrome
           gopls
           jq
-          libcanberra-gtk3
           lua-language-server
           neovide
           nil
@@ -172,31 +168,15 @@
           nix-update
           nixfmt
           nixpkgs-review
-          (nwg-drawer.overrideAttrs (old: {
-            postPatch = (old.postPatch or "") + ''
-              sed -i 's/if !entry.NoDisplay && (subsequenceMatch(needle, strings.ToLower(entry.NameLoc)) ||/if !entry.NoDisplay \&\& strings.HasPrefix(strings.ToLower(entry.NameLoc), strings.ToLower(needle)) {/' uicomponents.go
-              sed -i '/strings.Contains.*entry.CommentLoc.*/d' uicomponents.go
-              sed -i '/strings.Contains.*entry.Comment.*/d' uicomponents.go
-              sed -i '/strings.Contains.*entry.Exec.*/d' uicomponents.go
-            '';
-          }))
           opencode
-          papirus-icon-theme
           pavucontrol
           pyrefly
           python3Packages.fastavro
           ripgrep
           slack
-          sound-theme-freedesktop
           superhtml
-          swayosd
-          swaybg
           tig
           typescript-language-server
-          waybar
-          waycorner
-          wlr-randr
-          wl-clipboard
           zig_0_15
           zls_0_15
         ];

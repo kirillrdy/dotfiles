@@ -1,7 +1,6 @@
 {
   pkgs,
   config,
-  lib,
   ...
 }:
 let
@@ -334,11 +333,11 @@ let
     }
   '';
 
-  # GTK Settings for adw-gtk3 and Papirus
+  # GTK Settings for adw-gtk3 and Adwaita
   gtkSettings = ''
     [Settings]
     gtk-theme-name=adw-gtk3
-    gtk-icon-theme-name=Papirus
+    gtk-icon-theme-name=Adwaita
     gtk-cursor-theme-name=Adwaita
     gtk-application-prefer-dark-theme=1
     gtk-font-name=Cantarell 11
@@ -489,6 +488,7 @@ in
 
   # Ensure dconf is enabled so GTK apps store settings
   programs.dconf.enable = true;
+  programs.labwc.enable = true;
 
   nixpkgs.overlays = [
     (final: prev: {
@@ -536,10 +536,28 @@ in
 
   # Install necessary packages (if not already in nixos.nix, but duplicating here ensures this module is self-contained-ish)
   environment.systemPackages = with pkgs; [
+    adw-gtk3
+    adwaita-icon-theme
     grim
+    libcanberra-gtk3
+    (nwg-drawer.overrideAttrs (old: {
+      postPatch = (old.postPatch or "") + ''
+        sed -i 's/if !entry.NoDisplay && (subsequenceMatch(needle, strings.ToLower(entry.NameLoc)) ||/if !entry.NoDisplay \&\& strings.HasPrefix(strings.ToLower(entry.NameLoc), strings.ToLower(needle)) {/' uicomponents.go
+        sed -i '/strings.Contains.*entry.CommentLoc.*/d' uicomponents.go
+        sed -i '/strings.Contains.*entry.Comment.*/d' uicomponents.go
+        sed -i '/strings.Contains.*entry.Exec.*/d' uicomponents.go
+      '';
+    }))
     slurp
+    sound-theme-freedesktop
+    swaybg
     swayidle
     swaylock
+    swayosd
+    waybar
+    waycorner
+    wl-clipboard
+    wlr-randr
     adwaitaLabwcTheme
   ];
 }
