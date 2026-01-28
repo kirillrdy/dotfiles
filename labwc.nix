@@ -17,6 +17,26 @@ let
     ${pkgs.swayosd}/bin/swayosd-client --output-volume mute-toggle
   '';
 
+  brightnessLower = pkgs.writeShellScript "brightness-lower" ''
+    # Get current brightness percent
+    CURRENT=$(${pkgs.brightnessctl}/bin/brightnessctl g)
+    MAX=$(${pkgs.brightnessctl}/bin/brightnessctl m)
+    PERCENT=$(( 100 * CURRENT / MAX ))
+    
+    # Minimum threshold (e.g. 5%)
+    MIN=5
+    
+    if [ "$PERCENT" -gt "$MIN" ]; then
+       # Safe to lower by 5%
+       ${pkgs.swayosd}/bin/swayosd-client --brightness -5
+    else
+       # Already at or below min, but ensure we don't go to strict 0 if currently > 1
+       # Also ensures visibility. 
+       # If we want to allow going to exactly MIN, logic holds.
+       :
+    fi
+  '';
+
   screenshotRegion = pkgs.writeShellScript "screenshot-region" ''
     ${pkgs.grim}/bin/grim -g "$(${pkgs.slurp}/bin/slurp)" - | ${pkgs.wl-clipboard}/bin/wl-copy
     ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i screen-capture -d "screenshot-region"
@@ -256,7 +276,7 @@ let
 
         <!-- Brightness control -->
         <keybind key="XF86MonBrightnessUp"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --brightness raise" /></keybind>
-        <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --brightness lower" /></keybind>
+        <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${brightnessLower}" /></keybind>
 <!-- Screenshots -->
         <keybind key="Print"><action name="Execute" command="${screenshotFull}" /></keybind>
         <keybind key="S-Print"><action name="Execute" command="${screenshotRegion}" /></keybind>
