@@ -22,10 +22,10 @@ let
     CURRENT=$(${pkgs.brightnessctl}/bin/brightnessctl g)
     MAX=$(${pkgs.brightnessctl}/bin/brightnessctl m)
     PERCENT=$(( 100 * CURRENT / MAX ))
-    
+
     # Minimum threshold (e.g. 5%)
     MIN=5
-    
+
     if [ "$PERCENT" -gt "$MIN" ]; then
        # Safe to lower by 5%
        ${pkgs.swayosd}/bin/swayosd-client --brightness -5
@@ -65,7 +65,6 @@ let
       "memory"
       "group/system"
     ];
-
     "custom/launcher" = {
       format = "";
       on-click = "nwg-drawer";
@@ -156,7 +155,6 @@ let
       format-source = "";
       format-source-muted = "";
       on-click = "pavucontrol";
-      tooltip-format = "{volume}%";
     };
     tray = {
       spacing = 10;
@@ -237,75 +235,73 @@ let
   '';
 
   labwcRc = ''
-    <labwc_config>
-      <core>
-        <decoration>server</decoration>
-        <gap>5</gap>
-      </core>
+        <labwc_config>
+          <core>
+            <decoration>server</decoration>
+            <gap>5</gap>
+          </core>
 
-      <libinput>
-        <device category="default">
-          <naturalScroll>yes</naturalScroll>
-          <tap>no</tap>
-        </device>
-      </libinput>
+          <libinput>
+            <device category="default">
+              <naturalScroll>yes</naturalScroll>
+              <tap>no</tap>
+            </device>
+          </libinput>
 
-      <windowSwitcher preview="no" outlines="no">
-        <osd show="yes" style="thumbnail" output="all" thumbnailLabelFormat="%T" />
-      </windowSwitcher>
+          <windowSwitcher preview="no" outlines="no">
+            <osd show="yes" style="thumbnail" output="all" thumbnailLabelFormat="%T" />
+          </windowSwitcher>
 
-      <keyboard>
-        <default />
-        <layout>us</layout>
-        <options>caps:none</options>
-        <keybind key="W-Return"><action name="Execute" command="ghostty" /></keybind>
-        <keybind key="Super_L"><action name="Execute" command="nwg-drawer" /></keybind>
-        <keybind key="W-q"><action name="Close" /></keybind>
-        
-        <!-- Snap to edges -->
-        <keybind key="W-Left"><action name="SnapToEdge" direction="left" /></keybind>
-        <keybind key="W-Right"><action name="SnapToEdge" direction="right" /></keybind>
-        <keybind key="W-Up"><action name="SnapToEdge" direction="top" /></keybind>
-        <keybind key="W-Down"><action name="SnapToEdge" direction="bottom" /></keybind>
+          <keyboard>
+            <default />
+            <layout>us</layout>
+            <options>caps:none</options>
+            <keybind key="W-Return"><action name="Execute" command="ghostty" /></keybind>
+            <keybind key="W"><action name="Execute" command="nwg-drawer" /></keybind>
+            <keybind key="W-q"><action name="Close" /></keybind>
+            
+            <!-- Snap to edges -->
+            <keybind key="W-Left"><action name="SnapToEdge" direction="left" /></keybind>
+            <keybind key="W-Right"><action name="SnapToEdge" direction="right" /></keybind>
+            <keybind key="W-Up"><action name="SnapToEdge" direction="top" /></keybind>
+            <keybind key="W-Down"><action name="SnapToEdge" direction="bottom" /></keybind>
 
-        <!-- Volume control -->
-        <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="${volumeRaise}" /></keybind>
-        <keybind key="XF86AudioLowerVolume"><action name="Execute" command="${volumeLower}" /></keybind>
-        <keybind key="XF86AudioMute"><action name="Execute" command="${volumeMute}" /></keybind>
-        <keybind key="XF86AudioMicMute"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --input-volume mute-toggle" /></keybind>
+            <!-- Volume control -->
+            <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="${volumeRaise}" /></keybind>
+            <keybind key="XF86AudioLowerVolume"><action name="Execute" command="${volumeLower}" /></keybind>
+            <keybind key="XF86AudioMute"><action name="Execute" command="${volumeMute}" /></keybind>
+            <keybind key="XF86AudioMicMute"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --input-volume mute-toggle" /></keybind>
 
-        <!-- Brightness control -->
-        <keybind key="XF86MonBrightnessUp"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --brightness raise" /></keybind>
-        <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${brightnessLower}" /></keybind>
-<!-- Screenshots -->
-        <keybind key="Print"><action name="Execute" command="${screenshotFull}" /></keybind>
-        <keybind key="S-Print"><action name="Execute" command="${screenshotRegion}" /></keybind>
-      </keyboard>
+            <!-- Brightness control -->
+            <keybind key="XF86MonBrightnessUp"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --brightness raise" /></keybind>
+            <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${brightnessLower}" /></keybind>
+    <!-- Screenshots -->
+            <keybind key="Print"><action name="Execute" command="${screenshotFull}" /></keybind>
+            <keybind key="S-Print"><action name="Execute" command="${screenshotRegion}" /></keybind>
+          </keyboard>
 
-      <theme>
-        <name>Adwaita-Labwc</name>
-        <cornerRadius>10</cornerRadius>
-        <font name="Cantarell" size="11" />
-      </theme>
+          <theme>
+            <name>Adwaita-Labwc</name>
+            <cornerRadius>10</cornerRadius>
+            <font name="Cantarell" size="11" />
+          </theme>
 
-      <windowRules>
-        <windowRule type="normal">
-          <action name="Maximize" />
-        </windowRule>
-      </windowRules>
+          <windowRules>
+            <windowRule type="normal">
+              <action name="Maximize" />
+            </windowRule>
+          </windowRules>
 
-      <mouse>
-        <default />
-        <context name="Root">
-          <mousebind button="Left" action="Press"><action name="None" /></mousebind>
-          <mousebind button="Right" action="Press"><action name="None" /></mousebind>
-          <mousebind button="Middle" action="Press"><action name="None" /></mousebind>
-        </context>
-      </mouse>
-    </labwc_config>
+          <mouse>
+            <default />
+            <context name="Root">
+              <mousebind button="Left" action="Press"><action name="None" /></mousebind>
+              <mousebind button="Right" action="Press"><action name="None" /></mousebind>
+              <mousebind button="Middle" action="Press"><action name="None" /></mousebind>
+            </context>
+          </mouse>
+        </labwc_config>
   '';
-
-
 
   swayosdStyle = ''
     window {
@@ -363,7 +359,7 @@ let
       cat > themerc <<EOF
       # Adwaita-like theme for Labwc
       # Colors based on Adwaita Dark
-      
+
       border.width: 0
       padding.width: 8
       padding.height: 8
@@ -373,7 +369,7 @@ let
       window.inactive.title.bg.color: #242424
       window.active.label.text.color: #ffffff
       window.inactive.label.text.color: #9a9a9a
-      
+
       window.active.button.unpressed.image.color: #ffffff
       window.inactive.button.unpressed.image.color: #9a9a9a
 
@@ -388,7 +384,7 @@ let
       window.active.button.maximize.hover.image: match_hover.svg
       window.active.button.iconify.unpressed.image: iconify.svg
       window.active.button.iconify.hover.image: iconify_hover.svg
-      
+
       # For inactive, reuse unpressed or specific ones
       window.inactive.button.close.unpressed.image: close.svg
       window.inactive.button.maximize.unpressed.image: match.svg
@@ -410,7 +406,7 @@ let
       EOF
 
       # --- ICONS ---
-      
+
       # CLOSE (Normal: Transparent bg, Icon only)
       cat > close.svg <<EOF
       <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
