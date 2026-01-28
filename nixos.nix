@@ -89,9 +89,19 @@
           user.email = "kirillrdy@gmail.com";
         };
         services.desktopManager.gnome.enable = false;
-        services.displayManager.gdm.enable = true;
-        services.displayManager.autoLogin.enable = true;
-        services.displayManager.autoLogin.user = "kirillvr";
+        services.greetd = {
+          enable = true;
+          settings = {
+            initial_session = {
+              command = "labwc";
+              user = "kirillvr";
+            };
+            default_session = {
+              command = "${pkgs.tuigreet}/bin/tuigreet --time --cmd labwc";
+              user = "greeter";
+            };
+          };
+        };
         hardware.nvidia.open = true;
         programs.git.enable = true;
         services.avahi.enable = true;
