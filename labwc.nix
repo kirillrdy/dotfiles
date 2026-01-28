@@ -482,7 +482,7 @@ in
   # Waycorner Configuration (Hot Corner)
   environment.etc."xdg/waycorner/config.toml".text = ''
     [left]
-    command = "${pkgs.nwg-drawer}/bin/nwg-drawer"
+    command = ["${pkgs.nwg-drawer}/bin/nwg-drawer"]
     locations = ["top_left"]
   '';
 
