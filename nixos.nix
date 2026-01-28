@@ -51,9 +51,24 @@
         ];
         fonts.fontconfig = {
           defaultFonts = {
-            serif = [ "DejaVu Serif" "Source Serif Pro" "Noto Serif CJK JP" ];
-            sansSerif = [ "Cantarell" "Source Sans Pro" "DejaVu Sans" "Adwaita Sans" "Noto Sans CJK JP" ];
-            monospace = [ "Source Code Pro" "DejaVu Sans Mono" "Noto Sans Mono" "Noto Sans CJK JP" ];
+            serif = [
+              "DejaVu Serif"
+              "Source Serif Pro"
+              "Noto Serif CJK JP"
+            ];
+            sansSerif = [
+              "Cantarell"
+              "Source Sans Pro"
+              "DejaVu Sans"
+              "Adwaita Sans"
+              "Noto Sans CJK JP"
+            ];
+            monospace = [
+              "Source Code Pro"
+              "DejaVu Sans Mono"
+              "Noto Sans Mono"
+              "Noto Sans CJK JP"
+            ];
           };
         };
         hardware.nvidia.modesetting.enable = enableNvidia;
@@ -142,7 +157,8 @@
         hardware.graphics = {
           enable = true;
           enable32Bit = false;
-          extraPackages = with pkgs;
+          extraPackages =
+            with pkgs;
             if enableNvidia then
               [ nvidia-vaapi-driver ]
             else
