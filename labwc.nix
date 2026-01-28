@@ -451,6 +451,7 @@ in
     waycorner --config /etc/xdg/waycorner/config.toml >/dev/null 2>&1 &
     swayosd-server >/dev/null 2>&1 &
     nwg-dock-hyprland -d -p bottom -i 32 -w 5 >/dev/null 2>&1 &
+    swayidle -w before-sleep 'swaylock -f -c 000000' >/dev/null 2>&1 &
   '';
 
   # Configure Waybar defaults
@@ -520,6 +521,8 @@ in
   environment.systemPackages = with pkgs; [
     grim
     slurp
+    swayidle
+    swaylock
     adwaitaLabwcTheme
   ];
 }
