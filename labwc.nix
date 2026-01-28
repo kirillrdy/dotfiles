@@ -131,8 +131,8 @@ let
     pulseaudio = {
       format = "{icon}";
       format-bluetooth = "{icon}";
-      format-bluetooth-muted = " {icon}";
-      format-muted = "";
+      format-bluetooth-muted = " {icon}";
+      format-muted = "";
       format-icons = {
         headphone = "";
         hands-free = "";
