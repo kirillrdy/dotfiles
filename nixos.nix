@@ -126,6 +126,7 @@
         services.fprintd.enable = !enableNvidia;
         services.gnome.tinysparql.enable = false;
         services.gnome.localsearch.enable = false;
+        services.power-profiles-daemon.enable = true;
         services.logind.settings.Login.HandleLidSwitch = "suspend";
         services.openssh.enable = true;
         services.tailscale.enable = true;

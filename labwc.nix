@@ -62,6 +62,7 @@ let
     modules-center = [ "clock" ];
     modules-right = [
       "tray"
+      "power-profiles-daemon"
       "cpu"
       "memory"
       "group/system"
@@ -77,6 +78,17 @@ let
     clock = {
       format = "{:%b %d %H:%M}";
       tooltip-format = "<big>{:%Y %B}</big>\n<tt>{calendar}</tt>";
+    };
+    "power-profiles-daemon" = {
+      format = "{icon}";
+      tooltip-format = "Power profile: {profile}\nDriver: {driver}";
+      tooltip = true;
+      format-icons = {
+        default = "";
+        performance = "";
+        balanced = "";
+        power-saver = "";
+      };
     };
     cpu = {
       interval = 2;
@@ -220,12 +232,12 @@ let
         background: #333333;
     }
 
-    #clock, #cpu, #memory {
+    #clock, #cpu, #memory, #power-profiles-daemon {
         padding: 0 12px;
         margin: 4px 0;
         border-radius: 16px;
     }
-    #clock:hover, #cpu:hover, #memory:hover {
+    #clock:hover, #cpu:hover, #memory:hover, #power-profiles-daemon:hover {
         background: #333333;
     }
 
