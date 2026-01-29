@@ -489,6 +489,7 @@ in
   # Ensure dconf is enabled so GTK apps store settings
   programs.dconf.enable = true;
   programs.labwc.enable = true;
+  programs.ssh.startAgent = true;
 
   nixpkgs.overlays = [
     (final: prev: {
