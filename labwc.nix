@@ -114,21 +114,36 @@ let
     };
     battery = {
       format = "{icon} {time}";
-      format-charging = "⚡ {icon} {time}";
+      format-charging = "{icon} {time}";
       format-time = "{H}:{m}";
-      format-icons = [
-        "󰂎"
-        "󰁺"
-        "󰁻"
-        "󰁼"
-        "󰁽"
-        "󰁾"
-        "󰁿"
-        "󰂀"
-        "󰂁"
-        "󰂂"
-        "󰁹"
-      ];
+      format-icons = {
+        charging = [
+          "󰢟"
+          "󰢜"
+          "󰂆"
+          "󰂇"
+          "󰂈"
+          "󰢝"
+          "󰂉"
+          "󰢞"
+          "󰂊"
+          "󰂋"
+          "󰂅"
+        ];
+        default = [
+          "󰂎"
+          "󰁺"
+          "󰁻"
+          "󰁼"
+          "󰁽"
+          "󰁾"
+          "󰁿"
+          "󰂀"
+          "󰂁"
+          "󰂂"
+          "󰁹"
+        ];
+      };
     };
     pulseaudio = {
       format = "{icon}";
