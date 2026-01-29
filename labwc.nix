@@ -64,7 +64,7 @@ let
                 line = f.readline()
             fields = [float(x) for x in line.split()[1:]]
             total = sum(fields)
-            work = total - fields[3]
+            work = total - fields[3] - fields[4]
             
             diff_work = work - last_cpu_work
             diff_total = total - last_cpu_total
