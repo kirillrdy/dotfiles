@@ -284,6 +284,7 @@ let
             <name>Adwaita-Labwc</name>
             <cornerRadius>10</cornerRadius>
             <font name="Cantarell" size="11" />
+            <buttonOrder>LC</buttonOrder>
           </theme>
 
           <windowRules>
