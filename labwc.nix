@@ -301,7 +301,9 @@ let
             <name>Adwaita-Labwc</name>
             <cornerRadius>10</cornerRadius>
             <font name="Cantarell" size="11" />
-            <buttonOrder>LC</buttonOrder>
+            <titlebar>
+              <layout>:close</layout>
+            </titlebar>
           </theme>
 
           <windowRules>
@@ -398,15 +400,9 @@ let
       # Button Icons (SVGs)
       window.active.button.close.unpressed.image: close.svg
       window.active.button.close.hover.image: close_hover.svg
-      window.active.button.maximize.unpressed.image: match.svg
-      window.active.button.maximize.hover.image: match_hover.svg
-      window.active.button.iconify.unpressed.image: iconify.svg
-      window.active.button.iconify.hover.image: iconify_hover.svg
 
       # For inactive, reuse unpressed or specific ones
       window.inactive.button.close.unpressed.image: close.svg
-      window.inactive.button.maximize.unpressed.image: match.svg
-      window.inactive.button.iconify.unpressed.image: iconify.svg
 
       # OSD Switcher (Thumbnail style)
       osd.bg.color: #1e1e1e
@@ -437,36 +433,6 @@ let
       <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
         <circle cx="12" cy="12" r="12" fill="#E01B24"/>
         <path d="M7 7L17 17M17 7L7 17" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
-      </svg>
-      EOF
-
-      # MAXIMIZE (Normal) - Rect
-      cat > match.svg <<EOF
-      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-        <rect x="6" y="6" width="12" height="12" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
-      </svg>
-      EOF
-
-      # MAXIMIZE (Hover: Grey circle)
-      cat > match_hover.svg <<EOF
-      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="12" cy="12" r="12" fill="#505050"/>
-        <rect x="6" y="6" width="12" height="12" rx="2" stroke="#ffffff" stroke-width="2" fill="none"/>
-      </svg>
-      EOF
-
-      # ICONIFY (Minimize) (Normal) - Line
-      cat > iconify.svg <<EOF
-      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-        <path d="M6 12H18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-      </svg>
-      EOF
-
-      # ICONIFY (Hover: Grey circle)
-      cat > iconify_hover.svg <<EOF
-      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="12" cy="12" r="12" fill="#505050"/>
-        <path d="M6 12H18" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
       </svg>
       EOF
     '';
