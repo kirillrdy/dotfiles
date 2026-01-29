@@ -5,10 +5,12 @@
 }:
 let
   volumeRaise = pkgs.writeShellScript "volume-raise" ''
+    ${pkgs.wireplumber}/bin/wpctl set-mute @DEFAULT_AUDIO_SINK@ 0
     ${pkgs.swayosd}/bin/swayosd-client --output-volume raise
     ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i audio-volume-change -d "changeVolume"
   '';
   volumeLower = pkgs.writeShellScript "volume-lower" ''
+    ${pkgs.wireplumber}/bin/wpctl set-mute @DEFAULT_AUDIO_SINK@ 0
     ${pkgs.swayosd}/bin/swayosd-client --output-volume lower
     ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i audio-volume-change -d "changeVolume"
   '';
