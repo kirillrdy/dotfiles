@@ -38,6 +38,99 @@ let
     fi
   '';
 
+  systemMonitor = pkgs.writeScript "system-monitor" ''
+    #!${pkgs.python3}/bin/python3
+    import sys
+    import time
+    import json
+
+    if len(sys.argv) < 2:
+        sys.exit(1)
+
+    MODE = sys.argv[1]
+    HISTORY_LEN = 12
+    history = [0.0] * HISTORY_LEN
+    
+    # Block characters for graph
+    blocks = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+
+    last_cpu_work = 0.0
+    last_cpu_total = 0.0
+
+    def get_cpu():
+        global last_cpu_work, last_cpu_total
+        try:
+            with open("/proc/stat") as f:
+                line = f.readline()
+            fields = [float(x) for x in line.split()[1:]]
+            total = sum(fields)
+            work = total - fields[3]
+            
+            diff_work = work - last_cpu_work
+            diff_total = total - last_cpu_total
+            
+            last_cpu_work = work
+            last_cpu_total = total
+            
+            if diff_total == 0: return 0.0
+            return (diff_work / diff_total) * 100.0
+        except:
+            return 0.0
+
+    def get_mem():
+        try:
+            mem = {}
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        k = parts[0].strip()
+                        v = int(parts[1].split()[0])
+                        mem[k] = v
+            
+            total = mem.get("MemTotal", 1)
+            avail = mem.get("MemAvailable", 0)
+            used = total - avail
+            return (used / total) * 100.0
+        except:
+            return 0.0
+
+    # Initialize
+    get_cpu()
+    time.sleep(0.5)
+
+    while True:
+        if MODE == "cpu":
+            val = get_cpu()
+        elif MODE == "memory":
+            val = get_mem()
+        else:
+            val = 0
+
+        history.append(val)
+        if len(history) > HISTORY_LEN:
+            history.pop(0)
+
+        graph_str = ""
+        for v in history:
+            idx = int((v / 100.0) * (len(blocks) - 1))
+            if idx < 0: idx = 0
+            if idx >= len(blocks): idx = len(blocks) - 1
+            graph_str += blocks[idx]
+
+        # Determine color
+        if val < 50: color = "#2ec27e"
+        elif val < 80: color = "#e5a50a"
+        else: color = "#e01b24"
+
+        # Use monospace for alignment and color
+        text = f"<span font_family='monospace' foreground='{color}'>{graph_str} {int(val):3d}%</span>"
+        
+        print(json.dumps({"text": text, "tooltip": f"{MODE.upper()} {val:.1f}%", "class": f"custom-{MODE}"}))
+        sys.stdout.flush()
+        time.sleep(1)
+  '';
+
   screenshotRegion = pkgs.writeShellScript "screenshot-region" ''
     ${pkgs.grim}/bin/grim -g "$(${pkgs.slurp}/bin/slurp)" - | ${pkgs.wl-clipboard}/bin/wl-copy
     ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i screen-capture -d "screenshot-region"
@@ -62,9 +155,9 @@ let
     modules-center = [ "clock" ];
     modules-right = [
       "tray"
-      "power-profiles-daemon"
-      "cpu"
-      "memory"
+      "custom/cpu"
+      "custom/memory"
+      "group/extras"
       "group/system"
     ];
     "custom/launcher" = {
@@ -90,33 +183,40 @@ let
         power-saver = "";
       };
     };
-    cpu = {
-      interval = 2;
-      format = "{icon} {usage}%";
-      format-icons = [
-        " "
-        "▂"
-        "▃"
-        "▄"
-        "▅"
-        "▆"
-        "▇"
-        "█"
-      ];
+    "custom/cpu" = {
+      exec = "${systemMonitor} cpu";
+      return-type = "json";
+      format = " {}";
     };
-    memory = {
-      interval = 5;
-      format = " {percentage}%";
-      tooltip-format = "{used:0.1f}G/{total:0.1f}G";
+    "custom/memory" = {
+      exec = "${systemMonitor} memory";
+      return-type = "json";
+      format = " {}";
     };
     "group/system" = {
       orientation = "horizontal";
       modules = [
         "network"
         "pulseaudio"
-        "pulseaudio#source"
         "battery"
       ];
+    };
+    "group/extras" = {
+      orientation = "horizontal";
+      modules = [
+        "custom/chevron"
+        "power-profiles-daemon"
+        "pulseaudio#source"
+      ];
+      drawer = {
+        transition-duration = 500;
+        children-class = "extras-child";
+        transition-left-to-right = true;
+      };
+    };
+    "custom/chevron" = {
+      format = "";
+      tooltip = false;
     };
     network = {
       format-wifi = "";
@@ -225,19 +325,19 @@ let
 
     #custom-launcher {
         padding: 0 12px;
-        margin: 4px;
+        margin: 4px 0;
         border-radius: 16px;
     }
     #custom-launcher:hover {
         background: #333333;
     }
 
-    #clock, #cpu, #memory, #power-profiles-daemon {
+    #clock, #custom-cpu, #custom-memory, #power-profiles-daemon {
         padding: 0 12px;
         margin: 4px 0;
         border-radius: 16px;
     }
-    #clock:hover, #cpu:hover, #memory:hover, #power-profiles-daemon:hover {
+    #clock:hover, #custom-cpu:hover, #custom-memory:hover, #power-profiles-daemon:hover {
         background: #333333;
     }
 
@@ -246,15 +346,19 @@ let
     }
 
     /* Group: System Indicators */
-    #group-system {
+    #group-system, #group-extras {
         background: transparent;
-        margin: 4px;
+        margin: 4px 0;
         padding: 0 6px;
         border-radius: 16px;
     }
 
-    #group-system:hover {
+    #group-system:hover, #group-extras:hover {
         background: #333333;
+    }
+    
+    #custom-chevron {
+        padding: 0 12px;
     }
 
     #network, #battery, #pulseaudio, #pulseaudio.source {
