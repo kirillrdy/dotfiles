@@ -74,7 +74,6 @@
         services.gnome.localsearch.enable = false;
         services.openssh.enable = true;
         services.tailscale.enable = true;
-        services.xserver.excludePackages = [ pkgs.xterm ];
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         services.xserver.xkb.options = "caps:none";
         swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
