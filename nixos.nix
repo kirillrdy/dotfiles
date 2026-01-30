@@ -95,7 +95,8 @@
         hardware.graphics = {
           enable = true;
           enable32Bit = false;
-          extraPackages = with pkgs;
+          extraPackages =
+            with pkgs;
             if enableNvidia then
               [ nvidia-vaapi-driver ]
             else
