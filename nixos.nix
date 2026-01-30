@@ -50,7 +50,6 @@
           "silverpond:DvvEdyKZvc86cR1o/a+iJxnb7JxMCBzvSTjjEQIY8+g="
           "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
         ];
-        nix.settings.cores = 2;
         nix.settings.trusted-users = [ "kirillvr" ];
         i18n.inputMethod = {
           enable = true;
@@ -91,7 +90,7 @@
         };
         virtualisation.docker.enable = true;
         virtualisation.docker.storageDriver = "zfs";
-        hardware.nvidia-container-toolkit.enable = false;
+        hardware.nvidia-container-toolkit.enable = enableNvidia;
         hardware.graphics = {
           enable = true;
           enable32Bit = false;
