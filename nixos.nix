@@ -36,7 +36,6 @@
         hardware.nvidia.nvidiaSettings = false;
         hardware.cpu.intel.updateMicrocode = true;
         i18n.defaultLocale = "en_AU.UTF-8";
-        imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
         networking.firewall.enable = false;
         networking.hostId = "00000000";
         networking.networkmanager.enable = true;
