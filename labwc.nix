@@ -1,0 +1,664 @@
+{
+  pkgs,
+  config,
+  ...
+}:
+let
+  volumeRaise = pkgs.writeShellScript "volume-raise" ''
+    ${pkgs.wireplumber}/bin/wpctl set-mute @DEFAULT_AUDIO_SINK@ 0
+    ${pkgs.swayosd}/bin/swayosd-client --output-volume raise
+    ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i audio-volume-change -d "changeVolume"
+  '';
+  volumeLower = pkgs.writeShellScript "volume-lower" ''
+    ${pkgs.wireplumber}/bin/wpctl set-mute @DEFAULT_AUDIO_SINK@ 0
+    ${pkgs.swayosd}/bin/swayosd-client --output-volume lower
+    ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i audio-volume-change -d "changeVolume"
+  '';
+  volumeMute = pkgs.writeShellScript "volume-mute" ''
+    ${pkgs.swayosd}/bin/swayosd-client --output-volume mute-toggle
+  '';
+
+  brightnessLower = pkgs.writeShellScript "brightness-lower" ''
+    # Get current brightness percent
+    CURRENT=$(${pkgs.brightnessctl}/bin/brightnessctl g)
+    MAX=$(${pkgs.brightnessctl}/bin/brightnessctl m)
+    PERCENT=$(( 100 * CURRENT / MAX ))
+
+    # Minimum threshold (e.g. 5%)
+    MIN=5
+
+    if [ "$PERCENT" -gt "$MIN" ]; then
+       # Safe to lower by 5%
+       ${pkgs.swayosd}/bin/swayosd-client --brightness -5
+    else
+       # Already at or below min, but ensure we don't go to strict 0 if currently > 1
+       # Also ensures visibility. 
+       # If we want to allow going to exactly MIN, logic holds.
+       :
+    fi
+  '';
+
+  systemMonitor = pkgs.writeScript "system-monitor" ''
+    #!${pkgs.python3}/bin/python3
+    import sys
+    import time
+    import json
+
+    if len(sys.argv) < 2:
+        sys.exit(1)
+
+    MODE = sys.argv[1]
+    HISTORY_LEN = 12
+    history = [0.0] * HISTORY_LEN
+    
+    # Block characters for graph
+    blocks = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+
+    last_cpu_work = 0.0
+    last_cpu_total = 0.0
+
+    def get_cpu():
+        global last_cpu_work, last_cpu_total
+        try:
+            with open("/proc/stat") as f:
+                line = f.readline()
+            fields = [float(x) for x in line.split()[1:]]
+            total = sum(fields)
+            work = total - fields[3] - fields[4]
+            
+            diff_work = work - last_cpu_work
+            diff_total = total - last_cpu_total
+            
+            last_cpu_work = work
+            last_cpu_total = total
+            
+            if diff_total == 0: return 0.0
+            return (diff_work / diff_total) * 100.0
+        except:
+            return 0.0
+
+    def get_mem():
+        try:
+            mem = {}
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        k = parts[0].strip()
+                        v = int(parts[1].split()[0])
+                        mem[k] = v
+            
+            total = mem.get("MemTotal", 1)
+            avail = mem.get("MemAvailable", 0)
+            used = total - avail
+            return (used / total) * 100.0
+        except:
+            return 0.0
+
+    # Initialize
+    get_cpu()
+    time.sleep(0.5)
+
+    while True:
+        if MODE == "cpu":
+            val = get_cpu()
+        elif MODE == "memory":
+            val = get_mem()
+        else:
+            val = 0
+
+        history.append(val)
+        if len(history) > HISTORY_LEN:
+            history.pop(0)
+
+        graph_str = ""
+        for v in history:
+            idx = int((v / 100.0) * (len(blocks) - 1))
+            if idx < 0: idx = 0
+            if idx >= len(blocks): idx = len(blocks) - 1
+            graph_str += blocks[idx]
+
+        # Determine color
+        if val < 50: color = "#2ec27e"
+        elif val < 80: color = "#e5a50a"
+        else: color = "#e01b24"
+
+        # Use monospace for alignment and color
+        text = f"<span font_family='monospace' foreground='{color}'>{graph_str} {int(val):3d}%</span>"
+        
+        print(json.dumps({"text": text, "tooltip": f"{MODE.upper()} {val:.1f}%", "class": f"custom-{MODE}"}))
+        sys.stdout.flush()
+        time.sleep(1)
+  '';
+
+  screenshotRegion = pkgs.writeShellScript "screenshot-region" ''
+    ${pkgs.grim}/bin/grim -g "$(${pkgs.slurp}/bin/slurp)" - | ${pkgs.wl-clipboard}/bin/wl-copy
+    ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i screen-capture -d "screenshot-region"
+  '';
+
+  screenshotFull = pkgs.writeShellScript "screenshot-full" ''
+    ${pkgs.grim}/bin/grim - | ${pkgs.wl-clipboard}/bin/wl-copy
+    ${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play -i screen-capture -d "screenshot-full"
+  '';
+
+  monitorScale = if config.networking.hostName == "hagi" then 2.0 else 1.0;
+
+  waybarConfig = {
+    layer = "top";
+    position = "top";
+    height = 32;
+    spacing = 4;
+    modules-left = [
+      "custom/launcher"
+      "labwc/workspaces"
+    ];
+    modules-center = [ "clock" ];
+    modules-right = [
+      "tray"
+      "custom/cpu"
+      "custom/memory"
+      "group/extras"
+      "group/system"
+    ];
+    "custom/launcher" = {
+      format = "";
+      on-click = "nwg-drawer";
+      tooltip = false;
+    };
+    "labwc/workspaces" = {
+      format = "{name}";
+    };
+    clock = {
+      format = "{:%b %d %H:%M}";
+      tooltip-format = "<big>{:%Y %B}</big>\n<tt>{calendar}</tt>";
+    };
+    "power-profiles-daemon" = {
+      format = "{icon}";
+      tooltip-format = "Power profile: {profile}\nDriver: {driver}";
+      tooltip = true;
+      format-icons = {
+        default = "";
+        performance = "";
+        balanced = "";
+        power-saver = "";
+      };
+    };
+    "custom/cpu" = {
+      exec = "${systemMonitor} cpu";
+      return-type = "json";
+      format = " {}";
+    };
+    "custom/memory" = {
+      exec = "${systemMonitor} memory";
+      return-type = "json";
+      format = " {}";
+    };
+    "group/system" = {
+      orientation = "horizontal";
+      modules = [
+        "network"
+        "pulseaudio"
+        "battery"
+      ];
+    };
+    "group/extras" = {
+      orientation = "horizontal";
+      modules = [
+        "custom/chevron"
+        "power-profiles-daemon"
+        "pulseaudio#source"
+      ];
+      drawer = {
+        transition-duration = 500;
+        children-class = "extras-child";
+        transition-left-to-right = true;
+      };
+    };
+    "custom/chevron" = {
+      format = "";
+      tooltip = false;
+    };
+    network = {
+      format-wifi = "";
+      format-ethernet = "";
+      format-disconnected = "";
+      tooltip-format = "{essid} ({signalStrength}%)";
+    };
+    battery = {
+      format = "{icon} {time}";
+      format-charging = "{icon} {time}";
+      format-time = "{H}:{m}";
+      format-icons = {
+        charging = [
+          "󰢟"
+          "󰢜"
+          "󰂆"
+          "󰂇"
+          "󰂈"
+          "󰢝"
+          "󰂉"
+          "󰢞"
+          "󰂊"
+          "󰂋"
+          "󰂅"
+        ];
+        default = [
+          "󰂎"
+          "󰁺"
+          "󰁻"
+          "󰁼"
+          "󰁽"
+          "󰁾"
+          "󰁿"
+          "󰂀"
+          "󰂁"
+          "󰂂"
+          "󰁹"
+        ];
+      };
+    };
+    pulseaudio = {
+      format = "{icon}";
+      format-bluetooth = "{icon}";
+      format-bluetooth-muted = " {icon}";
+      format-muted = "";
+      format-icons = {
+        headphone = "";
+        hands-free = "";
+        headset = "";
+        phone = "";
+        portable = "";
+        car = "";
+        default = [
+          ""
+          ""
+          ""
+        ];
+      };
+      on-click = "pavucontrol";
+      tooltip-format = "{volume}%";
+    };
+    "pulseaudio#source" = {
+      format = "{format_source}";
+      format-source = "";
+      format-source-muted = "";
+      on-click = "pavucontrol";
+    };
+    tray = {
+      spacing = 10;
+    };
+  };
+
+  waybarStyle = ''
+    * {
+      border: none;
+      border-radius: 0;
+      font-family: "Adwaita Sans", "Sans Serif";
+      font-size: 15px;
+      font-weight: bold;
+      min-height: 0;
+    }
+
+    window#waybar {
+      background: #000000;
+      color: #ffffff;
+    }
+
+    #workspaces button {
+      padding: 0 12px;
+      background: transparent;
+      color: #ffffff;
+      border-radius: 16px;
+      margin: 4px;
+    }
+
+    #workspaces button.focused {
+      background: #333333;
+      box-shadow: inset 0 -2px #ffffff; /* Underline indicator like some GNOME versions or just pill? GNOME 40+ is just pill */
+      background: #333333;
+      box-shadow: none;
+    }
+
+    #workspaces button:hover {
+      background: #454545;
+    }
+
+    #custom-launcher {
+        padding: 0 12px;
+        margin: 4px 0;
+        border-radius: 16px;
+    }
+    #custom-launcher:hover {
+        background: #333333;
+    }
+
+    #clock, #custom-cpu, #custom-memory, #power-profiles-daemon {
+        padding: 0 12px;
+        margin: 4px 0;
+        border-radius: 16px;
+    }
+    #clock:hover, #custom-cpu:hover, #custom-memory:hover, #power-profiles-daemon:hover {
+        background: #333333;
+    }
+
+    #tray {
+        margin-right: 8px;
+    }
+
+    /* Group: System Indicators */
+    #group-system, #group-extras {
+        background: transparent;
+        margin: 4px 0;
+        padding: 0 6px;
+        border-radius: 16px;
+    }
+
+    #group-system:hover, #group-extras:hover {
+        background: #333333;
+    }
+    
+    #custom-chevron {
+        padding: 0 12px;
+    }
+
+    #network, #battery, #pulseaudio, #pulseaudio.source {
+        padding: 0 6px;
+    }
+  '';
+
+  labwcRc = ''
+        <labwc_config>
+          <core>
+            <decoration>server</decoration>
+            <gap>5</gap>
+          </core>
+
+          <libinput>
+            <device category="default">
+              <naturalScroll>yes</naturalScroll>
+              <tap>no</tap>
+            </device>
+          </libinput>
+
+          <windowSwitcher preview="no" outlines="no">
+            <osd show="yes" style="thumbnail" output="all" thumbnailLabelFormat="%T" />
+          </windowSwitcher>
+
+          <keyboard>
+            <default />
+            <layout>us</layout>
+            <options>caps:none</options>
+            <keybind key="W-Return"><action name="Execute" command="ghostty" /></keybind>
+            <keybind key="Super_L" onRelease="yes"><action name="Execute" command="nwg-drawer" /></keybind>
+            <keybind key="W-q"><action name="Close" /></keybind>
+            <keybind key="W-S-r"><action name="Reconfigure" /></keybind>
+            
+            <!-- Snap to edges -->
+            <keybind key="W-Left"><action name="SnapToEdge" direction="left" /></keybind>
+            <keybind key="W-Right"><action name="SnapToEdge" direction="right" /></keybind>
+            <keybind key="W-Up"><action name="SnapToEdge" direction="top" /></keybind>
+            <keybind key="W-Down"><action name="SnapToEdge" direction="bottom" /></keybind>
+
+            <!-- Volume control -->
+            <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="${volumeRaise}" /></keybind>
+            <keybind key="XF86AudioLowerVolume"><action name="Execute" command="${volumeLower}" /></keybind>
+            <keybind key="XF86AudioMute"><action name="Execute" command="${volumeMute}" /></keybind>
+            <keybind key="XF86AudioMicMute"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --input-volume mute-toggle" /></keybind>
+
+            <!-- Brightness control -->
+            <keybind key="XF86MonBrightnessUp"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --brightness raise" /></keybind>
+            <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${brightnessLower}" /></keybind>
+    <!-- Screenshots -->
+            <keybind key="Print"><action name="Execute" command="${screenshotFull}" /></keybind>
+            <keybind key="S-Print"><action name="Execute" command="${screenshotRegion}" /></keybind>
+          </keyboard>
+
+          <theme>
+            <name>Adwaita-Labwc</name>
+            <cornerRadius>10</cornerRadius>
+            <font name="Cantarell" size="11" />
+            <titlebar>
+              <layout>:close</layout>
+            </titlebar>
+          </theme>
+
+          <windowRules>
+            <windowRule type="normal">
+              <action name="Maximize" />
+            </windowRule>
+          </windowRules>
+
+          <mouse>
+            <default />
+            <context name="Root">
+              <mousebind button="Left" action="Press"><action name="None" /></mousebind>
+              <mousebind button="Right" action="Press"><action name="None" /></mousebind>
+              <mousebind button="Middle" action="Press"><action name="None" /></mousebind>
+            </context>
+          </mouse>
+        </labwc_config>
+  '';
+
+  swayosdStyle = ''
+    window {
+      background: transparent;
+    }
+
+    #container {
+      background-color: alpha(#1e1e1e, 0.98);
+      border-radius: 99px;
+      padding: 16px 24px;
+      margin: 16px;
+    }
+
+    image {
+      color: #ffffff;
+      margin-right: 12px;
+    }
+
+    progressbar {
+      min-height: 6px;
+      border-radius: 99px;
+      background-color: #454545;
+    }
+
+    progressbar > trough > progress {
+      background-color: #ffffff;
+      border-radius: 99px;
+      min-height: 6px;
+    }
+  '';
+
+  # GTK Settings for adw-gtk3 and Adwaita
+  gtkSettings = ''
+    [Settings]
+    gtk-theme-name=adw-gtk3
+    gtk-icon-theme-name=Adwaita
+    gtk-cursor-theme-name=Adwaita
+    gtk-application-prefer-dark-theme=1
+    gtk-font-name=Cantarell 11
+    gtk-xft-antialias=1
+    gtk-xft-hinting=1
+    gtk-xft-hintstyle=hintslight
+    gtk-xft-rgba=rgb
+  '';
+
+  # Custom Adwaita Theme for Labwc
+  adwaitaLabwcTheme = pkgs.stdenv.mkDerivation {
+    name = "adwaita-labwc-theme";
+    phases = [ "installPhase" ];
+    installPhase = ''
+      mkdir -p $out/share/themes/Adwaita-Labwc/openbox-3
+      cd $out/share/themes/Adwaita-Labwc/openbox-3
+
+      # --- THEME RC ---
+      cat > themerc <<EOF
+      # Adwaita-like theme for Labwc
+      # Colors based on Adwaita Dark
+
+      border.width: 0
+      padding.width: 8
+      padding.height: 8
+      window.active.border.color: #353535
+      window.inactive.border.color: #353535
+      window.active.title.bg.color: #353535
+      window.inactive.title.bg.color: #242424
+      window.active.label.text.color: #ffffff
+      window.inactive.label.text.color: #9a9a9a
+
+      window.active.button.unpressed.image.color: #ffffff
+      window.inactive.button.unpressed.image.color: #9a9a9a
+
+      # Button layout and style
+      window.button.width: 24
+      window.button.spacing: 8
+
+      # Button Icons (SVGs)
+      window.active.button.close.unpressed.image: close.svg
+      window.active.button.close.hover.image: close_hover.svg
+
+      # For inactive, reuse unpressed or specific ones
+      window.inactive.button.close.unpressed.image: close.svg
+
+      # OSD Switcher (Thumbnail style)
+      osd.bg.color: #1e1e1e
+      osd.border.width: 1
+      osd.border.color: #454545
+
+      osd.window-switcher.style-thumbnail.width.max: 80%
+      osd.window-switcher.style-thumbnail.item.width: 148
+      osd.window-switcher.style-thumbnail.item.height: 168
+      osd.window-switcher.style-thumbnail.item.icon.size: 96
+      osd.window-switcher.style-thumbnail.item.padding: 12
+      osd.window-switcher.style-thumbnail.item.active.border.width: 0
+      osd.window-switcher.style-thumbnail.item.active.border.color: #353535
+      osd.window-switcher.style-thumbnail.item.active.bg.color: #353535
+      EOF
+
+      # --- ICONS ---
+
+      # CLOSE (Normal: Transparent bg, Icon only)
+      cat > close.svg <<EOF
+      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M7 7L17 17M17 7L7 17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      EOF
+
+      # CLOSE (Hover: Red circle, White icon)
+      cat > close_hover.svg <<EOF
+      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="12" fill="#E01B24"/>
+        <path d="M7 7L17 17M17 7L7 17" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      EOF
+    '';
+  };
+
+in
+{
+  # Configure Labwc defaults in /etc/xdg/labwc
+  environment.etc."xdg/labwc/rc.xml".text = labwcRc;
+
+  environment.etc."xdg/labwc/autostart".text = ''
+    # Start components
+    wlr-randr --output eDP-1 --scale ${toString monitorScale}
+    swaybg -i ${pkgs.nixos-artwork.wallpapers.simple-blue.src} -m fill >/dev/null 2>&1 &
+    waybar >/dev/null 2>&1 &
+    waycorner --config /etc/xdg/waycorner/config.toml >/dev/null 2>&1 &
+    swayosd-server >/dev/null 2>&1 &
+    nwg-dock-hyprland -d -p bottom -i 32 -w 5 >/dev/null 2>&1 &
+    swayidle -w before-sleep 'swaylock -f -c 000000' >/dev/null 2>&1 &
+  '';
+
+  # Configure Waybar defaults
+  environment.etc."xdg/waybar/config".text = builtins.toJSON waybarConfig;
+  environment.etc."xdg/waybar/style.css".text = waybarStyle;
+  environment.etc."xdg/swayosd/style.css".text = swayosdStyle;
+
+  # Waycorner Configuration (Hot Corner)
+  environment.etc."xdg/waycorner/config.toml".text = ''
+    [left]
+    command = ["${pkgs.nwg-drawer}/bin/nwg-drawer"]
+    locations = ["top_left"]
+  '';
+
+  # Global GTK settings
+  environment.etc."gtk-3.0/settings.ini".text = gtkSettings;
+  # environment.etc."gtk-4.0/settings.ini".text = gtkSettings; # GTK4 usually uses dconf/gsettings but this might help some apps
+
+  # Ensure dconf is enabled so GTK apps store settings
+  programs.dconf.enable = true;
+  programs.labwc.enable = true;
+  programs.ssh.startAgent = true;
+
+  nixpkgs.overlays = [
+    (final: prev: {
+      labwc = prev.labwc.overrideAttrs (old: {
+        buildInputs = (old.buildInputs or [ ]) ++ [
+          prev.pkgs.librsvg
+          prev.pkgs.libsfdo
+        ];
+
+        patches = (old.patches or [ ]) ++ [ ./labwc-gnome-alt-tab.patch ];
+
+        postPatch = (old.postPatch or "") + ''
+          # Find the file (handle potential path differences)
+          RCXML_FILE=$(find . -name rcxml.c)
+          THEME_FILE=$(find . -name theme.c)
+
+          # --- FORCE DEFAULTS (src/theme.c) ---
+
+          # Dimensions
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_width = 300;|theme->osd_window_switcher_thumbnail.item_width = 148;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_height = 250;|theme->osd_window_switcher_thumbnail.item_height = 168;|' "$THEME_FILE"
+          sed -i 's|theme->osd_window_switcher_thumbnail.item_icon_size = 60;|theme->osd_window_switcher_thumbnail.item_icon_size = 96;|' "$THEME_FILE"
+
+          # Colors (Force Dark Gray BG, Dark Gray Border to remove blue)
+          sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_bg_color\[0\] = FLT_MIN;|parse_hexstr("#353535", theme->osd_window_switcher_thumbnail.item_active_bg_color);|' "$THEME_FILE"
+          sed -i -E 's|theme->osd_window_switcher_thumbnail.item_active_border_color\[0\] = FLT_MIN;|parse_hexstr("#353535", theme->osd_window_switcher_thumbnail.item_active_border_color);|' "$THEME_FILE"
+
+          # Force OSD Main Background Color (GNOME Dark)
+          # Replace initialization to FLT_MIN
+          sed -i -E 's|theme->osd_bg_color\[0\] = FLT_MIN;|parse_hexstr("#1e1e1e", theme->osd_bg_color);|' "$THEME_FILE"
+
+          # Force OSD Text Color (White)
+          sed -i -E 's|theme->osd_label_text_color\[0\] = FLT_MIN;|parse_hexstr("#ffffff", theme->osd_label_text_color);|' "$THEME_FILE"
+
+          # --- FORCE DEFAULTS (src/config/rcxml.c) ---
+          sed -i -E 's|[[:space:]]*rc\.window_switcher\.style = WINDOW_SWITCHER_CLASSIC;|rc.window_switcher.style = WINDOW_SWITCHER_THUMBNAIL;|g' "$RCXML_FILE"
+
+          # Verify patches
+          grep "#1e1e1e" "$THEME_FILE" || { echo "Patch failed: OSD bg color"; exit 1; }
+          grep "#ffffff" "$THEME_FILE" || { echo "Patch failed: OSD text color"; exit 1; }
+        '';
+      });
+    })
+  ];
+
+  # Install necessary packages (if not already in nixos.nix, but duplicating here ensures this module is self-contained-ish)
+  environment.systemPackages = with pkgs; [
+    adw-gtk3
+    adwaita-icon-theme
+    grim
+    libcanberra-gtk3
+    (nwg-drawer.overrideAttrs (old: {
+      postPatch = (old.postPatch or "") + ''
+        sed -i 's/if !entry.NoDisplay && (subsequenceMatch(needle, strings.ToLower(entry.NameLoc)) ||/if !entry.NoDisplay \&\& strings.HasPrefix(strings.ToLower(entry.NameLoc), strings.ToLower(needle)) {/' uicomponents.go
+        sed -i '/strings.Contains.*entry.CommentLoc.*/d' uicomponents.go
+        sed -i '/strings.Contains.*entry.Comment.*/d' uicomponents.go
+        sed -i '/strings.Contains.*entry.Exec.*/d' uicomponents.go
+      '';
+    }))
+    slurp
+    sound-theme-freedesktop
+    swaybg
+    swayidle
+    swaylock
+    swayosd
+    waybar
+    waycorner
+    wl-clipboard
+    wlr-randr
+    adwaitaLabwcTheme
+  ];
+}

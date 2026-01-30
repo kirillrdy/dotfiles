@@ -19,9 +19,15 @@
         boot.zfs.package = pkgs.zfs_2_4;
         boot.loader.efi.canTouchEfiVariables = true;
         boot.loader.systemd-boot.enable = true;
-        environment.variables = {
+        environment.sessionVariables = {
           EDITOR = "nvim";
-          NEOVIDE_FORK = 1;
+          NEOVIDE_FORK = "1";
+          ELECTRON_OZONE_PLATFORM_HINT = "auto";
+          NIXOS_OZONE_WL = "1";
+          XCURSOR_THEME = "Adwaita";
+          XCURSOR_SIZE = "24";
+          XKB_DEFAULT_LAYOUT = "us";
+          XKB_DEFAULT_OPTIONS = "caps:none";
         };
         fileSystems."/" = {
           device = "zroot/root";
@@ -31,11 +37,47 @@
           device = "/dev/nvme0n1p3";
           fsType = "vfat";
         };
-        fonts.packages = with pkgs; [ kochi-substitute ];
+        fonts.packages = with pkgs; [
+          noto-fonts-cjk-sans
+          noto-fonts-cjk-serif
+          noto-fonts-color-emoji
+          adwaita-fonts
+          cantarell-fonts
+          dejavu_fonts
+          font-awesome
+          source-code-pro
+          source-sans
+          nerd-fonts.symbols-only
+        ];
+        fonts.fontconfig = {
+          defaultFonts = {
+            serif = [
+              "DejaVu Serif"
+              "Source Serif Pro"
+              "Noto Serif CJK JP"
+            ];
+            sansSerif = [
+              "Cantarell"
+              "Source Sans Pro"
+              "DejaVu Sans"
+              "Adwaita Sans"
+              "Noto Sans CJK JP"
+            ];
+            monospace = [
+              "Source Code Pro"
+              "DejaVu Sans Mono"
+              "Noto Sans Mono"
+              "Noto Sans CJK JP"
+            ];
+          };
+        };
         hardware.nvidia.modesetting.enable = enableNvidia;
         hardware.nvidia.nvidiaSettings = false;
         i18n.defaultLocale = "en_AU.UTF-8";
-        imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+        imports = [
+          (modulesPath + "/installer/scan/not-detected.nix")
+          ./labwc.nix
+        ];
         networking.firewall.enable = false;
         networking.hostId = "00000000";
         networking.networkmanager.enable = true;
@@ -61,8 +103,20 @@
           user.name = "Kirill Radzikhovskyy";
           user.email = "kirillrdy@gmail.com";
         };
-        services.desktopManager.gnome.enable = true;
-        services.displayManager.gdm.enable = true;
+        services.desktopManager.gnome.enable = false;
+        services.greetd = {
+          enable = true;
+          settings = {
+            initial_session = {
+              command = "labwc";
+              user = "kirillvr";
+            };
+            default_session = {
+              command = "${pkgs.tuigreet}/bin/tuigreet --time --cmd labwc";
+              user = "greeter";
+            };
+          };
+        };
         hardware.nvidia.open = true;
         programs.git.enable = true;
         services.avahi.enable = true;
@@ -72,8 +126,17 @@
         services.fprintd.enable = !enableNvidia;
         services.gnome.tinysparql.enable = false;
         services.gnome.localsearch.enable = false;
+        services.power-profiles-daemon.enable = true;
+        services.logind.settings.Login.HandleLidSwitch = "suspend";
         services.openssh.enable = true;
         services.tailscale.enable = true;
+        security.rtkit.enable = true;
+        services.pipewire = {
+          enable = true;
+          alsa.enable = true;
+          alsa.support32Bit = true;
+          pulse.enable = true;
+        };
         services.xserver.excludePackages = [ pkgs.xterm ];
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         services.xserver.xkb.options = "caps:none";
@@ -95,7 +158,8 @@
         hardware.graphics = {
           enable = true;
           enable32Bit = false;
-          extraPackages = with pkgs;
+          extraPackages =
+            with pkgs;
             if enableNvidia then
               [ nvidia-vaapi-driver ]
             else
@@ -108,8 +172,9 @@
           (if enableNvidia then btop-cuda else btop)
           (import ./neovim.nix pkgs)
           acpi
-          antigravity-fhs
+          antigravity
           awscli2
+          brightnessctl
           claude-code
           ffmpeg
           file
@@ -117,10 +182,6 @@
           gemini-cli
           gh
           ghostty
-          gnomeExtensions.battery-time
-          gnomeExtensions.freon
-          gnomeExtensions.maximized-by-default-actually-reborn
-          gnomeExtensions.system-monitor-next
           go
           golangci-lint
           golangci-lint-langserver
@@ -135,6 +196,7 @@
           nixfmt
           nixpkgs-review
           opencode
+          pavucontrol
           pyrefly
           python3Packages.fastavro
           ripgrep
@@ -142,7 +204,6 @@
           superhtml
           tig
           typescript-language-server
-          wl-clipboard
           zig_0_15
           zls_0_15
         ];
