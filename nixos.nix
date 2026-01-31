@@ -63,6 +63,7 @@
         services.desktopManager.gnome.enable = true;
         services.displayManager.gdm.enable = true;
         hardware.nvidia.open = true;
+        hardware.enableRedistributableFirmware = true;
         programs.git.enable = true;
         services.avahi.enable = true;
         services.avahi.nssmdns4 = true;
