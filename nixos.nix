@@ -12,6 +12,27 @@
         modulesPath,
         ...
       }:
+      let
+        mkGeminiWrapper =
+          suffix:
+          pkgs.writeShellScriptBin "gemini-${suffix}" ''
+            export GEMINI_CLI_HOME="$HOME/.gemini-${suffix}"
+            mkdir -p $GEMINI_CLI_HOME/.gemini
+            SETTINGS_FILE="$GEMINI_CLI_HOME/.gemini/settings.json"
+            if [ ! -f "$SETTINGS_FILE" ]; then
+              echo ${lib.escapeShellArg (builtins.toJSON geminiCommon)} > "$SETTINGS_FILE"
+            fi
+            exec ${pkgs.gemini-cli}/bin/gemini "$@"
+          '';
+        geminiCommon = {
+          general = {
+            previewFeatures = true;
+          };
+          ui = {
+            hideBanner = true;
+          };
+        };
+      in
       {
         boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
         boot.initrd.availableKernelModules = [ "nvme" ];
@@ -113,7 +134,8 @@
           ffmpeg
           file
           firefox
-          gemini-cli
+          (mkGeminiWrapper "p")
+          (mkGeminiWrapper "w")
           gh
           ghostty
           gnomeExtensions.battery-time
