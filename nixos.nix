@@ -95,6 +95,67 @@
         services.gnome.localsearch.enable = false;
         services.openssh.enable = true;
         services.tailscale.enable = true;
+
+        systemd.services.openobserve = {
+          description = "OpenObserve";
+          after = [ "network.target" ];
+          wantedBy = [ "multi-user.target" ];
+          environment = {
+            ZO_ROOT_USER_EMAIL = "admin@example.com";
+            ZO_ROOT_USER_PASSWORD = "password";
+            ZO_DATA_DIR = "/var/lib/openobserve";
+            ZO_HTTP_PORT = "5080";
+          };
+          serviceConfig = {
+            ExecStart = "${pkgs.openobserve}/bin/openobserve";
+            Restart = "always";
+            StateDirectory = "openobserve";
+          };
+        };
+
+        services.vector = {
+          enable = true;
+          journaldAccess = true;
+          settings = {
+            sources = {
+              journal = {
+                type = "journald";
+              };
+              host_metrics = {
+                type = "host_metrics";
+                collectors = [
+                  "cpu"
+                  "memory"
+                ];
+                scrape_interval_secs = 15;
+              };
+            };
+            sinks = {
+              openobserve_logs = {
+                type = "http";
+                inputs = [ "journal" ];
+                uri = "http://localhost:5080/api/default/default/_json";
+                auth = {
+                  strategy = "basic";
+                  user = "admin@example.com";
+                  password = "password";
+                };
+                compression = "gzip";
+                encoding.codec = "json";
+              };
+              openobserve_metrics = {
+                type = "prometheus_remote_write";
+                inputs = [ "host_metrics" ];
+                endpoint = "http://localhost:5080/api/default/prometheus/api/v1/write";
+                auth = {
+                  strategy = "basic";
+                  user = "admin@example.com";
+                  password = "password";
+                };
+              };
+            };
+          };
+        };
         services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
         services.xserver.xkb.options = "caps:none";
         swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
