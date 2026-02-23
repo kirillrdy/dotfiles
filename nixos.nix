@@ -83,6 +83,7 @@
         };
         services.desktopManager.gnome.enable = true;
         services.displayManager.gdm.enable = true;
+        services.displayManager.gdm.autoSuspend = false;
         hardware.nvidia.open = true;
         hardware.enableRedistributableFirmware = true;
         programs.git.enable = true;
