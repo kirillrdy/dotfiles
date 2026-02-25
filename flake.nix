@@ -3,27 +3,36 @@
   inputs.nixpkgs.url = "github:nixos/nixpkgs";
   outputs =
     { self, nixpkgs }:
+    let
+      mkSystem =
+        {
+          hostName,
+          enableNvidia ? false,
+        }:
+        nixpkgs.lib.nixosSystem {
+          system = "x86_64-linux";
+          modules = [ (import ./nixos.nix { inherit hostName enableNvidia; }) ];
+        };
+    in
     {
       packages.x86_64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-linux"; });
       packages.aarch64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "aarch64-linux"; });
       packages.x86_64-darwin.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-darwin"; });
       nixosConfigurations = {
         # amd ryzen 5
-        #shinseikai = nixpkgs.lib.nixosSystem (simplesystem { hostName = "shinseikai"; enableNvidia = true; });
+        #shinseikai = mkSystem { hostName = "shinseikai"; enableNvidia = true; };
         # legacy, yao: T460s
 
         # Lenovo X1 gen9, alderlake
-        osaka = nixpkgs.lib.nixosSystem (import ./nixos.nix { hostName = "osaka"; });
+        osaka = mkSystem { hostName = "osaka"; };
         # Lenovo X1 gen13, ....
-        hagi = nixpkgs.lib.nixosSystem (import ./nixos.nix { hostName = "hagi"; });
+        hagi = mkSystem { hostName = "hagi"; };
 
         # i7-13700K, raptorlake
-        tsutenkaku = nixpkgs.lib.nixosSystem (
-          import ./nixos.nix {
-            hostName = "tsutenkaku";
-            enableNvidia = true;
-          }
-        );
+        tsutenkaku = mkSystem {
+          hostName = "tsutenkaku";
+          enableNvidia = true;
+        };
       };
     };
 }
