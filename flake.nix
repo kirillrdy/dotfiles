@@ -11,7 +11,8 @@
         }:
         nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          modules = [ (import ./nixos.nix { inherit hostName enableNvidia; }) ];
+          specialArgs = { inherit hostName enableNvidia; };
+          modules = [ ./nixos.nix ];
         };
     in
     {
