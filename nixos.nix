@@ -128,7 +128,9 @@
     nixpkgs-review
     opencode
     pyrefly
-    python3Packages.fastavro
+    (python3Packages.fastavro.overridePythonAttrs (old: {
+      dependencies = (old.dependencies or [ ]) ++ [ python3Packages.zstandard ];
+    }))
     ripgrep
     slack
     superhtml
