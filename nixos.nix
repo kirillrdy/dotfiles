@@ -69,12 +69,23 @@
   services.gnome.localsearch.enable = false;
   services.mediamtx.enable = true;
   services.mediamtx.settings = {
+    record = true;
+    recordPath = "/var/lib/mediamtx/%path/%Y-%m-%d_%H-%M-%S";
+    recordFormat = "fmp4";
     paths = {
       all = { };
-      cam1 = { }; cam2 = { }; cam3 = { }; cam4 = { };
-      cam5 = { }; cam6 = { }; cam7 = { }; cam8 = { };
+      cam1 = { record = true; };
+      cam2 = { record = true; };
+      cam3 = { record = true; };
+      cam4 = { record = true; };
+      cam5 = { record = true; };
+      cam6 = { record = true; };
+      cam7 = { record = true; };
+      cam8 = { record = true; };
     };
   };
+
+  systemd.services.mediamtx.serviceConfig.ReadWritePaths = [ "/var/lib/mediamtx" ];
 
   systemd.services.ffmpeg-cameras = {
     description = "Push 8 hardware-accelerated streams to MediaMTX";
