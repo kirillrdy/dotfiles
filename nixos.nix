@@ -68,20 +68,26 @@
   services.gnome.tinysparql.enable = false;
   services.gnome.localsearch.enable = false;
   services.mediamtx.enable = true;
+  services.mediamtx.env = { TZ = "UTC"; };
   services.mediamtx.settings = {
-    record = true;
-    recordPath = "/var/lib/mediamtx/%path/%Y-%m-%d_%H-%M-%S";
-    recordFormat = "fmp4";
+    playback = true;
+    playbackAddress = ":9996";
+    pathDefaults = {
+      record = true;
+      recordPath = "/var/lib/mediamtx/%path/%Y-%m-%d_%H-%M-%S_%f";
+      recordFormat = "fmp4";
+      playback = true;
+    };
     paths = {
       all = { };
-      cam1 = { record = true; };
-      cam2 = { record = true; };
-      cam3 = { record = true; };
-      cam4 = { record = true; };
-      cam5 = { record = true; };
-      cam6 = { record = true; };
-      cam7 = { record = true; };
-      cam8 = { record = true; };
+      cam1 = { alwaysAvailable = true; };
+      cam2 = { alwaysAvailable = true; };
+      cam3 = { alwaysAvailable = true; };
+      cam4 = { alwaysAvailable = true; };
+      cam5 = { alwaysAvailable = true; };
+      cam6 = { alwaysAvailable = true; };
+      cam7 = { alwaysAvailable = true; };
+      cam8 = { alwaysAvailable = true; };
     };
   };
 
