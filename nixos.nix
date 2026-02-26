@@ -67,6 +67,26 @@
   services.fprintd.enable = !enableNvidia;
   services.gnome.tinysparql.enable = false;
   services.gnome.localsearch.enable = false;
+  services.mediamtx.enable = true;
+  services.mediamtx.settings = {
+    paths = {
+      all = { };
+      cam1 = { }; cam2 = { }; cam3 = { }; cam4 = { };
+      cam5 = { }; cam6 = { }; cam7 = { }; cam8 = { };
+    };
+  };
+
+  systemd.services.ffmpeg-cameras = {
+    description = "Push 8 hardware-accelerated streams to MediaMTX";
+    after = [ "mediamtx.service" ];
+    requires = [ "mediamtx.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      ExecStart = "${pkgs.bash}/bin/sh -c 'sleep 2; for i in 1 2 3 4 5 6 7 8; do ${pkgs.ffmpeg}/bin/ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -hwaccel vaapi -hwaccel_device va -hwaccel_output_format vaapi -re -stream_loop -1 -i /var/lib/mediamtx/CosmosLaundromat_2k24p_HDR_P3PQ.mp4 -vf \"format=nv12|vaapi,hwupload\" -c:v h264_vaapi -bf 0 -profile:v 578 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam$i & done; wait'";
+      Restart = "always";
+      User = "mediamtx";
+    };
+  };
   services.openssh.enable = true;
   services.tailscale.enable = true;
   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
