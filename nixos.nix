@@ -110,8 +110,11 @@
   };
 
   systemd.services.mediamtx.serviceConfig = {
-    ReadWritePaths = [ "/var/lib/mediamtx" ];
     StateDirectory = "mediamtx";
+    ReadWritePaths = [ "/var/lib/mediamtx" ];
+    ProtectSystem = lib.mkForce "off";
+    ProtectHome = lib.mkForce "off";
+    PrivateTmp = lib.mkForce false;
   };
 
   systemd.services.ffmpeg-cameras = {
@@ -127,6 +130,10 @@
           "${pkgs.bash}/bin/sh -c 'sleep 2; for i in 1 2 3 4 5 6 7 8; do ${pkgs.ffmpeg}/bin/ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -hwaccel vaapi -hwaccel_device va -hwaccel_output_format vaapi -re -stream_loop -1 -i /var/lib/mediamtx/CosmosLaundromat_2k24p_HDR_P3PQ.mp4 -vf \"format=nv12|vaapi,hwupload\" -c:v h264_vaapi -bf 0 -profile:v 578 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam$i & done; wait'";
       Restart = "always";
       User = "mediamtx";
+      DynamicUser = true;
+      ReadWritePaths = [ "/var/lib/mediamtx" ];
+      ProtectSystem = lib.mkForce "off";
+      ProtectHome = lib.mkForce "off";
       SupplementaryGroups = [
         "video"
         "render"
