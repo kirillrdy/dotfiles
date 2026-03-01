@@ -59,6 +59,7 @@
   hardware.nvidia.open = true;
   hardware.enableRedistributableFirmware = true;
   programs.git.enable = true;
+  programs.steam.enable = enableNvidia;
   services.avahi.enable = true;
   services.avahi.nssmdns4 = true;
   services.avahi.publish.addresses = true;
@@ -87,7 +88,7 @@
   hardware.nvidia-container-toolkit.enable = enableNvidia;
   hardware.graphics = {
     enable = true;
-    enable32Bit = false;
+    enable32Bit = enableNvidia;
     extraPackages =
       with pkgs;
       if enableNvidia then
