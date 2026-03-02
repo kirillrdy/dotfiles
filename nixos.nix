@@ -67,6 +67,80 @@
   services.fprintd.enable = !enableNvidia;
   services.gnome.tinysparql.enable = false;
   services.gnome.localsearch.enable = false;
+  services.mediamtx.enable = true;
+  services.mediamtx.env = {
+    TZ = "UTC";
+  };
+  services.mediamtx.settings = {
+    playback = true;
+    playbackAddress = ":9996";
+    pathDefaults = {
+      record = true;
+      recordPath = "/var/lib/mediamtx/%path/%Y-%m-%d_%H-%M-%S_%f";
+      recordFormat = "fmp4";
+      playback = true;
+    };
+    paths = {
+      all = { };
+      cam1 = {
+        alwaysAvailable = true;
+      };
+      cam2 = {
+        alwaysAvailable = true;
+      };
+      cam3 = {
+        alwaysAvailable = true;
+      };
+      cam4 = {
+        alwaysAvailable = true;
+      };
+      cam5 = {
+        alwaysAvailable = true;
+      };
+      cam6 = {
+        alwaysAvailable = true;
+      };
+      cam7 = {
+        alwaysAvailable = true;
+      };
+      cam8 = {
+        alwaysAvailable = true;
+      };
+    };
+  };
+
+  systemd.services.mediamtx.serviceConfig = {
+    StateDirectory = "mediamtx";
+    ReadWritePaths = [ "/var/lib/mediamtx" ];
+    ProtectSystem = lib.mkForce "off";
+    ProtectHome = lib.mkForce "off";
+    PrivateTmp = lib.mkForce false;
+  };
+
+  systemd.services.ffmpeg-cameras = {
+    description = "Push 8 hardware-accelerated streams to MediaMTX";
+    after = [ "mediamtx.service" ];
+    requires = [ "mediamtx.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      ExecStart =
+        if enableNvidia then
+          "${pkgs.bash}/bin/sh -c 'sleep 2; for i in 1 2 3 4 5 6 7 8; do ${pkgs.ffmpeg}/bin/ffmpeg -hwaccel cuda -hwaccel_output_format cuda -re -stream_loop -1 -i /var/lib/mediamtx/CosmosLaundromat_2k24p_HDR_P3PQ.mp4 -c:v h264_nvenc -bf 0 -profile:v high -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam$i & done; wait'"
+        else
+          "${pkgs.bash}/bin/sh -c 'sleep 2; for i in 1 2 3 4 5 6 7 8; do ${pkgs.ffmpeg}/bin/ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -hwaccel vaapi -hwaccel_device va -hwaccel_output_format vaapi -re -stream_loop -1 -i /var/lib/mediamtx/CosmosLaundromat_2k24p_HDR_P3PQ.mp4 -vf \"format=nv12|vaapi,hwupload\" -c:v h264_vaapi -bf 0 -profile:v 578 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam$i & done; wait'";
+      Restart = "always";
+      User = "mediamtx";
+      DynamicUser = true;
+      ReadWritePaths = [ "/var/lib/mediamtx" ];
+      ProtectSystem = lib.mkForce "off";
+      ProtectHome = lib.mkForce "off";
+      SupplementaryGroups = [
+        "video"
+        "render"
+      ];
+      StateDirectory = "mediamtx";
+    };
+  };
   services.openssh.enable = true;
   services.tailscale.enable = true;
   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
