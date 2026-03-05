@@ -65,6 +65,7 @@
   services.avahi.publish.addresses = true;
   services.avahi.publish.enable = true;
   services.fprintd.enable = !enableNvidia;
+  services.flatpak.enable = enableNvidia;
   services.gnome.tinysparql.enable = false;
   services.gnome.localsearch.enable = false;
   services.openssh.enable = true;
