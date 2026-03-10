@@ -120,6 +120,7 @@
     golangci-lint-langserver
     google-chrome
     gopls
+    claude-code
     jq
     lua-language-server
     neovide
