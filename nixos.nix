@@ -111,6 +111,7 @@
   };
 
   systemd.services.mediamtx.serviceConfig = {
+    DynamicUser = lib.mkForce false;
     StateDirectory = "mediamtx";
     StateDirectoryMode = "0755";
     UMask = "0022";
@@ -144,6 +145,12 @@
       StateDirectory = "mediamtx";
     };
   };
+  users.users.mediamtx = {
+    isSystemUser = true;
+    group = "mediamtx";
+  };
+  users.groups.mediamtx = { };
+
   services.openssh.enable = true;
   services.tailscale.enable = true;
   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
