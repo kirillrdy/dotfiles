@@ -116,7 +116,6 @@
           "${pkgs.bash}/bin/sh -c 'sleep 2; ${pkgs.ffmpeg}/bin/ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -hwaccel vaapi -hwaccel_device va -re -f lavfi -i \"testsrc2=size=640x480:rate=30\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=40:x=(w-text_w)/2:y=(h-text_h)/2,format=nv12,hwupload\" -c:v h264_vaapi -profile:v baseline -level 30 -g 60 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam1 & ${pkgs.ffmpeg}/bin/ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -hwaccel vaapi -hwaccel_device va -re -f lavfi -i \"testsrc2=size=640x480:rate=1\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=40:x=(w-text_w)/2:y=(h-text_h)/2,format=nv12,hwupload\" -c:v h264_vaapi -profile:v baseline -level 30 -g 1 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam2 & wait'";
       Restart = "always";
       User = "mediamtx";
-      DynamicUser = true;
       ReadWritePaths = [ "/var/lib/mediamtx" ];
       ProtectSystem = lib.mkForce "off";
       ProtectHome = lib.mkForce "off";
@@ -124,7 +123,6 @@
         "video"
         "render"
       ];
-      StateDirectory = "mediamtx";
     };
   };
   users.users.mediamtx = {
