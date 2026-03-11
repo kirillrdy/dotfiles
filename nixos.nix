@@ -89,24 +89,6 @@
       cam2 = {
         alwaysAvailable = true;
       };
-      cam3 = {
-        alwaysAvailable = true;
-      };
-      cam4 = {
-        alwaysAvailable = true;
-      };
-      cam5 = {
-        alwaysAvailable = true;
-      };
-      cam6 = {
-        alwaysAvailable = true;
-      };
-      cam7 = {
-        alwaysAvailable = true;
-      };
-      cam8 = {
-        alwaysAvailable = true;
-      };
     };
   };
 
@@ -122,16 +104,16 @@
   };
 
   systemd.services.ffmpeg-cameras = {
-    description = "Push 8 hardware-accelerated streams to MediaMTX";
+    description = "Push hardware-accelerated streams to MediaMTX";
     after = [ "mediamtx.service" ];
     requires = [ "mediamtx.service" ];
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       ExecStart =
         if enableNvidia then
-          "${pkgs.bash}/bin/sh -c 'sleep 2; for i in 1 2 3 4 5 6 7 8; do ${pkgs.ffmpeg}/bin/ffmpeg -re -f lavfi -i \"testsrc2=size=640x480:rate=30\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=40:x=(w-text_w)/2:y=(h-text_h)/2,format=yuv420p\" -c:v h264_nvenc -profile:v baseline -level 3.0 -tune zerolatency -forced-idr 1 -g 60 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam$i & done; wait'"
+          "${pkgs.bash}/bin/sh -c 'sleep 2; ${pkgs.ffmpeg}/bin/ffmpeg -re -f lavfi -i \"testsrc2=size=640x480:rate=30\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=40:x=(w-text_w)/2:y=(h-text_h)/2,format=yuv420p\" -c:v h264_nvenc -profile:v baseline -level 3.0 -tune zerolatency -forced-idr 1 -g 60 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam1 & ${pkgs.ffmpeg}/bin/ffmpeg -re -f lavfi -i \"testsrc2=size=640x480:rate=1\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=40:x=(w-text_w)/2:y=(h-text_h)/2,format=yuv420p\" -c:v h264_nvenc -profile:v baseline -level 3.0 -tune zerolatency -forced-idr 1 -g 1 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam2 & wait'"
         else
-          "${pkgs.bash}/bin/sh -c 'sleep 2; for i in 1 2 3 4 5 6 7 8; do ${pkgs.ffmpeg}/bin/ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -hwaccel vaapi -hwaccel_device va -re -f lavfi -i \"testsrc2=size=640x480:rate=30\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=40:x=(w-text_w)/2:y=(h-text_h)/2,format=nv12,hwupload\" -c:v h264_vaapi -profile:v baseline -level 30 -g 60 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam$i & done; wait'";
+          "${pkgs.bash}/bin/sh -c 'sleep 2; ${pkgs.ffmpeg}/bin/ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -hwaccel vaapi -hwaccel_device va -re -f lavfi -i \"testsrc2=size=640x480:rate=30\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=40:x=(w-text_w)/2:y=(h-text_h)/2,format=nv12,hwupload\" -c:v h264_vaapi -profile:v baseline -level 30 -g 60 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam1 & ${pkgs.ffmpeg}/bin/ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -hwaccel vaapi -hwaccel_device va -re -f lavfi -i \"testsrc2=size=640x480:rate=1\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=40:x=(w-text_w)/2:y=(h-text_h)/2,format=nv12,hwupload\" -c:v h264_vaapi -profile:v baseline -level 30 -g 1 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam2 & wait'";
       Restart = "always";
       User = "mediamtx";
       DynamicUser = true;
