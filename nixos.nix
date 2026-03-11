@@ -112,6 +112,8 @@
 
   systemd.services.mediamtx.serviceConfig = {
     StateDirectory = "mediamtx";
+    StateDirectoryMode = "0755";
+    UMask = "0022";
     ReadWritePaths = [ "/var/lib/mediamtx" ];
     ProtectSystem = lib.mkForce "off";
     ProtectHome = lib.mkForce "off";
