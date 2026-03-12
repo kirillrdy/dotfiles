@@ -69,6 +69,9 @@
   services.gnome.tinysparql.enable = false;
   services.gnome.localsearch.enable = false;
   services.mediamtx.enable = true;
+  services.mediamtx.package = pkgs.mediamtx.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ [ ./patches/mediamtx-fmp4-seek.patch ];
+  });
   services.mediamtx.env = {
     TZ = "UTC";
   };

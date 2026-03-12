@@ -1,0 +1,192 @@
+diff --git a/internal/playback/segment_fmp4.go b/internal/playback/segment_fmp4.go
+index 4cadb349..afb59102 100644
+--- a/internal/playback/segment_fmp4.go
++++ b/internal/playback/segment_fmp4.go
+@@ -2,6 +2,7 @@ package playback
+ 
+ import (
+ 	"bytes"
++	"encoding/binary"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -16,6 +17,10 @@ import (
+ const (
+ 	sampleFlagIsNonSyncSample = 1 << 16
+ 	concatenationTolerance    = 1 * time.Second
++	// gopPreroll is the amount of video before the seek point that is always
++	// fully processed to ensure the pre-seek GOP is available for clean decode.
++	// Must be >= the maximum keyframe interval used by any source.
++	gopPreroll = 10 * time.Second
+ )
+ 
+ var errTerminated = errors.New("terminated")
+@@ -415,6 +420,142 @@ outer:
+ 	return maxElapsed, nil
+ }
+ 
++// fmp4WalkBoxes iterates over MP4 child boxes within buf, calling fn for each.
++// fn returns true to continue iteration, false to stop early.
++func fmp4WalkBoxes(buf []byte, fn func(boxType string, payload []byte) bool) {
++	for off := 0; off+8 <= len(buf); {
++		sz := int(binary.BigEndian.Uint32(buf[off : off+4]))
++		typ := string(buf[off+4 : off+8])
++		hdrSz := 8
++
++		if sz == 1 {
++			if off+16 > len(buf) {
++				return
++			}
++			sz64 := binary.BigEndian.Uint64(buf[off+8 : off+16])
++			if sz64 > uint64(len(buf)) {
++				return
++			}
++			sz = int(sz64)
++			hdrSz = 16
++		} else if sz == 0 {
++			sz = len(buf) - off
++		}
++
++		if sz < hdrSz || off+sz > len(buf) {
++			return
++		}
++
++		if !fn(typ, buf[off+hdrSz:off+sz]) {
++			return
++		}
++		off += sz
++	}
++}
++
++// fmp4ReadMoofTfdt extracts the base decode time and track timescale from the
++// first traf/tfdt found within a moof box body read via r.ReadAt.
++func fmp4ReadMoofTfdt(r io.ReaderAt, bodyStart, bodyEnd int64, tracks []*fmp4.InitTrack) (baseDTS int64, timeScale uint32, ok bool) {
++	bodySz := bodyEnd - bodyStart
++	if bodySz <= 0 || bodySz > 1<<20 { // moofs are small; >1MB is malformed
++		return 0, 0, false
++	}
++	body := make([]byte, bodySz)
++	if _, err := r.ReadAt(body, bodyStart); err != nil {
++		return 0, 0, false
++	}
++
++	fmp4WalkBoxes(body, func(t string, p []byte) bool {
++		if t != "traf" {
++			return true
++		}
++		var trackID uint32
++		fmp4WalkBoxes(p, func(t2 string, p2 []byte) bool {
++			switch t2 {
++			case "tfhd":
++				// FullBox: version(1)+flags(3)+trackID(4)
++				if len(p2) >= 8 {
++					trackID = binary.BigEndian.Uint32(p2[4:8])
++				}
++			case "tfdt":
++				if len(p2) < 4 {
++					return false
++				}
++				track := findInitTrack(tracks, int(trackID))
++				if track == nil {
++					return false
++				}
++				version := p2[0]
++				if version == 1 && len(p2) >= 12 {
++					baseDTS = int64(binary.BigEndian.Uint64(p2[4:12]))
++					timeScale = track.TimeScale
++					ok = true
++				} else if version == 0 && len(p2) >= 8 {
++					baseDTS = int64(binary.BigEndian.Uint32(p2[4:8]))
++					timeScale = track.TimeScale
++					ok = true
++				}
++				return false // stop after first tfdt
++			}
++			return !ok
++		})
++		return !ok
++	})
++	return
++}
++
++// segmentFMP4FindSkipOffset performs a lightweight scan of the fMP4 file using
++// ReadAt (which does not affect the sequential read position) to build a
++// fragment time index and find the absolute file offset of the first moof box
++// that falls within the GOP pre-roll window before startDTS. All moof boxes
++// before this offset are entirely outside the relevant time range and can be
++// skipped in the ReadBoxStructure pass without reading any sample payloads,
++// reducing seek latency from O(segment_duration) to O(gopPreroll).
++//
++// Returns 0 when no moofs can be skipped (full scan required).
++func segmentFMP4FindSkipOffset(r io.ReaderAt, startDTS time.Duration, tracks []*fmp4.InitTrack) uint64 {
++	var off int64
++	hdr := [16]byte{}
++
++	for {
++		if _, err := r.ReadAt(hdr[:8], off); err != nil {
++			return 0
++		}
++
++		boxSz := int64(binary.BigEndian.Uint32(hdr[0:4]))
++		boxType := string(hdr[4:8])
++		hdrSz := int64(8)
++
++		if boxSz == 1 {
++			if _, err := r.ReadAt(hdr[8:16], off+8); err != nil {
++				return 0
++			}
++			boxSz = int64(binary.BigEndian.Uint64(hdr[8:16]))
++			hdrSz = 16
++		} else if boxSz == 0 {
++			return 0 // extends to EOF; can't determine next box offset
++		}
++
++		if boxSz < hdrSz {
++			return 0
++		}
++
++		if boxType == "moof" {
++			baseDTS, timeScale, ok := fmp4ReadMoofTfdt(r, off+hdrSz, off+boxSz, tracks)
++			if ok {
++				// fragDTS is the time of this fragment relative to the requested start.
++				// Once it reaches -gopPreroll we have enough pre-roll for GOP alignment.
++				fragDTS := durationMp4ToGo(baseDTS, timeScale) + startDTS
++				if fragDTS >= -gopPreroll {
++					return uint64(off)
++				}
++			}
++		}
++
++		off += boxSz
++	}
++}
++
+ func segmentFMP4MuxParts(
+ 	r readSeekerAt,
+ 	startDTS time.Duration,
+@@ -422,6 +563,13 @@ func segmentFMP4MuxParts(
+ 	tracks []*fmp4.InitTrack,
+ 	m muxer,
+ ) (time.Duration, error) {
++	// Fast pre-scan: find the file offset of the first moof that falls within
++	// the GOP pre-roll window. Moofs before this offset are entirely outside
++	// the relevant time range; skipping them avoids reading their sample payloads
++	// (~1.8 GB for a 1-hour segment at 4 Mbps), which is the primary cause of
++	// slow seeks on long segments.
++	skipBeforeOffset := segmentFMP4FindSkipOffset(r, startDTS, tracks)
++
+ 	var startDTSMP4 int64
+ 	var durationMP4 int64
+ 	moofOffset := uint64(0)
+@@ -434,6 +582,11 @@ func segmentFMP4MuxParts(
+ 	_, err := amp4.ReadBoxStructure(r, func(h *amp4.ReadHandle) (any, error) {
+ 		switch h.BoxInfo.Type.String() {
+ 		case "moof":
++			// Skip moofs that are entirely before the GOP pre-roll window.
++			// ReadBoxStructure will seek past the entire moof+mdat pair cheaply.
++			if h.BoxInfo.Offset < skipBeforeOffset {
++				return nil, nil
++			}
+ 			moofOffset = h.BoxInfo.Offset
+ 			return h.Expand()
+ 
