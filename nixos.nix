@@ -68,6 +68,72 @@
   services.flatpak.enable = enableNvidia;
   services.gnome.tinysparql.enable = false;
   services.gnome.localsearch.enable = false;
+  services.mediamtx.enable = true;
+  services.mediamtx.package = pkgs.mediamtx.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ [ ./patches/mediamtx-fmp4-seek.patch ];
+  });
+  services.mediamtx.env = {
+    TZ = "UTC";
+  };
+  services.mediamtx.settings = {
+    playback = true;
+    playbackAddress = ":9996";
+    pathDefaults = {
+      record = true;
+      recordPath = "/var/lib/mediamtx/%path/%Y-%m-%d_%H-%M-%S_%f";
+      recordFormat = "fmp4";
+      playback = true;
+    };
+    paths = {
+      all = { };
+      cam1 = {
+        alwaysAvailable = true;
+      };
+      cam2 = {
+        alwaysAvailable = true;
+      };
+    };
+  };
+
+  systemd.services.mediamtx.serviceConfig = {
+    DynamicUser = lib.mkForce false;
+    StateDirectory = "mediamtx";
+    StateDirectoryMode = "0755";
+    UMask = "0022";
+    ReadWritePaths = [ "/var/lib/mediamtx" ];
+    ProtectSystem = lib.mkForce "off";
+    ProtectHome = lib.mkForce "off";
+    PrivateTmp = lib.mkForce false;
+  };
+
+  systemd.services.ffmpeg-cameras = {
+    description = "Push hardware-accelerated streams to MediaMTX";
+    after = [ "mediamtx.service" ];
+    requires = [ "mediamtx.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      ExecStart =
+        if enableNvidia then
+          "${pkgs.bash}/bin/sh -c 'sleep 2; ${pkgs.ffmpeg}/bin/ffmpeg -re -f lavfi -i \"testsrc2=size=1920x1080:rate=30\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=100:x=(w-text_w)/2:y=(h-text_h)/2,format=yuv420p\" -c:v h264_nvenc -profile:v baseline -level 4.0 -preset p1 -delay 0 -forced-idr 1 -g 60 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam1 & ${pkgs.ffmpeg}/bin/ffmpeg -re -f lavfi -i \"testsrc2=size=1920x1080:rate=1\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=100:x=(w-text_w)/2:y=(h-text_h)/2,format=yuv420p\" -c:v h264_nvenc -profile:v baseline -level 4.0 -preset p1 -delay 0 -forced-idr 1 -g 1 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam2 & wait'"
+        else
+          "${pkgs.bash}/bin/sh -c 'sleep 2; ${pkgs.ffmpeg}/bin/ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -hwaccel vaapi -hwaccel_device va -re -f lavfi -i \"testsrc2=size=1920x1080:rate=30\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=100:x=(w-text_w)/2:y=(h-text_h)/2,format=nv12,hwupload\" -c:v h264_vaapi -profile:v constrained_baseline -level 40 -g 60 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam1 & ${pkgs.ffmpeg}/bin/ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -hwaccel vaapi -hwaccel_device va -re -f lavfi -i \"testsrc2=size=1920x1080:rate=1\" -vf \"drawtext=text=%{localtime}:fontcolor=white:fontsize=100:x=(w-text_w)/2:y=(h-text_h)/2,format=nv12,hwupload\" -c:v h264_vaapi -profile:v constrained_baseline -level 40 -g 1 -bf 0 -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam2 & wait'";
+      Restart = "always";
+      User = "mediamtx";
+      ReadWritePaths = [ "/var/lib/mediamtx" ];
+      ProtectSystem = lib.mkForce "off";
+      ProtectHome = lib.mkForce "off";
+      SupplementaryGroups = [
+        "video"
+        "render"
+      ];
+    };
+  };
+  users.users.mediamtx = {
+    isSystemUser = true;
+    group = "mediamtx";
+  };
+  users.groups.mediamtx = { };
+
   services.openssh.enable = true;
   services.tailscale.enable = true;
   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
