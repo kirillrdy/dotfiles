@@ -6,6 +6,12 @@
   ...
 }:
 {
+  imports = [ ./mediamtx-cameras.nix ];
+
+  services.mediamtxCameras.user = "kirillvr";
+  services.mediamtxCameras.group = "users";
+  services.mediamtxCameras.storagePath = "/tank/mediamtx";
+
   boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
   boot.initrd.availableKernelModules = [ "nvme" ];
   boot.kernelPackages = pkgs.linuxPackages_6_19;
