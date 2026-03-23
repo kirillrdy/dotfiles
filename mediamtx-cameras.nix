@@ -95,7 +95,20 @@ let
     wait
   '';
 
-  simulatorConfig = (pkgs.formats.yaml { }).generate "mediamtx-simulator.yaml" {
+  simulatorConfigNoAuth = (pkgs.formats.yaml { }).generate "mediamtx-simulator.yaml" {
+    rtspAddress = ":${toString simulatorPort}";
+    rtspTransports = [ "tcp" ];
+    rtmp = false;
+    hls = false;
+    webrtc = false;
+    srt = false;
+    api = false;
+    metrics = false;
+    pprof = false;
+    paths.all = { };
+  };
+
+  simulatorConfigTemplate = (pkgs.formats.yaml { }).generate "mediamtx-simulator-template.yaml" {
     rtspAddress = ":${toString simulatorPort}";
     rtspTransports = [ "tcp" ];
     rtmp = false;
@@ -108,7 +121,7 @@ let
     authInternalUsers = [
       {
         user = "camera";
-        pass = "$ENV{CAMERA_PASSWORD}";
+        pass = "\${CAMERA_PASSWORD}";
         permissions = [
           { action = "publish"; path = ""; }
           { action = "read"; path = ""; }
@@ -117,6 +130,13 @@ let
     ];
     paths.all = { };
   };
+
+  genSimulatorConfigScript = pkgs.writeShellScript "gen-mediamtx-simulator-config" ''
+    . ${cfg.passwordFile}
+    ${pkgs.gettext}/bin/envsubst '$CAMERA_PASSWORD' \
+      < ${simulatorConfigTemplate} \
+      > /run/mediamtx-simulator-conf/mediamtx-simulator.yaml
+  '';
 
   # Plain camera paths used when no password is configured
   cameraPaths = lib.listToAttrs (
@@ -271,13 +291,18 @@ in
       after = [ "network.target" ];
       wantedBy = [ "multi-user.target" ];
       serviceConfig = {
-        ExecStart = "${config.services.mediamtx.package}/bin/mediamtx ${simulatorConfig}";
         User = cfg.user;
         Group = cfg.group;
         Restart = "always";
-      } // lib.optionalAttrs (cfg.passwordFile != null) {
-        EnvironmentFile = cfg.passwordFile;
-      };
+      } // (
+        if cfg.passwordFile != null then {
+          RuntimeDirectory = "mediamtx-simulator-conf";
+          ExecStartPre = genSimulatorConfigScript;
+          ExecStart = "${config.services.mediamtx.package}/bin/mediamtx /run/mediamtx-simulator-conf/mediamtx-simulator.yaml";
+        } else {
+          ExecStart = "${config.services.mediamtx.package}/bin/mediamtx ${simulatorConfigNoAuth}";
+        }
+      );
     };
 
     systemd.services.ffmpeg-cameras = {
