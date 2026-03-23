@@ -85,7 +85,7 @@ let
         "-f"
         "rtsp"
       ]
-    } \"rtsp://localhost:${toString simulatorPort}/${camName}/${ch.name}\"";
+    } \"rtsp://camera:$CAMERA_PASSWORD@localhost:${toString simulatorPort}/${camName}/${ch.name}\"";
 
   ffmpegCmds = map mkFfmpegCmd allChannelPairs;
 
@@ -105,10 +105,20 @@ let
     api = false;
     metrics = false;
     pprof = false;
+    authInternalUsers = [
+      {
+        user = "camera";
+        pass = "$ENV{CAMERA_PASSWORD}";
+        permissions = [
+          { action = "publish"; path = ""; }
+          { action = "read"; path = ""; }
+        ];
+      }
+    ];
     paths.all = { };
   };
 
-  # Main mediamtx pulls from the simulator, just like it would from real cameras
+  # Plain camera paths used when no password is configured
   cameraPaths = lib.listToAttrs (
     lib.concatMap (
       cam:
@@ -126,6 +136,48 @@ let
       ) cam.channels
     ) cfg.cameras
   );
+
+  # Camera paths template with ${CAMERA_PASSWORD} placeholder for envsubst substitution at runtime.
+  # \${...} in Nix produces the literal ${...} string in the output.
+  cameraPathsTemplate = lib.listToAttrs (
+    lib.concatMap (
+      cam:
+      map (
+        ch:
+        lib.nameValuePair "${cam.name}/${ch.name}" (
+          {
+            source = "rtsp://camera:\${CAMERA_PASSWORD}@localhost:${toString simulatorPort}/${cam.name}/${ch.name}";
+          }
+          // lib.optionalAttrs (ch.name == "ch2") {
+            record = false;
+            sourceOnDemand = true;
+          }
+        )
+      ) cam.channels
+    ) cfg.cameras
+  );
+
+  # Full mediamtx config template written to the nix store.
+  # Contains ${CAMERA_PASSWORD} placeholders that envsubst fills in at service start.
+  mediamtxConfigTemplate = (pkgs.formats.yaml { }).generate "mediamtx-template.yaml" {
+    playback = true;
+    playbackAddress = ":9996";
+    pathDefaults = {
+      record = true;
+      recordPath = "${cfg.storagePath}/%path/%Y-%m-%d_%H-%M-%S_%f";
+      recordFormat = "fmp4";
+      recordDeleteAfter = "30d";
+    };
+    paths = { all = { }; } // cameraPathsTemplate;
+  };
+
+  # ExecStartPre script: reads passwordFile, substitutes ${CAMERA_PASSWORD} into the template
+  genConfigScript = pkgs.writeShellScript "gen-mediamtx-config" ''
+    . ${cfg.passwordFile}
+    ${pkgs.gettext}/bin/envsubst '$CAMERA_PASSWORD' \
+      < ${mediamtxConfigTemplate} \
+      > /run/mediamtx-conf/mediamtx.yaml
+  '';
 in
 {
   options.services.mediamtxCameras = {
@@ -183,16 +235,11 @@ in
     services.mediamtx.env = {
       TZ = "UTC";
     };
+
+    # When no passwordFile: use settings normally with plain URLs.
+    # When passwordFile is set: ExecStart is overridden below so this config is ignored,
+    # but we still set it to avoid an empty settings warning from the mediamtx module.
     services.mediamtx.settings = {
-      authInternalUsers = lib.mkIf (cfg.passwordFile != null) [
-        {
-          user = "camera";
-          pass = "$ENV{CAMERA_PASSWORD}";
-          permissions = [
-            { action = "read"; path = ""; }
-          ];
-        }
-      ];
       playback = true;
       playbackAddress = ":9996";
       pathDefaults = {
@@ -201,10 +248,7 @@ in
         recordFormat = "fmp4";
         recordDeleteAfter = "30d";
       };
-      paths = {
-        all = { };
-      }
-      // cameraPaths;
+      paths = { all = { }; } // cameraPaths;
     };
 
     systemd.services.mediamtx.serviceConfig = {
@@ -216,7 +260,10 @@ in
       UMask = "0022";
       ReadWritePaths = [ "${cfg.storagePath}" ];
     } // lib.optionalAttrs (cfg.passwordFile != null) {
-      EnvironmentFile = cfg.passwordFile;
+      # Generate config with real password before mediamtx starts, then point ExecStart at it
+      RuntimeDirectory = "mediamtx-conf";
+      ExecStartPre = genConfigScript;
+      ExecStart = lib.mkForce "${config.services.mediamtx.package}/bin/mediamtx /run/mediamtx-conf/mediamtx.yaml";
     };
 
     systemd.services.mediamtx-simulator = {
@@ -228,6 +275,8 @@ in
         User = cfg.user;
         Group = cfg.group;
         Restart = "always";
+      } // lib.optionalAttrs (cfg.passwordFile != null) {
+        EnvironmentFile = cfg.passwordFile;
       };
     };
 
@@ -244,6 +293,8 @@ in
           "video"
           "render"
         ];
+      } // lib.optionalAttrs (cfg.passwordFile != null) {
+        EnvironmentFile = cfg.passwordFile;
       };
     };
 
