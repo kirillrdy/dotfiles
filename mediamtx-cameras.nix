@@ -85,7 +85,7 @@ let
         "-f"
         "rtsp"
       ]
-    } \"rtsp://camera:$CAMERA_PASSWORD@localhost:${toString simulatorPort}/${camName}/${ch.name}\"";
+    } \"rtsp://localhost:${toString simulatorPort}/${camName}/${ch.name}\"";
 
   ffmpegCmds = map mkFfmpegCmd allChannelPairs;
 
@@ -105,16 +105,6 @@ let
     api = false;
     metrics = false;
     pprof = false;
-    authInternalUsers = [
-      {
-        user = "camera";
-        pass = "$ENV{CAMERA_PASSWORD}";
-        permissions = [
-          { action = "publish"; path = ""; }
-          { action = "read"; path = ""; }
-        ];
-      }
-    ];
     paths.all = { };
   };
 
@@ -126,7 +116,7 @@ let
         ch:
         lib.nameValuePair "${cam.name}/${ch.name}" (
           {
-            source = "rtsp://camera:$ENV{CAMERA_PASSWORD}@localhost:${toString simulatorPort}/${cam.name}/${ch.name}";
+            source = "rtsp://localhost:${toString simulatorPort}/${cam.name}/${ch.name}";
           }
           // lib.optionalAttrs (ch.name == "ch2") {
             record = false;
@@ -194,6 +184,15 @@ in
       TZ = "UTC";
     };
     services.mediamtx.settings = {
+      authInternalUsers = lib.mkIf (cfg.passwordFile != null) [
+        {
+          user = "camera";
+          pass = "$ENV{CAMERA_PASSWORD}";
+          permissions = [
+            { action = "read"; path = ""; }
+          ];
+        }
+      ];
       playback = true;
       playbackAddress = ":9996";
       pathDefaults = {
@@ -229,8 +228,6 @@ in
         User = cfg.user;
         Group = cfg.group;
         Restart = "always";
-      } // lib.optionalAttrs (cfg.passwordFile != null) {
-        EnvironmentFile = cfg.passwordFile;
       };
     };
 
@@ -247,8 +244,6 @@ in
           "video"
           "render"
         ];
-      } // lib.optionalAttrs (cfg.passwordFile != null) {
-        EnvironmentFile = cfg.passwordFile;
       };
     };
 
