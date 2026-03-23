@@ -11,6 +11,7 @@
   services.mediamtxCameras.user = "kirillvr";
   services.mediamtxCameras.group = "users";
   services.mediamtxCameras.storagePath = "/tank/mediamtx";
+  services.mediamtxCameras.passwordFile = "/etc/mediamtx-password";
 
   boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
   boot.initrd.availableKernelModules = [ "nvme" ];
