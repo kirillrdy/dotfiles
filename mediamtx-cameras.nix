@@ -250,6 +250,12 @@ in
           url = "https://github.com/kirillrdy/mediamtx/commit/c2308b771e8c3e092f78092b70867ad5a420870e.patch";
           hash = "sha256-AZw4cwqQIScDSPTfSBg+plI8AVpH379FwLvWdUIRYS0=";
         })
+        # include video resolution in playback /list response
+        (pkgs.fetchpatch {
+          name = "mediamtx-playback-resolution.patch";
+          url = "https://github.com/kirillrdy/mediamtx/commit/4cb94cf7.patch";
+          hash = "sha256-fohU2BmvXWbRriwO+5cNBrU2W/DnIpwo/0474SRR0JI=";
+        })
       ];
     });
     services.mediamtx.env = {
