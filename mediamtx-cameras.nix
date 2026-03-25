@@ -232,28 +232,22 @@ in
     services.mediamtx.enable = true;
     services.mediamtx.package = pkgs.mediamtx.overrideAttrs (old: {
       patches = (old.patches or [ ]) ++ [
-        # fix fmp4 playback seek position
+        # add interpolation-based seeking to skip ahead in long fmp4 segments
         (pkgs.fetchpatch {
           name = "mediamtx-fmp4-seek.patch";
-          url = "https://github.com/kirillrdy/mediamtx/commit/c2a86eb6a221174820af74c580e08d37fbd1120b.patch";
-          hash = "sha256-PQit6PInKok+Qj0zP1pjlA4kkRpGZwyD0Eo5Q/wcA5A=";
+          url = "https://github.com/kirillrdy/mediamtx/commit/c08ea620.patch";
+          hash = "sha256-/Ta+5MWgI6u9igbf6Pxz870RoZ4zu/gTbsX3H8Xq7a4=";
         })
-        # speed up seek into long fmp4 segments using byte-offset interpolation
-        (pkgs.fetchpatch {
-          name = "mediamtx-fmp4-interpolation.patch";
-          url = "https://github.com/kirillrdy/mediamtx/commit/090c9c3d670e621eb7449c373da55dfbbcf3e04f.patch";
-          hash = "sha256-clii+un/F1/cB6I2oA5jkNIROimQjm3QEqxd+TabvmA=";
-        })
-        # fix pre-roll frames having wrong DTS and zero duration in fmp4 playback
+        # fix pre-roll frames having wrong DTS and zero duration
         (pkgs.fetchpatch {
           name = "mediamtx-fmp4-preroll-dts.patch";
-          url = "https://github.com/kirillrdy/mediamtx/commit/c2308b771e8c3e092f78092b70867ad5a420870e.patch";
+          url = "https://github.com/kirillrdy/mediamtx/commit/6f717594.patch";
           hash = "sha256-AZw4cwqQIScDSPTfSBg+plI8AVpH379FwLvWdUIRYS0=";
         })
-        # include video resolution in playback /list response
+        # add video resolution to /list API response
         (pkgs.fetchpatch {
           name = "mediamtx-playback-resolution.patch";
-          url = "https://github.com/kirillrdy/mediamtx/commit/4cb94cf7.patch";
+          url = "https://github.com/kirillrdy/mediamtx/commit/1f0dc88b.patch";
           hash = "sha256-fohU2BmvXWbRriwO+5cNBrU2W/DnIpwo/0474SRR0JI=";
         })
       ];
