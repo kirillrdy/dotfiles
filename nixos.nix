@@ -24,7 +24,7 @@
     device = "/dev/nvme0n1p3";
     fsType = "vfat";
   };
-  fonts.packages = with pkgs; [ noto-fonts-cjk-sans ];
+  fonts.packages = with pkgs; [ noto-fonts-cjk-sans source-code-pro ];
   hardware.nvidia.modesetting.enable = enableNvidia;
   hardware.nvidia.nvidiaSettings = false;
   hardware.cpu.intel.updateMicrocode = true;
