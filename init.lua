@@ -1,5 +1,6 @@
 vim.opt.relativenumber = true
 vim.opt.clipboard = "unnamedplus"
+vim.opt.guifont = "Adwaita Mono:h14"
 vim.cmd('colorscheme kanagawa')
 
 vim.g.mapleader = " "
