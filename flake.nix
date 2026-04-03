@@ -17,9 +17,20 @@
     in
     {
       packages.x86_64-linux.iso =
+        let
+          pkgs = import nixpkgs { system = "x86_64-linux"; };
+          nixos-installer = pkgs.runCommand "nixos-installer" { nativeBuildInputs = [ pkgs.go ]; } ''
+            mkdir -p $out/bin
+            cp ${./nixos-installer.go} main.go
+            env HOME=$(mktemp -d) go build -o $out/bin/nixos-installer main.go
+          '';
+        in
         (nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          modules = [ "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-graphical-gnome.nix" ];
+          modules = [
+            "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-graphical-gnome.nix"
+            { environment.systemPackages = [ nixos-installer ]; }
+          ];
         }).config.system.build.isoImage;
       packages.x86_64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-linux"; });
       packages.aarch64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "aarch64-linux"; });
