@@ -69,6 +69,8 @@
   services.gnome.tinysparql.enable = false;
   services.gnome.localsearch.enable = false;
   services.openssh.enable = true;
+  services.ollama.enable = enableNvidia;
+  services.ollama.package = pkgs.ollama-cuda;
   services.tailscale.enable = true;
   services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
   services.xserver.xkb.options = "caps:none";
