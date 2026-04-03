@@ -20,13 +20,19 @@
       packages.aarch64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "aarch64-linux"; });
       packages.x86_64-darwin.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-darwin"; });
       nixosConfigurations = {
+        installer = nixpkgs.lib.nixosSystem {
+          system = "x86_64-linux";
+          modules = [
+            "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-graphical-gnome.nix"
+          ];
+        };
         # amd ryzen 5
         #shinseikai = mkSystem { hostName = "shinseikai"; enableNvidia = true; };
         # legacy, yao: T460s
 
         # Lenovo X1 gen9, alderlake
         osaka = mkSystem { hostName = "osaka"; };
-        # Lenovo X1 gen13, ....
+        # Lenovo X1 gen13, lunarlake
         hagi = mkSystem { hostName = "hagi"; };
 
         # i7-13700K, raptorlake
