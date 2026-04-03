@@ -86,6 +86,7 @@
       "docker"
     ];
   };
+  virtualisation.libvirtd.enable = true;
   virtualisation.docker.enable = true;
   virtualisation.docker.storageDriver = "zfs";
   hardware.nvidia-container-toolkit.enable = enableNvidia;
@@ -113,6 +114,7 @@
     firefox
     gh
     ghostty
+    gnome-boxes
     gnomeExtensions.battery-time
     gnomeExtensions.freon
     gnomeExtensions.maximized-by-default-actually-reborn
