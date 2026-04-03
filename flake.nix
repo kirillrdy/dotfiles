@@ -16,16 +16,15 @@
         };
     in
     {
+      packages.x86_64-linux.iso =
+        (nixpkgs.lib.nixosSystem {
+          system = "x86_64-linux";
+          modules = [ "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-graphical-gnome.nix" ];
+        }).config.system.build.isoImage;
       packages.x86_64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-linux"; });
       packages.aarch64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "aarch64-linux"; });
       packages.x86_64-darwin.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-darwin"; });
       nixosConfigurations = {
-        installer = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-graphical-gnome.nix"
-          ];
-        };
         # amd ryzen 5
         #shinseikai = mkSystem { hostName = "shinseikai"; enableNvidia = true; };
         # legacy, yao: T460s
