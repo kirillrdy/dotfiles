@@ -118,6 +118,7 @@
     gnomeExtensions.battery-time
     gnomeExtensions.freon
     gnomeExtensions.maximized-by-default-actually-reborn
+    gnomeExtensions.executor
     gnomeExtensions.system-monitor-next
     go
     golangci-lint
