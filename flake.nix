@@ -1,8 +1,12 @@
 {
   description = "my computers in flakes";
-  inputs.nixpkgs.url = "github:nixos/nixpkgs";
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs";
+    darwin.url = "github:nix-darwin/nix-darwin";
+    darwin.inputs.nixpkgs.follows = "nixpkgs";
+  };
   outputs =
-    { self, nixpkgs }:
+    { self, nixpkgs, darwin }:
     let
       mkSystem =
         {
@@ -35,6 +39,13 @@
       packages.x86_64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-linux"; });
       packages.aarch64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "aarch64-linux"; });
       packages.x86_64-darwin.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-darwin"; });
+      packages.aarch64-darwin.neovim = import ./neovim.nix (import nixpkgs { system = "aarch64-darwin"; });
+
+      darwinConfigurations."shirahama" = darwin.lib.darwinSystem {
+        modules = [ ./darwin.nix ];
+        specialArgs = { inherit self; };
+      };
+
       nixosConfigurations = {
         # amd ryzen 5
         #shinseikai = mkSystem { hostName = "shinseikai"; enableNvidia = true; };

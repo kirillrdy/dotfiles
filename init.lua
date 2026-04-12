@@ -1,6 +1,12 @@
 vim.opt.relativenumber = true
 vim.opt.clipboard = "unnamedplus"
-vim.opt.guifont = "Adwaita Mono:h14"
+vim.opt.termguicolors = true
+vim.opt.background = "dark"
+if vim.fn.has("mac") == 1 then
+  vim.opt.guifont = "JetBrainsMono Nerd Font:h16"
+else
+  vim.opt.guifont = "Adwaita Mono:h14"
+end
 vim.cmd('colorscheme kanagawa')
 
 vim.g.mapleader = " "
