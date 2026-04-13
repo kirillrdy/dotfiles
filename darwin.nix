@@ -10,7 +10,6 @@
     nixpkgs-review
     colima
     docker
-    steam
     stats
     slack
     tig
@@ -23,6 +22,7 @@
   nix.enable = true;
   nix.settings.experimental-features = "nix-command flakes";
   nix.settings.sandbox = "relaxed";
+  nix.settings.trusted-users = [ "root" "kirillvr" ];
 
   # Create /etc/zshrc that loads the nix-darwin environment.
 
