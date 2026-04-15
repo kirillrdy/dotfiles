@@ -14,6 +14,7 @@
     tig
     btop
     nil
+    antigravity
     neovide
     self.packages.${pkgs.system}.neovim
   ];
