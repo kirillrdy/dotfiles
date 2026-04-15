@@ -11,8 +11,8 @@
     colima
     docker
     stats
-    slack
     tig
+    btop
     nil
     neovide
     self.packages.${pkgs.system}.neovim
@@ -21,7 +21,7 @@
   # nix-darwin now manages nix-daemon unconditionally when nix.enable is on.
   nix.enable = true;
   nix.settings.experimental-features = "nix-command flakes";
-  nix.settings.sandbox = "relaxed";
+  nix.settings.sandbox = true;
   nix.settings.trusted-users = [ "root" "kirillvr" ];
 
   # Create /etc/zshrc that loads the nix-darwin environment.
