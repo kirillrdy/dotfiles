@@ -24,7 +24,10 @@
     device = "/dev/nvme0n1p3";
     fsType = "vfat";
   };
-  fonts.packages = with pkgs; [ noto-fonts-cjk-sans source-code-pro ];
+  fonts.packages = with pkgs; [
+    noto-fonts-cjk-sans
+    source-code-pro
+  ];
   hardware.nvidia.modesetting.enable = enableNvidia;
   hardware.nvidia.nvidiaSettings = false;
   hardware.cpu.intel.updateMicrocode = true;
@@ -145,7 +148,7 @@
     tig
     typescript-language-server
     wl-clipboard
-    zig_0_15
-    zls_0_15
+    zig
+    zls
   ];
 }
