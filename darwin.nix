@@ -5,9 +5,10 @@
     vim
     ripgrep
     git
-    firefox-bin
+    firefox
     gemini-cli
     ghostty-bin
+    nil
     nixpkgs-review
     colima
     docker
