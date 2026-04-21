@@ -4,8 +4,8 @@
   environment.systemPackages = with pkgs;[
     vim
     ripgrep
+    gh
     git
-    firefox
     gemini-cli
     ghostty-bin
     nil
