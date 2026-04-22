@@ -7,16 +7,12 @@
     gh
     git
     gemini-cli
-    ghostty-bin
     nil
     nixpkgs-review
-    colima
-    docker
     stats
     tig
     btop
     nil
-    antigravity
     neovide
     self.packages.${pkgs.system}.neovim
   ];
