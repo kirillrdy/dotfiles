@@ -42,6 +42,7 @@
 
   # Set system-wide settings
   system.primaryUser = "kirillvr";
+  security.pam.enableSudoTouchIdAuth = true;
   ids.gids.nixbld = 350;
   system.defaults = {
     dock.autohide = true;
