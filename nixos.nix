@@ -6,6 +6,29 @@
   ...
 }:
 {
+  imports = [ ./mediamtx-cameras.nix ];
+
+  services.mediamtxCameras.user = "kirillvr";
+  services.mediamtxCameras.group = "users";
+  services.mediamtxCameras.cameras = lib.mkIf (hostName == "hagi") [
+    {
+      name = "shed1/zone1/roof";
+      channels = [
+        { name = "ch1"; width = 1280; height = 960; fps = 1; }
+        { name = "ch2"; width = 1280; height = 720; fps = 4; }
+      ];
+    }
+    {
+      name = "shed1/zone1/floor";
+      channels = [
+        { name = "ch1"; width = 3840; height = 2160; fps = 1; }
+        { name = "ch2"; width = 1280; height = 720; fps = 4; }
+      ];
+    }
+  ];
+  services.mediamtxCameras.storagePath = lib.mkIf (hostName == "tsutenkaku") "/tank/mediamtx";
+  services.mediamtxCameras.passwordFile = lib.mkIf (hostName == "tsutenkaku") "/etc/mediamtx-password";
+
   boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
   boot.initrd.availableKernelModules = [ "nvme" ];
   boot.kernelPackages = pkgs.linuxPackages_6_19;
