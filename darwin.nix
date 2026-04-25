@@ -42,13 +42,21 @@
 
   # Set system-wide settings
   system.primaryUser = "kirillvr";
-  security.pam.enableSudoTouchIdAuth = true;
+  security.pam.services.sudo_local.touchIdAuth = true;
   ids.gids.nixbld = 350;
   system.defaults = {
     dock.autohide = true;
     finder.AppleShowAllExtensions = true;
     NSGlobalDomain.AppleShowAllExtensions = true;
   };
+
+  system.keyboard.enableKeyMapping = true;
+  system.keyboard.userKeyMapping = [
+    {
+      HIDKeyboardModifierMappingSrc = 30064771129; # Caps Lock
+      HIDKeyboardModifierMappingDst = -1;          # Disable
+    }
+  ];
 
   fonts.packages = [ pkgs.nerd-fonts.jetbrains-mono ];
 
