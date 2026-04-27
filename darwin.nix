@@ -22,6 +22,18 @@
   nix.settings.experimental-features = "nix-command flakes";
   nix.settings.sandbox = "relaxed";
   nix.settings.trusted-users = [ "root" "kirillvr" ];
+  nix.linux-builder = {
+    enable = true;
+    systems = [ "aarch64-linux" "x86_64-linux" ];
+    config = ({ lib, ... }: {
+      virtualisation = {
+        cores = lib.mkForce 8;
+        memorySize = lib.mkForce 8192;
+        diskSize = lib.mkForce 40960;
+      };
+      boot.binfmt.emulatedSystems = [ "x86_64-linux" ];
+    });
+  };
 
   # Create /etc/zshrc that loads the nix-darwin environment.
 
