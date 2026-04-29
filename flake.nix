@@ -42,7 +42,10 @@
       packages.aarch64-darwin.neovim = import ./neovim.nix (import nixpkgs { system = "aarch64-darwin"; });
 
       darwinConfigurations."shirahama" = darwin.lib.darwinSystem {
-        modules = [ ./darwin.nix ];
+        modules = [
+          ./darwin.nix
+          "${nixpkgs}/nixos/modules/programs/git.nix"
+        ];
         specialArgs = { inherit self; };
       };
 
