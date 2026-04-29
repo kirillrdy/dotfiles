@@ -105,49 +105,22 @@
           intel-vaapi-driver
         ];
   };
-  environment.systemPackages = with pkgs; [
-    (if enableNvidia then btop-cuda else btop)
-    (import ./neovim.nix pkgs)
-    acpi
-    antigravity
-    awscli2
-    ffmpeg
-    file
-    firefox
-    gh
-    ghostty
-    gnome-boxes
-    gnomeExtensions.battery-time
-    gnomeExtensions.freon
-    gnomeExtensions.maximized-by-default-actually-reborn
-    gnomeExtensions.executor
-    gnomeExtensions.system-monitor-next
-    go
-    golangci-lint
-    golangci-lint-langserver
-    google-chrome
-    gopls
-    claude-code
-    jq
-    lua-language-server
-    neovide
-    nil
-    nix-tree
-    nix-update
-    nixfmt
-    nixpkgs-review
-    opencode
-    pyrefly
-    (python3Packages.fastavro.overridePythonAttrs (old: {
-      dependencies = (old.dependencies or [ ]) ++ [ python3Packages.zstandard ];
-    }))
-    ripgrep
-    slack
-    superhtml
-    tig
-    typescript-language-server
-    wl-clipboard
-    zig
-    zls
-  ];
+  environment.systemPackages =
+    (import ./common.nix pkgs)
+    ++ (with pkgs; [
+      (if enableNvidia then btop-cuda else btop)
+      acpi
+      antigravity
+      file
+      firefox
+      ghostty
+      gnomeExtensions.battery-time
+      gnomeExtensions.freon
+      gnomeExtensions.maximized-by-default-actually-reborn
+      gnomeExtensions.executor
+      gnomeExtensions.system-monitor-next
+      google-chrome
+      slack
+      wl-clipboard
+    ]);
 }
