@@ -50,6 +50,7 @@
   };
 
   programs.bash.enable = true;
+  programs.bash.completion.enable = true;
   programs.bash.interactiveShellInit = ''PS1='\[\e[32m\]\u@\h:\w> \[\e[0m\]' '';
 
   # Set system-wide settings
