@@ -41,6 +41,7 @@
   environment.variables = {
     EDITOR = "nvim";
     NEOVIDE_FORK = "1";
+    GIT_CONFIG_SYSTEM = "/etc/gitconfig";
   };
 
   programs.git.enable = true;
