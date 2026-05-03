@@ -6,7 +6,6 @@ pkgs: with pkgs; [
   lua-language-server
   nix-tree
   nix-update
-  opencode
   pyrefly
   (python3Packages.fastavro.overridePythonAttrs (old: {
     dependencies = (old.dependencies or [ ]) ++ [ python3Packages.zstandard ];
