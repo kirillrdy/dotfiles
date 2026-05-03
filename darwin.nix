@@ -56,6 +56,7 @@
 
   # Set system-wide settings
   system.primaryUser = "kirillvr";
+  users.users.kirillvr.shell = pkgs.bash;
   security.pam.services.sudo_local.touchIdAuth = true;
   ids.gids.nixbld = 350;
   system.defaults = {
