@@ -1,0 +1,332 @@
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
+let
+  cfg = config.services.mediamtxCameras;
+
+  mkCamera = name: channels: { inherit name channels; };
+  mkChannel = name: width: height: fps: {
+    inherit
+      name
+      width
+      height
+      fps
+      ;
+  };
+
+  roofChannels = [
+    (mkChannel "ch1" 1280 960 1)
+    (mkChannel "ch2" 1280 720 4)
+  ];
+
+  floorChannels = [
+    (mkChannel "ch1" 3840 2160 1)
+    (mkChannel "ch2" 1280 720 4)
+  ];
+
+  mkZone = shedName: zoneIdx: [
+    (mkCamera "${shedName}/zone${toString zoneIdx}/roof" roofChannels)
+    (mkCamera "${shedName}/zone${toString zoneIdx}/floor" floorChannels)
+  ];
+
+  mkShed =
+    shedIdx:
+    let
+      shedName = "shed${toString shedIdx}";
+    in
+    lib.concatMap (mkZone shedName) (lib.range 1 4);
+
+  defaultCameras = lib.concatMap mkShed (lib.range 1 6);
+
+  allChannelPairs = lib.concatMap (
+    cam:
+    map (ch: {
+      camName = cam.name;
+      inherit ch;
+    }) cam.channels
+  ) cfg.cameras;
+
+  # H.264 level 4.0 caps at ~2048x1088; anything larger needs 5.1
+  h264Level = ch: if ch.width * ch.height > 2048 * 1088 then "5.1" else "4.0";
+
+  simulatorPort = 8555;
+
+  # ffmpeg pushes to the simulator; main mediamtx pulls from it
+  mkFfmpegCmd =
+    { camName, ch }:
+    "${pkgs.ffmpeg}/bin/ffmpeg ${
+      lib.escapeShellArgs [
+        "-re"
+        "-f"
+        "lavfi"
+        "-i"
+        "testsrc2=size=${toString ch.width}x${toString ch.height}:rate=${toString ch.fps}"
+        "-vf"
+        "drawtext=text=%{localtime}:fontcolor=white:fontsize=100:x=(w-text_w)/2:y=(h-text_h)/2"
+        "-c:v"
+        "libx264"
+        "-profile:v"
+        "baseline"
+        "-level"
+        (h264Level ch)
+        "-preset"
+        "ultrafast"
+        "-tune"
+        "zerolatency"
+        "-g"
+        (toString ch.fps)
+        "-bf"
+        "0"
+        "-rtsp_transport"
+        "tcp"
+        "-f"
+        "rtsp"
+      ]
+    } \"rtsp://camera:$CAMERA_PASSWORD@localhost:${toString simulatorPort}/${camName}/${ch.name}\"";
+
+  ffmpegCmds = map mkFfmpegCmd allChannelPairs;
+
+  ffmpegScript = pkgs.writeShellScript "ffmpeg-cameras" ''
+    sleep 2
+    ${lib.concatStringsSep " &\n" ffmpegCmds} &
+    wait
+  '';
+
+  simulatorConfigNoAuth = (pkgs.formats.yaml { }).generate "mediamtx-simulator.yaml" {
+    rtspAddress = ":${toString simulatorPort}";
+    rtspTransports = [ "tcp" ];
+    rtmp = false;
+    hls = false;
+    webrtc = false;
+    srt = false;
+    api = false;
+    metrics = false;
+    pprof = false;
+    paths.all = { };
+  };
+
+  simulatorConfigTemplate = (pkgs.formats.yaml { }).generate "mediamtx-simulator-template.yaml" {
+    rtspAddress = ":${toString simulatorPort}";
+    rtspTransports = [ "tcp" ];
+    rtmp = false;
+    hls = false;
+    webrtc = false;
+    srt = false;
+    api = false;
+    metrics = false;
+    pprof = false;
+    authInternalUsers = [
+      {
+        user = "camera";
+        pass = "\${CAMERA_PASSWORD}";
+        permissions = [
+          { action = "publish"; path = ""; }
+          { action = "read"; path = ""; }
+        ];
+      }
+    ];
+    paths.all = { };
+  };
+
+  genSimulatorConfigScript = pkgs.writeShellScript "gen-mediamtx-simulator-config" ''
+    . ${cfg.passwordFile}
+    ${pkgs.gettext}/bin/envsubst '$CAMERA_PASSWORD' \
+      < ${simulatorConfigTemplate} \
+      > /run/mediamtx-simulator-conf/mediamtx-simulator.yaml
+  '';
+
+  # Plain camera paths used when no password is configured
+  cameraPaths = lib.listToAttrs (
+    lib.concatMap (
+      cam:
+      map (
+        ch:
+        lib.nameValuePair "${cam.name}/${ch.name}" (
+          {
+            source = "rtsp://localhost:${toString simulatorPort}/${cam.name}/${ch.name}";
+          }
+          // lib.optionalAttrs (ch.name == "ch2") {
+            record = false;
+            sourceOnDemand = true;
+          }
+        )
+      ) cam.channels
+    ) cfg.cameras
+  );
+
+  # Camera paths template with ${CAMERA_PASSWORD} placeholder for envsubst substitution at runtime.
+  # \${...} in Nix produces the literal ${...} string in the output.
+  cameraPathsTemplate = lib.listToAttrs (
+    lib.concatMap (
+      cam:
+      map (
+        ch:
+        lib.nameValuePair "${cam.name}/${ch.name}" (
+          {
+            source = "rtsp://camera:\${CAMERA_PASSWORD}@localhost:${toString simulatorPort}/${cam.name}/${ch.name}";
+          }
+          // lib.optionalAttrs (ch.name == "ch2") {
+            record = false;
+            sourceOnDemand = true;
+          }
+        )
+      ) cam.channels
+    ) cfg.cameras
+  );
+
+  # Full mediamtx config template written to the nix store.
+  # Contains ${CAMERA_PASSWORD} placeholders that envsubst fills in at service start.
+  mediamtxConfigTemplate = (pkgs.formats.yaml { }).generate "mediamtx-template.yaml" {
+    playback = true;
+    playbackAddress = ":9996";
+    pathDefaults = {
+      record = true;
+      recordPath = "${cfg.storagePath}/%path/%Y-%m-%d_%H-%M-%S_%f";
+      recordFormat = "fmp4";
+      recordDeleteAfter = "30d";
+    };
+    paths = { all = { }; } // cameraPathsTemplate;
+  };
+
+  # ExecStartPre script: reads passwordFile, substitutes ${CAMERA_PASSWORD} into the template
+  genConfigScript = pkgs.writeShellScript "gen-mediamtx-config" ''
+    . ${cfg.passwordFile}
+    ${pkgs.gettext}/bin/envsubst '$CAMERA_PASSWORD' \
+      < ${mediamtxConfigTemplate} \
+      > /run/mediamtx-conf/mediamtx.yaml
+  '';
+in
+{
+  options.services.mediamtxCameras = {
+    cameras = lib.mkOption {
+      type = lib.types.listOf lib.types.attrs;
+      default = defaultCameras;
+      description = "List of cameras created with mkCamera/mkChannel helpers.";
+    };
+    user = lib.mkOption {
+      type = lib.types.str;
+      default = "mediamtx";
+      description = "User account under which mediamtx and ffmpeg-cameras run.";
+    };
+    group = lib.mkOption {
+      type = lib.types.str;
+      default = cfg.user;
+      description = "Group under which mediamtx and ffmpeg-cameras run.";
+    };
+    storagePath = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/mediamtx";
+      description = "Directory where mediamtx stores recordings.";
+    };
+    passwordFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Path to a file containing CAMERA_PASSWORD=... for simulator auth.";
+    };
+  };
+
+  config = lib.mkIf (cfg.cameras != [ ]) {
+    services.mediamtx.enable = true;
+    services.mediamtx.package = pkgs.mediamtx.overrideAttrs (old: {
+      patches = (old.patches or [ ]) ++ [
+        # add interpolation-based seeking to skip ahead in long fmp4 segments
+        (pkgs.fetchpatch {
+          name = "mediamtx-fmp4-seek.patch";
+          url = "https://github.com/kirillrdy/mediamtx/commit/c08ea620.patch";
+          hash = "sha256-/Ta+5MWgI6u9igbf6Pxz870RoZ4zu/gTbsX3H8Xq7a4=";
+        })
+        # fix pre-roll frames having wrong DTS and zero duration
+        (pkgs.fetchpatch {
+          name = "mediamtx-fmp4-preroll-dts.patch";
+          url = "https://github.com/kirillrdy/mediamtx/commit/6f717594.patch";
+          hash = "sha256-AZw4cwqQIScDSPTfSBg+plI8AVpH379FwLvWdUIRYS0=";
+        })
+        # add video resolution to /list API response
+        (pkgs.fetchpatch {
+          name = "mediamtx-playback-resolution.patch";
+          url = "https://github.com/kirillrdy/mediamtx/commit/1f0dc88b.patch";
+          hash = "sha256-fohU2BmvXWbRriwO+5cNBrU2W/DnIpwo/0474SRR0JI=";
+        })
+      ];
+    });
+    services.mediamtx.env = {
+      TZ = "UTC";
+    };
+
+    # When no passwordFile: use settings normally with plain URLs.
+    # When passwordFile is set: ExecStart is overridden below so this config is ignored,
+    # but we still set it to avoid an empty settings warning from the mediamtx module.
+    services.mediamtx.settings = {
+      playback = true;
+      playbackAddress = ":9996";
+      pathDefaults = {
+        record = true;
+        recordPath = "${cfg.storagePath}/%path/%Y-%m-%d_%H-%M-%S_%f";
+        recordFormat = "fmp4";
+        recordDeleteAfter = "30d";
+      };
+      paths = { all = { }; } // cameraPaths;
+    };
+
+    systemd.services.mediamtx.serviceConfig = {
+      DynamicUser = lib.mkForce false;
+      User = lib.mkForce cfg.user;
+      Group = lib.mkForce cfg.group;
+      StateDirectory = "mediamtx";
+      StateDirectoryMode = "0755";
+      UMask = "0022";
+      ReadWritePaths = [ "${cfg.storagePath}" ];
+    } // lib.optionalAttrs (cfg.passwordFile != null) {
+      # Generate config with real password before mediamtx starts, then point ExecStart at it
+      RuntimeDirectory = "mediamtx-conf";
+      ExecStartPre = genConfigScript;
+      ExecStart = lib.mkForce "${config.services.mediamtx.package}/bin/mediamtx /run/mediamtx-conf/mediamtx.yaml";
+    };
+
+    systemd.services.mediamtx-simulator = {
+      description = "MediaMTX camera simulator (RTSP server for fake streams)";
+      after = [ "network.target" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        User = cfg.user;
+        Group = cfg.group;
+        Restart = "always";
+      } // (
+        if cfg.passwordFile != null then {
+          RuntimeDirectory = "mediamtx-simulator-conf";
+          ExecStartPre = genSimulatorConfigScript;
+          ExecStart = "${config.services.mediamtx.package}/bin/mediamtx /run/mediamtx-simulator-conf/mediamtx-simulator.yaml";
+        } else {
+          ExecStart = "${config.services.mediamtx.package}/bin/mediamtx ${simulatorConfigNoAuth}";
+        }
+      );
+    };
+
+    systemd.services.ffmpeg-cameras = {
+      description = "Push streams to MediaMTX simulator";
+      after = [ "mediamtx-simulator.service" ];
+      requires = [ "mediamtx-simulator.service" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        ExecStart = ffmpegScript;
+        Restart = "always";
+        User = cfg.user;
+        SupplementaryGroups = [
+          "video"
+          "render"
+        ];
+      } // lib.optionalAttrs (cfg.passwordFile != null) {
+        EnvironmentFile = cfg.passwordFile;
+      };
+    };
+
+    users.users.mediamtx = lib.mkIf (cfg.user == "mediamtx" && cfg.group == "mediamtx") {
+      isSystemUser = true;
+      group = "mediamtx";
+    };
+    users.groups.mediamtx = lib.mkIf (cfg.user == "mediamtx" && cfg.group == "mediamtx") { };
+  };
+}
