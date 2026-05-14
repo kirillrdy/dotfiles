@@ -7,6 +7,7 @@
     ++ (with pkgs; [
       stats
       btop
+      nix-eval-jobs
     ]);
 
   # nix-darwin now manages nix-daemon unconditionally when nix.enable is on.
