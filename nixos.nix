@@ -8,7 +8,7 @@
 {
   boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
   boot.initrd.availableKernelModules = [ "nvme" ];
-  #boot.kernelPackages = pkgs.linuxPackages_6_19;
+  boot.kernelPackages = pkgs.linuxPackages_7_0;
   boot.loader.efi.canTouchEfiVariables = true;
   boot.loader.systemd-boot.enable = true;
   environment.variables = {
@@ -86,7 +86,6 @@
       "docker"
     ];
   };
-  virtualisation.libvirtd.enable = true;
   virtualisation.docker.enable = true;
   virtualisation.docker.storageDriver = "zfs";
   hardware.nvidia-container-toolkit.enable = enableNvidia;
