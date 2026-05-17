@@ -7,7 +7,6 @@
     ++ (with pkgs; [
       stats
       btop
-      nix-eval-jobs
     ]);
 
   # nix-darwin now manages nix-daemon unconditionally when nix.enable is on.
@@ -18,6 +17,7 @@
     "root"
     "kirillvr"
   ];
+  nix.settings.extra-sandbox-paths = [ "/nix/var/cache/ccache" ];
   nix.linux-builder = {
     enable = false;
     systems = [
