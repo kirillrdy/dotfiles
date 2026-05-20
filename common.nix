@@ -13,7 +13,6 @@ pkgs: with pkgs; [
   typescript-language-server
   awscli2
   claude-code
-  gemini-cli
   gh
   go
   golangci-lint
