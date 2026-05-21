@@ -58,6 +58,15 @@
   services.desktopManager.gnome.enable = true;
   services.displayManager.gdm.enable = true;
   services.displayManager.gdm.autoSuspend = false;
+  programs.dconf.profiles.user.databases = [
+    {
+      settings = {
+        "org/gnome/desktop/interface" = {
+          gtk-enable-primary-paste = true;
+        };
+      };
+    }
+  ];
   hardware.nvidia.open = true;
   hardware.enableRedistributableFirmware = true;
   programs.git.enable = true;
