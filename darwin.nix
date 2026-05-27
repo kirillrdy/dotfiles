@@ -100,6 +100,10 @@ in
     NSGlobalDomain.AppleShowAllExtensions = true;
   };
 
+  system.activationScripts.pmset.text = ''
+    /usr/bin/pmset -c sleep 0
+  '';
+
   system.keyboard.enableKeyMapping = true;
   system.keyboard.userKeyMapping = [
     {
