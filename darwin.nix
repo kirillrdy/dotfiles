@@ -1,49 +1,14 @@
 { pkgs, self, ... }:
 let
-  claude-usage-systray = pkgs.stdenv.mkDerivation rec {
-    pname = "claude-usage-systray";
-    version = "1.0.4";
-    src = pkgs.fetchFromGitHub {
-      owner = "adntgv";
-      repo = "claude-usage-systray";
-      rev = "v${version}";
-      sha256 = "11ynbadzjkmpxx2msaxfcklf821zcpn6gpf5j17xnjxmq8790grh";
-    };
-    nativeBuildInputs = [ pkgs.swiftPackages.swift ];
-    buildPhase = ''
-      runHook preBuild
-      cd claude-usage-systray
-      mkdir -p build
-      swiftc -O -o build/ClaudeUsageSystray Sources/*.swift
-      runHook postBuild
-    '';
-    installPhase = ''
-      runHook preInstall
-      APP="$out/Applications/ClaudeUsageSystray.app"
-      mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-      cp build/ClaudeUsageSystray "$APP/Contents/MacOS/"
-      substitute Resources/Info.plist "$APP/Contents/Info.plist" \
-        --replace-fail '$(EXECUTABLE_NAME)' 'ClaudeUsageSystray' \
-        --replace-fail '$(PRODUCT_BUNDLE_IDENTIFIER)' 'com.claude.usage-systray' \
-        --replace-fail '$(MACOSX_DEPLOYMENT_TARGET)' '13.0'
-      printf 'APPL????' > "$APP/Contents/PkgInfo"
-      runHook postInstall
-    '';
-    meta.platforms = pkgs.lib.platforms.darwin;
-  };
 in
 {
-  # List packages installed in system profile. To search by name, run:
-  # $ nix-env -qaP | grep wget
   environment.systemPackages =
     (import ./common.nix pkgs)
     ++ (with pkgs; [
       stats
       btop
-    ])
-    ++ [ claude-usage-systray ];
+    ]);
 
-  # nix-darwin now manages nix-daemon unconditionally when nix.enable is on.
   nix.enable = true;
   nix.settings.experimental-features = "nix-command flakes";
   nix.settings.sandbox = "relaxed";
@@ -53,7 +18,7 @@ in
   ];
   nix.settings.extra-sandbox-paths = [ "/nix/var/cache/ccache" ];
   nix.linux-builder = {
-    enable = false;
+    enable = true;
     systems = [
       "aarch64-linux"
       "x86_64-linux"
