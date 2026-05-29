@@ -18,7 +18,7 @@ in
   ];
   nix.settings.extra-sandbox-paths = [ "/nix/var/cache/ccache" ];
   nix.linux-builder = {
-    enable = true;
+    enable = false;
     systems = [
       "aarch64-linux"
       "x86_64-linux"
@@ -35,8 +35,6 @@ in
       }
     );
   };
-
-  # Create /etc/zshrc that loads the nix-darwin environment.
 
   environment.variables = {
     EDITOR = "nvim";
