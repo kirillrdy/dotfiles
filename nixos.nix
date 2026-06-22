@@ -70,6 +70,24 @@
   hardware.nvidia.open = true;
   hardware.enableRedistributableFirmware = true;
   programs.git.enable = true;
+  programs.bash.interactiveShellInit = ''
+    # tss            -> toggle to the other logged-in tailscale account
+    # tss <name|id>  -> switch to a specific account
+    tss() {
+      if [ -n "$1" ]; then
+        tailscale switch "$1"
+        return
+      fi
+      local target
+      target=$(tailscale switch --list | awk 'NR>1 && $NF != "*" {print $1; exit}')
+      if [ -z "$target" ]; then
+        echo "tss: no other tailscale account to switch to" >&2
+        tailscale switch --list >&2
+        return 1
+      fi
+      tailscale switch "$target"
+    }
+  '';
   programs.steam.enable = enableNvidia;
   services.avahi.enable = true;
   services.avahi.nssmdns4 = true;
