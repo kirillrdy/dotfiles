@@ -79,7 +79,7 @@
         return
       fi
       local target
-      target=$(tailscale switch --list | awk 'NR>1 && $NF != "*" {print $1; exit}')
+      target=$(tailscale switch --list | awk 'NR>1 && $NF !~ /\*$/ {print $1; exit}')
       if [ -z "$target" ]; then
         echo "tss: no other tailscale account to switch to" >&2
         tailscale switch --list >&2
