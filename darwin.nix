@@ -67,10 +67,6 @@ in
     /usr/bin/pmset -c sleep 0
   '';
 
-  system.activationScripts.postUserActivation.text = ''
-    osascript -e 'tell application "System Events" to tell every desktop to set picture to "/System/Library/Desktop Pictures/Sonoma.heic"'
-  '';
-
   system.keyboard.enableKeyMapping = true;
   system.keyboard.userKeyMapping = [
     {
