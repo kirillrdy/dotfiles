@@ -129,7 +129,7 @@ let
 
   sourceDir = pkgs.runCommand "builder-source" { } ''
     mkdir -p $out
-    cp ${./default.nix} $out/default.nix
+    cp ${./vfkit-builder.nix} $out/default.nix
   '';
 
   installerExpect = pkgs.writeText "installer.expect" ''
