@@ -134,7 +134,7 @@
     ++ (with pkgs; [
       (if enableNvidia then btop-cuda else btop)
       acpi
-      antigravity
+      antigravity-ide
       file
       firefox
       ghostty
