@@ -3,6 +3,7 @@ pkgs: with pkgs; [
   (import ./neovim.nix pkgs)
   gopls
   jq
+  lazygit
   lua-language-server
   nix-tree
   nix-update
