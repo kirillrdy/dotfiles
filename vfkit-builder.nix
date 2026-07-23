@@ -171,14 +171,14 @@ let
     expect eof
   '';
 
-  builder = pkgs.writeShellScriptBin "builder" ''
+  builder = pkgs.writeShellScriptBin "vfkit-builder" ''
     set -euo pipefail
 
     if [ -z "''${SELF:-}" ]; then
       if [ -f "$0" ]; then
         SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
       else
-        SELF="builder"
+        SELF="vfkit-builder"
       fi
     fi
     VMDIR="''${VMDIR:-$HOME/.vfkit-linux-nix-builder}"
@@ -322,7 +322,7 @@ let
     }
 
     boot_builder() {
-      [ -f "$INSTALLED_FLAG" ] || die "not installed yet — run: ./builder install"
+      [ -f "$INSTALLED_FLAG" ] || die "not installed yet — run: vfkit-builder install"
       kill_vfkit
       local create=""; [ -f "$NVRAM_BOOT" ] || create=",create"
       local serial="virtio-serial,stdio"
@@ -338,7 +338,7 @@ let
     }
 
     boot_detached() {
-      [ -f "$INSTALLED_FLAG" ] || die "not installed yet — run: ./builder install"
+      [ -f "$INSTALLED_FLAG" ] || die "not installed yet — run: vfkit-builder install"
       vfkit_running && return 0
       nohup "$SELF" boot >/dev/null 2>&1 </dev/null &
       disown 2>/dev/null || true
@@ -395,7 +395,7 @@ let
     case "$cmd" in
       up)
         ensure_running
-        info "Builder is up. Use it with: ./builder build <args>   (or ./builder ssh)" ;;
+        info "Builder is up. Use it with: vfkit-builder build <args>   (or vfkit-builder ssh)" ;;
       start)   ensure_running ;;
       install) do_install ;;
       boot)    boot_builder ;;
