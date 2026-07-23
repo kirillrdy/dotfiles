@@ -211,8 +211,8 @@ let
     SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5)
 
-    bold() { printf '\033[1m%s\033[0m\n' "$*"; }
-    info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+    bold() { printf '\033[1m%s\033[0m\n' "$*" >&2; }
+    info() { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
     err()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; }
     die()  { err "$*"; exit 1; }
 
@@ -391,21 +391,23 @@ let
       echo "ip:         $(vm_ip || true)"
     }
 
-    cmd="''${1:-up}"; shift || true
-    case "$cmd" in
+    # Lifecycle subcommands are handled explicitly; anything else is forwarded
+    # verbatim to nix-build (offloaded to the VM), so vfkit-builder is a drop-in
+    # for nix-build: e.g. `vfkit-builder -A hello '<nixpkgs>'`.
+    case "''${1:-}" in
       up)
+        shift
         ensure_running
-        info "Builder is up. Use it with: vfkit-builder build <args>   (or vfkit-builder ssh)" ;;
-      start)   ensure_running ;;
-      install) do_install ;;
-      boot)    boot_builder ;;
-      build)   do_build "$@" ;;
-      ssh)     ensure_running >/dev/null; ssh_vm "$@" ;;
-      ip)      vm_ip ;;
-      spec)    builder_spec ;;
-      status)  status ;;
-      stop)    kill_vfkit; info "stopped" ;;
-      *) die "unknown command: $cmd (try: up start install boot build setup-offload ssh ip spec status stop)" ;;
+        info "Builder is up. Use it like nix-build: vfkit-builder <args>   (or vfkit-builder ssh)" ;;
+      start)   shift; ensure_running ;;
+      install) shift; do_install ;;
+      boot)    shift; boot_builder ;;
+      ssh)     shift; ensure_running >/dev/null; ssh_vm "$@" ;;
+      ip)      shift; vm_ip ;;
+      spec)    shift; builder_spec ;;
+      status)  shift; status ;;
+      stop)    shift; kill_vfkit; info "stopped" ;;
+      *)       do_build "$@" ;;
     esac
   '';
 in
