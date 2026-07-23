@@ -2,13 +2,14 @@
   nixpkgsCommit ? "ec942ba042dad5ef097e2ef3a3effc034241f011",
   pubkey ? "",
   idleMinutes ? 30,
+  system ? builtins.currentSystem,
 }:
 let
   nixpkgs = builtins.fetchTarball {
     url = "https://github.com/NixOS/nixpkgs/archive/${nixpkgsCommit}.tar.gz";
     sha256 = "01i5lznyfxyb5r7llscybv17nhbnb58p0wi62rag9jdagjwxm6a7";
   };
-  pkgs = import nixpkgs { };
+  pkgs = import nixpkgs { inherit system; };
 
   guestNixos = import "${nixpkgs}/nixos" {
     configuration =
