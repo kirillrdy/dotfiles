@@ -1,9 +1,11 @@
 { pkgs, self, ... }:
 let
+  vfkit-builder = import ./vfkit-builder.nix { inherit (pkgs) system; };
 in
 {
   environment.systemPackages =
     (import ./common.nix pkgs)
+    ++ [ vfkit-builder ]
     ++ (with pkgs; [
       stats
       btop
