@@ -18,25 +18,6 @@ in
     "root"
     "kirillvr"
   ];
-  nix.settings.extra-sandbox-paths = [ "/nix/var/cache/ccache" ];
-  nix.linux-builder = {
-    enable = false;
-    systems = [
-      "aarch64-linux"
-      "x86_64-linux"
-    ];
-    config = (
-      { lib, ... }:
-      {
-        virtualisation = {
-          cores = lib.mkForce 8;
-          memorySize = lib.mkForce 8192;
-          diskSize = lib.mkForce 40960;
-        };
-        boot.binfmt.emulatedSystems = [ "x86_64-linux" ];
-      }
-    );
-  };
 
   environment.variables = {
     EDITOR = "nvim";
