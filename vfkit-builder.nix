@@ -1,6 +1,5 @@
 {
   nixpkgsCommit ? "ec942ba042dad5ef097e2ef3a3effc034241f011",
-  pubkey ? "",
   idleMinutes ? 30,
   system ? builtins.currentSystem,
 }:
@@ -40,7 +39,6 @@ let
             PasswordAuthentication = false;
           };
         };
-        users.users.root.openssh.authorizedKeys.keys = lib.optional (pubkey != "") pubkey;
         nix.settings = {
           experimental-features = [
             "nix-command"
@@ -296,10 +294,8 @@ let
       ssh "''${SSH_OPTS[@]}" "root@$ip" "mkdir -p /tmp/builder-source"
       ${pkgs.gnutar}/bin/tar -C "${sourceDir}" -cf - . | ssh "''${SSH_OPTS[@]}" "root@$ip" "tar -xf - -C /tmp/builder-source"
 
-      local pubkey; pubkey="$(grep -m1 . "$PUBKEY_FILE")" || die "no pubkey in $PUBKEY_FILE"
-
       local system_path
-      system_path="$(ssh "''${SSH_OPTS[@]}" "root@$ip" "nix-build --no-out-link --argstr pubkey '$pubkey' -A system /tmp/builder-source/default.nix")"
+      system_path="$(ssh "''${SSH_OPTS[@]}" "root@$ip" "nix-build --no-out-link -A system /tmp/builder-source/default.nix")"
 
       info "Partitioning and formatting /dev/vda on VM …"
       ssh "''${SSH_OPTS[@]}" "root@$ip" "
@@ -312,6 +308,7 @@ let
         mkdir -p /mnt/boot
         mount /dev/vda1 /mnt/boot
         nixos-install --system '$system_path' --no-root-passwd --root /mnt
+        install -Dm600 /root/.ssh/authorized_keys /mnt/root/.ssh/authorized_keys
       "
 
       info "Install done — powering off installer."
