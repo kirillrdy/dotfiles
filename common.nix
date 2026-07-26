@@ -14,6 +14,7 @@ pkgs: with pkgs; [
   typescript-language-server
   awscli2
   claude-code
+  gdu
   gh
   go
   golangci-lint
