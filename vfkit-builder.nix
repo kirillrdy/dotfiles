@@ -19,6 +19,13 @@ let
         boot.kernelParams = [
           "console=ttyAMA0"
           "console=hvc0"
+          # Apple silicon implements SME without SVE, and Virtualization.framework
+          # passes that through, so the guest advertises sme/sme2 but no sve.
+          # Chromium's libyuv dispatches on the SME2 bits into I422ToARGBRow_SME,
+          # whose prologue runs `cntd` (an SVE instruction) before entering streaming
+          # mode -> SIGILL in the renderer on every decoded video frame. Masking SME
+          # only gives up a SIMD fast path; nothing here has SME kernels worth keeping.
+          "arm64.nosme"
         ];
         boot.initrd.availableKernelModules = [
           "virtio_pci"
