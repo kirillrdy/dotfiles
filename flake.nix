@@ -6,7 +6,11 @@
     darwin.inputs.nixpkgs.follows = "nixpkgs";
   };
   outputs =
-    { self, nixpkgs, darwin }:
+    {
+      self,
+      nixpkgs,
+      darwin,
+    }:
     let
       mkSystem =
         {
@@ -39,7 +43,10 @@
       packages.x86_64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-linux"; });
       packages.aarch64-linux.neovim = import ./neovim.nix (import nixpkgs { system = "aarch64-linux"; });
       packages.x86_64-darwin.neovim = import ./neovim.nix (import nixpkgs { system = "x86_64-darwin"; });
-      packages.aarch64-darwin.neovim = import ./neovim.nix (import nixpkgs { system = "aarch64-darwin"; });
+      packages.aarch64-darwin.neovim = import ./neovim.nix (
+        import nixpkgs { system = "aarch64-darwin"; }
+      );
+      packages.aarch64-darwin.vfkit-builder = import ./vfkit-builder.nix { system = "aarch64-darwin"; };
 
       darwinConfigurations."shirahama" = darwin.lib.darwinSystem {
         modules = [
