@@ -25,6 +25,7 @@ pkgs: with pkgs; [
   nixpkgs-review
   ripgrep
   tig
+  tuicr
   zig
   zls
 ]
