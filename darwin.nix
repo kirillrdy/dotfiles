@@ -1,6 +1,6 @@
 { pkgs, self, ... }:
 let
-  vfkit-builder = import ./vfkit-builder.nix { inherit (pkgs) system; };
+  vfkit-builder = import ./vfkit-builder.nix { system = pkgs.stdenv.hostPlatform.system; };
 in
 {
   environment.systemPackages =
