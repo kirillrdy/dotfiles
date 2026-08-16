@@ -19,6 +19,22 @@ in
     "kirillvr"
   ];
 
+  nix.linux-builder = {
+    enable = true;
+    package = pkgs.darwin.linux-builder-vz;
+    systems = [
+      "aarch64-linux"
+      "x86_64-linux"
+    ];
+    config.virtualisation.vz.nestedVirtualization = true;
+    supportedFeatures = [
+      "kvm"
+      "benchmark"
+      "big-parallel"
+      "nixos-test"
+    ];
+  };
+
   environment.variables = {
     EDITOR = "nvim";
     NEOVIDE_FORK = "1";
