@@ -16,10 +16,11 @@
         {
           hostName,
           enableNvidia ? false,
+          enableOpenvino ? false,
         }:
         nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit hostName enableNvidia; };
+          specialArgs = { inherit hostName enableNvidia enableOpenvino; };
           modules = [ ./nixos.nix ];
         };
     in
@@ -64,7 +65,10 @@
         # Lenovo X1 gen9, alderlake
         osaka = mkSystem { hostName = "osaka"; };
         # Lenovo X1 gen13, lunarlake
-        hagi = mkSystem { hostName = "hagi"; };
+        hagi = mkSystem {
+          hostName = "hagi";
+          enableOpenvino = true;
+        };
 
         # i7-13700K, raptorlake
         tsutenkaku = mkSystem {
