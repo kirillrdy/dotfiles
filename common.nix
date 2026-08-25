@@ -12,8 +12,10 @@ pkgs: with pkgs; [
   }))
   ffmpeg
   typescript-language-server
+  antigravity-cli
   awscli2
   claude-code
+  codex
   gdu
   gh
   go
