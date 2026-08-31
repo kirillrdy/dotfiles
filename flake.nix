@@ -16,11 +16,19 @@
         {
           hostName,
           enableNvidia ? false,
+          enableOpencl ? false,
           enableOpenvino ? false,
         }:
         nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit hostName enableNvidia enableOpenvino; };
+          specialArgs = {
+            inherit
+              hostName
+              enableNvidia
+              enableOpencl
+              enableOpenvino
+              ;
+          };
           modules = [ ./nixos.nix ];
         };
     in
@@ -74,6 +82,7 @@
         tsutenkaku = mkSystem {
           hostName = "tsutenkaku";
           enableNvidia = true;
+          enableOpencl = true;
         };
       };
     };
