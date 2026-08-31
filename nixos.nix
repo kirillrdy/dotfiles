@@ -3,6 +3,7 @@
   lib,
   hostName,
   enableNvidia ? false,
+  enableOpencl ? false,
   enableOpenvino ? false,
   ...
 }:
@@ -157,7 +158,8 @@
       )
       # OpenCL and Level Zero for the iGPU, which is what OpenVINO's GPU device
       # talks to. The NPU device comes from hardware.cpu.intel.npu above.
-      ++ lib.optional enableOpenvino intel-compute-runtime;
+      # The NVIDIA module supplies its own OpenCL runtime automatically.
+      ++ lib.optional (enableOpenvino || (enableOpencl && !enableNvidia)) intel-compute-runtime;
   };
   environment.systemPackages =
     (import ./common.nix pkgs)
@@ -177,5 +179,9 @@
       slack
       wl-clipboard
     ])
+    ++ lib.optionals enableOpencl [
+      pkgs.clinfo
+      pkgs.ocl-icd
+    ]
     ++ lib.optional enableOpenvino pkgs.openvino;
 }
