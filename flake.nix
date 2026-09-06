@@ -55,7 +55,6 @@
       packages.aarch64-darwin.neovim = import ./neovim.nix (
         import nixpkgs { system = "aarch64-darwin"; }
       );
-      packages.aarch64-darwin.vfkit-builder = import ./vfkit-builder.nix { system = "aarch64-darwin"; };
 
       darwinConfigurations."shirahama" = darwin.lib.darwinSystem {
         modules = [
