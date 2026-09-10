@@ -25,6 +25,7 @@ pkgs: with pkgs; [
   nil
   nixfmt
   nixpkgs-review
+  nvd
   tuicr
   ripgrep
   tig
