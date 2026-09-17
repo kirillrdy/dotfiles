@@ -1,7 +1,7 @@
 {
   description = "my computers in flakes";
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs";
+    nixpkgs.url = "github:theCapypara/nixpkgs/gnome51";
     darwin.url = "github:nix-darwin/nix-darwin";
     darwin.inputs.nixpkgs.follows = "nixpkgs";
   };
