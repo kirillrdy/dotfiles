@@ -22,7 +22,14 @@
       "aarch64-linux"
       "x86_64-linux"
     ];
-    config.virtualisation.vz.nestedVirtualization = true;
+    config = {
+      virtualisation = {
+        vz.nestedVirtualization = true;
+        darwin-builder.diskSize = 100 * 1024;
+        darwin-builder.memorySize = 6 * 1024;
+        cores = 4;
+      };
+    };
     supportedFeatures = [
       "kvm"
       "benchmark"
