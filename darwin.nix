@@ -16,7 +16,7 @@
   ];
 
   nix.linux-builder = {
-    enable = true;
+    enable = false;
     package = pkgs.darwin.linux-builder-vz;
     systems = [
       "aarch64-linux"
