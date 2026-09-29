@@ -170,6 +170,7 @@
       firefox
       ghostty
       gnomeExtensions.battery-time
+      gnomeExtensions.codex-usage
       gnomeExtensions.freon
       gnomeExtensions.maximized-by-default-actually-reborn
       gnomeExtensions.executor
