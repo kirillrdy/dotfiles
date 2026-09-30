@@ -165,6 +165,7 @@
     (import ./common.nix pkgs)
     ++ (with pkgs; [
       (if enableNvidia then btop-cuda else btop)
+      (if enableNvidia then nvtopPackages.nvidia else nvtopPackages.intel)
       antigravity-ide
       file
       firefox
