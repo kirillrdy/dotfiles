@@ -33,6 +33,60 @@
         };
     in
     {
+      apps.x86_64-linux.update = {
+        type = "app";
+        program = "${self.packages.x86_64-linux.update}/bin/update";
+      };
+      packages.x86_64-linux.update =
+        let
+          pkgs = import nixpkgs { system = "x86_64-linux"; };
+        in
+        pkgs.writeShellApplication {
+          name = "update";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.git
+            pkgs.nix
+            pkgs.nvd
+          ];
+          text = ''
+            if [[ $# -gt 2 ]]; then
+              echo "Usage: nix run .#update -- [hostname [baseline-system-path]]" >&2
+              exit 1
+            fi
+
+            host=''${1:-$(uname -n)}
+            baseline=$(readlink -e "''${2:-/run/current-system}")
+            cd "$(git rev-parse --show-toplevel)"
+
+            if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
+              echo "Commit or stash existing changes before updating." >&2
+              exit 1
+            fi
+
+            work_dir=$(mktemp -d)
+            trap 'rm -rf "$work_dir"' EXIT
+
+            nix flake update
+            nix build ".#nixosConfigurations.\"''${host}\".config.system.build.toplevel" \
+              --out-link "$work_dir/result"
+            nvd diff "$baseline" "$(readlink -e "$work_dir/result")" | tee "$work_dir/diff"
+
+            if git diff --quiet -- flake.lock; then
+              echo "Flake inputs are already up to date; no commit needed."
+              exit 0
+            fi
+
+            {
+              echo "flake.lock: update inputs"
+              echo
+              cat "$work_dir/diff"
+            } > "$work_dir/commit-message"
+            git add -- flake.lock
+            git commit -F "$work_dir/commit-message" --only -- flake.lock
+          '';
+        };
+
       packages.x86_64-linux.iso =
         let
           pkgs = import nixpkgs { system = "x86_64-linux"; };
