@@ -30,6 +30,6 @@ pkgs: with pkgs; [
   ripgrep
   tig
   tuicr
-  zig
+  zig_0_17
   zls
 ]
