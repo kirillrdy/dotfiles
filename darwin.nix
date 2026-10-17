@@ -1,4 +1,4 @@
-{ pkgs, self, ... }:
+{ pkgs, ... }:
 {
   environment.systemPackages =
     (import ./common.nix pkgs)
@@ -7,34 +7,12 @@
       btop
     ]);
 
-  nix.enable = true;
-  nix.settings.experimental-features = "nix-command flakes";
-  nix.settings.sandbox = "relaxed";
-  nix.settings.trusted-users = [
-    "root"
-    "kirillvr"
-  ];
-
-  nix.linux-builder = {
-    enable = false;
-    package = pkgs.darwin.linux-builder-vz;
-    systems = [
-      "aarch64-linux"
-      "x86_64-linux"
-    ];
-    config = {
-      virtualisation = {
-        vz.nestedVirtualization = true;
-        darwin-builder.diskSize = 100 * 1024;
-        darwin-builder.memorySize = 6 * 1024;
-        cores = 4;
-      };
-    };
-    supportedFeatures = [
-      "kvm"
-      "benchmark"
-      "big-parallel"
-      "nixos-test"
+  nix.settings = {
+    experimental-features = "nix-command flakes";
+    sandbox = "relaxed";
+    trusted-users = [
+      "root"
+      "kirillvr"
     ];
   };
 
@@ -50,7 +28,6 @@
     user.email = "kirillrdy@gmail.com";
   };
 
-  programs.bash.enable = true;
   programs.bash.completion.enable = true;
   programs.bash.interactiveShellInit = ''PS1='\[\e[32m\]\u@\h:\w> \[\e[0m\]' '';
 
@@ -61,11 +38,10 @@
   ids.gids.nixbld = 350;
   system.defaults = {
     dock.autohide = true;
-    finder.AppleShowAllExtensions = true;
     NSGlobalDomain.AppleShowAllExtensions = true;
   };
 
-  system.activationScripts.pmset.text = ''
+  system.activationScripts.postActivation.text = ''
     /usr/bin/pmset -c sleep 0
   '';
 

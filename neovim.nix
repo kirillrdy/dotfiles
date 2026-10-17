@@ -28,7 +28,6 @@ pkgs.wrapNeovimUnstable pkgs.neovim-unwrapped {
     cmp-buffer
     cmp-path
     cmp-nvim-lsp
-    cmp-nvim-lua
     nerdtree
   ];
 }

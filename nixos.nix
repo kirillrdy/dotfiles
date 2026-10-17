@@ -29,8 +29,11 @@
     noto-fonts-cjk-sans
     source-code-pro
   ];
-  hardware.nvidia.modesetting.enable = enableNvidia;
-  hardware.nvidia.nvidiaSettings = false;
+  hardware.nvidia = {
+    modesetting.enable = enableNvidia;
+    nvidiaSettings = false;
+    open = true;
+  };
   hardware.cpu.intel.updateMicrocode = true;
   i18n.defaultLocale = "en_AU.UTF-8";
   networking.firewall.enable = false;
@@ -38,20 +41,18 @@
   networking.networkmanager.enable = true;
   networking.networkmanager.plugins = lib.mkForce [ ];
   networking.hostName = hostName;
-  nix.extraOptions = ''
-    experimental-features = nix-command flakes
-    allow-import-from-derivation = false
-  '';
-  nix.settings.trusted-public-keys = [
-    "silverpond:DvvEdyKZvc86cR1o/a+iJxnb7JxMCBzvSTjjEQIY8+g="
-    "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-  ];
-  nix.settings.trusted-users = [ "kirillvr" ];
-  # i18n.inputMethod = {
-  #   enable = true;
-  #   type = "ibus";
-  #   ibus.engines = with pkgs.ibus-engines; [ mozc ];
-  # };
+  nix.settings = {
+    experimental-features = [
+      "nix-command"
+      "flakes"
+    ];
+    allow-import-from-derivation = false;
+    trusted-public-keys = [
+      "silverpond:DvvEdyKZvc86cR1o/a+iJxnb7JxMCBzvSTjjEQIY8+g="
+      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+    ];
+    trusted-users = [ "kirillvr" ];
+  };
   nixpkgs.config.allowUnfree = true;
   programs.git.config = {
     user.name = "Kirill Radzikhovskyy";
@@ -69,7 +70,6 @@
       };
     }
   ];
-  hardware.nvidia.open = true;
   hardware.enableRedistributableFirmware = true;
   programs.git.enable = true;
   programs.bash.interactiveShellInit = ''
