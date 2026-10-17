@@ -32,8 +32,6 @@
   hardware.nvidia.modesetting.enable = enableNvidia;
   hardware.nvidia.nvidiaSettings = false;
   hardware.cpu.intel.updateMicrocode = true;
-  # NPU driver, firmware and the Level Zero loader OpenVINO dispatches through.
-  hardware.cpu.intel.npu.enable = enableOpenvino;
   i18n.defaultLocale = "en_AU.UTF-8";
   networking.firewall.enable = false;
   networking.hostId = "00000000";
@@ -49,33 +47,12 @@
     "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
   ];
   nix.settings.trusted-users = [ "kirillvr" ];
-  i18n.inputMethod = {
-    enable = true;
-    type = "ibus";
-    ibus.engines = with pkgs.ibus-engines; [ mozc ];
-  };
+  # i18n.inputMethod = {
+  #   enable = true;
+  #   type = "ibus";
+  #   ibus.engines = with pkgs.ibus-engines; [ mozc ];
+  # };
   nixpkgs.config.allowUnfree = true;
-  nixpkgs.overlays = [
-    (final: prev: {
-      intel-graphics-compiler = prev.intel-graphics-compiler.overrideAttrs (oldAttrs: {
-        postPatch = ''
-          substituteInPlace igc/IGC/AdaptorOCL/igc-opencl.pc.in \
-            --replace-fail '/@CMAKE_INSTALL_INCLUDEDIR@' "/include" \
-            --replace-fail '/@CMAKE_INSTALL_LIBDIR@' "/lib"
-
-          chmod +x igc/IGC/Scripts/igc_create_linker_script.sh
-          patchShebangs --build igc/IGC/Scripts/igc_create_linker_script.sh
-
-          for patch in llvm-project/llvm/projects/opencl-clang/patches/clang/*.patch; do
-            patch -d llvm-project -p1 -F3 --ignore-whitespace -i "$PWD/$patch"
-          done
-        '';
-        cmakeFlags = (oldAttrs.cmakeFlags or [ ]) ++ [
-          (lib.cmakeBool "APPLY_PATCHES" false)
-        ];
-      });
-    })
-  ];
   programs.git.config = {
     user.name = "Kirill Radzikhovskyy";
     user.email = "kirillrdy@gmail.com";
@@ -145,21 +122,9 @@
   hardware.graphics = {
     enable = true;
     enable32Bit = enableNvidia;
-    extraPackages =
-      with pkgs;
-      (
-        if enableNvidia then
-          [ nvidia-vaapi-driver ]
-        else
-          [
-            intel-media-driver
-            intel-vaapi-driver
-          ]
-      )
-      # OpenCL and Level Zero for the iGPU, which is what OpenVINO's GPU device
-      # talks to. The NPU device comes from hardware.cpu.intel.npu above.
-      # The NVIDIA module supplies its own OpenCL runtime automatically.
-      ++ lib.optional (enableOpenvino || (enableOpencl && !enableNvidia)) intel-compute-runtime;
+    extraPackages = lib.optionals (!enableNvidia) [
+      pkgs.intel-compute-runtime
+    ];
   };
   environment.systemPackages =
     (import ./common.nix pkgs)
