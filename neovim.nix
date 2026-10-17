@@ -22,12 +22,10 @@ pkgs.wrapNeovimUnstable pkgs.neovim-unwrapped {
         zig
       ]
     ))
-    vim-fugitive
     nvim-lspconfig
     nvim-cmp
     cmp-buffer
     cmp-path
     cmp-nvim-lsp
-    nerdtree
   ];
 }

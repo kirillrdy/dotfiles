@@ -1,6 +1,5 @@
 vim.opt.relativenumber = true
 vim.opt.clipboard = "unnamedplus"
-vim.opt.background = "dark"
 if vim.fn.has("mac") == 1 then
   vim.opt.guifont = "JetBrainsMono Nerd Font:h16"
 else
@@ -54,7 +53,7 @@ vim.lsp.config('gopls', { cmd_env = { GOOS = "js", GOARCH = "wasm" } })
 vim.lsp.config('golangci_lint_ls', { cmd_env = { GOOS = "js", GOARCH = "wasm" } })
 vim.lsp.config('nil_ls', { settings = { ['nil'] = { formatting = { command = { "nixfmt" } } } } })
 
-local lsps = { "golangci_lint_ls", "gopls", "lua_ls", "nil_ls", "pyright", "rubocop", "ts_ls", "zls", 'superhtml' }
+local lsps = { "golangci_lint_ls", "gopls", "lua_ls", "nil_ls", "ts_ls", "zls", 'superhtml' }
 for _, name in ipairs(lsps) do
 	vim.lsp.enable(name)
 end

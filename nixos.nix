@@ -25,7 +25,6 @@
     fsType = "vfat";
   };
   hardware.nvidia = {
-    modesetting.enable = enableNvidia;
     nvidiaSettings = false;
     open = true;
   };
@@ -33,7 +32,6 @@
   i18n.defaultLocale = "en_AU.UTF-8";
   networking.firewall.enable = false;
   networking.hostId = "00000000";
-  networking.networkmanager.enable = true;
   networking.networkmanager.plugins = lib.mkForce [ ];
   networking.hostName = hostName;
   nix.settings = {
@@ -86,7 +84,6 @@
     }
   '';
   programs.steam.enable = enableNvidia;
-  services.avahi.enable = true;
   services.avahi.nssmdns4 = true;
   services.avahi.publish.addresses = true;
   services.avahi.publish.enable = true;
@@ -97,7 +94,7 @@
   services.openssh.enable = true;
   services.printing.enable = true;
   services.tailscale.enable = true;
-  services.xserver.videoDrivers = if enableNvidia then [ "nvidia" ] else [ "modesetting" ];
+  services.xserver.videoDrivers = lib.optional enableNvidia "nvidia";
   services.xserver.xkb.options = "caps:none";
   swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
   zramSwap.enable = true;
@@ -114,13 +111,7 @@
   virtualisation.docker.enable = true;
   virtualisation.docker.storageDriver = "zfs";
   hardware.nvidia-container-toolkit.enable = enableNvidia;
-  hardware.graphics = {
-    enable = true;
-    enable32Bit = enableNvidia;
-    extraPackages = lib.optionals (!enableNvidia) [
-      pkgs.intel-compute-runtime
-    ];
-  };
+  hardware.graphics.extraPackages = lib.optional (!enableNvidia) pkgs.intel-compute-runtime;
   environment.systemPackages =
     (import ./common.nix pkgs)
     ++ (with pkgs; [
@@ -138,7 +129,6 @@
       gnomeExtensions.system-monitor-next
       google-chrome
       slack
-      wl-clipboard
     ])
     ++ lib.optionals enableOpencl [
       pkgs.clinfo

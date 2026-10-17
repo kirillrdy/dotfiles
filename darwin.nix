@@ -10,10 +10,7 @@
   nix.settings = {
     experimental-features = "nix-command flakes";
     sandbox = "relaxed";
-    trusted-users = [
-      "root"
-      "kirillvr"
-    ];
+    trusted-users = [ "kirillvr" ];
   };
 
   environment.variables = {
@@ -35,7 +32,6 @@
   system.primaryUser = "kirillvr";
   users.users.kirillvr.shell = pkgs.bash;
   security.pam.services.sudo_local.touchIdAuth = true;
-  ids.gids.nixbld = 350;
   system.defaults = {
     dock.autohide = true;
     NSGlobalDomain.AppleShowAllExtensions = true;
@@ -57,7 +53,7 @@
 
   # Used for backwards compatibility, please read the changelog before changing.
   # $ darwin-rebuild changelog
-  system.stateVersion = 4;
+  system.stateVersion = 5;
 
   # The platform the configuration will be used on.
   nixpkgs.hostPlatform = "aarch64-darwin";
