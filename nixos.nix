@@ -3,8 +3,6 @@
   lib,
   hostName,
   enableNvidia ? false,
-  enableOpencl ? false,
-  enableOpenvino ? false,
   ...
 }:
 {
@@ -24,10 +22,7 @@
     device = "/dev/nvme0n1p3";
     fsType = "vfat";
   };
-  hardware.nvidia = {
-    nvidiaSettings = false;
-    open = true;
-  };
+  hardware.nvidia.open = true;
   hardware.cpu.intel.updateMicrocode = true;
   i18n.defaultLocale = "en_AU.UTF-8";
   networking.firewall.enable = false;
@@ -92,7 +87,6 @@
   services.gnome.tinysparql.enable = false;
   services.gnome.localsearch.enable = false;
   services.openssh.enable = true;
-  services.printing.enable = true;
   services.tailscale.enable = true;
   services.xserver.videoDrivers = lib.optional enableNvidia "nvidia";
   services.xserver.xkb.options = "caps:none";
@@ -105,11 +99,8 @@
     initialPassword = "password";
     extraGroups = [
       "wheel"
-      "docker"
     ];
   };
-  virtualisation.docker.enable = true;
-  virtualisation.docker.storageDriver = "zfs";
   hardware.nvidia-container-toolkit.enable = enableNvidia;
   hardware.graphics.extraPackages = lib.optional (!enableNvidia) pkgs.intel-compute-runtime;
   environment.systemPackages =
@@ -129,10 +120,5 @@
       gnomeExtensions.system-monitor-next
       google-chrome
       slack
-    ])
-    ++ lib.optionals enableOpencl [
-      pkgs.clinfo
-      pkgs.ocl-icd
-    ]
-    ++ lib.optional enableOpenvino pkgs.openvino;
+    ]);
 }
