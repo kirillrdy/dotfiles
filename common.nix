@@ -1,28 +1,25 @@
 pkgs: with pkgs; [
-  superhtml
   (import ./neovim.nix pkgs)
-  gopls
-  jq
-  lazygit
-  lua-language-server
-  nix-tree
-  nix-update
   (python3Packages.fastavro.overridePythonAttrs (old: {
     dependencies = (old.dependencies or [ ]) ++ [ python3Packages.zstandard ];
   }))
-  ffmpeg
-  typescript-language-server
   antigravity-cli
   awscli2
-  claude-code
   codex
+  ffmpeg
   gdu
   gh
   go
   golangci-lint
   golangci-lint-langserver
+  gopls
+  jq
+  lazygit
+  lua-language-server
   neovide
   nil
+  nix-tree
+  nix-update
   nixfmt
   nixpkgs-review
   nvd
