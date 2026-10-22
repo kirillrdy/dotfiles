@@ -80,8 +80,10 @@
   '';
   programs.steam.enable = enableNvidia;
   services.avahi.nssmdns4 = true;
-  services.avahi.publish.addresses = true;
-  services.avahi.publish.enable = true;
+  services.avahi.settings.publish = {
+    disable-publishing = false;
+    publish-addresses = true;
+  };
   services.fprintd.enable = !enableNvidia;
   services.flatpak.enable = enableNvidia;
   services.gnome.tinysparql.enable = false;
