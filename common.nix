@@ -3,7 +3,6 @@ pkgs: with pkgs; [
   (python3Packages.fastavro.overridePythonAttrs (old: {
     dependencies = (old.dependencies or [ ]) ++ [ python3Packages.zstandard ];
   }))
-  antigravity-cli
   awscli2
   codex
   ffmpeg

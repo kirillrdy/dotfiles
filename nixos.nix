@@ -6,7 +6,6 @@
   ...
 }:
 {
-  boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
   boot.kernelPackages = pkgs.linuxPackages_7_2;
   boot.loader.efi.canTouchEfiVariables = true;
   boot.loader.systemd-boot.enable = true;
@@ -59,6 +58,7 @@
     }
   ];
   hardware.enableRedistributableFirmware = true;
+  hardware.firmwareCompression = "xz";
   programs.git.enable = true;
   programs.bash.interactiveShellInit = ''
     # tss            -> toggle to the other logged-in tailscale account
@@ -106,7 +106,7 @@
     ];
   };
   hardware.nvidia-container-toolkit.enable = enableNvidia;
-  hardware.graphics.extraPackages = lib.optional (!enableNvidia) pkgs.intel-compute-runtime;
+  # hardware.graphics.extraPackages = lib.optional (!enableNvidia) pkgs.intel-compute-runtime;
   environment.systemPackages =
     (import ./common.nix pkgs)
     ++ (with pkgs; [
