@@ -88,6 +88,8 @@
   services.flatpak.enable = enableNvidia;
   services.gnome.tinysparql.enable = false;
   services.gnome.localsearch.enable = false;
+  services.orca.enable = false;
+  services.speechd.enable = false;
   services.openssh.enable = true;
   services.tailscale.enable = true;
   services.xserver.videoDrivers = lib.optional enableNvidia "nvidia";
@@ -110,7 +112,6 @@
     ++ (with pkgs; [
       (if enableNvidia then btop-cuda else btop)
       (if enableNvidia then nvtopPackages.nvidia else nvtopPackages.intel)
-      antigravity-ide
       file
       firefox
       ghostty
@@ -120,7 +121,5 @@
       gnomeExtensions.maximize-new-windows
       gnomeExtensions.executor
       gnomeExtensions.system-monitor-next
-      google-chrome
-      slack
     ]);
 }

@@ -26,6 +26,4 @@ pkgs: with pkgs; [
   ripgrep
   tig
   tuicr
-  zig_0_17
-  zls
 ]
