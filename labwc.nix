@@ -25,39 +25,9 @@ let
     url = "https://raw.githubusercontent.com/kevinpita/codex-usage-extension/b88a5d0b02b37e9a06b8266bd5f29fa6a5f16213/codex-icon-22.png";
     hash = "sha256-kI1mut3KtZNahi8btZNSdogSrF+Z44yXqaZ4Jxf5L+E=";
   };
-  codexUsage = pkgs.writeShellScriptBin "waybar-codex" ''
-    exec ${pkgs.python3}/bin/python3 ${./waybar-codex.py} "$@"
-  '';
-  panelData = pkgs.writeShellApplication {
-    name = "waybar-panel-data";
-    runtimeInputs = [
-      pkgs.coreutils
-      pkgs.wireplumber
-      pkgs.upower
-      pkgs.networkmanager
-    ];
-    text = ''exec ${pkgs.python3}/bin/python3 ${./waybar-panel.py} "$@"'';
-  };
-  panelModule = pkgs.stdenv.mkDerivation {
-    pname = "waybar-gnome-panel";
-    version = "0.1.0";
-    dontUnpack = true;
-    nativeBuildInputs = [ pkgs.pkg-config ];
-    buildInputs = [
-      pkgs.gtk3
-      pkgs.json-glib
-    ];
-    buildPhase = ''
-      $CC -std=gnu11 -O2 -Wall -Wextra -Werror -fPIC -shared \
-        ${./waybar-gnome.c} -o libwaybar-gnome.so \
-        $(pkg-config --cflags --libs gtk+-3.0 json-glib-1.0) -lm
-    '';
-    installPhase = ''
-      install -Dm755 libwaybar-gnome.so "$out/lib/libwaybar-gnome.so"
-    '';
-  };
+  desktopZig = import ./desktop-zig.nix { inherit pkgs; };
   nativeModule = name: kind: {
-    module_path = "${panelModule}/lib/libwaybar-gnome.so";
+    module_path = "${desktopZig}/lib/libwaybar-gnome.so";
     inherit name kind;
   };
   volumeControl = pkgs.writeShellApplication {
@@ -306,17 +276,17 @@ lib.mkIf enableLightDesktop {
         tooltip = false;
       };
       "cffi/codex" = nativeModule "gnome-codex" "indicator" // {
-        exec = "${lib.getExe panelData} codex --codex-command ${lib.getExe codexUsage} --codex-icon ${codexIcon}";
+        exec = "${desktopZig}/bin/waybar-panel codex --codex-icon ${codexIcon}";
       };
       "cffi/monitors" = nativeModule "gnome-monitors" "monitors" // {
-        exec = "${lib.getExe panelData} monitors";
+        exec = "${desktopZig}/bin/waybar-panel monitors";
         on-click = "ghostty -e btop";
       };
       "cffi/disk" = nativeModule "gnome-disk" "indicator" // {
-        exec = "${lib.getExe panelData} disk";
+        exec = "${desktopZig}/bin/waybar-panel disk";
       };
       "cffi/status" = nativeModule "gnome-status" "indicator" // {
-        exec = "${lib.getExe panelData} status";
+        exec = "${desktopZig}/bin/waybar-panel status";
         bluetooth-command = "${pkgs.bluez}/bin/bluetoothctl";
         bluetooth-settings-command = "${pkgs.blueman}/bin/blueman-manager";
         network-settings-command = "${pkgs.networkmanagerapplet}/bin/nm-connection-editor";
