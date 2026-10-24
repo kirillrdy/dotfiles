@@ -5,9 +5,45 @@
   ...
 }:
 let
+  codexIcon = pkgs.fetchurl {
+    url = "https://raw.githubusercontent.com/kevinpita/codex-usage-extension/b88a5d0b02b37e9a06b8266bd5f29fa6a5f16213/codex-icon-22.png";
+    hash = "sha256-kI1mut3KtZNahi8btZNSdogSrF+Z44yXqaZ4Jxf5L+E=";
+  };
   codexUsage = pkgs.writeShellScriptBin "waybar-codex" ''
-    exec ${pkgs.python3}/bin/python3 ${./waybar-codex.py}
+    exec ${pkgs.python3}/bin/python3 ${./waybar-codex.py} "$@"
   '';
+  panelData = pkgs.writeShellApplication {
+    name = "waybar-panel-data";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.wireplumber
+      pkgs.upower
+      pkgs.networkmanager
+    ];
+    text = ''exec ${pkgs.python3}/bin/python3 ${./waybar-panel.py} "$@"'';
+  };
+  panelModule = pkgs.stdenv.mkDerivation {
+    pname = "waybar-gnome-panel";
+    version = "0.1.0";
+    dontUnpack = true;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [
+      pkgs.gtk3
+      pkgs.json-glib
+    ];
+    buildPhase = ''
+      $CC -std=gnu11 -O2 -Wall -Wextra -Werror -fPIC -shared \
+        ${./waybar-gnome.c} -o libwaybar-gnome.so \
+        $(pkg-config --cflags --libs gtk+-3.0 json-glib-1.0) -lm
+    '';
+    installPhase = ''
+      install -Dm755 libwaybar-gnome.so "$out/lib/libwaybar-gnome.so"
+    '';
+  };
+  nativeModule = name: kind: {
+    module_path = "${panelModule}/lib/libwaybar-gnome.so";
+    inherit name kind;
+  };
   session = pkgs.writeShellScript "labwc-session" ''
     . /etc/profile
     export XDG_CURRENT_DESKTOP=labwc:wlroots
@@ -39,6 +75,7 @@ lib.mkIf enableLightDesktop {
   services.power-profiles-daemon.enable = true;
   services.upower.enable = true;
   services.gnome.gnome-keyring.enable = true;
+  fonts.packages = [ pkgs.adwaita-fonts ];
   systemd.packages = [ pkgs.labwc ];
   systemd.user.services = {
     waybar = sessionService "${pkgs.waybar}/bin/waybar";
@@ -99,100 +136,65 @@ lib.mkIf enableLightDesktop {
     "xdg/waybar/config".text = builtins.toJSON {
       layer = "top";
       position = "top";
-      height = 30;
-      spacing = 8;
-      modules-left = [
-        "custom/launcher"
-        "wlr/taskbar"
-      ];
-      modules-center = [ "clock" ];
+      height = 32;
+      spacing = 0;
+      modules-left = [ "cffi/activities" ];
+      modules-center = [ "cffi/clock" ];
       modules-right = [
-        "cpu"
-        "memory"
-        "temperature"
-        "disk"
-        "custom/codex"
-        "network"
-        "pulseaudio"
-        "battery"
-        "tray"
+        "cffi/codex"
+        "cffi/monitors"
+        "cffi/disk"
+        "cffi/status"
       ];
-      "custom/launcher" = {
-        format = "Apps";
+      "cffi/activities" = nativeModule "gnome-activities" "activities" // {
         on-click = "fuzzel";
         tooltip = false;
       };
-      "wlr/taskbar" = {
-        format = "{icon}";
-        icon-size = 20;
-        on-click = "activate";
-        on-click-middle = "close";
-        tooltip-format = "{title}";
+      "cffi/codex" = nativeModule "gnome-codex" "indicator" // {
+        exec = "${lib.getExe panelData} codex --codex-command ${lib.getExe codexUsage} --codex-icon ${codexIcon}";
       };
-      clock = {
-        format = "{:%a %d %b  %H:%M}";
-      };
-      cpu = {
-        format = "CPU {usage}%";
-        interval = 2;
+      "cffi/monitors" = nativeModule "gnome-monitors" "monitors" // {
+        exec = "${lib.getExe panelData} monitors";
         on-click = "ghostty -e btop";
       };
-      memory = {
-        format = "RAM {percentage}%";
-        interval = 2;
-        on-click = "ghostty -e btop";
+      "cffi/disk" = nativeModule "gnome-disk" "indicator" // {
+        exec = "${lib.getExe panelData} disk";
       };
-      temperature = {
-        hwmon-path-abs = "/sys/devices/platform/coretemp.0/hwmon";
-        input-filename = "temp1_input";
-        format = "{temperatureC}°C";
-        critical-threshold = 90;
+      "cffi/status" = nativeModule "gnome-status" "indicator" // {
+        exec = "${lib.getExe panelData} status";
       };
-      disk = {
-        path = "/";
-        format = "Disk {used}/{total}";
-        interval = 10;
-        on-click = "ghostty -e gdu /";
-      };
-      "custom/codex" = {
-        exec = lib.getExe codexUsage;
-        return-type = "json";
-        interval = 60;
-        escape = true;
-      };
-      network = {
-        format-wifi = "Wi-Fi {signalStrength}%";
-        format-ethernet = "Ethernet";
-        format-disconnected = "Offline";
-        on-click = "ghostty -e nmtui";
-      };
-      pulseaudio = {
-        format = "Vol {volume}%";
-        format-muted = "Muted";
-        on-click = "pavucontrol";
-        on-click-right = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
-      };
-      battery = {
-        format = "BAT {capacity}%";
-        format-charging = "BAT {capacity}% +";
-        states = {
-          warning = 20;
-          critical = 10;
-        };
-      };
-      tray.spacing = 8;
+      "cffi/clock" = nativeModule "gnome-clock" "clock";
     };
     "xdg/waybar/style.css".text = ''
-      * { font-family: sans-serif; font-size: 12px; border: none; border-radius: 0; min-height: 0; }
-      window#waybar { background: #1e1e2e; color: #cdd6f4; }
-      #custom-launcher, #clock, #cpu, #memory, #temperature, #disk,
-      #custom-codex, #network, #pulseaudio, #battery, #tray { padding: 0 6px; }
-      #taskbar button { padding: 0 5px; }
-      #taskbar button.active { background: #45475a; }
-      #custom-codex.warning, #battery.warning { color: #f9e2af; }
-      #custom-codex.critical, #battery.critical, #temperature.critical { color: #f38ba8; }
-      #custom-codex.unavailable { color: #9399b2; }
-      tooltip { background: #1e1e2e; color: #cdd6f4; }
+      * {
+        font-family: "Adwaita Sans";
+        font-size: 11pt;
+        font-weight: bold;
+        border: none;
+        border-radius: 0;
+        min-height: 0;
+      }
+      window#waybar { background: #000; color: #fff; }
+      .gnome-panel-module {
+        border: 3px solid transparent;
+        border-radius: 999px;
+        transition: background-color 150ms ease;
+      }
+      .gnome-panel-module:hover { background: rgba(255,255,255,0.17); }
+      #gnome-monitors { border-top-width: 0; border-bottom-width: 0; }
+      #gnome-codex .gnome-text { font-size: 12px; }
+      #gnome-disk { border: none; border-radius: 0; padding: 0; }
+      #gnome-disk:hover { background: transparent; }
+      .monitor-name { font-size: 62.5%; color: rgba(255,255,255,0.75); }
+      .monitor-value { padding: 0 5px 0 0; }
+      tooltip {
+        background: #36363a;
+        color: #fff;
+        border: 1px solid rgba(255,255,255,0.15);
+        border-radius: 12px;
+      }
+      tooltip label { font-size: 10pt; font-weight: normal; padding: 8px; }
+      .gnome-calendar { background: #36363a; color: white; border-radius: 24px; padding: 18px; }
     '';
   };
 }
