@@ -5,6 +5,9 @@
   ...
 }:
 let
+  desktopCompositor = pkgs.labwc.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ [ ./labwc-gnome-switcher.patch ];
+  });
   codexIcon = pkgs.fetchurl {
     url = "https://raw.githubusercontent.com/kevinpita/codex-usage-extension/b88a5d0b02b37e9a06b8266bd5f29fa6a5f16213/codex-icon-22.png";
     hash = "sha256-kI1mut3KtZNahi8btZNSdogSrF+Z44yXqaZ4Jxf5L+E=";
@@ -50,7 +53,7 @@ let
     export XDG_SESSION_DESKTOP=labwc
     export XDG_SESSION_TYPE=wayland
     trap '${pkgs.systemd}/bin/systemctl --user stop labwc-session.target' EXIT
-    ${pkgs.labwc}/bin/labwc
+    ${desktopCompositor}/bin/labwc
   '';
   sessionService = command: {
     wantedBy = [ "graphical-session.target" ];
@@ -64,6 +67,7 @@ let
 in
 lib.mkIf enableLightDesktop {
   programs.labwc.enable = true;
+  programs.labwc.package = desktopCompositor;
   programs.thunar.enable = true;
   services.greetd = {
     enable = true;
@@ -76,7 +80,7 @@ lib.mkIf enableLightDesktop {
   services.upower.enable = true;
   services.gnome.gnome-keyring.enable = true;
   fonts.packages = [ pkgs.adwaita-fonts ];
-  systemd.packages = [ pkgs.labwc ];
+  systemd.packages = [ desktopCompositor ];
   systemd.user.services = {
     waybar = sessionService "${pkgs.waybar}/bin/waybar";
     mako = sessionService "${pkgs.mako}/bin/mako";
@@ -102,11 +106,19 @@ lib.mkIf enableLightDesktop {
     "xdg/labwc/rc.xml".text = ''
       <?xml version="1.0"?>
       <labwc_config>
-        <windowSwitcher preview="yes">
-          <osd show="yes" style="thumbnail" />
+        <theme>
+          <icon>Adwaita</icon>
+          <font place="OnScreenDisplay" name="Adwaita Sans" size="11" />
+        </theme>
+        <windowSwitcher preview="no" outlines="no">
+          <osd show="yes" style="applications" output="focused" />
         </windowSwitcher>
         <keyboard>
           <default />
+          <keybind key="W-Tab"><action name="NextWindow" /></keybind>
+          <keybind key="W-S-Tab"><action name="PreviousWindow" /></keybind>
+          <keybind key="A-grave"><action name="NextWindow" identifier="current" /></keybind>
+          <keybind key="A-S-grave"><action name="PreviousWindow" identifier="current" /></keybind>
           <keybind key="W-Return"><action name="Execute" command="ghostty" /></keybind>
           <keybind key="W-d"><action name="Execute" command="fuzzel" /></keybind>
           <keybind key="Super_L" onRelease="yes"><action name="Execute" command="fuzzel" /></keybind>
