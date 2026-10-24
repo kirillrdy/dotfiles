@@ -1,20 +1,9 @@
 pkgs: with pkgs; [
   (import ./neovim.nix pkgs)
-  (python3Packages.fastavro.overridePythonAttrs (old: {
-    dependencies = (old.dependencies or [ ]) ++ [ python3Packages.zstandard ];
-  }))
-  awscli2
   codex
-  ffmpeg
   ncdu
   gh
-  go
-  golangci-lint
-  golangci-lint-langserver
-  gopls
   jq
-  lazygit
-  lua-language-server
   neovide
   nil
   nix-tree
@@ -24,5 +13,4 @@ pkgs: with pkgs; [
   nvd
   ripgrep
   tig
-  tuicr
 ]
