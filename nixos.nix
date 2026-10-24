@@ -3,9 +3,11 @@
   lib,
   hostName,
   enableNvidia ? false,
+  enableLightDesktop ? false,
   ...
 }:
 {
+  imports = [ ./labwc.nix ];
   boot.kernelPackages = pkgs.linuxPackages_7_2;
   boot.loader.efi.canTouchEfiVariables = true;
   boot.loader.systemd-boot.enable = true;
@@ -45,8 +47,14 @@
     user.name = "Kirill Radzikhovskyy";
     user.email = "kirillrdy@gmail.com";
   };
-  services.desktopManager.gnome.enable = true;
-  services.displayManager.gdm.enable = true;
+  services.desktopManager.gnome.enable = !enableLightDesktop;
+  environment.gnome.excludePackages = with pkgs; [
+    epiphany
+    gnome-tour
+    gnome-user-docs
+    yelp
+  ];
+  services.displayManager.gdm.enable = !enableLightDesktop;
   services.displayManager.gdm.autoSuspend = false;
   programs.dconf.profiles.user.databases = [
     {
@@ -115,11 +123,16 @@
       file
       firefox
       ghostty
-      gnomeExtensions.battery-time
-      gnomeExtensions.codex-usage
-      gnomeExtensions.freon
-      gnomeExtensions.maximize-new-windows
-      gnomeExtensions.executor
-      gnomeExtensions.system-monitor-next
-    ]);
+    ])
+    ++ lib.optionals (!enableLightDesktop) (
+      with pkgs;
+      [
+        gnomeExtensions.battery-time
+        gnomeExtensions.codex-usage
+        gnomeExtensions.freon
+        gnomeExtensions.maximize-new-windows
+        gnomeExtensions.executor
+        gnomeExtensions.system-monitor-next
+      ]
+    );
 }

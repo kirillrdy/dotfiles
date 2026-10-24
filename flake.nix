@@ -26,6 +26,7 @@
           enableNvidia ? false,
           enableOpencl ? false,
           enableOpenvino ? false,
+          enableLightDesktop ? false,
         }:
         lib.nixosSystem {
           system = "x86_64-linux";
@@ -35,6 +36,7 @@
               enableNvidia
               enableOpencl
               enableOpenvino
+              enableLightDesktop
               ;
           };
           modules = [ ./nixos.nix ];
@@ -110,18 +112,25 @@
         ];
       };
 
-      nixosConfigurations = builtins.mapAttrs mkSystem {
-        # Lenovo X1 gen9, alderlake
-        osaka = { };
-        # Lenovo X1 gen13, lunarlake
-        hagi = {
-          enableOpenvino = true;
+      nixosConfigurations =
+        (builtins.mapAttrs mkSystem {
+          # Lenovo X1 gen9, alderlake
+          osaka = { };
+          # Lenovo X1 gen13, lunarlake
+          hagi = {
+            enableOpenvino = true;
+          };
+          # i7-13700K, raptorlake
+          tsutenkaku = {
+            enableNvidia = true;
+            enableOpencl = true;
+          };
+        })
+        // {
+          hagi-labwc = mkSystem "hagi" {
+            enableOpenvino = true;
+            enableLightDesktop = true;
+          };
         };
-        # i7-13700K, raptorlake
-        tsutenkaku = {
-          enableNvidia = true;
-          enableOpencl = true;
-        };
-      };
     };
 }
