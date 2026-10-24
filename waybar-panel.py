@@ -186,7 +186,7 @@ def status_items(demo=False):
     if demo:
         return [
             {"icon": "network-wireless-signal-excellent-symbolic", "tooltip": "Wi-Fi"},
-            {"icon": "bluetooth-active-symbolic", "tooltip": "Bluetooth"},
+            {"icon": "bluetooth-active-symbolic", "tooltip": "Bluetooth · Quick Settings"},
             {"icon": "audio-volume-high-symbolic", "tooltip": "Volume"},
             {"icon": "battery-level-80-symbolic", "text": "5∶42", "tooltip": "Battery"},
         ]
@@ -199,7 +199,7 @@ def status_items(demo=False):
         if (entry / "type").exists() and (entry / "state").exists()
     )
     if powered:
-        items.append(dict(icon="bluetooth-active-symbolic", tooltip="Bluetooth", command="ghostty -e bluetoothctl"))
+        items.append(dict(icon="bluetooth-active-symbolic", tooltip="Bluetooth · Quick Settings"))
     volume = command("wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@")
     match = re.search(r"Volume:\s*([\d.]+)", volume)
     percentage = float(match[1]) * 100 if match else 0
@@ -208,7 +208,7 @@ def status_items(demo=False):
     contents = command("upower", "-i", "/org/freedesktop/UPower/devices/DisplayDevice")
     if "is-present:          yes" in contents or "percentage:" in contents:
         icon, label, tip = battery_info(contents)
-        items.append(dict(icon=icon, text=label, tooltip=tip, command="ghostty -e sh -c 'upower -d; read -r _'"))
+        items.append(dict(icon=icon, text=label, tooltip=tip + " · Quick Settings"))
     return items
 
 
@@ -228,7 +228,7 @@ def main():
             rows = command("df", "-h", "/").splitlines()
             fields = rows[1].split() if len(rows) > 1 else []
             label = f"{fields[2]}/{fields[1]}" if len(fields) >= 3 else "—"
-            data = {"items": [dict(text=label, tooltip="Root filesystem usage", command="ghostty -e gdu /")]}
+            data = {"items": [dict(text=label, tooltip="Root filesystem usage", command="ghostty -e ncdu /")]}
         elif args.kind == "status":
             data = {"items": status_items(demo)}
         else:

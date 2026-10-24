@@ -6,7 +6,7 @@ pkgs: with pkgs; [
   awscli2
   codex
   ffmpeg
-  gdu
+  ncdu
   gh
   go
   golangci-lint
