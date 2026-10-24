@@ -155,7 +155,23 @@ def wireless_icon():
 
 def battery_info(contents):
     fields = dict(re.findall(r"^\s*([a-z][a-z -]+):\s*(.*?)\s*$", contents, re.MULTILINE))
-    icon = fields.get("icon-name", "battery-missing-symbolic").strip("'")
+    # UPower still returns legacy names such as battery-full-charged-symbolic.
+    # GNOME derives Adwaita's current level icons from percentage and state.
+    icon = "battery-missing-symbolic"
+    try:
+        percentage = float(fields.get("percentage", "").rstrip("%"))
+        if math.isfinite(percentage):
+            level = int(max(0, min(100, percentage)) // 10) * 10
+            state = fields.get("state", "unknown")
+            if state == "fully-charged" or (state == "charging" and level == 100):
+                icon = "battery-level-100-charged-symbolic"
+            else:
+                suffix = "-charging" if state == "charging" else ""
+                if state == "pending-charge" and fields.get("charge-threshold-enabled") == "yes":
+                    suffix = "-plugged-in"
+                icon = f"battery-level-{level}{suffix}-symbolic"
+    except ValueError:
+        pass
     duration = fields.get("time to empty") or fields.get("time to full")
     label = ""
     if duration:

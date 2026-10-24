@@ -69,6 +69,26 @@ class MonitorTests(unittest.TestCase):
     def test_charged_battery_hides_unknown_estimate(self):
         self.assertEqual(panel.battery_info("state: fully-charged\npercentage: 100%\n")[1], "")
 
+    def test_legacy_upower_battery_names_use_current_adwaita_icons(self):
+        cases = [
+            ("state: fully-charged\npercentage: 100%\nicon-name: 'battery-full-charged-symbolic'\n",
+             "battery-level-100-charged-symbolic"),
+            ("state: charging\npercentage: 85%\nicon-name: 'battery-good-charging-symbolic'\n",
+             "battery-level-80-charging-symbolic"),
+            ("state: charging\npercentage: 100%\n", "battery-level-100-charged-symbolic"),
+            ("state: discharging\npercentage: 87%\n", "battery-level-80-symbolic"),
+            ("state: pending-charge\npercentage: 80%\ncharge-threshold-enabled: yes\n",
+             "battery-level-80-plugged-in-symbolic"),
+        ]
+        for contents, expected in cases:
+            with self.subTest(contents=contents):
+                self.assertEqual(panel.battery_info(contents)[0], expected)
+
+    def test_invalid_battery_percentage_uses_missing_icon(self):
+        for value in ("unknown", "nan", "inf", ""):
+            self.assertEqual(panel.battery_info(f"percentage: {value}\n")[0],
+                             "battery-missing-symbolic")
+
 
 class CodexDisplayTests(unittest.TestCase):
     def test_compact_cli_without_login_is_a_single_placeholder(self):
