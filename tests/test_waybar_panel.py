@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import os
+import select
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -91,6 +93,23 @@ class MonitorTests(unittest.TestCase):
 
 
 class CodexDisplayTests(unittest.TestCase):
+    def test_refresh_signal_updates_running_panel_stream(self):
+        process = subprocess.Popen(
+            [sys.executable, str(Path(panel.__file__)), "codex"],
+            env={**os.environ, "WB_PANEL_DEMO": "1"},
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 5)[0])
+            self.assertEqual(json.loads(process.stdout.readline())["windows"][0]["percent"], 54)
+            process.send_signal(signal.SIGUSR1)
+            self.assertTrue(select.select([process.stdout], [], [], 5)[0])
+            self.assertEqual(json.loads(process.stdout.readline())["windows"][1]["percent"], 93)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+            process.stdout.close()
+
     def test_compact_cli_without_login_is_a_single_placeholder(self):
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(
@@ -107,6 +126,7 @@ class CodexDisplayTests(unittest.TestCase):
         }}, remaining=True, compact=True)
         self.assertEqual(result["text"], "54%")
         self.assertIn("7d: 93% remaining", result["tooltip"])
+        self.assertEqual([window["percent"] for window in result["windows"]], [54, 93])
 
     def test_original_format_still_works(self):
         result = codex.format_usage({"rate_limit": {
@@ -120,6 +140,17 @@ class CodexDisplayTests(unittest.TestCase):
             "secondary_window": {"used_percent": 7},
         }}, remaining=True, compact=True)
         self.assertEqual(result["text"], "—")
+        self.assertIsNone(result["windows"][0]["percent"])
+        self.assertEqual(result["windows"][1]["percent"], 93)
+
+    def test_reset_countdown(self):
+        with patch.object(codex, "datetime") as clock:
+            clock.now.return_value.timestamp.return_value = 1000
+            self.assertEqual(codex.reset_text(1000 + 2 * 86400 + 3 * 3600), "Resets in 2d 3h")
+            self.assertEqual(codex.reset_text(1000 + 2 * 3600 + 15 * 60), "Resets in 2h 15m")
+            self.assertEqual(codex.reset_text(900), "Resets in now")
+            for value in (None, True, "1000", float("nan"), float("inf")):
+                self.assertEqual(codex.reset_text(value), "Resets: —")
 
     def test_invalid_values_do_not_display_fake_allowance(self):
         for value in (None, True, "50", float("nan"), float("inf")):

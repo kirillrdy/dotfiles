@@ -5,7 +5,9 @@ import json
 import math
 import os
 import re
+import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -219,11 +221,15 @@ def main():
     parser.add_argument("--codex-icon")
     args = parser.parse_args()
     demo = os.environ.get("WB_PANEL_DEMO") == "1"
+    refresh = threading.Event()
+    if args.kind == "codex":
+        signal.signal(signal.SIGUSR1, lambda *_: refresh.set())
     if args.kind == "monitors":
         for data in monitor_stream(demo):
             print(json.dumps(data), flush=True)
         return
     while True:
+        refresh.clear()
         if args.kind == "disk":
             rows = command("df", "-h", "/").splitlines()
             fields = rows[1].split() if len(rows) > 1 else []
@@ -233,13 +239,21 @@ def main():
             data = {"items": status_items(demo)}
         else:
             try:
-                result = json.loads(command(args.codex_command, "--remaining", "--compact", timeout=12)) if not demo else {"text": "54%", "tooltip": "5h: 54% remaining\n7d: 93% remaining"}
+                result = json.loads(command(args.codex_command, "--remaining", "--compact", timeout=12)) if not demo else {
+                    "text": "54%", "tooltip": "5h: 54% remaining\n7d: 93% remaining",
+                    "windows": [{"percent": 54, "reset": "Resets in 2h 15m"},
+                                {"percent": 93, "reset": "Resets in 4d 8h"}],
+                    "checked": time.strftime("Checked: %H:%M:%S"),
+                }
             except ValueError:
                 result = {"text": "—", "tooltip": "Codex usage unavailable"}
             data = {"items": [dict(icon=args.codex_icon or "", text=result.get("text", "—"))],
-                    "tooltip": result.get("tooltip", "")}
+                    "tooltip": result.get("tooltip", ""),
+                    "windows": result.get("windows", []),
+                    "checked": result.get("checked", "Checked: —"),
+                    "error": result.get("tooltip", "") if not result.get("windows") else ""}
         print(json.dumps(data), flush=True)
-        time.sleep(60 if args.kind == "codex" else 5)
+        refresh.wait(60 if args.kind == "codex" else 5)
 
 
 if __name__ == "__main__":

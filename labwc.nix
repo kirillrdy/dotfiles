@@ -352,7 +352,7 @@ lib.mkIf enableLightDesktop {
         border-radius: 12px;
       }
       tooltip label { font-size: 10pt; font-weight: normal; padding: 8px; }
-      .gnome-calendar {
+      .gnome-calendar, .gnome-codex-menu {
         background: #36363a;
         color: #fff;
         border: 1px solid rgba(255,255,255,0.15);
@@ -412,7 +412,7 @@ lib.mkIf enableLightDesktop {
         border-radius: 999px;
         min-width: 160px;
         min-height: 48px;
-        padding: 0 16px;
+        padding: 8px 16px;
       }
       .gnome-power-menu .quick-toggle-title { font-size: 11pt; }
       .gnome-power-menu .quick-toggle-subtitle { font-size: 9pt; font-weight: normal; }
@@ -432,6 +432,32 @@ lib.mkIf enableLightDesktop {
       .gnome-power-menu .profile-choice { background: transparent; border-radius: 12px; padding: 10px; }
       .gnome-power-menu .profile-selected { background: rgba(255,255,255,0.1); }
       .gnome-power-menu .quick-message { font-size: 9pt; font-weight: normal; }
+      .gnome-codex-menu { padding: 20px; }
+      .gnome-codex-menu .codex-section-title { font-size: 13px; font-weight: 600; color: #e0e0e0; }
+      .gnome-codex-menu .codex-percent-label { font-size: 13px; }
+      .gnome-codex-menu .codex-reset-label { font-size: 11px; font-weight: normal; color: #a0a0a0; }
+      .gnome-codex-menu .codex-checked { font-size: 10px; font-weight: normal; font-style: italic; color: #808080; }
+      .gnome-codex-menu separator { min-height: 1px; background: rgba(255,255,255,0.1); }
+      .gnome-codex-menu progressbar trough { min-height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; }
+      .gnome-codex-menu progressbar progress { min-height: 8px; border-radius: 4px; border: none; }
+      .gnome-codex-menu .usage-low progress { background: #10a37f; }
+      .gnome-codex-menu .usage-medium progress { background: #eab308; }
+      .gnome-codex-menu .usage-high progress { background: #f97316; }
+      .gnome-codex-menu .usage-critical progress { background: #ef4444; }
+      .gnome-codex-menu button {
+        background: rgba(255,255,255,0.06);
+        background-image: none;
+        color: #fff;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 999px;
+        padding: 6px 10px;
+        font-size: 12px;
+        box-shadow: none;
+        text-shadow: none;
+      }
+      .gnome-codex-menu button label { font-size: 12px; font-weight: 600; }
+      .gnome-codex-menu button:hover { background: rgba(255,255,255,0.12); }
+      .gnome-codex-menu button:disabled { opacity: 0.5; }
     '';
   };
 }

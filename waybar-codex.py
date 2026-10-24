@@ -14,6 +14,19 @@ def unavailable(message):
     return {"text": "Codex —", "tooltip": message, "class": "unavailable"}
 
 
+def reset_text(reset):
+    if isinstance(reset, bool) or not isinstance(reset, (int, float)) or not math.isfinite(reset):
+        return "Resets: —"
+    minutes = max(0, int((reset - datetime.now().timestamp()) / 60))
+    if minutes >= 1440:
+        duration = f"{minutes // 1440}d {minutes // 60 % 24}h"
+    elif minutes >= 60:
+        duration = f"{minutes // 60}h {minutes % 60}m"
+    else:
+        duration = f"{minutes}m" if minutes else "now"
+    return f"Resets in {duration}"
+
+
 def format_usage(data, remaining=False, compact=False):
     limits = data.get("rate_limit")
     if not isinstance(limits, dict):
@@ -23,6 +36,7 @@ def format_usage(data, remaining=False, compact=False):
     tooltip = ["Codex allowance remaining" if remaining else "Codex allowance used"]
     percentages = []
     primary_display = None
+    windows = []
     for key, label in (("primary_window", "5h"), ("secondary_window", "7d")):
         window = limits.get(key) or {}
         percent = window.get("used_percent")
@@ -32,10 +46,12 @@ def format_usage(data, remaining=False, compact=False):
             or not math.isfinite(percent)
         ):
             labels.append(f"{label} —")
+            windows.append({"percent": None, "reset": "Resets: —"})
             continue
         percent = max(0, min(100, percent))
         percentages.append(percent)
         display = 100 - percent if remaining else percent
+        windows.append({"percent": display, "reset": reset_text(window.get("reset_at"))})
         if key == "primary_window":
             primary_display = display
         labels.append(f"{label} {display:.0f}%")
@@ -58,6 +74,8 @@ def format_usage(data, remaining=False, compact=False):
         "tooltip": "\n".join(tooltip),
         "class": level,
         "percentage": round(highest),
+        "windows": windows,
+        "checked": datetime.now().strftime("Checked: %H:%M:%S"),
     }
 
 

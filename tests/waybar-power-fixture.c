@@ -23,6 +23,7 @@ static GtkContainer *root_widget(WaybarModule *module) {
 
 int main(int argc, char **argv) {
   gtk_init(&argc, &argv);
+  g_object_set(gtk_settings_get_default(), "gtk-enable-animations", FALSE, NULL);
   if (argc > 1) {
     GtkCssProvider *provider = gtk_css_provider_new();
     GError *error = NULL;
@@ -127,6 +128,38 @@ int main(int argc, char **argv) {
   wbcffi_deinit(status);
   while (g_main_context_iteration(NULL, FALSE)) {}
   gtk_widget_destroy(root);
+  g_object_unref(root);
+
+  /* Codex has an anchored popup and displays both allowance windows. */
+  root = gtk_event_box_new();
+  g_object_ref_sink(root);
+  info.obj = (WaybarModule *)root;
+  const ConfigEntry codex_config[] = { {"name", "\"gnome-codex\""}, {"kind", "\"indicator\""} };
+  Module *codex = wbcffi_init(&info, codex_config, G_N_ELEMENTS(codex_config));
+  g_assert_true(gtk_popover_get_relative_to(GTK_POPOVER(codex->codex_menu)) == root);
+  GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+  gtk_container_add(GTK_CONTAINER(window), root);
+  gtk_widget_show_all(window);
+  GdkEventButton click = { .type = GDK_BUTTON_PRESS, .button = 1 };
+  gboolean handled = FALSE;
+  g_signal_emit_by_name(root, "button-press-event", &click, &handled);
+  g_assert_true(handled);
+  g_assert_true(gtk_widget_get_visible(codex->codex_menu));
+  g_signal_emit_by_name(root, "button-press-event", &click, &handled);
+  g_assert_false(gtk_widget_get_visible(codex->codex_menu));
+  update_line(codex, "{\"items\":[{\"text\":\"54%\"}],\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"checked\":\"Checked: 12:00:00\"}");
+  g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(codex->codex_percent[0])), ==, "54.0% remaining");
+  g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(codex->codex_percent[1])), ==, "93.0% remaining");
+  g_assert_cmpfloat_with_epsilon(gtk_progress_bar_get_fraction(GTK_PROGRESS_BAR(codex->codex_progress[0])), .54, .001);
+  g_assert_true(gtk_style_context_has_class(gtk_widget_get_style_context(codex->codex_progress[0]), "usage-medium"));
+  g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(codex->codex_reset[1])), ==, "Resets in 4d 8h");
+  g_assert_false(gtk_widget_get_visible(codex->codex_error));
+  update_line(codex, "{\"items\":[{\"text\":\"—\"}],\"windows\":[],\"error\":\"Sign in with codex login\"}");
+  g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(codex->codex_percent[0])), ==, "—");
+  g_assert_cmpfloat(gtk_progress_bar_get_fraction(GTK_PROGRESS_BAR(codex->codex_progress[0])), ==, 0);
+  g_assert_true(gtk_widget_get_visible(codex->codex_error));
+  wbcffi_deinit(codex);
+  gtk_widget_destroy(window);
   g_object_unref(root);
 
   /* Calendar navigation handles leap days, year boundaries and spillover days. */

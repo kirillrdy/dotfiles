@@ -4,6 +4,7 @@
 #include <gtk/gtk.h>
 #include <json-glib/json-glib.h>
 #include <math.h>
+#include <signal.h>
 #include <string.h>
 
 typedef struct WaybarModule WaybarModule;
@@ -54,6 +55,8 @@ typedef struct {
   char *bluetooth_command, *bluetooth_settings_command, *network_settings_command;
   gboolean bluetooth_powered, bluetooth_busy;
   guint bluetooth_timer;
+  GtkWidget *codex_menu, *codex_percent[2], *codex_progress[2], *codex_reset[2];
+  GtkWidget *codex_checked, *codex_refresh, *codex_error;
 } Module;
 
 static void unref_module(Module *m);
@@ -173,6 +176,7 @@ static GtkWidget *quick_tile(GtkWidget *button, const char *title, GtkWidget *ic
   css(button, "quick-toggle");
   GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
   GtkWidget *labels = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+  gtk_widget_set_valign(labels, GTK_ALIGN_CENTER);
   GtkWidget *heading = gtk_label_new(title);
   gtk_label_set_xalign(GTK_LABEL(heading), 0);
   css(heading, "quick-toggle-title");
@@ -454,6 +458,104 @@ static void css(GtkWidget *widget, const char *name) {
   gtk_style_context_add_class(gtk_widget_get_style_context(widget), name);
 }
 
+static gboolean codex_click(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+  (void)widget;
+  Module *m = data;
+  if (event->button != 1) return FALSE;
+  if (gtk_widget_get_visible(m->codex_menu)) gtk_popover_popdown(GTK_POPOVER(m->codex_menu));
+  else gtk_popover_popup(GTK_POPOVER(m->codex_menu));
+  return TRUE;
+}
+
+static void codex_refresh(GtkButton *button, gpointer data) {
+  Module *m = data;
+  if (!m->process) return;
+  gtk_widget_set_sensitive(GTK_WIDGET(button), FALSE);
+  gtk_label_set_text(GTK_LABEL(m->codex_checked), "Refreshing…");
+  g_subprocess_send_signal(m->process, SIGUSR1);
+}
+
+static void make_codex_menu(Module *m) {
+  m->codex_menu = gtk_popover_new(m->root);
+  gtk_popover_set_constrain_to(GTK_POPOVER(m->codex_menu), GTK_POPOVER_CONSTRAINT_NONE);
+  gtk_popover_set_position(GTK_POPOVER(m->codex_menu), GTK_POS_BOTTOM);
+  css(m->codex_menu, "gnome-codex-menu");
+  GtkWidget *menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+  gtk_widget_set_size_request(menu, 300, -1);
+  gtk_container_add(GTK_CONTAINER(m->codex_menu), menu);
+  const char *titles[] = { "5-Hour Remaining", "Weekly Remaining" };
+  for (guint i = 0; i < 2; i++) {
+    GtkWidget *section = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *title = gtk_label_new(titles[i]);
+    gtk_label_set_xalign(GTK_LABEL(title), 0);
+    css(title, "codex-section-title");
+    m->codex_percent[i] = gtk_label_new("—");
+    css(m->codex_percent[i], "codex-percent-label");
+    gtk_box_pack_start(GTK_BOX(header), title, TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(header), m->codex_percent[i], FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(section), header, FALSE, FALSE, 0);
+    m->codex_progress[i] = gtk_progress_bar_new();
+    gtk_box_pack_start(GTK_BOX(section), m->codex_progress[i], FALSE, FALSE, 0);
+    m->codex_reset[i] = gtk_label_new("Resets: —");
+    gtk_label_set_xalign(GTK_LABEL(m->codex_reset[i]), 0);
+    css(m->codex_reset[i], "codex-reset-label");
+    gtk_box_pack_start(GTK_BOX(section), m->codex_reset[i], FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(menu), section, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(menu), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 0);
+  }
+  GtkWidget *footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+  m->codex_refresh = gtk_button_new_with_label("Refresh");
+  gtk_widget_set_sensitive(m->codex_refresh, FALSE);
+  gtk_button_set_image(GTK_BUTTON(m->codex_refresh),
+      gtk_image_new_from_icon_name("view-refresh-symbolic", GTK_ICON_SIZE_MENU));
+  gtk_button_set_always_show_image(GTK_BUTTON(m->codex_refresh), TRUE);
+  g_signal_connect(m->codex_refresh, "clicked", G_CALLBACK(codex_refresh), m);
+  gtk_box_pack_start(GTK_BOX(footer), m->codex_refresh, FALSE, FALSE, 0);
+  m->codex_checked = gtk_label_new("Checked: —");
+  css(m->codex_checked, "codex-checked");
+  gtk_box_pack_end(GTK_BOX(footer), m->codex_checked, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(menu), footer, FALSE, FALSE, 0);
+  m->codex_error = gtk_label_new("");
+  gtk_label_set_line_wrap(GTK_LABEL(m->codex_error), TRUE);
+  gtk_label_set_max_width_chars(GTK_LABEL(m->codex_error), 40);
+  gtk_label_set_xalign(GTK_LABEL(m->codex_error), 0);
+  css(m->codex_error, "codex-reset-label");
+  gtk_widget_set_no_show_all(m->codex_error, TRUE);
+  g_signal_connect(m->codex_error, "notify::label", G_CALLBACK(message_changed), NULL);
+  gtk_box_pack_start(GTK_BOX(menu), m->codex_error, FALSE, FALSE, 0);
+  gtk_widget_show_all(menu);
+  g_signal_connect(m->root, "button-press-event", G_CALLBACK(codex_click), m);
+}
+
+static void update_codex(Module *m, JsonObject *o) {
+  JsonArray *windows = json_object_has_member(o, "windows")
+      ? json_object_get_array_member(o, "windows") : NULL;
+  const char *levels[] = { "usage-low", "usage-medium", "usage-high", "usage-critical" };
+  for (guint i = 0; i < 2; i++) {
+    JsonObject *window = windows && i < json_array_get_length(windows)
+        ? json_array_get_object_element(windows, i) : NULL;
+    JsonNode *percent = window && json_object_has_member(window, "percent")
+        ? json_object_get_member(window, "percent") : NULL;
+    gboolean valid = percent && JSON_NODE_HOLDS_VALUE(percent) &&
+        (json_node_get_value_type(percent) == G_TYPE_DOUBLE || json_node_get_value_type(percent) == G_TYPE_INT64);
+    double value = valid ? json_node_get_double(percent) : 0;
+    valid = valid && isfinite(value);
+    value = valid ? CLAMP(value, 0, 100) : 0;
+    char *label = valid ? g_strdup_printf("%.1f%% remaining", value) : g_strdup("—");
+    gtk_label_set_text(GTK_LABEL(m->codex_percent[i]), label);
+    g_free(label);
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(m->codex_progress[i]), value / 100);
+    gtk_label_set_text(GTK_LABEL(m->codex_reset[i]), window ? text(window, "reset") : "Resets: —");
+    GtkStyleContext *style = gtk_widget_get_style_context(m->codex_progress[i]);
+    for (guint j = 0; j < G_N_ELEMENTS(levels); j++) gtk_style_context_remove_class(style, levels[j]);
+    css(m->codex_progress[i], levels[value <= 10 ? 3 : value <= 30 ? 2 : value <= 60 ? 1 : 0]);
+  }
+  gtk_label_set_text(GTK_LABEL(m->codex_checked), *text(o, "checked") ? text(o, "checked") : "Checked: —");
+  gtk_label_set_text(GTK_LABEL(m->codex_error), text(o, "error"));
+  gtk_widget_set_sensitive(m->codex_refresh, TRUE);
+}
+
 static gboolean draw_graph(GtkWidget *widget, cairo_t *cr, gpointer data) {
   Graph *g = data;
   if (!g->series) return FALSE;
@@ -640,6 +742,7 @@ static void update_line(Module *m, const char *line) {
         update_items(m, json_object_get_array_member(o, "items"));
       }
       gtk_widget_set_tooltip_text(m->box, text(o, "tooltip"));
+      if (m->codex_menu) update_codex(m, o);
     }
   }
   g_object_unref(parser);
@@ -750,6 +853,8 @@ void *wbcffi_init(const InitInfo *info, const ConfigEntry *entries, size_t lengt
     make_graph(m, 0, "cpu");
     make_graph(m, 1, "mem");
     make_graph(m, 2, "net");
+  } else if (g_strcmp0(name, "gnome-codex") == 0) {
+    make_codex_menu(m);
   } else if (m->status) {
     m->power_icon = gtk_image_new_from_icon_name(power_icons[1], GTK_ICON_SIZE_MENU);
     m->power_label = gtk_label_new("Power Mode");
@@ -864,6 +969,7 @@ void wbcffi_deinit(void *instance) {
   if (m->clock_timer) g_source_remove(m->clock_timer);
   if (m->bluetooth_timer) g_source_remove(m->bluetooth_timer);
   if (m->calendar) gtk_widget_destroy(m->calendar);
+  if (m->codex_menu) gtk_widget_destroy(m->codex_menu);
   if (m->calendar_selected) g_date_time_unref(m->calendar_selected);
   if (m->power_menu) gtk_widget_destroy(m->power_menu);
   if (m->power) g_signal_handlers_disconnect_by_data(m->power, m);
