@@ -9,8 +9,11 @@ let
   cursorSize = 24;
   # Use the same default as the NixOS GNOME desktop module.
   gnomeWallpaper = pkgs.nixos-artwork.wallpapers.simple-blue.gnomeFilePath;
+  desktopDrawer = pkgs.nwg-drawer.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ [ ./nwg-drawer-name-search.patch ];
+  });
   appLauncher = pkgs.writeShellScriptBin "desktop-apps" ''
-    exec ${pkgs.nwg-drawer}/bin/nwg-drawer -s /etc/xdg/nwg-drawer/drawer.css \
+    exec ${desktopDrawer}/bin/nwg-drawer -s /etc/xdg/nwg-drawer/drawer.css \
       -c 6 -is 96 -spacing 24 -nocats -nofs -term ghostty -i Adwaita "$@"
   '';
   gtkCursorSettings = ''
@@ -21,6 +24,28 @@ let
   desktopCompositor = pkgs.labwc.overrideAttrs (old: {
     patches = (old.patches or [ ]) ++ [ ./labwc-gnome-switcher.patch ];
   });
+  # The panel uses only CFFI modules; device status comes from desktopZig.
+  # Keep udev: Waybar 0.15's unconditional battery module requires it.
+  desktopWaybar = pkgs.waybar.override {
+    cavaSupport = false;
+    evdevSupport = false;
+    gpsSupport = false;
+    inputSupport = false;
+    jackSupport = false;
+    mpdSupport = false;
+    mprisSupport = false;
+    niriSupport = false;
+    nlSupport = false;
+    pipewireSupport = false;
+    pulseSupport = false;
+    rfkillSupport = false;
+    sndioSupport = false;
+    systemdSupport = false;
+    traySupport = false;
+    upowerSupport = false;
+    wireplumberSupport = false;
+    withMediaPlayer = false;
+  };
   codexIcon = pkgs.fetchurl {
     url = "https://raw.githubusercontent.com/kevinpita/codex-usage-extension/b88a5d0b02b37e9a06b8266bd5f29fa6a5f16213/codex-icon-22.png";
     hash = "sha256-kI1mut3KtZNahi8btZNSdogSrF+Z44yXqaZ4Jxf5L+E=";
@@ -100,7 +125,7 @@ lib.mkIf enableLightDesktop {
   systemd.packages = [ desktopCompositor ];
   systemd.user.services = {
     wallpaper = sessionService "${pkgs.swaybg}/bin/swaybg -i ${gnomeWallpaper} -m fill";
-    waybar = sessionService "${pkgs.waybar}/bin/waybar";
+    waybar = sessionService "${desktopWaybar}/bin/waybar";
     mako = sessionService "${pkgs.mako}/bin/mako --config /etc/xdg/mako/config";
     swayosd = sessionService "${pkgs.swayosd}/bin/swayosd-server --config /etc/xdg/swayosd/config.toml --style /etc/xdg/swayosd/style.css";
     polkit-agent = sessionService "${pkgs.polkit_gnome}/libexec/polkit-gnome-authentication-agent-1";
@@ -119,7 +144,7 @@ lib.mkIf enableLightDesktop {
     swayidle
     swaylock
     swayosd
-    waybar
+    desktopWaybar
     wl-clipboard
     wlr-randr
   ];
