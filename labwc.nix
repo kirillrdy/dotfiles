@@ -143,6 +143,8 @@ lib.mkIf enableLightDesktop {
       XKB_DEFAULT_OPTIONS=caps:none
     '';
     "xdg/labwc/autostart".text = ''
+      # Match GNOME's fractional scale for hagi's 2880x1800 built-in display.
+      ${pkgs.wlr-randr}/bin/wlr-randr --output eDP-1 --scale 1.6666666667
       ${pkgs.systemd}/bin/systemctl --user import-environment PATH
       ${pkgs.systemd}/bin/systemctl --user --no-block start labwc-session.target
     '';
