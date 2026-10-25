@@ -41,7 +41,7 @@ print(f"Artifacts: {root}", flush=True)
 (root / "config/labwc/autostart").write_text("")
 (root / "config/labwc/environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
 env = dict(os.environ)
-for key in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID"):
+for key in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID", "GDK_PIXBUF_MODULE_FILE"):
     env.pop(key, None)
 env.update(
     XDG_RUNTIME_DIR=str(root / "runtime"),
@@ -155,6 +155,8 @@ try:
     config["right"][0]["exec"] = (
         'sh -c "cat ' + str(root / "codex.json") + '; sleep 120"'
     )
+    # Keep the Codex click independent of changing battery/disk label widths.
+    config["left"].append(config["right"].pop(0))
     (root / "panel.json").write_text(json.dumps(config))
     panel = start(
         [str(args.bin / "desktop-panel"), str(root / "panel.json"), str(args.style)],
@@ -178,7 +180,7 @@ try:
     dismiss()
     capture("calendar-dismissed")
     before = log().count("get_subsurface")
-    click(1125, 16)
+    click(112, 16)
     capture("codex")
     assert log().count("get_subsurface") > before, "Codex popover did not open"
     dismiss()

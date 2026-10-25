@@ -37,6 +37,28 @@ fn setProperty(m: *p.Module, name: [:0]const u8, value: ?*c.GVariant) void {
 }
 pub fn main(process_init: std.process.Init) !void {
     c.gtk_init(null, null);
+    // Resolve and decode the SVGs, rather than only checking GtkImage names.
+    if (c.g_getenv("DESKTOP_PANEL_ICON_PATH")) |path| {
+        const theme = c.gtk_icon_theme_new();
+        defer c.g_object_unref(theme);
+        c.gtk_icon_theme_append_search_path(theme, path);
+        c.gtk_icon_theme_set_custom_theme(theme, "Adwaita");
+        for ([_][*:0]const u8{
+            "network-wireless-signal-good-symbolic",
+            "battery-level-90-symbolic",
+            "battery-level-50-charging-symbolic",
+            "audio-volume-medium-symbolic",
+        }) |name| {
+            for ([_]c_int{ 1, 2 }) |scale| {
+                var err: [*c]c.GError = null;
+                const pixbuf = c.gtk_icon_theme_load_icon_for_scale(theme, name, 16, scale, 0, &err);
+                if (err != null) c.g_printerr("Cannot load %s: %s\n", name, err.*.message);
+                assert(err == null and pixbuf != null);
+                assert(c.gdk_pixbuf_get_width(pixbuf) > 0 and c.gdk_pixbuf_get_height(pixbuf) > 0);
+                c.g_object_unref(pixbuf);
+            }
+        }
+    }
     c.g_object_set(c.gtk_settings_get_default(), "gtk-enable-animations", @as(c_int, 0), @as(?*anyopaque, null));
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
