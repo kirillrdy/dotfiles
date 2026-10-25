@@ -309,7 +309,7 @@
  			lab_wlr_scene_buffer_create(tree, thumb_buffer);
 --- /dev/null
 +++ b/src/cycle/osd-applications.c
-@@ -0,0 +1,365 @@
+@@ -0,0 +1,375 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/* GNOME-style application switcher, using the compositor's native cycle list. */
 +#include <assert.h>
@@ -518,7 +518,18 @@
 +	int thumb_w = MIN(THUMB_DEFAULT_SIZE, MAX(48, max_item_w - 2 * pad));
 +	int width = thumb_w + 2 * pad;
 +	int avail_h = screen_height - panel_y - panel_height - POPUP_SPACING - 2 * SWITCHER_PADDING;
-+	int bin_h = MIN(THUMB_DEFAULT_SIZE, MAX(48, avail_h - 2 * pad - ITEM_PADDING - label_h));
++	int max_bin_h = MIN(THUMB_DEFAULT_SIZE, MAX(48, avail_h - 2 * pad - ITEM_PADDING - label_h));
++	int bin_h = 48;
++	struct view *view;
++	wl_list_for_each(view, &server.cycle.views, cycle_link) {
++		if (!cycle_same_app(app->base.view, view)) {
++			continue;
++		}
++		int vw = MAX(1, view->current.width);
++		int vh = MAX(1, view->current.height);
++		double scale = MIN(1.0, MIN((double)thumb_w / vw, (double)max_bin_h / vh));
++		bin_h = MAX(bin_h, (int)(vh * scale + 0.5));
++	}
 +	int height = bin_h + 2 * pad + ITEM_PADDING + label_h;
 +	int total_width = count * width + (count - 1) * ITEM_SPACING + 2 * SWITCHER_PADDING;
 +	app->windows = lab_wlr_scene_tree_create(osd_output->tree);
@@ -530,7 +541,6 @@
 +	x = MAX(-panel_x, MIN(x, screen_width - panel_x - total_width));
 +	wlr_scene_node_set_position(&app->windows->node, x, panel_height + POPUP_SPACING);
 +	int index = 0;
-+	struct view *view;
 +	wl_list_for_each(view, &server.cycle.views, cycle_link) {
 +		if (!cycle_same_app(app->base.view, view)) {
 +			continue;

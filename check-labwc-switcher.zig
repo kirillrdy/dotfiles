@@ -211,7 +211,7 @@ pub fn main(init: std.process.Init) !void {
     try write(a, try u.fmt(a, "{s}/rc.xml", .{config}), try u.read(a, try u.fmt(a, "{s}/etc/xdg/labwc/rc.xml", .{options.system})));
     try write(a, try u.fmt(a, "{s}/autostart", .{config}), "");
     try write(a, try u.fmt(a, "{s}/environment", .{config}), "LABWC_UPDATE_ACTIVATION_ENV=false\n");
-    for ([_][]const u8{ "Browser", "Terminal", "Files" }, [_][]const u8{ "firefox", "com.mitchellh.ghostty", "org.xfce.thunar" }) |app, icon| try write(a, try u.fmt(a, "{s}/data/applications/io.test.{s}.desktop", .{ root, app }), try u.fmt(a, "[Desktop Entry]\nType=Application\nName={s}\nIcon={s}\nExec=true\n", .{ app, icon }));
+    for ([_][]const u8{ "Browser", "Terminal", "Files" }, [_][]const u8{ "firefox", "com.mitchellh.ghostty", "folder" }) |app, icon| try write(a, try u.fmt(a, "{s}/data/applications/io.test.{s}.desktop", .{ root, app }), try u.fmt(a, "[Desktop Entry]\nType=Application\nName={s}\nIcon={s}\nExec=true\n", .{ app, icon }));
     const bus = try u.fmt(a, "{s}/dbus.conf", .{root});
     try write(a, bus, try u.fmt(a, "<busconfig><type>session</type><listen>unix:tmpdir={s}</listen><policy context=\"default\"><allow send_destination=\"*\"/><allow receive_sender=\"*\"/><allow own=\"*\"/></policy></busconfig>", .{runtime}));
     for ([_][]const u8{ "DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "LABWC_PID" }) |name| _ = env.swapRemove(name);
