@@ -9,13 +9,7 @@ let
   cursorSize = 24;
   # Use the same default as the NixOS GNOME desktop module.
   gnomeWallpaper = pkgs.nixos-artwork.wallpapers.simple-blue.gnomeFilePath;
-  desktopDrawer = pkgs.nwg-drawer.overrideAttrs (old: {
-    patches = (old.patches or [ ]) ++ [ ./nwg-drawer-name-search.patch ];
-  });
-  appLauncher = pkgs.writeShellScriptBin "desktop-apps" ''
-    exec ${desktopDrawer}/bin/nwg-drawer -s /etc/xdg/nwg-drawer/drawer.css \
-      -c 6 -is 96 -spacing 24 -nocats -nofs -term ghostty -i Adwaita "$@"
-  '';
+  appLauncher = lib.getExe' desktopZig "desktop-apps";
   gtkCursorSettings = ''
     [Settings]
     gtk-cursor-theme-name=${cursorTheme}
@@ -134,7 +128,7 @@ lib.mkIf enableLightDesktop {
   environment.systemPackages = with pkgs; [
     adwaita-icon-theme
     brightnessctl
-    appLauncher
+    desktopZig
     grim
     mako
     pavucontrol
@@ -149,30 +143,6 @@ lib.mkIf enableLightDesktop {
   ];
 
   environment.etc = {
-    "xdg/nwg-drawer/drawer.css".text = ''
-      window {
-        background: rgba(46,46,51,0.98);
-        color: #fff;
-        font-family: "Adwaita Sans";
-        font-size: 11pt;
-      }
-      entry {
-        background: #45454b;
-        color: #fff;
-        border: 1px solid rgba(255,255,255,0.12);
-        border-radius: 999px;
-        padding: 12px 20px;
-        margin: 32px 0;
-        min-width: 320px;
-        box-shadow: none;
-      }
-      entry:focus { border-color: #78aeed; }
-      button, image { background: none; border: none; box-shadow: none; color: #fff; }
-      button { border-radius: 24px; padding: 16px; }
-      button:hover, button:focus { background: rgba(255,255,255,0.1); }
-      button:active { background: rgba(255,255,255,0.18); }
-      #pinned-box { padding-bottom: 24px; }
-    '';
     # Keep GTK clients and compositor-rendered Wayland cursors consistent.
     "xdg/gtk-3.0/settings.ini".text = gtkCursorSettings;
     "xdg/gtk-4.0/settings.ini".text = gtkCursorSettings;
@@ -249,9 +219,9 @@ lib.mkIf enableLightDesktop {
           <keybind key="A-grave"><action name="NextWindow" identifier="current" /></keybind>
           <keybind key="A-S-grave"><action name="PreviousWindow" identifier="current" /></keybind>
           <keybind key="W-Return"><action name="Execute" command="ghostty" /></keybind>
-          <keybind key="W-d"><action name="Execute" command="${lib.getExe appLauncher}" /></keybind>
-          <keybind key="W-a"><action name="Execute" command="${lib.getExe appLauncher}" /></keybind>
-          <keybind key="Super_L" onRelease="yes"><action name="Execute" command="${lib.getExe appLauncher}" /></keybind>
+          <keybind key="W-d"><action name="Execute" command="${appLauncher}" /></keybind>
+          <keybind key="W-a"><action name="Execute" command="${appLauncher}" /></keybind>
+          <keybind key="Super_L" onRelease="yes"><action name="Execute" command="${appLauncher}" /></keybind>
           <keybind key="W-l"><action name="Execute" command="swaylock -f -c 1e1e2e" /></keybind>
           <keybind key="W-S-e"><action name="Exit" /></keybind>
           <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="${lib.getExe volumeControl} up" /></keybind>
@@ -266,6 +236,7 @@ lib.mkIf enableLightDesktop {
         <libinput><device category="touchpad"><tap>no</tap><naturalScroll>yes</naturalScroll></device></libinput>
         <windowRules>
           <windowRule identifier="*" type="normal"><action name="Maximize" /></windowRule>
+          <windowRule identifier="org.dotfiles.DesktopApps" serverDecoration="no" />
         </windowRules>
       </labwc_config>
     '';
@@ -295,7 +266,7 @@ lib.mkIf enableLightDesktop {
         "cffi/status"
       ];
       "cffi/activities" = nativeModule "gnome-activities" "activities" // {
-        on-click = lib.getExe appLauncher;
+        on-click = appLauncher;
         tooltip = false;
       };
       "cffi/codex" = nativeModule "gnome-codex" "indicator" // {

@@ -10,6 +10,18 @@ pub fn build(b: *std.Build) void {
     const panel = b.addSharedLibrary(.{ .name = "waybar-gnome", .root_source_file = b.path("waybar-gnome.zig"), .target = target, .optimize = optimize });
     linkGtk(panel);
     b.installArtifact(panel);
+    const apps = b.addExecutable(.{ .name = "desktop-apps", .root_source_file = b.path("desktop-apps.zig"), .target = target, .optimize = optimize });
+    apps.linkLibC();
+    apps.linkSystemLibrary("gtk+-3.0");
+    apps.linkSystemLibrary("gio-unix-2.0");
+    b.installArtifact(apps);
+    const apps_fixture = b.addExecutable(.{ .name = "desktop-apps-fixture", .root_source_file = b.path("tests/desktop-apps-fixture.zig"), .target = target, .optimize = optimize });
+    const apps_module = b.createModule(.{ .root_source_file = b.path("desktop-apps.zig"), .target = target, .optimize = optimize });
+    apps_module.link_libc = true;
+    apps_module.linkSystemLibrary("gtk+-3.0", .{});
+    apps_module.linkSystemLibrary("gio-unix-2.0", .{});
+    apps_fixture.root_module.addImport("apps", apps_module);
+    b.installArtifact(apps_fixture);
     for ([_][]const u8{ "waybar-codex", "waybar-panel" }) |name| {
         const exe = b.addExecutable(.{ .name = name, .root_source_file = b.path(b.fmt("{s}.zig", .{name})), .target = target, .optimize = optimize });
         exe.linkLibC();

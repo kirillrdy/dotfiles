@@ -34,8 +34,14 @@ pkgs.stdenv.mkDerivation {
       sleep 0.05
     done
     G_DEBUG=fatal-criticals "$out/bin/waybar-power-fixture"
+    G_DEBUG=fatal-criticals GDK_BACKEND=x11 \
+      GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+      DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons \
+      "$out/bin/desktop-apps-fixture"
   '';
   installPhase = ''
+    wrapProgram "$out/bin/desktop-apps" \
+      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
     wrapProgram "$out/bin/waybar-panel" --prefix PATH : ${
       pkgs.lib.makeBinPath [
         pkgs.coreutils
