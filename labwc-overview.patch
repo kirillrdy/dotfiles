@@ -1,0 +1,140 @@
+--- a/include/desktop-overview.h
++++ b/include/desktop-overview.h
+@@ -0,0 +1,2 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++void desktop_overview_init(void);
+--- a/src/desktop-overview.c
++++ b/src/desktop-overview.c
+@@ -0,0 +1,118 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#include "desktop-overview.h"
++#include <string.h>
++#include <wayland-server-core.h>
++#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
++#include "desktop-overview-v1-protocol.h"
++#include "labwc.h"
++#include "view.h"
++#include "workspaces.h"
++
++static struct workspace *
++workspace_at(uint32_t index)
++{
++    struct workspace *workspace;
++    wl_list_for_each(workspace, &server.workspaces.all, link) {
++        if (!index--) return workspace;
++    }
++    return NULL;
++}
++
++static uint32_t
++workspace_index(struct workspace *target)
++{
++    uint32_t index = 0;
++    struct workspace *workspace;
++    wl_list_for_each(workspace, &server.workspaces.all, link) {
++        if (workspace == target) return index;
++        ++index;
++    }
++    return 0;
++}
++
++static struct view *
++find_view(const char *identifier)
++{
++    struct wlr_ext_foreign_toplevel_handle_v1 *handle;
++    wl_list_for_each(handle, &server.foreign_toplevel_list->toplevels, link) {
++        if (!strcmp(handle->identifier, identifier)) return handle->data;
++    }
++    return NULL;
++}
++
++static void
++refresh(struct wl_client *client, struct wl_resource *resource)
++{
++    uint32_t index = 0;
++    struct workspace *workspace;
++    wl_list_for_each(workspace, &server.workspaces.all, link) {
++        dotfiles_overview_v1_send_workspace(resource, index++, workspace->name,
++            workspace == server.workspaces.current);
++    }
++    struct wlr_ext_foreign_toplevel_handle_v1 *handle;
++    wl_list_for_each(handle, &server.foreign_toplevel_list->toplevels, link) {
++        struct view *view = handle->data;
++        if (!view || !view->been_mapped) continue;
++        dotfiles_overview_v1_send_window(resource, handle->identifier,
++            workspace_index(view->workspace), view->current.x, view->current.y,
++            view->current.width, view->current.height,
++            view->visible_on_all_workspaces);
++    }
++    dotfiles_overview_v1_send_done(resource);
++}
++
++static void
++activate(struct wl_client *client, struct wl_resource *resource, const char *id)
++{
++    struct view *view = find_view(id);
++    if (view) desktop_focus_view(view, true);
++}
++
++static void
++close_view(struct wl_client *client, struct wl_resource *resource, const char *id)
++{
++    struct view *view = find_view(id);
++    if (view) view_close(view);
++}
++
++static void
++switch_workspace(struct wl_client *client, struct wl_resource *resource, uint32_t index)
++{
++    struct workspace *workspace = workspace_at(index);
++    if (workspace) workspaces_switch_to(workspace, false);
++}
++
++static void
++move_view(struct wl_client *client, struct wl_resource *resource, const char *id, uint32_t index)
++{
++    struct workspace *workspace = workspace_at(index);
++    struct view *view = find_view(id);
++    if (workspace && view) view_move_to_workspace(view, workspace);
++}
++
++static void
++destroy(struct wl_client *client, struct wl_resource *resource)
++{
++    wl_resource_destroy(resource);
++}
++
++static const struct dotfiles_overview_v1_interface implementation = {
++    .destroy = destroy, .refresh = refresh, .activate = activate,
++    .close = close_view, .switch_workspace = switch_workspace, .move = move_view,
++};
++
++static void
++bind_overview(struct wl_client *client, void *data, uint32_t version, uint32_t id)
++{
++    struct wl_resource *resource = wl_resource_create(client,
++        &dotfiles_overview_v1_interface, 1, id);
++    if (!resource) { wl_client_post_no_memory(client); return; }
++    wl_resource_set_implementation(resource, &implementation, NULL, NULL);
++}
++
++void
++desktop_overview_init(void)
++{
++    wl_global_create(server.wl_display, &dotfiles_overview_v1_interface, 1,
++        NULL, bind_overview);
++}
+--- a/src/server.c
++++ b/src/server.c
+@@ -65,0 +66 @@
++#include "desktop-overview.h"
+@@ -843,0 +845 @@
++	desktop_overview_init();
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -5,0 +6 @@
++  'desktop-overview.c',
+--- a/protocols/meson.build
++++ b/protocols/meson.build
+@@ -16,0 +17 @@
++	'desktop-overview-v1.xml',

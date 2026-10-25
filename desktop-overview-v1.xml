@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="dotfiles_overview_v1">
+  <copyright>SPDX-License-Identifier: MIT</copyright>
+  <interface name="dotfiles_overview_v1" version="1">
+    <description summary="desktop overview placement and window actions">
+      Companion to ext-foreign-toplevel-list and ext-image-copy-capture.
+      Identifiers are those from ext_foreign_toplevel_handle_v1.identifier.
+      Each refresh produces a complete workspace/window snapshot followed by
+      done. Indices are zero-based and valid until the next snapshot.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="refresh"/>
+    <request name="activate"><arg name="identifier" type="string"/></request>
+    <request name="close"><arg name="identifier" type="string"/></request>
+    <request name="switch_workspace"><arg name="index" type="uint"/></request>
+    <request name="move"><arg name="identifier" type="string"/><arg name="index" type="uint"/></request>
+    <event name="workspace"><arg name="index" type="uint"/><arg name="name" type="string"/><arg name="active" type="uint"/></event>
+    <event name="window"><arg name="identifier" type="string"/><arg name="workspace" type="uint"/><arg name="x" type="int"/><arg name="y" type="int"/><arg name="width" type="int"/><arg name="height" type="int"/><arg name="sticky" type="uint"/></event>
+    <event name="done"/>
+  </interface>
+</protocol>

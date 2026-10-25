@@ -25,6 +25,13 @@ pub fn build(b: *std.Build) void {
     panel.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
     panel.root_module.addImport("gtk", panel_gtk);
     b.installArtifact(panel);
+    const wallpaper = b.addExecutable(.{ .name = "desktop-wallpaper", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-wallpaper.zig"), .target = target, .optimize = optimize }) });
+    wallpaper.root_module.link_libc = true;
+    wallpaper.root_module.linkSystemLibrary("gtk+-3.0", .{});
+    wallpaper.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
+    wallpaper.root_module.addImport("gtk", panel_gtk);
+    b.installArtifact(wallpaper);
+    const wallpaper_tests = b.addTest(.{ .root_module = wallpaper.root_module });
     const osd = b.addExecutable(.{ .name = "desktop-osd", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-osd.zig"), .target = target, .optimize = optimize }) });
     osd.root_module.link_libc = true;
     osd.root_module.linkSystemLibrary("gtk+-3.0", .{});
@@ -43,6 +50,33 @@ pub fn build(b: *std.Build) void {
     apps.root_module.linkSystemLibrary("gio-unix-2.0", .{});
     apps.root_module.addImport("gtk", apps_gtk);
     b.installArtifact(apps);
+    const overview = b.addExecutable(.{ .name = "desktop-overview", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-overview.zig"), .target = target, .optimize = optimize }) });
+    overview.root_module.link_libc = true;
+    overview.root_module.linkSystemLibrary("gtk+-3.0", .{});
+    overview.root_module.linkSystemLibrary("gio-unix-2.0", .{});
+    overview.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
+    overview.root_module.linkSystemLibrary("wayland-client", .{});
+    const overview_header = b.addWriteFiles().add("overview-bindings.h", "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <wayland-client.h>\n#include <sys/mman.h>\n#include <unistd.h>\n#include <signal.h>\n#include \"ext-foreign-toplevel-list-v1.h\"\n#include \"ext-image-capture-source-v1.h\"\n#include \"ext-image-copy-capture-v1.h\"\n#include \"desktop-overview-v1.h\"\n");
+    const overview_c = b.addTranslateC(.{ .root_source_file = overview_header, .target = target, .optimize = optimize });
+    for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client" }) |name| overview_c.linkSystemLibrary(name, .{});
+    const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
+    for ([_][]const u8{ "ext-foreign-toplevel-list", "ext-image-capture-source", "ext-image-copy-capture", "desktop-overview" }) |name| {
+        const xml: std.Build.LazyPath = if (std.mem.eql(u8, name, "desktop-overview")) b.path("desktop-overview-v1.xml") else .{ .cwd_relative = b.fmt("{s}/staging/{s}/{s}-v1.xml", .{ protocol_dir, name, name }) };
+        const header_command = b.addSystemCommand(&.{ "wayland-scanner", "client-header" });
+        header_command.addFileArg(xml);
+        const header = header_command.addOutputFileArg(b.fmt("{s}-v1.h", .{name}));
+        overview_c.addIncludePath(header.dirname());
+        const code_command = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
+        code_command.addFileArg(xml);
+        const code = code_command.addOutputFileArg(b.fmt("{s}-v1.c", .{name}));
+        overview.root_module.addCSourceFile(.{ .file = code, .flags = &.{} });
+    }
+    const overview_gtk = overview_c.createModule();
+    const overview_apps = b.createModule(.{ .root_source_file = b.path("desktop-apps.zig"), .target = target, .optimize = optimize });
+    overview_apps.addImport("gtk", overview_gtk);
+    overview.root_module.addImport("gtk", overview_gtk);
+    overview.root_module.addImport("apps", overview_apps);
+    b.installArtifact(overview);
     const apps_fixture = b.addExecutable(.{ .name = "desktop-apps-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-apps-fixture.zig"), .target = target, .optimize = optimize }) });
     const apps_module = b.createModule(.{ .root_source_file = b.path("desktop-apps.zig"), .target = target, .optimize = optimize });
     apps_module.link_libc = true;
@@ -73,6 +107,22 @@ pub fn build(b: *std.Build) void {
     switcher.root_module.linkSystemLibrary("wayland-client", .{});
     switcher.root_module.addImport("gtk", wayland_gtk);
     b.installArtifact(switcher);
+    const pointer_xml: std.Build.LazyPath = .{ .cwd_relative = b.fmt("{s}/unstable/wlr-virtual-pointer-unstable-v1.xml", .{b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols"}) };
+    const pointer_header_command = b.addSystemCommand(&.{ "wayland-scanner", "client-header" });
+    pointer_header_command.addFileArg(pointer_xml);
+    const pointer_header = pointer_header_command.addOutputFileArg("virtual-pointer.h");
+    const pointer_code_command = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
+    pointer_code_command.addFileArg(pointer_xml);
+    const pointer_code = pointer_code_command.addOutputFileArg("virtual-pointer.c");
+    const pointer_c = b.addTranslateC(.{ .root_source_file = b.addWriteFiles().add("pointer.h", "#include <wayland-client.h>\n#include <stdio.h>\n#include <string.h>\n#include \"virtual-pointer.h\"\n"), .target = target, .optimize = optimize });
+    pointer_c.addIncludePath(pointer_header.dirname());
+    pointer_c.linkSystemLibrary("wayland-client", .{});
+    const pointer = b.addExecutable(.{ .name = "desktop-pointer-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-pointer-fixture.zig"), .target = target, .optimize = optimize }) });
+    pointer.root_module.link_libc = true;
+    pointer.root_module.linkSystemLibrary("wayland-client", .{});
+    pointer.root_module.addCSourceFile(.{ .file = pointer_code, .flags = &.{} });
+    pointer.root_module.addImport("wayland", pointer_c.createModule());
+    b.installArtifact(pointer);
     const checker = b.addExecutable(.{ .name = "check-labwc-switcher", .root_module = b.createModule(.{ .root_source_file = b.path("check-labwc-switcher.zig"), .target = target, .optimize = optimize }) });
     checker.root_module.link_libc = true;
     checker.root_module.addImport("libc", libc);
@@ -86,4 +136,5 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run data parsing and allowance tests");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&b.addRunArtifact(osd_tests).step);
+    test_step.dependOn(&b.addRunArtifact(wallpaper_tests).step);
 }

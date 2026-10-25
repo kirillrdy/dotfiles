@@ -4,14 +4,19 @@ pkgs.stdenv.mkDerivation {
   version = "0.1.0";
   src = pkgs.lib.fileset.toSource {
     root = ./.;
-    fileset = pkgs.lib.fileset.fileFilter (file: file.hasExt "zig" || file.hasExt "svg") ./.;
+    fileset = pkgs.lib.fileset.fileFilter (
+      file: file.hasExt "zig" || file.hasExt "svg" || file.hasExt "xml"
+    ) ./.;
   };
   nativeBuildInputs = [
     pkgs.zig_0_17
     pkgs.pkg-config
     pkgs.makeWrapper
     pkgs.xorg-server
+    pkgs.wayland-scanner
   ];
+  WAYLAND_PROTOCOLS_DIR = "${pkgs.wayland-protocols}/share/wayland-protocols";
+  WLR_PROTOCOLS_DIR = "${pkgs.wlr-protocols}/share/wlr-protocols";
   buildInputs = [
     pkgs.gtk3
     pkgs.gtk-layer-shell
@@ -44,6 +49,11 @@ pkgs.stdenv.mkDerivation {
       "$out/bin/desktop-apps-fixture"
   '';
   installPhase = ''
+    wrapProgram "$out/bin/desktop-overview" \
+      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
+    wrapProgram "$out/bin/desktop-wallpaper" \
+      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
     wrapProgram "$out/bin/desktop-notifications" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share"

@@ -9,14 +9,20 @@ let
   cursorSize = 24;
   # Use the same default as the NixOS GNOME desktop module.
   gnomeWallpaper = pkgs.nixos-artwork.wallpapers.simple-blue.gnomeFilePath;
-  appLauncher = lib.getExe' desktopZig "desktop-apps";
+  appLauncher = "${lib.getExe' desktopZig "desktop-overview"} ${gnomeWallpaper}";
   gtkCursorSettings = ''
     [Settings]
     gtk-cursor-theme-name=${cursorTheme}
     gtk-cursor-theme-size=${toString cursorSize}
   '';
   desktopCompositor = pkgs.labwc.overrideAttrs (old: {
-    patches = (old.patches or [ ]) ++ [ ./labwc-gnome-switcher.patch ];
+    patches = (old.patches or [ ]) ++ [
+      ./labwc-gnome-switcher.patch
+      ./labwc-overview.patch
+    ];
+    postPatch = (old.postPatch or "") + ''
+      cp ${./desktop-overview-v1.xml} protocols/desktop-overview-v1.xml
+    '';
   });
   codexIcon = pkgs.fetchurl {
     url = "https://raw.githubusercontent.com/kevinpita/codex-usage-extension/b88a5d0b02b37e9a06b8266bd5f29fa6a5f16213/codex-icon-22.png";
@@ -65,7 +71,7 @@ lib.mkIf enableLightDesktop {
   ];
   systemd.packages = [ desktopCompositor ];
   systemd.user.services = {
-    wallpaper = sessionService "${pkgs.swaybg}/bin/swaybg -i ${gnomeWallpaper} -m fill";
+    wallpaper = sessionService "${desktopZig}/bin/desktop-wallpaper ${gnomeWallpaper}";
     desktop-panel = sessionService "${desktopZig}/bin/desktop-panel /etc/xdg/desktop-panel/config.json /etc/xdg/desktop-panel/style.css";
     desktop-notifications =
       (sessionService "${desktopZig}/bin/desktop-notifications /etc/xdg/desktop-notifications/style.css")
@@ -127,6 +133,7 @@ lib.mkIf enableLightDesktop {
           <!-- Let applications draw their own GNOME-style window frames. -->
           <decoration>client</decoration>
         </core>
+        <desktops><names><name>1</name><name>2</name><name>3</name><name>4</name></names></desktops>
         <theme>
           <icon>Adwaita</icon>
           <font place="OnScreenDisplay" name="Adwaita Sans" size="11" />

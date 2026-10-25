@@ -100,6 +100,8 @@ fn entry(child: *c.GtkFlowBoxChild) *Entry {
 
 pub const Launcher = struct {
     window: *c.GtkWidget,
+    layout: *c.GtkWidget,
+    results: *c.GtkWidget,
     search: *c.GtkEntry,
     grid: *c.GtkFlowBox,
     empty: *c.GtkWidget,
@@ -159,17 +161,20 @@ pub const Launcher = struct {
         c.gtk_style_context_add_class(c.gtk_widget_get_style_context(message), "message");
         c.gtk_widget_set_no_show_all(message, 1);
         c.gtk_box_pack_end(cast(c.GtkBox, layout), message, 0, 0, 0);
-        return .{ .window = window.?, .search = cast(c.GtkEntry, search), .grid = cast(c.GtkFlowBox, grid), .empty = empty.?, .message = cast(c.GtkLabel, message), .entries = std.array_list.Managed(*Entry).init(std.heap.c_allocator), .query = fold("") };
+        return .{ .window = window.?, .layout = layout.?, .results = scroll.?, .search = cast(c.GtkEntry, search), .grid = cast(c.GtkFlowBox, grid), .empty = empty.?, .message = cast(c.GtkLabel, message), .entries = std.array_list.Managed(*Entry).init(std.heap.c_allocator), .query = fold("") };
     }
 
     // Bind after init: callbacks retain this stable address.
     pub fn bind(self: *Launcher) void {
+        self.bindControls();
+        connect(self.window, "key-press-event", &keyPress, self);
+    }
+    pub fn bindControls(self: *Launcher) void {
         c.gtk_flow_box_set_filter_func(self.grid, filter, self, null);
         c.gtk_flow_box_set_sort_func(self.grid, sort, self, null);
         connect(self.search, "changed", &changed, self);
         connect(self.search, "activate", &searchActivate, self);
         connect(self.grid, "child-activated", &activateChild, self);
-        connect(self.window, "key-press-event", &keyPress, self);
     }
     pub fn deinit(self: *Launcher) void {
         c.gtk_widget_destroy(self.window);
