@@ -116,6 +116,9 @@ lib.mkIf enableLightDesktop {
       window#osd progressbar:disabled, window#osd image:disabled { opacity: 0.5; }
     '';
     "xdg/mako/config".text = ''
+      # Match GNOME Shell's banner timeout instead of application expiry hints.
+      default-timeout=4000
+      ignore-timeout=1
       font=Adwaita Sans 11
       background-color=#36363a
       text-color=#ffffff
@@ -135,6 +138,9 @@ lib.mkIf enableLightDesktop {
       icon-path=${pkgs.adwaita-icon-theme}/share/icons/Adwaita:/run/current-system/sw/share/icons/hicolor
       format=<b>%s</b>\n%b
       progress-color=over #ffffff26
+
+      [urgency=critical]
+      default-timeout=0
     '';
     "xdg/labwc/rc.xml".text = ''
       <?xml version="1.0"?>
