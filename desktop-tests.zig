@@ -5,6 +5,18 @@ const codex = @import("waybar-codex.zig");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
+test "Linux virtual files are read despite reporting size zero" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const stat = try u.read(a, "/proc/stat");
+    defer a.free(stat);
+    try expect(std.mem.startsWith(u8, stat, "cpu "));
+    const counters = panel.cpuCounters(stat);
+    try expect(counters[0] + counters[2] + counters[3] > 0);
+    const meminfo = try u.read(a, "/proc/meminfo");
+    defer a.free(meminfo);
+    try expect(panel.memoryUsage(meminfo).total > 0.001);
+}
 test "CPU categories share one total; idle and counter resets stay zero" {
     try equal([5]f64{ 20, 10, 5, 5, 10 }, panel.cpuUsage(@as([8]u64, @splat(0)), .{ 20, 5, 10, 50, 5, 3, 4, 3 }));
     try equal(@as([5]f64, @splat(0)), panel.cpuUsage(@as([8]u64, @splat(100)), @as([8]u64, @splat(0))));

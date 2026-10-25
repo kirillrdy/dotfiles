@@ -56,7 +56,14 @@ pub fn fmt(a: Allocator, comptime format: []const u8, args: anytype) ![]const u8
     return std.fmt.allocPrint(a, format, args);
 }
 pub fn read(a: Allocator, path: []const u8) ![]const u8 {
-    return std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(4 * 1024 * 1024));
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    // procfs/sysfs files can report size zero while still returning data.
+    var reader = file.readerStreaming(io, &.{});
+    return reader.interface.allocRemaining(a, .limited(4 * 1024 * 1024)) catch |err| switch (err) {
+        error.ReadFailed => return reader.err.?,
+        else => |e| return e,
+    };
 }
 pub fn exists(path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;

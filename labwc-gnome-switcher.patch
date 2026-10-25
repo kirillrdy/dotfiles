@@ -309,7 +309,7 @@
  			lab_wlr_scene_buffer_create(tree, thumb_buffer);
 --- /dev/null
 +++ b/src/cycle/osd-applications.c
-@@ -0,0 +1,375 @@
+@@ -0,0 +1,367 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/* GNOME-style application switcher, using the compositor's native cycle list. */
 +#include <assert.h>
@@ -348,7 +348,8 @@
 + *   .thumbnail-box { padding: 2px; spacing: 6px; }
 + *   .thumbnail { width: 256px; }
 + */
-+#define SWITCHER_PADDING 12
++/* CSS padding plus the switcher-list's one-pixel border. */
++#define SWITCHER_PADDING 13
 +#define SWITCHER_RADIUS 28
 +#define POPUP_SPACING 24
 +#define ITEM_SPACING 12
@@ -518,18 +519,8 @@
 +	int thumb_w = MIN(THUMB_DEFAULT_SIZE, MAX(48, max_item_w - 2 * pad));
 +	int width = thumb_w + 2 * pad;
 +	int avail_h = screen_height - panel_y - panel_height - POPUP_SPACING - 2 * SWITCHER_PADDING;
-+	int max_bin_h = MIN(THUMB_DEFAULT_SIZE, MAX(48, avail_h - 2 * pad - ITEM_PADDING - label_h));
-+	int bin_h = 48;
-+	struct view *view;
-+	wl_list_for_each(view, &server.cycle.views, cycle_link) {
-+		if (!cycle_same_app(app->base.view, view)) {
-+			continue;
-+		}
-+		int vw = MAX(1, view->current.width);
-+		int vh = MAX(1, view->current.height);
-+		double scale = MIN(1.0, MIN((double)thumb_w / vw, (double)max_bin_h / vh));
-+		bin_h = MAX(bin_h, (int)(vh * scale + 0.5));
-+	}
++	/* GNOME reserves a thumbnail bin independently of window aspect ratio. */
++	int bin_h = MIN(THUMB_DEFAULT_SIZE, MAX(48, avail_h - 2 * pad - ITEM_PADDING - label_h));
 +	int height = bin_h + 2 * pad + ITEM_PADDING + label_h;
 +	int total_width = count * width + (count - 1) * ITEM_SPACING + 2 * SWITCHER_PADDING;
 +	app->windows = lab_wlr_scene_tree_create(osd_output->tree);
@@ -541,6 +532,7 @@
 +	x = MAX(-panel_x, MIN(x, screen_width - panel_x - total_width));
 +	wlr_scene_node_set_position(&app->windows->node, x, panel_height + POPUP_SPACING);
 +	int index = 0;
++	struct view *view;
 +	wl_list_for_each(view, &server.cycle.views, cycle_link) {
 +		if (!cycle_same_app(app->base.view, view)) {
 +			continue;
@@ -620,7 +612,7 @@
 +		wlr_scene_node_set_position(&image->scene_buffer->node,
 +			(tile_size - icon) / 2, ITEM_PADDING);
 +		label_create(item->base.tree, view, tile_size, ITEM_PADDING,
-+			ITEM_PADDING + icon + ITEM_PADDING, false);
++			ITEM_PADDING + icon, false);
 +		item->arrow_dim = shape_create(item->base.tree,
 +			ARROW_WIDTH, ARROW_HEIGHT, 0, arrow_dim, NULL, true);
 +		item->arrow_bright = shape_create(item->base.tree,
