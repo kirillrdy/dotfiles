@@ -15,7 +15,11 @@ let
     gtk-cursor-theme-name=${cursorTheme}
     gtk-cursor-theme-size=${toString cursorSize}
   '';
-  desktopCompositor = pkgs.labwc.overrideAttrs (old: {
+  desktopCompositor = (pkgs.labwc.override {
+    wlroots_0_20 = pkgs.wlroots_0_20.overrideAttrs (old: {
+      patches = (old.patches or [ ]) ++ [ ./wlroots-capture-bounds.patch ];
+    });
+  }).overrideAttrs (old: {
     patches = (old.patches or [ ]) ++ [
       ./labwc-gnome-switcher.patch
       ./labwc-overview.patch

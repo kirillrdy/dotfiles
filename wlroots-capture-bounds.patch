@@ -1,0 +1,53 @@
+--- a/types/ext_image_capture_source_v1/scene.c
++++ b/types/ext_image_capture_source_v1/scene.c
+@@ -36,6 +36,11 @@
+ 
+ static void _get_scene_node_extents(struct wlr_scene_node *node, int lx, int ly,
+ 		int *x_min, int *y_min, int *x_max, int *y_max) {
++	// Hidden subsurfaces and empty root surfaces have no capture extent.
++	if (!node->enabled) {
++		return;
++	}
++
+ 	switch (node->type) {
+ 	case WLR_SCENE_NODE_TREE:;
+ 		struct wlr_scene_tree *scene_tree = wlr_scene_tree_from_node(node);
+@@ -48,6 +53,9 @@
+ 	case WLR_SCENE_NODE_BUFFER:;
+ 		struct wlr_box node_box = { .x = lx, .y = ly };
+ 		scene_node_get_size(node, &node_box.width, &node_box.height);
++		if (wlr_box_empty(&node_box)) {
++			return;
++		}
+ 
+ 		if (node_box.x < *x_min) {
+ 			*x_min = node_box.x;
+@@ -71,6 +79,10 @@
+ 	*box = (struct wlr_box){ .x = INT_MAX, .y = INT_MAX };
+ 	int x_max = INT_MIN, y_max = INT_MIN;
+ 	_get_scene_node_extents(node, lx, ly, &box->x, &box->y, &x_max, &y_max);
++	if (box->x == INT_MAX || box->y == INT_MAX) {
++		*box = (struct wlr_box){0};
++		return;
++	}
+ 	box->width = x_max - box->x;
+ 	box->height = y_max - box->y;
+ }
+@@ -109,6 +121,9 @@
+ 		return;
+ 	}
+ 
++	// Match output capture: compose a stable buffer instead of borrowing
++	// a client buffer via direct scan-out (notably video buffers).
++	wlr_output_lock_attach_render(&source->output, true);
+ 	source_render(source);
+ 
+ 	struct timespec now;
+@@ -124,6 +139,7 @@
+ 		return;
+ 	}
+ 
++	wlr_output_lock_attach_render(&source->output, false);
+ 	struct wlr_output_state state;
+ 	wlr_output_state_init(&state);
+ 	wlr_output_state_set_enabled(&state, false);
