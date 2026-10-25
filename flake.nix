@@ -112,25 +112,19 @@
         ];
       };
 
-      nixosConfigurations =
-        (builtins.mapAttrs mkSystem {
-          # Lenovo X1 gen9, alderlake
-          osaka = { };
-          # Lenovo X1 gen13, lunarlake
-          hagi = {
-            enableOpenvino = true;
-          };
-          # i7-13700K, raptorlake
-          tsutenkaku = {
-            enableNvidia = true;
-            enableOpencl = true;
-          };
-        })
-        // {
-          hagi-labwc = mkSystem "hagi" {
-            enableOpenvino = true;
-            enableLightDesktop = true;
-          };
+      nixosConfigurations = builtins.mapAttrs mkSystem {
+        # Lenovo X1 gen9, alderlake
+        osaka = { };
+        # Lenovo X1 gen13, lunarlake
+        hagi = {
+          enableOpenvino = true;
+          enableLightDesktop = true;
         };
+        # i7-13700K, raptorlake
+        tsutenkaku = {
+          enableNvidia = true;
+          enableOpencl = true;
+        };
+      };
     };
 }
