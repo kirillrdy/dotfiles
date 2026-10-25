@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--labwc", required=True)
     parser.add_argument("--wallpaper", required=True)
     parser.add_argument("--artifacts", type=Path)
+    parser.add_argument("--renderer", choices=["pixman", "gles2"], default="pixman")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="desktop-overview-") as directory:
         root = Path(directory)
@@ -67,7 +68,7 @@ def main():
             XDG_CONFIG_HOME=str(root / "config"),
             XDG_DATA_HOME=str(root / "data"),
             WLR_BACKENDS="headless",
-            WLR_RENDERER="pixman",
+            WLR_RENDERER=args.renderer,
             WLR_HEADLESS_OUTPUTS="1",
             LABWC_UPDATE_ACTIVATION_ENV="false",
             NO_AT_BRIDGE="1",

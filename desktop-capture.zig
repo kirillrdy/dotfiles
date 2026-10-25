@@ -286,7 +286,7 @@ fn bufferSize(data: ?*anyopaque, _: ?*c.ext_image_copy_capture_session_v1, width
 }
 fn shmFormat(data: ?*anyopaque, _: ?*c.ext_image_copy_capture_session_v1, value: u32) callconv(.c) void {
     const w = cast(Window, data);
-    if (value == c.WL_SHM_FORMAT_ARGB8888 or value == c.WL_SHM_FORMAT_XRGB8888) {
+    if (value == c.WL_SHM_FORMAT_ARGB8888 or value == c.WL_SHM_FORMAT_XRGB8888 or value == c.WL_SHM_FORMAT_ABGR8888 or value == c.WL_SHM_FORMAT_XBGR8888) {
         w.format = value;
         w.supported = true;
     }
@@ -320,7 +320,19 @@ fn ready(data: ?*anyopaque, frame: ?*c.ext_image_copy_capture_frame_v1) callconv
         w.image = null;
     };
     if (w.image == null) w.image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, width, height);
-    const source = c.cairo_image_surface_create_for_data(@ptrCast(w.mapped), if (w.buffer_format == c.WL_SHM_FORMAT_XRGB8888) c.CAIRO_FORMAT_RGB24 else c.CAIRO_FORMAT_ARGB32, @intCast(w.buffer_width), @intCast(w.buffer_height), @intCast(w.buffer_width * 4));
+    // Cairo uses native ARGB words; GLES renderers may offer ABGR instead.
+    // The compositor has finished writing and will not reuse this buffer until
+    // the next capture, which damages the entire buffer.
+    const swapped = w.buffer_format == c.WL_SHM_FORMAT_ABGR8888 or w.buffer_format == c.WL_SHM_FORMAT_XBGR8888;
+    if (swapped) {
+        const pixels: [*]u32 = @ptrCast(@alignCast(w.mapped.?));
+        for (pixels[0 .. @as(usize, w.buffer_width) * w.buffer_height]) |*pixel| {
+            const value = pixel.*;
+            pixel.* = (value & 0xff00ff00) | ((value & 0xff) << 16) | ((value >> 16) & 0xff);
+        }
+    }
+    const is_opaque = w.buffer_format == c.WL_SHM_FORMAT_XRGB8888 or w.buffer_format == c.WL_SHM_FORMAT_XBGR8888;
+    const source = c.cairo_image_surface_create_for_data(@ptrCast(w.mapped), if (is_opaque) c.CAIRO_FORMAT_RGB24 else c.CAIRO_FORMAT_ARGB32, @intCast(w.buffer_width), @intCast(w.buffer_height), @intCast(w.buffer_width * 4));
     defer c.cairo_surface_destroy(source);
     const cr = c.cairo_create(w.image);
     defer c.cairo_destroy(cr);
