@@ -18,9 +18,11 @@ pub fn build(b: *std.Build) void {
     const wayland_gtk = bindings(b, target, optimize, "#include <gtk/gtk.h>\n#include <gdk/gdkwayland.h>\n", &.{ "gtk+-3.0", "wayland-client" });
     const libc = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <time.h>\n#include <unistd.h>\n#include <poll.h>\n#include <stdio.h>\n#include <errno.h>\n#include <stdlib.h>\n#include <fcntl.h>\n#include <sys/wait.h>\n", &.{});
     const curl = bindings(b, target, optimize, "#include <curl/curl.h>\n", &.{"libcurl"});
-    const panel = b.addLibrary(.{ .name = "waybar-gnome", .linkage = .dynamic, .root_module = b.createModule(.{ .root_source_file = b.path("waybar-gnome.zig"), .target = target, .optimize = optimize }) });
+    const panel_gtk = bindings(b, target, optimize, "#include <gtk/gtk.h>\n#include <json-glib/json-glib.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <math.h>\n#include <signal.h>\n#include <string.h>\n", &.{ "gtk+-3.0", "json-glib-1.0", "gtk-layer-shell-0" });
+    const panel = b.addExecutable(.{ .name = "desktop-panel", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-panel.zig"), .target = target, .optimize = optimize }) });
     linkGtk(panel);
-    panel.root_module.addImport("gtk", gtk);
+    panel.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
+    panel.root_module.addImport("gtk", panel_gtk);
     b.installArtifact(panel);
     const apps = b.addExecutable(.{ .name = "desktop-apps", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-apps.zig"), .target = target, .optimize = optimize }) });
     apps.root_module.link_libc = true;
@@ -46,7 +48,7 @@ pub fn build(b: *std.Build) void {
     }
     const gtk_fixture = b.addExecutable(.{ .name = "waybar-power-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/waybar-power-fixture.zig"), .target = target, .optimize = optimize }) });
     linkGtk(gtk_fixture);
-    const module = b.createModule(.{ .root_source_file = b.path("waybar-gnome.zig"), .target = target, .optimize = optimize });
+    const module = b.createModule(.{ .root_source_file = b.path("desktop-widgets.zig"), .target = target, .optimize = optimize });
     module.linkSystemLibrary("gtk+-3.0", .{});
     module.linkSystemLibrary("json-glib-1.0", .{});
     module.link_libc = true;

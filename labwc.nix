@@ -18,37 +18,11 @@ let
   desktopCompositor = pkgs.labwc.overrideAttrs (old: {
     patches = (old.patches or [ ]) ++ [ ./labwc-gnome-switcher.patch ];
   });
-  # The panel uses only CFFI modules; device status comes from desktopZig.
-  # Keep udev: Waybar 0.15's unconditional battery module requires it.
-  desktopWaybar = pkgs.waybar.override {
-    cavaSupport = false;
-    evdevSupport = false;
-    gpsSupport = false;
-    inputSupport = false;
-    jackSupport = false;
-    mpdSupport = false;
-    mprisSupport = false;
-    niriSupport = false;
-    nlSupport = false;
-    pipewireSupport = false;
-    pulseSupport = false;
-    rfkillSupport = false;
-    sndioSupport = false;
-    systemdSupport = false;
-    traySupport = false;
-    upowerSupport = false;
-    wireplumberSupport = false;
-    withMediaPlayer = false;
-  };
   codexIcon = pkgs.fetchurl {
     url = "https://raw.githubusercontent.com/kevinpita/codex-usage-extension/b88a5d0b02b37e9a06b8266bd5f29fa6a5f16213/codex-icon-22.png";
     hash = "sha256-kI1mut3KtZNahi8btZNSdogSrF+Z44yXqaZ4Jxf5L+E=";
   };
   desktopZig = import ./desktop-zig.nix { inherit pkgs; };
-  nativeModule = name: kind: {
-    module_path = "${desktopZig}/lib/libwaybar-gnome.so";
-    inherit name kind;
-  };
   volumeControl = pkgs.writeShellApplication {
     name = "desktop-volume";
     runtimeInputs = [
@@ -116,7 +90,7 @@ lib.mkIf enableLightDesktop {
   systemd.packages = [ desktopCompositor ];
   systemd.user.services = {
     wallpaper = sessionService "${pkgs.swaybg}/bin/swaybg -i ${gnomeWallpaper} -m fill";
-    waybar = sessionService "${desktopWaybar}/bin/waybar";
+    desktop-panel = sessionService "${desktopZig}/bin/desktop-panel /etc/xdg/desktop-panel/config.json /etc/xdg/desktop-panel/style.css";
     mako = sessionService "${pkgs.mako}/bin/mako --config /etc/xdg/mako/config";
     swayosd = sessionService "${pkgs.swayosd}/bin/swayosd-server --config /etc/xdg/swayosd/config.toml --style /etc/xdg/swayosd/style.css";
     polkit-agent = sessionService "${pkgs.polkit_gnome}/libexec/polkit-gnome-authentication-agent-1";
@@ -135,7 +109,6 @@ lib.mkIf enableLightDesktop {
     swayidle
     swaylock
     swayosd
-    desktopWaybar
     wl-clipboard
     wlr-randr
   ];
@@ -250,40 +223,44 @@ lib.mkIf enableLightDesktop {
       ${pkgs.systemd}/bin/systemctl --user import-environment PATH
       ${pkgs.systemd}/bin/systemctl --user --no-block start labwc-session.target
     '';
-    "xdg/waybar/config".text = builtins.toJSON {
-      layer = "top";
-      position = "top";
+    "xdg/desktop-panel/config.json".text = builtins.toJSON {
       height = 32;
-      spacing = 0;
-      modules-left = [ "cffi/activities" ];
-      modules-center = [ "cffi/clock" ];
-      modules-right = [
-        "cffi/codex"
-        "cffi/monitors"
-        "cffi/disk"
-        "cffi/status"
+      left = [
+        {
+          name = "gnome-activities";
+          kind = "activities";
+          on_click = appLauncher;
+        }
       ];
-      "cffi/activities" = nativeModule "gnome-activities" "activities" // {
-        on-click = appLauncher;
-        tooltip = false;
-      };
-      "cffi/codex" = nativeModule "gnome-codex" "indicator" // {
-        exec = "${desktopZig}/bin/waybar-panel codex --codex-icon ${codexIcon}";
-      };
-      "cffi/monitors" = nativeModule "gnome-monitors" "monitors" // {
-        exec = "${desktopZig}/bin/waybar-panel monitors";
-        on-click = "ghostty -e btop";
-      };
-      "cffi/disk" = nativeModule "gnome-disk" "indicator" // {
-        exec = "${desktopZig}/bin/waybar-panel disk";
-      };
-      "cffi/status" = nativeModule "gnome-status" "indicator" // {
-        exec = "${desktopZig}/bin/waybar-panel status";
-        network-settings-command = "${pkgs.networkmanagerapplet}/bin/nm-connection-editor";
-      };
-      "cffi/clock" = nativeModule "gnome-clock" "clock";
+      center = [
+        {
+          name = "gnome-clock";
+          kind = "clock";
+        }
+      ];
+      right = [
+        {
+          name = "gnome-codex";
+          exec = "${desktopZig}/bin/waybar-panel codex --codex-icon ${codexIcon}";
+        }
+        {
+          name = "gnome-monitors";
+          kind = "monitors";
+          exec = "${desktopZig}/bin/waybar-panel monitors";
+          on_click = "ghostty -e btop";
+        }
+        {
+          name = "gnome-disk";
+          exec = "${desktopZig}/bin/waybar-panel disk";
+        }
+        {
+          name = "gnome-status";
+          exec = "${desktopZig}/bin/waybar-panel status";
+          network_settings_command = "${pkgs.networkmanagerapplet}/bin/nm-connection-editor";
+        }
+      ];
     };
-    "xdg/waybar/style.css".text = ''
+    "xdg/desktop-panel/style.css".text = ''
       * {
         font-family: "Adwaita Sans";
         font-size: 11pt;
@@ -292,7 +269,7 @@ lib.mkIf enableLightDesktop {
         border-radius: 0;
         min-height: 0;
       }
-      window#waybar { background: #000; color: #fff; }
+      window#desktop-panel { background: #000; color: #fff; }
       .gnome-panel-module {
         border: 3px solid transparent;
         border-radius: 999px;

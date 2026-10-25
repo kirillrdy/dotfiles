@@ -1,4 +1,4 @@
-//! Native Zig implementation of Waybar CFFI ABI v2 and GTK panel popups.
+//! Shared GTK widgets and popups for the standalone desktop panel.
 const std = @import("std");
 pub const c = @import("gtk");
 fn cast(comptime T: type, p: anytype) [*c]T {
@@ -7,18 +7,13 @@ fn cast(comptime T: type, p: anytype) [*c]T {
 fn finite(value: f64) c_int {
     return @intFromBool(std.math.isFinite(value));
 }
-pub const WaybarModule = opaque {};
-pub const InitInfo = extern struct {
-    obj: ?*WaybarModule = null,
-    waybar_version: [*c]const u8 = null,
-    get_root_widget: ?*const fn (?*WaybarModule) callconv(.c) [*c]c.GtkContainer = null,
-    queue_update: ?*const fn (?*WaybarModule) callconv(.c) void = null,
+pub const Options = struct {
+    name: [:0]const u8 = "",
+    kind: [:0]const u8 = "indicator",
+    exec: ?[:0]const u8 = null,
+    on_click: ?[:0]const u8 = null,
+    network_settings_command: ?[:0]const u8 = null,
 };
-pub const ConfigEntry = extern struct {
-    key: [*c]const u8 = null,
-    value: [*c]const u8 = null,
-};
-pub export const wbcffi_version: usize = 2;
 pub const Graph = extern struct {
     box: [*c]c.GtkWidget = null,
     label: [*c]c.GtkWidget = null,
@@ -874,28 +869,12 @@ pub fn line_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpoin
     c.g_clear_error(&@"error");
     unref_module(m);
 }
-pub fn config_string(entries: [*c]const ConfigEntry, length: usize, key: [*c]const u8) callconv(.c) [*c]u8 {
-    {
-        var i: usize = 0;
-        while (i < length) : (i += 1) {
-            if (c.strcmp(entries[i].key, key) != 0) continue;
-            const parser: [*c]c.JsonParser = c.json_parser_new();
-            var value: [*c]u8 = null;
-            if (c.json_parser_load_from_data(parser, entries[i].value, @as(c.gssize, -1), null) != 0) {
-                value = c.g_strdup(c.json_node_get_string(c.json_parser_get_root(parser)));
-            }
-            c.g_object_unref(@as(c.gpointer, @ptrCast(parser)));
-            return value;
-        }
-    }
-    return null;
-}
-pub export fn wbcffi_init(info: *const InitInfo, entries: [*c]const ConfigEntry, length: usize) ?*anyopaque {
+pub fn init(root: *c.GtkWidget, options: Options) *Module {
     const m: *Module = @as(*Module, @ptrCast(@alignCast(c.g_malloc0_n(@as(c.gsize, 1), @sizeOf(Module)))));
     m.refs = 1;
     m.cancel = c.g_cancellable_new();
-    const kind: [*c]u8 = config_string(entries, length, "kind");
-    const name: [*c]u8 = config_string(entries, length, "name");
+    const kind = options.kind.ptr;
+    const name = options.name.ptr;
     m.monitors = @intFromBool(c.g_strcmp0(kind, "monitors") == 0);
     m.status = @intFromBool(c.g_strcmp0(name, "gnome-status") == 0);
     m.box = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, if ((m.monitors != 0) or (m.status != 0)) 4 else 0);
@@ -907,13 +886,12 @@ pub export fn wbcffi_init(info: *const InitInfo, entries: [*c]const ConfigEntry,
             c.gtk_widget_set_margin_bottom(m.box, 3);
         }
     }
-    const root: [*c]c.GtkContainer = info.get_root_widget.?(info.obj);
     m.root = cast(c.GtkWidget, root);
-    if (name != null) {
+    if (options.name.len != 0) {
         c.gtk_widget_set_name(cast(c.GtkWidget, root), name);
     }
     css(cast(c.GtkWidget, root), "gnome-panel-module");
-    c.gtk_container_add(root, m.box);
+    c.gtk_container_add(cast(c.GtkContainer, root), m.box);
     if (m.monitors != 0) {
         make_graph(m, 0, "cpu");
         make_graph(m, 1, "mem");
@@ -938,7 +916,7 @@ pub export fn wbcffi_init(info: *const InitInfo, entries: [*c]const ConfigEntry,
         m.network_label = c.gtk_label_new("Connections");
         const network: [*c]c.GtkWidget = quick_tile(c.gtk_button_new(), "Network", m.network_icon, m.network_label, 1);
         c.gtk_grid_attach(cast(c.GtkGrid, tiles), network, 0, 0, 1, 1);
-        m.network_settings_command = config_string(entries, length, "network-settings-command");
+        m.network_settings_command = if (options.network_settings_command) |command| c.g_strdup(command) else null;
         if (m.network_settings_command != null) {
             _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(network)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&settings_launch))), @as(c.gpointer, @ptrCast(m.network_settings_command)), null, 0);
         }
@@ -959,7 +937,7 @@ pub export fn wbcffi_init(info: *const InitInfo, entries: [*c]const ConfigEntry,
                 m.power_buttons[i] = c.gtk_button_new_with_label(power_names[i]);
                 css(m.power_buttons[i], "profile-choice");
                 c.gtk_label_set_xalign(cast(c.GtkLabel, c.gtk_bin_get_child(cast(c.GtkBin, @as(?*anyopaque, @ptrCast(c.g_type_check_instance_cast(cast(c.GTypeInstance, m.power_buttons[i]), c.gtk_bin_get_type())))))), 0);
-                c.g_object_set_data(cast(c.GObject, m.power_buttons[i]), "profile", @as(c.gpointer, @ptrCast(@volatileCast(@constCast(power_ids[i])))));
+                c.g_object_set_data(cast(c.GObject, m.power_buttons[i]), "profile", @as(c.gpointer, @ptrCast(@constCast(@volatileCast(power_ids[i])))));
                 _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.power_buttons[i])), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&power_select))), @as(c.gpointer, @ptrCast(m)), null, 0);
                 c.gtk_box_pack_start(cast(c.GtkBox, profiles), m.power_buttons[i], 0, 0, 0);
             }
@@ -998,17 +976,14 @@ pub export fn wbcffi_init(info: *const InitInfo, entries: [*c]const ConfigEntry,
         _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(area)), "draw", @as(c.GCallback, @ptrCast(@alignCast(&draw_activities))), @as(?*anyopaque, @ptrFromInt(0)), null, 0);
         c.gtk_container_add(cast(c.GtkContainer, m.box), area);
     }
-    m.command = config_string(entries, length, "exec");
+    m.command = if (options.exec) |command| c.g_strdup(command) else null;
     c.gtk_widget_show_all(m.box);
     if (m.command != null) {
         _ = start_process(@as(c.gpointer, @ptrCast(m)));
     }
-    c.g_free(@as(c.gpointer, @ptrCast(name)));
-    c.g_free(@as(c.gpointer, @ptrCast(kind)));
-    return @as(?*anyopaque, @ptrCast(m));
+    return m;
 }
-pub export fn wbcffi_deinit(instance: ?*anyopaque) void {
-    var m: *Module = @as(*Module, @ptrCast(@alignCast(instance)));
+pub fn deinit(m: *Module) void {
     m.dead = 1;
     if (m.clock_timer != 0) {
         _ = c.g_source_remove(m.clock_timer);
@@ -1049,15 +1024,4 @@ pub export fn wbcffi_deinit(instance: ?*anyopaque) void {
         };
     }
     unref_module(m);
-}
-pub export fn wbcffi_update(instance: ?*anyopaque) void {
-    _ = instance;
-}
-pub export fn wbcffi_refresh(instance: ?*anyopaque, signal_1: c_int) void {
-    _ = signal_1;
-    _ = instance;
-}
-pub export fn wbcffi_doaction(instance: ?*anyopaque, action: [*c]const u8) void {
-    _ = action;
-    _ = instance;
 }

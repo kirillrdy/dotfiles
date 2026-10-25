@@ -26,17 +26,10 @@ fn tooltipVisible() bool {
     }
     return false;
 }
-fn rootWidget(module: ?*p.WaybarModule) callconv(.c) [*c]c.GtkContainer {
-    return @ptrCast(@alignCast(module));
-}
 fn root() *c.GtkWidget {
     const widget = c.gtk_event_box_new();
     _ = c.g_object_ref_sink(widget);
     return widget;
-}
-fn init(widget: *c.GtkWidget, config: []const p.ConfigEntry) *p.Module {
-    const info = p.InitInfo{ .obj = @ptrCast(widget), .get_root_widget = &rootWidget };
-    return @ptrCast(@alignCast(p.wbcffi_init(&info, config.ptr, config.len).?));
 }
 fn setProperty(m: *p.Module, name: [:0]const u8, value: ?*c.GVariant) void {
     c.g_dbus_proxy_set_cached_property(m.power, name, value);
@@ -103,20 +96,20 @@ pub fn main(process_init: std.process.Init) !void {
     assert(c.gtk_widget_get_sensitive(m.power_buttons[0]) != 0);
 
     const status_root = root();
-    const status = init(status_root, &.{ .{ .key = "name", .value = "\"gnome-status\"" }, .{ .key = "kind", .value = "\"indicator\"" } });
+    const status = p.init(status_root, .{ .name = "gnome-status" });
     for ([_][*c]c.GtkWidget{ status.power_label, status.network_icon }) |widget| assert(c.gtk_widget_is_ancestor(widget, status.power_menu) != 0);
     assert(c.gtk_widget_is_ancestor(status.power_label, status.box) == 0);
     p.update_line(status, "{\"items\":[{\"icon\":\"audio-volume-high-symbolic\"},{\"icon\":\"battery-level-80-symbolic\"}]}");
     assert(c.gtk_widget_get_visible(status.item[0].box) != 0 and c.gtk_widget_get_visible(status.item[1].box) != 0);
     p.update_line(status, "{\"items\":[{\"icon\":\"network-wired-symbolic\",\"tooltip\":\"Wired network\"}]}");
     eq(c.gtk_label_get_text(cast(c.GtkLabel, status.network_label)), "Wired network");
-    p.wbcffi_deinit(status);
+    p.deinit(status);
     while (c.g_main_context_iteration(null, 0) != 0) {}
     c.gtk_widget_destroy(status_root);
     c.g_object_unref(status_root);
 
     const codex_root = root();
-    const usage = init(codex_root, &.{ .{ .key = "name", .value = "\"gnome-codex\"" }, .{ .key = "kind", .value = "\"indicator\"" } });
+    const usage = p.init(codex_root, .{ .name = "gnome-codex" });
     assert(c.gtk_popover_get_relative_to(cast(c.GtkPopover, usage.codex_menu)) == codex_root);
     const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
     c.gtk_container_add(cast(c.GtkContainer, window), codex_root);
@@ -158,12 +151,12 @@ pub fn main(process_init: std.process.Init) !void {
     p.update_line(usage, "{\"items\":[{\"text\":\"—\"}],\"windows\":[],\"error\":\"Sign in with codex login\"}");
     eq(c.gtk_label_get_text(cast(c.GtkLabel, usage.codex_percent[0])), "—");
     assert(c.gtk_progress_bar_get_fraction(cast(c.GtkProgressBar, usage.codex_progress[0])) == 0 and c.gtk_widget_get_visible(usage.codex_error) != 0);
-    p.wbcffi_deinit(usage);
+    p.deinit(usage);
     c.gtk_widget_destroy(window);
     c.g_object_unref(codex_root);
 
     const clock_root = root();
-    const clock = init(clock_root, &.{.{ .key = "kind", .value = "\"clock\"" }});
+    const clock = p.init(clock_root, .{ .kind = "clock" });
     c.g_date_time_unref(clock.calendar_selected);
     clock.calendar_selected = c.g_date_time_new_local(2024, 2, 29, 12, 0, 0);
     p.calendar_refresh(clock);
@@ -182,12 +175,12 @@ pub fn main(process_init: std.process.Init) !void {
     c.g_date_time_unref(now);
     c.gtk_widget_destroy(previous);
     c.g_object_unref(previous);
-    p.wbcffi_deinit(clock);
+    p.deinit(clock);
     c.gtk_widget_destroy(clock_root);
     c.g_object_unref(clock_root);
     // Exercise graph history rollover and the native draw callback after migration.
     const graph_root = root();
-    const monitors = init(graph_root, &.{.{ .key = "kind", .value = "\"monitors\"" }});
+    const monitors = p.init(graph_root, .{ .kind = "monitors" });
     for (0..130) |i| {
         const sample = try std.fmt.allocPrintSentinel(arena.allocator(), "{{\"monitors\":[{{\"sequence\":{d},\"values\":[{d}],\"colors\":[\"#0072b3\"],\"maximum\":100}}]}}", .{ i, i }, 0);
         p.update_line(monitors, sample);
@@ -200,7 +193,7 @@ pub fn main(process_init: std.process.Init) !void {
     assert(c.cairo_status(context) == c.CAIRO_STATUS_SUCCESS);
     c.cairo_destroy(context);
     c.cairo_surface_destroy(surface);
-    p.wbcffi_deinit(monitors);
+    p.deinit(monitors);
     c.gtk_widget_destroy(graph_root);
     c.g_object_unref(graph_root);
     c.gtk_widget_destroy(box);

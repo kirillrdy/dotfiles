@@ -14,6 +14,7 @@ pkgs.stdenv.mkDerivation {
   ];
   buildInputs = [
     pkgs.gtk3
+    pkgs.gtk-layer-shell
     pkgs.json-glib
     pkgs.curl
     pkgs.wayland
