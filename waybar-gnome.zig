@@ -68,17 +68,9 @@ pub const Module = extern struct {
     power_message: [*c]c.GtkWidget = null,
     power_buttons: [3][*c]c.GtkWidget = std.mem.zeroes([3][*c]c.GtkWidget),
     power_pending: c.gboolean = 0,
-    bluetooth_button: [*c]c.GtkWidget = null,
-    bluetooth_label: [*c]c.GtkWidget = null,
-    bluetooth_message: [*c]c.GtkWidget = null,
     network_icon: [*c]c.GtkWidget = null,
     network_label: [*c]c.GtkWidget = null,
-    bluetooth_command: [*c]u8 = null,
-    bluetooth_settings_command: [*c]u8 = null,
     network_settings_command: [*c]u8 = null,
-    bluetooth_powered: c.gboolean = 0,
-    bluetooth_busy: c.gboolean = 0,
-    bluetooth_timer: c.guint = 0,
     codex_menu: [*c]c.GtkWidget = null,
     codex_percent: [2][*c]c.GtkWidget = std.mem.zeroes([2][*c]c.GtkWidget),
     codex_progress: [2][*c]c.GtkWidget = std.mem.zeroes([2][*c]c.GtkWidget),
@@ -108,8 +100,6 @@ pub fn unref_module(m: *Module) callconv(.c) void {
     }
     m.power = null;
     c.g_free(@as(c.gpointer, @ptrCast(m.command)));
-    c.g_free(@as(c.gpointer, @ptrCast(m.bluetooth_command)));
-    c.g_free(@as(c.gpointer, @ptrCast(m.bluetooth_settings_command)));
     c.g_free(@as(c.gpointer, @ptrCast(m.network_settings_command)));
     c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
     {
@@ -123,100 +113,6 @@ pub fn unref_module(m: *Module) callconv(.c) void {
 }
 pub fn css(widget: [*c]c.GtkWidget, name: [*c]const u8) callconv(.c) void {
     c.gtk_style_context_add_class(c.gtk_widget_get_style_context(widget), name);
-}
-pub fn bluetooth_refresh(data: c.gpointer) callconv(.c) c.gboolean {
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    if (((m.bluetooth_busy == 0) and (m.bluetooth_command != null)) and (c.gtk_widget_get_visible(m.power_menu) != 0)) {
-        bluetooth_run(m, &bluetooth_ready, "show", null);
-    }
-    return 1;
-}
-pub fn bluetooth_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    var @"error": [*c]c.GError = null;
-    var output: [*c]u8 = null;
-    var errors: [*c]u8 = null;
-    const ok: c.gboolean = c.g_subprocess_communicate_utf8_finish(@as(?*c.GSubprocess, @ptrCast(source)), result, &output, &errors, &@"error");
-    if ((m.dead == 0)) {
-        m.bluetooth_busy = 0;
-        const available: c.gboolean = @intFromBool((((ok != 0) and (c.g_subprocess_get_successful(@as(?*c.GSubprocess, @ptrCast(source))) != 0)) and (output != null)) and (c.strstr(output, "Powered:") != null));
-        m.bluetooth_powered = @intFromBool((available != 0) and (c.strstr(output, "Powered: yes") != null));
-        c.gtk_label_set_text(cast(c.GtkLabel, m.bluetooth_label), if (m.bluetooth_powered != 0) "On" else "Off");
-        const style: [*c]c.GtkStyleContext = c.gtk_widget_get_style_context(m.bluetooth_button);
-        if (m.bluetooth_powered != 0) {
-            c.gtk_style_context_add_class(style, "quick-active");
-        } else {
-            c.gtk_style_context_remove_class(style, "quick-active");
-        }
-        c.gtk_widget_set_sensitive(m.bluetooth_button, available);
-        c.gtk_label_set_text(cast(c.GtkLabel, m.bluetooth_message), if (available != 0) "" else if (@"error" != null) @"error".*.message else "Bluetooth unavailable");
-    }
-    c.g_clear_error(&@"error");
-    c.g_free(@as(c.gpointer, @ptrCast(output)));
-    c.g_free(@as(c.gpointer, @ptrCast(errors)));
-    unref_module(m);
-}
-pub fn bluetooth_run(m: *Module, callback: c.GAsyncReadyCallback, action: [*c]const u8, value: [*c]const u8) callconv(.c) void {
-    var @"error": [*c]c.GError = null;
-    const launcher: ?*c.GSubprocessLauncher = c.g_subprocess_launcher_new(@as(c_uint, @bitCast(c.G_SUBPROCESS_FLAGS_STDOUT_PIPE | c.G_SUBPROCESS_FLAGS_STDERR_PIPE)));
-    c.g_subprocess_launcher_setenv(launcher, "LC_ALL", "C", 1);
-    var argv: [6][*c]const u8 = [6][*c]const u8{
-        m.bluetooth_command,
-        "--timeout",
-        "5",
-        action,
-        value,
-        null,
-    };
-    const process: ?*c.GSubprocess = c.g_subprocess_launcher_spawnv(launcher, @as([*c][*c]const u8, @ptrCast(@alignCast(&argv[@as(usize, @intCast(0))]))), &@"error");
-    c.g_object_unref(@as(c.gpointer, @ptrCast(launcher)));
-    if (process != null) {
-        m.bluetooth_busy = 1;
-        m.refs += 1;
-        c.g_subprocess_communicate_utf8_async(process, null, m.cancel, callback, @as(c.gpointer, @ptrCast(m)));
-        c.g_object_unref(@as(c.gpointer, @ptrCast(process)));
-    } else {
-        c.gtk_label_set_text(cast(c.GtkLabel, m.bluetooth_message), @"error".*.message);
-        c.g_clear_error(&@"error");
-    }
-}
-pub fn bluetooth_set_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    var @"error": [*c]c.GError = null;
-    var output: [*c]u8 = null;
-    var errors: [*c]u8 = null;
-    const ok: c.gboolean = c.g_subprocess_communicate_utf8_finish(@as(?*c.GSubprocess, @ptrCast(source)), result, &output, &errors, &@"error");
-    if ((m.dead == 0)) {
-        m.bluetooth_busy = 0;
-        c.gtk_widget_set_sensitive(m.bluetooth_button, 1);
-        if ((ok == 0) or !(c.g_subprocess_get_successful(@as(?*c.GSubprocess, @ptrCast(source))) != 0)) {
-            c.gtk_label_set_text(cast(c.GtkLabel, m.bluetooth_message), if (@"error" != null) @"error".*.message else if ((errors != null) and (@as(c_int, @bitCast(@as(c_uint, errors.*))) != 0)) errors else if ((output != null) and (@as(c_int, @bitCast(@as(c_uint, output.*))) != 0)) output else "Could not change Bluetooth power");
-        } else {
-            _ = bluetooth_refresh(@as(c.gpointer, @ptrCast(m)));
-        }
-    }
-    c.g_clear_error(&@"error");
-    c.g_free(@as(c.gpointer, @ptrCast(output)));
-    c.g_free(@as(c.gpointer, @ptrCast(errors)));
-    unref_module(m);
-}
-pub fn bluetooth_toggle(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) void {
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    if ((m.bluetooth_busy != 0) or !(m.bluetooth_command != null)) return;
-    bluetooth_run(m, &bluetooth_set_ready, "power", if (m.bluetooth_powered != 0) "off" else "on");
-    c.gtk_widget_set_sensitive(cast(c.GtkWidget, button), @intFromBool((m.bluetooth_busy == 0)));
-}
-pub fn bluetooth_settings(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) void {
-    _ = button;
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    var @"error": [*c]c.GError = null;
-    if (m.bluetooth_settings_command != null) {
-        _ = c.g_spawn_command_line_async(m.bluetooth_settings_command, &@"error");
-    }
-    if (@"error" != null) {
-        c.gtk_label_set_text(cast(c.GtkLabel, m.bluetooth_message), @"error".*.message);
-    }
-    c.g_clear_error(&@"error");
 }
 pub fn settings_launch(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) void {
     var @"error": [*c]c.GError = null;
@@ -394,7 +290,6 @@ pub fn power_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
         c.gtk_popover_popdown(cast(c.GtkPopover, m.power_menu));
     } else {
         c.gtk_popover_popup(cast(c.GtkPopover, m.power_menu));
-        _ = bluetooth_refresh(@as(c.gpointer, @ptrCast(m)));
     }
     return 1;
 }
@@ -1047,24 +942,11 @@ pub export fn wbcffi_init(info: *const InitInfo, entries: [*c]const ConfigEntry,
         if (m.network_settings_command != null) {
             _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(network)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&settings_launch))), @as(c.gpointer, @ptrCast(m.network_settings_command)), null, 0);
         }
-        const bluetooth: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0);
-        css(bluetooth, "quick-split");
-        m.bluetooth_label = c.gtk_label_new("Off");
-        m.bluetooth_button = quick_tile(c.gtk_button_new(), "Bluetooth", c.gtk_image_new_from_icon_name("bluetooth-active-symbolic", c.GTK_ICON_SIZE_MENU), m.bluetooth_label, 0);
-        c.gtk_widget_set_sensitive(m.bluetooth_button, 0);
-        _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.bluetooth_button)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&bluetooth_toggle))), @as(c.gpointer, @ptrCast(m)), null, 0);
-        c.gtk_box_pack_start(cast(c.GtkBox, bluetooth), m.bluetooth_button, 1, 1, 0);
-        const devices: [*c]c.GtkWidget = c.gtk_button_new_from_icon_name("go-next-symbolic", c.GTK_ICON_SIZE_MENU);
-        css(devices, "quick-menu-arrow");
-        c.gtk_widget_set_tooltip_text(devices, "Bluetooth Settings");
-        _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(devices)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&bluetooth_settings))), @as(c.gpointer, @ptrCast(m)), null, 0);
-        c.gtk_box_pack_start(cast(c.GtkBox, bluetooth), devices, 0, 0, 0);
-        c.gtk_grid_attach(cast(c.GtkGrid, tiles), bluetooth, 1, 0, 1, 1);
         const power: [*c]c.GtkWidget = quick_tile(c.gtk_toggle_button_new(), "Power Mode", m.power_icon, m.power_label, 1);
         c.gtk_grid_attach(cast(c.GtkGrid, tiles), power, 0, 1, 1, 1);
         const sound: [*c]c.GtkWidget = quick_tile(c.gtk_button_new(), "Sound", c.gtk_image_new_from_icon_name("audio-volume-high-symbolic", c.GTK_ICON_SIZE_MENU), null, 1);
         _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(sound)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&settings_launch))), @as(c.gpointer, @ptrCast(@constCast("pavucontrol"))), null, 0);
-        c.gtk_grid_attach(cast(c.GtkGrid, tiles), sound, 1, 1, 1, 1);
+        c.gtk_grid_attach(cast(c.GtkGrid, tiles), sound, 1, 0, 1, 1);
         const profiles: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 4);
         css(profiles, "quick-toggle-menu");
         const heading: [*c]c.GtkWidget = c.gtk_label_new("Power Mode");
@@ -1087,26 +969,13 @@ pub export fn wbcffi_init(info: *const InitInfo, entries: [*c]const ConfigEntry,
         c.gtk_box_pack_start(cast(c.GtkBox, menu), revealer, 0, 0, 0);
         _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(power)), "toggled", @as(c.GCallback, @ptrCast(@alignCast(&power_expand))), @as(c.gpointer, @ptrCast(revealer)), null, 0);
         m.power_message = c.gtk_label_new("Connecting…");
-        m.bluetooth_message = c.gtk_label_new("");
-        const messages: [2][*c]c.GtkWidget = [2][*c]c.GtkWidget{
-            m.power_message,
-            m.bluetooth_message,
-        };
-        {
-            var i: c.guint = 0;
-            while (@as(c_ulong, @bitCast(@as(c_ulong, i))) < (@sizeOf([2][*c]c.GtkWidget) / @sizeOf([*c]c.GtkWidget))) : (i += 1) {
-                c.gtk_label_set_line_wrap(cast(c.GtkLabel, messages[i]), 1);
-                c.gtk_label_set_max_width_chars(cast(c.GtkLabel, messages[i]), 40);
-                css(messages[i], "quick-message");
-                c.gtk_widget_set_no_show_all(messages[i], 1);
-                _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(messages[i])), "notify::label", @as(c.GCallback, @ptrCast(@alignCast(&message_changed))), @as(?*anyopaque, @ptrFromInt(0)), null, 0);
-                message_changed(cast(c.GObject, messages[i]), null, @as(?*anyopaque, @ptrFromInt(0)));
-                c.gtk_box_pack_start(cast(c.GtkBox, menu), messages[i], 0, 0, 0);
-            }
-        }
-        m.bluetooth_command = config_string(entries, length, "bluetooth-command");
-        m.bluetooth_settings_command = config_string(entries, length, "bluetooth-settings-command");
-        m.bluetooth_timer = c.g_timeout_add_seconds(5, &bluetooth_refresh, @as(c.gpointer, @ptrCast(m)));
+        c.gtk_label_set_line_wrap(cast(c.GtkLabel, m.power_message), 1);
+        c.gtk_label_set_max_width_chars(cast(c.GtkLabel, m.power_message), 40);
+        css(m.power_message, "quick-message");
+        c.gtk_widget_set_no_show_all(m.power_message, 1);
+        _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.power_message)), "notify::label", @as(c.GCallback, @ptrCast(@alignCast(&message_changed))), @as(?*anyopaque, @ptrFromInt(0)), null, 0);
+        message_changed(cast(c.GObject, m.power_message), null, @as(?*anyopaque, @ptrFromInt(0)));
+        c.gtk_box_pack_start(cast(c.GtkBox, menu), m.power_message, 0, 0, 0);
         c.gtk_widget_show_all(menu);
         update_power(m);
         _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&power_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
@@ -1143,9 +1012,6 @@ pub export fn wbcffi_deinit(instance: ?*anyopaque) void {
     m.dead = 1;
     if (m.clock_timer != 0) {
         _ = c.g_source_remove(m.clock_timer);
-    }
-    if (m.bluetooth_timer != 0) {
-        _ = c.g_source_remove(m.bluetooth_timer);
     }
     if (m.calendar != null) {
         c.gtk_widget_destroy(m.calendar);

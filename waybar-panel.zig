@@ -220,29 +220,16 @@ fn item(a: A, icon: []const u8, label: []const u8, tooltip: []const u8, cmd: []c
     try u.put(a, &out, "command", u.str(cmd));
     return out;
 }
-fn bluetoothPowered(a: A) !bool {
-    var dir = std.Io.Dir.openDirAbsolute(u.io, "/sys/class/rfkill", .{ .iterate = true }) catch return false;
-    defer dir.close(u.io);
-    var entries = dir.iterate();
-    while (try entries.next(u.io)) |entry| {
-        const kind = u.read(a, try u.fmt(a, "/sys/class/rfkill/{s}/type", .{entry.name})) catch continue;
-        const state = u.read(a, try u.fmt(a, "/sys/class/rfkill/{s}/state", .{entry.name})) catch continue;
-        if (u.eq(u.trim(kind), "bluetooth") and u.eq(u.trim(state), "1")) return true;
-    }
-    return false;
-}
 fn statusItems(a: A, demo: bool) !V {
     var items = u.array(a);
     if (demo) {
         try items.array.append(try item(a, "network-wireless-signal-excellent-symbolic", "", "Wi-Fi", ""));
-        try items.array.append(try item(a, "bluetooth-active-symbolic", "", "Bluetooth · Quick Settings", ""));
         try items.array.append(try item(a, "audio-volume-high-symbolic", "", "Volume", ""));
         try items.array.append(try item(a, "battery-level-80-symbolic", "5∶42", "Battery", ""));
         return items;
     }
     const wireless = try wirelessIcon(a);
     try items.array.append(try item(a, wireless.icon, "", wireless.tooltip, "ghostty -e nmtui"));
-    if (try bluetoothPowered(a)) try items.array.append(try item(a, "bluetooth-active-symbolic", "", "Bluetooth · Quick Settings", ""));
     const volume = u.command(a, &.{ "wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@" }, 4);
     var words = std.mem.tokenizeAny(u8, volume, " \t");
     _ = words.next();

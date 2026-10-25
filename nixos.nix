@@ -67,6 +67,7 @@
   ];
   hardware.enableRedistributableFirmware = true;
   hardware.firmwareCompression = "xz";
+  hardware.bluetooth.enable = false;
   programs.git.enable = true;
   programs.bash.interactiveShellInit = ''
     # tss            -> toggle to the other logged-in tailscale account

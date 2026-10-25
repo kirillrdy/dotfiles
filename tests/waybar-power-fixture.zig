@@ -42,17 +42,6 @@ fn setProperty(m: *p.Module, name: [:0]const u8, value: ?*c.GVariant) void {
     c.g_dbus_proxy_set_cached_property(m.power, name, value);
     p.update_power(m);
 }
-fn bluetoothOutput(m: *p.Module, output: [:0]const u8) void {
-    var err: [*c]c.GError = null;
-    const argv = [_:null]?[*:0]const u8{ "printf", "%s", output };
-    const process = c.g_subprocess_newv(@ptrCast(&argv), c.G_SUBPROCESS_FLAGS_STDOUT_PIPE | c.G_SUBPROCESS_FLAGS_STDERR_PIPE, &err);
-    assert(err == null and process != null);
-    m.refs += 1;
-    m.bluetooth_busy = 1;
-    c.g_subprocess_communicate_utf8_async(process, null, null, &p.bluetooth_ready, m);
-    while (m.bluetooth_busy != 0) _ = c.g_main_context_iteration(null, 1);
-    c.g_object_unref(process);
-}
 pub fn main(process_init: std.process.Init) !void {
     c.gtk_init(null, null);
     c.g_object_set(c.gtk_settings_get_default(), "gtk-enable-animations", @as(c_int, 0), @as(?*anyopaque, null));
@@ -75,11 +64,7 @@ pub fn main(process_init: std.process.Init) !void {
     m.power_label = c.gtk_label_new("");
     m.power_icon = c.gtk_image_new();
     m.power_message = c.gtk_label_new("");
-    m.bluetooth_button = c.gtk_button_new();
-    m.bluetooth_label = c.gtk_label_new("");
-    m.bluetooth_message = c.gtk_label_new("");
-    c.gtk_container_add(cast(c.GtkContainer, m.bluetooth_button), m.bluetooth_label);
-    for ([_][*c]c.GtkWidget{ m.power_label, m.power_icon, m.power_message, m.bluetooth_button, m.bluetooth_message }) |widget| c.gtk_container_add(cast(c.GtkContainer, box), widget);
+    for ([_][*c]c.GtkWidget{ m.power_label, m.power_icon, m.power_message }) |widget| c.gtk_container_add(cast(c.GtkContainer, box), widget);
     for (&m.power_buttons) |*button| {
         button.* = c.gtk_button_new();
         c.gtk_container_add(cast(c.GtkContainer, box), button.*);
@@ -116,22 +101,12 @@ pub fn main(process_init: std.process.Init) !void {
     assert(c.gtk_widget_get_sensitive(m.power_buttons[0]) == 0 and c.gtk_widget_get_sensitive(m.power_buttons[1]) != 0);
     setProperty(&m, "PerformanceInhibited", c.g_variant_new_string(""));
     assert(c.gtk_widget_get_sensitive(m.power_buttons[0]) != 0);
-    bluetoothOutput(&m, "Controller 00:11:22:33:44:55\n\tPowered: yes\n");
-    assert(m.bluetooth_powered != 0 and c.gtk_widget_get_sensitive(m.bluetooth_button) != 0);
-    assert(c.gtk_style_context_has_class(c.gtk_widget_get_style_context(m.bluetooth_button), "quick-active") != 0);
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.bluetooth_label)), "On");
-    bluetoothOutput(&m, "Controller 00:11:22:33:44:55\n\tPowered: no\n");
-    assert(m.bluetooth_powered == 0 and c.gtk_widget_get_sensitive(m.bluetooth_button) != 0);
-    assert(c.gtk_style_context_has_class(c.gtk_widget_get_style_context(m.bluetooth_button), "quick-active") == 0);
-    bluetoothOutput(&m, "No default controller available\n");
-    assert(c.gtk_widget_get_sensitive(m.bluetooth_button) == 0);
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.bluetooth_message)), "Bluetooth unavailable");
 
     const status_root = root();
     const status = init(status_root, &.{ .{ .key = "name", .value = "\"gnome-status\"" }, .{ .key = "kind", .value = "\"indicator\"" } });
-    for ([_][*c]c.GtkWidget{ status.power_label, status.bluetooth_button, status.network_icon }) |widget| assert(c.gtk_widget_is_ancestor(widget, status.power_menu) != 0);
+    for ([_][*c]c.GtkWidget{ status.power_label, status.network_icon }) |widget| assert(c.gtk_widget_is_ancestor(widget, status.power_menu) != 0);
     assert(c.gtk_widget_is_ancestor(status.power_label, status.box) == 0);
-    p.update_line(status, "{\"items\":[{\"icon\":\"bluetooth-active-symbolic\"},{\"icon\":\"battery-level-80-symbolic\"}]}");
+    p.update_line(status, "{\"items\":[{\"icon\":\"audio-volume-high-symbolic\"},{\"icon\":\"battery-level-80-symbolic\"}]}");
     assert(c.gtk_widget_get_visible(status.item[0].box) != 0 and c.gtk_widget_get_visible(status.item[1].box) != 0);
     p.update_line(status, "{\"items\":[{\"icon\":\"network-wired-symbolic\",\"tooltip\":\"Wired network\"}]}");
     eq(c.gtk_label_get_text(cast(c.GtkLabel, status.network_label)), "Wired network");

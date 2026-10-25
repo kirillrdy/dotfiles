@@ -101,8 +101,6 @@ lib.mkIf enableLightDesktop {
     settings.default_session.command = "${lib.getExe pkgs.tuigreet} --time --remember --cmd ${session}";
   };
   networking.networkmanager.enable = true;
-  hardware.bluetooth.enable = true;
-  services.blueman.enable = true;
   services.power-profiles-daemon.enable = true;
   services.upower.enable = true;
   services.gnome.gnome-keyring.enable = true;
@@ -281,8 +279,6 @@ lib.mkIf enableLightDesktop {
       };
       "cffi/status" = nativeModule "gnome-status" "indicator" // {
         exec = "${desktopZig}/bin/waybar-panel status";
-        bluetooth-command = "${pkgs.bluez}/bin/bluetoothctl";
-        bluetooth-settings-command = "${pkgs.blueman}/bin/blueman-manager";
         network-settings-command = "${pkgs.networkmanagerapplet}/bin/nm-connection-editor";
       };
       "cffi/clock" = nativeModule "gnome-clock" "clock";
@@ -382,15 +378,6 @@ lib.mkIf enableLightDesktop {
       .gnome-power-menu .quick-toggle-subtitle { font-size: 9pt; font-weight: normal; }
       .gnome-power-menu .quick-active { background: #3584e4; }
       .gnome-power-menu .quick-active:hover { background: #4990e7; }
-      .gnome-power-menu .quick-split .quick-toggle {
-        border-radius: 999px 0 0 999px;
-        min-width: 120px;
-      }
-      .gnome-power-menu .quick-menu-arrow {
-        border-radius: 0 999px 999px 0;
-        padding: 0 12px;
-        border-left: 1px solid rgba(255,255,255,0.15);
-      }
       .gnome-power-menu .quick-toggle-menu { background: #454549; border-radius: 24px; padding: 12px; }
       .gnome-power-menu .quick-menu-title { font-size: 14pt; padding: 6px 10px 12px; }
       .gnome-power-menu .profile-choice { background: transparent; border-radius: 12px; padding: 10px; }
