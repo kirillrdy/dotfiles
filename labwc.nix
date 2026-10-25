@@ -23,31 +23,7 @@ let
     hash = "sha256-kI1mut3KtZNahi8btZNSdogSrF+Z44yXqaZ4Jxf5L+E=";
   };
   desktopZig = import ./desktop-zig.nix { inherit pkgs; };
-  volumeControl = pkgs.writeShellApplication {
-    name = "desktop-volume";
-    runtimeInputs = [
-      pkgs.wireplumber
-      pkgs.swayosd
-      pkgs.pipewire
-      pkgs.util-linux
-    ];
-    text = ''
-      case "''${1:-}" in
-        up) step=5 ;;
-        down) step=-5 ;;
-        *) echo "Usage: desktop-volume up|down" >&2; exit 1 ;;
-      esac
-
-      wpctl set-mute @DEFAULT_AUDIO_SINK@ 0
-      swayosd-client --output-volume "$step"
-
-      # Keep key repeat responsive without overlapping feedback sounds.
-      exec 9>"$XDG_RUNTIME_DIR/desktop-volume-feedback.lock"
-      flock --nonblock 9 || exit 0
-      exec pw-play --properties='{"media.role":"event"}' \
-        ${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/audio-volume-change.oga
-    '';
-  };
+  osd = lib.getExe' desktopZig "desktop-osd";
   session = pkgs.writeShellScript "labwc-session" ''
     . /etc/profile
     export XDG_CURRENT_DESKTOP=labwc:wlroots
@@ -92,7 +68,7 @@ lib.mkIf enableLightDesktop {
     wallpaper = sessionService "${pkgs.swaybg}/bin/swaybg -i ${gnomeWallpaper} -m fill";
     desktop-panel = sessionService "${desktopZig}/bin/desktop-panel /etc/xdg/desktop-panel/config.json /etc/xdg/desktop-panel/style.css";
     mako = sessionService "${pkgs.mako}/bin/mako --config /etc/xdg/mako/config";
-    swayosd = sessionService "${pkgs.swayosd}/bin/swayosd-server --config /etc/xdg/swayosd/config.toml --style /etc/xdg/swayosd/style.css";
+    desktop-osd = sessionService "${osd} serve /etc/xdg/desktop-osd/style.css";
     polkit-agent = sessionService "${pkgs.polkit_gnome}/libexec/polkit-gnome-authentication-agent-1";
     swayidle = sessionService "${pkgs.swayidle}/bin/swayidle -w timeout 600 'swaylock -f -c 1e1e2e' before-sleep 'swaylock -f -c 1e1e2e'";
   };
@@ -108,7 +84,6 @@ lib.mkIf enableLightDesktop {
     slurp
     swayidle
     swaylock
-    swayosd
     wl-clipboard
     wlr-randr
   ];
@@ -117,15 +92,7 @@ lib.mkIf enableLightDesktop {
     # Keep GTK clients and compositor-rendered Wayland cursors consistent.
     "xdg/gtk-3.0/settings.ini".text = gtkCursorSettings;
     "xdg/gtk-4.0/settings.ini".text = gtkCursorSettings;
-    "xdg/swayosd/config.toml".text = ''
-      [server]
-      top_margin = 0.94
-      max_volume = 100
-      min_brightness = 5
-      show_percentage = false
-      duration = 1500
-    '';
-    "xdg/swayosd/style.css".text = ''
+    "xdg/desktop-osd/style.css".text = ''
       window#osd {
         /* GNOME Shell's OSD palette and dimensions. */
         background: #2e2e33;
@@ -195,12 +162,12 @@ lib.mkIf enableLightDesktop {
           <keybind key="Super_L" onRelease="yes"><action name="Execute" command="${appLauncher}" /></keybind>
           <keybind key="W-l"><action name="Execute" command="swaylock -f -c 1e1e2e" /></keybind>
           <keybind key="W-S-e"><action name="Exit" /></keybind>
-          <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="${lib.getExe volumeControl} up" /></keybind>
-          <keybind key="XF86AudioLowerVolume"><action name="Execute" command="${lib.getExe volumeControl} down" /></keybind>
-          <keybind key="XF86AudioMute"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --output-volume mute-toggle" /></keybind>
-          <keybind key="XF86AudioMicMute"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --input-volume mute-toggle" /></keybind>
-          <keybind key="XF86MonBrightnessUp"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --brightness +5" /></keybind>
-          <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${pkgs.swayosd}/bin/swayosd-client --brightness -5" /></keybind>
+          <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="${osd} volume up" /></keybind>
+          <keybind key="XF86AudioLowerVolume"><action name="Execute" command="${osd} volume down" /></keybind>
+          <keybind key="XF86AudioMute"><action name="Execute" command="${osd} volume mute" /></keybind>
+          <keybind key="XF86AudioMicMute"><action name="Execute" command="${osd} microphone mute" /></keybind>
+          <keybind key="XF86MonBrightnessUp"><action name="Execute" command="${osd} brightness up" /></keybind>
+          <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${osd} brightness down" /></keybind>
           <keybind key="Print"><action name="Execute" command="sh -c 'grim -g &quot;$(slurp)&quot; - | wl-copy'" /></keybind>
         </keyboard>
         <mouse><default /></mouse>

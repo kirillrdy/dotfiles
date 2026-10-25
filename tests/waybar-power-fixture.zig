@@ -48,6 +48,9 @@ pub fn main(process_init: std.process.Init) !void {
             "battery-level-90-symbolic",
             "battery-level-50-charging-symbolic",
             "audio-volume-medium-symbolic",
+            "microphone-sensitivity-high-symbolic",
+            "microphone-sensitivity-muted-symbolic",
+            "display-brightness-symbolic",
         }) |name| {
             for ([_]c_int{ 1, 2 }) |scale| {
                 var err: [*c]c.GError = null;

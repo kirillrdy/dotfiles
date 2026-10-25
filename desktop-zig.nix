@@ -44,6 +44,17 @@ pkgs.stdenv.mkDerivation {
       "$out/bin/desktop-apps-fixture"
   '';
   installPhase = ''
+    wrapProgram "$out/bin/desktop-osd" \
+      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share \
+      --set DESKTOP_OSD_SOUND_FILE ${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/audio-volume-change.oga \
+      --suffix PATH : ${
+        pkgs.lib.makeBinPath [
+          pkgs.wireplumber
+          pkgs.brightnessctl
+          pkgs.pipewire
+        ]
+      }
     wrapProgram "$out/bin/desktop-panel" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share

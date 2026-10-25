@@ -24,6 +24,13 @@ pub fn build(b: *std.Build) void {
     panel.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
     panel.root_module.addImport("gtk", panel_gtk);
     b.installArtifact(panel);
+    const osd = b.addExecutable(.{ .name = "desktop-osd", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-osd.zig"), .target = target, .optimize = optimize }) });
+    osd.root_module.link_libc = true;
+    osd.root_module.linkSystemLibrary("gtk+-3.0", .{});
+    osd.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
+    osd.root_module.addImport("gtk", panel_gtk);
+    b.installArtifact(osd);
+    const osd_tests = b.addTest(.{ .root_module = osd.root_module });
     const apps = b.addExecutable(.{ .name = "desktop-apps", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-apps.zig"), .target = target, .optimize = optimize }) });
     apps.root_module.link_libc = true;
     apps.root_module.linkSystemLibrary("gtk+-3.0", .{});
@@ -72,4 +79,5 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run data parsing and allowance tests");
     test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&b.addRunArtifact(osd_tests).step);
 }
