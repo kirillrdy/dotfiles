@@ -11,6 +11,7 @@ fn linkGtk(step: *std.Build.Step.Compile) void {
     step.root_module.linkSystemLibrary("json-glib-1.0", .{});
 }
 pub fn build(b: *std.Build) void {
+    b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const gtk = bindings(b, target, optimize, "#include <gtk/gtk.h>\n#include <json-glib/json-glib.h>\n#include <math.h>\n#include <signal.h>\n#include <string.h>\n", &.{ "gtk+-3.0", "json-glib-1.0" });
@@ -18,7 +19,7 @@ pub fn build(b: *std.Build) void {
     const wayland_gtk = bindings(b, target, optimize, "#include <gtk/gtk.h>\n#include <gdk/gdkwayland.h>\n", &.{ "gtk+-3.0", "wayland-client" });
     const libc = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <time.h>\n#include <unistd.h>\n#include <poll.h>\n#include <stdio.h>\n#include <errno.h>\n#include <stdlib.h>\n#include <fcntl.h>\n#include <sys/wait.h>\n", &.{});
     const curl = bindings(b, target, optimize, "#include <curl/curl.h>\n", &.{"libcurl"});
-    const panel_gtk = bindings(b, target, optimize, "#include <gtk/gtk.h>\n#include <json-glib/json-glib.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <math.h>\n#include <signal.h>\n#include <string.h>\n", &.{ "gtk+-3.0", "json-glib-1.0", "gtk-layer-shell-0" });
+    const panel_gtk = bindings(b, target, optimize, "#include <gtk/gtk.h>\n#include <json-glib/json-glib.h>\n#include <gtk-layer-shell.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <math.h>\n#include <signal.h>\n#include <string.h>\n", &.{ "gtk+-3.0", "json-glib-1.0", "gtk-layer-shell-0", "gio-unix-2.0" });
     const panel = b.addExecutable(.{ .name = "desktop-panel", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-panel.zig"), .target = target, .optimize = optimize }) });
     linkGtk(panel);
     panel.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
@@ -31,6 +32,11 @@ pub fn build(b: *std.Build) void {
     osd.root_module.addImport("gtk", panel_gtk);
     b.installArtifact(osd);
     const osd_tests = b.addTest(.{ .root_module = osd.root_module });
+    const notifications = b.addExecutable(.{ .name = "desktop-notifications", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-notifications.zig"), .target = target, .optimize = optimize }) });
+    linkGtk(notifications);
+    notifications.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
+    notifications.root_module.addImport("gtk", panel_gtk);
+    b.installArtifact(notifications);
     const apps = b.addExecutable(.{ .name = "desktop-apps", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-apps.zig"), .target = target, .optimize = optimize }) });
     apps.root_module.link_libc = true;
     apps.root_module.linkSystemLibrary("gtk+-3.0", .{});

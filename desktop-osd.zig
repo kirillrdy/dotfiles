@@ -112,6 +112,7 @@ const Overlay = struct {
 
 const Phase = enum { initial, unmute, write, final };
 const Server = struct {
+    connection: ?*c.GDBusConnection = null,
     ready: bool = false,
     dead: bool = false,
     overlays: std.ArrayList(Overlay) = .empty,
@@ -269,6 +270,7 @@ const Server = struct {
             },
             .final => {
                 const state = if (work.kind == .brightness) try parseBrightness(output) else try parseVolume(output);
+                if (work.kind != .brightness) _ = c.g_dbus_connection_emit_signal(self.connection, null, "/org/dotfiles/DesktopOsd", "org.dotfiles.DesktopOsd", "DeviceChanged", c.g_variant_new("(s)", @as([*:0]const u8, @tagName(work.kind))), null);
                 self.last_kind = work.kind;
                 self.last_state = state;
                 for (self.overlays.items) |*overlay| overlay.show(work.kind, state);
@@ -329,6 +331,7 @@ const Server = struct {
 
 fn commandLine(app: *c.GApplication, command: *c.GApplicationCommandLine, data: c.gpointer) callconv(.c) c_int {
     const self = cast(Server, data);
+    self.connection = c.g_application_get_dbus_connection(app);
     var count: c_int = 0;
     const argv = c.g_application_command_line_get_arguments(command, &count);
     defer c.g_strfreev(argv);

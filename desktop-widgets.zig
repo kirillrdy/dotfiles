@@ -1,5 +1,6 @@
 //! Shared GTK widgets and popups for the standalone desktop panel.
 const std = @import("std");
+const notification_view = @import("desktop-notification-view.zig");
 pub const c = @import("gtk");
 fn cast(comptime T: type, p: anytype) [*c]T {
     return @ptrCast(@alignCast(p));
@@ -43,6 +44,12 @@ pub const Module = extern struct {
     root: [*c]c.GtkWidget = null,
     clock: [*c]c.GtkWidget = null,
     calendar: [*c]c.GtkWidget = null,
+    calendar_today: [*c]c.GtkWidget = null,
+    history_container: [*c]c.GtkWidget = null,
+    history_empty: [*c]c.GtkWidget = null,
+    history_clear: [*c]c.GtkWidget = null,
+    history_subscription: c.guint = 0,
+    history_busy: bool = false,
     calendar_month: [*c]c.GtkWidget = null,
     calendar_weekday: [*c]c.GtkWidget = null,
     calendar_date: [*c]c.GtkWidget = null,
@@ -57,6 +64,8 @@ pub const Module = extern struct {
     restart: c.guint = 0,
     clock_timer: c.guint = 0,
     power: [*c]c.GDBusProxy = null,
+    session: ?*c.GDBusConnection = null,
+    device_subscription: c.guint = 0,
     power_menu: [*c]c.GtkWidget = null,
     power_label: [*c]c.GtkWidget = null,
     power_icon: [*c]c.GtkWidget = null,
@@ -93,6 +102,7 @@ pub fn unref_module(m: *Module) callconv(.c) void {
     if (m.power != null) {
         c.g_object_unref(@as(c.gpointer, @ptrCast(m.power)));
     }
+    if (m.session != null) c.g_object_unref(m.session);
     m.power = null;
     c.g_free(@as(c.gpointer, @ptrCast(m.command)));
     c.g_free(@as(c.gpointer, @ptrCast(m.network_settings_command)));
@@ -305,7 +315,9 @@ pub fn calendar_refresh(m: *Module) callconv(.c) void {
     const now: ?*c.GDateTime = c.g_date_time_new_now_local();
     const weekday: [*c]u8 = c.g_date_time_format(now, "%A");
     const date: [*c]u8 = c.g_date_time_format(now, "%B %-d %Y");
-    const month: [*c]u8 = c.g_date_time_format(m.calendar_selected, "%B %Y");
+    const month_format: [*:0]const u8 = if (c.g_date_time_get_year(now) == c.g_date_time_get_year(m.calendar_selected)) "%B" else "%B %Y";
+    const month = c.g_date_time_format(m.calendar_selected, month_format);
+    c.gtk_widget_set_sensitive(m.calendar_today, @intFromBool(c.g_date_time_get_year(now) != c.g_date_time_get_year(m.calendar_selected) or c.g_date_time_get_day_of_year(now) != c.g_date_time_get_day_of_year(m.calendar_selected)));
     c.gtk_label_set_text(cast(c.GtkLabel, m.calendar_weekday), weekday);
     c.gtk_label_set_text(cast(c.GtkLabel, m.calendar_date), date);
     c.gtk_button_set_label(cast(c.GtkButton, m.calendar_month), month);
@@ -319,7 +331,7 @@ pub fn calendar_refresh(m: *Module) callconv(.c) void {
         while (@as(c_ulong, @bitCast(@as(c_ulong, i))) < (@sizeOf([42][*c]c.GtkWidget) / @sizeOf([*c]c.GtkWidget))) : (i += 1) {
             const day: ?*c.GDateTime = c.g_date_time_add_days(start, @as(c.gint, @bitCast(i)));
             const button: [*c]c.GtkWidget = m.calendar_days[i];
-            const label: [*c]u8 = c.g_date_time_format(day, "%-d");
+            const label: [*c]u8 = c.g_date_time_format(day, "%d");
             c.gtk_button_set_label(cast(c.GtkButton, button), label);
             c.g_free(@as(c.gpointer, @ptrCast(label)));
             c.g_object_set_data_full(cast(c.GObject, button), "date", @as(c.gpointer, @ptrCast(day)), @as(c.GDestroyNotify, @ptrCast(@alignCast(&c.g_date_time_unref))));
@@ -367,82 +379,131 @@ pub fn calendar_navigate(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c)
     calendar_refresh(m);
 }
 pub fn make_calendar(m: *Module) callconv(.c) void {
-    const box: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 12);
-    c.gtk_container_add(cast(c.GtkContainer, m.calendar), box);
-    const today: [*c]c.GtkWidget = c.gtk_button_new();
+    const menu = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0);
+    css(menu, "gnome-date-menu");
+    c.gtk_container_add(cast(c.GtkContainer, m.calendar), menu);
+    const left = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 6);
+    c.gtk_widget_set_margin_end(left, 4);
+    c.gtk_box_pack_start(cast(c.GtkBox, menu), left, 0, 0, 0);
+    const list = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0);
+    c.gtk_box_pack_start(cast(c.GtkBox, left), list, 0, 0, 0);
+    const separator = c.gtk_separator_new(c.GTK_ORIENTATION_VERTICAL);
+    css(separator, "date-menu-separator");
+    c.gtk_box_pack_start(cast(c.GtkBox, left), separator, 0, 0, 0);
+    const overlay = c.gtk_overlay_new();
+    c.gtk_widget_set_size_request(overlay, 425, 348);
+    c.gtk_box_pack_start(cast(c.GtkBox, list), overlay, 1, 1, 0);
+    const scroll = c.gtk_scrolled_window_new(null, null);
+    c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_AUTOMATIC);
+    c.gtk_widget_set_margin_end(scroll, 12);
+    c.gtk_container_add(cast(c.GtkContainer, overlay), scroll);
+    m.history_container = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 12);
+    c.gtk_container_add(cast(c.GtkContainer, scroll), m.history_container);
+    m.history_empty = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 12);
+    css(m.history_empty, "date-menu-placeholder");
+    c.gtk_widget_set_halign(m.history_empty, c.GTK_ALIGN_CENTER);
+    c.gtk_widget_set_valign(m.history_empty, c.GTK_ALIGN_CENTER);
+    const bell = c.gtk_image_new_from_icon_name("no-notifications-symbolic", c.GTK_ICON_SIZE_DIALOG);
+    c.gtk_image_set_pixel_size(cast(c.GtkImage, bell), 96);
+    c.gtk_box_pack_start(cast(c.GtkBox, m.history_empty), bell, 0, 0, 0);
+    c.gtk_box_pack_start(cast(c.GtkBox, m.history_empty), c.gtk_label_new("No Notifications"), 0, 0, 0);
+    c.gtk_overlay_add_overlay(cast(c.GtkOverlay, overlay), m.history_empty);
+    const controls = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 6);
+    css(controls, "date-menu-controls");
+    m.history_clear = c.gtk_button_new_with_label("Clear");
+    css(m.history_clear, "date-menu-clear");
+    c.gtk_widget_set_sensitive(m.history_clear, 0);
+    _ = c.g_signal_connect_data(m.history_clear, "clicked", @ptrCast(&history_clear), m, null, 0);
+    c.gtk_box_pack_start(cast(c.GtkBox, controls), m.history_clear, 0, 0, 0);
+    c.gtk_box_pack_start(cast(c.GtkBox, list), controls, 0, 0, 0);
+    const box = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 6);
+    c.gtk_widget_set_margin_start(box, 6);
+    c.gtk_widget_set_size_request(box, 290, 397);
+    c.gtk_box_pack_start(cast(c.GtkBox, menu), box, 0, 0, 0);
+    const today = c.gtk_button_new();
+    m.calendar_today = today;
     css(today, "calendar-today-button");
-    _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(today)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&calendar_navigate))), @as(c.gpointer, @ptrCast(m)), null, 0);
-    const heading: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 3);
+    c.gtk_widget_set_margin_start(today, 4);
+    c.gtk_widget_set_margin_end(today, 4);
+    c.gtk_widget_set_margin_top(today, 4);
+    c.gtk_widget_set_margin_bottom(today, 4);
+    _ = c.g_signal_connect_data(today, "clicked", @ptrCast(&calendar_navigate), m, null, 0);
+    const heading = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0);
     m.calendar_weekday = c.gtk_label_new("");
     m.calendar_date = c.gtk_label_new("");
     css(m.calendar_weekday, "calendar-weekday-label");
     css(m.calendar_date, "calendar-date-label");
     c.gtk_label_set_xalign(cast(c.GtkLabel, m.calendar_weekday), 0);
     c.gtk_label_set_xalign(cast(c.GtkLabel, m.calendar_date), 0);
-    c.gtk_container_add(cast(c.GtkContainer, heading), m.calendar_weekday);
-    c.gtk_container_add(cast(c.GtkContainer, heading), m.calendar_date);
+    c.gtk_box_pack_start(cast(c.GtkBox, heading), m.calendar_weekday, 0, 0, 0);
+    c.gtk_box_pack_start(cast(c.GtkBox, heading), m.calendar_date, 0, 0, 0);
     c.gtk_container_add(cast(c.GtkContainer, today), heading);
     c.gtk_box_pack_start(cast(c.GtkBox, box), today, 0, 0, 0);
-    const header: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0);
-    c.gtk_box_pack_start(cast(c.GtkBox, box), header, 0, 0, 0);
+    const calendar = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0);
+    css(calendar, "calendar-grid");
+    c.gtk_widget_set_margin_start(calendar, 4);
+    c.gtk_widget_set_margin_end(calendar, 4);
+    c.gtk_widget_set_margin_bottom(calendar, 4);
+    c.gtk_box_pack_start(cast(c.GtkBox, box), calendar, 0, 0, 0);
+    const header = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0);
+    c.gtk_widget_set_size_request(header, 280, 38);
+    c.gtk_box_pack_start(cast(c.GtkBox, calendar), header, 0, 0, 0);
     m.calendar_month = c.gtk_button_new();
-    _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.calendar_month)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&calendar_navigate))), @as(c.gpointer, @ptrCast(m)), null, 0);
-    {
-        var offset: c_int = -1;
-        while (offset <= 1) : (offset += 2) {
-            const arrow: [*c]c.GtkWidget = c.gtk_button_new_from_icon_name(if (offset < 0) "pan-start-symbolic" else "pan-end-symbolic", c.GTK_ICON_SIZE_MENU);
-            css(arrow, "calendar-pager");
-            c.gtk_widget_set_tooltip_text(arrow, if (offset < 0) "Previous month" else "Next month");
-            c.g_object_set_data(cast(c.GObject, arrow), "month-offset", @as(c.gpointer, @ptrFromInt(@as(usize, @bitCast(@as(isize, offset))))));
-            _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(arrow)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&calendar_navigate))), @as(c.gpointer, @ptrCast(m)), null, 0);
-            c.gtk_box_pack_start(cast(c.GtkBox, header), arrow, 0, 0, 0);
-            if (offset == -1) {
-                c.gtk_box_pack_start(cast(c.GtkBox, header), m.calendar_month, 1, 1, 0);
-            }
-        }
+    css(m.calendar_month, "calendar-month");
+    c.gtk_widget_set_valign(m.calendar_month, c.GTK_ALIGN_CENTER);
+    _ = c.g_signal_connect_data(m.calendar_month, "clicked", @ptrCast(&calendar_navigate), m, null, 0);
+    c.gtk_box_set_center_widget(cast(c.GtkBox, header), m.calendar_month);
+    for ([_]c_int{ -1, 1 }) |offset| {
+        const arrow = c.gtk_button_new_from_icon_name(if (offset < 0) "pan-start-symbolic" else "pan-end-symbolic", c.GTK_ICON_SIZE_MENU);
+        css(arrow, "calendar-pager");
+        c.gtk_widget_set_tooltip_text(arrow, if (offset < 0) "Previous month" else "Next month");
+        c.g_object_set_data(cast(c.GObject, arrow), "month-offset", @ptrFromInt(@as(usize, @bitCast(@as(isize, offset)))));
+        _ = c.g_signal_connect_data(arrow, "clicked", @ptrCast(&calendar_navigate), m, null, 0);
+        if (offset < 0) c.gtk_box_pack_start(cast(c.GtkBox, header), arrow, 0, 0, 0) else c.gtk_box_pack_end(cast(c.GtkBox, header), arrow, 0, 0, 0);
     }
-    const grid: [*c]c.GtkWidget = c.gtk_grid_new();
-    c.gtk_grid_set_column_homogeneous(cast(c.GtkGrid, grid), 1);
-    c.gtk_grid_set_row_homogeneous(cast(c.GtkGrid, grid), 1);
-    c.gtk_box_pack_start(cast(c.GtkBox, box), grid, 0, 0, 0);
-    const sunday: ?*c.GDateTime = c.g_date_time_new_local(2024, 1, 7, 12, 0, 0);
-    {
-        var i: c_int = 0;
-        while (i < 7) : (i += 1) {
-            const day: ?*c.GDateTime = c.g_date_time_add_days(sunday, i);
-            const name: [*c]u8 = c.g_date_time_format(day, "%a");
-            const letter: [*c]u8 = c.g_strndup(name, @as(c.gsize, @bitCast(@divExact(@as(c_long, @bitCast(@intFromPtr(name + @as(usize, @bitCast(@as(isize, @intCast(@as(c_int, @bitCast(@as(c_uint, c.g_utf8_skip[@as([*c]const c.guchar, @ptrCast(@alignCast(name))).*])))))))) -% @intFromPtr(name))), @sizeOf(u8)))));
-            const label: [*c]c.GtkWidget = c.gtk_label_new(letter);
-            css(label, "calendar-day-heading");
-            c.gtk_widget_set_tooltip_text(label, name);
-            c.gtk_grid_attach(cast(c.GtkGrid, grid), label, i, 0, 1, 1);
-            c.g_free(@as(c.gpointer, @ptrCast(letter)));
-            c.g_free(@as(c.gpointer, @ptrCast(name)));
-            c.g_date_time_unref(day);
-        }
+    const headings = c.gtk_grid_new();
+    c.gtk_grid_set_column_homogeneous(cast(c.GtkGrid, headings), 1);
+    c.gtk_widget_set_size_request(headings, 280, 27);
+    c.gtk_box_pack_start(cast(c.GtkBox, calendar), headings, 0, 0, 0);
+    const sunday = c.g_date_time_new_local(2024, 1, 7, 12, 0, 0);
+    for (0..7) |i| {
+        const day = c.g_date_time_add_days(sunday, @intCast(i));
+        const name = c.g_date_time_format(day, "%a");
+        const end = c.g_utf8_offset_to_pointer(name, 1);
+        const letter = c.g_strndup(name, @intFromPtr(end) - @intFromPtr(name));
+        const label = c.gtk_label_new(letter);
+        css(label, "calendar-day-heading");
+        c.gtk_widget_set_margin_start(label, 4);
+        c.gtk_widget_set_margin_end(label, 4);
+        c.gtk_widget_set_margin_top(label, 4);
+        c.gtk_widget_set_margin_bottom(label, 2);
+        c.gtk_widget_set_tooltip_text(label, name);
+        c.gtk_grid_attach(cast(c.GtkGrid, headings), label, @intCast(i), 0, 1, 1);
+        c.g_free(letter);
+        c.g_free(name);
+        c.g_date_time_unref(day);
     }
     c.g_date_time_unref(sunday);
-    {
-        var i: c.guint = 0;
-        while (@as(c_ulong, @bitCast(@as(c_ulong, i))) < (@sizeOf([42][*c]c.GtkWidget) / @sizeOf([*c]c.GtkWidget))) : (i += 1) {
-            const day: [*c]c.GtkWidget = blk: {
-                const tmp = c.gtk_button_new();
-                m.calendar_days[i] = tmp;
-                break :blk tmp;
-            };
-            c.gtk_widget_set_halign(day, c.GTK_ALIGN_CENTER);
-            c.gtk_widget_set_valign(day, c.GTK_ALIGN_CENTER);
-            css(day, "calendar-day");
-            if (((i % 7) == 0) or ((i % 7) == 6)) {
-                css(day, "calendar-weekend");
-            }
-            _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(day)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&calendar_select))), @as(c.gpointer, @ptrCast(m)), null, 0);
-            c.gtk_grid_attach(cast(c.GtkGrid, grid), day, @as(c.gint, @bitCast(i % 7)), @as(c.gint, @bitCast(1 +% (i / 7))), 1, 1);
-        }
+    const grid = c.gtk_grid_new();
+    c.gtk_grid_set_column_homogeneous(cast(c.GtkGrid, grid), 1);
+    c.gtk_grid_set_row_homogeneous(cast(c.GtkGrid, grid), 1);
+    c.gtk_box_pack_start(cast(c.GtkBox, calendar), grid, 0, 0, 0);
+    for (&m.calendar_days, 0..) |*slot, i| {
+        const button = c.gtk_button_new();
+        slot.* = button;
+        css(button, "calendar-day");
+        if (i % 7 == 0 or i % 7 == 6) css(button, "calendar-weekend");
+        c.gtk_widget_set_margin_start(button, 2);
+        c.gtk_widget_set_margin_end(button, 2);
+        c.gtk_widget_set_margin_top(button, 2);
+        c.gtk_widget_set_margin_bottom(button, 2);
+        _ = c.g_signal_connect_data(button, "clicked", @ptrCast(&calendar_select), m, null, 0);
+        c.gtk_grid_attach(cast(c.GtkGrid, grid), button, @intCast(i % 7), @intCast(i / 7), 1, 1);
     }
+    c.gtk_box_pack_start(cast(c.GtkBox, box), c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0), 0, 0, 0);
     m.calendar_selected = c.g_date_time_new_now_local();
     calendar_refresh(m);
-    c.gtk_widget_show_all(box);
+    c.gtk_widget_show_all(menu);
 }
 pub fn clock_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
     _ = widget;
@@ -451,10 +512,92 @@ pub fn clock_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
     if (c.gtk_widget_get_visible(m.calendar) != 0) {
         c.gtk_popover_popdown(cast(c.GtkPopover, m.calendar));
     } else {
+        history_reload(m);
+        history_call(m, "CalendarOpen", c.g_variant_new("(b)", @as(c_int, 1)));
+        const pointing = c.GdkRectangle{ .x = 0, .y = 0, .width = c.gtk_widget_get_allocated_width(m.root), .height = 26 };
+        c.gtk_popover_set_pointing_to(cast(c.GtkPopover, m.calendar), &pointing);
         calendar_navigate(null, @as(c.gpointer, @ptrCast(m)));
         c.gtk_popover_popup(cast(c.GtkPopover, m.calendar));
     }
     return 1;
+}
+fn calendar_closed(_: *c.GtkPopover, data: c.gpointer) callconv(.c) void {
+    const m: *Module = @ptrCast(@alignCast(data));
+    history_call(m, "CalendarOpen", c.g_variant_new("(b)", @as(c_int, 0)));
+}
+fn history_call(m: *Module, member: [*:0]const u8, parameters: ?*c.GVariant) void {
+    if (m.dead != 0 or m.session == null) return;
+    c.g_dbus_connection_call(m.session, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.dotfiles.Notifications", member, parameters, null, c.G_DBUS_CALL_FLAGS_NONE, 2000, m.cancel, null, null);
+}
+fn history_clear(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
+    history_call(@ptrCast(@alignCast(data)), "Clear", null);
+}
+fn history_dismiss(data: ?*anyopaque, id: u32) void {
+    history_call(@ptrCast(@alignCast(data)), "Dismiss", c.g_variant_new("(u)", id));
+}
+fn history_activate(data: ?*anyopaque, id: u32, key: [:0]const u8) void {
+    history_call(@ptrCast(@alignCast(data)), "Activate", c.g_variant_new("(us)", id, key.ptr));
+}
+fn history_changed(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: c.gpointer) callconv(.c) void {
+    history_reload(@ptrCast(@alignCast(data)));
+}
+fn history_reload(m: *Module) void {
+    if (m.dead != 0 or m.session == null or m.history_busy) return;
+    m.history_busy = true;
+    m.refs += 1;
+    c.g_dbus_connection_call(m.session, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.dotfiles.Notifications", "List", null, null, c.G_DBUS_CALL_FLAGS_NONE, 2000, m.cancel, &history_ready, m);
+}
+fn history_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
+    const m: *Module = @ptrCast(@alignCast(data));
+    defer unref_module(m);
+    m.history_busy = false;
+    var err: [*c]c.GError = null;
+    const reply = c.g_dbus_connection_call_finish(@ptrCast(source), result, &err);
+    defer c.g_clear_error(&err);
+    if (reply == null) return;
+    defer c.g_variant_unref(reply);
+    if (m.dead != 0) return;
+    const value = c.g_variant_get_child_value(reply, 0);
+    defer c.g_variant_unref(value);
+    const parser = c.json_parser_new();
+    defer c.g_object_unref(parser);
+    if (c.json_parser_load_from_data(parser, c.g_variant_get_string(value, null), -1, null) == 0) return;
+    const root = c.json_parser_get_root(parser);
+    if (c.json_node_get_node_type(root) != c.JSON_NODE_ARRAY) return;
+    const children = c.gtk_container_get_children(cast(c.GtkContainer, m.history_container));
+    var child = children;
+    while (child != null) : (child = child.*.next) c.gtk_widget_destroy(@ptrCast(@alignCast(child.*.data)));
+    c.g_list_free(children);
+    const array = c.json_node_get_array(root);
+    const count = c.json_array_get_length(array);
+    var i = count;
+    while (i > 0) {
+        i -= 1;
+        const object = c.json_array_get_object_element(array, i);
+        if (object == null or c.json_object_has_member(object, "id") == 0 or c.json_object_has_member(object, "created") == 0) continue;
+        var actions: [32]notification_view.Action = undefined;
+        var action_count: usize = 0;
+        if (c.json_object_has_member(object, "actions") != 0) {
+            const list = c.json_object_get_array_member(object, "actions");
+            while (action_count < @min(32, c.json_array_get_length(list))) : (action_count += 1) {
+                const action = c.json_array_get_object_element(list, @intCast(action_count));
+                actions[action_count] = .{ .key = std.mem.span(text(action, "key")), .label = std.mem.span(text(action, "label")) };
+            }
+        }
+        const card = notification_view.View.create(.{
+            .id = @intCast(c.json_object_get_int_member(object, "id")),
+            .created = c.json_object_get_int_member(object, "created"),
+            .app = std.mem.span(text(object, "app")),
+            .title = std.mem.span(text(object, "title")),
+            .body = std.mem.span(text(object, "body")),
+            .icon = std.mem.span(text(object, "icon")),
+            .actions = actions[0..action_count],
+        }, .{ .context = m, .close = &history_dismiss, .activate = &history_activate });
+        css(card.root, "history-notification");
+        c.gtk_box_pack_start(cast(c.GtkBox, m.history_container), card.root, 0, 0, 0);
+    }
+    c.gtk_widget_set_visible(m.history_empty, @intFromBool(count == 0));
+    c.gtk_widget_set_sensitive(m.history_clear, @intFromBool(count > 0));
 }
 pub fn text(o: ?*c.JsonObject, key: [*c]const u8) callconv(.c) [*c]const u8 {
     if (!(c.json_object_has_member(o, key) != 0)) return "";
@@ -488,6 +631,8 @@ pub fn codex_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
         // Dismiss an active tooltip before the popover takes the pointer grab.
         c.gtk_widget_set_tooltip_text(m.box, null);
         c.gtk_widget_trigger_tooltip_query(m.box);
+        const pointing = c.GdkRectangle{ .x = 0, .y = 0, .width = c.gtk_widget_get_allocated_width(m.root), .height = 26 };
+        c.gtk_popover_set_pointing_to(cast(c.GtkPopover, m.codex_menu), &pointing);
         c.gtk_popover_popup(cast(c.GtkPopover, m.codex_menu));
     }
     update_codex_tooltip(m);
@@ -505,8 +650,8 @@ pub fn make_codex_menu(m: *Module) callconv(.c) void {
     c.gtk_popover_set_constrain_to(cast(c.GtkPopover, m.codex_menu), c.GTK_POPOVER_CONSTRAINT_NONE);
     c.gtk_popover_set_position(cast(c.GtkPopover, m.codex_menu), c.GTK_POS_BOTTOM);
     css(m.codex_menu, "gnome-codex-menu");
-    const menu: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 12);
-    c.gtk_widget_set_size_request(menu, 300, -1);
+    const menu: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0);
+    css(menu, "codex-menu-content");
     c.gtk_container_add(cast(c.GtkContainer, m.codex_menu), menu);
     const titles: [2][*c]const u8 = [2][*c]const u8{
         "5-Hour Remaining",
@@ -516,6 +661,7 @@ pub fn make_codex_menu(m: *Module) callconv(.c) void {
         var i: c.guint = 0;
         while (i < 2) : (i += 1) {
             const section: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 6);
+            css(section, "codex-usage-section");
             const header: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 12);
             const title: [*c]c.GtkWidget = c.gtk_label_new(titles[i]);
             c.gtk_label_set_xalign(cast(c.GtkLabel, title), 0);
@@ -526,20 +672,32 @@ pub fn make_codex_menu(m: *Module) callconv(.c) void {
             c.gtk_box_pack_end(cast(c.GtkBox, header), m.codex_percent[i], 0, 0, 0);
             c.gtk_box_pack_start(cast(c.GtkBox, section), header, 0, 0, 0);
             m.codex_progress[i] = c.gtk_progress_bar_new();
+            c.gtk_widget_set_margin_top(m.codex_progress[i], 4);
+            c.gtk_widget_set_margin_bottom(m.codex_progress[i], 4);
             c.gtk_box_pack_start(cast(c.GtkBox, section), m.codex_progress[i], 0, 0, 0);
             m.codex_reset[i] = c.gtk_label_new("Resets: —");
             c.gtk_label_set_xalign(cast(c.GtkLabel, m.codex_reset[i]), 0);
             css(m.codex_reset[i], "codex-reset-label");
             c.gtk_box_pack_start(cast(c.GtkBox, section), m.codex_reset[i], 0, 0, 0);
             c.gtk_box_pack_start(cast(c.GtkBox, menu), section, 0, 0, 0);
-            c.gtk_box_pack_start(cast(c.GtkBox, menu), c.gtk_separator_new(c.GTK_ORIENTATION_HORIZONTAL), 0, 0, 0);
+            const separator = c.gtk_separator_new(c.GTK_ORIENTATION_HORIZONTAL);
+            c.gtk_widget_set_margin_start(separator, 12);
+            c.gtk_widget_set_margin_end(separator, 12);
+            c.gtk_widget_set_margin_top(separator, 9);
+            c.gtk_widget_set_margin_bottom(separator, 9);
+            c.gtk_box_pack_start(cast(c.GtkBox, menu), separator, 0, 0, 0);
         }
     }
     const footer: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 10);
-    m.codex_refresh = c.gtk_button_new_with_label("Refresh");
+    css(footer, "codex-footer");
+    m.codex_refresh = c.gtk_button_new();
     c.gtk_widget_set_sensitive(m.codex_refresh, 0);
-    c.gtk_button_set_image(cast(c.GtkButton, m.codex_refresh), c.gtk_image_new_from_icon_name("view-refresh-symbolic", c.GTK_ICON_SIZE_MENU));
-    c.gtk_button_set_always_show_image(cast(c.GtkButton, m.codex_refresh), 1);
+    const refresh_content = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 6);
+    const refresh_icon = c.gtk_image_new_from_icon_name("view-refresh-symbolic", c.GTK_ICON_SIZE_MENU);
+    c.gtk_image_set_pixel_size(cast(c.GtkImage, refresh_icon), 14);
+    c.gtk_box_pack_start(cast(c.GtkBox, refresh_content), refresh_icon, 0, 0, 0);
+    c.gtk_box_pack_start(cast(c.GtkBox, refresh_content), c.gtk_label_new("Refresh"), 0, 0, 0);
+    c.gtk_container_add(cast(c.GtkContainer, m.codex_refresh), refresh_content);
     _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.codex_refresh)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&codex_refresh))), @as(c.gpointer, @ptrCast(m)), null, 0);
     c.gtk_box_pack_start(cast(c.GtkBox, footer), m.codex_refresh, 0, 0, 0);
     m.codex_checked = c.gtk_label_new("Checked: —");
@@ -869,6 +1027,25 @@ pub fn line_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpoin
     c.g_clear_error(&@"error");
     unref_module(m);
 }
+fn device_changed(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: c.gpointer) callconv(.c) void {
+    const m: *Module = @ptrCast(@alignCast(data));
+    if (m.dead == 0 and m.process != null) c.g_subprocess_send_signal(m.process, c.SIGUSR1);
+}
+fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
+    const m: *Module = @ptrCast(@alignCast(data));
+    var err: [*c]c.GError = null;
+    const connection = c.g_bus_get_finish(result, &err);
+    c.g_clear_error(&err);
+    if (m.dead == 0) {
+        m.session = connection;
+        if (connection != null and m.status != 0) m.device_subscription = c.g_dbus_connection_signal_subscribe(connection, "org.dotfiles.DesktopOsd", "org.dotfiles.DesktopOsd", "DeviceChanged", "/org/dotfiles/DesktopOsd", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &device_changed, m, null);
+        if (connection != null and m.calendar != null) {
+            m.history_subscription = c.g_dbus_connection_signal_subscribe(connection, "org.freedesktop.Notifications", "org.dotfiles.Notifications", "Changed", "/org/freedesktop/Notifications", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &history_changed, m, null);
+            history_reload(m);
+        }
+    } else if (connection != null) c.g_object_unref(connection);
+    unref_module(m);
+}
 pub fn init(root: *c.GtkWidget, options: Options) *Module {
     const m: *Module = @as(*Module, @ptrCast(@alignCast(c.g_malloc0_n(@as(c.gsize, 1), @sizeOf(Module)))));
     m.refs = 1;
@@ -879,8 +1056,10 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
     m.status = @intFromBool(c.g_strcmp0(name, "gnome-status") == 0);
     m.box = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, if ((m.monitors != 0) or (m.status != 0)) 4 else 0);
     if (c.g_strcmp0(name, "gnome-disk") != 0) {
-        c.gtk_widget_set_margin_start(m.box, 15);
-        c.gtk_widget_set_margin_end(m.box, 15);
+        // GtkEventBox doesn't allocate the CSS border like St's PanelMenu.
+        const padding: c_int = if (c.g_strcmp0(name, "gnome-codex") == 0) 12 else 15;
+        c.gtk_widget_set_margin_start(m.box, padding);
+        c.gtk_widget_set_margin_end(m.box, padding);
         if ((m.monitors == 0)) {
             c.gtk_widget_set_margin_top(m.box, 3);
             c.gtk_widget_set_margin_bottom(m.box, 3);
@@ -959,6 +1138,8 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
         _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&power_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
         m.refs += 1;
         c.g_dbus_proxy_new_for_bus(c.G_BUS_TYPE_SYSTEM, c.G_DBUS_PROXY_FLAGS_NONE, null, "org.freedesktop.UPower.PowerProfiles", "/org/freedesktop/UPower/PowerProfiles", "org.freedesktop.UPower.PowerProfiles", m.cancel, &power_ready, @as(c.gpointer, @ptrCast(m)));
+        m.refs += 1;
+        c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
     } else if (c.g_strcmp0(kind, "clock") == 0) {
         m.clock = c.gtk_label_new("");
         c.gtk_container_add(cast(c.GtkContainer, m.box), m.clock);
@@ -967,6 +1148,9 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
         c.gtk_popover_set_position(cast(c.GtkPopover, m.calendar), c.GTK_POS_BOTTOM);
         css(m.calendar, "gnome-calendar");
         make_calendar(m);
+        _ = c.g_signal_connect_data(m.calendar, "closed", @ptrCast(&calendar_closed), m, null, 0);
+        m.refs += 1;
+        c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
         _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&clock_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
         _ = update_clock(@as(c.gpointer, @ptrCast(m)));
         m.clock_timer = c.g_timeout_add_seconds(1, &update_clock, @as(c.gpointer, @ptrCast(m)));
@@ -985,6 +1169,8 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
 }
 pub fn deinit(m: *Module) void {
     m.dead = 1;
+    if (m.device_subscription != 0) c.g_dbus_connection_signal_unsubscribe(m.session, m.device_subscription);
+    if (m.history_subscription != 0) c.g_dbus_connection_signal_unsubscribe(m.session, m.history_subscription);
     if (m.clock_timer != 0) {
         _ = c.g_source_remove(m.clock_timer);
     }

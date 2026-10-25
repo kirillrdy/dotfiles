@@ -4,7 +4,7 @@ pkgs.stdenv.mkDerivation {
   version = "0.1.0";
   src = pkgs.lib.fileset.toSource {
     root = ./.;
-    fileset = pkgs.lib.fileset.fileFilter (file: file.hasExt "zig") ./.;
+    fileset = pkgs.lib.fileset.fileFilter (file: file.hasExt "zig" || file.hasExt "svg") ./.;
   };
   nativeBuildInputs = [
     pkgs.zig_0_17
@@ -44,9 +44,12 @@ pkgs.stdenv.mkDerivation {
       "$out/bin/desktop-apps-fixture"
   '';
   installPhase = ''
+    wrapProgram "$out/bin/desktop-notifications" \
+      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+      --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share"
     wrapProgram "$out/bin/desktop-osd" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share \
+      --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share" \
       --set DESKTOP_OSD_SOUND_FILE ${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/audio-volume-change.oga \
       --suffix PATH : ${
         pkgs.lib.makeBinPath [
@@ -57,7 +60,7 @@ pkgs.stdenv.mkDerivation {
       }
     wrapProgram "$out/bin/desktop-panel" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
+      --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share"
     wrapProgram "$out/bin/desktop-apps" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
     wrapProgram "$out/bin/waybar-panel" --prefix PATH : ${

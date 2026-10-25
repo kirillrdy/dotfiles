@@ -67,7 +67,12 @@ lib.mkIf enableLightDesktop {
   systemd.user.services = {
     wallpaper = sessionService "${pkgs.swaybg}/bin/swaybg -i ${gnomeWallpaper} -m fill";
     desktop-panel = sessionService "${desktopZig}/bin/desktop-panel /etc/xdg/desktop-panel/config.json /etc/xdg/desktop-panel/style.css";
-    mako = sessionService "${pkgs.mako}/bin/mako --config /etc/xdg/mako/config";
+    desktop-notifications =
+      (sessionService "${desktopZig}/bin/desktop-notifications /etc/xdg/desktop-notifications/style.css")
+      // {
+        conflicts = [ "mako.service" ];
+        after = [ "mako.service" ];
+      };
     desktop-osd = sessionService "${osd} serve /etc/xdg/desktop-osd/style.css";
     polkit-agent = sessionService "${pkgs.polkit_gnome}/libexec/polkit-gnome-authentication-agent-1";
     swayidle = sessionService "${pkgs.swayidle}/bin/swayidle -w timeout 600 'swaylock -f -c 1e1e2e' before-sleep 'swaylock -f -c 1e1e2e'";
@@ -78,7 +83,6 @@ lib.mkIf enableLightDesktop {
     brightnessctl
     desktopZig
     grim
-    mako
     pavucontrol
     networkmanagerapplet
     slurp
@@ -115,33 +119,7 @@ lib.mkIf enableLightDesktop {
       window#osd progress { background: #fff; }
       window#osd progressbar:disabled, window#osd image:disabled { opacity: 0.5; }
     '';
-    "xdg/mako/config".text = ''
-      # Match GNOME Shell's banner timeout instead of application expiry hints.
-      default-timeout=4000
-      ignore-timeout=1
-      font=Adwaita Sans 11
-      background-color=#36363a
-      text-color=#ffffff
-      border-color=#ffffff26
-      border-size=1
-      border-radius=16
-      width=400
-      height=200
-      padding=16
-      margin=6,12
-      outer-margin=12,0
-      anchor=top-center
-      icons=1
-      max-icon-size=48
-      icon-location=left
-      icon-border-radius=8
-      icon-path=${pkgs.adwaita-icon-theme}/share/icons/Adwaita:/run/current-system/sw/share/icons/hicolor
-      format=<b>%s</b>\n%b
-      progress-color=over #ffffff26
-
-      [urgency=critical]
-      default-timeout=0
-    '';
+    "xdg/desktop-notifications/style.css".text = builtins.readFile ./desktop-notifications.css;
     "xdg/labwc/rc.xml".text = ''
       <?xml version="1.0"?>
       <labwc_config>
@@ -333,12 +311,27 @@ lib.mkIf enableLightDesktop {
       .gnome-power-menu .profile-choice { background: transparent; border-radius: 12px; padding: 10px; }
       .gnome-power-menu .profile-selected { background: rgba(255,255,255,0.1); }
       .gnome-power-menu .quick-message { font-size: 9pt; font-weight: normal; }
-      .gnome-codex-menu { padding: 20px; }
+      .gnome-codex-menu {
+        background: transparent;
+        border: none;
+        padding: 0;
+        margin: 0;
+        box-shadow: none;
+      }
+      .gnome-codex-menu .codex-menu-content {
+        background: #36363a;
+        padding: 6px;
+        border: 1px solid #424247;
+        border-radius: 20px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      }
+      .gnome-codex-menu .codex-usage-section { min-width: 260px; padding: 13px 12px; }
+      .gnome-codex-menu .codex-footer { padding: 13px 12px 11px; }
       .gnome-codex-menu .codex-section-title { font-size: 13px; font-weight: 600; color: #e0e0e0; }
       .gnome-codex-menu .codex-percent-label { font-size: 13px; }
       .gnome-codex-menu .codex-reset-label { font-size: 11px; font-weight: normal; color: #a0a0a0; }
       .gnome-codex-menu .codex-checked { font-size: 10px; font-weight: normal; font-style: italic; color: #808080; }
-      .gnome-codex-menu separator { min-height: 1px; background: rgba(255,255,255,0.1); }
+      .gnome-codex-menu separator { min-height: 1px; margin: 0; padding: 0; background: rgba(255,255,255,0.1); }
       .gnome-codex-menu progressbar trough { min-height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; }
       .gnome-codex-menu progressbar progress { min-height: 8px; border-radius: 4px; border: none; }
       .gnome-codex-menu .usage-low progress { background: #10a37f; }
@@ -359,6 +352,7 @@ lib.mkIf enableLightDesktop {
       .gnome-codex-menu button label { font-size: 12px; font-weight: 600; }
       .gnome-codex-menu button:hover { background: rgba(255,255,255,0.12); }
       .gnome-codex-menu button:disabled { opacity: 0.5; }
-    '';
+    ''
+    + builtins.readFile ./desktop-notifications.css;
   };
 }

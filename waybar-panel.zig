@@ -220,6 +220,9 @@ fn item(a: A, icon: []const u8, label: []const u8, tooltip: []const u8, cmd: []c
     try u.put(a, &out, "command", u.str(cmd));
     return out;
 }
+pub fn microphoneMuted(output: []const u8) bool {
+    return std.mem.startsWith(u8, output, "Volume:") and std.mem.indexOf(u8, output, "[MUTED]") != null;
+}
 fn statusItems(a: A, demo: bool) !V {
     var items = u.array(a);
     if (demo) {
@@ -237,6 +240,9 @@ fn statusItems(a: A, demo: bool) !V {
     const percentage = if (std.math.isFinite(amount)) amount * 100 else 0;
     const level = if (std.mem.indexOf(u8, volume, "MUTED") != null or !std.math.isFinite(amount)) "muted" else if (percentage >= 66) "high" else if (percentage >= 33) "medium" else "low";
     try items.array.append(try item(a, try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), "", try u.fmt(a, "Volume: {d:.0}%", .{percentage}), "pavucontrol"));
+    if (microphoneMuted(u.command(a, &.{ "wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@" }, 4))) {
+        try items.array.append(try item(a, "microphone-sensitivity-muted-symbolic", "", "Microphone muted", ""));
+    }
     const contents = u.command(a, &.{ "upower", "-i", "/org/freedesktop/UPower/devices/DisplayDevice" }, 4);
     if (u.eq(field(contents, "is-present"), "yes") or field(contents, "percentage").len > 0) {
         const battery = try batteryInfo(a, contents);
@@ -281,7 +287,7 @@ fn run(args_source: std.process.Args) !void {
         _ = u.libc.close(wake_pipe[0]);
         _ = u.libc.close(wake_pipe[1]);
     }
-    if (u.eq(kind, "codex")) std.posix.sigaction(std.posix.SIG.USR1, &.{ .handler = .{ .handler = refreshSignal }, .mask = std.posix.sigemptyset(), .flags = 0 }, null);
+    if (u.eq(kind, "codex") or u.eq(kind, "status")) std.posix.sigaction(std.posix.SIG.USR1, &.{ .handler = .{ .handler = refreshSignal }, .mask = std.posix.sigemptyset(), .flags = 0 }, null);
     while (true) {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();

@@ -1,0 +1,98 @@
+/* GNOME Shell 50.4: _message-list.scss and _notifications.scss. */
+.desktop-notification {
+  font-family: "Adwaita Sans";
+  font-size: 14.666px;
+  font-weight: normal;
+  color: #fff;
+  background: #54545a;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  padding: 6px;
+}
+.desktop-notification label { color: inherit; }
+.desktop-notification .notification-header { color: #b2b2b4; }
+.desktop-notification .notification-source { min-height: 24px; padding-bottom: 6px; }
+.desktop-notification .notification-source-icon { color: #b2b2b4; }
+.desktop-notification .notification-app,
+.desktop-notification .notification-title { font-weight: bold; }
+.desktop-notification .notification-time { font-size: 12px; padding-bottom: 1px; }
+.desktop-notification .notification-content-row { padding: 6px; }
+.desktop-notification button {
+  min-width: 0;
+  min-height: 0;
+  padding: 6px;
+  background: rgba(255,255,255,0.15);
+  background-image: none;
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  box-shadow: none;
+  text-shadow: none;
+  font-weight: bold;
+}
+.desktop-notification button:hover { background: rgba(255,255,255,0.25); }
+.desktop-notification button:active { background: rgba(255,255,255,0.3); }
+.desktop-notification button:focus { box-shadow: inset 0 0 0 2px #99c1f1; }
+.desktop-notification button image { min-width: 16px; min-height: 16px; }
+.desktop-notification .notification-close { margin: 3px; }
+.desktop-notification .notification-actions { padding: 4px; }
+.desktop-notification .notification-action { border-radius: 8px; padding: 6px 12px; }
+window.notification-banner { background: transparent; }
+window.notification-banner .notification-shadow {
+  padding: 8px;
+  background: transparent;
+}
+window.notification-banner .desktop-notification {
+  box-shadow: 0 2px 4px 2px rgba(0,0,0,0.2);
+}
+
+/* GNOME Shell's complete date menu, measured at 1728x1080, scale 1. */
+.gnome-calendar { background: transparent; border: none; padding: 0; box-shadow: none; }
+.gnome-date-menu {
+  background: #36363a;
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 30px;
+  font-family: "Adwaita Sans";
+  font-size: 14.666px;
+  font-weight: normal;
+  padding: 10px;
+  box-shadow: 0 2px 4px 2px rgba(0,0,0,0.2);
+}
+.gnome-date-menu label { font-size: inherit; font-weight: inherit; }
+.gnome-date-menu button {
+  color: #fff;
+  background: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  text-shadow: none;
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+}
+.gnome-date-menu button:hover { background: rgba(255,255,255,0.08); }
+.gnome-date-menu button:active { background: rgba(255,255,255,0.16); }
+.gnome-date-menu .date-menu-separator { min-width: 1px; background: rgba(255,255,255,0.1); }
+.gnome-date-menu .date-menu-controls { padding: 12px 12px 9px; }
+.gnome-date-menu .date-menu-clear {
+  background: #4b4b4f; border-radius: 999px; padding: 0 24px; min-height: 28px; font-weight: bold;
+}
+.gnome-date-menu .date-menu-clear:disabled { color: rgba(255,255,255,0.5); background: rgba(255,255,255,0.05); }
+.gnome-date-menu .date-menu-placeholder { color: rgba(255,255,255,0.45); font-weight: 700; font-size: 20px; }
+.gnome-date-menu .calendar-today-button { padding: 9px; border: 1px solid transparent; border-radius: 16px; }
+.gnome-date-menu .calendar-today-button:disabled { color: #9b9b9d; }
+.gnome-date-menu .calendar-weekday-label { font-size: 14.666px; font-weight: bold; }
+.gnome-date-menu .calendar-date-label { font-size: 20px; font-weight: 800; }
+.gnome-date-menu .calendar-grid { border: 1px solid transparent; }
+.gnome-date-menu .calendar-month { min-width: 147px; min-height: 35px; border-radius: 999px; font-weight: bold; }
+.gnome-date-menu .calendar-pager { min-width: 38px; min-height: 38px; border-radius: 999px; }
+.gnome-date-menu .calendar-day-heading { font-size: 12px; font-weight: bold; padding: 3px 6px; }
+.gnome-date-menu .calendar-day { font-size: 12px; font-weight: bold; min-width: 36px; min-height: 36px; margin: 0; padding: 0; border-radius: 999px; }
+.gnome-date-menu .calendar-weekend { color: #9b9b9d; }
+.gnome-date-menu .calendar-other-month { color: rgba(255,255,255,0.5); font-weight: normal; }
+.gnome-date-menu .calendar-selected { background: rgba(255,255,255,0.1); box-shadow: none; }
+.gnome-date-menu .calendar-today { background: #3584e4; color: #fff; box-shadow: none; }
+.gnome-date-menu .calendar-today:hover { background: #4990e7; }
+.gnome-date-menu .history-notification .desktop-notification { border-radius: 18px; }
+.desktop-notification .notification-expand image.expanded { -gtk-icon-transform: rotate(180deg); }

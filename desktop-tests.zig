@@ -5,6 +5,12 @@ const codex = @import("waybar-codex.zig");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
+test "muted microphone indicator excludes active and unavailable inputs" {
+    try expect(panel.microphoneMuted("Volume: 0.65 [MUTED]\n"));
+    try expect(!panel.microphoneMuted("Volume: 0.65\n"));
+    try expect(!panel.microphoneMuted(""));
+    try expect(!panel.microphoneMuted("No default microphone"));
+}
 test "Linux virtual files are read despite reporting size zero" {
     if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const a = std.testing.allocator;
