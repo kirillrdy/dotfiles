@@ -1,6 +1,5 @@
 pkgs: with pkgs; [
   (import ./neovim.nix pkgs)
-  codex
   ncdu
   gh
   jq

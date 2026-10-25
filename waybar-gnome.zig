@@ -1,12 +1,6 @@
 //! Native Zig implementation of Waybar CFFI ABI v2 and GTK panel popups.
 const std = @import("std");
-pub const c = @cImport({
-    @cInclude("gtk/gtk.h");
-    @cInclude("json-glib/json-glib.h");
-    @cInclude("math.h");
-    @cInclude("signal.h");
-    @cInclude("string.h");
-});
+pub const c = @import("gtk");
 fn cast(comptime T: type, p: anytype) [*c]T {
     return @ptrCast(@alignCast(p));
 }
@@ -429,7 +423,7 @@ pub fn calendar_refresh(m: *Module) callconv(.c) void {
     c.g_free(@as(c.gpointer, @ptrCast(date)));
     c.g_free(@as(c.gpointer, @ptrCast(month)));
     const first: ?*c.GDateTime = c.g_date_time_add_days(m.calendar_selected, 1 - c.g_date_time_get_day_of_month(m.calendar_selected));
-    const start: ?*c.GDateTime = c.g_date_time_add_days(first, -@import("std").zig.c_translation.signedRemainder(c.g_date_time_get_day_of_week(first), 7));
+    const start: ?*c.GDateTime = c.g_date_time_add_days(first, -@import("std").zig.c_translation.helpers.signedRemainder(c.g_date_time_get_day_of_week(first), 7));
     {
         var i: c.guint = 0;
         while (@as(c_ulong, @bitCast(@as(c_ulong, i))) < (@sizeOf([42][*c]c.GtkWidget) / @sizeOf([*c]c.GtkWidget))) : (i += 1) {

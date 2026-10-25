@@ -1,21 +1,36 @@
 const std = @import("std");
 pub const Value = std.json.Value;
 pub const Allocator = std.mem.Allocator;
-pub const libc = @cImport({
-    @cInclude("time.h");
-    @cInclude("unistd.h");
-    @cInclude("poll.h");
-    @cInclude("stdio.h");
-    @cInclude("errno.h");
-});
-pub fn object(a: Allocator) Value {
-    return .{ .object = std.json.ObjectMap.init(a) };
+// Executables provide their process I/O implementation; tests use the runner's.
+pub var io: std.Io = if (@import("builtin").is_test) std.testing.io else undefined;
+pub const libc = @import("libc");
+pub fn sleep(nanoseconds: u64) void {
+    io.sleep(.fromNanoseconds(nanoseconds), .awake) catch {};
+}
+pub fn timestamp() i64 {
+    return std.Io.Clock.real.now(io).toSeconds();
+}
+pub const Timer = struct {
+    started: std.Io.Timestamp,
+    pub fn start() Timer {
+        return .{ .started = std.Io.Clock.awake.now(io) };
+    }
+    pub fn read(self: Timer) u64 {
+        return @intCast(self.started.untilNow(io, .awake).toNanoseconds());
+    }
+};
+pub fn object() Value {
+    return .{ .object = .empty };
 }
 pub fn array(a: Allocator) Value {
-    return .{ .array = std.ArrayList(Value).init(a) };
+    return .{ .array = std.array_list.Managed(Value).init(a) };
 }
-pub fn put(o: *Value, key: []const u8, value: Value) !void {
-    try o.object.put(key, value);
+pub fn put(a: Allocator, o: *Value, key: []const u8, value: Value) !void {
+    try o.object.put(a, key, value);
+}
+pub fn environment(a: Allocator) !std.process.Environ.Map {
+    const environ = std.process.Environ{ .block = .{ .slice = std.mem.span(std.c.environ) } };
+    return environ.createMap(a);
 }
 pub fn str(s: []const u8) Value {
     return .{ .string = s };
@@ -41,14 +56,15 @@ pub fn fmt(a: Allocator, comptime format: []const u8, args: anytype) ![]const u8
     return std.fmt.allocPrint(a, format, args);
 }
 pub fn read(a: Allocator, path: []const u8) ![]const u8 {
-    return std.fs.cwd().readFileAlloc(a, path, 4 * 1024 * 1024);
+    return std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(4 * 1024 * 1024));
 }
 pub fn exists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 pub fn env(name: [:0]const u8) ?[]const u8 {
-    return std.posix.getenv(name);
+    const value = libc.getenv(name);
+    return if (value == null) null else std.mem.span(value);
 }
 pub fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
@@ -60,9 +76,9 @@ pub fn parse(a: Allocator, s: []const u8) !Value {
     return (try std.json.parseFromSlice(Value, a, s, .{ .allocate = .alloc_always })).value;
 }
 pub fn emit(a: Allocator, v: anytype) !void {
-    const s = try std.json.stringifyAlloc(a, v, .{});
-    try std.io.getStdOut().writeAll(s);
-    try std.io.getStdOut().writeAll("\n");
+    const s = try std.json.Stringify.valueAlloc(a, v, .{});
+    try std.Io.File.stdout().writeStreamingAll(io, s);
+    try std.Io.File.stdout().writeStreamingAll(io, "\n");
 }
 pub fn command(a: Allocator, args: []const []const u8, seconds: u32) []const u8 {
     const argv = a.alloc([]const u8, args.len + 3) catch return "";
@@ -70,9 +86,9 @@ pub fn command(a: Allocator, args: []const []const u8, seconds: u32) []const u8 
     argv[1] = "--signal=KILL";
     argv[2] = fmt(a, "{d}", .{seconds}) catch return "";
     @memcpy(argv[3..], args);
-    const result = std.process.Child.run(.{ .allocator = a, .argv = argv, .max_output_bytes = 4 * 1024 * 1024 }) catch return "";
+    const result = std.process.run(a, io, .{ .argv = argv, .stdout_limit = .limited(4 * 1024 * 1024), .stderr_limit = .limited(4 * 1024 * 1024) }) catch return "";
     return switch (result.term) {
-        .Exited => |code| if (code == 0) trim(result.stdout) else "",
+        .exited => |code| if (code == 0) trim(result.stdout) else "",
         else => "",
     };
 }

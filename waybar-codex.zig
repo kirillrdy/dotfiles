@@ -3,15 +3,13 @@ const std = @import("std");
 const u = @import("desktop-util.zig");
 const A = u.Allocator;
 const V = u.Value;
-const curl = @cImport({
-    @cInclude("curl/curl.h");
-});
+const curl = @import("curl");
 
 pub fn unavailable(a: A, message: []const u8, compact: bool) !V {
-    var result = u.object(a);
-    try u.put(&result, "text", u.str(if (compact) "—" else "Codex —"));
-    try u.put(&result, "tooltip", u.str(message));
-    try u.put(&result, "class", u.str("unavailable"));
+    var result = u.object();
+    try u.put(a, &result, "text", u.str(if (compact) "—" else "Codex —"));
+    try u.put(a, &result, "tooltip", u.str(message));
+    try u.put(a, &result, "class", u.str("unavailable"));
     return result;
 }
 pub fn resetText(a: A, reset: V, now: i64) ![]const u8 {
@@ -28,21 +26,21 @@ pub fn formatUsage(a: A, data: V, remaining: bool, compact: bool, now: i64) !V {
     const limits = u.get(data, "rate_limit");
     if (limits != .object) return unavailable(a, "Codex usage is unavailable", compact);
     var labels: [2][]const u8 = undefined;
-    var tooltip = std.ArrayList(u8).init(a);
+    var tooltip = std.array_list.Managed(u8).init(a);
     try tooltip.appendSlice(if (remaining) "Codex allowance remaining" else "Codex allowance used");
     var windows = u.array(a);
     var primary: ?f64 = null;
     var highest: ?f64 = null;
     for ([_][]const u8{ "primary_window", "secondary_window" }, [_][]const u8{ "5h", "7d" }, 0..) |key, label, i| {
         const window = u.get(limits, key);
-        var row = u.object(a);
+        var row = u.object();
         if (u.number(u.get(window, "used_percent"))) |raw| {
             const used = std.math.clamp(raw, 0, 100);
             highest = @max(highest orelse 0, used);
             const display = if (remaining) 100 - used else used;
             if (i == 0) primary = display;
             labels[i] = try u.fmt(a, "{s} {d:.0}%", .{ label, display });
-            try tooltip.writer().print("\n{s}: {d:.0}% {s}", .{ label, display, if (remaining) "remaining" else "used" });
+            try tooltip.appendSlice(try u.fmt(a, "\n{s}: {d:.0}% {s}", .{ label, display, if (remaining) "remaining" else "used" }));
             const reset = u.get(window, "reset_at");
             if (u.number(reset)) |stamp| {
                 if (stamp > -1e12 and stamp < 1e12) {
@@ -50,27 +48,27 @@ pub fn formatUsage(a: A, data: V, remaining: bool, compact: bool, now: i64) !V {
                     try tooltip.appendSlice(date);
                 }
             }
-            try u.put(&row, "percent", u.num(display));
-            try u.put(&row, "reset", u.str(try resetText(a, reset, now)));
+            try u.put(a, &row, "percent", u.num(display));
+            try u.put(a, &row, "reset", u.str(try resetText(a, reset, now)));
         } else {
             labels[i] = try u.fmt(a, "{s} —", .{label});
-            try u.put(&row, "percent", .null);
-            try u.put(&row, "reset", u.str("Resets: —"));
+            try u.put(a, &row, "percent", .null);
+            try u.put(a, &row, "reset", u.str("Resets: —"));
         }
         try windows.array.append(row);
     }
     const highest_used = highest orelse return unavailable(a, "Codex usage is unavailable", compact);
-    var result = u.object(a);
+    var result = u.object();
     const label = if (compact) (if (primary) |p| try u.fmt(a, "{d:.0}%", .{p}) else "—") else try u.fmt(a, "Codex {s} · {s}", .{ labels[0], labels[1] });
-    try u.put(&result, "text", u.str(label));
-    try u.put(&result, "tooltip", u.str(try tooltip.toOwnedSlice()));
-    try u.put(&result, "class", u.str(if (highest_used >= 90) "critical" else if (highest_used >= 75) "warning" else "normal"));
-    try u.put(&result, "percentage", u.num(@round(highest_used)));
-    try u.put(&result, "windows", windows);
-    try u.put(&result, "checked", u.str(try u.localTime(a, now, "Checked: %H:%M:%S")));
+    try u.put(a, &result, "text", u.str(label));
+    try u.put(a, &result, "tooltip", u.str(try tooltip.toOwnedSlice()));
+    try u.put(a, &result, "class", u.str(if (highest_used >= 90) "critical" else if (highest_used >= 75) "warning" else "normal"));
+    try u.put(a, &result, "percentage", u.num(@round(highest_used)));
+    try u.put(a, &result, "windows", windows);
+    try u.put(a, &result, "checked", u.str(try u.localTime(a, now, "Checked: %H:%M:%S")));
     return result;
 }
-const Response = struct { a: A, bytes: std.ArrayList(u8), failed: bool = false };
+const Response = struct { a: A, bytes: std.array_list.Managed(u8), failed: bool = false };
 fn receive(data: [*c]u8, size: usize, count: usize, context: ?*anyopaque) callconv(.c) usize {
     const response: *Response = @ptrCast(@alignCast(context.?));
     const len = std.math.mul(usize, size, count) catch return 0;
@@ -99,13 +97,13 @@ fn fetchUsage(a: A, remaining: bool, compact: bool) !V {
     defer curl.curl_easy_cleanup(handle);
     var headers: ?*curl.struct_curl_slist = null;
     defer curl.curl_slist_free_all(headers);
-    headers = curl.curl_slist_append(headers, try std.fmt.allocPrintZ(a, "Authorization: Bearer {s}", .{token})) orelse return error.OutOfMemory;
+    headers = curl.curl_slist_append(headers, try std.fmt.allocPrintSentinel(a, "Authorization: Bearer {s}", .{token}, 0)) orelse return error.OutOfMemory;
     const account = u.string(u.get(tokens, "account_id"));
     if (account.len > 0) {
         if (std.mem.indexOfAny(u8, account, "\r\n") != null) return error.InvalidAccount;
-        headers = curl.curl_slist_append(headers, try std.fmt.allocPrintZ(a, "ChatGPT-Account-Id: {s}", .{account})) orelse return error.OutOfMemory;
+        headers = curl.curl_slist_append(headers, try std.fmt.allocPrintSentinel(a, "ChatGPT-Account-Id: {s}", .{account}, 0)) orelse return error.OutOfMemory;
     }
-    var response = Response{ .a = a, .bytes = std.ArrayList(u8).init(a) };
+    var response = Response{ .a = a, .bytes = std.array_list.Managed(u8).init(a) };
     if (curl.curl_easy_setopt(handle, curl.CURLOPT_URL, @as([*:0]const u8, "https://chatgpt.com/backend-api/wham/usage")) != curl.CURLE_OK or
         curl.curl_easy_setopt(handle, curl.CURLOPT_HTTPHEADER, headers) != curl.CURLE_OK or
         curl.curl_easy_setopt(handle, curl.CURLOPT_USERAGENT, @as([*:0]const u8, "codex-cli")) != curl.CURLE_OK or
@@ -118,13 +116,14 @@ fn fetchUsage(a: A, remaining: bool, compact: bool) !V {
     if (curl.curl_easy_getinfo(handle, curl.CURLINFO_RESPONSE_CODE, &status) != curl.CURLE_OK) return error.HttpRequest;
     if (status == 401 or status == 403) return unavailable(a, "Codex login needs refreshing; run codex login", compact);
     if (status != 200) return unavailable(a, try u.fmt(a, "Codex usage service returned HTTP {d}", .{status}), compact);
-    return formatUsage(a, try u.parse(a, response.bytes.items), remaining, compact, std.time.timestamp());
+    return formatUsage(a, try u.parse(a, response.bytes.items), remaining, compact, u.timestamp());
 }
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const args = try std.process.argsAlloc(a);
+    u.io = init.io;
+    const args = try init.minimal.args.toSlice(a);
     var remaining = false;
     var compact = false;
     for (args[1..]) |arg| {

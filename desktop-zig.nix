@@ -7,7 +7,7 @@ pkgs.stdenv.mkDerivation {
     fileset = pkgs.lib.fileset.fileFilter (file: file.hasExt "zig") ./.;
   };
   nativeBuildInputs = [
-    pkgs.zig_0_14
+    pkgs.zig_0_17
     pkgs.pkg-config
     pkgs.makeWrapper
     pkgs.xorg-server

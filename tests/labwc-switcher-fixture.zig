@@ -1,25 +1,21 @@
 //! Native Wayland windows for private compositor tests.
 const std = @import("std");
-const c = @cImport({
-    @cInclude("gtk/gtk.h");
-    @cInclude("gdk/gdkwayland.h");
-});
+const c = @import("gtk");
 fn cast(comptime T: type, p: anytype) *T {
     return @ptrCast(@alignCast(p));
 }
 fn activeChanged(object: *c.GObject, _: ?*c.GParamSpec, _: ?*anyopaque) callconv(.c) void {
     const window = cast(c.GtkWindow, object);
     if (c.gtk_window_is_active(window) != 0) {
-        std.io.getStdOut().writer().print("{d} {s}\n", .{ c.g_get_monotonic_time(), c.gtk_window_get_title(window) }) catch {};
+        c.g_print("%lld %s\n", @as(c_longlong, c.g_get_monotonic_time()), c.gtk_window_get_title(window));
     }
 }
 fn quit(_: ?*c.GtkWidget, _: ?*anyopaque) callconv(.c) void {
     c.gtk_main_quit();
 }
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     const a = std.heap.page_allocator;
-    const args = try std.process.argsAlloc(a);
-    defer std.process.argsFree(a, args);
+    const args = try init.minimal.args.toSlice(a);
     if (args.len != 3) return error.InvalidArguments;
     c.g_set_prgname(args[1]);
     c.gtk_init(null, null);

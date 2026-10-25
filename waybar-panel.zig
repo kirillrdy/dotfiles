@@ -11,7 +11,7 @@ const network_colors = [_][]const u8{ "#fce94f", "#ff6e00", "#fb74fb", "#e0006e"
 pub fn cpuCounters(contents: []const u8) [8]u64 {
     var words = std.mem.tokenizeAny(u8, contents[0 .. std.mem.indexOfScalar(u8, contents, '\n') orelse contents.len], " \t");
     _ = words.next();
-    var result = [_]u64{0} ** 8;
+    var result = @as([8]u64, @splat(0));
     for (&result) |*value| value.* = std.fmt.parseInt(u64, words.next() orelse "0", 10) catch 0;
     return result;
 }
@@ -22,7 +22,7 @@ pub fn cpuUsage(previous: [8]u64, current: [8]u64) [5]f64 {
         d.* = new -| old;
         total += @floatFromInt(d.*);
     }
-    if (total == 0) return [_]f64{0} ** 5;
+    if (total == 0) return @as([5]f64, @splat(0));
     const values = [_]u64{ delta[0], delta[2], delta[1], delta[4], delta[5] + delta[6] + delta[7] };
     var result: [5]f64 = undefined;
     for (values, &result) |value, *out| out.* = @as(f64, @floatFromInt(value)) * 100 / total;
@@ -51,7 +51,7 @@ pub fn memoryUsage(contents: []const u8) Memory {
     return .{ .values = values, .used = @as(f64, @floatFromInt(used)) / 1048576, .total = @as(f64, @floatFromInt(total)) / 1048576 };
 }
 fn networkCounters(a: A) ![2]u64 {
-    var result = [_]u64{0} ** 2;
+    var result = @as([2]u64, @splat(0));
     var lines = std.mem.splitScalar(u8, try u.read(a, "/proc/net/dev"), '\n');
     while (lines.next()) |line| {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
@@ -85,17 +85,17 @@ pub fn rateText(a: A, rate: f64) ![]const u8 {
     return u.fmt(a, "{s}<span size=\"62.5%\" alpha=\"65%\"> {s}</span>", .{ try shortNumber(a, value), unit });
 }
 fn graph(a: A, values: []const f64, colors: []const []const u8, sequence: u64, markup: []const u8, tooltip: []const u8, maximum: f64) !V {
-    var out = u.object(a);
+    var out = u.object();
     var series = u.array(a);
     var palette = u.array(a);
     for (values) |v| try series.array.append(u.num(v));
     for (colors) |color| try palette.array.append(u.str(color));
-    try u.put(&out, "values", series);
-    try u.put(&out, "colors", palette);
-    try u.put(&out, "sequence", .{ .integer = @intCast(sequence) });
-    try u.put(&out, "markup", u.str(markup));
-    try u.put(&out, "tooltip", u.str(tooltip));
-    try u.put(&out, "maximum", u.num(maximum));
+    try u.put(a, &out, "values", series);
+    try u.put(a, &out, "colors", palette);
+    try u.put(a, &out, "sequence", .{ .integer = @intCast(sequence) });
+    try u.put(a, &out, "markup", u.str(markup));
+    try u.put(a, &out, "tooltip", u.str(tooltip));
+    try u.put(a, &out, "maximum", u.num(maximum));
     return out;
 }
 fn monitorStream(demo: bool) !void {
@@ -103,10 +103,10 @@ fn monitorStream(demo: bool) !void {
     var previous_cpu = cpuCounters(try u.read(initial.allocator(), "/proc/stat"));
     var previous_net = try networkCounters(initial.allocator());
     initial.deinit();
-    var timer = try std.time.Timer.start();
-    var last = [_]f64{-10} ** 3;
-    var sequences = [_]u64{0} ** 3;
-    var cpu = [_]f64{0} ** 5;
+    const timer = u.Timer.start();
+    var last = @as([3]f64, @splat(-10));
+    var sequences = @as([3]u64, @splat(0));
+    var cpu = @as([5]f64, @splat(0));
     var memory = Memory{ .values = .{ 0, 0, 0 }, .used = 0, .total = 0 };
     var down: f64 = 0;
     var up: f64 = 0;
@@ -142,11 +142,11 @@ fn monitorStream(demo: bool) !void {
         try graphs.array.append(try graph(a, &cpu, &cpu_colors, sequences[0], try u.fmt(a, "{d:.0}<span size=\"62.5%\" alpha=\"65%\">%</span>", .{percent}), try u.fmt(a, "CPU: {d:.0}%", .{percent}), 100));
         try graphs.array.append(try graph(a, &memory.values, &memory_colors, sequences[1], try u.fmt(a, "{s} / {s}<span size=\"62.5%\" alpha=\"65%\"> GiB</span>", .{ try shortNumber(a, memory.used), try shortNumber(a, memory.total) }), try u.fmt(a, "Memory: {d:.0}% programs, {d:.0}% buffers, {d:.0}% cache", .{ memory.values[0], memory.values[1], memory.values[2] }), 100));
         try graphs.array.append(try graph(a, &.{ down, 0, up, 0, 0 }, &network_colors, sequences[2], try u.fmt(a, "{s}\n{s}", .{ try rateText(a, down), try rateText(a, up) }), try u.fmt(a, "Download: {d:.1} KiB/s\nUpload: {d:.1} KiB/s", .{ down / 1024, up / 1024 }), 0));
-        var out = u.object(a);
-        try u.put(&out, "monitors", graphs);
+        var out = u.object();
+        try u.put(a, &out, "monitors", graphs);
         try u.emit(a, out);
         tick += 1;
-        std.Thread.sleep(if (demo) 20 * std.time.ns_per_ms else 500 * std.time.ns_per_ms);
+        u.sleep(if (demo) 20 * std.time.ns_per_ms else 500 * std.time.ns_per_ms);
     }
 }
 pub const Status = struct { icon: []const u8, label: []const u8 = "", tooltip: []const u8 };
@@ -175,10 +175,10 @@ fn wirelessIcon(a: A) !Status {
         const quality = std.fmt.parseFloat(f64, words.next() orelse continue) catch continue;
         if (std.math.isFinite(quality)) return wirelessStrength(a, quality / 70);
     }
-    var dir = std.fs.openDirAbsolute("/sys/class/net", .{ .iterate = true }) catch return .{ .icon = "network-wireless-offline-symbolic", .tooltip = "Network disconnected" };
-    defer dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(u.io, "/sys/class/net", .{ .iterate = true }) catch return .{ .icon = "network-wireless-offline-symbolic", .tooltip = "Network disconnected" };
+    defer dir.close(u.io);
     var entries = dir.iterate();
-    while (try entries.next()) |entry| {
+    while (try entries.next(u.io)) |entry| {
         const base = try u.fmt(a, "/sys/class/net/{s}", .{entry.name});
         if (!u.exists(try u.fmt(a, "{s}/device", .{base}))) continue;
         const state = u.read(a, try u.fmt(a, "{s}/operstate", .{base})) catch continue;
@@ -192,7 +192,7 @@ pub fn batteryInfo(a: A, contents: []const u8) !Status {
     const percent = field(contents, "percentage");
     const state = field(contents, "state");
     var icon: []const u8 = "battery-missing-symbolic";
-    const percentage = std.fmt.parseFloat(f64, std.mem.trimRight(u8, percent, "%")) catch std.math.nan(f64);
+    const percentage = std.fmt.parseFloat(f64, std.mem.trimEnd(u8, percent, "%")) catch std.math.nan(f64);
     if (std.math.isFinite(percentage)) {
         const level: u32 = @as(u32, @intFromFloat(std.math.clamp(percentage, 0, 100))) / 10 * 10;
         if (u.eq(state, "fully-charged") or (u.eq(state, "charging") and level == 100)) icon = "battery-level-100-charged-symbolic" else {
@@ -213,18 +213,18 @@ pub fn batteryInfo(a: A, contents: []const u8) !Status {
     return .{ .icon = icon, .label = label, .tooltip = try u.fmt(a, "Battery: {s} · {s}", .{ if (percent.len > 0) percent else "—", if (state.len > 0) state else "unknown" }) };
 }
 fn item(a: A, icon: []const u8, label: []const u8, tooltip: []const u8, cmd: []const u8) !V {
-    var out = u.object(a);
-    try u.put(&out, "icon", u.str(icon));
-    try u.put(&out, "text", u.str(label));
-    try u.put(&out, "tooltip", u.str(tooltip));
-    try u.put(&out, "command", u.str(cmd));
+    var out = u.object();
+    try u.put(a, &out, "icon", u.str(icon));
+    try u.put(a, &out, "text", u.str(label));
+    try u.put(a, &out, "tooltip", u.str(tooltip));
+    try u.put(a, &out, "command", u.str(cmd));
     return out;
 }
 fn bluetoothPowered(a: A) !bool {
-    var dir = std.fs.openDirAbsolute("/sys/class/rfkill", .{ .iterate = true }) catch return false;
-    defer dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(u.io, "/sys/class/rfkill", .{ .iterate = true }) catch return false;
+    defer dir.close(u.io);
     var entries = dir.iterate();
-    while (try entries.next()) |entry| {
+    while (try entries.next(u.io)) |entry| {
         const kind = u.read(a, try u.fmt(a, "/sys/class/rfkill/{s}/type", .{entry.name})) catch continue;
         const state = u.read(a, try u.fmt(a, "/sys/class/rfkill/{s}/state", .{entry.name})) catch continue;
         if (u.eq(u.trim(kind), "bluetooth") and u.eq(u.trim(state), "1")) return true;
@@ -258,7 +258,7 @@ fn statusItems(a: A, demo: bool) !V {
     return items;
 }
 var wake_pipe: [2]std.posix.fd_t = .{ -1, -1 };
-fn refreshSignal(_: c_int) callconv(.c) void {
+fn refreshSignal(_: std.posix.SIG) callconv(.c) void {
     const saved_errno = u.libc.__errno_location().*;
     defer u.libc.__errno_location().* = saved_errno;
     _ = u.libc.write(wake_pipe[1], "r", 1);
@@ -269,13 +269,14 @@ fn waitRefresh(milliseconds: c_int) void {
     var buf: [128]u8 = undefined;
     while (u.libc.read(wake_pipe[0], &buf, buf.len) > 0) {}
 }
-pub fn main() !void {
-    run() catch |err| if (err != error.BrokenPipe) return err;
+pub fn main(init: std.process.Init) !void {
+    u.io = init.io;
+    run(init.minimal.args) catch |err| if (err != error.WriteFailed) return err;
 }
-fn run() !void {
+fn run(args_source: std.process.Args) !void {
     var startup = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer startup.deinit();
-    const args = try std.process.argsAlloc(startup.allocator());
+    const args = try args_source.toSlice(startup.allocator());
     if (args.len < 2) return error.MissingKind;
     const kind = args[1];
     if (!u.eq(kind, "monitors") and !u.eq(kind, "codex") and !u.eq(kind, "status") and !u.eq(kind, "disk")) return error.InvalidKind;
@@ -288,18 +289,18 @@ fn run() !void {
     }
     const demo = u.eq(u.env("WB_PANEL_DEMO") orelse "", "1");
     if (u.eq(kind, "monitors")) return monitorStream(demo);
-    wake_pipe = try std.posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
+    if (u.libc.pipe2(&wake_pipe, u.libc.O_NONBLOCK | u.libc.O_CLOEXEC) != 0) return error.PipeFailed;
     defer {
-        std.posix.close(wake_pipe[0]);
-        std.posix.close(wake_pipe[1]);
+        _ = u.libc.close(wake_pipe[0]);
+        _ = u.libc.close(wake_pipe[1]);
     }
-    if (u.eq(kind, "codex")) std.posix.sigaction(std.posix.SIG.USR1, &.{ .handler = .{ .handler = refreshSignal }, .mask = std.posix.empty_sigset, .flags = 0 }, null);
+    if (u.eq(kind, "codex")) std.posix.sigaction(std.posix.SIG.USR1, &.{ .handler = .{ .handler = refreshSignal }, .mask = std.posix.sigemptyset(), .flags = 0 }, null);
     while (true) {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        var out = u.object(a);
-        if (u.eq(kind, "status")) try u.put(&out, "items", try statusItems(a, demo)) else if (u.eq(kind, "disk")) {
+        var out = u.object();
+        if (u.eq(kind, "status")) try u.put(a, &out, "items", try statusItems(a, demo)) else if (u.eq(kind, "disk")) {
             const output = u.command(a, &.{ "df", "-h", "/" }, 4);
             var rows = std.mem.splitScalar(u8, output, '\n');
             _ = rows.next();
@@ -309,17 +310,17 @@ fn run() !void {
             const used = words.next() orelse "—";
             var items = u.array(a);
             try items.array.append(try item(a, "", try u.fmt(a, "{s}/{s}", .{ used, total }), "Root filesystem usage", "ghostty -e ncdu /"));
-            try u.put(&out, "items", items);
+            try u.put(a, &out, "items", items);
         } else {
             const result = if (demo) try u.parse(a, "{\"text\":\"54%\",\"tooltip\":\"5h: 54% remaining\\n7d: 93% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}]}") else if (codex_command) |cmd| u.parse(a, u.command(a, &.{ cmd, "--remaining", "--compact" }, 12)) catch try codex.unavailable(a, "Codex usage unavailable", true) else try codex.readUsage(a, true, true);
             var items = u.array(a);
             try items.array.append(try item(a, icon, u.string(u.get(result, "text")), "", ""));
-            try u.put(&out, "items", items);
-            try u.put(&out, "tooltip", u.get(result, "tooltip"));
+            try u.put(a, &out, "items", items);
+            try u.put(a, &out, "tooltip", u.get(result, "tooltip"));
             const windows = u.get(result, "windows");
-            try u.put(&out, "windows", if (windows == .array) windows else u.array(a));
-            try u.put(&out, "error", u.str(if (windows == .array and windows.array.items.len > 0) "" else u.string(u.get(result, "tooltip"))));
-            try u.put(&out, "checked", if (demo) u.str(try u.localTime(a, std.time.timestamp(), "Checked: %H:%M:%S")) else if (u.get(result, "checked") == .string) u.get(result, "checked") else u.str("Checked: —"));
+            try u.put(a, &out, "windows", if (windows == .array) windows else u.array(a));
+            try u.put(a, &out, "error", u.str(if (windows == .array and windows.array.items.len > 0) "" else u.string(u.get(result, "tooltip"))));
+            try u.put(a, &out, "checked", if (demo) u.str(try u.localTime(a, u.timestamp(), "Checked: %H:%M:%S")) else if (u.get(result, "checked") == .string) u.get(result, "checked") else u.str("Checked: —"));
         }
         try u.emit(a, out);
         waitRefresh(if (u.eq(kind, "codex")) 60000 else 5000);

@@ -20,19 +20,19 @@
  };
  
  struct cycle_osd_output {
-@@ -96,6 +99,12 @@
- 
+@@ -97,6 +100,12 @@
  /* Cycle the selected view in the window switcher */
  void cycle_step(enum lab_cycle_dir direction);
-+
+ 
 +/* Application grouping and navigation for the applications style. */
 +bool cycle_same_app(struct view *a, struct view *b);
 +struct view *cycle_app_representative(struct view *view);
 +bool cycle_handle_app_key(uint32_t sym, bool backwards);
 +struct wlr_buffer *cycle_render_thumbnail(struct output *output, struct view *view);
- 
++
  /* Closes the OSD */
  void cycle_finish(bool switch_focus);
+ 
 @@ -164,6 +173,7 @@
  /* Scroll the OSD to show server.cycle.selected_view if needed */
  void cycle_osd_scroll_update(struct cycle_osd_output *osd_output);
@@ -134,14 +134,13 @@
 +			}
 +		} else {
  			link = link->prev;
--		}
--	}
--	struct view *view = wl_container_of(link, view, cycle_link);
--	return view;
 +			if (link == &server.cycle.views) {
 +				link = link->prev;
 +			}
-+		}
+ 		}
+-	}
+-	struct view *view = wl_container_of(link, view, cycle_link);
+-	return view;
 +		struct view *view = wl_container_of(link, view, cycle_link);
 +		if (!group || cycle_app_representative(view) == view) {
 +			return view;
@@ -151,15 +150,15 @@
  }
  
  static struct view *
-@@ -190,8 +227,69 @@
+@@ -190,10 +227,71 @@
  {
  	assert(server.input_mode == LAB_INPUT_STATE_CYCLE);
  
 +	server.cycle.window_selection = server.cycle.filter.app_id == CYCLE_APP_ID_CURRENT;
  	server.cycle.selected_view = get_next_selected_view(direction);
  	update_cycle();
-+}
-+
+ }
+ 
 +static void
 +cycle_app_window(bool backwards)
 +{
@@ -218,9 +217,11 @@
 +	default:
 +		return false;
 +	}
- }
- 
++}
++
  void
+ cycle_finish(bool switch_focus)
+ {
 @@ -255,6 +353,8 @@
  get_osd_impl(void)
  {
@@ -239,7 +240,7 @@
  
  	if (rc.window_switcher.osd.show) {
  		/* Create OSD */
-@@ -451,10 +553,33 @@
+@@ -451,11 +553,34 @@
  	return true;
  }
  
@@ -256,7 +257,7 @@
  update_cycle(void)
  {
  	struct cycle_state *cycle = &server.cycle;
-+
+ 
 +	if (applications_style()) {
 +		struct view *app = cycle_app_representative(cycle->selected_view);
 +		if (cycle->thumbnail_app != app) {
@@ -270,9 +271,10 @@
 +			wl_event_source_timer_update(cycle->thumbnail_timer, 500);
 +		}
 +	}
- 
++
  	if (rc.window_switcher.osd.show) {
  		struct cycle_osd_output *osd_output;
+ 		wl_list_for_each(osd_output, &cycle->osd_outputs, link) {
 @@ -479,6 +604,9 @@
  static void
  destroy_cycle(void)
@@ -307,7 +309,7 @@
  			lab_wlr_scene_buffer_create(tree, thumb_buffer);
 --- /dev/null
 +++ b/src/cycle/osd-applications.c
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,365 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/* GNOME-style application switcher, using the compositor's native cycle list. */
 +#include <assert.h>
@@ -333,26 +335,63 @@
 +#include "scaled-buffer/scaled-icon-buffer.h"
 +#include "view.h"
 +
-+#define PADDING 12
-+#define GAP 12
-+static const float background[] = {0.212f, 0.212f, 0.227f, 1};
-+static const float selected[] = {0.37f, 0.37f, 0.382f, 1};
++/*
++ * GNOME Shell _switcher-popup.scss / altTab.js metrics and palette:
++ *   $base_padding = 6px, $switcher_padding = 12px, $switcher_radius = 28px
++ *   .switcher-popup { spacing: 24px; }
++ *   .switcher-list { background: #2e2e33; border: 1px solid rgba(255,255,255,0.02);
++ *                    padding: 12px; border-radius: 28px; }
++ *   .switcher-list-item-container { spacing: 12px; }
++ *   .item-box { padding: 6px; spacing: 6px; border-radius: 16px; }
++ *   .item-box:selected { background: rgba(255,255,255,0.2); }
++ *   .item-box:highlighted { background: #414149; } // st-lighten(#2e2e33, 8%)
++ *   .thumbnail-box { padding: 2px; spacing: 6px; }
++ *   .thumbnail { width: 256px; }
++ */
++#define SWITCHER_PADDING 12
++#define SWITCHER_RADIUS 28
++#define POPUP_SPACING 24
++#define ITEM_SPACING 12
++#define ITEM_PADDING 6
++#define ITEM_RADIUS 16
++#define THUMB_BOX_PADDING 2
++#define THUMB_DEFAULT_SIZE 256
++#define ARROW_WIDTH 8
++#define ARROW_HEIGHT 4
++static const float background[] = {0x2e / 255.0f, 0x2e / 255.0f, 0x33 / 255.0f, 1};
++static const float panel_border[] = {0.02f, 0.02f, 0.02f, 0.02f};
++static const float selected[] = {0.2f, 0.2f, 0.2f, 0.2f};
++static const float highlighted[] = {0x41 / 255.0f, 0x41 / 255.0f, 0x49 / 255.0f, 1};
 +static const float foreground[] = {1, 1, 1, 1};
++static const float arrow_dim[] = {0.8f, 0.8f, 0.8f, 0.8f};
 +static const float transparent[] = {0, 0, 0, 0};
 +
 +struct shape {
 +	float color[4];
++	float border[4];
 +	int width, height, radius;
 +	bool arrow;
 +};
 +
 +struct application_item {
 +	struct cycle_osd_item base;
-+	struct scaled_buffer *highlight;
++	struct scaled_buffer *selected, *highlighted;
++	struct scaled_buffer *arrow_dim, *arrow_bright;
 +	/* Non-NULL on application tiles; NULL on individual window tiles. */
 +	struct wlr_scene_tree *windows;
 +	int index, slots, step, app_count;
 +};
++
++static void
++rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r)
++{
++	cairo_new_sub_path(cr);
++	cairo_arc(cr, x + w - r, y + r, r, -G_PI_2, 0);
++	cairo_arc(cr, x + w - r, y + h - r, r, 0, G_PI_2);
++	cairo_arc(cr, x + r, y + h - r, r, G_PI_2, G_PI);
++	cairo_arc(cr, x + r, y + r, r, G_PI, 3 * G_PI_2);
++	cairo_close_path(cr);
++}
 +
 +static struct lab_data_buffer *
 +shape_render(struct scaled_buffer *self, double scale)
@@ -364,20 +403,26 @@
 +		return NULL;
 +	}
 +	cairo_t *cr = cairo_create(buffer->surface);
-+	set_cairo_color(cr, shape->color);
 +	double w = shape->width, h = shape->height, r = shape->radius;
 +	if (shape->arrow) {
-+		cairo_move_to(cr, 0, 0);
-+		cairo_line_to(cr, w, 0);
-+		cairo_line_to(cr, w / 2, h);
++		set_cairo_color(cr, shape->color);
++		cairo_set_line_width(cr, 1.0);
++		cairo_move_to(cr, w, 0);
++		cairo_line_to(cr, w * 0.5, h);
++		cairo_line_to(cr, 0, 0);
++		cairo_stroke_preserve(cr);
++		cairo_fill(cr);
 +	} else {
-+		cairo_arc(cr, w - r, r, r, -G_PI_2, 0);
-+		cairo_arc(cr, w - r, h - r, r, 0, G_PI_2);
-+		cairo_arc(cr, r, h - r, r, G_PI_2, G_PI);
-+		cairo_arc(cr, r, r, r, G_PI, 3 * G_PI_2);
++		set_cairo_color(cr, shape->color);
++		rounded_rect(cr, 0, 0, w, h, r);
++		cairo_fill(cr);
++		if (shape->border[3] > 0) {
++			set_cairo_color(cr, shape->border);
++			cairo_set_line_width(cr, 1.0);
++			rounded_rect(cr, 0.5, 0.5, w - 1.0, h - 1.0, MAX(0.0, r - 0.5));
++			cairo_stroke(cr);
++		}
 +	}
-+	cairo_close_path(cr);
-+	cairo_fill(cr);
 +	cairo_destroy(cr);
 +	cairo_surface_flush(buffer->surface);
 +	return buffer;
@@ -391,7 +436,7 @@
 +
 +static struct scaled_buffer *
 +shape_create(struct wlr_scene_tree *parent, int width, int height,
-+		int radius, const float *color, bool arrow)
++		int radius, const float *color, const float *border, bool arrow)
 +{
 +	static const struct scaled_buffer_impl impl = {
 +		.create_buffer = shape_render,
@@ -400,6 +445,9 @@
 +	struct scaled_buffer *buffer = scaled_buffer_create(parent, &impl, true);
 +	struct shape *shape = znew(*shape);
 +	memcpy(shape->color, color, sizeof(shape->color));
++	if (border) {
++		memcpy(shape->border, border, sizeof(shape->border));
++	}
 +	shape->width = width;
 +	shape->height = height;
 +	shape->radius = radius;
@@ -411,7 +459,7 @@
 +
 +static void
 +label_create(struct wlr_scene_tree *tree, struct view *view,
-+		int width, int y, bool window)
++		int width, int pad, int y, bool window)
 +{
 +	struct buf text = BUF_INIT;
 +	struct cycle_osd_field field = {
@@ -420,7 +468,7 @@
 +	cycle_osd_field_get_content(&field, &text, view);
 +	struct scaled_font_buffer *label = scaled_font_buffer_create(tree);
 +	scaled_font_buffer_update(label, text.data ? text.data : "",
-+		width - 2 * PADDING, &rc.font_osd, foreground, transparent);
++		width - 2 * pad, &rc.font_osd, foreground, transparent);
 +	wlr_scene_node_set_position(&label->scene_buffer->node,
 +		(width - label->width) / 2, y);
 +	buf_reset(&text);
@@ -438,8 +486,11 @@
 +		LAB_NODE_CYCLE_OSD_ITEM, NULL, item);
 +	/* Transparent hitbox also makes empty tile space clickable. */
 +	lab_wlr_scene_rect_create(item->base.tree, width, height, (float[4]){0});
-+	item->highlight = shape_create(item->base.tree,
-+		width, height, 16, selected, false);
++	item->selected = shape_create(item->base.tree,
++		width, height, ITEM_RADIUS, selected, NULL, false);
++	item->highlighted = shape_create(item->base.tree,
++		width, height, ITEM_RADIUS, highlighted, NULL, false);
++	wlr_scene_node_set_enabled(&item->highlighted->scene_buffer->node, false);
 +	return item;
 +}
 +
@@ -456,23 +507,28 @@
 +
 +static void
 +windows_create(struct cycle_osd_output *osd_output, struct application_item *app,
-+		int screen_width, int screen_height, int app_x, int panel_width,
-+		int panel_height, int panel_y)
++		int screen_width, int screen_height, int app_x, int tile_width,
++		int panel_width, int panel_height, int panel_y)
 +{
 +	int count = app_window_count(app->base.view);
++	int pad = ITEM_PADDING + THUMB_BOX_PADDING;
++	int label_h = font_height(&rc.font_osd);
 +	/* Keep all windows on screen, shrinking thumbnails on small outputs. */
-+	int width = MIN(280, MAX(1, (screen_width - 4 * PADDING) / count));
-+	int height = MIN(200, MAX(48, screen_height - panel_y - panel_height - 60));
-+	int total_width = count * width + 2 * PADDING;
++	int max_item_w = (screen_width - 2 * SWITCHER_PADDING - (count - 1) * ITEM_SPACING) / count;
++	int thumb_w = MIN(THUMB_DEFAULT_SIZE, MAX(48, max_item_w - 2 * pad));
++	int width = thumb_w + 2 * pad;
++	int avail_h = screen_height - panel_y - panel_height - POPUP_SPACING - 2 * SWITCHER_PADDING;
++	int bin_h = MIN(THUMB_DEFAULT_SIZE, MAX(48, avail_h - 2 * pad - ITEM_PADDING - label_h));
++	int height = bin_h + 2 * pad + ITEM_PADDING + label_h;
++	int total_width = count * width + (count - 1) * ITEM_SPACING + 2 * SWITCHER_PADDING;
 +	app->windows = lab_wlr_scene_tree_create(osd_output->tree);
-+	shape_create(app->windows, total_width, height + 2 * PADDING,
-+		24, background, false);
-+	int x = app_x + app->step / 2 - total_width / 2;
++	shape_create(app->windows, total_width, height + 2 * SWITCHER_PADDING,
++		SWITCHER_RADIUS, background, panel_border, false);
++	int x = app_x + tile_width / 2 - total_width / 2;
 +	/* Coordinates here are relative to the centered application panel. */
 +	int panel_x = (screen_width - panel_width) / 2;
-+	x = MAX(-panel_x + PADDING,
-+		MIN(x, screen_width - panel_x - total_width - PADDING));
-+	wlr_scene_node_set_position(&app->windows->node, x, panel_height + 24);
++	x = MAX(-panel_x, MIN(x, screen_width - panel_x - total_width));
++	wlr_scene_node_set_position(&app->windows->node, x, panel_height + POPUP_SPACING);
 +	int index = 0;
 +	struct view *view;
 +	wl_list_for_each(view, &server.cycle.views, cycle_link) {
@@ -482,11 +538,10 @@
 +		struct application_item *item = item_create(osd_output,
 +			app->windows, view, width, height);
 +		wlr_scene_node_set_position(&item->base.tree->node,
-+			PADDING + index++ * width, PADDING);
++			SWITCHER_PADDING + index++ * (width + ITEM_SPACING), SWITCHER_PADDING);
 +		struct wlr_box bounds = {
-+			.x = PADDING, .y = PADDING,
-+			.width = MAX(1, width - 2 * PADDING),
-+			.height = MAX(1, height - 3 * PADDING - font_height(&rc.font_osd)),
++			.x = pad, .y = pad,
++			.width = thumb_w, .height = bin_h,
 +		};
 +		struct wlr_buffer *buffer = cycle_render_thumbnail(osd_output->output, view);
 +		if (buffer) {
@@ -497,8 +552,8 @@
 +			wlr_scene_node_set_position(&thumb->node, box.x, box.y);
 +			wlr_buffer_drop(buffer);
 +		}
-+		label_create(item->base.tree, view, width,
-+			height - PADDING - font_height(&rc.font_osd), true);
++		label_create(item->base.tree, view, width, pad,
++			pad + bin_h + ITEM_PADDING, true);
 +	}
 +	wlr_scene_node_set_enabled(&app->windows->node, false);
 +}
@@ -515,22 +570,26 @@
 +		count += cycle_app_representative(view) == view;
 +	}
 +	assert(count > 0);
++	int label_h = font_height(&rc.font_osd);
++	int icon_spacing = label_h + 2 * ITEM_PADDING;
 +	int sizes[] = {96, 64, 48, 32, 22};
 +	int icon = 22;
 +	for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
-+		if (count * (sizes[i] + 2 * PADDING + GAP) + PADDING < screen_width) {
++		int sq = sizes[i] + icon_spacing;
++		if (count * sq + (count - 1) * ITEM_SPACING + 2 * SWITCHER_PADDING <= screen_width) {
 +			icon = sizes[i];
 +			break;
 +		}
 +	}
-+	int tile_width = icon + 2 * PADDING;
-+	int step = tile_width + GAP;
-+	int slots = MIN(count, MAX(1, (screen_width - 2 * PADDING) / step));
-+	int width = slots * step - GAP + 2 * PADDING;
-+	int tile_height = icon + 3 * PADDING + font_height(&rc.font_osd);
-+	int height = tile_height + 2 * PADDING;
++	/* GNOME SwitcherButton(square=true) sets tile width equal to tile height. */
++	int tile_size = icon + icon_spacing;
++	int step = tile_size + ITEM_SPACING;
++	int slots = MIN(count, MAX(1, (screen_width - 2 * SWITCHER_PADDING + ITEM_SPACING) / step));
++	int width = slots * step - ITEM_SPACING + 2 * SWITCHER_PADDING;
++	int height = tile_size + 2 * SWITCHER_PADDING;
 +	osd_output->tree = lab_wlr_scene_tree_create(osd_output->output->cycle_osd_tree);
-+	shape_create(osd_output->tree, width, height, 32, background, false);
++	shape_create(osd_output->tree, width, height,
++		SWITCHER_RADIUS, background, panel_border, false);
 +	osd_output->items_tree = lab_wlr_scene_tree_create(osd_output->tree);
 +	int index = 0;
 +	wl_list_for_each(view, &server.cycle.views, cycle_link) {
@@ -538,26 +597,30 @@
 +			continue;
 +		}
 +		struct application_item *item = item_create(osd_output,
-+			osd_output->items_tree, view, tile_width, tile_height);
++			osd_output->items_tree, view, tile_size, tile_size);
 +		item->index = index++;
 +		item->slots = slots;
 +		item->step = step;
 +		item->app_count = count;
-+		int x = PADDING + item->index * step;
-+		wlr_scene_node_set_position(&item->base.tree->node, x, PADDING);
++		int x = SWITCHER_PADDING + item->index * step;
++		wlr_scene_node_set_position(&item->base.tree->node, x, SWITCHER_PADDING);
 +		struct scaled_icon_buffer *image = scaled_icon_buffer_create(
 +			item->base.tree, icon, icon);
 +		scaled_icon_buffer_set_view(image, view);
-+		wlr_scene_node_set_position(&image->scene_buffer->node, PADDING, PADDING);
-+		label_create(item->base.tree, view, tile_width, icon + 2 * PADDING, false);
-+		if (app_window_count(view) > 1) {
-+			struct scaled_buffer *arrow = shape_create(item->base.tree,
-+				12, 6, 0, foreground, true);
-+			wlr_scene_node_set_position(&arrow->scene_buffer->node,
-+				(tile_width - 12) / 2, tile_height + 3);
-+		}
++		wlr_scene_node_set_position(&image->scene_buffer->node,
++			(tile_size - icon) / 2, ITEM_PADDING);
++		label_create(item->base.tree, view, tile_size, ITEM_PADDING,
++			ITEM_PADDING + icon + ITEM_PADDING, false);
++		item->arrow_dim = shape_create(item->base.tree,
++			ARROW_WIDTH, ARROW_HEIGHT, 0, arrow_dim, NULL, true);
++		item->arrow_bright = shape_create(item->base.tree,
++			ARROW_WIDTH, ARROW_HEIGHT, 0, foreground, NULL, true);
++		wlr_scene_node_set_position(&item->arrow_dim->scene_buffer->node,
++			(tile_size - ARROW_WIDTH) / 2, tile_size + ARROW_HEIGHT);
++		wlr_scene_node_set_position(&item->arrow_bright->scene_buffer->node,
++			(tile_size - ARROW_WIDTH) / 2, tile_size + ARROW_HEIGHT);
 +		windows_create(osd_output, item, screen_width, screen_height,
-+			x, width, height, (screen_height - height) / 2);
++			x, tile_size, width, height, (screen_height - height) / 2);
 +	}
 +	struct wlr_box box;
 +	wlr_output_layout_get_box(server.output_layout,
@@ -578,23 +641,33 @@
 +		}
 +	}
 +	wl_list_for_each(item, &osd_output->items, base.link) {
-+		bool active;
 +		if (item->windows) {
-+			active = cycle_same_app(item->base.view, server.cycle.selected_view);
++			bool active = cycle_same_app(item->base.view, server.cycle.selected_view);
++			bool outline = active && server.cycle.window_selection;
 +			int first = MAX(0, MIN(selected_index - item->slots / 2,
 +				item->app_count - item->slots));
 +			wlr_scene_node_set_enabled(&item->base.tree->node,
 +				item->index >= first && item->index < first + item->slots);
 +			wlr_scene_node_set_position(&item->base.tree->node,
-+				PADDING + (item->index - first) * item->step, PADDING);
++				SWITCHER_PADDING + (item->index - first) * item->step, SWITCHER_PADDING);
++			int nwindows = app_window_count(item->base.view);
 +			wlr_scene_node_set_enabled(&item->windows->node, active
 +				&& server.cycle.show_windows
-+				&& (app_window_count(item->base.view) > 1 || server.cycle.window_selection));
++				&& (nwindows > 1 || server.cycle.window_selection));
++			wlr_scene_node_set_enabled(&item->selected->scene_buffer->node,
++				active && !outline);
++			wlr_scene_node_set_enabled(&item->highlighted->scene_buffer->node,
++				outline);
++			bool show_bright = active && (nwindows > 1 || outline);
++			bool show_dim = !active && nwindows > 1;
++			wlr_scene_node_set_enabled(&item->arrow_bright->scene_buffer->node, show_bright);
++			wlr_scene_node_set_enabled(&item->arrow_dim->scene_buffer->node, show_dim);
 +		} else {
-+			active = server.cycle.window_selection
++			bool active = server.cycle.window_selection
 +				&& item->base.view == server.cycle.selected_view;
++			wlr_scene_node_set_enabled(&item->selected->scene_buffer->node, active);
++			wlr_scene_node_set_enabled(&item->highlighted->scene_buffer->node, false);
 +		}
-+		wlr_scene_node_set_enabled(&item->highlight->scene_buffer->node, active);
 +	}
 +}
 +

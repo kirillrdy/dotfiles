@@ -53,12 +53,12 @@ fn bluetoothOutput(m: *p.Module, output: [:0]const u8) void {
     while (m.bluetooth_busy != 0) _ = c.g_main_context_iteration(null, 1);
     c.g_object_unref(process);
 }
-pub fn main() !void {
+pub fn main(process_init: std.process.Init) !void {
     c.gtk_init(null, null);
     c.g_object_set(c.gtk_settings_get_default(), "gtk-enable-animations", @as(c_int, 0), @as(?*anyopaque, null));
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const args = try std.process.argsAlloc(arena.allocator());
+    const args = try process_init.minimal.args.toSlice(arena.allocator());
     if (args.len > 1) {
         const provider = c.gtk_css_provider_new();
         var err: [*c]c.GError = null;
@@ -214,7 +214,7 @@ pub fn main() !void {
     const graph_root = root();
     const monitors = init(graph_root, &.{.{ .key = "kind", .value = "\"monitors\"" }});
     for (0..130) |i| {
-        const sample = try std.fmt.allocPrintZ(arena.allocator(), "{{\"monitors\":[{{\"sequence\":{d},\"values\":[{d}],\"colors\":[\"#0072b3\"],\"maximum\":100}}]}}", .{ i, i });
+        const sample = try std.fmt.allocPrintSentinel(arena.allocator(), "{{\"monitors\":[{{\"sequence\":{d},\"values\":[{d}],\"colors\":[\"#0072b3\"],\"maximum\":100}}]}}", .{ i, i }, 0);
         p.update_line(monitors, sample);
     }
     assert(monitors.graph[0].count == 100);

@@ -10,10 +10,10 @@ fn eq(actual: [*c]const u8, expected: []const u8) void {
     assert(std.mem.eql(u8, std.mem.span(actual), expected));
 }
 fn pump() void {
-    const end = std.time.milliTimestamp() + 100;
-    while (std.time.milliTimestamp() < end) {
+    const end = @divTrunc(c.g_get_monotonic_time(), 1000) + 100;
+    while (@divTrunc(c.g_get_monotonic_time(), 1000) < end) {
         while (c.g_main_context_iteration(null, 0) != 0) {}
-        std.Thread.sleep(std.time.ns_per_ms);
+        c.g_usleep(1000);
     }
 }
 fn firstName(launcher: *apps.Launcher) [*c]const u8 {
@@ -23,13 +23,13 @@ fn firstName(launcher: *apps.Launcher) [*c]const u8 {
     defer c.g_list_free(children);
     return c.gtk_label_get_text(cast(c.GtkLabel, children.*.next.*.data));
 }
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const args = try std.process.argsAlloc(a);
+    const args = try init.minimal.args.toSlice(a);
     if (args.len == 3 and std.mem.eql(u8, args[1], "--record")) {
-        try std.fs.cwd().writeFile(.{ .sub_path = args[2], .data = "launched" });
+        try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = args[2], .data = "launched" });
         return;
     }
     // GLib can cache XDG paths in library constructors, before main. Re-exec
@@ -38,28 +38,27 @@ pub fn main() !void {
         const root = c.g_dir_make_tmp("desktop-apps-XXXXXX", null);
         assert(root != null);
         defer c.g_free(root);
-        defer std.fs.deleteTreeAbsolute(std.mem.span(root)) catch {};
-        var env = try std.process.getEnvMap(a);
+        defer std.Io.Dir.cwd().deleteTree(init.io, std.mem.span(root)) catch {};
+        var env = try init.minimal.environ.createMap(a);
         for ([_][]const u8{ "DESKTOP_APPS_FIXTURE_ROOT", "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_CACHE_HOME" }) |key| try env.put(key, std.mem.span(root));
         try env.put("XDG_CURRENT_DESKTOP", "labwc:wlroots");
         try env.put("LANGUAGE", "C");
-        var child = std.process.Child.init(&.{try std.fs.selfExePathAlloc(a)}, a);
-        child.env_map = &env;
-        const term = try child.spawnAndWait();
-        if (term != .Exited or term.Exited != 0) return error.FixtureFailed;
+        var child = try std.process.spawn(init.io, .{ .argv = &.{try std.process.executablePathAlloc(init.io, a)}, .environ_map = &env });
+        const term = try child.wait(init.io);
+        if (term != .exited or term.exited != 0) return error.FixtureFailed;
         return;
     }
     const base = c.g_getenv("DESKTOP_APPS_FIXTURE_ROOT").?;
     const applications = try std.fmt.allocPrint(a, "{s}/applications", .{base});
-    try std.fs.makeDirAbsolute(applications);
+    try std.Io.Dir.createDirAbsolute(init.io, applications, .default_dir);
     const theme = try std.fmt.allocPrint(a, "{s}/icons/hicolor", .{base});
     const icon_directory = try std.fmt.allocPrint(a, "{s}/scalable/apps", .{theme});
-    try std.fs.cwd().makePath(icon_directory);
-    try std.fs.cwd().writeFile(.{
+    try std.Io.Dir.cwd().createDirPath(init.io, icon_directory);
+    try std.Io.Dir.cwd().writeFile(init.io, .{
         .sub_path = try std.fmt.allocPrint(a, "{s}/index.theme", .{theme}),
         .data = "[Icon Theme]\nName=Fixture\nDirectories=scalable/apps\n[scalable/apps]\nSize=96\nMinSize=1\nMaxSize=512\nType=Scalable\nContext=Applications\n",
     });
-    try std.fs.cwd().writeFile(.{
+    try std.Io.Dir.cwd().writeFile(init.io, .{
         .sub_path = try std.fmt.allocPrint(a, "{s}/desktop-apps-fixture-icon.svg", .{icon_directory}),
         .data = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"96\" height=\"96\"><rect width=\"96\" height=\"96\" fill=\"red\"/></svg>",
     });
@@ -75,7 +74,7 @@ pub fn main() !void {
         .{ .name = "try", .text = "Name=Missing executable\nTryExec=/nonexistent-desktop-apps-fixture\n" },
     };
     for (fixtures) |fixture| {
-        try std.fs.cwd().writeFile(.{
+        try std.Io.Dir.cwd().writeFile(init.io, .{
             .sub_path = try std.fmt.allocPrint(a, "{s}/{s}.desktop", .{ applications, fixture.name }),
             .data = try std.fmt.allocPrint(a, "[Desktop Entry]\nType=Application\nExec=/proc/self/exe\nComment=unrelated description\n{s}", .{fixture.text}),
         });
@@ -159,25 +158,25 @@ pub fn main() !void {
 
     launcher.present();
     const marker = try std.fmt.allocPrint(a, "{s}/launched", .{base});
-    const executable = c.g_shell_quote((try a.dupeZ(u8, try std.fs.selfExePathAlloc(a))).ptr);
+    const executable = c.g_shell_quote((try a.dupeSentinel(u8, try std.process.executablePathAlloc(init.io, a), 0)).ptr);
     defer c.g_free(executable);
-    const quoted_marker = c.g_shell_quote((try a.dupeZ(u8, marker)).ptr);
+    const quoted_marker = c.g_shell_quote((try a.dupeSentinel(u8, marker, 0)).ptr);
     defer c.g_free(quoted_marker);
-    const command = try std.fmt.allocPrintZ(a, "{s} --record {s}", .{ executable, quoted_marker });
+    const command = try std.fmt.allocPrintSentinel(a, "{s} --record {s}", .{ executable, quoted_marker }, 0);
     const success = c.g_app_info_create_from_commandline(command, "Launch fixture", 0, null).?;
     defer c.g_object_unref(success);
     assert(launcher.launch(success));
     assert(c.gtk_widget_get_visible(launcher.window) == 0);
-    const deadline = std.time.milliTimestamp() + 5000;
-    while (std.time.milliTimestamp() < deadline) {
-        if (std.fs.openFileAbsolute(marker, .{})) |file| {
-            file.close();
+    const deadline = @divTrunc(c.g_get_monotonic_time(), 1000) + 5000;
+    while (@divTrunc(c.g_get_monotonic_time(), 1000) < deadline) {
+        if (std.Io.Dir.openFileAbsolute(init.io, marker, .{})) |file| {
+            file.close(init.io);
             break;
         } else |_| {}
         pump();
     }
-    const recorded = try std.fs.cwd().readFileAlloc(a, marker, 1024);
-    eq((try a.dupeZ(u8, recorded)).ptr, "launched");
+    const recorded = try std.Io.Dir.cwd().readFileAlloc(init.io, marker, a, .limited(1024));
+    eq((try a.dupeSentinel(u8, recorded, 0)).ptr, "launched");
 
     // Render a screenshot when explicitly requested for visual inspection.
     if (c.g_getenv("DESKTOP_APPS_SCREENSHOT")) |path| {

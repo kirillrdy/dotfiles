@@ -6,9 +6,9 @@ const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
 test "CPU categories share one total; idle and counter resets stay zero" {
-    try equal([5]f64{ 20, 10, 5, 5, 10 }, panel.cpuUsage(.{0} ** 8, .{ 20, 5, 10, 50, 5, 3, 4, 3 }));
-    try equal([_]f64{0} ** 5, panel.cpuUsage(.{100} ** 8, .{0} ** 8));
-    try equal([_]f64{0} ** 5, panel.cpuUsage(.{0} ** 8, .{ 0, 0, 0, 100, 0, 0, 0, 0 }));
+    try equal([5]f64{ 20, 10, 5, 5, 10 }, panel.cpuUsage(@as([8]u64, @splat(0)), .{ 20, 5, 10, 50, 5, 3, 4, 3 }));
+    try equal(@as([5]f64, @splat(0)), panel.cpuUsage(@as([8]u64, @splat(100)), @as([8]u64, @splat(0))));
+    try equal(@as([5]f64, @splat(0)), panel.cpuUsage(@as([8]u64, @splat(0)), .{ 0, 0, 0, 100, 0, 0, 0, 0 }));
     try equal([8]u64{ 20, 5, 10, 50, 5, 3, 4, 3 }, panel.cpuCounters("cpu  20 5 10 50 5 3 4 3 10\ncpu0 99\n"));
 }
 test "memory separates programs buffers and cache" {
@@ -79,22 +79,19 @@ test "running Codex stream refreshes immediately on SIGUSR1" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var env = try std.process.getEnvMap(a);
+    var env = try u.environment(a);
     try env.put("WB_PANEL_DEMO", "1");
-    var process = std.process.Child.init(&.{ binary, "codex" }, a);
-    process.env_map = &env;
-    process.stdout_behavior = .Pipe;
-    try process.spawn();
-    defer {
-        _ = process.kill() catch {};
-    }
+    var process = try std.process.spawn(u.io, .{ .argv = &.{ binary, "codex" }, .environ_map = &env, .stdout = .pipe });
+    defer process.kill(u.io);
     var fd = u.libc.struct_pollfd{ .fd = process.stdout.?.handle, .events = u.libc.POLLIN, .revents = 0 };
     try expect(u.libc.poll(&fd, 1, 5000) > 0);
-    const first = try u.parse(a, try process.stdout.?.reader().readUntilDelimiterAlloc(a, '\n', 65536));
+    var buffer: [65536]u8 = undefined;
+    var reader = process.stdout.?.reader(u.io, &buffer);
+    const first = try u.parse(a, (try reader.interface.takeDelimiter('\n')).?);
     try equal(@as(?f64, 54), u.number(u.get(u.get(first, "windows").array.items[0], "percent")));
-    try std.posix.kill(process.id, std.posix.SIG.USR1);
+    try std.posix.kill(process.id.?, std.posix.SIG.USR1);
     try expect(u.libc.poll(&fd, 1, 5000) > 0);
-    const second = try u.parse(a, try process.stdout.?.reader().readUntilDelimiterAlloc(a, '\n', 65536));
+    const second = try u.parse(a, (try reader.interface.takeDelimiter('\n')).?);
     try equal(@as(?f64, 93), u.number(u.get(u.get(second, "windows").array.items[1], "percent")));
 }
 test "compact Codex CLI without login emits one placeholder" {
@@ -104,9 +101,9 @@ test "compact Codex CLI without login emits one placeholder" {
     const a = arena.allocator();
     var directory = std.testing.tmpDir(.{});
     defer directory.cleanup();
-    var env = try std.process.getEnvMap(a);
-    try env.put("CODEX_HOME", try directory.dir.realpathAlloc(a, "."));
-    const result = try std.process.Child.run(.{ .allocator = a, .env_map = &env, .argv = &.{ binary, "--remaining", "--compact" } });
-    try equal(std.process.Child.Term{ .Exited = 0 }, result.term);
+    var env = try u.environment(a);
+    try env.put("CODEX_HOME", try directory.dir.realPathFileAlloc(std.testing.io, ".", a));
+    const result = try std.process.run(a, u.io, .{ .environ_map = &env, .argv = &.{ binary, "--remaining", "--compact" } });
+    try equal(std.process.Child.Term{ .exited = 0 }, result.term);
     try strings("—", u.string(u.get(try u.parse(a, result.stdout), "text")));
 }

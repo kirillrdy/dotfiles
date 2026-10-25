@@ -1,9 +1,6 @@
 //! Minimal GNOME-style application grid, using the desktop's GTK/GIO stack.
 const std = @import("std");
-pub const c = @cImport({
-    @cInclude("gtk/gtk.h");
-    @cInclude("gio/gdesktopappinfo.h");
-});
+pub const c = @import("gtk");
 // GTK event unions contain C bitfields that Zig 0.14 cannot translate.
 pub const KeyEvent = extern struct {
     event_type: c_int,
@@ -45,7 +42,7 @@ pub fn rank(name: [*c]const u8, query: [*c]const u8) u8 {
 }
 // GIO's terminal fallback does not consistently include Ghostty. Expand desktop
 // field codes into argv directly, preserving quoting without invoking a shell.
-pub fn terminalArgs(a: std.mem.Allocator, info: *c.GDesktopAppInfo) !std.ArrayList(?[*:0]const u8) {
+pub fn terminalArgs(a: std.mem.Allocator, info: *c.GDesktopAppInfo) !std.array_list.Managed(?[*:0]const u8) {
     const command = c.g_app_info_get_commandline(@ptrCast(info));
     if (command == null) return error.MissingCommand;
     var argc: c_int = 0;
@@ -56,17 +53,17 @@ pub fn terminalArgs(a: std.mem.Allocator, info: *c.GDesktopAppInfo) !std.ArrayLi
         return error.InvalidCommand;
     }
     defer c.g_strfreev(argv);
-    var args = std.ArrayList(?[*:0]const u8).init(a);
+    var args = std.array_list.Managed(?[*:0]const u8).init(a);
     try args.appendSlice(&.{ "ghostty", "-e" });
     for (argv[0..@intCast(argc)]) |argument| {
         const text = std.mem.span(argument);
         if (std.mem.eql(u8, text, "%i")) {
             const icon = c.g_desktop_app_info_get_string(info, "Icon");
             defer c.g_free(icon);
-            if (icon != null and icon[0] != 0) try args.appendSlice(&.{ "--icon", (try a.dupeZ(u8, std.mem.span(icon))).ptr });
+            if (icon != null and icon[0] != 0) try args.appendSlice(&.{ "--icon", (try a.dupeSentinel(u8, std.mem.span(icon), 0)).ptr });
             continue;
         }
-        var expanded = std.ArrayList(u8).init(a);
+        var expanded = std.array_list.Managed(u8).init(a);
         var i: usize = 0;
         while (i < text.len) : (i += 1) {
             if (text[i] != '%') {
@@ -87,7 +84,7 @@ pub fn terminalArgs(a: std.mem.Allocator, info: *c.GDesktopAppInfo) !std.ArrayLi
                 else => return error.InvalidFieldCode,
             }
         }
-        if (expanded.items.len > 0 or text.len == 0) try args.append((try a.dupeZ(u8, expanded.items)).ptr);
+        if (expanded.items.len > 0 or text.len == 0) try args.append((try a.dupeSentinel(u8, expanded.items, 0)).ptr);
     }
     try args.append(null);
     return args;
@@ -107,7 +104,7 @@ pub const Launcher = struct {
     grid: *c.GtkFlowBox,
     empty: *c.GtkWidget,
     message: *c.GtkLabel,
-    entries: std.ArrayList(*Entry),
+    entries: std.array_list.Managed(*Entry),
     query: [*c]u8,
 
     pub fn init(application: ?*c.GtkApplication) Launcher {
@@ -162,7 +159,7 @@ pub const Launcher = struct {
         c.gtk_style_context_add_class(c.gtk_widget_get_style_context(message), "message");
         c.gtk_widget_set_no_show_all(message, 1);
         c.gtk_box_pack_end(cast(c.GtkBox, layout), message, 0, 0, 0);
-        return .{ .window = window.?, .search = cast(c.GtkEntry, search), .grid = cast(c.GtkFlowBox, grid), .empty = empty.?, .message = cast(c.GtkLabel, message), .entries = std.ArrayList(*Entry).init(std.heap.c_allocator), .query = fold("") };
+        return .{ .window = window.?, .search = cast(c.GtkEntry, search), .grid = cast(c.GtkFlowBox, grid), .empty = empty.?, .message = cast(c.GtkLabel, message), .entries = std.array_list.Managed(*Entry).init(std.heap.c_allocator), .query = fold("") };
     }
 
     // Bind after init: callbacks retain this stable address.
