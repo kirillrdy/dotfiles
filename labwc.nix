@@ -101,7 +101,6 @@ in
 lib.mkIf enableLightDesktop {
   programs.labwc.enable = true;
   programs.labwc.package = desktopCompositor;
-  programs.thunar.enable = true;
   services.greetd = {
     enable = true;
     useTextGreeter = true;
@@ -253,7 +252,6 @@ lib.mkIf enableLightDesktop {
           <keybind key="W-d"><action name="Execute" command="${lib.getExe appLauncher}" /></keybind>
           <keybind key="W-a"><action name="Execute" command="${lib.getExe appLauncher}" /></keybind>
           <keybind key="Super_L" onRelease="yes"><action name="Execute" command="${lib.getExe appLauncher}" /></keybind>
-          <keybind key="W-e"><action name="Execute" command="thunar" /></keybind>
           <keybind key="W-l"><action name="Execute" command="swaylock -f -c 1e1e2e" /></keybind>
           <keybind key="W-S-e"><action name="Exit" /></keybind>
           <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="${lib.getExe volumeControl} up" /></keybind>
