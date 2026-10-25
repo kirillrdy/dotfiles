@@ -100,7 +100,7 @@
   services.orca.enable = false;
   services.speechd.enable = false;
   services.openssh.enable = true;
-  services.tailscale.enable = true;
+  services.tailscale.enable = false;
   services.xserver.videoDrivers = lib.optional enableNvidia "nvidia";
   services.xserver.xkb.options = "caps:none";
   swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
