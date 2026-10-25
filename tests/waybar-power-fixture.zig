@@ -137,7 +137,16 @@ pub fn main() !void {
     assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
     c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
     assert(c.gtk_widget_get_visible(usage.codex_menu) == 0);
-    p.update_line(usage, "{\"items\":[{\"text\":\"54%\"}],\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"checked\":\"Checked: 12:00:00\"}");
+    p.update_line(usage, "{\"items\":[{\"text\":\"54%\"}],\"tooltip\":\"5h: 54% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"checked\":\"Checked: 12:00:00\"}");
+    eq(c.gtk_widget_get_tooltip_text(usage.box), "5h: 54% remaining");
+    c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
+    assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
+    assert(c.gtk_widget_get_tooltip_text(usage.box) == null);
+    p.update_line(usage, "{\"items\":[{\"text\":\"54%\"}],\"tooltip\":\"5h: 54% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"checked\":\"Checked: 12:00:00\"}");
+    assert(c.gtk_widget_get_tooltip_text(usage.box) == null);
+    c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
+    assert(c.gtk_widget_get_visible(usage.codex_menu) == 0);
+    eq(c.gtk_widget_get_tooltip_text(usage.box), "5h: 54% remaining");
     eq(c.gtk_label_get_text(cast(c.GtkLabel, usage.codex_percent[0])), "54.0% remaining");
     eq(c.gtk_label_get_text(cast(c.GtkLabel, usage.codex_percent[1])), "93.0% remaining");
     assert(@abs(c.gtk_progress_bar_get_fraction(cast(c.GtkProgressBar, usage.codex_progress[0])) - 0.54) < 0.001);

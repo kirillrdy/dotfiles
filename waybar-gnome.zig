@@ -92,6 +92,7 @@ pub const Module = extern struct {
     codex_checked: [*c]c.GtkWidget = null,
     codex_refresh: [*c]c.GtkWidget = null,
     codex_error: [*c]c.GtkWidget = null,
+    tooltip: [*c]u8 = null,
 };
 pub fn unref_module(m: *Module) callconv(.c) void {
     m.refs -= 1;
@@ -116,6 +117,7 @@ pub fn unref_module(m: *Module) callconv(.c) void {
     c.g_free(@as(c.gpointer, @ptrCast(m.bluetooth_command)));
     c.g_free(@as(c.gpointer, @ptrCast(m.bluetooth_settings_command)));
     c.g_free(@as(c.gpointer, @ptrCast(m.network_settings_command)));
+    c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
     {
         var i: c.guint = 0;
         while (i < 8) : (i += 1) {
@@ -575,6 +577,22 @@ pub fn text(o: ?*c.JsonObject, key: [*c]const u8) callconv(.c) [*c]const u8 {
     const node: ?*c.JsonNode = c.json_object_get_member(o, key);
     return if ((c.json_node_get_node_type(node) == c.JSON_NODE_VALUE) and (c.json_node_get_value_type(node) == @as(c.GType, @bitCast(@as(c_long, 16 << @intCast(2)))))) c.json_node_get_string(node) else @as([*c]const c.gchar, @ptrCast(@alignCast("")));
 }
+pub fn update_codex_tooltip(m: *Module) callconv(.c) void {
+    if (m.dead != 0) return;
+    const hide = m.codex_menu != null and c.gtk_widget_get_visible(m.codex_menu) != 0;
+    c.gtk_widget_set_tooltip_text(m.box, if (hide or m.tooltip == null or m.tooltip.* == 0) null else m.tooltip);
+}
+pub fn codex_menu_visibility(object: ?*c.GObject, pspec: ?*c.GParamSpec, data: c.gpointer) callconv(.c) void {
+    _ = object;
+    _ = pspec;
+    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
+    update_codex_tooltip(m);
+}
+pub fn codex_menu_closed(popover: [*c]c.GtkPopover, data: c.gpointer) callconv(.c) void {
+    _ = popover;
+    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
+    update_codex_tooltip(m);
+}
 pub fn codex_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
     _ = widget;
     const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
@@ -584,6 +602,7 @@ pub fn codex_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
     } else {
         c.gtk_popover_popup(cast(c.GtkPopover, m.codex_menu));
     }
+    update_codex_tooltip(m);
     return 1;
 }
 pub fn codex_refresh(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) void {
@@ -648,6 +667,8 @@ pub fn make_codex_menu(m: *Module) callconv(.c) void {
     _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.codex_error)), "notify::label", @as(c.GCallback, @ptrCast(@alignCast(&message_changed))), @as(?*anyopaque, @ptrFromInt(0)), null, 0);
     c.gtk_box_pack_start(cast(c.GtkBox, menu), m.codex_error, 0, 0, 0);
     c.gtk_widget_show_all(menu);
+    _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.codex_menu)), "notify::visible", @as(c.GCallback, @ptrCast(@alignCast(&codex_menu_visibility))), @as(c.gpointer, @ptrCast(m)), null, 0);
+    _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.codex_menu)), "closed", @as(c.GCallback, @ptrCast(@alignCast(&codex_menu_closed))), @as(c.gpointer, @ptrCast(m)), null, 0);
     _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&codex_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
 }
 pub fn update_codex(m: *Module, o: ?*c.JsonObject) callconv(.c) void {
@@ -895,7 +916,9 @@ pub fn update_line(m: *Module, line: [*c]const u8) callconv(.c) void {
             } else if ((m.monitors == 0) and (c.json_object_has_member(o, "items") != 0)) {
                 update_items(m, c.json_object_get_array_member(o, "items"));
             }
-            c.gtk_widget_set_tooltip_text(m.box, text(o, "tooltip"));
+            c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
+            m.tooltip = c.g_strdup(text(o, "tooltip"));
+            update_codex_tooltip(m);
             if (m.codex_menu != null) {
                 update_codex(m, o);
             }
@@ -948,7 +971,9 @@ pub fn line_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpoin
             }
             read_next(m);
         } else {
-            c.gtk_widget_set_tooltip_text(m.box, "Panel data unavailable; retrying");
+            c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
+            m.tooltip = c.g_strdup("Panel data unavailable; retrying");
+            update_codex_tooltip(m);
             m.restart = c.g_timeout_add_seconds(5, &start_process, @as(c.gpointer, @ptrCast(m)));
         }
     }
