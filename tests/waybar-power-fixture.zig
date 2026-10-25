@@ -9,6 +9,23 @@ fn cast(comptime T: type, ptr: anytype) *T {
 fn eq(a: [*c]const u8, b: [:0]const u8) void {
     assert(std.mem.eql(u8, std.mem.span(a), b));
 }
+fn pumpEvents(milliseconds: i64) void {
+    const end = c.g_get_monotonic_time() + milliseconds * 1000;
+    while (c.g_get_monotonic_time() < end) {
+        while (c.g_main_context_iteration(null, 0) != 0) {}
+        c.g_usleep(1000);
+    }
+}
+fn tooltipVisible() bool {
+    const windows = c.gtk_window_list_toplevels();
+    defer c.g_list_free(windows);
+    var node = windows;
+    while (node != null) : (node = node.*.next) {
+        if (c.g_strcmp0(c.g_type_name_from_instance(cast(c.GTypeInstance, node.*.data)), "GtkTooltipWindow") == 0 and
+            c.gtk_widget_get_visible(cast(c.GtkWidget, node.*.data)) != 0) return true;
+    }
+    return false;
+}
 fn rootWidget(module: ?*p.WaybarModule) callconv(.c) [*c]c.GtkContainer {
     return @ptrCast(@alignCast(module));
 }
@@ -139,8 +156,18 @@ pub fn main() !void {
     assert(c.gtk_widget_get_visible(usage.codex_menu) == 0);
     p.update_line(usage, "{\"items\":[{\"text\":\"54%\"}],\"tooltip\":\"5h: 54% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"checked\":\"Checked: 12:00:00\"}");
     eq(c.gtk_widget_get_tooltip_text(usage.box), "5h: 54% remaining");
+    pumpEvents(50);
+    var x: c.gint = 0;
+    var y: c.gint = 0;
+    _ = c.gdk_window_get_origin(c.gtk_widget_get_window(codex_root), &x, &y);
+    const pointer = c.gdk_seat_get_pointer(c.gdk_display_get_default_seat(c.gdk_display_get_default()));
+    c.gdk_device_warp(pointer, c.gdk_screen_get_default(), x + @divTrunc(c.gtk_widget_get_allocated_width(codex_root), 2), y + @divTrunc(c.gtk_widget_get_allocated_height(codex_root), 2));
+    c.gtk_widget_trigger_tooltip_query(usage.box);
+    pumpEvents(750);
+    assert(tooltipVisible());
     c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
     assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
+    assert(!tooltipVisible());
     assert(c.gtk_widget_get_tooltip_text(usage.box) == null);
     p.update_line(usage, "{\"items\":[{\"text\":\"54%\"}],\"tooltip\":\"5h: 54% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"checked\":\"Checked: 12:00:00\"}");
     assert(c.gtk_widget_get_tooltip_text(usage.box) == null);

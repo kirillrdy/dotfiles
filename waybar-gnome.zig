@@ -581,6 +581,7 @@ pub fn update_codex_tooltip(m: *Module) callconv(.c) void {
     if (m.dead != 0) return;
     const hide = m.codex_menu != null and c.gtk_widget_get_visible(m.codex_menu) != 0;
     c.gtk_widget_set_tooltip_text(m.box, if (hide or m.tooltip == null or m.tooltip.* == 0) null else m.tooltip);
+    if (hide) c.gtk_widget_trigger_tooltip_query(m.box);
 }
 pub fn codex_menu_visibility(object: ?*c.GObject, pspec: ?*c.GParamSpec, data: c.gpointer) callconv(.c) void {
     _ = object;
@@ -600,6 +601,9 @@ pub fn codex_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
     if (c.gtk_widget_get_visible(m.codex_menu) != 0) {
         c.gtk_popover_popdown(cast(c.GtkPopover, m.codex_menu));
     } else {
+        // Dismiss an active tooltip before the popover takes the pointer grab.
+        c.gtk_widget_set_tooltip_text(m.box, null);
+        c.gtk_widget_trigger_tooltip_query(m.box);
         c.gtk_popover_popup(cast(c.GtkPopover, m.codex_menu));
     }
     update_codex_tooltip(m);
