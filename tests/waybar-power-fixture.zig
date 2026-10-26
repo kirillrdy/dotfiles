@@ -46,6 +46,7 @@ pub fn main(process_init: std.process.Init) !void {
         }
         return;
     }
+    _ = c.g_setenv("GSETTINGS_BACKEND", "memory", 1);
     c.gtk_init(null, null);
     // Resolve and decode the SVGs, rather than only checking GtkImage names.
     if (c.g_getenv("DESKTOP_PANEL_ICON_PATH")) |path| {
@@ -141,7 +142,8 @@ pub fn main(process_init: std.process.Init) !void {
     p.update_line(status, "{\"items\":[{\"icon\":\"audio-volume-high-symbolic\"},{\"icon\":\"battery-level-80-symbolic\"}]}");
     assert(c.gtk_widget_get_visible(status.item[0].box) != 0 and c.gtk_widget_get_visible(status.item[1].box) != 0);
     p.update_line(status, "{\"items\":[{\"icon\":\"network-wired-symbolic\",\"tooltip\":\"Wired network\"}]}");
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, status.network_label)), "Wired network");
+    // Collector tooltips must not overwrite the quick-settings connection name.
+    eq(c.gtk_label_get_text(cast(c.GtkLabel, status.network_label)), "");
     if (args.len > 1) {
         c.gtk_widget_show_all(status_window);
         pumpEvents(50);
@@ -154,15 +156,34 @@ pub fn main(process_init: std.process.Init) !void {
         c.gtk_style_context_get_border(c.gtk_widget_get_style_context(status_root), c.GTK_STATE_FLAG_NORMAL, &border);
         std.debug.print("quick settings: panel module border {d}px\n", .{border.top});
         assert(border.top == 3 and border.left == 3);
-        const children = c.gtk_container_get_children(cast(c.GtkContainer, content));
-        defer c.g_list_free(children);
-        const network = c.gtk_grid_get_child_at(cast(c.GtkGrid, children.*.data), 0, 0);
+        const network = status.quick.?.network.button;
         var height: c.GValue = std.mem.zeroes(c.GValue);
         c.gtk_style_context_get_property(c.gtk_widget_get_style_context(network), "min-height", c.GTK_STATE_FLAG_NORMAL, &height);
         std.debug.print("quick settings: tile minimum height {d}px\n", .{c.g_value_get_int(&height)});
         assert(c.g_value_get_int(&height) == 48);
         c.g_value_unset(&height);
     }
+    const controls = status.quick.?;
+    if (controls.interface) |prefs| {
+        const before = c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, controls.dark.button));
+        c.gtk_button_clicked(cast(c.GtkButton, controls.dark.button));
+        assert(c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, controls.dark.button)) != before);
+        const color_scheme = c.g_settings_get_string(prefs, "color-scheme");
+        eq(color_scheme, if (before == 0) "prefer-dark" else "default");
+        c.g_free(color_scheme);
+    }
+    if (controls.notifications) |prefs| {
+        const before = c.g_settings_get_boolean(prefs, "show-banners");
+        c.gtk_button_clicked(cast(c.GtkButton, controls.dnd.button));
+        assert(c.g_settings_get_boolean(prefs, "show-banners") != before);
+        _ = c.g_settings_set_boolean(prefs, "show-banners", before);
+    }
+    c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, controls.power.arrow.?), 1);
+    assert(c.gtk_widget_get_visible(controls.profile_menu) != 0);
+    c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, controls.network.arrow.?), 1);
+    assert(c.gtk_widget_get_visible(controls.network_menu) != 0 and c.gtk_widget_get_visible(controls.profile_menu) == 0);
+    c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, controls.network.arrow.?), 0);
+    assert(c.gtk_widget_get_visible(controls.network_menu) == 0);
     p.power_select(cast(c.GtkButton, status.power_buttons[0]), status);
     p.deinit(status);
     pumpEvents(500);

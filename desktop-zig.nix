@@ -44,6 +44,8 @@ pkgs.stdenv.mkDerivation {
   '';
   doCheck = true;
   checkPhase = ''
+    export GSETTINGS_BACKEND=memory
+    export GSETTINGS_SCHEMA_DIR=${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}/glib-2.0/schemas
     python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-zig" --subcommand greeter
     zig build test-power -Doptimize=ReleaseSafe -j2
     WB_PANEL_BINARY="$out/bin/waybar-panel" WB_CODEX_BINARY="$out/bin/waybar-codex" zig build test -Doptimize=ReleaseSafe -j2
@@ -108,6 +110,7 @@ pkgs.stdenv.mkDerivation {
       --set DESKTOP_POWER_HELPER "$out/bin/desktop-zig" \
       --set DESKTOP_POWER_SUBCOMMAND power \
       --set DESKTOP_POWER_PKEXEC /run/wrappers/bin/pkexec \
+      --prefix XDG_DATA_DIRS : "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share" \
       --set DESKTOP_OSD_SOUND_FILE ${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/audio-volume-change.oga \

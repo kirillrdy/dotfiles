@@ -320,47 +320,6 @@ lib.mkIf enableLightDesktop {
       .gnome-calendar .calendar-selected { box-shadow: inset 0 0 0 2px #b6b6b9; }
       .gnome-calendar .calendar-today { background-color: #3584e4; color: #fff; box-shadow: none; }
       .gnome-calendar .calendar-today:hover { background-color: #4990e7; }
-      .gnome-power-menu {
-        background: transparent;
-        border: none;
-        padding: 0;
-        box-shadow: none;
-      }
-      .gnome-power-menu .quick-settings-content {
-        background: #36363a;
-        color: #fff;
-        border: 1px solid rgba(255,255,255,0.15);
-        border-radius: 36px;
-        padding: 18px;
-        box-shadow: 0 8px 18px rgba(0,0,0,0.25);
-      }
-      .gnome-power-menu button {
-        background: #505054;
-        background-image: none;
-        color: #fff;
-        border: none;
-        box-shadow: none;
-        text-shadow: none;
-        transition: background-color 150ms ease;
-      }
-      .gnome-power-menu button:hover { background: #626266; }
-      .gnome-power-menu button:disabled { opacity: 0.5; }
-      .gnome-power-menu button:focus { box-shadow: inset 0 0 0 2px #99c1f1; }
-      .gnome-power-menu .quick-toggle {
-        border-radius: 999px;
-        min-width: 160px;
-        min-height: 48px;
-        padding: 8px 16px;
-      }
-      .gnome-power-menu .quick-toggle-title { font-size: 11pt; }
-      .gnome-power-menu .quick-toggle-subtitle { font-size: 9pt; font-weight: normal; }
-      .gnome-power-menu .quick-active { background: #3584e4; }
-      .gnome-power-menu .quick-active:hover { background: #4990e7; }
-      .gnome-power-menu .quick-toggle-menu { background: #454549; border-radius: 24px; padding: 12px; }
-      .gnome-power-menu .quick-menu-title { font-size: 14pt; padding: 6px 10px 12px; }
-      .gnome-power-menu .profile-choice { background: transparent; border-radius: 12px; padding: 10px; }
-      .gnome-power-menu .profile-selected { background: rgba(255,255,255,0.1); }
-      .gnome-power-menu .quick-message { font-size: 9pt; font-weight: normal; }
       .gnome-codex-menu {
         background: transparent;
         border: none;
@@ -403,6 +362,7 @@ lib.mkIf enableLightDesktop {
       .gnome-codex-menu button:hover { background: rgba(255,255,255,0.12); }
       .gnome-codex-menu button:disabled { opacity: 0.5; }
     ''
+    + builtins.readFile ./desktop-quick-settings.css
     + builtins.readFile ./desktop-notifications.css;
   };
 }

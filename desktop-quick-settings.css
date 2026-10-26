@@ -1,0 +1,100 @@
+/* GNOME Shell 50.4 quick settings, in logical pixels at the default 11pt font. */
+.gnome-power-menu {
+  background: transparent; border: none; padding: 0; margin: 0; box-shadow: none;
+}
+.gnome-power-menu .quick-settings-content {
+  min-width: 364px;
+  margin: -6px;
+  background: #36363a; color: #fff;
+  border: 1px solid #424247; border-radius: 36px;
+  padding: 18px;
+  box-shadow: 0 2px 4px 2px rgba(0,0,0,0.2);
+  font-family: "Adwaita Sans"; font-size: 14.666px;
+}
+.gnome-power-menu button {
+  background: #48484b; background-image: none; color: #fff;
+  padding: 0; border: none; box-shadow: none; text-shadow: none;
+  font-weight: bold;
+  transition: background-color 150ms ease;
+}
+.gnome-power-menu button:hover { background: #525256; }
+.gnome-power-menu button:active { background: #5f5f63; }
+.gnome-power-menu button:checked { background: #3584e4; }
+.gnome-power-menu button:checked:hover { background: #4390e8; }
+.gnome-power-menu button:disabled { opacity: 0.5; }
+.gnome-power-menu button:focus { box-shadow: inset 0 0 0 2px rgba(153,193,241,0.8); }
+.gnome-power-menu .quick-icon-button {
+  min-width: 38px; min-height: 38px; border-radius: 999px;
+}
+.gnome-power-menu .quick-battery {
+  min-height: 38px; border-radius: 999px; padding: 0 15px;
+}
+.gnome-power-menu .quick-tile { min-width: 176px; }
+.gnome-power-menu .quick-toggle {
+  min-width: 0; min-height: 48px; padding: 0; border-radius: 999px;
+}
+.gnome-power-menu .quick-toggle-content { margin: 0 12px 0 15px; }
+.gnome-power-menu .quick-toggle-split { border-radius: 999px 0 0 999px; }
+.gnome-power-menu .quick-toggle-split .quick-toggle-content { margin-right: 9px; }
+.gnome-power-menu .quick-toggle-title { font-size: 14.666px; font-weight: bold; }
+.gnome-power-menu .quick-toggle-subtitle { font-size: 12px; font-weight: normal; }
+.gnome-power-menu .quick-toggle-arrow,
+.gnome-power-menu .quick-toggle-arrow:checked {
+  min-width: 35px; min-height: 48px; padding: 0; border-radius: 0 999px 999px 0;
+  background: #5a5a5e;
+}
+.gnome-power-menu .quick-toggle-arrow:hover { background: #646469; }
+.gnome-power-menu .quick-toggle-separator {
+  min-width: 1px; margin: 0; padding: 0; background: rgba(255,255,255,0.25);
+}
+.gnome-power-menu .quick-active .quick-toggle-arrow { background: #5396e8; }
+.gnome-power-menu .quick-active .quick-toggle-separator { background: rgba(255,255,255,0.3); }
+.gnome-power-menu .quick-slider { min-height: 28px; }
+.gnome-power-menu .quick-slider .quick-icon-button {
+  min-width: 28px; min-height: 28px; background: transparent;
+}
+.gnome-power-menu .quick-slider .quick-icon-button:hover { background: rgba(255,255,255,0.08); }
+.gnome-power-menu scale { min-height: 28px; padding: 0 6px; }
+.gnome-power-menu scale contents { min-height: 28px; }
+.gnome-power-menu scale trough {
+  min-height: 4px; border-radius: 999px; border: none; background: rgba(255,255,255,0.1);
+}
+.gnome-power-menu scale highlight { border: none; border-radius: 999px; background: #3584e4; }
+.gnome-power-menu scale slider {
+  min-width: 16px; min-height: 16px; margin: -6px 0;
+  border: none; border-radius: 999px; background: #e8e8e8; box-shadow: none;
+}
+.gnome-power-menu .quick-toggle-menu {
+  background: #48484b; border-radius: 24px; padding: 12px;
+}
+.gnome-power-menu .quick-menu-title {
+  font-size: 20px; font-weight: bold; padding: 6px 12px 18px;
+}
+.gnome-power-menu .profile-choice {
+  min-height: 24px; background: transparent; border-radius: 12px; padding: 6px 12px;
+  font-size: 14.666px; font-weight: normal;
+}
+.gnome-power-menu .profile-choice:hover { background: rgba(255,255,255,0.08); }
+.gnome-power-menu .quick-message { font-size: 12px; font-weight: normal; }
+
+.gnome-power-menu .quick-menu-header { margin: 0 0 12px; }
+.gnome-power-menu .quick-menu-header .quick-menu-title { padding: 0; }
+.gnome-power-menu .quick-menu-header-icon {
+  padding: 9px; border-radius: 999px; background: rgba(255,255,255,0.2);
+}
+.gnome-power-menu .profile-choice .profile-check { min-width: 16px; }
+
+.gnome-power-menu .quick-menu-separator { min-height: 1px; margin: 12px; background: rgba(255,255,255,0.1); }
+/* GNOME overlays its inactive controls with 40% black while a submenu is open. */
+.gnome-power-menu .quick-submenu-open { background: #202023; border-color: #28282b; }
+.gnome-power-menu .quick-submenu-open .quick-system-row button,
+.gnome-power-menu .quick-submenu-open .quick-tile button { background: #2b2b2d; color: #999; }
+.gnome-power-menu .quick-submenu-open .quick-tile .quick-toggle-arrow { background: #363638; }
+.gnome-power-menu .quick-submenu-open .quick-active .quick-toggle { background: #204f88; }
+.gnome-power-menu .quick-submenu-open .quick-active .quick-toggle-arrow { background: #325a8b; }
+.gnome-power-menu .quick-submenu-open .quick-slider { color: #999; }
+.gnome-power-menu .quick-submenu-open .quick-slider button { color: #999; }
+.gnome-power-menu .quick-submenu-open scale trough { background: #2c2c2e; }
+.gnome-power-menu .quick-submenu-open scale highlight { background: #204f88; }
+.gnome-power-menu .quick-submenu-open scale slider { background: #8b8b8b; }
+.gnome-power-menu .quick-active-menu .quick-menu-header-icon { background: #3584e4; }

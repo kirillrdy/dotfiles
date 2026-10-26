@@ -245,7 +245,7 @@ const Server = struct {
                 break;
             };
             old.destroy();
-            if (self.calendar_open) notice.pending = false;
+            if (self.calendar_open or (!notice.critical and !@import("desktop-quick-settings.zig").bannersEnabled())) notice.pending = false;
             self.changed();
             self.showNext();
             return notice.id;
@@ -255,7 +255,7 @@ const Server = struct {
         self.next_id +%= 1;
         if (self.notices.items.len >= 100) self.close(self.notices.items[0].id, 1);
         try self.notices.append(allocator, notice);
-        if (self.calendar_open) notice.pending = false;
+        if (self.calendar_open or (!notice.critical and !@import("desktop-quick-settings.zig").bannersEnabled())) notice.pending = false;
         if (notice.critical and self.active != null and !self.active.?.critical) self.hide();
         self.changed();
         self.showNext();

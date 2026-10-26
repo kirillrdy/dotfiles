@@ -1,6 +1,7 @@
 //! Shared GTK widgets and popups for the standalone desktop panel.
 const std = @import("std");
 const power_backend = @import("power");
+const quick = @import("desktop-quick-settings.zig");
 const notification_view = @import("desktop-notification-view.zig");
 pub const c = @import("gtk");
 fn cast(comptime T: type, p: anytype) [*c]T {
@@ -72,9 +73,12 @@ pub const Module = extern struct {
     device_subscription: c.guint = 0,
     settings_subscription: c.guint = 0,
     power_menu: [*c]c.GtkWidget = null,
+    quick: ?*quick.Controls = null,
     power_label: [*c]c.GtkWidget = null,
     power_icon: [*c]c.GtkWidget = null,
     power_message: [*c]c.GtkWidget = null,
+    power_labels: [3][*c]c.GtkWidget = @splat(null),
+    power_checks: [3][*c]c.GtkWidget = @splat(null),
     power_buttons: [3][*c]c.GtkWidget = std.mem.zeroes([3][*c]c.GtkWidget),
     power_pending: c.gboolean = 0,
     network_icon: [*c]c.GtkWidget = null,
@@ -183,13 +187,21 @@ pub fn apply_power_state(m: *Module, state: power_backend.State) void {
         if (selected) c.gtk_style_context_add_class(style, "profile-selected") else c.gtk_style_context_remove_class(style, "profile-selected");
         const label = c.g_strdup_printf("%s%s", power_names[i], @as([*:0]const u8, if (selected) "  ✓" else ""));
         defer c.g_free(label);
-        c.gtk_button_set_label(cast(c.GtkButton, m.power_buttons[i]), label);
+        if (m.power_labels[i] != null) {
+            c.gtk_label_set_text(cast(c.GtkLabel, m.power_labels[i]), power_names[i]);
+            c.gtk_widget_set_opacity(m.power_checks[i], if (selected) 1 else 0);
+        } else c.gtk_button_set_label(cast(c.GtkButton, m.power_buttons[i]), label);
         c.gtk_widget_set_visible(m.power_buttons[i], @intFromBool(state.available[i]));
         c.gtk_widget_set_sensitive(m.power_buttons[i], @intFromBool(m.power_pending == 0));
         if (selected) {
             c.gtk_label_set_text(cast(c.GtkLabel, m.power_label), power_names[i]);
             c.gtk_image_set_from_icon_name(cast(c.GtkImage, m.power_icon), power_icons[i], c.GTK_ICON_SIZE_MENU);
         }
+    }
+    if (m.quick) |controls| {
+        const selected = state.active != null and state.active.? != .balanced;
+        c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, controls.power.button), @intFromBool(selected));
+        if (selected) css(controls.power.widget, "quick-active") else c.gtk_style_context_remove_class(c.gtk_widget_get_style_context(controls.power.widget), "quick-active");
     }
     const available = state.available[0] or state.available[1] or state.available[2];
     if (!available) c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), "Power profiles unavailable") else if (c.g_strcmp0(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "Power profiles unavailable") == 0) c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), "");
@@ -835,7 +847,7 @@ pub fn update_items(m: *Module, array: ?*c.JsonArray) callconv(.c) void {
                 }
             }
             const icon: [*c]const u8 = text(o, "icon");
-            if ((m.network_icon != null) and (c.g_str_has_prefix(icon, "network-") != 0)) {
+            if (m.quick == null and (m.network_icon != null) and (c.g_str_has_prefix(icon, "network-") != 0)) {
                 c.gtk_image_set_from_icon_name(cast(c.GtkImage, m.network_icon), icon, c.GTK_ICON_SIZE_MENU);
                 c.gtk_label_set_text(cast(c.GtkLabel, m.network_label), text(o, "tooltip"));
             }
@@ -1045,55 +1057,55 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
     } else if (c.g_strcmp0(name, "gnome-codex") == 0) {
         make_codex_menu(m);
     } else if (m.status != 0) {
-        m.power_icon = c.gtk_image_new_from_icon_name(power_icons[@as(c_uint, @intCast(1))], c.GTK_ICON_SIZE_MENU);
-        m.power_label = c.gtk_label_new("Power Mode");
         m.power_menu = c.gtk_popover_new(m.root);
         c.gtk_popover_set_constrain_to(cast(c.GtkPopover, m.power_menu), c.GTK_POPOVER_CONSTRAINT_NONE);
         c.gtk_popover_set_position(cast(c.GtkPopover, m.power_menu), c.GTK_POS_BOTTOM);
         css(m.power_menu, "gnome-power-menu");
-        const menu: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 12);
-        css(menu, "quick-settings-content");
-        c.gtk_container_add(cast(c.GtkContainer, m.power_menu), menu);
-        const tiles: [*c]c.GtkWidget = c.gtk_grid_new();
-        c.gtk_grid_set_row_spacing(cast(c.GtkGrid, tiles), 12);
-        c.gtk_grid_set_column_spacing(cast(c.GtkGrid, tiles), 12);
-        c.gtk_grid_set_column_homogeneous(cast(c.GtkGrid, tiles), 1);
-        c.gtk_box_pack_start(cast(c.GtkBox, menu), tiles, 0, 0, 0);
-        m.network_icon = c.gtk_image_new_from_icon_name("network-wireless-symbolic", c.GTK_ICON_SIZE_MENU);
-        m.network_label = c.gtk_label_new("Connections");
-        const network: [*c]c.GtkWidget = quick_tile(c.gtk_button_new(), "Network", m.network_icon, m.network_label, 1);
-        c.gtk_grid_attach(cast(c.GtkGrid, tiles), network, 0, 0, 1, 1);
+        m.quick = quick.Controls.create(m.power_menu.?, if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr);
+        const controls = m.quick.?;
+        const menu = controls.content;
+        // The controller owns the shared GNOME geometry and asynchronous device controls.
+        m.power_icon = controls.power.icon;
+        m.power_label = controls.power.subtitle;
+        m.network_icon = controls.network.icon;
+        m.network_label = controls.network.subtitle;
         m.network_settings_command = if (options.network_settings_command) |command| c.g_strdup(command) else null;
-        if (m.network_settings_command != null) {
-            _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(network)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&settings_launch))), @as(c.gpointer, @ptrCast(m.network_settings_command)), null, 0);
-        }
-        const power: [*c]c.GtkWidget = quick_tile(c.gtk_toggle_button_new(), "Power Mode", m.power_icon, m.power_label, 1);
-        c.gtk_grid_attach(cast(c.GtkGrid, tiles), power, 0, 1, 1, 1);
-        const sound: [*c]c.GtkWidget = quick_tile(c.gtk_button_new(), "Sound", c.gtk_image_new_from_icon_name("audio-volume-high-symbolic", c.GTK_ICON_SIZE_MENU), null, 1);
-        // The signal owns its command independently of the parsed config.
-        _ = c.g_signal_connect_data(sound, "clicked", @ptrCast(&settings_launch), c.g_strdup(options.sound_settings_command.ptr), &free_command, 0);
-        c.gtk_grid_attach(cast(c.GtkGrid, tiles), sound, 1, 0, 1, 1);
-        const profiles: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 4);
+        _ = c.g_signal_connect_data(controls.power.button, "clicked", @ptrCast(&power_toggle), m, null, 0);
+        const profiles: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0);
         css(profiles, "quick-toggle-menu");
-        const heading: [*c]c.GtkWidget = c.gtk_label_new("Power Mode");
+        const header = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 12);
+        css(header, "quick-menu-header");
+        const header_icon = c.gtk_image_new_from_icon_name("power-profile-balanced-symbolic", c.GTK_ICON_SIZE_LARGE_TOOLBAR);
+        c.gtk_image_set_pixel_size(cast(c.GtkImage, header_icon), 24);
+        css(header_icon, "quick-menu-header-icon");
+        c.gtk_box_pack_start(cast(c.GtkBox, header), header_icon, 0, 0, 0);
+        const heading = c.gtk_label_new("Power Mode");
         c.gtk_label_set_xalign(cast(c.GtkLabel, heading), 0);
         css(heading, "quick-menu-title");
-        c.gtk_box_pack_start(cast(c.GtkBox, profiles), heading, 0, 0, 0);
+        c.gtk_box_pack_start(cast(c.GtkBox, header), heading, 1, 1, 0);
+        c.gtk_box_pack_start(cast(c.GtkBox, profiles), header, 0, 0, 0);
         {
             var i: c.guint = 0;
             while (@as(c_ulong, @bitCast(@as(c_ulong, i))) < (@sizeOf([3][*c]const u8) / @sizeOf([*c]const u8))) : (i += 1) {
-                m.power_buttons[i] = c.gtk_button_new_with_label(power_names[i]);
+                m.power_buttons[i] = c.gtk_button_new();
                 css(m.power_buttons[i], "profile-choice");
-                c.gtk_label_set_xalign(cast(c.GtkLabel, c.gtk_bin_get_child(cast(c.GtkBin, @as(?*anyopaque, @ptrCast(c.g_type_check_instance_cast(cast(c.GTypeInstance, m.power_buttons[i]), c.gtk_bin_get_type())))))), 0);
+                const row = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 6);
+                m.power_checks[i] = c.gtk_label_new("✓");
+                css(m.power_checks[i], "profile-check");
+                c.gtk_box_pack_start(cast(c.GtkBox, row), c.gtk_image_new_from_icon_name(power_icons[i], c.GTK_ICON_SIZE_MENU), 0, 0, 0);
+                m.power_labels[i] = c.gtk_label_new(power_names[i]);
+                c.gtk_label_set_xalign(cast(c.GtkLabel, m.power_labels[i]), 0);
+                c.gtk_box_pack_start(cast(c.GtkBox, row), m.power_labels[i], 0, 0, 0);
+                c.gtk_box_pack_start(cast(c.GtkBox, row), m.power_checks[i], 0, 0, 0);
+                c.gtk_container_add(cast(c.GtkContainer, m.power_buttons[i]), row);
                 c.g_object_set_data(cast(c.GObject, m.power_buttons[i]), "profile", @as(c.gpointer, @ptrCast(@constCast(@volatileCast(power_ids[i])))));
                 _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.power_buttons[i])), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&power_select))), @as(c.gpointer, @ptrCast(m)), null, 0);
                 c.gtk_box_pack_start(cast(c.GtkBox, profiles), m.power_buttons[i], 0, 0, 0);
             }
         }
-        const revealer: [*c]c.GtkWidget = c.gtk_revealer_new();
-        c.gtk_container_add(cast(c.GtkContainer, revealer), profiles);
-        c.gtk_box_pack_start(cast(c.GtkBox, menu), revealer, 0, 0, 0);
-        _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(power)), "toggled", @as(c.GCallback, @ptrCast(@alignCast(&power_expand))), @as(c.gpointer, @ptrCast(revealer)), null, 0);
+        controls.addPowerSettings(profiles, m.power_buttons);
+        c.gtk_container_add(cast(c.GtkContainer, controls.profile_menu), profiles);
+        c.gtk_widget_show_all(profiles);
         m.power_message = c.gtk_label_new("");
         c.gtk_label_set_line_wrap(cast(c.GtkLabel, m.power_message), 1);
         c.gtk_label_set_max_width_chars(cast(c.GtkLabel, m.power_message), 40);
@@ -1153,6 +1165,7 @@ pub fn deinit(m: *Module) void {
     if (m.calendar_selected != null) {
         c.g_date_time_unref(m.calendar_selected);
     }
+    if (m.quick) |controls| controls.deinit();
     if (m.power_menu != null) {
         c.gtk_widget_destroy(m.power_menu);
     }
@@ -1182,3 +1195,10 @@ pub fn deinit(m: *Module) void {
 
 /// Session callback for built-in collectors; invoked only on the GTK thread.
 pub var refresh_source: ?*const fn ([]const u8) void = null;
+
+fn power_toggle(_: *c.GtkToggleButton, data: c.gpointer) callconv(.c) void {
+    const m: *Module = @ptrCast(@alignCast(data));
+    const state = (power_backend.Backend{}).inspect();
+    const index: usize = if (state.active == .balanced and state.available[2]) 2 else 1;
+    power_select(cast(c.GtkButton, m.power_buttons[index]), m);
+}
