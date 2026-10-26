@@ -2,6 +2,8 @@
 pkgs.stdenv.mkDerivation {
   pname = "desktop-zig";
   version = "0.1.0";
+  outputs = [ "out" "tests" ];
+  meta.mainProgram = "desktop-zig";
   src = pkgs.lib.fileset.toSource {
     root = ./.;
     fileset = pkgs.lib.fileset.fileFilter (
@@ -33,10 +35,16 @@ pkgs.stdenv.mkDerivation {
   buildPhase = ''
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
     zig build --prefix "$out" -Doptimize=ReleaseSafe -j2
+    # Compatibility names share the same executable; fixtures exercise these modes.
+    for name in desktop-greeter desktop-power desktop-askpass desktop-screenshot \
+      desktop-panel desktop-wallpaper desktop-notifications desktop-osd desktop-polkit \
+      desktop-overview desktop-settings desktop-apps waybar-panel waybar-codex grim slurp; do
+      ln -s desktop-zig "$out/bin/$name"
+    done
   '';
   doCheck = true;
   checkPhase = ''
-    python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-greeter"
+    python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-zig" --subcommand greeter
     zig build test-power -Doptimize=ReleaseSafe -j2
     WB_PANEL_BINARY="$out/bin/waybar-panel" WB_CODEX_BINARY="$out/bin/waybar-codex" zig build test -Doptimize=ReleaseSafe -j2
     Xvfb :99 -nolisten tcp &
@@ -67,6 +75,16 @@ pkgs.stdenv.mkDerivation {
       zig build test-screenshot -Doptimize=ReleaseSafe -j2
   '';
   installPhase = ''
+    # Keep test programs and legacy component entry points outside the desktop output.
+    mkdir -p "$tests/bin"
+    for name in desktop-apps-fixture waybar-power-fixture labwc-switcher-fixture \
+      desktop-pointer-fixture check-labwc-switcher \
+      desktop-greeter desktop-power desktop-screenshot desktop-panel desktop-wallpaper \
+      desktop-notifications desktop-osd desktop-polkit desktop-overview desktop-settings \
+      desktop-apps waybar-panel waybar-codex; do
+      mv "$out/bin/$name" "$tests/bin/$name"
+    done
+    ln -s "$out/bin/desktop-zig" "$tests/bin/desktop-zig"
     mkdir -p "$out/share/polkit-1/actions"
     cat > "$out/share/polkit-1/actions/org.dotfiles.desktop-power.policy" <<EOF
     <?xml version="1.0" encoding="UTF-8"?>
@@ -80,65 +98,28 @@ pkgs.stdenv.mkDerivation {
           <allow_inactive>auth_admin</allow_inactive>
           <allow_active>yes</allow_active>
         </defaults>
-        <annotate key="org.freedesktop.policykit.exec.path">$out/bin/desktop-power</annotate>
+        <annotate key="org.freedesktop.policykit.exec.path">$out/bin/desktop-zig</annotate>
+        <annotate key="org.freedesktop.policykit.exec.argv1">power</annotate>
       </action>
     </policyconfig>
     EOF
-    wrapProgram "$out/bin/desktop-screenshot" \
+    wrapProgram "$out/bin/desktop-zig" \
+      --run 'export DESKTOP_ZIG_INVOKED_AS="$0"' \
+      --set DESKTOP_POWER_HELPER "$out/bin/desktop-zig" \
+      --set DESKTOP_POWER_SUBCOMMAND power \
+      --set DESKTOP_POWER_PKEXEC /run/wrappers/bin/pkexec \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
-    ln -s desktop-screenshot "$out/bin/grim"
-    ln -s desktop-screenshot "$out/bin/slurp"
-    wrapProgram "$out/bin/desktop-polkit" \
-      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
-    wrapProgram "$out/bin/desktop-askpass" \
-      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
-    wrapProgram "$out/bin/desktop-settings" \
-      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share \
+      --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share" \
+      --set DESKTOP_OSD_SOUND_FILE ${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/audio-volume-change.oga \
       --suffix PATH : ${
         pkgs.lib.makeBinPath [
           pkgs.coreutils
           pkgs.wireplumber
           pkgs.pipewire
           pkgs.networkmanager
-        ]
-      }
-    wrapProgram "$out/bin/desktop-overview" \
-      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
-    wrapProgram "$out/bin/desktop-wallpaper" \
-      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
-    wrapProgram "$out/bin/desktop-notifications" \
-      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share"
-    wrapProgram "$out/bin/desktop-osd" \
-      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share" \
-      --set DESKTOP_OSD_SOUND_FILE ${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/audio-volume-change.oga \
-      --suffix PATH : ${
-        pkgs.lib.makeBinPath [
-          pkgs.wireplumber
+          pkgs.upower
           pkgs.brightnessctl
-          pkgs.pipewire
         ]
       }
-    wrapProgram "$out/bin/desktop-panel" \
-      --set DESKTOP_POWER_HELPER "$out/bin/desktop-power" \
-      --set DESKTOP_POWER_PKEXEC /run/wrappers/bin/pkexec \
-      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share"
-    wrapProgram "$out/bin/desktop-apps" \
-      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
-    wrapProgram "$out/bin/waybar-panel" --prefix PATH : ${
-      pkgs.lib.makeBinPath [
-        pkgs.coreutils
-        pkgs.wireplumber
-        pkgs.upower
-        pkgs.networkmanager
-      ]
-    }
   '';
 }

@@ -583,3 +583,42 @@ test "volume rejects invalid data and clamps amplification" {
     try std.testing.expectError(error.InvalidVolume, volume("Volume: -1"));
     try std.testing.expectError(error.InvalidVolume, volume("unavailable"));
 }
+
+/// Keep dialog states alive until their asynchronous jobs have completed.
+pub const Service = struct {
+    windows: std.ArrayList(*Settings) = .empty,
+
+    pub fn show(self: *Service, app: *c.GtkApplication, mode: Mode) !void {
+        self.reap();
+        for (self.windows.items) |settings| {
+            if (!settings.closed and settings.mode == mode) {
+                c.gtk_window_present(cast(c.GtkWindow, settings.window));
+                return;
+            }
+        }
+        try self.windows.ensureUnusedCapacity(a, 1);
+        const settings = Settings.create(mode);
+        self.windows.appendAssumeCapacity(settings);
+        c.gtk_application_add_window(app, cast(c.GtkWindow, settings.window));
+    }
+
+    pub fn reap(self: *Service) void {
+        var i: usize = 0;
+        while (i < self.windows.items.len) {
+            const settings = self.windows.items[i];
+            if (settings.closed and settings.jobs == null) {
+                _ = self.windows.orderedRemove(i);
+                settings.destroy();
+            } else i += 1;
+        }
+    }
+
+    pub fn deinit(self: *Service) void {
+        for (self.windows.items) |settings| if (!settings.closed) c.gtk_widget_destroy(settings.window);
+        while (self.windows.items.len > 0) {
+            self.reap();
+            if (self.windows.items.len > 0) _ = c.g_main_context_iteration(null, 1);
+        }
+        self.windows.deinit(a);
+    }
+};

@@ -627,8 +627,8 @@ fn drawImage(cr: *c.cairo_t, image: ?*c.cairo_surface_t, r: Rect, opacity: f64) 
     }
 }
 
-const State = struct { overview: ?*Overview = null, wallpaper: [*:0]const u8 };
-fn activate(app: *c.GtkApplication, data: c.gpointer) callconv(.c) void {
+pub const State = struct { overview: ?*Overview = null, wallpaper: [*:0]const u8 };
+pub fn activate(app: *c.GtkApplication, data: c.gpointer) callconv(.c) void {
     const state = cast(State, data);
     if (state.overview == null) state.overview = Overview.create(app, state.wallpaper);
     const self = state.overview.?;
@@ -651,4 +651,9 @@ pub fn main(init: std.process.Init) !void {
     connect(app, "activate", &activate, &state);
     const status = c.g_application_run(cast(c.GApplication, app), 0, null);
     if (status != 0) std.process.exit(@intCast(status));
+}
+
+pub fn deinit(state: *State) void {
+    if (state.overview) |self| self.destroy();
+    state.overview = null;
 }

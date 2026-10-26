@@ -111,7 +111,7 @@ const Overlay = struct {
 };
 
 const Phase = enum { initial, unmute, write, final };
-const Server = struct {
+pub const Server = struct {
     connection: ?*c.GDBusConnection = null,
     ready: bool = false,
     dead: bool = false,
@@ -128,7 +128,7 @@ const Server = struct {
     hide_timer: c.guint = 0,
     sound: ?*c.GSubprocess = null,
 
-    fn start(self: *Server, style: [*:0]const u8) !void {
+    pub fn start(self: *Server, style: [*:0]const u8) !void {
         if (c.gtk_layer_is_supported() == 0) return error.LayerShellUnavailable;
         const provider = c.gtk_css_provider_new();
         defer c.g_object_unref(provider);
@@ -162,7 +162,7 @@ const Server = struct {
         };
     }
 
-    fn enqueue(self: *Server, work: Work) bool {
+    pub fn enqueue(self: *Server, work: Work) bool {
         if (self.queue.items.len > 0 and work.delta != 0) {
             const last = &self.queue.items[self.queue.items.len - 1];
             if (last.kind == work.kind and (last.delta > 0 and work.delta > 0 or last.delta < 0 and work.delta < 0)) {
@@ -311,7 +311,7 @@ const Server = struct {
         self.sound = null;
     }
 
-    fn deinit(self: *Server) void {
+    pub fn deinit(self: *Server) void {
         self.dead = true;
         if (self.ready) _ = c.g_signal_handlers_disconnect_matched(c.gdk_display_get_default(), c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         if (self.hide_timer != 0) _ = c.g_source_remove(self.hide_timer);

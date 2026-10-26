@@ -98,54 +98,65 @@ fn graph(a: A, values: []const f64, colors: []const []const u8, sequence: u64, m
     try u.put(a, &out, "maximum", u.num(maximum));
     return out;
 }
+pub const Monitor = struct {
+    previous_cpu: [8]u64,
+    previous_net: [2]u64,
+    timer: u.Timer,
+    last: [3]f64 = @splat(-10),
+    sequences: [3]u64 = @splat(0),
+    cpu: [5]f64 = @splat(0),
+    memory: Memory = .{ .values = .{ 0, 0, 0 }, .used = 0, .total = 0 },
+    down: f64 = 0,
+    up: f64 = 0,
+    tick: f64 = 0,
+
+    pub fn init(a: A) !Monitor {
+        return .{ .previous_cpu = cpuCounters(try u.read(a, "/proc/stat")), .previous_net = try networkCounters(a), .timer = u.Timer.start() };
+    }
+
+    pub fn sample(self: *Monitor, a: A, demo: bool) !V {
+        const now = @as(f64, @floatFromInt(self.timer.read())) / std.time.ns_per_s;
+        if (demo or now - self.last[0] >= 1.5) {
+            const current = cpuCounters(try u.read(a, "/proc/stat"));
+            self.cpu = if (demo) .{ 12 + 8 * @sin(self.tick / 9), 5, 0, 1, 0 } else cpuUsage(self.previous_cpu, current);
+            self.previous_cpu = current;
+            self.last[0] = now;
+            self.sequences[0] += 1;
+        }
+        if (demo or now - self.last[1] >= 5) {
+            self.memory = if (demo) .{ .values = .{ 24 + 2 * @sin(self.tick / 18), 1, 32 }, .used = 7.65, .total = 31 } else memoryUsage(try u.read(a, "/proc/meminfo"));
+            self.last[1] = now;
+            self.sequences[1] += 1;
+        }
+        if (demo or now - self.last[2] >= 1) {
+            const current = try networkCounters(a);
+            const elapsed = @max(0.001, now - @max(0, self.last[2]));
+            self.down = if (demo) 12000 + 8000 * @sin(self.tick / 8) else @as(f64, @floatFromInt(current[0] -| self.previous_net[0])) / elapsed;
+            self.up = if (demo) 3000 + 1500 * @sin(self.tick / 5) else @as(f64, @floatFromInt(current[1] -| self.previous_net[1])) / elapsed;
+            self.previous_net = current;
+            self.last[2] = now;
+            self.sequences[2] += 1;
+        }
+        const percent = @round(self.cpu[0] + self.cpu[1] + self.cpu[2] + self.cpu[3] + self.cpu[4]);
+        var graphs = u.array(a);
+        try graphs.array.append(try graph(a, &self.cpu, &cpu_colors, self.sequences[0], try u.fmt(a, "{d:.0}<span size=\"62.5%\" alpha=\"65%\">%</span>", .{percent}), try u.fmt(a, "CPU: {d:.0}%", .{percent}), 100));
+        try graphs.array.append(try graph(a, &self.memory.values, &memory_colors, self.sequences[1], try u.fmt(a, "{s} / {s}<span size=\"62.5%\" alpha=\"65%\"> GiB</span>", .{ try shortNumber(a, self.memory.used), try shortNumber(a, self.memory.total) }), try u.fmt(a, "Memory: {d:.0}% programs, {d:.0}% buffers, {d:.0}% cache", .{ self.memory.values[0], self.memory.values[1], self.memory.values[2] }), 100));
+        try graphs.array.append(try graph(a, &.{ self.down, 0, self.up, 0, 0 }, &network_colors, self.sequences[2], try u.fmt(a, "{s}\n{s}", .{ try rateText(a, self.down), try rateText(a, self.up) }), try u.fmt(a, "Download: {d:.1} KiB/s\nUpload: {d:.1} KiB/s", .{ self.down / 1024, self.up / 1024 }), 0));
+        var out = u.object();
+        try u.put(a, &out, "monitors", graphs);
+        self.tick += 1;
+        return out;
+    }
+};
 fn monitorStream(demo: bool) !void {
     var initial = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    var previous_cpu = cpuCounters(try u.read(initial.allocator(), "/proc/stat"));
-    var previous_net = try networkCounters(initial.allocator());
+    var monitor = try Monitor.init(initial.allocator());
     initial.deinit();
-    const timer = u.Timer.start();
-    var last = @as([3]f64, @splat(-10));
-    var sequences = @as([3]u64, @splat(0));
-    var cpu = @as([5]f64, @splat(0));
-    var memory = Memory{ .values = .{ 0, 0, 0 }, .used = 0, .total = 0 };
-    var down: f64 = 0;
-    var up: f64 = 0;
-    var tick: f64 = 0;
     while (true) {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        const now = @as(f64, @floatFromInt(timer.read())) / std.time.ns_per_s;
-        if (demo or now - last[0] >= 1.5) {
-            const current = cpuCounters(try u.read(a, "/proc/stat"));
-            cpu = if (demo) .{ 12 + 8 * @sin(tick / 9), 5, 0, 1, 0 } else cpuUsage(previous_cpu, current);
-            previous_cpu = current;
-            last[0] = now;
-            sequences[0] += 1;
-        }
-        if (demo or now - last[1] >= 5) {
-            memory = if (demo) .{ .values = .{ 24 + 2 * @sin(tick / 18), 1, 32 }, .used = 7.65, .total = 31 } else memoryUsage(try u.read(a, "/proc/meminfo"));
-            last[1] = now;
-            sequences[1] += 1;
-        }
-        if (demo or now - last[2] >= 1) {
-            const current = try networkCounters(a);
-            const elapsed = @max(0.001, now - @max(0, last[2]));
-            down = if (demo) 12000 + 8000 * @sin(tick / 8) else @as(f64, @floatFromInt(current[0] -| previous_net[0])) / elapsed;
-            up = if (demo) 3000 + 1500 * @sin(tick / 5) else @as(f64, @floatFromInt(current[1] -| previous_net[1])) / elapsed;
-            previous_net = current;
-            last[2] = now;
-            sequences[2] += 1;
-        }
-        const percent = @round(cpu[0] + cpu[1] + cpu[2] + cpu[3] + cpu[4]);
-        var graphs = u.array(a);
-        try graphs.array.append(try graph(a, &cpu, &cpu_colors, sequences[0], try u.fmt(a, "{d:.0}<span size=\"62.5%\" alpha=\"65%\">%</span>", .{percent}), try u.fmt(a, "CPU: {d:.0}%", .{percent}), 100));
-        try graphs.array.append(try graph(a, &memory.values, &memory_colors, sequences[1], try u.fmt(a, "{s} / {s}<span size=\"62.5%\" alpha=\"65%\"> GiB</span>", .{ try shortNumber(a, memory.used), try shortNumber(a, memory.total) }), try u.fmt(a, "Memory: {d:.0}% programs, {d:.0}% buffers, {d:.0}% cache", .{ memory.values[0], memory.values[1], memory.values[2] }), 100));
-        try graphs.array.append(try graph(a, &.{ down, 0, up, 0, 0 }, &network_colors, sequences[2], try u.fmt(a, "{s}\n{s}", .{ try rateText(a, down), try rateText(a, up) }), try u.fmt(a, "Download: {d:.1} KiB/s\nUpload: {d:.1} KiB/s", .{ down / 1024, up / 1024 }), 0));
-        var out = u.object();
-        try u.put(a, &out, "monitors", graphs);
-        try u.emit(a, out);
-        tick += 1;
+        try u.emit(a, try monitor.sample(a, demo));
         u.sleep(if (demo) 20 * std.time.ns_per_ms else 500 * std.time.ns_per_ms);
     }
 }
@@ -292,30 +303,36 @@ fn run(args_source: std.process.Args) !void {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        var out = u.object();
-        if (u.eq(kind, "status")) try u.put(a, &out, "items", try statusItems(a, demo)) else if (u.eq(kind, "disk")) {
-            const output = u.command(a, &.{ "df", "-h", "/" }, 4);
-            var rows = std.mem.splitScalar(u8, output, '\n');
-            _ = rows.next();
-            var words = std.mem.tokenizeAny(u8, rows.next() orelse "", " \t");
-            _ = words.next();
-            const total = words.next() orelse "—";
-            const used = words.next() orelse "—";
-            var items = u.array(a);
-            try items.array.append(try item(a, "", try u.fmt(a, "{s}/{s}", .{ used, total }), "Root filesystem usage", "ghostty -e ncdu /"));
-            try u.put(a, &out, "items", items);
-        } else {
-            const result = if (demo) try u.parse(a, "{\"text\":\"54%\",\"tooltip\":\"5h: 54% remaining\\n7d: 93% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}]}") else if (codex_command) |cmd| u.parse(a, u.command(a, &.{ cmd, "--remaining", "--compact" }, 12)) catch try codex.unavailable(a, "Codex usage unavailable", true) else try codex.readUsage(a, true, true);
-            var items = u.array(a);
-            try items.array.append(try item(a, icon, u.string(u.get(result, "text")), "", ""));
-            try u.put(a, &out, "items", items);
-            try u.put(a, &out, "tooltip", u.get(result, "tooltip"));
-            const windows = u.get(result, "windows");
-            try u.put(a, &out, "windows", if (windows == .array) windows else u.array(a));
-            try u.put(a, &out, "error", u.str(if (windows == .array and windows.array.items.len > 0) "" else u.string(u.get(result, "tooltip"))));
-            try u.put(a, &out, "checked", if (demo) u.str(try u.localTime(a, u.timestamp(), "Checked: %H:%M:%S")) else if (u.get(result, "checked") == .string) u.get(result, "checked") else u.str("Checked: —"));
-        }
+        const out = try sample(a, kind, icon, codex_command, demo);
         try u.emit(a, out);
         waitRefresh(if (u.eq(kind, "codex")) 60000 else 5000);
     }
+}
+
+/// One bounded update, suitable for a shared session worker.
+pub fn sample(a: A, kind: []const u8, icon: []const u8, codex_command: ?[]const u8, demo: bool) !V {
+    var out = u.object();
+    if (u.eq(kind, "status")) try u.put(a, &out, "items", try statusItems(a, demo)) else if (u.eq(kind, "disk")) {
+        const output = u.command(a, &.{ "df", "-h", "/" }, 4);
+        var rows = std.mem.splitScalar(u8, output, '\n');
+        _ = rows.next();
+        var words = std.mem.tokenizeAny(u8, rows.next() orelse "", " \t");
+        _ = words.next();
+        const total = words.next() orelse "—";
+        const used = words.next() orelse "—";
+        var items = u.array(a);
+        try items.array.append(try item(a, "", try u.fmt(a, "{s}/{s}", .{ used, total }), "Root filesystem usage", "ghostty -e ncdu /"));
+        try u.put(a, &out, "items", items);
+    } else {
+        const result = if (demo) try u.parse(a, "{\"text\":\"54%\",\"tooltip\":\"5h: 54% remaining\\n7d: 93% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}]}") else if (codex_command) |cmd| u.parse(a, u.command(a, &.{ cmd, "--remaining", "--compact" }, 12)) catch try codex.unavailable(a, "Codex usage unavailable", true) else try codex.readUsage(a, true, true);
+        var items = u.array(a);
+        try items.array.append(try item(a, icon, u.string(u.get(result, "text")), "", ""));
+        try u.put(a, &out, "items", items);
+        try u.put(a, &out, "tooltip", u.get(result, "tooltip"));
+        const windows = u.get(result, "windows");
+        try u.put(a, &out, "windows", if (windows == .array) windows else u.array(a));
+        try u.put(a, &out, "error", u.str(if (windows == .array and windows.array.items.len > 0) "" else u.string(u.get(result, "tooltip"))));
+        try u.put(a, &out, "checked", if (demo) u.str(try u.localTime(a, u.timestamp(), "Checked: %H:%M:%S")) else if (u.get(result, "checked") == .string) u.get(result, "checked") else u.str("Checked: —"));
+    }
+    return out;
 }

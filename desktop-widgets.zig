@@ -13,9 +13,10 @@ pub const Options = struct {
     name: [:0]const u8 = "",
     kind: [:0]const u8 = "indicator",
     exec: ?[:0]const u8 = null,
+    source: [:0]const u8 = "",
     on_click: ?[:0]const u8 = null,
     network_settings_command: ?[:0]const u8 = null,
-    sound_settings_command: [:0]const u8 = "desktop-settings sound",
+    sound_settings_command: [:0]const u8 = "desktop-zig settings sound",
 };
 pub const Graph = extern struct {
     box: [*c]c.GtkWidget = null,
@@ -61,6 +62,7 @@ pub const Module = extern struct {
     item: [8]Item = std.mem.zeroes([8]Item),
     command: [*c]u8 = null,
     process: ?*c.GSubprocess = null,
+    source: [*:0]const u8 = "",
     stream: [*c]c.GDataInputStream = null,
     cancel: [*c]c.GCancellable = null,
     restart: c.guint = 0,
@@ -227,7 +229,8 @@ pub fn power_select(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) void
         return;
     }
     var err: [*c]c.GError = null;
-    const argv = [_][*c]const u8{ pkexec, helper, "set", id, null };
+    const subcommand = c.g_getenv("DESKTOP_POWER_SUBCOMMAND");
+    const argv = if (subcommand != null) [_][*c]const u8{ pkexec, helper, subcommand, "set", id, null } else [_][*c]const u8{ pkexec, helper, "set", id, null, null };
     const process = c.g_subprocess_newv(&argv, c.G_SUBPROCESS_FLAGS_STDERR_PIPE | c.G_SUBPROCESS_FLAGS_STDOUT_SILENCE, &err);
     if (process == null) {
         c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), if (err != null) err.*.message else "Could not start the power profile helper");
@@ -594,6 +597,12 @@ pub fn codex_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
 }
 pub fn codex_refresh(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) void {
     const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
+    if (std.mem.eql(u8, std.mem.span(m.source), "codex")) {
+        c.gtk_widget_set_sensitive(cast(c.GtkWidget, button), 0);
+        c.gtk_label_set_text(cast(c.GtkLabel, m.codex_checked), "Refreshing…");
+        if (refresh_source) |refresh| refresh("codex");
+        return;
+    }
     if (!(m.process != null)) return;
     c.gtk_widget_set_sensitive(cast(c.GtkWidget, button), 0);
     c.gtk_label_set_text(cast(c.GtkLabel, m.codex_checked), "Refreshing…");
@@ -983,7 +992,10 @@ pub fn line_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpoin
 }
 fn device_changed(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: c.gpointer) callconv(.c) void {
     const m: *Module = @ptrCast(@alignCast(data));
-    if (m.dead == 0 and m.process != null) c.g_subprocess_send_signal(m.process, c.SIGUSR1);
+    if (m.dead != 0) return;
+    if (m.source[0] != 0) {
+        if (refresh_source) |refresh| refresh(std.mem.span(m.source));
+    } else if (m.process != null) c.g_subprocess_send_signal(m.process, c.SIGUSR1);
 }
 fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
     const m: *Module = @ptrCast(@alignCast(data));
@@ -992,7 +1004,7 @@ fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) c
     c.g_clear_error(&err);
     if (m.dead == 0) {
         m.session = connection;
-        if (connection != null and m.status != 0) m.device_subscription = c.g_dbus_connection_signal_subscribe(connection, "org.dotfiles.DesktopOsd", "org.dotfiles.DesktopOsd", "DeviceChanged", "/org/dotfiles/DesktopOsd", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &device_changed, m, null);
+        if (connection != null and m.status != 0) m.device_subscription = c.g_dbus_connection_signal_subscribe(connection, null, "org.dotfiles.DesktopOsd", "DeviceChanged", "/org/dotfiles/DesktopOsd", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &device_changed, m, null);
         if (connection != null and m.status != 0) m.settings_subscription = c.g_dbus_connection_signal_subscribe(connection, null, "org.dotfiles.DesktopSettings", "DeviceChanged", "/org/dotfiles/DesktopSettings", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &device_changed, m, null);
         if (connection != null and m.calendar != null) {
             m.history_subscription = c.g_dbus_connection_signal_subscribe(connection, "org.freedesktop.Notifications", "org.dotfiles.Notifications", "Changed", "/org/freedesktop/Notifications", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &history_changed, m, null);
@@ -1116,6 +1128,7 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
         _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(area)), "draw", @as(c.GCallback, @ptrCast(@alignCast(&draw_activities))), @as(?*anyopaque, @ptrFromInt(0)), null, 0);
         c.gtk_container_add(cast(c.GtkContainer, m.box), area);
     }
+    m.source = options.source.ptr;
     m.command = if (options.exec) |command| c.g_strdup(command) else null;
     c.gtk_widget_show_all(m.box);
     if (m.command != null) {
@@ -1166,3 +1179,6 @@ pub fn deinit(m: *Module) void {
     }
     unref_module(m);
 }
+
+/// Session callback for built-in collectors; invoked only on the GTK thread.
+pub var refresh_source: ?*const fn ([]const u8) void = null;

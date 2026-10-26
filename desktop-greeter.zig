@@ -301,6 +301,12 @@ pub fn main(init: std.process.Init) void {
     };
 }
 fn run(init: std.process.Init) !void {
+    var arguments = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arguments.deinit();
+    return runArgs(init, try init.minimal.args.toSlice(arguments.allocator()));
+}
+pub fn runArgs(init: std.process.Init, args: []const []const u8) !void {
+    _ = init;
     // No credentials in core dumps; all authentication stays with greetd/PAM.
     if (c.prctl(c.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
     const previous_term = c.signal(c.SIGTERM, &signal);
@@ -311,7 +317,7 @@ fn run(init: std.process.Init) !void {
     defer _ = c.signal(c.SIGHUP, previous_hup);
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const options = try Options.parse(try init.minimal.args.toSlice(arena.allocator()), arena.allocator());
+    const options = try Options.parse(args, arena.allocator());
     const path = c.getenv("GREETD_SOCK") orelse return error.MissingGreetdSocket;
     const client = try Client.connect(std.mem.span(path));
     defer _ = c.close(client.fd);

@@ -1,0 +1,196 @@
+//! Session shell. Compositor-specific operations stay behind Wayland protocols.
+const std = @import("std");
+const c = @import("gtk");
+const panel = @import("desktop-panel.zig");
+const wallpaper = @import("desktop-wallpaper.zig");
+const notifications = @import("desktop-notifications.zig");
+const osd = @import("desktop-osd.zig");
+const polkit = @import("desktop-polkit.zig");
+const overview = @import("desktop-overview.zig");
+const settings = @import("desktop-settings.zig");
+const collectors = @import("desktop-collectors.zig");
+const widgets = @import("desktop-widgets.zig");
+const a = std.heap.page_allocator;
+var current: ?*Session = null;
+
+const Session = struct {
+    app: *c.GtkApplication,
+    panels: ?*panel.Service = null,
+    background: ?*wallpaper.Service = null,
+    notices: ?*notifications.Service = null,
+    agent: ?polkit.Service = null,
+    media: osd.Server = .{},
+    activities: overview.State = .{ .wallpaper = "" },
+    dialogs: settings.Service = .{},
+    data: collectors.Service = undefined,
+    image: ?[:0]u8 = null,
+    timer: c.guint = 0,
+    serving: bool = false,
+    stopping: bool = false,
+
+    fn start(self: *Session, args: []const []const u8) !void {
+        if (self.stopping) return error.SessionStopping;
+        if (self.serving) return error.AlreadyRunning;
+        if (args.len != 1 and args.len != 5) return error.InvalidServeArguments;
+        if (c.gtk_layer_is_supported() == 0) return error.LayerShellUnavailable;
+        if (c.prctl(c.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
+        self.image = try a.dupeSentinel(u8, args[0], 0);
+        self.activities.wallpaper = self.image.?.ptr;
+        var temporary = std.heap.ArenaAllocator.init(a);
+        defer temporary.deinit();
+        const alloc = temporary.allocator();
+        const config = try alloc.dupeSentinel(u8, if (args.len == 5) args[1] else "/etc/xdg/desktop-panel/config.json", 0);
+        const panel_style = try alloc.dupeSentinel(u8, if (args.len == 5) args[2] else "/etc/xdg/desktop-panel/style.css", 0);
+        const notice_style = try alloc.dupeSentinel(u8, if (args.len == 5) args[3] else "/etc/xdg/desktop-notifications/style.css", 0);
+        const osd_style = try alloc.dupeSentinel(u8, if (args.len == 5) args[4] else "/etc/xdg/desktop-osd/style.css", 0);
+        self.background = try wallpaper.Service.create(self.image.?);
+        self.panels = try panel.Service.create(config, panel_style);
+        self.notices = try notifications.Service.create(notice_style);
+        try self.media.start(osd_style);
+        self.media.connection = c.g_application_get_dbus_connection(@ptrCast(self.app));
+        self.agent = polkit.Service.init() catch |err| blk: {
+            std.log.warn("PolicyKit agent: {s}; will retry", .{@errorName(err)});
+            break :blk null;
+        };
+        self.data = .{ .panel = self.panels.?, .icon = if (c.g_getenv("DESKTOP_CODEX_ICON")) |icon| std.mem.span(icon) else "" };
+        self.data.start();
+        self.serving = true;
+        current = self;
+        widgets.refresh_source = &refresh;
+        self.timer = c.g_timeout_add_seconds(5, &maintain, self);
+        c.g_application_hold(@ptrCast(self.app));
+    }
+
+    fn maintain(ptr: c.gpointer) callconv(.c) c.gboolean {
+        const self: *Session = @ptrCast(@alignCast(ptr));
+        self.dialogs.reap();
+        if (self.agent == null) self.agent = polkit.Service.init() catch null;
+        return 1;
+    }
+
+    fn deinit(self: *Session) void {
+        self.stopping = true;
+        current = null;
+        widgets.refresh_source = null;
+        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.serving) self.data.deinit();
+        self.dialogs.deinit();
+        overview.deinit(&self.activities);
+        self.media.deinit();
+        if (self.agent) |*agent| agent.deinit();
+        if (self.panels) |panels| panels.destroy();
+        if (self.notices) |notices| notices.destroy();
+        if (self.background) |background| background.destroy();
+        // Drain cancelled widget reads while their reference-counted states survive.
+        while (c.g_main_context_iteration(null, 0) != 0) {}
+        if (self.image) |image| a.free(image);
+    }
+};
+fn refresh(kind: []const u8) void {
+    if (current) |session| session.data.refresh(kind);
+}
+fn quit(ptr: c.gpointer) callconv(.c) c.gboolean {
+    c.g_application_quit(@ptrCast(@alignCast(ptr)));
+    return 1;
+}
+fn commandLine(_: *c.GApplication, command: *c.GApplicationCommandLine, ptr: c.gpointer) callconv(.c) c_int {
+    const self: *Session = @ptrCast(@alignCast(ptr));
+    var count: c_int = 0;
+    const argv = c.g_application_command_line_get_arguments(command, &count);
+    defer c.g_strfreev(argv);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const args = arena.allocator().alloc([]const u8, @intCast(count)) catch return 1;
+    for (args, 0..) |*arg, i| arg.* = std.mem.span(argv[i]);
+    dispatch(self, args[1..]) catch |err| {
+        c.g_application_command_line_printerr(command, "desktop-zig: %s\n", @as([*:0]const u8, @errorName(err)));
+        return 1;
+    };
+    return 0;
+}
+fn dispatch(self: *Session, args: []const []const u8) !void {
+    if (self.stopping) return error.SessionStopping;
+    if (args.len == 0) return error.ExpectedCommand;
+    const verb = args[0];
+    if (std.mem.eql(u8, verb, "serve")) return self.start(args[1..]);
+    if (!self.serving) return error.SessionNotRunning;
+    if (std.mem.eql(u8, verb, "overview") and args.len == 1) {
+        overview.activate(self.app, &self.activities);
+    } else if (std.mem.eql(u8, verb, "settings") and args.len == 2) {
+        try self.dialogs.show(self.app, std.meta.stringToEnum(settings.Mode, args[1]) orelse return error.InvalidSettingsMode);
+    } else if (std.mem.eql(u8, verb, "refresh") and args.len == 2) {
+        if (!std.mem.eql(u8, args[1], "codex") and !std.mem.eql(u8, args[1], "status")) return error.InvalidSource;
+        self.data.refresh(args[1]);
+    } else if (std.mem.eql(u8, verb, "ping") and args.len == 1) {
+        return;
+    } else if (osd.parseCommand(args)) |work| {
+        if (!self.media.enqueue(work)) return error.QueueFull;
+    } else return error.InvalidCommand;
+}
+
+pub fn main(init: std.process.Init) !void {
+    @import("desktop-util.zig").io = init.io;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const args = try init.minimal.args.toSlice(arena.allocator());
+    const name = std.fs.path.basename(if (c.g_getenv("DESKTOP_ZIG_INVOKED_AS")) |invoked| std.mem.span(invoked) else args[0]);
+    // Compatibility entry points share the executable, including portal protocols.
+    if (std.mem.eql(u8, name, "desktop-greeter")) return @import("greeter").runArgs(init, args);
+    if (std.mem.eql(u8, name, "desktop-power")) return @import("power").runArgs(init, args);
+    if (std.mem.eql(u8, name, "desktop-askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args));
+    if (std.mem.eql(u8, name, "grim") or std.mem.eql(u8, name, "slurp") or std.mem.eql(u8, name, "desktop-screenshot")) {
+        const forwarded = try arena.allocator().dupe([]const u8, args);
+        forwarded[0] = name;
+        return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
+    }
+    if (std.mem.eql(u8, name, "desktop-apps")) return @import("apps").main();
+    if (std.mem.eql(u8, name, "waybar-panel")) return @import("waybar-panel.zig").main(init);
+    if (std.mem.eql(u8, name, "waybar-codex")) return @import("waybar-codex.zig").main(init);
+    // Standalone modes remain useful to the existing isolated component fixtures.
+    if (std.mem.eql(u8, name, "desktop-panel")) return panel.main(init);
+    if (std.mem.eql(u8, name, "desktop-wallpaper")) return wallpaper.main(init);
+    if (std.mem.eql(u8, name, "desktop-notifications")) return notifications.main(init);
+    if (std.mem.eql(u8, name, "desktop-osd")) return osd.main(init);
+    if (std.mem.eql(u8, name, "desktop-polkit")) return polkit.main(init);
+    if (std.mem.eql(u8, name, "desktop-overview")) return overview.main(init);
+    if (std.mem.eql(u8, name, "desktop-settings")) return settings.main(init);
+    if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
+        std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig greeter|askpass|power|screenshot [ARGS...]\n", .{});
+        if (args.len < 2) return error.ExpectedCommand;
+        return;
+    }
+    if (std.mem.eql(u8, args[1], "greeter")) return @import("greeter").runArgs(init, args[1..]);
+    if (std.mem.eql(u8, args[1], "power")) return @import("power").runArgs(init, args[1..]);
+    if (std.mem.eql(u8, args[1], "askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args[1..]));
+    if (std.mem.eql(u8, args[1], "screenshot")) return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, args[1..]));
+    if (!std.mem.eql(u8, args[1], "serve")) try requireSession();
+    _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
+    const app = c.gtk_application_new("org.dotfiles.Desktop", c.G_APPLICATION_HANDLES_COMMAND_LINE).?;
+    defer c.g_object_unref(app);
+    var session = Session{ .app = app };
+    defer session.deinit();
+    _ = c.g_signal_connect_data(app, "command-line", @ptrCast(&commandLine), &session, null, 0);
+    const term = c.g_unix_signal_add(c.SIGTERM, &quit, app);
+    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, app);
+    defer _ = c.g_source_remove(term);
+    defer _ = c.g_source_remove(interrupt);
+    const argv = try arena.allocator().allocSentinel(?[*:0]const u8, args.len, null);
+    for (args, 0..) |arg, i| argv[i] = (try arena.allocator().dupeSentinel(u8, arg, 0)).ptr;
+    const status = c.g_application_run(@ptrCast(app), @intCast(args.len), @ptrCast(argv.ptr));
+    if (status != 0) return error.CommandFailed;
+    if (session.serving and !session.notices.?.isOwned()) return error.NotificationNameUnavailable;
+}
+fn helperStatus(status: u8) void {
+    if (status != 0) std.process.exit(status);
+}
+
+// A command client must never compete with the daemon for its well-known name.
+fn requireSession() !void {
+    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return error.NoSessionBus;
+    defer c.g_object_unref(bus);
+    const reply = c.g_dbus_connection_call_sync(bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner", c.g_variant_new("(s)", @as([*:0]const u8, "org.dotfiles.Desktop")), null, c.G_DBUS_CALL_FLAGS_NONE, 3000, null, null) orelse return error.NoSessionBus;
+    defer c.g_variant_unref(reply);
+    const owned = c.g_variant_get_child_value(reply, 0);
+    defer c.g_variant_unref(owned);
+    if (c.g_variant_get_boolean(owned) == 0) return error.SessionNotRunning;
+}

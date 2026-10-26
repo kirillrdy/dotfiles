@@ -75,10 +75,12 @@ const Panel = struct {
 const App = struct {
     config: Config,
     panels: std.ArrayList(*Panel) = .empty,
+    revision: u64 = 0,
 
     fn add(_: *c.GdkDisplay, monitor: *c.GdkMonitor, data: c.gpointer) callconv(.c) void {
         const self: *App = @ptrCast(@alignCast(data));
         self.panels.append(allocator, Panel.create(monitor, self.config)) catch @panic("out of memory");
+        self.revision +%= 1;
     }
 
     fn remove(_: *c.GdkDisplay, monitor: *c.GdkMonitor, data: c.gpointer) callconv(.c) void {
@@ -87,6 +89,7 @@ const App = struct {
             if (panel.monitor == monitor) {
                 _ = self.panels.orderedRemove(i);
                 panel.destroy();
+                self.revision +%= 1;
                 return;
             }
         }
@@ -104,57 +107,75 @@ fn quit(_: c.gpointer) callconv(.c) c.gboolean {
     return 1; // Keep source alive until cleanup removes it.
 }
 
-pub fn main(process_init: std.process.Init) !void {
+pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const args = try process_init.minimal.args.toSlice(arena.allocator());
-    if (args.len != 3) {
-        std.debug.print("Usage: desktop-panel CONFIG.json STYLE.css\n", .{});
-        return error.InvalidArguments;
-    }
-    const config_path = try arena.allocator().dupeSentinel(u8, args[1], 0);
-    var contents: [*c]u8 = null;
-    var length: c.gsize = 0;
-    var err: [*c]c.GError = null;
-    if (c.g_file_get_contents(config_path, &contents, &length, &err) == 0) {
-        std.debug.print("Cannot read panel configuration: {s}\n", .{err.*.message});
-        c.g_clear_error(&err);
-        return error.InvalidConfig;
-    }
-    defer c.g_free(contents);
-    const parsed = try std.json.parseFromSlice(Config, arena.allocator(), contents[0..length], .{});
-    defer parsed.deinit();
-    if (parsed.value.height == 0) return error.InvalidConfig;
+    const args = try init.minimal.args.toSlice(arena.allocator());
+    if (args.len != 3) return error.InvalidArguments;
     _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
     if (c.gtk_init_check(null, null) == 0) return error.NoWaylandDisplay;
     if (c.gtk_layer_is_supported() == 0) return error.LayerShellUnavailable;
-    const style_path = try arena.allocator().dupeSentinel(u8, args[2], 0);
-    const provider = c.gtk_css_provider_new();
-    defer c.g_object_unref(provider);
-    if (c.gtk_css_provider_load_from_path(provider, style_path, &err) == 0) {
-        std.debug.print("Cannot load panel stylesheet: {s}\n", .{err.*.message});
-        c.g_clear_error(&err);
-        return error.InvalidStyle;
-    }
-    c.gtk_style_context_add_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    var app = App{ .config = parsed.value };
-    const display = c.gdk_display_get_default().?;
-    const added = c.g_signal_connect_data(display, "monitor-added", @ptrCast(&App.add), &app, null, 0);
-    const removed = c.g_signal_connect_data(display, "monitor-removed", @ptrCast(&App.remove), &app, null, 0);
-    defer {
-        c.g_signal_handler_disconnect(display, added);
-        c.g_signal_handler_disconnect(display, removed);
-        for (app.panels.items) |panel| panel.destroy();
-        app.panels.deinit(allocator);
-        // Complete cancelled asynchronous reads while their module refs remain valid.
-        while (c.g_main_context_iteration(null, 0) != 0) {}
-    }
-    const count = c.gdk_display_get_n_monitors(display);
-    var i: c_int = 0;
-    while (i < count) : (i += 1) App.add(display, c.gdk_display_get_monitor(display, i).?, &app);
+    const service = try Service.create(args[1], args[2]);
+    defer service.destroy();
     const term = c.g_unix_signal_add(c.SIGTERM, &quit, null);
     const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, null);
     defer _ = c.g_source_remove(term);
     defer _ = c.g_source_remove(interrupt);
     c.gtk_main();
+    while (c.g_main_context_iteration(null, 0) != 0) {}
 }
+
+/// Owns panel windows; the session owns GTK and the event loop.
+pub const Service = struct {
+    arena: std.heap.ArenaAllocator,
+    app: App,
+    provider: *c.GtkCssProvider,
+    added: c.gulong = 0,
+    removed: c.gulong = 0,
+
+    pub fn create(config_path: [:0]const u8, style_path: [:0]const u8) !*Service {
+        const self = try allocator.create(Service);
+        errdefer allocator.destroy(self);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        var contents: [*c]u8 = null;
+        var length: c.gsize = 0;
+        if (c.g_file_get_contents(config_path, &contents, &length, null) == 0) return error.InvalidConfig;
+        defer c.g_free(contents);
+        const parsed = try std.json.parseFromSlice(Config, arena.allocator(), contents[0..length], .{});
+        if (parsed.value.height == 0) return error.InvalidConfig;
+        const provider = c.gtk_css_provider_new().?;
+        errdefer c.g_object_unref(provider);
+        if (c.gtk_css_provider_load_from_path(provider, style_path, null) == 0) return error.InvalidStyle;
+        c.gtk_style_context_add_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        self.* = .{ .arena = arena, .app = .{ .config = parsed.value }, .provider = provider };
+        const display = c.gdk_display_get_default().?;
+        self.added = c.g_signal_connect_data(display, "monitor-added", @ptrCast(&App.add), &self.app, null, 0);
+        self.removed = c.g_signal_connect_data(display, "monitor-removed", @ptrCast(&App.remove), &self.app, null, 0);
+        var i: c_int = 0;
+        while (i < c.gdk_display_get_n_monitors(display)) : (i += 1) App.add(display, c.gdk_display_get_monitor(display, i).?, &self.app);
+        return self;
+    }
+
+    pub fn revision(self: *Service) u64 {
+        return self.app.revision;
+    }
+
+    pub fn update(self: *Service, source: []const u8, line: [:0]const u8) void {
+        for (self.app.panels.items) |panel| for (panel.modules.items) |module| {
+            if (std.mem.eql(u8, std.mem.span(module.source), source)) widgets.update_line(module, line.ptr);
+        };
+    }
+
+    pub fn destroy(self: *Service) void {
+        const display = c.gdk_display_get_default().?;
+        c.g_signal_handler_disconnect(display, self.added);
+        c.g_signal_handler_disconnect(display, self.removed);
+        for (self.app.panels.items) |panel| panel.destroy();
+        self.app.panels.deinit(allocator);
+        c.gtk_style_context_remove_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, self.provider));
+        c.g_object_unref(self.provider);
+        self.arena.deinit();
+        allocator.destroy(self);
+    }
+};

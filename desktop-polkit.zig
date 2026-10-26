@@ -397,7 +397,7 @@ fn finishAuth(_: ?*c.PolkitAgentListener, res: ?*c.GAsyncResult, err: [*c]?*c.GE
 fn onSignal(_: c.gpointer) callconv(.c) c.gboolean {
     if (active_dialog) |d| d.finishCancel();
     c.gtk_main_quit();
-    return 0;
+    return 1;
 }
 
 pub fn main(init: std.process.Init) void {
@@ -409,49 +409,62 @@ fn run(init: std.process.Init) !u8 {
     _ = init;
     if (c.prctl(c.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return 1;
     if (c.gtk_init_check(null, null) == 0) return 1;
-
-    var err: ?*c.GError = null;
-    const authority = c.polkit_authority_get_sync(null, &err);
-    if (authority == null) {
-        if (err) |e| c.g_printerr("Failed to connect to PolicyKit authority: %s\n", e.*.message);
-        return 1;
-    }
-    defer c.g_object_unref(authority);
-
-    err = null;
-    var session: ?*c.PolkitSubject = c.polkit_unix_session_new_for_process_sync(c.getpid(), null, &err);
-    if (session == null) {
-        if (c.g_getenv("XDG_SESSION_ID")) |sid| {
-            session = c.polkit_unix_session_new(sid);
-        }
-    }
-    if (session == null) {
-        session = c.polkit_unix_process_new_for_owner(c.getpid(), 0, @intCast(c.getuid()));
-    }
-    defer if (session) |s| c.g_object_unref(s);
-
-    const listener = createListener();
-    defer c.g_object_unref(listener);
-
-    err = null;
-    const handle = c.polkit_agent_listener_register(
-        listener,
-        c.POLKIT_AGENT_REGISTER_FLAGS_NONE,
-        session,
-        "/org/dotfiles/PolicyKit1/AuthenticationAgent",
-        null,
-        &err,
-    );
-    if (handle == null) {
-        if (err) |e| c.g_printerr("Failed to register authentication agent: %s\n", e.*.message);
-        return 1;
-    }
-    defer c.polkit_agent_listener_unregister(handle);
-
-    _ = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null);
-    _ = c.g_unix_signal_add(c.SIGINT, &onSignal, null);
-    _ = c.g_unix_signal_add(c.SIGTERM, &onSignal, null);
-
+    var service = Service.init() catch return 1;
+    defer service.deinit();
+    const term = c.g_unix_signal_add(c.SIGTERM, &onSignal, null);
+    const interrupt = c.g_unix_signal_add(c.SIGINT, &onSignal, null);
+    defer _ = c.g_source_remove(term);
+    defer _ = c.g_source_remove(interrupt);
     c.gtk_main();
     return 0;
 }
+
+pub const Service = struct {
+    listener: *c.PolkitAgentListener,
+    handle: c.gpointer,
+    pub fn init() !Service {
+        var err: ?*c.GError = null;
+        defer c.g_clear_error(&err);
+        const authority = c.polkit_authority_get_sync(null, &err);
+        if (authority == null) {
+            if (err) |e| c.g_printerr("Failed to connect to PolicyKit authority: %s\n", e.*.message);
+            return error.PolicyKitUnavailable;
+        }
+        defer c.g_object_unref(authority);
+
+        c.g_clear_error(&err);
+        var session: ?*c.PolkitSubject = c.polkit_unix_session_new_for_process_sync(c.getpid(), null, &err);
+        if (session == null) {
+            if (c.g_getenv("XDG_SESSION_ID")) |sid| {
+                session = c.polkit_unix_session_new(sid);
+            }
+        }
+        if (session == null) {
+            session = c.polkit_unix_process_new_for_owner(c.getpid(), 0, @intCast(c.getuid()));
+        }
+        defer if (session) |s| c.g_object_unref(s);
+
+        const listener = createListener();
+        errdefer c.g_object_unref(listener);
+
+        c.g_clear_error(&err);
+        const handle = c.polkit_agent_listener_register(
+            listener,
+            c.POLKIT_AGENT_REGISTER_FLAGS_NONE,
+            session,
+            "/org/dotfiles/PolicyKit1/AuthenticationAgent",
+            null,
+            &err,
+        );
+        if (handle == null) {
+            if (err) |e| c.g_printerr("Failed to register authentication agent: %s\n", e.*.message);
+            return error.PolicyKitUnavailable;
+        }
+        return .{ .listener = listener, .handle = handle.? };
+    }
+    pub fn deinit(self: *Service) void {
+        c.polkit_agent_listener_unregister(self.handle);
+        if (active_dialog) |dialog| dialog.finishCancel();
+        c.g_object_unref(self.listener);
+    }
+};

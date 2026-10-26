@@ -9,7 +9,8 @@ let
   cursorSize = 24;
   # Use the same default as the NixOS GNOME desktop module.
   gnomeWallpaper = pkgs.nixos-artwork.wallpapers.simple-blue.gnomeFilePath;
-  appLauncher = "${lib.getExe' desktopZig "desktop-overview"} ${gnomeWallpaper}";
+  shell = "${desktopZig}/bin/desktop-zig";
+  appLauncher = "${shell} overview";
   gtkCursorSettings = ''
     [Settings]
     gtk-cursor-theme-name=${cursorTheme}
@@ -33,7 +34,7 @@ let
     hash = "sha256-kI1mut3KtZNahi8btZNSdogSrF+Z44yXqaZ4Jxf5L+E=";
   };
   desktopZig = import ./desktop-zig.nix { inherit pkgs; };
-  osd = lib.getExe' desktopZig "desktop-osd";
+  osd = shell;
   session = pkgs.writeShellScript "labwc-session" ''
     . /etc/profile
     export XDG_CURRENT_DESKTOP=labwc:wlroots
@@ -66,7 +67,7 @@ lib.mkIf enableLightDesktop {
   services.greetd = {
     enable = true;
     useTextGreeter = true;
-    settings.default_session.command = "${desktopZig}/bin/desktop-greeter --time --remember-file /var/cache/desktop-greeter/last-user --cmd ${session}";
+    settings.default_session.command = "${shell} greeter --time --remember-file /var/cache/desktop-greeter/last-user --cmd ${session}";
   };
   systemd.tmpfiles.rules = [ "d /var/cache/desktop-greeter 0700 greeter greeter - -" ];
   networking.networkmanager.enable = true;
@@ -80,14 +81,14 @@ lib.mkIf enableLightDesktop {
     before = [ "greetd.service" ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${desktopZig}/bin/desktop-power restore";
+      ExecStart = "${shell} power restore";
       StateDirectory = "desktop-power";
       StateDirectoryMode = "0755";
       UMask = "0022";
     };
   };
   powerManagement.resumeCommands = ''
-    ${desktopZig}/bin/desktop-power restore
+    ${shell} power restore
   '';
   services.upower.enable = true;
   services.gnome.gnome-keyring.enable = true;
@@ -109,16 +110,14 @@ lib.mkIf enableLightDesktop {
   ];
   systemd.packages = [ desktopCompositor ];
   systemd.user.services = {
-    wallpaper = sessionService "${desktopZig}/bin/desktop-wallpaper ${gnomeWallpaper}";
-    desktop-panel = sessionService "${desktopZig}/bin/desktop-panel /etc/xdg/desktop-panel/config.json /etc/xdg/desktop-panel/style.css";
-    desktop-notifications =
-      (sessionService "${desktopZig}/bin/desktop-notifications /etc/xdg/desktop-notifications/style.css")
-      // {
-        conflicts = [ "mako.service" ];
-        after = [ "mako.service" ];
+    desktop-zig = (sessionService "${shell} serve ${gnomeWallpaper}") // {
+      conflicts = [ "mako.service" ];
+      after = [ "mako.service" ];
+      serviceConfig = (sessionService "").serviceConfig // {
+        ExecStart = "${shell} serve ${gnomeWallpaper}";
+        Environment = "DESKTOP_CODEX_ICON=${codexIcon}";
       };
-    desktop-osd = sessionService "${osd} serve /etc/xdg/desktop-osd/style.css";
-    polkit-agent = sessionService "${desktopZig}/bin/desktop-polkit";
+    };
     swayidle = sessionService "${pkgs.swayidle}/bin/swayidle -w timeout 600 'swaylock -f -c 1e1e2e' before-sleep 'swaylock -f -c 1e1e2e'";
   };
 
@@ -192,7 +191,7 @@ lib.mkIf enableLightDesktop {
           <keybind key="XF86AudioMicMute"><action name="Execute" command="${osd} microphone mute" /></keybind>
           <keybind key="XF86MonBrightnessUp"><action name="Execute" command="${osd} brightness up" /></keybind>
           <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${osd} brightness down" /></keybind>
-          <keybind key="Print"><action name="Execute" command="${desktopZig}/bin/desktop-screenshot" /></keybind>
+          <keybind key="Print"><action name="Execute" command="${shell} screenshot" /></keybind>
         </keyboard>
         <mouse><default /></mouse>
         <libinput><device category="touchpad"><tap>no</tap><naturalScroll>yes</naturalScroll></device></libinput>
@@ -232,28 +231,31 @@ lib.mkIf enableLightDesktop {
       right = [
         {
           name = "gnome-codex";
-          exec = "${desktopZig}/bin/waybar-panel codex --codex-icon ${codexIcon}";
+          source = "codex";
         }
         {
           name = "gnome-monitors";
           kind = "monitors";
-          exec = "${desktopZig}/bin/waybar-panel monitors";
+          source = "monitors";
           on_click = "ghostty -e btop";
         }
         {
           name = "gnome-disk";
-          exec = "${desktopZig}/bin/waybar-panel disk";
+          source = "disk";
         }
         {
           name = "gnome-status";
-          exec = "${desktopZig}/bin/waybar-panel status";
-          network_settings_command = "${desktopZig}/bin/desktop-settings network";
-          sound_settings_command = "${desktopZig}/bin/desktop-settings sound";
+          source = "status";
+          network_settings_command = "${shell} settings network";
+          sound_settings_command = "${shell} settings sound";
         }
       ];
     };
     "xdg/desktop-panel/style.css".text = ''
-      * {
+      window#desktop-panel, window#desktop-panel *,
+      .gnome-calendar, .gnome-calendar *,
+      .gnome-power-menu, .gnome-power-menu *,
+      .gnome-codex-menu, .gnome-codex-menu * {
         font-family: "Adwaita Sans";
         font-size: 11pt;
         font-weight: bold;

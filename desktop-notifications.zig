@@ -389,10 +389,6 @@ fn acquired(connection: ?*c.GDBusConnection, _: [*c]const u8, data: c.gpointer) 
 fn owned(_: ?*c.GDBusConnection, _: [*c]const u8, data: c.gpointer) callconv(.c) void {
     cast(Server, data).owned = true;
 }
-fn lost(_: ?*c.GDBusConnection, _: [*c]const u8, data: c.gpointer) callconv(.c) void {
-    cast(Server, data).owned = false;
-    c.gtk_main_quit();
-}
 fn quit(_: c.gpointer) callconv(.c) c.gboolean {
     c.gtk_main_quit();
     return 1;
@@ -404,26 +400,50 @@ pub fn main(init: std.process.Init) !void {
     if (args.len != 2) return error.ExpectedStylesheet;
     _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
     if (c.gtk_init_check(null, null) == 0 or c.gtk_layer_is_supported() == 0) return error.NoLayerShellDisplay;
-    const provider = c.gtk_css_provider_new();
-    defer c.g_object_unref(provider);
-    const style = try arena.allocator().dupeSentinel(u8, args[1], 0);
-    var err: [*c]c.GError = null;
-    if (c.gtk_css_provider_load_from_path(provider, style, &err) == 0) {
-        c.g_printerr("desktop-notifications: %s\n", err.*.message);
-        c.g_clear_error(&err);
-        return error.InvalidStyle;
-    }
-    c.gtk_style_context_add_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    const node = c.g_dbus_node_info_new_for_xml(xml, null) orelse return error.InvalidInterface;
-    defer c.g_dbus_node_info_unref(node);
-    var server = Server.create(node);
-    defer server.deinit();
-    const owner = c.g_bus_own_name(c.G_BUS_TYPE_SESSION, name, c.G_BUS_NAME_OWNER_FLAGS_NONE, &acquired, &owned, &lost, &server, null);
-    defer c.g_bus_unown_name(owner);
+    const service = try Service.create(args[1]);
+    defer service.destroy();
     const term = c.g_unix_signal_add(c.SIGTERM, &quit, null);
     const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, null);
     defer _ = c.g_source_remove(term);
     defer _ = c.g_source_remove(interrupt);
     c.gtk_main();
-    if (!server.owned) return error.NotificationNameUnavailable;
+    if (!service.isOwned()) return error.NotificationNameUnavailable;
+}
+
+pub const Service = struct {
+    server: Server,
+    node: *c.GDBusNodeInfo,
+    provider: *c.GtkCssProvider,
+    owner: c.guint = 0,
+
+    pub fn create(style: [:0]const u8) !*Service {
+        const self = try allocator.create(Service);
+        errdefer allocator.destroy(self);
+        const provider = c.gtk_css_provider_new().?;
+        errdefer c.g_object_unref(provider);
+        if (c.gtk_css_provider_load_from_path(provider, style, null) == 0) return error.InvalidStyle;
+        const node = c.g_dbus_node_info_new_for_xml(xml, null) orelse return error.InvalidInterface;
+        c.gtk_style_context_add_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        self.* = .{ .server = Server.create(node), .node = node, .provider = provider };
+        self.owner = c.g_bus_own_name(c.G_BUS_TYPE_SESSION, name, c.G_BUS_NAME_OWNER_FLAGS_NONE, &acquired, &owned, &serviceLost, &self.server, null);
+        return self;
+    }
+
+    pub fn isOwned(self: *Service) bool {
+        return self.server.owned;
+    }
+
+    pub fn destroy(self: *Service) void {
+        c.g_bus_unown_name(self.owner);
+        self.server.deinit();
+        c.g_dbus_node_info_unref(self.node);
+        c.gtk_style_context_remove_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, self.provider));
+        c.g_object_unref(self.provider);
+        allocator.destroy(self);
+    }
+};
+
+fn serviceLost(_: ?*c.GDBusConnection, _: [*c]const u8, data: c.gpointer) callconv(.c) void {
+    cast(Server, data).owned = false;
+    if (c.g_application_get_default()) |app| c.g_application_quit(app) else c.gtk_main_quit();
 }

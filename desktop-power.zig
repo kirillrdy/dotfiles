@@ -195,9 +195,14 @@ pub fn main(init: std.process.Init) void {
     };
 }
 fn run(init: std.process.Init) !void {
+    var arguments = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arguments.deinit();
+    return runArgs(init, try init.minimal.args.toSlice(arguments.allocator()));
+}
+pub fn runArgs(init: std.process.Init, args: []const []const u8) !void {
+    _ = init;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
-    const args = try init.minimal.args.toSlice(arena.allocator());
     // Validate before opening files. No arbitrary paths or commands are accepted.
     const restore = args.len == 2 and std.mem.eql(u8, args[1], "restore");
     const profile: ?Profile = if (args.len == 3 and std.mem.eql(u8, args[1], "set")) try Profile.parse(args[2]) else if (restore) null else return error.InvalidArguments;

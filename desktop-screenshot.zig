@@ -616,10 +616,15 @@ pub fn main(init: std.process.Init) void {
 }
 
 fn run(init: std.process.Init) !u8 {
+    var arguments = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arguments.deinit();
+    return runArgs(init, try init.minimal.args.toSlice(arguments.allocator()));
+}
+pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
+    _ = init;
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
-    const args = try init.minimal.args.toSlice(arena.allocator());
     var opt = Options.parse(args);
 
     if (opt.slurp_mode) {

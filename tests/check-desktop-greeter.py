@@ -26,7 +26,7 @@ class Greeter:
         self.listener.bind(str(path))
         self.listener.listen()
         self.process = sp.Popen(
-            [str(binary), "--time", "--remember-file", str(remember),
+            [*binary, "--time", "--remember-file", str(remember),
              "--cmd", "/test/labwc-session", "--session", "Other=/test/other-session"],
             stdin=self.slave, stdout=self.slave, stderr=sp.PIPE,
             env=dict(os.environ, GREETD_SOCK=str(path)),
@@ -107,7 +107,11 @@ class Greeter:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
-    binary = parser.parse_args().binary.resolve()
+    parser.add_argument("--subcommand")
+    args = parser.parse_args()
+    binary = [str(args.binary.absolute())]
+    if args.subcommand:
+        binary.append(args.subcommand)
     with tempfile.TemporaryDirectory(prefix="desktop-greeter-check-") as directory:
         root = Path(directory)
         remember = root / "last-user"

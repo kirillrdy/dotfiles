@@ -104,35 +104,12 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
-    if (args.len != 2) {
-        std.debug.print("Usage: desktop-wallpaper IMAGE\n", .{});
-        return error.InvalidArguments;
-    }
-    const path = try arena.allocator().dupeSentinel(u8, args[1], 0);
-    var err: [*c]c.GError = null;
-    const decoded = c.gdk_pixbuf_new_from_file(path, &err) orelse {
-        std.debug.print("Cannot load wallpaper: {s}\n", .{err.*.message});
-        c.g_clear_error(&err);
-        return error.InvalidImage;
-    };
-    defer c.g_object_unref(decoded);
-    const image = c.gdk_pixbuf_apply_embedded_orientation(decoded) orelse return error.InvalidImage;
-    defer c.g_object_unref(image);
+    if (args.len != 2) return error.InvalidArguments;
     _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
     if (c.gtk_init_check(null, null) == 0) return error.NoWaylandDisplay;
     if (c.gtk_layer_is_supported() == 0) return error.LayerShellUnavailable;
-    var app = App{ .image = image };
-    const display = c.gdk_display_get_default().?;
-    const added = c.g_signal_connect_data(display, "monitor-added", @ptrCast(&App.add), &app, null, 0);
-    const removed = c.g_signal_connect_data(display, "monitor-removed", @ptrCast(&App.remove), &app, null, 0);
-    defer {
-        c.g_signal_handler_disconnect(display, added);
-        c.g_signal_handler_disconnect(display, removed);
-        for (app.backgrounds.items) |background| background.destroy();
-        app.backgrounds.deinit(allocator);
-    }
-    var i: c_int = 0;
-    while (i < c.gdk_display_get_n_monitors(display)) : (i += 1) App.add(display, c.gdk_display_get_monitor(display, i).?, &app);
+    const service = try Service.create(args[1]);
+    defer service.destroy();
     const term = c.g_unix_signal_add(c.SIGTERM, &quit, null);
     const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, null);
     defer _ = c.g_source_remove(term);
@@ -170,3 +147,34 @@ test "fill crops the center of wide and tall images at both buffer scales" {
         }
     }
 }
+
+pub const Service = struct {
+    app: App,
+    added: c.gulong,
+    removed: c.gulong,
+
+    pub fn create(path: [:0]const u8) !*Service {
+        const decoded = c.gdk_pixbuf_new_from_file(path, null) orelse return error.InvalidImage;
+        defer c.g_object_unref(decoded);
+        const image = c.gdk_pixbuf_apply_embedded_orientation(decoded) orelse return error.InvalidImage;
+        errdefer c.g_object_unref(image);
+        const self = try allocator.create(Service);
+        self.* = .{ .app = .{ .image = image }, .added = 0, .removed = 0 };
+        const display = c.gdk_display_get_default().?;
+        self.added = c.g_signal_connect_data(display, "monitor-added", @ptrCast(&App.add), &self.app, null, 0);
+        self.removed = c.g_signal_connect_data(display, "monitor-removed", @ptrCast(&App.remove), &self.app, null, 0);
+        var i: c_int = 0;
+        while (i < c.gdk_display_get_n_monitors(display)) : (i += 1) App.add(display, c.gdk_display_get_monitor(display, i).?, &self.app);
+        return self;
+    }
+
+    pub fn destroy(self: *Service) void {
+        const display = c.gdk_display_get_default().?;
+        c.g_signal_handler_disconnect(display, self.added);
+        c.g_signal_handler_disconnect(display, self.removed);
+        for (self.app.backgrounds.items) |background| background.destroy();
+        self.app.backgrounds.deinit(allocator);
+        c.g_object_unref(self.app.image);
+        allocator.destroy(self);
+    }
+};
