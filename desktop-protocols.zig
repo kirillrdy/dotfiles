@@ -802,3 +802,59 @@ pub fn dotfiles_overview_v1_move(overview: ?*dotfiles_overview_v1, identifier: [
     _ = c.wl_proxy_marshal_flags(@ptrCast(@alignCast(overview)), DOTFILES_OVERVIEW_V1_MOVE, null, c.wl_proxy_get_version(@ptrCast(@alignCast(overview))), 0, identifier, index);
 }
 
+// ext-session-lock-v1: native metadata, checked against wayland-scanner.
+// /*
+//  * Copyright 2021 Isaac Freund
+//  *
+//  * Permission is hereby granted, free of charge, to any person obtaining a
+//  * copy of this software and associated documentation files (the "Software"),
+//  * to deal in the Software without restriction, including without limitation
+//  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+//  * and/or sell copies of the Software, and to permit persons to whom the
+//  * Software is furnished to do so, subject to the following conditions:
+//  *
+//  * The above copyright notice and this permission notice shall be included in
+//  * all copies or substantial portions of the Software.
+//  *
+//  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+//  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+//  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+//  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+//  * THE SOFTWARE.
+//
+// */
+extern const wl_surface_interface: Interface;
+const ext_session_lock_v1_types = [_][*c]const Interface{
+    null,
+    null,
+    null,
+    &ext_session_lock_v1_interface,
+    &ext_session_lock_surface_v1_interface,
+    &wl_surface_interface,
+    &wl_output_interface,
+};
+const ext_session_lock_manager_v1_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
+    .{ .name = "lock", .signature = "n", .types = @constCast(ext_session_lock_v1_types[3..].ptr) },
+};
+const ext_session_lock_v1_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
+    .{ .name = "get_lock_surface", .signature = "noo", .types = @constCast(ext_session_lock_v1_types[4..].ptr) },
+    .{ .name = "unlock_and_destroy", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
+};
+const ext_session_lock_v1_events = [_]Message{
+    .{ .name = "locked", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
+    .{ .name = "finished", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
+};
+const ext_session_lock_surface_v1_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
+    .{ .name = "ack_configure", .signature = "u", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
+};
+const ext_session_lock_surface_v1_events = [_]Message{
+    .{ .name = "configure", .signature = "uuu", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
+};
+pub export const ext_session_lock_manager_v1_interface: Interface = .{ .name = "ext_session_lock_manager_v1", .version = 1, .method_count = 2, .methods = &ext_session_lock_manager_v1_requests, .event_count = 0, .events = null };
+pub export const ext_session_lock_v1_interface: Interface = .{ .name = "ext_session_lock_v1", .version = 1, .method_count = 3, .methods = &ext_session_lock_v1_requests, .event_count = 2, .events = &ext_session_lock_v1_events };
+pub export const ext_session_lock_surface_v1_interface: Interface = .{ .name = "ext_session_lock_surface_v1", .version = 1, .method_count = 2, .methods = &ext_session_lock_surface_v1_requests, .event_count = 1, .events = &ext_session_lock_surface_v1_events };

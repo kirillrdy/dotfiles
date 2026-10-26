@@ -973,6 +973,7 @@ pub const enum__cairo_font_slant = c_uint;
 pub const cairo_font_slant_t = enum__cairo_font_slant;
 
 pub const CAIRO_FONT_WEIGHT_BOLD: c_int = 1;
+pub const CAIRO_FONT_WEIGHT_NORMAL: c_int = 0;
 
 pub const enum__cairo_font_weight = c_uint;
 
@@ -2424,4 +2425,3 @@ pub const wl_shm = struct_wl_shm;
 pub const wl_registry_listener = struct_wl_registry_listener;
 
 pub const wl_output_listener = struct_wl_output_listener;
-

@@ -28,6 +28,8 @@ pkgs.stdenv.mkDerivation {
     pkgs.gtk3
     pkgs.gtk-layer-shell
     pkgs.wayland
+    pkgs.pam
+    pkgs.libxkbcommon
     pkgs.polkit
   ];
   buildPhase = ''
@@ -78,7 +80,7 @@ pkgs.stdenv.mkDerivation {
   installPhase = ''
     # Keep test programs and legacy component entry points outside the desktop output.
     mkdir -p "$tests/bin"
-    for name in desktop-apps-fixture waybar-power-fixture labwc-switcher-fixture \
+    for name in desktop-apps-fixture desktop-lock-fixture waybar-power-fixture labwc-switcher-fixture \
       desktop-pointer-fixture check-labwc-switcher \
       desktop-greeter desktop-power desktop-screenshot desktop-panel desktop-wallpaper \
       desktop-notifications desktop-osd desktop-polkit desktop-overview desktop-settings \

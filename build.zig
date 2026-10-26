@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     const gtk = b.createModule(.{ .root_source_file = b.path("desktop-gtk.zig"), .target = target, .optimize = optimize });
     const protocols = b.createModule(.{ .root_source_file = b.path("desktop-protocols.zig"), .target = target, .optimize = optimize });
     protocols.addImport("gtk", gtk);
-    var protocol_references: [7]std.Build.LazyPath = undefined;
+    var protocol_references: [8]std.Build.LazyPath = undefined;
     const libc_reference = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n", &.{});
     const libc_abi = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-libc-abi.zig"), .target = target, .optimize = optimize }) });
     libc_abi.root_module.addImport("api", libc);
@@ -150,6 +150,38 @@ pub fn build(b: *std.Build) void {
         const code = code_command.addOutputFileArg(b.fmt("{s}-v1.c", .{name}));
         protocol_references[protocol_index + 2] = code;
     }
+    const lock_code = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
+    lock_code.addFileArg(.{ .cwd_relative = b.fmt("{s}/staging/ext-session-lock/ext-session-lock-v1.xml", .{protocol_dir}) });
+    protocol_references[7] = lock_code.addOutputFileArg("ext-session-lock-v1.c");
+    const lock_auth = b.createModule(.{ .root_source_file = b.path("desktop-lock-auth.zig"), .target = target, .optimize = optimize });
+    lock_auth.link_libc = true;
+    lock_auth.linkSystemLibrary("pam", .{});
+    const lock_module = b.createModule(.{ .root_source_file = b.path("desktop-lock.zig"), .target = target, .optimize = optimize });
+    lock_module.addImport("gtk", gtk);
+    lock_module.addImport("libc", libc);
+    lock_module.addImport("protocols", protocols);
+    lock_module.addImport("lock-auth", lock_auth);
+    lock_module.link_libc = true;
+    for ([_][]const u8{ "gtk+-3.0", "wayland-client", "xkbcommon" }) |name| lock_module.linkSystemLibrary(name, .{});
+    session.root_module.addImport("lock", lock_module);
+    const auth_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-lock-auth.zig"), .target = target, .optimize = optimize }) });
+    auth_tests.root_module.addImport("auth", lock_auth);
+    const fixture_auth = b.createModule(.{ .root_source_file = b.path("tests/desktop-lock-fake-auth.zig"), .target = target, .optimize = optimize });
+    const fixture_lock = b.createModule(.{ .root_source_file = b.path("desktop-lock.zig"), .target = target, .optimize = optimize });
+    fixture_lock.addImport("gtk", gtk);
+    fixture_lock.addImport("libc", libc);
+    fixture_lock.addImport("protocols", protocols);
+    fixture_lock.addImport("lock-auth", fixture_auth);
+    fixture_lock.link_libc = true;
+    for ([_][]const u8{ "gtk+-3.0", "wayland-client", "xkbcommon" }) |name| fixture_lock.linkSystemLibrary(name, .{});
+    const lock_fixture = b.addExecutable(.{ .name = "desktop-lock-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-lock-fixture.zig"), .target = target, .optimize = optimize }) });
+    lock_fixture.root_module.addImport("lock", fixture_lock);
+    b.installArtifact(lock_fixture);
+    b.step("lock-fixture", "Build the isolated session lock fixture").dependOn(&b.addInstallArtifact(lock_fixture, .{}).step);
+    const lock_tests = b.addTest(.{ .root_module = lock_module });
+    const lock_check = b.step("test-lock", "Check password editing, erasure, and PAM conversations");
+    lock_check.dependOn(&b.addRunArtifact(lock_tests).step);
+    lock_check.dependOn(&b.addRunArtifact(auth_tests).step);
     const overview_gtk = gtk;
     const abi_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-gtk-abi.zig"), .target = target, .optimize = optimize }) });
     abi_tests.root_module.addImport("api", gtk);
@@ -246,6 +278,9 @@ pub fn build(b: *std.Build) void {
     // Rename reference symbols so the C and Zig implementations can be
     // compared in the same process, including cross-protocol type pointers.
     const protocol_names = [_][]const u8{
+        "ext_session_lock_manager_v1_interface",
+        "ext_session_lock_v1_interface",
+        "ext_session_lock_surface_v1_interface",
         "zwlr_screencopy_manager_v1_interface",
         "zwlr_screencopy_frame_v1_interface",
         "zwlr_data_control_manager_v1_interface",
@@ -271,6 +306,8 @@ pub fn build(b: *std.Build) void {
     const run_protocol_tests = b.addRunArtifact(protocol_tests);
     b.step("test-protocols", "Compare native Wayland metadata with the protocol generator").dependOn(&run_protocol_tests.step);
     const test_step = b.step("test", "Run data parsing and allowance tests");
+    test_step.dependOn(&b.addRunArtifact(lock_tests).step);
+    test_step.dependOn(&b.addRunArtifact(auth_tests).step);
     test_step.dependOn(&run_protocol_tests.step);
     test_step.dependOn(&run_pointer_tests.step);
     test_step.dependOn(&run_http_tests.step);

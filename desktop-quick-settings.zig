@@ -633,7 +633,7 @@ pub const Controls = struct {
             }
             reveal(self.power_menu, @intFromBool(c.gtk_revealer_get_reveal_child(cast(c.GtkRevealer, self.power_menu)) == 0));
             self.updateDim();
-        } else if (std.mem.eql(u8, std.mem.span(action), "settings")) self.launch(self.network_settings) else if (std.mem.eql(u8, std.mem.span(action), "lock")) self.launch("swaylock -f -c 1e1e2e") else {
+        } else if (std.mem.eql(u8, std.mem.span(action), "settings")) self.launch(self.network_settings) else if (std.mem.eql(u8, std.mem.span(action), "lock")) self.launch("desktop-zig lock --daemonize") else {
             c.gtk_popover_popdown(cast(c.GtkPopover, self.popover));
             self.refs += 1;
             _ = c.g_timeout_add(200, &screenshot, self);

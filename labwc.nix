@@ -72,6 +72,7 @@ lib.mkIf enableLightDesktop {
   systemd.tmpfiles.rules = [ "d /var/cache/desktop-greeter 0700 greeter greeter - -" ];
   networking.networkmanager.enable = true;
   services.power-profiles-daemon.enable = false;
+  security.pam.services.desktop-lock = { };
   security.polkit.enable = true;
   security.polkit.enablePkexecWrapper = true;
   systemd.services.desktop-power-restore = {
@@ -118,7 +119,7 @@ lib.mkIf enableLightDesktop {
         Environment = "DESKTOP_CODEX_ICON=${codexIcon}";
       };
     };
-    swayidle = sessionService "${pkgs.swayidle}/bin/swayidle -w timeout 600 'swaylock -f -c 1e1e2e' before-sleep 'swaylock -f -c 1e1e2e'";
+    swayidle = sessionService "${pkgs.swayidle}/bin/swayidle -w timeout 600 '${shell} lock --daemonize' before-sleep '${shell} lock --daemonize'";
   };
 
   environment.systemPackages = with pkgs; [
@@ -126,7 +127,6 @@ lib.mkIf enableLightDesktop {
     brightnessctl
     desktopZig
     swayidle
-    swaylock
     wlr-randr
   ];
 
@@ -183,7 +183,7 @@ lib.mkIf enableLightDesktop {
           <keybind key="W-d"><action name="Execute" command="${appLauncher}" /></keybind>
           <keybind key="W-a"><action name="Execute" command="${appLauncher}" /></keybind>
           <keybind key="Super_L" onRelease="yes"><action name="Execute" command="${appLauncher}" /></keybind>
-          <keybind key="W-l"><action name="Execute" command="swaylock -f -c 1e1e2e" /></keybind>
+          <keybind key="W-l"><action name="Execute" command="${shell} lock --daemonize" /></keybind>
           <keybind key="W-S-e"><action name="Exit" /></keybind>
           <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="${osd} volume up" /></keybind>
           <keybind key="XF86AudioLowerVolume"><action name="Execute" command="${osd} volume down" /></keybind>
