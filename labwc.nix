@@ -93,8 +93,6 @@ lib.mkIf enableLightDesktop {
     brightnessctl
     desktopZig
     grim
-    pavucontrol
-    networkmanagerapplet
     slurp
     swayidle
     swaylock
@@ -218,7 +216,8 @@ lib.mkIf enableLightDesktop {
         {
           name = "gnome-status";
           exec = "${desktopZig}/bin/waybar-panel status";
-          network_settings_command = "${pkgs.networkmanagerapplet}/bin/nm-connection-editor";
+          network_settings_command = "${desktopZig}/bin/desktop-settings network";
+          sound_settings_command = "${desktopZig}/bin/desktop-settings sound";
         }
       ];
     };

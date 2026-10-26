@@ -14,6 +14,7 @@ pub const Options = struct {
     exec: ?[:0]const u8 = null,
     on_click: ?[:0]const u8 = null,
     network_settings_command: ?[:0]const u8 = null,
+    sound_settings_command: [:0]const u8 = "desktop-settings sound",
 };
 pub const Graph = extern struct {
     box: [*c]c.GtkWidget = null,
@@ -66,6 +67,7 @@ pub const Module = extern struct {
     power: [*c]c.GDBusProxy = null,
     session: ?*c.GDBusConnection = null,
     device_subscription: c.guint = 0,
+    settings_subscription: c.guint = 0,
     power_menu: [*c]c.GtkWidget = null,
     power_label: [*c]c.GtkWidget = null,
     power_icon: [*c]c.GtkWidget = null,
@@ -124,6 +126,9 @@ pub fn settings_launch(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) v
     _ = c.g_spawn_command_line_async(@as([*c]const c.gchar, @ptrCast(@alignCast(data))), &@"error");
     c.gtk_widget_set_tooltip_text(cast(c.GtkWidget, button), if (@"error" != null) @"error".*.message else null);
     c.g_clear_error(&@"error");
+}
+fn free_command(data: c.gpointer, _: ?*c.GClosure) callconv(.c) void {
+    c.g_free(data);
 }
 pub var power_ids: [3][*c]const u8 = [3][*c]const u8{
     "performance",
@@ -1039,6 +1044,7 @@ fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) c
     if (m.dead == 0) {
         m.session = connection;
         if (connection != null and m.status != 0) m.device_subscription = c.g_dbus_connection_signal_subscribe(connection, "org.dotfiles.DesktopOsd", "org.dotfiles.DesktopOsd", "DeviceChanged", "/org/dotfiles/DesktopOsd", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &device_changed, m, null);
+        if (connection != null and m.status != 0) m.settings_subscription = c.g_dbus_connection_signal_subscribe(connection, null, "org.dotfiles.DesktopSettings", "DeviceChanged", "/org/dotfiles/DesktopSettings", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &device_changed, m, null);
         if (connection != null and m.calendar != null) {
             m.history_subscription = c.g_dbus_connection_signal_subscribe(connection, "org.freedesktop.Notifications", "org.dotfiles.Notifications", "Changed", "/org/freedesktop/Notifications", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &history_changed, m, null);
             history_reload(m);
@@ -1102,7 +1108,8 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
         const power: [*c]c.GtkWidget = quick_tile(c.gtk_toggle_button_new(), "Power Mode", m.power_icon, m.power_label, 1);
         c.gtk_grid_attach(cast(c.GtkGrid, tiles), power, 0, 1, 1, 1);
         const sound: [*c]c.GtkWidget = quick_tile(c.gtk_button_new(), "Sound", c.gtk_image_new_from_icon_name("audio-volume-high-symbolic", c.GTK_ICON_SIZE_MENU), null, 1);
-        _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(sound)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&settings_launch))), @as(c.gpointer, @ptrCast(@constCast("pavucontrol"))), null, 0);
+        // The signal owns its command independently of the parsed config.
+        _ = c.g_signal_connect_data(sound, "clicked", @ptrCast(&settings_launch), c.g_strdup(options.sound_settings_command.ptr), &free_command, 0);
         c.gtk_grid_attach(cast(c.GtkGrid, tiles), sound, 1, 0, 1, 1);
         const profiles: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 4);
         css(profiles, "quick-toggle-menu");
@@ -1170,6 +1177,7 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
 pub fn deinit(m: *Module) void {
     m.dead = 1;
     if (m.device_subscription != 0) c.g_dbus_connection_signal_unsubscribe(m.session, m.device_subscription);
+    if (m.settings_subscription != 0) c.g_dbus_connection_signal_unsubscribe(m.session, m.settings_subscription);
     if (m.history_subscription != 0) c.g_dbus_connection_signal_unsubscribe(m.session, m.history_subscription);
     if (m.clock_timer != 0) {
         _ = c.g_source_remove(m.clock_timer);

@@ -232,14 +232,14 @@ fn statusItems(a: A, demo: bool) !V {
         return items;
     }
     const wireless = try wirelessIcon(a);
-    try items.array.append(try item(a, wireless.icon, "", wireless.tooltip, "ghostty -e nmtui"));
+    try items.array.append(try item(a, wireless.icon, "", wireless.tooltip, "desktop-settings network"));
     const volume = u.command(a, &.{ "wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@" }, 4);
     var words = std.mem.tokenizeAny(u8, volume, " \t");
     _ = words.next();
     const amount = std.fmt.parseFloat(f64, words.next() orelse "") catch std.math.nan(f64);
     const percentage = if (std.math.isFinite(amount)) amount * 100 else 0;
     const level = if (std.mem.indexOf(u8, volume, "MUTED") != null or !std.math.isFinite(amount)) "muted" else if (percentage >= 66) "high" else if (percentage >= 33) "medium" else "low";
-    try items.array.append(try item(a, try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), "", try u.fmt(a, "Volume: {d:.0}%", .{percentage}), "pavucontrol"));
+    try items.array.append(try item(a, try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), "", try u.fmt(a, "Volume: {d:.0}%", .{percentage}), "desktop-settings sound"));
     if (microphoneMuted(u.command(a, &.{ "wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@" }, 4))) {
         try items.array.append(try item(a, "microphone-sensitivity-muted-symbolic", "", "Microphone muted", ""));
     }

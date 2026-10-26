@@ -25,6 +25,17 @@ pub fn build(b: *std.Build) void {
     panel.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
     panel.root_module.addImport("gtk", panel_gtk);
     b.installArtifact(panel);
+    const settings_module = b.createModule(.{ .root_source_file = b.path("desktop-settings.zig"), .target = target, .optimize = optimize });
+    settings_module.link_libc = true;
+    settings_module.linkSystemLibrary("gtk+-3.0", .{});
+    settings_module.addImport("gtk", gtk);
+    const settings = b.addExecutable(.{ .name = "desktop-settings", .root_module = settings_module });
+    b.installArtifact(settings);
+    const settings_tests = b.addTest(.{ .root_module = settings_module });
+    const settings_fixture = b.addExecutable(.{ .name = "desktop-settings-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-settings-fixture.zig"), .target = target, .optimize = optimize }) });
+    settings_fixture.root_module.addImport("settings", settings_module);
+    const settings_check = b.step("test-settings", "Exercise settings against isolated sound and network backends (requires a display)");
+    settings_check.dependOn(&b.addRunArtifact(settings_fixture).step);
     const wallpaper = b.addExecutable(.{ .name = "desktop-wallpaper", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-wallpaper.zig"), .target = target, .optimize = optimize }) });
     wallpaper.root_module.link_libc = true;
     wallpaper.root_module.linkSystemLibrary("gtk+-3.0", .{});
@@ -137,4 +148,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&b.addRunArtifact(osd_tests).step);
     test_step.dependOn(&b.addRunArtifact(wallpaper_tests).step);
+    test_step.dependOn(&b.addRunArtifact(settings_tests).step);
 }

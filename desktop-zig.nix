@@ -47,8 +47,20 @@ pkgs.stdenv.mkDerivation {
       GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons \
       "$out/bin/desktop-apps-fixture"
+    G_DEBUG=fatal-criticals GDK_BACKEND=x11 zig build test-settings -Doptimize=ReleaseSafe -j2
   '';
   installPhase = ''
+    wrapProgram "$out/bin/desktop-settings" \
+      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share \
+      --suffix PATH : ${
+        pkgs.lib.makeBinPath [
+          pkgs.coreutils
+          pkgs.wireplumber
+          pkgs.pipewire
+          pkgs.networkmanager
+        ]
+      }
     wrapProgram "$out/bin/desktop-overview" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
