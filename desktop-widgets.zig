@@ -200,6 +200,10 @@ pub fn apply_power_state(m: *Module, state: power_backend.State) void {
     }
     if (m.quick) |controls| {
         const selected = state.active != null and state.active.? != .balanced;
+        // GtkToggleButton can emit clicked while set_active synchronizes the UI.
+        const syncing = controls.syncing;
+        controls.syncing = true;
+        defer controls.syncing = syncing;
         c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, controls.power.button), @intFromBool(selected));
         if (selected) css(controls.power.widget, "quick-active") else c.gtk_style_context_remove_class(c.gtk_widget_get_style_context(controls.power.widget), "quick-active");
     }
@@ -1198,6 +1202,8 @@ pub var refresh_source: ?*const fn ([]const u8) void = null;
 
 fn power_toggle(_: *c.GtkToggleButton, data: c.gpointer) callconv(.c) void {
     const m: *Module = @ptrCast(@alignCast(data));
+    if (m.dead != 0 or m.power_pending != 0) return;
+    if (m.quick) |controls| if (controls.syncing) return;
     const state = (power_backend.Backend{}).inspect();
     const index: usize = if (state.active == .balanced and state.available[2]) 2 else 1;
     power_select(cast(c.GtkButton, m.power_buttons[index]), m);

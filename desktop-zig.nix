@@ -34,7 +34,7 @@ pkgs.stdenv.mkDerivation {
   ];
   buildPhase = ''
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-    zig build --prefix "$out" -Doptimize=ReleaseSafe -j2
+    zig build --prefix "$out" -Doptimize=ReleaseSafe
     # Compatibility names share the same executable; fixtures exercise these modes.
     for name in desktop-greeter desktop-power desktop-askpass desktop-screenshot \
       desktop-panel desktop-wallpaper desktop-notifications desktop-osd desktop-polkit \
@@ -47,8 +47,8 @@ pkgs.stdenv.mkDerivation {
     export GSETTINGS_BACKEND=memory
     export GSETTINGS_SCHEMA_DIR=${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}/glib-2.0/schemas
     python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-zig" --subcommand greeter
-    zig build test-power -Doptimize=ReleaseSafe -j2
-    WB_PANEL_BINARY="$out/bin/waybar-panel" WB_CODEX_BINARY="$out/bin/waybar-codex" zig build test -Doptimize=ReleaseSafe -j2
+    zig build test-power -Doptimize=ReleaseSafe
+    WB_PANEL_BINARY="$out/bin/waybar-panel" WB_CODEX_BINARY="$out/bin/waybar-codex" zig build test -Doptimize=ReleaseSafe
     Xvfb :99 -nolisten tcp &
     xvfb_pid=$!
     trap 'kill "$xvfb_pid"' EXIT
@@ -65,16 +65,16 @@ pkgs.stdenv.mkDerivation {
       GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons \
       "$out/bin/desktop-apps-fixture"
-    G_DEBUG=fatal-criticals GDK_BACKEND=x11 zig build test-settings -Doptimize=ReleaseSafe -j2
+    G_DEBUG=fatal-criticals GDK_BACKEND=x11 zig build test-settings -Doptimize=ReleaseSafe
     G_DEBUG=fatal-criticals GDK_BACKEND=x11 \
       GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      zig build test-askpass -Doptimize=ReleaseSafe -j2
+      zig build test-askpass -Doptimize=ReleaseSafe
     G_DEBUG=fatal-criticals GDK_BACKEND=x11 \
       GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      zig build test-polkit -Doptimize=ReleaseSafe -j2
+      zig build test-polkit -Doptimize=ReleaseSafe
     G_DEBUG=fatal-criticals GDK_BACKEND=x11 \
       GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      zig build test-screenshot -Doptimize=ReleaseSafe -j2
+      zig build test-screenshot -Doptimize=ReleaseSafe
   '';
   installPhase = ''
     # Keep test programs and legacy component entry points outside the desktop output.

@@ -164,6 +164,19 @@ pub fn main(process_init: std.process.Init) !void {
         c.g_value_unset(&height);
     }
     const controls = status.quick.?;
+    const refs_before_refresh = status.refs;
+    // Refreshing the tile must never launch another profile change, including
+    // transitions between balanced (inactive) and either active toggle state.
+    for ([_]?@import("power").Profile{ .performance, .balanced, .@"power-saver", .balanced, null }) |profile| {
+        p.apply_power_state(status, .{ .available = .{ true, true, true }, .active = profile });
+        assert(status.power_pending == 0 and status.refs == refs_before_refresh);
+        assert(c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, controls.power.button)) == @intFromBool(profile != null and profile.? != .balanced));
+    }
+    // User clicks still dispatch once; async completion must not dispatch again.
+    c.gtk_button_clicked(cast(c.GtkButton, controls.power.button));
+    assert(status.power_pending != 0);
+    pumpEvents(500);
+    assert(status.power_pending == 0);
     if (controls.interface) |prefs| {
         const before = c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, controls.dark.button));
         c.gtk_button_clicked(cast(c.GtkButton, controls.dark.button));
