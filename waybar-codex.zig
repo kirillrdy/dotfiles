@@ -3,7 +3,7 @@ const std = @import("std");
 const u = @import("desktop-util.zig");
 const A = u.Allocator;
 const V = u.Value;
-const curl = @import("curl");
+const http = @import("desktop-http.zig");
 
 pub fn unavailable(a: A, message: []const u8, compact: bool) !V {
     var result = u.object();
@@ -68,17 +68,6 @@ pub fn formatUsage(a: A, data: V, remaining: bool, compact: bool, now: i64) !V {
     try u.put(a, &result, "checked", u.str(try u.localTime(a, now, "Checked: %H:%M:%S")));
     return result;
 }
-const Response = struct { a: A, bytes: std.array_list.Managed(u8), failed: bool = false };
-fn receive(data: [*c]u8, size: usize, count: usize, context: ?*anyopaque) callconv(.c) usize {
-    const response: *Response = @ptrCast(@alignCast(context.?));
-    const len = std.math.mul(usize, size, count) catch return 0;
-    if (len > 1024 * 1024 or response.bytes.items.len + len > 1024 * 1024) return 0;
-    response.bytes.appendSlice(data[0..len]) catch {
-        response.failed = true;
-        return 0;
-    };
-    return len;
-}
 pub fn readUsage(a: A, remaining: bool, compact: bool) !V {
     return fetchUsage(a, remaining, compact) catch unavailable(a, "Codex usage is unavailable; check login and network", compact);
 }
@@ -91,32 +80,21 @@ fn fetchUsage(a: A, remaining: bool, compact: bool) !V {
     if (token.len == 0) return unavailable(a, "Sign in with codex login to see account usage", compact);
     // Never pass authorization through process arguments or log HTTP headers.
     if (std.mem.indexOfAny(u8, token, "\r\n") != null) return error.InvalidToken;
-    if (curl.curl_global_init(curl.CURL_GLOBAL_DEFAULT) != curl.CURLE_OK) return error.HttpInit;
-    defer curl.curl_global_cleanup();
-    const handle = curl.curl_easy_init() orelse return error.HttpInit;
-    defer curl.curl_easy_cleanup(handle);
-    var headers: ?*curl.struct_curl_slist = null;
-    defer curl.curl_slist_free_all(headers);
-    headers = curl.curl_slist_append(headers, try std.fmt.allocPrintSentinel(a, "Authorization: Bearer {s}", .{token}, 0)) orelse return error.OutOfMemory;
     const account = u.string(u.get(tokens, "account_id"));
-    if (account.len > 0) {
-        if (std.mem.indexOfAny(u8, account, "\r\n") != null) return error.InvalidAccount;
-        headers = curl.curl_slist_append(headers, try std.fmt.allocPrintSentinel(a, "ChatGPT-Account-Id: {s}", .{account}, 0)) orelse return error.OutOfMemory;
-    }
-    var response = Response{ .a = a, .bytes = std.array_list.Managed(u8).init(a) };
-    if (curl.curl_easy_setopt(handle, curl.CURLOPT_URL, @as([*:0]const u8, "https://chatgpt.com/backend-api/wham/usage")) != curl.CURLE_OK or
-        curl.curl_easy_setopt(handle, curl.CURLOPT_HTTPHEADER, headers) != curl.CURLE_OK or
-        curl.curl_easy_setopt(handle, curl.CURLOPT_USERAGENT, @as([*:0]const u8, "codex-cli")) != curl.CURLE_OK or
-        curl.curl_easy_setopt(handle, curl.CURLOPT_TIMEOUT, @as(c_long, 10)) != curl.CURLE_OK or
-        curl.curl_easy_setopt(handle, curl.CURLOPT_NOSIGNAL, @as(c_long, 1)) != curl.CURLE_OK or
-        curl.curl_easy_setopt(handle, curl.CURLOPT_WRITEFUNCTION, &receive) != curl.CURLE_OK or
-        curl.curl_easy_setopt(handle, curl.CURLOPT_WRITEDATA, &response) != curl.CURLE_OK) return error.HttpSetup;
-    if (curl.curl_easy_perform(handle) != curl.CURLE_OK or response.failed) return error.HttpRequest;
-    var status: c_long = 0;
-    if (curl.curl_easy_getinfo(handle, curl.CURLINFO_RESPONSE_CODE, &status) != curl.CURLE_OK) return error.HttpRequest;
+    if (std.mem.indexOfAny(u8, account, "\r\n") != null) return error.InvalidAccount;
+    const headers = [_]std.http.Header{
+        .{ .name = "Authorization", .value = try u.fmt(a, "Bearer {s}", .{token}) },
+        .{ .name = "ChatGPT-Account-Id", .value = account },
+    };
+    const response = try http.get(a, u.io, .{
+        .url = "https://chatgpt.com/backend-api/wham/usage",
+        .headers = headers[0..if (account.len > 0) 2 else 1],
+    });
+    defer a.free(response.body);
+    const status = @backingInt(response.status);
     if (status == 401 or status == 403) return unavailable(a, "Codex login needs refreshing; run codex login", compact);
     if (status != 200) return unavailable(a, try u.fmt(a, "Codex usage service returned HTTP {d}", .{status}), compact);
-    return formatUsage(a, try u.parse(a, response.bytes.items), remaining, compact, u.timestamp());
+    return formatUsage(a, try u.parse(a, response.body), remaining, compact, u.timestamp());
 }
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
