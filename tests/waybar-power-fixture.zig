@@ -31,11 +31,21 @@ fn root() *c.GtkWidget {
     _ = c.g_object_ref_sink(widget);
     return widget;
 }
-fn setProperty(m: *p.Module, name: [:0]const u8, value: ?*c.GVariant) void {
-    c.g_dbus_proxy_set_cached_property(m.power, name, value);
-    p.update_power(m);
-}
 pub fn main(process_init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const args = try process_init.minimal.args.toSlice(arena.allocator());
+    // Re-exec this fixture in place of pkexec to exercise argv, async completion,
+    // error reporting and disposal without authorization or real sysfs writes.
+    if (args.len == 4 and std.mem.eql(u8, args[1], "--power-fixture")) {
+        assert(std.mem.eql(u8, args[2], "set"));
+        _ = try @import("power").Profile.parse(args[3]);
+        if (std.mem.eql(u8, args[3], "power-saver")) {
+            std.debug.print("fixture: permission denied", .{});
+            std.process.exit(1);
+        }
+        return;
+    }
     c.gtk_init(null, null);
     // Resolve and decode the SVGs, rather than only checking GtkImage names.
     if (c.g_getenv("DESKTOP_PANEL_ICON_PATH")) |path| {
@@ -63,9 +73,6 @@ pub fn main(process_init: std.process.Init) !void {
         }
     }
     c.g_object_set(c.gtk_settings_get_default(), "gtk-enable-animations", @as(c_int, 0), @as(?*anyopaque, null));
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const args = try process_init.minimal.args.toSlice(arena.allocator());
     if (args.len > 1) {
         const provider = c.gtk_css_provider_new();
         var err: [*c]c.GError = null;
@@ -76,7 +83,6 @@ pub fn main(process_init: std.process.Init) !void {
     }
     var m = p.Module{};
     m.refs = 1;
-    m.power = @ptrCast(@alignCast(c.g_object_new(c.g_dbus_proxy_get_type(), "g-interface-name", @as([*:0]const u8, "org.freedesktop.UPower.PowerProfiles"), @as(?*anyopaque, null))));
     const box = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0);
     _ = c.g_object_ref_sink(box);
     m.power_label = c.gtk_label_new("");
@@ -87,38 +93,43 @@ pub fn main(process_init: std.process.Init) !void {
         button.* = c.gtk_button_new();
         c.gtk_container_add(cast(c.GtkContainer, box), button.*);
     }
-    p.update_power(&m);
+    p.apply_power_state(&m, .{});
     eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "Power profiles unavailable");
     for (m.power_buttons) |button| assert(c.gtk_widget_get_visible(button) == 0);
-    var err: [*c]c.GError = null;
-    const profiles = c.g_variant_parse(null, "[{'Profile': <'balanced'>}, {'Profile': <'power-saver'>}]", null, null, &err);
-    assert(err == null);
-    setProperty(&m, "Profiles", profiles);
-    c.g_variant_unref(profiles);
-    setProperty(&m, "ActiveProfile", c.g_variant_new_string("balanced"));
+    p.apply_power_state(&m, .{ .available = .{ false, true, true }, .active = .balanced });
     assert(c.gtk_widget_get_visible(m.power_buttons[0]) == 0);
     assert(c.gtk_widget_get_visible(m.power_buttons[1]) != 0 and c.gtk_widget_get_visible(m.power_buttons[2]) != 0);
     eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_label)), "Balanced");
     eq(c.gtk_button_get_label(cast(c.GtkButton, m.power_buttons[1])), "Balanced  ✓");
-    setProperty(&m, "ActiveProfile", c.g_variant_new_string("power-saver"));
+    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "");
+    const saver = @import("power").State{ .available = .{ true, true, true }, .active = .@"power-saver" };
+    p.apply_power_state(&m, saver);
     eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_label)), "Power Saver");
     eq(c.gtk_button_get_label(cast(c.GtkButton, m.power_buttons[1])), "Balanced");
     eq(c.gtk_button_get_label(cast(c.GtkButton, m.power_buttons[2])), "Power Saver  ✓");
     m.power_pending = 1;
-    p.update_power(&m);
+    p.apply_power_state(&m, saver);
     assert(c.gtk_widget_get_sensitive(m.power_buttons[2]) == 0);
     m.power_pending = 0;
-    p.update_power(&m);
+    p.apply_power_state(&m, saver);
     assert(c.gtk_widget_get_sensitive(m.power_buttons[2]) != 0);
-    const all_profiles = c.g_variant_parse(null, "[{'Profile': <'performance'>}, {'Profile': <'balanced'>}, {'Profile': <'power-saver'>}]", null, null, &err);
-    assert(err == null);
-    setProperty(&m, "Profiles", all_profiles);
-    c.g_variant_unref(all_profiles);
     assert(c.gtk_widget_get_visible(m.power_buttons[0]) != 0);
-    setProperty(&m, "PerformanceInhibited", c.g_variant_new_string("lap-detected"));
-    assert(c.gtk_widget_get_sensitive(m.power_buttons[0]) == 0 and c.gtk_widget_get_sensitive(m.power_buttons[1]) != 0);
-    setProperty(&m, "PerformanceInhibited", c.g_variant_new_string(""));
-    assert(c.gtk_widget_get_sensitive(m.power_buttons[0]) != 0);
+    p.apply_power_state(&m, .{ .available = .{ true, true, true } });
+    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_label)), "Custom");
+    const executable = try arena.allocator().dupeSentinel(u8, args[0], 0);
+    _ = c.g_setenv("DESKTOP_POWER_PKEXEC", executable.ptr, 1);
+    _ = c.g_setenv("DESKTOP_POWER_HELPER", "--power-fixture", 1);
+    c.g_object_set_data(cast(c.GObject, m.power_buttons[0]), "profile", @constCast("performance"));
+    p.power_select(cast(c.GtkButton, m.power_buttons[0]), &m);
+    assert(m.power_pending != 0);
+    pumpEvents(500);
+    assert(m.power_pending == 0 and m.refs == 1);
+    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "");
+    c.g_object_set_data(cast(c.GObject, m.power_buttons[2]), "profile", @constCast("power-saver"));
+    p.power_select(cast(c.GtkButton, m.power_buttons[2]), &m);
+    pumpEvents(500);
+    assert(m.power_pending == 0 and m.refs == 1);
+    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "fixture: permission denied");
 
     const status_root = root();
     const status = p.init(status_root, .{ .name = "gnome-status" });
@@ -128,8 +139,9 @@ pub fn main(process_init: std.process.Init) !void {
     assert(c.gtk_widget_get_visible(status.item[0].box) != 0 and c.gtk_widget_get_visible(status.item[1].box) != 0);
     p.update_line(status, "{\"items\":[{\"icon\":\"network-wired-symbolic\",\"tooltip\":\"Wired network\"}]}");
     eq(c.gtk_label_get_text(cast(c.GtkLabel, status.network_label)), "Wired network");
+    p.power_select(cast(c.GtkButton, status.power_buttons[0]), status);
     p.deinit(status);
-    while (c.g_main_context_iteration(null, 0) != 0) {}
+    pumpEvents(500);
     c.gtk_widget_destroy(status_root);
     c.g_object_unref(status_root);
 
@@ -223,5 +235,4 @@ pub fn main(process_init: std.process.Init) !void {
     c.g_object_unref(graph_root);
     c.gtk_widget_destroy(box);
     c.g_object_unref(box);
-    c.g_object_unref(m.power);
 }

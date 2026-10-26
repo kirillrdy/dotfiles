@@ -1,5 +1,6 @@
 //! Shared GTK widgets and popups for the standalone desktop panel.
 const std = @import("std");
+const power_backend = @import("power");
 const notification_view = @import("desktop-notification-view.zig");
 pub const c = @import("gtk");
 fn cast(comptime T: type, p: anytype) [*c]T {
@@ -64,7 +65,7 @@ pub const Module = extern struct {
     cancel: [*c]c.GCancellable = null,
     restart: c.guint = 0,
     clock_timer: c.guint = 0,
-    power: [*c]c.GDBusProxy = null,
+    power_timer: c.guint = 0,
     session: ?*c.GDBusConnection = null,
     device_subscription: c.guint = 0,
     settings_subscription: c.guint = 0,
@@ -101,11 +102,7 @@ pub fn unref_module(m: *Module) callconv(.c) void {
         c.g_object_unref(@as(c.gpointer, @ptrCast(m.cancel)));
     }
     m.cancel = null;
-    if (m.power != null) {
-        c.g_object_unref(@as(c.gpointer, @ptrCast(m.power)));
-    }
     if (m.session != null) c.g_object_unref(m.session);
-    m.power = null;
     c.g_free(@as(c.gpointer, @ptrCast(m.command)));
     c.g_free(@as(c.gpointer, @ptrCast(m.network_settings_command)));
     c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
@@ -175,122 +172,74 @@ pub fn quick_tile(button: [*c]c.GtkWidget, title: [*c]const u8, icon: [*c]c.GtkW
     c.gtk_container_add(cast(c.GtkContainer, button), row);
     return button;
 }
-pub fn update_power(m: *Module) callconv(.c) void {
-    var active: ?*c.GVariant = if (m.power != null) c.g_dbus_proxy_get_cached_property(m.power, "ActiveProfile") else null;
-    var profiles: ?*c.GVariant = if (m.power != null) c.g_dbus_proxy_get_cached_property(m.power, "Profiles") else null;
-    var inhibited: ?*c.GVariant = if (m.power != null) c.g_dbus_proxy_get_cached_property(m.power, "PerformanceInhibited") else null;
-    const current: [*c]const u8 = if (active != null) c.g_variant_get_string(active, null) else @as([*c]const c.gchar, @ptrCast(@alignCast("")));
-    c.gtk_label_set_text(cast(c.GtkLabel, m.power_label), "Power Mode");
-    {
-        var i: c.guint = 0;
-        while (@as(c_ulong, @bitCast(@as(c_ulong, i))) < (@sizeOf([3][*c]const u8) / @sizeOf([*c]const u8))) : (i += 1) {
-            var available: c.gboolean = 0;
-            if (profiles != null) {
-                var iter: c.GVariantIter = undefined;
-                var entry: ?*c.GVariant = undefined;
-                _ = c.g_variant_iter_init(&iter, profiles);
-                while ((blk: {
-                    const tmp = c.g_variant_iter_next_value(&iter);
-                    entry = tmp;
-                    break :blk tmp;
-                }) != null) {
-                    var id: [*c]const u8 = null;
-                    if ((c.g_variant_lookup(entry, "Profile", "&s", &id) != 0) and (c.strcmp(id, power_ids[i]) == 0)) {
-                        available = 1;
-                    }
-                    c.g_variant_unref(entry);
-                }
-            }
-            const selected: c.gboolean = @intFromBool(c.strcmp(current, power_ids[i]) == 0);
-            const style: [*c]c.GtkStyleContext = c.gtk_widget_get_style_context(m.power_buttons[i]);
-            if (selected != 0) {
-                c.gtk_style_context_add_class(style, "profile-selected");
-            } else {
-                c.gtk_style_context_remove_class(style, "profile-selected");
-            }
-            const label: [*c]u8 = c.g_strdup_printf("%s%s", power_names[i], @as([*:0]const u8, if (selected != 0) "  ✓" else ""));
-            c.gtk_button_set_label(cast(c.GtkButton, m.power_buttons[i]), label);
-            c.gtk_widget_set_visible(m.power_buttons[i], available);
-            const blocked: c.gboolean = @intFromBool(((i == 0) and (inhibited != null)) and (@as(c_int, @bitCast(@as(c_uint, c.g_variant_get_string(inhibited, null).*))) != 0));
-            c.gtk_widget_set_sensitive(m.power_buttons[i], @intFromBool((m.power_pending == 0) and (blocked == 0)));
-            c.gtk_widget_set_tooltip_text(m.power_buttons[i], if (blocked != 0) c.g_variant_get_string(inhibited, null) else null);
-            if (selected != 0) {
-                c.gtk_label_set_text(cast(c.GtkLabel, m.power_label), power_names[i]);
-                c.gtk_image_set_from_icon_name(cast(c.GtkImage, m.power_icon), power_icons[i], c.GTK_ICON_SIZE_MENU);
-            }
-            c.g_free(@as(c.gpointer, @ptrCast(label)));
+pub fn apply_power_state(m: *Module, state: power_backend.State) void {
+    c.gtk_label_set_text(cast(c.GtkLabel, m.power_label), if (state.available[1]) "Custom" else "Power Mode");
+    c.gtk_image_set_from_icon_name(cast(c.GtkImage, m.power_icon), power_icons[1], c.GTK_ICON_SIZE_MENU);
+    for (0..3) |i| {
+        const selected = if (state.active) |active| @backingInt(active) == i else false;
+        const style = c.gtk_widget_get_style_context(m.power_buttons[i]);
+        if (selected) c.gtk_style_context_add_class(style, "profile-selected") else c.gtk_style_context_remove_class(style, "profile-selected");
+        const label = c.g_strdup_printf("%s%s", power_names[i], @as([*:0]const u8, if (selected) "  ✓" else ""));
+        defer c.g_free(label);
+        c.gtk_button_set_label(cast(c.GtkButton, m.power_buttons[i]), label);
+        c.gtk_widget_set_visible(m.power_buttons[i], @intFromBool(state.available[i]));
+        c.gtk_widget_set_sensitive(m.power_buttons[i], @intFromBool(m.power_pending == 0));
+        if (selected) {
+            c.gtk_label_set_text(cast(c.GtkLabel, m.power_label), power_names[i]);
+            c.gtk_image_set_from_icon_name(cast(c.GtkImage, m.power_icon), power_icons[i], c.GTK_ICON_SIZE_MENU);
         }
     }
-    if ((m.power_pending == 0)) {
-        c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), if (active != null) "" else "Power profiles unavailable");
-    }
-    if (active != null) {
-        c.g_variant_unref(active);
-    }
-    active = null;
-    if (profiles != null) {
-        c.g_variant_unref(profiles);
-    }
-    profiles = null;
-    if (inhibited != null) {
-        c.g_variant_unref(inhibited);
-    }
-    inhibited = null;
+    const available = state.available[0] or state.available[1] or state.available[2];
+    if (!available) c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), "Power profiles unavailable") else if (c.g_strcmp0(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "Power profiles unavailable") == 0) c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), "");
 }
-pub fn power_changed(proxy: [*c]c.GDBusProxy, changed: ?*c.GVariant, invalidated: [*c]const [*c]const u8, data: c.gpointer) callconv(.c) void {
-    _ = invalidated;
-    _ = changed;
-    _ = proxy;
-    update_power(@as(*Module, @ptrCast(@alignCast(data))));
+pub fn update_power(m: *Module) callconv(.c) void {
+    apply_power_state(m, (power_backend.Backend{}).inspect());
 }
-pub fn power_set_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    var @"error": [*c]c.GError = null;
-    var reply: ?*c.GVariant = c.g_dbus_proxy_call_finish(cast(c.GDBusProxy, source), result, &@"error");
-    if ((m.dead == 0)) {
+fn refresh_power(data: c.gpointer) callconv(.c) c.gboolean {
+    const m: *Module = @ptrCast(@alignCast(data));
+    if (m.dead != 0) return 0;
+    update_power(m);
+    return 1;
+}
+pub fn power_set_ready(source: ?*c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
+    const m: *Module = @ptrCast(@alignCast(data));
+    var err: [*c]c.GError = null;
+    var errors: [*c]u8 = null;
+    const process: *c.GSubprocess = @ptrCast(@alignCast(source));
+    const communicated = c.g_subprocess_communicate_utf8_finish(process, result, null, &errors, &err) != 0;
+    defer c.g_clear_error(&err);
+    defer c.g_free(errors);
+    if (m.dead == 0) {
         m.power_pending = 0;
         update_power(m);
-        c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), if (@"error" != null) @"error".*.message else "");
+        c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), if (err != null) err.*.message else if (!communicated or c.g_subprocess_get_successful(process) == 0) (if (errors != null and errors[0] != 0) errors else "Could not change the power profile") else "");
     }
-    if (reply != null) {
-        c.g_variant_unref(reply);
-    }
-    reply = null;
-    c.g_clear_error(&@"error");
     unref_module(m);
 }
 pub fn power_select(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) void {
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    const id: [*c]const u8 = @as([*c]const u8, @ptrCast(@alignCast(c.g_object_get_data(cast(c.GObject, button), "profile"))));
-    if (!(m.power != null) or (m.power_pending != 0)) return;
+    const m: *Module = @ptrCast(@alignCast(data));
+    if (m.power_pending != 0) return;
+    const id: [*c]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, button), "profile"));
+    const helper = c.g_getenv("DESKTOP_POWER_HELPER");
+    const pkexec = c.g_getenv("DESKTOP_POWER_PKEXEC");
+    if (helper == null or pkexec == null) {
+        c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), "Power profile helper unavailable");
+        return;
+    }
+    var err: [*c]c.GError = null;
+    const argv = [_][*c]const u8{ pkexec, helper, "set", id, null };
+    const process = c.g_subprocess_newv(&argv, c.G_SUBPROCESS_FLAGS_STDERR_PIPE | c.G_SUBPROCESS_FLAGS_STDOUT_SILENCE, &err);
+    if (process == null) {
+        c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), if (err != null) err.*.message else "Could not start the power profile helper");
+        c.g_clear_error(&err);
+        return;
+    }
+    defer c.g_object_unref(process);
     m.power_pending = 1;
     update_power(m);
     c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), "Switching…");
     m.refs += 1;
-    c.g_dbus_proxy_call(m.power, "org.freedesktop.DBus.Properties.Set", c.g_variant_new("(ssv)", "org.freedesktop.UPower.PowerProfiles", "ActiveProfile", c.g_variant_new_string(id)), c.G_DBUS_CALL_FLAGS_ALLOW_INTERACTIVE_AUTHORIZATION, -1, m.cancel, &power_set_ready, @as(c.gpointer, @ptrCast(m)));
-}
-pub fn power_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
-    _ = source;
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    var @"error": [*c]c.GError = null;
-    var proxy: [*c]c.GDBusProxy = c.g_dbus_proxy_new_for_bus_finish(result, &@"error");
-    if ((m.dead == 0)) {
-        m.power = proxy;
-        proxy = null;
-        if (m.power != null) {
-            _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.power)), "g-properties-changed", @as(c.GCallback, @ptrCast(@alignCast(&power_changed))), @as(c.gpointer, @ptrCast(m)), null, 0);
-        }
-        update_power(m);
-        if (@"error" != null) {
-            c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), @"error".*.message);
-        }
-    }
-    if (proxy != null) {
-        c.g_object_unref(@as(c.gpointer, @ptrCast(proxy)));
-    }
-    proxy = null;
-    c.g_clear_error(&@"error");
-    unref_module(m);
+    c.g_subprocess_communicate_utf8_async(process, null, m.cancel, &power_set_ready, m);
 }
 pub fn power_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
     _ = widget;
@@ -1133,7 +1082,7 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
         c.gtk_container_add(cast(c.GtkContainer, revealer), profiles);
         c.gtk_box_pack_start(cast(c.GtkBox, menu), revealer, 0, 0, 0);
         _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(power)), "toggled", @as(c.GCallback, @ptrCast(@alignCast(&power_expand))), @as(c.gpointer, @ptrCast(revealer)), null, 0);
-        m.power_message = c.gtk_label_new("Connecting…");
+        m.power_message = c.gtk_label_new("");
         c.gtk_label_set_line_wrap(cast(c.GtkLabel, m.power_message), 1);
         c.gtk_label_set_max_width_chars(cast(c.GtkLabel, m.power_message), 40);
         css(m.power_message, "quick-message");
@@ -1144,8 +1093,7 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
         c.gtk_widget_show_all(menu);
         update_power(m);
         _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&power_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
-        m.refs += 1;
-        c.g_dbus_proxy_new_for_bus(c.G_BUS_TYPE_SYSTEM, c.G_DBUS_PROXY_FLAGS_NONE, null, "org.freedesktop.UPower.PowerProfiles", "/org/freedesktop/UPower/PowerProfiles", "org.freedesktop.UPower.PowerProfiles", m.cancel, &power_ready, @as(c.gpointer, @ptrCast(m)));
+        m.power_timer = c.g_timeout_add_seconds(2, &refresh_power, m);
         m.refs += 1;
         c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
     } else if (c.g_strcmp0(kind, "clock") == 0) {
@@ -1195,9 +1143,7 @@ pub fn deinit(m: *Module) void {
     if (m.power_menu != null) {
         c.gtk_widget_destroy(m.power_menu);
     }
-    if (m.power != null) {
-        _ = c.g_signal_handlers_disconnect_matched(@as(c.gpointer, @ptrCast(m.power)), c.G_SIGNAL_MATCH_DATA, 0, @as(c.GQuark, 0), null, @as(?*anyopaque, @ptrFromInt(0)), @as(c.gpointer, @ptrCast(m)));
-    }
+    if (m.power_timer != 0) _ = c.g_source_remove(m.power_timer);
     _ = c.g_signal_handlers_disconnect_matched(@as(c.gpointer, @ptrCast(m.root)), c.G_SIGNAL_MATCH_DATA, 0, @as(c.GQuark, 0), null, @as(?*anyopaque, @ptrFromInt(0)), @as(c.gpointer, @ptrCast(m)));
     if (m.restart != 0) {
         _ = c.g_source_remove(m.restart);

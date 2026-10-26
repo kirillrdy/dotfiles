@@ -70,7 +70,25 @@ lib.mkIf enableLightDesktop {
   };
   systemd.tmpfiles.rules = [ "d /var/cache/desktop-greeter 0700 greeter greeter - -" ];
   networking.networkmanager.enable = true;
-  services.power-profiles-daemon.enable = true;
+  services.power-profiles-daemon.enable = false;
+  security.polkit.enable = true;
+  security.polkit.enablePkexecWrapper = true;
+  systemd.services.desktop-power-restore = {
+    description = "Restore the selected desktop power profile";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "systemd-modules-load.service" ];
+    before = [ "greetd.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${desktopZig}/bin/desktop-power restore";
+      StateDirectory = "desktop-power";
+      StateDirectoryMode = "0755";
+      UMask = "0022";
+    };
+  };
+  powerManagement.resumeCommands = ''
+    ${desktopZig}/bin/desktop-power restore
+  '';
   services.upower.enable = true;
   services.gnome.gnome-keyring.enable = true;
   services.gnome.gcr-ssh-agent.enable = false;

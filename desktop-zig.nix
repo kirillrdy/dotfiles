@@ -37,6 +37,7 @@ pkgs.stdenv.mkDerivation {
   doCheck = true;
   checkPhase = ''
     python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-greeter"
+    zig build test-power -Doptimize=ReleaseSafe -j2
     WB_PANEL_BINARY="$out/bin/waybar-panel" WB_CODEX_BINARY="$out/bin/waybar-codex" zig build test -Doptimize=ReleaseSafe -j2
     Xvfb :99 -nolisten tcp &
     xvfb_pid=$!
@@ -66,6 +67,23 @@ pkgs.stdenv.mkDerivation {
       zig build test-screenshot -Doptimize=ReleaseSafe -j2
   '';
   installPhase = ''
+    mkdir -p "$out/share/polkit-1/actions"
+    cat > "$out/share/polkit-1/actions/org.dotfiles.desktop-power.policy" <<EOF
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+    <policyconfig>
+      <action id="org.dotfiles.desktop-power">
+        <description>Change the desktop power profile</description>
+        <message>Authentication is required to change the power profile</message>
+        <defaults>
+          <allow_any>auth_admin</allow_any>
+          <allow_inactive>auth_admin</allow_inactive>
+          <allow_active>yes</allow_active>
+        </defaults>
+        <annotate key="org.freedesktop.policykit.exec.path">$out/bin/desktop-power</annotate>
+      </action>
+    </policyconfig>
+    EOF
     wrapProgram "$out/bin/desktop-screenshot" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
@@ -108,6 +126,8 @@ pkgs.stdenv.mkDerivation {
         ]
       }
     wrapProgram "$out/bin/desktop-panel" \
+      --set DESKTOP_POWER_HELPER "$out/bin/desktop-power" \
+      --set DESKTOP_POWER_PKEXEC /run/wrappers/bin/pkexec \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share"
     wrapProgram "$out/bin/desktop-apps" \

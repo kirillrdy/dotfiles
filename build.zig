@@ -14,6 +14,17 @@ pub fn build(b: *std.Build) void {
     b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const power_c = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <fcntl.h>\n#include <dirent.h>\n#include <errno.h>\n#include <stdio.h>\n#include <sys/file.h>\n", &.{});
+    const power_module = b.createModule(.{ .root_source_file = b.path("desktop-power.zig"), .target = target, .optimize = optimize });
+    power_module.link_libc = true;
+    power_module.addImport("libc", power_c);
+    const power = b.addExecutable(.{ .name = "desktop-power", .root_module = power_module });
+    b.installArtifact(power);
+    b.step("power", "Build the on-demand power profile helper").dependOn(&b.addInstallArtifact(power, .{}).step);
+    const power_fixture = b.addExecutable(.{ .name = "desktop-power-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-power-fixture.zig"), .target = target, .optimize = optimize }) });
+    power_fixture.root_module.addImport("power", power_module);
+    power_fixture.root_module.addImport("libc", power_c);
+    b.step("test-power", "Check power profiles against isolated sysfs fixtures").dependOn(&b.addRunArtifact(power_fixture).step);
     const greeter_c = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <sys/socket.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n", &.{});
     const greeter_module = b.createModule(.{ .root_source_file = b.path("desktop-greeter.zig"), .target = target, .optimize = optimize });
     greeter_module.link_libc = true;
@@ -31,6 +42,7 @@ pub fn build(b: *std.Build) void {
     linkGtk(panel);
     panel.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
     panel.root_module.addImport("gtk", panel_gtk);
+    panel.root_module.addImport("power", power_module);
     b.installArtifact(panel);
     const settings_module = b.createModule(.{ .root_source_file = b.path("desktop-settings.zig"), .target = target, .optimize = optimize });
     settings_module.link_libc = true;
@@ -181,7 +193,10 @@ pub fn build(b: *std.Build) void {
     module.linkSystemLibrary("json-glib-1.0", .{});
     module.link_libc = true;
     module.addImport("gtk", gtk);
+    module.addImport("power", power_module);
     gtk_fixture.root_module.addImport("panel", module);
+    gtk_fixture.root_module.addImport("power", power_module);
+    b.step("test-power-menu", "Check power profile controls and panel popups (requires a display)").dependOn(&b.addRunArtifact(gtk_fixture).step);
     b.installArtifact(gtk_fixture);
     const switcher = b.addExecutable(.{ .name = "labwc-switcher-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/labwc-switcher-fixture.zig"), .target = target, .optimize = optimize }) });
     linkGtk(switcher);
