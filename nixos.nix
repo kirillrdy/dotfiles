@@ -93,7 +93,7 @@
     disable-publishing = false;
     publish-addresses = true;
   };
-  services.fprintd.enable = !enableNvidia;
+  services.fprintd.enable = false;
   services.flatpak.enable = enableNvidia;
   services.gnome.tinysparql.enable = false;
   services.gnome.localsearch.enable = false;
