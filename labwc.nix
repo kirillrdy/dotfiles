@@ -252,7 +252,8 @@ lib.mkIf enableLightDesktop {
       ];
     };
     "xdg/desktop-panel/style.css".text = ''
-      window#desktop-panel, window#desktop-panel *,
+      /* Keep the reset less specific than the popup and tile rules below. */
+      .gnome-panel-module, .gnome-panel-module *,
       .gnome-calendar, .gnome-calendar *,
       .gnome-power-menu, .gnome-power-menu *,
       .gnome-codex-menu, .gnome-codex-menu * {

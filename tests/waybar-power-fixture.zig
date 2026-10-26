@@ -131,7 +131,10 @@ pub fn main(process_init: std.process.Init) !void {
     assert(m.power_pending == 0 and m.refs == 1);
     eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "fixture: permission denied");
 
+    const status_window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
+    c.gtk_widget_set_name(status_window, "desktop-panel");
     const status_root = root();
+    c.gtk_container_add(cast(c.GtkContainer, status_window), status_root);
     const status = p.init(status_root, .{ .name = "gnome-status" });
     for ([_][*c]c.GtkWidget{ status.power_label, status.network_icon }) |widget| assert(c.gtk_widget_is_ancestor(widget, status.power_menu) != 0);
     assert(c.gtk_widget_is_ancestor(status.power_label, status.box) == 0);
@@ -139,10 +142,31 @@ pub fn main(process_init: std.process.Init) !void {
     assert(c.gtk_widget_get_visible(status.item[0].box) != 0 and c.gtk_widget_get_visible(status.item[1].box) != 0);
     p.update_line(status, "{\"items\":[{\"icon\":\"network-wired-symbolic\",\"tooltip\":\"Wired network\"}]}");
     eq(c.gtk_label_get_text(cast(c.GtkLabel, status.network_label)), "Wired network");
+    if (args.len > 1) {
+        c.gtk_widget_show_all(status_window);
+        pumpEvents(50);
+        // A panel-scoped reset must not override the popup's more specific styles.
+        const content = c.gtk_bin_get_child(cast(c.GtkBin, status.power_menu));
+        var border: c.GtkBorder = undefined;
+        c.gtk_style_context_get_border(c.gtk_widget_get_style_context(content), c.GTK_STATE_FLAG_NORMAL, &border);
+        std.debug.print("quick settings: content border {d}px\n", .{border.top});
+        assert(border.top == 1 and border.left == 1);
+        c.gtk_style_context_get_border(c.gtk_widget_get_style_context(status_root), c.GTK_STATE_FLAG_NORMAL, &border);
+        std.debug.print("quick settings: panel module border {d}px\n", .{border.top});
+        assert(border.top == 3 and border.left == 3);
+        const children = c.gtk_container_get_children(cast(c.GtkContainer, content));
+        defer c.g_list_free(children);
+        const network = c.gtk_grid_get_child_at(cast(c.GtkGrid, children.*.data), 0, 0);
+        var height: c.GValue = std.mem.zeroes(c.GValue);
+        c.gtk_style_context_get_property(c.gtk_widget_get_style_context(network), "min-height", c.GTK_STATE_FLAG_NORMAL, &height);
+        std.debug.print("quick settings: tile minimum height {d}px\n", .{c.g_value_get_int(&height)});
+        assert(c.g_value_get_int(&height) == 48);
+        c.g_value_unset(&height);
+    }
     p.power_select(cast(c.GtkButton, status.power_buttons[0]), status);
     p.deinit(status);
     pumpEvents(500);
-    c.gtk_widget_destroy(status_root);
+    c.gtk_widget_destroy(status_window);
     c.g_object_unref(status_root);
 
     const codex_root = root();

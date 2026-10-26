@@ -7,7 +7,7 @@ let
   };
   style =
     pkgs.writeText "waybar-style.css"
-      desktop.content.environment.etc."xdg/waybar/style.css".text;
+      desktop.content.environment.etc."xdg/desktop-panel/style.css".text;
   zigDesktop = import ../desktop-zig.nix { inherit pkgs; };
 in
 zigDesktop.overrideAttrs (old: {
