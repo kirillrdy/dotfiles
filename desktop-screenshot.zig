@@ -41,6 +41,7 @@ pub const Options = struct {
     interactive: bool = false,
     slurp_mode: bool = false,
     file_path: ?[]const u8 = null,
+    save_default: bool = false,
 
     pub fn parse(args: []const []const u8) Options {
         var opt = Options{};
@@ -85,9 +86,12 @@ pub const Options = struct {
                 opt.file_path = arg;
             }
         }
-        if (!opt.slurp_mode and opt.geometry == null and opt.file_path == null) {
-            opt.interactive = true;
-            opt.clipboard = true;
+        if (!opt.slurp_mode and opt.file_path == null) {
+            opt.save_default = !opt.clipboard;
+            if (opt.geometry == null) {
+                opt.interactive = true;
+                opt.clipboard = true;
+            }
         }
         return opt;
     }
@@ -276,8 +280,23 @@ pub const FrameCapture = struct {
         self.buffer = c.wl_shm_pool_create_buffer(pool, 0, @intCast(width), @intCast(height), @intCast(stride), format);
         c.wl_shm_pool_destroy(pool);
 
+        if (c.zwlr_screencopy_frame_v1_get_version(frame) < 3) {
+            c.zwlr_screencopy_frame_v1_copy(frame, self.buffer);
+        }
+    }
+
+    fn onBufferDone(data: ?*anyopaque, frame: ?*c.zwlr_screencopy_frame_v1) callconv(.c) void {
+        const self: *FrameCapture = @ptrCast(@alignCast(data));
+        if (self.failed) return;
+        if (self.buffer == null) {
+            self.failed = true;
+            return;
+        }
         c.zwlr_screencopy_frame_v1_copy(frame, self.buffer);
     }
+
+    fn onLinuxDmabuf(_: ?*anyopaque, _: ?*c.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {}
+    fn onDamage(_: ?*anyopaque, _: ?*c.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32, _: u32) callconv(.c) void {}
 
     fn onFlags(data: ?*anyopaque, _: ?*c.zwlr_screencopy_frame_v1, flags: u32) callconv(.c) void {
         const self: *FrameCapture = @ptrCast(@alignCast(data));
@@ -299,6 +318,9 @@ pub const FrameCapture = struct {
         .flags = &onFlags,
         .ready = &onReady,
         .failed = &onFailed,
+        .damage = &onDamage,
+        .linux_dmabuf = &onLinuxDmabuf,
+        .buffer_done = &onBufferDone,
     };
 };
 
@@ -533,6 +555,10 @@ pub fn captureAndWrite(options: Options, allocator: std.mem.Allocator) !void {
         capture.frame = c.zwlr_screencopy_manager_v1_capture_output(screencopy_mgr, 1, target_output.wl_out) orelse return error.CaptureFailed;
     }
     defer c.zwlr_screencopy_frame_v1_destroy(capture.frame);
+    defer {
+        if (capture.buffer) |buffer| c.wl_buffer_destroy(buffer);
+        if (capture.memory) |memory| _ = c.munmap(memory, capture.length);
+    }
 
     _ = c.zwlr_screencopy_frame_v1_add_listener(capture.frame, &FrameCapture.listener, &capture);
 
@@ -558,6 +584,22 @@ pub fn captureAndWrite(options: Options, allocator: std.mem.Allocator) !void {
             defer allocator.free(zpath);
             if (c.cairo_surface_write_to_png(surface, zpath.ptr) != c.CAIRO_STATUS_SUCCESS) return error.WriteFailed;
         }
+    } else if (options.save_default) {
+        const pictures = c.g_get_user_special_dir(c.G_USER_DIRECTORY_PICTURES);
+        const directory = if (pictures != null)
+            try std.fmt.allocPrintSentinel(allocator, "{s}/Screenshots", .{std.mem.span(pictures)}, 0)
+        else
+            try std.fmt.allocPrintSentinel(allocator, "{s}/Pictures/Screenshots", .{std.mem.span(c.g_get_home_dir())}, 0);
+        defer allocator.free(directory);
+        if (c.g_mkdir_with_parents(directory, 0o755) != 0) return error.CreateDirectoryFailed;
+        const now = c.g_date_time_new_now_local() orelse return error.TimestampFailed;
+        defer c.g_date_time_unref(now);
+        const timestamp = c.g_date_time_format(now, "%Y-%m-%d_%H-%M-%S_%f") orelse return error.TimestampFailed;
+        defer c.g_free(timestamp);
+        const path = try std.fmt.allocPrintSentinel(allocator, "{s}/Screenshot_{s}.png", .{ directory, std.mem.span(timestamp) }, 0);
+        defer allocator.free(path);
+        if (c.cairo_surface_write_to_png(surface, path) != c.CAIRO_STATUS_SUCCESS) return error.WriteFailed;
+        std.debug.print("Screenshot saved to {s}\n", .{path});
     }
 
     if (options.clipboard) {

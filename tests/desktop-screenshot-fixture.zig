@@ -42,14 +42,25 @@ fn testOptionsParsing() !void {
     const opt2 = screenshot.Options.parse(&args2);
     try std.testing.expect(opt2.clipboard);
     try std.testing.expect(opt2.interactive);
+    try std.testing.expect(!opt2.save_default);
+
+    const defaults = screenshot.Options.parse(&.{"desktop-screenshot"});
+    try std.testing.expect(defaults.interactive);
+    try std.testing.expect(defaults.clipboard);
+    try std.testing.expect(defaults.save_default);
+    const region = screenshot.Options.parse(&.{ "desktop-screenshot", "-g", "0,0 32x32" });
+    try std.testing.expect(region.save_default);
+    try std.testing.expect(!region.interactive);
 
     const args3 = [_][]const u8{ "slurp", "-f", "%o", "-or" };
     const opt3 = screenshot.Options.parse(&args3);
     try std.testing.expect(opt3.slurp_mode);
+    try std.testing.expect(!opt3.save_default);
 
     const args4 = [_][]const u8{ "grim", "-s", "1", "-g", "0,0 1920x1080", "-t", "ppm", "--", "shot.png" };
     const opt4 = screenshot.Options.parse(&args4);
     try std.testing.expectEqualStrings("shot.png", opt4.file_path.?);
+    try std.testing.expect(!opt4.save_default);
     try std.testing.expectEqual(@as(i32, 1920), opt4.geometry.?.w);
 }
 
