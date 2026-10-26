@@ -1,6 +1,7 @@
 //! OpenSSH's askpass protocol, with a native GTK password/confirmation dialog.
 const std = @import("std");
 pub const c = @import("gtk");
+const libc = @import("libc");
 fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
 }
@@ -116,7 +117,7 @@ fn run(init: std.process.Init) !u8 {
 pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
     // Passwords should not appear in a core dump or another process's ptrace
     // view. No password is copied into argv, an environment variable or a file.
-    if (c.prctl(c.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return 1;
+    if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return 1;
     if (c.gtk_init_check(null, null) == 0) return 1;
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();

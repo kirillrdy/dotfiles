@@ -1,8 +1,5 @@
 //! Compare the checked-in ABI against independently translated system headers.
 const std = @import("std");
-comptime {
-    _ = @import("protocols");
-}
 const api = @import("api");
 const reference = @import("reference");
 

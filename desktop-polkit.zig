@@ -1,6 +1,7 @@
 //! PolicyKit authentication agent with a native GNOME-style GTK dialog.
 const std = @import("std");
 pub const c = @import("gtk");
+const libc = @import("libc");
 
 fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
@@ -318,14 +319,14 @@ fn initiateAuth(
     var username: ?[:0]const u8 = null;
 
     if (identities) |list| {
-        const current_uid = c.getuid();
+        const current_uid = libc.getuid();
         var curr: ?*c.GList = list;
         while (curr) |node| : (curr = node.*.next) {
             const id: *c.PolkitIdentity = cast(c.PolkitIdentity, node.*.data);
             if (isUnixUser(id)) {
                 const unix_user: *c.PolkitUnixUser = @ptrCast(@alignCast(id));
                 const uid = c.polkit_unix_user_get_uid(unix_user);
-                if (uid >= 0 and @as(c.uid_t, @intCast(uid)) == current_uid) {
+                if (uid >= 0 and @as(libc.__uid_t, @intCast(uid)) == current_uid) {
                     selected_identity = id;
                     break;
                 }
@@ -341,7 +342,7 @@ fn initiateAuth(
             const unix_user: *c.PolkitUnixUser = @ptrCast(@alignCast(id));
             const uid = c.polkit_unix_user_get_uid(unix_user);
             if (uid >= 0) {
-                if (c.getpwuid(@intCast(uid))) |pwd| {
+                if (libc.getpwuid(@intCast(uid))) |pwd| {
                     const name = std.mem.span(pwd.*.pw_name);
                     if (name.len < user_buffer.len) {
                         @memcpy(user_buffer[0..name.len], name);
@@ -407,12 +408,12 @@ pub fn main(init: std.process.Init) void {
 
 fn run(init: std.process.Init) !u8 {
     _ = init;
-    if (c.prctl(c.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return 1;
+    if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return 1;
     if (c.gtk_init_check(null, null) == 0) return 1;
     var service = Service.init() catch return 1;
     defer service.deinit();
-    const term = c.g_unix_signal_add(c.SIGTERM, &onSignal, null);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &onSignal, null);
+    const term = c.g_unix_signal_add(libc.SIGTERM, &onSignal, null);
+    const interrupt = c.g_unix_signal_add(libc.SIGINT, &onSignal, null);
     defer _ = c.g_source_remove(term);
     defer _ = c.g_source_remove(interrupt);
     c.gtk_main();
@@ -433,14 +434,14 @@ pub const Service = struct {
         defer c.g_object_unref(authority);
 
         c.g_clear_error(&err);
-        var session: ?*c.PolkitSubject = c.polkit_unix_session_new_for_process_sync(c.getpid(), null, &err);
+        var session: ?*c.PolkitSubject = c.polkit_unix_session_new_for_process_sync(libc.getpid(), null, &err);
         if (session == null) {
             if (c.g_getenv("XDG_SESSION_ID")) |sid| {
                 session = c.polkit_unix_session_new(sid);
             }
         }
         if (session == null) {
-            session = c.polkit_unix_process_new_for_owner(c.getpid(), 0, @intCast(c.getuid()));
+            session = c.polkit_unix_process_new_for_owner(libc.getpid(), 0, @intCast(libc.getuid()));
         }
         defer if (session) |s| c.g_object_unref(s);
 

@@ -195,3 +195,48 @@ pub const pollfd = struct_pollfd;
 pub const sockaddr = struct_sockaddr;
 
 pub extern fn waitpid(__pid: __pid_t, __stat_loc: [*c]c_int, __options: c_int) __pid_t;
+
+pub const __gid_t = c_uint;
+
+pub const struct_passwd = extern struct {
+    pw_name: [*c]u8 = null,
+    pw_passwd: [*c]u8 = null,
+    pw_uid: __uid_t = 0,
+    pw_gid: __gid_t = 0,
+    pw_gecos: [*c]u8 = null,
+    pw_dir: [*c]u8 = null,
+    pw_shell: [*c]u8 = null,
+};
+
+pub extern fn getpwuid(__uid: __uid_t) [*c]struct_passwd;
+
+pub extern fn getuid() __uid_t;
+
+pub extern fn getpid() __pid_t;
+
+pub extern fn fork() __pid_t;
+
+pub extern fn ftruncate(__fd: c_int, __length: __off_t) c_int;
+
+pub extern fn raise(__sig: c_int) c_int;
+
+pub extern fn memfd_create(__name: [*c]const u8, __flags: c_uint) c_int;
+
+pub extern fn mmap(__addr: ?*anyopaque, __len: usize, __prot: c_int, __flags: c_int, __fd: c_int, __offset: __off_t) ?*anyopaque;
+
+pub extern fn munmap(__addr: ?*anyopaque, __len: usize) c_int;
+
+pub const PROT_READ = @as(c_int, 0x1);
+
+pub const PROT_WRITE = @as(c_int, 0x2);
+
+pub const MAP_SHARED = @as(c_int, 0x01);
+
+pub const MFD_CLOEXEC = @as(c_uint, 1);
+
+pub const MAP_FAILED = @as(?*anyopaque, @ptrFromInt(std.math.maxInt(usize)));
+
+pub const SIGUSR1: c_int = @intCast(@backingInt(std.posix.SIG.USR1));
+
+pub const STDOUT_FILENO = @as(c_int, 1);
+

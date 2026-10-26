@@ -1,8 +1,7 @@
 //! Wayland screenshot tool with region selection and clipboard support.
 const std = @import("std");
-comptime {
-    _ = @import("protocols");
-}
+pub const protocols = @import("protocols");
+const libc = @import("libc");
 pub const c = @import("gtk");
 
 fn cast(comptime T: type, ptr: anytype) *T {
@@ -123,7 +122,7 @@ pub const PngBuffer = struct {
 };
 
 fn writeStdout(_: ?*anyopaque, data: [*c]const u8, length: c_uint) callconv(.c) c.cairo_status_t {
-    const written = c.write(c.STDOUT_FILENO, data, length);
+    const written = libc.write(libc.STDOUT_FILENO, data, length);
     if (written < 0 or @as(c_uint, @intCast(written)) != length) return c.CAIRO_STATUS_WRITE_ERROR;
     return c.CAIRO_STATUS_SUCCESS;
 }
@@ -143,8 +142,8 @@ pub const WaylandClient = struct {
     display: *c.wl_display,
     registry: *c.wl_registry,
     shm: ?*c.wl_shm = null,
-    screencopy_mgr: ?*c.zwlr_screencopy_manager_v1 = null,
-    data_control_mgr: ?*c.zwlr_data_control_manager_v1 = null,
+    screencopy_mgr: ?*protocols.zwlr_screencopy_manager_v1 = null,
+    data_control_mgr: ?*protocols.zwlr_data_control_manager_v1 = null,
     seat: ?*c.wl_seat = null,
     outputs: std.ArrayList(Output) = .empty,
 
@@ -168,8 +167,8 @@ pub const WaylandClient = struct {
     pub fn deinit(self: *WaylandClient) void {
         for (self.outputs.items) |out| c.wl_output_destroy(out.wl_out);
         self.outputs.deinit(self.allocator);
-        if (self.screencopy_mgr) |mgr| c.zwlr_screencopy_manager_v1_destroy(mgr);
-        if (self.data_control_mgr) |mgr| c.zwlr_data_control_manager_v1_destroy(mgr);
+        if (self.screencopy_mgr) |mgr| protocols.zwlr_screencopy_manager_v1_destroy(mgr);
+        if (self.data_control_mgr) |mgr| protocols.zwlr_data_control_manager_v1_destroy(mgr);
         if (self.shm) |s| c.wl_shm_destroy(s);
         if (self.seat) |seat| c.wl_seat_destroy(seat);
         c.wl_registry_destroy(self.registry);
@@ -182,9 +181,9 @@ pub const WaylandClient = struct {
         if (std.mem.eql(u8, iface, "wl_shm")) {
             self.shm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1));
         } else if (std.mem.eql(u8, iface, "zwlr_screencopy_manager_v1")) {
-            self.screencopy_mgr = @ptrCast(c.wl_registry_bind(registry, name, &c.zwlr_screencopy_manager_v1_interface, @min(version, 3)));
+            self.screencopy_mgr = @ptrCast(c.wl_registry_bind(registry, name, &protocols.zwlr_screencopy_manager_v1_interface, @min(version, 3)));
         } else if (std.mem.eql(u8, iface, "zwlr_data_control_manager_v1")) {
-            self.data_control_mgr = @ptrCast(c.wl_registry_bind(registry, name, &c.zwlr_data_control_manager_v1_interface, @min(version, 2)));
+            self.data_control_mgr = @ptrCast(c.wl_registry_bind(registry, name, &protocols.zwlr_data_control_manager_v1_interface, @min(version, 2)));
         } else if (std.mem.eql(u8, iface, "wl_seat")) {
             self.seat = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_seat_interface, 1));
         } else if (std.mem.eql(u8, iface, "wl_output")) {
@@ -241,7 +240,7 @@ pub const WaylandClient = struct {
 
 pub const FrameCapture = struct {
     shm: *c.wl_shm,
-    frame: *c.zwlr_screencopy_frame_v1,
+    frame: *protocols.zwlr_screencopy_frame_v1,
     format: u32 = 0,
     width: u32 = 0,
     height: u32 = 0,
@@ -253,7 +252,7 @@ pub const FrameCapture = struct {
     failed: bool = false,
     y_invert: bool = false,
 
-    fn onBuffer(data: ?*anyopaque, frame: ?*c.zwlr_screencopy_frame_v1, format: u32, width: u32, height: u32, stride: u32) callconv(.c) void {
+    fn onBuffer(data: ?*anyopaque, frame: ?*protocols.zwlr_screencopy_frame_v1, format: u32, width: u32, height: u32, stride: u32) callconv(.c) void {
         const self: *FrameCapture = @ptrCast(@alignCast(data));
         self.format = format;
         self.width = width;
@@ -261,19 +260,19 @@ pub const FrameCapture = struct {
         self.stride = stride;
         self.length = @as(usize, stride) * height;
 
-        const fd = c.memfd_create("desktop-screenshot", c.MFD_CLOEXEC);
+        const fd = libc.memfd_create("desktop-screenshot", libc.MFD_CLOEXEC);
         if (fd < 0) {
             self.failed = true;
             return;
         }
-        defer _ = c.close(fd);
+        defer _ = libc.close(fd);
 
-        if (c.ftruncate(fd, @intCast(self.length)) != 0) {
+        if (libc.ftruncate(fd, @intCast(self.length)) != 0) {
             self.failed = true;
             return;
         }
-        const mem = c.mmap(null, self.length, c.PROT_READ | c.PROT_WRITE, c.MAP_SHARED, fd, 0);
-        if (mem == c.MAP_FAILED or mem == null) {
+        const mem = libc.mmap(null, self.length, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
+        if (mem == libc.MAP_FAILED or mem == null) {
             self.failed = true;
             return;
         }
@@ -283,40 +282,40 @@ pub const FrameCapture = struct {
         self.buffer = c.wl_shm_pool_create_buffer(pool, 0, @intCast(width), @intCast(height), @intCast(stride), format);
         c.wl_shm_pool_destroy(pool);
 
-        if (c.zwlr_screencopy_frame_v1_get_version(frame) < 3) {
-            c.zwlr_screencopy_frame_v1_copy(frame, self.buffer);
+        if (protocols.zwlr_screencopy_frame_v1_get_version(frame) < 3) {
+            protocols.zwlr_screencopy_frame_v1_copy(frame, self.buffer);
         }
     }
 
-    fn onBufferDone(data: ?*anyopaque, frame: ?*c.zwlr_screencopy_frame_v1) callconv(.c) void {
+    fn onBufferDone(data: ?*anyopaque, frame: ?*protocols.zwlr_screencopy_frame_v1) callconv(.c) void {
         const self: *FrameCapture = @ptrCast(@alignCast(data));
         if (self.failed) return;
         if (self.buffer == null) {
             self.failed = true;
             return;
         }
-        c.zwlr_screencopy_frame_v1_copy(frame, self.buffer);
+        protocols.zwlr_screencopy_frame_v1_copy(frame, self.buffer);
     }
 
-    fn onLinuxDmabuf(_: ?*anyopaque, _: ?*c.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {}
-    fn onDamage(_: ?*anyopaque, _: ?*c.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32, _: u32) callconv(.c) void {}
+    fn onLinuxDmabuf(_: ?*anyopaque, _: ?*protocols.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {}
+    fn onDamage(_: ?*anyopaque, _: ?*protocols.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32, _: u32) callconv(.c) void {}
 
-    fn onFlags(data: ?*anyopaque, _: ?*c.zwlr_screencopy_frame_v1, flags: u32) callconv(.c) void {
+    fn onFlags(data: ?*anyopaque, _: ?*protocols.zwlr_screencopy_frame_v1, flags: u32) callconv(.c) void {
         const self: *FrameCapture = @ptrCast(@alignCast(data));
-        self.y_invert = (flags & c.ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT) != 0;
+        self.y_invert = (flags & protocols.ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT) != 0;
     }
 
-    fn onReady(data: ?*anyopaque, _: ?*c.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {
+    fn onReady(data: ?*anyopaque, _: ?*protocols.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {
         const self: *FrameCapture = @ptrCast(@alignCast(data));
         self.done = true;
     }
 
-    fn onFailed(data: ?*anyopaque, _: ?*c.zwlr_screencopy_frame_v1) callconv(.c) void {
+    fn onFailed(data: ?*anyopaque, _: ?*protocols.zwlr_screencopy_frame_v1) callconv(.c) void {
         const self: *FrameCapture = @ptrCast(@alignCast(data));
         self.failed = true;
     }
 
-    const listener = c.zwlr_screencopy_frame_v1_listener{
+    const listener = protocols.zwlr_screencopy_frame_v1_listener{
         .buffer = &onBuffer,
         .flags = &onFlags,
         .ready = &onReady,
@@ -481,21 +480,21 @@ const ClipboardOffer = struct {
     png_data: []const u8,
     cancelled: bool = false,
 
-    fn onSend(data: ?*anyopaque, _: ?*c.zwlr_data_control_source_v1, mime: [*c]const u8, fd: i32) callconv(.c) void {
+    fn onSend(data: ?*anyopaque, _: ?*protocols.zwlr_data_control_source_v1, mime: [*c]const u8, fd: i32) callconv(.c) void {
         const self: *ClipboardOffer = @ptrCast(@alignCast(data));
-        defer _ = c.close(fd);
+        defer _ = libc.close(fd);
         const mime_str = std.mem.span(mime);
         if (std.mem.eql(u8, mime_str, "image/png") or std.mem.eql(u8, mime_str, "image/x-png")) {
-            _ = c.write(fd, self.png_data.ptr, self.png_data.len);
+            _ = libc.write(fd, self.png_data.ptr, self.png_data.len);
         }
     }
 
-    fn onCancelled(data: ?*anyopaque, _: ?*c.zwlr_data_control_source_v1) callconv(.c) void {
+    fn onCancelled(data: ?*anyopaque, _: ?*protocols.zwlr_data_control_source_v1) callconv(.c) void {
         const self: *ClipboardOffer = @ptrCast(@alignCast(data));
         self.cancelled = true;
     }
 
-    const listener = c.zwlr_data_control_source_v1_listener{
+    const listener = protocols.zwlr_data_control_source_v1_listener{
         .send = &onSend,
         .cancelled = &onCancelled,
     };
@@ -505,19 +504,19 @@ pub fn copyToClipboard(client: *WaylandClient, png_data: []const u8) !void {
     const mgr = client.data_control_mgr orelse return error.NoDataControl;
     const seat = client.seat orelse return error.NoSeat;
 
-    const source = c.zwlr_data_control_manager_v1_create_data_source(mgr) orelse return error.CreateSourceFailed;
-    c.zwlr_data_control_source_v1_offer(source, "image/png");
-    c.zwlr_data_control_source_v1_offer(source, "image/x-png");
+    const source = protocols.zwlr_data_control_manager_v1_create_data_source(mgr) orelse return error.CreateSourceFailed;
+    protocols.zwlr_data_control_source_v1_offer(source, "image/png");
+    protocols.zwlr_data_control_source_v1_offer(source, "image/x-png");
 
     var offer = ClipboardOffer{ .png_data = png_data };
-    _ = c.zwlr_data_control_source_v1_add_listener(source, &ClipboardOffer.listener, &offer);
+    _ = protocols.zwlr_data_control_source_v1_add_listener(source, &ClipboardOffer.listener, &offer);
 
-    const device = c.zwlr_data_control_manager_v1_get_data_device(mgr, seat) orelse return error.GetDeviceFailed;
-    c.zwlr_data_control_device_v1_set_selection(device, source);
+    const device = protocols.zwlr_data_control_manager_v1_get_data_device(mgr, seat) orelse return error.GetDeviceFailed;
+    protocols.zwlr_data_control_device_v1_set_selection(device, source);
     _ = c.wl_display_roundtrip(client.display);
 
     // Fork into background to serve clipboard paste requests until replaced
-    const pid = c.fork();
+    const pid = libc.fork();
     if (pid < 0) return error.ForkFailed;
     if (pid != 0) return; // Parent returns immediately
 
@@ -525,8 +524,8 @@ pub fn copyToClipboard(client: *WaylandClient, png_data: []const u8) !void {
     while (!offer.cancelled) {
         if (c.wl_display_dispatch(client.display) < 0) break;
     }
-    c.zwlr_data_control_source_v1_destroy(source);
-    c.zwlr_data_control_device_v1_destroy(device);
+    protocols.zwlr_data_control_source_v1_destroy(source);
+    protocols.zwlr_data_control_device_v1_destroy(device);
     std.process.exit(0);
 }
 
@@ -553,17 +552,17 @@ pub fn captureAndWrite(options: Options, allocator: std.mem.Allocator) !void {
     };
 
     if (options.geometry) |geom| {
-        capture.frame = c.zwlr_screencopy_manager_v1_capture_output_region(screencopy_mgr, 1, target_output.wl_out, geom.x, geom.y, geom.w, geom.h) orelse return error.CaptureFailed;
+        capture.frame = protocols.zwlr_screencopy_manager_v1_capture_output_region(screencopy_mgr, 1, target_output.wl_out, geom.x, geom.y, geom.w, geom.h) orelse return error.CaptureFailed;
     } else {
-        capture.frame = c.zwlr_screencopy_manager_v1_capture_output(screencopy_mgr, 1, target_output.wl_out) orelse return error.CaptureFailed;
+        capture.frame = protocols.zwlr_screencopy_manager_v1_capture_output(screencopy_mgr, 1, target_output.wl_out) orelse return error.CaptureFailed;
     }
-    defer c.zwlr_screencopy_frame_v1_destroy(capture.frame);
+    defer protocols.zwlr_screencopy_frame_v1_destroy(capture.frame);
     defer {
         if (capture.buffer) |buffer| c.wl_buffer_destroy(buffer);
-        if (capture.memory) |memory| _ = c.munmap(memory, capture.length);
+        if (capture.memory) |memory| _ = libc.munmap(memory, capture.length);
     }
 
-    _ = c.zwlr_screencopy_frame_v1_add_listener(capture.frame, &FrameCapture.listener, &capture);
+    _ = protocols.zwlr_screencopy_frame_v1_add_listener(capture.frame, &FrameCapture.listener, &capture);
 
     while (!capture.done and !capture.failed) {
         if (c.wl_display_dispatch(client.display) < 0) return error.DispatchFailed;
@@ -634,7 +633,7 @@ pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
         if (SelectionOverlay.run()) |rect| {
             var buf: [64]u8 = undefined;
             const text = std.fmt.bufPrint(&buf, "{d},{d} {d}x{d}\n", .{ rect.x, rect.y, rect.w, rect.h }) catch return 1;
-            _ = c.write(c.STDOUT_FILENO, text.ptr, text.len);
+            _ = libc.write(libc.STDOUT_FILENO, text.ptr, text.len);
             return 0;
         } else {
             return 1;

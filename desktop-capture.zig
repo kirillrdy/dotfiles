@@ -1,6 +1,8 @@
 //! Live, per-window captures; no screenshots of the composed desktop.
 const std = @import("std");
 pub const c = @import("gtk");
+const protocols = @import("protocols");
+const libc = @import("libc");
 const a = std.heap.page_allocator;
 fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
@@ -10,7 +12,7 @@ pub const Workspace = struct { name: [128:0]u8 = @splat(0) };
 
 pub const Window = struct {
     client: *Client,
-    handle: *c.ext_foreign_toplevel_handle_v1,
+    handle: *protocols.ext_foreign_toplevel_handle_v1,
     id: [*c]u8 = null,
     title: [*c]u8 = null,
     app_id: [*c]u8 = null,
@@ -20,9 +22,9 @@ pub const Window = struct {
     target: Rect = .{},
     icon: ?*c.GdkPixbuf = null,
     image: ?*c.cairo_surface_t = null,
-    source: ?*c.ext_image_capture_source_v1 = null,
-    session: ?*c.ext_image_copy_capture_session_v1 = null,
-    frame: ?*c.ext_image_copy_capture_frame_v1 = null,
+    source: ?*protocols.ext_image_capture_source_v1 = null,
+    session: ?*protocols.ext_image_copy_capture_session_v1 = null,
+    frame: ?*protocols.ext_image_copy_capture_frame_v1 = null,
     buffer: ?*c.wl_buffer = null,
     mapped: ?*anyopaque = null,
     length: usize = 0,
@@ -36,11 +38,11 @@ pub const Window = struct {
     constraints: bool = false,
 
     fn stop(self: *Window) void {
-        if (self.frame) |frame| c.ext_image_copy_capture_frame_v1_destroy(frame);
+        if (self.frame) |frame| protocols.ext_image_copy_capture_frame_v1_destroy(frame);
         self.frame = null;
-        if (self.session) |session| c.ext_image_copy_capture_session_v1_destroy(session);
+        if (self.session) |session| protocols.ext_image_copy_capture_session_v1_destroy(session);
         self.session = null;
-        if (self.source) |source| c.ext_image_capture_source_v1_destroy(source);
+        if (self.source) |source| protocols.ext_image_capture_source_v1_destroy(source);
         self.source = null;
         self.freeBuffer();
         self.constraints = false;
@@ -49,7 +51,7 @@ pub const Window = struct {
     fn freeBuffer(self: *Window) void {
         if (self.buffer) |buffer| c.wl_buffer_destroy(buffer);
         self.buffer = null;
-        if (self.mapped) |memory| _ = c.munmap(memory, self.length);
+        if (self.mapped) |memory| _ = libc.munmap(memory, self.length);
         self.mapped = null;
         self.length = 0;
     }
@@ -60,15 +62,15 @@ pub const Window = struct {
         c.g_free(self.id);
         c.g_free(self.title);
         c.g_free(self.app_id);
-        c.ext_foreign_toplevel_handle_v1_destroy(self.handle);
+        protocols.ext_foreign_toplevel_handle_v1_destroy(self.handle);
         a.destroy(self);
     }
     fn capture(self: *Window) void {
         const client = self.client;
         if (self.session == null) {
-            self.source = c.ext_foreign_toplevel_image_capture_source_manager_v1_create_source(client.sources, self.handle);
-            self.session = c.ext_image_copy_capture_manager_v1_create_session(client.captures, self.source, 0);
-            _ = c.ext_image_copy_capture_session_v1_add_listener(self.session, &session_listener, self);
+            self.source = protocols.ext_foreign_toplevel_image_capture_source_manager_v1_create_source(client.sources, self.handle);
+            self.session = protocols.ext_image_copy_capture_manager_v1_create_session(client.captures, self.source, 0);
+            _ = protocols.ext_image_copy_capture_session_v1_add_listener(self.session, &session_listener, self);
             return;
         }
         if (!self.constraints or !self.supported or self.frame != null) return;
@@ -77,12 +79,12 @@ pub const Window = struct {
         if (length > 64 * 1024 * 1024) return;
         if (self.buffer != null and (self.buffer_width != self.width or self.buffer_height != self.height or self.buffer_format != self.format)) self.freeBuffer();
         if (self.buffer == null) {
-            const fd = c.memfd_create("desktop-overview", c.MFD_CLOEXEC);
+            const fd = libc.memfd_create("desktop-overview", libc.MFD_CLOEXEC);
             if (fd < 0) return;
-            defer _ = c.close(fd);
-            if (c.ftruncate(fd, @intCast(length)) != 0) return;
-            const memory = c.mmap(null, length, c.PROT_READ | c.PROT_WRITE, c.MAP_SHARED, fd, 0);
-            if (memory == c.MAP_FAILED or memory == null) return;
+            defer _ = libc.close(fd);
+            if (libc.ftruncate(fd, @intCast(length)) != 0) return;
+            const memory = libc.mmap(null, length, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
+            if (memory == libc.MAP_FAILED or memory == null) return;
             self.mapped = memory;
             self.length = length;
             self.buffer_width = self.width;
@@ -92,11 +94,11 @@ pub const Window = struct {
             self.buffer = c.wl_shm_pool_create_buffer(pool, 0, @intCast(self.width), @intCast(self.height), @intCast(self.width * 4), self.format);
             c.wl_shm_pool_destroy(pool);
         }
-        self.frame = c.ext_image_copy_capture_session_v1_create_frame(self.session);
-        _ = c.ext_image_copy_capture_frame_v1_add_listener(self.frame, &frame_listener, self);
-        c.ext_image_copy_capture_frame_v1_attach_buffer(self.frame, self.buffer);
-        c.ext_image_copy_capture_frame_v1_damage_buffer(self.frame, 0, 0, @intCast(self.width), @intCast(self.height));
-        c.ext_image_copy_capture_frame_v1_capture(self.frame);
+        self.frame = protocols.ext_image_copy_capture_session_v1_create_frame(self.session);
+        _ = protocols.ext_image_copy_capture_frame_v1_add_listener(self.frame, &frame_listener, self);
+        protocols.ext_image_copy_capture_frame_v1_attach_buffer(self.frame, self.buffer);
+        protocols.ext_image_copy_capture_frame_v1_damage_buffer(self.frame, 0, 0, @intCast(self.width), @intCast(self.height));
+        protocols.ext_image_copy_capture_frame_v1_capture(self.frame);
     }
 };
 
@@ -104,10 +106,10 @@ pub const Client = struct {
     display: *c.wl_display,
     registry: *c.wl_registry,
     shm: ?*c.wl_shm = null,
-    list: ?*c.ext_foreign_toplevel_list_v1 = null,
-    sources: ?*c.ext_foreign_toplevel_image_capture_source_manager_v1 = null,
-    captures: ?*c.ext_image_copy_capture_manager_v1 = null,
-    control: ?*c.dotfiles_overview_v1 = null,
+    list: ?*protocols.ext_foreign_toplevel_list_v1 = null,
+    sources: ?*protocols.ext_foreign_toplevel_image_capture_source_manager_v1 = null,
+    captures: ?*protocols.ext_image_copy_capture_manager_v1 = null,
+    control: ?*protocols.dotfiles_overview_v1 = null,
     windows: std.ArrayList(*Window) = .empty,
     workspaces: [32]Workspace = @splat(.{}),
     count: u32 = 0,
@@ -133,10 +135,10 @@ pub const Client = struct {
         if (self.fd_source != 0) _ = c.g_source_remove(self.fd_source);
         for (self.windows.items) |window| window.destroy();
         self.windows.deinit(a);
-        if (self.control) |control| c.dotfiles_overview_v1_destroy(control);
-        if (self.captures) |manager| c.ext_image_copy_capture_manager_v1_destroy(manager);
-        if (self.sources) |manager| c.ext_foreign_toplevel_image_capture_source_manager_v1_destroy(manager);
-        if (self.list) |list| c.ext_foreign_toplevel_list_v1_destroy(list);
+        if (self.control) |control| protocols.dotfiles_overview_v1_destroy(control);
+        if (self.captures) |manager| protocols.ext_image_copy_capture_manager_v1_destroy(manager);
+        if (self.sources) |manager| protocols.ext_foreign_toplevel_image_capture_source_manager_v1_destroy(manager);
+        if (self.list) |list| protocols.ext_foreign_toplevel_list_v1_destroy(list);
         if (self.shm) |shm| c.wl_shm_destroy(shm);
         c.wl_registry_destroy(self.registry);
         c.wl_display_disconnect(self.display);
@@ -150,7 +152,7 @@ pub const Client = struct {
     pub fn refresh(self: *Client) void {
         if (!self.connected) return;
         self.count = 0;
-        c.dotfiles_overview_v1_refresh(self.control);
+        protocols.dotfiles_overview_v1_refresh(self.control);
         self.flush();
     }
     pub fn tick(self: *Client) void {
@@ -164,20 +166,20 @@ pub const Client = struct {
         if (self.connected) _ = c.wl_display_flush(self.display);
     }
     pub fn activate(self: *Client, window: *Window) void {
-        c.dotfiles_overview_v1_activate(self.control, window.id);
+        protocols.dotfiles_overview_v1_activate(self.control, window.id);
         self.flush();
     }
     pub fn close(self: *Client, window: *Window) void {
-        c.dotfiles_overview_v1_close(self.control, window.id);
+        protocols.dotfiles_overview_v1_close(self.control, window.id);
         self.flush();
     }
     pub fn switchWorkspace(self: *Client, index: u32) void {
-        c.dotfiles_overview_v1_switch_workspace(self.control, index);
+        protocols.dotfiles_overview_v1_switch_workspace(self.control, index);
         self.flush();
         self.refresh();
     }
     pub fn move(self: *Client, window: *Window, index: u32) void {
-        c.dotfiles_overview_v1_move(self.control, window.id, index);
+        protocols.dotfiles_overview_v1_move(self.control, window.id, index);
         self.flush();
         self.refresh();
     }
@@ -199,25 +201,25 @@ fn global(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*
     const self = cast(Client, data);
     const s = std.mem.span(interface);
     if (std.mem.eql(u8, s, "wl_shm")) self.shm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1)) else if (std.mem.eql(u8, s, "ext_foreign_toplevel_list_v1")) {
-        self.list = @ptrCast(c.wl_registry_bind(registry, name, &c.ext_foreign_toplevel_list_v1_interface, 1));
-        _ = c.ext_foreign_toplevel_list_v1_add_listener(self.list, &list_listener, self);
-    } else if (std.mem.eql(u8, s, "ext_foreign_toplevel_image_capture_source_manager_v1")) self.sources = @ptrCast(c.wl_registry_bind(registry, name, &c.ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1)) else if (std.mem.eql(u8, s, "ext_image_copy_capture_manager_v1")) self.captures = @ptrCast(c.wl_registry_bind(registry, name, &c.ext_image_copy_capture_manager_v1_interface, 1)) else if (std.mem.eql(u8, s, "dotfiles_overview_v1")) {
-        self.control = @ptrCast(c.wl_registry_bind(registry, name, &c.dotfiles_overview_v1_interface, 1));
-        _ = c.dotfiles_overview_v1_add_listener(self.control, &control_listener, self);
+        self.list = @ptrCast(c.wl_registry_bind(registry, name, &protocols.ext_foreign_toplevel_list_v1_interface, 1));
+        _ = protocols.ext_foreign_toplevel_list_v1_add_listener(self.list, &list_listener, self);
+    } else if (std.mem.eql(u8, s, "ext_foreign_toplevel_image_capture_source_manager_v1")) self.sources = @ptrCast(c.wl_registry_bind(registry, name, &protocols.ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1)) else if (std.mem.eql(u8, s, "ext_image_copy_capture_manager_v1")) self.captures = @ptrCast(c.wl_registry_bind(registry, name, &protocols.ext_image_copy_capture_manager_v1_interface, 1)) else if (std.mem.eql(u8, s, "dotfiles_overview_v1")) {
+        self.control = @ptrCast(c.wl_registry_bind(registry, name, &protocols.dotfiles_overview_v1_interface, 1));
+        _ = protocols.dotfiles_overview_v1_add_listener(self.control, &control_listener, self);
     }
 }
 fn globalRemove(_: ?*anyopaque, _: ?*c.wl_registry, _: u32) callconv(.c) void {}
-const list_listener = c.ext_foreign_toplevel_list_v1_listener{ .toplevel = &toplevel, .finished = &finished };
-fn toplevel(data: ?*anyopaque, _: ?*c.ext_foreign_toplevel_list_v1, handle: ?*c.ext_foreign_toplevel_handle_v1) callconv(.c) void {
+const list_listener = protocols.ext_foreign_toplevel_list_v1_listener{ .toplevel = &toplevel, .finished = &finished };
+fn toplevel(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_list_v1, handle: ?*protocols.ext_foreign_toplevel_handle_v1) callconv(.c) void {
     const self = cast(Client, data);
     const window = a.create(Window) catch @panic("out of memory");
     window.* = .{ .client = self, .handle = handle.? };
     self.windows.append(a, window) catch @panic("out of memory");
-    _ = c.ext_foreign_toplevel_handle_v1_add_listener(handle, &handle_listener, window);
+    _ = protocols.ext_foreign_toplevel_handle_v1_add_listener(handle, &handle_listener, window);
 }
-fn finished(_: ?*anyopaque, _: ?*c.ext_foreign_toplevel_list_v1) callconv(.c) void {}
-const handle_listener = c.ext_foreign_toplevel_handle_v1_listener{ .closed = &closed, .done = &done, .title = &title, .app_id = &appId, .identifier = &identifier };
-fn closed(data: ?*anyopaque, _: ?*c.ext_foreign_toplevel_handle_v1) callconv(.c) void {
+fn finished(_: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_list_v1) callconv(.c) void {}
+const handle_listener = protocols.ext_foreign_toplevel_handle_v1_listener{ .closed = &closed, .done = &done, .title = &title, .app_id = &appId, .identifier = &identifier };
+fn closed(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1) callconv(.c) void {
     const window = cast(Window, data);
     const client = window.client;
     for (client.windows.items, 0..) |item, i| if (item == window) {
@@ -227,21 +229,21 @@ fn closed(data: ?*anyopaque, _: ?*c.ext_foreign_toplevel_handle_v1) callconv(.c)
     window.destroy();
     client.changed(client.context);
 }
-fn done(data: ?*anyopaque, _: ?*c.ext_foreign_toplevel_handle_v1) callconv(.c) void {
+fn done(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1) callconv(.c) void {
     const window = cast(Window, data);
     window.client.changed(window.client.context);
 }
-fn title(data: ?*anyopaque, _: ?*c.ext_foreign_toplevel_handle_v1, value: [*c]const u8) callconv(.c) void {
+fn title(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1, value: [*c]const u8) callconv(.c) void {
     const w = cast(Window, data);
     c.g_free(w.title);
     w.title = c.g_strdup(value);
 }
-fn identifier(data: ?*anyopaque, _: ?*c.ext_foreign_toplevel_handle_v1, value: [*c]const u8) callconv(.c) void {
+fn identifier(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1, value: [*c]const u8) callconv(.c) void {
     const w = cast(Window, data);
     c.g_free(w.id);
     w.id = c.g_strdup(value);
 }
-fn appId(data: ?*anyopaque, _: ?*c.ext_foreign_toplevel_handle_v1, value: [*c]const u8) callconv(.c) void {
+fn appId(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1, value: [*c]const u8) callconv(.c) void {
     const w = cast(Window, data);
     c.g_free(w.app_id);
     w.app_id = c.g_strdup(value);
@@ -257,15 +259,15 @@ fn appId(data: ?*anyopaque, _: ?*c.ext_foreign_toplevel_handle_v1, value: [*c]co
     defer if (icon_info != null) c.g_object_unref(icon_info);
     w.icon = if (icon_info != null) c.gtk_icon_info_load_icon(icon_info, null) else c.gtk_icon_theme_load_icon(theme, "application-x-executable", 64, 0, null);
 }
-const control_listener = c.dotfiles_overview_v1_listener{ .workspace = &workspace, .window = &placement, .done = &snapshotDone };
-fn workspace(data: ?*anyopaque, _: ?*c.dotfiles_overview_v1, index: u32, name: [*c]const u8, active: u32) callconv(.c) void {
+const control_listener = protocols.dotfiles_overview_v1_listener{ .workspace = &workspace, .window = &placement, .done = &snapshotDone };
+fn workspace(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, index: u32, name: [*c]const u8, active: u32) callconv(.c) void {
     const self = cast(Client, data);
     if (index >= self.workspaces.len) return;
     _ = c.g_strlcpy(&self.workspaces[index].name, name, self.workspaces[index].name.len);
     self.count = @max(self.count, index + 1);
     if (active != 0) self.current = index;
 }
-fn placement(data: ?*anyopaque, _: ?*c.dotfiles_overview_v1, id: [*c]const u8, index: u32, x: i32, y: i32, width: i32, height: i32, sticky: u32) callconv(.c) void {
+fn placement(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, id: [*c]const u8, index: u32, x: i32, y: i32, width: i32, height: i32, sticky: u32) callconv(.c) void {
     const self = cast(Client, data);
     for (self.windows.items) |w| if (c.g_strcmp0(w.id, id) == 0) {
         w.workspace = index;
@@ -274,26 +276,26 @@ fn placement(data: ?*anyopaque, _: ?*c.dotfiles_overview_v1, id: [*c]const u8, i
         break;
     };
 }
-fn snapshotDone(data: ?*anyopaque, _: ?*c.dotfiles_overview_v1) callconv(.c) void {
+fn snapshotDone(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1) callconv(.c) void {
     const self = cast(Client, data);
     self.changed(self.context);
 }
-const session_listener = c.ext_image_copy_capture_session_v1_listener{ .buffer_size = &bufferSize, .shm_format = &shmFormat, .dmabuf_device = &device, .dmabuf_format = &format, .done = &constraintsDone, .stopped = &stopped };
-fn bufferSize(data: ?*anyopaque, _: ?*c.ext_image_copy_capture_session_v1, width: u32, height: u32) callconv(.c) void {
+const session_listener = protocols.ext_image_copy_capture_session_v1_listener{ .buffer_size = &bufferSize, .shm_format = &shmFormat, .dmabuf_device = &device, .dmabuf_format = &format, .done = &constraintsDone, .stopped = &stopped };
+fn bufferSize(data: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, width: u32, height: u32) callconv(.c) void {
     const w = cast(Window, data);
     w.width = width;
     w.height = height;
 }
-fn shmFormat(data: ?*anyopaque, _: ?*c.ext_image_copy_capture_session_v1, value: u32) callconv(.c) void {
+fn shmFormat(data: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, value: u32) callconv(.c) void {
     const w = cast(Window, data);
     if (value == c.WL_SHM_FORMAT_ARGB8888 or value == c.WL_SHM_FORMAT_XRGB8888 or value == c.WL_SHM_FORMAT_ABGR8888 or value == c.WL_SHM_FORMAT_XBGR8888) {
         w.format = value;
         w.supported = true;
     }
 }
-fn device(_: ?*anyopaque, _: ?*c.ext_image_copy_capture_session_v1, _: [*c]c.wl_array) callconv(.c) void {}
-fn format(_: ?*anyopaque, _: ?*c.ext_image_copy_capture_session_v1, _: u32, _: [*c]c.wl_array) callconv(.c) void {}
-fn constraintsDone(data: ?*anyopaque, _: ?*c.ext_image_copy_capture_session_v1) callconv(.c) void {
+fn device(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, _: [*c]c.wl_array) callconv(.c) void {}
+fn format(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, _: u32, _: [*c]c.wl_array) callconv(.c) void {}
+fn constraintsDone(data: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1) callconv(.c) void {
     const window = cast(Window, data);
     window.constraints = true;
     if (window.client.active) {
@@ -301,16 +303,16 @@ fn constraintsDone(data: ?*anyopaque, _: ?*c.ext_image_copy_capture_session_v1) 
         window.client.flush();
     }
 }
-fn stopped(data: ?*anyopaque, _: ?*c.ext_image_copy_capture_session_v1) callconv(.c) void {
+fn stopped(data: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1) callconv(.c) void {
     cast(Window, data).stop();
 }
-const frame_listener = c.ext_image_copy_capture_frame_v1_listener{ .transform = &transform, .damage = &damage, .presentation_time = &presentation, .ready = &ready, .failed = &failed };
-fn transform(_: ?*anyopaque, _: ?*c.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {}
-fn damage(_: ?*anyopaque, _: ?*c.ext_image_copy_capture_frame_v1, _: i32, _: i32, _: i32, _: i32) callconv(.c) void {}
-fn presentation(_: ?*anyopaque, _: ?*c.ext_image_copy_capture_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {}
-fn ready(data: ?*anyopaque, frame: ?*c.ext_image_copy_capture_frame_v1) callconv(.c) void {
+const frame_listener = protocols.ext_image_copy_capture_frame_v1_listener{ .transform = &transform, .damage = &damage, .presentation_time = &presentation, .ready = &ready, .failed = &failed };
+fn transform(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {}
+fn damage(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: i32, _: i32, _: i32, _: i32) callconv(.c) void {}
+fn presentation(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {}
+fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) callconv(.c) void {
     const w = cast(Window, data);
-    c.ext_image_copy_capture_frame_v1_destroy(frame);
+    protocols.ext_image_copy_capture_frame_v1_destroy(frame);
     w.frame = null;
     const ratio = @min(1.0, 1024.0 / @as(f64, @floatFromInt(@max(w.buffer_width, w.buffer_height))));
     const width: c_int = @max(1, @as(c_int, @intFromFloat(@as(f64, @floatFromInt(w.buffer_width)) * ratio)));
@@ -342,9 +344,9 @@ fn ready(data: ?*anyopaque, frame: ?*c.ext_image_copy_capture_frame_v1) callconv
     c.cairo_paint(cr);
     w.client.changed(w.client.context);
 }
-fn failed(data: ?*anyopaque, frame: ?*c.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {
+fn failed(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {
     const w = cast(Window, data);
-    c.ext_image_copy_capture_frame_v1_destroy(frame);
+    protocols.ext_image_copy_capture_frame_v1_destroy(frame);
     w.frame = null;
     w.freeBuffer();
 }

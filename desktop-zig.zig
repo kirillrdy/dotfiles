@@ -1,6 +1,7 @@
 //! Session shell. Compositor-specific operations stay behind Wayland protocols.
 const std = @import("std");
 const c = @import("gtk");
+const libc = @import("libc");
 const panel = @import("desktop-panel.zig");
 const wallpaper = @import("desktop-wallpaper.zig");
 const notifications = @import("desktop-notifications.zig");
@@ -36,7 +37,7 @@ const Session = struct {
         if (self.serving) return error.AlreadyRunning;
         if (args.len != 1 and args.len != 5) return error.InvalidServeArguments;
         if (c.gtk_layer_is_supported() == 0) return error.LayerShellUnavailable;
-        if (c.prctl(c.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
+        if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
         self.image = try a.dupeSentinel(u8, args[0], 0);
         self.activities.wallpaper = self.image.?.ptr;
         var temporary = std.heap.ArenaAllocator.init(a);

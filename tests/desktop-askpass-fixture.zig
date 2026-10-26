@@ -2,6 +2,7 @@
 const std = @import("std");
 const askpass = @import("askpass");
 const c = askpass.c;
+const libc = @import("libc");
 const assert = std.debug.assert;
 fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
@@ -15,7 +16,7 @@ const Response = struct {
         return 0;
     }
     fn signal(_: c.gpointer) callconv(.c) c.gboolean {
-        _ = c.raise(c.SIGTERM);
+        _ = libc.raise(libc.SIGTERM);
         return 0;
     }
 };
