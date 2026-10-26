@@ -36,6 +36,18 @@ pub fn build(b: *std.Build) void {
     settings_fixture.root_module.addImport("settings", settings_module);
     const settings_check = b.step("test-settings", "Exercise settings against isolated sound and network backends (requires a display)");
     settings_check.dependOn(&b.addRunArtifact(settings_fixture).step);
+    const askpass_gtk = bindings(b, target, optimize, "#include <gtk/gtk.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <sys/prctl.h>\n", &.{"gtk+-3.0"});
+    const askpass_module = b.createModule(.{ .root_source_file = b.path("desktop-askpass.zig"), .target = target, .optimize = optimize });
+    askpass_module.link_libc = true;
+    askpass_module.linkSystemLibrary("gtk+-3.0", .{});
+    askpass_module.addImport("gtk", askpass_gtk);
+    const askpass = b.addExecutable(.{ .name = "desktop-askpass", .root_module = askpass_module });
+    b.installArtifact(askpass);
+    const askpass_fixture = b.addExecutable(.{ .name = "desktop-askpass-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-askpass-fixture.zig"), .target = target, .optimize = optimize }) });
+    askpass_fixture.root_module.addImport("askpass", askpass_module);
+    const run_askpass_fixture = b.addRunArtifact(askpass_fixture);
+    run_askpass_fixture.addArtifactArg(askpass);
+    b.step("test-askpass", "Check the SSH askpass dialog and protocol (requires a display)").dependOn(&run_askpass_fixture.step);
     const wallpaper = b.addExecutable(.{ .name = "desktop-wallpaper", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-wallpaper.zig"), .target = target, .optimize = optimize }) });
     wallpaper.root_module.link_libc = true;
     wallpaper.root_module.linkSystemLibrary("gtk+-3.0", .{});

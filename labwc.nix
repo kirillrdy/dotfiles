@@ -64,6 +64,13 @@ lib.mkIf enableLightDesktop {
   services.power-profiles-daemon.enable = true;
   services.upower.enable = true;
   services.gnome.gnome-keyring.enable = true;
+  services.gnome.gcr-ssh-agent.enable = false;
+  programs.ssh = {
+    startAgent = true;
+    enableAskPassword = true;
+    askPassword = lib.getExe' desktopZig "desktop-askpass";
+    extraConfig = "AddKeysToAgent yes";
+  };
   fonts.packages = [ pkgs.adwaita-fonts ];
   programs.dconf.profiles.user.databases = [
     {

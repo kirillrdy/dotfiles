@@ -48,8 +48,14 @@ pkgs.stdenv.mkDerivation {
       DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons \
       "$out/bin/desktop-apps-fixture"
     G_DEBUG=fatal-criticals GDK_BACKEND=x11 zig build test-settings -Doptimize=ReleaseSafe -j2
+    G_DEBUG=fatal-criticals GDK_BACKEND=x11 \
+      GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+      zig build test-askpass -Doptimize=ReleaseSafe -j2
   '';
   installPhase = ''
+    wrapProgram "$out/bin/desktop-askpass" \
+      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
     wrapProgram "$out/bin/desktop-settings" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share \
