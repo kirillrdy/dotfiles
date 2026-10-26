@@ -1,5 +1,8 @@
 //! Wayland screenshot tool with region selection and clipboard support.
 const std = @import("std");
+comptime {
+    _ = @import("protocols");
+}
 pub const c = @import("gtk");
 
 fn cast(comptime T: type, ptr: anytype) *T {

@@ -66,10 +66,6 @@ pub const gconstpointer = ?*const anyopaque;
 
 pub const GDestroyNotify = ?*const fn (data: gpointer) callconv(.c) void;
 
-pub extern fn memmove(__dest: ?*anyopaque, __src: ?*const anyopaque, __n: usize) ?*anyopaque;
-
-pub extern fn index(__s: [*c]const u8, __c: c_int) [*c]u8;
-
 pub const GQuark = guint32;
 
 pub const struct__GError = extern struct {
@@ -2071,12 +2067,6 @@ pub const struct_passwd = extern struct {
     pw_shell: [*c]u8 = null,
 };
 
-pub extern fn log2(__x: f64) f64;
-
-pub extern fn pow(__x: f64, __y: f64) f64;
-
-pub extern fn ceil(__x: f64) f64;
-
 pub const struct_wl_interface = extern struct {
     name: [*c]const u8 = null,
     version: c_int = 0,
@@ -2099,6 +2089,8 @@ pub const struct_wl_array = extern struct {
 };
 
 pub const struct_wl_proxy = opaque {};
+pub const wl_proxy = struct_wl_proxy;
+pub const wl_interface = struct_wl_interface;
 
 pub const struct_wl_display = opaque {};
 
@@ -2109,6 +2101,19 @@ pub extern fn wl_proxy_destroy(proxy: ?*struct_wl_proxy) void;
 pub extern fn wl_proxy_add_listener(proxy: ?*struct_wl_proxy, implementation: [*c]?*const fn () callconv(.c) void, data: ?*anyopaque) c_int;
 
 pub extern fn wl_proxy_get_version(proxy: ?*struct_wl_proxy) u32;
+
+pub const wl_object = opaque {};
+pub const wl_argument = extern union {
+    i: i32,
+    u: u32,
+    f: i32,
+    s: [*c]const u8,
+    o: ?*wl_object,
+    n: u32,
+    a: [*c]wl_array,
+    h: i32,
+};
+pub extern fn wl_proxy_marshal_array_flags(proxy: ?*struct_wl_proxy, opcode: u32, interface: [*c]const struct_wl_interface, version: u32, flags: u32, args: [*c]wl_argument) ?*struct_wl_proxy;
 
 pub extern fn wl_display_connect(name: [*c]const u8) ?*struct_wl_display;
 
@@ -2287,73 +2292,6 @@ pub extern fn memfd_create(__name: [*c]const u8, __flags: c_uint) c_int;
 pub extern fn mmap(__addr: ?*anyopaque, __len: usize, __prot: c_int, __flags: c_int, __fd: c_int, __offset: __off_t) ?*anyopaque;
 
 pub extern fn munmap(__addr: ?*anyopaque, __len: usize) c_int;
-
-pub const struct__JsonNode = opaque {};
-
-pub const JsonNode = struct__JsonNode;
-
-pub const struct__JsonObject = opaque {};
-
-pub const JsonObject = struct__JsonObject;
-
-pub const struct__JsonArray = opaque {};
-
-pub const JsonArray = struct__JsonArray;
-
-pub const JSON_NODE_OBJECT: c_int = 0;
-
-pub const JSON_NODE_ARRAY: c_int = 1;
-
-pub const JSON_NODE_VALUE: c_int = 2;
-
-pub const JsonNodeType = c_uint;
-
-pub extern fn json_node_get_node_type(node: ?*JsonNode) JsonNodeType;
-
-pub extern fn json_node_get_value_type(node: ?*JsonNode) GType;
-
-pub extern fn json_node_get_object(node: ?*JsonNode) ?*JsonObject;
-
-pub extern fn json_node_get_array(node: ?*JsonNode) ?*JsonArray;
-
-pub extern fn json_node_get_string(node: ?*JsonNode) [*c]const gchar;
-
-pub extern fn json_node_get_double(node: ?*JsonNode) gdouble;
-
-pub extern fn json_object_get_member(object: ?*JsonObject, member_name: [*c]const gchar) ?*JsonNode;
-
-pub extern fn json_object_get_int_member(object: ?*JsonObject, member_name: [*c]const gchar) gint64;
-
-pub extern fn json_object_get_double_member(object: ?*JsonObject, member_name: [*c]const gchar) gdouble;
-
-pub extern fn json_object_get_array_member(object: ?*JsonObject, member_name: [*c]const gchar) ?*JsonArray;
-
-pub extern fn json_object_has_member(object: ?*JsonObject, member_name: [*c]const gchar) gboolean;
-
-pub extern fn json_array_get_double_element(array: ?*JsonArray, index_: guint) gdouble;
-
-pub extern fn json_array_get_string_element(array: ?*JsonArray, index_: guint) [*c]const gchar;
-
-pub extern fn json_array_get_object_element(array: ?*JsonArray, index_: guint) ?*JsonObject;
-
-pub extern fn json_array_get_length(array: ?*JsonArray) guint;
-
-pub const struct__JsonParserPrivate = opaque {};
-
-pub const JsonParserPrivate = struct__JsonParserPrivate;
-
-pub const struct__JsonParser = extern struct {
-    parent_instance: GObject = @import("std").mem.zeroes(GObject),
-    priv: ?*JsonParserPrivate = null,
-};
-
-pub const JsonParser = struct__JsonParser;
-
-pub extern fn json_parser_new() [*c]JsonParser;
-
-pub extern fn json_parser_load_from_data(parser: [*c]JsonParser, data: [*c]const gchar, length: gssize, @"error": [*c][*c]GError) gboolean;
-
-pub extern fn json_parser_get_root(parser: [*c]JsonParser) ?*JsonNode;
 
 pub extern fn gdk_wayland_window_set_application_id(window: ?*GdkWindow, application_id: [*c]const u8) void;
 

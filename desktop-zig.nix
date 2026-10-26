@@ -27,7 +27,6 @@ pkgs.stdenv.mkDerivation {
   buildInputs = [
     pkgs.gtk3
     pkgs.gtk-layer-shell
-    pkgs.json-glib
     pkgs.wayland
     pkgs.polkit
   ];
@@ -46,7 +45,7 @@ pkgs.stdenv.mkDerivation {
     export GSETTINGS_BACKEND=memory
     export GSETTINGS_SCHEMA_DIR=${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}/glib-2.0/schemas
     python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-zig" --subcommand greeter
-    zig build test-gtk-abi -Doptimize=ReleaseSafe
+    zig build test-gtk-abi test-libc-abi -Doptimize=ReleaseSafe
     zig build test-power -Doptimize=ReleaseSafe
     WB_PANEL_BINARY="$out/bin/waybar-panel" WB_CODEX_BINARY="$out/bin/waybar-codex" zig build test -Doptimize=ReleaseSafe
     Xvfb :99 -nolisten tcp &

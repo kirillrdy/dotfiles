@@ -74,7 +74,7 @@ const Client = struct {
         const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM | c.SOCK_CLOEXEC, 0);
         if (fd < 0) return error.SocketFailed;
         errdefer _ = c.close(fd);
-        if (c.connect(fd, .{ .__sockaddr_un__ = &address }, @sizeOf(c.struct_sockaddr_un)) != 0) return error.ConnectFailed;
+        if (c.connect(fd, @ptrCast(&address), @sizeOf(c.struct_sockaddr_un)) != 0) return error.ConnectFailed;
         return .{ .fd = fd };
     }
     fn exchange(self: Client, request: anytype) !Reply {

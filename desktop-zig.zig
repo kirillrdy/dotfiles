@@ -11,6 +11,9 @@ const settings = @import("desktop-settings.zig");
 const collectors = @import("desktop-collectors.zig");
 const widgets = @import("desktop-widgets.zig");
 const a = std.heap.page_allocator;
+comptime {
+    _ = @import("protocols");
+}
 var current: ?*Session = null;
 
 const Session = struct {

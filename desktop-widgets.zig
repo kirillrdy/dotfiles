@@ -527,55 +527,77 @@ fn history_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpoint
     var err: [*c]c.GError = null;
     const reply = c.g_dbus_connection_call_finish(@ptrCast(source), result, &err);
     defer c.g_clear_error(&err);
+    populate_notifications(m, reply);
+}
+
+fn jsonStringZ(a: std.mem.Allocator, val: ?std.json.Value) [:0]const u8 {
+    if (val) |v| {
+        if (v == .string) return a.dupeSentinel(u8, v.string, 0) catch "";
+    }
+    return "";
+}
+
+fn populate_notifications(m: *Module, reply: ?*c.GVariant) void {
     if (reply == null) return;
     defer c.g_variant_unref(reply);
     if (m.dead != 0) return;
     const value = c.g_variant_get_child_value(reply, 0);
     defer c.g_variant_unref(value);
-    const parser = c.json_parser_new();
-    defer c.g_object_unref(parser);
-    if (c.json_parser_load_from_data(parser, c.g_variant_get_string(value, null), -1, null) == 0) return;
-    const root = c.json_parser_get_root(parser);
-    if (c.json_node_get_node_type(root) != c.JSON_NODE_ARRAY) return;
+    const raw = c.g_variant_get_string(value, null);
+    if (raw == null) return;
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), std.mem.span(raw), .{}) catch return;
+    if (parsed.value != .array) return;
     const children = c.gtk_container_get_children(cast(c.GtkContainer, m.history_container));
     var child = children;
     while (child != null) : (child = child.*.next) c.gtk_widget_destroy(@ptrCast(@alignCast(child.*.data)));
     c.g_list_free(children);
-    const array = c.json_node_get_array(root);
-    const count = c.json_array_get_length(array);
-    var i = count;
+    const items = parsed.value.array.items;
+    var i = items.len;
     while (i > 0) {
         i -= 1;
-        const object = c.json_array_get_object_element(array, i);
-        if (object == null or c.json_object_has_member(object, "id") == 0 or c.json_object_has_member(object, "created") == 0) continue;
+        const item = items[i];
+        if (item != .object) continue;
+        const id_val = item.object.get("id") orelse continue;
+        const created_val = item.object.get("created") orelse continue;
+        const id: u32 = switch (id_val) {
+            .integer => |v| @intCast(v),
+            else => continue,
+        };
+        const created: i64 = switch (created_val) {
+            .integer => |v| v,
+            else => continue,
+        };
         var actions: [32]notification_view.Action = undefined;
         var action_count: usize = 0;
-        if (c.json_object_has_member(object, "actions") != 0) {
-            const list = c.json_object_get_array_member(object, "actions");
-            while (action_count < @min(32, c.json_array_get_length(list))) : (action_count += 1) {
-                const action = c.json_array_get_object_element(list, @intCast(action_count));
-                actions[action_count] = .{ .key = std.mem.span(text(action, "key")), .label = std.mem.span(text(action, "label")) };
+        if (item.object.get("actions")) |actions_val| {
+            if (actions_val == .array) {
+                for (actions_val.array.items) |action_item| {
+                    if (action_count >= 32) break;
+                    if (action_item != .object) continue;
+                    actions[action_count] = .{
+                        .key = jsonStringZ(arena.allocator(), action_item.object.get("key")),
+                        .label = jsonStringZ(arena.allocator(), action_item.object.get("label")),
+                    };
+                    action_count += 1;
+                }
             }
         }
         const card = notification_view.View.create(.{
-            .id = @intCast(c.json_object_get_int_member(object, "id")),
-            .created = c.json_object_get_int_member(object, "created"),
-            .app = std.mem.span(text(object, "app")),
-            .title = std.mem.span(text(object, "title")),
-            .body = std.mem.span(text(object, "body")),
-            .icon = std.mem.span(text(object, "icon")),
+            .id = id,
+            .created = created,
+            .app = jsonStringZ(arena.allocator(), item.object.get("app")),
+            .title = jsonStringZ(arena.allocator(), item.object.get("title")),
+            .body = jsonStringZ(arena.allocator(), item.object.get("body")),
+            .icon = jsonStringZ(arena.allocator(), item.object.get("icon")),
             .actions = actions[0..action_count],
         }, .{ .context = m, .close = &history_dismiss, .activate = &history_activate });
         css(card.root, "history-notification");
         c.gtk_box_pack_start(cast(c.GtkBox, m.history_container), card.root, 0, 0, 0);
     }
-    c.gtk_widget_set_visible(m.history_empty, @intFromBool(count == 0));
-    c.gtk_widget_set_sensitive(m.history_clear, @intFromBool(count > 0));
-}
-pub fn text(o: ?*c.JsonObject, key: [*c]const u8) callconv(.c) [*c]const u8 {
-    if (!(c.json_object_has_member(o, key) != 0)) return "";
-    const node: ?*c.JsonNode = c.json_object_get_member(o, key);
-    return if ((c.json_node_get_node_type(node) == c.JSON_NODE_VALUE) and (c.json_node_get_value_type(node) == @as(c.GType, @bitCast(@as(c_long, 16 << @intCast(2)))))) c.json_node_get_string(node) else @as([*c]const c.gchar, @ptrCast(@alignCast("")));
+    c.gtk_widget_set_visible(m.history_empty, @intFromBool(items.len == 0));
+    c.gtk_widget_set_sensitive(m.history_clear, @intFromBool(items.len > 0));
 }
 pub fn update_codex_tooltip(m: *Module) callconv(.c) void {
     if (m.dead != 0) return;
@@ -696,40 +718,45 @@ pub fn make_codex_menu(m: *Module) callconv(.c) void {
     _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.codex_menu)), "closed", @as(c.GCallback, @ptrCast(@alignCast(&codex_menu_closed))), @as(c.gpointer, @ptrCast(m)), null, 0);
     _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&codex_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
 }
-pub fn update_codex(m: *Module, o: ?*c.JsonObject) callconv(.c) void {
-    const windows: ?*c.JsonArray = if (c.json_object_has_member(o, "windows") != 0) c.json_object_get_array_member(o, "windows") else null;
-    const levels: [4][*c]const u8 = [4][*c]const u8{
+pub fn update_codex(m: *Module, o: std.json.Value, a: std.mem.Allocator) void {
+    const windows_val = o.object.get("windows");
+    const windows: ?[]const std.json.Value = if (windows_val) |w| if (w == .array) w.array.items else null else null;
+    const levels = [_][*:0]const u8{
         "usage-low",
         "usage-medium",
         "usage-high",
         "usage-critical",
     };
-    {
-        var i: c.guint = 0;
-        while (i < 2) : (i += 1) {
-            const window: ?*c.JsonObject = if ((windows != null) and (i < c.json_array_get_length(windows))) c.json_array_get_object_element(windows, i) else null;
-            const percent: ?*c.JsonNode = if ((window != null) and (c.json_object_has_member(window, "percent") != 0)) c.json_object_get_member(window, "percent") else null;
-            var valid: c.gboolean = @intFromBool(((percent != null) and (c.json_node_get_node_type(percent) == c.JSON_NODE_VALUE)) and ((c.json_node_get_value_type(percent) == @as(c.GType, @bitCast(@as(c_long, 15 << @intCast(2))))) or (c.json_node_get_value_type(percent) == @as(c.GType, @bitCast(@as(c_long, 10 << @intCast(2)))))));
-            var value: f64 = if (valid != 0) c.json_node_get_double(percent) else 0;
-            valid = @intFromBool((valid != 0) and (finite(value) != 0));
-            value = if (valid != 0) if (value > 100) 100 else if (value < 0) 0 else value else 0;
-            const label: [*c]u8 = if (valid != 0) c.g_strdup_printf("%.1f%% remaining", value) else c.g_strdup("—");
-            c.gtk_label_set_text(cast(c.GtkLabel, m.codex_percent[i]), label);
-            c.g_free(@as(c.gpointer, @ptrCast(label)));
-            c.gtk_progress_bar_set_fraction(cast(c.GtkProgressBar, @as(?*anyopaque, @ptrCast(c.g_type_check_instance_cast(cast(c.GTypeInstance, m.codex_progress[i]), c.gtk_progress_bar_get_type())))), value / 100);
-            c.gtk_label_set_text(cast(c.GtkLabel, m.codex_reset[i]), if (window != null) text(window, "reset") else "Resets: —");
-            const style: [*c]c.GtkStyleContext = c.gtk_widget_get_style_context(m.codex_progress[i]);
-            {
-                var j: c.guint = 0;
-                while (@as(c_ulong, @bitCast(@as(c_ulong, j))) < (@sizeOf([4][*c]const u8) / @sizeOf([*c]const u8))) : (j += 1) {
-                    c.gtk_style_context_remove_class(style, levels[j]);
-                }
-            }
-            css(m.codex_progress[i], levels[@as(usize, if (value <= 10) 3 else if (value <= 30) 2 else if (value <= 60) 1 else 0)]);
-        }
+    for (0..2) |i| {
+        const window: ?std.json.Value = if (windows) |w| if (i < w.len and w[i] == .object) w[i] else null else null;
+        const percent_val = if (window) |win| win.object.get("percent") else null;
+        var valid = false;
+        var value: f64 = 0;
+        if (percent_val) |p| switch (p) {
+            .float => |f| {
+                value = f;
+                valid = std.math.isFinite(f);
+            },
+            .integer => |iv| {
+                value = @floatFromInt(iv);
+                valid = true;
+            },
+            else => {},
+        };
+        value = if (valid) std.math.clamp(value, 0, 100) else 0;
+        const label = if (valid) c.g_strdup_printf("%.1f%% remaining", value) else c.g_strdup("—");
+        c.gtk_label_set_text(cast(c.GtkLabel, m.codex_percent[i]), label);
+        c.g_free(@as(c.gpointer, @ptrCast(label)));
+        c.gtk_progress_bar_set_fraction(cast(c.GtkProgressBar, @as(?*anyopaque, @ptrCast(c.g_type_check_instance_cast(cast(c.GTypeInstance, m.codex_progress[i]), c.gtk_progress_bar_get_type())))), value / 100);
+        const reset_str = if (window) |win| jsonStringZ(a, win.object.get("reset")) else "Resets: —";
+        c.gtk_label_set_text(cast(c.GtkLabel, m.codex_reset[i]), reset_str);
+        const style: [*c]c.GtkStyleContext = c.gtk_widget_get_style_context(m.codex_progress[i]);
+        for (levels) |lvl| c.gtk_style_context_remove_class(style, lvl);
+        css(m.codex_progress[i], levels[if (value <= 10) 3 else if (value <= 30) 2 else if (value <= 60) 1 else 0]);
     }
-    c.gtk_label_set_text(cast(c.GtkLabel, m.codex_checked), if (@as(c_int, @bitCast(@as(c_uint, text(o, "checked").*))) != 0) text(o, "checked") else "Checked: —");
-    c.gtk_label_set_text(cast(c.GtkLabel, m.codex_error), text(o, "error"));
+    const checked_str = jsonStringZ(a, o.object.get("checked"));
+    c.gtk_label_set_text(cast(c.GtkLabel, m.codex_checked), if (checked_str.len != 0) checked_str else "Checked: —");
+    c.gtk_label_set_text(cast(c.GtkLabel, m.codex_error), jsonStringZ(a, o.object.get("error")));
     c.gtk_widget_set_sensitive(m.codex_refresh, 1);
 }
 pub fn draw_graph(widget: [*c]c.GtkWidget, cr: ?*c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
@@ -746,7 +773,7 @@ pub fn draw_graph(widget: [*c]c.GtkWidget, cr: ?*c.cairo_t, data: c.gpointer) ca
                 max = if (max > g.history[g.series - 1][j]) max else g.history[g.series - 1][j];
             }
         }
-        max = c.pow(2, c.ceil(c.log2(max)));
+        max = std.math.pow(f64, 2, @ceil(std.math.log2(max)));
     }
     if ((max <= 0) or (g.count < 2)) return 0;
     c.cairo_rectangle(cr, 0, 0, width, height);
@@ -823,133 +850,144 @@ pub fn item_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c.
     c.g_clear_error(&@"error");
     return 1;
 }
-pub fn update_items(m: *Module, array: ?*c.JsonArray) callconv(.c) void {
-    const count: c.guint = if (c.json_array_get_length(array) < 8) c.json_array_get_length(array) else 8;
-    {
-        var i: c.guint = 0;
-        while (i < count) : (i += 1) {
-            const o: ?*c.JsonObject = c.json_array_get_object_element(array, i);
-            const item: *Item = &m.item[i];
-            if (!(item.box != null)) {
-                item.box = c.gtk_event_box_new();
-                const row: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0);
-                c.gtk_container_add(cast(c.GtkContainer, item.box), row);
-                css(item.box, "gnome-item");
-                if (m.status != 0) {
-                    c.gtk_widget_set_margin_start(item.box, 4);
-                    c.gtk_widget_set_margin_end(item.box, 4);
-                }
-                item.image = c.gtk_image_new();
-                item.label = c.gtk_label_new("");
-                css(item.image, "gnome-icon");
-                css(item.label, "gnome-text");
-                c.gtk_box_pack_start(cast(c.GtkBox, row), item.image, 0, 0, 0);
-                c.gtk_box_pack_start(cast(c.GtkBox, row), item.label, 0, 0, 0);
-                c.gtk_box_pack_start(cast(c.GtkBox, m.box), item.box, 0, 0, 0);
-                if ((m.status == 0)) {
-                    _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(item.box)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&item_click))), @as(c.gpointer, @ptrCast(item)), null, 0);
-                }
+fn update_items(m: *Module, items: []const std.json.Value, a: std.mem.Allocator) void {
+    const count: usize = @min(items.len, 8);
+    for (0..count) |i| {
+        const item_val = items[i];
+        if (item_val != .object) continue;
+        const item: *Item = &m.item[i];
+        if (item.box == null) {
+            item.box = c.gtk_event_box_new();
+            const row: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0);
+            c.gtk_container_add(cast(c.GtkContainer, item.box), row);
+            css(item.box, "gnome-item");
+            if (m.status != 0) {
+                c.gtk_widget_set_margin_start(item.box, 4);
+                c.gtk_widget_set_margin_end(item.box, 4);
             }
-            const icon: [*c]const u8 = text(o, "icon");
-            if (m.quick == null and (m.network_icon != null) and (c.g_str_has_prefix(icon, "network-") != 0)) {
-                c.gtk_image_set_from_icon_name(cast(c.GtkImage, m.network_icon), icon, c.GTK_ICON_SIZE_MENU);
-                c.gtk_label_set_text(cast(c.GtkLabel, m.network_label), text(o, "tooltip"));
+            item.image = c.gtk_image_new();
+            item.label = c.gtk_label_new("");
+            css(item.image, "gnome-icon");
+            css(item.label, "gnome-text");
+            c.gtk_box_pack_start(cast(c.GtkBox, row), item.image, 0, 0, 0);
+            c.gtk_box_pack_start(cast(c.GtkBox, row), item.label, 0, 0, 0);
+            c.gtk_box_pack_start(cast(c.GtkBox, m.box), item.box, 0, 0, 0);
+            if (m.status == 0) {
+                _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(item.box)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&item_click))), @as(c.gpointer, @ptrCast(item)), null, 0);
             }
-            if (c.g_strcmp0(icon, item.icon) != 0) {
-                c.g_free(@as(c.gpointer, @ptrCast(item.icon)));
-                item.icon = c.g_strdup(icon);
-                if (c.g_path_is_absolute(icon) != 0) {
-                    var @"error": [*c]c.GError = null;
-                    var pixbuf: ?*c.GdkPixbuf = c.gdk_pixbuf_new_from_file_at_scale(icon, 16, 16, 1, &@"error");
-                    c.gtk_image_set_from_pixbuf(cast(c.GtkImage, item.image), pixbuf);
-                    if (pixbuf != null) {
-                        c.g_object_unref(@as(c.gpointer, @ptrCast(pixbuf)));
-                    }
-                    pixbuf = null;
-                    c.g_clear_error(&@"error");
-                } else {
-                    c.gtk_image_set_from_icon_name(cast(c.GtkImage, item.image), icon, c.GTK_ICON_SIZE_MENU);
-                    c.gtk_image_set_pixel_size(cast(c.GtkImage, item.image), 16);
-                }
-            }
-            c.gtk_label_set_text(cast(c.GtkLabel, item.label), text(o, "text"));
-            c.gtk_widget_set_margin_start(item.label, if ((@as(c_int, @bitCast(@as(c_uint, icon.*))) != 0) and (@as(c_int, @bitCast(@as(c_uint, text(o, "text").*))) != 0)) 6 else 0);
-            c.gtk_widget_set_tooltip_text(item.box, text(o, "tooltip"));
-            c.g_free(@as(c.gpointer, @ptrCast(item.command)));
-            item.command = c.g_strdup(text(o, "command"));
-            c.gtk_widget_show_all(item.box);
-            c.gtk_widget_set_visible(item.image, @intFromBool(@as(c_int, @bitCast(@as(c_uint, icon.*))) != @as(c_int, '\x00')));
-            c.gtk_widget_set_visible(item.label, @intFromBool(@as(c_int, @bitCast(@as(c_uint, text(o, "text").*))) != @as(c_int, '\x00')));
         }
+        const icon = jsonStringZ(a, item_val.object.get("icon"));
+        const tooltip = jsonStringZ(a, item_val.object.get("tooltip"));
+        const text_str = jsonStringZ(a, item_val.object.get("text"));
+        const command = jsonStringZ(a, item_val.object.get("command"));
+        if (m.quick == null and m.network_icon != null and std.mem.startsWith(u8, icon, "network-")) {
+            c.gtk_image_set_from_icon_name(cast(c.GtkImage, m.network_icon), icon, c.GTK_ICON_SIZE_MENU);
+            c.gtk_label_set_text(cast(c.GtkLabel, m.network_label), tooltip);
+        }
+        if (c.g_strcmp0(icon, item.icon) != 0) {
+            c.g_free(@as(c.gpointer, @ptrCast(item.icon)));
+            item.icon = c.g_strdup(icon);
+            if (c.g_path_is_absolute(icon) != 0) {
+                var @"error": [*c]c.GError = null;
+                const pixbuf: ?*c.GdkPixbuf = c.gdk_pixbuf_new_from_file_at_scale(icon, 16, 16, 1, &@"error");
+                c.gtk_image_set_from_pixbuf(cast(c.GtkImage, item.image), pixbuf);
+                if (pixbuf != null) {
+                    c.g_object_unref(@as(c.gpointer, @ptrCast(pixbuf)));
+                }
+                c.g_clear_error(&@"error");
+            } else {
+                c.gtk_image_set_from_icon_name(cast(c.GtkImage, item.image), icon, c.GTK_ICON_SIZE_MENU);
+                c.gtk_image_set_pixel_size(cast(c.GtkImage, item.image), 16);
+            }
+        }
+        c.gtk_label_set_text(cast(c.GtkLabel, item.label), text_str);
+        c.gtk_widget_set_margin_start(item.label, if (icon.len > 0 and text_str.len > 0) 6 else 0);
+        c.gtk_widget_set_tooltip_text(item.box, tooltip);
+        c.g_free(@as(c.gpointer, @ptrCast(item.command)));
+        item.command = c.g_strdup(command);
+        c.gtk_widget_show_all(item.box);
+        c.gtk_widget_set_visible(item.image, @intFromBool(icon.len > 0));
+        c.gtk_widget_set_visible(item.label, @intFromBool(text_str.len > 0));
     }
-    {
-        var i: c.guint = count;
-        while (i < 8) : (i += 1) if (m.item[i].box != null) {
-            c.gtk_widget_hide(m.item[i].box);
-        };
+    for (count..8) |i| {
+        if (m.item[i].box != null) c.gtk_widget_hide(m.item[i].box);
     }
 }
-pub fn update_graph(g: *Graph, o: ?*c.JsonObject) callconv(.c) void {
-    c.gtk_label_set_markup(cast(c.GtkLabel, g.value), text(o, "markup"));
-    c.gtk_widget_set_tooltip_text(g.box, text(o, "tooltip"));
-    const sequence: c.gint64 = c.json_object_get_int_member(o, "sequence");
+
+fn update_graph(g: *Graph, o: std.json.Value, a: std.mem.Allocator) void {
+    const markup = jsonStringZ(a, o.object.get("markup"));
+    const tooltip = jsonStringZ(a, o.object.get("tooltip"));
+    c.gtk_label_set_markup(cast(c.GtkLabel, g.value), markup);
+    c.gtk_widget_set_tooltip_text(g.box, tooltip);
+    const seq_val = o.object.get("sequence") orelse return;
+    const sequence: i64 = switch (seq_val) {
+        .integer => |v| v,
+        else => return,
+    };
     if (sequence == g.sequence) return;
     g.sequence = sequence;
-    const values: ?*c.JsonArray = c.json_object_get_array_member(o, "values");
-    const colors: ?*c.JsonArray = c.json_object_get_array_member(o, "colors");
-    g.series = if (c.json_array_get_length(values) < 5) c.json_array_get_length(values) else 5;
-    if ((g.series == 0)) return;
-    g.maximum = c.json_object_get_double_member(o, "maximum");
+    const values_val = o.object.get("values") orelse return;
+    if (values_val != .array) return;
+    const values = values_val.array.items;
+    const colors_val = o.object.get("colors");
+    const colors = if (colors_val) |cv| if (cv == .array) cv.array.items else &.{} else &.{};
+    g.series = @intCast(@min(values.len, 5));
+    if (g.series == 0) return;
+    g.maximum = if (o.object.get("maximum")) |mv| switch (mv) {
+        .float => |f| f,
+        .integer => |iv| @floatFromInt(iv),
+        else => 0,
+    } else 0;
     g.autoscale = @intFromBool(g.maximum <= 0);
     if (g.count == 100) {
-        {
-            var i: c.guint = 0;
-            while (i < 5) : (i += 1) {
-                _ = c.memmove(@as(?*anyopaque, @ptrCast(@as([*c]f64, @ptrCast(@alignCast(&g.history[i][@as(usize, @intCast(0))]))))), @as(?*const anyopaque, @ptrCast(@as([*c]f64, @ptrCast(@alignCast(&g.history[i][@as(usize, @intCast(0))]))) + @as(usize, @bitCast(@as(isize, @intCast(1)))))), @as(c_ulong, @bitCast(@as(c_long, 100 - 1))) *% @sizeOf(f64));
-            }
+        for (0..5) |row| {
+            for (0..99) |col| g.history[row][col] = g.history[row][col + 1];
         }
         g.count -= 1;
     }
     var total: f64 = 0;
-    {
-        var i: c.guint = 0;
-        while (i < g.series) : (i += 1) {
-            const value: f64 = c.json_array_get_double_element(values, i);
-            total += if (finite(value) != 0) if (0 > value) 0 else value else 0;
-            g.history[i][g.count] = total;
-            const color: [*c]const u8 = if (i < c.json_array_get_length(colors)) c.json_array_get_string_element(colors, i) else @as([*c]const c.gchar, @ptrCast(@alignCast("white")));
-            _ = c.gdk_rgba_parse(&g.colors[i], color);
-        }
+    for (0..g.series) |i| {
+        const val: f64 = switch (values[i]) {
+            .float => |f| f,
+            .integer => |iv| @floatFromInt(iv),
+            else => 0,
+        };
+        total += if (std.math.isFinite(val)) @max(0, val) else 0;
+        g.history[i][g.count] = total;
+        const color = if (i < colors.len and colors[i] == .string) (a.dupeSentinel(u8, colors[i].string, 0) catch "white") else "white";
+        _ = c.gdk_rgba_parse(&g.colors[i], color);
     }
     g.count += 1;
     c.gtk_widget_queue_draw(g.area);
 }
+
 pub fn update_line(m: *Module, line: [*c]const u8) callconv(.c) void {
-    const parser: [*c]c.JsonParser = c.json_parser_new();
-    if (c.json_parser_load_from_data(parser, line, @as(c.gssize, -1), null) != 0) {
-        const node: ?*c.JsonNode = c.json_parser_get_root(parser);
-        if (c.json_node_get_node_type(node) == c.JSON_NODE_OBJECT) {
-            const o: ?*c.JsonObject = c.json_node_get_object(node);
-            if ((m.monitors != 0) and (c.json_object_has_member(o, "monitors") != 0)) {
-                const graphs: ?*c.JsonArray = c.json_object_get_array_member(o, "monitors");
-                {
-                    var i: c.guint = 0;
-                    while (i < (if (3 < c.json_array_get_length(graphs)) 3 else c.json_array_get_length(graphs))) : (i += 1) {
-                        update_graph(&m.graph[i], c.json_array_get_object_element(graphs, i));
-                    }
-                }
-            } else if ((m.monitors == 0) and (c.json_object_has_member(o, "items") != 0)) {
-                update_items(m, c.json_object_get_array_member(o, "items"));
-            }
-            c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
-            m.tooltip = c.g_strdup(text(o, "tooltip"));
-            update_codex_tooltip(m);
-            if (m.codex_menu != null) {
-                update_codex(m, o);
+    if (line == null) return;
+    const slice = std.mem.span(line);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), slice, .{}) catch return;
+    if (parsed.value != .object) return;
+    const o = parsed.value;
+    if (m.monitors != 0 and o.object.get("monitors") != null) {
+        if (o.object.get("monitors").? == .array) {
+            const graphs = o.object.get("monitors").?.array.items;
+            for (graphs[0..@min(3, graphs.len)], 0..) |graph_obj, i| {
+                if (graph_obj == .object) update_graph(&m.graph[i], graph_obj, arena.allocator());
             }
         }
+    } else if (m.monitors == 0 and o.object.get("items") != null) {
+        if (o.object.get("items").? == .array) {
+            update_items(m, o.object.get("items").?.array.items, arena.allocator());
+        }
     }
-    c.g_object_unref(@as(c.gpointer, @ptrCast(parser)));
+    c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
+    const tooltip_str = jsonStringZ(arena.allocator(), o.object.get("tooltip"));
+    m.tooltip = c.g_strdup(tooltip_str);
+    update_codex_tooltip(m);
+    if (m.codex_menu != null) {
+        update_codex(m, o, arena.allocator());
+    }
 }
 pub fn read_next(m: *Module) callconv(.c) void {
     m.refs += 1;

@@ -8,13 +8,13 @@ fn bindings(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
 fn linkGtk(step: *std.Build.Step.Compile) void {
     step.root_module.link_libc = true;
     step.root_module.linkSystemLibrary("gtk+-3.0", .{});
-    step.root_module.linkSystemLibrary("json-glib-1.0", .{});
 }
 pub fn build(b: *std.Build) void {
     b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const power_c = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <fcntl.h>\n#include <dirent.h>\n#include <errno.h>\n#include <stdio.h>\n#include <sys/file.h>\n", &.{});
+    const libc = b.createModule(.{ .root_source_file = b.path("desktop-libc.zig"), .target = target, .optimize = optimize });
+    const power_c = libc;
     const power_module = b.createModule(.{ .root_source_file = b.path("desktop-power.zig"), .target = target, .optimize = optimize });
     power_module.link_libc = true;
     power_module.addImport("libc", power_c);
@@ -24,16 +24,24 @@ pub fn build(b: *std.Build) void {
     power_fixture.root_module.addImport("power", power_module);
     power_fixture.root_module.addImport("libc", power_c);
     b.step("test-power", "Check power profiles against isolated sysfs fixtures").dependOn(&b.addRunArtifact(power_fixture).step);
-    const greeter_c = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <sys/socket.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n", &.{});
+    const greeter_c = libc;
+    const gtk = b.createModule(.{ .root_source_file = b.path("desktop-gtk.zig"), .target = target, .optimize = optimize });
+    const protocols = b.createModule(.{ .root_source_file = b.path("desktop-protocols.zig"), .target = target, .optimize = optimize });
+    protocols.addImport("gtk", gtk);
+    var protocol_references: [7]std.Build.LazyPath = undefined;
+    const libc_reference = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n", &.{});
+    const libc_abi = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-libc-abi.zig"), .target = target, .optimize = optimize }) });
+    libc_abi.root_module.addImport("api", libc);
+    libc_abi.root_module.addImport("reference", libc_reference);
+    libc_abi.root_module.link_libc = true;
+    b.step("test-libc-abi", "Verify POSIX declarations and constants against system headers").dependOn(&b.addRunArtifact(libc_abi).step);
     const greeter_module = b.createModule(.{ .root_source_file = b.path("desktop-greeter.zig"), .target = target, .optimize = optimize });
     greeter_module.link_libc = true;
     greeter_module.addImport("libc", greeter_c);
     const greeter = b.addExecutable(.{ .name = "desktop-greeter", .root_module = greeter_module });
     b.step("greeter", "Build the terminal greetd login screen").dependOn(&b.addInstallArtifact(greeter, .{}).step);
-    const gtk = b.createModule(.{ .root_source_file = b.path("desktop-gtk.zig"), .target = target, .optimize = optimize });
     const apps_gtk = gtk;
     const wayland_gtk = gtk;
-    const libc = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <time.h>\n#include <unistd.h>\n#include <poll.h>\n#include <stdio.h>\n#include <errno.h>\n#include <stdlib.h>\n#include <fcntl.h>\n#include <sys/wait.h>\n", &.{});
     const panel_gtk = gtk;
     const panel = b.addExecutable(.{ .name = "desktop-panel", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-panel.zig"), .target = target, .optimize = optimize }) });
     linkGtk(panel);
@@ -95,8 +103,9 @@ pub fn build(b: *std.Build) void {
     sc_module.linkSystemLibrary("gtk-layer-shell-0", .{});
     sc_module.linkSystemLibrary("wayland-client", .{});
     sc_module.linkSystemLibrary("cairo", .{});
-    sc_module.addCSourceFile(.{ .file = sc_code, .flags = &.{} });
-    sc_module.addCSourceFile(.{ .file = dc_code, .flags = &.{} });
+    sc_module.addImport("protocols", protocols);
+    protocol_references[0] = sc_code;
+    protocol_references[1] = dc_code;
     sc_module.addImport("gtk", sc_gtk);
     const sc_exe = b.addExecutable(.{ .name = "desktop-screenshot", .root_module = sc_module });
     const sc_fixture = b.addExecutable(.{ .name = "desktop-screenshot-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-screenshot-fixture.zig"), .target = target, .optimize = optimize }) });
@@ -132,14 +141,14 @@ pub fn build(b: *std.Build) void {
     overview.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
     overview.root_module.linkSystemLibrary("wayland-client", .{});
     const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-zig.zig"), .target = target, .optimize = optimize }) });
-    const overview_header = b.addWriteFiles().add("overview-bindings.h", "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <wayland-client.h>\n#include <sys/mman.h>\n#include <unistd.h>\n#include <signal.h>\n#include <json-glib/json-glib.h>\n#include <gdk/gdkwayland.h>\n#include <math.h>\n#include <string.h>\n#include <fcntl.h>\n#include <sys/prctl.h>\n#include <pwd.h>\n#define POLKIT_AGENT_I_KNOW_API_IS_SUBJECT_TO_CHANGE 1\n#include <polkit/polkit.h>\n#include <polkitagent/polkitagent.h>\n#include \"wlr-screencopy-unstable-v1.h\"\n#include \"wlr-data-control-unstable-v1.h\"\n#include \"ext-foreign-toplevel-list-v1.h\"\n#include \"ext-image-capture-source-v1.h\"\n#include \"ext-image-copy-capture-v1.h\"\n#include \"desktop-overview-v1.h\"\n");
+    const overview_header = b.addWriteFiles().add("overview-bindings.h", "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <wayland-client.h>\n#include <sys/mman.h>\n#include <unistd.h>\n#include <signal.h>\n#include <gdk/gdkwayland.h>\n#include <fcntl.h>\n#include <sys/prctl.h>\n#include <pwd.h>\n#define POLKIT_AGENT_I_KNOW_API_IS_SUBJECT_TO_CHANGE 1\n#include <polkit/polkit.h>\n#include <polkitagent/polkitagent.h>\n#include \"wlr-screencopy-unstable-v1.h\"\n#include \"wlr-data-control-unstable-v1.h\"\n#include \"ext-foreign-toplevel-list-v1.h\"\n#include \"ext-image-capture-source-v1.h\"\n#include \"ext-image-copy-capture-v1.h\"\n#include \"desktop-overview-v1.h\"\n");
     const overview_c = b.addTranslateC(.{ .root_source_file = overview_header, .target = target, .optimize = optimize });
     for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client" }) |name| overview_c.linkSystemLibrary(name, .{});
     overview_c.addIncludePath(sc_header.dirname());
     overview_c.addIncludePath(dc_header.dirname());
-    for ([_][]const u8{ "json-glib-1.0", "polkit-agent-1", "polkit-gobject-1" }) |name| overview_c.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "polkit-agent-1", "polkit-gobject-1" }) |name| overview_c.linkSystemLibrary(name, .{});
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
-    for ([_][]const u8{ "ext-foreign-toplevel-list", "ext-image-capture-source", "ext-image-copy-capture", "desktop-overview" }) |name| {
+    for ([_][]const u8{ "ext-foreign-toplevel-list", "ext-image-capture-source", "ext-image-copy-capture", "desktop-overview" }, 0..) |name, protocol_index| {
         const xml: std.Build.LazyPath = if (std.mem.eql(u8, name, "desktop-overview")) b.path("desktop-overview-v1.xml") else .{ .cwd_relative = b.fmt("{s}/staging/{s}/{s}-v1.xml", .{ protocol_dir, name, name }) };
         const header_command = b.addSystemCommand(&.{ "wayland-scanner", "client-header" });
         header_command.addFileArg(xml);
@@ -148,13 +157,13 @@ pub fn build(b: *std.Build) void {
         const code_command = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
         code_command.addFileArg(xml);
         const code = code_command.addOutputFileArg(b.fmt("{s}-v1.c", .{name}));
-        overview.root_module.addCSourceFile(.{ .file = code, .flags = &.{} });
-        session.root_module.addCSourceFile(.{ .file = code, .flags = &.{} });
+        protocol_references[protocol_index + 2] = code;
     }
     const overview_gtk = gtk;
     const abi_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-gtk-abi.zig"), .target = target, .optimize = optimize }) });
     abi_tests.root_module.addImport("api", gtk);
     abi_tests.root_module.addImport("reference", overview_c.createModule());
+    abi_tests.root_module.addImport("protocols", protocols);
     abi_tests.root_module.link_libc = true;
     b.step("test-gtk-abi", "Verify explicit toolkit declarations against the installed C headers").dependOn(&b.addRunArtifact(abi_tests).step);
     const overview_apps = b.createModule(.{ .root_source_file = b.path("desktop-apps.zig"), .target = target, .optimize = optimize });
@@ -162,14 +171,14 @@ pub fn build(b: *std.Build) void {
     overview.root_module.addImport("gtk", overview_gtk);
     overview.root_module.addImport("apps", overview_apps);
     session.root_module.link_libc = true;
-    for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client", "json-glib-1.0", "polkit-agent-1", "polkit-gobject-1" }) |name| session.root_module.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client", "polkit-agent-1", "polkit-gobject-1" }) |name| session.root_module.linkSystemLibrary(name, .{});
     session.root_module.addImport("gtk", overview_gtk);
     session.root_module.addImport("apps", overview_apps);
     session.root_module.addImport("power", power_module);
     session.root_module.addImport("greeter", greeter_module);
     session.root_module.addImport("libc", libc);
-    session.root_module.addCSourceFile(.{ .file = sc_code, .flags = &.{} });
-    session.root_module.addCSourceFile(.{ .file = dc_code, .flags = &.{} });
+    session.root_module.addImport("protocols", protocols);
+    overview.root_module.addImport("protocols", protocols);
     b.installArtifact(session);
     b.step("shell", "Build the unified desktop shell").dependOn(&b.addInstallArtifact(session, .{}).step);
     const apps_fixture = b.addExecutable(.{ .name = "desktop-apps-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-apps-fixture.zig"), .target = target, .optimize = optimize }) });
@@ -189,7 +198,6 @@ pub fn build(b: *std.Build) void {
     linkGtk(gtk_fixture);
     const module = b.createModule(.{ .root_source_file = b.path("desktop-widgets.zig"), .target = target, .optimize = optimize });
     module.linkSystemLibrary("gtk+-3.0", .{});
-    module.linkSystemLibrary("json-glib-1.0", .{});
     module.link_libc = true;
     module.addImport("gtk", gtk);
     module.addImport("power", power_module);
@@ -203,20 +211,18 @@ pub fn build(b: *std.Build) void {
     switcher.root_module.addImport("gtk", wayland_gtk);
     b.installArtifact(switcher);
     const pointer_xml: std.Build.LazyPath = .{ .cwd_relative = b.fmt("{s}/unstable/wlr-virtual-pointer-unstable-v1.xml", .{b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols"}) };
-    const pointer_header_command = b.addSystemCommand(&.{ "wayland-scanner", "client-header" });
-    pointer_header_command.addFileArg(pointer_xml);
-    const pointer_header = pointer_header_command.addOutputFileArg("virtual-pointer.h");
     const pointer_code_command = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
     pointer_code_command.addFileArg(pointer_xml);
     const pointer_code = pointer_code_command.addOutputFileArg("virtual-pointer.c");
-    const pointer_c = b.addTranslateC(.{ .root_source_file = b.addWriteFiles().add("pointer.h", "#include <wayland-client.h>\n#include <stdio.h>\n#include <string.h>\n#include \"virtual-pointer.h\"\n"), .target = target, .optimize = optimize });
-    pointer_c.addIncludePath(pointer_header.dirname());
-    pointer_c.linkSystemLibrary("wayland-client", .{});
+    const pointer_api = b.createModule(.{ .root_source_file = b.path("desktop-virtual-pointer.zig"), .target = target, .optimize = optimize });
+    pointer_api.addImport("gtk", gtk);
     const pointer = b.addExecutable(.{ .name = "desktop-pointer-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-pointer-fixture.zig"), .target = target, .optimize = optimize }) });
     pointer.root_module.link_libc = true;
     pointer.root_module.linkSystemLibrary("wayland-client", .{});
-    pointer.root_module.addCSourceFile(.{ .file = pointer_code, .flags = &.{} });
-    pointer.root_module.addImport("wayland", pointer_c.createModule());
+    pointer.root_module.addImport("protocols", protocols);
+    protocol_references[6] = pointer_code;
+    pointer.root_module.addImport("gtk", gtk);
+    pointer.root_module.addImport("virtual-pointer", pointer_api);
     b.installArtifact(pointer);
     const checker = b.addExecutable(.{ .name = "check-labwc-switcher", .root_module = b.createModule(.{ .root_source_file = b.path("check-labwc-switcher.zig"), .target = target, .optimize = optimize }) });
     checker.root_module.link_libc = true;
@@ -232,7 +238,50 @@ pub fn build(b: *std.Build) void {
     http_tests.root_module.addImport("http", http_module);
     const run_http_tests = b.addRunArtifact(http_tests);
     b.step("test-http", "Check HTTP headers, body limits, redirects and timeouts against a local server").dependOn(&run_http_tests.step);
+    const pointer_transport = b.createModule(.{ .root_source_file = b.path("tests/desktop-pointer-transport.zig"), .target = target, .optimize = optimize });
+    pointer_transport.addImport("real-gtk", gtk);
+    const pointer_test_api = b.createModule(.{ .root_source_file = b.path("desktop-virtual-pointer.zig"), .target = target, .optimize = optimize });
+    pointer_test_api.addImport("gtk", pointer_transport);
+    const pointer_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-virtual-pointer.zig"), .target = target, .optimize = optimize }) });
+    pointer_tests.root_module.addImport("transport", pointer_transport);
+    pointer_tests.root_module.addImport("pointer-api", pointer_test_api);
+    const run_pointer_tests = b.addRunArtifact(pointer_tests);
+    b.step("test-virtual-pointer", "Check virtual pointer protocol requests without a compositor").dependOn(&run_pointer_tests.step);
+    const protocol_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-protocols.zig"), .target = target, .optimize = optimize }) });
+    protocol_tests.root_module.addImport("protocols", protocols);
+    protocol_tests.root_module.addImport("gtk", gtk);
+    protocol_tests.root_module.link_libc = true;
+    protocol_tests.root_module.linkSystemLibrary("wayland-client", .{});
+    // Rename reference symbols so the C and Zig implementations can be
+    // compared in the same process, including cross-protocol type pointers.
+    const protocol_names = [_][]const u8{
+        "zwlr_screencopy_manager_v1_interface",
+        "zwlr_screencopy_frame_v1_interface",
+        "zwlr_data_control_manager_v1_interface",
+        "zwlr_data_control_device_v1_interface",
+        "zwlr_data_control_source_v1_interface",
+        "zwlr_data_control_offer_v1_interface",
+        "ext_foreign_toplevel_list_v1_interface",
+        "ext_foreign_toplevel_handle_v1_interface",
+        "ext_image_capture_source_v1_interface",
+        "ext_output_image_capture_source_manager_v1_interface",
+        "ext_foreign_toplevel_image_capture_source_manager_v1_interface",
+        "ext_image_copy_capture_manager_v1_interface",
+        "ext_image_copy_capture_session_v1_interface",
+        "ext_image_copy_capture_frame_v1_interface",
+        "ext_image_copy_capture_cursor_session_v1_interface",
+        "dotfiles_overview_v1_interface",
+        "zwlr_virtual_pointer_v1_interface",
+        "zwlr_virtual_pointer_manager_v1_interface",
+    };
+    var reference_flags: [protocol_names.len][]const u8 = undefined;
+    for (protocol_names, &reference_flags) |name, *flag| flag.* = b.fmt("-D{s}=reference_{s}", .{ name, name });
+    for (protocol_references) |code| protocol_tests.root_module.addCSourceFile(.{ .file = code, .flags = &reference_flags });
+    const run_protocol_tests = b.addRunArtifact(protocol_tests);
+    b.step("test-protocols", "Compare native Wayland metadata with the protocol generator").dependOn(&run_protocol_tests.step);
     const test_step = b.step("test", "Run data parsing and allowance tests");
+    test_step.dependOn(&run_protocol_tests.step);
+    test_step.dependOn(&run_pointer_tests.step);
     test_step.dependOn(&run_http_tests.step);
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&b.addRunArtifact(osd_tests).step);

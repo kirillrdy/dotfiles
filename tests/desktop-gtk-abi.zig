@@ -1,5 +1,8 @@
 //! Compare the checked-in ABI against independently translated system headers.
 const std = @import("std");
+comptime {
+    _ = @import("protocols");
+}
 const api = @import("api");
 const reference = @import("reference");
 
@@ -8,6 +11,16 @@ fn checkType(comptime A: type, comptime B: type) void {
     const right = @typeInfo(B);
     if (left == .@"opaque" or right == .@"opaque") return;
     if (left == .@"struct" and @sizeOf(A) == 0) return; // Incomplete toolkit handle.
+    if (left == .pointer and right == .optional and @typeInfo(right.optional.child) == .pointer) {
+        checkType(A, right.optional.child);
+        return;
+    }
+    // glibc exposes connect's address parameter as a GNU transparent union of
+    // pointers. Its C ABI is the same as the ordinary sockaddr pointer.
+    if (left == .pointer and right == .@"union") {
+        inline for (right.@"union".field_types) |field| checkType(A, field);
+        return;
+    }
     if (std.meta.activeTag(left) != std.meta.activeTag(right)) @compileError("ABI type category differs: " ++ @typeName(A) ++ " / " ++ @typeName(B));
     switch (left) {
         .@"fn" => |func| {
@@ -45,6 +58,8 @@ test "explicit desktop declarations match the installed C ABI" {
             const B = @TypeOf(@field(reference, decl));
             if (A == type) {
                 checkType(@field(api, decl), @field(reference, decl));
+            } else if ((@typeInfo(A) == .int or @typeInfo(A) == .comptime_int) and (@typeInfo(B) == .int or @typeInfo(B) == .comptime_int)) {
+                if (@field(api, decl) != @field(reference, decl)) @compileError("C constant differs: " ++ decl);
             } else {
                 checkType(A, B);
                 if (@typeInfo(A) == .comptime_int and @field(api, decl) != @field(reference, decl)) @compileError("C constant differs: " ++ decl);
