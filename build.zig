@@ -14,6 +14,13 @@ pub fn build(b: *std.Build) void {
     b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const greeter_c = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <sys/socket.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n", &.{});
+    const greeter_module = b.createModule(.{ .root_source_file = b.path("desktop-greeter.zig"), .target = target, .optimize = optimize });
+    greeter_module.link_libc = true;
+    greeter_module.addImport("libc", greeter_c);
+    const greeter = b.addExecutable(.{ .name = "desktop-greeter", .root_module = greeter_module });
+    b.installArtifact(greeter);
+    b.step("greeter", "Build the terminal greetd login screen").dependOn(&b.addInstallArtifact(greeter, .{}).step);
     const gtk = bindings(b, target, optimize, "#include <gtk/gtk.h>\n#include <json-glib/json-glib.h>\n#include <math.h>\n#include <signal.h>\n#include <string.h>\n", &.{ "gtk+-3.0", "json-glib-1.0" });
     const apps_gtk = bindings(b, target, optimize, "#include <gtk/gtk.h>\n#include <gio/gdesktopappinfo.h>\n", &.{ "gtk+-3.0", "gio-unix-2.0" });
     const wayland_gtk = bindings(b, target, optimize, "#include <gtk/gtk.h>\n#include <gdk/gdkwayland.h>\n", &.{ "gtk+-3.0", "wayland-client" });

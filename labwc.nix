@@ -66,8 +66,9 @@ lib.mkIf enableLightDesktop {
   services.greetd = {
     enable = true;
     useTextGreeter = true;
-    settings.default_session.command = "${lib.getExe pkgs.tuigreet} --time --remember --cmd ${session}";
+    settings.default_session.command = "${desktopZig}/bin/desktop-greeter --time --remember-file /var/cache/desktop-greeter/last-user --cmd ${session}";
   };
+  systemd.tmpfiles.rules = [ "d /var/cache/desktop-greeter 0700 greeter greeter - -" ];
   networking.networkmanager.enable = true;
   services.power-profiles-daemon.enable = true;
   services.upower.enable = true;

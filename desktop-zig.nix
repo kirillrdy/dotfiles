@@ -5,7 +5,11 @@ pkgs.stdenv.mkDerivation {
   src = pkgs.lib.fileset.toSource {
     root = ./.;
     fileset = pkgs.lib.fileset.fileFilter (
-      file: file.hasExt "zig" || file.hasExt "svg" || file.hasExt "xml"
+      file:
+      file.hasExt "zig"
+      || file.hasExt "svg"
+      || file.hasExt "xml"
+      || file.name == "check-desktop-greeter.py"
     ) ./.;
   };
   nativeBuildInputs = [
@@ -14,6 +18,7 @@ pkgs.stdenv.mkDerivation {
     pkgs.makeWrapper
     pkgs.xorg-server
     pkgs.wayland-scanner
+    pkgs.python3
   ];
   WAYLAND_PROTOCOLS_DIR = "${pkgs.wayland-protocols}/share/wayland-protocols";
   WLR_PROTOCOLS_DIR = "${pkgs.wlr-protocols}/share/wlr-protocols";
@@ -31,6 +36,7 @@ pkgs.stdenv.mkDerivation {
   '';
   doCheck = true;
   checkPhase = ''
+    python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-greeter"
     WB_PANEL_BINARY="$out/bin/waybar-panel" WB_CODEX_BINARY="$out/bin/waybar-codex" zig build test -Doptimize=ReleaseSafe -j2
     Xvfb :99 -nolisten tcp &
     xvfb_pid=$!
