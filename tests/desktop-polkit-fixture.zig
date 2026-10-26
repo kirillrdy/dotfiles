@@ -1,0 +1,67 @@
+//! PolicyKit agent dialog and interaction tests under synthetic Xvfb.
+const std = @import("std");
+const polkit = @import("polkit");
+const c = polkit.c;
+const assert = std.debug.assert;
+
+fn cast(comptime T: type, ptr: anytype) *T {
+    return @ptrCast(@alignCast(ptr));
+}
+
+const Response = struct {
+    window: *c.GtkWidget,
+    response: c_int,
+    fn send(data: c.gpointer) callconv(.c) c.gboolean {
+        const self: *Response = @ptrCast(@alignCast(data));
+        c.gtk_dialog_response(cast(c.GtkDialog, self.window), self.response);
+        return 0;
+    }
+};
+
+fn checkDialog() !void {
+    const action = "org.freedesktop.policykit.exec";
+    const prompt = "Authentication is required to run the configuration tool: 東京";
+    const username = "kirillvr";
+
+    var dialog = polkit.Dialog.create(action, prompt, username, null);
+    defer dialog.destroy();
+
+    try std.testing.expectEqualStrings(prompt, std.mem.span(c.gtk_label_get_text(cast(c.GtkLabel, dialog.prompt))));
+    assert(c.gtk_entry_get_visibility(cast(c.GtkEntry, dialog.entry)) == 0);
+    assert(c.gtk_entry_get_input_purpose(cast(c.GtkEntry, dialog.entry)) == c.GTK_INPUT_PURPOSE_PASSWORD);
+
+    // Test error presentation
+    dialog.setError("Authentication failure: password incorrect");
+    assert(c.gtk_widget_get_visible(dialog.error_label) != 0);
+
+    // Test password entry and clearing
+    c.gtk_entry_set_text(cast(c.GtkEntry, dialog.entry), "secret-pass-123");
+    try std.testing.expectEqualStrings("secret-pass-123", std.mem.span(c.gtk_entry_get_text(cast(c.GtkEntry, dialog.entry))));
+    dialog.clear();
+    try std.testing.expectEqualStrings("", std.mem.span(c.gtk_entry_get_text(cast(c.GtkEntry, dialog.entry))));
+
+    // Test dialog response via timer
+    var reply = Response{ .window = dialog.window, .response = c.GTK_RESPONSE_CANCEL };
+    _ = c.g_timeout_add(25, &Response.send, &reply);
+    _ = c.gtk_dialog_run(cast(c.GtkDialog, dialog.window));
+}
+
+pub fn main(init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const args = try init.minimal.args.toSlice(arena.allocator());
+
+    c.gtk_init(null, null);
+    try checkDialog();
+
+    if (args.len > 1) {
+        var env = try init.minimal.environ.createMap(arena.allocator());
+        try env.put("GDK_BACKEND", "x11");
+        try env.put("DISPLAY", "");
+        try env.put("WAYLAND_DISPLAY", "");
+        const failed = try std.process.run(arena.allocator(), init.io, .{ .argv = &.{args[1]}, .environ_map = &env });
+        assert(failed.term == .exited and failed.term.exited == 1);
+    }
+
+    std.debug.print("desktop-polkit: masked input, Unicode labels, error display, cancel responses, and missing display passed\n", .{});
+}

@@ -91,7 +91,7 @@ lib.mkIf enableLightDesktop {
         after = [ "mako.service" ];
       };
     desktop-osd = sessionService "${osd} serve /etc/xdg/desktop-osd/style.css";
-    polkit-agent = sessionService "${pkgs.polkit_gnome}/libexec/polkit-gnome-authentication-agent-1";
+    polkit-agent = sessionService "${desktopZig}/bin/desktop-polkit";
     swayidle = sessionService "${pkgs.swayidle}/bin/swayidle -w timeout 600 'swaylock -f -c 1e1e2e' before-sleep 'swaylock -f -c 1e1e2e'";
   };
 

@@ -23,6 +23,7 @@ pkgs.stdenv.mkDerivation {
     pkgs.json-glib
     pkgs.curl
     pkgs.wayland
+    pkgs.polkit
   ];
   buildPhase = ''
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
@@ -51,8 +52,14 @@ pkgs.stdenv.mkDerivation {
     G_DEBUG=fatal-criticals GDK_BACKEND=x11 \
       GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       zig build test-askpass -Doptimize=ReleaseSafe -j2
+    G_DEBUG=fatal-criticals GDK_BACKEND=x11 \
+      GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+      zig build test-polkit -Doptimize=ReleaseSafe -j2
   '';
   installPhase = ''
+    wrapProgram "$out/bin/desktop-polkit" \
+      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
     wrapProgram "$out/bin/desktop-askpass" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
