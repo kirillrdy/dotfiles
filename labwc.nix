@@ -53,6 +53,14 @@ let
   };
 in
 lib.mkIf enableLightDesktop {
+  nixpkgs.overlays = [
+    (final: prev: {
+      xdg-desktop-portal-wlr = prev.xdg-desktop-portal-wlr.override {
+        grim = desktopZig;
+        slurp = desktopZig;
+      };
+    })
+  ];
   programs.labwc.enable = true;
   programs.labwc.package = desktopCompositor;
   services.greetd = {
@@ -99,11 +107,8 @@ lib.mkIf enableLightDesktop {
     adwaita-icon-theme
     brightnessctl
     desktopZig
-    grim
-    slurp
     swayidle
     swaylock
-    wl-clipboard
     wlr-randr
   ];
 
@@ -168,7 +173,7 @@ lib.mkIf enableLightDesktop {
           <keybind key="XF86AudioMicMute"><action name="Execute" command="${osd} microphone mute" /></keybind>
           <keybind key="XF86MonBrightnessUp"><action name="Execute" command="${osd} brightness up" /></keybind>
           <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${osd} brightness down" /></keybind>
-          <keybind key="Print"><action name="Execute" command="sh -c 'grim -g &quot;$(slurp)&quot; - | wl-copy'" /></keybind>
+          <keybind key="Print"><action name="Execute" command="${desktopZig}/bin/desktop-screenshot" /></keybind>
         </keyboard>
         <mouse><default /></mouse>
         <libinput><device category="touchpad"><tap>no</tap><naturalScroll>yes</naturalScroll></device></libinput>

@@ -55,8 +55,16 @@ pkgs.stdenv.mkDerivation {
     G_DEBUG=fatal-criticals GDK_BACKEND=x11 \
       GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       zig build test-polkit -Doptimize=ReleaseSafe -j2
+    G_DEBUG=fatal-criticals GDK_BACKEND=x11 \
+      GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+      zig build test-screenshot -Doptimize=ReleaseSafe -j2
   '';
   installPhase = ''
+    wrapProgram "$out/bin/desktop-screenshot" \
+      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+      --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
+    ln -s desktop-screenshot "$out/bin/grim"
+    ln -s desktop-screenshot "$out/bin/slurp"
     wrapProgram "$out/bin/desktop-polkit" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       --prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share
