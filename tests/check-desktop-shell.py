@@ -123,6 +123,7 @@ try:
     wait_for(lambda: run([binary, "ping"], ok=False).returncode == 0, "shell ready")
     wait_for(lambda: shell_log().count('"desktop-panel"') >= 2, "panel on both outputs")
     wait_for(lambda: shell_log().count('"desktop-wallpaper"') >= 2, "wallpaper on both outputs")
+    wait_for(lambda: '.get_idle_notification(' in shell_log(), "native idle notification")
     assert owner_pid("org.dotfiles.Desktop") == shell.pid
     wait_for(lambda: "org.freedesktop.Notifications" in run([
         "gdbus", "call", "--session", "--dest", "org.freedesktop.DBus", "--object-path",

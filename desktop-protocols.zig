@@ -858,3 +858,50 @@ const ext_session_lock_surface_v1_events = [_]Message{
 pub export const ext_session_lock_manager_v1_interface: Interface = .{ .name = "ext_session_lock_manager_v1", .version = 1, .method_count = 2, .methods = &ext_session_lock_manager_v1_requests, .event_count = 0, .events = null };
 pub export const ext_session_lock_v1_interface: Interface = .{ .name = "ext_session_lock_v1", .version = 1, .method_count = 3, .methods = &ext_session_lock_v1_requests, .event_count = 2, .events = &ext_session_lock_v1_events };
 pub export const ext_session_lock_surface_v1_interface: Interface = .{ .name = "ext_session_lock_surface_v1", .version = 1, .method_count = 2, .methods = &ext_session_lock_surface_v1_requests, .event_count = 1, .events = &ext_session_lock_surface_v1_events };
+
+// ext-idle-notify-v1: native metadata, checked against wayland-scanner.
+// /*
+//  * Copyright © 2015 Martin Gräßlin
+//  * Copyright © 2022 Simon Ser
+//  *
+//  * Permission is hereby granted, free of charge, to any person obtaining a
+//  * copy of this software and associated documentation files (the "Software"),
+//  * to deal in the Software without restriction, including without limitation
+//  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+//  * and/or sell copies of the Software, and to permit persons to whom the
+//  * Software is furnished to do so, subject to the following conditions:
+//  *
+//  * The above copyright notice and this permission notice (including the next
+//  * paragraph) shall be included in all copies or substantial portions of the
+//  * Software.
+//  *
+//  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+//  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+//  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+//  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+//  * DEALINGS IN THE SOFTWARE.
+//  */
+const ext_idle_notify_v1_types = [_][*c]const Interface{
+    &ext_idle_notification_v1_interface,
+    null,
+    &wl_seat_interface,
+    &ext_idle_notification_v1_interface,
+    null,
+    &wl_seat_interface,
+};
+const ext_idle_notifier_v1_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = @constCast(ext_idle_notify_v1_types[0..].ptr) },
+    .{ .name = "get_idle_notification", .signature = "nuo", .types = @constCast(ext_idle_notify_v1_types[0..].ptr) },
+    .{ .name = "get_input_idle_notification", .signature = "2nuo", .types = @constCast(ext_idle_notify_v1_types[3..].ptr) },
+};
+const ext_idle_notification_v1_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = @constCast(ext_idle_notify_v1_types[0..].ptr) },
+};
+const ext_idle_notification_v1_events = [_]Message{
+    .{ .name = "idled", .signature = "", .types = @constCast(ext_idle_notify_v1_types[0..].ptr) },
+    .{ .name = "resumed", .signature = "", .types = @constCast(ext_idle_notify_v1_types[0..].ptr) },
+};
+pub export const ext_idle_notifier_v1_interface: Interface = .{ .name = "ext_idle_notifier_v1", .version = 2, .method_count = 3, .methods = &ext_idle_notifier_v1_requests, .event_count = 0, .events = null };
+pub export const ext_idle_notification_v1_interface: Interface = .{ .name = "ext_idle_notification_v1", .version = 2, .method_count = 1, .methods = &ext_idle_notification_v1_requests, .event_count = 2, .events = &ext_idle_notification_v1_events };

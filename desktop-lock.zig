@@ -235,6 +235,7 @@ const State = struct {
     password: *Password,
     user: [*:0]const u8,
     ready_fd: c_int = -1,
+    managed_readiness: bool = false,
     locked: bool = false,
     done: bool = false,
     unlocked: bool = false,
@@ -265,6 +266,11 @@ const State = struct {
         self.busy = false;
         if (c.g_task_propagate_boolean(@ptrCast(result), null) != 0 and self.locked and !self.done) {
             self.done = true;
+            // Revoke managed readiness before the compositor processes unlock.
+            if (self.ready_fd >= 0) {
+                _ = libc.close(self.ready_fd);
+                self.ready_fd = -1;
+            }
             destroy(self.lock.?, 2);
             self.lock = null;
             if (c.wl_display_roundtrip(self.display) < 0) std.process.exit(1);
@@ -287,9 +293,12 @@ const State = struct {
         const self = cast(State, data);
         self.locked = true;
         if (self.ready_fd >= 0) {
-            if (libc.write(self.ready_fd, "1", 1) != 1) std.process.exit(1);
-            _ = libc.close(self.ready_fd);
-            self.ready_fd = -1;
+            // Keep protecting the session if the requesting shell has exited.
+            if (libc.write(self.ready_fd, "1", 1) != 1) std.log.warn("lock readiness receiver disconnected", .{});
+            if (!self.managed_readiness) {
+                _ = libc.close(self.ready_fd);
+                self.ready_fd = -1;
+            }
         }
     }
     fn finished(data: ?*anyopaque, _: ?*Proxy) callconv(.c) void {
@@ -350,10 +359,19 @@ const lock_listener = extern struct { locked: *const @TypeOf(State.lockedEvent),
 
 pub fn run(args: []const []const u8) !void {
     var daemonize = false;
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--daemonize") or std.mem.eql(u8, arg, "-f")) daemonize = true else return error.InvalidLockArguments;
-    }
     var ready_fd: c_int = -1;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--daemonize") or std.mem.eql(u8, arg, "-f")) {
+            daemonize = true;
+        } else if (std.mem.eql(u8, arg, "--ready-fd") and index + 1 < args.len and ready_fd < 0) {
+            index += 1;
+            ready_fd = std.fmt.parseInt(c_int, args[index], 10) catch return error.InvalidReadyFd;
+            if (ready_fd < 3) return error.InvalidReadyFd;
+        } else return error.InvalidLockArguments;
+    }
+    if (daemonize and ready_fd >= 0) return error.InvalidLockArguments;
     if (daemonize) {
         var fds: [2]c_int = undefined;
         if (libc.pipe2(&fds, libc.O_CLOEXEC) != 0) return error.PipeFailed;
@@ -389,6 +407,7 @@ pub fn run(args: []const []const u8) !void {
     // Terminating the client leaves the compositor locked; ignore ordinary logout signals.
     _ = signal(libc.SIGTERM, @ptrFromInt(1));
     _ = signal(libc.SIGHUP, @ptrFromInt(1));
+    _ = signal(@intCast(@backingInt(std.posix.SIG.PIPE)), @ptrFromInt(1));
     _ = signal(@intCast(@backingInt(std.posix.SIG.INT)), @ptrFromInt(1));
     const password = try a.create(Password);
     password.* = .{};
@@ -404,7 +423,7 @@ pub fn run(args: []const []const u8) !void {
     defer a.free(username);
     const display = c.wl_display_connect(null) orelse return error.NoWaylandDisplay;
     defer c.wl_display_disconnect(display);
-    var state = State{ .display = display, .password = password, .user = username.ptr, .ready_fd = ready_fd };
+    var state = State{ .display = display, .password = password, .user = username.ptr, .ready_fd = ready_fd, .managed_readiness = !daemonize and ready_fd >= 0 };
     const registry = c.wl_display_get_registry(display);
     _ = c.wl_registry_add_listener(registry, &registry_listener, &state);
     if (c.wl_display_roundtrip(display) < 0) return error.WaylandDisconnected;

@@ -2425,3 +2425,20 @@ pub const wl_shm = struct_wl_shm;
 pub const wl_registry_listener = struct_wl_registry_listener;
 
 pub const wl_output_listener = struct_wl_output_listener;
+
+pub const GUnixFDList = extern struct { parent_instance: GObject, priv: ?*anyopaque };
+pub const G_BUS_TYPE_SYSTEM: c_int = 1;
+pub const GBusNameWatcherFlags = c_uint;
+pub const GBusNameAppearedCallback = ?*const fn (?*GDBusConnection, [*c]const gchar, [*c]const gchar, gpointer) callconv(.c) void;
+pub const GBusNameVanishedCallback = ?*const fn (?*GDBusConnection, [*c]const gchar, gpointer) callconv(.c) void;
+pub extern fn g_bus_watch_name_on_connection(?*GDBusConnection, [*c]const gchar, GBusNameWatcherFlags, GBusNameAppearedCallback, GBusNameVanishedCallback, gpointer, GDestroyNotify) guint;
+pub extern fn g_bus_unwatch_name(guint) void;
+pub extern fn g_dbus_connection_is_closed(?*GDBusConnection) gboolean;
+pub extern fn g_dbus_connection_set_exit_on_close(?*GDBusConnection, gboolean) void;
+pub extern fn g_dbus_connection_call_with_unix_fd_list(?*GDBusConnection, [*c]const gchar, [*c]const gchar, [*c]const gchar, [*c]const gchar, ?*GVariant, ?*const GVariantType, GDBusCallFlags, gint, [*c]GUnixFDList, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
+pub extern fn g_dbus_connection_call_with_unix_fd_list_finish(?*GDBusConnection, [*c][*c]GUnixFDList, ?*GAsyncResult, [*c][*c]GError) ?*GVariant;
+pub extern fn g_unix_fd_list_get([*c]GUnixFDList, gint, [*c][*c]GError) gint;
+pub extern fn g_variant_get_handle(?*GVariant) gint32;
+pub extern fn g_variant_get_variant(?*GVariant) ?*GVariant;
+pub extern fn g_file_read_link([*c]const gchar, [*c][*c]GError) [*c]gchar;
+pub extern fn g_subprocess_launcher_take_fd(?*GSubprocessLauncher, gint, gint) void;

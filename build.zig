@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     const gtk = b.createModule(.{ .root_source_file = b.path("desktop-gtk.zig"), .target = target, .optimize = optimize });
     const protocols = b.createModule(.{ .root_source_file = b.path("desktop-protocols.zig"), .target = target, .optimize = optimize });
     protocols.addImport("gtk", gtk);
-    var protocol_references: [8]std.Build.LazyPath = undefined;
+    var protocol_references: [9]std.Build.LazyPath = undefined;
     const libc_reference = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n", &.{});
     const libc_abi = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-libc-abi.zig"), .target = target, .optimize = optimize }) });
     libc_abi.root_module.addImport("api", libc);
@@ -153,6 +153,20 @@ pub fn build(b: *std.Build) void {
     const lock_code = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
     lock_code.addFileArg(.{ .cwd_relative = b.fmt("{s}/staging/ext-session-lock/ext-session-lock-v1.xml", .{protocol_dir}) });
     protocol_references[7] = lock_code.addOutputFileArg("ext-session-lock-v1.c");
+    const idle_code = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
+    idle_code.addFileArg(.{ .cwd_relative = b.fmt("{s}/staging/ext-idle-notify/ext-idle-notify-v1.xml", .{protocol_dir}) });
+    protocol_references[8] = idle_code.addOutputFileArg("ext-idle-notify-v1.c");
+    const idle_module = b.createModule(.{ .root_source_file = b.path("desktop-idle.zig"), .target = target, .optimize = optimize });
+    idle_module.addImport("gtk", gtk);
+    idle_module.addImport("libc", libc);
+    idle_module.addImport("protocols", protocols);
+    idle_module.link_libc = true;
+    for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "wayland-client" }) |name| idle_module.linkSystemLibrary(name, .{});
+    const idle_fixture = b.addExecutable(.{ .name = "desktop-idle-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-idle-fixture.zig"), .target = target, .optimize = optimize }) });
+    idle_fixture.root_module.addImport("idle", idle_module);
+    idle_fixture.root_module.addImport("gtk", gtk);
+    b.installArtifact(idle_fixture);
+    b.step("idle-fixture", "Build the isolated idle and sleep coordination fixture").dependOn(&b.addInstallArtifact(idle_fixture, .{}).step);
     const lock_auth = b.createModule(.{ .root_source_file = b.path("desktop-lock-auth.zig"), .target = target, .optimize = optimize });
     lock_auth.link_libc = true;
     lock_auth.linkSystemLibrary("pam", .{});
@@ -278,6 +292,8 @@ pub fn build(b: *std.Build) void {
     // Rename reference symbols so the C and Zig implementations can be
     // compared in the same process, including cross-protocol type pointers.
     const protocol_names = [_][]const u8{
+        "ext_idle_notifier_v1_interface",
+        "ext_idle_notification_v1_interface",
         "ext_session_lock_manager_v1_interface",
         "ext_session_lock_v1_interface",
         "ext_session_lock_surface_v1_interface",

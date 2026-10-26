@@ -119,14 +119,12 @@ lib.mkIf enableLightDesktop {
         Environment = "DESKTOP_CODEX_ICON=${codexIcon}";
       };
     };
-    swayidle = sessionService "${pkgs.swayidle}/bin/swayidle -w timeout 600 '${shell} lock --daemonize' before-sleep '${shell} lock --daemonize'";
   };
 
   environment.systemPackages = with pkgs; [
     adwaita-icon-theme
     brightnessctl
     desktopZig
-    swayidle
     wlr-randr
   ];
 

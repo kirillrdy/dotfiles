@@ -11,6 +11,7 @@ const overview = @import("desktop-overview.zig");
 const settings = @import("desktop-settings.zig");
 const collectors = @import("desktop-collectors.zig");
 const widgets = @import("desktop-widgets.zig");
+const idle = @import("desktop-idle.zig");
 const a = std.heap.page_allocator;
 comptime {
     _ = @import("protocols");
@@ -23,6 +24,7 @@ const Session = struct {
     background: ?*wallpaper.Service = null,
     notices: ?*notifications.Service = null,
     agent: ?polkit.Service = null,
+    inactivity: ?*idle.Service = null,
     media: osd.Server = .{},
     activities: overview.State = .{ .wallpaper = "" },
     dialogs: settings.Service = .{},
@@ -58,6 +60,7 @@ const Session = struct {
         };
         self.data = .{ .panel = self.panels.?, .icon = if (c.g_getenv("DESKTOP_CODEX_ICON")) |icon| std.mem.span(icon) else "" };
         self.data.start();
+        self.inactivity = try idle.Service.create(.{});
         self.serving = true;
         current = self;
         widgets.refresh_source = &refresh;
@@ -77,6 +80,7 @@ const Session = struct {
         current = null;
         widgets.refresh_source = null;
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.inactivity) |inactivity| inactivity.destroy();
         if (self.serving) self.data.deinit();
         self.dialogs.deinit();
         overview.deinit(&self.activities);
