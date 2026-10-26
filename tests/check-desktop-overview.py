@@ -50,6 +50,9 @@ def main():
         (gtk_config / "settings.ini").write_text(
             "[Settings]\ngtk-enable-animations=0\n"
         )
+        settings = root / "config/glib-2.0/settings"
+        settings.mkdir(parents=True)
+        (settings / "keyfile").write_text("[org/gnome/shell]\nfavorite-apps=[]\n")
         data = root / "data/applications"
         data.mkdir(parents=True)
         for app, icon in [
@@ -74,6 +77,7 @@ def main():
             NO_AT_BRIDGE="1",
             GTK_USE_PORTAL="0",
             GIO_USE_VFS="local",
+            GSETTINGS_BACKEND="keyfile",
             G_DEBUG="fatal-criticals",
         )
         processes = []

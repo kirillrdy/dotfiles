@@ -1091,6 +1091,7 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
         c.gtk_popover_set_position(cast(c.GtkPopover, m.power_menu), c.GTK_POS_BOTTOM);
         css(m.power_menu, "gnome-power-menu");
         const menu: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 12);
+        css(menu, "quick-settings-content");
         c.gtk_container_add(cast(c.GtkContainer, m.power_menu), menu);
         const tiles: [*c]c.GtkWidget = c.gtk_grid_new();
         c.gtk_grid_set_row_spacing(cast(c.GtkGrid, tiles), 12);

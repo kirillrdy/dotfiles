@@ -294,6 +294,12 @@ lib.mkIf enableLightDesktop {
       .gnome-calendar .calendar-today { background-color: #3584e4; color: #fff; box-shadow: none; }
       .gnome-calendar .calendar-today:hover { background-color: #4990e7; }
       .gnome-power-menu {
+        background: transparent;
+        border: none;
+        padding: 0;
+        box-shadow: none;
+      }
+      .gnome-power-menu .quick-settings-content {
         background: #36363a;
         color: #fff;
         border: 1px solid rgba(255,255,255,0.15);

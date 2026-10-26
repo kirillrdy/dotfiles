@@ -15,9 +15,9 @@ const style =
     \\window#desktop-apps { background: #222226; color: white; }
     \\#desktop-apps entry { min-width: 352px; min-height: 19px; padding: 8px; border: 1px solid transparent; border-radius: 999px; background: #404045; font-size: 14.666px; }
     \\#desktop-apps entry:focus { border-color: #78aeed; }
-    \\#desktop-apps .overview-dash { background: #38383c; border-radius: 28px; padding: 10px; }
-    \\#desktop-apps .overview-dash button { min-width: 80px; min-height: 80px; padding: 0; background: transparent; color: white; border: none; border-radius: 20px; box-shadow: none; text-shadow: none; }
-    \\#desktop-apps .overview-running-dot { font-size: 8px; color: white; }
+    \\#desktop-apps .overview-dash { background: #38383b; border-radius: 28px; padding: 12px 10px; }
+    \\#desktop-apps .overview-dash button { min-width: 76px; min-height: 76px; margin: 0 2px; padding: 0; background: transparent; color: white; border: none; border-radius: 20px; box-shadow: none; text-shadow: none; }
+    \\#desktop-apps .overview-dash separator { min-width: 1px; background: rgba(255,255,255,0.1); margin: 6px 4px; }
     \\#desktop-apps .overview-dash button:hover, #desktop-apps .overview-dash button:checked { background: rgba(255,255,255,0.1); }
     \\#desktop-apps .overview-dash button:focus { box-shadow: inset 0 0 0 2px #78aeed; }
 ;
@@ -65,13 +65,13 @@ const Overview = struct {
         c.gtk_style_context_add_provider_for_screen(c.gtk_widget_get_screen(l.window), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
         c.g_object_unref(provider);
         c.gtk_widget_set_margin_top(@ptrCast(l.search), 12);
-        c.gtk_widget_set_margin_bottom(@ptrCast(l.search), 12);
+        c.gtk_widget_set_margin_bottom(@ptrCast(l.search), 6);
         c.gtk_widget_set_size_request(self.strip, -1, 64);
         c.gtk_box_pack_start(cast(c.GtkBox, l.layout), self.strip, 0, 0, 0);
         c.gtk_box_reorder_child(cast(c.GtkBox, l.layout), self.strip, 1);
-        c.gtk_widget_set_margin_top(self.stage, 3);
+        c.gtk_widget_set_margin_top(self.stage, 9);
         c.gtk_widget_set_can_focus(self.stage, 1);
-        c.gtk_widget_set_margin_bottom(self.stage, 20);
+        c.gtk_widget_set_margin_bottom(self.stage, 21);
         c.gtk_box_pack_start(cast(c.GtkBox, l.layout), self.stage, 1, 1, 0);
         c.gtk_box_reorder_child(cast(c.GtkBox, l.layout), self.stage, 2);
         c.gtk_widget_set_halign(self.dash, c.GTK_ALIGN_CENTER);
@@ -175,6 +175,7 @@ const Overview = struct {
             };
             self.appendDash(@ptrCast(info), running);
         }
+        var separated = favorites == null or favorites[0] == null;
         if (self.client) |client| for (client.windows.items, 0..) |window, i| {
             var duplicate = false;
             for (client.windows.items[0..i]) |previous| if (c.g_strcmp0(previous.app_id, window.app_id) == 0) {
@@ -186,11 +187,18 @@ const Overview = struct {
                 duplicate = true;
                 break;
             };
-            if (!duplicate) self.appendDash(null, window);
+            if (!duplicate) {
+                if (!separated) {
+                    const separator = c.gtk_separator_new(c.GTK_ORIENTATION_VERTICAL);
+                    c.gtk_box_pack_start(cast(c.GtkBox, self.dash), separator, 0, 0, 0);
+                    separated = true;
+                }
+                self.appendDash(null, window);
+            }
         };
         const show_apps = c.gtk_button_new();
         const icon = c.gtk_image_new_from_icon_name("view-app-grid-symbolic", c.GTK_ICON_SIZE_DIALOG);
-        c.gtk_image_set_pixel_size(cast(c.GtkImage, icon), 48);
+        c.gtk_image_set_pixel_size(cast(c.GtkImage, icon), 64);
         c.gtk_container_add(cast(c.GtkContainer, show_apps), icon);
         c.gtk_widget_set_tooltip_text(show_apps, "Show Applications");
         connect(show_apps, "clicked", &toggleApps, self);
@@ -200,19 +208,32 @@ const Overview = struct {
     fn appendDash(self: *Overview, info: ?*c.GAppInfo, window: ?*capture.Window) void {
         const button = c.gtk_button_new();
         c.gtk_widget_set_tooltip_text(button, if (info != null) c.g_app_info_get_display_name(info) else if (window) |w| w.title else "Application");
-        const box = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0);
+        const box = c.gtk_overlay_new();
         const image = if (window) |w| c.gtk_image_new_from_pixbuf(w.icon) else c.gtk_image_new_from_gicon(c.g_app_info_get_icon(info), c.GTK_ICON_SIZE_DIALOG);
         c.gtk_image_set_pixel_size(cast(c.GtkImage, image), 64);
-        c.gtk_widget_set_margin_top(image, 8);
-        c.gtk_box_pack_start(cast(c.GtkBox, box), image, 0, 0, 0);
-        const dot = c.gtk_label_new(if (window != null) "•" else " ");
-        c.gtk_style_context_add_class(c.gtk_widget_get_style_context(dot), "overview-running-dot");
-        c.gtk_box_pack_end(cast(c.GtkBox, box), dot, 0, 0, 0);
+        c.gtk_widget_set_halign(image, c.GTK_ALIGN_CENTER);
+        c.gtk_widget_set_valign(image, c.GTK_ALIGN_CENTER);
+        c.gtk_container_add(cast(c.GtkContainer, box), image);
+        if (window != null) {
+            const dot = c.gtk_drawing_area_new();
+            c.gtk_widget_set_size_request(dot, 5, 5);
+            c.gtk_widget_set_halign(dot, c.GTK_ALIGN_CENTER);
+            c.gtk_widget_set_valign(dot, c.GTK_ALIGN_END);
+            connect(dot, "draw", &drawRunningDot, self);
+            c.gtk_overlay_add_overlay(cast(c.GtkOverlay, box), dot);
+            c.gtk_overlay_set_overlay_pass_through(cast(c.GtkOverlay, box), dot, 1);
+        }
         c.gtk_container_add(cast(c.GtkContainer, button), box);
         if (window) |w| c.g_object_set_data_full(cast(c.GObject, button), "window-id", c.g_strdup(w.id), &c.g_free);
         if (info) |app| c.g_object_set_data_full(cast(c.GObject, button), "app-info", c.g_object_ref(app), &c.g_object_unref);
         connect(button, "clicked", &dashActivate, self);
         c.gtk_box_pack_start(cast(c.GtkBox, self.dash), button, 0, 0, 0);
+    }
+    fn drawRunningDot(_: *c.GtkWidget, cr: *c.cairo_t, _: c.gpointer) callconv(.c) c.gboolean {
+        c.cairo_arc(cr, 2.5, 2.5, 2.5, 0, 2 * std.math.pi);
+        c.cairo_set_source_rgb(cr, 1, 1, 1);
+        c.cairo_fill(cr);
+        return 1;
     }
     fn changed(data: ?*anyopaque) void {
         const self = cast(Overview, data);
@@ -442,23 +463,23 @@ const Overview = struct {
         const left = (width - @as(f64, @floatFromInt(client.count)) * 72 + 6) / 2;
         for (0..client.count) |i| {
             const x = left + @as(f64, @floatFromInt(i)) * 72;
-            const rect = Rect{ .x = x, .y = 13, .w = 66, .h = 40 };
+            const rect = Rect{ .x = x, .y = 19, .w = 66, .h = 40 };
             if (i == client.current) {
-                rounded(cr, .{ .x = x - 3, .y = 10, .w = 72, .h = 46 }, 7);
+                rounded(cr, .{ .x = x - 3, .y = 16, .w = 72, .h = 46 }, 8);
                 c.cairo_set_source_rgb(cr, 0.208, 0.518, 0.894);
                 c.cairo_fill(cr);
             }
             rounded(cr, rect, 3);
-            c.cairo_set_source_rgb(cr, 0.29, 0.29, 0.32);
+            c.cairo_set_source_rgb(cr, 70.0 / 255.0, 70.0 / 255.0, 78.0 / 255.0);
             c.cairo_fill(cr);
             for (client.windows.items) |window| {
                 if (window.workspace != i and !window.sticky) continue;
                 const g = window.geometry;
                 const sx = 66 / @as(f64, @floatFromInt(self.monitor.width));
                 const sy = 40 / @as(f64, @floatFromInt(self.monitor.height - 32));
-                const r = Rect{ .x = x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = 13 + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
+                const r = Rect{ .x = x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = 19 + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
                 c.cairo_save(cr);
-                c.cairo_rectangle(cr, x, 13, 66, 40);
+                c.cairo_rectangle(cr, x, 19, 66, 40);
                 c.cairo_clip(cr);
                 drawImage(cr, window.image, r, 1);
                 c.cairo_restore(cr);
@@ -485,7 +506,7 @@ const Overview = struct {
         for (0..client.count) |i| {
             const offset = @as(f64, @floatFromInt(i)) - position;
             const ratio = 1 - 0.06 * @min(1, @abs(offset));
-            var background = Rect{ .x = width / 2 + offset * (base.w + 100) - base.w * ratio / 2, .y = 12 + (base.h - base.h * ratio) / 2, .w = base.w * ratio, .h = base.h * ratio };
+            var background = Rect{ .x = width / 2 + offset * (base.w + 64) - base.w * ratio / 2, .y = 12 + (base.h - base.h * ratio) / 2, .w = base.w * ratio, .h = base.h * ratio };
             if (background.x > width or background.x + background.w < 0) continue;
             if (i == client.current and t < 1) {
                 background.x *= ease;
@@ -561,7 +582,7 @@ const Overview = struct {
     fn drawWorkspace(self: *Overview, cr: *c.cairo_t, r: Rect) void {
         c.cairo_save(cr);
         defer c.cairo_restore(cr);
-        rounded(cr, r, 24);
+        rounded(cr, r, 30);
         c.cairo_clip(cr);
         c.cairo_set_source_rgb(cr, 0.015, 0.235, 0.53);
         c.cairo_paint(cr);
