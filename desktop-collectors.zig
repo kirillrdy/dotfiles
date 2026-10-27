@@ -118,7 +118,7 @@ const Source = struct {
                 if (self.monitor == null) self.monitor = data.Monitor.init(alloc) catch break :blk null;
                 break :blk self.monitor.?.sample(alloc, demo) catch null;
             }
-            break :blk data.sample(alloc, kinds[self.index], self.owner.icon, null, demo) catch null;
+            break :blk data.sample(alloc, kinds[self.index], self.owner.icon, demo) catch null;
         };
         const line = if (result) |value| blk: {
             const json = std.json.Stringify.valueAlloc(alloc, value, .{}) catch break :blk null;

@@ -106,7 +106,6 @@ pkgs.stdenv.mkDerivation {
     wrapProgram "$out/bin/desktop-zig" \
       --run 'export DESKTOP_ZIG_INVOKED_AS="$0"' \
       --set DESKTOP_POWER_HELPER "$out/bin/desktop-zig" \
-      --set DESKTOP_POWER_SUBCOMMAND power \
       --set DESKTOP_POWER_PKEXEC /run/wrappers/bin/pkexec \
       --prefix XDG_DATA_DIRS : "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \

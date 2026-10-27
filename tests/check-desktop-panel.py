@@ -42,13 +42,12 @@ print(f"Artifacts: {root}", flush=True)
 (root / "config/labwc/autostart").write_text("")
 (root / "config/labwc/environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
 env = dict(os.environ)
-for key in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID", "GDK_PIXBUF_MODULE_FILE"):
+for key in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID"):
     env.pop(key, None)
 env.update(
     XDG_RUNTIME_DIR=str(root / "runtime"),
     XDG_CONFIG_HOME=str(root / "config"),
     XDG_CACHE_HOME=str(root / "cache"),
-    XDG_DATA_DIRS="/run/current-system/sw/share",
     WLR_BACKENDS="headless",
     WLR_RENDERER="pixman",
     WLR_HEADLESS_OUTPUTS="2",
@@ -56,6 +55,8 @@ env.update(
     NO_AT_BRIDGE="1",
     GTK_USE_PORTAL="0",
     GIO_USE_VFS="local",
+    WB_PANEL_DEMO="1",
+    DBUS_SYSTEM_BUS_ADDRESS="unix:path=" + str(root / "no-system-bus"),
 )
 procs = []
 
@@ -135,27 +136,9 @@ try:
     )
     seat = start([wtype, "-s", "55000"], "seat.log")
     config = json.loads(args.config.read_text())
-    for module in config["right"]:
-        if module["name"] in ("gnome-monitors", "gnome-disk", "gnome-status"):
-            kind = module["name"].removeprefix("gnome-")
-            module.pop("exec", None)
-            module["source"] = kind
     # Verify command launching without opening another app.
     config["left"][0]["on_click"] = shlex.join(
         ["touch", str(root / "activities-clicked")]
-    )
-    sample = {
-        "items": [{"text": "54%"}],
-        "tooltip": "5h: 54% remaining",
-        "windows": [
-            {"percent": 54, "reset": "Resets in 2h"},
-            {"percent": 93, "reset": "Resets in 4d"},
-        ],
-        "checked": "Checked: test",
-    }
-    (root / "codex.json").write_text(json.dumps(sample) + "\n")
-    config["right"][0]["exec"] = (
-        'sh -c "cat ' + str(root / "codex.json") + '; sleep 120"'
     )
     # Keep the Codex click independent of changing battery/disk label widths.
     config["left"].append(config["right"].pop(0))

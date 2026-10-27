@@ -80,23 +80,6 @@ fn properties(source: anytype, comptime get: anytype) State {
 fn cached(proxy: *c.GDBusProxy, key: [*:0]const u8) ?*c.GVariant {
     return c.g_dbus_proxy_get_cached_property(proxy, key);
 }
-fn lookup(dict: *c.GVariant, key: [*:0]const u8) ?*c.GVariant {
-    return c.g_variant_lookup_value(dict, key, null);
-}
-
-// The legacy standalone JSON stream uses a bounded native read, without a GTK loop.
-pub fn read() State {
-    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SYSTEM, null, null) orelse return .{};
-    defer c.g_object_unref(bus);
-    const reply = c.g_dbus_connection_call_sync(bus, name, path, "org.freedesktop.DBus.Properties", "GetAll", c.g_variant_new("(s)", @as([*:0]const u8, interface)), null, c.G_DBUS_CALL_FLAGS_NONE, 3000, null, null) orelse return .{};
-    defer c.g_variant_unref(reply);
-    if (!std.mem.eql(u8, std.mem.span(c.g_variant_get_type_string(reply)), "(a{sv})")) return .{};
-    const dict = c.g_variant_get_child_value(reply, 0) orelse return .{};
-    defer c.g_variant_unref(dict);
-    if (!std.mem.eql(u8, std.mem.span(c.g_variant_get_type_string(dict)), "a{sv}")) return .{};
-    return properties(dict, lookup);
-}
-
 pub const Service = struct {
     callback: *const fn (?*anyopaque, State) void,
     data: ?*anyopaque,

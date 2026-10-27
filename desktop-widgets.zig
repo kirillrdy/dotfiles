@@ -1,4 +1,4 @@
-//! Shared GTK widgets and popups for the standalone desktop panel.
+//! Shared GTK widgets and popups for the desktop session.
 const std = @import("std");
 const power_backend = @import("power");
 const quick = @import("desktop-quick-settings.zig");
@@ -13,7 +13,6 @@ fn finite(value: f64) c_int {
 pub const Options = struct {
     name: [:0]const u8 = "",
     kind: [:0]const u8 = "indicator",
-    exec: ?[:0]const u8 = null,
     source: [:0]const u8 = "",
     on_click: ?[:0]const u8 = null,
     network_settings_command: ?[:0]const u8 = null,
@@ -61,12 +60,8 @@ pub const Module = extern struct {
     calendar_selected: ?*c.GDateTime = null,
     graph: [3]Graph = std.mem.zeroes([3]Graph),
     item: [8]Item = std.mem.zeroes([8]Item),
-    command: [*c]u8 = null,
-    process: ?*c.GSubprocess = null,
     source: [*:0]const u8 = "",
-    stream: [*c]c.GDataInputStream = null,
     cancel: [*c]c.GCancellable = null,
-    restart: c.guint = 0,
     clock_timer: c.guint = 0,
     power_timer: c.guint = 0,
     session: ?*c.GDBusConnection = null,
@@ -96,20 +91,11 @@ pub const Module = extern struct {
 pub fn unref_module(m: *Module) callconv(.c) void {
     m.refs -= 1;
     if (m.refs != 0) return;
-    if (m.stream != null) {
-        c.g_object_unref(@as(c.gpointer, @ptrCast(m.stream)));
-    }
-    m.stream = null;
-    if (m.process != null) {
-        c.g_object_unref(@as(c.gpointer, @ptrCast(m.process)));
-    }
-    m.process = null;
     if (m.cancel != null) {
         c.g_object_unref(@as(c.gpointer, @ptrCast(m.cancel)));
     }
     m.cancel = null;
     if (m.session != null) c.g_object_unref(m.session);
-    c.g_free(@as(c.gpointer, @ptrCast(m.command)));
     c.g_free(@as(c.gpointer, @ptrCast(m.network_settings_command)));
     c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
     {
@@ -245,8 +231,7 @@ pub fn power_select(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) void
         return;
     }
     var err: [*c]c.GError = null;
-    const subcommand = c.g_getenv("DESKTOP_POWER_SUBCOMMAND");
-    const argv = if (subcommand != null) [_][*c]const u8{ pkexec, helper, subcommand, "set", id, null } else [_][*c]const u8{ pkexec, helper, "set", id, null, null };
+    const argv = [_][*c]const u8{ pkexec, helper, "power", "set", id, null };
     const process = c.g_subprocess_newv(&argv, c.G_SUBPROCESS_FLAGS_STDERR_PIPE | c.G_SUBPROCESS_FLAGS_STDOUT_SILENCE, &err);
     if (process == null) {
         c.gtk_label_set_text(cast(c.GtkLabel, m.power_message), if (err != null) err.*.message else "Could not start the power profile helper");
@@ -639,12 +624,7 @@ pub fn codex_refresh(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) voi
         c.gtk_widget_set_sensitive(cast(c.GtkWidget, button), 0);
         c.gtk_label_set_text(cast(c.GtkLabel, m.codex_checked), "Refreshing…");
         if (refresh_source) |refresh| refresh("codex");
-        return;
     }
-    if (!(m.process != null)) return;
-    c.gtk_widget_set_sensitive(cast(c.GtkWidget, button), 0);
-    c.gtk_label_set_text(cast(c.GtkLabel, m.codex_checked), "Refreshing…");
-    c.g_subprocess_send_signal(m.process, 10);
 }
 pub fn make_codex_menu(m: *Module) callconv(.c) void {
     m.codex_menu = c.gtk_popover_new(m.root);
@@ -989,67 +969,12 @@ pub fn update_line(m: *Module, line: [*c]const u8) callconv(.c) void {
         update_codex(m, o, arena.allocator());
     }
 }
-pub fn read_next(m: *Module) callconv(.c) void {
-    m.refs += 1;
-    c.g_data_input_stream_read_line_async(m.stream, 0, m.cancel, &line_ready, @as(c.gpointer, @ptrCast(m)));
-}
-pub fn start_process(data: c.gpointer) callconv(.c) c.gboolean {
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    m.restart = 0;
-    if (m.stream != null) {
-        c.g_object_unref(@as(c.gpointer, @ptrCast(m.stream)));
-    }
-    m.stream = null;
-    if (m.process != null) {
-        c.g_subprocess_force_exit(m.process);
-    }
-    if (m.process != null) {
-        c.g_object_unref(@as(c.gpointer, @ptrCast(m.process)));
-    }
-    m.process = null;
-    var argv: [*c][*c]u8 = null;
-    var @"error": [*c]c.GError = null;
-    if (c.g_shell_parse_argv(m.command, null, &argv, &@"error") != 0) {
-        m.process = c.g_subprocess_newv(@as([*c]const [*c]const u8, @ptrCast(@alignCast(argv))), @as(c_uint, @bitCast(c.G_SUBPROCESS_FLAGS_STDOUT_PIPE | c.G_SUBPROCESS_FLAGS_STDERR_SILENCE)), &@"error");
-    }
-    c.g_strfreev(argv);
-    c.g_clear_error(&@"error");
-    if (m.process != null) {
-        m.stream = c.g_data_input_stream_new(c.g_subprocess_get_stdout_pipe(m.process));
-        read_next(m);
-    } else {
-        m.restart = c.g_timeout_add_seconds(5, &start_process, @as(c.gpointer, @ptrCast(m)));
-    }
-    return 0;
-}
-pub fn line_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    var length: c.gsize = 0;
-    var @"error": [*c]c.GError = null;
-    const line: [*c]u8 = c.g_data_input_stream_read_line_finish(cast(c.GDataInputStream, source), result, &length, &@"error");
-    if ((m.dead == 0)) {
-        if (line != null) {
-            if (length < @as(c.gsize, 65536)) {
-                update_line(m, line);
-            }
-            read_next(m);
-        } else {
-            c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
-            m.tooltip = c.g_strdup("Panel data unavailable; retrying");
-            update_codex_tooltip(m);
-            m.restart = c.g_timeout_add_seconds(5, &start_process, @as(c.gpointer, @ptrCast(m)));
-        }
-    }
-    c.g_free(@as(c.gpointer, @ptrCast(line)));
-    c.g_clear_error(&@"error");
-    unref_module(m);
-}
 fn device_changed(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: c.gpointer) callconv(.c) void {
     const m: *Module = @ptrCast(@alignCast(data));
     if (m.dead != 0) return;
     if (m.source[0] != 0) {
         if (refresh_source) |refresh| refresh(std.mem.span(m.source));
-    } else if (m.process != null) c.g_subprocess_send_signal(m.process, c.SIGUSR1);
+    }
 }
 fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
     const m: *Module = @ptrCast(@alignCast(data));
@@ -1183,11 +1108,7 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
         c.gtk_container_add(cast(c.GtkContainer, m.box), area);
     }
     m.source = options.source.ptr;
-    m.command = if (options.exec) |command| c.g_strdup(command) else null;
     c.gtk_widget_show_all(m.box);
-    if (m.command != null) {
-        _ = start_process(@as(c.gpointer, @ptrCast(m)));
-    }
     return m;
 }
 pub fn deinit(m: *Module) void {
@@ -1213,13 +1134,7 @@ pub fn deinit(m: *Module) void {
     }
     if (m.power_timer != 0) _ = c.g_source_remove(m.power_timer);
     _ = c.g_signal_handlers_disconnect_matched(@as(c.gpointer, @ptrCast(m.root)), c.G_SIGNAL_MATCH_DATA, 0, @as(c.GQuark, 0), null, @as(?*anyopaque, @ptrFromInt(0)), @as(c.gpointer, @ptrCast(m)));
-    if (m.restart != 0) {
-        _ = c.g_source_remove(m.restart);
-    }
     c.g_cancellable_cancel(m.cancel);
-    if (m.process != null) {
-        c.g_subprocess_force_exit(m.process);
-    }
     {
         var i: c.guint = 0;
         while (i < 3) : (i += 1) if (m.graph[i].area != null) {

@@ -26,6 +26,11 @@ fn tooltipVisible() bool {
     }
     return false;
 }
+var refresh_count: usize = 0;
+fn refresh(kind: []const u8) void {
+    assert(std.mem.eql(u8, kind, "codex"));
+    refresh_count += 1;
+}
 fn root() *c.GtkWidget {
     const widget = c.gtk_event_box_new();
     _ = c.g_object_ref_sink(widget);
@@ -37,10 +42,11 @@ pub fn main(process_init: std.process.Init) !void {
     const args = try process_init.minimal.args.toSlice(arena.allocator());
     // Re-exec this fixture in place of pkexec to exercise argv, async completion,
     // error reporting and disposal without authorization or real sysfs writes.
-    if (args.len == 4 and std.mem.eql(u8, args[1], "--power-fixture")) {
-        assert(std.mem.eql(u8, args[2], "set"));
-        _ = try @import("power").Profile.parse(args[3]);
-        if (std.mem.eql(u8, args[3], "power-saver")) {
+    if (args.len == 5 and std.mem.eql(u8, args[1], "--power-fixture")) {
+        assert(std.mem.eql(u8, args[2], "power"));
+        assert(std.mem.eql(u8, args[3], "set"));
+        _ = try @import("power").Profile.parse(args[4]);
+        if (std.mem.eql(u8, args[4], "power-saver")) {
             std.debug.print("fixture: permission denied", .{});
             std.process.exit(1);
         }
@@ -204,7 +210,9 @@ pub fn main(process_init: std.process.Init) !void {
     c.g_object_unref(status_root);
 
     const codex_root = root();
-    const usage = p.init(codex_root, .{ .name = "gnome-codex" });
+    const usage = p.init(codex_root, .{ .name = "gnome-codex", .source = "codex" });
+    p.refresh_source = &refresh;
+    defer p.refresh_source = null;
     assert(c.gtk_popover_get_relative_to(cast(c.GtkPopover, usage.codex_menu)) == codex_root);
     const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
     c.gtk_container_add(cast(c.GtkContainer, window), codex_root);
@@ -217,7 +225,12 @@ pub fn main(process_init: std.process.Init) !void {
     assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
     c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
     assert(c.gtk_widget_get_visible(usage.codex_menu) == 0);
+    c.gtk_button_clicked(cast(c.GtkButton, usage.codex_refresh));
+    assert(refresh_count == 1);
+    assert(c.gtk_widget_get_sensitive(usage.codex_refresh) == 0);
+    eq(c.gtk_label_get_text(cast(c.GtkLabel, usage.codex_checked)), "Refreshing…");
     p.update_line(usage, "{\"items\":[{\"text\":\"54%\"}],\"tooltip\":\"5h: 54% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"checked\":\"Checked: 12:00:00\"}");
+    assert(c.gtk_widget_get_sensitive(usage.codex_refresh) != 0);
     eq(c.gtk_widget_get_tooltip_text(usage.box), "5h: 54% remaining");
     pumpEvents(50);
     var x: c.gint = 0;

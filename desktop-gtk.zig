@@ -536,17 +536,6 @@ pub const struct__GCancellable = extern struct {
 
 pub const GCancellable = struct__GCancellable;
 
-pub const struct__GDataInputStreamPrivate = opaque {};
-
-pub const GDataInputStreamPrivate = struct__GDataInputStreamPrivate;
-
-pub const struct__GDataInputStream = extern struct {
-    parent_instance: GBufferedInputStream = @import("std").mem.zeroes(GBufferedInputStream),
-    priv: ?*GDataInputStreamPrivate = null,
-};
-
-pub const GDataInputStream = struct__GDataInputStream;
-
 pub const struct__GApplicationPrivate = opaque {};
 
 pub const GApplicationPrivate = struct__GApplicationPrivate;
@@ -731,12 +720,6 @@ pub extern fn g_cancellable_new() [*c]GCancellable;
 
 pub extern fn g_cancellable_cancel(cancellable: [*c]GCancellable) void;
 
-pub extern fn g_data_input_stream_new(base_stream: [*c]GInputStream) [*c]GDataInputStream;
-
-pub extern fn g_data_input_stream_read_line_async(stream: [*c]GDataInputStream, io_priority: gint, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
-
-pub extern fn g_data_input_stream_read_line_finish(stream: [*c]GDataInputStream, result: ?*GAsyncResult, length: [*c]gsize, @"error": [*c][*c]GError) [*c]u8;
-
 pub extern fn g_bus_get(bus_type: GBusType, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
 
 pub extern fn g_bus_get_finish(res: ?*GAsyncResult, @"error": [*c][*c]GError) ?*GDBusConnection;
@@ -814,8 +797,6 @@ pub extern fn g_settings_get_strv(settings: [*c]GSettings, key: [*c]const gchar)
 pub extern fn g_subprocess_new(flags: GSubprocessFlags, @"error": [*c][*c]GError, argv0: [*c]const gchar, ...) ?*GSubprocess;
 
 pub extern fn g_subprocess_newv(argv: [*c]const [*c]const gchar, flags: GSubprocessFlags, @"error": [*c][*c]GError) ?*GSubprocess;
-
-pub extern fn g_subprocess_get_stdout_pipe(subprocess: ?*GSubprocess) [*c]GInputStream;
 
 pub extern fn g_subprocess_send_signal(subprocess: ?*GSubprocess, signal_num: gint) void;
 

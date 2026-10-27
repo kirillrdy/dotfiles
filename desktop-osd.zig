@@ -242,59 +242,6 @@ pub const Server = struct {
     }
 };
 
-fn commandLine(app: *c.GApplication, command: *c.GApplicationCommandLine, data: c.gpointer) callconv(.c) c_int {
-    const self = cast(Server, data);
-    self.connection = c.g_application_get_dbus_connection(app);
-    var count: c_int = 0;
-    const argv = c.g_application_command_line_get_arguments(command, &count);
-    defer c.g_strfreev(argv);
-    if (count == 3 and c.g_strcmp0(argv[1], "serve") == 0) {
-        if (self.ready) return 0;
-        self.start(std.mem.span(argv[2])) catch |err| {
-            c.g_application_command_line_printerr(command, "desktop-osd: %s\n", @as([*:0]const u8, @errorName(err)));
-            return 1;
-        };
-        c.g_application_hold(app);
-        return 0;
-    }
-    if (!self.ready) {
-        c.g_application_command_line_printerr(command, "desktop-osd: session service is not running\n");
-        return 1;
-    }
-    if (count != 3) return 1;
-    const work = parseCommand(&.{ std.mem.span(argv[1]), std.mem.span(argv[2]) }) orelse return 1;
-    return if (self.enqueue(work)) 0 else 1;
-}
-
-fn quit(data: c.gpointer) callconv(.c) c.gboolean {
-    c.g_application_quit(cast(c.GApplication, data));
-    return 1;
-}
-
-pub fn mainWithBackend(init: std.process.Init, backend: backlight.Backend) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const args = try init.minimal.args.toSlice(arena.allocator());
-    const serve = args.len == 3 and std.mem.eql(u8, args[1], "serve");
-    if (!serve and parseCommand(args[1..]) == null) {
-        std.debug.print("Usage: desktop-osd serve STYLE.css | volume up|down|mute | microphone mute | brightness up|down\n", .{});
-        return error.InvalidArguments;
-    }
-    _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
-    const app = c.gtk_application_new("org.dotfiles.DesktopOsd", c.G_APPLICATION_HANDLES_COMMAND_LINE);
-    defer c.g_object_unref(app);
-    var server = Server{ .backlight_backend = backend };
-    defer server.deinit();
-    _ = c.g_signal_connect_data(app, "command-line", @ptrCast(&commandLine), &server, null, 0);
-    const term = c.g_unix_signal_add(c.SIGTERM, &quit, app);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, app);
-    defer _ = c.g_source_remove(term);
-    defer _ = c.g_source_remove(interrupt);
-    const argv = try arena.allocator().allocSentinel(?[*:0]const u8, args.len, null);
-    for (args, 0..) |arg, i| argv[i] = (try arena.allocator().dupeSentinel(u8, arg, 0)).ptr;
-    if (c.g_application_run(cast(c.GApplication, app), @intCast(args.len), @ptrCast(argv.ptr)) != 0) return error.CommandFailed;
-}
-
 test "media key limits preserve zero volume and the five percent brightness floor" {
     try std.testing.expectEqual(@as(f64, 100), target(.{ .percent = 98 }, .{ .kind = .volume, .delta = 5 }));
     try std.testing.expectEqual(@as(f64, 0), target(.{ .percent = 2 }, .{ .kind = .volume, .delta = -5 }));

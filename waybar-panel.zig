@@ -232,7 +232,7 @@ fn statusItems(a: A, demo: bool) !V {
     return items;
 }
 /// One bounded update, suitable for a shared session worker.
-pub fn sample(a: A, kind: []const u8, icon: []const u8, codex_command: ?[]const u8, demo: bool) !V {
+pub fn sample(a: A, kind: []const u8, icon: []const u8, demo: bool) !V {
     var out = u.object();
     if (u.eq(kind, "status")) try u.put(a, &out, "items", try statusItems(a, demo)) else if (u.eq(kind, "disk")) {
         const output = u.command(a, &.{ "df", "-h", "/" }, 4);
@@ -246,7 +246,7 @@ pub fn sample(a: A, kind: []const u8, icon: []const u8, codex_command: ?[]const 
         try items.array.append(try item(a, "", try u.fmt(a, "{s}/{s}", .{ used, total }), "Root filesystem usage", "ghostty -e ncdu /"));
         try u.put(a, &out, "items", items);
     } else {
-        const result = if (demo) try u.parse(a, "{\"text\":\"54%\",\"tooltip\":\"5h: 54% remaining\\n7d: 93% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}]}") else if (codex_command) |cmd| u.parse(a, u.command(a, &.{ cmd, "--remaining", "--compact" }, 12)) catch try codex.unavailable(a, "Codex usage unavailable", true) else try codex.readUsage(a, true, true);
+        const result = if (demo) try u.parse(a, "{\"text\":\"54%\",\"tooltip\":\"5h: 54% remaining\\n7d: 93% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}]}") else try codex.readUsage(a, true, true);
         var items = u.array(a);
         try items.array.append(try item(a, icon, u.string(u.get(result, "text")), "", ""));
         try u.put(a, &out, "items", items);

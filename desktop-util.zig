@@ -28,10 +28,6 @@ pub fn array(a: Allocator) Value {
 pub fn put(a: Allocator, o: *Value, key: []const u8, value: Value) !void {
     try o.object.put(a, key, value);
 }
-pub fn environment(a: Allocator) !std.process.Environ.Map {
-    const environ = std.process.Environ{ .block = .{ .slice = std.mem.span(std.c.environ) } };
-    return environ.createMap(a);
-}
 pub fn str(s: []const u8) Value {
     return .{ .string = s };
 }
@@ -81,11 +77,6 @@ pub fn trim(s: []const u8) []const u8 {
 }
 pub fn parse(a: Allocator, s: []const u8) !Value {
     return (try std.json.parseFromSlice(Value, a, s, .{ .allocate = .alloc_always })).value;
-}
-pub fn emit(a: Allocator, v: anytype) !void {
-    const s = try std.json.Stringify.valueAlloc(a, v, .{});
-    try std.Io.File.stdout().writeStreamingAll(io, s);
-    try std.Io.File.stdout().writeStreamingAll(io, "\n");
 }
 pub fn command(a: Allocator, args: []const []const u8, seconds: u32) []const u8 {
     const argv = a.alloc([]const u8, args.len + 3) catch return "";
