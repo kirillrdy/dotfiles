@@ -13,8 +13,9 @@ let
   osdStyle = pkgs.writeText "desktop-osd-style.css" etc."xdg/desktop-osd/style.css".text;
 in
 pkgs.runCommand "desktop-shell-check" {
-  nativeBuildInputs = [ pkgs.python3 pkgs.dbus pkgs.glib ];
+  nativeBuildInputs = [ pkgs.python3 pkgs.dbus pkgs.glib pkgs.pipewire pkgs.wireplumber ];
 } ''
+  export PYTHONPATH=${./.}
   export XDG_DATA_DIRS=${pkgs.adwaita-icon-theme}/share
   dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- python3 ${./check-desktop-shell.py} \
     --binary ${desktop}/bin/desktop-zig \

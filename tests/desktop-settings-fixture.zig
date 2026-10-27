@@ -3,13 +3,6 @@ const std = @import("std");
 const settings = @import("settings");
 const c = settings.c;
 const assert = std.debug.assert;
-const snapshot =
-    \\[{"id":41,"info":{"props":{"media.class":"Audio/Sink","node.description":"Test speakers"}}},
-    \\ {"id":42,"info":{"props":{"media.class":"Audio/Source","node.description":"Test microphone"}}},
-    \\ {"id":43,"info":{"props":{"media.class":"Stream/Output/Audio","application.name":"Test player"}}},
-    \\ {"id":44,"info":{"props":{"media.class":"Stream/Input/Audio","application.name":"Test recorder"}}},
-    \\ {"id":45,"info":{"props":{"media.class":"Video/Source","node.description":"Camera"}}}]
-;
 fn cast(comptime T: type, p: anytype) *T {
     return @ptrCast(@alignCast(p));
 }
@@ -62,23 +55,6 @@ fn record(init: std.process.Init, name: []const u8, value: []const u8) !void {
 }
 fn mock(init: std.process.Init, args: []const []const u8) !bool {
     const name = std.fs.path.basename(args[0]);
-    if (std.mem.eql(u8, name, "pw-dump")) {
-        try std.Io.File.stdout().writeStreamingAll(init.io, snapshot);
-        return true;
-    }
-    if (std.mem.eql(u8, name, "wpctl")) {
-        if (std.mem.eql(u8, args[1], "get-volume")) {
-            try std.Io.File.stdout().writeStreamingAll(init.io, "Volume: 0.42 [MUTED]\n");
-        } else if (std.mem.eql(u8, args[1], "set-volume")) {
-            assert(args.len == 6 and std.mem.eql(u8, args[2], "-l") and std.mem.eql(u8, args[3], "1.0"));
-            try record(init, "volume", args[5]);
-        } else if (std.mem.eql(u8, args[1], "set-mute")) {
-            try record(init, "mute", args[3]);
-        } else if (std.mem.eql(u8, args[1], "set-default")) {
-            try record(init, "default", args[2]);
-        } else return error.UnexpectedAudioCommand;
-        return true;
-    }
     if (std.mem.eql(u8, name, "nmcli")) {
         const joined = try std.mem.join(std.heap.page_allocator, " ", args[1..]);
         defer std.heap.page_allocator.free(joined);
@@ -111,7 +87,7 @@ pub fn main(init: std.process.Init) !void {
     defer c.g_free(root);
     defer std.Io.Dir.cwd().deleteTree(init.io, std.mem.span(root)) catch {};
     const executable = try arena.allocator().dupeSentinel(u8, try std.process.executablePathAlloc(init.io, arena.allocator()), 0);
-    for ([_][]const u8{ "nmcli", "wpctl", "pw-dump" }) |name| {
+    for ([_][]const u8{"nmcli"}) |name| {
         const path = try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/{s}", .{ root, name }, 0);
         const file = c.g_file_new_for_path(path);
         defer c.g_object_unref(file);
@@ -121,36 +97,6 @@ pub fn main(init: std.process.Init) !void {
     assert(c.g_setenv("PATH", path, 1) != 0);
     assert(c.g_setenv("DESKTOP_SETTINGS_FIXTURE_ROOT", root, 1) != 0);
     c.gtk_init(null, null);
-    const sound = settings.Settings.create(.sound);
-    wait(sound);
-    assert(!sound.failed);
-    try capture(sound, "sound");
-    assert(sound.rows.items.len == 6); // defaults, two devices and two streams
-    const output = sound.rows.items[2];
-    eq(output.id, "41");
-    assert(c.gtk_widget_get_sensitive(output.box) != 0);
-    assert(c.gtk_range_get_value(cast(c.GtkRange, output.scale)) == 42);
-    assert(c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, output.mute)) != 0);
-    c.gtk_range_set_value(cast(c.GtkRange, output.scale), 63);
-    const deadline = c.g_get_monotonic_time() + 300 * 1000;
-    while (c.g_get_monotonic_time() < deadline) pump();
-    wait(sound);
-    try std.testing.expectEqualStrings("63%", try marker(init, "volume"));
-    c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, output.mute), 0);
-    wait(sound);
-    try std.testing.expectEqualStrings("0", try marker(init, "mute"));
-    c.gtk_button_clicked(findButton(output.box, "Use by default").?);
-    wait(sound);
-    try std.testing.expectEqualStrings("41", try marker(init, "default"));
-    // Failed commands must retain their error after another query succeeds.
-    sound.run(&.{"false"}, .audio_action, 0, null);
-    sound.run(&.{ "wpctl", "get-volume", "41" }, .volume, 2, null);
-    wait(sound);
-    assert(sound.failed and c.gtk_label_get_text(cast(c.GtkLabel, sound.message))[0] != 0);
-    sound.refresh();
-    wait(sound);
-    assert(!sound.failed);
-
     const network = settings.Settings.create(.network);
     wait(network);
     assert(!network.failed);
@@ -179,8 +125,5 @@ pub fn main(init: std.process.Init) !void {
     c.gtk_widget_destroy(network.window);
     wait(network);
     network.destroy();
-    c.gtk_widget_destroy(sound.window);
-    wait(sound);
-    sound.destroy();
-    std.debug.print("desktop-settings: sound devices, app volumes, mute, defaults, escaped SSIDs, secrets on stdin, saved connections, errors and cancellation passed\n", .{});
+    std.debug.print("desktop-settings: escaped SSIDs, secrets on stdin, saved connections, errors and cancellation passed\n", .{});
 }

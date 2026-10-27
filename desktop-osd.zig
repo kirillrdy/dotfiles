@@ -2,6 +2,7 @@
 //! asynchronously; repeated steps coalesce while a backend is busy.
 const std = @import("std");
 const c = @import("gtk");
+const audio = @import("audio");
 const backlight = @import("backlight");
 const allocator = std.heap.page_allocator;
 fn cast(comptime T: type, ptr: anytype) *T {
@@ -10,7 +11,7 @@ fn cast(comptime T: type, ptr: anytype) *T {
 
 pub const Kind = enum { volume, microphone, brightness };
 pub const Work = struct { kind: Kind, delta: i16 = 0 };
-pub const State = struct { percent: f64, muted: bool = false };
+pub const State = audio.State;
 
 pub fn parseCommand(args: []const []const u8) ?Work {
     if (args.len != 2) return null;
@@ -19,17 +20,6 @@ pub fn parseCommand(args: []const []const u8) ?Work {
     if (kind == .microphone) return null;
     const delta: i16 = if (std.mem.eql(u8, args[1], "up")) 5 else if (std.mem.eql(u8, args[1], "down")) -5 else return null;
     return .{ .kind = kind, .delta = delta };
-}
-
-pub fn parseVolume(output: []const u8) !State {
-    var words = std.mem.tokenizeAny(u8, output, " \r\n\t");
-    if (!std.mem.eql(u8, words.next() orelse "", "Volume:")) return error.InvalidVolume;
-    const value = try std.fmt.parseFloat(f64, words.next() orelse return error.InvalidVolume);
-    if (!std.math.isFinite(value) or value < 0 or value > 100) return error.InvalidVolume;
-    const flag = words.next();
-    if (flag) |text| if (!std.mem.eql(u8, text, "[MUTED]")) return error.InvalidVolume;
-    if (words.next() != null) return error.InvalidVolume;
-    return .{ .percent = @min(value * 100, 100), .muted = flag != null };
 }
 
 pub fn target(state: State, work: Work) f64 {
@@ -99,7 +89,6 @@ const Overlay = struct {
     }
 };
 
-const Phase = enum { initial, unmute, write, final };
 pub const Server = struct {
     connection: ?*c.GDBusConnection = null,
     backlight_backend: backlight.Backend = .{},
@@ -112,12 +101,11 @@ pub const Server = struct {
     state: State = .{ .percent = 0 },
     last_kind: Kind = .volume,
     last_state: State = .{ .percent = 0 },
-    phase: Phase = .initial,
-    process: ?*c.GSubprocess = null,
+    audio_service: ?*audio.Service = null,
+    audio_busy: bool = false,
     cancel: ?*c.GCancellable = null,
-    timeout: c.guint = 0,
     hide_timer: c.guint = 0,
-    sound: ?*c.GSubprocess = null,
+    feedback_player: audio.Feedback = .{},
 
     pub fn start(self: *Server, style: [*:0]const u8) !void {
         if (c.gtk_layer_is_supported() == 0) return error.LayerShellUnavailable;
@@ -135,6 +123,7 @@ pub const Server = struct {
         while (i < c.gdk_display_get_n_monitors(display)) : (i += 1) added(display.?, c.gdk_display_get_monitor(display, i).?, self);
         _ = c.g_signal_connect_data(display, "monitor-added", @ptrCast(&added), self, null, 0);
         _ = c.g_signal_connect_data(display, "monitor-removed", @ptrCast(&removed), self, null, 0);
+        self.audio_service = try audio.Service.create(&audioChanged, self);
         self.ready = true;
     }
 
@@ -176,100 +165,27 @@ pub const Server = struct {
             self.backlight_backend.start(.{ .step = self.active.?.delta }, self.cancel.?, &brightnessDone, self);
             return;
         }
-        self.phase = .initial;
-        self.read();
-    }
-
-    fn audioTarget(self: *Server) [*:0]const u8 {
-        return if (self.active.?.kind == .microphone) "@DEFAULT_AUDIO_SOURCE@" else "@DEFAULT_AUDIO_SINK@";
-    }
-
-    fn read(self: *Server) void {
-        self.run(&.{ "wpctl", "get-volume", self.audioTarget() });
-    }
-
-    fn write(self: *Server) void {
-        self.phase = .write;
-        const work = self.active.?;
-        if (work.delta == 0) return self.run(&.{ "wpctl", "set-mute", self.audioTarget(), "toggle" });
-        var buffer: [32]u8 = undefined;
-        const value = std.fmt.bufPrintSentinel(&buffer, "{d:.0}%", .{target(self.state, work)}, 0) catch unreachable;
-        self.run(&.{ "wpctl", "set-volume", "-l", "1.0", self.audioTarget(), value });
-    }
-
-    fn run(self: *Server, args: []const [*:0]const u8) void {
-        var argv: [10:null]?[*:0]const u8 = @splat(null);
-        for (args, 0..) |arg, i| argv[i] = arg;
-        var err: [*c]c.GError = null;
-        self.process = c.g_subprocess_newv(@ptrCast(&argv), c.G_SUBPROCESS_FLAGS_STDOUT_PIPE | c.G_SUBPROCESS_FLAGS_STDERR_PIPE, &err);
-        if (self.process == null) {
-            c.g_printerr("desktop-osd: %s\n", err.*.message);
-            c.g_clear_error(&err);
+        const service = self.audio_service orelse {
             self.finish();
             return;
-        }
+        };
         self.cancel = c.g_cancellable_new();
-        self.timeout = c.g_timeout_add(2000, &timedOut, self);
-        c.g_subprocess_communicate_utf8_async(self.process, null, self.cancel, &completed, self);
+        self.audio_busy = true;
+        const work = self.active.?;
+        service.apply(if (work.kind == .microphone) .input else .output, if (work.delta == 0) .toggle else .{ .step = work.delta }, self.cancel.?, &audioDone, self);
     }
-
-    fn timedOut(data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Server, data);
-        self.timeout = 0;
-        c.g_subprocess_force_exit(self.process);
-        c.g_cancellable_cancel(self.cancel);
-        return 0;
-    }
-
-    fn completed(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
-        const self = cast(Server, data);
-        var output: [*c]u8 = null;
-        var stderr_output: [*c]u8 = null;
-        var err: [*c]c.GError = null;
-        const ok = c.g_subprocess_communicate_utf8_finish(self.process, result, &output, &stderr_output, &err) != 0;
-        const success = ok and c.g_subprocess_get_successful(self.process) != 0;
-        if (self.timeout != 0) _ = c.g_source_remove(self.timeout);
-        self.timeout = 0;
-        c.g_object_unref(self.process);
-        self.process = null;
+    fn audioChanged(_: ?*anyopaque, _: *audio.Service) void {}
+    fn audioDone(ptr: ?*anyopaque, result: audio.Result) void {
+        const self = cast(Server, ptr);
+        self.audio_busy = false;
         c.g_object_unref(self.cancel);
         self.cancel = null;
-        defer c.g_free(output);
-        defer c.g_free(stderr_output);
-        defer c.g_clear_error(&err);
         if (self.dead) return;
-        if (!success) {
-            const message: [*c]const u8 = if (err != null) err.*.message else if (stderr_output != null) stderr_output else "unknown error";
-            c.g_printerr("desktop-osd: backend failed: %s\n", message);
-            self.finish();
-            return;
+        switch (result) {
+            .value => |value| self.present(self.active.?.kind, value),
+            .failure => |err| std.log.warn("desktop-osd: audio: {s}", .{@errorName(err)}),
         }
-        self.advance(if (output != null) std.mem.span(output) else "") catch |failure| {
-            std.debug.print("desktop-osd: {s}\n", .{@errorName(failure)});
-            self.finish();
-        };
-    }
-
-    fn advance(self: *Server, output: []const u8) !void {
-        const work = self.active.?;
-        switch (self.phase) {
-            .initial => {
-                self.state = try parseVolume(output);
-                if (work.kind == .volume and work.delta != 0 and self.state.muted) {
-                    self.phase = .unmute;
-                    self.run(&.{ "wpctl", "set-mute", self.audioTarget(), "0" });
-                } else self.write();
-            },
-            .unmute => self.write(),
-            .write => {
-                self.phase = .final;
-                self.read();
-            },
-            .final => {
-                self.present(work.kind, try parseVolume(output));
-                self.finish();
-            },
-        }
+        self.finish();
     }
 
     fn brightnessDone(data: ?*anyopaque, result: backlight.Result) void {
@@ -307,32 +223,19 @@ pub const Server = struct {
     }
 
     fn feedback(self: *Server) void {
-        if (self.sound != null) return;
         const path = c.g_getenv("DESKTOP_OSD_SOUND_FILE") orelse return;
-        const argv = [_:null]?[*:0]const u8{ "pw-play", "--properties={\"media.role\":\"event\"}", path };
-        var err: [*c]c.GError = null;
-        self.sound = c.g_subprocess_newv(@ptrCast(&argv), c.G_SUBPROCESS_FLAGS_STDOUT_SILENCE | c.G_SUBPROCESS_FLAGS_STDERR_SILENCE, &err);
-        c.g_clear_error(&err);
-        if (self.sound != null) c.g_subprocess_wait_async(self.sound, null, &soundDone, self);
-    }
-
-    fn soundDone(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
-        const self = cast(Server, data);
-        _ = c.g_subprocess_wait_finish(@ptrCast(source), result, null);
-        c.g_object_unref(self.sound);
-        self.sound = null;
+        self.feedback_player.play(@ptrCast(path));
     }
 
     pub fn deinit(self: *Server) void {
         self.dead = true;
         if (self.ready) _ = c.g_signal_handlers_disconnect_matched(c.gdk_display_get_default(), c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         if (self.hide_timer != 0) _ = c.g_source_remove(self.hide_timer);
-        if (self.timeout != 0) _ = c.g_source_remove(self.timeout);
-        self.timeout = 0;
-        if (self.process != null) c.g_subprocess_force_exit(self.process);
         if (self.cancel != null) c.g_cancellable_cancel(self.cancel);
-        if (self.sound != null) c.g_subprocess_force_exit(self.sound);
-        while (self.process != null or self.sound != null or self.brightness_busy) _ = c.g_main_context_iteration(null, 1);
+        if (self.audio_service) |service| service.destroy();
+        self.audio_service = null;
+        self.feedback_player.deinit();
+        while (self.audio_busy or self.brightness_busy) _ = c.g_main_context_iteration(null, 1);
         for (self.overlays.items) |overlay| overlay.destroy();
         self.overlays.deinit(allocator);
         self.queue.deinit(allocator);
@@ -393,15 +296,6 @@ pub fn mainWithBackend(init: std.process.Init, backend: backlight.Backend) !void
     const argv = try arena.allocator().allocSentinel(?[*:0]const u8, args.len, null);
     for (args, 0..) |arg, i| argv[i] = (try arena.allocator().dupeSentinel(u8, arg, 0)).ptr;
     if (c.g_application_run(cast(c.GApplication, app), @intCast(args.len), @ptrCast(argv.ptr)) != 0) return error.CommandFailed;
-}
-
-test "audio state accepts mute and amplification and rejects invalid readings" {
-    const testing = std.testing;
-    try testing.expectEqual(State{ .percent = 65, .muted = true }, try parseVolume("Volume: 0.65 [MUTED]\n"));
-    try testing.expectEqual(@as(f64, 100), (try parseVolume("Volume: 1.5")).percent);
-    for ([_][]const u8{ "", "Volume: nan", "Volume: inf", "Volume: -0.5", "Volume: 0.5 unexpected", "Volume: 0.5 [MUTED] extra" }) |invalid| {
-        if (parseVolume(invalid)) |_| return error.ExpectedInvalidVolume else |_| {}
-    }
 }
 
 test "media key limits preserve zero volume and the five percent brightness floor" {

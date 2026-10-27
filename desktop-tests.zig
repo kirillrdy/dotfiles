@@ -5,12 +5,16 @@ const codex = @import("waybar-codex.zig");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
-test "muted microphone indicator excludes active and unavailable inputs" {
-    try expect(panel.microphoneMuted("Volume: 0.65 [MUTED]\n"));
-    try expect(!panel.microphoneMuted("Volume: 0.65\n"));
-    try expect(!panel.microphoneMuted(""));
-    try expect(!panel.microphoneMuted("No default microphone"));
+test "panel uses native microphone mute state" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out = try u.parse(a, "{\"items\":[]}");
+    try panel.addAudio(a, &out, .{ .percent = 65 }, .{ .percent = 40, .muted = true });
+    try equal(@as(usize, 2), out.object.get("items").?.array.items.len);
+    try strings("microphone-sensitivity-muted-symbolic", out.object.get("items").?.array.items[1].object.get("icon").?.string);
 }
+
 test "Linux virtual files are read despite reporting size zero" {
     if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const a = std.testing.allocator;

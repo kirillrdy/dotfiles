@@ -7,7 +7,7 @@ in
 pkgs.runCommand "desktop-backlight-check" {
   nativeBuildInputs = [
     (pkgs.python3.withPackages (python: [ python.pygobject3 ]))
-    pkgs.dbus pkgs.glib pkgs.xorg-server pkgs.grim pkgs.wlr-randr pkgs.wtype
+    pkgs.dbus pkgs.glib pkgs.xorg-server pkgs.grim pkgs.wlr-randr pkgs.wtype pkgs.pipewire pkgs.wireplumber
     config.content.programs.labwc.package
   ];
 } ''

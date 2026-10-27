@@ -9,6 +9,9 @@ import shutil
 import subprocess as sp
 import tempfile
 import time
+import sys
+sys.dont_write_bytecode = True
+from audio_server import AudioServer
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True, type=Path)
@@ -59,9 +62,6 @@ env.update(
 )
 (root / "tools").mkdir()
 for name, body in {
-    "wpctl": 'if [ "$1" = get-volume ]; then echo "Volume: 0.42"; fi',
-    "pw-play": 'exit 0',
-    "pw-dump": 'echo "[]"',
     "nmcli": 'exit 0',
 }.items():
     tool = root / "tools" / name
@@ -69,6 +69,7 @@ for name, body in {
     tool.chmod(0o755)
 env["PATH"] = str(root / "tools") + os.pathsep + env["PATH"]
 processes = []
+audio = AudioServer(root, env)
 
 
 def start(command, log):
@@ -109,6 +110,7 @@ def owner_pid(name):
 
 
 try:
+    audio.start()
     compositor = start([args.compositor, "-C", str(root / "config")], "labwc.log")
     wait_for(lambda: (root / "runtime/wayland-0").exists(), "compositor socket")
     env["WAYLAND_DISPLAY"] = "wayland-0"
@@ -133,6 +135,10 @@ try:
     assert run([binary, "invalid-command"], ok=False).returncode != 0
     run([binary, "refresh", "codex"])
     run([binary, "refresh", "status"])
+    def media_ready():
+        run([binary, "volume", "up"])
+        return '\"desktop-osd\"' in shell_log()
+    wait_for(media_ready, "native audio and media overlay ready")
     for kind, action in (("volume", "up"), ("volume", "mute"),
                          ("microphone", "mute"), ("brightness", "down")):
         run([binary, kind, action])
@@ -170,6 +176,7 @@ try:
     print("desktop-zig: two outputs, shared services, command forwarding, settings, media keys, overview, "
           "notifications, shutdown and restart passed")
 finally:
+    audio.stop()
     for process in reversed(processes):
         if process.poll() is None:
             process.terminate()

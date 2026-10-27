@@ -1,10 +1,11 @@
 //! GNOME quick-settings geometry with asynchronous controls for the desktop services.
 const std = @import("std");
 const c = @import("gtk");
-const media = @import("desktop-osd.zig");
+const audio = @import("audio");
 const battery_backend = @import("battery");
 const backlight = @import("backlight");
-const network_fields = @import("desktop-settings.zig").fields;
+pub const settings_client = @import("desktop-settings.zig");
+const network_fields = settings_client.fields;
 const a = std.heap.page_allocator;
 fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
@@ -87,7 +88,7 @@ fn iconButton(icon_name: [*:0]const u8, tooltip: [*:0]const u8) *c.GtkWidget {
     c.gtk_widget_set_tooltip_text(button, tooltip);
     return button;
 }
-const Read = enum { volume, network, radio, action };
+const Read = enum { network, radio, action };
 const Job = struct { owner: *Controls, process: *c.GSubprocess, kind: Read, next: ?*Job, timeout: c.guint = 0, input: ?[:0]u8 = null };
 pub const Controls = struct {
     popover: *c.GtkWidget,
@@ -106,6 +107,7 @@ pub const Controls = struct {
     battery_label: *c.GtkWidget,
     battery_icon: *c.GtkWidget,
     battery_service: ?*battery_backend.Service = null,
+    audio_service: ?*audio.Service = null,
     power_menu: *c.GtkWidget,
     profile_menu: *c.GtkWidget,
     profile_buttons: [3]?*c.GtkWidget = @splat(null),
@@ -123,7 +125,7 @@ pub const Controls = struct {
     brightness_busy: bool = false,
     brightness_writing: bool = false,
     brightness_wanted: ?f64 = null,
-    pending: [3]bool = @splat(false),
+    pending: [2]bool = @splat(false),
     syncing: bool = false,
     dead: bool = false,
     refs: usize = 1,
@@ -243,6 +245,7 @@ pub const Controls = struct {
         if (self.notifications) |prefs| connect(prefs, "changed", &preferencesChanged, self);
         self.syncPreferences();
         self.battery_service = battery_backend.Service.create(&batteryChanged, self) catch null;
+        self.audio_service = audio.Service.create(&audioChanged, self) catch null;
         self.timer = c.g_timeout_add_seconds(5, &refreshTimer, self);
         return self;
     }
@@ -374,7 +377,6 @@ pub const Controls = struct {
     pub fn refresh(self: *Controls) void {
         if (self.dead) return;
         self.syncPreferences();
-        self.run(.volume, &.{ "wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@" });
         self.refreshBrightness();
         self.run(.network, &.{ "nmcli", "-t", "-f", "IN-USE,SSID,SECURITY,SIGNAL", "device", "wifi", "list", "--rescan", "no" });
         self.run(.radio, &.{ "nmcli", "-t", "-f", "WIFI", "general" });
@@ -384,7 +386,7 @@ pub const Controls = struct {
         self.run(.action, &.{ "nmcli", "radio", "wifi", if (c.gtk_toggle_button_get_active(button) != 0) "on" else "off" });
     }
     fn mute(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
-        cast(Controls, ptr).run(.action, &.{ "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle" });
+        cast(Controls, ptr).audioAction(.toggle);
     }
     fn volumeChanged(_: *c.GtkRange, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Controls, ptr);
@@ -401,9 +403,7 @@ pub const Controls = struct {
     fn writeVolume(ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Controls, ptr);
         self.volume_timer = 0;
-        var buffer: [32]u8 = undefined;
-        const value = std.fmt.bufPrintSentinel(&buffer, "{d:.0}%", .{c.gtk_range_get_value(cast(c.GtkRange, self.volume))}, 0) catch unreachable;
-        self.run(.action, &.{ "wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", value });
+        self.audioAction(.{ .volume = c.gtk_range_get_value(cast(c.GtkRange, self.volume)) });
         return 0;
     }
     fn writeBrightness(ptr: c.gpointer) callconv(.c) c.gboolean {
@@ -491,7 +491,7 @@ pub const Controls = struct {
         link.* = job.next;
         if (job.kind != .action) self.pending[@backingInt(job.kind)] = false;
         if (!self.dead) {
-            if (ok) self.apply(job.kind, if (output != null) std.mem.span(output) else "") else if (job.kind == .volume) c.gtk_widget_hide(self.volume_row);
+            if (ok) self.apply(job.kind, if (output != null) std.mem.span(output) else "");
             if (!ok and job.kind == .action) c.gtk_widget_set_tooltip_text(self.content, if (err != null) err.*.message else errors);
         }
         c.g_object_unref(job.process);
@@ -506,14 +506,6 @@ pub const Controls = struct {
         self.syncing = true;
         defer self.syncing = false;
         switch (kind) {
-            .volume => {
-                const state = media.parseVolume(output) catch return;
-                c.gtk_range_set_value(cast(c.GtkRange, self.volume), state.percent);
-                c.gtk_image_set_from_icon_name(cast(c.GtkImage, self.volume_icon), if (state.muted or state.percent == 0) "audio-volume-muted-symbolic" else if (state.percent < 33) "audio-volume-low-symbolic" else if (state.percent < 66) "audio-volume-medium-symbolic" else "audio-volume-high-symbolic", c.GTK_ICON_SIZE_MENU);
-                c.gtk_widget_set_no_show_all(self.volume_row, 0);
-                c.gtk_widget_show_all(self.volume_row);
-                c.gtk_widget_set_no_show_all(self.volume_row, 1);
-            },
             .network => {
                 const children = c.gtk_container_get_children(cast(c.GtkContainer, self.network_list));
                 var node = children;
@@ -570,6 +562,36 @@ pub const Controls = struct {
                 if (enabled) css(self.network.widget, "quick-active") else c.gtk_style_context_remove_class(c.gtk_widget_get_style_context(self.network.widget), "quick-active");
             },
             .action => self.refresh(),
+        }
+    }
+    fn audioChanged(ptr: ?*anyopaque, service: *audio.Service) void {
+        const self = cast(Controls, ptr);
+        if (self.dead) return;
+        const state = service.state(.output) orelse {
+            c.gtk_widget_hide(self.volume_row);
+            return;
+        };
+        self.syncing = true;
+        defer self.syncing = false;
+        if (self.volume_timer == 0) c.gtk_range_set_value(cast(c.GtkRange, self.volume), state.percent);
+        c.gtk_image_set_from_icon_name(cast(c.GtkImage, self.volume_icon), if (state.muted or state.percent == 0) "audio-volume-muted-symbolic" else if (state.percent < 33) "audio-volume-low-symbolic" else if (state.percent < 66) "audio-volume-medium-symbolic" else "audio-volume-high-symbolic", c.GTK_ICON_SIZE_MENU);
+        c.gtk_widget_set_no_show_all(self.volume_row, 0);
+        c.gtk_widget_show_all(self.volume_row);
+        c.gtk_widget_set_no_show_all(self.volume_row, 1);
+    }
+    fn audioAction(self: *Controls, change: audio.Change) void {
+        if (self.dead) return;
+        const service = self.audio_service orelse return;
+        self.refs += 1;
+        service.apply(.output, change, self.cancel, &audioDone, self);
+    }
+    fn audioDone(ptr: ?*anyopaque, result: audio.Result) void {
+        const self = cast(Controls, ptr);
+        defer self.release();
+        if (self.dead) return;
+        switch (result) {
+            .value => if (self.audio_service) |service| audioChanged(self, service),
+            .failure => |err| c.gtk_widget_set_tooltip_text(self.volume_row, @errorName(err).ptr),
         }
     }
     fn batteryChanged(ptr: ?*anyopaque, state: battery_backend.State) void {
@@ -708,6 +730,7 @@ pub const Controls = struct {
     pub fn deinit(self: *Controls) void {
         self.dead = true;
         if (self.battery_service) |service| service.destroy();
+        if (self.audio_service) |service| service.destroy();
         _ = c.g_signal_handlers_disconnect_matched(self.popover, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         if (self.dialog) |dialog| c.gtk_dialog_response(cast(c.GtkDialog, dialog), c.GTK_RESPONSE_CANCEL);
         _ = c.g_source_remove(self.timer);

@@ -3,6 +3,7 @@ const std = @import("std");
 const c = @import("gtk");
 const data = @import("waybar-panel.zig");
 const u = @import("desktop-util.zig");
+const audio = @import("audio");
 const battery = @import("battery");
 const panel = @import("desktop-panel.zig");
 const a = std.heap.page_allocator;
@@ -18,10 +19,14 @@ pub const Service = struct {
     revision: u64 = 0,
     battery_service: ?*battery.Service = null,
     battery_state: battery.State = .{},
+    audio_service: ?*audio.Service = null,
+    output_state: ?audio.State = null,
+    input_state: ?audio.State = null,
 
     pub fn start(self: *Service) void {
         for (&self.sources, 0..) |*source, i| source.* = .{ .owner = self, .index = i };
         self.battery_service = battery.Service.create(&batteryChanged, self) catch null;
+        self.audio_service = audio.Service.create(&audioChanged, self) catch null;
         _ = tick(self);
         self.timer = c.g_timeout_add(500, &tick, self);
     }
@@ -47,6 +52,12 @@ pub const Service = struct {
         return 1;
     }
 
+    fn audioChanged(ptr: ?*anyopaque, service: *audio.Service) void {
+        const self: *Service = @ptrCast(@alignCast(ptr));
+        self.output_state = service.state(.output);
+        self.input_state = service.state(.input);
+        if (!self.dead) self.sources[1].publish("status");
+    }
     fn batteryChanged(ptr: ?*anyopaque, state: battery.State) void {
         const self: *Service = @ptrCast(@alignCast(ptr));
         self.battery_state = state;
@@ -55,6 +66,7 @@ pub const Service = struct {
     pub fn deinit(self: *Service) void {
         self.dead = true;
         if (self.battery_service) |service| service.destroy();
+        if (self.audio_service) |service| service.destroy();
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         for (&self.sources) |*source| {
             while (source.busy) _ = c.g_main_context_iteration(null, 1);
@@ -80,6 +92,7 @@ const Source = struct {
         defer arena.deinit();
         const alloc = arena.allocator();
         var out = u.parse(alloc, line) catch return;
+        data.addAudio(alloc, &out, self.owner.output_state, self.owner.input_state) catch return;
         data.addBattery(alloc, &out, self.owner.battery_state) catch return;
         const json = std.json.Stringify.valueAlloc(alloc, out, .{}) catch return;
         const terminated = alloc.dupeSentinel(u8, json, 0) catch return;

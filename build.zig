@@ -26,6 +26,22 @@ pub fn build(b: *std.Build) void {
     b.step("test-power", "Check power profiles against isolated sysfs fixtures").dependOn(&b.addRunArtifact(power_fixture).step);
     const greeter_c = libc;
     const gtk = b.createModule(.{ .root_source_file = b.path("desktop-gtk.zig"), .target = target, .optimize = optimize });
+    const audio_api = b.createModule(.{ .root_source_file = b.path("desktop-audio-api.zig"), .target = target, .optimize = optimize });
+    audio_api.addImport("gtk", gtk);
+    const audio = b.createModule(.{ .root_source_file = b.path("desktop-audio.zig"), .target = target, .optimize = optimize });
+    audio.addImport("gtk", gtk);
+    audio.addImport("audio-api", audio_api);
+    audio.link_libc = true;
+    for ([_][]const u8{ "wireplumber-0.5", "libcanberra" }) |name| audio.linkSystemLibrary(name, .{});
+    const audio_tests = b.addTest(.{ .root_module = audio });
+    const audio_reference = bindings(b, target, optimize, "#include <wp/wp.h>\n#include <canberra.h>\n", &.{ "wireplumber-0.5", "libcanberra" });
+    const audio_abi = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-gtk-abi.zig"), .target = target, .optimize = optimize }) });
+    audio_abi.root_module.addImport("api", audio_api);
+    audio_abi.root_module.addImport("reference", audio_reference);
+    audio_abi.root_module.link_libc = true;
+    const audio_check = b.step("test-audio", "Check native audio targets and the WirePlumber/event-sound ABI");
+    audio_check.dependOn(&b.addRunArtifact(audio_tests).step);
+    audio_check.dependOn(&b.addRunArtifact(audio_abi).step);
     const battery = b.createModule(.{ .root_source_file = b.path("desktop-battery.zig"), .target = target, .optimize = optimize });
     battery.addImport("gtk", gtk);
     battery.link_libc = true;
@@ -43,6 +59,7 @@ pub fn build(b: *std.Build) void {
     backlight_fixture.root_module.addImport("gtk", gtk);
     backlight_fixture.root_module.addImport("backlight", backlight);
     backlight_fixture.root_module.addImport("battery", battery);
+    backlight_fixture.root_module.addImport("audio", audio);
     backlight_fixture.root_module.link_libc = true;
     backlight_fixture.root_module.linkSystemLibrary("gtk+-3.0", .{});
     backlight_fixture.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
@@ -73,10 +90,12 @@ pub fn build(b: *std.Build) void {
     const quick_module = b.createModule(.{ .root_source_file = b.path("desktop-quick-settings.zig"), .target = target, .optimize = optimize });
     quick_module.addImport("gtk", gtk);
     quick_module.addImport("battery", battery);
+    quick_module.addImport("audio", audio);
     quick_module.addImport("backlight", backlight);
     quick_module.addImport("libc", libc);
     const panel_data = b.createModule(.{ .root_source_file = b.path("waybar-panel.zig"), .target = target, .optimize = optimize });
     panel_data.addImport("battery", battery);
+    panel_data.addImport("audio", audio);
     panel_data.addImport("libc", libc);
     const battery_fixture = b.addExecutable(.{ .name = "desktop-battery-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-battery-fixture.zig"), .target = target, .optimize = optimize }) });
     battery_fixture.root_module.addImport("gtk", gtk);
@@ -90,6 +109,14 @@ pub fn build(b: *std.Build) void {
     settings_module.link_libc = true;
     settings_module.linkSystemLibrary("gtk+-3.0", .{});
     settings_module.addImport("gtk", gtk);
+    settings_module.addImport("audio", audio);
+    const audio_fixture = b.addExecutable(.{ .name = "desktop-audio-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-audio-fixture.zig"), .target = target, .optimize = optimize }) });
+    audio_fixture.root_module.addImport("gtk", gtk);
+    audio_fixture.root_module.addImport("audio", audio);
+    audio_fixture.root_module.addImport("quick", quick_module);
+    linkGtk(audio_fixture);
+    b.installArtifact(audio_fixture);
+    b.step("audio-fixture", "Build the isolated native audio integration fixture").dependOn(&b.addInstallArtifact(audio_fixture, .{}).step);
     const settings_tests = b.addTest(.{ .root_module = settings_module });
     const settings_fixture = b.addExecutable(.{ .name = "desktop-settings-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-settings-fixture.zig"), .target = target, .optimize = optimize }) });
     settings_fixture.root_module.addImport("settings", settings_module);
@@ -280,6 +307,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.link_libc = true;
         exe.root_module.addImport("libc", libc);
         exe.root_module.addImport("battery", battery);
+        exe.root_module.addImport("audio", audio);
     }
     const gtk_fixture = b.addExecutable(.{ .name = "waybar-power-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/waybar-power-fixture.zig"), .target = target, .optimize = optimize }) });
     linkGtk(gtk_fixture);
@@ -319,6 +347,7 @@ pub fn build(b: *std.Build) void {
     tests.root_module.link_libc = true;
     tests.root_module.addImport("libc", libc);
     tests.root_module.addImport("battery", battery);
+    tests.root_module.addImport("audio", audio);
     const run_tests = b.addRunArtifact(tests);
     const http_module = b.createModule(.{ .root_source_file = b.path("desktop-http.zig"), .target = target, .optimize = optimize });
     const http_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-http.zig"), .target = target, .optimize = optimize }) });
@@ -380,8 +409,11 @@ pub fn build(b: *std.Build) void {
     for ([_]*std.Build.Module{ panel.root_module, osd.root_module, notifications.root_module, session.root_module, module }) |root| {
         root.addImport("backlight", backlight);
         root.addImport("battery", battery);
+        root.addImport("audio", audio);
     }
     const test_step = b.step("test", "Run data parsing and allowance tests");
+    test_step.dependOn(&b.addRunArtifact(audio_tests).step);
+    test_step.dependOn(&b.addRunArtifact(audio_abi).step);
     test_step.dependOn(&b.addRunArtifact(battery_tests).step);
     test_step.dependOn(&b.addRunArtifact(output_tests).step);
     test_step.dependOn(&b.addRunArtifact(backlight_tests).step);

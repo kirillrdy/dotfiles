@@ -1,5 +1,5 @@
 """Headless integration test; run under dbus-run-session with labwc, grim,
-wlr-randr, wtype, and dbus-send on PATH. All hardware backends are replaced by mocks.
+wlr-randr, wtype, PipeWire, WirePlumber, and dbus-send on PATH. Audio uses private virtual devices.
 For an unwrapped development binary, supply --loader-cache explicitly.
 """
 
@@ -16,6 +16,7 @@ import time
 import zlib
 sys.dont_write_bytecode = True
 from backlight_mock import BacklightMock
+from audio_server import AudioServer
 from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -34,65 +35,8 @@ print(f"Artifacts: {root}", flush=True)
 (root / "config/labwc/rc.xml").write_text("<labwc_config />")
 (root / "config/labwc/autostart").write_text("")
 (root / "config/labwc/environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
-(root / "mock").mkdir()
 state_file = root / "state.json"
-state_file.write_text(
-    json.dumps({"volume": 50, "muted": True, "mic_muted": False, "brightness": 20})
-)
-mock = root / "mock/backend"
-mock.write_text(
-    f"#!{sys.executable}\n"
-    + r"""
-import fcntl, json, os, sys, time
-from pathlib import Path
-root = Path(os.environ['OSD_TEST_ROOT'])
-tool = Path(sys.argv[0]).name
-args = sys.argv[1:]
-with (root/'calls.log').open('a') as f:
-    f.write(json.dumps([tool, args])+'\n')
-if tool == 'pw-play':
-    with (root/'sound.lock').open('w') as lock:
-        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            (root/'sound-overlap').touch()
-            sys.exit(1)
-        with (root/'sounds.log').open('a') as f: f.write('sound\n')
-        time.sleep(.8)
-    sys.exit(0)
-path = root/'state.json'
-state = json.loads(path.read_text())
-def save():
-    temp = path.with_suffix('.tmp')
-    temp.write_text(json.dumps(state))
-    temp.replace(path)
-if state.pop('fail', False):
-    save()
-    print('fixture backend failure', file=sys.stderr)
-    sys.exit(1)
-if state.pop('hang', False):
-    save()
-    time.sleep(10)
-if tool == 'wpctl':
-    is_mic = '@DEFAULT_AUDIO_SOURCE@' in args
-    muted = 'mic_muted' if is_mic else 'muted'
-    if args[0] == 'get-volume':
-        print('Volume: %.2f%s' % ((65 if is_mic else state['volume'])/100,
-                                 ' [MUTED]' if state[muted] else ''))
-    elif args[0] == 'set-mute':
-        state[muted] = not state[muted] if args[-1] == 'toggle' else args[-1] == '1'
-        save()
-    elif args[0] == 'set-volume':
-        assert args[1:3] == ['-l', '1.0']
-        state['volume'] = float(args[-1].removesuffix('%'))
-        assert 0 <= state['volume'] <= 100
-        save()
-    else: raise ValueError(args)
-else: raise ValueError(tool)
-"""
-)
-mock.chmod(0o755)
-for tool in ("wpctl", "pw-play"):
-    (root / "mock" / tool).symlink_to(mock)
+state_file.write_text(json.dumps({"brightness": 20}))
 def set_brightness(percent):
     state = json.loads(state_file.read_text())
     state["brightness"] = percent
@@ -103,7 +47,6 @@ env = dict(os.environ)
 for name in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID", "GDK_PIXBUF_MODULE_FILE"):
     env.pop(name, None)
 env.update(
-    PATH=str(root / "mock") + ":" + env["PATH"],
     OSD_TEST_ROOT=str(root),
     DESKTOP_BACKLIGHT_FIXTURE_ROOT=str(backlight.sysfs),
     DBUS_SYSTEM_BUS_ADDRESS=backlight.address,
@@ -123,6 +66,7 @@ env.update(
 if args.loader_cache:
     env["GDK_PIXBUF_MODULE_FILE"] = str(args.loader_cache)
 processes = []
+audio = AudioServer(root, env)
 
 
 def start(command, filename, extra=None):
@@ -156,7 +100,7 @@ def wait_for(predicate, seconds=6):
 
 
 def state():
-    return json.loads(state_file.read_text())
+    return json.loads(state_file.read_text()) | audio.state()
 
 
 def pixels(name, output="HEADLESS-1"):
@@ -178,6 +122,10 @@ def log():
 
 
 try:
+    audio.start()
+    audio.command("set-volume", "@DEFAULT_AUDIO_SINK@", "0.5")
+    audio.command("set-mute", "@DEFAULT_AUDIO_SINK@", "1")
+    audio.command("set-mute", "@DEFAULT_AUDIO_SOURCE@", "0")
     compositor = start(["labwc", "-C", str(root / "config/labwc")], "labwc.log")
     for _ in range(100):
         if (root / "runtime/wayland-0").exists():
@@ -237,7 +185,7 @@ try:
         return "boolean true" in result.stdout
 
     wait_for(registered)
-    time.sleep(0.1)
+    time.sleep(0.4)
     baseline = pixels("hidden")
     baseline_second = pixels("hidden-second", "HEADLESS-2")
     send("volume", "up")
@@ -266,8 +214,6 @@ try:
         assert client.wait(timeout=8) == 0
     wait_for(lambda: state()["volume"] == 100)
     time.sleep(0.3)
-    assert not (root / "sound-overlap").exists()
-    assert len((root / "sounds.log").read_text().splitlines()) < 26
     clients = [
         sp.Popen(
             [str(args.binary), "volume", "down"],
@@ -289,7 +235,7 @@ try:
     time.sleep(0.15)
     pixels("microphone")
     print(
-        "PASS key repeat, 100 percent cap, mute toggles and non-overlapping feedback",
+        "PASS key repeat, 100 percent cap and native mute toggles",
         flush=True,
     )
     for _ in range(8):
@@ -305,17 +251,19 @@ try:
     time.sleep(1.6)
     assert pixels("dismissed") == baseline, "OSD did not disappear"
     print("PASS brightness limits and automatic dismissal", flush=True)
-    # A failed or hung backend must not block subsequent media keys.
-    for mode in ("fail", "hang"):
-        data = state()
-        data[mode] = True
-        state_file.write_text(json.dumps(data))
-        send("volume", "down")
-        wait_for(lambda mode=mode: mode not in state())
-        send("brightness", "down")
-        expected = 95 if mode == "fail" else 90
-        wait_for(lambda expected=expected: state()["brightness"] == expected)
-    print("PASS backend failure, timeout and queue recovery", flush=True)
+    # A stopped server must time out without blocking brightness work behind it.
+    audio.suspend()
+    send("volume", "down")
+    send("brightness", "down")
+    wait_for(lambda: state()["brightness"] == 95)
+    audio.resume()
+    time.sleep(.2)
+    audio.stop()
+    time.sleep(.2)
+    send("volume", "down")
+    send("brightness", "down")
+    wait_for(lambda: state()["brightness"] == 90)
+    print("PASS native audio timeout, disconnect and queue recovery", flush=True)
     run(
         [
             "wlr-randr",
@@ -347,6 +295,7 @@ try:
     assert server.wait(timeout=5) == 0
     print("PASS clean shutdown", flush=True)
 finally:
+    audio.stop()
     backlight.stop()
     for process in reversed(processes):
         if process.poll() is None:

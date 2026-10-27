@@ -1,6 +1,7 @@
 //! JSON streams for the native panel. Each update owns a bounded arena.
 const std = @import("std");
 const u = @import("desktop-util.zig");
+const audio = @import("audio");
 const battery = @import("battery");
 const codex = @import("waybar-codex.zig");
 const A = u.Allocator;
@@ -220,8 +221,15 @@ fn item(a: A, icon: []const u8, label: []const u8, tooltip: []const u8, cmd: []c
     try u.put(a, &out, "command", u.str(cmd));
     return out;
 }
-pub fn microphoneMuted(output: []const u8) bool {
-    return std.mem.startsWith(u8, output, "Volume:") and std.mem.indexOf(u8, output, "[MUTED]") != null;
+pub fn addAudio(a: A, out: *V, output: ?audio.State, input: ?audio.State) !void {
+    const items = out.object.getPtr("items") orelse return;
+    if (output) |state| {
+        const level = if (state.muted or state.percent == 0) "muted" else if (state.percent >= 66) "high" else if (state.percent >= 33) "medium" else "low";
+        try items.array.append(try item(a, try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), "", try u.fmt(a, "Volume: {d:.0}%", .{state.percent}), "desktop-settings sound"));
+    }
+    if (input) |state| if (state.muted) {
+        try items.array.append(try item(a, "microphone-sensitivity-muted-symbolic", "", "Microphone muted", ""));
+    };
 }
 fn statusItems(a: A, demo: bool) !V {
     var items = u.array(a);
@@ -233,16 +241,6 @@ fn statusItems(a: A, demo: bool) !V {
     }
     const wireless = try wirelessIcon(a);
     try items.array.append(try item(a, wireless.icon, "", wireless.tooltip, "desktop-settings network"));
-    const volume = u.command(a, &.{ "wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@" }, 4);
-    var words = std.mem.tokenizeAny(u8, volume, " \t");
-    _ = words.next();
-    const amount = std.fmt.parseFloat(f64, words.next() orelse "") catch std.math.nan(f64);
-    const percentage = if (std.math.isFinite(amount)) amount * 100 else 0;
-    const level = if (std.mem.indexOf(u8, volume, "MUTED") != null or !std.math.isFinite(amount)) "muted" else if (percentage >= 66) "high" else if (percentage >= 33) "medium" else "low";
-    try items.array.append(try item(a, try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), "", try u.fmt(a, "Volume: {d:.0}%", .{percentage}), "desktop-settings sound"));
-    if (microphoneMuted(u.command(a, &.{ "wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@" }, 4))) {
-        try items.array.append(try item(a, "microphone-sensitivity-muted-symbolic", "", "Microphone muted", ""));
-    }
     return items;
 }
 var wake_pipe: [2]std.posix.fd_t = .{ -1, -1 };
@@ -253,10 +251,16 @@ fn refreshSignal(_: std.posix.SIG) callconv(.c) void {
 }
 fn waitRefresh(milliseconds: c_int) void {
     var fd = u.libc.struct_pollfd{ .fd = wake_pipe[0], .events = u.libc.POLLIN, .revents = 0 };
-    _ = u.libc.poll(&fd, 1, milliseconds);
+    var remaining = milliseconds;
+    while (remaining > 0) {
+        audio.dispatch();
+        if (u.libc.poll(&fd, 1, @min(remaining, 50)) > 0) break;
+        remaining -= 50;
+    }
     var buf: [128]u8 = undefined;
     while (u.libc.read(wake_pipe[0], &buf, buf.len) > 0) {}
 }
+fn audioChanged(_: ?*anyopaque, _: *audio.Service) void {}
 pub fn main(init: std.process.Init) !void {
     u.io = init.io;
     run(init.minimal.args) catch |err| if (err != error.WriteFailed) return err;
@@ -283,11 +287,14 @@ fn run(args_source: std.process.Args) !void {
         _ = u.libc.close(wake_pipe[1]);
     }
     if (u.eq(kind, "codex") or u.eq(kind, "status")) std.posix.sigaction(std.posix.SIG.USR1, &.{ .handler = .{ .handler = refreshSignal }, .mask = std.posix.sigemptyset(), .flags = 0 }, null);
+    const audio_service = if (u.eq(kind, "status") and !demo) try audio.Service.create(&audioChanged, null) else null;
+    defer if (audio_service) |service| service.destroy();
     while (true) {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const a = arena.allocator();
         var out = try sample(a, kind, icon, codex_command, demo);
+        if (audio_service) |service| try addAudio(a, &out, service.state(.output), service.state(.input));
         if (u.eq(kind, "status") and !demo) try addBattery(a, &out, battery.read());
         try u.emit(a, out);
         waitRefresh(if (u.eq(kind, "codex")) 60000 else 5000);
