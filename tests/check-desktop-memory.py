@@ -10,6 +10,9 @@ import tempfile
 
 sys.dont_write_bytecode = True
 from audio_server import AudioServer
+from network_server import Server
+from gi.repository import GLib
+import threading
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True)
@@ -19,16 +22,12 @@ args = parser.parse_args()
 root = Path(tempfile.mkdtemp(prefix="desktop-memory-check-", dir=os.environ.get("TMPDIR", "/tmp")))
 print(f"Memory-check artifacts: {root}", flush=True)
 (root / "runtime").mkdir(mode=0o700)
-(root / "tools").mkdir()
-# UI teardown may cancel network queries. Never run a real network backend.
-(root / "tools/nmcli").write_text("#!/bin/sh\nexit 0\n")
-(root / "tools/nmcli").chmod(0o755)
 env = dict(os.environ, XDG_RUNTIME_DIR=str(root / "runtime"),
            XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"),
            XDG_STATE_HOME=str(root / "state"), GSETTINGS_BACKEND="memory",
            NO_AT_BRIDGE="1", GDK_BACKEND="x11", G_DEBUG="gc-friendly,fatal-criticals",
            DESKTOP_MEMORY_TEST_RUN="1", DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDRESS"],
-           PATH=str(root / "tools") + os.pathsep + os.environ["PATH"])
+           PATH=os.environ["PATH"])
 env.pop("DESKTOP_MEMORY_LEAK_PROBE", None)
 # Keep source-level diagnostics for the native run. Valgrind's DWARF reader
 # cannot parse this Zig compiler's line-table extensions; retain symbol names.
@@ -55,6 +54,10 @@ def run(name, probe=None, checked_heap=False):
 
 
 try:
+    network = Server(os.environ["DBUS_SESSION_BUS_ADDRESS"])
+    network_loop = GLib.MainLoop()
+    network_thread = threading.Thread(target=network_loop.run, daemon=True)
+    network_thread.start()
     audio.start()
     status, output, _ = run("tracked-lifetimes")
     assert status == 0, output[-14000:]
@@ -72,3 +75,5 @@ try:
     print("PASS negative controls: deliberate Zig, GObject-reference and C-heap leaks fail", flush=True)
 finally:
     audio.stop()
+    network_loop.quit()
+    network_thread.join(timeout=2)

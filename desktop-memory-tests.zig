@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("gtk");
 const audio = @import("audio");
+const network = @import("network");
 const battery = @import("battery");
 const settings = @import("desktop-settings.zig");
 const widgets = @import("desktop-widgets.zig");
@@ -96,6 +97,55 @@ fn batteryLifetime(settle: bool) !void {
     service.destroy();
     try objects.wait(15_000_000);
 }
+fn networkChanged(_: ?*anyopaque, _: *network.Client) void {}
+const NetworkCompletion = struct {
+    finished: bool = false,
+    succeeded: bool = false,
+    fn done(ptr: ?*anyopaque, result: network.Result) void {
+        const self: *NetworkCompletion = @ptrCast(@alignCast(ptr));
+        self.finished = true;
+        self.succeeded = result == .success;
+    }
+};
+fn networkLifetime(settle: bool) !void {
+    var objects = Objects{};
+    const client = try network.Client.create(&networkChanged, null);
+    const second = try network.Client.create(&networkChanged, null);
+    try std.testing.expect(client.service == second.service);
+    objects.watch(client.cancel);
+    objects.watch(second.cancel);
+    objects.watch(client.service.cancel);
+    var activation = NetworkCompletion{};
+    if (settle) {
+        const deadline = c.g_get_monotonic_time() + 15_000_000;
+        while ((!client.state().available or client.state().profiles.items.len == 0) and c.g_get_monotonic_time() < deadline) pump();
+        try std.testing.expect(client.state().available and client.state().profiles.items.len != 0);
+        if (client.service.manager) |manager| objects.watch(manager);
+        const cancel = c.g_cancellable_new().?;
+        defer c.g_object_unref(cancel);
+        objects.watch(cancel);
+        var connected = NetworkCompletion{};
+        const ap = client.state().access_points.items[0];
+        client.perform(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = "memory-secret" } }, cancel, &NetworkCompletion.done, &connected);
+        while (!connected.finished and c.g_get_monotonic_time() < deadline) pump();
+        try std.testing.expect(connected.finished and connected.succeeded);
+        const ui = settings.Settings.create(.network);
+        objects.watch(ui.window);
+        objects.watch(ui.audio_cancel);
+        // Start a real asynchronous action, then cancel it during window teardown.
+        ui.refresh();
+        c.gtk_widget_destroy(ui.window);
+        while (ui.network_operations != 0) pump();
+        ui.destroy();
+        client.perform(.{ .activate = client.state().profiles.items[0].path }, cancel, &NetworkCompletion.done, &activation);
+        while (!activation.finished and client.service.waiting.items.len == 0 and c.g_get_monotonic_time() < deadline) pump();
+        try std.testing.expect(activation.finished or client.service.waiting.items.len != 0);
+    }
+    second.destroy();
+    client.destroy();
+    try objects.wait(15_000_000);
+    if (settle) try std.testing.expect(activation.finished);
+}
 fn soundLifetime(settle: bool) !void {
     var objects = Objects{};
     const sound = settings.Settings.create(.sound);
@@ -112,8 +162,8 @@ fn soundLifetime(settle: bool) !void {
     }
     c.gtk_widget_destroy(sound.window);
     const deadline = c.g_get_monotonic_time() + 15_000_000;
-    while ((sound.audio_operations != 0 or sound.jobs != null) and c.g_get_monotonic_time() < deadline) pump();
-    try std.testing.expect(sound.audio_operations == 0 and sound.jobs == null);
+    while ((sound.audio_operations != 0 or sound.network_operations != 0) and c.g_get_monotonic_time() < deadline) pump();
+    try std.testing.expect(sound.audio_operations == 0 and sound.network_operations == 0);
     sound.destroy();
     try objects.wait(15_000_000);
 }
@@ -132,6 +182,10 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         if (controls.interface) |prefs| objects.watch(prefs);
         if (controls.notifications) |prefs| objects.watch(prefs);
         if (controls.audio_service) |service| watchAudio(&objects, service);
+        if (controls.network_client) |client| {
+            objects.watch(client.cancel);
+            objects.watch(client.service.cancel);
+        }
         if (controls.battery_service) |service| objects.watch(service.cancel);
     }
     if (module.calendar != null) objects.watch(module.calendar);
@@ -166,6 +220,8 @@ test "memory: repeated asynchronous service and widget teardown releases ownersh
     if (c.gtk_init_check(null, null) == 0) return error.PrivateDisplayRequired;
     c.g_object_set(c.gtk_settings_get_default(), "gtk-enable-animations", @as(c_int, 0), @as(?*anyopaque, null));
     for (0..4) |_| {
+        try networkLifetime(false);
+        try networkLifetime(true);
         try audioLifetime(false);
         try audioLifetime(true);
         try batteryLifetime(false);

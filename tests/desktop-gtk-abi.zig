@@ -12,6 +12,10 @@ fn checkType(comptime A: type, comptime B: type) void {
         checkType(A, right.optional.child);
         return;
     }
+    if (left == .optional and right == .pointer and @typeInfo(left.optional.child) == .pointer) {
+        checkType(left.optional.child, B);
+        return;
+    }
     // glibc exposes connect's address parameter as a GNU transparent union of
     // pointers. Its C ABI is the same as the ordinary sockaddr pointer.
     if (left == .pointer and right == .@"union") {

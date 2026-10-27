@@ -2,6 +2,7 @@
 const std = @import("std");
 pub const c = @import("gtk");
 const audio = @import("audio");
+const network = @import("network");
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 fn cast(comptime T: type, p: anytype) *T {
@@ -29,42 +30,7 @@ fn button(box: *c.GtkWidget, text: [*:0]const u8, callback: anytype, data: anyty
     return widget;
 }
 
-/// nmcli's terse format escapes both colons and backslashes. Never split it
-/// with a plain ':' tokenizer: SSIDs and connection names may contain either.
-pub fn fields(comptime count: usize, allocator: std.mem.Allocator, line: []const u8) ![count][]const u8 {
-    var result: [count][]const u8 = undefined;
-    var field: std.ArrayList(u8) = .empty;
-    defer field.deinit(allocator);
-    var index: usize = 0;
-    var pos: usize = 0;
-    while (pos < line.len) : (pos += 1) {
-        if (line[pos] == '\\') {
-            pos += 1;
-            if (pos == line.len or (line[pos] != ':' and line[pos] != '\\')) return error.InvalidEscape;
-        } else if (line[pos] == ':') {
-            if (index >= count - 1) return error.InvalidFields;
-            result[index] = try allocator.dupe(u8, field.items);
-            index += 1;
-            field.clearRetainingCapacity();
-            continue;
-        }
-        try field.append(allocator, line[pos]);
-    }
-    if (index != count - 1) return error.InvalidFields;
-    result[index] = try allocator.dupe(u8, field.items);
-    return result;
-}
 pub const Mode = enum { sound, network };
-const Kind = enum { wifi, profiles, devices, action };
-const Job = struct {
-    owner: *Settings,
-    process: *c.GSubprocess,
-    next: ?*Job,
-    kind: Kind,
-    generation: usize,
-    index: usize,
-    input: ?[:0]u8,
-};
 pub const AudioRow = struct {
     owner: *Settings,
     id: [:0]u8,
@@ -82,11 +48,9 @@ pub const Settings = struct {
     message: *c.GtkWidget,
     refresh_button: *c.GtkWidget,
     rows: std.ArrayList(*AudioRow) = .empty,
-    jobs: ?*Job = null,
+    network_client: ?*network.Client = null,
+    network_operations: usize = 0,
     closed: bool = false,
-    generation: usize = 0,
-    queries: usize = 0,
-    mutating: bool = false,
     failed: bool = false,
     audio_service: ?*audio.Service = null,
     audio_cancel: *c.GCancellable,
@@ -123,7 +87,10 @@ pub const Settings = struct {
         c.gtk_label_set_max_width_chars(cast(c.GtkLabel, self.message), 60);
         c.gtk_label_set_selectable(cast(c.GtkLabel, self.message), 1);
         connect(window, "destroy", &destroyed, self);
-        if (mode == .network) self.makeNetwork() else self.audio_service = audio.Service.create(&audioChanged, self) catch null;
+        if (mode == .network) {
+            self.makeNetwork();
+            self.network_client = network.Client.create(&networkChanged, self) catch null;
+        } else self.audio_service = audio.Service.create(&audioChanged, self) catch null;
         c.gtk_widget_show_all(window);
         self.refresh();
         return self;
@@ -132,8 +99,10 @@ pub const Settings = struct {
         c.gtk_label_set_text(cast(c.GtkLabel, self.message), text);
     }
     fn sensitivity(self: *Settings) void {
-        c.gtk_widget_set_sensitive(self.refresh_button, @intFromBool(self.queries == 0 and !self.mutating and self.audio_operations == 0));
-        c.gtk_widget_set_sensitive(self.body, @intFromBool(!self.mutating and (self.mode == .sound or self.queries == 0)));
+        const idle = self.audio_operations == 0 and self.network_operations == 0;
+        c.gtk_widget_set_sensitive(self.refresh_button, @intFromBool(idle));
+        const available = self.mode == .sound or (self.network_client != null and self.network_client.?.state().available);
+        c.gtk_widget_set_sensitive(self.body, @intFromBool(idle and available));
     }
     fn clearRows(self: *Settings) void {
         for (self.rows.items) |row| {
@@ -145,7 +114,7 @@ pub const Settings = struct {
     }
     /// The caller frees the state after asynchronous completions have drained.
     pub fn destroy(self: *Settings) void {
-        std.debug.assert(self.closed and self.jobs == null and self.audio_operations == 0);
+        std.debug.assert(self.closed and self.network_operations == 0 and self.audio_operations == 0);
         c.g_object_unref(self.audio_cancel);
         self.clearRows();
         self.rows.deinit(a);
@@ -161,108 +130,53 @@ pub const Settings = struct {
             if (row.timer != 0) _ = c.g_source_remove(row.timer);
             row.timer = 0;
         }
-        var job = self.jobs;
-        // timeout forwards TERM to the backend; killing only the supervisor
-        // would leave nmcli running after the window closes.
-        while (job) |j| : (job = j.next) c.g_subprocess_send_signal(j.process, c.SIGTERM);
+        if (self.network_client) |client| client.destroy();
+        self.network_client = null;
     }
     fn refreshClicked(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
         const self: *Settings = @ptrCast(@alignCast(data));
         self.refresh();
     }
     pub fn refresh(self: *Settings) void {
-        if (self.closed or self.mutating or self.queries != 0) return;
-        self.generation += 1;
+        if (self.closed or self.network_operations != 0 or self.audio_operations != 0) return;
         self.failed = false;
-        self.setMessage("Refreshing…");
         if (self.mode == .sound) {
             self.audio_layout = null;
             if (self.audio_service) |service| self.renderSound(service) else self.setMessage("Audio service unavailable");
-        } else {
-            self.run(&.{ "nmcli", "-t", "-e", "yes", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan", "auto" }, .wifi, 0, null);
-            self.run(&.{ "nmcli", "-t", "-e", "yes", "-f", "UUID,NAME,TYPE,DEVICE", "connection", "show" }, .profiles, 0, null);
-            self.run(&.{ "nmcli", "-t", "-e", "yes", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status" }, .devices, 0, null);
-        }
+        } else if (self.network_client) |client| {
+            client.refresh();
+            if (client.state().available) self.networkAction(.scan) else self.renderNetwork(client.state());
+        } else self.setMessage("NetworkManager unavailable");
     }
-    pub fn run(self: *Settings, args: []const [:0]const u8, kind: Kind, index: usize, input: ?[:0]const u8) void {
-        if (self.closed) return;
-        var argv: [40:null]?[*:0]const u8 = @splat(null);
-        std.debug.assert(args.len + 2 < argv.len);
-        // Bound queries and interactive authentication; never block GTK's loop.
-        argv[0] = "timeout";
-        argv[1] = "40";
-        for (args, 2..) |arg, i| argv[i] = arg.ptr;
-        const flags: c.GSubprocessFlags = @intCast(c.G_SUBPROCESS_FLAGS_STDOUT_PIPE | c.G_SUBPROCESS_FLAGS_STDERR_PIPE | if (input != null) c.G_SUBPROCESS_FLAGS_STDIN_PIPE else @as(c_int, 0));
-        const launcher = c.g_subprocess_launcher_new(flags);
-        defer c.g_object_unref(launcher);
-        c.g_subprocess_launcher_setenv(launcher, "LC_ALL", "C", 1);
-        var err: [*c]c.GError = null;
-        const process = c.g_subprocess_launcher_spawnv(launcher, @ptrCast(&argv), &err);
-        if (process == null) {
-            self.failed = true;
-            self.setMessage(err.*.message);
-            c.g_clear_error(&err);
-            if (kind == .action) self.mutating = false;
-            self.sensitivity();
+    fn networkChanged(ptr: ?*anyopaque, client: *network.Client) void {
+        const self = cast(Settings, ptr);
+        if (!self.closed) self.renderNetwork(client.state());
+    }
+    fn networkAction(self: *Settings, action: network.Action) void {
+        if (self.closed or self.network_operations != 0) return;
+        const client = self.network_client orelse {
+            self.setMessage("NetworkManager unavailable");
             return;
-        }
-        const job = a.create(Job) catch @panic("out of memory");
-        job.* = .{ .owner = self, .process = process.?, .next = self.jobs, .kind = kind, .generation = self.generation, .index = index, .input = if (input) |s| z(s) else null };
-        self.jobs = job;
-        if (kind != .action) self.queries += 1;
+        };
+        self.failed = false;
+        self.network_operations += 1;
+        self.setMessage("Working…");
         self.sensitivity();
-        c.g_subprocess_communicate_utf8_async(process, if (job.input) |s| s.ptr else null, null, &completed, job);
+        client.perform(action, self.audio_cancel, &networkDone, self);
     }
-    fn completed(_: ?*c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
-        const job: *Job = @ptrCast(@alignCast(data));
-        const self = job.owner;
-        var out: [*c]u8 = null;
-        var errors: [*c]u8 = null;
-        var err: [*c]c.GError = null;
-        const communicated = c.g_subprocess_communicate_utf8_finish(job.process, result, &out, &errors, &err) != 0;
-        const ok = communicated and c.g_subprocess_get_successful(job.process) != 0;
-        if (job.kind != .action) self.queries -= 1;
-        var link = &self.jobs;
-        while (link.* != job) link = &link.*.?.next;
-        link.* = job.next;
-        if (!self.closed and job.generation == self.generation) {
-            if (job.kind == .action) self.mutating = false;
-            if (!ok) {
+    fn networkDone(ptr: ?*anyopaque, result: network.Result) void {
+        const self = cast(Settings, ptr);
+        self.network_operations -= 1;
+        if (self.closed) return;
+        switch (result) {
+            .success => self.setMessage(""),
+            .failure => |message| {
                 self.failed = true;
-                self.setMessage(if (err != null) err.*.message else if (errors != null and errors[0] != 0) errors else "The operation failed or timed out. Refresh and try again.");
-            } else {
-                const text = if (out != null) std.mem.span(out) else "";
-                self.accept(job.kind, job.index, text) catch |failure| {
-                    self.failed = true;
-                    const message = z(@errorName(failure));
-                    defer a.free(message);
-                    self.setMessage(message);
-                };
-            }
-            self.sensitivity();
-        }
-        c.g_free(out);
-        c.g_free(errors);
-        c.g_clear_error(&err);
-        c.g_object_unref(job.process);
-        if (job.input) |s| {
-            @memset(s, 0);
-            a.free(s);
-        }
-        a.destroy(job);
-    }
-    fn accept(self: *Settings, kind: Kind, _: usize, text: []const u8) !void {
-        switch (kind) {
-            .wifi => try self.renderWifi(text),
-            .profiles => try self.renderProfiles(text),
-            .devices => try self.renderDevices(text),
-            .action => {
-                self.notifyDevices();
-                self.refresh();
-                return;
+                self.setMessage(message);
             },
         }
-        if (self.queries == 0 and !self.failed) self.setMessage("");
+        if (self.network_client) |client| self.renderNetwork(client.state());
+        self.sensitivity();
     }
     fn notifyDevices(_: *Settings) void {
         const app = c.g_application_get_default() orelse return;
@@ -420,128 +334,93 @@ pub const Settings = struct {
         _ = button(self.body, "Disconnect device", &deviceDisconnect, self);
         _ = button(self.body, "Edit connections…", &editConnections, self);
     }
-    pub fn renderWifi(self: *Settings, text: []const u8) !void {
-        // Keep a manually entered SSID while refreshing the access-point list.
+    pub fn renderNetwork(self: *Settings, state: *const network.State) void {
+        var arena = std.heap.ArenaAllocator.init(a);
+        defer arena.deinit();
+        const alloc = arena.allocator();
         const entry = cast(c.GtkEntry, c.gtk_bin_get_child(cast(c.GtkBin, self.ssids.?)));
-        const selected = z(std.mem.span(c.gtk_entry_get_text(entry)));
-        defer a.free(selected);
+        const manual = alloc.dupeSentinel(u8, std.mem.span(c.gtk_entry_get_text(entry)), 0) catch @panic("out of memory");
+        const selected_ap = c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.ssids.?));
+        const ap_id = if (selected_ap != null) alloc.dupeSentinel(u8, std.mem.span(selected_ap), 0) catch @panic("out of memory") else null;
         c.gtk_combo_box_text_remove_all(cast(c.GtkComboBoxText, self.ssids.?));
-        var arena = std.heap.ArenaAllocator.init(a);
-        defer arena.deinit();
-        var seen: std.StringHashMap(void) = .init(arena.allocator());
-        var lines = std.mem.splitScalar(u8, text, '\n');
-        while (lines.next()) |line| {
-            if (line.len == 0) continue;
-            const values = try fields(4, arena.allocator(), line);
-            if (values[1].len == 0 or seen.contains(values[1])) continue;
-            try seen.put(values[1], {});
-            const ssid = try arena.allocator().dupeSentinel(u8, values[1], 0);
-            c.gtk_combo_box_text_append(cast(c.GtkComboBoxText, self.ssids.?), ssid, ssid);
+        var seen: std.StringHashMap(void) = .init(alloc);
+        for (state.access_points.items) |ap| {
+            if (ap.ssid.len == 0 or seen.contains(ap.ssid)) continue;
+            seen.put(ap.ssid, {}) catch @panic("out of memory");
+            c.gtk_combo_box_text_append(cast(c.GtkComboBoxText, self.ssids.?), ap.path, ap.title);
         }
-        c.gtk_entry_set_text(entry, selected);
-    }
-    pub fn renderProfiles(self: *Settings, text: []const u8) !void {
-        const combo = cast(c.GtkComboBox, self.profiles.?);
-        const current = c.gtk_combo_box_get_active_id(combo);
-        const selected = if (current != null) z(std.mem.span(current)) else null;
-        defer if (selected) |s| a.free(s);
+        if (ap_id == null or c.gtk_combo_box_set_active_id(cast(c.GtkComboBox, self.ssids.?), ap_id.?) == 0) c.gtk_entry_set_text(entry, manual);
+        const profile_combo = cast(c.GtkComboBox, self.profiles.?);
+        const current_profile = c.gtk_combo_box_get_active_id(profile_combo);
+        const profile_id = if (current_profile != null) alloc.dupeSentinel(u8, std.mem.span(current_profile), 0) catch @panic("out of memory") else null;
         c.gtk_combo_box_text_remove_all(cast(c.GtkComboBoxText, self.profiles.?));
-        var arena = std.heap.ArenaAllocator.init(a);
-        defer arena.deinit();
-        var lines = std.mem.splitScalar(u8, text, '\n');
-        while (lines.next()) |line| {
-            if (line.len == 0) continue;
-            const values = try fields(4, arena.allocator(), line);
-            const id = try arena.allocator().dupeSentinel(u8, values[0], 0);
-            const name = try std.fmt.allocPrintSentinel(arena.allocator(), "{s} ({s}){s}", .{ values[1], values[2], if (values[3].len > 0 and !std.mem.eql(u8, values[3], "--")) " — connected" else "" }, 0);
-            c.gtk_combo_box_text_append(cast(c.GtkComboBoxText, self.profiles.?), id, name);
+        for (state.profiles.items) |p| {
+            const title = std.fmt.allocPrintSentinel(alloc, "{s} ({s}){s}", .{ p.title, p.kind, if (p.active) " — connected" else "" }, 0) catch @panic("out of memory");
+            c.gtk_combo_box_text_append(cast(c.GtkComboBoxText, self.profiles.?), p.path, title);
         }
-        if (selected == null or c.gtk_combo_box_set_active_id(combo, selected.?) == 0) c.gtk_combo_box_set_active(combo, 0);
-    }
-    pub fn renderDevices(self: *Settings, text: []const u8) !void {
-        const combo = cast(c.GtkComboBox, self.devices.?);
-        const current = c.gtk_combo_box_get_active_id(combo);
-        const selected = if (current != null) z(std.mem.span(current)) else null;
-        defer if (selected) |s| a.free(s);
+        if (profile_id == null or c.gtk_combo_box_set_active_id(profile_combo, profile_id.?) == 0) c.gtk_combo_box_set_active(profile_combo, 0);
+        const device_combo = cast(c.GtkComboBox, self.devices.?);
+        const current_device = c.gtk_combo_box_get_active_id(device_combo);
+        const device_id = if (current_device != null) alloc.dupeSentinel(u8, std.mem.span(current_device), 0) catch @panic("out of memory") else null;
         c.gtk_combo_box_text_remove_all(cast(c.GtkComboBoxText, self.devices.?));
-        var arena = std.heap.ArenaAllocator.init(a);
-        defer arena.deinit();
         var summary: std.ArrayList(u8) = .empty;
-        var lines = std.mem.splitScalar(u8, text, '\n');
-        while (lines.next()) |line| {
-            if (line.len == 0) continue;
-            const values = try fields(4, arena.allocator(), line);
-            if (std.mem.eql(u8, values[1], "loopback")) continue;
-            const id = try arena.allocator().dupeSentinel(u8, values[0], 0);
-            const name = try std.fmt.allocPrintSentinel(arena.allocator(), "{s}: {s} — {s}", .{ values[0], values[2], values[3] }, 0);
-            c.gtk_combo_box_text_append(cast(c.GtkComboBoxText, self.devices.?), id, name);
-            if (summary.items.len != 0) try summary.append(arena.allocator(), '\n');
-            try summary.appendSlice(arena.allocator(), name);
+        for (state.devices.items) |d| {
+            if (d.kind == 32 or std.mem.eql(u8, d.interface, "lo")) continue;
+            const title = std.fmt.allocPrintSentinel(alloc, "{s}: {s} — {s}", .{ d.interface, network.deviceState(d.state), state.connectionName(d.active) }, 0) catch @panic("out of memory");
+            c.gtk_combo_box_text_append(cast(c.GtkComboBoxText, self.devices.?), d.path, title);
+            if (summary.items.len != 0) summary.append(alloc, '\n') catch @panic("out of memory");
+            summary.appendSlice(alloc, title) catch @panic("out of memory");
         }
-        if (selected == null or c.gtk_combo_box_set_active_id(combo, selected.?) == 0) c.gtk_combo_box_set_active(combo, 0);
-        const status = try arena.allocator().dupeSentinel(u8, if (summary.items.len == 0) "No network devices available" else summary.items, 0);
+        if (device_id == null or c.gtk_combo_box_set_active_id(device_combo, device_id.?) == 0) c.gtk_combo_box_set_active(device_combo, 0);
+        const status = alloc.dupeSentinel(u8, if (!state.available) "NetworkManager unavailable" else if (summary.items.len == 0) "No network devices available" else summary.items, 0) catch @panic("out of memory");
         c.gtk_label_set_text(cast(c.GtkLabel, self.status.?), status);
+        self.sensitivity();
     }
-    fn action(self: *Settings, args: []const [:0]const u8, input: ?[:0]const u8) void {
-        if (self.mutating or self.queries != 0) return;
-        self.mutating = true;
-        self.setMessage("Applying…");
-        self.run(args, .action, 0, input);
+    fn wifiOn(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
+        cast(Settings, ptr).networkAction(.{ .wifi = true });
     }
-    fn wifiOn(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(data));
-        self.action(&.{ "nmcli", "radio", "wifi", "on" }, null);
+    fn wifiOff(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
+        cast(Settings, ptr).networkAction(.{ .wifi = false });
     }
-    fn wifiOff(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(data));
-        self.action(&.{ "nmcli", "radio", "wifi", "off" }, null);
-    }
-    pub fn wifiConnect(_: ?*c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(data));
-        const ssid = c.gtk_entry_get_text(cast(c.GtkEntry, c.gtk_bin_get_child(cast(c.GtkBin, self.ssids.?))));
-        if (ssid[0] == 0) {
-            self.setMessage("Select a Wi-Fi network or enter its name.");
-            return;
-        }
+    pub fn wifiConnect(_: ?*c.GtkButton, ptr: c.gpointer) callconv(.c) void {
+        const self = cast(Settings, ptr);
+        const client = self.network_client orelse return;
+        const entered = std.mem.span(c.gtk_entry_get_text(cast(c.GtkEntry, c.gtk_bin_get_child(cast(c.GtkBin, self.ssids.?)))));
+        const selected = c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.ssids.?));
+        const ap = if (selected != null) client.state().ap(std.mem.span(selected)) else null;
         const password = c.gtk_entry_get_text(cast(c.GtkEntry, self.password.?));
-        // --ask reads a missing secret from stdin. Keep it out of argv, the
-        // process list and temporary files; EOF terminates additional prompts.
-        const input = std.fmt.allocPrintSentinel(a, "{s}\n", .{std.mem.span(password)}, 0) catch @panic("out of memory");
-        defer {
-            @memset(input, 0);
-            a.free(input);
-        }
-        self.action(&.{ "nmcli", "--wait", "30", "--ask", "device", "wifi", "connect", std.mem.span(ssid), "hidden", if (c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, self.hidden.?)) != 0) "yes" else "no" }, input);
+        self.networkAction(.{ .connect = .{ .ssid = if (ap) |p| p.ssid else entered, .password = std.mem.span(password), .hidden = c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, self.hidden.?)) != 0, .access_point = if (ap) |p| p.path else null } });
         c.gtk_entry_set_text(cast(c.GtkEntry, self.password.?), "");
     }
-    fn profileAction(self: *Settings, verb: [:0]const u8) void {
+    fn profileAction(self: *Settings, action: enum { activate, deactivate, forget }) void {
         const id = c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.profiles.?));
         if (id == null) {
             self.setMessage("Select a saved connection first.");
             return;
         }
-        self.action(&.{ "nmcli", "--wait", "30", "connection", verb, "uuid", std.mem.span(id) }, null);
+        self.networkAction(switch (action) {
+            .activate => .{ .activate = std.mem.span(id) },
+            .deactivate => .{ .deactivate = std.mem.span(id) },
+            .forget => .{ .forget = std.mem.span(id) },
+        });
     }
-    fn profileConnect(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(data));
-        self.profileAction("up");
+    fn profileConnect(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
+        cast(Settings, ptr).profileAction(.activate);
     }
-    fn profileDisconnect(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(data));
-        self.profileAction("down");
+    fn profileDisconnect(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
+        cast(Settings, ptr).profileAction(.deactivate);
     }
-    fn profileForget(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(data));
+    fn profileForget(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
+        const self = cast(Settings, ptr);
         if (c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.profiles.?)) == null) return;
         const dialog = c.gtk_message_dialog_new(cast(c.GtkWindow, self.window), c.GTK_DIALOG_MODAL | c.GTK_DIALOG_DESTROY_WITH_PARENT, c.GTK_MESSAGE_QUESTION, c.GTK_BUTTONS_OK_CANCEL, "%s", @as([*:0]const u8, "Forget the selected connection and its saved credentials?"));
         const response = c.gtk_dialog_run(cast(c.GtkDialog, dialog));
         c.gtk_widget_destroy(dialog);
-        if (!self.closed and response == c.GTK_RESPONSE_OK) self.profileAction("delete");
+        if (!self.closed and response == c.GTK_RESPONSE_OK) self.profileAction(.forget);
     }
-    fn deviceDisconnect(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(data));
-        const id = c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.devices.?));
-        if (id != null) self.action(&.{ "nmcli", "--wait", "30", "device", "disconnect", std.mem.span(id) }, null);
+    fn deviceDisconnect(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
+        const self = cast(Settings, ptr);
+        if (c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.devices.?))) |id| self.networkAction(.{ .disconnect = std.mem.span(id) });
     }
     fn editConnections(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
         const self: *Settings = @ptrCast(@alignCast(data));
@@ -553,16 +432,6 @@ pub const Settings = struct {
         c.g_clear_error(&err);
     }
 };
-
-test "escaped nmcli fields and malformed records" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const values = try fields(4, arena.allocator(), "*:Cafe\\: Tokyo\\\\5G:83:WPA2 WPA3");
-    try std.testing.expectEqualStrings("Cafe: Tokyo\\5G", values[1]);
-    try std.testing.expectEqualStrings("", (try fields(4, arena.allocator(), "uuid:Name:wifi:"))[3]);
-    try std.testing.expectError(error.InvalidFields, fields(4, arena.allocator(), "one:two"));
-    try std.testing.expectError(error.InvalidEscape, fields(4, arena.allocator(), "a:b:c:bad\\"));
-}
 
 pub const Service = struct {
     windows: std.ArrayList(*Settings) = .empty,
@@ -585,7 +454,7 @@ pub const Service = struct {
         var i: usize = 0;
         while (i < self.windows.items.len) {
             const settings = self.windows.items[i];
-            if (settings.closed and settings.jobs == null and settings.audio_operations == 0) {
+            if (settings.closed and settings.network_operations == 0 and settings.audio_operations == 0) {
                 _ = self.windows.orderedRemove(i);
                 settings.destroy();
             } else i += 1;

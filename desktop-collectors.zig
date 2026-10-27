@@ -4,6 +4,7 @@ const c = @import("gtk");
 const data = @import("waybar-panel.zig");
 const u = @import("desktop-util.zig");
 const audio = @import("audio");
+const network = @import("network");
 const battery = @import("battery");
 const panel = @import("desktop-panel.zig");
 const a = std.heap.page_allocator;
@@ -19,6 +20,7 @@ pub const Service = struct {
     revision: u64 = 0,
     battery_service: ?*battery.Service = null,
     battery_state: battery.State = .{},
+    network_client: ?*network.Client = null,
     audio_service: ?*audio.Service = null,
     output_state: ?audio.State = null,
     input_state: ?audio.State = null,
@@ -27,6 +29,7 @@ pub const Service = struct {
         for (&self.sources, 0..) |*source, i| source.* = .{ .owner = self, .index = i };
         self.battery_service = battery.Service.create(&batteryChanged, self) catch null;
         self.audio_service = audio.Service.create(&audioChanged, self) catch null;
+        self.network_client = network.Client.create(&networkChanged, self) catch null;
         _ = tick(self);
         self.timer = c.g_timeout_add(500, &tick, self);
     }
@@ -52,6 +55,10 @@ pub const Service = struct {
         return 1;
     }
 
+    fn networkChanged(ptr: ?*anyopaque, _: *network.Client) void {
+        const self: *Service = @ptrCast(@alignCast(ptr));
+        if (!self.dead) self.sources[1].publish("status");
+    }
     fn audioChanged(ptr: ?*anyopaque, service: *audio.Service) void {
         const self: *Service = @ptrCast(@alignCast(ptr));
         self.output_state = service.state(.output);
@@ -65,6 +72,7 @@ pub const Service = struct {
     }
     pub fn deinit(self: *Service) void {
         self.dead = true;
+        if (self.network_client) |client| client.destroy();
         if (self.battery_service) |service| service.destroy();
         if (self.audio_service) |service| service.destroy();
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
@@ -92,6 +100,7 @@ const Source = struct {
         defer arena.deinit();
         const alloc = arena.allocator();
         var out = u.parse(alloc, line) catch return;
+        if (self.owner.network_client) |client| data.addNetwork(alloc, &out, client.state()) catch return;
         data.addAudio(alloc, &out, self.owner.output_state, self.owner.input_state) catch return;
         data.addBattery(alloc, &out, self.owner.battery_state) catch return;
         const json = std.json.Stringify.valueAlloc(alloc, out, .{}) catch return;

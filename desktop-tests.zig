@@ -40,15 +40,13 @@ test "memory separates programs buffers and cache" {
     try equal(@as(f64, 1), result.total);
     try expect(panel.memoryUsage("MemTotal: 0 kB\nMemFree: 0 kB\n").total > 0);
 }
-test "network units and cached NetworkManager strength" {
+test "network rate units" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     for ([_]f64{ 1024, 1048576, 1073741824 }, [_][]const u8{ "KiB/s", "MiB/s", "GiB/s" }) |rate, unit| try expect(std.mem.indexOf(u8, try panel.rateText(a, rate), unit) != null);
     try expect(std.mem.startsWith(u8, try panel.rateText(a, -1), "0"));
-    const wifi = (try panel.nmWireless(a, "*:72\n:50")).?;
-    try strings("network-wireless-signal-good-symbolic", wifi.icon);
-    try strings("Wi-Fi: 72%", wifi.tooltip);
+
 }
 test "panel appends native battery state and omits absent batteries" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

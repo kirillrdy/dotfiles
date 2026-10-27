@@ -5,7 +5,7 @@ const audio = @import("audio");
 const battery_backend = @import("battery");
 const backlight = @import("backlight");
 pub const settings_client = @import("desktop-settings.zig");
-const network_fields = settings_client.fields;
+const network_backend = @import("network");
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 fn cast(comptime T: type, ptr: anytype) *T {
@@ -89,8 +89,7 @@ fn iconButton(icon_name: [*:0]const u8, tooltip: [*:0]const u8) *c.GtkWidget {
     c.gtk_widget_set_tooltip_text(button, tooltip);
     return button;
 }
-const Read = enum { network, radio, action };
-const Job = struct { owner: *Controls, process: *c.GSubprocess, kind: Read, next: ?*Job, timeout: c.guint = 0, input: ?[:0]u8 = null };
+const Job = struct { owner: *Controls, process: *c.GSubprocess, next: ?*Job, timeout: c.guint = 0 };
 pub const Controls = struct {
     popover: *c.GtkWidget,
     content: *c.GtkWidget,
@@ -126,7 +125,7 @@ pub const Controls = struct {
     brightness_busy: bool = false,
     brightness_writing: bool = false,
     brightness_wanted: ?f64 = null,
-    pending: [2]bool = @splat(false),
+    network_client: ?*network_backend.Client = null,
     syncing: bool = false,
     dead: bool = false,
     refs: usize = 1,
@@ -247,6 +246,7 @@ pub const Controls = struct {
         self.syncPreferences();
         self.battery_service = battery_backend.Service.create(&batteryChanged, self) catch null;
         self.audio_service = audio.Service.create(&audioChanged, self) catch null;
+        self.network_client = network_backend.Client.create(&networkChanged, self) catch null;
         self.timer = c.g_timeout_add_seconds(5, &refreshTimer, self);
         return self;
     }
@@ -280,6 +280,7 @@ pub const Controls = struct {
         const self = cast(Controls, ptr);
         if (c.gtk_toggle_button_get_active(button) != 0) c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, self.power.arrow.?), 0);
         reveal(self.network_menu, c.gtk_toggle_button_get_active(button));
+        if (c.gtk_toggle_button_get_active(button) != 0) self.networkAction(.scan);
         self.updateDim();
     }
     fn profileExpanded(button: *c.GtkToggleButton, ptr: c.gpointer) callconv(.c) void {
@@ -379,12 +380,11 @@ pub const Controls = struct {
         if (self.dead) return;
         self.syncPreferences();
         self.refreshBrightness();
-        self.run(.network, &.{ "nmcli", "-t", "-f", "IN-USE,SSID,SECURITY,SIGNAL", "device", "wifi", "list", "--rescan", "no" });
-        self.run(.radio, &.{ "nmcli", "-t", "-f", "WIFI", "general" });
+        if (self.network_client) |client| self.renderNetwork(client.state());
     }
     fn wifiToggled(button: *c.GtkToggleButton, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Controls, ptr);
-        self.run(.action, &.{ "nmcli", "radio", "wifi", if (c.gtk_toggle_button_get_active(button) != 0) "on" else "off" });
+        if (!self.syncing) self.networkAction(.{ .wifi = c.gtk_toggle_button_get_active(button) != 0 });
     }
     fn mute(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
         cast(Controls, ptr).audioAction(.toggle);
@@ -449,26 +449,17 @@ pub const Controls = struct {
         }
         self.release();
     }
-    fn run(self: *Controls, kind: Read, args: []const [*:0]const u8) void {
-        self.runInput(kind, args, null);
-    }
-    fn runInput(self: *Controls, kind: Read, args: []const [*:0]const u8, input: ?[:0]const u8) void {
+    fn run(self: *Controls, args: []const [*:0]const u8) void {
         if (self.dead) return;
-        if (kind != .action and self.pending[@backingInt(kind)]) return;
         var argv: [16:null]?[*:0]const u8 = @splat(null);
         for (args, 0..) |arg, i| argv[i] = arg;
-        var err: [*c]c.GError = null;
-        const process = c.g_subprocess_newv(@ptrCast(&argv), @intCast(c.G_SUBPROCESS_FLAGS_STDOUT_PIPE | c.G_SUBPROCESS_FLAGS_STDERR_PIPE | (if (input != null) @as(c_int, c.G_SUBPROCESS_FLAGS_STDIN_PIPE) else 0)), &err);
-        c.g_clear_error(&err);
-        if (process == null) return;
+        const process = c.g_subprocess_newv(@ptrCast(&argv), c.G_SUBPROCESS_FLAGS_STDOUT_PIPE | c.G_SUBPROCESS_FLAGS_STDERR_PIPE, null) orelse return;
         const job = a.create(Job) catch @panic("out of memory");
-        job.* = .{ .owner = self, .process = process.?, .kind = kind, .next = self.jobs };
+        job.* = .{ .owner = self, .process = process, .next = self.jobs };
         self.jobs = job;
         self.refs += 1;
-        if (kind != .action) self.pending[@backingInt(kind)] = true;
-        if (input) |value| job.input = a.dupeSentinel(u8, value, 0) catch @panic("out of memory");
-        job.timeout = c.g_timeout_add(if (input != null) 30000 else 4000, &timedOut, job);
-        c.g_subprocess_communicate_utf8_async(process, if (job.input) |value| value.ptr else null, self.cancel, &completed, job);
+        job.timeout = c.g_timeout_add(4000, &timedOut, job);
+        c.g_subprocess_communicate_utf8_async(process, null, self.cancel, &completed, job);
     }
     fn timedOut(ptr: c.gpointer) callconv(.c) c.gboolean {
         const job = cast(Job, ptr);
@@ -490,80 +481,72 @@ pub const Controls = struct {
         var link = &self.jobs;
         while (link.* != job) link = &link.*.?.next;
         link.* = job.next;
-        if (job.kind != .action) self.pending[@backingInt(job.kind)] = false;
-        if (!self.dead) {
-            if (ok) self.apply(job.kind, if (output != null) std.mem.span(output) else "");
-            if (!ok and job.kind == .action) c.gtk_widget_set_tooltip_text(self.content, if (err != null) err.*.message else errors);
-        }
+        if (!self.dead and !ok) c.gtk_widget_set_tooltip_text(self.content, if (err != null) err.*.message else errors);
         c.g_object_unref(job.process);
-        if (job.input) |value| {
-            @memset(value, 0);
-            a.free(value);
-        }
         a.destroy(job);
         self.release();
     }
-    fn apply(self: *Controls, kind: Read, output: []const u8) void {
+    fn networkChanged(ptr: ?*anyopaque, client: *network_backend.Client) void {
+        const self = cast(Controls, ptr);
+        if (!self.dead) self.renderNetwork(client.state());
+    }
+    fn networkAction(self: *Controls, action: network_backend.Action) void {
+        if (self.dead) return;
+        const client = self.network_client orelse return;
+        self.refs += 1;
+        client.perform(action, self.cancel, &networkDone, self);
+    }
+    fn networkDone(ptr: ?*anyopaque, result: network_backend.Result) void {
+        const self = cast(Controls, ptr);
+        defer self.release();
+        if (self.dead) return;
+        switch (result) {
+            .success => c.gtk_widget_set_tooltip_text(self.content, null),
+            .failure => |message| c.gtk_widget_set_tooltip_text(self.content, message),
+        }
+    }
+    pub fn renderNetwork(self: *Controls, state: *const network_backend.State) void {
         self.syncing = true;
         defer self.syncing = false;
-        switch (kind) {
-            .network => {
-                const children = c.gtk_container_get_children(cast(c.GtkContainer, self.network_list));
-                var node = children;
-                while (node != null) : (node = node.*.next) c.gtk_widget_destroy(cast(c.GtkWidget, node.*.data));
-                c.g_list_free(children);
-                var arena = std.heap.ArenaAllocator.init(a);
-                defer arena.deinit();
-                var lines = std.mem.splitScalar(u8, output, '\n');
-                var active: []const u8 = if (self.wifi_enabled) "Not Connected" else "Off";
-                var count: usize = 0;
-                while (lines.next()) |line| {
-                    const fields = network_fields(4, arena.allocator(), line) catch continue;
-                    if (fields[1].len == 0 or count == 8) continue;
-                    count += 1;
-                    const connected = std.mem.eql(u8, fields[0], "*");
-                    if (connected) active = fields[1];
-                    const row = c.gtk_button_new().?;
-                    css(row, "profile-choice");
-                    const box = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 12).?;
-                    const check = label("✓");
-                    css(check, "profile-check");
-                    c.gtk_widget_set_opacity(check, if (connected) 1 else 0);
-                    pack(box, check, false);
-                    const strength = std.fmt.parseInt(u32, fields[3], 10) catch 0;
-                    pack(box, image(if (strength >= 80) "network-wireless-signal-excellent-symbolic" else if (strength >= 55) "network-wireless-signal-good-symbolic" else if (strength >= 30) "network-wireless-signal-ok-symbolic" else "network-wireless-signal-weak-symbolic"), false);
-                    const ssid = arena.allocator().dupeSentinel(u8, fields[1], 0) catch continue;
-                    const title = label(ssid);
-                    c.gtk_label_set_ellipsize(cast(c.GtkLabel, title), c.PANGO_ELLIPSIZE_END);
-                    pack(box, title, true);
-                    const secure = fields[2].len > 0 and !std.mem.eql(u8, fields[2], "--");
-                    if (secure) {
-                        const lock = image("channel-secure-symbolic");
-                        c.gtk_image_set_pixel_size(cast(c.GtkImage, lock), 8);
-                        pack(box, lock, false);
-                    }
-                    c.gtk_container_add(cast(c.GtkContainer, row), box);
-                    c.g_object_set_data_full(cast(c.GObject, row), "ssid", c.g_strdup(ssid), &freeData);
-                    c.g_object_set_data(cast(c.GObject, row), "secure", if (secure) @ptrFromInt(1) else null);
-                    connect(row, "clicked", &connectNetwork, self);
-                    pack(self.network_list, row, false);
-                }
-                c.gtk_widget_show_all(self.network_list);
-                const text = a.dupeSentinel(u8, active, 0) catch return;
-                defer a.free(text);
-                c.gtk_label_set_text(cast(c.GtkLabel, self.network.subtitle), text);
-            },
-            .radio => {
-                const enabled = std.mem.eql(u8, std.mem.trim(u8, output, " \r\n"), "enabled");
-                self.wifi_enabled = enabled;
-                const context = c.gtk_widget_get_style_context(self.network_menu);
-                if (enabled) c.gtk_style_context_add_class(context, "quick-active-menu") else c.gtk_style_context_remove_class(context, "quick-active-menu");
-                if (!enabled) c.gtk_label_set_text(cast(c.GtkLabel, self.network.subtitle), "Off");
-                c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, self.network.button), @intFromBool(enabled));
-                if (enabled) css(self.network.widget, "quick-active") else c.gtk_style_context_remove_class(c.gtk_widget_get_style_context(self.network.widget), "quick-active");
-            },
-            .action => self.refresh(),
+        self.wifi_enabled = state.wifi_enabled;
+        c.gtk_widget_set_sensitive(self.network.button, @intFromBool(state.available and state.hardware_enabled));
+        c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, self.network.button), @intFromBool(state.wifi_enabled));
+        const context = c.gtk_widget_get_style_context(self.network.widget);
+        if (state.wifi_enabled) c.gtk_style_context_add_class(context, "quick-active") else c.gtk_style_context_remove_class(context, "quick-active");
+        var title: [*:0]const u8 = if (!state.available) "Unavailable" else if (!state.hardware_enabled) "Hardware Blocked" else if (!state.wifi_enabled) "Off" else "Not Connected";
+        const children = c.gtk_container_get_children(cast(c.GtkContainer, self.network_list));
+        var node = children;
+        while (node != null) : (node = node.*.next) c.gtk_widget_destroy(cast(c.GtkWidget, node.*.data));
+        c.g_list_free(children);
+        var count: usize = 0;
+        for (state.access_points.items, 0..) |ap, index| {
+            if (ap.connected) title = ap.title;
+            if (count == 8 or ap.ssid.len == 0) continue;
+            var duplicate = false;
+            for (state.access_points.items[0..index]) |previous| {
+                if (std.mem.eql(u8, previous.ssid, ap.ssid)) duplicate = true;
+            }
+            if (duplicate) continue;
+            count += 1;
+            const row = c.gtk_button_new().?;
+            css(row, "profile-choice");
+            const box = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 12).?;
+            const check = label("✓");
+            c.gtk_widget_set_opacity(check, if (ap.connected) 1 else 0);
+            pack(box, check, false);
+            pack(box, image(network_backend.wifiIcon(ap.strength)), false);
+            const heading = label(ap.title);
+            c.gtk_label_set_ellipsize(cast(c.GtkLabel, heading), c.PANGO_ELLIPSIZE_END);
+            pack(box, heading, true);
+            if (ap.passwordRequired()) pack(box, image("channel-secure-symbolic"), false);
+            c.gtk_container_add(cast(c.GtkContainer, row), box);
+            c.g_object_set_data_full(cast(c.GObject, row), "ssid", c.g_strdup(ap.path), &freeData);
+            c.g_object_set_data(cast(c.GObject, row), "secure", if (ap.passwordRequired()) @ptrFromInt(1) else null);
+            connect(row, "clicked", &connectNetwork, self);
+            pack(self.network_list, row, false);
         }
+        c.gtk_label_set_text(cast(c.GtkLabel, self.network.subtitle), title);
+        c.gtk_widget_show_all(self.network_list);
     }
     fn audioChanged(ptr: ?*anyopaque, service: *audio.Service) void {
         const self = cast(Controls, ptr);
@@ -617,8 +600,10 @@ pub const Controls = struct {
     fn connectNetwork(button: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Controls, ptr);
         const ssid: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, button), "ssid"));
+        const client = self.network_client orelse return;
+        const ap = client.state().ap(std.mem.span(ssid)) orelse return;
         if (c.g_object_get_data(cast(c.GObject, button), "secure") == null) {
-            self.run(.action, &.{ "nmcli", "--wait", "3", "device", "wifi", "connect", ssid });
+            self.networkAction(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path } });
             return;
         }
         if (self.dialog) |dialog| {
@@ -631,7 +616,7 @@ pub const Controls = struct {
         const content = c.gtk_dialog_get_content_area(cast(c.GtkDialog, dialog));
         c.gtk_container_set_border_width(cast(c.GtkContainer, content), 18);
         c.gtk_box_set_spacing(cast(c.GtkBox, content), 12);
-        pack(content, label(ssid), false);
+        pack(content, label(ap.title), false);
         const password = c.gtk_entry_new().?;
         c.gtk_entry_set_visibility(cast(c.GtkEntry, password), 0);
         c.gtk_entry_set_input_purpose(cast(c.GtkEntry, password), c.GTK_INPUT_PURPOSE_PASSWORD);
@@ -650,12 +635,9 @@ pub const Controls = struct {
         const entry: *c.GtkEntry = @ptrCast(@alignCast(c.g_object_get_data(cast(c.GObject, dialog), "password")));
         const ssid: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, dialog), "ssid"));
         if (!self.dead and response == c.GTK_RESPONSE_ACCEPT) {
-            const input = std.fmt.allocPrintSentinel(a, "{s}\n", .{std.mem.span(c.gtk_entry_get_text(entry))}, 0) catch @panic("out of memory");
-            defer {
-                @memset(input, 0);
-                a.free(input);
-            }
-            self.runInput(.action, &.{ "nmcli", "--wait", "25", "--ask", "device", "wifi", "connect", ssid }, input);
+            if (self.network_client) |client| if (client.state().ap(std.mem.span(ssid))) |ap| {
+                self.networkAction(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = std.mem.span(c.gtk_entry_get_text(entry)) } });
+            };
         }
         c.gtk_entry_set_text(entry, "");
         self.dialog = null;
@@ -721,8 +703,8 @@ pub const Controls = struct {
         const action: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, dialog), "action"));
         if (response == c.GTK_RESPONSE_ACCEPT and !self.dead) {
             if (std.mem.eql(u8, std.mem.span(action), "logout")) {
-                if (c.g_getenv("XDG_SESSION_ID")) |id| self.run(.action, &.{ "loginctl", "terminate-session", id });
-            } else self.run(.action, &.{ "systemctl", action });
+                if (c.g_getenv("XDG_SESSION_ID")) |id| self.run(&.{ "loginctl", "terminate-session", id });
+            } else self.run(&.{ "systemctl", action });
         }
         self.dialog = null;
         c.gtk_widget_destroy(@ptrCast(dialog));
@@ -732,6 +714,7 @@ pub const Controls = struct {
         self.dead = true;
         if (self.battery_service) |service| service.destroy();
         if (self.audio_service) |service| service.destroy();
+        if (self.network_client) |client| client.destroy();
         _ = c.g_signal_handlers_disconnect_matched(self.popover, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         if (self.dialog) |dialog| c.gtk_dialog_response(cast(c.GtkDialog, dialog), c.GTK_RESPONSE_CANCEL);
         _ = c.g_source_remove(self.timer);

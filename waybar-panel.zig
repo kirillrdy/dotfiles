@@ -1,5 +1,6 @@
 //! JSON streams for the native panel. Each update owns a bounded arena.
 const std = @import("std");
+const network = @import("network");
 const u = @import("desktop-util.zig");
 const audio = @import("audio");
 const battery = @import("battery");
@@ -152,43 +153,10 @@ pub const Monitor = struct {
     }
 };
 pub const Status = struct { icon: []const u8, label: []const u8 = "", tooltip: []const u8 };
-fn wirelessStrength(a: A, quality: f64) !Status {
-    const level = if (quality >= 0.8) "excellent" else if (quality >= 0.55) "good" else if (quality >= 0.3) "ok" else "weak";
-    return .{ .icon = try u.fmt(a, "network-wireless-signal-{s}-symbolic", .{level}), .tooltip = try u.fmt(a, "Wi-Fi: {d:.0}%", .{@min(100, quality * 100)}) };
-}
-pub fn nmWireless(a: A, output: []const u8) !?Status {
-    var lines = std.mem.splitScalar(u8, output, '\n');
-    while (lines.next()) |line| if (std.mem.startsWith(u8, line, "*:")) {
-        const strength = std.fmt.parseFloat(f64, line[2..]) catch continue;
-        if (std.math.isFinite(strength)) return try wirelessStrength(a, strength / 100);
-    };
-    return null;
-}
-fn wirelessIcon(a: A) !Status {
-    if (try nmWireless(a, u.command(a, &.{ "nmcli", "-t", "-f", "IN-USE,SIGNAL", "device", "wifi", "list", "--rescan", "no" }, 4))) |status| return status;
-    const contents = u.read(a, "/proc/net/wireless") catch "";
-    var lines = std.mem.splitScalar(u8, contents, '\n');
-    while (lines.next()) |line| {
-        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-        const state = u.read(a, try u.fmt(a, "/sys/class/net/{s}/operstate", .{u.trim(line[0..colon])})) catch continue;
-        if (!u.eq(u.trim(state), "up")) continue;
-        var words = std.mem.tokenizeAny(u8, line[colon + 1 ..], " \t");
-        _ = words.next();
-        const quality = std.fmt.parseFloat(f64, words.next() orelse continue) catch continue;
-        if (std.math.isFinite(quality)) return wirelessStrength(a, quality / 70);
-    }
-    var dir = std.Io.Dir.openDirAbsolute(u.io, "/sys/class/net", .{ .iterate = true }) catch return .{ .icon = "network-wireless-offline-symbolic", .tooltip = "Network disconnected" };
-    defer dir.close(u.io);
-    var entries = dir.iterate();
-    while (try entries.next(u.io)) |entry| {
-        const base = try u.fmt(a, "/sys/class/net/{s}", .{entry.name});
-        if (!u.exists(try u.fmt(a, "{s}/device", .{base}))) continue;
-        const state = u.read(a, try u.fmt(a, "{s}/operstate", .{base})) catch continue;
-        if (!u.eq(u.trim(state), "up")) continue;
-        if (u.exists(try u.fmt(a, "{s}/wireless", .{base})) or u.exists(try u.fmt(a, "{s}/phy80211", .{base}))) return .{ .icon = "network-wireless-connected-symbolic", .tooltip = "Wi-Fi connected" };
-        return .{ .icon = "network-wired-symbolic", .tooltip = "Wired network" };
-    }
-    return .{ .icon = "network-wireless-offline-symbolic", .tooltip = "Network disconnected" };
+pub fn addNetwork(a: A, out: *V, state: *const network.State) !void {
+    const info = state.indicator();
+    const items = out.object.getPtr("items") orelse return;
+    try items.array.append(try item(a, info.icon, "", info.title, "desktop-zig settings network"));
 }
 pub fn batteryInfo(a: A, state: battery.State) !Status {
     var icon_buffer: [100]u8 = undefined;
@@ -227,8 +195,6 @@ fn statusItems(a: A, demo: bool) !V {
         try items.array.append(try item(a, "battery-level-80-symbolic", "5∶42", "Battery", ""));
         return items;
     }
-    const wireless = try wirelessIcon(a);
-    try items.array.append(try item(a, wireless.icon, "", wireless.tooltip, "desktop-zig settings network"));
     return items;
 }
 /// One bounded update, suitable for a shared session worker.

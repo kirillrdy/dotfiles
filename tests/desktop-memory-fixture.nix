@@ -14,7 +14,7 @@ let
   };
 in
 pkgs.runCommand "desktop-memory-check" {
-  nativeBuildInputs = [ pkgs.python3 pkgs.dbus pkgs.xorg-server pkgs.pipewire pkgs.wireplumber ];
+  nativeBuildInputs = [ (pkgs.python3.withPackages (p: [ p.pygobject3 ])) pkgs.dbus pkgs.xorg-server pkgs.pipewire pkgs.wireplumber ];
   FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; };
 } ''
   export PYTHONPATH=${./.}

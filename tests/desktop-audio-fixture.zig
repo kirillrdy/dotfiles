@@ -67,7 +67,7 @@ fn ui(service: *audio.Service) !void {
     defer {
         c.gtk_widget_destroy(sound.window);
         controls.deinit();
-        while (sound.audio_operations != 0 or sound.jobs != null) pump();
+        while (sound.audio_operations != 0 or sound.network_operations != 0) pump();
         sound.destroy();
     }
     var deadline = c.g_get_monotonic_time() + 8_000_000;

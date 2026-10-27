@@ -25,6 +25,21 @@ pub fn build(b: *std.Build) void {
     b.step("test-power", "Check power profiles against isolated sysfs fixtures").dependOn(&b.addRunArtifact(power_fixture).step);
     const greeter_c = libc;
     const gtk = b.createModule(.{ .root_source_file = b.path("desktop-gtk.zig"), .target = target, .optimize = optimize });
+    const network_api = b.createModule(.{ .root_source_file = b.path("desktop-network-api.zig"), .target = target, .optimize = optimize });
+    network_api.addImport("gtk", gtk);
+    const network = b.createModule(.{ .root_source_file = b.path("desktop-network.zig"), .target = target, .optimize = optimize });
+    network.addImport("gtk", gtk);
+    network.addImport("network-api", network_api);
+    network.link_libc = true;
+    network.linkSystemLibrary("gio-2.0", .{});
+    const network_tests = b.addTest(.{ .root_module = network });
+    const network_abi = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-gtk-abi.zig"), .target = target, .optimize = optimize }) });
+    network_abi.root_module.addImport("api", network_api);
+    network_abi.root_module.addImport("reference", bindings(b, target, optimize, "#include <gio/gio.h>\n", &.{"gio-2.0"}));
+    network_abi.root_module.link_libc = true;
+    const network_check = b.step("test-network", "Check native NetworkManager state and GIO ABI");
+    network_check.dependOn(&b.addRunArtifact(network_tests).step);
+    network_check.dependOn(&b.addRunArtifact(network_abi).step);
     const audio_api = b.createModule(.{ .root_source_file = b.path("desktop-audio-api.zig"), .target = target, .optimize = optimize });
     audio_api.addImport("gtk", gtk);
     const audio = b.createModule(.{ .root_source_file = b.path("desktop-audio.zig"), .target = target, .optimize = optimize });
@@ -59,6 +74,7 @@ pub fn build(b: *std.Build) void {
     backlight_fixture.root_module.addImport("backlight", backlight);
     backlight_fixture.root_module.addImport("battery", battery);
     backlight_fixture.root_module.addImport("audio", audio);
+    backlight_fixture.root_module.addImport("network", network);
     backlight_fixture.root_module.link_libc = true;
     backlight_fixture.root_module.linkSystemLibrary("gtk+-3.0", .{});
     backlight_fixture.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
@@ -83,11 +99,13 @@ pub fn build(b: *std.Build) void {
     quick_module.addImport("gtk", gtk);
     quick_module.addImport("battery", battery);
     quick_module.addImport("audio", audio);
+    quick_module.addImport("network", network);
     quick_module.addImport("backlight", backlight);
     quick_module.addImport("libc", libc);
     const panel_data = b.createModule(.{ .root_source_file = b.path("waybar-panel.zig"), .target = target, .optimize = optimize });
     panel_data.addImport("battery", battery);
     panel_data.addImport("audio", audio);
+    panel_data.addImport("network", network);
     panel_data.addImport("libc", libc);
     const battery_fixture = b.addExecutable(.{ .name = "desktop-battery-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-battery-fixture.zig"), .target = target, .optimize = optimize }) });
     battery_fixture.root_module.addImport("gtk", gtk);
@@ -102,9 +120,11 @@ pub fn build(b: *std.Build) void {
     settings_module.linkSystemLibrary("gtk+-3.0", .{});
     settings_module.addImport("gtk", gtk);
     settings_module.addImport("audio", audio);
+    settings_module.addImport("network", network);
     const audio_fixture = b.addExecutable(.{ .name = "desktop-audio-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-audio-fixture.zig"), .target = target, .optimize = optimize }) });
     audio_fixture.root_module.addImport("gtk", gtk);
     audio_fixture.root_module.addImport("audio", audio);
+    audio_fixture.root_module.addImport("network", network);
     audio_fixture.root_module.addImport("quick", quick_module);
     linkGtk(audio_fixture);
     b.installArtifact(audio_fixture);
@@ -308,6 +328,7 @@ pub fn build(b: *std.Build) void {
     tests.root_module.addImport("libc", libc);
     tests.root_module.addImport("battery", battery);
     tests.root_module.addImport("audio", audio);
+    tests.root_module.addImport("network", network);
     const run_tests = b.addRunArtifact(tests);
     const http_module = b.createModule(.{ .root_source_file = b.path("desktop-http.zig"), .target = target, .optimize = optimize });
     const http_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-http.zig"), .target = target, .optimize = optimize }) });
@@ -370,7 +391,18 @@ pub fn build(b: *std.Build) void {
         root.addImport("backlight", backlight);
         root.addImport("battery", battery);
         root.addImport("audio", audio);
+        root.addImport("network", network);
     }
+    const network_fixture = b.addExecutable(.{ .name = "desktop-network-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-network-fixture.zig"), .target = target, .optimize = optimize }) });
+    for ([_]*std.Build.Module{network_fixture.root_module}) |root| {
+        root.addImport("gtk", gtk);
+        root.addImport("network", network);
+        root.addImport("audio", audio);
+        root.addImport("battery", battery);
+        root.addImport("backlight", backlight);
+    }
+    linkGtk(network_fixture);
+    b.step("network-fixture", "Build isolated NetworkManager integration driver").dependOn(&b.addInstallArtifact(network_fixture, .{}).step);
     // Run only through the private D-Bus/PipeWire/Xvfb memory fixture.
     const memory_tests = b.addTest(.{
         .name = "desktop-memory-tests",
@@ -384,6 +416,7 @@ pub fn build(b: *std.Build) void {
     memory_tests.root_module.addImport("gtk", gtk);
     memory_tests.root_module.addImport("libc", libc);
     memory_tests.root_module.addImport("audio", audio);
+    memory_tests.root_module.addImport("network", network);
     memory_tests.root_module.addImport("battery", battery);
     memory_tests.root_module.addImport("backlight", backlight);
     memory_tests.root_module.addImport("power", power_module);
@@ -391,6 +424,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run data parsing and allowance tests");
     test_step.dependOn(&b.addRunArtifact(audio_tests).step);
     test_step.dependOn(&b.addRunArtifact(audio_abi).step);
+    test_step.dependOn(network_check);
     test_step.dependOn(&b.addRunArtifact(battery_tests).step);
     test_step.dependOn(&b.addRunArtifact(output_tests).step);
     test_step.dependOn(&b.addRunArtifact(backlight_tests).step);
