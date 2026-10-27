@@ -46,23 +46,18 @@ test "network units and cached NetworkManager strength" {
     try strings("network-wireless-signal-good-symbolic", wifi.icon);
     try strings("Wi-Fi: 72%", wifi.tooltip);
 }
-test "battery derives Adwaita levels and estimates instead of legacy icons" {
+test "panel appends native battery state and omits absent batteries" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const battery = try panel.batteryInfo(a, "state: discharging\npercentage: 80%\ntime to empty: 2.5 hours\nicon-name: 'battery-full-charged-symbolic'\n");
-    try strings("battery-level-80-symbolic", battery.icon);
-    try strings("2∶30", battery.label);
-    const cases = [_]struct { input: []const u8, icon: []const u8 }{
-        .{ .input = "state: fully-charged\npercentage: 100%\n", .icon = "battery-level-100-charged-symbolic" },
-        .{ .input = "state: charging\npercentage: 85%\n", .icon = "battery-level-80-charging-symbolic" },
-        .{ .input = "state: charging\npercentage: 100%\n", .icon = "battery-level-100-charged-symbolic" },
-        .{ .input = "state: discharging\npercentage: 87%\n", .icon = "battery-level-80-symbolic" },
-        .{ .input = "state: pending-charge\npercentage: 80%\ncharge-threshold-enabled: yes\n", .icon = "battery-level-80-plugged-in-symbolic" },
-    };
-    for (cases) |case| try strings(case.icon, (try panel.batteryInfo(a, case.input)).icon);
-    for ([_][]const u8{ "unknown", "nan", "inf", "" }) |value| try strings("battery-missing-symbolic", (try panel.batteryInfo(a, try u.fmt(a, "percentage: {s}\n", .{value}))).icon);
-    try strings("", (try panel.batteryInfo(a, "state: fully-charged\npercentage: 100%\n")).label);
+    var out = try u.parse(a, "{\"items\":[{\"icon\":\"audio-volume-high-symbolic\"}]}");
+    try panel.addBattery(a, &out, .{});
+    try equal(@as(usize, 1), out.object.get("items").?.array.items.len);
+    try panel.addBattery(a, &out, .{ .present = true, .percent = 80, .state = 2, .time_to_empty = 9000 });
+    const items = out.object.get("items").?.array.items;
+    try equal(@as(usize, 2), items.len);
+    try strings("battery-level-80-symbolic", items[1].object.get("icon").?.string);
+    try strings("2∶30", items[1].object.get("text").?.string);
 }
 test "Codex keeps used and remaining modes and both popup windows" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

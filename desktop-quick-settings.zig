@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("gtk");
 const media = @import("desktop-osd.zig");
+const battery_backend = @import("battery");
 const backlight = @import("backlight");
 const network_fields = @import("desktop-settings.zig").fields;
 const a = std.heap.page_allocator;
@@ -86,7 +87,7 @@ fn iconButton(icon_name: [*:0]const u8, tooltip: [*:0]const u8) *c.GtkWidget {
     c.gtk_widget_set_tooltip_text(button, tooltip);
     return button;
 }
-const Read = enum { volume, network, radio, battery, action };
+const Read = enum { volume, network, radio, action };
 const Job = struct { owner: *Controls, process: *c.GSubprocess, kind: Read, next: ?*Job, timeout: c.guint = 0, input: ?[:0]u8 = null };
 pub const Controls = struct {
     popover: *c.GtkWidget,
@@ -104,6 +105,7 @@ pub const Controls = struct {
     battery: *c.GtkWidget,
     battery_label: *c.GtkWidget,
     battery_icon: *c.GtkWidget,
+    battery_service: ?*battery_backend.Service = null,
     power_menu: *c.GtkWidget,
     profile_menu: *c.GtkWidget,
     profile_buttons: [3]?*c.GtkWidget = @splat(null),
@@ -121,7 +123,7 @@ pub const Controls = struct {
     brightness_busy: bool = false,
     brightness_writing: bool = false,
     brightness_wanted: ?f64 = null,
-    pending: [4]bool = @splat(false),
+    pending: [3]bool = @splat(false),
     syncing: bool = false,
     dead: bool = false,
     refs: usize = 1,
@@ -240,6 +242,7 @@ pub const Controls = struct {
         if (self.interface) |prefs| connect(prefs, "changed", &preferencesChanged, self);
         if (self.notifications) |prefs| connect(prefs, "changed", &preferencesChanged, self);
         self.syncPreferences();
+        self.battery_service = battery_backend.Service.create(&batteryChanged, self) catch null;
         self.timer = c.g_timeout_add_seconds(5, &refreshTimer, self);
         return self;
     }
@@ -375,7 +378,6 @@ pub const Controls = struct {
         self.refreshBrightness();
         self.run(.network, &.{ "nmcli", "-t", "-f", "IN-USE,SSID,SECURITY,SIGNAL", "device", "wifi", "list", "--rescan", "no" });
         self.run(.radio, &.{ "nmcli", "-t", "-f", "WIFI", "general" });
-        self.run(.battery, &.{ "upower", "-i", "/org/freedesktop/UPower/devices/DisplayDevice" });
     }
     fn wifiToggled(button: *c.GtkToggleButton, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Controls, ptr);
@@ -567,30 +569,24 @@ pub const Controls = struct {
                 c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, self.network.button), @intFromBool(enabled));
                 if (enabled) css(self.network.widget, "quick-active") else c.gtk_style_context_remove_class(c.gtk_widget_get_style_context(self.network.widget), "quick-active");
             },
-            .battery => {
-                var lines = std.mem.splitScalar(u8, output, '\n');
-                var percent: ?f64 = null;
-                var state: []const u8 = "";
-                while (lines.next()) |line| {
-                    const text = std.mem.trim(u8, line, " \t");
-                    if (std.mem.startsWith(u8, text, "percentage:")) percent = std.fmt.parseFloat(f64, std.mem.trim(u8, text[11..], " \t%")) catch null;
-                    if (std.mem.startsWith(u8, text, "state:")) state = std.mem.trim(u8, text[6..], " \t");
-                }
-                if (percent) |value| {
-                    if (!std.math.isFinite(value) or value < 0 or value > 100) return;
-                    var buffer: [80]u8 = undefined;
-                    const text = std.fmt.bufPrintSentinel(&buffer, "{d:.0}%", .{value}, 0) catch return;
-                    c.gtk_label_set_text(cast(c.GtkLabel, self.battery_label), text);
-                    const suffix: []const u8 = if (std.mem.eql(u8, state, "fully-charged")) "-charged" else if (std.mem.eql(u8, state, "charging")) "-charging" else "";
-                    const icon = std.fmt.bufPrintSentinel(&buffer, "battery-level-{d}{s}-symbolic", .{ @as(u32, @intFromFloat(@floor(value / 10))) * 10, suffix }, 0) catch return;
-                    c.gtk_image_set_from_icon_name(cast(c.GtkImage, self.battery_icon), icon, c.GTK_ICON_SIZE_MENU);
-                    c.gtk_widget_set_no_show_all(self.battery, 0);
-                    c.gtk_widget_show_all(self.battery);
-                    c.gtk_widget_set_no_show_all(self.battery, 1);
-                } else c.gtk_widget_hide(self.battery);
-            },
             .action => self.refresh(),
         }
+    }
+    fn batteryChanged(ptr: ?*anyopaque, state: battery_backend.State) void {
+        const self = cast(Controls, ptr);
+        if (self.dead) return;
+        if (!state.visible()) {
+            c.gtk_widget_hide(self.battery);
+            return;
+        }
+        var buffer: [100]u8 = undefined;
+        const text = std.fmt.bufPrintSentinel(&buffer, "{d:.0}%", .{state.percent}, 0) catch return;
+        c.gtk_label_set_text(cast(c.GtkLabel, self.battery_label), text);
+        const icon = state.icon(&buffer) catch return;
+        c.gtk_image_set_from_icon_name(cast(c.GtkImage, self.battery_icon), icon, c.GTK_ICON_SIZE_MENU);
+        c.gtk_widget_set_no_show_all(self.battery, 0);
+        c.gtk_widget_show_all(self.battery);
+        c.gtk_widget_set_no_show_all(self.battery, 1);
     }
     fn freeData(ptr: c.gpointer) callconv(.c) void {
         c.g_free(ptr);
@@ -711,6 +707,7 @@ pub const Controls = struct {
     }
     pub fn deinit(self: *Controls) void {
         self.dead = true;
+        if (self.battery_service) |service| service.destroy();
         _ = c.g_signal_handlers_disconnect_matched(self.popover, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         if (self.dialog) |dialog| c.gtk_dialog_response(cast(c.GtkDialog, dialog), c.GTK_RESPONSE_CANCEL);
         _ = c.g_source_remove(self.timer);

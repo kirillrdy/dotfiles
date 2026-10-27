@@ -1,6 +1,7 @@
 //! JSON streams for the native panel. Each update owns a bounded arena.
 const std = @import("std");
 const u = @import("desktop-util.zig");
+const battery = @import("battery");
 const codex = @import("waybar-codex.zig");
 const A = u.Allocator;
 const V = u.Value;
@@ -29,6 +30,7 @@ pub fn cpuUsage(previous: [8]u64, current: [8]u64) [5]f64 {
     return result;
 }
 pub const Memory = struct { values: [3]f64, used: f64, total: f64 };
+
 fn field(contents: []const u8, key: []const u8) []const u8 {
     var lines = std.mem.splitScalar(u8, contents, '\n');
     while (lines.next()) |line| {
@@ -199,29 +201,16 @@ fn wirelessIcon(a: A) !Status {
     }
     return .{ .icon = "network-wireless-offline-symbolic", .tooltip = "Network disconnected" };
 }
-pub fn batteryInfo(a: A, contents: []const u8) !Status {
-    const percent = field(contents, "percentage");
-    const state = field(contents, "state");
-    var icon: []const u8 = "battery-missing-symbolic";
-    const percentage = std.fmt.parseFloat(f64, std.mem.trimEnd(u8, percent, "%")) catch std.math.nan(f64);
-    if (std.math.isFinite(percentage)) {
-        const level: u32 = @as(u32, @intFromFloat(std.math.clamp(percentage, 0, 100))) / 10 * 10;
-        if (u.eq(state, "fully-charged") or (u.eq(state, "charging") and level == 100)) icon = "battery-level-100-charged-symbolic" else {
-            const suffix = if (u.eq(state, "charging")) "-charging" else if (u.eq(state, "pending-charge") and u.eq(field(contents, "charge-threshold-enabled"), "yes")) "-plugged-in" else "";
-            icon = try u.fmt(a, "battery-level-{d}{s}-symbolic", .{ level, suffix });
-        }
-    }
-    var duration = field(contents, "time to empty");
-    if (duration.len == 0) duration = field(contents, "time to full");
-    var label: []const u8 = "";
-    var words = std.mem.tokenizeAny(u8, duration, " \t");
-    const amount = std.fmt.parseFloat(f64, words.next() orelse "") catch std.math.nan(f64);
-    const unit = words.next() orelse "";
-    if (std.math.isFinite(amount) and amount >= 0 and amount < 1e9 and (std.mem.startsWith(u8, unit, "hour") or std.mem.startsWith(u8, unit, "minute"))) {
-        const minutes: u64 = @intFromFloat(@round(amount * @as(f64, if (std.mem.startsWith(u8, unit, "hour")) 60 else 1)));
-        label = try u.fmt(a, "{d}∶{d:0>2}", .{ minutes / 60, minutes % 60 });
-    }
-    return .{ .icon = icon, .label = label, .tooltip = try u.fmt(a, "Battery: {s} · {s}", .{ if (percent.len > 0) percent else "—", if (state.len > 0) state else "unknown" }) };
+pub fn batteryInfo(a: A, state: battery.State) !Status {
+    var icon_buffer: [100]u8 = undefined;
+    var time_buffer: [80]u8 = undefined;
+    return .{ .icon = try a.dupe(u8, try state.icon(&icon_buffer)), .label = try a.dupe(u8, try state.duration(&time_buffer)), .tooltip = try u.fmt(a, "Battery: {d:.0}% · {s}", .{ state.percent, state.description() }) };
+}
+pub fn addBattery(a: A, out: *V, state: battery.State) !void {
+    if (!state.visible()) return;
+    const info = try batteryInfo(a, state);
+    const items = out.object.getPtr("items") orelse return;
+    try items.array.append(try item(a, info.icon, info.label, try u.fmt(a, "{s} · Quick Settings", .{info.tooltip}), ""));
 }
 fn item(a: A, icon: []const u8, label: []const u8, tooltip: []const u8, cmd: []const u8) !V {
     var out = u.object();
@@ -253,11 +242,6 @@ fn statusItems(a: A, demo: bool) !V {
     try items.array.append(try item(a, try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), "", try u.fmt(a, "Volume: {d:.0}%", .{percentage}), "desktop-settings sound"));
     if (microphoneMuted(u.command(a, &.{ "wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@" }, 4))) {
         try items.array.append(try item(a, "microphone-sensitivity-muted-symbolic", "", "Microphone muted", ""));
-    }
-    const contents = u.command(a, &.{ "upower", "-i", "/org/freedesktop/UPower/devices/DisplayDevice" }, 4);
-    if (u.eq(field(contents, "is-present"), "yes") or field(contents, "percentage").len > 0) {
-        const battery = try batteryInfo(a, contents);
-        try items.array.append(try item(a, battery.icon, battery.label, try u.fmt(a, "{s} · Quick Settings", .{battery.tooltip}), ""));
     }
     return items;
 }
@@ -303,7 +287,8 @@ fn run(args_source: std.process.Args) !void {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        const out = try sample(a, kind, icon, codex_command, demo);
+        var out = try sample(a, kind, icon, codex_command, demo);
+        if (u.eq(kind, "status") and !demo) try addBattery(a, &out, battery.read());
         try u.emit(a, out);
         waitRefresh(if (u.eq(kind, "codex")) 60000 else 5000);
     }

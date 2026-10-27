@@ -2444,3 +2444,17 @@ pub extern fn g_file_read_link([*c]const gchar, [*c][*c]GError) [*c]gchar;
 pub extern fn g_subprocess_launcher_take_fd(?*GSubprocessLauncher, gint, gint) void;
 
 pub extern fn g_cancellable_is_cancelled([*c]GCancellable) gboolean;
+
+// Native UPower property monitoring through GIO.
+pub const GDBusProxy = extern struct {};
+pub const GDBusProxyFlags = c_uint;
+pub const G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START: GDBusProxyFlags = 4;
+pub const G_DBUS_PROXY_FLAGS_GET_INVALIDATED_PROPERTIES: GDBusProxyFlags = 8;
+pub extern fn g_dbus_proxy_new(?*GDBusConnection, GDBusProxyFlags, [*c]GDBusInterfaceInfo, [*c]const gchar, [*c]const gchar, [*c]const gchar, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
+pub extern fn g_dbus_proxy_new_finish(?*GAsyncResult, [*c][*c]GError) [*c]GDBusProxy;
+pub extern fn g_dbus_proxy_get_cached_property([*c]GDBusProxy, [*c]const gchar) ?*GVariant;
+pub extern fn g_dbus_proxy_get_name_owner([*c]GDBusProxy) [*c]gchar;
+pub extern fn g_dbus_proxy_get_connection([*c]GDBusProxy) ?*GDBusConnection;
+pub extern fn g_variant_get_type_string(?*GVariant) [*c]const gchar;
+pub extern fn g_variant_get_double(?*GVariant) f64;
+pub extern fn g_variant_get_int64(?*GVariant) gint64;

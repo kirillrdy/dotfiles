@@ -26,6 +26,12 @@ pub fn build(b: *std.Build) void {
     b.step("test-power", "Check power profiles against isolated sysfs fixtures").dependOn(&b.addRunArtifact(power_fixture).step);
     const greeter_c = libc;
     const gtk = b.createModule(.{ .root_source_file = b.path("desktop-gtk.zig"), .target = target, .optimize = optimize });
+    const battery = b.createModule(.{ .root_source_file = b.path("desktop-battery.zig"), .target = target, .optimize = optimize });
+    battery.addImport("gtk", gtk);
+    battery.link_libc = true;
+    battery.linkSystemLibrary("gio-2.0", .{});
+    const battery_tests = b.addTest(.{ .root_module = battery });
+    b.step("test-battery", "Check native battery state and presentation").dependOn(&b.addRunArtifact(battery_tests).step);
     const backlight = b.createModule(.{ .root_source_file = b.path("desktop-backlight.zig"), .target = target, .optimize = optimize });
     backlight.addImport("gtk", gtk);
     backlight.addImport("libc", libc);
@@ -36,6 +42,7 @@ pub fn build(b: *std.Build) void {
     const backlight_fixture = b.addExecutable(.{ .name = "desktop-backlight-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-backlight-fixture.zig"), .target = target, .optimize = optimize }) });
     backlight_fixture.root_module.addImport("gtk", gtk);
     backlight_fixture.root_module.addImport("backlight", backlight);
+    backlight_fixture.root_module.addImport("battery", battery);
     backlight_fixture.root_module.link_libc = true;
     backlight_fixture.root_module.linkSystemLibrary("gtk+-3.0", .{});
     backlight_fixture.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
@@ -63,6 +70,22 @@ pub fn build(b: *std.Build) void {
     panel.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
     panel.root_module.addImport("gtk", panel_gtk);
     panel.root_module.addImport("power", power_module);
+    const quick_module = b.createModule(.{ .root_source_file = b.path("desktop-quick-settings.zig"), .target = target, .optimize = optimize });
+    quick_module.addImport("gtk", gtk);
+    quick_module.addImport("battery", battery);
+    quick_module.addImport("backlight", backlight);
+    quick_module.addImport("libc", libc);
+    const panel_data = b.createModule(.{ .root_source_file = b.path("waybar-panel.zig"), .target = target, .optimize = optimize });
+    panel_data.addImport("battery", battery);
+    panel_data.addImport("libc", libc);
+    const battery_fixture = b.addExecutable(.{ .name = "desktop-battery-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-battery-fixture.zig"), .target = target, .optimize = optimize }) });
+    battery_fixture.root_module.addImport("gtk", gtk);
+    battery_fixture.root_module.addImport("battery", battery);
+    battery_fixture.root_module.addImport("quick", quick_module);
+    battery_fixture.root_module.addImport("panel-data", panel_data);
+    linkGtk(battery_fixture);
+    b.installArtifact(battery_fixture);
+    b.step("battery-fixture", "Build the native battery and quick-settings fixture").dependOn(&b.addInstallArtifact(battery_fixture, .{}).step);
     const settings_module = b.createModule(.{ .root_source_file = b.path("desktop-settings.zig"), .target = target, .optimize = optimize });
     settings_module.link_libc = true;
     settings_module.linkSystemLibrary("gtk+-3.0", .{});
@@ -256,6 +279,7 @@ pub fn build(b: *std.Build) void {
         const exe = b.addExecutable(.{ .name = name, .root_module = b.createModule(.{ .root_source_file = b.path(b.fmt("{s}.zig", .{name})), .target = target, .optimize = optimize }) });
         exe.root_module.link_libc = true;
         exe.root_module.addImport("libc", libc);
+        exe.root_module.addImport("battery", battery);
     }
     const gtk_fixture = b.addExecutable(.{ .name = "waybar-power-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/waybar-power-fixture.zig"), .target = target, .optimize = optimize }) });
     linkGtk(gtk_fixture);
@@ -294,6 +318,7 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("desktop-tests.zig"), .target = target, .optimize = optimize }) });
     tests.root_module.link_libc = true;
     tests.root_module.addImport("libc", libc);
+    tests.root_module.addImport("battery", battery);
     const run_tests = b.addRunArtifact(tests);
     const http_module = b.createModule(.{ .root_source_file = b.path("desktop-http.zig"), .target = target, .optimize = optimize });
     const http_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-http.zig"), .target = target, .optimize = optimize }) });
@@ -352,8 +377,12 @@ pub fn build(b: *std.Build) void {
     for (protocol_references) |code| protocol_tests.root_module.addCSourceFile(.{ .file = code, .flags = &reference_flags });
     const run_protocol_tests = b.addRunArtifact(protocol_tests);
     b.step("test-protocols", "Compare native Wayland metadata with the protocol generator").dependOn(&run_protocol_tests.step);
-    for ([_]*std.Build.Module{ panel.root_module, osd.root_module, notifications.root_module, session.root_module, module }) |root| root.addImport("backlight", backlight);
+    for ([_]*std.Build.Module{ panel.root_module, osd.root_module, notifications.root_module, session.root_module, module }) |root| {
+        root.addImport("backlight", backlight);
+        root.addImport("battery", battery);
+    }
     const test_step = b.step("test", "Run data parsing and allowance tests");
+    test_step.dependOn(&b.addRunArtifact(battery_tests).step);
     test_step.dependOn(&b.addRunArtifact(output_tests).step);
     test_step.dependOn(&b.addRunArtifact(backlight_tests).step);
     test_step.dependOn(&b.addRunArtifact(lock_tests).step);
