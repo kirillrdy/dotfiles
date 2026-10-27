@@ -6,7 +6,8 @@ const battery_backend = @import("battery");
 const backlight = @import("backlight");
 pub const settings_client = @import("desktop-settings.zig");
 const network_fields = settings_client.fields;
-const a = std.heap.page_allocator;
+// Test builds account for service state and asynchronous callback allocations.
+const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
 }

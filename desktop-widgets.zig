@@ -530,7 +530,7 @@ fn populate_notifications(m: *Module, reply: ?*c.GVariant) void {
     defer c.g_variant_unref(value);
     const raw = c.g_variant_get_string(value, null);
     if (raw == null) return;
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = std.heap.ArenaAllocator.init(if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator);
     defer arena.deinit();
     const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), std.mem.span(raw), .{}) catch return;
     if (parsed.value != .array) return;
@@ -944,7 +944,7 @@ fn update_graph(g: *Graph, o: std.json.Value, a: std.mem.Allocator) void {
 pub fn update_line(m: *Module, line: [*c]const u8) callconv(.c) void {
     if (line == null) return;
     const slice = std.mem.span(line);
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = std.heap.ArenaAllocator.init(if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator);
     defer arena.deinit();
     const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), slice, .{}) catch return;
     if (parsed.value != .object) return;

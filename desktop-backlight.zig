@@ -2,7 +2,8 @@
 const std = @import("std");
 const c = @import("gtk");
 const libc = @import("libc");
-const a = std.heap.page_allocator;
+// Test builds account for service state and asynchronous callback allocations.
+const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 
 pub const Device = struct {
     name: [256:0]u8 = @splat(0),

@@ -1,7 +1,8 @@
 //! UPower DisplayDevice properties, shared by quick settings and panel reporting.
 const std = @import("std");
 const c = @import("gtk");
-const a = std.heap.page_allocator;
+// Test builds account for service state and asynchronous callback allocations.
+const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const name = "org.freedesktop.UPower";
 const path = "/org/freedesktop/UPower/devices/DisplayDevice";
 const interface = "org.freedesktop.UPower.Device";

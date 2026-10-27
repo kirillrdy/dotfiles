@@ -371,6 +371,23 @@ pub fn build(b: *std.Build) void {
         root.addImport("battery", battery);
         root.addImport("audio", audio);
     }
+    // Run only through the private D-Bus/PipeWire/Xvfb memory fixture.
+    const memory_tests = b.addTest(.{
+        .name = "desktop-memory-tests",
+        .root_module = b.createModule(.{ .root_source_file = b.path("desktop-memory-tests.zig"), .target = target, .optimize = optimize }),
+        .filters = &.{"memory:"},
+    });
+    memory_tests.root_module.link_libc = true;
+    memory_tests.root_module.linkSystemLibrary("gtk+-3.0", .{});
+    memory_tests.root_module.linkSystemLibrary("pangoft2", .{});
+    memory_tests.root_module.linkSystemLibrary("gtk-layer-shell-0", .{});
+    memory_tests.root_module.addImport("gtk", gtk);
+    memory_tests.root_module.addImport("libc", libc);
+    memory_tests.root_module.addImport("audio", audio);
+    memory_tests.root_module.addImport("battery", battery);
+    memory_tests.root_module.addImport("backlight", backlight);
+    memory_tests.root_module.addImport("power", power_module);
+    b.step("memory-tests", "Build leak-checking lifecycle tests for the isolated memory fixture").dependOn(&b.addInstallArtifact(memory_tests, .{}).step);
     const test_step = b.step("test", "Run data parsing and allowance tests");
     test_step.dependOn(&b.addRunArtifact(audio_tests).step);
     test_step.dependOn(&b.addRunArtifact(audio_abi).step);
