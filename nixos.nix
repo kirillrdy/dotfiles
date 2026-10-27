@@ -122,8 +122,6 @@
       (if enableNvidia then btop-cuda else btop)
       (if enableNvidia then nvtopPackages.nvidia else nvtopPackages.intel)
       file
-      firefox
-      ghostty
     ])
     ++ lib.optionals (!enableLightDesktop) (
       with pkgs;
