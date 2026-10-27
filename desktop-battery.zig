@@ -146,7 +146,8 @@ pub const Service = struct {
         defer c.g_object_unref(bus);
         c.g_dbus_connection_set_exit_on_close(bus, 0);
         // All consumers must release a closed shared bus before GIO can replace it.
-        c.g_dbus_proxy_new(bus, c.G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START | c.G_DBUS_PROXY_FLAGS_GET_INVALIDATED_PROPERTIES, null, name, path, interface, self.cancel, &connected, self);
+        // UPower is D-Bus activated and may not be running yet on a fresh boot.
+        c.g_dbus_proxy_new(bus, c.G_DBUS_PROXY_FLAGS_GET_INVALIDATED_PROPERTIES, null, name, path, interface, self.cancel, &connected, self);
     }
     fn connected(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
         const self: *Service = @ptrCast(@alignCast(data));

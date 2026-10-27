@@ -6,6 +6,7 @@ from pathlib import Path
 import queue
 import signal
 import subprocess as sp
+import sys
 import tempfile
 import threading
 import time
@@ -14,6 +15,7 @@ from gi.repository import Gio, GLib
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--fixture", required=True)
 parser.add_argument("--dbus-config", required=True)
+parser.add_argument("--serve-upower", action="store_true")
 args = parser.parse_args()
 root = Path(tempfile.mkdtemp(prefix="desktop-battery-check-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
@@ -31,8 +33,35 @@ xml = '<node><interface name="' + interface + '">' + ''.join(
     for key, value in properties.items()) + '</interface></node>'
 
 
-def start_bus():
-    bus = sp.Popen(["dbus-daemon", "--nofork", "--print-address=1", "--config-file=" + args.dbus_config,
+if args.serve_upower:
+    conn = Gio.DBusConnection.new_for_address_sync(os.environ["DBUS_STARTER_ADDRESS"],
+        Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+        None, None)
+    conn.set_exit_on_close(False)
+    conn.connect("closed", lambda *_: loop.quit())
+    conn.register_object(path, Gio.DBusNodeInfo.new_for_xml(xml).interfaces[0],
+        None, lambda conn, sender, obj, iface, prop: properties[prop], None)
+    conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+        "RequestName", GLib.Variant("(su)", (name, 0)), GLib.VariantType("(u)"), 0, 3000, None)
+    thread.join()
+    raise SystemExit(0)
+
+
+activation_dir = root / "services"
+activation_dir.mkdir()
+activation_command = ' '.join('"' + arg.replace('\\', '\\\\').replace('"', '\\"') + '"' for arg in
+    [sys.executable, str(Path(__file__).resolve()), "--fixture", args.fixture,
+     "--dbus-config", args.dbus_config, "--serve-upower"])
+(activation_dir / (name + ".service")).write_text(
+    f"[D-BUS Service]\nName={name}\nExec={activation_command}\n")
+activation_config = root / "activation.conf"
+activation_config.write_text(Path(args.dbus_config).read_text().replace(
+    "</busconfig>", f"<servicedir>{activation_dir}</servicedir></busconfig>"))
+
+
+def start_bus(activate=False):
+    config = str(activation_config) if activate else args.dbus_config
+    bus = sp.Popen(["dbus-daemon", "--nofork", "--print-address=1", "--config-file=" + config,
                     "--address=unix:path=" + str(root / "bus")], stdout=sp.PIPE, stderr=sp.PIPE, text=True)
     address = bus.stdout.readline().strip()
     assert address, bus.stderr.read()
@@ -141,9 +170,17 @@ try:
     service = UPower(dict(properties, Percentage=GLib.Variant("d", 44.0)))
     expect(lambda s: s["present"] and s["text"] == "44%", "system bus reconnect restores reporting", timeout=15)
     sp.run([args.fixture, "--dispose"], env=env, check=True, timeout=5, capture_output=True)
+    service.close()
+    service = None
+    bus.terminate()
+    bus.wait(timeout=5)
+    expect(lambda s: not s["visible"], "clear state before testing cold-start activation", timeout=12)
+    bus, address = start_bus(activate=True)
+    expect(lambda s: s["visible"] and s["text"] == "72%" and s["duration"] == "2∶30",
+           "a fresh bus must activate UPower without a cable event", timeout=15)
     process.send_signal(signal.SIGTERM)
     assert process.wait(timeout=5) == 0, (root / "fixture.log").read_text()
-    print("PASS battery properties, live widgets, charge limits, invalidation, invalid values, service/bus restarts, and cancellation", flush=True)
+    print("PASS battery properties, live widgets, charge limits, invalidation, invalid values, service/bus restarts, cold-start activation, and cancellation", flush=True)
 finally:
     if service:
         service.close()
