@@ -6,6 +6,7 @@ const battery_backend = @import("battery");
 const backlight = @import("backlight");
 pub const settings_client = @import("desktop-settings.zig");
 const network_backend = @import("network");
+const session = @import("desktop-session.zig");
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 fn cast(comptime T: type, ptr: anytype) *T {
@@ -89,7 +90,6 @@ fn iconButton(icon_name: [*:0]const u8, tooltip: [*:0]const u8) *c.GtkWidget {
     c.gtk_widget_set_tooltip_text(button, tooltip);
     return button;
 }
-const Job = struct { owner: *Controls, process: *c.GSubprocess, next: ?*Job, timeout: c.guint = 0 };
 pub const Controls = struct {
     popover: *c.GtkWidget,
     content: *c.GtkWidget,
@@ -129,7 +129,7 @@ pub const Controls = struct {
     syncing: bool = false,
     dead: bool = false,
     refs: usize = 1,
-    jobs: ?*Job = null,
+    session_busy: bool = false,
     cancel: *c.GCancellable,
     dialog: ?*c.GtkWidget = null,
 
@@ -449,42 +449,22 @@ pub const Controls = struct {
         }
         self.release();
     }
-    fn run(self: *Controls, args: []const [*:0]const u8) void {
-        if (self.dead) return;
-        var argv: [16:null]?[*:0]const u8 = @splat(null);
-        for (args, 0..) |arg, i| argv[i] = arg;
-        const process = c.g_subprocess_newv(@ptrCast(&argv), c.G_SUBPROCESS_FLAGS_STDOUT_PIPE | c.G_SUBPROCESS_FLAGS_STDERR_PIPE, null) orelse return;
-        const job = a.create(Job) catch @panic("out of memory");
-        job.* = .{ .owner = self, .process = process, .next = self.jobs };
-        self.jobs = job;
+    pub fn sessionAction(self: *Controls, action: session.Action) void {
+        if (self.dead or self.session_busy) return;
+        self.session_busy = true;
         self.refs += 1;
-        job.timeout = c.g_timeout_add(4000, &timedOut, job);
-        c.g_subprocess_communicate_utf8_async(process, null, self.cancel, &completed, job);
+        session.perform(action, self.cancel, &sessionDone, self);
     }
-    fn timedOut(ptr: c.gpointer) callconv(.c) c.gboolean {
-        const job = cast(Job, ptr);
-        job.timeout = 0;
-        c.g_subprocess_force_exit(job.process);
-        return 0;
-    }
-    fn completed(_: ?*c.GObject, result: ?*c.GAsyncResult, ptr: c.gpointer) callconv(.c) void {
-        const job = cast(Job, ptr);
-        const self = job.owner;
-        var output: [*c]u8 = null;
-        var errors: [*c]u8 = null;
-        var err: [*c]c.GError = null;
-        const ok = c.g_subprocess_communicate_utf8_finish(job.process, result, &output, &errors, &err) != 0 and c.g_subprocess_get_successful(job.process) != 0;
-        defer c.g_free(output);
-        defer c.g_free(errors);
-        defer c.g_clear_error(&err);
-        if (job.timeout != 0) _ = c.g_source_remove(job.timeout);
-        var link = &self.jobs;
-        while (link.* != job) link = &link.*.?.next;
-        link.* = job.next;
-        if (!self.dead and !ok) c.gtk_widget_set_tooltip_text(self.content, if (err != null) err.*.message else errors);
-        c.g_object_unref(job.process);
-        a.destroy(job);
-        self.release();
+    fn sessionDone(ptr: ?*anyopaque, result: session.Result) void {
+        const self = cast(Controls, ptr);
+        defer self.release();
+        self.session_busy = false;
+        if (self.dead) return;
+        switch (result) {
+            .success => c.gtk_widget_set_tooltip_text(self.content, null),
+            .failure => |message| c.gtk_widget_set_tooltip_text(self.content, message),
+            .cancelled => {},
+        }
     }
     fn networkChanged(ptr: ?*anyopaque, client: *network_backend.Client) void {
         const self = cast(Controls, ptr);
@@ -684,6 +664,7 @@ pub const Controls = struct {
     }
     fn confirmAction(button: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Controls, ptr);
+        if (self.session_busy) return;
         const action: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, button), "action"));
         if (self.dialog) |dialog| {
             c.gtk_window_present(cast(c.GtkWindow, dialog));
@@ -702,9 +683,7 @@ pub const Controls = struct {
         const self = cast(Controls, ptr);
         const action: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, dialog), "action"));
         if (response == c.GTK_RESPONSE_ACCEPT and !self.dead) {
-            if (std.mem.eql(u8, std.mem.span(action), "logout")) {
-                if (c.g_getenv("XDG_SESSION_ID")) |id| self.run(&.{ "loginctl", "terminate-session", id });
-            } else self.run(&.{ "systemctl", action });
+            if (std.meta.stringToEnum(session.Action, std.mem.span(action))) |selected| self.sessionAction(selected);
         }
         self.dialog = null;
         c.gtk_widget_destroy(@ptrCast(dialog));
@@ -721,8 +700,6 @@ pub const Controls = struct {
         if (self.volume_timer != 0) _ = c.g_source_remove(self.volume_timer);
         if (self.brightness_timer != 0) _ = c.g_source_remove(self.brightness_timer);
         c.g_cancellable_cancel(self.cancel);
-        var job = self.jobs;
-        while (job) |value| : (job = value.next) c.g_subprocess_force_exit(value.process);
         if (self.interface) |prefs| {
             _ = c.g_signal_handlers_disconnect_matched(prefs, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
             c.g_object_unref(prefs);

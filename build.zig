@@ -403,6 +403,17 @@ pub fn build(b: *std.Build) void {
     }
     linkGtk(network_fixture);
     b.step("network-fixture", "Build isolated NetworkManager integration driver").dependOn(&b.addInstallArtifact(network_fixture, .{}).step);
+    const session_fixture = b.addTest(.{
+        .name = "desktop-session-fixture",
+        .root_module = b.createModule(.{ .root_source_file = b.path("desktop-session-fixture.zig"), .target = target, .optimize = optimize }),
+    });
+    session_fixture.root_module.addImport("gtk", gtk);
+    session_fixture.root_module.addImport("network", network);
+    session_fixture.root_module.addImport("audio", audio);
+    session_fixture.root_module.addImport("battery", battery);
+    session_fixture.root_module.addImport("backlight", backlight);
+    linkGtk(session_fixture);
+    b.step("session-fixture", "Build private logind action and lifecycle tests").dependOn(&b.addInstallArtifact(session_fixture, .{}).step);
     // Run only through the private D-Bus/PipeWire/Xvfb memory fixture.
     const memory_tests = b.addTest(.{
         .name = "desktop-memory-tests",

@@ -211,7 +211,7 @@ lib.mkIf enableLightDesktop {
       # Stay near GNOME's 5/3 scale on hagi using an exact multiple of 1/8,
       # representable in both Wayland's 1/256 and fractional-scale's 1/120 units.
       ${shell} output --output eDP-1 --scale 1.625
-      ${pkgs.systemd}/bin/systemctl --user import-environment PATH
+      ${pkgs.systemd}/bin/systemctl --user import-environment PATH XDG_SESSION_ID
       ${pkgs.systemd}/bin/systemctl --user --no-block start labwc-session.target
     '';
     "xdg/desktop-panel/config.json".text = builtins.toJSON {
