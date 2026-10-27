@@ -271,9 +271,6 @@ fn quit(data: c.gpointer) callconv(.c) c.gboolean {
     return 1;
 }
 
-pub fn main(init: std.process.Init) !void {
-    return mainWithBackend(init, .{});
-}
 pub fn mainWithBackend(init: std.process.Init, backend: backlight.Backend) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();

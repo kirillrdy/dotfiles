@@ -96,16 +96,3 @@ fn fetchUsage(a: A, remaining: bool, compact: bool) !V {
     if (status != 200) return unavailable(a, try u.fmt(a, "Codex usage service returned HTTP {d}", .{status}), compact);
     return formatUsage(a, try u.parse(a, response.body), remaining, compact, u.timestamp());
 }
-pub fn main(init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    u.io = init.io;
-    const args = try init.minimal.args.toSlice(a);
-    var remaining = false;
-    var compact = false;
-    for (args[1..]) |arg| {
-        if (u.eq(arg, "--remaining")) remaining = true else if (u.eq(arg, "--compact")) compact = true else return error.InvalidArgument;
-    }
-    try u.emit(a, try readUsage(a, remaining, compact));
-}

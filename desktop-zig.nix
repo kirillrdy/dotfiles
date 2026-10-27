@@ -37,10 +37,8 @@ pkgs.stdenv.mkDerivation {
   buildPhase = ''
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
     zig build --prefix "$out" -Doptimize=ReleaseSafe
-    # Compatibility names share the same executable; fixtures exercise these modes.
-    for name in desktop-greeter desktop-power desktop-askpass desktop-screenshot \
-      desktop-panel desktop-wallpaper desktop-notifications desktop-osd desktop-polkit \
-      desktop-overview desktop-settings desktop-apps waybar-panel waybar-codex grim slurp; do
+    # Executable interfaces required by SSH and the screenshot portal.
+    for name in desktop-askpass grim slurp; do
       ln -s desktop-zig "$out/bin/$name"
     done
   '';
@@ -51,7 +49,7 @@ pkgs.stdenv.mkDerivation {
     python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-zig" --subcommand greeter
     zig build test-gtk-abi test-libc-abi -Doptimize=ReleaseSafe
     zig build test-power -Doptimize=ReleaseSafe
-    WB_PANEL_BINARY="$out/bin/waybar-panel" WB_CODEX_BINARY="$out/bin/waybar-codex" zig build test -Doptimize=ReleaseSafe
+    zig build test -Doptimize=ReleaseSafe
     Xvfb :99 -nolisten tcp &
     xvfb_pid=$!
     trap 'kill "$xvfb_pid"' EXIT
@@ -80,13 +78,10 @@ pkgs.stdenv.mkDerivation {
       zig build test-screenshot -Doptimize=ReleaseSafe
   '';
   installPhase = ''
-    # Keep test programs and legacy component entry points outside the desktop output.
+    # Keep test programs outside the desktop output.
     mkdir -p "$tests/bin"
     for name in desktop-apps-fixture desktop-audio-fixture desktop-battery-fixture desktop-backlight-fixture desktop-lock-fixture desktop-idle-fixture waybar-power-fixture labwc-switcher-fixture \
-      desktop-pointer-fixture check-labwc-switcher \
-      desktop-greeter desktop-power desktop-screenshot desktop-panel desktop-wallpaper \
-      desktop-notifications desktop-osd desktop-polkit desktop-overview desktop-settings \
-      desktop-apps waybar-panel waybar-codex; do
+      desktop-pointer-fixture check-labwc-switcher; do
       mv "$out/bin/$name" "$tests/bin/$name"
     done
     ln -s "$out/bin/desktop-zig" "$tests/bin/desktop-zig"

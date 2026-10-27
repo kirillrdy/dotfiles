@@ -151,18 +151,6 @@ pub const Monitor = struct {
         return out;
     }
 };
-fn monitorStream(demo: bool) !void {
-    var initial = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    var monitor = try Monitor.init(initial.allocator());
-    initial.deinit();
-    while (true) {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const a = arena.allocator();
-        try u.emit(a, try monitor.sample(a, demo));
-        u.sleep(if (demo) 20 * std.time.ns_per_ms else 500 * std.time.ns_per_ms);
-    }
-}
 pub const Status = struct { icon: []const u8, label: []const u8 = "", tooltip: []const u8 };
 fn wirelessStrength(a: A, quality: f64) !Status {
     const level = if (quality >= 0.8) "excellent" else if (quality >= 0.55) "good" else if (quality >= 0.3) "ok" else "weak";
@@ -225,7 +213,7 @@ pub fn addAudio(a: A, out: *V, output: ?audio.State, input: ?audio.State) !void 
     const items = out.object.getPtr("items") orelse return;
     if (output) |state| {
         const level = if (state.muted or state.percent == 0) "muted" else if (state.percent >= 66) "high" else if (state.percent >= 33) "medium" else "low";
-        try items.array.append(try item(a, try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), "", try u.fmt(a, "Volume: {d:.0}%", .{state.percent}), "desktop-settings sound"));
+        try items.array.append(try item(a, try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), "", try u.fmt(a, "Volume: {d:.0}%", .{state.percent}), "desktop-zig settings sound"));
     }
     if (input) |state| if (state.muted) {
         try items.array.append(try item(a, "microphone-sensitivity-muted-symbolic", "", "Microphone muted", ""));
@@ -240,67 +228,9 @@ fn statusItems(a: A, demo: bool) !V {
         return items;
     }
     const wireless = try wirelessIcon(a);
-    try items.array.append(try item(a, wireless.icon, "", wireless.tooltip, "desktop-settings network"));
+    try items.array.append(try item(a, wireless.icon, "", wireless.tooltip, "desktop-zig settings network"));
     return items;
 }
-var wake_pipe: [2]std.posix.fd_t = .{ -1, -1 };
-fn refreshSignal(_: std.posix.SIG) callconv(.c) void {
-    const saved_errno = u.libc.__errno_location().*;
-    defer u.libc.__errno_location().* = saved_errno;
-    _ = u.libc.write(wake_pipe[1], "r", 1);
-}
-fn waitRefresh(milliseconds: c_int) void {
-    var fd = u.libc.struct_pollfd{ .fd = wake_pipe[0], .events = u.libc.POLLIN, .revents = 0 };
-    var remaining = milliseconds;
-    while (remaining > 0) {
-        audio.dispatch();
-        if (u.libc.poll(&fd, 1, @min(remaining, 50)) > 0) break;
-        remaining -= 50;
-    }
-    var buf: [128]u8 = undefined;
-    while (u.libc.read(wake_pipe[0], &buf, buf.len) > 0) {}
-}
-fn audioChanged(_: ?*anyopaque, _: *audio.Service) void {}
-pub fn main(init: std.process.Init) !void {
-    u.io = init.io;
-    run(init.minimal.args) catch |err| if (err != error.WriteFailed) return err;
-}
-fn run(args_source: std.process.Args) !void {
-    var startup = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer startup.deinit();
-    const args = try args_source.toSlice(startup.allocator());
-    if (args.len < 2) return error.MissingKind;
-    const kind = args[1];
-    if (!u.eq(kind, "monitors") and !u.eq(kind, "codex") and !u.eq(kind, "status") and !u.eq(kind, "disk")) return error.InvalidKind;
-    var icon: []const u8 = "";
-    var codex_command: ?[]const u8 = null;
-    var i: usize = 2;
-    while (i < args.len) : (i += 2) {
-        if (i + 1 >= args.len) return error.MissingValue;
-        if (u.eq(args[i], "--codex-icon")) icon = args[i + 1] else if (u.eq(args[i], "--codex-command")) codex_command = args[i + 1] else return error.InvalidArgument;
-    }
-    const demo = u.eq(u.env("WB_PANEL_DEMO") orelse "", "1");
-    if (u.eq(kind, "monitors")) return monitorStream(demo);
-    if (u.libc.pipe2(&wake_pipe, u.libc.O_NONBLOCK | u.libc.O_CLOEXEC) != 0) return error.PipeFailed;
-    defer {
-        _ = u.libc.close(wake_pipe[0]);
-        _ = u.libc.close(wake_pipe[1]);
-    }
-    if (u.eq(kind, "codex") or u.eq(kind, "status")) std.posix.sigaction(std.posix.SIG.USR1, &.{ .handler = .{ .handler = refreshSignal }, .mask = std.posix.sigemptyset(), .flags = 0 }, null);
-    const audio_service = if (u.eq(kind, "status") and !demo) try audio.Service.create(&audioChanged, null) else null;
-    defer if (audio_service) |service| service.destroy();
-    while (true) {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const a = arena.allocator();
-        var out = try sample(a, kind, icon, codex_command, demo);
-        if (audio_service) |service| try addAudio(a, &out, service.state(.output), service.state(.input));
-        if (u.eq(kind, "status") and !demo) try addBattery(a, &out, battery.read());
-        try u.emit(a, out);
-        waitRefresh(if (u.eq(kind, "codex")) 60000 else 5000);
-    }
-}
-
 /// One bounded update, suitable for a shared session worker.
 pub fn sample(a: A, kind: []const u8, icon: []const u8, codex_command: ?[]const u8, demo: bool) !V {
     var out = u.object();

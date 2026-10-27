@@ -6,6 +6,7 @@ and --wallpaper for the build being checked; the current desktop is untouched.
 """
 
 import argparse
+from session_fixture import command as session_command, wait_ready
 import os
 import re
 import select
@@ -129,7 +130,8 @@ def main():
             run(["grim", "-s", "1", "-g", "300,180 1120x740", str(path)])
             return path.read_bytes()
 
-        overview_command = [str(args.bin_dir / "desktop-overview"), args.wallpaper]
+        binary = args.bin_dir / "desktop-zig"
+        overview_command = [str(binary), "overview"]
         log_path = artifacts / "overview.log"
 
         def log():
@@ -165,14 +167,11 @@ def main():
             )
             panel_style = root / "panel.css"
             panel_style.write_text("window#desktop-panel { background: black; }")
-            start(
-                [
-                    str(args.bin_dir / "desktop-panel"),
-                    str(panel_config),
-                    str(panel_style),
-                ],
-                "panel",
+            overview = start(
+                session_command(binary, root, args.wallpaper, panel_config, panel_style),
+                "overview", WAYLAND_DEBUG="client",
             )
+            wait_ready(binary, env, overview)
             # Headless wlroots starts without a keyboard; keep one connected.
             start(["wtype", "-k", "Shift_L", "-s", "60000"], "keyboard")
             time.sleep(0.2)
@@ -198,7 +197,7 @@ def main():
                     )
                 )
                 time.sleep(0.2)
-            overview = start(overview_command, "overview", WAYLAND_DEBUG="client")
+            run(overview_command)
             wait_for(
                 lambda: log().count(".ready()") >= 8,
                 "Window captures did not update live",

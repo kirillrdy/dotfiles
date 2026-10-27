@@ -95,28 +95,6 @@ const App = struct {
     }
 };
 
-fn quit(_: c.gpointer) callconv(.c) c.gboolean {
-    c.gtk_main_quit();
-    return 1;
-}
-
-pub fn main(init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const args = try init.minimal.args.toSlice(arena.allocator());
-    if (args.len != 2) return error.InvalidArguments;
-    _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
-    if (c.gtk_init_check(null, null) == 0) return error.NoWaylandDisplay;
-    if (c.gtk_layer_is_supported() == 0) return error.LayerShellUnavailable;
-    const service = try Service.create(args[1]);
-    defer service.destroy();
-    const term = c.g_unix_signal_add(c.SIGTERM, &quit, null);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, null);
-    defer _ = c.g_source_remove(term);
-    defer _ = c.g_source_remove(interrupt);
-    c.gtk_main();
-}
-
 test "fill crops the center of wide and tall images at both buffer scales" {
     for ([_]bool{ false, true }) |vertical| {
         const image = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 0, 8, if (vertical) 4 else 12, if (vertical) 12 else 4).?;

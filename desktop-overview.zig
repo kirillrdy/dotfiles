@@ -637,25 +637,6 @@ pub fn activate(app: *c.GtkApplication, data: c.gpointer) callconv(.c) void {
     const self = state.overview.?;
     if (c.gtk_widget_get_visible(self.launcher.window) != 0) c.gtk_widget_hide(self.launcher.window) else self.present();
 }
-pub fn main(init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(a);
-    defer arena.deinit();
-    const args = try init.minimal.args.toSlice(arena.allocator());
-    if (args.len != 2) {
-        std.debug.print("Usage: desktop-overview WALLPAPER\n", .{});
-        return error.InvalidArguments;
-    }
-    _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
-    c.g_set_prgname("org.dotfiles.DesktopOverview");
-    const app = c.gtk_application_new("org.dotfiles.DesktopOverview", c.G_APPLICATION_DEFAULT_FLAGS).?;
-    defer c.g_object_unref(app);
-    var state = State{ .wallpaper = (try arena.allocator().dupeSentinel(u8, args[1], 0)).ptr };
-    defer if (state.overview) |self| self.destroy();
-    connect(app, "activate", &activate, &state);
-    const status = c.g_application_run(cast(c.GApplication, app), 0, null);
-    if (status != 0) std.process.exit(@intCast(status));
-}
-
 pub fn deinit(state: *State) void {
     if (state.overview) |self| self.destroy();
     state.overview = null;

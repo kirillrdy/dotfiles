@@ -344,14 +344,3 @@ fn close(widget: ?*c.GtkWidget, _: ?*anyopaque, _: ?*anyopaque) callconv(.c) c.g
     c.gtk_widget_hide(widget);
     return 1;
 }
-pub fn main() void {
-    // Also provides a stable Wayland app_id for compositor window rules.
-    c.g_set_prgname("org.dotfiles.DesktopApps");
-    const app = c.gtk_application_new("org.dotfiles.DesktopApps", c.G_APPLICATION_DEFAULT_FLAGS);
-    defer c.g_object_unref(app);
-    var state: ?Launcher = null;
-    defer if (state) |*self| self.deinit();
-    connect(app, "activate", &activate, &state);
-    const status = c.g_application_run(@ptrCast(app), 0, null);
-    if (status != 0) std.process.exit(@intCast(status));
-}

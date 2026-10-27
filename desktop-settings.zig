@@ -553,38 +553,6 @@ pub const Settings = struct {
     }
 };
 
-const Application = struct {
-    mode: Mode,
-    settings: ?*Settings = null,
-    fn activate(app: *c.GtkApplication, data: c.gpointer) callconv(.c) void {
-        const self: *Application = @ptrCast(@alignCast(data));
-        if (self.settings == null) {
-            self.settings = Settings.create(self.mode);
-            c.gtk_application_add_window(app, cast(c.GtkWindow, self.settings.?.window));
-        }
-        c.gtk_window_present(cast(c.GtkWindow, self.settings.?.window));
-    }
-};
-pub fn main(init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(a);
-    defer arena.deinit();
-    const args = try init.minimal.args.toSlice(arena.allocator());
-    if (args.len != 2) return error.ExpectedSoundOrNetwork;
-    const mode = std.meta.stringToEnum(Mode, args[1]) orelse return error.ExpectedSoundOrNetwork;
-    var state = Application{ .mode = mode };
-    const app = c.gtk_application_new(if (mode == .sound) "org.dotfiles.DesktopSound" else "org.dotfiles.DesktopNetwork", c.G_APPLICATION_FLAGS_NONE);
-    defer c.g_object_unref(app);
-    connect(app, "activate", &Application.activate, &state);
-    var argv = [_:null]?[*:0]u8{try arena.allocator().dupeSentinel(u8, args[0], 0)};
-    const status = c.g_application_run(cast(c.GApplication, app), 1, @ptrCast(&argv));
-    if (state.settings) |settings| {
-        if (!settings.closed) c.gtk_widget_destroy(settings.window);
-        while (settings.jobs != null or settings.audio_operations != 0) _ = c.g_main_context_iteration(null, 1);
-        settings.destroy();
-    }
-    if (status != 0) return error.ApplicationFailed;
-}
-
 test "escaped nmcli fields and malformed records" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

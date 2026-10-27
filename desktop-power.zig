@@ -188,17 +188,6 @@ pub const Backend = struct {
     }
 };
 
-pub fn main(init: std.process.Init) void {
-    run(init) catch |err| {
-        std.debug.print("desktop-power: {s}\n", .{@errorName(err)});
-        std.process.exit(1);
-    };
-}
-fn run(init: std.process.Init) !void {
-    var arguments = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arguments.deinit();
-    return runArgs(init, try init.minimal.args.toSlice(arguments.allocator()));
-}
 pub fn runArgs(init: std.process.Init, args: []const []const u8) !void {
     _ = init;
     var arena = std.heap.ArenaAllocator.init(a);

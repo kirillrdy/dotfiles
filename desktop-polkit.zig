@@ -395,31 +395,6 @@ fn finishAuth(_: ?*c.PolkitAgentListener, res: ?*c.GAsyncResult, err: [*c]?*c.GE
     return c.g_task_propagate_boolean(cast(c.GTask, res), err);
 }
 
-fn onSignal(_: c.gpointer) callconv(.c) c.gboolean {
-    if (active_dialog) |d| d.finishCancel();
-    c.gtk_main_quit();
-    return 1;
-}
-
-pub fn main(init: std.process.Init) void {
-    const status = run(init) catch 1;
-    if (status != 0) std.process.exit(status);
-}
-
-fn run(init: std.process.Init) !u8 {
-    _ = init;
-    if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return 1;
-    if (c.gtk_init_check(null, null) == 0) return 1;
-    var service = Service.init() catch return 1;
-    defer service.deinit();
-    const term = c.g_unix_signal_add(libc.SIGTERM, &onSignal, null);
-    const interrupt = c.g_unix_signal_add(libc.SIGINT, &onSignal, null);
-    defer _ = c.g_source_remove(term);
-    defer _ = c.g_source_remove(interrupt);
-    c.gtk_main();
-    return 0;
-}
-
 pub const Service = struct {
     listener: *c.PolkitAgentListener,
     handle: c.gpointer,

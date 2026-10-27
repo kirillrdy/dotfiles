@@ -70,7 +70,7 @@ pub fn main(init: std.process.Init) !void {
         try env.put("GDK_BACKEND", "x11");
         try env.put("DISPLAY", "");
         try env.put("WAYLAND_DISPLAY", "");
-        const failed = try std.process.run(arena.allocator(), init.io, .{ .argv = &.{ args[1], "A prompt that must not reach stdout" }, .environ_map = &env });
+        const failed = try std.process.run(arena.allocator(), init.io, .{ .argv = &.{ args[1], "askpass", "A prompt that must not reach stdout" }, .environ_map = &env });
         assert(failed.term == .exited and failed.term.exited == 1);
         try std.testing.expectEqualStrings("", failed.stdout);
     }

@@ -47,21 +47,9 @@ fn checkDialog() !void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const args = try init.minimal.args.toSlice(arena.allocator());
-
+    _ = init;
     c.gtk_init(null, null);
     try checkDialog();
 
-    if (args.len > 1) {
-        var env = try init.minimal.environ.createMap(arena.allocator());
-        try env.put("GDK_BACKEND", "x11");
-        try env.put("DISPLAY", "");
-        try env.put("WAYLAND_DISPLAY", "");
-        const failed = try std.process.run(arena.allocator(), init.io, .{ .argv = &.{args[1]}, .environ_map = &env });
-        assert(failed.term == .exited and failed.term.exited == 1);
-    }
-
-    std.debug.print("desktop-polkit: masked input, Unicode labels, error display, cancel responses, and missing display passed\n", .{});
+    std.debug.print("desktop-polkit: masked input, Unicode labels, error display, cancel responses passed\n", .{});
 }

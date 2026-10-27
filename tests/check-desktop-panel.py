@@ -6,6 +6,7 @@ are retained in a temporary directory printed at startup.
 """
 
 import argparse
+from session_fixture import command as session_command, wait_ready
 import json
 import os
 import re
@@ -137,7 +138,8 @@ try:
     for module in config["right"]:
         if module["name"] in ("gnome-monitors", "gnome-disk", "gnome-status"):
             kind = module["name"].removeprefix("gnome-")
-            module["exec"] = shlex.join([str(args.bin / "waybar-panel"), kind])
+            module.pop("exec", None)
+            module["source"] = kind
     # Verify command launching without opening another app.
     config["left"][0]["on_click"] = shlex.join(
         ["touch", str(root / "activities-clicked")]
@@ -159,10 +161,11 @@ try:
     config["left"].append(config["right"].pop(0))
     (root / "panel.json").write_text(json.dumps(config))
     panel = start(
-        [str(args.bin / "desktop-panel"), str(root / "panel.json"), str(args.style)],
+        session_command(args.bin / "desktop-zig", root, panel_config=root / "panel.json", panel_style=args.style),
         "panel.log",
         {"WAYLAND_DEBUG": "1", "G_DEBUG": "fatal-criticals"},
     )
+    wait_ready(args.bin / "desktop-zig", env, panel)
     time.sleep(2)
     check()
     assert log().count('"desktop-panel")') == 2, (

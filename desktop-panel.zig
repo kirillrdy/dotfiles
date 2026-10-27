@@ -102,29 +102,6 @@ fn launch(root: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callco
     return 1;
 }
 
-fn quit(_: c.gpointer) callconv(.c) c.gboolean {
-    c.gtk_main_quit();
-    return 1; // Keep source alive until cleanup removes it.
-}
-
-pub fn main(init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const args = try init.minimal.args.toSlice(arena.allocator());
-    if (args.len != 3) return error.InvalidArguments;
-    _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
-    if (c.gtk_init_check(null, null) == 0) return error.NoWaylandDisplay;
-    if (c.gtk_layer_is_supported() == 0) return error.LayerShellUnavailable;
-    const service = try Service.create(args[1], args[2]);
-    defer service.destroy();
-    const term = c.g_unix_signal_add(c.SIGTERM, &quit, null);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, null);
-    defer _ = c.g_source_remove(term);
-    defer _ = c.g_source_remove(interrupt);
-    c.gtk_main();
-    while (c.g_main_context_iteration(null, 0) != 0) {}
-}
-
 /// Owns panel windows; the session owns GTK and the event loop.
 pub const Service = struct {
     arena: std.heap.ArenaAllocator,

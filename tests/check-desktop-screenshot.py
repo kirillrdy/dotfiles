@@ -15,7 +15,7 @@ import time
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--bin-dir", required=True, type=Path)
 args = parser.parse_args()
-binary = args.bin_dir / "desktop-screenshot"
+command = [str(args.bin_dir / "desktop-zig"), "screenshot"]
 root = Path(tempfile.mkdtemp(prefix="desktop-screenshot-check-"))
 print(f"Artifacts: {root}", flush=True)
 (root / "runtime").mkdir(mode=0o700)
@@ -74,11 +74,11 @@ try:
         time.sleep(0.05)
     env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem
     explicit = root / "explicit.png"
-    run([str(binary), "-g", "10,20 64x48", str(explicit)])
+    run([*command, "-g", "10,20 64x48", str(explicit)])
     assert dimensions(explicit) == (64, 48)
-    run([str(binary), "-g", "10,20 64x48"])
+    run([*command, "-g", "10,20 64x48"])
     assert len(saved()) == 1 and dimensions(saved()[0]) == (64, 48)
-    run([str(binary), "-g", "10,20 64x48"])
+    run([*command, "-g", "10,20 64x48"])
     assert len(saved()) == 2, "Successive captures overwrote a file"
 
     pointer = start(
@@ -87,7 +87,7 @@ try:
     )
     assert select.select([pointer.stdout], [], [], 5)[0]
     assert pointer.stdout.readline().strip() == "ready"
-    capture = start([str(binary)], "interactive.log", stdout=sp.DEVNULL)
+    capture = start(command, "interactive.log", stdout=sp.DEVNULL)
     time.sleep(0.7)
     for command in ("move 100 100", "button 1", "move 400 300", "button 0"):
         pointer.stdin.write(command + "\n")

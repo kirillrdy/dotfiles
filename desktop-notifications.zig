@@ -389,27 +389,6 @@ fn acquired(connection: ?*c.GDBusConnection, _: [*c]const u8, data: c.gpointer) 
 fn owned(_: ?*c.GDBusConnection, _: [*c]const u8, data: c.gpointer) callconv(.c) void {
     cast(Server, data).owned = true;
 }
-fn quit(_: c.gpointer) callconv(.c) c.gboolean {
-    c.gtk_main_quit();
-    return 1;
-}
-pub fn main(init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const args = try init.minimal.args.toSlice(arena.allocator());
-    if (args.len != 2) return error.ExpectedStylesheet;
-    _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
-    if (c.gtk_init_check(null, null) == 0 or c.gtk_layer_is_supported() == 0) return error.NoLayerShellDisplay;
-    const service = try Service.create(args[1]);
-    defer service.destroy();
-    const term = c.g_unix_signal_add(c.SIGTERM, &quit, null);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, null);
-    defer _ = c.g_source_remove(term);
-    defer _ = c.g_source_remove(interrupt);
-    c.gtk_main();
-    if (!service.isOwned()) return error.NotificationNameUnavailable;
-}
-
 pub const Service = struct {
     server: Server,
     node: *c.GDBusNodeInfo,

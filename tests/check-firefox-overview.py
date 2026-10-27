@@ -5,6 +5,7 @@ Requires Pillow, dbus-run-session, grim and wlr-randr on PATH.
 """
 
 import argparse
+from session_fixture import command as session_command, wait_ready
 import os
 from pathlib import Path
 import re
@@ -75,6 +76,7 @@ def main():
                                stdout=(args.artifacts / f"{name}.log").open("w"),
                                stderr=sp.STDOUT)
             processes.append(process)
+            return process
 
         def run(command):
             sp.run(command, env=env, check=True, capture_output=True, timeout=15)
@@ -100,8 +102,11 @@ def main():
             wait_for(lambda: ".set_window_geometry(" in firefox_log.read_text(),
                      "Firefox did not map a window")
             time.sleep(1)
-            start([str(args.bin_dir / "desktop-overview"), args.wallpaper],
-                  "overview", WAYLAND_DEBUG="client")
+            binary = args.bin_dir / "desktop-zig"
+            session = start(session_command(binary, root, args.wallpaper),
+                            "overview", WAYLAND_DEBUG="client")
+            wait_ready(binary, env, session)
+            run([str(binary), "overview"])
             wait_for(lambda: log.exists() and log.read_text().count(".ready()") >= 4,
                      "Firefox preview did not update live")
             time.sleep(1)

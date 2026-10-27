@@ -142,26 +142,13 @@ pub fn main(init: std.process.Init) !void {
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
     const name = std.fs.path.basename(if (c.g_getenv("DESKTOP_ZIG_INVOKED_AS")) |invoked| std.mem.span(invoked) else args[0]);
-    // Compatibility entry points share the executable, including portal protocols.
-    if (std.mem.eql(u8, name, "desktop-greeter")) return @import("greeter").runArgs(init, args);
-    if (std.mem.eql(u8, name, "desktop-power")) return @import("power").runArgs(init, args);
+    // Executable aliases implement the portal and SSH askpass protocols.
     if (std.mem.eql(u8, name, "desktop-askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args));
-    if (std.mem.eql(u8, name, "grim") or std.mem.eql(u8, name, "slurp") or std.mem.eql(u8, name, "desktop-screenshot")) {
+    if (std.mem.eql(u8, name, "grim") or std.mem.eql(u8, name, "slurp")) {
         const forwarded = try arena.allocator().dupe([]const u8, args);
         forwarded[0] = name;
         return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
     }
-    if (std.mem.eql(u8, name, "desktop-apps")) return @import("apps").main();
-    if (std.mem.eql(u8, name, "waybar-panel")) return @import("waybar-panel.zig").main(init);
-    if (std.mem.eql(u8, name, "waybar-codex")) return @import("waybar-codex.zig").main(init);
-    // Standalone modes remain useful to the existing isolated component fixtures.
-    if (std.mem.eql(u8, name, "desktop-panel")) return panel.main(init);
-    if (std.mem.eql(u8, name, "desktop-wallpaper")) return wallpaper.main(init);
-    if (std.mem.eql(u8, name, "desktop-notifications")) return notifications.main(init);
-    if (std.mem.eql(u8, name, "desktop-osd")) return osd.main(init);
-    if (std.mem.eql(u8, name, "desktop-polkit")) return polkit.main(init);
-    if (std.mem.eql(u8, name, "desktop-overview")) return overview.main(init);
-    if (std.mem.eql(u8, name, "desktop-settings")) return settings.main(init);
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
         std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig greeter|askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;

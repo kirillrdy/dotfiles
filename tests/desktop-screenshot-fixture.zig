@@ -28,7 +28,7 @@ fn testGeometryParsing() !void {
 }
 
 fn testOptionsParsing() !void {
-    const args1 = [_][]const u8{ "desktop-screenshot", "-o", "eDP-1", "-g", "10,20 300x400", "test.png" };
+    const args1 = [_][]const u8{ "screenshot", "-o", "eDP-1", "-g", "10,20 300x400", "test.png" };
     const opt1 = screenshot.Options.parse(&args1);
     try std.testing.expectEqualStrings("eDP-1", opt1.output_name.?);
     try std.testing.expectEqual(@as(i32, 10), opt1.geometry.?.x);
@@ -38,17 +38,17 @@ fn testOptionsParsing() !void {
     try std.testing.expectEqualStrings("test.png", opt1.file_path.?);
     try std.testing.expect(!opt1.interactive);
 
-    const args2 = [_][]const u8{ "desktop-screenshot", "-c" };
+    const args2 = [_][]const u8{ "screenshot", "-c" };
     const opt2 = screenshot.Options.parse(&args2);
     try std.testing.expect(opt2.clipboard);
     try std.testing.expect(opt2.interactive);
     try std.testing.expect(!opt2.save_default);
 
-    const defaults = screenshot.Options.parse(&.{"desktop-screenshot"});
+    const defaults = screenshot.Options.parse(&.{"screenshot"});
     try std.testing.expect(defaults.interactive);
     try std.testing.expect(defaults.clipboard);
     try std.testing.expect(defaults.save_default);
-    const region = screenshot.Options.parse(&.{ "desktop-screenshot", "-g", "0,0 32x32" });
+    const region = screenshot.Options.parse(&.{ "screenshot", "-g", "0,0 32x32" });
     try std.testing.expect(region.save_default);
     try std.testing.expect(!region.interactive);
 
