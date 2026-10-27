@@ -78,18 +78,6 @@ pub fn trim(s: []const u8) []const u8 {
 pub fn parse(a: Allocator, s: []const u8) !Value {
     return (try std.json.parseFromSlice(Value, a, s, .{ .allocate = .alloc_always })).value;
 }
-pub fn command(a: Allocator, args: []const []const u8, seconds: u32) []const u8 {
-    const argv = a.alloc([]const u8, args.len + 3) catch return "";
-    argv[0] = "timeout";
-    argv[1] = "--signal=KILL";
-    argv[2] = fmt(a, "{d}", .{seconds}) catch return "";
-    @memcpy(argv[3..], args);
-    const result = std.process.run(a, io, .{ .argv = argv, .stdout_limit = .limited(4 * 1024 * 1024), .stderr_limit = .limited(4 * 1024 * 1024) }) catch return "";
-    return switch (result.term) {
-        .exited => |code| if (code == 0) trim(result.stdout) else "",
-        else => "",
-    };
-}
 pub fn localTime(a: Allocator, stamp: i64, comptime format: [:0]const u8) ![]const u8 {
     var t: libc.time_t = @intCast(stamp);
     var tm: libc.struct_tm = undefined;

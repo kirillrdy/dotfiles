@@ -46,7 +46,6 @@ test "network rate units" {
     const a = arena.allocator();
     for ([_]f64{ 1024, 1048576, 1073741824 }, [_][]const u8{ "KiB/s", "MiB/s", "GiB/s" }) |rate, unit| try expect(std.mem.indexOf(u8, try panel.rateText(a, rate), unit) != null);
     try expect(std.mem.startsWith(u8, try panel.rateText(a, -1), "0"));
-
 }
 test "panel appends native battery state and omits absent batteries" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -88,4 +87,28 @@ test "Codex reset countdown handles missing invalid and past timestamps" {
     try strings("Resets in 2h 15m", try codex.resetText(a, u.num(1000 + 2 * 3600 + 15 * 60), 1000));
     try strings("Resets in now", try codex.resetText(a, u.num(900), 1000));
     for ([_]u.Value{ .null, .{ .bool = true }, u.str("1000"), u.num(std.math.nan(f64)), u.num(std.math.inf(f64)) }) |value| try strings("Resets: —", try codex.resetText(a, value, 1000));
+}
+
+test "disk usage uses fragment sizes and excludes free reserved blocks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try strings("2.0G/4.0G", try panel.diskUsageText(arena.allocator(), .{
+        .f_bsize = 8192,
+        .f_frsize = 4096,
+        .f_blocks = 1048576,
+        .f_bfree = 524288,
+        .f_bavail = 262144,
+    }));
+    try strings("0B/0B", try panel.diskUsageText(arena.allocator(), .{}));
+}
+
+test "disk panel queries the root filesystem without commands" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try panel.sample(arena.allocator(), "disk", "", false);
+    const entry = u.get(result, "items").array.items[0];
+    const label = u.string(u.get(entry, "text"));
+    try expect(!std.mem.eql(u8, label, "—/—"));
+    try expect(std.mem.indexOfScalar(u8, label, '/') != null);
+    try strings("ghostty -e ncdu /", u.string(u.get(entry, "command")));
 }

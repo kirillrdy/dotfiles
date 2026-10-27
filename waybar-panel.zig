@@ -197,19 +197,31 @@ fn statusItems(a: A, demo: bool) !V {
     }
     return items;
 }
+fn diskSize(a: A, bytes: u128) ![]const u8 {
+    var size: f64 = @floatFromInt(bytes);
+    const units = "BKMGTPEZY";
+    var unit: usize = 0;
+    while (size >= 1024 and unit + 1 < units.len) : (unit += 1) size /= 1024;
+    if (unit > 0 and size < 10) return u.fmt(a, "{d:.1}{c}", .{ @ceil(size * 10) / 10, units[unit] });
+    return u.fmt(a, "{d:.0}{c}", .{ @ceil(size), units[unit] });
+}
+
+pub fn diskUsageText(a: A, stats: u.libc.struct_statvfs) ![]const u8 {
+    // f_bfree includes reserved blocks; f_bavail would count them as used.
+    const block_size: u128 = stats.f_frsize;
+    const total = @as(u128, stats.f_blocks) * block_size;
+    const used = @as(u128, stats.f_blocks -| stats.f_bfree) * block_size;
+    return u.fmt(a, "{s}/{s}", .{ try diskSize(a, used), try diskSize(a, total) });
+}
+
 /// One bounded update, suitable for a shared session worker.
 pub fn sample(a: A, kind: []const u8, icon: []const u8, demo: bool) !V {
     var out = u.object();
     if (u.eq(kind, "status")) try u.put(a, &out, "items", try statusItems(a, demo)) else if (u.eq(kind, "disk")) {
-        const output = u.command(a, &.{ "df", "-h", "/" }, 4);
-        var rows = std.mem.splitScalar(u8, output, '\n');
-        _ = rows.next();
-        var words = std.mem.tokenizeAny(u8, rows.next() orelse "", " \t");
-        _ = words.next();
-        const total = words.next() orelse "—";
-        const used = words.next() orelse "—";
+        var stats: u.libc.struct_statvfs = undefined;
+        const label = if (u.libc.statvfs("/", &stats) == 0) try diskUsageText(a, stats) else "—/—";
         var items = u.array(a);
-        try items.array.append(try item(a, "", try u.fmt(a, "{s}/{s}", .{ used, total }), "Root filesystem usage", "ghostty -e ncdu /"));
+        try items.array.append(try item(a, "", label, "Root filesystem usage", "ghostty -e ncdu /"));
         try u.put(a, &out, "items", items);
     } else {
         const result = if (demo) try u.parse(a, "{\"text\":\"54%\",\"tooltip\":\"5h: 54% remaining\\n7d: 93% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}]}") else try codex.readUsage(a, true, true);

@@ -3,6 +3,25 @@
 //! The remaining declarations are verified by test-libc-abi, without parsing
 //! system headers during ordinary builds.
 const std = @import("std");
+// Linux/glibc statvfs layout on the desktop's 64-bit targets.
+pub const struct_statvfs = extern struct {
+    f_bsize: c_ulong = 0,
+    f_frsize: c_ulong = 0,
+    f_blocks: c_ulong = 0,
+    f_bfree: c_ulong = 0,
+    f_bavail: c_ulong = 0,
+    f_files: c_ulong = 0,
+    f_ffree: c_ulong = 0,
+    f_favail: c_ulong = 0,
+    f_fsid: c_ulong = 0,
+    f_flag: c_ulong = 0,
+    f_namemax: c_ulong = 0,
+    f_type: c_uint = 0,
+    __f_spare: [5]c_int = @splat(0),
+};
+
+pub extern fn statvfs(path: [*c]const u8, buf: [*c]struct_statvfs) c_int;
+
 pub const __uid_t = c_uint;
 
 pub const __ino_t = c_ulong;
@@ -239,4 +258,3 @@ pub const MAP_FAILED = @as(?*anyopaque, @ptrFromInt(std.math.maxInt(usize)));
 pub const SIGUSR1: c_int = @intCast(@backingInt(std.posix.SIG.USR1));
 
 pub const STDOUT_FILENO = @as(c_int, 1);
-
