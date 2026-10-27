@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("gtk");
 const media = @import("desktop-osd.zig");
+const backlight = @import("backlight");
 const network_fields = @import("desktop-settings.zig").fields;
 const a = std.heap.page_allocator;
 fn cast(comptime T: type, ptr: anytype) *T {
@@ -85,7 +86,7 @@ fn iconButton(icon_name: [*:0]const u8, tooltip: [*:0]const u8) *c.GtkWidget {
     c.gtk_widget_set_tooltip_text(button, tooltip);
     return button;
 }
-const Read = enum { volume, brightness, network, radio, battery, action };
+const Read = enum { volume, network, radio, battery, action };
 const Job = struct { owner: *Controls, process: *c.GSubprocess, kind: Read, next: ?*Job, timeout: c.guint = 0, input: ?[:0]u8 = null };
 pub const Controls = struct {
     popover: *c.GtkWidget,
@@ -116,7 +117,11 @@ pub const Controls = struct {
     timer: c.guint = 0,
     volume_timer: c.guint = 0,
     brightness_timer: c.guint = 0,
-    pending: [5]bool = @splat(false),
+    backlight_backend: backlight.Backend = .{},
+    brightness_busy: bool = false,
+    brightness_writing: bool = false,
+    brightness_wanted: ?f64 = null,
+    pending: [4]bool = @splat(false),
     syncing: bool = false,
     dead: bool = false,
     refs: usize = 1,
@@ -367,7 +372,7 @@ pub const Controls = struct {
         if (self.dead) return;
         self.syncPreferences();
         self.run(.volume, &.{ "wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@" });
-        self.run(.brightness, &.{ "brightnessctl", "-c", "backlight", "-m" });
+        self.refreshBrightness();
         self.run(.network, &.{ "nmcli", "-t", "-f", "IN-USE,SSID,SECURITY,SIGNAL", "device", "wifi", "list", "--rescan", "no" });
         self.run(.radio, &.{ "nmcli", "-t", "-f", "WIFI", "general" });
         self.run(.battery, &.{ "upower", "-i", "/org/freedesktop/UPower/devices/DisplayDevice" });
@@ -402,10 +407,44 @@ pub const Controls = struct {
     fn writeBrightness(ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Controls, ptr);
         self.brightness_timer = 0;
-        var buffer: [32]u8 = undefined;
-        const value = std.fmt.bufPrintSentinel(&buffer, "{d:.0}%", .{@max(1, c.gtk_range_get_value(cast(c.GtkRange, self.brightness)))}, 0) catch unreachable;
-        self.run(.action, &.{ "brightnessctl", "-c", "backlight", "set", value });
+        self.brightness_wanted = @max(1, c.gtk_range_get_value(cast(c.GtkRange, self.brightness)));
+        self.refreshBrightness();
         return 0;
+    }
+    fn refreshBrightness(self: *Controls) void {
+        if (self.dead or self.brightness_busy) return;
+        const wanted = self.brightness_wanted;
+        self.brightness_wanted = null;
+        self.brightness_busy = true;
+        self.brightness_writing = wanted != null;
+        self.refs += 1;
+        self.backlight_backend.start(if (wanted) |value| .{ .set = value } else .read, self.cancel, &brightnessDone, self);
+    }
+    fn brightnessDone(ptr: ?*anyopaque, result: backlight.Result) void {
+        const self = cast(Controls, ptr);
+        self.brightness_busy = false;
+        if (!self.dead) {
+            var reread = false;
+            switch (result) {
+                .value => |device| {
+                    if (self.brightness_writing) c.gtk_widget_set_tooltip_text(self.content, null);
+                    if (self.brightness_wanted == null and self.brightness_timer == 0) {
+                        self.syncing = true;
+                        c.gtk_range_set_value(cast(c.GtkRange, self.brightness), device.percent());
+                        self.syncing = false;
+                    }
+                    c.gtk_widget_set_no_show_all(self.brightness_row, 0);
+                    c.gtk_widget_show_all(self.brightness_row);
+                    c.gtk_widget_set_no_show_all(self.brightness_row, 1);
+                },
+                .failure => |err| {
+                    if (err == error.NoBacklight or err == error.BacklightUnavailable) c.gtk_widget_hide(self.brightness_row) else if (err != error.Cancelled) c.gtk_widget_set_tooltip_text(self.content, if (self.brightness_writing) "Brightness change failed" else "Brightness unavailable");
+                    reread = self.brightness_writing and err != error.Cancelled and err != error.NoBacklight and err != error.BacklightUnavailable;
+                },
+            }
+            if (self.brightness_wanted != null or reread) self.refreshBrightness();
+        }
+        self.release();
     }
     fn run(self: *Controls, kind: Read, args: []const [*:0]const u8) void {
         self.runInput(kind, args, null);
@@ -450,7 +489,7 @@ pub const Controls = struct {
         link.* = job.next;
         if (job.kind != .action) self.pending[@backingInt(job.kind)] = false;
         if (!self.dead) {
-            if (ok) self.apply(job.kind, if (output != null) std.mem.span(output) else "") else if (job.kind == .brightness) c.gtk_widget_hide(self.brightness_row) else if (job.kind == .volume) c.gtk_widget_hide(self.volume_row);
+            if (ok) self.apply(job.kind, if (output != null) std.mem.span(output) else "") else if (job.kind == .volume) c.gtk_widget_hide(self.volume_row);
             if (!ok and job.kind == .action) c.gtk_widget_set_tooltip_text(self.content, if (err != null) err.*.message else errors);
         }
         c.g_object_unref(job.process);
@@ -472,13 +511,6 @@ pub const Controls = struct {
                 c.gtk_widget_set_no_show_all(self.volume_row, 0);
                 c.gtk_widget_show_all(self.volume_row);
                 c.gtk_widget_set_no_show_all(self.volume_row, 1);
-            },
-            .brightness => {
-                const state = media.parseBrightness(output) catch return;
-                c.gtk_range_set_value(cast(c.GtkRange, self.brightness), state.percent);
-                c.gtk_widget_set_no_show_all(self.brightness_row, 0);
-                c.gtk_widget_show_all(self.brightness_row);
-                c.gtk_widget_set_no_show_all(self.brightness_row, 1);
             },
             .network => {
                 const children = c.gtk_container_get_children(cast(c.GtkContainer, self.network_list));

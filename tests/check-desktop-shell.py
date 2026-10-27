@@ -60,7 +60,6 @@ env.update(
 (root / "tools").mkdir()
 for name, body in {
     "wpctl": 'if [ "$1" = get-volume ]; then echo "Volume: 0.42"; fi',
-    "brightnessctl": 'echo "test,backlight,42,42%,100"',
     "pw-play": 'exit 0',
     "pw-dump": 'echo "[]"',
     "nmcli": 'exit 0',

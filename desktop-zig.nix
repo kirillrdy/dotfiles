@@ -80,7 +80,7 @@ pkgs.stdenv.mkDerivation {
   installPhase = ''
     # Keep test programs and legacy component entry points outside the desktop output.
     mkdir -p "$tests/bin"
-    for name in desktop-apps-fixture desktop-lock-fixture desktop-idle-fixture waybar-power-fixture labwc-switcher-fixture \
+    for name in desktop-apps-fixture desktop-backlight-fixture desktop-lock-fixture desktop-idle-fixture waybar-power-fixture labwc-switcher-fixture \
       desktop-pointer-fixture check-labwc-switcher \
       desktop-greeter desktop-power desktop-screenshot desktop-panel desktop-wallpaper \
       desktop-notifications desktop-osd desktop-polkit desktop-overview desktop-settings \
@@ -122,7 +122,6 @@ pkgs.stdenv.mkDerivation {
           pkgs.pipewire
           pkgs.networkmanager
           pkgs.upower
-          pkgs.brightnessctl
         ]
       }
   '';

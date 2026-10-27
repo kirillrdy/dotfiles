@@ -123,7 +123,6 @@ lib.mkIf enableLightDesktop {
 
   environment.systemPackages = with pkgs; [
     adwaita-icon-theme
-    brightnessctl
     desktopZig
     wlr-randr
   ];

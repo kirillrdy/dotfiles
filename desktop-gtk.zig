@@ -2442,3 +2442,5 @@ pub extern fn g_variant_get_handle(?*GVariant) gint32;
 pub extern fn g_variant_get_variant(?*GVariant) ?*GVariant;
 pub extern fn g_file_read_link([*c]const gchar, [*c][*c]GError) [*c]gchar;
 pub extern fn g_subprocess_launcher_take_fd(?*GSubprocessLauncher, gint, gint) void;
+
+pub extern fn g_cancellable_is_cancelled([*c]GCancellable) gboolean;

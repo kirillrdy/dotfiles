@@ -2,6 +2,7 @@
 //! asynchronously; repeated steps coalesce while a backend is busy.
 const std = @import("std");
 const c = @import("gtk");
+const backlight = @import("backlight");
 const allocator = std.heap.page_allocator;
 fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
@@ -29,18 +30,6 @@ pub fn parseVolume(output: []const u8) !State {
     if (flag) |text| if (!std.mem.eql(u8, text, "[MUTED]")) return error.InvalidVolume;
     if (words.next() != null) return error.InvalidVolume;
     return .{ .percent = @min(value * 100, 100), .muted = flag != null };
-}
-
-pub fn parseBrightness(output: []const u8) !State {
-    var fields = std.mem.splitScalar(u8, std.mem.trim(u8, output, " \r\n\t"), ',');
-    const device = fields.next() orelse return error.InvalidBrightness;
-    if (device.len == 0) return error.InvalidBrightness;
-    if (!std.mem.eql(u8, fields.next() orelse "", "backlight")) return error.InvalidBrightness;
-    const current = try std.fmt.parseInt(u64, fields.next() orelse "", 10);
-    _ = fields.next() orelse return error.InvalidBrightness;
-    const maximum = try std.fmt.parseInt(u64, fields.next() orelse "", 10);
-    if (maximum == 0 or current > maximum or fields.next() != null) return error.InvalidBrightness;
-    return .{ .percent = @as(f64, @floatFromInt(current)) / @as(f64, @floatFromInt(maximum)) * 100 };
 }
 
 pub fn target(state: State, work: Work) f64 {
@@ -113,6 +102,8 @@ const Overlay = struct {
 const Phase = enum { initial, unmute, write, final };
 pub const Server = struct {
     connection: ?*c.GDBusConnection = null,
+    backlight_backend: backlight.Backend = .{},
+    brightness_busy: bool = false,
     ready: bool = false,
     dead: bool = false,
     overlays: std.ArrayList(Overlay) = .empty,
@@ -179,6 +170,12 @@ pub const Server = struct {
     fn next(self: *Server) void {
         if (self.dead or self.active != null or self.queue.items.len == 0) return;
         self.active = self.queue.orderedRemove(0);
+        if (self.active.?.kind == .brightness) {
+            self.brightness_busy = true;
+            self.cancel = c.g_cancellable_new();
+            self.backlight_backend.start(.{ .step = self.active.?.delta }, self.cancel.?, &brightnessDone, self);
+            return;
+        }
         self.phase = .initial;
         self.read();
     }
@@ -188,7 +185,7 @@ pub const Server = struct {
     }
 
     fn read(self: *Server) void {
-        if (self.active.?.kind == .brightness) self.run(&.{ "brightnessctl", "-c", "backlight", "-m" }) else self.run(&.{ "wpctl", "get-volume", self.audioTarget() });
+        self.run(&.{ "wpctl", "get-volume", self.audioTarget() });
     }
 
     fn write(self: *Server) void {
@@ -197,7 +194,7 @@ pub const Server = struct {
         if (work.delta == 0) return self.run(&.{ "wpctl", "set-mute", self.audioTarget(), "toggle" });
         var buffer: [32]u8 = undefined;
         const value = std.fmt.bufPrintSentinel(&buffer, "{d:.0}%", .{target(self.state, work)}, 0) catch unreachable;
-        if (work.kind == .brightness) self.run(&.{ "brightnessctl", "-c", "backlight", "set", value }) else self.run(&.{ "wpctl", "set-volume", "-l", "1.0", self.audioTarget(), value });
+        self.run(&.{ "wpctl", "set-volume", "-l", "1.0", self.audioTarget(), value });
     }
 
     fn run(self: *Server, args: []const [*:0]const u8) void {
@@ -257,7 +254,7 @@ pub const Server = struct {
         const work = self.active.?;
         switch (self.phase) {
             .initial => {
-                self.state = if (work.kind == .brightness) try parseBrightness(output) else try parseVolume(output);
+                self.state = try parseVolume(output);
                 if (work.kind == .volume and work.delta != 0 and self.state.muted) {
                     self.phase = .unmute;
                     self.run(&.{ "wpctl", "set-mute", self.audioTarget(), "0" });
@@ -269,17 +266,32 @@ pub const Server = struct {
                 self.read();
             },
             .final => {
-                const state = if (work.kind == .brightness) try parseBrightness(output) else try parseVolume(output);
-                if (work.kind != .brightness) _ = c.g_dbus_connection_emit_signal(self.connection, null, "/org/dotfiles/DesktopOsd", "org.dotfiles.DesktopOsd", "DeviceChanged", c.g_variant_new("(s)", @as([*:0]const u8, @tagName(work.kind))), null);
-                self.last_kind = work.kind;
-                self.last_state = state;
-                for (self.overlays.items) |*overlay| overlay.show(work.kind, state);
-                if (self.hide_timer != 0) _ = c.g_source_remove(self.hide_timer);
-                self.hide_timer = c.g_timeout_add(1500, &hide, self);
-                if (work.kind == .volume and work.delta != 0 and !state.muted and state.percent > 0) self.feedback();
+                self.present(work.kind, try parseVolume(output));
                 self.finish();
             },
         }
+    }
+
+    fn brightnessDone(data: ?*anyopaque, result: backlight.Result) void {
+        const self = cast(Server, data);
+        self.brightness_busy = false;
+        c.g_object_unref(self.cancel);
+        self.cancel = null;
+        if (self.dead) return;
+        switch (result) {
+            .value => |device| self.present(.brightness, .{ .percent = device.percent() }),
+            .failure => |err| std.log.warn("desktop-osd: brightness: {s}", .{@errorName(err)}),
+        }
+        self.finish();
+    }
+    fn present(self: *Server, kind: Kind, state: State) void {
+        if (self.connection != null) _ = c.g_dbus_connection_emit_signal(self.connection, null, "/org/dotfiles/DesktopOsd", "org.dotfiles.DesktopOsd", "DeviceChanged", c.g_variant_new("(s)", @as([*:0]const u8, @tagName(kind))), null);
+        self.last_kind = kind;
+        self.last_state = state;
+        for (self.overlays.items) |*overlay| overlay.show(kind, state);
+        if (self.hide_timer != 0) _ = c.g_source_remove(self.hide_timer);
+        self.hide_timer = c.g_timeout_add(1500, &hide, self);
+        if (kind == .volume and self.active.?.delta != 0 and !state.muted and state.percent > 0) self.feedback();
     }
 
     fn finish(self: *Server) void {
@@ -317,12 +329,10 @@ pub const Server = struct {
         if (self.hide_timer != 0) _ = c.g_source_remove(self.hide_timer);
         if (self.timeout != 0) _ = c.g_source_remove(self.timeout);
         self.timeout = 0;
-        if (self.process != null) {
-            c.g_subprocess_force_exit(self.process);
-            c.g_cancellable_cancel(self.cancel);
-        }
+        if (self.process != null) c.g_subprocess_force_exit(self.process);
+        if (self.cancel != null) c.g_cancellable_cancel(self.cancel);
         if (self.sound != null) c.g_subprocess_force_exit(self.sound);
-        while (self.process != null or self.sound != null) _ = c.g_main_context_iteration(null, 1);
+        while (self.process != null or self.sound != null or self.brightness_busy) _ = c.g_main_context_iteration(null, 1);
         for (self.overlays.items) |overlay| overlay.destroy();
         self.overlays.deinit(allocator);
         self.queue.deinit(allocator);
@@ -359,6 +369,9 @@ fn quit(data: c.gpointer) callconv(.c) c.gboolean {
 }
 
 pub fn main(init: std.process.Init) !void {
+    return mainWithBackend(init, .{});
+}
+pub fn mainWithBackend(init: std.process.Init, backend: backlight.Backend) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
@@ -370,7 +383,7 @@ pub fn main(init: std.process.Init) !void {
     _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
     const app = c.gtk_application_new("org.dotfiles.DesktopOsd", c.G_APPLICATION_HANDLES_COMMAND_LINE);
     defer c.g_object_unref(app);
-    var server = Server{};
+    var server = Server{ .backlight_backend = backend };
     defer server.deinit();
     _ = c.g_signal_connect_data(app, "command-line", @ptrCast(&commandLine), &server, null, 0);
     const term = c.g_unix_signal_add(c.SIGTERM, &quit, app);
@@ -388,13 +401,6 @@ test "audio state accepts mute and amplification and rejects invalid readings" {
     try testing.expectEqual(@as(f64, 100), (try parseVolume("Volume: 1.5")).percent);
     for ([_][]const u8{ "", "Volume: nan", "Volume: inf", "Volume: -0.5", "Volume: 0.5 unexpected", "Volume: 0.5 [MUTED] extra" }) |invalid| {
         if (parseVolume(invalid)) |_| return error.ExpectedInvalidVolume else |_| {}
-    }
-}
-
-test "brightness derives exact hardware percentage and rejects absent devices" {
-    try std.testing.expectEqual(@as(f64, 20), (try parseBrightness("intel,backlight,80,20%,400\n")).percent);
-    for ([_][]const u8{ "", "led,leds,80,20%,400", "intel,backlight,1,0%,0", "intel,backlight,401,100%,400", "intel,backlight,no,20%,400" }) |invalid| {
-        if (parseBrightness(invalid)) |_| return error.ExpectedInvalidBrightness else |_| {}
     }
 }
 

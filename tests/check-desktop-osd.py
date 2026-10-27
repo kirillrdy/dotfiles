@@ -14,12 +14,15 @@ import sys
 import tempfile
 import time
 import zlib
+sys.dont_write_bytecode = True
+from backlight_mock import BacklightMock
 from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True, type=Path)
 parser.add_argument("--style", required=True, type=Path)
 parser.add_argument("--loader-cache", type=Path)
+parser.add_argument("--dbus-config", type=Path)
 args = parser.parse_args()
 for tool in ("labwc", "grim", "wlr-randr", "wtype", "dbus-send"):
     if shutil.which(tool) is None:
@@ -84,29 +87,29 @@ if tool == 'wpctl':
         assert 0 <= state['volume'] <= 100
         save()
     else: raise ValueError(args)
-elif tool == 'brightnessctl':
-    assert args[:2] == ['-c', 'backlight']
-    if args[2] == 'set':
-        state['brightness'] = float(args[3].removesuffix('%'))
-        assert 5 <= state['brightness'] <= 100
-        save()
-    else: assert args[2] == '-m'
-    print('intel,backlight,%d,%d%%,400' % (state['brightness']*4, state['brightness']))
 else: raise ValueError(tool)
 """
 )
 mock.chmod(0o755)
-for tool in ("wpctl", "brightnessctl", "pw-play"):
+for tool in ("wpctl", "pw-play"):
     (root / "mock" / tool).symlink_to(mock)
+def set_brightness(percent):
+    state = json.loads(state_file.read_text())
+    state["brightness"] = percent
+    state_file.write_text(json.dumps(state))
+
+backlight = BacklightMock(root, args.dbus_config, on_set=set_brightness)
 env = dict(os.environ)
 for name in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID", "GDK_PIXBUF_MODULE_FILE"):
     env.pop(name, None)
 env.update(
     PATH=str(root / "mock") + ":" + env["PATH"],
     OSD_TEST_ROOT=str(root),
+    DESKTOP_BACKLIGHT_FIXTURE_ROOT=str(backlight.sysfs),
+    DBUS_SYSTEM_BUS_ADDRESS=backlight.address,
     XDG_RUNTIME_DIR=str(root / "runtime"),
     XDG_CONFIG_HOME=str(root / "config"),
-    XDG_DATA_DIRS="/run/current-system/sw/share",
+    XDG_DATA_DIRS=env.get("XDG_DATA_DIRS", "/run/current-system/sw/share"),
     XDG_CACHE_HOME=str(root / "cache"),
     WLR_BACKENDS="headless",
     WLR_RENDERER="pixman",
@@ -335,14 +338,16 @@ try:
     pixels("reenabled-output", "HEADLESS-2")
     assert server.poll() is None
     assert not re.search(r"CRITICAL|panic:|assertion", log()), log()[-3000:]
-    assert len((root / "focus.log").read_text().splitlines()) == 1, (
-        "Application focus changed"
-    )
+    # GTK/font diagnostics share this log; only timestamped records are focus events.
+    focus_events = re.findall(r"^\d+ OSD focus fixture$", (root / "focus.log").read_text(), re.MULTILINE)
+    assert len(focus_events) == 1, ("Application focus changed", focus_events)
+    assert not re.search(r"wl_keyboard#\d+\.enter\(", log()), "OSD stole keyboard focus"
     print("PASS fractional scale and output disable/reenable", flush=True)
     server.terminate()
     assert server.wait(timeout=5) == 0
     print("PASS clean shutdown", flush=True)
 finally:
+    backlight.stop()
     for process in reversed(processes):
         if process.poll() is None:
             process.terminate()
