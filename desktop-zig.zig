@@ -163,7 +163,7 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, name, "desktop-overview")) return overview.main(init);
     if (std.mem.eql(u8, name, "desktop-settings")) return settings.main(init);
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig greeter|askpass|power|screenshot [ARGS...]\n", .{});
+        std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig greeter|askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;
         return;
     }
@@ -171,6 +171,7 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "power")) return @import("power").runArgs(init, args[1..]);
     if (std.mem.eql(u8, args[1], "askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args[1..]));
     if (std.mem.eql(u8, args[1], "screenshot")) return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, args[1..]));
+    if (std.mem.eql(u8, args[1], "output")) return @import("output").run(args[2..]);
     if (std.mem.eql(u8, args[1], "lock")) return @import("lock").run(args[2..]);
     if (!std.mem.eql(u8, args[1], "serve")) try requireSession();
     _ = c.g_setenv("GDK_BACKEND", "wayland", 1);

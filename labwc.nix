@@ -124,7 +124,6 @@ lib.mkIf enableLightDesktop {
   environment.systemPackages = with pkgs; [
     adwaita-icon-theme
     desktopZig
-    wlr-randr
   ];
 
   environment.etc = {
@@ -206,7 +205,7 @@ lib.mkIf enableLightDesktop {
     "xdg/labwc/autostart".text = ''
       # Stay near GNOME's 5/3 scale on hagi using an exact multiple of 1/8,
       # representable in both Wayland's 1/256 and fractional-scale's 1/120 units.
-      ${pkgs.wlr-randr}/bin/wlr-randr --output eDP-1 --scale 1.625
+      ${shell} output --output eDP-1 --scale 1.625
       ${pkgs.systemd}/bin/systemctl --user import-environment PATH
       ${pkgs.systemd}/bin/systemctl --user --no-block start labwc-session.target
     '';

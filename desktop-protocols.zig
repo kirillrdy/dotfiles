@@ -905,3 +905,140 @@ const ext_idle_notification_v1_events = [_]Message{
 };
 pub export const ext_idle_notifier_v1_interface: Interface = .{ .name = "ext_idle_notifier_v1", .version = 2, .method_count = 3, .methods = &ext_idle_notifier_v1_requests, .event_count = 0, .events = null };
 pub export const ext_idle_notification_v1_interface: Interface = .{ .name = "ext_idle_notification_v1", .version = 2, .method_count = 1, .methods = &ext_idle_notification_v1_requests, .event_count = 2, .events = &ext_idle_notification_v1_events };
+
+// wlr-output-management-unstable-v1.xml
+// /*
+//  * Copyright © 2019 Purism SPC
+//  *
+//  * Permission to use, copy, modify, distribute, and sell this
+//  * software and its documentation for any purpose is hereby granted
+//  * without fee, provided that the above copyright notice appear in
+//  * all copies and that both that copyright notice and this permission
+//  * notice appear in supporting documentation, and that the name of
+//  * the copyright holders not be used in advertising or publicity
+//  * pertaining to distribution of the software without specific,
+//  * written prior permission.  The copyright holders make no
+//  * representations about the suitability of this software for any
+//  * purpose.  It is provided "as is" without express or implied
+//  * warranty.
+//  *
+//  * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
+//  * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+//  * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
+//  * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+//  * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+//  * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+//  * ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+//  * THIS SOFTWARE.
+//  */
+const wlr_output_management_unstable_v1_types = [_][*c]const Interface{
+    null,
+    null,
+    null,
+    &zwlr_output_configuration_v1_interface,
+    null,
+    &zwlr_output_head_v1_interface,
+    &zwlr_output_mode_v1_interface,
+    &zwlr_output_mode_v1_interface,
+    &zwlr_output_configuration_head_v1_interface,
+    &zwlr_output_head_v1_interface,
+    &zwlr_output_head_v1_interface,
+    &zwlr_output_mode_v1_interface,
+};
+const zwlr_output_manager_v1_requests = [_]Message{
+    .{ .name = "create_configuration", .signature = "nu", .types = @constCast(wlr_output_management_unstable_v1_types[3..].ptr) },
+    .{ .name = "stop", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+};
+const zwlr_output_manager_v1_events = [_]Message{
+    .{ .name = "head", .signature = "n", .types = @constCast(wlr_output_management_unstable_v1_types[5..].ptr) },
+    .{ .name = "done", .signature = "u", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "finished", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+};
+const zwlr_output_head_v1_requests = [_]Message{
+    .{ .name = "release", .signature = "3", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+};
+const zwlr_output_head_v1_events = [_]Message{
+    .{ .name = "name", .signature = "s", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "description", .signature = "s", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "physical_size", .signature = "ii", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "mode", .signature = "n", .types = @constCast(wlr_output_management_unstable_v1_types[6..].ptr) },
+    .{ .name = "enabled", .signature = "i", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "current_mode", .signature = "o", .types = @constCast(wlr_output_management_unstable_v1_types[7..].ptr) },
+    .{ .name = "position", .signature = "ii", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "transform", .signature = "i", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "scale", .signature = "f", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "finished", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "make", .signature = "2s", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "model", .signature = "2s", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "serial_number", .signature = "2s", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "adaptive_sync", .signature = "4u", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+};
+const zwlr_output_mode_v1_requests = [_]Message{
+    .{ .name = "release", .signature = "3", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+};
+const zwlr_output_mode_v1_events = [_]Message{
+    .{ .name = "size", .signature = "ii", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "refresh", .signature = "i", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "preferred", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "finished", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+};
+const zwlr_output_configuration_v1_requests = [_]Message{
+    .{ .name = "enable_head", .signature = "no", .types = @constCast(wlr_output_management_unstable_v1_types[8..].ptr) },
+    .{ .name = "disable_head", .signature = "o", .types = @constCast(wlr_output_management_unstable_v1_types[10..].ptr) },
+    .{ .name = "apply", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "test", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "destroy", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+};
+const zwlr_output_configuration_v1_events = [_]Message{
+    .{ .name = "succeeded", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "failed", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "cancelled", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+};
+const zwlr_output_configuration_head_v1_requests = [_]Message{
+    .{ .name = "set_mode", .signature = "o", .types = @constCast(wlr_output_management_unstable_v1_types[11..].ptr) },
+    .{ .name = "set_custom_mode", .signature = "iii", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "set_position", .signature = "ii", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "set_transform", .signature = "i", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "set_scale", .signature = "f", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+    .{ .name = "set_adaptive_sync", .signature = "4u", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
+};
+pub export const zwlr_output_manager_v1_interface: Interface = .{
+    .name = "zwlr_output_manager_v1",
+    .version = 4,
+    .method_count = 2,
+    .methods = &zwlr_output_manager_v1_requests,
+    .event_count = 3,
+    .events = &zwlr_output_manager_v1_events,
+};
+pub export const zwlr_output_head_v1_interface: Interface = .{
+    .name = "zwlr_output_head_v1",
+    .version = 4,
+    .method_count = 1,
+    .methods = &zwlr_output_head_v1_requests,
+    .event_count = 14,
+    .events = &zwlr_output_head_v1_events,
+};
+pub export const zwlr_output_mode_v1_interface: Interface = .{
+    .name = "zwlr_output_mode_v1",
+    .version = 3,
+    .method_count = 1,
+    .methods = &zwlr_output_mode_v1_requests,
+    .event_count = 4,
+    .events = &zwlr_output_mode_v1_events,
+};
+pub export const zwlr_output_configuration_v1_interface: Interface = .{
+    .name = "zwlr_output_configuration_v1",
+    .version = 4,
+    .method_count = 5,
+    .methods = &zwlr_output_configuration_v1_requests,
+    .event_count = 3,
+    .events = &zwlr_output_configuration_v1_events,
+};
+pub export const zwlr_output_configuration_head_v1_interface: Interface = .{
+    .name = "zwlr_output_configuration_head_v1",
+    .version = 4,
+    .method_count = 6,
+    .methods = &zwlr_output_configuration_head_v1_requests,
+    .event_count = 0,
+    .events = null,
+};

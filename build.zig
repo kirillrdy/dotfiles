@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) void {
     b.step("backlight-fixture", "Build native backlight integration fixture").dependOn(&b.addInstallArtifact(backlight_fixture, .{}).step);
     const protocols = b.createModule(.{ .root_source_file = b.path("desktop-protocols.zig"), .target = target, .optimize = optimize });
     protocols.addImport("gtk", gtk);
-    var protocol_references: [9]std.Build.LazyPath = undefined;
+    var protocol_references: [10]std.Build.LazyPath = undefined;
     const libc_reference = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n", &.{});
     const libc_abi = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-libc-abi.zig"), .target = target, .optimize = optimize }) });
     libc_abi.root_module.addImport("api", libc);
@@ -171,6 +171,17 @@ pub fn build(b: *std.Build) void {
     const idle_code = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
     idle_code.addFileArg(.{ .cwd_relative = b.fmt("{s}/staging/ext-idle-notify/ext-idle-notify-v1.xml", .{protocol_dir}) });
     protocol_references[8] = idle_code.addOutputFileArg("ext-idle-notify-v1.c");
+    const output_code = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
+    output_code.addFileArg(.{ .cwd_relative = b.fmt("{s}/unstable/wlr-output-management-unstable-v1.xml", .{b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols"}) });
+    protocol_references[9] = output_code.addOutputFileArg("wlr-output-management-v1.c");
+    const output_module = b.createModule(.{ .root_source_file = b.path("desktop-output.zig"), .target = target, .optimize = optimize });
+    output_module.addImport("gtk", gtk);
+    output_module.addImport("protocols", protocols);
+    output_module.link_libc = true;
+    for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "wayland-client" }) |name| output_module.linkSystemLibrary(name, .{});
+    session.root_module.addImport("output", output_module);
+    const output_tests = b.addTest(.{ .root_module = output_module });
+    b.step("test-output", "Check output scaling arguments and fixed point limits").dependOn(&b.addRunArtifact(output_tests).step);
     const idle_module = b.createModule(.{ .root_source_file = b.path("desktop-idle.zig"), .target = target, .optimize = optimize });
     idle_module.addImport("gtk", gtk);
     idle_module.addImport("libc", libc);
@@ -307,6 +318,11 @@ pub fn build(b: *std.Build) void {
     // Rename reference symbols so the C and Zig implementations can be
     // compared in the same process, including cross-protocol type pointers.
     const protocol_names = [_][]const u8{
+        "zwlr_output_manager_v1_interface",
+        "zwlr_output_head_v1_interface",
+        "zwlr_output_mode_v1_interface",
+        "zwlr_output_configuration_v1_interface",
+        "zwlr_output_configuration_head_v1_interface",
         "ext_idle_notifier_v1_interface",
         "ext_idle_notification_v1_interface",
         "ext_session_lock_manager_v1_interface",
@@ -338,6 +354,7 @@ pub fn build(b: *std.Build) void {
     b.step("test-protocols", "Compare native Wayland metadata with the protocol generator").dependOn(&run_protocol_tests.step);
     for ([_]*std.Build.Module{ panel.root_module, osd.root_module, notifications.root_module, session.root_module, module }) |root| root.addImport("backlight", backlight);
     const test_step = b.step("test", "Run data parsing and allowance tests");
+    test_step.dependOn(&b.addRunArtifact(output_tests).step);
     test_step.dependOn(&b.addRunArtifact(backlight_tests).step);
     test_step.dependOn(&b.addRunArtifact(lock_tests).step);
     test_step.dependOn(&b.addRunArtifact(auth_tests).step);
