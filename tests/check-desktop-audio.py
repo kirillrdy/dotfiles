@@ -94,6 +94,11 @@ try:
     headphones = str(nodes["fixture-headphones"])
     microphone = str(nodes["fixture-microphone"])
     native("set", speakers, "default")
+    run(["wpctl", "set-default", headphones])
+    expect(lambda s: any(n["id"] == int(headphones) and n["is_default"] for n in s["nodes"]), "external default selection is pushed")
+    native("set", speakers, "default")
+    expect(lambda s: any(n["id"] == int(speakers) and n["is_default"] for n in s["nodes"]), "native default selection is pushed")
+    native("set", microphone, "default")
     native("set", speakers, "volume", "42")
     assert "0.42" in run(["wpctl", "get-volume", speakers]).stdout
     native("set", speakers, "mute", "1")

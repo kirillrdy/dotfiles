@@ -61,10 +61,10 @@ let
           "-Dsysconfdir=/etc"
         ];
         # The upstream library-only build omits every module. Add precisely the
-        # two upstream C modules loaded by desktop-audio.zig, without Lua or policy.
+        # upstream C mixer module loaded by desktop-audio.zig, without Lua or policy.
         postPatch = (old.postPatch or "") + ''
           cat >> meson.build <<'EOF'
-          foreach module : ['default-nodes-api', 'mixer-api']
+          foreach module : ['mixer-api']
             shared_library('wireplumber-module-' + module,
               'modules/module-' + module + '.c',
               install: true,

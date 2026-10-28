@@ -50,7 +50,8 @@ fn watchAudio(objects: *Objects, service: *audio.Service) void {
     if (service.core) |core| objects.watch(core);
     if (service.manager) |manager| objects.watch(manager);
     if (service.mixer != null) objects.watch(service.mixer);
-    if (service.defaults != null) objects.watch(service.defaults);
+    if (service.defaults.manager) |manager| objects.watch(manager);
+    if (service.defaults.metadata) |metadata| objects.watch(metadata);
 }
 fn ready(service: *audio.Service) !void {
     const deadline = c.g_get_monotonic_time() + 15_000_000;

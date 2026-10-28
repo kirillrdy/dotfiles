@@ -56,6 +56,7 @@ fn volume(mixer: [*c]w.WpPlugin, id: u32) ?State {
     defer if (mute) |v| c.g_variant_unref(v);
     return .{ .percent = @min(percent, 100), .muted = if (mute) |v| c.g_variant_get_boolean(v) != 0 else false };
 }
+const Defaults = @import("desktop-audio-defaults.zig").Defaults;
 const Load = struct { service: *Service, epoch: u64 };
 pub const Service = struct {
     callback: *const fn (?*anyopaque, *Service) void,
@@ -63,13 +64,12 @@ pub const Service = struct {
     core: ?*w.WpCore = null,
     manager: ?*w.WpObjectManager = null,
     mixer: [*c]w.WpPlugin = null,
-    defaults: [*c]w.WpPlugin = null,
+    defaults: Defaults,
     nodes: std.ArrayList(Node) = .empty,
     cancel: *c.GCancellable,
     timer: c.guint = 0,
     idle: c.guint = 0,
     epoch: u64 = 0,
-    loading: usize = 0,
     refs: usize = 1,
     ready: bool = false,
     stopped: bool = false,
@@ -80,7 +80,7 @@ pub const Service = struct {
             w.wp_init(w.WP_INIT_ALL);
             initialized = true;
         }
-        self.* = .{ .callback = callback, .data = data, .cancel = c.g_cancellable_new().? };
+        self.* = .{ .callback = callback, .data = data, .cancel = c.g_cancellable_new().?, .defaults = .{ .callback = &defaultsChanged, .data = self } };
         self.connect();
         self.timer = c.g_timeout_add_seconds(5, &maintain, self);
         return self;
@@ -105,18 +105,17 @@ pub const Service = struct {
         self.ready = false;
         if (self.idle != 0) _ = c.g_source_remove(self.idle);
         self.idle = 0;
-        for ([_]c.gpointer{ self.mixer, self.defaults, self.manager, self.core }) |object| if (object) |value| {
+        for ([_]c.gpointer{ self.mixer, self.manager, self.core }) |object| if (object) |value| {
             _ = c.g_signal_handlers_disconnect_matched(value, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         };
         if (self.mixer != null) c.g_object_unref(self.mixer);
-        if (self.defaults != null) c.g_object_unref(self.defaults);
+        self.defaults.disconnect();
         if (self.manager) |manager| c.g_object_unref(manager);
         if (self.core) |core| {
             w.wp_core_disconnect(core);
             c.g_object_unref(core);
         }
         self.mixer = null;
-        self.defaults = null;
         self.manager = null;
         self.core = null;
         self.nodes.clearRetainingCapacity();
@@ -142,13 +141,15 @@ pub const Service = struct {
             self.notify();
             return;
         }
-        self.loading = 2;
-        for ([_][*:0]const u8{ "libwireplumber-module-default-nodes-api", "libwireplumber-module-mixer-api" }) |name| {
-            const load = a.create(Load) catch @panic("out of memory");
-            load.* = .{ .service = self, .epoch = self.epoch };
-            self.refs += 1;
-            w.wp_core_load_component(self.core, name, "module", null, null, self.cancel, &loaded, load);
+        if (!self.defaults.connect(self.core.?)) {
+            self.reset();
+            self.notify();
+            return;
         }
+        const load = a.create(Load) catch @panic("out of memory");
+        load.* = .{ .service = self, .epoch = self.epoch };
+        self.refs += 1;
+        w.wp_core_load_component(self.core, "libwireplumber-module-mixer-api", "module", null, null, self.cancel, &loaded, load);
     }
     fn loaded(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
         const load = cast(Load, data);
@@ -164,18 +165,14 @@ pub const Service = struct {
             self.notify();
             return;
         }
-        self.loading -= 1;
-        if (self.loading != 0) return;
         self.mixer = w.wp_plugin_find(self.core, "mixer-api");
-        self.defaults = w.wp_plugin_find(self.core, "default-nodes-api");
-        if (self.mixer == null or self.defaults == null) {
+        if (self.mixer == null) {
             self.reset();
             self.notify();
             return;
         }
         c.g_object_set(self.mixer, "scale", @as(c_int, 1), @as(?*anyopaque, null));
         signal(self.mixer, "changed", &mixerChanged, self);
-        signal(self.defaults, "changed", &changed, self);
         w.wp_core_install_object_manager(self.core, self.manager);
     }
     fn disconnected(_: ?*w.WpCore, data: ?*anyopaque) callconv(.c) void {
@@ -189,6 +186,9 @@ pub const Service = struct {
         self.schedule();
     }
     fn changed(_: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
+        cast(Service, data).schedule();
+    }
+    fn defaultsChanged(data: ?*anyopaque) void {
         cast(Service, data).schedule();
     }
     fn mixerChanged(_: ?*anyopaque, _: u32, data: ?*anyopaque) callconv(.c) void {
@@ -208,9 +208,7 @@ pub const Service = struct {
         if (!self.stopped) self.callback(self.data, self);
     }
     fn defaultId(self: *Service, class: [*:0]const u8) u32 {
-        var id: u32 = std.math.maxInt(u32);
-        if (self.defaults != null) c.g_signal_emit_by_name(self.defaults, "get-default-node", class, &id);
-        return id;
+        return self.defaults.id(self.manager, std.mem.eql(u8, std.mem.span(class), "Audio/Sink"));
     }
     fn rebuild(self: *Service) void {
         self.nodes.clearRetainingCapacity();
@@ -265,15 +263,14 @@ pub const Service = struct {
         var ok: c.gboolean = 0;
         var expected: ?State = null;
         if (change == .default) {
-            const class: [*:0]const u8 = switch (item.class) {
-                .output => "Audio/Sink",
-                .input => "Audio/Source",
+            switch (item.class) {
+                .output, .input => {},
                 else => {
                     callback(data, .{ .failure = error.InvalidDefaultDevice });
                     return;
                 },
-            };
-            c.g_signal_emit_by_name(self.defaults, "set-default-configured-node-name", class, @as([*:0]const u8, &item.name), &ok);
+            }
+            ok = @intFromBool(self.defaults.set(item.class == .output, std.mem.sliceTo(&item.name, 0)));
         } else {
             const current = self.state(wanted) orelse {
                 callback(data, .{ .failure = error.AudioUnavailable });
@@ -414,8 +411,9 @@ pub fn dispatch() void {
 
 pub const Feedback = @import("desktop-feedback.zig").Feedback;
 comptime {
-    // Include the feedback parser tests even when only control APIs are used.
+    // Include parser tests even when only control APIs are used.
     _ = Feedback;
+    _ = Defaults;
 }
 
 test "audio target names and media classes are explicit" {
