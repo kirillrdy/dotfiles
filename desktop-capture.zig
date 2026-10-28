@@ -114,6 +114,9 @@ pub const Client = struct {
     workspaces: [32]Workspace = @splat(.{}),
     count: u32 = 0,
     current: u32 = 0,
+    pending_count: u32 = 0,
+    pending_current: u32 = 0,
+    snapshot_dirty: bool = false,
     active: bool = false,
     connected: bool = true,
     fd_source: c.guint = 0,
@@ -151,7 +154,9 @@ pub const Client = struct {
     }
     pub fn refresh(self: *Client) void {
         if (!self.connected) return;
-        self.count = 0;
+        self.pending_count = 0;
+        self.pending_current = self.current;
+        self.snapshot_dirty = false;
         protocols.dotfiles_overview_v1_refresh(self.control);
         self.flush();
     }
@@ -263,22 +268,39 @@ const control_listener = protocols.dotfiles_overview_v1_listener{ .workspace = &
 fn workspace(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, index: u32, name: [*c]const u8, active: u32) callconv(.c) void {
     const self = cast(Client, data);
     if (index >= self.workspaces.len) return;
-    _ = c.g_strlcpy(&self.workspaces[index].name, name, self.workspaces[index].name.len);
-    self.count = @max(self.count, index + 1);
-    if (active != 0) self.current = index;
+    if (index == 0) self.pending_count = 0;
+    if (c.g_strcmp0(&self.workspaces[index].name, name) != 0) {
+        _ = c.g_strlcpy(&self.workspaces[index].name, name, self.workspaces[index].name.len);
+        self.snapshot_dirty = true;
+    }
+    self.pending_count = @max(self.pending_count, index + 1);
+    if (active != 0) self.pending_current = index;
 }
 fn placement(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, id: [*c]const u8, index: u32, x: i32, y: i32, width: i32, height: i32, sticky: u32) callconv(.c) void {
     const self = cast(Client, data);
     for (self.windows.items) |w| if (c.g_strcmp0(w.id, id) == 0) {
-        w.workspace = index;
-        w.sticky = sticky != 0;
-        w.geometry = .{ .x = @floatFromInt(x), .y = @floatFromInt(y), .w = @floatFromInt(@max(1, width)), .h = @floatFromInt(@max(1, height)) };
+        const is_sticky = sticky != 0;
+        const geom = Rect{ .x = @floatFromInt(x), .y = @floatFromInt(y), .w = @floatFromInt(@max(1, width)), .h = @floatFromInt(@max(1, height)) };
+        if (w.workspace != index or w.sticky != is_sticky or w.geometry.x != geom.x or w.geometry.y != geom.y or w.geometry.w != geom.w or w.geometry.h != geom.h) {
+            w.workspace = index;
+            w.sticky = is_sticky;
+            w.geometry = geom;
+            self.snapshot_dirty = true;
+        }
         break;
     };
 }
 fn snapshotDone(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1) callconv(.c) void {
     const self = cast(Client, data);
-    self.changed(self.context);
+    if (self.count != self.pending_count or self.current != self.pending_current) {
+        self.count = self.pending_count;
+        self.current = self.pending_current;
+        self.snapshot_dirty = true;
+    }
+    if (self.snapshot_dirty) {
+        self.snapshot_dirty = false;
+        self.changed(self.context);
+    }
 }
 const session_listener = protocols.ext_image_copy_capture_session_v1_listener{ .buffer_size = &bufferSize, .shm_format = &shmFormat, .dmabuf_device = &device, .dmabuf_format = &format, .done = &constraintsDone, .stopped = &stopped };
 fn bufferSize(data: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, width: u32, height: u32) callconv(.c) void {

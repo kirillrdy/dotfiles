@@ -31,7 +31,7 @@ const Overview = struct {
     strip: *c.GtkWidget,
     stage: *c.GtkWidget,
     dash: *c.GtkWidget,
-    wallpaper: ?*c.GdkPixbuf,
+    wallpaper: ?*c.cairo_surface_t,
     timer: c.guint = 0,
     tick_count: u32 = 0,
     apps_mode: bool = false,
@@ -51,7 +51,16 @@ const Overview = struct {
 
     fn create(application: *c.GtkApplication, path: [*:0]const u8) *Overview {
         const self = a.create(Overview) catch @panic("out of memory");
-        self.* = .{ .launcher = apps.Launcher.init(application), .strip = c.gtk_drawing_area_new().?, .stage = c.gtk_drawing_area_new().?, .dash = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0).?, .wallpaper = c.gdk_pixbuf_new_from_file(path, null) };
+        var wallpaper: ?*c.cairo_surface_t = null;
+        if (c.gdk_pixbuf_new_from_file(path, null)) |pixbuf| {
+            defer c.g_object_unref(pixbuf);
+            wallpaper = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, c.gdk_pixbuf_get_width(pixbuf), c.gdk_pixbuf_get_height(pixbuf));
+            const cr = c.cairo_create(wallpaper);
+            defer c.cairo_destroy(cr);
+            c.gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
+            c.cairo_paint(cr);
+        }
+        self.* = .{ .launcher = apps.Launcher.init(application), .strip = c.gtk_drawing_area_new().?, .stage = c.gtk_drawing_area_new().?, .dash = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0).?, .wallpaper = wallpaper };
         const l = &self.launcher;
         l.bindControls();
         const window = cast(c.GtkWindow, l.window);
@@ -107,7 +116,7 @@ const Overview = struct {
         if (self.client) |client| client.destroy();
         self.client = null;
         self.launcher.deinit();
-        if (self.wallpaper) |image| c.g_object_unref(image);
+        if (self.wallpaper) |image| c.cairo_surface_destroy(image);
         a.destroy(self);
     }
     fn present(self: *Overview) void {
@@ -590,12 +599,12 @@ const Overview = struct {
         c.cairo_set_source_rgb(cr, 0.015, 0.235, 0.53);
         c.cairo_paint(cr);
         if (self.wallpaper) |image| {
-            const iw: f64 = @floatFromInt(c.gdk_pixbuf_get_width(image));
-            const ih: f64 = @floatFromInt(c.gdk_pixbuf_get_height(image));
+            const iw: f64 = @floatFromInt(c.cairo_image_surface_get_width(image));
+            const ih: f64 = @floatFromInt(c.cairo_image_surface_get_height(image));
             const scale = @max(r.w / iw, r.h / ih);
             c.cairo_translate(cr, r.x + (r.w - iw * scale) / 2, r.y + (r.h - ih * scale) / 2);
             c.cairo_scale(cr, scale, scale);
-            c.gdk_cairo_set_source_pixbuf(cr, image, 0, 0);
+            c.cairo_set_source_surface(cr, image, 0, 0);
             c.cairo_paint(cr);
         }
     }
