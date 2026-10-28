@@ -1,6 +1,11 @@
 { pkgs }:
 let
   audioLibraries = import ./desktop-audio-libs.nix { inherit pkgs; };
+  feedbackSound = pkgs.runCommand "desktop-volume-feedback.wav" {
+    nativeBuildInputs = [ pkgs.sox ];
+  } ''
+    sox ${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/audio-volume-change.oga -t wav -e signed-integer -b 16 "$out"
+  '';
 in
 pkgs.stdenv.mkDerivation {
   pname = "desktop-zig";
@@ -38,7 +43,7 @@ pkgs.stdenv.mkDerivation {
     pkgs.libxkbcommon
     pkgs.polkit
     audioLibraries.wireplumber
-    pkgs.libcanberra
+    audioLibraries.pipewire
   ];
   buildPhase = ''
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
@@ -116,6 +121,6 @@ pkgs.stdenv.mkDerivation {
       --prefix XDG_DATA_DIRS : "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}" \
       --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
       --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share" \
-      --set DESKTOP_OSD_SOUND_FILE ${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/audio-volume-change.oga
+      --set DESKTOP_OSD_SOUND_FILE ${feedbackSound}
   '';
 }

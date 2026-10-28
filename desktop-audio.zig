@@ -412,23 +412,11 @@ pub fn dispatch() void {
     while (c.g_main_context_iteration(null, 0) != 0) {}
 }
 
-pub const Feedback = struct {
-    context: ?*w.ca_context = null,
-    pub fn playing(self: *Feedback) bool {
-        if (self.context == null) return false;
-        var active: c_int = 0;
-        return w.ca_context_playing(self.context, 1, &active) >= 0 and active != 0;
-    }
-    pub fn play(self: *Feedback, path: [*:0]const u8) void {
-        if (self.context == null and w.ca_context_create(&self.context) < 0) return;
-        if (self.playing()) return;
-        _ = w.ca_context_play(self.context, 1, @as([*:0]const u8, "media.filename"), path, @as([*:0]const u8, "media.role"), @as([*:0]const u8, "event"), @as([*:0]const u8, "canberra.cache-control"), @as([*:0]const u8, "never"), @as(?*anyopaque, null));
-    }
-    pub fn deinit(self: *Feedback) void {
-        if (self.context) |ctx| _ = w.ca_context_destroy(ctx);
-        self.context = null;
-    }
-};
+pub const Feedback = @import("desktop-feedback.zig").Feedback;
+comptime {
+    // Include the feedback parser tests even when only control APIs are used.
+    _ = Feedback;
+}
 
 test "audio target names and media classes are explicit" {
     try std.testing.expectEqual(Target.output, try target("@DEFAULT_AUDIO_SINK@"));

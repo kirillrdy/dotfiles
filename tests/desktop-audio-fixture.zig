@@ -135,6 +135,7 @@ pub fn main(init: std.process.Init) !void {
         assert(player.playing());
         const start_time = c.g_get_monotonic_time();
         while (c.g_get_monotonic_time() < start_time + 600_000) pump();
+        assert(player.playing()); // The two-second stream is still delivering audio.
         player.play(path); // Repeated volume keys keep the existing sound.
         while (c.g_get_monotonic_time() < start_time + 2_300_000) pump();
         assert(!player.playing());

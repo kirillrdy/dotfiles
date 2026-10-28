@@ -121,8 +121,6 @@ try:
     assert "0.40" in run(["wpctl", "get-volume", speakers]).stdout
     native("cancel")
     print("PASS native volume, mute, defaults, limits, errors, external changes, and cancellation", flush=True)
-    pulse = start(["pipewire-pulse"], "pulse.log")
-    wait(lambda: (root / "runtime/pulse/native").exists(), "private feedback playback server")
     sound = root / "feedback.wav"
     with wave.open(str(sound), "wb") as wav:
         wav.setnchannels(1)

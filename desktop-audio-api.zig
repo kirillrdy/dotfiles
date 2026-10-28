@@ -1,4 +1,4 @@
-//! Explicit WirePlumber, GIO and event-sound ABI; checked against upstream headers.
+//! Explicit WirePlumber and GIO ABI; checked against upstream headers.
 const c = @import("gtk");
 pub const WpCore = opaque {};
 pub const WpConf = opaque {};
@@ -38,8 +38,3 @@ pub extern fn g_variant_builder_add([*c]GVariantBuilder, [*c]const u8, ...) void
 pub extern fn g_variant_builder_end([*c]GVariantBuilder) ?*c.GVariant;
 pub extern fn g_variant_builder_unref([*c]GVariantBuilder) void;
 pub extern fn g_variant_ref_sink(?*c.GVariant) ?*c.GVariant;
-pub const ca_context = opaque {};
-pub extern fn ca_context_create([*c]?*ca_context) c_int;
-pub extern fn ca_context_destroy(?*ca_context) c_int;
-pub extern fn ca_context_play(?*ca_context, u32, ...) c_int;
-pub extern fn ca_context_playing(?*ca_context, u32, [*c]c_int) c_int;
