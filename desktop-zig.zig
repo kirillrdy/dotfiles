@@ -137,11 +137,12 @@ fn dispatch(self: *Session, args: []const []const u8) !void {
 }
 
 pub fn main(init: std.process.Init) !void {
+    try @import("runtime").setup(a);
     @import("desktop-util.zig").io = init.io;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
-    const name = std.fs.path.basename(if (c.g_getenv("DESKTOP_ZIG_INVOKED_AS")) |invoked| std.mem.span(invoked) else args[0]);
+    const name = std.fs.path.basename(args[0]);
     // Executable aliases implement the portal and SSH askpass protocols.
     if (std.mem.eql(u8, name, "desktop-askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args));
     if (std.mem.eql(u8, name, "grim") or std.mem.eql(u8, name, "slurp")) {

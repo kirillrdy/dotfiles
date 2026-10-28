@@ -1,11 +1,15 @@
 { pkgs }:
 let
+  polkitLibraries = import ./desktop-polkit-libs.nix { inherit pkgs; };
   audioLibraries = import ./desktop-audio-libs.nix { inherit pkgs; };
-  feedbackSound = pkgs.runCommand "desktop-volume-feedback.wav" {
-    nativeBuildInputs = [ pkgs.sox ];
-  } ''
-    sox ${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/audio-volume-change.oga -t wav -e signed-integer -b 16 "$out"
-  '';
+  feedbackSound =
+    pkgs.runCommand "desktop-volume-feedback.wav"
+      {
+        nativeBuildInputs = [ pkgs.sox ];
+      }
+      ''
+        sox ${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/audio-volume-change.oga -t wav -e signed-integer -b 16 "$out"
+      '';
 in
 pkgs.stdenv.mkDerivation {
   pname = "desktop-zig";
@@ -28,7 +32,6 @@ pkgs.stdenv.mkDerivation {
   nativeBuildInputs = [
     pkgs.zig_0_17
     pkgs.pkg-config
-    pkgs.makeWrapper
     pkgs.xorg-server
     pkgs.wayland-scanner
     pkgs.python3
@@ -41,10 +44,16 @@ pkgs.stdenv.mkDerivation {
     pkgs.wayland
     pkgs.pam
     pkgs.libxkbcommon
-    pkgs.polkit
+    polkitLibraries
     audioLibraries.wireplumber
     audioLibraries.pipewire
   ];
+  # Compile the former launcher's environment setup into the Zig executable.
+  DESKTOP_RUNTIME_POWER_HELPER = "${placeholder "out"}/bin/desktop-zig";
+  DESKTOP_RUNTIME_POWER_PKEXEC = "/run/wrappers/bin/pkexec";
+  DESKTOP_RUNTIME_PIXBUF_LOADERS = "${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache";
+  DESKTOP_RUNTIME_SOUND_FILE = "${feedbackSound}";
+  DESKTOP_RUNTIME_DATA_DIRS = "${placeholder "out"}/share:${pkgs.adwaita-icon-theme}/share:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}";
   buildPhase = ''
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
     zig build --prefix "$out" -Doptimize=ReleaseSafe
@@ -59,7 +68,7 @@ pkgs.stdenv.mkDerivation {
     export GSETTINGS_SCHEMA_DIR=${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}/glib-2.0/schemas
     python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-zig" --subcommand greeter
     zig build test-gtk-abi test-libc-abi -Doptimize=ReleaseSafe
-    zig build test-power -Doptimize=ReleaseSafe
+    zig build test-runtime test-power -Doptimize=ReleaseSafe
     zig build test -Doptimize=ReleaseSafe
     Xvfb :99 -nolisten tcp &
     xvfb_pid=$!
@@ -114,13 +123,5 @@ pkgs.stdenv.mkDerivation {
       </action>
     </policyconfig>
     EOF
-    wrapProgram "$out/bin/desktop-zig" \
-      --run 'export DESKTOP_ZIG_INVOKED_AS="$0"' \
-      --set DESKTOP_POWER_HELPER "$out/bin/desktop-zig" \
-      --set DESKTOP_POWER_PKEXEC /run/wrappers/bin/pkexec \
-      --prefix XDG_DATA_DIRS : "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}" \
-      --set GDK_PIXBUF_MODULE_FILE ${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      --prefix XDG_DATA_DIRS : "$out/share:${pkgs.adwaita-icon-theme}/share" \
-      --set DESKTOP_OSD_SOUND_FILE ${feedbackSound}
   '';
 }

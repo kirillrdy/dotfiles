@@ -14,6 +14,16 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-zig.zig"), .target = target, .optimize = optimize }) });
+    const runtime_options = b.addOptions();
+    for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "PIXBUF_LOADERS", "SOUND_FILE", "DATA_DIRS" }) |name| {
+        runtime_options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
+    }
+    const runtime = b.createModule(.{ .root_source_file = b.path("desktop-runtime.zig"), .target = target, .optimize = optimize });
+    runtime.addOptions("options", runtime_options);
+    runtime.link_libc = true;
+    const runtime_tests = b.addTest(.{ .root_module = runtime });
+    b.step("test-runtime", "Check native launcher environment setup").dependOn(&b.addRunArtifact(runtime_tests).step);
+    session.root_module.addImport("runtime", runtime);
     const libc = b.createModule(.{ .root_source_file = b.path("desktop-libc.zig"), .target = target, .optimize = optimize });
     const power_c = libc;
     const power_module = b.createModule(.{ .root_source_file = b.path("desktop-power.zig"), .target = target, .optimize = optimize });
@@ -435,6 +445,7 @@ pub fn build(b: *std.Build) void {
     memory_tests.root_module.addImport("power", power_module);
     b.step("memory-tests", "Build leak-checking lifecycle tests for the isolated memory fixture").dependOn(&b.addInstallArtifact(memory_tests, .{}).step);
     const test_step = b.step("test", "Run data parsing and allowance tests");
+    test_step.dependOn(&b.addRunArtifact(runtime_tests).step);
     test_step.dependOn(&b.addRunArtifact(audio_tests).step);
     test_step.dependOn(&b.addRunArtifact(audio_abi).step);
     test_step.dependOn(network_check);
