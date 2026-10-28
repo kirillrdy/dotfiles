@@ -1,5 +1,6 @@
 { pkgs }:
 let
+  gtkLibraries = import ./desktop-gtk-libs.nix { inherit pkgs; };
   polkitLibraries = import ./desktop-polkit-libs.nix { inherit pkgs; };
   audioLibraries = import ./desktop-audio-libs.nix { inherit pkgs; };
   feedbackSound =
@@ -39,8 +40,8 @@ pkgs.stdenv.mkDerivation {
   WAYLAND_PROTOCOLS_DIR = "${pkgs.wayland-protocols}/share/wayland-protocols";
   WLR_PROTOCOLS_DIR = "${pkgs.wlr-protocols}/share/wlr-protocols";
   buildInputs = [
-    pkgs.gtk3
-    pkgs.gtk-layer-shell
+    gtkLibraries.gtk
+    gtkLibraries.layerShell
     pkgs.wayland
     pkgs.pam
     pkgs.libxkbcommon

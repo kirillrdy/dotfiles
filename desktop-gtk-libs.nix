@@ -1,0 +1,52 @@
+{ pkgs }:
+let
+  # The desktop uses GTK widgets, accessibility, input methods, and Wayland.
+  # Keep X11 for the isolated Xvfb fixtures; printing and indexed file search
+  # belong to applications rather than this shell.
+  gtk =
+    (pkgs.gtk3.override {
+      trackerSupport = false;
+      cupsSupport = false;
+      broadwaySupport = false;
+      withIntrospection = false;
+    }).overrideAttrs
+      (old: {
+        pname = "desktop-gtk";
+        separateDebugInfo = false;
+        mesonFlags = old.mesonFlags ++ [
+          "-Dprint_backends=file"
+          "-Ddemos=false"
+          "-Dexamples=false"
+        ];
+        # The upstream Nix install hook moves broadwayd unconditionally.
+        postInstall =
+          pkgs.lib.replaceStrings [ ''moveToOutput bin/broadwayd "$out"'' ] [ "" ]
+            old.postInstall;
+        # The full package wraps demos, which this build does not install.
+        postFixup = "";
+      });
+
+  layerShell = (pkgs.gtk-layer-shell.override { gtk3 = gtk; }).overrideAttrs {
+    pname = "desktop-gtk-layer-shell";
+    outputs = [
+      "out"
+      "dev"
+    ];
+    outputBin = "dev";
+    nativeBuildInputs = with pkgs; [
+      meson
+      ninja
+      pkg-config
+      wayland-scanner
+    ];
+    mesonFlags = [
+      "-Ddocs=false"
+      "-Dexamples=false"
+      "-Dintrospection=false"
+      "-Dvapi=false"
+    ];
+  };
+in
+{
+  inherit gtk layerShell;
+}
