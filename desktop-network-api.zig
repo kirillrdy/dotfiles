@@ -24,3 +24,7 @@ pub extern fn g_variant_builder_unref(*GVariantBuilder) void;
 pub extern fn g_variant_new_fixed_array(?*const c.GVariantType, c.gconstpointer, usize, usize) ?*c.GVariant;
 pub extern fn g_variant_ref(?*c.GVariant) ?*c.GVariant;
 pub extern fn g_dbus_connection_set_exit_on_close(?*c.GDBusConnection, c.gboolean) void;
+
+pub extern fn g_variant_ref_sink(?*c.GVariant) ?*c.GVariant;
+
+pub extern fn g_variant_builder_add_value(*GVariantBuilder, *c.GVariant) void;

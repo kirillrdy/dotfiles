@@ -94,6 +94,33 @@ def main():
             run('disconnect', DEVICE)
             run('deactivate', PROFILE)
             run('ui')
+            run('edit')
+            assert server.settings['connection']['uuid'].unpack() == 'test-uuid'
+            assert server.settings['connection']['id'].unpack() == 'Native connection'
+            assert server.settings['proxy']['pac-url'].unpack() == 'https://proxy.example/config'
+            assert server.settings['ipv4']['address-data'].unpack()[0] == {'address': '192.0.2.10', 'prefix': 24}
+            assert server.settings['ipv6']['address-data'].unpack()[0] == {'address': '2001:db8::10', 'prefix': 64}
+            assert server.settings['ipv4']['dns-data'].unpack() == ['1.1.1.1', '9.9.9.9']
+            run('edit-secret')
+            assert server.settings['802-11-wireless-security']['psk'].unpack() == 'updated-wifi-secret'
+            assert server.settings['802-1x']['private-key-password'].unpack() == 'stored-key-secret'
+            assert set(server.secret_reads) >= {'802-11-wireless-security', '802-1x'}
+            server.stale = True
+            run('edit', fail=True)
+            server.stale = False
+            server.deny = True
+            run('edit', fail=True)
+            server.deny = False
+            server.delay = True
+            updates_before = sum(call[0] == 'Update2' for call in server.calls)
+            run('edit-cancel')
+            assert sum(call[0] == 'Update2' for call in server.calls) == updates_before
+            server.delay = False
+            run('new')
+            assert server.last_added['connection']['type'] == 'bridge'
+            assert server.last_added['connection']['interface-name'] == 'fixture-br0'
+            assert server.last_added['bridge']['stp']
+            assert server.last_added['connection']['uuid'] != 'test-uuid'
             run('forget', PROFILE)
             loop.quit()
             thread.join(timeout=2)

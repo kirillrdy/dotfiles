@@ -2439,3 +2439,15 @@ pub extern fn g_dbus_proxy_get_connection([*c]GDBusProxy) ?*GDBusConnection;
 pub extern fn g_variant_get_type_string(?*GVariant) [*c]const gchar;
 pub extern fn g_variant_get_double(?*GVariant) f64;
 pub extern fn g_variant_get_int64(?*GVariant) gint64;
+
+pub extern fn g_variant_get_uint64(?*GVariant) u64;
+pub extern fn g_variant_print(?*GVariant, gboolean) [*c]gchar;
+pub extern fn g_variant_parse(?*const GVariantType, [*c]const gchar, [*c]const gchar, [*c][*c]const gchar, [*c][*c]GError) ?*GVariant;
+pub extern fn g_variant_type_string_is_valid([*c]const gchar) gboolean;
+pub extern fn g_uuid_string_random() [*c]gchar;
+
+pub extern fn g_dbus_error_get_remote_error([*c]const GError) [*c]gchar;
+
+pub extern fn gtk_dialog_get_widget_for_response([*c]GtkDialog, gint) [*c]GtkWidget;
+
+pub extern fn g_variant_type_is_definite(?*const GVariantType) gboolean;

@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("gtk");
 const g = @import("network-api");
+pub const api = g;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const name = "org.freedesktop.NetworkManager";
 const root = "/org/freedesktop/NetworkManager";
@@ -93,7 +94,7 @@ pub const AccessPoint = struct {
     }
 };
 pub const Device = struct { path: [:0]u8, interface: [:0]u8, kind: u32, state: u32, managed: bool, active: [:0]u8 };
-pub const Profile = struct { path: [:0]u8, uuid: [:0]u8, title: [:0]u8, kind: [:0]u8, ssid: []u8, active: bool, base: *c.GVariant };
+pub const Profile = struct { path: [:0]u8, uuid: [:0]u8, title: [:0]u8, kind: [:0]u8, ssid: []u8, active: bool, base: *c.GVariant, version: u64 = 0 };
 const Active = struct { path: [:0]u8, profile: [:0]u8, title: [:0]u8, kind: [:0]u8, state: u32 };
 pub const Indicator = struct { icon: [:0]const u8, title: []const u8, strength: ?u8 = null };
 pub const State = struct {
@@ -180,8 +181,8 @@ pub fn deviceState(state: u32) []const u8 {
         else => "unknown",
     };
 }
-const Record = struct { path: [:0]u8, settings: ?*c.GVariant = null, dirty: bool = true, loading: bool = false, seen: bool = false };
-const Fetch = struct { service: *Service, path: [:0]u8, epoch: u64 };
+const Record = struct { path: [:0]u8, settings: ?*c.GVariant = null, dirty: bool = true, loading: bool = false, seen: bool = false, version: u64 = 0 };
+const Fetch = struct { service: *Service, path: [:0]u8, epoch: u64, version: u64 };
 var shared: ?*Service = null;
 pub const Service = struct {
     manager: ?*g.GDBusObjectManager = null,
@@ -339,7 +340,9 @@ pub const Service = struct {
         r.dirty = false;
         r.loading = true;
         const fetch_data = a.create(Fetch) catch @panic("out of memory");
-        fetch_data.* = .{ .service = self, .path = z(r.path), .epoch = self.epoch };
+        const version = prop(proxy, "VersionId");
+        defer if (version) |v| c.g_variant_unref(v);
+        fetch_data.* = .{ .service = self, .path = z(r.path), .epoch = self.epoch, .version = if (version) |v| c.g_variant_get_uint64(v) else 0 };
         self.ref();
         g.g_dbus_proxy_call(proxy, "GetSettings", null, c.G_DBUS_CALL_FLAGS_NONE, 10000, self.cancel, &fetched, fetch_data);
     }
@@ -359,6 +362,7 @@ pub const Service = struct {
         if (reply) |v| {
             if (r.settings) |old| c.g_variant_unref(old);
             r.settings = c.g_variant_get_child_value(v, 0);
+            r.version = task.version;
         }
         self.schedule();
     }
@@ -426,7 +430,7 @@ pub const Service = struct {
                 for (self.state.active.items) |v| {
                     if (eq(v.profile, r.path)) active = true;
                 }
-                self.state.profiles.append(a, .{ .path = z(r.path), .uuid = settingText(base, "connection", "uuid"), .title = settingText(base, "connection", "id"), .kind = settingText(base, "connection", "type"), .ssid = a.dupe(u8, bytes(ssid)) catch @panic("out of memory"), .active = active, .base = g.g_variant_ref(base).? }) catch @panic("out of memory");
+                self.state.profiles.append(a, .{ .path = z(r.path), .uuid = settingText(base, "connection", "uuid"), .title = settingText(base, "connection", "id"), .kind = settingText(base, "connection", "type"), .ssid = a.dupe(u8, bytes(ssid)) catch @panic("out of memory"), .active = active, .base = g.g_variant_ref(base).?, .version = r.version }) catch @panic("out of memory");
             }
             index += 1;
         }
@@ -459,7 +463,8 @@ pub const Service = struct {
     }
 };
 pub const Connect = struct { ssid: []const u8, password: []const u8 = "", hidden: bool = false, access_point: ?[]const u8 = null };
-pub const Action = union(enum) { wifi: bool, scan, connect: Connect, activate: []const u8, deactivate: []const u8, forget: []const u8, disconnect: []const u8 };
+pub const Save = struct { path: ?[]const u8, settings: *c.GVariant, version: u64 = 0 };
+pub const Action = union(enum) { save: Save, wifi: bool, scan, connect: Connect, activate: []const u8, deactivate: []const u8, forget: []const u8, disconnect: []const u8 };
 pub const Result = union(enum) { success, failure: [:0]const u8 };
 pub const Completion = *const fn (?*anyopaque, Result) void;
 pub const Client = struct {
@@ -546,6 +551,133 @@ fn group(b: *g.GVariantBuilder, key: [*:0]const u8, inner: *g.GVariantBuilder) v
     g.g_variant_builder_add(b, "{s@a{sv}}", key, g.g_variant_builder_end(inner));
     g.g_variant_builder_unref(inner);
 }
+pub const secret_groups = [_][:0]const u8{ "802-11-wireless-security", "802-1x", "vpn", "gsm", "cdma", "pppoe", "wireguard", "macsec" };
+pub fn secretProperty(key: []const u8) bool {
+    return std.mem.indexOf(u8, key, "password") != null or std.mem.indexOf(u8, key, "private-key") != null or eq(key, "psk") or std.mem.startsWith(u8, key, "wep-key") or eq(key, "secrets") or eq(key, "pin") or eq(key, "peers") or eq(key, "mka-cak");
+}
+fn hasSecrets(settings: *c.GVariant) bool {
+    for (secret_groups) |group_key| {
+        const dict = section(settings, group_key) orelse continue;
+        defer c.g_variant_unref(dict);
+        for (0..c.g_variant_n_children(dict)) |i| {
+            const pair = c.g_variant_get_child_value(dict, i).?;
+            defer c.g_variant_unref(pair);
+            const key = c.g_variant_get_child_value(pair, 0).?;
+            defer c.g_variant_unref(key);
+            const key_text = string(key);
+            if (secretProperty(key_text) and !std.mem.endsWith(u8, key_text, "-flags")) return true;
+        }
+    }
+    return false;
+}
+fn overlayDictionary(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
+    const out = builder(c.g_variant_get_type_string(patch));
+    defer g.g_variant_builder_unref(out);
+    for ([_]*c.GVariant{ base, patch }, 0..) |source, pass| for (0..c.g_variant_n_children(source)) |i| {
+        const pair = c.g_variant_get_child_value(source, i).?;
+        defer c.g_variant_unref(pair);
+        if (pass == 0) {
+            const key = c.g_variant_get_child_value(pair, 0).?;
+            defer c.g_variant_unref(key);
+            if (section(patch, c.g_variant_get_string(key, null))) |replacement| {
+                c.g_variant_unref(replacement);
+                continue;
+            }
+        }
+        g.g_variant_builder_add_value(out, pair);
+    };
+    return g.g_variant_ref_sink(g.g_variant_builder_end(out)).?;
+}
+fn mergePeers(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
+    const out = builder("aa{sv}");
+    defer g.g_variant_builder_unref(out);
+    for (0..c.g_variant_n_children(patch)) |i| {
+        const peer = c.g_variant_get_child_value(patch, i).?;
+        defer c.g_variant_unref(peer);
+        var combined = g.g_variant_ref(peer).?;
+        defer c.g_variant_unref(combined);
+        const key = section(peer, "public-key");
+        defer if (key) |v| c.g_variant_unref(v);
+        if (key) |public_key| {
+            for (0..c.g_variant_n_children(base)) |j| {
+                const old = c.g_variant_get_child_value(base, j).?;
+                defer c.g_variant_unref(old);
+                const old_key = section(old, "public-key") orelse continue;
+                defer c.g_variant_unref(old_key);
+                if (eq(std.mem.span(c.g_variant_get_type_string(old_key)), "s") and eq(std.mem.span(c.g_variant_get_type_string(public_key)), "s") and eq(string(old_key), string(public_key))) {
+                    c.g_variant_unref(combined);
+                    combined = overlayDictionary(old, peer);
+                    break;
+                }
+            }
+        }
+        g.g_variant_builder_add_value(out, combined);
+    }
+    return g.g_variant_ref_sink(g.g_variant_builder_end(out)).?;
+}
+/// Overlay complete setting groups without losing unedited or unknown keys.
+pub fn mergeSettings(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
+    const out = builder("a{sa{sv}}");
+    defer g.g_variant_builder_unref(out);
+    for ([_]*c.GVariant{ base, patch }, 0..) |source, pass| {
+        for (0..c.g_variant_n_children(source)) |i| {
+            const pair = c.g_variant_get_child_value(source, i).?;
+            defer c.g_variant_unref(pair);
+            const key = c.g_variant_get_child_value(pair, 0).?;
+            defer c.g_variant_unref(key);
+            const key_text = c.g_variant_get_string(key, null);
+            const old = section(base, key_text);
+            defer if (old) |v| c.g_variant_unref(v);
+            const fresh = section(patch, key_text);
+            defer if (fresh) |v| c.g_variant_unref(v);
+            if (pass == 1 and old != null) continue;
+            const inner = builder("a{sv}");
+            if (old) |dict| for (0..c.g_variant_n_children(dict)) |j| {
+                const property = c.g_variant_get_child_value(dict, j).?;
+                defer c.g_variant_unref(property);
+                const property_key = c.g_variant_get_child_value(property, 0).?;
+                defer c.g_variant_unref(property_key);
+                const replacement = if (fresh) |f| section(f, c.g_variant_get_string(property_key, null)) else null;
+                if (replacement) |v| {
+                    c.g_variant_unref(v);
+                    continue;
+                }
+                g.g_variant_builder_add(inner, "@{sv}", property);
+            };
+            if (fresh) |dict| for (0..c.g_variant_n_children(dict)) |j| {
+                const property = c.g_variant_get_child_value(dict, j).?;
+                defer c.g_variant_unref(property);
+                const property_key = c.g_variant_get_child_value(property, 0).?;
+                defer c.g_variant_unref(property_key);
+                const key_name = c.g_variant_get_string(property_key, null);
+                const previous = if (old) |v| section(v, key_name) else null;
+                defer if (previous) |v| c.g_variant_unref(v);
+                const next = section(dict, key_name).?;
+                defer c.g_variant_unref(next);
+                if (previous) |v| {
+                    const kind = std.mem.span(c.g_variant_get_type_string(next));
+                    if (eq(kind, std.mem.span(c.g_variant_get_type_string(v)))) {
+                        if (eq(std.mem.span(key_name), "secrets") and eq(kind, "a{ss}")) {
+                            const merged = overlayDictionary(v, next);
+                            defer c.g_variant_unref(merged);
+                            add(inner, key_name, merged);
+                            continue;
+                        }
+                        if (eq(std.mem.span(key_text), "wireguard") and eq(std.mem.span(key_name), "peers") and eq(kind, "aa{sv}")) {
+                            const merged = mergePeers(v, next);
+                            defer c.g_variant_unref(merged);
+                            add(inner, key_name, merged);
+                            continue;
+                        }
+                    }
+                }
+                g.g_variant_builder_add(inner, "@{sv}", property);
+            };
+            group(out, key_text, inner);
+        }
+    }
+    return g.g_variant_ref_sink(g.g_variant_builder_end(out)).?;
+}
 const Call = struct {
     client: *Client,
     callback: Completion,
@@ -565,6 +697,11 @@ const Call = struct {
     next_profile: ?[:0]u8 = null,
     next_device: ?[:0]u8 = null,
     next_ap: ?[:0]u8 = null,
+    save_settings: ?*c.GVariant = null,
+    save_path: ?[:0]u8 = null,
+    save_version: u64 = 0,
+    secret_next: usize = 0,
+    reading_secrets: bool = false,
     fn cancelled(_: ?*c.GCancellable, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Call, ptr);
         c.g_cancellable_cancel(self.cancel);
@@ -582,6 +719,14 @@ const Call = struct {
         const reply = c.g_dbus_connection_call_finish(@ptrCast(source), result, &err);
         defer if (reply) |v| c.g_variant_unref(v);
         defer c.g_clear_error(&err);
+        if (reply == null and self.reading_secrets and err != null) {
+            const remote = c.g_dbus_error_get_remote_error(err);
+            defer c.g_free(remote);
+            if (remote != null and std.mem.endsWith(u8, std.mem.span(remote), ".NoSecrets")) {
+                self.nextSecret();
+                return;
+            }
+        }
         if (reply == null) {
             self.failed = true;
             if (err != null) {
@@ -593,6 +738,15 @@ const Call = struct {
         if (self.pending != 0) return;
         if (self.failed) {
             self.finish(.{ .failure = std.mem.sliceTo(&self.message, 0) });
+            return;
+        }
+        if (self.reading_secrets) {
+            const secrets = c.g_variant_get_child_value(reply.?, 0).?;
+            defer c.g_variant_unref(secrets);
+            const combined = mergeSettings(secrets, self.save_settings.?);
+            c.g_variant_unref(self.save_settings.?);
+            self.save_settings = combined;
+            self.nextSecret();
             return;
         }
         if (self.next_profile) |profile| {
@@ -661,8 +815,41 @@ const Call = struct {
         if (self.next_profile) |s| a.free(s);
         if (self.next_device) |s| a.free(s);
         if (self.next_ap) |s| a.free(s);
+        if (self.save_settings) |v| c.g_variant_unref(v);
+        if (self.save_path) |v| a.free(v);
         a.destroy(self);
         client.unref();
+    }
+    fn nextSecret(self: *Call) void {
+        if (self.client.dead or c.g_cancellable_is_cancelled(self.cancel) != 0 or !self.client.state().available) {
+            self.finish(.{ .failure = "Cancelled" });
+            return;
+        }
+        const profile = self.client.state().profile(self.save_path.?) orelse {
+            self.finish(.{ .failure = "NetworkProfileUnavailable" });
+            return;
+        };
+        while (self.secret_next < secret_groups.len) {
+            const key = secret_groups[self.secret_next];
+            self.secret_next += 1;
+            const dict = section(profile.base, key) orelse continue;
+            c.g_variant_unref(dict);
+            const retained = section(self.save_settings.?, key) orelse continue;
+            c.g_variant_unref(retained);
+            self.reading_secrets = true;
+            self.send(self.save_path.?, profile_iface, "GetSecrets", c.g_variant_new("(s)", key.ptr));
+            return;
+        }
+        self.reading_secrets = false;
+        self.writeSettings();
+    }
+    fn writeSettings(self: *Call) void {
+        if (self.save_path) |path| {
+            const options = builder("a{sv}");
+            defer g.g_variant_builder_unref(options);
+            add(options, "version-id", c.g_variant_new("t", self.save_version));
+            self.send(path, profile_iface, "Update2", c.g_variant_new("(@a{sa{sv}}u@a{sv})", self.save_settings.?, @as(c_uint, 1), g.g_variant_builder_end(options)));
+        } else self.send(root ++ "/Settings", name ++ ".Settings", "AddConnection", c.g_variant_new("(@a{sa{sv}})", self.save_settings.?));
     }
     fn device(self: *Call, kind: u32, wanted: ?[]const u8) !Device {
         for (self.client.state().devices.items) |d| if (d.kind == kind and d.managed and (wanted == null or eq(d.path, wanted.?))) return d;
@@ -671,6 +858,17 @@ const Call = struct {
     fn begin(self: *Call, action: Action) !void {
         const state = self.client.state();
         switch (action) {
+            .save => |request| {
+                if (!eq(std.mem.span(c.g_variant_get_type_string(request.settings)), "a{sa{sv}}")) return error.InvalidConnectionSettings;
+                if (request.path) |path| {
+                    const p = state.profile(path) orelse return error.NetworkProfileUnavailable;
+                    if (request.version == 0 or p.version != request.version) return error.NetworkProfileChanged;
+                }
+                self.save_path = if (request.path) |path| z(path) else null;
+                self.save_version = request.version;
+                self.save_settings = g.g_variant_ref(request.settings);
+                if (request.path != null and hasSecrets(request.settings)) self.nextSecret() else self.writeSettings();
+            },
             .wifi => |enabled| self.send(root, "org.freedesktop.DBus.Properties", "Set", c.g_variant_new("(ssv)", @as([*:0]const u8, name), @as([*:0]const u8, "WirelessEnabled"), c.g_variant_new("b", @as(c_int, @intFromBool(enabled))))),
             .scan => {
                 self.client.refresh();
@@ -761,7 +959,7 @@ fn connectionSettings(request: Connect, mode: Security, profile: ?Profile) !*c.G
             defer c.g_variant_unref(dict);
             const group_name = c.g_variant_get_string(key, null);
             if (!eq(std.mem.span(group_name), target)) {
-                g.g_variant_builder_add(out, "{s@a{sv}}", group_name, g.g_variant_ref(dict));
+                g.g_variant_builder_add(out, "{s@a{sv}}", group_name, dict);
                 continue;
             }
             found = true;
@@ -774,7 +972,7 @@ fn connectionSettings(request: Connect, mode: Security, profile: ?Profile) !*c.G
                 defer c.g_variant_unref(k);
                 const k_text = c.g_variant_get_string(k, null);
                 if (eq(std.mem.span(k_text), std.mem.span(secret))) continue;
-                g.g_variant_builder_add(inner, "@{sv}", g.g_variant_ref(pair));
+                g.g_variant_builder_add(inner, "@{sv}", pair);
             }
             add(inner, secret, c.g_variant_new("s", pass.ptr));
             group(out, group_name, inner);
@@ -860,4 +1058,30 @@ test "network snapshot cleanup and connected presentation" {
     try std.testing.expectEqualStrings("Wi-Fi blocked by hardware switch", state.indicator().title);
     state.clear();
     try std.testing.expectEqualStrings("NetworkManager unavailable", state.indicator().title);
+}
+
+test "connection edits preserve VPN credentials and WireGuard peer secrets" {
+    const signature: [*:0]const u8 = "a{sa{sv}}";
+    const original = c.g_variant_parse(@ptrCast(signature), "{'vpn': {'secrets': <@a{ss} {'password': 'old', 'otp': 'keep'}>}, 'wireguard': {'peers': <@aa{sv} [{'public-key': <'peer-a'>, 'preshared-key': <'keep-peer-key'>}, {'public-key': <'removed-peer'>, 'preshared-key': <'discard'>}]>}}", null, null, null).?;
+    defer c.g_variant_unref(original);
+    const patch = c.g_variant_parse(@ptrCast(signature), "{'vpn': {'secrets': <@a{ss} {'password': 'new'}>}, 'wireguard': {'peers': <@aa{sv} [{'public-key': <'peer-a'>, 'endpoint': <'host:51820'>}]>}}", null, null, null).?;
+    defer c.g_variant_unref(patch);
+    const combined = mergeSettings(original, patch);
+    defer c.g_variant_unref(combined);
+    const secrets = setting(combined, "vpn", "secrets").?;
+    defer c.g_variant_unref(secrets);
+    const password = section(secrets, "password").?;
+    defer c.g_variant_unref(password);
+    const otp = section(secrets, "otp").?;
+    defer c.g_variant_unref(otp);
+    try std.testing.expectEqualStrings("new", string(password));
+    try std.testing.expectEqualStrings("keep", string(otp));
+    const peers = setting(combined, "wireguard", "peers").?;
+    defer c.g_variant_unref(peers);
+    try std.testing.expectEqual(@as(usize, 1), c.g_variant_n_children(peers));
+    const peer = c.g_variant_get_child_value(peers, 0).?;
+    defer c.g_variant_unref(peer);
+    const secret = section(peer, "preshared-key").?;
+    defer c.g_variant_unref(secret);
+    try std.testing.expectEqualStrings("keep-peer-key", string(secret));
 }

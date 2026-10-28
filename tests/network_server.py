@@ -21,10 +21,15 @@ class Server:
         self.deny = False
         self.activation_fail = False
         self.delay = False
+        self.stale = False
+        self.secret_reads = []
+        self.secrets = {'802-11-wireless-security': {'psk': V('s', 'stored-wifi-secret')}, '802-1x': {'private-key-password': V('s', 'stored-key-secret')}}
         self.settings = {
             'connection': {'id': V('s', 'Saved'), 'uuid': V('s', 'test-uuid'), 'type': V('s', '802-11-wireless')},
             '802-11-wireless': {'ssid': V('ay', b'Saved')},
             '802-11-wireless-security': {'key-mgmt': V('s', 'wpa-psk')},
+            '802-1x': {'eap': V('as', ['tls'])},
+            'proxy': {'method': V('i', 0), 'pac-url': V('s', 'https://proxy.example/config')},
             'ipv4': {'method': V('s', 'manual'), 'dns': V('au', [0x01010101])},
         }
         self.add('/org/freedesktop', OM, {}, {'GetManagedObjects': ('', 'a{oa{sa{sv}}}')})
@@ -33,7 +38,8 @@ class Server:
         self.add(DEVICE, NAME+'.Device', {'DeviceType': V('u', 2), 'Interface': V('s', 'wlan0'), 'State': V('u', 30), 'Managed': V('b', True), 'ActiveConnection': V('o', '/')}, {'Disconnect': ('', '')})
         self.add(DEVICE, NAME+'.Device.Wireless', {'AccessPoints': V('ao', [AP]), 'ActiveAccessPoint': V('o', '/')}, {'RequestScan': ('a{sv}', '')})
         self.add(AP, NAME+'.AccessPoint', {'Ssid': V('ay', b'Cafe: Tokyo\\5G'), 'Strength': V('y', 83), 'Flags': V('u', 1), 'WpaFlags': V('u', 0), 'RsnFlags': V('u', 0x100)}, {})
-        self.add(PROFILE, NAME+'.Settings.Connection', {}, {'GetSettings': ('', 'a{sa{sv}}'), 'Update': ('a{sa{sv}}', ''), 'Delete': ('', '')}, '<signal name="Updated"/>')
+        self.add(ROOT+'/Settings', NAME+'.Settings', {}, {'AddConnection': ('a{sa{sv}}', 'o')})
+        self.add(PROFILE, NAME+'.Settings.Connection', {'VersionId': V('t', 1)}, {'GetSettings': ('', 'a{sa{sv}}'), 'GetSecrets': ('s', 'a{sa{sv}}'), 'Update2': ('a{sa{sv}}ua{sv}', 'a{sv}'), 'Update': ('a{sa{sv}}', ''), 'Delete': ('', '')}, '<signal name="Updated"/>')
         self.own()
 
     def own(self):
@@ -86,16 +92,27 @@ class Server:
         if self.deny and method not in ('GetManagedObjects', 'GetSettings'):
             invocation.return_dbus_error(NAME+'.PermissionDenied', 'fixture permission denied')
             return
-        if self.delay and method == 'RequestScan':
-            GLib.timeout_add(500, lambda: (invocation.return_value(V('()', ())), False)[1])
+        if self.delay and method in ('RequestScan', 'GetSecrets', 'Update2'):
+            reply = V('(a{sa{sv}})', ({},)) if method == 'GetSecrets' else V('(a{sv})', ({},)) if method == 'Update2' else V('()', ())
+            GLib.timeout_add(500, lambda: (invocation.return_value(reply), False)[1])
             return
         if method == 'GetManagedObjects':
             invocation.return_value(V('(a{oa{sa{sv}}})', ({p:i for p,i in self.objects.items() if p != '/org/freedesktop'},)))
         elif method == 'GetSettings': invocation.return_value(V('(a{sa{sv}})', (self.settings,)))
-        elif method == 'Update':
+        elif method == 'GetSecrets':
+            group = params.unpack()[0]
+            self.secret_reads.append(group)
+            invocation.return_value(V('(a{sa{sv}})', ({group: self.secrets.get(group, {})},)))
+        elif method == 'AddConnection':
+            self.last_added = params.unpack()[0]
+            invocation.return_value(V('(o)', (ROOT+'/Settings/2',)))
+        elif method == 'Update2' and (self.stale or params.unpack()[2].get('version-id') != self.objects[PROFILE][NAME+'.Settings.Connection']['VersionId'].unpack()):
+            invocation.return_dbus_error(NAME+'.Settings.VersionIdMismatch', 'Profile changed since the editor opened')
+        elif method in ('Update', 'Update2'):
             self.settings = {group: {key: params.get_child_value(0).lookup_value(group, None).lookup_value(key, None) for key in values} for group, values in params.unpack()[0].items()}
+            self.change(PROFILE, NAME+'.Settings.Connection', {'VersionId': V('t', self.objects[PROFILE][NAME+'.Settings.Connection']['VersionId'].unpack()+1)})
             self.bus.emit_signal(None, path, iface, 'Updated', None)
-            invocation.return_value(V('()', ()))
+            invocation.return_value(V('(a{sv})', ({},)) if method == 'Update2' else V('()', ()))
         elif method in ('ActivateConnection', 'AddAndActivateConnection'):
             if method == 'AddAndActivateConnection':
                 self.last_added = params.unpack()[0]

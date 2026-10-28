@@ -3,6 +3,7 @@ const std = @import("std");
 pub const c = @import("gtk");
 const audio = @import("audio");
 const network = @import("network");
+const editor = @import("desktop-network-editor.zig");
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 fn cast(comptime T: type, p: anytype) *T {
@@ -332,7 +333,8 @@ pub const Settings = struct {
         self.devices = c.gtk_combo_box_text_new();
         pack(self.body, self.devices.?);
         _ = button(self.body, "Disconnect device", &deviceDisconnect, self);
-        _ = button(self.body, "Edit connections…", &editConnections, self);
+        _ = button(self.body, "Edit connection…", &editConnections, self);
+        _ = button(self.body, "New connection…", &newConnection, self);
     }
     pub fn renderNetwork(self: *Settings, state: *const network.State) void {
         var arena = std.heap.ArenaAllocator.init(a);
@@ -423,13 +425,19 @@ pub const Settings = struct {
         if (c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.devices.?))) |id| self.networkAction(.{ .disconnect = std.mem.span(id) });
     }
     fn editConnections(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(data));
-        var err: [*c]c.GError = null;
-        // nmtui is part of the NetworkManager package already in the closure.
-        const process = c.g_subprocess_new(c.G_SUBPROCESS_FLAGS_NONE, &err, @as([*:0]const u8, "ghostty"), @as([*:0]const u8, "-e"), @as([*:0]const u8, "nmtui-edit"), @as(?*anyopaque, null));
-        if (process) |p| c.g_object_unref(p);
-        if (err != null) self.setMessage(err.*.message);
-        c.g_clear_error(&err);
+        const self = cast(Settings, data);
+        const client = self.network_client orelse return;
+        const id = c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.profiles.?));
+        if (id == null) {
+            self.setMessage("Select a saved connection first.");
+            return;
+        }
+        const profile = client.state().profile(std.mem.span(id)) orelse return;
+        _ = editor.Editor.create(self.window, profile);
+    }
+    fn newConnection(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
+        const self = cast(Settings, data);
+        _ = editor.Editor.create(self.window, null);
     }
 };
 

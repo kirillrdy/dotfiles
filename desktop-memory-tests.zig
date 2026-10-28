@@ -5,6 +5,7 @@ const audio = @import("audio");
 const network = @import("network");
 const battery = @import("battery");
 const settings = @import("desktop-settings.zig");
+const editor = @import("desktop-network-editor.zig");
 const widgets = @import("desktop-widgets.zig");
 
 extern fn pango_cairo_font_map_get_default() *anyopaque;
@@ -132,6 +133,17 @@ fn networkLifetime(settle: bool) !void {
         const ui = settings.Settings.create(.network);
         objects.watch(ui.window);
         objects.watch(ui.audio_cancel);
+        const connection_editor = editor.Editor.create(ui.window, client.state().profiles.items[0]);
+        objects.watch(connection_editor.window);
+        objects.watch(connection_editor.cancel);
+        // A close during profile saving must release the editor after the reply.
+        connection_editor.save();
+        c.gtk_widget_destroy(connection_editor.window);
+        const new_connection = editor.Editor.create(ui.window, null);
+        objects.watch(new_connection.window);
+        const new_settings = try new_connection.values();
+        c.g_variant_unref(new_settings);
+        c.gtk_widget_destroy(new_connection.window);
         // Start a real asynchronous action, then cancel it during window teardown.
         ui.refresh();
         c.gtk_widget_destroy(ui.window);
