@@ -1,4 +1,7 @@
-{ pkgs }:
+{
+  pkgs,
+  dbus ? pkgs.dbus,
+}:
 let
   # This process is a control client. Hardware, codecs, and session policy run
   # in the system's normal PipeWire/WirePlumber services, not in these libraries.
@@ -15,7 +18,7 @@ let
       pkg-config
       python3
     ];
-    buildInputs = [ pkgs.dbus ];
+    buildInputs = [ dbus ];
     mesonFlags = [
       "-Dauto_features=disabled"
       "-Dexamples=disabled"

@@ -1,8 +1,15 @@
 { pkgs }:
 let
-  gtkLibraries = import ./desktop-gtk-libs.nix { inherit pkgs; };
+  dbusLibraries = import ./desktop-dbus-libs.nix { inherit pkgs; };
+  gtkLibraries = import ./desktop-gtk-libs.nix {
+    inherit pkgs;
+    dbus = dbusLibraries;
+  };
   polkitLibraries = import ./desktop-polkit-libs.nix { inherit pkgs; };
-  audioLibraries = import ./desktop-audio-libs.nix { inherit pkgs; };
+  audioLibraries = import ./desktop-audio-libs.nix {
+    inherit pkgs;
+    dbus = dbusLibraries;
+  };
   feedbackSound =
     pkgs.runCommand "desktop-volume-feedback.wav"
       {

@@ -1,10 +1,31 @@
-{ pkgs }:
+{
+  pkgs,
+  dbus ? pkgs.dbus,
+}:
 let
+  # Match the desktop's D-Bus client and preserve accessibility bus launching
+  # without retaining a Bash interpreter just for its environment wrapper.
+  accessibility =
+    (pkgs.at-spi2-core.override {
+      inherit dbus;
+      makeWrapper = pkgs.makeBinaryWrapper;
+      withIntrospection = false;
+    }).overrideAttrs
+      (old: {
+        outputs = old.outputs ++ [ "xwayland" ];
+        # This system session hook invokes busctl, sed, and xprop. Keep it
+        # available separately from the client libraries and accessibility bus.
+        postInstall = (old.postInstall or "") + ''
+          moveToOutput etc/xdg/Xwayland-session.d "$xwayland"
+        '';
+      });
   # The desktop uses GTK widgets, accessibility, input methods, and Wayland.
   # Keep X11 for the isolated Xvfb fixtures; printing and indexed file search
   # belong to applications rather than this shell.
   gtk =
     (pkgs.gtk3.override {
+      atk = accessibility;
+      at-spi2-atk = accessibility;
       trackerSupport = false;
       cupsSupport = false;
       broadwaySupport = false;
@@ -48,5 +69,5 @@ let
   };
 in
 {
-  inherit gtk layerShell;
+  inherit accessibility gtk layerShell;
 }
