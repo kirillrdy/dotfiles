@@ -56,6 +56,11 @@ in
 lib.mkIf enableLightDesktop {
   nixpkgs.overlays = [
     (final: prev: {
+      xdg-desktop-portal = import ./desktop-portal.nix {
+        pkgs = final;
+        desktop = desktopZig;
+        upstream = prev.xdg-desktop-portal;
+      };
       # Only the optional Wallpaper portal needs gnome-desktop.
       xdg-desktop-portal-gtk = prev.xdg-desktop-portal-gtk.overrideAttrs (old: {
         mesonFlags = (old.mesonFlags or [ ]) ++ [ "-Dwallpaper=disabled" ];

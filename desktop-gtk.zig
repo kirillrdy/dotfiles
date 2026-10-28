@@ -2451,3 +2451,34 @@ pub extern fn g_dbus_error_get_remote_error([*c]const GError) [*c]gchar;
 pub extern fn gtk_dialog_get_widget_for_response([*c]GtkDialog, gint) [*c]GtkWidget;
 
 pub extern fn g_variant_type_is_definite(?*const GVariantType) gboolean;
+
+// Native portal broker: tuples and Unix file descriptor forwarding.
+pub const GDBusMessage = opaque {};
+pub extern fn g_variant_new_tuple([*c]const ?*GVariant, gsize) ?*GVariant;
+pub extern fn g_dbus_method_invocation_get_message(?*GDBusMethodInvocation) ?*GDBusMessage;
+pub extern fn g_dbus_message_get_unix_fd_list(?*GDBusMessage) [*c]GUnixFDList;
+pub extern fn g_dbus_method_invocation_return_value_with_unix_fd_list(?*GDBusMethodInvocation, ?*GVariant, [*c]GUnixFDList) void;
+pub extern fn g_unix_fd_list_new() [*c]GUnixFDList;
+pub extern fn g_unix_fd_list_append([*c]GUnixFDList, gint, [*c][*c]GError) gint;
+pub extern fn g_app_info_launch_default_for_uri_async([*c]const gchar, ?*GAppLaunchContext, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
+pub extern fn g_app_info_launch_default_for_uri_finish(?*GAsyncResult, [*c][*c]GError) gboolean;
+pub extern fn g_app_info_get_default_for_uri_scheme([*c]const gchar) ?*GAppInfo;
+pub extern fn g_file_get_uri(?*GFile) [*c]gchar;
+pub extern fn g_variant_ref(?*GVariant) ?*GVariant;
+pub extern fn g_variant_take_ref(?*GVariant) ?*GVariant;
+pub const GVariantBuilder = opaque {};
+pub extern fn g_variant_builder_new(?*const GVariantType) ?*GVariantBuilder;
+pub extern fn g_variant_builder_add(?*GVariantBuilder, [*c]const gchar, ...) void;
+pub extern fn g_variant_builder_end(?*GVariantBuilder) ?*GVariant;
+pub extern fn g_variant_builder_unref(?*GVariantBuilder) void;
+pub const GNetworkMonitor = opaque {};
+pub extern fn g_network_monitor_get_default() ?*GNetworkMonitor;
+pub extern fn g_network_monitor_get_network_available(?*GNetworkMonitor) gboolean;
+pub extern fn g_network_monitor_get_network_metered(?*GNetworkMonitor) gboolean;
+pub extern fn g_network_monitor_get_connectivity(?*GNetworkMonitor) c_uint;
+pub extern fn g_variant_new_array(?*const GVariantType, [*c]const ?*GVariant, gsize) ?*GVariant;
+pub extern fn g_file_query_file_type(?*GFile, c_uint, [*c]GCancellable) c_uint;
+pub const GSocketConnectable = opaque {};
+pub extern fn g_network_address_new([*c]const gchar, u16) ?*GSocketConnectable;
+pub extern fn g_network_monitor_can_reach_async(?*GNetworkMonitor, ?*GSocketConnectable, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
+pub extern fn g_network_monitor_can_reach_finish(?*GNetworkMonitor, ?*GAsyncResult, [*c][*c]GError) gboolean;

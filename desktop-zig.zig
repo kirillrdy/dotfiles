@@ -144,6 +144,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(arena.allocator());
     const name = std.fs.path.basename(args[0]);
     // Executable aliases implement the portal and SSH askpass protocols.
+    if (std.mem.eql(u8, name, "xdg-desktop-portal")) return @import("portal").run();
     if (std.mem.eql(u8, name, "desktop-askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args));
     if (std.mem.eql(u8, name, "grim") or std.mem.eql(u8, name, "slurp")) {
         const forwarded = try arena.allocator().dupe([]const u8, args);
@@ -151,10 +152,11 @@ pub fn main(init: std.process.Init) !void {
         return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig greeter|askpass|power|screenshot [ARGS...]\n", .{});
+        std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig portal | greeter|askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;
         return;
     }
+    if (std.mem.eql(u8, args[1], "portal")) return @import("portal").run();
     if (std.mem.eql(u8, args[1], "greeter")) return @import("greeter").runArgs(init, args[1..]);
     if (std.mem.eql(u8, args[1], "power")) return @import("power").runArgs(init, args[1..]);
     if (std.mem.eql(u8, args[1], "askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args[1..]));

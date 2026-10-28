@@ -35,6 +35,15 @@ pub fn build(b: *std.Build) void {
     b.step("test-power", "Check power profiles against isolated sysfs fixtures").dependOn(&b.addRunArtifact(power_fixture).step);
     const greeter_c = libc;
     const gtk = b.createModule(.{ .root_source_file = b.path("desktop-gtk.zig"), .target = target, .optimize = optimize });
+    const portal = b.createModule(.{ .root_source_file = b.path("desktop-portal.zig"), .target = target, .optimize = optimize });
+    portal.addImport("gtk", gtk);
+    portal.addImport("libc", libc);
+    portal.link_libc = true;
+    portal.linkSystemLibrary("gio-2.0", .{});
+    session.root_module.addImport("portal", portal);
+    const portal_fixture = b.addExecutable(.{ .name = "desktop-portal-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-portal-fixture.zig"), .target = target, .optimize = optimize }) });
+    portal_fixture.root_module.addImport("portal", portal);
+    b.step("portal-fixture", "Build the native portal broker for private D-Bus tests").dependOn(&b.addInstallArtifact(portal_fixture, .{}).step);
     const network_api = b.createModule(.{ .root_source_file = b.path("desktop-network-api.zig"), .target = target, .optimize = optimize });
     network_api.addImport("gtk", gtk);
     const network = b.createModule(.{ .root_source_file = b.path("desktop-network.zig"), .target = target, .optimize = optimize });

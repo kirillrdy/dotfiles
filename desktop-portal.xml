@@ -1,0 +1,210 @@
+<!-- Public portal D-Bus signatures, matching xdg-desktop-portal 1.22. -->
+<node>
+  <interface name="org.freedesktop.portal.Settings">
+    <method name="ReadAll">
+      <arg type="as" name="namespaces" direction="in" />
+      <arg type="a{sa{sv}}" name="value" direction="out" />
+    </method>
+    <method name="Read">
+      <arg type="s" name="namespace" direction="in" />
+      <arg type="s" name="key" direction="in" />
+      <arg type="v" name="value" direction="out" />
+    </method>
+    <method name="ReadOne">
+      <arg type="s" name="namespace" direction="in" />
+      <arg type="s" name="key" direction="in" />
+      <arg type="v" name="value" direction="out" />
+    </method>
+    <signal name="SettingChanged">
+      <arg type="s" name="namespace" direction="out" />
+      <arg type="s" name="key" direction="out" />
+      <arg type="v" name="value" direction="out" />
+    </signal>
+    <property name="version" type="u" access="read" />
+  </interface>
+  <interface name="org.freedesktop.portal.Screenshot">
+    <method name="Screenshot">
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <method name="PickColor">
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <property name="version" type="u" access="read" />
+  </interface>
+  <interface name="org.freedesktop.portal.FileChooser">
+    <method name="OpenFile">
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="s" name="title" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <method name="SaveFile">
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="s" name="title" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <method name="SaveFiles">
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="s" name="title" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <property name="version" type="u" access="read" />
+  </interface>
+  <interface name="org.freedesktop.portal.ScreenCast">
+    <method name="CreateSession">
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <method name="SelectSources">
+      <arg type="o" name="session_handle" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <method name="Start">
+      <arg type="o" name="session_handle" direction="in" />
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <method name="OpenPipeWireRemote">
+      <arg type="o" name="session_handle" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="h" name="fd" direction="out" />
+    </method>
+    <property name="AvailableSourceTypes" type="u" access="read" />
+    <property name="AvailableCursorModes" type="u" access="read" />
+    <property name="version" type="u" access="read" />
+  </interface>
+  <interface name="org.freedesktop.portal.Print">
+    <method name="PreparePrint">
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="s" name="title" direction="in" />
+      <arg type="a{sv}" name="settings" direction="in" />
+      <arg type="a{sv}" name="page_setup" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <method name="Print">
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="s" name="title" direction="in" />
+      <arg type="h" name="fd" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <property name="version" type="u" access="read" />
+  </interface>
+  <interface name="org.freedesktop.portal.Account">
+    <method name="GetUserInformation">
+      <arg type="s" name="window" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <property name="version" type="u" access="read" />
+  </interface>
+  <interface name="org.freedesktop.portal.Email">
+    <method name="ComposeEmail">
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <property name="version" type="u" access="read" />
+  </interface>
+  <interface name="org.freedesktop.portal.Notification">
+    <method name="AddNotification">
+      <arg type="s" name="id" direction="in" />
+      <arg type="a{sv}" name="notification" direction="in" />
+    </method>
+    <method name="RemoveNotification">
+      <arg type="s" name="id" direction="in" />
+    </method>
+    <property name="SupportedOptions" type="a{sv}" access="read" />
+    <signal name="ActionInvoked">
+      <arg type="s" name="id" />
+      <arg type="s" name="action" />
+      <arg type="av" name="parameter" />
+    </signal>
+    <property name="version" type="u" access="read" />
+  </interface>
+  <interface name="org.freedesktop.portal.OpenURI">
+    <method name="OpenURI">
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="s" name="uri" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <method name="OpenFile">
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="h" name="fd" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <method name="OpenDirectory">
+      <arg type="s" name="parent_window" direction="in" />
+      <arg type="h" name="fd" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <method name="SchemeSupported">
+      <arg type="s" name="scheme" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="b" name="supported" direction="out" />
+    </method>
+    <property name="version" type="u" access="read" />
+  </interface>
+  <interface name="org.freedesktop.portal.NetworkMonitor">
+    <signal name="changed" />
+    <method name="GetAvailable">
+      <arg type="b" name="available" direction="out" />
+    </method>
+    <method name="GetMetered">
+      <arg type="b" name="metered" direction="out" />
+    </method>
+    <method name="GetConnectivity">
+      <arg type="u" name="connectivity" direction="out" />
+    </method>
+    <method name="GetStatus">
+      <arg type="a{sv}" name="status" direction="out" />
+    </method>
+    <method name="CanReach">
+      <arg type="s" name="hostname" direction="in" />
+      <arg type="u" name="port" direction="in" />
+      <arg type="b" name="reachable" direction="out" />
+    </method>
+    <property name="version" type="u" access="read" />
+  </interface>
+  <interface name="org.freedesktop.portal.Request">
+    <method name="Close" />
+    <signal name="Response">
+      <arg type="u" name="response" />
+      <arg type="a{sv}" name="results" />
+    </signal>
+  </interface>
+  <interface name="org.freedesktop.portal.Session">
+    <method name="Close" />
+    <signal name="Closed">
+      <arg type="a{sv}" name="details" />
+    </signal>
+    <property name="version" type="u" access="read" />
+  </interface>
+  <interface name="org.freedesktop.host.portal.Registry">
+    <method name="Register">
+      <arg name="app_id" type="s" direction="in" />
+      <arg name="options" type="a{sv}" direction="in" />
+    </method>
+  </interface>
+  <interface name="org.freedesktop.portal.Inhibit">
+    <method name="Inhibit">
+      <arg type="s" name="window" direction="in" />
+      <arg type="u" name="flags" direction="in" />
+      <arg type="a{sv}" name="options" direction="in" />
+      <arg type="o" name="handle" direction="out" />
+    </method>
+    <property name="version" type="u" access="read" />
+  </interface>
+</node>
