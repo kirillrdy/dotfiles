@@ -1,8 +1,14 @@
 { pkgs }:
+let
+  audioLibraries = import ./desktop-audio-libs.nix { inherit pkgs; };
+in
 pkgs.stdenv.mkDerivation {
   pname = "desktop-zig";
   version = "0.1.0";
-  outputs = [ "out" "tests" ];
+  outputs = [
+    "out"
+    "tests"
+  ];
   meta.mainProgram = "desktop-zig";
   src = pkgs.lib.fileset.toSource {
     root = ./.;
@@ -31,7 +37,7 @@ pkgs.stdenv.mkDerivation {
     pkgs.pam
     pkgs.libxkbcommon
     pkgs.polkit
-    pkgs.wireplumber
+    audioLibraries.wireplumber
     pkgs.libcanberra
   ];
   buildPhase = ''
