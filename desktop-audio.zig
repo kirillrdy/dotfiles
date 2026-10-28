@@ -43,30 +43,15 @@ fn classOf(text: []const u8) ?Class {
     }
     return null;
 }
-fn volume(mixer: [*c]w.WpPlugin, id: u32) ?State {
-    var dict: ?*c.GVariant = null;
-    c.g_signal_emit_by_name(mixer, "get-volume", id, &dict);
-    if (dict == null) return null;
-    defer c.g_variant_unref(dict);
-    const value = c.g_variant_lookup_value(dict, "volume", @ptrCast(@as([*:0]const u8, "d"))) orelse return null;
-    defer c.g_variant_unref(value);
-    const percent = c.g_variant_get_double(value) * 100;
-    if (!std.math.isFinite(percent) or percent < 0) return null;
-    const mute = c.g_variant_lookup_value(dict, "mute", @ptrCast(@as([*:0]const u8, "b")));
-    defer if (mute) |v| c.g_variant_unref(v);
-    return .{ .percent = @min(percent, 100), .muted = if (mute) |v| c.g_variant_get_boolean(v) != 0 else false };
-}
+const Mixer = @import("desktop-audio-mixer.zig");
 const Defaults = @import("desktop-audio-defaults.zig").Defaults;
-const Load = struct { service: *Service, epoch: u64 };
 pub const Service = struct {
     callback: *const fn (?*anyopaque, *Service) void,
     data: ?*anyopaque,
     core: ?*w.WpCore = null,
     manager: ?*w.WpObjectManager = null,
-    mixer: [*c]w.WpPlugin = null,
     defaults: Defaults,
     nodes: std.ArrayList(Node) = .empty,
-    cancel: *c.GCancellable,
     timer: c.guint = 0,
     idle: c.guint = 0,
     epoch: u64 = 0,
@@ -80,7 +65,7 @@ pub const Service = struct {
             w.wp_init(w.WP_INIT_ALL);
             initialized = true;
         }
-        self.* = .{ .callback = callback, .data = data, .cancel = c.g_cancellable_new().?, .defaults = .{ .callback = &defaultsChanged, .data = self } };
+        self.* = .{ .callback = callback, .data = data, .defaults = .{ .callback = &defaultsChanged, .data = self } };
         self.connect();
         self.timer = c.g_timeout_add_seconds(5, &maintain, self);
         return self;
@@ -88,7 +73,6 @@ pub const Service = struct {
     pub fn destroy(self: *Service) void {
         self.stopped = true;
         _ = c.g_source_remove(self.timer);
-        c.g_cancellable_cancel(self.cancel);
         self.reset();
         self.unref();
     }
@@ -96,7 +80,6 @@ pub const Service = struct {
         self.refs -= 1;
         if (self.refs == 0) {
             self.nodes.deinit(a);
-            c.g_object_unref(self.cancel);
             a.destroy(self);
         }
     }
@@ -105,17 +88,25 @@ pub const Service = struct {
         self.ready = false;
         if (self.idle != 0) _ = c.g_source_remove(self.idle);
         self.idle = 0;
-        for ([_]c.gpointer{ self.mixer, self.manager, self.core }) |object| if (object) |value| {
+        if (self.manager) |manager| {
+            if (w.wp_object_manager_new_iterator(manager)) |iterator| {
+                defer w.wp_iterator_unref(iterator);
+                var value = std.mem.zeroes(c.GValue);
+                while (w.wp_iterator_next(iterator, &value) != 0) {
+                    _ = c.g_signal_handlers_disconnect_matched(w.g_value_get_object(&value), c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
+                    c.g_value_unset(&value);
+                }
+            }
+        }
+        for ([_]c.gpointer{ self.manager, self.core }) |object| if (object) |value| {
             _ = c.g_signal_handlers_disconnect_matched(value, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         };
-        if (self.mixer != null) c.g_object_unref(self.mixer);
         self.defaults.disconnect();
         if (self.manager) |manager| c.g_object_unref(manager);
         if (self.core) |core| {
             w.wp_core_disconnect(core);
             c.g_object_unref(core);
         }
-        self.mixer = null;
         self.manager = null;
         self.core = null;
         self.nodes.clearRetainingCapacity();
@@ -132,8 +123,12 @@ pub const Service = struct {
             return;
         };
         w.wp_object_manager_add_interest(self.manager, w.wp_node_get_type(), @as(?*anyopaque, null));
-        w.wp_object_manager_request_object_features(self.manager, w.wp_node_get_type(), w.WP_PIPEWIRE_OBJECT_FEATURES_MINIMAL);
+        w.wp_object_manager_request_object_features(self.manager, w.wp_node_get_type(), w.WP_PIPEWIRE_OBJECT_FEATURES_MINIMAL | w.WP_PIPEWIRE_OBJECT_FEATURE_PARAM_PROPS);
+        w.wp_object_manager_add_interest(self.manager, w.wp_device_get_type(), @as(?*anyopaque, null));
+        w.wp_object_manager_request_object_features(self.manager, w.wp_device_get_type(), w.WP_PIPEWIRE_OBJECT_FEATURES_MINIMAL | w.WP_PIPEWIRE_OBJECT_FEATURE_PARAM_ROUTE);
         signal(self.core, "disconnected", &disconnected, self);
+        signal(self.manager, "object-added", &objectAdded, self);
+        signal(self.manager, "object-removed", &objectRemoved, self);
         signal(self.manager, "installed", &installed, self);
         signal(self.manager, "objects-changed", &changed, self);
         if (w.wp_core_connect(self.core) == 0) {
@@ -146,34 +141,16 @@ pub const Service = struct {
             self.notify();
             return;
         }
-        const load = a.create(Load) catch @panic("out of memory");
-        load.* = .{ .service = self, .epoch = self.epoch };
-        self.refs += 1;
-        w.wp_core_load_component(self.core, "libwireplumber-module-mixer-api", "module", null, null, self.cancel, &loaded, load);
-    }
-    fn loaded(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
-        const load = cast(Load, data);
-        const self = load.service;
-        defer {
-            a.destroy(load);
-            self.unref();
-        }
-        const ok = w.wp_core_load_component_finish(@ptrCast(source), result, null) != 0;
-        if (self.stopped or load.epoch != self.epoch) return;
-        if (!ok) {
-            self.reset();
-            self.notify();
-            return;
-        }
-        self.mixer = w.wp_plugin_find(self.core, "mixer-api");
-        if (self.mixer == null) {
-            self.reset();
-            self.notify();
-            return;
-        }
-        c.g_object_set(self.mixer, "scale", @as(c_int, 1), @as(?*anyopaque, null));
-        signal(self.mixer, "changed", &mixerChanged, self);
         w.wp_core_install_object_manager(self.core, self.manager);
+    }
+    fn objectAdded(_: ?*w.WpObjectManager, object: *w.WpPipewireObject, data: ?*anyopaque) callconv(.c) void {
+        signal(object, "params-changed", &paramsChanged, data);
+    }
+    fn objectRemoved(_: ?*w.WpObjectManager, object: *w.WpPipewireObject, data: ?*anyopaque) callconv(.c) void {
+        _ = c.g_signal_handlers_disconnect_matched(object, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, data);
+    }
+    fn paramsChanged(_: *w.WpPipewireObject, name: [*:0]const u8, data: ?*anyopaque) callconv(.c) void {
+        if (std.mem.eql(u8, std.mem.span(name), "Props") or std.mem.eql(u8, std.mem.span(name), "Route")) cast(Service, data).schedule();
     }
     fn disconnected(_: ?*w.WpCore, data: ?*anyopaque) callconv(.c) void {
         const self = cast(Service, data);
@@ -189,9 +166,6 @@ pub const Service = struct {
         cast(Service, data).schedule();
     }
     fn defaultsChanged(data: ?*anyopaque) void {
-        cast(Service, data).schedule();
-    }
-    fn mixerChanged(_: ?*anyopaque, _: u32, data: ?*anyopaque) callconv(.c) void {
         cast(Service, data).schedule();
     }
     fn schedule(self: *Service) void {
@@ -225,7 +199,7 @@ pub const Service = struct {
             if (media == null) continue;
             const class = classOf(std.mem.span(media)) orelse continue;
             const id = w.wp_proxy_get_bound_id(@ptrCast(object));
-            var entry = Node{ .id = id, .class = class, .state = volume(self.mixer, id), .is_default = id == output or id == input };
+            var entry = Node{ .id = id, .class = class, .state = self.volume(id), .is_default = id == output or id == input };
             copy(&entry.name, w.wp_pipewire_object_get_property(object, "node.name"));
             for ([_][*:0]const u8{ "node.description", "application.name", "node.nick", "node.name" }) |key| {
                 const title = w.wp_pipewire_object_get_property(object, key);
@@ -247,9 +221,14 @@ pub const Service = struct {
         for (self.nodes.items) |item| if (item.id == id) return item;
         return null;
     }
+    fn volume(self: *Service, id: u32) ?State {
+        var control = Mixer.read(self.manager, id) orelse return null;
+        defer control.deinit();
+        return .{ .percent = control.percent(), .muted = control.muted };
+    }
     pub fn state(self: *Service, wanted: Target) ?State {
         const item = self.node(wanted) orelse return null;
-        return volume(self.mixer, item.id);
+        return self.volume(item.id);
     }
     pub fn apply(self: *Service, wanted: Target, change: Change, cancel: *c.GCancellable, callback: Completion, data: ?*anyopaque) void {
         const item = self.node(wanted) orelse {
@@ -287,26 +266,16 @@ pub const Service = struct {
                 .toggle => expected.?.muted = !current.muted,
                 .default => unreachable,
             }
-            const builder = w.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
-            defer w.g_variant_builder_unref(builder);
-            switch (change) {
-                .volume => |percent| {
-                    if (!std.math.isFinite(percent)) {
-                        callback(data, .{ .failure = error.InvalidVolume });
-                        return;
-                    }
-                    w.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "volume"), c.g_variant_new("d", std.math.clamp(percent, 0, 100) / 100));
-                },
-                .step => |delta| {
-                    w.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "volume"), c.g_variant_new("d", std.math.clamp(current.percent + @as(f64, @floatFromInt(delta)), 0, 100) / 100));
-                    w.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "mute"), c.g_variant_new("b", @as(c_int, 0)));
-                },
-                .mute, .toggle => w.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "mute"), c.g_variant_new("b", @as(c_int, @intFromBool(if (change == .mute) change.mute else !current.muted)))),
-                .default => unreachable,
+            if (change == .volume and !std.math.isFinite(change.volume)) {
+                callback(data, .{ .failure = error.InvalidVolume });
+                return;
             }
-            const dict = w.g_variant_ref_sink(w.g_variant_builder_end(builder));
-            defer c.g_variant_unref(dict);
-            c.g_signal_emit_by_name(self.mixer, "set-volume", item.id, dict, &ok);
+            var control = Mixer.read(self.manager, item.id) orelse {
+                callback(data, .{ .failure = error.AudioUnavailable });
+                return;
+            };
+            defer control.deinit();
+            ok = @intFromBool(control.write(if (change == .volume or change == .step) expected.?.percent else null, if (change == .volume) null else expected.?.muted));
         }
         if (ok == 0) {
             callback(data, .{ .failure = error.AudioWriteRejected });
@@ -383,7 +352,7 @@ const Call = struct {
             self.finish(.{ .value = actual });
             return;
         }
-        // A core sync can precede the mixer's asynchronous Props refresh. Wait
+        // A core sync can precede the asynchronous parameter cache refresh. Wait
         // for that refresh before allowing the next relative volume step.
         _ = c.g_timeout_add(5, &retry, self);
     }
@@ -414,6 +383,7 @@ comptime {
     // Include parser tests even when only control APIs are used.
     _ = Feedback;
     _ = Defaults;
+    _ = Mixer;
 }
 
 test "audio target names and media classes are explicit" {

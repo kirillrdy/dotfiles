@@ -122,6 +122,21 @@ try:
     assert absent.returncode != 0 and "AudioUnavailable" in absent.stderr, absent
     run(["wpctl", "set-volume", speakers, "0.38"])
     expect(lambda s: any(n["id"] == int(speakers) and n["state"] and abs(n["state"]["percent"] - 38) < 0.01 for n in s["nodes"]), "external volume updates are pushed")
+    # Independent SPA writes exercise unequal channels, cubic conversion and
+    # preservation of balance by native volume and mute changes.
+    run(["pw-cli", "set-param", speakers, "Props", "{ channelVolumes: [ 0.125, 0.015625 ] }"])
+    expect(lambda s: any(n["id"] == int(speakers) and n["state"] and abs(n["state"]["percent"] - 50) < 0.01 for n in s["nodes"]), "unequal stereo volume is pushed")
+    native("set", speakers, "volume", "80")
+    def channel_volumes():
+        dump = json.loads(run(["pw-dump", speakers]).stdout)
+        return dump[0]["info"]["params"]["Props"][0]["channelVolumes"]
+    channels = channel_volumes()
+    assert abs(channels[0] - 0.512) < 0.0001 and abs(channels[1] - 0.064) < 0.0001, channels
+    native("set", speakers, "mute", "1")
+    assert channel_volumes() == channels, "mute must preserve channel levels"
+    native("set", speakers, "toggle")
+    # Restore equal channels for the existing rapid-step test.
+    run(["pw-cli", "set-param", speakers, "Props", "{ channelVolumes: [ 0.054872, 0.054872 ] }"])
     native("burst")
     assert "0.40" in run(["wpctl", "get-volume", speakers]).stdout
     native("cancel")

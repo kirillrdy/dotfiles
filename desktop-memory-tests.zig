@@ -46,10 +46,8 @@ const Objects = struct {
 fn audioChanged(_: ?*anyopaque, _: *audio.Service) void {}
 fn batteryChanged(_: ?*anyopaque, _: battery.State) void {}
 fn watchAudio(objects: *Objects, service: *audio.Service) void {
-    objects.watch(service.cancel);
     if (service.core) |core| objects.watch(core);
     if (service.manager) |manager| objects.watch(manager);
-    if (service.mixer != null) objects.watch(service.mixer);
     if (service.defaults.manager) |manager| objects.watch(manager);
     if (service.defaults.metadata) |metadata| objects.watch(metadata);
 }

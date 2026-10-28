@@ -42,7 +42,7 @@ let
       enableDocs = false;
       enableGI = false;
     }).overrideAttrs
-      (old: {
+      {
         pname = "desktop-wireplumber-client";
         buildInputs = [
           pkgs.glib
@@ -60,20 +60,7 @@ let
           "-Dsystemd-user-service=false"
           "-Dsysconfdir=/etc"
         ];
-        # The upstream library-only build omits every module. Add precisely the
-        # upstream C mixer module loaded by desktop-audio.zig, without Lua or policy.
-        postPatch = (old.postPatch or "") + ''
-          cat >> meson.build <<'EOF'
-          foreach module : ['mixer-api']
-            shared_library('wireplumber-module-' + module,
-              'modules/module-' + module + '.c',
-              install: true,
-              install_dir: wireplumber_module_dir,
-              dependencies: [wp_dep, pipewire_dep, mathlib])
-          endforeach
-          EOF
-        '';
-      });
+      };
 
 in
 {
