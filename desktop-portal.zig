@@ -7,6 +7,7 @@ var a: std.mem.Allocator = std.heap.page_allocator;
 const path = "/org/freedesktop/portal/desktop";
 const public = "org.freedesktop.portal.";
 const impl = "org.freedesktop.impl.portal.";
+const Account = @import("desktop-portal-account.zig").Dialog;
 const FileChooser = @import("desktop-portal-file-chooser.zig").Dialog;
 const Notifications = @import("desktop-portal-notification.zig").Service;
 const Settings = @import("desktop-portal-settings.zig").Service;
@@ -267,6 +268,7 @@ const Request = struct {
     closed: bool = false,
     inhibitor_fd: c_int = -1,
     dialog: ?*FileChooser = null,
+    account: ?*Account = null,
 
     fn create(server: *Server, client_info: *Client, interface: []const u8, method: []const u8, options: ?*c.GVariant, kind: Kind) !*Request {
         if (server.requests.items.len >= 128) return error.TooManyRequests;
@@ -327,6 +329,7 @@ const Request = struct {
     }
     fn destroy(self: *Request) void {
         if (self.dialog) |dialog| dialog.destroy();
+        if (self.account) |dialog| dialog.destroy();
         if (self.registration != 0) _ = c.g_dbus_connection_unregister_object(self.server.connection, self.registration);
         if (self.invocation) |invocation| c.g_object_unref(invocation);
         c.g_object_unref(self.cancel);
@@ -385,7 +388,7 @@ const Request = struct {
         }
         self.respond(code, results);
     }
-    fn fileChosen(data: ?*anyopaque, code: u32, results: ?*c.GVariant) void {
+    fn dialogFinished(data: ?*anyopaque, code: u32, results: ?*c.GVariant) void {
         const self = cast(Request, data);
         self.respond(code, results);
         self.destroy();
@@ -477,7 +480,17 @@ fn chooseFile(server: *Server, client_info: *Client, method: []const u8, params:
     defer c.g_variant_unref(options);
     const request = try Request.create(server, client_info, "FileChooser", method, options, .dialog);
     errdefer request.destroy();
-    request.dialog = try FileChooser.create(a, method, std.mem.span(c.g_variant_get_string(parent, null)), std.mem.span(c.g_variant_get_string(title, null)), options.?, &Request.fileChosen, request);
+    request.dialog = try FileChooser.create(a, method, std.mem.span(c.g_variant_get_string(parent, null)), std.mem.span(c.g_variant_get_string(title, null)), options.?, &Request.dialogFinished, request);
+    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
+}
+fn userInformation(server: *Server, client_info: *Client, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+    const parent = child(params, 0);
+    defer c.g_variant_unref(parent);
+    const options = child(params, 1);
+    defer c.g_variant_unref(options);
+    const request = try Request.create(server, client_info, "Account", "GetUserInformation", options, .dialog);
+    errdefer request.destroy();
+    request.account = try Account.create(a, client_info.app, std.mem.span(c.g_variant_get_string(parent, null)), options.?, &Request.dialogFinished, request);
     c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
 }
 fn openRemote(server: *Server, client_info: *Client, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
@@ -624,6 +637,7 @@ fn dispatch(server: *Server, sender: [*:0]const u8, interface: []const u8, metho
         return;
     }
     const short = interface[public.len..];
+    if (eq(short, "Account")) return userInformation(server, client_info, params, invocation);
     if (eq(short, "FileChooser")) return chooseFile(server, client_info, method, params, invocation);
     if (eq(short, "Settings")) {
         server.settings.?.call(method, params, invocation);

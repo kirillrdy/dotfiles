@@ -99,7 +99,7 @@ pub const Dialog = struct {
         _ = c.g_signal_connect_data(self.window, "response", @ptrCast(&responded), self, null, 0);
         c.gtk_widget_show_all(self.window);
         c.gtk_window_present(cast(c.GtkWindow, self.window));
-        self.parentTo(parent);
+        @import("desktop-portal-window.zig").parentTo(self.window, allocator, parent);
         return self;
     }
     pub fn chooser(self: *Dialog) *c.GtkFileChooser {
@@ -233,20 +233,6 @@ pub const Dialog = struct {
         if (readonly) {
             self.read_only = c.gtk_check_button_new_with_label("Open files read-only");
             c.gtk_box_pack_start(cast(c.GtkBox, box), self.read_only.?, 0, 0, 0);
-        }
-    }
-    fn parentTo(self: *Dialog, parent: [:0]const u8) void {
-        const display = c.gdk_display_get_default();
-        const window = c.gtk_widget_get_window(self.window) orelse return;
-        if (std.mem.startsWith(u8, parent, "wayland:") and c.g_type_check_instance_is_a(cast(c.GTypeInstance, display), c.gdk_wayland_display_get_type()) != 0) {
-            const handle = self.arena.allocator().dupeSentinel(u8, parent[8..], 0) catch return;
-            _ = c.gdk_wayland_window_set_transient_for_exported(window, handle);
-        } else if (std.mem.startsWith(u8, parent, "x11:") and c.g_type_check_instance_is_a(cast(c.GTypeInstance, display), c.gdk_x11_display_get_type()) != 0) {
-            const xid = std.fmt.parseInt(c_ulong, parent[4..], 16) catch return;
-            if (xid == 0) return;
-            const foreign = c.gdk_x11_window_foreign_new_for_display(display, xid) orelse return;
-            defer c.g_object_unref(foreign);
-            c.gdk_window_set_transient_for(window, foreign);
         }
     }
     fn results(self: *Dialog) !?*c.GVariant {

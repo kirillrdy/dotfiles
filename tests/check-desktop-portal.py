@@ -185,9 +185,7 @@ def backend_call(conn, sender, object_path, interface, method, params, invocatio
         invocation.return_dbus_error("org.freedesktop.portal.Error.Failed", "fixture backend failure")
         return
     results = {}
-    if interface == IMP + "Account":
-        results = {"id": GLib.Variant("s", "fixture"), "name": GLib.Variant("s", "Fixture user")}
-    elif interface == IMP + "Screenshot":
+    if interface == IMP + "Screenshot":
         results = {"uri": GLib.Variant("s", "file:///tmp/screenshot.png")}
     elif interface == IMP + "Print":
         descriptors = invocation.get_message().get_unix_fd_list()
@@ -203,7 +201,7 @@ def backend_call(conn, sender, object_path, interface, method, params, invocatio
     invocation.return_value(GLib.Variant("(ua{sv})", (0, results)))
 
 
-register("Account", [("GetUserInformation", "ossa{sv}", "ua{sv}")])
+register("Email", [("ComposeEmail", "ossa{sv}", "ua{sv}")])
 register("Screenshot", [("Screenshot", "ossa{sv}", "ua{sv}")])
 register("ScreenCast", [("CreateSession", "oosa{sv}", "ua{sv}"), ("SelectSources", "oosa{sv}", "ua{sv}"), ("Start", "oossa{sv}", "ua{sv}")], ["AvailableSourceTypes", "AvailableCursorModes"])
 register("Settings", [("Read", "ss", "v"), ("ReadAll", "as", "a{sa{sv}}")])
@@ -268,20 +266,20 @@ try:
     wait(lambda: any(event[0] == "org.gnome.fontconfig" for event in settings_changed), "font serial invalidated")
     assert not any(entry[0] == IMP + "Settings" for entry in log), "settings still used GTK backend"
     print("PASS native settings reads, namespace filters, appearance updates and font invalidation", flush=True)
-    handle, response = request("Account", "GetUserInformation", "(sa{sv})", ("", {"handle_token": GLib.Variant("s", "files")}))
-    assert response == (0, {"id": "fixture", "name": "Fixture user"}), response
+    handle, response = request("Email", "ComposeEmail", "(sa{sv})", ("", {"handle_token": GLib.Variant("s", "files")}))
+    assert response == (0, {}), response
     assert handle.endswith("/files")
-    assert any(entry[2][1] == "org.dotfiles.PortalFixture" for entry in log if entry[0] == IMP + "Account")
+    assert any(entry[2][1] == "org.dotfiles.PortalFixture" for entry in log if entry[0] == IMP + "Email")
     _, response = request("Screenshot", "Screenshot", "(sa{sv})", ("", {}))
     assert response == (0, {"uri": "file:///tmp/screenshot.png"})
-    rejected(lambda: request("Account", "GetUserInformation", "(sa{sv})", ("", {"handle_token": GLib.Variant("s", "bad/path")})), "invalid token accepted")
-    handle = request("Account", "GetUserInformation", "(sa{sv})", ("", {"hold": GLib.Variant("b", True)}), expect_response=False)
+    rejected(lambda: request("Email", "ComposeEmail", "(sa{sv})", ("", {"handle_token": GLib.Variant("s", "bad/path")})), "invalid token accepted")
+    handle = request("Email", "ComposeEmail", "(sa{sv})", ("", {"hold": GLib.Variant("b", True)}), expect_response=False)
     wait(lambda: handle in held, "backend holds request")
     rejected(lambda: call(other, PUB + "Request", "Close", path=handle), "foreign client closed request")
     call(client, PUB + "Request", "Close", path=handle)
     wait(lambda: handle not in held, "Close propagated to backend")
     assert handle not in responses, "cancelled request emitted Response"
-    _, response = request("Account", "GetUserInformation", "(sa{sv})", ("", {"fail": GLib.Variant("b", True)}))
+    _, response = request("Email", "ComposeEmail", "(sa{sv})", ("", {"fail": GLib.Variant("b", True)}))
     assert response[0] == 2
     fd = os.memfd_create("portal-print")
     os.write(fd, b"portal print fixture")
@@ -396,7 +394,7 @@ try:
     print("PASS native logind inhibition and release on Close", flush=True)
     transient = connection()
     transient.signal_subscribe(PUB + "Desktop", PUB + "Request", "Response", None, None, 0, lambda *_: None)
-    handle = request("Account", "GetUserInformation", "(sa{sv})", ("", {"hold": GLib.Variant("b", True)}), conn=transient, expect_response=False)
+    handle = request("Email", "ComposeEmail", "(sa{sv})", ("", {"hold": GLib.Variant("b", True)}), conn=transient, expect_response=False)
     wait(lambda: handle in held, "transient request pending")
     transient.close_sync(None)
     wait(lambda: handle not in held, "disconnect closes outstanding backend request")
@@ -417,7 +415,7 @@ else:
     assert sandbox.returncode == 0, (root / "broker.log").read_text()
     print("PASS sandbox clients cannot obtain unmediated host access", flush=True)
     # Shut down while an asynchronous backend request is still pending.
-    request("Account", "GetUserInformation", "(sa{sv})", ("", {"hold": GLib.Variant("b", True)}), expect_response=False)
+    request("Email", "ComposeEmail", "(sa{sv})", ("", {"hold": GLib.Variant("b", True)}), expect_response=False)
     process.send_signal(signal.SIGTERM)
     wait(lambda: process.poll() is not None, "broker shutdown")
     assert process.returncode == 0, (root / "broker.log").read_text()

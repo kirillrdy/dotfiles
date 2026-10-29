@@ -1,4 +1,4 @@
-"""Exercise native chooser requests with real GTK windows on a private X server."""
+"""Exercise native file and account dialogs on a private X server."""
 import argparse
 import os
 from pathlib import Path
@@ -17,11 +17,12 @@ parser.add_argument("--binary", required=True)
 args = parser.parse_args()
 root = Path(tempfile.mkdtemp(prefix="desktop-portal-chooser-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
-for name in ("config", "cache", "data"):
+for name in ("config", "cache", "data", "home"):
     (root / name).mkdir()
 selected = root / "selected file.txt"
 selected.write_text("native chooser fixture\n")
-env = dict(os.environ, XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"), XDG_RUNTIME_DIR=str(root), GTK_USE_PORTAL="0", GIO_USE_VFS="local", NO_AT_BRIDGE="1", GSETTINGS_BACKEND="memory", G_DEBUG="fatal-criticals")
+(root / "home" / ".face").write_text("account picture fixture\n")
+env = dict(os.environ, HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"), XDG_RUNTIME_DIR=str(root), GTK_USE_PORTAL="0", GIO_USE_VFS="local", NO_AT_BRIDGE="1", GSETTINGS_BACKEND="memory", G_DEBUG="fatal-criticals")
 PUB = "org.freedesktop.portal."
 P = "/org/freedesktop/portal/desktop"
 context = GLib.MainContext.default()
@@ -130,11 +131,58 @@ try:
     transient.close_sync(None)
     wait(lambda: not window("Native portal disconnected"), "client disconnect destroys dialog")
     print("PASS native chooser D-Bus open/save/cancel, request ownership, Close and client disconnect", flush=True)
-    handle, _ = request("Native portal shutdown")
+    account_title = "Share account information"
+
+    def account_request(conn=client, options=None):
+        reply = call(conn, PUB + "Account", "GetUserInformation", GLib.Variant("(sa{sv})", ("", options or {"reason": GLib.Variant("s", "Use your name in the document <not markup>")})))
+        account_handle = reply.unpack()[0]
+        wait(lambda: window(account_title), "native account window")
+        return account_handle, window(account_title)
+
+    handle, xid = account_request()
+    call(client, PUB + "NetworkMonitor", "GetStatus")
+    assert handle not in responses, "account data released before consent"
+    xdo("windowfocus", "--sync", xid)
+    xdo("key", "--clearmodifiers", "Return")
+    wait(lambda: handle in responses, "account default response")
+    assert responses[handle] == (1, {}), responses[handle]
+    handle, xid = account_request()
+    xdo("windowfocus", "--sync", xid)
+    xdo("key", "--clearmodifiers", "alt+s")
+    wait(lambda: handle in responses, "account consent response")
+    code, values = responses[handle]
+    assert code == 0, responses[handle]
+    assert values["id"] == GLib.get_user_name(), values
+    real_name = GLib.get_real_name()
+    assert values["name"] == (GLib.get_user_name() if real_name in ("", "Unknown") else real_name), values
+    assert values["image"] == (root / "home" / ".face").as_uri(), values
+    assert not name_owned("org.freedesktop.impl.portal.desktop.gtk"), "account used external GTK backend"
+    (root / "home" / ".face").unlink()
+    handle, xid = account_request()
+    xdo("windowfocus", "--sync", xid)
+    xdo("key", "--clearmodifiers", "alt+s")
+    wait(lambda: handle in responses, "account without picture")
+    assert responses[handle][0] == 0 and responses[handle][1]["image"] == ""
+    rejected(lambda: account_request(options={"reason": GLib.Variant("b", True)}))
+    assert not window(account_title), "invalid account request leaked a window"
+    handle, _ = account_request()
+    rejected(lambda: call(other, PUB + "Request", "Close", path=handle))
+    assert window(account_title), "foreign client destroyed account dialog"
+    call(client, PUB + "Request", "Close", path=handle)
+    wait(lambda: not window(account_title), "account Close destroys dialog")
+    call(client, PUB + "NetworkMonitor", "GetStatus")
+    assert handle not in responses, "account Close emitted a Response"
+    transient = connection()
+    handle, _ = account_request(conn=transient)
+    transient.close_sync(None)
+    wait(lambda: not window(account_title), "disconnected account dialog")
+    print("PASS native account consent/default denial, identity/picture, invalid options, ownership, Close and disconnect", flush=True)
+
+    handle, _ = account_request()
     process.send_signal(signal.SIGTERM)
     wait(lambda: process.poll() is not None, "broker shutdown with dialog")
     assert process.returncode == 0, (root / "broker.log").read_text()
-    assert not window("Native portal shutdown")
+    assert not window(account_title)
     print("PASS shutdown with an open native dialog and checked allocation ownership", flush=True)
 finally:
     if process.poll() is None:

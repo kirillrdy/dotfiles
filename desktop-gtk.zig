@@ -2538,3 +2538,6 @@ pub extern fn gdk_x11_display_get_type() GType;
 pub extern fn gdk_x11_window_foreign_new_for_display(?*GdkDisplay, c_ulong) ?*GdkWindow;
 pub extern fn gdk_window_set_transient_for(?*GdkWindow, ?*GdkWindow) void;
 pub extern fn gtk_file_chooser_select_all(?*GtkFileChooser) void;
+
+pub extern fn g_get_user_name() [*c]const gchar;
+pub extern fn g_get_real_name() [*c]const gchar;
