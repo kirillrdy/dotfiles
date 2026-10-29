@@ -93,7 +93,7 @@ pub fn build(b: *std.Build) void {
     audio.addImport("audio-api", audio_api);
     audio.link_libc = true;
     for ([_][]const u8{ "wireplumber-0.5", "libpipewire-0.3" }) |name| audio.linkSystemLibrary(name, .{});
-    audio.addImport("pipewire", bindings(b, target, optimize, "#include <pipewire/pipewire.h>\n#include <spa/param/audio/format.h>\n", &.{"libpipewire-0.3"}));
+    audio.addImport("pipewire", bindings(b, target, optimize, "#include <pipewire/pipewire.h>\n#include <spa/param/audio/format.h>\n#include <spa/param/props.h>\n#include <spa/param/route.h>\n", &.{"libpipewire-0.3"}));
     const audio_tests = b.addTest(.{ .root_module = audio });
     const audio_reference = bindings(b, target, optimize, "#include <wp/wp.h>\n", &.{"wireplumber-0.5"});
     const audio_abi = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-gtk-abi.zig"), .target = target, .optimize = optimize }) });
