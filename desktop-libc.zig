@@ -230,6 +230,10 @@ pub const struct_passwd = extern struct {
 pub extern fn getpwuid(__uid: __uid_t) [*c]struct_passwd;
 
 pub extern fn getuid() __uid_t;
+pub const struct_ucred = extern struct { pid: c_int, uid: c_uint, gid: c_uint };
+pub const SOL_SOCKET = std.c.SOL.SOCKET;
+pub const SO_PEERCRED = std.c.SO.PEERCRED;
+pub extern fn getsockopt(c_int, c_int, c_int, ?*anyopaque, *socklen_t) c_int;
 
 pub extern fn getpid() __pid_t;
 

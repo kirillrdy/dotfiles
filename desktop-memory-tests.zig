@@ -45,12 +45,6 @@ const Objects = struct {
 };
 fn audioChanged(_: ?*anyopaque, _: *audio.Service) void {}
 fn batteryChanged(_: ?*anyopaque, _: battery.State) void {}
-fn watchAudio(objects: *Objects, service: *audio.Service) void {
-    if (service.core) |core| objects.watch(core);
-    if (service.manager) |manager| objects.watch(manager);
-    if (service.defaults.manager) |manager| objects.watch(manager);
-    if (service.defaults.metadata) |metadata| objects.watch(metadata);
-}
 fn ready(service: *audio.Service) !void {
     const deadline = c.g_get_monotonic_time() + 15_000_000;
     while ((!service.ready or service.state(.output) == null) and c.g_get_monotonic_time() < deadline) pump();
@@ -67,7 +61,6 @@ fn audioLifetime(settle: bool) !void {
     var objects = Objects{};
     const service = try audio.Service.create(&audioChanged, null);
     if (settle) try ready(service);
-    watchAudio(&objects, service);
     if (settle) {
         const cancel = c.g_cancellable_new().?;
         objects.watch(cancel);
@@ -79,7 +72,7 @@ fn audioLifetime(settle: bool) !void {
         try objects.wait(15_000_000);
         try std.testing.expect(completion.finished);
     } else {
-        // Destroy while the component-loading callbacks still retain the service.
+        // Native registry ownership is checked by the Zig allocator and Valgrind.
         service.destroy();
         try objects.wait(15_000_000);
     }
@@ -169,7 +162,6 @@ fn soundLifetime(settle: bool) !void {
             while (sound.rows.items.len == 0 and c.g_get_monotonic_time() < deadline) pump();
             try std.testing.expect(sound.rows.items.len != 0);
         }
-        watchAudio(&objects, service);
     }
     c.gtk_widget_destroy(sound.window);
     const deadline = c.g_get_monotonic_time() + 15_000_000;
@@ -192,7 +184,6 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         objects.watch(controls.popover);
         if (controls.interface) |prefs| objects.watch(prefs);
         if (controls.notifications) |prefs| objects.watch(prefs);
-        if (controls.audio_service) |service| watchAudio(&objects, service);
         if (controls.network_client) |client| {
             objects.watch(client.cancel);
             objects.watch(client.service.cancel);

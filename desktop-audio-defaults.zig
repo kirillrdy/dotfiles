@@ -1,7 +1,5 @@
 //! Default audio devices through PipeWire metadata, without a client plugin.
 const std = @import("std");
-const c = @import("gtk");
-const w = @import("audio-api");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 
 const Device = struct { name: []const u8 };
@@ -10,87 +8,46 @@ fn decode(bytes: []const u8) !std.json.Parsed(Device) {
     if (bytes.len > 64 * 1024) return error.InvalidDefaultDevice;
     return std.json.parseFromSlice(Device, a, bytes, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
 }
-fn encode(name: []const u8) ![:0]u8 {
+pub fn encode(name: []const u8) ![:0]u8 {
     const json = try std.json.Stringify.valueAlloc(a, Device{ .name = name }, .{});
     defer a.free(json);
     return a.dupeSentinel(u8, json, 0);
 }
 
 pub const Defaults = struct {
-    manager: ?*w.WpObjectManager = null,
-    metadata: ?*w.WpMetadata = null,
-    callback: *const fn (?*anyopaque) void,
-    data: ?*anyopaque,
-
-    pub fn connect(self: *Defaults, core: *w.WpCore) bool {
-        self.manager = w.wp_object_manager_new() orelse return false;
-        w.wp_object_manager_add_interest(self.manager, w.wp_metadata_get_type(), w.WP_CONSTRAINT_TYPE_PW_GLOBAL_PROPERTY, @as([*:0]const u8, "metadata.name"), @as([*:0]const u8, "=s"), @as([*:0]const u8, "default"), @as(?*anyopaque, null));
-        w.wp_object_manager_request_object_features(self.manager, w.wp_metadata_get_type(), w.WP_OBJECT_FEATURES_ALL);
-        _ = c.g_signal_connect_data(self.manager, "objects-changed", @ptrCast(&objectsChanged), self, null, 0);
-        w.wp_core_install_object_manager(core, self.manager);
-        return true;
+    output: ?[]u8 = null,
+    input: ?[]u8 = null,
+    pub fn deinit(self: *Defaults) void {
+        if (self.output) |value| a.free(value);
+        if (self.input) |value| a.free(value);
+        self.* = .{};
     }
-    fn clearMetadata(self: *Defaults) void {
-        if (self.metadata) |metadata| {
-            _ = c.g_signal_handlers_disconnect_matched(metadata, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-            c.g_object_unref(metadata);
+    pub fn name(self: *const Defaults, output: bool) ?[]const u8 {
+        return if (output) self.output else self.input;
+    }
+    pub fn update(self: *Defaults, subject: u32, key: ?[]const u8, kind: ?[]const u8, json: ?[]const u8) bool {
+        if (subject != 0) return false;
+        if (key == null) {
+            const changed = self.output != null or self.input != null;
+            self.deinit();
+            return changed;
         }
-        self.metadata = null;
-    }
-    pub fn disconnect(self: *Defaults) void {
-        self.clearMetadata();
-        if (self.manager) |manager| {
-            _ = c.g_signal_handlers_disconnect_matched(manager, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-            c.g_object_unref(manager);
+        const target = if (std.mem.eql(u8, key.?, "default.audio.sink")) &self.output else if (std.mem.eql(u8, key.?, "default.audio.source")) &self.input else return false;
+        var replacement: ?[]u8 = null;
+        if (json != null and kind != null and std.mem.eql(u8, kind.?, "Spa:String:JSON")) {
+            if (decode(json.?)) |device| {
+                defer device.deinit();
+                replacement = a.dupe(u8, device.value.name) catch return false;
+            } else |_| {}
         }
-        self.manager = null;
-    }
-    fn objectsChanged(_: ?*w.WpObjectManager, data: ?*anyopaque) callconv(.c) void {
-        const self: *Defaults = @ptrCast(@alignCast(data.?));
-        self.clearMetadata();
-        if (w.wp_object_manager_new_iterator(self.manager)) |iterator| {
-            defer w.wp_iterator_unref(iterator);
-            var value = std.mem.zeroes(c.GValue);
-            if (w.wp_iterator_next(iterator, &value) != 0) {
-                defer c.g_value_unset(&value);
-                self.metadata = @ptrCast(c.g_object_ref(w.g_value_get_object(&value)));
-                _ = c.g_signal_connect_data(self.metadata, "changed", @ptrCast(&metadataChanged), self, null, 0);
-            }
+        if (target.* != null and replacement != null and std.mem.eql(u8, target.*.?, replacement.?)) {
+            a.free(replacement.?);
+            return false;
         }
-        self.callback(self.data);
-    }
-    fn metadataChanged(_: ?*w.WpMetadata, subject: u32, key: [*c]const u8, _: [*c]const u8, _: [*c]const u8, data: ?*anyopaque) callconv(.c) void {
-        if (subject != 0) return;
-        if (key != null and !std.mem.eql(u8, std.mem.span(key), "default.audio.sink") and !std.mem.eql(u8, std.mem.span(key), "default.audio.source")) return;
-        const self: *Defaults = @ptrCast(@alignCast(data.?));
-        self.callback(self.data);
-    }
-    pub fn id(self: *Defaults, nodes: ?*w.WpObjectManager, output: bool) u32 {
-        const invalid = std.math.maxInt(u32);
-        const metadata = self.metadata orelse return invalid;
-        var kind: [*c]const u8 = null;
-        const json = w.wp_metadata_find(metadata, 0, if (output) "default.audio.sink" else "default.audio.source", &kind);
-        if (json == null or kind == null or !std.mem.eql(u8, std.mem.span(kind), "Spa:String:JSON")) return invalid;
-        const device = decode(std.mem.span(json)) catch return invalid;
-        defer device.deinit();
-        const iterator = w.wp_object_manager_new_iterator(nodes) orelse return invalid;
-        defer w.wp_iterator_unref(iterator);
-        var value = std.mem.zeroes(c.GValue);
-        while (w.wp_iterator_next(iterator, &value) != 0) {
-            defer c.g_value_unset(&value);
-            const object: *w.WpPipewireObject = @ptrCast(w.g_value_get_object(&value) orelse continue);
-            const name = w.wp_pipewire_object_get_property(object, "node.name");
-            const class = w.wp_pipewire_object_get_property(object, "media.class");
-            if (name != null and class != null and std.mem.eql(u8, std.mem.span(name), device.value.name) and std.mem.eql(u8, std.mem.span(class), if (output) "Audio/Sink" else "Audio/Source")) return w.wp_proxy_get_bound_id(@ptrCast(object));
-        }
-        return invalid;
-    }
-    pub fn set(self: *Defaults, output: bool, name: []const u8) bool {
-        const metadata = self.metadata orelse return false;
-        const json = encode(name) catch return false;
-        defer a.free(json);
-        w.wp_metadata_set(metadata, 0, if (output) "default.configured.audio.sink" else "default.configured.audio.source", "Spa:String:JSON", json.ptr);
-        return true;
+        const changed = target.* != null or replacement != null;
+        if (target.*) |old| a.free(old);
+        target.* = replacement;
+        return changed;
     }
 };
 
@@ -107,4 +64,18 @@ test "default device metadata handles escaping, unknown fields and invalid names
     try std.testing.expectError(error.MissingField, decode("{}"));
     try std.testing.expectError(error.UnexpectedToken, decode("{\"name\":42}"));
     try std.testing.expectError(error.InvalidDefaultDevice, decode(&@as([65537]u8, @splat(' '))));
+}
+
+test "metadata updates replace and clear only the selected default" {
+    var defaults: Defaults = .{};
+    defer defaults.deinit();
+    try std.testing.expect(defaults.update(0, "default.audio.sink", "Spa:String:JSON", "{\"name\":\"speakers\"}"));
+    try std.testing.expect(defaults.update(0, "default.audio.source", "Spa:String:JSON", "{\"name\":\"mic\"}"));
+    try std.testing.expect(!defaults.update(1, null, null, null));
+    try std.testing.expect(!defaults.update(0, "default.audio.sink", "Spa:String:JSON", "{\"name\":\"speakers\"}"));
+    try std.testing.expect(defaults.update(0, "default.audio.sink", "wrong", "{}"));
+    try std.testing.expect(defaults.name(true) == null);
+    try std.testing.expectEqualStrings("mic", defaults.name(false).?);
+    try std.testing.expect(defaults.update(0, null, null, null));
+    try std.testing.expect(defaults.name(false) == null);
 }

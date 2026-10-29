@@ -1,39 +1,23 @@
 //! Audio control through cached PipeWire Props and device Route parameters.
 const std = @import("std");
 const c = @import("gtk");
-const w = @import("audio-api");
 const p = @import("pipewire");
 const Pod = @import("desktop-audio-pod.zig");
-fn view(pod: *w.WpSpaPod) ?Pod.View {
-    const raw: *const p.spa_pod = @ptrCast(@alignCast(w.wp_spa_pod_get_spa_pod(pod) orelse return null));
-    if (raw.size > 1024 * 1024 - 8) return null;
-    const bytes: [*]const u8 = @ptrCast(raw);
-    return Pod.View.init(bytes[0 .. @sizeOf(p.spa_pod) + raw.size]) catch null;
-}
-
-fn find(manager: ?*w.WpObjectManager, id: u32) ?*w.WpPipewireObject {
-    const iterator = w.wp_object_manager_new_iterator(manager) orelse return null;
-    defer w.wp_iterator_unref(iterator);
-    var value = std.mem.zeroes(c.GValue);
-    while (w.wp_iterator_next(iterator, &value) != 0) {
-        defer c.g_value_unset(&value);
-        const object: *w.WpPipewireObject = @ptrCast(w.g_value_get_object(&value) orelse continue);
-        if (w.wp_proxy_get_bound_id(@ptrCast(object)) == id) return @ptrCast(c.g_object_ref(object));
-    }
-    return null;
-}
+const Registry = @import("desktop-audio-registry.zig").Registry;
+const Object = @import("desktop-audio-registry.zig").Object;
+const Parameter = struct {
+    props: [512]u8 align(8) = undefined,
+    route: [768]u8 align(8) = undefined,
+};
 
 pub const Control = struct {
-    object: *w.WpPipewireObject,
+    object: *Object,
     route: ?struct { index: i32, device: i32 } = null,
     channels: [64]f32 = @splat(0),
     count: u32 = 0,
     scalar: f32 = 1,
     muted: bool = false,
 
-    pub fn deinit(self: *Control) void {
-        c.g_object_unref(self.object);
-    }
     fn fill(self: *Control, props: Pod.View) bool {
         const object = props.object(p.SPA_TYPE_OBJECT_Props) catch return false;
         const mute = object.property(p.SPA_PROP_mute) orelse return false;
@@ -74,9 +58,8 @@ pub const Control = struct {
         }
         return result;
     }
-    fn parameter(self: *const Control, percent_value: ?f64, mute: ?bool) ?*w.WpSpaPod {
-        var props_bytes: [512]u8 align(8) = undefined;
-        var props = Pod.Builder.init(&props_bytes, p.SPA_TYPE_OBJECT_Props, p.SPA_PARAM_Props) catch return null;
+    fn parameter(self: *const Control, buffer: *Parameter, percent_value: ?f64, mute: ?bool) ?Pod.View {
+        var props = Pod.Builder.init(&buffer.props, p.SPA_TYPE_OBJECT_Props, p.SPA_PARAM_Props) catch return null;
         if (percent_value) |value| {
             if (!std.math.isFinite(value) or self.count > self.channels.len) return null;
             if (self.count > 0) {
@@ -89,82 +72,50 @@ pub const Control = struct {
             }
         }
         if (mute) |value| props.boolean(p.SPA_PROP_mute, value) catch return null;
-        var route_bytes: [768]u8 align(8) = undefined;
         var raw = props.view();
         if (self.route) |route| {
-            var builder = Pod.Builder.init(&route_bytes, p.SPA_TYPE_OBJECT_ParamRoute, p.SPA_PARAM_Route) catch return null;
+            var builder = Pod.Builder.init(&buffer.route, p.SPA_TYPE_OBJECT_ParamRoute, p.SPA_PARAM_Route) catch return null;
             builder.integer(p.SPA_PARAM_ROUTE_index, route.index) catch return null;
             builder.integer(p.SPA_PARAM_ROUTE_device, route.device) catch return null;
             builder.object(p.SPA_PARAM_ROUTE_props, raw) catch return null;
             builder.boolean(p.SPA_PARAM_ROUTE_save, true) catch return null;
             raw = builder.view();
         }
-        const wrapped = w.wp_spa_pod_new_wrap_const(@ptrCast(@alignCast(raw.bytes.ptr))) orelse return null;
-        defer w.wp_spa_pod_unref(wrapped);
-        // set_param consumes its wrapper. Copy before the stack buffers expire.
-        return w.wp_spa_pod_copy(wrapped);
+        return raw;
     }
     pub fn write(self: *Control, percent_value: ?f64, mute: ?bool) bool {
-        const param = self.parameter(percent_value, mute) orelse return false;
-        // set_param takes ownership of the pod, including on failure.
-        return w.wp_pipewire_object_set_param(self.object, if (self.route != null) "Route" else "Props", 0, param) != 0;
+        var buffer: Parameter = .{};
+        return self.object.set(self.parameter(&buffer, percent_value, mute) orelse return false);
     }
 };
 
-pub fn read(manager: ?*w.WpObjectManager, id: u32) ?Control {
-    const node = find(manager, id) orelse return null;
-    defer c.g_object_unref(node);
-    const device_id = w.wp_pipewire_object_get_property(node, "device.id");
-    const profile = w.wp_pipewire_object_get_property(node, "card.profile.device");
+pub fn read(registry: *Registry, id: u32) ?Control {
+    const node = registry.find(id) orelse return null;
+    if (node.kind != .node) return null;
+    const device_id = node.property("device.id");
+    const profile = node.property("card.profile.device");
     if (device_id != null and profile != null) route: {
         const device_number = std.fmt.parseInt(u32, std.mem.span(device_id), 10) catch break :route;
         const profile_number = std.fmt.parseInt(i32, std.mem.span(profile), 10) catch break :route;
-        const device = find(manager, device_number) orelse break :route;
-        defer c.g_object_unref(device);
-        const iterator = w.wp_pipewire_object_enum_params_sync(device, "Route", null) orelse break :route;
-        defer w.wp_iterator_unref(iterator);
-        var value = std.mem.zeroes(c.GValue);
-        while (w.wp_iterator_next(iterator, &value) != 0) {
-            defer c.g_value_unset(&value);
-            const pod: *w.WpSpaPod = @ptrCast(w.g_value_get_boxed(&value) orelse continue);
-            const raw = view(pod) orelse continue;
+        const device = registry.find(device_number) orelse break :route;
+        if (device.kind != .device) break :route;
+        for (device.params.items) |param| {
+            const raw = Pod.View.init(param.bytes) catch continue;
             const route_object = raw.object(p.SPA_TYPE_OBJECT_ParamRoute) catch continue;
             const index = (route_object.property(p.SPA_PARAM_ROUTE_index) orelse continue).integer() catch continue;
             const route_device = (route_object.property(p.SPA_PARAM_ROUTE_device) orelse continue).integer() catch continue;
             const props = route_object.property(p.SPA_PARAM_ROUTE_props) orelse continue;
             if (index < 0 or route_device != profile_number) continue;
             var control = Control{ .object = device, .route = .{ .index = index, .device = route_device } };
-            if (control.fill(props)) {
-                _ = c.g_object_ref(device);
-                return control;
-            }
+            if (control.fill(props)) return control;
         }
     }
-    const iterator = w.wp_pipewire_object_enum_params_sync(node, "Props", null) orelse return null;
-    defer w.wp_iterator_unref(iterator);
-    var value = std.mem.zeroes(c.GValue);
-    while (w.wp_iterator_next(iterator, &value) != 0) {
-        defer c.g_value_unset(&value);
-        const pod: *w.WpSpaPod = @ptrCast(w.g_value_get_boxed(&value) orelse continue);
+    for (node.params.items) |param| {
         var control = Control{ .object = node };
-        if (control.fill(view(pod) orelse continue)) {
-            _ = c.g_object_ref(node);
-            return control;
-        }
+        if (control.fill(Pod.View.init(param.bytes) catch continue)) return control;
     }
     return null;
 }
-
-// Independent WirePlumber encoding/parsing is retained only as a test oracle.
-const end: ?*anyopaque = null;
-const Reference = struct {
-    const Builder = opaque {};
-    extern fn wp_spa_pod_get_object(?*w.WpSpaPod, [*c][*c]const u8, ...) c.gboolean;
-    extern fn wp_spa_pod_builder_new_object([*c]const u8, [*c]const u8) ?*Builder;
-    extern fn wp_spa_pod_builder_add(?*Builder, ...) void;
-    extern fn wp_spa_pod_builder_end(?*Builder) ?*w.WpSpaPod;
-    extern fn wp_spa_pod_builder_unref(?*Builder) void;
-};
 comptime {
     _ = Pod;
 }
@@ -185,58 +136,48 @@ test "cubic volume conversion preserves channel balance and silence" {
 
 test "Props and saved device Route parameters carry cubic channel levels and mute" {
     var control = Control{ .object = undefined, .channels = @splat(0.125), .count = 2 };
-    const props = control.parameter(25, true) orelse return error.NoProps;
-    defer w.wp_spa_pod_unref(props);
+    var buffer: Parameter = .{};
+    const props = control.parameter(&buffer, 25, true) orelse return error.NoProps;
     var decoded = Control{ .object = undefined };
-    try std.testing.expect(decoded.fill(view(props).?));
+    try std.testing.expect(decoded.fill(props));
     try std.testing.expect(decoded.muted);
     try std.testing.expectApproxEqAbs(@as(f64, 25), decoded.percent(), 0.0001);
     control.route = .{ .index = 7, .device = 3 };
-    const route = control.parameter(75, false) orelse return error.NoRoute;
-    defer w.wp_spa_pod_unref(route);
-    var index: i32 = -1;
-    var device: i32 = -1;
-    var save: c.gboolean = 0;
-    var nested: ?*w.WpSpaPod = null;
-    defer if (nested) |pod| w.wp_spa_pod_unref(pod);
-    try std.testing.expect(Reference.wp_spa_pod_get_object(route, null, @as([*:0]const u8, "index"), @as([*:0]const u8, "i"), &index, @as([*:0]const u8, "device"), @as([*:0]const u8, "i"), &device, @as([*:0]const u8, "save"), @as([*:0]const u8, "b"), &save, @as([*:0]const u8, "props"), @as([*:0]const u8, "P"), &nested, end) != 0);
-    try std.testing.expectEqual(@as(i32, 7), index);
-    try std.testing.expectEqual(@as(i32, 3), device);
-    try std.testing.expect(save != 0);
-    try std.testing.expect(decoded.fill(view(nested.?).?));
+    const route = control.parameter(&buffer, 75, false) orelse return error.NoRoute;
+    const object = try route.object(p.SPA_TYPE_OBJECT_ParamRoute);
+    try std.testing.expectEqual(@as(u32, p.SPA_PARAM_Route), object.id());
+    try std.testing.expectEqual(@as(i32, 7), try object.property(p.SPA_PARAM_ROUTE_index).?.integer());
+    try std.testing.expectEqual(@as(i32, 3), try object.property(p.SPA_PARAM_ROUTE_device).?.integer());
+    try std.testing.expect(try object.property(p.SPA_PARAM_ROUTE_save).?.boolean());
+    try std.testing.expect(decoded.fill(object.property(p.SPA_PARAM_ROUTE_props).?));
     try std.testing.expect(!decoded.muted);
     try std.testing.expectApproxEqAbs(@as(f64, 75), decoded.percent(), 0.0001);
 }
 
-test "unusable channel parameters are rejected" {
-    const builder = Reference.wp_spa_pod_builder_new_object("Spa:Pod:Object:Param:Props", "Props").?;
-    defer Reference.wp_spa_pod_builder_unref(builder);
-    const channels = [_]f32{std.math.nan(f32)};
-    Reference.wp_spa_pod_builder_add(builder, @as([*:0]const u8, "mute"), @as([*:0]const u8, "b"), @as(c_int, 0), @as([*:0]const u8, "channelVolumes"), @as([*:0]const u8, "a"), @as(c_int, @sizeOf(f32)), @as(c_uint, p.SPA_TYPE_Float), @as(c_uint, 1), &channels, end);
-    const props = Reference.wp_spa_pod_builder_end(builder).?;
-    defer w.wp_spa_pod_unref(props);
+test "native reader accepts scalar-only Props from C layouts" {
+    const Scalar = extern struct { property: p.spa_pod_prop, value: u32, padding: u32 = 0 };
+    const Props = extern struct { header: p.spa_pod, body: p.spa_pod_object_body, volume: Scalar, mute: Scalar };
+    var props: Props = .{
+        .header = .{ .size = @sizeOf(Props) - 8, .type = p.SPA_TYPE_Object },
+        .body = .{ .type = p.SPA_TYPE_OBJECT_Props, .id = p.SPA_PARAM_Props },
+        .volume = .{ .property = .{ .key = p.SPA_PROP_volume, .flags = 0, .value = .{ .size = 4, .type = p.SPA_TYPE_Float } }, .value = @bitCast(@as(f32, 0.125)) },
+        .mute = .{ .property = .{ .key = p.SPA_PROP_mute, .flags = 0, .value = .{ .size = 4, .type = p.SPA_TYPE_Bool } }, .value = 1 },
+    };
     var control = Control{ .object = undefined };
-    try std.testing.expect(!control.fill(view(props).?));
-}
-
-test "native reader accepts independent scalar-only Props and encoder preserves scalar control" {
-    const builder = Reference.wp_spa_pod_builder_new_object("Spa:Pod:Object:Param:Props", "Props").?;
-    defer Reference.wp_spa_pod_builder_unref(builder);
-    Reference.wp_spa_pod_builder_add(builder, @as([*:0]const u8, "volume"), @as([*:0]const u8, "f"), @as(f64, 0.125), @as([*:0]const u8, "mute"), @as([*:0]const u8, "b"), @as(c_int, 1), end);
-    const props = Reference.wp_spa_pod_builder_end(builder).?;
-    defer w.wp_spa_pod_unref(props);
-    var control = Control{ .object = undefined };
-    try std.testing.expect(control.fill(view(props).?));
+    try std.testing.expect(control.fill(try Pod.View.init(std.mem.asBytes(&props))));
     try std.testing.expectEqual(@as(u32, 0), control.count);
     try std.testing.expectApproxEqAbs(@as(f64, 50), control.percent(), 0.0001);
     try std.testing.expect(control.muted);
-    const written = control.parameter(75, false).?;
-    defer w.wp_spa_pod_unref(written);
-    var volume: f32 = 0;
-    var mute: c.gboolean = 1;
-    try std.testing.expect(Reference.wp_spa_pod_get_object(written, null, @as([*:0]const u8, "volume"), @as([*:0]const u8, "f"), &volume, @as([*:0]const u8, "mute"), @as([*:0]const u8, "b"), &mute, end) != 0);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.421875), volume, 0.000001);
-    try std.testing.expectEqual(@as(c.gboolean, 0), mute);
+    var buffer: Parameter = .{};
+    const written = control.parameter(&buffer, 75, false).?;
+    const raw: *const p.spa_pod_object = @ptrCast(@alignCast(written.bytes.ptr));
+    try std.testing.expectEqual(@as(u32, p.SPA_TYPE_OBJECT_Props), raw.body.type);
+    const field: *const Scalar = @ptrCast(@alignCast(written.bytes[@sizeOf(p.spa_pod_object)..].ptr));
+    try std.testing.expectEqual(@as(u32, p.SPA_PROP_volume), field.property.key);
+    try std.testing.expectEqual(@as(u32, p.SPA_TYPE_Float), field.property.value.type);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.421875), @as(f32, @bitCast(field.value)), 0.000001);
+    props.volume.value = @bitCast(std.math.nan(f32));
+    try std.testing.expect(!control.fill(try Pod.View.init(std.mem.asBytes(&props))));
 }
 
 test "native Props reader bounds arrays and leaves prior state intact on invalid input" {
@@ -259,5 +200,6 @@ test "native Props reader bounds arrays and leaves prior state intact on invalid
     try builder.integer(p.SPA_PROP_channelVolumes, 1);
     try std.testing.expect(!control.fill(builder.view()));
     control.count = 65;
-    try std.testing.expect(control.parameter(50, null) == null);
+    var buffer: Parameter = .{};
+    try std.testing.expect(control.parameter(&buffer, 50, null) == null);
 }

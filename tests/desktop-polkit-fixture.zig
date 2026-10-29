@@ -19,20 +19,23 @@ const Response = struct {
 };
 
 fn checkDialog() !void {
-    const action = "org.freedesktop.policykit.exec";
+    const action = "org.dotfiles.test<&>";
     const prompt = "Authentication is required to run the configuration tool: 東京";
-    const username = "kirillvr";
+    const username = "test<&>";
 
     var dialog = polkit.Dialog.create(action, prompt, username, null);
     defer dialog.destroy();
 
     try std.testing.expectEqualStrings(prompt, std.mem.span(c.gtk_label_get_text(cast(c.GtkLabel, dialog.prompt))));
+    try std.testing.expectEqualStrings("Action: " ++ action, std.mem.span(c.gtk_label_get_text(cast(c.GtkLabel, dialog.action_label.?))));
+    try std.testing.expectEqualStrings("Password for " ++ username ++ ":", std.mem.span(c.gtk_label_get_text(cast(c.GtkLabel, dialog.user_label.?))));
     assert(c.gtk_entry_get_visibility(cast(c.GtkEntry, dialog.entry)) == 0);
     assert(c.gtk_entry_get_input_purpose(cast(c.GtkEntry, dialog.entry)) == c.GTK_INPUT_PURPOSE_PASSWORD);
 
     // Test error presentation
-    dialog.setError("Authentication failure: password incorrect");
+    dialog.setError("Authentication failure: <&> password incorrect");
     assert(c.gtk_widget_get_visible(dialog.error_label) != 0);
+    try std.testing.expectEqualStrings("Authentication failure: <&> password incorrect", std.mem.span(c.gtk_label_get_text(cast(c.GtkLabel, dialog.error_label))));
 
     // Test password entry and clearing
     c.gtk_entry_set_text(cast(c.GtkEntry, dialog.entry), "secret-pass-123");

@@ -36,33 +36,7 @@ let
     '';
   };
 
-  wireplumber =
-    (pkgs.wireplumber.override {
-      inherit pipewire;
-      enableDocs = false;
-      enableGI = false;
-    }).overrideAttrs
-      {
-        pname = "desktop-wireplumber-client";
-        buildInputs = [
-          pkgs.glib
-          pipewire
-        ];
-        mesonFlags = [
-          "-Dauto_features=disabled"
-          "-Ddoc=disabled"
-          "-Dintrospection=disabled"
-          "-Dmodules=false"
-          "-Ddaemon=false"
-          "-Dtools=false"
-          "-Dtests=false"
-          "-Dsystemd-system-service=false"
-          "-Dsystemd-user-service=false"
-          "-Dsysconfdir=/etc"
-        ];
-      };
-
 in
 {
-  inherit pipewire wireplumber;
+  inherit pipewire;
 }

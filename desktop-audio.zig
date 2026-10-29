@@ -1,15 +1,11 @@
-//! Native, main-context WirePlumber audio control and event-driven node discovery.
+//! Direct PipeWire audio control and event-driven discovery on the main context.
 const std = @import("std");
 const c = @import("gtk");
-const w = @import("audio-api");
+const Registry = @import("desktop-audio-registry.zig").Registry;
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
-var initialized = false;
 fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
-}
-fn signal(object: anytype, name: [*:0]const u8, callback: anytype, data: anytype) void {
-    _ = c.g_signal_connect_data(object, name, @ptrCast(callback), data, null, 0);
 }
 pub const Class = enum { output, input, playback, recording };
 pub const State = struct { percent: f64, muted: bool = false };
@@ -44,13 +40,11 @@ fn classOf(text: []const u8) ?Class {
     return null;
 }
 const Mixer = @import("desktop-audio-mixer.zig");
-const Defaults = @import("desktop-audio-defaults.zig").Defaults;
 pub const Service = struct {
     callback: *const fn (?*anyopaque, *Service) void,
     data: ?*anyopaque,
-    core: ?*w.WpCore = null,
-    manager: ?*w.WpObjectManager = null,
-    defaults: Defaults,
+    registry: ?*Registry = null,
+    calls: std.ArrayList(*Call) = .empty,
     nodes: std.ArrayList(Node) = .empty,
     timer: c.guint = 0,
     idle: c.guint = 0,
@@ -61,11 +55,7 @@ pub const Service = struct {
 
     pub fn create(callback: *const fn (?*anyopaque, *Service) void, data: ?*anyopaque) !*Service {
         const self = try a.create(Service);
-        if (!initialized) {
-            w.wp_init(w.WP_INIT_ALL);
-            initialized = true;
-        }
-        self.* = .{ .callback = callback, .data = data, .defaults = .{ .callback = &defaultsChanged, .data = self } };
+        self.* = .{ .callback = callback, .data = data };
         self.connect();
         self.timer = c.g_timeout_add_seconds(5, &maintain, self);
         return self;
@@ -80,6 +70,7 @@ pub const Service = struct {
         self.refs -= 1;
         if (self.refs == 0) {
             self.nodes.deinit(a);
+            self.calls.deinit(a);
             a.destroy(self);
         }
     }
@@ -88,84 +79,20 @@ pub const Service = struct {
         self.ready = false;
         if (self.idle != 0) _ = c.g_source_remove(self.idle);
         self.idle = 0;
-        if (self.manager) |manager| {
-            if (w.wp_object_manager_new_iterator(manager)) |iterator| {
-                defer w.wp_iterator_unref(iterator);
-                var value = std.mem.zeroes(c.GValue);
-                while (w.wp_iterator_next(iterator, &value) != 0) {
-                    _ = c.g_signal_handlers_disconnect_matched(w.g_value_get_object(&value), c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-                    c.g_value_unset(&value);
-                }
-            }
-        }
-        for ([_]c.gpointer{ self.manager, self.core }) |object| if (object) |value| {
-            _ = c.g_signal_handlers_disconnect_matched(value, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-        };
-        self.defaults.disconnect();
-        if (self.manager) |manager| c.g_object_unref(manager);
-        if (self.core) |core| {
-            w.wp_core_disconnect(core);
-            c.g_object_unref(core);
-        }
-        self.manager = null;
-        self.core = null;
+        if (self.registry) |registry| registry.destroy();
+        self.registry = null;
         self.nodes.clearRetainingCapacity();
+        for (self.calls.items) |call| call.wake();
     }
     fn maintain(data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Service, data);
-        if (self.core == null) self.connect();
+        if (self.registry == null) self.connect();
         return 1;
     }
     fn connect(self: *Service) void {
-        self.core = w.wp_core_new(null, null, null) orelse return;
-        self.manager = w.wp_object_manager_new() orelse {
-            self.reset();
-            return;
-        };
-        w.wp_object_manager_add_interest(self.manager, w.wp_node_get_type(), @as(?*anyopaque, null));
-        w.wp_object_manager_request_object_features(self.manager, w.wp_node_get_type(), w.WP_PIPEWIRE_OBJECT_FEATURES_MINIMAL | w.WP_PIPEWIRE_OBJECT_FEATURE_PARAM_PROPS);
-        w.wp_object_manager_add_interest(self.manager, w.wp_device_get_type(), @as(?*anyopaque, null));
-        w.wp_object_manager_request_object_features(self.manager, w.wp_device_get_type(), w.WP_PIPEWIRE_OBJECT_FEATURES_MINIMAL | w.WP_PIPEWIRE_OBJECT_FEATURE_PARAM_ROUTE);
-        signal(self.core, "disconnected", &disconnected, self);
-        signal(self.manager, "object-added", &objectAdded, self);
-        signal(self.manager, "object-removed", &objectRemoved, self);
-        signal(self.manager, "installed", &installed, self);
-        signal(self.manager, "objects-changed", &changed, self);
-        if (w.wp_core_connect(self.core) == 0) {
-            self.reset();
-            self.notify();
-            return;
-        }
-        if (!self.defaults.connect(self.core.?)) {
-            self.reset();
-            self.notify();
-            return;
-        }
-        w.wp_core_install_object_manager(self.core, self.manager);
+        self.registry = Registry.create(&changed, self) catch null;
     }
-    fn objectAdded(_: ?*w.WpObjectManager, object: *w.WpPipewireObject, data: ?*anyopaque) callconv(.c) void {
-        signal(object, "params-changed", &paramsChanged, data);
-    }
-    fn objectRemoved(_: ?*w.WpObjectManager, object: *w.WpPipewireObject, data: ?*anyopaque) callconv(.c) void {
-        _ = c.g_signal_handlers_disconnect_matched(object, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, data);
-    }
-    fn paramsChanged(_: *w.WpPipewireObject, name: [*:0]const u8, data: ?*anyopaque) callconv(.c) void {
-        if (std.mem.eql(u8, std.mem.span(name), "Props") or std.mem.eql(u8, std.mem.span(name), "Route")) cast(Service, data).schedule();
-    }
-    fn disconnected(_: ?*w.WpCore, data: ?*anyopaque) callconv(.c) void {
-        const self = cast(Service, data);
-        self.reset();
-        self.notify();
-    }
-    fn installed(_: ?*w.WpObjectManager, data: ?*anyopaque) callconv(.c) void {
-        const self = cast(Service, data);
-        self.ready = true;
-        self.schedule();
-    }
-    fn changed(_: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
-        cast(Service, data).schedule();
-    }
-    fn defaultsChanged(data: ?*anyopaque) void {
+    fn changed(data: ?*anyopaque) void {
         cast(Service, data).schedule();
     }
     fn schedule(self: *Service) void {
@@ -174,6 +101,14 @@ pub const Service = struct {
     fn updated(data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Service, data);
         self.idle = 0;
+        if (self.registry) |registry| {
+            if (registry.failed) {
+                self.reset();
+                self.notify();
+                return 0;
+            }
+            self.ready = registry.ready;
+        }
         self.rebuild();
         self.notify();
         return 0;
@@ -182,27 +117,31 @@ pub const Service = struct {
         if (!self.stopped) self.callback(self.data, self);
     }
     fn defaultId(self: *Service, class: [*:0]const u8) u32 {
-        return self.defaults.id(self.manager, std.mem.eql(u8, std.mem.span(class), "Audio/Sink"));
+        const registry = self.registry orelse return std.math.maxInt(u32);
+        const name = registry.defaultName(std.mem.eql(u8, std.mem.span(class), "Audio/Sink")) orelse return std.math.maxInt(u32);
+        for (registry.objects.items) |object| {
+            if (object.kind != .node) continue;
+            const node_name = object.property("node.name");
+            const media = object.property("media.class");
+            if (node_name != null and media != null and std.mem.eql(u8, std.mem.span(node_name), name) and std.mem.eql(u8, std.mem.span(media), std.mem.span(class))) return object.id;
+        }
+        return std.math.maxInt(u32);
     }
     fn rebuild(self: *Service) void {
         self.nodes.clearRetainingCapacity();
         if (!self.ready) return;
-        const iterator = w.wp_object_manager_new_iterator(self.manager) orelse return;
-        defer w.wp_iterator_unref(iterator);
+        const registry = self.registry orelse return;
         const output = self.defaultId("Audio/Sink");
         const input = self.defaultId("Audio/Source");
-        var value = std.mem.zeroes(c.GValue);
-        while (w.wp_iterator_next(iterator, &value) != 0) {
-            defer c.g_value_unset(&value);
-            const object: *w.WpPipewireObject = @ptrCast(w.g_value_get_object(&value) orelse continue);
-            const media = w.wp_pipewire_object_get_property(object, "media.class");
+        for (registry.objects.items) |object| {
+            if (object.kind != .node) continue;
+            const media = object.property("media.class");
             if (media == null) continue;
             const class = classOf(std.mem.span(media)) orelse continue;
-            const id = w.wp_proxy_get_bound_id(@ptrCast(object));
-            var entry = Node{ .id = id, .class = class, .state = self.volume(id), .is_default = id == output or id == input };
-            copy(&entry.name, w.wp_pipewire_object_get_property(object, "node.name"));
+            var entry = Node{ .id = object.id, .class = class, .state = self.volume(object.id), .is_default = object.id == output or object.id == input };
+            copy(&entry.name, object.property("node.name"));
             for ([_][*:0]const u8{ "node.description", "application.name", "node.nick", "node.name" }) |key| {
-                const title = w.wp_pipewire_object_get_property(object, key);
+                const title = object.property(key);
                 if (title != null) {
                     copy(&entry.title, title);
                     break;
@@ -222,8 +161,7 @@ pub const Service = struct {
         return null;
     }
     fn volume(self: *Service, id: u32) ?State {
-        var control = Mixer.read(self.manager, id) orelse return null;
-        defer control.deinit();
+        var control = Mixer.read(self.registry orelse return null, id) orelse return null;
         return .{ .percent = control.percent(), .muted = control.muted };
     }
     pub fn state(self: *Service, wanted: Target) ?State {
@@ -249,7 +187,7 @@ pub const Service = struct {
                     return;
                 },
             }
-            ok = @intFromBool(self.defaults.set(item.class == .output, std.mem.sliceTo(&item.name, 0)));
+            ok = @intFromBool(self.registry.?.setDefault(item.class == .output, std.mem.sliceTo(&item.name, 0)));
         } else {
             const current = self.state(wanted) orelse {
                 callback(data, .{ .failure = error.AudioUnavailable });
@@ -270,103 +208,88 @@ pub const Service = struct {
                 callback(data, .{ .failure = error.InvalidVolume });
                 return;
             }
-            var control = Mixer.read(self.manager, item.id) orelse {
+            var control = Mixer.read(self.registry.?, item.id) orelse {
                 callback(data, .{ .failure = error.AudioUnavailable });
                 return;
             };
-            defer control.deinit();
             ok = @intFromBool(control.write(if (change == .volume or change == .step) expected.?.percent else null, if (change == .volume) null else expected.?.muted));
         }
         if (ok == 0) {
             callback(data, .{ .failure = error.AudioWriteRejected });
             return;
         }
+        const ticket = self.registry.?.sync() orelse {
+            callback(data, .{ .failure = error.AudioWriteRejected });
+            return;
+        };
         const call = a.create(Call) catch @panic("out of memory");
-        call.* = .{ .service = self, .epoch = self.epoch, .target = .{ .id = item.id }, .expected = expected, .default_class = if (change == .default) item.class else null, .callback = callback, .data = data, .cancel = c.g_cancellable_new().?, .parent = cast(c.GCancellable, c.g_object_ref(cancel)) };
+        call.* = .{ .service = self, .epoch = self.epoch, .target = .{ .id = item.id }, .ticket = ticket, .expected = expected, .default_class = if (change == .default) item.class else null, .callback = callback, .data = data, .parent = cast(c.GCancellable, c.g_object_ref(cancel)), .deadline = c.g_get_monotonic_time() + 4_000_000 };
         self.refs += 1;
-        call.parent_signal = c.g_signal_connect_data(cancel, "cancelled", @ptrCast(&Call.cancelled), call, null, 0);
-        call.timer = c.g_timeout_add(4000, &Call.timedOut, call);
-        _ = w.wp_core_sync(self.core, call.cancel, &Call.synced, call);
+        self.calls.append(a, call) catch @panic("out of memory");
+        call.wake();
     }
 };
 const Call = struct {
     service: *Service,
     epoch: u64,
     target: Target,
+    ticket: u64,
     expected: ?State,
     default_class: ?Class,
     callback: Completion,
     data: ?*anyopaque,
-    cancel: *c.GCancellable,
     parent: *c.GCancellable,
-    parent_signal: c.gulong = 0,
-    timer: c.guint = 0,
-    timed_out: bool = false,
-    fn cancelled(_: ?*c.GCancellable, data: ?*anyopaque) callconv(.c) void {
-        const self = cast(Call, data);
-        c.g_cancellable_cancel(self.cancel);
-        if (!self.service.stopped and self.epoch == self.service.epoch) {
-            self.service.reset();
-            self.service.notify();
-        }
+    source: c.guint = 0,
+    deadline: i64,
+    fn wake(self: *Call) void {
+        if (self.source != 0) _ = c.g_source_remove(self.source);
+        self.source = c.g_idle_add(&poll, self);
     }
-    fn timedOut(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Call, data);
-        self.timer = 0;
-        self.timed_out = true;
-        c.g_cancellable_cancel(self.cancel);
-        // WirePlumber completes sync tasks only on a reply or disconnect.
-        // Drop this client connection to release a stalled request immediately.
-        if (!self.service.stopped and self.epoch == self.service.epoch) {
-            self.service.reset();
-            self.service.notify();
-        }
-        return 0;
+    fn again(self: *Call) void {
+        self.source = c.g_timeout_add(5, &poll, self);
     }
-    fn failure(self: *Call) ?anyerror {
-        if (self.timed_out) return error.AudioTimedOut;
-        if (c.g_cancellable_is_cancelled(self.parent) != 0) return error.Cancelled;
-        if (self.service.stopped or self.epoch != self.service.epoch) return error.AudioDisconnected;
-        return null;
-    }
-    fn synced(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+    fn poll(data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Call, data);
-        const ok = w.wp_core_sync_finish(@ptrCast(source), result, null) != 0;
-        if (self.failure()) |err| {
-            self.finish(.{ .failure = err });
-            return;
+        self.source = 0;
+        if (c.g_cancellable_is_cancelled(self.parent) != 0) {
+            self.finish(.{ .failure = error.Cancelled });
+            return 0;
         }
-        if (!ok) {
+        if (self.service.stopped or self.epoch != self.service.epoch or self.service.registry == null or self.service.registry.?.failed) {
             self.finish(.{ .failure = error.AudioDisconnected });
-            return;
+            return 0;
+        }
+        if (c.g_get_monotonic_time() >= self.deadline) {
+            self.finish(.{ .failure = error.AudioTimedOut });
+            return 0;
+        }
+        const registry = self.service.registry.?;
+        if (registry.find(self.target.id) == null) {
+            self.finish(.{ .failure = error.AudioUnavailable });
+            return 0;
+        }
+        if (registry.completed < self.ticket) {
+            self.again();
+            return 0;
         }
         const actual = self.service.state(self.target) orelse {
-            self.finish(.{ .failure = error.AudioUnavailable });
-            return;
+            self.again();
+            return 0;
         };
         const confirmed = if (self.expected) |expected|
             @abs(actual.percent - expected.percent) < 0.01 and actual.muted == expected.muted
         else
             self.service.defaultId(if (self.default_class.? == .output) "Audio/Sink" else "Audio/Source") == self.target.id;
-        if (confirmed) {
-            self.finish(.{ .value = actual });
-            return;
-        }
-        // A core sync can precede the asynchronous parameter cache refresh. Wait
-        // for that refresh before allowing the next relative volume step.
-        _ = c.g_timeout_add(5, &retry, self);
-    }
-    fn retry(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Call, data);
-        if (self.failure()) |err| self.finish(.{ .failure = err }) else _ = w.wp_core_sync(self.service.core, self.cancel, &synced, self);
+        if (confirmed) self.finish(.{ .value = actual }) else self.again();
         return 0;
     }
     fn finish(self: *Call, answer: Result) void {
         const service = self.service;
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
-        c.g_signal_handler_disconnect(self.parent, self.parent_signal);
+        for (service.calls.items, 0..) |call, i| if (call == self) {
+            _ = service.calls.swapRemove(i);
+            break;
+        };
         self.callback(self.data, answer);
-        c.g_object_unref(self.cancel);
         c.g_object_unref(self.parent);
         a.destroy(self);
         service.unref();
@@ -382,8 +305,9 @@ pub const Feedback = @import("desktop-feedback.zig").Feedback;
 comptime {
     // Include parser tests even when only control APIs are used.
     _ = Feedback;
-    _ = Defaults;
+    _ = @import("desktop-audio-defaults.zig");
     _ = Mixer;
+    _ = @import("desktop-audio-registry.zig");
 }
 
 test "audio target names and media classes are explicit" {

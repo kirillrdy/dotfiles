@@ -5,7 +5,6 @@ let
     inherit pkgs;
     dbus = dbusLibraries;
   };
-  polkitLibraries = import ./desktop-polkit-libs.nix { inherit pkgs; };
   audioLibraries = import ./desktop-audio-libs.nix {
     inherit pkgs;
     dbus = dbusLibraries;
@@ -59,8 +58,6 @@ pkgs.stdenv.mkDerivation {
     pkgs.wayland
     pkgs.pam
     pkgs.libxkbcommon
-    polkitLibraries
-    audioLibraries.wireplumber
     audioLibraries.pipewire
   ];
   # Compile the former launcher's environment setup into the Zig executable.

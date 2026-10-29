@@ -176,6 +176,7 @@ pub const struct__GSList = extern struct {
 };
 
 pub const G_IO_IN: c_int = 1;
+pub const G_IO_OUT: c_int = 4;
 
 pub const G_IO_ERR: c_int = 8;
 
@@ -2261,88 +2262,6 @@ pub fn wl_output_destroy(arg_wl_output_1: ?*struct_wl_output) callconv(.c) void 
 
 pub extern fn gdk_wayland_window_set_application_id(window: ?*GdkWindow, application_id: [*c]const u8) void;
 
-pub const struct__PolkitAuthority = opaque {};
-
-pub const PolkitAuthority = struct__PolkitAuthority;
-
-pub const struct__PolkitSubject = opaque {};
-
-pub const PolkitSubject = struct__PolkitSubject;
-
-pub const struct__PolkitIdentity = opaque {};
-
-pub const PolkitIdentity = struct__PolkitIdentity;
-
-pub const struct__PolkitUnixUser = opaque {};
-
-pub const PolkitUnixUser = struct__PolkitUnixUser;
-
-pub const struct__PolkitDetails = opaque {};
-
-pub const PolkitDetails = struct__PolkitDetails;
-
-pub extern fn polkit_error_quark() GQuark;
-
-pub const POLKIT_ERROR_FAILED: c_int = 0;
-
-pub const POLKIT_ERROR_CANCELLED: c_int = 1;
-
-pub extern fn polkit_unix_user_get_type() GType;
-
-pub extern fn polkit_unix_user_get_uid(user: ?*PolkitUnixUser) gint;
-
-pub extern fn polkit_unix_process_new_for_owner(pid: gint, start_time: guint64, uid: gint) ?*PolkitSubject;
-
-pub extern fn polkit_unix_session_new(session_id: [*c]const gchar) ?*PolkitSubject;
-
-pub extern fn polkit_unix_session_new_for_process_sync(pid: gint, cancellable: [*c]GCancellable, @"error": [*c][*c]GError) ?*PolkitSubject;
-
-pub extern fn polkit_authority_get_sync(cancellable: [*c]GCancellable, @"error": [*c][*c]GError) ?*PolkitAuthority;
-
-pub const struct__PolkitAgentListener = extern struct {
-    parent_instance: GObject = @import("std").mem.zeroes(GObject),
-};
-
-pub const PolkitAgentListener = struct__PolkitAgentListener;
-
-pub const struct__PolkitAgentSession = opaque {};
-
-pub const PolkitAgentSession = struct__PolkitAgentSession;
-
-pub const struct__PolkitAgentListenerClass = extern struct {
-    parent_class: GObjectClass = @import("std").mem.zeroes(GObjectClass),
-    initiate_authentication: ?*const fn (listener: [*c]PolkitAgentListener, action_id: [*c]const gchar, message: [*c]const gchar, icon_name: [*c]const gchar, details: ?*PolkitDetails, cookie: [*c]const gchar, identities: [*c]GList, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) callconv(.c) void = null,
-    initiate_authentication_finish: ?*const fn (listener: [*c]PolkitAgentListener, res: ?*GAsyncResult, @"error": [*c][*c]GError) callconv(.c) gboolean = null,
-    _polkit_reserved0: ?*const fn () callconv(.c) void = null,
-    _polkit_reserved1: ?*const fn () callconv(.c) void = null,
-    _polkit_reserved2: ?*const fn () callconv(.c) void = null,
-    _polkit_reserved3: ?*const fn () callconv(.c) void = null,
-    _polkit_reserved4: ?*const fn () callconv(.c) void = null,
-    _polkit_reserved5: ?*const fn () callconv(.c) void = null,
-    _polkit_reserved6: ?*const fn () callconv(.c) void = null,
-    _polkit_reserved7: ?*const fn () callconv(.c) void = null,
-};
-
-pub const PolkitAgentListenerClass = struct__PolkitAgentListenerClass;
-
-pub extern fn polkit_agent_listener_get_type() GType;
-
-pub const POLKIT_AGENT_REGISTER_FLAGS_NONE: c_int = 0;
-
-pub const PolkitAgentRegisterFlags = c_uint;
-
-pub extern fn polkit_agent_listener_register(listener: [*c]PolkitAgentListener, flags: PolkitAgentRegisterFlags, subject: ?*PolkitSubject, object_path: [*c]const gchar, cancellable: [*c]GCancellable, @"error": [*c][*c]GError) gpointer;
-
-pub extern fn polkit_agent_listener_unregister(registration_handle: gpointer) void;
-
-pub extern fn polkit_agent_session_new(identity: ?*PolkitIdentity, cookie: [*c]const gchar) ?*PolkitAgentSession;
-
-pub extern fn polkit_agent_session_initiate(session: ?*PolkitAgentSession) void;
-
-pub extern fn polkit_agent_session_response(session: ?*PolkitAgentSession, response: [*c]const gchar) void;
-
-pub extern fn polkit_agent_session_cancel(session: ?*PolkitAgentSession) void;
-
 pub const SIGINT = @as(c_int, 2);
 
 pub const SIGTERM = @as(c_int, 15);
@@ -2577,6 +2496,7 @@ pub extern fn g_idle_add(GSourceFunc, gpointer) guint;
 
 pub extern fn g_get_user_name() [*c]const gchar;
 pub extern fn g_get_real_name() [*c]const gchar;
+pub extern fn g_strcompress([*c]const gchar) [*c]gchar;
 pub extern fn g_app_launch_context_new() ?*GAppLaunchContext;
 pub extern fn g_app_launch_context_setenv(?*GAppLaunchContext, [*c]const gchar, [*c]const gchar) void;
 pub extern fn g_app_launch_context_get_type() GType;
