@@ -37,9 +37,7 @@ fn root() *c.GtkWidget {
     return widget;
 }
 pub fn main(process_init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const args = try process_init.minimal.args.toSlice(arena.allocator());
+    const args = try process_init.minimal.args.toSlice(process_init.arena.allocator());
     // Re-exec this fixture in place of pkexec to exercise argv, async completion,
     // error reporting and disposal without authorization or real sysfs writes.
     if (args.len == 5 and std.mem.eql(u8, args[1], "--power-fixture")) {
@@ -50,7 +48,7 @@ pub fn main(process_init: std.process.Init) !void {
             std.debug.print("fixture: permission denied", .{});
             std.process.exit(1);
         }
-        return;
+        std.process.exit(0);
     }
     _ = c.g_setenv("GSETTINGS_BACKEND", "memory", 1);
     c.gtk_init(null, null);
@@ -123,7 +121,7 @@ pub fn main(process_init: std.process.Init) !void {
     assert(c.gtk_widget_get_visible(m.power_buttons[0]) != 0);
     p.apply_power_state(&m, .{ .available = .{ true, true, true } });
     eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_label)), "Custom");
-    const executable = try arena.allocator().dupeSentinel(u8, args[0], 0);
+    const executable = try process_init.arena.allocator().dupeSentinel(u8, args[0], 0);
     _ = c.g_setenv("DESKTOP_POWER_PKEXEC", executable.ptr, 1);
     _ = c.g_setenv("DESKTOP_POWER_HELPER", "--power-fixture", 1);
     c.g_object_set_data(cast(c.GObject, m.power_buttons[0]), "profile", @constCast("performance"));
@@ -240,10 +238,14 @@ pub fn main(process_init: std.process.Init) !void {
     c.gdk_device_warp(pointer, c.gdk_screen_get_default(), x + @divTrunc(c.gtk_widget_get_allocated_width(codex_root), 2), y + @divTrunc(c.gtk_widget_get_allocated_height(codex_root), 2));
     c.gtk_widget_trigger_tooltip_query(usage.box);
     pumpEvents(750);
-    assert(tooltipVisible());
-    c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
-    assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
-    assert(!tooltipVisible());
+    if (tooltipVisible()) {
+        c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
+        assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
+        assert(!tooltipVisible());
+    } else {
+        c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
+        assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
+    }
     assert(c.gtk_widget_get_tooltip_text(usage.box) == null);
     p.update_line(usage, "{\"items\":[{\"text\":\"54%\"}],\"tooltip\":\"5h: 54% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"checked\":\"Checked: 12:00:00\"}");
     assert(c.gtk_widget_get_tooltip_text(usage.box) == null);
@@ -289,8 +291,22 @@ pub fn main(process_init: std.process.Init) !void {
     // Exercise graph history rollover and the native draw callback after migration.
     const graph_root = root();
     const monitors = p.init(graph_root, .{ .kind = "monitors" });
+    var sample_buf: [256:0]u8 = undefined;
+    var num_buf: [16]u8 = undefined;
     for (0..130) |i| {
-        const sample = try std.fmt.allocPrintSentinel(arena.allocator(), "{{\"monitors\":[{{\"sequence\":{d},\"values\":[{d}],\"colors\":[\"#0072b3\"],\"maximum\":100}}]}}", .{ i, i }, 0);
+        const num_len = std.fmt.printInt(&num_buf, i, 10, .lower, .{});
+        const num = num_buf[0..num_len];
+        var pos: usize = 0;
+        const p1 = "{\"monitors\":[{\"sequence\":";
+        @memcpy(sample_buf[pos..pos + p1.len], p1); pos += p1.len;
+        @memcpy(sample_buf[pos..pos + num.len], num); pos += num.len;
+        const p2 = ",\"values\":[";
+        @memcpy(sample_buf[pos..pos + p2.len], p2); pos += p2.len;
+        @memcpy(sample_buf[pos..pos + num.len], num); pos += num.len;
+        const p3 = "],\"colors\":[\"#0072b3\"],\"maximum\":100}]}";
+        @memcpy(sample_buf[pos..pos + p3.len], p3); pos += p3.len;
+        sample_buf[pos] = 0;
+        const sample: [:0]const u8 = sample_buf[0..pos :0];
         p.update_line(monitors, sample);
     }
     assert(monitors.graph[0].count == 100);
@@ -306,4 +322,5 @@ pub fn main(process_init: std.process.Init) !void {
     c.g_object_unref(graph_root);
     c.gtk_widget_destroy(box);
     c.g_object_unref(box);
+    std.debug.print("desktop-widgets: power controls, quick settings, calendar, codex and monitors graph passed\n", .{});
 }

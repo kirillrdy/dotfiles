@@ -115,7 +115,7 @@
     ];
   };
   hardware.nvidia-container-toolkit.enable = enableNvidia;
-  # hardware.graphics.extraPackages = lib.optional (!enableNvidia) pkgs.intel-compute-runtime;
+  hardware.graphics.extraPackages = lib.optional (!enableNvidia) pkgs.intel-compute-runtime;
   environment.systemPackages =
     (import ./common.nix pkgs)
     ++ (with pkgs; [

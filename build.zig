@@ -234,7 +234,7 @@ pub fn build(b: *std.Build) void {
     osd.linkSystemLibrary("gtk-layer-shell-0", .{});
     osd.addImport("gtk", panel_gtk);
     const osd_tests = b.addTest(.{ .root_module = osd });
-    const overview_header = b.addWriteFiles().add("overview-bindings.h", "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n#include <gdk/gdkx.h>\n");
+    const overview_header = b.addWriteFiles().add("overview-bindings.h", "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n");
     const overview_c = b.addTranslateC(.{ .root_source_file = overview_header, .target = target, .optimize = optimize });
     for ([_][]const u8{ "gtk+-unix-print-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client" }) |name| overview_c.linkSystemLibrary(name, .{});
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";

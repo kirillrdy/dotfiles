@@ -333,7 +333,8 @@ pub const Controls = struct {
     fn dialogProfile(button: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Controls, ptr);
         if (self.dead) return;
-        const index = @intFromPtr(c.g_object_get_data(cast(c.GObject, button), "profile-index")) - 1;
+        const profile_ptr = c.g_object_get_data(cast(c.GObject, button), "profile-index") orelse return;
+        const index = @intFromPtr(profile_ptr) - 1;
         if (self.profile_buttons[index]) |source| c.gtk_button_clicked(cast(c.GtkButton, source));
     }
     fn powerSettingsClosed(dialog: *c.GtkDialog, _: c_int, ptr: c.gpointer) callconv(.c) void {
@@ -683,7 +684,18 @@ pub const Controls = struct {
         const self = cast(Controls, ptr);
         const action: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, dialog), "action"));
         if (response == c.GTK_RESPONSE_ACCEPT and !self.dead) {
-            if (std.meta.stringToEnum(session.Action, std.mem.span(action))) |selected| self.sessionAction(selected);
+            const name = std.mem.span(action);
+            const act: ?session.Action = if (std.mem.eql(u8, name, "suspend"))
+                .@"suspend"
+            else if (std.mem.eql(u8, name, "reboot"))
+                .reboot
+            else if (std.mem.eql(u8, name, "poweroff"))
+                .poweroff
+            else if (std.mem.eql(u8, name, "logout"))
+                .logout
+            else
+                null;
+            if (act) |selected| self.sessionAction(selected);
         }
         self.dialog = null;
         c.gtk_widget_destroy(@ptrCast(dialog));

@@ -35,6 +35,20 @@ let
     doInstallCheck = false;
     postInstall = ''
       rm -rf "$out/bin"
+      # The default client config uses these modules for native controls and
+      # PCM event playback. Server factories, network protocols, and filters
+      # run in the system PipeWire daemon rather than in the desktop process.
+      for module in "$out"/lib/pipewire-0.3/libpipewire-module-*.so; do
+        case "$(basename "$module")" in
+          libpipewire-module-protocol-native.so|libpipewire-module-client-node.so|\
+          libpipewire-module-client-device.so|libpipewire-module-adapter.so|\
+          libpipewire-module-metadata.so|libpipewire-module-session-manager.so|\
+          libpipewire-module-rt.so) ;;
+          *) rm "$module" ;;
+        esac
+      done
+      rm -rf "$out/lib/spa-0.2/aec" "$out/lib/spa-0.2/audiomixer" \
+        "$out/lib/spa-0.2/control" "$out/lib/spa-0.2/filter-graph"
     '';
   };
 

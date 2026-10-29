@@ -15,11 +15,18 @@ pub const State = audio.State;
 
 pub fn parseCommand(args: []const []const u8) ?Work {
     if (args.len != 2) return null;
-    const kind = std.meta.stringToEnum(Kind, args[0]) orelse return null;
-    if (std.mem.eql(u8, args[1], "mute") and kind != .brightness) return .{ .kind = kind };
-    if (kind == .microphone) return null;
+    const k: Kind = if (std.mem.eql(u8, args[0], "volume"))
+        .volume
+    else if (std.mem.eql(u8, args[0], "microphone"))
+        .microphone
+    else if (std.mem.eql(u8, args[0], "brightness"))
+        .brightness
+    else
+        return null;
+    if (std.mem.eql(u8, args[1], "mute") and k != .brightness) return .{ .kind = k };
+    if (k == .microphone) return null;
     const delta: i16 = if (std.mem.eql(u8, args[1], "up")) 5 else if (std.mem.eql(u8, args[1], "down")) -5 else return null;
-    return .{ .kind = kind, .delta = delta };
+    return .{ .kind = k, .delta = delta };
 }
 
 pub fn target(state: State, work: Work) f64 {

@@ -9,7 +9,10 @@ pub const Profile = enum {
     @"power-saver",
 
     pub fn parse(value: []const u8) !Profile {
-        return std.meta.stringToEnum(Profile, value) orelse error.InvalidProfile;
+        if (std.mem.eql(u8, value, "performance")) return .performance;
+        if (std.mem.eql(u8, value, "balanced")) return .balanced;
+        if (std.mem.eql(u8, value, "power-saver")) return .@"power-saver";
+        return error.InvalidProfile;
     }
 };
 pub const State = struct {

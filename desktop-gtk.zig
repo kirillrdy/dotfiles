@@ -2453,8 +2453,6 @@ pub extern fn g_file_get_child(?*GFile, [*c]const gchar) ?*GFile;
 pub extern fn g_file_query_exists(?*GFile, [*c]GCancellable) gboolean;
 pub extern fn gdk_wayland_display_get_type() GType;
 pub extern fn gdk_wayland_window_set_transient_for_exported(?*GdkWindow, [*c]gchar) gboolean;
-pub extern fn gdk_x11_display_get_type() GType;
-pub extern fn gdk_x11_window_foreign_new_for_display(?*GdkDisplay, c_ulong) ?*GdkWindow;
 pub extern fn gdk_window_set_transient_for(?*GdkWindow, ?*GdkWindow) void;
 pub extern fn gtk_file_chooser_select_all(?*GtkFileChooser) void;
 pub const GtkPrintUnixDialog = opaque {};

@@ -329,9 +329,14 @@ pub fn calendar_select(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) v
 }
 pub fn calendar_navigate(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) void {
     const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    const offset: c_int = if (button != null) @truncate(@as(isize, @bitCast(@intFromPtr(c.g_object_get_data(cast(c.GObject, button), "month-offset"))))) else 0;
+    var offset: c_int = 0;
+    if (button != null) {
+        if (c.g_object_get_data(cast(c.GObject, button), "month-offset")) |ptr| {
+            offset = @truncate(@as(isize, @bitCast(@intFromPtr(ptr))));
+        }
+    }
     const day: ?*c.GDateTime = if (offset != 0) c.g_date_time_add_months(m.calendar_selected, offset) else c.g_date_time_new_now_local();
-    if (!(day != null)) return;
+    if (day == null) return;
     c.g_date_time_unref(m.calendar_selected);
     m.calendar_selected = day;
     calendar_refresh(m);
@@ -934,7 +939,12 @@ fn update_graph(g: *Graph, o: std.json.Value, a: std.mem.Allocator) void {
         };
         total += if (std.math.isFinite(val)) @max(0, val) else 0;
         g.history[i][g.count] = total;
-        const color = if (i < colors.len and colors[i] == .string) (a.dupeSentinel(u8, colors[i].string, 0) catch "white") else "white";
+        var color_buf: [64:0]u8 = undefined;
+        const color: [:0]const u8 = if (i < colors.len and colors[i] == .string and colors[i].string.len < 64) blk: {
+            @memcpy(color_buf[0..colors[i].string.len], colors[i].string);
+            color_buf[colors[i].string.len] = 0;
+            break :blk color_buf[0..colors[i].string.len :0];
+        } else "white";
         _ = c.gdk_rgba_parse(&g.colors[i], color);
     }
     g.count += 1;

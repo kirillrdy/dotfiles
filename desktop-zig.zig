@@ -125,7 +125,13 @@ fn dispatch(self: *Session, args: []const []const u8) !void {
     if (std.mem.eql(u8, verb, "overview") and args.len == 1) {
         overview.activate(self.app, &self.activities);
     } else if (std.mem.eql(u8, verb, "settings") and args.len == 2) {
-        try self.dialogs.show(self.app, std.meta.stringToEnum(settings.Mode, args[1]) orelse return error.InvalidSettingsMode);
+        const mode: settings.Mode = if (std.mem.eql(u8, args[1], "sound"))
+            .sound
+        else if (std.mem.eql(u8, args[1], "network"))
+            .network
+        else
+            return error.InvalidSettingsMode;
+        try self.dialogs.show(self.app, mode);
     } else if (std.mem.eql(u8, verb, "refresh") and args.len == 2) {
         if (!std.mem.eql(u8, args[1], "codex") and !std.mem.eql(u8, args[1], "status")) return error.InvalidSource;
         self.data.refresh(args[1]);

@@ -5,6 +5,7 @@
   accessibilitySupport ? false,
 }:
 let
+  textLibraries = import ./desktop-text-libs.nix { inherit pkgs; };
   # GTK still requires ATK's widget types. Build those without the AT-SPI
   # bridge, registry, bus launcher, or their D-Bus/X11 dependencies for now.
   accessibility =
@@ -39,16 +40,40 @@ let
           ];
           postFixup = "";
         });
-  # Keep X11 for the isolated Xvfb fixtures. Printer discovery/spooling and
-  # accessibility integration are deferred; the file backend still exports PDF.
+  # Libepoxy provides EGL function pointers for Wayland OpenGL without GLX/X11.
+  epoxy =
+    let
+      base =
+        (pkgs.libepoxy.override { x11Support = false; }).overrideAttrs (old: {
+          pname = "desktop-libepoxy";
+          propagatedBuildInputs = [ pkgs.libGL ];
+          mesonFlags = [
+            "-Degl=yes"
+            "-Dglx=no"
+            "-Dx11=false"
+            "-Dtests=false"
+          ];
+        });
+    in
+    base // { override = _: epoxy; };
+
+  # Pure Wayland desktop toolkit without X11 or accessibility bus dependencies.
+  # Printer discovery/spooling is deferred; the file backend still exports PDF.
   gtk =
     (pkgs.gtk3.override {
+      inherit (textLibraries) cairo pango;
+      libxkbcommon = textLibraries.xkbcommon;
+      libepoxy = epoxy;
+      isocodes = import ./desktop-language-data.nix { inherit pkgs; };
       atk = accessibility;
       at-spi2-atk = accessibility;
       trackerSupport = false;
       cupsSupport = printingSupport;
       broadwaySupport = false;
       withIntrospection = false;
+      x11Support = false;
+      xineramaSupport = false;
+      waylandSupport = true;
     }).overrideAttrs
       (old: {
         pname = "desktop-gtk";

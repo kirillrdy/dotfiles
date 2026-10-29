@@ -67,7 +67,7 @@ pub fn main(init: std.process.Init) !void {
     try check(init, std.mem.span(root), .password, c.GTK_RESPONSE_CANCEL, "", 1, true);
     if (args.len > 1) {
         var env = try init.minimal.environ.createMap(arena.allocator());
-        try env.put("GDK_BACKEND", "x11");
+        try env.put("GDK_BACKEND", "wayland");
         try env.put("DISPLAY", "");
         try env.put("WAYLAND_DISPLAY", "");
         const failed = try std.process.run(arena.allocator(), init.io, .{ .argv = &.{ args[1], "askpass", "A prompt that must not reach stdout" }, .environ_map = &env });
