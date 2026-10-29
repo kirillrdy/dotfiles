@@ -5,10 +5,8 @@ let
     inherit pkgs;
     dbus = dbusLibraries;
   };
-  audioLibraries = import ./desktop-audio-libs.nix {
-    inherit pkgs;
-    dbus = dbusLibraries;
-  };
+  audioLibraries = import ./desktop-audio-libs.nix { inherit pkgs; };
+  pamLibraries = import ./desktop-pam-libs.nix { inherit pkgs; };
   # Keep the portal's xsettings namespace without retaining the daemon.
   portalSettingsSchemas =
     pkgs.runCommand "gnome-settings-daemon-${pkgs.gnome-settings-daemon.version}-gsettings-schemas" { }
@@ -56,7 +54,7 @@ pkgs.stdenv.mkDerivation {
     gtkLibraries.gtk
     gtkLibraries.layerShell
     pkgs.wayland
-    pkgs.pam
+    pamLibraries
     pkgs.libxkbcommon
     audioLibraries.pipewire
   ];

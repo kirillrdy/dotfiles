@@ -1,7 +1,4 @@
-{
-  pkgs,
-  dbus ? pkgs.dbus,
-}:
+{ pkgs }:
 let
   # This process is a control client. Hardware, codecs, and session policy run
   # in the system's normal PipeWire/WirePlumber services, not in these libraries.
@@ -18,7 +15,7 @@ let
       pkg-config
       python3
     ];
-    buildInputs = [ dbus ];
+    buildInputs = [ ];
     mesonFlags = [
       "-Dauto_features=disabled"
       "-Dexamples=disabled"
@@ -26,7 +23,12 @@ let
       "-Dpipewire-jack=disabled"
       "-Dpipewire-v4l2=disabled"
       "-Dflatpak=disabled"
-      "-Ddbus=enabled"
+      # GIO handles the shell's D-Bus calls. This audio client uses PipeWire's
+      # native socket; RTKit and portal integration belong to the system daemon.
+      "-Ddbus=disabled"
+      "-Daudiotestsrc=disabled"
+      "-Dvideoconvert=disabled"
+      "-Dvideotestsrc=disabled"
       "-Dsession-managers=[]"
       "-Drlimits-install=false"
     ];
