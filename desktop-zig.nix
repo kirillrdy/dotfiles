@@ -83,7 +83,7 @@ pkgs.stdenv.mkDerivation {
     export GSETTINGS_SCHEMA_DIR=${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}/glib-2.0/schemas
     python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-zig" --subcommand greeter
     zig build test-gtk-abi test-libc-abi -Doptimize=ReleaseSafe
-    zig build test-runtime test-power -Doptimize=ReleaseSafe
+    zig build test-runtime test-power test-portal-email -Doptimize=ReleaseSafe
     zig build test -Doptimize=ReleaseSafe
     Xvfb :99 -nolisten tcp &
     xvfb_pid=$!

@@ -11,6 +11,7 @@ const Account = @import("desktop-portal-account.zig").Dialog;
 const FileChooser = @import("desktop-portal-file-chooser.zig").Dialog;
 const Notifications = @import("desktop-portal-notification.zig").Service;
 const Settings = @import("desktop-portal-settings.zig").Service;
+const Email = @import("desktop-portal-email.zig");
 const gtk = "org.freedesktop.impl.portal.desktop.gtk";
 const wlr = "org.freedesktop.impl.portal.desktop.wlr";
 const bus = "org.freedesktop.DBus";
@@ -558,6 +559,18 @@ fn openUri(server: *Server, client_info: *Client, method: []const u8, params: ?*
     c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
     c.g_app_info_launch_default_for_uri_async(uri, null, request.cancel, &Request.uriFinished, request);
 }
+fn composeEmail(server: *Server, client_info: *Client, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+    const options = child(params, 1);
+    defer c.g_variant_unref(options);
+    const request = try Request.create(server, client_info, "Email", "ComposeEmail", options, .uri);
+    errdefer request.destroy();
+    const descriptors = c.g_dbus_message_get_unix_fd_list(c.g_dbus_method_invocation_get_message(invocation));
+    const uri = try Email.composeUri(request.arena.allocator(), options.?, descriptors);
+    const context = try Email.launchContext(options.?);
+    defer c.g_object_unref(context);
+    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
+    c.g_app_info_launch_default_for_uri_async(uri, context, request.cancel, &Request.uriFinished, request);
+}
 fn inhibit(server: *Server, client_info: *Client, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
     const flags_value = child(params, 1);
     defer c.g_variant_unref(flags_value);
@@ -655,6 +668,7 @@ fn dispatch(server: *Server, sender: [*:0]const u8, interface: []const u8, metho
         c.g_dbus_method_invocation_return_value(invocation, null);
         return;
     }
+    if (eq(short, "Email")) return composeEmail(server, client_info, params, invocation);
     if (eq(short, "Inhibit")) return inhibit(server, client_info, params, invocation);
     if (eq(short, "OpenURI")) return openUri(server, client_info, method, params, invocation);
     if (eq(short, "NetworkMonitor")) return network(server, client_info, method, params, invocation);
@@ -664,7 +678,7 @@ fn dispatch(server: *Server, sender: [*:0]const u8, interface: []const u8, metho
 fn getProperty(connection: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, interface_name: [*c]const u8, property: [*c]const u8, _: [*c][*c]c.GError, _: ?*anyopaque) callconv(.c) ?*c.GVariant {
     const short = std.mem.span(interface_name)[public.len..];
     if (eq(std.mem.span(property), "version")) {
-        const version: c_uint = if (eq(short, "Settings") or eq(short, "Screenshot")) 2 else if (eq(short, "ScreenCast") or eq(short, "FileChooser") or eq(short, "NetworkMonitor")) 3 else if (eq(short, "OpenURI")) 5 else 1;
+        const version: c_uint = if (eq(short, "Settings") or eq(short, "Screenshot")) 2 else if (eq(short, "ScreenCast") or eq(short, "FileChooser") or eq(short, "NetworkMonitor")) 3 else if (eq(short, "OpenURI")) 5 else if (eq(short, "Email")) 4 else 1;
         return c.g_variant_new("u", version);
     }
     if (eq(short, "Notification")) return dict();

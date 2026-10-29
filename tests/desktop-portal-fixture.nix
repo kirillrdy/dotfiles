@@ -11,7 +11,7 @@ let
     outputs = [ "out" ];
     buildPhase = ''
       export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build portal-fixture portal-chooser-fixture --prefix "$out" -Doptimize=ReleaseSafe
+      zig build portal-fixture portal-chooser-fixture test-portal-email test-gtk-abi test-libc-abi --prefix "$out" -Doptimize=ReleaseSafe
     '';
     doCheck = false;
     installPhase = "true";
@@ -38,6 +38,9 @@ pkgs.runCommand "desktop-portal-check"
     mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
       python3 ${./check-desktop-portal.py} --binary ${fixture}/bin/desktop-portal-fixture
+
+    dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
+      python3 ${./check-desktop-portal-email.py} --binary ${fixture}/bin/desktop-portal-fixture
 
     Xvfb :92 -nolisten tcp &
     chooser_xvfb=$!

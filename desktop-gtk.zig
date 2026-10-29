@@ -2541,3 +2541,18 @@ pub extern fn gtk_file_chooser_select_all(?*GtkFileChooser) void;
 
 pub extern fn g_get_user_name() [*c]const gchar;
 pub extern fn g_get_real_name() [*c]const gchar;
+pub extern fn g_app_launch_context_new() ?*GAppLaunchContext;
+pub extern fn g_app_launch_context_setenv(?*GAppLaunchContext, [*c]const gchar, [*c]const gchar) void;
+pub extern fn g_app_launch_context_get_type() GType;
+pub extern fn g_unix_fd_list_get_length(?*GUnixFDList) gint;
+pub const GAppLaunchContextClass = extern struct {
+    parent_class: GObjectClass,
+    get_display: ?*const fn (?*GAppLaunchContext, ?*GAppInfo, [*c]GList) callconv(.c) [*c]gchar,
+    get_startup_notify_id: ?*const fn (?*GAppLaunchContext, ?*GAppInfo, [*c]GList) callconv(.c) [*c]gchar,
+    launch_failed: ?*const fn (?*GAppLaunchContext, [*c]const gchar) callconv(.c) void,
+    launched: ?*const fn (?*GAppLaunchContext, ?*GAppInfo, ?*GVariant) callconv(.c) void,
+    launch_started: ?*const fn (?*GAppLaunchContext, ?*GAppInfo, ?*GVariant) callconv(.c) void,
+    _g_reserved1: ?*const fn () callconv(.c) void,
+    _g_reserved2: ?*const fn () callconv(.c) void,
+    _g_reserved3: ?*const fn () callconv(.c) void,
+};

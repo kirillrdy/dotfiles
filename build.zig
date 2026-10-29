@@ -41,6 +41,13 @@ pub fn build(b: *std.Build) void {
     portal.link_libc = true;
     portal.linkSystemLibrary("gio-2.0", .{});
     portal.linkSystemLibrary("gtk+-3.0", .{});
+    const email = b.createModule(.{ .root_source_file = b.path("desktop-portal-email.zig"), .target = target, .optimize = optimize });
+    email.addImport("gtk", gtk);
+    email.addImport("libc", libc);
+    email.link_libc = true;
+    email.linkSystemLibrary("gio-2.0", .{});
+    const email_tests = b.addTest(.{ .root_module = email });
+    b.step("test-portal-email", "Check native mailto encoding and portal option validation").dependOn(&b.addRunArtifact(email_tests).step);
     const file_chooser = b.createModule(.{ .root_source_file = b.path("desktop-portal-file-chooser.zig"), .target = target, .optimize = optimize });
     file_chooser.addImport("gtk", gtk);
     file_chooser.link_libc = true;
