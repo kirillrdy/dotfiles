@@ -1,7 +1,10 @@
 { pkgs }:
 let
   dbus = import ../desktop-dbus-libs.nix { inherit pkgs; };
-  toolkit = import ../desktop-gtk-libs.nix { inherit pkgs dbus; };
+  toolkit = import ../desktop-gtk-libs.nix {
+    inherit pkgs dbus;
+    accessibilitySupport = true;
+  };
 in
 pkgs.runCommand "desktop-accessibility-check"
   {

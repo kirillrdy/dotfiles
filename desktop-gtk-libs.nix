@@ -1,33 +1,52 @@
 {
   pkgs,
   dbus ? pkgs.dbus,
+  printingSupport ? false,
+  accessibilitySupport ? false,
 }:
 let
-  # Match the desktop's D-Bus client and preserve accessibility bus launching
-  # without retaining a Bash interpreter just for its environment wrapper.
+  # GTK still requires ATK's widget types. Build those without the AT-SPI
+  # bridge, registry, bus launcher, or their D-Bus/X11 dependencies for now.
   accessibility =
-    (pkgs.at-spi2-core.override {
-      inherit dbus;
-      makeWrapper = pkgs.makeBinaryWrapper;
-      withIntrospection = false;
-    }).overrideAttrs
-      (old: {
-        outputs = old.outputs ++ [ "xwayland" ];
-        # This system session hook invokes busctl, sed, and xprop. Keep it
-        # available separately from the client libraries and accessibility bus.
-        postInstall = (old.postInstall or "") + ''
-          moveToOutput etc/xdg/Xwayland-session.d "$xwayland"
-        '';
-      });
-  # The desktop uses GTK widgets, accessibility, input methods, and Wayland.
-  # Keep X11 for the isolated Xvfb fixtures and CUPS for the native print portal.
-  # Indexed file search belongs to applications rather than this shell.
+    if accessibilitySupport then
+      (pkgs.at-spi2-core.override {
+        inherit dbus;
+        makeWrapper = pkgs.makeBinaryWrapper;
+        withIntrospection = false;
+      }).overrideAttrs
+        (old: {
+          outputs = old.outputs ++ [ "xwayland" ];
+          postInstall = (old.postInstall or "") + ''
+            moveToOutput etc/xdg/Xwayland-session.d "$xwayland"
+          '';
+        })
+    else
+      (pkgs.at-spi2-core.override {
+        systemdSupport = false;
+        withDconf = false;
+        withIntrospection = false;
+      }).overrideAttrs
+        (old: {
+          pname = "desktop-atk";
+          separateDebugInfo = false;
+          buildInputs = [ pkgs.libxml2 ];
+          propagatedBuildInputs = [ pkgs.glib ];
+          mesonFlags = old.mesonFlags ++ [
+            "-Datk_only=true"
+            "-Dx11=disabled"
+            "-Ddefault_bus=dbus-daemon"
+            "-Dgtk2_atk_adaptor=false"
+          ];
+          postFixup = "";
+        });
+  # Keep X11 for the isolated Xvfb fixtures. Printer discovery/spooling and
+  # accessibility integration are deferred; the file backend still exports PDF.
   gtk =
     (pkgs.gtk3.override {
       atk = accessibility;
       at-spi2-atk = accessibility;
       trackerSupport = false;
-      cupsSupport = true;
+      cupsSupport = printingSupport;
       broadwaySupport = false;
       withIntrospection = false;
     }).overrideAttrs
@@ -35,10 +54,22 @@ let
         pname = "desktop-gtk";
         separateDebugInfo = false;
         mesonFlags = old.mesonFlags ++ [
-          "-Dprint_backends=file,cups"
+          "-Dprint_backends=file${pkgs.lib.optionalString printingSupport ",cups"}"
           "-Ddemos=false"
           "-Dexamples=false"
         ];
+        # GTK's Meson build unconditionally enables the bridge for X11.
+        # Retain ATK's widget ABI while omitting the optional bus integration.
+        postPatch =
+          (old.postPatch or "")
+          + pkgs.lib.optionalString (!accessibilitySupport) ''
+            substituteInPlace meson.build \
+              --replace-fail "atkbridge_dep  = dependency('atk-bridge-2.0', version: at_spi2_atk_req)" "atkbridge_dep = []" \
+              --replace-fail "atk_pkgs += ['atk-bridge-2.0']" "# AT-SPI bridge disabled for desktop-zig"
+            substituteInPlace gtk/a11y/gtkaccessibility.c \
+              --replace-fail '#include <atk-bridge.h>' '/* AT-SPI bridge disabled for desktop-zig */' \
+              --replace-fail 'atk_bridge_adaptor_init (NULL, NULL);' '/* AT-SPI bridge disabled for desktop-zig */'
+          '';
         # The upstream Nix install hook moves broadwayd unconditionally.
         postInstall =
           pkgs.lib.replaceStrings [ ''moveToOutput bin/broadwayd "$out"'' ] [ "" ]
