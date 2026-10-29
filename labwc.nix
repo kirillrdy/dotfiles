@@ -61,17 +61,15 @@ lib.mkIf enableLightDesktop {
         desktop = desktopZig;
         upstream = prev.xdg-desktop-portal;
       };
-      # Only the optional Wallpaper portal needs gnome-desktop.
-      xdg-desktop-portal-gtk = prev.xdg-desktop-portal-gtk.overrideAttrs (old: {
-        mesonFlags = (old.mesonFlags or [ ]) ++ [ "-Dwallpaper=disabled" ];
-        buildInputs = lib.remove prev.gnome-desktop old.buildInputs;
-      });
       xdg-desktop-portal-wlr = prev.xdg-desktop-portal-wlr.override {
         grim = desktopZig;
         slurp = desktopZig;
       };
     })
   ];
+  # The shell serves all general portals; retain WLR only for capture.
+  xdg.portal.extraPortals = lib.mkForce [ pkgs.xdg-desktop-portal-wlr ];
+  xdg.portal.config.wlroots.default = lib.mkForce [ "wlr" ];
   programs.labwc.enable = true;
   programs.labwc.package = desktopCompositor;
   services.greetd = {

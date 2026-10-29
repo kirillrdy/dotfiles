@@ -11,7 +11,7 @@ let
     outputs = [ "out" ];
     buildPhase = ''
       export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build portal-fixture portal-chooser-fixture test-portal-email test-gtk-abi test-libc-abi --prefix "$out" -Doptimize=ReleaseSafe
+      zig build portal-fixture portal-chooser-fixture portal-print-fixture test-portal-email test-gtk-abi test-libc-abi --prefix "$out" -Doptimize=ReleaseSafe
     '';
     doCheck = false;
     installPhase = "true";
@@ -68,5 +68,11 @@ pkgs.runCommand "desktop-portal-check"
       ${fixture}/bin/desktop-portal-chooser-fixture "$chooser_files"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
       python3 ${./check-desktop-portal-chooser.py} --binary ${fixture}/bin/desktop-portal-fixture
+    export GTK_PRINT_BACKENDS=file
+    GSETTINGS_BACKEND=memory \
+      dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
+      ${fixture}/bin/desktop-portal-print-fixture "$chooser_files"
+    dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
+      python3 ${./check-desktop-portal-print.py} --binary ${fixture}/bin/desktop-portal-fixture
     touch "$out"
   ''

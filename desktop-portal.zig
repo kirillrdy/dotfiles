@@ -11,8 +11,8 @@ const Account = @import("desktop-portal-account.zig").Dialog;
 const FileChooser = @import("desktop-portal-file-chooser.zig").Dialog;
 const Notifications = @import("desktop-portal-notification.zig").Service;
 const Settings = @import("desktop-portal-settings.zig").Service;
+const Printing = @import("desktop-portal-print.zig");
 const Email = @import("desktop-portal-email.zig");
-const gtk = "org.freedesktop.impl.portal.desktop.gtk";
 const wlr = "org.freedesktop.impl.portal.desktop.wlr";
 const bus = "org.freedesktop.DBus";
 const bus_path = "/org/freedesktop/DBus";
@@ -52,9 +52,6 @@ fn validToken(value: []const u8) bool {
     for (value) |ch| if (!std.ascii.isAlphanumeric(ch) and ch != '_') return false;
     return true;
 }
-fn backend(interface: []const u8) [:0]const u8 {
-    return if (eq(interface, "ScreenCast") or eq(interface, "Screenshot")) wlr else gtk;
-}
 const Client = struct {
     arena: std.heap.ArenaAllocator,
     sender: [:0]const u8,
@@ -90,6 +87,7 @@ const Server = struct {
     sessions: std.ArrayList(*Session) = .empty,
     settings: ?*Settings = null,
     notifications: ?*Notifications = null,
+    printing: ?*Printing.Service = null,
     serial: u64 = 0,
     quitting: bool = false,
 
@@ -114,6 +112,7 @@ const Server = struct {
         try self.subscriptions.append(a, c.g_dbus_connection_signal_subscribe(self.connection, bus, bus, "NameOwnerChanged", bus_path, null, 0, &ownerChanged, self, null));
         self.settings = try Settings.create(a, self.connection);
         self.notifications = try Notifications.create(a, self.connection);
+        self.printing = try Printing.Service.create(a);
         try self.subscriptions.append(a, c.g_dbus_connection_signal_subscribe(self.connection, wlr, impl ++ "Session", "Closed", null, null, 0, &sessionClosed, self, null));
         if (c.g_network_monitor_get_default()) |monitor| _ = c.g_signal_connect_data(monitor, "network-changed", @ptrCast(&networkChanged), self, null, 0);
     }
@@ -125,6 +124,7 @@ const Server = struct {
         for (self.subscriptions.items) |id| c.g_dbus_connection_signal_unsubscribe(self.connection, id);
         self.cancelRequests(null);
         while (self.requests.items.len > 0) _ = c.g_main_context_iteration(null, 1);
+        if (self.printing) |printing| printing.destroy();
         while (self.sessions.items.len > 0) self.closeSession(self.sessions.items[0], true);
         for (self.registrations.items) |id| _ = c.g_dbus_connection_unregister_object(self.connection, id);
         for (self.clients.items) |client| client.destroy();
@@ -229,6 +229,7 @@ const Server = struct {
         }
         if (!std.mem.startsWith(u8, text(name), ":")) return;
         self.cancelRequests(text(name));
+        self.printing.?.removeOwner(text(name));
         var i: usize = 0;
         while (i < self.sessions.items.len) {
             const item = self.sessions.items[i];
@@ -270,6 +271,7 @@ const Request = struct {
     inhibitor_fd: c_int = -1,
     dialog: ?*FileChooser = null,
     account: ?*Account = null,
+    print_operation: ?*Printing.Operation = null,
 
     fn create(server: *Server, client_info: *Client, interface: []const u8, method: []const u8, options: ?*c.GVariant, kind: Kind) !*Request {
         if (server.requests.items.len >= 128) return error.TooManyRequests;
@@ -318,6 +320,7 @@ const Request = struct {
         c.g_cancellable_cancel(self.cancel);
         if (self.session_handle) |handle| if (self.server.session(handle, self.owner)) |session_info| self.server.closeSession(session_info, true);
         if (self.kind == .dialog) {
+            if (self.print_operation) |operation| if (operation.pending()) return;
             self.destroy();
             return;
         }
@@ -326,11 +329,12 @@ const Request = struct {
             self.destroy();
             return;
         }
-        if (self.kind == .request) c.g_dbus_connection_call(self.server.connection, backend(self.interface), self.handle, impl ++ "Request", "Close", null, null, 0, 1000, null, null, null);
+        if (self.kind == .request) c.g_dbus_connection_call(self.server.connection, wlr, self.handle, impl ++ "Request", "Close", null, null, 0, 1000, null, null, null);
     }
     fn destroy(self: *Request) void {
         if (self.dialog) |dialog| dialog.destroy();
         if (self.account) |dialog| dialog.destroy();
+        if (self.print_operation) |operation| operation.destroy();
         if (self.registration != 0) _ = c.g_dbus_connection_unregister_object(self.server.connection, self.registration);
         if (self.invocation) |invocation| c.g_object_unref(invocation);
         c.g_object_unref(self.cancel);
@@ -470,7 +474,7 @@ fn forward(server: *Server, client_info: *Client, interface: []const u8, method:
     const backend_interface = try std.fmt.allocPrintSentinel(request.arena.allocator(), impl ++ "{s}", .{interface}, 0);
     const fds = c.g_dbus_message_get_unix_fd_list(c.g_dbus_method_invocation_get_message(invocation));
     c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
-    c.g_dbus_connection_call_with_unix_fd_list(server.connection, backend(interface), path, backend_interface, request.method, tuple(args[0..size]), @ptrCast(@as([*:0]const u8, "(ua{sv})")), 0, 120000, fds, request.cancel, &Request.finish, request);
+    c.g_dbus_connection_call_with_unix_fd_list(server.connection, wlr, path, backend_interface, request.method, tuple(args[0..size]), @ptrCast(@as([*:0]const u8, "(ua{sv})")), 0, 120000, fds, request.cancel, &Request.finish, request);
 }
 fn chooseFile(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
     const parent = child(params, 0);
@@ -558,6 +562,26 @@ fn openUri(server: *Server, client_info: *Client, method: []const u8, params: ?*
     }
     c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
     c.g_app_info_launch_default_for_uri_async(uri, null, request.cancel, &Request.uriFinished, request);
+}
+fn printDocument(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+    const prepare = eq(method, "PreparePrint");
+    const parent = child(params, 0);
+    defer c.g_variant_unref(parent);
+    const title = child(params, 1);
+    defer c.g_variant_unref(title);
+    const settings = if (prepare) child(params, 2) else null;
+    defer if (settings != null) c.g_variant_unref(settings);
+    const page = if (prepare) child(params, 3) else null;
+    defer if (page != null) c.g_variant_unref(page);
+    const fd = if (prepare) null else child(params, 2);
+    defer if (fd != null) c.g_variant_unref(fd);
+    const options = child(params, if (prepare) 4 else 3);
+    defer c.g_variant_unref(options);
+    const request = try Request.create(server, client_info, "Print", method, options, .dialog);
+    errdefer request.destroy();
+    const descriptors = c.g_dbus_message_get_unix_fd_list(c.g_dbus_method_invocation_get_message(invocation));
+    request.print_operation = try Printing.Operation.create(server.printing.?, client_info.sender, std.mem.span(c.g_variant_get_string(parent, null)), std.mem.span(c.g_variant_get_string(title, null)), settings, page, options.?, descriptors, if (fd != null) c.g_variant_get_handle(fd) else null, &Request.dialogFinished, request);
+    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
 }
 fn composeEmail(server: *Server, client_info: *Client, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
     const options = child(params, 1);
@@ -668,23 +692,25 @@ fn dispatch(server: *Server, sender: [*:0]const u8, interface: []const u8, metho
         c.g_dbus_method_invocation_return_value(invocation, null);
         return;
     }
+    if (eq(short, "Print")) return printDocument(server, client_info, method, params, invocation);
     if (eq(short, "Email")) return composeEmail(server, client_info, params, invocation);
     if (eq(short, "Inhibit")) return inhibit(server, client_info, params, invocation);
     if (eq(short, "OpenURI")) return openUri(server, client_info, method, params, invocation);
     if (eq(short, "NetworkMonitor")) return network(server, client_info, method, params, invocation);
     if (eq(short, "ScreenCast") and eq(method, "OpenPipeWireRemote")) return openRemote(server, client_info, params, invocation);
-    return forward(server, client_info, short, method, params, invocation);
+    if (eq(short, "ScreenCast") or eq(short, "Screenshot")) return forward(server, client_info, short, method, params, invocation);
+    return error.NotSupported;
 }
 fn getProperty(connection: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, interface_name: [*c]const u8, property: [*c]const u8, _: [*c][*c]c.GError, _: ?*anyopaque) callconv(.c) ?*c.GVariant {
     const short = std.mem.span(interface_name)[public.len..];
     if (eq(std.mem.span(property), "version")) {
-        const version: c_uint = if (eq(short, "Settings") or eq(short, "Screenshot")) 2 else if (eq(short, "ScreenCast") or eq(short, "FileChooser") or eq(short, "NetworkMonitor")) 3 else if (eq(short, "OpenURI")) 5 else if (eq(short, "Email")) 4 else 1;
+        const version: c_uint = if (eq(short, "Settings") or eq(short, "Screenshot")) 2 else if (eq(short, "ScreenCast") or eq(short, "FileChooser") or eq(short, "NetworkMonitor")) 3 else if (eq(short, "OpenURI")) 5 else if (eq(short, "Email") or eq(short, "Print")) 4 else 1;
         return c.g_variant_new("u", version);
     }
     if (eq(short, "Notification")) return dict();
     var buffer: [128]u8 = undefined;
     const backend_interface = std.fmt.bufPrintSentinel(&buffer, impl ++ "{s}", .{short}, 0) catch return null;
-    const reply = c.g_dbus_connection_call_sync(connection, backend(short), path, "org.freedesktop.DBus.Properties", "Get", c.g_variant_new("(ss)", backend_interface.ptr, property), @ptrCast(@as([*:0]const u8, "(v)")), 0, 1000, null, null) orelse return c.g_variant_new("u", @as(c_uint, 0));
+    const reply = c.g_dbus_connection_call_sync(connection, wlr, path, "org.freedesktop.DBus.Properties", "Get", c.g_variant_new("(ss)", backend_interface.ptr, property), @ptrCast(@as([*:0]const u8, "(v)")), 0, 1000, null, null) orelse return c.g_variant_new("u", @as(c_uint, 0));
     defer c.g_variant_unref(reply);
     const wrapped = child(reply, 0);
     defer c.g_variant_unref(wrapped);

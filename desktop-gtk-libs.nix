@@ -20,14 +20,14 @@ let
         '';
       });
   # The desktop uses GTK widgets, accessibility, input methods, and Wayland.
-  # Keep X11 for the isolated Xvfb fixtures; printing and indexed file search
-  # belong to applications rather than this shell.
+  # Keep X11 for the isolated Xvfb fixtures and CUPS for the native print portal.
+  # Indexed file search belongs to applications rather than this shell.
   gtk =
     (pkgs.gtk3.override {
       atk = accessibility;
       at-spi2-atk = accessibility;
       trackerSupport = false;
-      cupsSupport = false;
+      cupsSupport = true;
       broadwaySupport = false;
       withIntrospection = false;
     }).overrideAttrs
@@ -35,7 +35,7 @@ let
         pname = "desktop-gtk";
         separateDebugInfo = false;
         mesonFlags = old.mesonFlags ++ [
-          "-Dprint_backends=file"
+          "-Dprint_backends=file,cups"
           "-Ddemos=false"
           "-Dexamples=false"
         ];

@@ -187,11 +187,6 @@ def backend_call(conn, sender, object_path, interface, method, params, invocatio
     results = {}
     if interface == IMP + "Screenshot":
         results = {"uri": GLib.Variant("s", "file:///tmp/screenshot.png")}
-    elif interface == IMP + "Print":
-        descriptors = invocation.get_message().get_unix_fd_list()
-        fd = descriptors.get(values[4])
-        assert os.read(fd, 100) == b"portal print fixture"
-        os.close(fd)
     elif interface == IMP + "ScreenCast":
         handle = values[1]
         if method == "CreateSession":
@@ -204,7 +199,6 @@ def backend_call(conn, sender, object_path, interface, method, params, invocatio
 register("Screenshot", [("Screenshot", "ossa{sv}", "ua{sv}")])
 register("ScreenCast", [("CreateSession", "oosa{sv}", "ua{sv}"), ("SelectSources", "oosa{sv}", "ua{sv}"), ("Start", "oossa{sv}", "ua{sv}")], ["AvailableSourceTypes", "AvailableCursorModes"])
 register("Settings", [("Read", "ss", "v"), ("ReadAll", "as", "a{sa{sv}}")])
-register("Print", [("Print", "osssha{sv}", "ua{sv}")])
 register("Notification", [("AddNotification", "ssa{sv}", ""), ("RemoveNotification", "ss", "")])
 inhibit_info = Gio.DBusNodeInfo.new_for_xml('<node><interface name="org.freedesktop.login1.Manager"><method name="Inhibit"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="h" direction="out"/></method></interface></node>').interfaces[0]
 registrations.append(backend.register_object("/org/freedesktop/login1", inhibit_info, backend_call, None, None))
@@ -280,15 +274,7 @@ try:
     assert handle not in responses, "cancelled request emitted Response"
     _, response = request("Screenshot", "Screenshot", "(sa{sv})", ("", {"fail": GLib.Variant("b", True)}))
     assert response[0] == 2
-    fd = os.memfd_create("portal-print")
-    os.write(fd, b"portal print fixture")
-    os.lseek(fd, 0, 0)
-    fds = Gio.UnixFDList.new()
-    index = fds.append(fd)
-    os.close(fd)
-    _, response = request("Print", "Print", "(ssha{sv})", ("", "Print", index, {}), fds=fds)
-    assert response[0] == 0
-    print("PASS settings, request responses, owner isolation, cancellation, backend errors and print FD forwarding", flush=True)
+    print("PASS settings, request responses, owner isolation, cancellation, backend errors", flush=True)
     _, implicit = request("ScreenCast", "CreateSession", "(a{sv})", ({},))
     call(client, PUB + "Session", "Close", path=implicit[1]["session_handle"])
     rejected(lambda: request("ScreenCast", "CreateSession", "(a{sv})", ({"session_handle_token": GLib.Variant("u", 1)},)), "non-string session token accepted")

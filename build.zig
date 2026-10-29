@@ -41,6 +41,16 @@ pub fn build(b: *std.Build) void {
     portal.link_libc = true;
     portal.linkSystemLibrary("gio-2.0", .{});
     portal.linkSystemLibrary("gtk+-3.0", .{});
+    const printing = b.createModule(.{ .root_source_file = b.path("desktop-portal-print.zig"), .target = target, .optimize = optimize });
+    printing.addImport("gtk", gtk);
+    printing.addImport("libc", libc);
+    printing.link_libc = true;
+    printing.linkSystemLibrary("gtk+-3.0", .{});
+    const print_fixture = b.addExecutable(.{ .name = "desktop-portal-print-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-portal-print-fixture.zig"), .target = target, .optimize = optimize }) });
+    print_fixture.root_module.addImport("printing", printing);
+    print_fixture.root_module.addImport("gtk", gtk);
+    print_fixture.root_module.addImport("libc", libc);
+    b.step("portal-print-fixture", "Build native print dialog and spooling checks").dependOn(&b.addInstallArtifact(print_fixture, .{}).step);
     const email = b.createModule(.{ .root_source_file = b.path("desktop-portal-email.zig"), .target = target, .optimize = optimize });
     email.addImport("gtk", gtk);
     email.addImport("libc", libc);
@@ -232,9 +242,9 @@ pub fn build(b: *std.Build) void {
     osd.linkSystemLibrary("gtk-layer-shell-0", .{});
     osd.addImport("gtk", panel_gtk);
     const osd_tests = b.addTest(.{ .root_module = osd });
-    const overview_header = b.addWriteFiles().add("overview-bindings.h", "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n#include <gdk/gdkx.h>\n#define POLKIT_AGENT_I_KNOW_API_IS_SUBJECT_TO_CHANGE 1\n#include <polkit/polkit.h>\n#include <polkitagent/polkitagent.h>\n");
+    const overview_header = b.addWriteFiles().add("overview-bindings.h", "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n#include <gdk/gdkx.h>\n#define POLKIT_AGENT_I_KNOW_API_IS_SUBJECT_TO_CHANGE 1\n#include <polkit/polkit.h>\n#include <polkitagent/polkitagent.h>\n");
     const overview_c = b.addTranslateC(.{ .root_source_file = overview_header, .target = target, .optimize = optimize });
-    for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client", "polkit-agent-1", "polkit-gobject-1" }) |name| overview_c.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "gtk+-unix-print-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client", "polkit-agent-1", "polkit-gobject-1" }) |name| overview_c.linkSystemLibrary(name, .{});
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
     for ([_][]const u8{ "ext-foreign-toplevel-list", "ext-image-capture-source", "ext-image-copy-capture", "desktop-overview" }, 0..) |name, protocol_index| {
         const xml: std.Build.LazyPath = if (std.mem.eql(u8, name, "desktop-overview")) b.path("desktop-overview-v1.xml") else .{ .cwd_relative = b.fmt("{s}/staging/{s}/{s}-v1.xml", .{ protocol_dir, name, name }) };
