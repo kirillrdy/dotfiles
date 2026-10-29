@@ -7,6 +7,7 @@ var a: std.mem.Allocator = std.heap.page_allocator;
 const path = "/org/freedesktop/portal/desktop";
 const public = "org.freedesktop.portal.";
 const impl = "org.freedesktop.impl.portal.";
+const FileChooser = @import("desktop-portal-file-chooser.zig").Dialog;
 const Notifications = @import("desktop-portal-notification.zig").Service;
 const Settings = @import("desktop-portal-settings.zig").Service;
 const gtk = "org.freedesktop.impl.portal.desktop.gtk";
@@ -249,7 +250,7 @@ const Server = struct {
         _ = c.g_dbus_connection_emit_signal(self.connection, null, path, public ++ "NetworkMonitor", "changed", null, null);
     }
 };
-const Kind = enum { request, direct, uri, inhibit };
+const Kind = enum { request, direct, uri, inhibit, dialog };
 const Request = struct {
     server: *Server,
     arena: std.heap.ArenaAllocator,
@@ -265,6 +266,7 @@ const Request = struct {
     invocation: ?*c.GDBusMethodInvocation = null,
     closed: bool = false,
     inhibitor_fd: c_int = -1,
+    dialog: ?*FileChooser = null,
 
     fn create(server: *Server, client_info: *Client, interface: []const u8, method: []const u8, options: ?*c.GVariant, kind: Kind) !*Request {
         if (server.requests.items.len >= 128) return error.TooManyRequests;
@@ -312,6 +314,10 @@ const Request = struct {
         }
         c.g_cancellable_cancel(self.cancel);
         if (self.session_handle) |handle| if (self.server.session(handle, self.owner)) |session_info| self.server.closeSession(session_info, true);
+        if (self.kind == .dialog) {
+            self.destroy();
+            return;
+        }
         if (self.kind == .inhibit and self.inhibitor_fd >= 0) {
             _ = libc.close(self.inhibitor_fd);
             self.destroy();
@@ -320,6 +326,7 @@ const Request = struct {
         if (self.kind == .request) c.g_dbus_connection_call(self.server.connection, backend(self.interface), self.handle, impl ++ "Request", "Close", null, null, 0, 1000, null, null, null);
     }
     fn destroy(self: *Request) void {
+        if (self.dialog) |dialog| dialog.destroy();
         if (self.registration != 0) _ = c.g_dbus_connection_unregister_object(self.server.connection, self.registration);
         if (self.invocation) |invocation| c.g_object_unref(invocation);
         c.g_object_unref(self.cancel);
@@ -377,6 +384,11 @@ const Request = struct {
             } else code = 2;
         }
         self.respond(code, results);
+    }
+    fn fileChosen(data: ?*anyopaque, code: u32, results: ?*c.GVariant) void {
+        const self = cast(Request, data);
+        self.respond(code, results);
+        self.destroy();
     }
     fn inhibitorFinished(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
         const self = cast(Request, data);
@@ -455,6 +467,18 @@ fn forward(server: *Server, client_info: *Client, interface: []const u8, method:
     const fds = c.g_dbus_message_get_unix_fd_list(c.g_dbus_method_invocation_get_message(invocation));
     c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
     c.g_dbus_connection_call_with_unix_fd_list(server.connection, backend(interface), path, backend_interface, request.method, tuple(args[0..size]), @ptrCast(@as([*:0]const u8, "(ua{sv})")), 0, 120000, fds, request.cancel, &Request.finish, request);
+}
+fn chooseFile(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+    const parent = child(params, 0);
+    defer c.g_variant_unref(parent);
+    const title = child(params, 1);
+    defer c.g_variant_unref(title);
+    const options = child(params, 2);
+    defer c.g_variant_unref(options);
+    const request = try Request.create(server, client_info, "FileChooser", method, options, .dialog);
+    errdefer request.destroy();
+    request.dialog = try FileChooser.create(a, method, std.mem.span(c.g_variant_get_string(parent, null)), std.mem.span(c.g_variant_get_string(title, null)), options.?, &Request.fileChosen, request);
+    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
 }
 fn openRemote(server: *Server, client_info: *Client, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
     const handle = child(params, 0);
@@ -600,6 +624,7 @@ fn dispatch(server: *Server, sender: [*:0]const u8, interface: []const u8, metho
         return;
     }
     const short = interface[public.len..];
+    if (eq(short, "FileChooser")) return chooseFile(server, client_info, method, params, invocation);
     if (eq(short, "Settings")) {
         server.settings.?.call(method, params, invocation);
         return;

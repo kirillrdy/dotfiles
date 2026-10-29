@@ -40,7 +40,15 @@ pub fn build(b: *std.Build) void {
     portal.addImport("libc", libc);
     portal.link_libc = true;
     portal.linkSystemLibrary("gio-2.0", .{});
-    portal.linkSystemLibrary("gdk-pixbuf-2.0", .{});
+    portal.linkSystemLibrary("gtk+-3.0", .{});
+    const file_chooser = b.createModule(.{ .root_source_file = b.path("desktop-portal-file-chooser.zig"), .target = target, .optimize = optimize });
+    file_chooser.addImport("gtk", gtk);
+    file_chooser.link_libc = true;
+    file_chooser.linkSystemLibrary("gtk+-3.0", .{});
+    const chooser_fixture = b.addExecutable(.{ .name = "desktop-portal-chooser-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-portal-chooser-fixture.zig"), .target = target, .optimize = optimize }) });
+    chooser_fixture.root_module.addImport("chooser", file_chooser);
+    chooser_fixture.root_module.addImport("gtk", gtk);
+    b.step("portal-chooser-fixture", "Check native portal file dialogs under a private display").dependOn(&b.addInstallArtifact(chooser_fixture, .{}).step);
     session.root_module.addImport("portal", portal);
     const portal_fixture = b.addExecutable(.{ .name = "desktop-portal-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-portal-fixture.zig"), .target = target, .optimize = optimize }) });
     portal_fixture.root_module.addImport("portal", portal);
@@ -217,7 +225,7 @@ pub fn build(b: *std.Build) void {
     osd.linkSystemLibrary("gtk-layer-shell-0", .{});
     osd.addImport("gtk", panel_gtk);
     const osd_tests = b.addTest(.{ .root_module = osd });
-    const overview_header = b.addWriteFiles().add("overview-bindings.h", "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n#define POLKIT_AGENT_I_KNOW_API_IS_SUBJECT_TO_CHANGE 1\n#include <polkit/polkit.h>\n#include <polkitagent/polkitagent.h>\n");
+    const overview_header = b.addWriteFiles().add("overview-bindings.h", "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n#include <gdk/gdkx.h>\n#define POLKIT_AGENT_I_KNOW_API_IS_SUBJECT_TO_CHANGE 1\n#include <polkit/polkit.h>\n#include <polkitagent/polkitagent.h>\n");
     const overview_c = b.addTranslateC(.{ .root_source_file = overview_header, .target = target, .optimize = optimize });
     for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client", "polkit-agent-1", "polkit-gobject-1" }) |name| overview_c.linkSystemLibrary(name, .{});
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
