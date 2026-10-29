@@ -7,6 +7,8 @@ var a: std.mem.Allocator = std.heap.page_allocator;
 const path = "/org/freedesktop/portal/desktop";
 const public = "org.freedesktop.portal.";
 const impl = "org.freedesktop.impl.portal.";
+const Notifications = @import("desktop-portal-notification.zig").Service;
+const Settings = @import("desktop-portal-settings.zig").Service;
 const gtk = "org.freedesktop.impl.portal.desktop.gtk";
 const wlr = "org.freedesktop.impl.portal.desktop.wlr";
 const bus = "org.freedesktop.DBus";
@@ -83,6 +85,8 @@ const Server = struct {
     clients: std.ArrayList(*Client) = .empty,
     requests: std.ArrayList(*Request) = .empty,
     sessions: std.ArrayList(*Session) = .empty,
+    settings: ?*Settings = null,
+    notifications: ?*Notifications = null,
     serial: u64 = 0,
     quitting: bool = false,
 
@@ -105,13 +109,15 @@ const Server = struct {
             try self.registrations.append(a, id);
         }
         try self.subscriptions.append(a, c.g_dbus_connection_signal_subscribe(self.connection, bus, bus, "NameOwnerChanged", bus_path, null, 0, &ownerChanged, self, null));
-        try self.subscriptions.append(a, c.g_dbus_connection_signal_subscribe(self.connection, gtk, impl ++ "Settings", "SettingChanged", path, null, 0, &settingChanged, self, null));
-        try self.subscriptions.append(a, c.g_dbus_connection_signal_subscribe(self.connection, gtk, impl ++ "Notification", "ActionInvoked", path, null, 0, &actionInvoked, self, null));
+        self.settings = try Settings.create(a, self.connection);
+        self.notifications = try Notifications.create(a, self.connection);
         try self.subscriptions.append(a, c.g_dbus_connection_signal_subscribe(self.connection, wlr, impl ++ "Session", "Closed", null, null, 0, &sessionClosed, self, null));
         if (c.g_network_monitor_get_default()) |monitor| _ = c.g_signal_connect_data(monitor, "network-changed", @ptrCast(&networkChanged), self, null, 0);
     }
     fn deinit(self: *Server) void {
         self.quitting = true;
+        if (self.settings) |settings| settings.destroy();
+        if (self.notifications) |notifications| notifications.destroy();
         if (c.g_network_monitor_get_default()) |monitor| _ = c.g_signal_handlers_disconnect_matched(monitor, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         for (self.subscriptions.items) |id| c.g_dbus_connection_signal_unsubscribe(self.connection, id);
         self.cancelRequests(null);
@@ -231,23 +237,6 @@ const Server = struct {
             break;
         };
     }
-    fn settingChanged(connection: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, params: ?*c.GVariant, _: ?*anyopaque) callconv(.c) void {
-        _ = c.g_dbus_connection_emit_signal(connection, null, path, public ++ "Settings", "SettingChanged", params, null);
-    }
-    fn actionInvoked(connection: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, params: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
-        const self = cast(Server, data);
-        const app = child(params, 0);
-        defer c.g_variant_unref(app);
-        const id_value = child(params, 1);
-        defer c.g_variant_unref(id_value);
-        const id = text(id_value);
-        const separator = std.mem.indexOfScalar(u8, id, '/') orelse return;
-        for (self.clients.items) |client_info| if (eq(client_info.app, text(app)) and eq(client_info.component, id[0..separator])) {
-            const original_id = a.dupeSentinel(u8, id[separator + 1 ..], 0) catch return;
-            defer a.free(original_id);
-            _ = c.g_dbus_connection_emit_signal(connection, client_info.sender, path, public ++ "Notification", "ActionInvoked", tuple(&.{ string(original_id), child(params, 2), child(params, 3) }), null);
-        };
-    }
     fn sessionClosed(_: ?*c.GDBusConnection, _: [*c]const u8, handle: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
         const self = cast(Server, data);
         for (self.sessions.items) |item| if (eq(item.handle, std.mem.span(handle))) {
@@ -359,20 +348,6 @@ const Request = struct {
             if (self.invocation) |invocation| errorReply(invocation, "Portal request cancelled");
             return;
         }
-        if (self.kind == .direct) {
-            if (reply) |value| {
-                var answer = c.g_variant_ref(value);
-                if (eq(self.interface, "Settings") and eq(self.method, "Read")) {
-                    c.g_variant_unref(answer);
-                    const nested = child(value, 0);
-                    defer c.g_variant_unref(nested);
-                    answer = c.g_variant_take_ref(c.g_variant_new("(v)", nested));
-                }
-                defer c.g_variant_unref(answer);
-                c.g_dbus_method_invocation_return_value_with_unix_fd_list(self.invocation, answer, fds);
-            } else errorReply(self.invocation, if (err) |value| value.message else "Portal backend unavailable");
-            return;
-        }
         var code: u32 = 2;
         var results = dict();
         if (reply) |value| {
@@ -437,9 +412,8 @@ const Request = struct {
 };
 
 fn forward(server: *Server, client_info: *Client, interface: []const u8, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
-    const direct = eq(interface, "Settings") or eq(interface, "Notification");
     const count = c.g_variant_n_children(params);
-    const options = if (!direct) child(params, count - 1) else null;
+    const options = child(params, count - 1);
     defer if (options != null) c.g_variant_unref(options);
     var session_info: ?*Session = null;
     if (eq(interface, "ScreenCast")) {
@@ -453,7 +427,7 @@ fn forward(server: *Server, client_info: *Client, interface: []const u8, method:
             if (session_info.?.state != needed) return error.InvalidSessionState;
         }
     }
-    var request = Request.create(server, client_info, interface, method, options, if (direct) .direct else .request) catch |err| {
+    var request = Request.create(server, client_info, interface, method, options, .request) catch |err| {
         if (session_info != null and eq(method, "CreateSession")) server.closeSession(session_info.?, true);
         return err;
     };
@@ -464,35 +438,23 @@ fn forward(server: *Server, client_info: *Client, interface: []const u8, method:
     }
     var args: [16]?*c.GVariant = undefined;
     var size: usize = 0;
-    if (!direct) {
-        args[size] = object(request.handle);
-        size += 1;
-    }
+    args[size] = object(request.handle);
+    size += 1;
     if (session_info) |item| {
         args[size] = object(item.handle);
         size += 1;
     }
-    if (!eq(interface, "Settings")) {
-        args[size] = string(request.app);
-        size += 1;
-    }
+    args[size] = string(request.app);
+    size += 1;
     const first: usize = if (session_info != null and !eq(method, "CreateSession")) 1 else 0;
     for (first..count) |index| {
-        if (eq(interface, "Notification") and index == 0) {
-            const id = child(params, index);
-            defer c.g_variant_unref(id);
-            if (text(id).len > 512) return error.InvalidNotificationId;
-            const scoped = try std.fmt.allocPrintSentinel(request.arena.allocator(), "{s}/{s}", .{ client_info.component, text(id) }, 0);
-            args[size] = string(scoped);
-        } else args[size] = child(params, index);
+        args[size] = child(params, index);
         size += 1;
     }
     const backend_interface = try std.fmt.allocPrintSentinel(request.arena.allocator(), impl ++ "{s}", .{interface}, 0);
-    const backend_method: [*:0]const u8 = if (eq(interface, "Settings") and eq(method, "ReadOne")) "Read" else request.method;
     const fds = c.g_dbus_message_get_unix_fd_list(c.g_dbus_method_invocation_get_message(invocation));
-    if (direct) request.invocation = @ptrCast(c.g_object_ref(invocation)) else c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
-    const reply_signature: [*:0]const u8 = if (!direct) "(ua{sv})" else if (eq(interface, "Notification")) "()" else if (eq(method, "ReadAll")) "(a{sa{sv}})" else "(v)";
-    c.g_dbus_connection_call_with_unix_fd_list(server.connection, backend(interface), path, backend_interface, backend_method, tuple(args[0..size]), @ptrCast(reply_signature), 0, if (direct) 10000 else 120000, fds, request.cancel, &Request.finish, request);
+    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
+    c.g_dbus_connection_call_with_unix_fd_list(server.connection, backend(interface), path, backend_interface, request.method, tuple(args[0..size]), @ptrCast(@as([*:0]const u8, "(ua{sv})")), 0, 120000, fds, request.cancel, &Request.finish, request);
 }
 fn openRemote(server: *Server, client_info: *Client, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
     const handle = child(params, 0);
@@ -638,6 +600,22 @@ fn dispatch(server: *Server, sender: [*:0]const u8, interface: []const u8, metho
         return;
     }
     const short = interface[public.len..];
+    if (eq(short, "Settings")) {
+        server.settings.?.call(method, params, invocation);
+        return;
+    }
+    if (eq(short, "Notification")) {
+        const id_value = child(params, 0);
+        defer c.g_variant_unref(id_value);
+        const id: [:0]const u8 = std.mem.span(c.g_variant_get_string(id_value, null));
+        if (eq(method, "AddNotification")) {
+            const contents = child(params, 1);
+            defer c.g_variant_unref(contents);
+            try server.notifications.?.add(client_info.sender, client_info.app, id, contents.?);
+        } else server.notifications.?.remove(client_info.sender, id);
+        c.g_dbus_method_invocation_return_value(invocation, null);
+        return;
+    }
     if (eq(short, "Inhibit")) return inhibit(server, client_info, params, invocation);
     if (eq(short, "OpenURI")) return openUri(server, client_info, method, params, invocation);
     if (eq(short, "NetworkMonitor")) return network(server, client_info, method, params, invocation);

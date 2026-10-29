@@ -7,6 +7,8 @@ import signal
 import socket
 import subprocess
 import sys
+import struct
+import zlib
 import tempfile
 import threading
 import time
@@ -69,13 +71,18 @@ def rejected(function, description):
 
 
 backend = connection()
-for name in (GTK, WLR, "org.freedesktop.login1"):
+for name in (GTK, WLR, "org.freedesktop.login1", "org.freedesktop.Notifications", "org.dotfiles.PortalFixture"):
     backend.call_sync(BUS, "/org/freedesktop/DBus", BUS, "RequestName", GLib.Variant("(su)", (name, 4)), None, 0, 1000, None)
 registrations = []
 log = []
 held = {}
 sessions = {}
 notifications = []
+closed_notices = []
+notice_ids = []
+held_notifications = []
+application_actions = []
+next_notice = 10
 inhibitor_reads = []
 
 
@@ -121,6 +128,25 @@ def register(name, methods, properties=(), object_path=P):
 def backend_call(conn, sender, object_path, interface, method, params, invocation):
     values = params.unpack()
     log.append((interface, method, values))
+    if interface == "org.freedesktop.Application":
+        application_actions.append((method, values))
+        invocation.return_value(None)
+        return
+    if interface == "org.freedesktop.Notifications":
+        global next_notice
+        if method == "Notify":
+            notifications.append(values)
+            native_id = values[1] or next_notice
+            if not values[1]: next_notice += 1
+            notice_ids.append(native_id)
+            if values[3] == "Slow notification":
+                held_notifications.append((invocation, native_id))
+            else:
+                invocation.return_value(GLib.Variant("(u)", (native_id,)))
+        else:
+            closed_notices.append(values[0])
+            invocation.return_value(None)
+        return
     if interface == "org.freedesktop.login1.Manager":
         assert values[0] == "sleep:idle", values
         read_fd, write_fd = os.pipe()
@@ -185,6 +211,11 @@ register("Print", [("Print", "osssha{sv}", "ua{sv}")])
 register("Notification", [("AddNotification", "ssa{sv}", ""), ("RemoveNotification", "ss", "")])
 inhibit_info = Gio.DBusNodeInfo.new_for_xml('<node><interface name="org.freedesktop.login1.Manager"><method name="Inhibit"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="h" direction="out"/></method></interface></node>').interfaces[0]
 registrations.append(backend.register_object("/org/freedesktop/login1", inhibit_info, backend_call, None, None))
+notice_xml = interface_xml("Placeholder", [("Notify", "susssasa{sv}i", "u"), ("CloseNotification", "u", "")]).replace(IMP + "Placeholder", "org.freedesktop.Notifications")
+notice_info = Gio.DBusNodeInfo.new_for_xml(notice_xml).interfaces[0]
+registrations.append(backend.register_object("/org/freedesktop/Notifications", notice_info, backend_call, None, None))
+app_xml = interface_xml("Placeholder", [("Activate", "a{sv}", ""), ("ActivateAction", "sava{sv}", "")]).replace(IMP + "Placeholder", "org.freedesktop.Application")
+registrations.append(backend.register_object("/org/dotfiles/PortalFixture", Gio.DBusNodeInfo.new_for_xml(app_xml).interfaces[0], backend_call, None, None))
 client = connection()
 other = connection()
 responses = {}
@@ -199,7 +230,9 @@ client.signal_subscribe(PUB + "Desktop", PUB + "Settings", "SettingChanged", P, 
 client.signal_subscribe(PUB + "Desktop", PUB + "Notification", "ActionInvoked", P, None, 0, lambda *event: notification_actions.append(event[-1].unpack()))
 other.signal_subscribe(PUB + "Desktop", PUB + "Notification", "ActionInvoked", P, None, 0, lambda *event: foreign_actions.append(event[-1].unpack()))
 client.signal_subscribe(PUB + "Desktop", PUB + "Session", "Closed", None, None, 0, lambda conn, sender, path, *event: closed_sessions.append(path))
-env = dict(os.environ, XDG_RUNTIME_DIR=str(root), DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDRESS"], G_DEBUG="fatal-criticals")
+for directory in ("home", "config", "data/fonts", "cache"):
+    (root / directory).mkdir(parents=True)
+env = dict(os.environ, XDG_RUNTIME_DIR=str(root), HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"), XDG_CACHE_HOME=str(root / "cache"), GSETTINGS_BACKEND="keyfile", DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDRESS"], G_DEBUG="fatal-criticals")
 output = (root / "broker.log").open("w")
 process = subprocess.Popen([args.binary, "portal"], env=env, stdout=output, stderr=output)
 
@@ -221,11 +254,20 @@ try:
     assert process.poll() is None, (root / "broker.log").read_text()
     call(client, "org.freedesktop.host.portal.Registry", "Register", GLib.Variant("(sa{sv})", ("org.dotfiles.PortalFixture", {})))
     reply, _ = call(client, PUB + "Settings", "ReadOne", GLib.Variant("(ss)", ("org.freedesktop.appearance", "color-scheme")))
-    assert reply.get_child_value(0).get_variant().get_uint32() == 1
+    assert reply.get_child_value(0).get_variant().get_uint32() == 0
     reply, _ = call(client, PUB + "Settings", "Read", GLib.Variant("(ss)", ("org.freedesktop.appearance", "color-scheme")))
-    assert reply.get_child_value(0).get_variant().get_variant().get_uint32() == 1
-    backend.emit_signal(None, P, IMP + "Settings", "SettingChanged", GLib.Variant("(ssv)", ("org.freedesktop.appearance", "color-scheme", GLib.Variant("u", 2))))
-    wait(lambda: settings_changed, "settings change forwarded")
+    assert reply.get_child_value(0).get_variant().get_variant().get_uint32() == 0
+    reply, _ = call(client, PUB + "Settings", "ReadAll", GLib.Variant("(as)", (["org.freedesktop.*"],)))
+    assert set(reply.unpack()[0]) == {"org.freedesktop.appearance"}
+    rejected(lambda: call(client, PUB + "Settings", "ReadOne", GLib.Variant("(ss)", ("org.gnome.desktop.interface", "does-not-exist"))), "unknown setting accepted")
+    setter = subprocess.Popen([sys.executable, "-c", "from gi.repository import Gio; s=Gio.Settings.new('org.gnome.desktop.interface'); assert s.set_string('color-scheme', 'prefer-dark'); Gio.Settings.sync()"], env=env, stdout=output, stderr=output)
+    wait(lambda: setter.poll() is not None, "settings writer exits")
+    assert setter.returncode == 0, (root / "broker.log").read_text()
+    wait(lambda: any(event == ("org.freedesktop.appearance", "color-scheme", 1) for event in settings_changed), "native appearance change pushed")
+    (root / "data/fonts/fixture-change").write_text("font directory changed")
+    wait(lambda: any(event[0] == "org.gnome.fontconfig" for event in settings_changed), "font serial invalidated")
+    assert not any(entry[0] == IMP + "Settings" for entry in log), "settings still used GTK backend"
+    print("PASS native settings reads, namespace filters, appearance updates and font invalidation", flush=True)
     handle, response = request("FileChooser", "OpenFile", "(ssa{sv})", ("", "Choose a file", {"handle_token": GLib.Variant("s", "files")}))
     assert response == (0, {"uris": ["file:///tmp/selected.txt"]}), response
     assert handle.endswith("/files")
@@ -286,14 +328,54 @@ try:
     backend.call_sync(BUS, "/org/freedesktop/DBus", BUS, "RequestName", GLib.Variant("(su)", (WLR, 4)), None, 0, 1000, None)
     print("PASS screencast backend disappearance invalidates sessions", flush=True)
 
-    call(client, PUB + "Notification", "AddNotification", GLib.Variant("(sa{sv})", ("notice", {"title": GLib.Variant("s", "Native portal")})))
-    call(client, PUB + "Notification", "RemoveNotification", GLib.Variant("(s)", ("notice",)))
+    call(client, PUB + "Notification", "AddNotification", GLib.Variant("(sa{sv})", ("notice", {"title": GLib.Variant("s", "Native portal"), "body": GLib.Variant("s", "plain <body> & text"), "priority": GLib.Variant("s", "high"), "default-action": GLib.Variant("s", "default")})))
+    wait(lambda: notifications, "native notification delivered")
     assert notifications[0][0] == "org.dotfiles.PortalFixture"
+    assert notifications[0][3:5] == ("Native portal", "plain &lt;body&gt; &amp; text"), notifications[0]
+    assert notifications[0][6]["urgency"] == 2
     call(other, "org.freedesktop.host.portal.Registry", "Register", GLib.Variant("(sa{sv})", ("org.dotfiles.PortalFixture", {})))
-    backend.emit_signal(None, P, IMP + "Notification", "ActionInvoked", GLib.Variant("(sssav)", (notifications[0][0], notifications[0][1], "default", [])))
+    backend.emit_signal(None, "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "ActionInvoked", GLib.Variant("(us)", (10, "default")))
     wait(lambda: notification_actions, "notification action forwarded")
     assert notification_actions == [("notice", "default", [])], notification_actions
     assert not foreign_actions, "notification action leaked to another client with the same app ID"
+    call(client, PUB + "Notification", "AddNotification", GLib.Variant("(sa{sv})", ("notice", {"title": GLib.Variant("s", "Replaced")})))
+    wait(lambda: len(notifications) == 2, "notification replaced")
+    assert notifications[-1][1] == 10, notifications
+    call(client, PUB + "Notification", "RemoveNotification", GLib.Variant("(s)", ("notice",)))
+    wait(lambda: 10 in closed_notices, "notification removed")
+    assert not any(entry[0] == IMP + "Notification" for entry in log), "notification still used GTK backend"
+    print("PASS native notification delivery, markup, urgency, replacement, removal and action isolation", flush=True)
+    def png_chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    png = b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)) + png_chunk(b"IDAT", zlib.compress(b"\0\xff\0\0\xff")) + png_chunk(b"IEND", b"")
+    icon = Gio.BytesIcon.new(GLib.Bytes.new(png)).serialize()
+    buttons = GLib.Variant("aa{sv}", [{"label": GLib.Variant("s", "Open"), "action": GLib.Variant("s", "app.open"), "target": GLib.Variant("s", "payload")}])
+    call(client, PUB + "Notification", "AddNotification", GLib.Variant("(sa{sv})", ("image", {"title": GLib.Variant("s", "Image"), "icon": icon, "buttons": buttons})))
+    wait(lambda: len(notifications) == 3, "image notification delivered")
+    image_id = notice_ids[-1]
+    assert "image-data" in notifications[-1][6], notifications[-1]
+    image = notifications[-1][6]["image-data"]
+    assert 0 < image[0] <= 128 and 0 < image[1] <= 128 and image[-1]
+    backend.emit_signal(None, "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "ActionInvoked", GLib.Variant("(us)", (image_id, "button0")))
+    wait(lambda: any(event == ("ActivateAction", ("open", ["payload"], {})) for event in application_actions), "application action activated with target")
+    call(client, PUB + "Notification", "AddNotification", GLib.Variant("(sa{sv})", ("slow", {"title": GLib.Variant("s", "Slow notification")})))
+    wait(lambda: held_notifications, "Notify reply held")
+    call(client, PUB + "Notification", "RemoveNotification", GLib.Variant("(s)", ("slow",)))
+    pending, slow_id = held_notifications.pop()
+    pending.return_value(GLib.Variant("(u)", (slow_id,)))
+    wait(lambda: slow_id in closed_notices, "removal during Notify closes returned ID")
+    before_actions = len(notification_actions)
+    backend.call_sync(BUS, "/org/freedesktop/DBus", BUS, "ReleaseName", GLib.Variant("(s)", ("org.freedesktop.Notifications",)), None, 0, 1000, None)
+    next_notice = image_id
+    backend.call_sync(BUS, "/org/freedesktop/DBus", BUS, "RequestName", GLib.Variant("(su)", ("org.freedesktop.Notifications", 4)), None, 0, 1000, None)
+    count_before = len(notifications)
+    call(other, PUB + "Notification", "AddNotification", GLib.Variant("(sa{sv})", ("after-restart", {"title": GLib.Variant("s", "New owner")})))
+    wait(lambda: len(notifications) > count_before, "notification after service restart")
+    backend.emit_signal(None, "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "ActionInvoked", GLib.Variant("(us)", (image_id, "default")))
+    wait(lambda: foreign_actions, "reused ID belongs to new owner")
+    assert foreign_actions == [("after-restart", "default", [])], foreign_actions
+    assert len(notification_actions) == before_actions, "stale owner received reused notification ID"
+    print("PASS notification images, application actions, pending removal and daemon restart isolation", flush=True)
 
     reply, _ = call(client, PUB + "NetworkMonitor", "GetStatus")
     assert set(reply.unpack()[0]) == {"available", "metered", "connectivity"}

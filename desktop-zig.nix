@@ -10,6 +10,13 @@ let
     inherit pkgs;
     dbus = dbusLibraries;
   };
+  # Keep the portal's xsettings namespace without retaining the daemon.
+  portalSettingsSchemas =
+    pkgs.runCommand "gnome-settings-daemon-${pkgs.gnome-settings-daemon.version}-gsettings-schemas" { }
+      ''
+        mkdir -p $out/share
+        cp -r ${pkgs.gnome-settings-daemon}/share/gsettings-schemas/ $out/share/
+      '';
   feedbackSound =
     pkgs.runCommand "desktop-volume-feedback.wav"
       {
@@ -61,7 +68,7 @@ pkgs.stdenv.mkDerivation {
   DESKTOP_RUNTIME_POWER_PKEXEC = "/run/wrappers/bin/pkexec";
   DESKTOP_RUNTIME_PIXBUF_LOADERS = "${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache";
   DESKTOP_RUNTIME_SOUND_FILE = "${feedbackSound}";
-  DESKTOP_RUNTIME_DATA_DIRS = "${placeholder "out"}/share:${pkgs.adwaita-icon-theme}/share:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}";
+  DESKTOP_RUNTIME_DATA_DIRS = "${placeholder "out"}/share:${pkgs.adwaita-icon-theme}/share:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${portalSettingsSchemas}/share/gsettings-schemas/gnome-settings-daemon-${pkgs.gnome-settings-daemon.version}";
   buildPhase = ''
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
     zig build --prefix "$out" -Doptimize=ReleaseSafe

@@ -20,6 +20,7 @@ pkgs.runCommand "desktop-portal-check"
     ];
   }
   ''
+    export GSETTINGS_SCHEMA_DIR=${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}/glib-2.0/schemas
     export PYTHONDONTWRITEBYTECODE=1
     export HOME=$TMPDIR/home
     mkdir -p "$HOME"

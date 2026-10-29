@@ -40,6 +40,7 @@ pub fn build(b: *std.Build) void {
     portal.addImport("libc", libc);
     portal.link_libc = true;
     portal.linkSystemLibrary("gio-2.0", .{});
+    portal.linkSystemLibrary("gdk-pixbuf-2.0", .{});
     session.root_module.addImport("portal", portal);
     const portal_fixture = b.addExecutable(.{ .name = "desktop-portal-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-portal-fixture.zig"), .target = target, .optimize = optimize }) });
     portal_fixture.root_module.addImport("portal", portal);
