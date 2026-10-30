@@ -1,7 +1,4 @@
-{
-  pkgs,
-  llvm ? false,
-}:
+{ pkgs }:
 let
   compositorLibraries = import ./desktop-compositor-libs.nix { inherit pkgs; };
   dbusLibraries = import ./desktop-dbus-libs.nix { inherit pkgs; };
@@ -77,7 +74,7 @@ pkgs.stdenv.mkDerivation {
   DESKTOP_RUNTIME_DATA_DIRS = "${placeholder "out"}/share:${gtkLibraries.gtk}/share/gsettings-schemas/${gtkLibraries.gtk.name}:${pkgs.adwaita-icon-theme}/share:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${portalSettingsSchemas}/share/gsettings-schemas/gnome-settings-daemon-${pkgs.gnome-settings-daemon.version}";
   buildPhase = ''
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-    zig build --prefix "$out" -Doptimize=ReleaseSafe -Dllvm=${pkgs.lib.boolToString llvm}
+    zig build --prefix "$out" -Doptimize=ReleaseSafe
     # Executable interfaces required by SSH and the screenshot portal.
     for name in desktop-askpass grim slurp; do
       ln -s desktop-zig "$out/bin/$name"
@@ -107,7 +104,7 @@ pkgs.stdenv.mkDerivation {
     export GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
     export DESKTOP_PANEL_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
     export DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
-    G_DEBUG=fatal-criticals zig build test compositor-fixture --prefix "$out" -Doptimize=ReleaseSafe -Dllvm=${pkgs.lib.boolToString llvm} --summary all
+    G_DEBUG=fatal-criticals zig build test compositor-fixture --prefix "$out" -Doptimize=ReleaseSafe --summary all
     python3 tests/check-desktop-compositor.py --bin-dir "$out/bin" --wtype "$(command -v wtype)"
   '';
   installPhase = ''

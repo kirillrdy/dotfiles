@@ -13,7 +13,6 @@ fn protocolCode(b: *std.Build, xml: std.Build.LazyPath, output: []const u8) std.
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const llvm = b.option(bool, "llvm", "Compile with LLVM instead of Zig's native backend") orelse false;
     const desktop = b.createModule(.{
         .root_source_file = b.path("desktop-zig.zig"),
         .target = target,
@@ -40,7 +39,7 @@ pub fn build(b: *std.Build) void {
         desktop.linkSystemLibrary(name, .{});
     }
     desktop.addImport("compositor-abi", compositor.createModule());
-    const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = desktop, .use_llvm = llvm });
+    const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = desktop });
     b.installArtifact(session);
     b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
     b.step("shell", "Build the desktop shell").dependOn(&b.addInstallArtifact(session, .{}).step);
@@ -50,7 +49,7 @@ pub fn build(b: *std.Build) void {
     const test_module = b.createModule(.{ .root_source_file = b.path("desktop-test-runner.zig"), .target = target, .optimize = optimize, .link_libc = true });
     for (desktop.import_table.keys(), desktop.import_table.values()) |name, dependency| test_module.addImport(name, dependency);
     test_module.link_objects.appendSlice(b.graph.arena, desktop.link_objects.items) catch @panic("OOM");
-    const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module, .use_llvm = llvm });
+    const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module });
     const test_step = b.step("test", "Run unit, ABI, protocol and widget checks (requires Wayland)");
     test_step.dependOn(&b.addRunArtifact(tests).step);
     test_module.addImport("gtk-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n", &.{ "gtk+-unix-print-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client" }));
@@ -140,11 +139,11 @@ pub fn build(b: *std.Build) void {
         const module = b.createModule(.{ .root_source_file = b.path(fixture.source), .target = target, .optimize = optimize });
         module.addImport("desktop", desktop);
         const artifact = if (fixture.library)
-            b.addLibrary(.{ .name = fixture.name, .root_module = module, .linkage = .dynamic, .use_llvm = llvm })
+            b.addLibrary(.{ .name = fixture.name, .root_module = module, .linkage = .dynamic })
         else if (fixture.test_runner)
-            b.addTest(.{ .name = fixture.name, .root_module = module, .use_llvm = llvm, .filters = if (std.mem.eql(u8, fixture.step, "memory-tests")) &.{"memory:"} else &.{"session:"} })
+            b.addTest(.{ .name = fixture.name, .root_module = module, .filters = if (std.mem.eql(u8, fixture.step, "memory-tests")) &.{"memory:"} else &.{"session:"} })
         else
-            b.addExecutable(.{ .name = fixture.name, .root_module = module, .use_llvm = llvm });
+            b.addExecutable(.{ .name = fixture.name, .root_module = module });
         if (fixture.install) b.installArtifact(artifact);
         const step = if (b.top_level_steps.get(fixture.step)) |existing| &existing.step else b.step(fixture.step, "Build isolated test client");
         step.dependOn(&b.addInstallArtifact(artifact, .{}).step);
