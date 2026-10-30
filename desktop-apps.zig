@@ -11,9 +11,7 @@ pub const KeyEvent = extern struct {
     keyval: c_uint,
 };
 extern fn gtk_widget_event(widget: *c.GtkWidget, event: *anyopaque) c.gboolean;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
     _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
 }

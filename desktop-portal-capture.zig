@@ -4,9 +4,7 @@ const c = @import("gtk");
 const libc = @import("libc");
 const sc = @import("screenshot");
 const protocols = sc.protocols;
-fn cast(comptime T: type, value: anytype) *T {
-    return @ptrCast(@alignCast(value));
-}
+const cast = c.__zig.cast;
 pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;
 
 /// A private Wayland connection keeps capture traffic off GTK's event queue.

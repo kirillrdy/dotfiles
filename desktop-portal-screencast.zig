@@ -4,9 +4,7 @@ const c = @import("gtk");
 const p = @import("pipewire");
 const Pod = @import("audio-pod");
 const Capture = @import("desktop-portal-capture.zig").Capture;
-fn cast(comptime T: type, value: anytype) *T {
-    return @ptrCast(@alignCast(value));
-}
+const cast = c.__zig.cast;
 fn control(loop: *p.pw_loop) struct { methods: *const p.spa_loop_control_methods, data: ?*anyopaque } {
     const iface = cast(p.spa_interface, loop.*.control);
     return .{ .methods = @ptrCast(@alignCast(iface.cb.funcs)), .data = iface.cb.data };

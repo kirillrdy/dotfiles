@@ -4,9 +4,7 @@ const polkit = @import("polkit");
 const c = polkit.c;
 const assert = std.debug.assert;
 
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 
 const Response = struct {
     window: *c.GtkWidget,

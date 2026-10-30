@@ -22,12 +22,8 @@ fn iface(kind: Kind) [:0]const u8 {
         .login => "org.dotfiles.Desktop.Secrets",
     };
 }
-fn eq(x: []const u8, y: []const u8) bool {
-    return std.mem.eql(u8, x, y);
-}
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const eq = c.__zig.eq;
+const cast = c.__zig.cast;
 fn child(v: ?*c.GVariant, i: usize) *c.GVariant {
     return c.g_variant_get_child_value(v, i).?;
 }

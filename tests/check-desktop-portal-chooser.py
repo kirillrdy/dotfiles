@@ -1,13 +1,13 @@
-"""Exercise native file and account dialogs on a private X server."""
+"""Exercise native file and account dialogs on a private Wayland compositor."""
 import argparse
 import os
 from pathlib import Path
-import re
 import signal
 import subprocess as sp
 import tempfile
 import time
 import gi
+from wayland_ui import WaylandUI
 
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib
@@ -22,7 +22,7 @@ for name in ("config", "cache", "data", "home"):
 selected = root / "selected file.txt"
 selected.write_text("native chooser fixture\n")
 (root / "home" / ".face").write_text("account picture fixture\n")
-env = dict(os.environ, HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"), XDG_RUNTIME_DIR=str(root), GTK_USE_PORTAL="0", GIO_USE_VFS="local", NO_AT_BRIDGE="1", GSETTINGS_BACKEND="memory", G_DEBUG="fatal-criticals")
+env = dict(os.environ, HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"), GTK_USE_PORTAL="0", GIO_USE_VFS="local", NO_AT_BRIDGE="1", GSETTINGS_BACKEND="memory", G_DEBUG="fatal-criticals")
 PUB = "org.freedesktop.portal."
 P = "/org/freedesktop/portal/desktop"
 context = GLib.MainContext.default()
@@ -33,7 +33,9 @@ def wait(check, description, timeout=12):
     while not check():
         while context.pending():
             context.iteration(False)
-        assert time.monotonic() < until, description
+        if time.monotonic() >= until:
+            ui.run("grim", str(Path(os.environ.get("TMPDIR", root)) / "portal-ui-failure.png"), check=False)
+            raise AssertionError(description + "\n" + (root / "broker.log").read_text())
         time.sleep(0.01)
 
 
@@ -63,13 +65,8 @@ def rejected(function):
     raise AssertionError("invalid operation accepted")
 
 
-def xdo(*command, check=True):
-    return sp.run(["xdotool", *map(str, command)], env=env, check=check, capture_output=True, text=True, timeout=5)
-
-
-def window(title):
-    result = xdo("search", "--onlyvisible", "--name", "^" + re.escape(title) + "$", check=False)
-    return result.stdout.splitlines()[0] if result.returncode == 0 and result.stdout else None
+ui = WaylandUI(env)
+window = ui.window
 
 
 client = connection()
@@ -96,25 +93,25 @@ def request(title, method="OpenFile", options=None, conn=client):
 try:
     wait(lambda: name_owned(PUB + "Desktop"), "native broker name")
     assert not name_owned("org.freedesktop.impl.portal.desktop.gtk")
-    handle, xid = request("Native portal open")
-    xdo("windowfocus", "--sync", xid)
-    xdo("key", "--clearmodifiers", "ctrl+l")
-    xdo("type", "--clearmodifiers", "--delay", 1, str(selected))
-    xdo("key", "--clearmodifiers", "Return")
+    handle, title = request("Native portal open")
+    ui.focus(title)
+    ui.key("ctrl+l")
+    ui.type(str(selected))
+    ui.key("Return")
     wait(lambda: handle in responses, "open response")
     code, values = responses[handle]
     assert code == 0 and values["uris"] == [selected.as_uri()], responses[handle]
     assert values["writable"] is True
     assert not name_owned("org.freedesktop.impl.portal.desktop.gtk"), "chooser used external GTK backend"
-    handle, xid = request("Native portal save", "SaveFile", {"current_name": GLib.Variant("s", "ui-save.txt")})
-    xdo("windowfocus", "--sync", xid)
-    xdo("key", "--clearmodifiers", "alt+s")
+    handle, title = request("Native portal save", "SaveFile", {"current_name": GLib.Variant("s", "ui-save.txt")})
+    ui.focus(title)
+    ui.key("alt+s")
     wait(lambda: handle in responses, "save response")
     assert responses[handle][0] == 0 and responses[handle][1]["uris"] == [(root / "ui-save.txt").as_uri()], responses[handle]
     assert not (root / "ui-save.txt").exists(), "portal wrote the application's output file"
-    handle, xid = request("Native portal cancel")
-    xdo("windowfocus", "--sync", xid)
-    xdo("key", "--clearmodifiers", "Escape")
+    handle, title = request("Native portal cancel")
+    ui.focus(title)
+    ui.key("Escape")
     wait(lambda: handle in responses, "cancel response")
     assert responses[handle][0] == 1
     handle, _ = request("Native portal close")
@@ -139,16 +136,16 @@ try:
         wait(lambda: window(account_title), "native account window")
         return account_handle, window(account_title)
 
-    handle, xid = account_request()
+    handle, title = account_request()
     call(client, PUB + "NetworkMonitor", "GetStatus")
     assert handle not in responses, "account data released before consent"
-    xdo("windowfocus", "--sync", xid)
-    xdo("key", "--clearmodifiers", "Return")
+    ui.focus(title)
+    ui.key("Return")
     wait(lambda: handle in responses, "account default response")
     assert responses[handle] == (1, {}), responses[handle]
-    handle, xid = account_request()
-    xdo("windowfocus", "--sync", xid)
-    xdo("key", "--clearmodifiers", "alt+s")
+    handle, title = account_request()
+    ui.focus(title)
+    ui.key("alt+s")
     wait(lambda: handle in responses, "account consent response")
     code, values = responses[handle]
     assert code == 0, responses[handle]
@@ -158,9 +155,9 @@ try:
     assert values["image"] == (root / "home" / ".face").as_uri(), values
     assert not name_owned("org.freedesktop.impl.portal.desktop.gtk"), "account used external GTK backend"
     (root / "home" / ".face").unlink()
-    handle, xid = account_request()
-    xdo("windowfocus", "--sync", xid)
-    xdo("key", "--clearmodifiers", "alt+s")
+    handle, title = account_request()
+    ui.focus(title)
+    ui.key("alt+s")
     wait(lambda: handle in responses, "account without picture")
     assert responses[handle][0] == 0 and responses[handle][1]["image"] == ""
     rejected(lambda: account_request(options={"reason": GLib.Variant("b", True)}))

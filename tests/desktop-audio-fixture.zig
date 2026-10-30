@@ -8,9 +8,7 @@ const assert = std.debug.assert;
 const a = std.heap.page_allocator;
 var stopping = false;
 var watch = false;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 fn pump() void {
     audio.dispatch();
     c.g_usleep(1000);

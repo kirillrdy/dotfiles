@@ -11,15 +11,11 @@ const wireless_iface = device_iface ++ ".Wireless";
 const ap_iface = name ++ ".AccessPoint";
 const profile_iface = name ++ ".Settings.Connection";
 const active_iface = name ++ ".Connection.Active";
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 fn z(value: []const u8) [:0]u8 {
     return a.dupeSentinel(u8, value, 0) catch @panic("out of memory");
 }
-fn eq(x: []const u8, y: []const u8) bool {
-    return std.mem.eql(u8, x, y);
-}
+const eq = c.__zig.eq;
 fn string(value: ?*c.GVariant) []const u8 {
     return if (value) |v| std.mem.span(c.g_variant_get_string(v, null)) else "";
 }

@@ -4,9 +4,7 @@ const askpass = @import("askpass");
 const c = askpass.c;
 const libc = @import("libc");
 const assert = std.debug.assert;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 const Response = struct {
     dialog: *askpass.Dialog,
     response: c_int,

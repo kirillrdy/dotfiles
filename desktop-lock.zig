@@ -26,9 +26,7 @@ extern fn munlock(*const anyopaque, usize) c_int;
 extern fn signal(c_int, ?*const fn (c_int) callconv(.c) void) ?*const fn (c_int) callconv(.c) void;
 extern fn setsid() c_int;
 
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 fn request(proxy: *Proxy, opcode: u32) void {
     _ = c.wl_proxy_marshal_flags(proxy, opcode, null, c.wl_proxy_get_version(proxy), 0);
 }

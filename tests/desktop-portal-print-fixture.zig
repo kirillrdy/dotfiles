@@ -5,9 +5,7 @@ const libc = @import("libc");
 const printing = @import("printing");
 const expect = std.testing.expect;
 var io: std.Io = undefined;
-fn cast(comptime T: type, value: anytype) *T {
-    return @ptrCast(@alignCast(value));
-}
+const cast = c.__zig.cast;
 fn pump() void {
     while (c.g_main_context_iteration(null, 0) != 0) {}
     io.sleep(.fromMilliseconds(5), .awake) catch {};

@@ -9,9 +9,7 @@ const authority_path = "/org/freedesktop/PolicyKit1/Authority";
 const agent = name ++ ".AuthenticationAgent";
 const path = "/org/dotfiles/PolicyKit1/AuthenticationAgent";
 const xml = "<node><interface name='" ++ agent ++ "'><method name='BeginAuthentication'><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='a{ss}' direction='in'/><arg type='s' direction='in'/><arg type='a(sa{sv})' direction='in'/></method><method name='CancelAuthentication'><arg type='s' direction='in'/></method></interface></node>";
-fn cast(comptime T: type, value: anytype) *T {
-    return @ptrCast(@alignCast(value));
-}
+const cast = c.__zig.cast;
 fn text(value: ?*c.GVariant) [:0]const u8 {
     return std.mem.span(c.g_variant_get_string(value, null));
 }

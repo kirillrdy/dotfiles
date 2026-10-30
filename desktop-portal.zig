@@ -15,12 +15,8 @@ const Capture = @import("desktop-portal-capture.zig");
 const Video = @import("desktop-portal-screencast.zig");
 const bus = "org.freedesktop.DBus";
 const bus_path = "/org/freedesktop/DBus";
-fn cast(comptime T: type, value: anytype) *T {
-    return @ptrCast(@alignCast(value));
-}
-fn eq(left: []const u8, right: []const u8) bool {
-    return std.mem.eql(u8, left, right);
-}
+const cast = c.__zig.cast;
+const eq = c.__zig.eq;
 fn text(value: ?*c.GVariant) []const u8 {
     return std.mem.span(c.g_variant_get_string(value, null));
 }
@@ -40,9 +36,7 @@ fn tuple(values: []const ?*c.GVariant) ?*c.GVariant {
 fn dict() ?*c.GVariant {
     return c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0);
 }
-fn child(value: ?*c.GVariant, index: usize) ?*c.GVariant {
-    return c.g_variant_get_child_value(value, index);
-}
+const child = c.g_variant_get_child_value;
 fn errorReply(invocation: ?*c.GDBusMethodInvocation, message: [*:0]const u8) void {
     c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.portal.Error.Failed", message);
 }

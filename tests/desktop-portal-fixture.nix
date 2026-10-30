@@ -22,8 +22,10 @@ pkgs.runCommand "desktop-portal-check"
     nativeBuildInputs = [
       (pkgs.python3.withPackages (p: [ p.pygobject3 ]))
       pkgs.dbus
-      pkgs.xorg-server
-      pkgs.xdotool
+      pkgs.labwc
+      pkgs.wlrctl
+      pkgs.wtype
+      pkgs.grim
     ];
     FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; };
   }
@@ -32,6 +34,7 @@ pkgs.runCommand "desktop-portal-check"
     export XDG_DATA_DIRS=${gtk}/share/gsettings-schemas/${gtk.name}:${pkgs.adwaita-icon-theme}/share
     export GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
     export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONPATH=${./.}
     export XDG_CONFIG_HOME=$TMPDIR/config
     export XDG_CACHE_HOME=$TMPDIR/cache
     export XDG_DATA_HOME=$TMPDIR/data
@@ -42,15 +45,24 @@ pkgs.runCommand "desktop-portal-check"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
       python3 ${./check-desktop-portal-email.py} --binary ${fixture}/bin/desktop-portal-fixture
 
-    Xvfb :92 -nolisten tcp &
-    chooser_xvfb=$!
-    trap 'kill "$chooser_xvfb"' EXIT
+    export XDG_RUNTIME_DIR=$TMPDIR/runtime
+    mkdir -m 700 "$XDG_RUNTIME_DIR"
+    mkdir -p "$TMPDIR/labwc"
+    echo '<labwc_config><keyboard><default /></keyboard></labwc_config>' > "$TMPDIR/labwc/rc.xml"
+    touch "$TMPDIR/labwc/autostart"
+    export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=1
+    export LABWC_UPDATE_ACTIVATION_ENV=false
+    labwc -C "$TMPDIR/labwc" > "$TMPDIR/labwc.log" 2>&1 &
+    compositor_pid=$!
+    trap 'kill "$compositor_pid"' EXIT
     for attempt in $(seq 1 100); do
-      test -S /tmp/.X11-unix/X92 && break
+      test -S "$XDG_RUNTIME_DIR/wayland-0" && break
+      kill -0 "$compositor_pid" || { cat "$TMPDIR/labwc.log"; exit 1; }
       sleep 0.05
     done
-    export DISPLAY=:92
-    export GDK_BACKEND=x11
+    test -S "$XDG_RUNTIME_DIR/wayland-0"
+    export WAYLAND_DISPLAY=wayland-0
+    export GDK_BACKEND=wayland
     export NO_AT_BRIDGE=1
     export GTK_USE_PORTAL=0
     export GIO_USE_VFS=local

@@ -3,9 +3,7 @@ const std = @import("std");
 pub const c = @import("gtk");
 const libc = @import("libc");
 
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 
 pub const Dialog = struct {
     window: *c.GtkWidget,

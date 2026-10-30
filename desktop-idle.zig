@@ -8,9 +8,7 @@ const Proxy = c.wl_proxy;
 const login_name = "org.freedesktop.login1";
 const login_path = "/org/freedesktop/login1";
 const login_interface = "org.freedesktop.login1.Manager";
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 fn destroyProxy(proxy: *Proxy) void {
     _ = c.wl_proxy_marshal_flags(proxy, 0, null, c.wl_proxy_get_version(proxy), 1);
 }

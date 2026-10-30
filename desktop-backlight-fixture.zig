@@ -5,9 +5,7 @@ const backlight = @import("backlight");
 const osd = @import("desktop-osd.zig");
 const quick = @import("desktop-quick-settings.zig");
 const assert = std.debug.assert;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 fn pump() void {
     while (c.g_main_context_iteration(null, 0) != 0) {}
     c.g_usleep(1000);

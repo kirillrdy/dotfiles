@@ -1,9 +1,7 @@
 //! Native Wayland windows for private compositor tests.
 const std = @import("std");
 const c = @import("gtk");
-fn cast(comptime T: type, p: anytype) *T {
-    return @ptrCast(@alignCast(p));
-}
+const cast = c.__zig.cast;
 fn activeChanged(object: *c.GObject, _: ?*c.GParamSpec, _: ?*anyopaque) callconv(.c) void {
     const window = cast(c.GtkWindow, object);
     if (c.gtk_window_is_active(window) != 0) {

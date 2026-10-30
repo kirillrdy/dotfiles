@@ -8,6 +8,16 @@
 const __root = @This();
 pub const __helpers = @import("std").zig.c_translation.helpers;
 
+// Zig helpers shared by toolkit consumers; excluded from C ABI comparisons.
+pub const __zig = struct {
+    pub fn cast(comptime T: type, ptr: anytype) *T {
+        return @ptrCast(@alignCast(ptr));
+    }
+    pub fn eq(left: []const u8, right: []const u8) bool {
+        return @import("std").mem.eql(u8, left, right);
+    }
+};
+
 pub const gint8 = i8;
 
 pub const guint8 = u8;

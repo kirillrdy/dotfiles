@@ -4,9 +4,7 @@ const widgets = @import("desktop-widgets.zig");
 const c = widgets.c;
 const allocator = std.heap.page_allocator;
 
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 
 pub const Config = struct {
     height: u16 = 32,

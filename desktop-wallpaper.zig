@@ -3,9 +3,7 @@ const std = @import("std");
 const c = @import("gtk");
 const allocator = std.heap.page_allocator;
 
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 
 fn paint(cr: *c.cairo_t, image: *c.GdkPixbuf, width: f64, height: f64) void {
     if (width <= 0 or height <= 0) return;

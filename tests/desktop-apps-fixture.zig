@@ -3,9 +3,7 @@ const std = @import("std");
 const apps = @import("apps");
 const c = apps.c;
 const assert = std.debug.assert;
-fn cast(comptime T: type, p: anytype) *T {
-    return @ptrCast(@alignCast(p));
-}
+const cast = c.__zig.cast;
 fn eq(actual: [*c]const u8, expected: []const u8) void {
     assert(std.mem.eql(u8, std.mem.span(actual), expected));
 }

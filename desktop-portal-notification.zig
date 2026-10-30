@@ -3,18 +3,12 @@ const std = @import("std");
 const c = @import("gtk");
 const fdo = "org.freedesktop.Notifications";
 const object_path = "/org/freedesktop/Notifications";
-fn eq(left: []const u8, right: []const u8) bool {
-    return std.mem.eql(u8, left, right);
-}
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const eq = c.__zig.eq;
+const cast = c.__zig.cast;
 fn lookup(dict: ?*c.GVariant, key: [*:0]const u8, signature: [*:0]const u8) ?*c.GVariant {
     return c.g_variant_lookup_value(dict, key, @ptrCast(signature));
 }
-fn child(value: ?*c.GVariant, index: usize) ?*c.GVariant {
-    return c.g_variant_get_child_value(value, index);
-}
+const child = c.g_variant_get_child_value;
 fn text(value: ?*c.GVariant) [*:0]const u8 {
     return if (value == null) "" else c.g_variant_get_string(value, null);
 }

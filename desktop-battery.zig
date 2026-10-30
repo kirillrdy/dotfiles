@@ -87,9 +87,7 @@ pub const Device = struct {
     time_full: i64 = 0,
     threshold: bool = false,
 };
-fn eq(left: []const u8, right: []const u8) bool {
-    return std.mem.eql(u8, left, right);
-}
+const eq = c.__zig.eq;
 fn validName(name: []const u8) bool {
     return name.len > 0 and name.len < 256 and name[0] != '.' and std.mem.indexOfAny(u8, name, "/\x00") == null;
 }

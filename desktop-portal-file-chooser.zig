@@ -1,15 +1,9 @@
 //! Native file portal dialogs, using the shell's existing GTK toolkit.
 const std = @import("std");
 const c = @import("gtk");
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
-fn eq(left: []const u8, right: []const u8) bool {
-    return std.mem.eql(u8, left, right);
-}
-fn child(value: ?*c.GVariant, index: usize) ?*c.GVariant {
-    return c.g_variant_get_child_value(value, index);
-}
+const cast = c.__zig.cast;
+const eq = c.__zig.eq;
+const child = c.g_variant_get_child_value;
 fn text(value: ?*c.GVariant) [:0]const u8 {
     return std.mem.span(c.g_variant_get_string(value, null));
 }

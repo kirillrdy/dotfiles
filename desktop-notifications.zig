@@ -3,9 +3,7 @@ const std = @import("std");
 const view = @import("desktop-notification-view.zig");
 const c = view.c;
 const allocator = std.heap.page_allocator;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 const path = "/org/freedesktop/Notifications";
 const name = "org.freedesktop.Notifications";
 const control = "org.dotfiles.Notifications";

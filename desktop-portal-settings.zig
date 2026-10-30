@@ -10,12 +10,8 @@ const schemas = [_][:0]const u8{
 };
 const appearance = "org.freedesktop.appearance";
 const fontconfig = "org.gnome.fontconfig";
-fn eq(left: []const u8, right: []const u8) bool {
-    return std.mem.eql(u8, left, right);
-}
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const eq = c.__zig.eq;
+const cast = c.__zig.cast;
 fn builder(signature: [*:0]const u8) *c.GVariantBuilder {
     return c.g_variant_builder_new(@ptrCast(signature)).?;
 }

@@ -2,7 +2,6 @@
 import argparse
 import os
 from pathlib import Path
-import re
 import signal
 import subprocess as sp
 import tempfile
@@ -10,6 +9,7 @@ import time
 from urllib.parse import unquote, urlsplit
 
 import gi
+from wayland_ui import WaylandUI
 
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib
@@ -21,7 +21,7 @@ root = Path(tempfile.mkdtemp(prefix="desktop-portal-print-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
 for directory in ("home", "config", "cache", "data"):
     (root / directory).mkdir()
-env = dict(os.environ, HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"), XDG_RUNTIME_DIR=str(root), GTK_PRINT_BACKENDS="file", GTK_USE_PORTAL="0", GIO_USE_VFS="local", NO_AT_BRIDGE="1", GSETTINGS_BACKEND="memory", G_DEBUG="fatal-criticals", LC_ALL="C")
+env = dict(os.environ, HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"), GTK_PRINT_BACKENDS="file", GTK_USE_PORTAL="0", GIO_USE_VFS="local", NO_AT_BRIDGE="1", GSETTINGS_BACKEND="memory", G_DEBUG="fatal-criticals", LC_ALL="C")
 PUB = "org.freedesktop.portal."
 P = "/org/freedesktop/portal/desktop"
 context = GLib.MainContext.default()
@@ -33,7 +33,9 @@ def wait(check, description, timeout=12):
     while not check():
         while context.pending():
             context.iteration(False)
-        assert time.monotonic() < until, description
+        if time.monotonic() >= until:
+            ui.run("grim", str(Path(os.environ.get("TMPDIR", root)) / "portal-ui-failure.png"), check=False)
+            raise AssertionError(description + "\n" + (root / "broker.log").read_text())
         time.sleep(0.01)
 
 
@@ -69,13 +71,8 @@ def rejected(function):
     raise AssertionError("invalid operation accepted")
 
 
-def xdo(*command, check=True):
-    return sp.run(["xdotool", *map(str, command)], env=env, check=check, capture_output=True, text=True, timeout=5)
-
-
-def window(title):
-    result = xdo("search", "--onlyvisible", "--name", "^" + re.escape(title) + "$", check=False)
-    return result.stdout.splitlines()[0] if result.returncode == 0 and result.stdout else None
+ui = WaylandUI(env)
+window = ui.window
 
 
 client = connection()
@@ -98,14 +95,14 @@ def prepare(title, target=None, conn=client, options=None, settings=None, page=N
     return handle, window(title)
 
 
-def accept(handle, xid):
-    xdo("windowfocus", "--sync", xid)
+def accept(handle, title):
+    ui.focus(title)
     until = time.monotonic() + 10
     while handle not in responses:
         while context.pending():
             context.iteration(False)
         assert time.monotonic() < until, "print consent response"
-        xdo("key", "--window", xid, "--clearmodifiers", "alt+g", check=False)
+        ui.key("alt+g")
         time.sleep(0.05)
     code, values = responses[handle]
     assert code == 0, responses[handle]
@@ -123,8 +120,8 @@ try:
     for conn in (client, other):
         call(conn, "org.freedesktop.host.portal.Registry", "Register", GLib.Variant("(sa{sv})", ("org.dotfiles.PrintFixture", {})))
     target = root / "文書 output.pdf"
-    handle, xid = prepare("Native print setup", target, page={"Name": GLib.Variant("s", "custom"), "DisplayName": GLib.Variant("s", "Fixture paper"), "Width": GLib.Variant("d", 210), "Height": GLib.Variant("d", 297), "Orientation": GLib.Variant("s", "landscape")}, options={"has_current_page": GLib.Variant("b", True), "has_selected_pages": GLib.Variant("b", True)})
-    result = accept(handle, xid)
+    handle, title = prepare("Native print setup", target, page={"Name": GLib.Variant("s", "custom"), "DisplayName": GLib.Variant("s", "Fixture paper"), "Width": GLib.Variant("d", 210), "Height": GLib.Variant("d", 297), "Orientation": GLib.Variant("s", "landscape")}, options={"has_current_page": GLib.Variant("b", True), "has_selected_pages": GLib.Variant("b", True)})
+    result = accept(handle, title)
     token = result["token"]
     assert token > 0 and result["page-setup"]["Orientation"] == "landscape", result
     assert Path(unquote(urlsplit(result["settings"]["output-uri"]).path)) == target, result
@@ -159,8 +156,8 @@ try:
     print("PASS native print preparation, settings, caller-owned single-use tokens, FD output and invalid requests", flush=True)
     handle = print_file("Cancel direct printing", descriptors)
     wait(lambda: window("Cancel direct printing"), "direct print window")
-    xdo("windowfocus", "--sync", window("Cancel direct printing"))
-    xdo("key", "--clearmodifiers", "Escape")
+    ui.focus("Cancel direct printing")
+    ui.key("Escape")
     wait(lambda: handle in responses, "direct print cancellation")
     assert responses[handle] == (1, {}), responses[handle]
     handle, _ = prepare("Close native printing")
@@ -174,8 +171,8 @@ try:
     prepare("Disconnected native printing", conn=transient)
     transient.close_sync(None)
     wait(lambda: not window("Disconnected native printing"), "disconnect destroys print dialog")
-    handle, xid = prepare("Prepared at shutdown", root / "never-printed.pdf")
-    accept(handle, xid)
+    handle, title = prepare("Prepared at shutdown", root / "never-printed.pdf")
+    accept(handle, title)
     prepare("Shutdown native printing")
     process.send_signal(signal.SIGTERM)
     wait(lambda: process.poll() is not None, "broker shutdown")

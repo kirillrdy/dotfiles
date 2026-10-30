@@ -4,9 +4,7 @@ pub const protocols = @import("protocols");
 const libc = @import("libc");
 pub const c = @import("gtk");
 
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 
 pub const Rect = struct {
     x: i32 = 0,

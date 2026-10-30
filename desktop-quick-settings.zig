@@ -9,9 +9,7 @@ const network_backend = @import("network");
 const session = @import("desktop-session.zig");
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 fn css(widget: anytype, name: [*:0]const u8) void {
     c.gtk_style_context_add_class(c.gtk_widget_get_style_context(widget), name);
 }

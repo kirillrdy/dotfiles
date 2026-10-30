@@ -1,4 +1,4 @@
-//! Real GTK widgets under Xvfb; no portal backend or public test controls.
+//! Real GTK widgets under headless labwc; no portal backend or public test controls.
 const std = @import("std");
 const c = @import("gtk");
 const Dialog = @import("chooser").Dialog;
@@ -6,9 +6,7 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectStrings = std.testing.expectEqualStrings;
 var io: std.Io = undefined;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 fn pump() void {
     while (c.g_main_context_iteration(null, 0) != 0) {}
     io.sleep(.fromMilliseconds(5), .awake) catch {};

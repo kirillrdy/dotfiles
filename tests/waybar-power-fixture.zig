@@ -3,9 +3,7 @@ const std = @import("std");
 const p = @import("panel");
 const c = p.c;
 const assert = std.debug.assert;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 fn eq(a: [*c]const u8, b: [:0]const u8) void {
     assert(std.mem.eql(u8, std.mem.span(a), b));
 }
@@ -292,21 +290,8 @@ pub fn main(process_init: std.process.Init) !void {
     const graph_root = root();
     const monitors = p.init(graph_root, .{ .kind = "monitors" });
     var sample_buf: [256:0]u8 = undefined;
-    var num_buf: [16]u8 = undefined;
     for (0..130) |i| {
-        const num_len = std.fmt.printInt(&num_buf, i, 10, .lower, .{});
-        const num = num_buf[0..num_len];
-        var pos: usize = 0;
-        const p1 = "{\"monitors\":[{\"sequence\":";
-        @memcpy(sample_buf[pos..pos + p1.len], p1); pos += p1.len;
-        @memcpy(sample_buf[pos..pos + num.len], num); pos += num.len;
-        const p2 = ",\"values\":[";
-        @memcpy(sample_buf[pos..pos + p2.len], p2); pos += p2.len;
-        @memcpy(sample_buf[pos..pos + num.len], num); pos += num.len;
-        const p3 = "],\"colors\":[\"#0072b3\"],\"maximum\":100}]}";
-        @memcpy(sample_buf[pos..pos + p3.len], p3); pos += p3.len;
-        sample_buf[pos] = 0;
-        const sample: [:0]const u8 = sample_buf[0..pos :0];
+        const sample = try std.fmt.bufPrintSentinel(&sample_buf, "{{\"monitors\":[{{\"sequence\":{d},\"values\":[{d}],\"colors\":[\"#0072b3\"],\"maximum\":100}}]}}", .{ i, i }, 0);
         p.update_line(monitors, sample);
     }
     assert(monitors.graph[0].count == 100);

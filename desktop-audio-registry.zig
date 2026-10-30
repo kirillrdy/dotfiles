@@ -6,9 +6,7 @@ const Pod = @import("audio-pod");
 const defaults = @import("desktop-audio-defaults.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 var initialized = false;
-fn cast(comptime T: type, value: anytype) *T {
-    return @ptrCast(@alignCast(value));
-}
+const cast = c.__zig.cast;
 fn iface(object: anytype) *p.spa_interface {
     return cast(p.spa_interface, object);
 }

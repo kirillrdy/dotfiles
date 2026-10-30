@@ -5,9 +5,7 @@ const c = @import("gtk");
 const audio = @import("audio");
 const backlight = @import("backlight");
 const allocator = std.heap.page_allocator;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 
 pub const Kind = enum { volume, microphone, brightness };
 pub const Work = struct { kind: Kind, delta: i16 = 0 };

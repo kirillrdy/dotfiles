@@ -4,9 +4,7 @@ pub const c = @import("gtk");
 const protocols = @import("protocols");
 const libc = @import("libc");
 const a = std.heap.page_allocator;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 pub const Rect = struct { x: f64 = 0, y: f64 = 0, w: f64 = 1, h: f64 = 1 };
 pub const Workspace = struct { name: [128:0]u8 = @splat(0) };
 

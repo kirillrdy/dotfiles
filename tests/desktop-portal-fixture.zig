@@ -1,8 +1,6 @@
 const std = @import("std");
 const c = @import("gtk");
-fn cast(comptime T: type, value: anytype) *T {
-    return @ptrCast(@alignCast(value));
-}
+const cast = c.__zig.cast;
 var background: ?*c.GtkWidget = null;
 var color = [3]f64{ 1, 0, 0 };
 fn draw(_: *c.GtkWidget, cr: *c.cairo_t, _: ?*anyopaque) callconv(.c) c.gboolean {

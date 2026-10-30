@@ -4,15 +4,11 @@ const c = @import("gtk");
 const network = @import("network");
 const g = network.api;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
-fn cast(comptime T: type, p: anytype) *T {
-    return @ptrCast(@alignCast(p));
-}
+const cast = c.__zig.cast;
 fn z(s: []const u8) [:0]u8 {
     return a.dupeSentinel(u8, s, 0) catch @panic("out of memory");
 }
-fn eq(x: []const u8, y: []const u8) bool {
-    return std.mem.eql(u8, x, y);
-}
+const eq = c.__zig.eq;
 fn pack(box: *c.GtkWidget, widget: *c.GtkWidget) void {
     c.gtk_box_pack_start(cast(c.GtkBox, box), widget, 0, 0, 0);
 }

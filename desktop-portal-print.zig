@@ -2,12 +2,8 @@
 const std = @import("std");
 const c = @import("gtk");
 const libc = @import("libc");
-fn cast(comptime T: type, value: anytype) *T {
-    return @ptrCast(@alignCast(value));
-}
-fn eq(left: []const u8, right: []const u8) bool {
-    return std.mem.eql(u8, left, right);
-}
+const cast = c.__zig.cast;
+const eq = c.__zig.eq;
 fn option(options: ?*c.GVariant, key: [*:0]const u8, signature: [:0]const u8) !?*c.GVariant {
     const value = c.g_variant_lookup_value(options, key, null) orelse return null;
     if (!eq(std.mem.span(c.g_variant_get_type_string(value)), signature)) {

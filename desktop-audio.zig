@@ -4,9 +4,7 @@ const c = @import("gtk");
 const Registry = @import("desktop-audio-registry.zig").Registry;
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 pub const Class = enum { output, input, playback, recording };
 pub const State = struct { percent: f64, muted: bool = false };
 pub const Node = struct {

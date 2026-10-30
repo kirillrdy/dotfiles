@@ -6,9 +6,7 @@ const network = @import("network");
 const editor = @import("desktop-network-editor.zig");
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
-fn cast(comptime T: type, p: anytype) *T {
-    return @ptrCast(@alignCast(p));
-}
+const cast = c.__zig.cast;
 fn z(text: []const u8) [:0]u8 {
     return a.dupeSentinel(u8, text, 0) catch @panic("out of memory");
 }

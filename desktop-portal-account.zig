@@ -1,9 +1,7 @@
 //! Account information is released only after explicit consent in a native dialog.
 const std = @import("std");
 const c = @import("gtk");
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;
 pub const Dialog = struct {
     allocator: std.mem.Allocator,

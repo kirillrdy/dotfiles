@@ -2,9 +2,7 @@
 const std = @import("std");
 pub const c = @import("gtk");
 const allocator = std.heap.page_allocator;
-fn cast(comptime T: type, ptr: anytype) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 pub fn css(widget: [*c]c.GtkWidget, name: [*:0]const u8) void {
     c.gtk_style_context_add_class(c.gtk_widget_get_style_context(widget), name);
 }
