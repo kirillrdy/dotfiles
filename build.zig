@@ -56,6 +56,27 @@ pub fn build(b: *std.Build) void {
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
     const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
+    const decoration_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-decoration-fixture.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    decoration_module.linkSystemLibrary("wayland-client", .{});
+    const decoration_headers = b.addWriteFiles();
+    for ([_][]const u8{ "stable/xdg-shell/xdg-shell.xml", "unstable/xdg-decoration/xdg-decoration-unstable-v1.xml" }, [_][]const u8{ "xdg-shell", "xdg-decoration" }) |xml, name| {
+        const source: std.Build.LazyPath = .{ .cwd_relative = b.fmt("{s}/{s}", .{ protocol_dir, xml }) };
+        const header = b.addSystemCommand(&.{ "wayland-scanner", "client-header" });
+        header.addFileArg(source);
+        const filename = b.fmt("{s}-client-protocol.h", .{name});
+        _ = decoration_headers.addCopyFile(header.addOutputFileArg(filename), filename);
+        decoration_module.addCSourceFile(.{ .file = protocolCode(b, source, b.fmt("{s}-client-protocol.c", .{name})) });
+    }
+    const decoration_bindings = b.addTranslateC(.{
+        .root_source_file = decoration_headers.add("bindings.h", "#include <wayland-client.h>\n#include \"xdg-shell-client-protocol.h\"\n#include \"xdg-decoration-client-protocol.h\"\n"),
+        .target = target,
+        .optimize = optimize,
+    });
+    decoration_bindings.addIncludePath(decoration_headers.getDirectory());
+    decoration_bindings.linkSystemLibrary("wayland-client", .{});
+    decoration_module.addImport("decoration-client", decoration_bindings.createModule());
+    const decoration_fixture = b.addExecutable(.{ .name = "desktop-decoration-fixture", .root_module = decoration_module });
+    b.step("compositor-fixture", "Build compositor protocol test clients").dependOn(&b.addInstallArtifact(decoration_fixture, .{}).step);
     const protocol_names = [_][]const u8{
         "zwlr_output_manager_v1_interface",
         "zwlr_output_head_v1_interface",

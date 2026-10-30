@@ -134,6 +134,7 @@ def switcher_checks():
 try:
     server = start("server", [bin + "desktop-zig", "compositor-only"])
     wait(lambda: (root / "runtime/wayland-0").exists(), "socket")
+    print(run([bin + "desktop-decoration-fixture"]), flush=True)
     switcher_checks()
     first = start(
         "first", [bin + "labwc-switcher-fixture", "com.dotfiles.First", "First"]

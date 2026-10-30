@@ -540,7 +540,7 @@ const Server = struct {
         c.wlr_seat_set_primary_selection(cast(Server, ptr).seat, e.source, e.serial);
     }
     fn decoration(_: *anyopaque, data: ?*anyopaque) void {
-        _ = c.wlr_xdg_toplevel_decoration_v1_set_mode(cast(c.wlr_xdg_toplevel_decoration_v1, data), c.WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+        Decoration.create(cast(c.wlr_xdg_toplevel_decoration_v1, data));
     }
     fn activate(ptr: *anyopaque, data: ?*anyopaque) void {
         const self = cast(Server, ptr);
@@ -940,6 +940,36 @@ const Layer = struct {
         for (self.s.outputs.items) |o| if (o.wlr == self.wlr.output) o.arrange();
     }
 };
+const Decoration = struct {
+    wlr: *c.wlr_xdg_toplevel_decoration_v1,
+    hooks: Hooks = .{},
+
+    fn create(wlr: *c.wlr_xdg_toplevel_decoration_v1) void {
+        const self = heap.create(Decoration) catch @panic("decoration allocation");
+        self.* = .{ .wlr = wlr };
+        self.hooks.add(&wlr.events.destroy, self, &destroy);
+        self.hooks.add(&wlr.events.request_mode, self, &configure);
+        self.hooks.add(&wlr.toplevel.*.base.*.surface.*.events.commit, self, &commit);
+        configure(self, null);
+    }
+    fn configure(ptr: *anyopaque, _: ?*anyopaque) void {
+        const self = cast(Decoration, ptr);
+        // Clients such as Chrome create decorations and request a mode before
+        // the first surface commit. wlroots cannot schedule a configure yet.
+        if (!self.wlr.toplevel.*.base.*.initialized) return;
+        _ = c.wlr_xdg_toplevel_decoration_v1_set_mode(self.wlr, c.WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+    }
+    fn commit(ptr: *anyopaque, _: ?*anyopaque) void {
+        const self = cast(Decoration, ptr);
+        if (self.wlr.toplevel.*.base.*.initial_commit) configure(self, null);
+    }
+    fn destroy(ptr: *anyopaque, _: ?*anyopaque) void {
+        const self = cast(Decoration, ptr);
+        self.hooks.clear();
+        heap.destroy(self);
+    }
+};
+
 const Popup = struct {
     s: *Server,
     wlr: *c.wlr_xdg_popup,

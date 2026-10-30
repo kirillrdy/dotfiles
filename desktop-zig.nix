@@ -109,7 +109,7 @@ pkgs.stdenv.mkDerivation {
     # Keep test programs outside the desktop output.
     mkdir -p "$tests/bin"
     for name in desktop-apps-fixture desktop-audio-fixture desktop-battery-fixture desktop-backlight-fixture desktop-lock-fixture desktop-idle-fixture waybar-power-fixture labwc-switcher-fixture \
-      desktop-pointer-fixture desktop-compositor-fixture; do
+      desktop-pointer-fixture desktop-compositor-fixture desktop-decoration-fixture; do
       mv "$out/bin/$name" "$tests/bin/$name"
     done
     ln -s "$out/bin/desktop-zig" "$tests/bin/desktop-zig"
