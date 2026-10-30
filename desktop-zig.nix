@@ -41,7 +41,6 @@ pkgs.stdenv.mkDerivation {
       || file.hasExt "h"
       || file.hasExt "svg"
       || file.hasExt "xml"
-      || file.name == "check-desktop-greeter.py"
       || file.name == "check-desktop-compositor.py"
     ) ./.;
   };
@@ -87,7 +86,6 @@ pkgs.stdenv.mkDerivation {
     export FONTCONFIG_FILE=${pkgs.fontconfig.out}/etc/fonts/fonts.conf
     export XDG_CACHE_HOME="$TMPDIR/cache"
     mkdir -p "$XDG_CACHE_HOME"
-    python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-zig" --subcommand greeter
     export XDG_RUNTIME_DIR="$TMPDIR/runtime"
     mkdir -p "$XDG_RUNTIME_DIR"
     chmod 700 "$XDG_RUNTIME_DIR"

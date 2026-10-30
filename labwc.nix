@@ -23,7 +23,6 @@ let
   };
   desktopZig = import ./desktop-zig.nix { inherit pkgs; };
   session = pkgs.writeShellScript "desktop-session" ''
-    . /etc/profile
     export XDG_CURRENT_DESKTOP=desktop:wlroots
     export XDG_SESSION_DESKTOP=desktop
     export XDG_SESSION_TYPE=wayland
@@ -52,12 +51,10 @@ lib.mkIf enableLightDesktop {
   services.graphical-desktop.enable = true;
   xdg.portal.enable = true;
   services.xserver.desktopManager.runXdgAutostartIfNone = lib.mkDefault true;
-  services.greetd = {
-    enable = true;
-    useTextGreeter = true;
-    settings.default_session.command = "${shell} greeter --time --remember-file /var/cache/desktop-greeter/last-user --cmd ${session}";
-  };
-  systemd.tmpfiles.rules = [ "d /var/cache/desktop-greeter 0700 greeter greeter - -" ];
+  # getty + login own PAM and the logind session; the tty1 login shell becomes the desktop.
+  environment.loginShellInit = ''
+    if [ "$(tty)" = /dev/tty1 ]; then exec ${session}; fi
+  '';
   networking.networkmanager.enable = true;
   services.power-profiles-daemon.enable = false;
   security.pam.services.desktop-lock = { };
@@ -67,7 +64,7 @@ lib.mkIf enableLightDesktop {
     description = "Restore the selected desktop power profile";
     wantedBy = [ "multi-user.target" ];
     after = [ "systemd-modules-load.service" ];
-    before = [ "greetd.service" ];
+    before = [ "systemd-user-sessions.service" ];
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${shell} power restore";
@@ -102,20 +99,26 @@ lib.mkIf enableLightDesktop {
     };
   };
   services.gnome.gnome-keyring.enable = false;
-  security.pam.services.greetd = {
+  security.pam.services.login = {
     enableGnomeKeyring = false;
     rules.auth = {
-      # greetd runs login as a substack, so capture its token after it returns.
+      # The final pam_unix is "sufficient" and ends the stack, so prompt with an
+      # optional pam_unix first, capture the token, and let try_first_pass reuse it.
+      desktop-secrets-unix = {
+        order = config.security.pam.services.login.rules.auth.unix.order - 20;
+        control = "optional";
+        modulePath = config.security.pam.pam_unixModulePath;
+        settings.nullok = config.security.pam.services.login.allowNullPassword;
+      };
       desktop-secrets = {
-        order =
-          if config == null then 10001 else config.security.pam.services.greetd.rules.auth.login.order + 1;
+        order = config.security.pam.services.login.rules.auth.unix.order - 10;
         control = "optional";
         modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
       };
     };
+    # After pam_systemd, which provides XDG_SESSION_ID.
     rules.session.desktop-secrets = {
-      order =
-        if config == null then 10001 else config.security.pam.services.greetd.rules.session.login.order + 1;
+      order = config.security.pam.services.login.rules.session.systemd.order + 1;
       control = "optional";
       modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
       settings.helper = "${shell}";

@@ -178,7 +178,7 @@ pub fn main(init: std.process.Init) !void {
         return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | greeter|askpass|power|screenshot [ARGS...]\n", .{});
+        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;
         return;
     }
@@ -211,7 +211,6 @@ pub fn main(init: std.process.Init) !void {
         return @import("desktop-battery-monitor.zig").run();
     }
     if (std.mem.eql(u8, args[1], "portal")) return @import("desktop-portal.zig").run();
-    if (std.mem.eql(u8, args[1], "greeter")) return @import("desktop-greeter.zig").runArgs(init, args[1..]);
     if (std.mem.eql(u8, args[1], "power")) return @import("desktop-power.zig").runArgs(init, args[1..]);
     if (std.mem.eql(u8, args[1], "askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args[1..]));
     if (std.mem.eql(u8, args[1], "screenshot")) return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, args[1..]));
@@ -272,7 +271,6 @@ pub const battery = @import("desktop-battery.zig");
 pub const battery_monitor = @import("desktop-battery-monitor.zig");
 pub const backlight = @import("desktop-backlight.zig");
 pub const protocols = @import("desktop-protocols.zig");
-pub const greeter = @import("desktop-greeter.zig");
 pub const quick = @import("desktop-quick-settings.zig");
 pub const panel_data = @import("waybar-panel.zig");
 pub const askpass = @import("desktop-askpass.zig");

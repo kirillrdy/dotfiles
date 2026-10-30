@@ -32,14 +32,9 @@ pkgs.testers.runNixOSTest {
           "video"
         ];
       };
-      # Start the production session script through greetd, avoiding manual
-      # compositor, D-Bus and systemd environment setup in the test driver.
-      services.greetd.settings.initial_session = {
-        user = "alice";
-        command = lib.last (
-          lib.splitString " --cmd " config.services.greetd.settings.default_session.command
-        );
-      };
+      # Log in on tty1 so the production login shell starts the session script,
+      # avoiding manual compositor, D-Bus and systemd environment setup.
+      services.getty.autologinUser = "alice";
       environment.sessionVariables.WLR_RENDERER = "pixman";
       environment.sessionVariables.GI_TYPELIB_PATH =
         lib.makeSearchPathOutput "lib" "lib/girepository-1.0"
@@ -73,11 +68,11 @@ pkgs.testers.runNixOSTest {
         path = [ pkgs.util-linux ];
         before = [
           "desktop-battery.service"
-          "greetd.service"
+          "getty@tty1.service"
         ];
         requiredBy = [
           "desktop-battery.service"
-          "greetd.service"
+          "getty@tty1.service"
         ];
         serviceConfig.Type = "oneshot";
         serviceConfig.RemainAfterExit = true;
@@ -115,7 +110,7 @@ pkgs.testers.runNixOSTest {
         ).strip()
 
     machine.start()
-    machine.wait_for_unit("greetd.service")
+    machine.wait_for_unit("getty@tty1.service")
     machine.wait_for_unit("desktop-battery.service")
     machine.wait_for_file("/run/user/1000/wayland-0")
     machine.wait_until_succeeds(user("desktop-zig ping"))
