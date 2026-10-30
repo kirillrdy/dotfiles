@@ -1,8 +1,8 @@
 //! Native idle locking and logind suspend coordination. All callbacks run on the GLib context.
 const std = @import("std");
-const c = @import("gtk");
-const libc = @import("libc");
-const p = @import("protocols");
+const c = @import("desktop-gtk.zig");
+const libc = @import("desktop-libc.zig");
+const p = @import("desktop-protocols.zig");
 const a = std.heap.page_allocator;
 const Proxy = c.wl_proxy;
 const login_name = "org.freedesktop.login1";

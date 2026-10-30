@@ -6,7 +6,7 @@ let
     outputs = [ "out" ];
     buildPhase = ''
       export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build secrets-fixture secrets-pam secrets-pam-fixture test-secrets --prefix "$out" -Doptimize=ReleaseSafe
+      zig build secrets-fixture secrets-pam secrets-pam-fixture --prefix "$out" -Doptimize=ReleaseSafe
     '';
     doCheck = false;
     installPhase = "true";

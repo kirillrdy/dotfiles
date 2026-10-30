@@ -1,6 +1,6 @@
 //! Translate portal notifications directly to the shell's notification service.
 const std = @import("std");
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 const fdo = "org.freedesktop.Notifications";
 const object_path = "/org/freedesktop/Notifications";
 const eq = c.__zig.eq;

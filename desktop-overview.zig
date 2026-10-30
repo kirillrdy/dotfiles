@@ -1,9 +1,9 @@
 //! Activities: live window previews, workspace navigation, search and app grid.
 const std = @import("std");
 comptime {
-    _ = @import("protocols");
+    _ = @import("desktop-protocols.zig");
 }
-const apps = @import("apps");
+const apps = @import("desktop-apps.zig");
 const capture = @import("desktop-capture.zig");
 const c = capture.c;
 const a = std.heap.page_allocator;

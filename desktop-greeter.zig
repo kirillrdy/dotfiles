@@ -1,7 +1,7 @@
 //! Small terminal greeter. Authentication and session creation belong to greetd.
 //! Wire format: greetd-ipc(7), a native-endian u32 followed by UTF-8 JSON.
 const std = @import("std");
-const c = @import("libc");
+const c = @import("desktop-libc.zig");
 const allocator = std.heap.page_allocator;
 var stopped = std.atomic.Value(bool).init(false);
 fn signal(_: c_int) callconv(.c) void {

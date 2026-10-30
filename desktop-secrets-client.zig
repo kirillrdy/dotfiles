@@ -1,5 +1,5 @@
 //! Lock client uses a nonactivating call: it must work without a Secret Service.
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 const std = @import("std");
 const name = "org.freedesktop.secrets";
 const root = "/org/freedesktop/secrets";

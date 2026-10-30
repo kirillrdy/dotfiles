@@ -1,6 +1,6 @@
 const std = @import("std");
-const c = @import("gtk");
-const idle = @import("idle");
+const c = @import("desktop").gtk;
+const idle = @import("desktop").idle;
 var stopping = false;
 fn stop(_: ?*anyopaque) callconv(.c) c_int {
     stopping = true;

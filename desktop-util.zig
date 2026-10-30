@@ -3,7 +3,7 @@ pub const Value = std.json.Value;
 pub const Allocator = std.mem.Allocator;
 // Executables provide their process I/O implementation; tests use the runner's.
 pub var io: std.Io = if (@import("builtin").is_test) std.testing.io else undefined;
-pub const libc = @import("libc");
+pub const libc = @import("desktop-libc.zig");
 pub fn sleep(nanoseconds: u64) void {
     io.sleep(.fromNanoseconds(nanoseconds), .awake) catch {};
 }

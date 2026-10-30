@@ -1,7 +1,7 @@
 //! PolicyKit authentication agent with a native GNOME-style GTK dialog.
 const std = @import("std");
-pub const c = @import("gtk");
-const libc = @import("libc");
+pub const c = @import("desktop-gtk.zig");
+const libc = @import("desktop-libc.zig");
 
 const cast = c.__zig.cast;
 

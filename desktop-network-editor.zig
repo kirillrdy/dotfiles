@@ -1,7 +1,7 @@
 //! Native connection properties. Unknown settings round-trip without libnm.
 const std = @import("std");
-const c = @import("gtk");
-const network = @import("network");
+const c = @import("desktop-gtk.zig");
+const network = @import("desktop-network.zig");
 const g = network.api;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;

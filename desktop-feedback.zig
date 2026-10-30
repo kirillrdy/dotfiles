@@ -1,8 +1,8 @@
 //! Bounded PCM WAV decoding and native PipeWire event playback.
 const std = @import("std");
 const p = @import("pipewire");
-const c = @import("gtk");
-const libc = @import("libc");
+const c = @import("desktop-gtk.zig");
+const libc = @import("desktop-libc.zig");
 const a = std.heap.page_allocator;
 var initialized = false;
 

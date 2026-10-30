@@ -1,7 +1,7 @@
 //! Real GTK widgets under headless labwc; no portal backend or public test controls.
 const std = @import("std");
-const c = @import("gtk");
-const Dialog = @import("chooser").Dialog;
+const c = @import("desktop").gtk;
+const Dialog = @import("desktop").chooser.Dialog;
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectStrings = std.testing.expectEqualStrings;

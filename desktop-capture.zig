@@ -1,8 +1,8 @@
 //! Live, per-window captures; no screenshots of the composed desktop.
 const std = @import("std");
-pub const c = @import("gtk");
-const protocols = @import("protocols");
-const libc = @import("libc");
+pub const c = @import("desktop-gtk.zig");
+const protocols = @import("desktop-protocols.zig");
+const libc = @import("desktop-libc.zig");
 const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
 pub const Rect = struct { x: f64 = 0, y: f64 = 0, w: f64 = 1, h: f64 = 1 };

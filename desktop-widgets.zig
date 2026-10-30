@@ -1,9 +1,9 @@
 //! Shared GTK widgets and popups for the desktop session.
 const std = @import("std");
-const power_backend = @import("power");
+const power_backend = @import("desktop-power.zig");
 const quick = @import("desktop-quick-settings.zig");
 const notification_view = @import("desktop-notification-view.zig");
-pub const c = @import("gtk");
+pub const c = @import("desktop-gtk.zig");
 fn cast(comptime T: type, p: anytype) [*c]T {
     return @ptrCast(@alignCast(p));
 }

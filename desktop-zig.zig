@@ -1,20 +1,20 @@
 //! Session shell. Compositor-specific operations stay behind Wayland protocols.
 const std = @import("std");
-const c = @import("gtk");
-const libc = @import("libc");
+const c = @import("desktop-gtk.zig");
+pub const libc = @import("desktop-libc.zig");
 const panel = @import("desktop-panel.zig");
 const wallpaper = @import("desktop-wallpaper.zig");
 const notifications = @import("desktop-notifications.zig");
-const osd = @import("desktop-osd.zig");
-const polkit = @import("desktop-polkit.zig");
+pub const osd = @import("desktop-osd.zig");
+pub const polkit = @import("desktop-polkit.zig");
 const overview = @import("desktop-overview.zig");
-const settings = @import("desktop-settings.zig");
+pub const settings = @import("desktop-settings.zig");
 const collectors = @import("desktop-collectors.zig");
-const widgets = @import("desktop-widgets.zig");
-const idle = @import("desktop-idle.zig");
+pub const widgets = @import("desktop-widgets.zig");
+pub const idle = @import("desktop-idle.zig");
 const a = std.heap.page_allocator;
 comptime {
-    _ = @import("protocols");
+    _ = @import("desktop-protocols.zig");
 }
 var current: ?*Session = null;
 
@@ -143,19 +143,19 @@ fn dispatch(self: *Session, args: []const []const u8) !void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    try @import("runtime").setup(a);
+    try @import("desktop-runtime.zig").setup(a);
     @import("desktop-util.zig").io = init.io;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
     const name = std.fs.path.basename(args[0]);
     // Executable aliases implement the portal and SSH askpass protocols.
-    if (std.mem.eql(u8, name, "xdg-desktop-portal")) return @import("portal").run();
+    if (std.mem.eql(u8, name, "xdg-desktop-portal")) return @import("desktop-portal.zig").run();
     if (std.mem.eql(u8, name, "desktop-askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args));
     if (std.mem.eql(u8, name, "grim") or std.mem.eql(u8, name, "slurp")) {
         const forwarded = try arena.allocator().dupe([]const u8, args);
         forwarded[0] = name;
-        return helperStatus(try @import("screenshot").runArgs(init, forwarded));
+        return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
         std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | greeter|askpass|power|screenshot [ARGS...]\n", .{});
@@ -164,11 +164,11 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "secrets-import")) {
         if (args.len != 2) return error.InvalidSecretsArguments;
-        return @import("secrets").runImport();
+        return @import("desktop-secrets.zig").runImport();
     }
     if (std.mem.eql(u8, args[1], "secrets")) {
         if (args.len != 2) return error.InvalidSecretsArguments;
-        return @import("secrets").run();
+        return @import("desktop-secrets.zig").run();
     }
     if (std.mem.eql(u8, args[1], "secrets-login")) {
         if (args.len != 2) return error.InvalidSecretsArguments;
@@ -184,19 +184,19 @@ pub fn main(init: std.process.Init) !void {
             length += @intCast(n);
         }
         if (length == 0 or length > 4096) return error.InvalidPassword;
-        return @import("secrets").loginUnlock(password[0..length]);
+        return @import("desktop-secrets.zig").loginUnlock(password[0..length]);
     }
     if (std.mem.eql(u8, args[1], "battery-monitor")) {
         if (args.len != 2) return error.InvalidBatteryMonitorArguments;
-        return @import("battery-monitor").run();
+        return @import("desktop-battery-monitor.zig").run();
     }
-    if (std.mem.eql(u8, args[1], "portal")) return @import("portal").run();
-    if (std.mem.eql(u8, args[1], "greeter")) return @import("greeter").runArgs(init, args[1..]);
-    if (std.mem.eql(u8, args[1], "power")) return @import("power").runArgs(init, args[1..]);
+    if (std.mem.eql(u8, args[1], "portal")) return @import("desktop-portal.zig").run();
+    if (std.mem.eql(u8, args[1], "greeter")) return @import("desktop-greeter.zig").runArgs(init, args[1..]);
+    if (std.mem.eql(u8, args[1], "power")) return @import("desktop-power.zig").runArgs(init, args[1..]);
     if (std.mem.eql(u8, args[1], "askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args[1..]));
-    if (std.mem.eql(u8, args[1], "screenshot")) return helperStatus(try @import("screenshot").runArgs(init, args[1..]));
-    if (std.mem.eql(u8, args[1], "output")) return @import("output").run(args[2..]);
-    if (std.mem.eql(u8, args[1], "lock")) return @import("lock").run(args[2..]);
+    if (std.mem.eql(u8, args[1], "screenshot")) return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, args[1..]));
+    if (std.mem.eql(u8, args[1], "output")) return @import("desktop-output.zig").run(args[2..]);
+    if (std.mem.eql(u8, args[1], "lock")) return @import("desktop-lock.zig").run(args[2..]);
     if (!std.mem.eql(u8, args[1], "serve")) try requireSession();
     _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
     const app = c.gtk_application_new("org.dotfiles.Desktop", c.G_APPLICATION_HANDLES_COMMAND_LINE).?;
@@ -228,3 +228,42 @@ fn requireSession() !void {
     defer c.g_variant_unref(owned);
     if (c.g_variant_get_boolean(owned) == 0) return error.SessionNotRunning;
 }
+
+// Shared production namespace for isolated protocol and lifecycle clients.
+pub const gtk = @import("desktop-gtk.zig");
+pub const runtime = @import("desktop-runtime.zig");
+pub const power = @import("desktop-power.zig");
+pub const secrets = @import("desktop-secrets.zig");
+pub const portal = @import("desktop-portal.zig");
+pub const network = @import("desktop-network.zig");
+pub const network_api = @import("desktop-network-api.zig");
+pub const audio = @import("desktop-audio.zig");
+pub const audio_pod = @import("desktop-audio-pod.zig");
+pub const battery = @import("desktop-battery.zig");
+pub const battery_monitor = @import("desktop-battery-monitor.zig");
+pub const backlight = @import("desktop-backlight.zig");
+pub const protocols = @import("desktop-protocols.zig");
+pub const greeter = @import("desktop-greeter.zig");
+pub const quick = @import("desktop-quick-settings.zig");
+pub const panel_data = @import("waybar-panel.zig");
+pub const askpass = @import("desktop-askpass.zig");
+pub const screenshot = @import("desktop-screenshot.zig");
+pub const output = @import("desktop-output.zig");
+pub const lock = @import("desktop-lock.zig");
+pub const auth = @import("desktop-lock-auth.zig");
+pub const apps = @import("desktop-apps.zig");
+pub const http = @import("desktop-http.zig");
+pub const virtual_pointer = @import("desktop-virtual-pointer.zig");
+pub const printing = @import("desktop-portal-print.zig");
+pub const chooser = @import("desktop-portal-file-chooser.zig");
+pub const util = @import("desktop-util.zig");
+pub const posix = @import("posix");
+pub const pipewire = @import("pipewire");
+
+test {
+    _ = @import("desktop-tests.zig");
+}
+
+pub const network_editor = @import("desktop-network-editor.zig");
+
+pub const session_actions = @import("desktop-session.zig");

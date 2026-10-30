@@ -1,8 +1,8 @@
 //! Small GTK settings clients using the desktop's existing system services.
 const std = @import("std");
-pub const c = @import("gtk");
-const audio = @import("audio");
-const network = @import("network");
+pub const c = @import("desktop-gtk.zig");
+const audio = @import("desktop-audio.zig");
+const network = @import("desktop-network.zig");
 const editor = @import("desktop-network-editor.zig");
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;

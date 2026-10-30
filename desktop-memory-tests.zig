@@ -1,12 +1,12 @@
 //! Leak assertions only. Requires the private desktop-memory-fixture.nix runtime.
 const std = @import("std");
-const c = @import("gtk");
-const audio = @import("audio");
-const network = @import("network");
-const battery = @import("battery");
-const settings = @import("desktop-settings.zig");
-const editor = @import("desktop-network-editor.zig");
-const widgets = @import("desktop-widgets.zig");
+const c = @import("desktop").gtk;
+const audio = @import("desktop").audio;
+const network = @import("desktop").network;
+const battery = @import("desktop").battery;
+const settings = @import("desktop").settings;
+const editor = @import("desktop").network_editor;
+const widgets = @import("desktop").widgets;
 
 extern fn pango_cairo_font_map_get_default() *anyopaque;
 extern fn pango_cairo_font_map_set_default(?*anyopaque) void;

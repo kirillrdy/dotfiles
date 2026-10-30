@@ -6,7 +6,7 @@ let
     outputs = [ "out" ];
     buildPhase = ''
       export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build audio-fixture test-audio --prefix "$out" -Doptimize=ReleaseSafe
+      zig build audio-fixture --prefix "$out" -Doptimize=ReleaseSafe
     '';
     doCheck = false;
     installPhase = "true";

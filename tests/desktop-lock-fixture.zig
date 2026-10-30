@@ -4,5 +4,5 @@ pub fn main(init: std.process.Init) !void {
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
     const start: usize = if (args.len > 1 and std.mem.eql(u8, args[1], "lock")) 2 else 1;
-    try @import("lock").run(args[start..]);
+    try @import("desktop").lock.runWithAuthenticator(args[start..], @import("desktop-lock-fake-auth.zig").authenticate);
 }

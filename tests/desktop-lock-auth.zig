@@ -1,6 +1,6 @@
 //! PAM is substituted at the ABI boundary; the production conversation is exercised.
 const std = @import("std");
-const auth = @import("auth");
+const auth = @import("../desktop-lock-auth.zig");
 var conversation: auth.Conversation = undefined;
 var authentication_status: c_int = 0;
 var account_status: c_int = 0;

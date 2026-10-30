@@ -1,11 +1,11 @@
 //! Shared collectors: blocking device/API queries run in GLib workers, never GTK.
 const std = @import("std");
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 const data = @import("waybar-panel.zig");
 const u = @import("desktop-util.zig");
-const audio = @import("audio");
-const network = @import("network");
-const battery = @import("battery");
+const audio = @import("desktop-audio.zig");
+const network = @import("desktop-network.zig");
+const battery = @import("desktop-battery.zig");
 const panel = @import("desktop-panel.zig");
 const a = std.heap.page_allocator;
 const kinds = [_][]const u8{ "monitors", "status", "disk", "codex" };

@@ -1,6 +1,6 @@
 //! Asynchronous logind actions. Result messages are valid for the callback only.
 const std = @import("std");
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const name = "org.freedesktop.login1";
 const path = "/org/freedesktop/login1";

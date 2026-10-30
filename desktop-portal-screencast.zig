@@ -1,8 +1,8 @@
 //! PipeWire video producer. All callbacks run on the broker's GLib thread.
 const std = @import("std");
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 const p = @import("pipewire");
-const Pod = @import("audio-pod");
+const Pod = @import("desktop-audio-pod.zig");
 const Capture = @import("desktop-portal-capture.zig").Capture;
 const cast = c.__zig.cast;
 fn control(loop: *p.pw_loop) struct { methods: *const p.spa_loop_control_methods, data: ?*anyopaque } {

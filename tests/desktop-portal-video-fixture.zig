@@ -1,9 +1,9 @@
 //! Independent PipeWire consumer: require complete red and blue video frames.
 const std = @import("std");
-const p = @import("pipewire");
-const Pod = @import("audio-pod");
-const c = @import("gtk");
-const libc = @import("libc");
+const p = @import("desktop").pipewire;
+const Pod = @import("desktop").audio_pod;
+const c = @import("desktop").gtk;
+const libc = @import("desktop").libc;
 const Consumer = struct {
     stream: ?*p.pw_stream = null,
     width: u32,

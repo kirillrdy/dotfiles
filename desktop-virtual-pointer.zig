@@ -1,5 +1,5 @@
 //! Explicit requests for the virtual pointer used by headless integration tests.
-const c = @import("gtk");
+const c = if (@import("builtin").is_test) @import("tests/desktop-pointer-transport.zig") else @import("desktop-gtk.zig");
 pub const Manager = opaque {};
 pub const Pointer = opaque {};
 pub extern const zwlr_virtual_pointer_manager_v1_interface: c.wl_interface;

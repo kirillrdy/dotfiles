@@ -1,9 +1,9 @@
 //! Test-only sysfs injection. Production always reads the fixed kernel paths.
 const std = @import("std");
-const c = @import("gtk");
-const battery = @import("battery");
-const quick = @import("quick");
-const data = @import("panel-data");
+const c = @import("desktop").gtk;
+const battery = @import("desktop").battery;
+const quick = @import("desktop").quick;
+const data = @import("desktop").panel_data;
 const a = std.heap.page_allocator;
 var stopping = false;
 var latest: battery.State = .{};
@@ -65,7 +65,7 @@ pub fn main(init: std.process.Init) !void {
         var checked: std.heap.DebugAllocator(.{}) = .init;
         defer if (checked.deinit() == .leak) @panic("battery monitor allocation leak");
         const lid = try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/../lid", .{root}, 0);
-        try @import("battery-monitor").runWithOptions(.{ .source = options, .lid_root = lid, .action_delay_us = 750000 }, checked.allocator());
+        try @import("desktop").battery_monitor.runWithOptions(.{ .source = options, .lid_root = lid, .action_delay_us = 750000 }, checked.allocator());
         return;
     }
     if (c.gtk_init_check(null, null) == 0) return error.NoDisplay;

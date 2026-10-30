@@ -1,5 +1,5 @@
 //! GIO ABI used by the native NetworkManager client; checked against gio/gio.h.
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 pub const GDBusObjectManager = opaque {};
 pub const GDBusObjectManagerClient = opaque {};
 pub const GDBusObject = opaque {};

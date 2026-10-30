@@ -1,6 +1,6 @@
 //! Minimal GNOME-style application grid, using the desktop's GTK/GIO stack.
 const std = @import("std");
-pub const c = @import("gtk");
+pub const c = @import("desktop-gtk.zig");
 // GTK event unions contain C bitfields that Zig 0.14 cannot translate.
 pub const KeyEvent = extern struct {
     event_type: c_int,

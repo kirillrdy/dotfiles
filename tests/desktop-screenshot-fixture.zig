@@ -1,6 +1,6 @@
 //! Screenshot parsing, PNG stream encoding and overlay tests.
 const std = @import("std");
-const screenshot = @import("screenshot");
+const screenshot = @import("desktop").screenshot;
 const c = screenshot.c;
 const assert = std.debug.assert;
 

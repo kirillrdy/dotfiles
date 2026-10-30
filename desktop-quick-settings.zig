@@ -1,11 +1,11 @@
 //! GNOME quick-settings geometry with asynchronous controls for the desktop services.
 const std = @import("std");
-const c = @import("gtk");
-const audio = @import("audio");
-const battery_backend = @import("battery");
-const backlight = @import("backlight");
+const c = @import("desktop-gtk.zig");
+const audio = @import("desktop-audio.zig");
+const battery_backend = @import("desktop-battery.zig");
+const backlight = @import("desktop-backlight.zig");
 pub const settings_client = @import("desktop-settings.zig");
-const network_backend = @import("network");
+const network_backend = @import("desktop-network.zig");
 const session = @import("desktop-session.zig");
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;

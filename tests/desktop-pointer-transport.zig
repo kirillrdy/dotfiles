@@ -1,5 +1,5 @@
 //! Test transport: capture typed Wayland requests without a compositor.
-const c = @import("real-gtk");
+const c = @import("../desktop-gtk.zig");
 pub const wl_proxy = c.wl_proxy;
 pub const wl_interface = c.wl_interface;
 pub const wl_argument = c.wl_argument;

@@ -1,7 +1,7 @@
 //! Exercise real file operations against private sysfs/state trees, never /sys.
 const std = @import("std");
-const power = @import("power");
-const c = @import("libc");
+const power = @import("../desktop-power.zig");
+const c = @import("../desktop-libc.zig");
 const assert = std.debug.assert;
 const Fixture = struct {
     io: std.Io,
@@ -23,16 +23,16 @@ const Fixture = struct {
         try self.write(try std.fmt.allocPrint(self.a, "devices/system/cpu/cpufreq/{s}/{s}", .{ name, attribute }), value);
     }
 };
-pub fn main(init: std.process.Init) !void {
+test "power profiles apply, persist, restore and roll back in private sysfs trees" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var template = "/tmp/desktop-power-XXXXXX".*;
     const root = c.mkdtemp(&template) orelse return error.TempFailed;
-    defer std.Io.Dir.cwd().deleteTree(init.io, std.mem.span(root)) catch {};
-    const f = Fixture{ .io = init.io, .root = std.mem.span(root), .a = a };
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, std.mem.span(root)) catch {};
+    const f = Fixture{ .io = std.testing.io, .root = std.mem.span(root), .a = a };
     const state = try f.file("state");
-    try std.Io.Dir.cwd().createDirPath(init.io, state);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, state);
     const backend = power.Backend{ .root = f.root, .state = state };
     assert(backend.inspect().active == null);
     assert(!backend.inspect().available[1]);
@@ -84,7 +84,7 @@ pub fn main(init: std.process.Init) !void {
     try f.expect("state/profile", "power-saver");
 
     // EPP-only systems work too, and a performance governor is changed first.
-    try std.Io.Dir.cwd().deleteFile(init.io, try f.file("firmware/acpi/platform_profile_choices"));
+    try std.Io.Dir.cwd().deleteFile(std.testing.io, try f.file("firmware/acpi/platform_profile_choices"));
     try f.policy("policy0", "scaling_governor", "performance");
     try backend.apply(.balanced);
     try f.expect("devices/system/cpu/cpufreq/policy0/scaling_governor", "powersave");

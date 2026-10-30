@@ -1,6 +1,6 @@
 //! Direct PipeWire audio control and event-driven discovery on the main context.
 const std = @import("std");
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 const Registry = @import("desktop-audio-registry.zig").Registry;
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;

@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("gtk");
+const c = @import("desktop").gtk;
 const cast = c.__zig.cast;
 var background: ?*c.GtkWidget = null;
 var color = [3]f64{ 1, 0, 0 };
@@ -75,5 +75,5 @@ pub fn main() !void {
         if (registration != 0) _ = c.g_dbus_connection_unregister_object(connection, registration);
     }
     defer if (background) |window| c.gtk_widget_destroy(window);
-    try @import("portal").runWithAllocator(allocator.allocator());
+    try @import("desktop").portal.runWithAllocator(allocator.allocator());
 }

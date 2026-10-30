@@ -1,6 +1,6 @@
 //! Isolated desktop-entry and GTK integration checks, run under Xvfb.
 const std = @import("std");
-const apps = @import("apps");
+const apps = @import("desktop").apps;
 const c = apps.c;
 const assert = std.debug.assert;
 const cast = c.__zig.cast;

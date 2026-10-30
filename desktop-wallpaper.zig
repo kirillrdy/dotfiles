@@ -1,6 +1,6 @@
 //! One input-transparent background layer per monitor, sharing a decoded image.
 const std = @import("std");
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 const allocator = std.heap.page_allocator;
 
 const cast = c.__zig.cast;

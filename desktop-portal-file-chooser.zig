@@ -1,6 +1,6 @@
 //! Native file portal dialogs, using the shell's existing GTK toolkit.
 const std = @import("std");
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
 const child = c.g_variant_get_child_value;

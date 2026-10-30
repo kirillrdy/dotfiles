@@ -1,7 +1,7 @@
 //! Optional PAM login bridge. Cache the existing token; never prompt or authenticate.
 //! Only a child with the user's UID connects to their session bus.
 const std = @import("std");
-const c = @import("pam-posix");
+const c = @import("desktop").posix;
 const Handle = opaque {};
 extern fn pam_get_item(?*Handle, c_int, *?*const anyopaque) c_int;
 extern fn pam_get_user(?*Handle, *?[*:0]const u8, ?[*:0]const u8) c_int;

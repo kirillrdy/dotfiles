@@ -1,7 +1,7 @@
 //! Compare the checked-in libc ABI against independently translated system headers.
 const std = @import("std");
-const api = @import("api");
-const reference = @import("reference");
+const api = @import("../desktop-libc.zig");
+const reference = @import("libc-reference");
 
 fn checkType(comptime A: type, comptime B: type) void {
     const left = @typeInfo(A);

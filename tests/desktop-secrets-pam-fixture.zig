@@ -1,6 +1,6 @@
 //! Real PAM dispatcher with an isolated login substack and a fixed dummy token.
 const std = @import("std");
-const c = @import("pam");
+const c = @import("desktop").posix;
 fn converse(_: c_int, _: [*c]const [*c]const c.pam_message, _: [*c][*c]c.pam_response, _: ?*anyopaque) callconv(.c) c_int {
     return c.PAM_CONV_ERR;
 }

@@ -1,7 +1,7 @@
 //! One-shot display scaling through wlr-output-management, independent of the shell daemon.
 const std = @import("std");
-const c = @import("gtk");
-const p = @import("protocols");
+const c = @import("desktop-gtk.zig");
+const p = @import("desktop-protocols.zig");
 const a = std.heap.page_allocator;
 const Proxy = c.wl_proxy;
 extern const wl_callback_interface: c.wl_interface;

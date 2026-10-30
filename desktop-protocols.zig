@@ -1,7 +1,7 @@
 //! Native Wayland interface metadata. Request/event order and type tables
-//! match the protocol XML; test-protocols compares all tables with the reference
+//! match the protocol XML; zig build test compares all tables with the reference
 //! wayland-scanner output. Normal builds need no generated C sources.
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 pub const Interface = c.struct_wl_interface;
 const Message = c.struct_wl_message;
 

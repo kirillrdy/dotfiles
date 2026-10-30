@@ -6,7 +6,7 @@ let
     outputs = [ "out" ];
     buildPhase = ''
       export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build network-fixture test-network --prefix "$out" -Doptimize=Debug -Dcpu=baseline -j2
+      zig build network-fixture --prefix "$out" -Doptimize=Debug -Dcpu=baseline -j2
     '';
     doCheck = false;
     dontStrip = true;

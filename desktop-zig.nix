@@ -1,4 +1,7 @@
-{ pkgs }:
+{
+  pkgs,
+  llvm ? false,
+}:
 let
   dbusLibraries = import ./desktop-dbus-libs.nix { inherit pkgs; };
   gtkLibraries = import ./desktop-gtk-libs.nix {
@@ -67,7 +70,7 @@ pkgs.stdenv.mkDerivation {
   DESKTOP_RUNTIME_DATA_DIRS = "${placeholder "out"}/share:${gtkLibraries.gtk}/share/gsettings-schemas/${gtkLibraries.gtk.name}:${pkgs.adwaita-icon-theme}/share:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${portalSettingsSchemas}/share/gsettings-schemas/gnome-settings-daemon-${pkgs.gnome-settings-daemon.version}";
   buildPhase = ''
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-    zig build --prefix "$out" -Doptimize=ReleaseSafe
+    zig build --prefix "$out" -Doptimize=ReleaseSafe -Dllvm=${pkgs.lib.boolToString llvm}
     # Executable interfaces required by SSH and the screenshot portal.
     for name in desktop-askpass grim slurp; do
       ln -s desktop-zig "$out/bin/$name"
@@ -81,17 +84,8 @@ pkgs.stdenv.mkDerivation {
     export XDG_CACHE_HOME="$TMPDIR/cache"
     mkdir -p "$XDG_CACHE_HOME"
     python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-zig" --subcommand greeter
-    zig build test-gtk-abi test-libc-abi -Doptimize=ReleaseSafe
-    zig build test-secrets -Doptimize=ReleaseSafe
-    zig build test-runtime test-power test-portal-email -Doptimize=ReleaseSafe
-    zig build test -Doptimize=ReleaseSafe
     mkdir -p "$TMPDIR/labwc-cfg"
-    cat > "$TMPDIR/labwc-cfg/rc.xml" <<'EOF'
-<labwc_config>
-  <desktops><names><name>1</name></names></desktops>
-  <keyboard><default /></keyboard>
-</labwc_config>
-EOF
+    echo '<labwc_config><desktops><names><name>1</name></names></desktops><keyboard><default /></keyboard></labwc_config>' > "$TMPDIR/labwc-cfg/rc.xml"
     touch "$TMPDIR/labwc-cfg/autostart"
     export XDG_RUNTIME_DIR="$TMPDIR/runtime"
     mkdir -p "$XDG_RUNTIME_DIR"
@@ -106,24 +100,10 @@ EOF
     done
     export WAYLAND_DISPLAY=wayland-0
     export GDK_BACKEND=wayland
-    G_DEBUG=fatal-criticals \
-      GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      DESKTOP_PANEL_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons \
-      "$out/bin/waybar-power-fixture"
-    G_DEBUG=fatal-criticals \
-      GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons \
-      "$out/bin/desktop-apps-fixture"
-    G_DEBUG=fatal-criticals zig build test-settings -Doptimize=ReleaseSafe
-    G_DEBUG=fatal-criticals \
-      GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      zig build test-askpass -Doptimize=ReleaseSafe
-    G_DEBUG=fatal-criticals \
-      GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      zig build test-polkit -Doptimize=ReleaseSafe
-    G_DEBUG=fatal-criticals \
-      GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
-      zig build test-screenshot -Doptimize=ReleaseSafe
+    export GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
+    export DESKTOP_PANEL_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
+    export DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
+    G_DEBUG=fatal-criticals zig build test -Doptimize=ReleaseSafe -Dllvm=${pkgs.lib.boolToString llvm} --summary all
   '';
   installPhase = ''
     # Keep test programs outside the desktop output.

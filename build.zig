@@ -5,382 +5,46 @@ fn bindings(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
     for (libraries) |name| translated.linkSystemLibrary(name, .{});
     return translated.createModule();
 }
-fn linkLibraries(module: *std.Build.Module, libraries: []const []const u8) void {
-    module.link_libc = true;
-    for (libraries) |name| module.linkSystemLibrary(name, .{});
-}
 fn protocolCode(b: *std.Build, xml: std.Build.LazyPath, output: []const u8) std.Build.LazyPath {
     const command = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
     command.addFileArg(xml);
     return command.addOutputFileArg(output);
 }
-fn linkGtk(step: *std.Build.Step.Compile) void {
-    linkLibraries(step.root_module, &.{"gtk+-3.0"});
-}
 pub fn build(b: *std.Build) void {
-    b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-zig.zig"), .target = target, .optimize = optimize }) });
-    const runtime_options = b.addOptions();
+    const llvm = b.option(bool, "llvm", "Compile with LLVM instead of Zig's native backend") orelse false;
+    const desktop = b.createModule(.{
+        .root_source_file = b.path("desktop-zig.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client", "libpipewire-0.3", "pam", "xkbcommon", "pangoft2" }) |name| desktop.linkSystemLibrary(name, .{});
+    const options = b.addOptions();
     for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "PIXBUF_LOADERS", "SOUND_FILE", "DATA_DIRS" }) |name| {
-        runtime_options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
+        options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
     }
-    const runtime = b.createModule(.{ .root_source_file = b.path("desktop-runtime.zig"), .target = target, .optimize = optimize });
-    runtime.addOptions("options", runtime_options);
-    runtime.link_libc = true;
-    const runtime_tests = b.addTest(.{ .root_module = runtime });
-    b.step("test-runtime", "Check native launcher environment setup").dependOn(&b.addRunArtifact(runtime_tests).step);
-    session.root_module.addImport("runtime", runtime);
-    const libc = b.createModule(.{ .root_source_file = b.path("desktop-libc.zig"), .target = target, .optimize = optimize });
-    const power_module = b.createModule(.{ .root_source_file = b.path("desktop-power.zig"), .target = target, .optimize = optimize });
-    power_module.link_libc = true;
-    power_module.addImport("libc", libc);
-    const power_fixture = b.addExecutable(.{ .name = "desktop-power-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-power-fixture.zig"), .target = target, .optimize = optimize }) });
-    power_fixture.root_module.addImport("power", power_module);
-    power_fixture.root_module.addImport("libc", libc);
-    b.step("test-power", "Check power profiles against isolated sysfs fixtures").dependOn(&b.addRunArtifact(power_fixture).step);
-    const gtk = b.createModule(.{ .root_source_file = b.path("desktop-gtk.zig"), .target = target, .optimize = optimize });
-    const secrets_posix = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <fcntl.h>\n#include <errno.h>\n#include <sys/stat.h>\n#include <sys/file.h>\n#include <sys/random.h>\n#include <stdlib.h>\n#include <sys/prctl.h>\n#include <sys/mman.h>\n", &.{});
-    const secrets = b.createModule(.{ .root_source_file = b.path("desktop-secrets.zig"), .target = target, .optimize = optimize });
-    secrets.addImport("gtk", gtk);
-    secrets.addImport("secrets-posix", secrets_posix);
-    linkLibraries(secrets, &.{"gtk+-3.0"});
-    session.root_module.addImport("secrets", secrets);
-    const pam_posix = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <fcntl.h>\n#include <errno.h>\n#include <pwd.h>\n#include <grp.h>\n#include <sys/wait.h>\n#include <sys/socket.h>\n#include <sys/mman.h>\n", &.{});
-    const secrets_pam = b.addLibrary(.{ .name = "pam_desktop_secrets", .linkage = .dynamic, .root_module = b.createModule(.{ .root_source_file = b.path("desktop-secrets-pam.zig"), .target = target, .optimize = optimize }) });
-    secrets_pam.root_module.addImport("pam-posix", pam_posix);
-    linkLibraries(secrets_pam.root_module, &.{"pam"});
-    b.installArtifact(secrets_pam);
-    b.step("secrets-pam", "Build the native PAM login bridge").dependOn(&b.addInstallArtifact(secrets_pam, .{}).step);
-    const pam_reference = bindings(b, target, optimize, "#include <unistd.h>\n#include <pwd.h>\n#include <security/pam_appl.h>\n#include <security/pam_modules.h>\n", &.{"pam"});
-    const pam_fixture = b.addExecutable(.{ .name = "desktop-secrets-pam-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-secrets-pam-fixture.zig"), .target = target, .optimize = optimize }) });
-    pam_fixture.root_module.addImport("pam", pam_reference);
-    linkLibraries(pam_fixture.root_module, &.{"pam"});
-    const pam_token = b.addLibrary(.{ .name = "desktop_secrets_test_token", .linkage = .dynamic, .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-secrets-pam-token.zig"), .target = target, .optimize = optimize }) });
-    linkLibraries(pam_token.root_module, &.{"pam"});
-    const pam_fixtures = b.step("secrets-pam-fixture", "Build the isolated PAM substack integration check");
-    pam_fixtures.dependOn(&b.addInstallArtifact(pam_fixture, .{}).step);
-    pam_fixtures.dependOn(&b.addInstallArtifact(pam_token, .{}).step);
-    const secrets_tests = b.addTest(.{ .root_module = secrets });
-    b.step("test-secrets", "Check authenticated vault and secret transport").dependOn(&b.addRunArtifact(secrets_tests).step);
-    const secrets_fixture = b.addExecutable(.{ .name = "desktop-secrets-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-secrets-fixture.zig"), .target = target, .optimize = optimize }) });
-    secrets_fixture.root_module.addImport("secrets", secrets);
-    secrets_fixture.root_module.addImport("gtk", gtk);
-    b.step("secrets-fixture", "Build isolated Secret Service integration fixture").dependOn(&b.addInstallArtifact(secrets_fixture, .{}).step);
-    const portal = b.createModule(.{ .root_source_file = b.path("desktop-portal.zig"), .target = target, .optimize = optimize });
-    linkLibraries(portal, &.{ "gio-2.0", "gtk+-3.0" });
-    const printing = b.createModule(.{ .root_source_file = b.path("desktop-portal-print.zig"), .target = target, .optimize = optimize });
-    linkLibraries(printing, &.{"gtk+-3.0"});
-    const print_fixture = b.addExecutable(.{ .name = "desktop-portal-print-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-portal-print-fixture.zig"), .target = target, .optimize = optimize }) });
-    print_fixture.root_module.addImport("printing", printing);
-    print_fixture.root_module.addImport("gtk", gtk);
-    print_fixture.root_module.addImport("libc", libc);
-    b.step("portal-print-fixture", "Build native print dialog and spooling checks").dependOn(&b.addInstallArtifact(print_fixture, .{}).step);
-    const email = b.createModule(.{ .root_source_file = b.path("desktop-portal-email.zig"), .target = target, .optimize = optimize });
-    linkLibraries(email, &.{"gio-2.0"});
-    const email_tests = b.addTest(.{ .root_module = email });
-    b.step("test-portal-email", "Check native mailto encoding and portal option validation").dependOn(&b.addRunArtifact(email_tests).step);
-    const file_chooser = b.createModule(.{ .root_source_file = b.path("desktop-portal-file-chooser.zig"), .target = target, .optimize = optimize });
-    file_chooser.addImport("gtk", gtk);
-    linkLibraries(file_chooser, &.{"gtk+-3.0"});
-    const chooser_fixture = b.addExecutable(.{ .name = "desktop-portal-chooser-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-portal-chooser-fixture.zig"), .target = target, .optimize = optimize }) });
-    chooser_fixture.root_module.addImport("chooser", file_chooser);
-    chooser_fixture.root_module.addImport("gtk", gtk);
-    b.step("portal-chooser-fixture", "Check native portal file dialogs under a private display").dependOn(&b.addInstallArtifact(chooser_fixture, .{}).step);
-    session.root_module.addImport("portal", portal);
-    const portal_fixture = b.addExecutable(.{ .name = "desktop-portal-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-portal-fixture.zig"), .target = target, .optimize = optimize }) });
-    portal_fixture.root_module.addImport("portal", portal);
-    portal_fixture.root_module.addImport("gtk", gtk);
-    b.step("portal-fixture", "Build the native portal broker for private D-Bus tests").dependOn(&b.addInstallArtifact(portal_fixture, .{}).step);
-    const network_api = b.createModule(.{ .root_source_file = b.path("desktop-network-api.zig"), .target = target, .optimize = optimize });
-    network_api.addImport("gtk", gtk);
-    const network = b.createModule(.{ .root_source_file = b.path("desktop-network.zig"), .target = target, .optimize = optimize });
-    network.addImport("gtk", gtk);
-    network.addImport("network-api", network_api);
-    linkLibraries(network, &.{"gio-2.0"});
-    const network_tests = b.addTest(.{ .root_module = network });
-    const network_abi = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-gtk-abi.zig"), .target = target, .optimize = optimize }) });
-    network_abi.root_module.addImport("api", network_api);
-    network_abi.root_module.addImport("reference", bindings(b, target, optimize, "#include <gio/gio.h>\n", &.{"gio-2.0"}));
-    network_abi.root_module.link_libc = true;
-    const network_check = b.step("test-network", "Check native NetworkManager state and GIO ABI");
-    network_check.dependOn(&b.addRunArtifact(network_tests).step);
-    network_check.dependOn(&b.addRunArtifact(network_abi).step);
-    const audio = b.createModule(.{ .root_source_file = b.path("desktop-audio.zig"), .target = target, .optimize = optimize });
-    linkLibraries(audio, &.{"libpipewire-0.3"});
-    const pipewire = bindings(b, target, optimize, "#include <pipewire/pipewire.h>\n#include <pipewire/extensions/metadata.h>\n#include <spa/param/audio/format.h>\n#include <spa/param/video/format.h>\n#include <spa/param/buffers.h>\n#include <spa/param/props.h>\n#include <spa/param/route.h>\n", &.{"libpipewire-0.3"});
-    const audio_pod = b.createModule(.{ .root_source_file = b.path("desktop-audio-pod.zig"), .target = target, .optimize = optimize });
-    audio_pod.addImport("pipewire", pipewire);
-    audio.addImport("audio-pod", audio_pod);
-    portal.addImport("audio-pod", audio_pod);
-    audio.addImport("pipewire", pipewire);
-    portal.addImport("pipewire", pipewire);
-    portal.linkSystemLibrary("libpipewire-0.3", .{});
-    const video_fixture = b.addExecutable(.{ .name = "desktop-portal-video-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-portal-video-fixture.zig"), .target = target, .optimize = optimize }) });
-    video_fixture.root_module.addImport("gtk", gtk);
-    video_fixture.root_module.addImport("libc", libc);
-    video_fixture.root_module.addImport("pipewire", pipewire);
-    video_fixture.root_module.addImport("audio-pod", audio_pod);
-    linkLibraries(video_fixture.root_module, &.{ "gio-2.0", "libpipewire-0.3" });
-    b.step("portal-video-fixture", "Build the independent screen sharing consumer").dependOn(&b.addInstallArtifact(video_fixture, .{}).step);
-    const pod_tests = b.addTest(.{ .root_module = audio_pod });
-    b.step("test-audio-pod", "Check shared SPA parameter encoding").dependOn(&b.addRunArtifact(pod_tests).step);
-    const audio_tests = b.addTest(.{ .root_module = audio });
-    b.step("test-audio", "Check native PipeWire controls and parameter codecs").dependOn(&b.addRunArtifact(audio_tests).step);
-    const battery = b.createModule(.{ .root_source_file = b.path("desktop-battery.zig"), .target = target, .optimize = optimize });
-    linkLibraries(battery, &.{"gio-2.0"});
-    const battery_monitor = b.createModule(.{ .root_source_file = b.path("desktop-battery-monitor.zig"), .target = target, .optimize = optimize });
-    battery_monitor.addImport("battery", battery);
-    linkLibraries(battery_monitor, &.{"gio-2.0"});
-    session.root_module.addImport("battery-monitor", battery_monitor);
-    const battery_policy_tests = b.addTest(.{ .root_module = battery_monitor });
-    b.step("test-battery-policy", "Check critical battery grace period and cancellation").dependOn(&b.addRunArtifact(battery_policy_tests).step);
-    const battery_tests = b.addTest(.{ .root_module = battery });
-    b.step("test-battery", "Check native battery state and presentation").dependOn(&b.addRunArtifact(battery_tests).step);
-    const backlight = b.createModule(.{ .root_source_file = b.path("desktop-backlight.zig"), .target = target, .optimize = optimize });
-    linkLibraries(backlight, &.{"gtk+-3.0"});
-    const backlight_tests = b.addTest(.{ .root_module = backlight });
-    b.step("test-backlight", "Check native backlight limits and rounding").dependOn(&b.addRunArtifact(backlight_tests).step);
-    const backlight_fixture = b.addExecutable(.{ .name = "desktop-backlight-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-backlight-fixture.zig"), .target = target, .optimize = optimize }) });
-    backlight_fixture.root_module.addImport("gtk", gtk);
-    backlight_fixture.root_module.addImport("backlight", backlight);
-    backlight_fixture.root_module.addImport("battery", battery);
-    backlight_fixture.root_module.addImport("audio", audio);
-    backlight_fixture.root_module.addImport("network", network);
-    linkLibraries(backlight_fixture.root_module, &.{ "gtk+-3.0", "gtk-layer-shell-0" });
-    b.installArtifact(backlight_fixture);
-    b.step("backlight-fixture", "Build native backlight integration fixture").dependOn(&b.addInstallArtifact(backlight_fixture, .{}).step);
-    const protocols = b.createModule(.{ .root_source_file = b.path("desktop-protocols.zig"), .target = target, .optimize = optimize });
-    protocols.addImport("gtk", gtk);
-    var protocol_references: [10]std.Build.LazyPath = undefined;
-    const libc_reference = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{});
-    const libc_abi = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-libc-abi.zig"), .target = target, .optimize = optimize }) });
-    libc_abi.root_module.addImport("api", libc);
-    libc_abi.root_module.addImport("reference", libc_reference);
-    libc_abi.root_module.link_libc = true;
-    b.step("test-libc-abi", "Verify POSIX declarations and constants against system headers").dependOn(&b.addRunArtifact(libc_abi).step);
-    const greeter_module = b.createModule(.{ .root_source_file = b.path("desktop-greeter.zig"), .target = target, .optimize = optimize });
-    greeter_module.link_libc = true;
-    greeter_module.addImport("libc", libc);
-    const quick_module = b.createModule(.{ .root_source_file = b.path("desktop-quick-settings.zig"), .target = target, .optimize = optimize });
-    quick_module.addImport("gtk", gtk);
-    quick_module.addImport("battery", battery);
-    quick_module.addImport("audio", audio);
-    quick_module.addImport("network", network);
-    quick_module.addImport("backlight", backlight);
-    quick_module.addImport("libc", libc);
-    const panel_data = b.createModule(.{ .root_source_file = b.path("waybar-panel.zig"), .target = target, .optimize = optimize });
-    panel_data.addImport("battery", battery);
-    panel_data.addImport("audio", audio);
-    panel_data.addImport("network", network);
-    panel_data.addImport("libc", libc);
-    const battery_fixture = b.addExecutable(.{ .name = "desktop-battery-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-battery-fixture.zig"), .target = target, .optimize = optimize }) });
-    battery_fixture.root_module.addImport("gtk", gtk);
-    battery_fixture.root_module.addImport("battery", battery);
-    battery_fixture.root_module.addImport("battery-monitor", battery_monitor);
-    battery_fixture.root_module.addImport("quick", quick_module);
-    battery_fixture.root_module.addImport("panel-data", panel_data);
-    linkGtk(battery_fixture);
-    b.installArtifact(battery_fixture);
-    b.step("battery-fixture", "Build the native battery and quick-settings fixture").dependOn(&b.addInstallArtifact(battery_fixture, .{}).step);
-    const settings_module = b.createModule(.{ .root_source_file = b.path("desktop-settings.zig"), .target = target, .optimize = optimize });
-    linkLibraries(settings_module, &.{"gtk+-3.0"});
-    settings_module.addImport("gtk", gtk);
-    settings_module.addImport("audio", audio);
-    settings_module.addImport("network", network);
-    const audio_fixture = b.addExecutable(.{ .name = "desktop-audio-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-audio-fixture.zig"), .target = target, .optimize = optimize }) });
-    audio_fixture.root_module.addImport("gtk", gtk);
-    audio_fixture.root_module.addImport("audio", audio);
-    audio_fixture.root_module.addImport("network", network);
-    audio_fixture.root_module.addImport("quick", quick_module);
-    linkGtk(audio_fixture);
-    b.installArtifact(audio_fixture);
-    b.step("audio-fixture", "Build the isolated native audio integration fixture").dependOn(&b.addInstallArtifact(audio_fixture, .{}).step);
-    const settings_tests = b.addTest(.{ .root_module = settings_module });
-    const settings_fixture = b.addExecutable(.{ .name = "desktop-settings-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-settings-fixture.zig"), .target = target, .optimize = optimize }) });
-    settings_fixture.root_module.addImport("settings", settings_module);
-    const settings_check = b.step("test-settings", "Exercise settings against isolated sound and network backends (requires a display)");
-    settings_check.dependOn(&b.addRunArtifact(settings_fixture).step);
-    const askpass_module = b.createModule(.{ .root_source_file = b.path("desktop-askpass.zig"), .target = target, .optimize = optimize });
-    linkLibraries(askpass_module, &.{"gtk+-3.0"});
-    const askpass_fixture = b.addExecutable(.{ .name = "desktop-askpass-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-askpass-fixture.zig"), .target = target, .optimize = optimize }) });
-    askpass_fixture.root_module.addImport("askpass", askpass_module);
-    askpass_fixture.root_module.addImport("libc", libc);
-    const run_askpass_fixture = b.addRunArtifact(askpass_fixture);
-    run_askpass_fixture.addArtifactArg(session);
-    b.step("test-askpass", "Check the SSH askpass dialog and protocol (requires a display)").dependOn(&run_askpass_fixture.step);
-    const polkit_module = b.createModule(.{ .root_source_file = b.path("desktop-polkit.zig"), .target = target, .optimize = optimize });
-    linkLibraries(polkit_module, &.{"gtk+-3.0"});
-    const polkit_fixture = b.addExecutable(.{ .name = "desktop-polkit-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-polkit-fixture.zig"), .target = target, .optimize = optimize }) });
-    polkit_fixture.root_module.addImport("polkit", polkit_module);
-    const polkit_agent_fixture = b.addExecutable(.{ .name = "desktop-polkit-agent-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-polkit-agent-fixture.zig"), .target = target, .optimize = optimize }) });
-    polkit_agent_fixture.root_module.addImport("polkit", polkit_module);
-    polkit_agent_fixture.root_module.addImport("libc", libc);
-    b.step("polkit-agent-fixture", "Install the private Polkit protocol fixture").dependOn(&b.addInstallArtifact(polkit_agent_fixture, .{}).step);
-    const run_polkit_fixture = b.addRunArtifact(polkit_fixture);
-    b.step("test-polkit", "Check the PolicyKit authentication agent dialog and interactions (requires a display)").dependOn(&run_polkit_fixture.step);
-    const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
-    const sc_xml: std.Build.LazyPath = .{ .cwd_relative = b.fmt("{s}/unstable/wlr-screencopy-unstable-v1.xml", .{wlr_protocols}) };
-    const sc_code = protocolCode(b, sc_xml, "wlr-screencopy-unstable-v1.c");
-    const dc_xml: std.Build.LazyPath = .{ .cwd_relative = b.fmt("{s}/unstable/wlr-data-control-unstable-v1.xml", .{wlr_protocols}) };
-    const dc_code = protocolCode(b, dc_xml, "wlr-data-control-unstable-v1.c");
-    const sc_module = b.createModule(.{ .root_source_file = b.path("desktop-screenshot.zig"), .target = target, .optimize = optimize });
-    linkLibraries(sc_module, &.{ "gtk+-3.0", "gtk-layer-shell-0", "wayland-client", "cairo" });
-    sc_module.addImport("protocols", protocols);
-    protocol_references[0] = sc_code;
-    protocol_references[1] = dc_code;
-    portal.addImport("screenshot", sc_module);
-    session.root_module.addImport("screenshot", sc_module);
-    const capture_test_module = b.createModule(.{ .root_source_file = b.path("desktop-portal-capture.zig"), .target = target, .optimize = optimize });
-    capture_test_module.addImport("screenshot", sc_module);
-    linkLibraries(capture_test_module, &.{"cairo"});
-    const capture_tests = b.addTest(.{ .root_module = capture_test_module });
-    b.step("test-portal-capture", "Check capture pixel layout, orientation and buffer validation").dependOn(&b.addRunArtifact(capture_tests).step);
-    const sc_fixture = b.addExecutable(.{ .name = "desktop-screenshot-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-screenshot-fixture.zig"), .target = target, .optimize = optimize }) });
-    sc_fixture.root_module.addImport("screenshot", sc_module);
-    const run_sc_fixture = b.addRunArtifact(sc_fixture);
-    b.step("test-screenshot", "Check screenshot CLI parsing, buffers, PNG encoding and overlay (requires a display)").dependOn(&run_sc_fixture.step);
-    const wallpaper = b.createModule(.{ .root_source_file = b.path("desktop-wallpaper.zig"), .target = target, .optimize = optimize });
-    linkLibraries(wallpaper, &.{ "gtk+-3.0", "gtk-layer-shell-0" });
-    wallpaper.addImport("gtk", gtk);
-    const wallpaper_tests = b.addTest(.{ .root_module = wallpaper });
-    const osd = b.createModule(.{ .root_source_file = b.path("desktop-osd.zig"), .target = target, .optimize = optimize });
-    linkLibraries(osd, &.{ "gtk+-3.0", "gtk-layer-shell-0" });
-    osd.addImport("gtk", gtk);
-    const osd_tests = b.addTest(.{ .root_module = osd });
-    const overview_header = b.addWriteFiles().add("overview-bindings.h", "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n");
-    const overview_c = b.addTranslateC(.{ .root_source_file = overview_header, .target = target, .optimize = optimize });
-    for ([_][]const u8{ "gtk+-unix-print-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client" }) |name| overview_c.linkSystemLibrary(name, .{});
-    const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
-    for ([_][]const u8{ "ext-foreign-toplevel-list", "ext-image-capture-source", "ext-image-copy-capture", "desktop-overview" }, 0..) |name, protocol_index| {
-        const xml: std.Build.LazyPath = if (std.mem.eql(u8, name, "desktop-overview")) b.path("desktop-overview-v1.xml") else .{ .cwd_relative = b.fmt("{s}/staging/{s}/{s}-v1.xml", .{ protocol_dir, name, name }) };
-        protocol_references[protocol_index + 2] = protocolCode(b, xml, b.fmt("{s}-v1.c", .{name}));
-    }
-    protocol_references[7] = protocolCode(b, .{ .cwd_relative = b.fmt("{s}/staging/ext-session-lock/ext-session-lock-v1.xml", .{protocol_dir}) }, "ext-session-lock-v1.c");
-    protocol_references[8] = protocolCode(b, .{ .cwd_relative = b.fmt("{s}/staging/ext-idle-notify/ext-idle-notify-v1.xml", .{protocol_dir}) }, "ext-idle-notify-v1.c");
-    protocol_references[9] = protocolCode(b, .{ .cwd_relative = b.fmt("{s}/unstable/wlr-output-management-unstable-v1.xml", .{wlr_protocols}) }, "wlr-output-management-v1.c");
-    const output_module = b.createModule(.{ .root_source_file = b.path("desktop-output.zig"), .target = target, .optimize = optimize });
-    output_module.addImport("gtk", gtk);
-    output_module.addImport("protocols", protocols);
-    linkLibraries(output_module, &.{ "gtk+-3.0", "gio-unix-2.0", "wayland-client" });
-    session.root_module.addImport("output", output_module);
-    const output_tests = b.addTest(.{ .root_module = output_module });
-    b.step("test-output", "Check output scaling arguments and fixed point limits").dependOn(&b.addRunArtifact(output_tests).step);
-    const idle_module = b.createModule(.{ .root_source_file = b.path("desktop-idle.zig"), .target = target, .optimize = optimize });
-    idle_module.addImport("protocols", protocols);
-    linkLibraries(idle_module, &.{ "gtk+-3.0", "gio-unix-2.0", "wayland-client" });
-    const idle_fixture = b.addExecutable(.{ .name = "desktop-idle-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-idle-fixture.zig"), .target = target, .optimize = optimize }) });
-    idle_fixture.root_module.addImport("idle", idle_module);
-    idle_fixture.root_module.addImport("gtk", gtk);
-    b.installArtifact(idle_fixture);
-    b.step("idle-fixture", "Build the isolated idle and sleep coordination fixture").dependOn(&b.addInstallArtifact(idle_fixture, .{}).step);
-    const lock_auth = b.createModule(.{ .root_source_file = b.path("desktop-lock-auth.zig"), .target = target, .optimize = optimize });
-    linkLibraries(lock_auth, &.{"pam"});
-    const lock_module = b.createModule(.{ .root_source_file = b.path("desktop-lock.zig"), .target = target, .optimize = optimize });
-    lock_module.addImport("protocols", protocols);
-    lock_module.addImport("lock-auth", lock_auth);
-    linkLibraries(lock_module, &.{ "gtk+-3.0", "wayland-client", "xkbcommon" });
-    session.root_module.addImport("lock", lock_module);
-    const auth_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-lock-auth.zig"), .target = target, .optimize = optimize }) });
-    auth_tests.root_module.addImport("auth", lock_auth);
-    const fixture_auth = b.createModule(.{ .root_source_file = b.path("tests/desktop-lock-fake-auth.zig"), .target = target, .optimize = optimize });
-    const fixture_lock = b.createModule(.{ .root_source_file = b.path("desktop-lock.zig"), .target = target, .optimize = optimize });
-    fixture_lock.addImport("protocols", protocols);
-    fixture_lock.addImport("lock-auth", fixture_auth);
-    linkLibraries(fixture_lock, &.{ "gtk+-3.0", "wayland-client", "xkbcommon" });
-    const lock_fixture = b.addExecutable(.{ .name = "desktop-lock-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-lock-fixture.zig"), .target = target, .optimize = optimize }) });
-    lock_fixture.root_module.addImport("lock", fixture_lock);
-    b.installArtifact(lock_fixture);
-    b.step("lock-fixture", "Build the isolated session lock fixture").dependOn(&b.addInstallArtifact(lock_fixture, .{}).step);
-    const lock_tests = b.addTest(.{ .root_module = lock_module });
-    const lock_check = b.step("test-lock", "Check password editing, erasure, and PAM conversations");
-    lock_check.dependOn(&b.addRunArtifact(lock_tests).step);
-    lock_check.dependOn(&b.addRunArtifact(auth_tests).step);
-    const abi_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-gtk-abi.zig"), .target = target, .optimize = optimize }) });
-    abi_tests.root_module.addImport("api", gtk);
-    abi_tests.root_module.addImport("reference", overview_c.createModule());
-    abi_tests.root_module.link_libc = true;
-    b.step("test-gtk-abi", "Verify explicit toolkit declarations against the installed C headers").dependOn(&b.addRunArtifact(abi_tests).step);
-    const overview_apps = b.createModule(.{ .root_source_file = b.path("desktop-apps.zig"), .target = target, .optimize = optimize });
-    overview_apps.addImport("gtk", gtk);
-    linkLibraries(session.root_module, &.{ "gtk+-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client" });
-    session.root_module.addImport("gtk", gtk);
-    session.root_module.addImport("apps", overview_apps);
-    session.root_module.addImport("power", power_module);
-    session.root_module.addImport("greeter", greeter_module);
-    session.root_module.addImport("libc", libc);
-    session.root_module.addImport("protocols", protocols);
+    desktop.addOptions("options", options);
+    desktop.addImport("posix", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <fcntl.h>\n#include <errno.h>\n#include <sys/stat.h>\n#include <sys/file.h>\n#include <sys/random.h>\n#include <stdlib.h>\n#include <sys/prctl.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <grp.h>\n#include <sys/wait.h>\n#include <sys/socket.h>\n#include <security/pam_appl.h>\n#include <security/pam_modules.h>\n", &.{"pam"}));
+    desktop.addImport("pipewire", bindings(b, target, optimize, "#include <pipewire/pipewire.h>\n#include <pipewire/extensions/metadata.h>\n#include <spa/param/audio/format.h>\n#include <spa/param/video/format.h>\n#include <spa/param/buffers.h>\n#include <spa/param/props.h>\n#include <spa/param/route.h>\n", &.{"libpipewire-0.3"}));
+    const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = desktop, .use_llvm = llvm });
     b.installArtifact(session);
-    b.step("shell", "Build the unified desktop shell").dependOn(&b.addInstallArtifact(session, .{}).step);
-    const apps_fixture = b.addExecutable(.{ .name = "desktop-apps-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-apps-fixture.zig"), .target = target, .optimize = optimize }) });
-    const apps_module = b.createModule(.{ .root_source_file = b.path("desktop-apps.zig"), .target = target, .optimize = optimize });
-    linkLibraries(apps_module, &.{ "gtk+-3.0", "gio-unix-2.0" });
-    apps_module.addImport("gtk", gtk);
-    apps_fixture.root_module.addImport("apps", apps_module);
-    b.installArtifact(apps_fixture);
-    const gtk_fixture = b.addExecutable(.{ .name = "waybar-power-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/waybar-power-fixture.zig"), .target = target, .optimize = optimize }) });
-    linkGtk(gtk_fixture);
-    const module = b.createModule(.{ .root_source_file = b.path("desktop-widgets.zig"), .target = target, .optimize = optimize });
-    linkLibraries(module, &.{"gtk+-3.0"});
-    module.addImport("gtk", gtk);
-    module.addImport("power", power_module);
-    gtk_fixture.root_module.addImport("panel", module);
-    gtk_fixture.root_module.addImport("power", power_module);
-    b.step("test-power-menu", "Check power profile controls and panel popups (requires a display)").dependOn(&b.addRunArtifact(gtk_fixture).step);
-    b.installArtifact(gtk_fixture);
-    const switcher = b.addExecutable(.{ .name = "labwc-switcher-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/labwc-switcher-fixture.zig"), .target = target, .optimize = optimize }) });
-    linkGtk(switcher);
-    switcher.root_module.linkSystemLibrary("wayland-client", .{});
-    switcher.root_module.addImport("gtk", gtk);
-    b.installArtifact(switcher);
-    const pointer_xml: std.Build.LazyPath = .{ .cwd_relative = b.fmt("{s}/unstable/wlr-virtual-pointer-unstable-v1.xml", .{wlr_protocols}) };
-    const pointer_code = protocolCode(b, pointer_xml, "virtual-pointer.c");
-    const pointer_api = b.createModule(.{ .root_source_file = b.path("desktop-virtual-pointer.zig"), .target = target, .optimize = optimize });
-    pointer_api.addImport("gtk", gtk);
-    const pointer = b.addExecutable(.{ .name = "desktop-pointer-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-pointer-fixture.zig"), .target = target, .optimize = optimize }) });
-    linkLibraries(pointer.root_module, &.{"wayland-client"});
-    pointer.root_module.addImport("protocols", protocols);
-    protocol_references[6] = pointer_code;
-    pointer.root_module.addImport("gtk", gtk);
-    pointer.root_module.addImport("virtual-pointer", pointer_api);
-    b.installArtifact(pointer);
-    const capture_fixtures = b.step("portal-capture-fixtures", "Build the native capture broker, video consumer and pointer fixtures");
-    capture_fixtures.dependOn(&b.addInstallArtifact(portal_fixture, .{}).step);
-    capture_fixtures.dependOn(&b.addInstallArtifact(video_fixture, .{}).step);
-    capture_fixtures.dependOn(&b.addInstallArtifact(pointer, .{}).step);
-    const checker = b.addExecutable(.{ .name = "check-labwc-switcher", .root_module = b.createModule(.{ .root_source_file = b.path("check-labwc-switcher.zig"), .target = target, .optimize = optimize }) });
-    checker.root_module.link_libc = true;
-    checker.root_module.addImport("libc", libc);
-    b.installArtifact(checker);
-    const tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("desktop-tests.zig"), .target = target, .optimize = optimize }) });
-    tests.root_module.link_libc = true;
-    tests.root_module.addImport("libc", libc);
-    tests.root_module.addImport("battery", battery);
-    tests.root_module.addImport("audio", audio);
-    tests.root_module.addImport("network", network);
-    const run_tests = b.addRunArtifact(tests);
-    const http_module = b.createModule(.{ .root_source_file = b.path("desktop-http.zig"), .target = target, .optimize = optimize });
-    const http_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-http.zig"), .target = target, .optimize = optimize }) });
-    http_tests.root_module.link_libc = true;
-    http_tests.root_module.addImport("http", http_module);
-    const run_http_tests = b.addRunArtifact(http_tests);
-    b.step("test-http", "Check HTTP headers, body limits, redirects and timeouts against a local server").dependOn(&run_http_tests.step);
-    const pointer_transport = b.createModule(.{ .root_source_file = b.path("tests/desktop-pointer-transport.zig"), .target = target, .optimize = optimize });
-    pointer_transport.addImport("real-gtk", gtk);
-    const pointer_test_api = b.createModule(.{ .root_source_file = b.path("desktop-virtual-pointer.zig"), .target = target, .optimize = optimize });
-    pointer_test_api.addImport("gtk", pointer_transport);
-    const pointer_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-virtual-pointer.zig"), .target = target, .optimize = optimize }) });
-    pointer_tests.root_module.addImport("transport", pointer_transport);
-    pointer_tests.root_module.addImport("pointer-api", pointer_test_api);
-    const run_pointer_tests = b.addRunArtifact(pointer_tests);
-    b.step("test-virtual-pointer", "Check virtual pointer protocol requests without a compositor").dependOn(&run_pointer_tests.step);
-    const protocol_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-protocols.zig"), .target = target, .optimize = optimize }) });
-    protocol_tests.root_module.addImport("protocols", protocols);
-    protocol_tests.root_module.addImport("gtk", gtk);
-    linkLibraries(protocol_tests.root_module, &.{"wayland-client"});
-    // Rename reference symbols so the C and Zig implementations can be
-    // compared in the same process, including cross-protocol type pointers.
+    b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
+    b.step("shell", "Build the desktop shell").dependOn(&b.addInstallArtifact(session, .{}).step);
+
+    // Zig collects tests from files in the root module, not imported modules.
+    // Compile the same production files with the same dependencies in one test root.
+    const test_module = b.createModule(.{ .root_source_file = b.path("desktop-test-runner.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    for (desktop.import_table.keys(), desktop.import_table.values()) |name, dependency| test_module.addImport(name, dependency);
+    test_module.link_objects.appendSlice(b.graph.arena, desktop.link_objects.items) catch @panic("OOM");
+    const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module, .use_llvm = llvm });
+    const test_step = b.step("test", "Run unit, ABI, protocol and widget checks (requires Wayland)");
+    test_step.dependOn(&b.addRunArtifact(tests).step);
+    test_module.addImport("gtk-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n", &.{ "gtk+-unix-print-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client" }));
+    test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
+    const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
+    const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
     const protocol_names = [_][]const u8{
         "zwlr_output_manager_v1_interface",
         "zwlr_output_head_v1_interface",
@@ -413,62 +77,70 @@ pub fn build(b: *std.Build) void {
     };
     var reference_flags: [protocol_names.len][]const u8 = undefined;
     for (protocol_names, &reference_flags) |name, *flag| flag.* = b.fmt("-D{s}=reference_{s}", .{ name, name });
-    for (protocol_references) |code| protocol_tests.root_module.addCSourceFile(.{ .file = code, .flags = &reference_flags });
-    const run_protocol_tests = b.addRunArtifact(protocol_tests);
-    b.step("test-protocols", "Compare native Wayland metadata with the protocol generator").dependOn(&run_protocol_tests.step);
-    for ([_]*std.Build.Module{ osd, session.root_module, module }) |root| {
-        root.addImport("backlight", backlight);
-        root.addImport("battery", battery);
-        root.addImport("audio", audio);
-        root.addImport("network", network);
+    const protocol_files = [_]std.Build.LazyPath{
+        .{ .cwd_relative = b.fmt("{s}/unstable/wlr-screencopy-unstable-v1.xml", .{wlr_protocols}) },
+        .{ .cwd_relative = b.fmt("{s}/unstable/wlr-data-control-unstable-v1.xml", .{wlr_protocols}) },
+        .{ .cwd_relative = b.fmt("{s}/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/staging/ext-image-capture-source/ext-image-capture-source-v1.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml", .{protocol_dir}) },
+        b.path("desktop-overview-v1.xml"),
+        .{ .cwd_relative = b.fmt("{s}/unstable/wlr-virtual-pointer-unstable-v1.xml", .{wlr_protocols}) },
+        .{ .cwd_relative = b.fmt("{s}/staging/ext-session-lock/ext-session-lock-v1.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/staging/ext-idle-notify/ext-idle-notify-v1.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/unstable/wlr-output-management-unstable-v1.xml", .{wlr_protocols}) },
+    };
+    for (protocol_files, 0..) |xml, i| {
+        // Reference symbols are used only by the test binary.
+        tests.root_module.addCSourceFile(.{ .file = protocolCode(b, xml, b.fmt("protocol-{d}.c", .{i})), .flags = &reference_flags });
     }
-    const network_fixture = b.addExecutable(.{ .name = "desktop-network-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("desktop-network-fixture.zig"), .target = target, .optimize = optimize }) });
-    for ([_]*std.Build.Module{network_fixture.root_module}) |root| {
-        root.addImport("gtk", gtk);
-        root.addImport("network", network);
-        root.addImport("audio", audio);
-        root.addImport("battery", battery);
-        root.addImport("backlight", backlight);
+
+    const Fixture = struct { name: []const u8, source: []const u8, step: []const u8, install: bool = false, run: bool = false, library: bool = false, test_runner: bool = false };
+    const fixtures = [_]Fixture{
+        .{ .name = "pam_desktop_secrets", .source = "desktop-secrets-pam.zig", .step = "secrets-pam", .install = true, .library = true },
+        .{ .name = "desktop-secrets-pam-fixture", .source = "tests/desktop-secrets-pam-fixture.zig", .step = "secrets-pam-fixture" },
+        .{ .name = "desktop_secrets_test_token", .source = "tests/desktop-secrets-pam-token.zig", .step = "secrets-pam-fixture", .library = true },
+        .{ .name = "desktop-secrets-fixture", .source = "tests/desktop-secrets-fixture.zig", .step = "secrets-fixture" },
+        .{ .name = "desktop-portal-fixture", .source = "tests/desktop-portal-fixture.zig", .step = "portal-fixture" },
+        .{ .name = "desktop-portal-chooser-fixture", .source = "tests/desktop-portal-chooser-fixture.zig", .step = "portal-chooser-fixture" },
+        .{ .name = "desktop-portal-print-fixture", .source = "tests/desktop-portal-print-fixture.zig", .step = "portal-print-fixture" },
+        .{ .name = "desktop-portal-video-fixture", .source = "tests/desktop-portal-video-fixture.zig", .step = "portal-video-fixture" },
+        .{ .name = "desktop-pointer-fixture", .source = "tests/desktop-pointer-fixture.zig", .step = "pointer-fixture", .install = true },
+        .{ .name = "desktop-battery-fixture", .source = "tests/desktop-battery-fixture.zig", .step = "battery-fixture", .install = true },
+        .{ .name = "desktop-audio-fixture", .source = "tests/desktop-audio-fixture.zig", .step = "audio-fixture", .install = true },
+        .{ .name = "desktop-backlight-fixture", .source = "desktop-backlight-fixture.zig", .step = "backlight-fixture", .install = true },
+        .{ .name = "desktop-network-fixture", .source = "desktop-network-fixture.zig", .step = "network-fixture" },
+        .{ .name = "desktop-idle-fixture", .source = "tests/desktop-idle-fixture.zig", .step = "idle-fixture", .install = true },
+        .{ .name = "desktop-lock-fixture", .source = "tests/desktop-lock-fixture.zig", .step = "lock-fixture", .install = true },
+        .{ .name = "desktop-apps-fixture", .source = "tests/desktop-apps-fixture.zig", .step = "apps-fixture", .install = true, .run = true },
+        .{ .name = "waybar-power-fixture", .source = "tests/waybar-power-fixture.zig", .step = "widgets-fixture", .install = true, .run = true },
+        .{ .name = "labwc-switcher-fixture", .source = "tests/labwc-switcher-fixture.zig", .step = "switcher-fixture", .install = true },
+        .{ .name = "check-labwc-switcher", .source = "check-labwc-switcher.zig", .step = "switcher-checker", .install = true },
+        .{ .name = "desktop-settings-fixture", .source = "tests/desktop-settings-fixture.zig", .step = "settings-fixture", .run = true },
+        .{ .name = "desktop-askpass-fixture", .source = "tests/desktop-askpass-fixture.zig", .step = "askpass-fixture", .run = true },
+        .{ .name = "desktop-polkit-fixture", .source = "tests/desktop-polkit-fixture.zig", .step = "polkit-fixture", .run = true },
+        .{ .name = "desktop-polkit-agent-fixture", .source = "tests/desktop-polkit-agent-fixture.zig", .step = "polkit-agent-fixture" },
+        .{ .name = "desktop-screenshot-fixture", .source = "tests/desktop-screenshot-fixture.zig", .step = "screenshot-fixture", .run = true },
+        .{ .name = "desktop-session-fixture", .source = "desktop-session-fixture.zig", .step = "session-fixture", .test_runner = true },
+        .{ .name = "desktop-memory-tests", .source = "desktop-memory-tests.zig", .step = "memory-tests", .test_runner = true },
+    };
+    const capture = b.step("portal-capture-fixtures", "Build the capture protocol test clients");
+    for (fixtures) |fixture| {
+        const module = b.createModule(.{ .root_source_file = b.path(fixture.source), .target = target, .optimize = optimize });
+        module.addImport("desktop", desktop);
+        const artifact = if (fixture.library)
+            b.addLibrary(.{ .name = fixture.name, .root_module = module, .linkage = .dynamic, .use_llvm = llvm })
+        else if (fixture.test_runner)
+            b.addTest(.{ .name = fixture.name, .root_module = module, .use_llvm = llvm, .filters = if (std.mem.eql(u8, fixture.step, "memory-tests")) &.{"memory:"} else &.{"session:"} })
+        else
+            b.addExecutable(.{ .name = fixture.name, .root_module = module, .use_llvm = llvm });
+        if (fixture.install) b.installArtifact(artifact);
+        const step = if (b.top_level_steps.get(fixture.step)) |existing| &existing.step else b.step(fixture.step, "Build isolated test client");
+        step.dependOn(&b.addInstallArtifact(artifact, .{}).step);
+        if (std.mem.eql(u8, fixture.step, "portal-fixture") or std.mem.eql(u8, fixture.step, "portal-video-fixture") or std.mem.eql(u8, fixture.step, "pointer-fixture")) capture.dependOn(&b.addInstallArtifact(artifact, .{}).step);
+        if (fixture.run) {
+            const run = b.addRunArtifact(artifact);
+            if (std.mem.eql(u8, fixture.step, "askpass-fixture")) run.addArtifactArg(session);
+            test_step.dependOn(&run.step);
+        }
     }
-    linkGtk(network_fixture);
-    b.step("network-fixture", "Build isolated NetworkManager integration driver").dependOn(&b.addInstallArtifact(network_fixture, .{}).step);
-    const session_fixture = b.addTest(.{
-        .name = "desktop-session-fixture",
-        .root_module = b.createModule(.{ .root_source_file = b.path("desktop-session-fixture.zig"), .target = target, .optimize = optimize }),
-    });
-    session_fixture.root_module.addImport("gtk", gtk);
-    session_fixture.root_module.addImport("network", network);
-    session_fixture.root_module.addImport("audio", audio);
-    session_fixture.root_module.addImport("battery", battery);
-    session_fixture.root_module.addImport("backlight", backlight);
-    linkGtk(session_fixture);
-    b.step("session-fixture", "Build private logind action and lifecycle tests").dependOn(&b.addInstallArtifact(session_fixture, .{}).step);
-    // Run only through the private D-Bus/PipeWire/Xvfb memory fixture.
-    const memory_tests = b.addTest(.{
-        .name = "desktop-memory-tests",
-        .root_module = b.createModule(.{ .root_source_file = b.path("desktop-memory-tests.zig"), .target = target, .optimize = optimize }),
-        .filters = &.{"memory:"},
-    });
-    linkLibraries(memory_tests.root_module, &.{ "gtk+-3.0", "pangoft2", "gtk-layer-shell-0" });
-    memory_tests.root_module.addImport("gtk", gtk);
-    memory_tests.root_module.addImport("libc", libc);
-    memory_tests.root_module.addImport("audio", audio);
-    memory_tests.root_module.addImport("network", network);
-    memory_tests.root_module.addImport("battery", battery);
-    memory_tests.root_module.addImport("backlight", backlight);
-    memory_tests.root_module.addImport("power", power_module);
-    b.step("memory-tests", "Build leak-checking lifecycle tests for the isolated memory fixture").dependOn(&b.addInstallArtifact(memory_tests, .{}).step);
-    for ([_]*std.Build.Module{ portal, printing, email, audio, battery, battery_monitor, backlight, askpass_module, polkit_module, sc_module, capture_test_module, idle_module, lock_module, fixture_lock }) |root| {
-        root.addImport("gtk", gtk);
-        root.addImport("libc", libc);
-    }
-    const test_step = b.step("test", "Run data parsing and allowance tests");
-    for ([_]*std.Build.Step.Compile{ runtime_tests, audio_tests, pod_tests, capture_tests, battery_tests, battery_policy_tests, output_tests, backlight_tests, lock_tests, auth_tests, osd_tests, wallpaper_tests, settings_tests }) |suite| {
-        test_step.dependOn(&b.addRunArtifact(suite).step);
-    }
-    test_step.dependOn(network_check);
-    test_step.dependOn(&run_protocol_tests.step);
-    test_step.dependOn(&run_pointer_tests.step);
-    test_step.dependOn(&run_http_tests.step);
-    test_step.dependOn(&run_tests.step);
 }

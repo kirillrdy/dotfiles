@@ -1,9 +1,9 @@
 //! JSON streams for the native panel. Each update owns a bounded arena.
 const std = @import("std");
-const network = @import("network");
+const network = @import("desktop-network.zig");
 const u = @import("desktop-util.zig");
-const audio = @import("audio");
-const battery = @import("battery");
+const audio = @import("desktop-audio.zig");
+const battery = @import("desktop-battery.zig");
 const codex = @import("waybar-codex.zig");
 const A = u.Allocator;
 const V = u.Value;

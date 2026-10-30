@@ -1,8 +1,8 @@
 //! Real file-backend jobs, with no printer or print server.
 const std = @import("std");
-const c = @import("gtk");
-const libc = @import("libc");
-const printing = @import("printing");
+const c = @import("desktop").gtk;
+const libc = @import("desktop").libc;
+const printing = @import("desktop").printing;
 const expect = std.testing.expect;
 var io: std.Io = undefined;
 const cast = c.__zig.cast;

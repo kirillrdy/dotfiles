@@ -1,10 +1,10 @@
 //! Isolated D-Bus integration driver; never run against the host system bus.
 const std = @import("std");
-const c = @import("gtk");
-const network = @import("network");
-const settings = @import("desktop-settings.zig");
-const editor = @import("desktop-network-editor.zig");
-const quick = @import("desktop-quick-settings.zig");
+const c = @import("desktop").gtk;
+const network = @import("desktop").network;
+const settings = @import("desktop").settings;
+const editor = @import("desktop").network_editor;
+const quick = @import("desktop").quick;
 var complete = false;
 var success = false;
 var watching = false;

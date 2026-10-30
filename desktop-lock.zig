@@ -1,9 +1,9 @@
 //! Independent ext-session-lock client. Only successful PAM authentication sends unlock.
 const std = @import("std");
-const c = @import("gtk");
-const libc = @import("libc");
-const p = @import("protocols");
-const auth = @import("lock-auth");
+const c = @import("desktop-gtk.zig");
+const libc = @import("desktop-libc.zig");
+const p = @import("desktop-protocols.zig");
+const auth = @import("desktop-lock-auth.zig");
 const a = std.heap.page_allocator;
 const Proxy = c.wl_proxy;
 extern const wl_compositor_interface: c.wl_interface;
@@ -232,6 +232,7 @@ const State = struct {
     seats: ?*Seat = null,
     password: *Password,
     user: [*:0]const u8,
+    authenticator: *const fn ([*:0]const u8, [*:0]const u8) bool = auth.authenticate,
     ready_fd: c_int = -1,
     managed_readiness: bool = false,
     locked: bool = false,
@@ -255,7 +256,7 @@ const State = struct {
     }
     fn authWork(task: ?*c.GTask, _: ?*anyopaque, data: ?*anyopaque, _: [*c]c.GCancellable) callconv(.c) void {
         const self = cast(State, data);
-        const success = auth.authenticate(self.user, &self.password.bytes);
+        const success = self.authenticator(self.user, &self.password.bytes);
         if (success) {
             @import("desktop-secrets-client.zig").screenLocked(false);
             @import("desktop-secrets-client.zig").unlock(self.password.bytes[0..self.password.len]);
@@ -361,6 +362,11 @@ const registry_listener = c.wl_registry_listener{ .global = State.global, .globa
 const lock_listener = extern struct { locked: *const @TypeOf(State.lockedEvent), finished: *const @TypeOf(State.finished) }{ .locked = State.lockedEvent, .finished = State.finished };
 
 pub fn run(args: []const []const u8) !void {
+    return runWithAuthenticator(args, auth.authenticate);
+}
+
+/// Isolated protocol tests supply an authenticator without changing the module graph.
+pub fn runWithAuthenticator(args: []const []const u8, authenticator: *const fn ([*:0]const u8, [*:0]const u8) bool) !void {
     var daemonize = false;
     var ready_fd: c_int = -1;
     var index: usize = 0;
@@ -426,7 +432,7 @@ pub fn run(args: []const []const u8) !void {
     defer a.free(username);
     const display = c.wl_display_connect(null) orelse return error.NoWaylandDisplay;
     defer c.wl_display_disconnect(display);
-    var state = State{ .display = display, .password = password, .user = username.ptr, .ready_fd = ready_fd, .managed_readiness = !daemonize and ready_fd >= 0 };
+    var state = State{ .display = display, .password = password, .user = username.ptr, .authenticator = authenticator, .ready_fd = ready_fd, .managed_readiness = !daemonize and ready_fd >= 0 };
     const registry = c.wl_display_get_registry(display);
     _ = c.wl_registry_add_listener(registry, &registry_listener, &state);
     if (c.wl_display_roundtrip(display) < 0) return error.WaylandDisconnected;

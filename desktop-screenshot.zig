@@ -1,8 +1,8 @@
 //! Wayland screenshot tool with region selection and clipboard support.
 const std = @import("std");
-pub const protocols = @import("protocols");
-const libc = @import("libc");
-pub const c = @import("gtk");
+pub const protocols = @import("desktop-protocols.zig");
+const libc = @import("desktop-libc.zig");
+pub const c = @import("desktop-gtk.zig");
 
 const cast = c.__zig.cast;
 

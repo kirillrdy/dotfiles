@@ -1,6 +1,6 @@
 //! Portal settings read directly from the desktop's GSettings schemas.
 const std = @import("std");
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 const schemas = [_][:0]const u8{
     "org.gnome.desktop.a11y",           "org.gnome.desktop.a11y.interface",
     "org.gnome.desktop.calendar",       "org.gnome.desktop.input-sources",

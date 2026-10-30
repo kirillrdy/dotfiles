@@ -1,8 +1,8 @@
 //! Native audio commands and GTK integration against an isolated PipeWire server.
 const std = @import("std");
-const c = @import("gtk");
-const audio = @import("audio");
-const quick = @import("quick");
+const c = @import("desktop").gtk;
+const audio = @import("desktop").audio;
+const quick = @import("desktop").quick;
 const settings = quick.settings_client;
 const assert = std.debug.assert;
 const a = std.heap.page_allocator;

@@ -1,8 +1,8 @@
 //! Askpass protocol tests. Uses only synthetic credentials under Xvfb.
 const std = @import("std");
-const askpass = @import("askpass");
+const askpass = @import("desktop").askpass;
 const c = askpass.c;
-const libc = @import("libc");
+const libc = @import("desktop").libc;
 const assert = std.debug.assert;
 const cast = c.__zig.cast;
 const Response = struct {

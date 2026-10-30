@@ -1,8 +1,8 @@
 //! Native capture requests on the broker's GLib context.
 const std = @import("std");
-const c = @import("gtk");
-const libc = @import("libc");
-const sc = @import("screenshot");
+const c = @import("desktop-gtk.zig");
+const libc = @import("desktop-libc.zig");
+const sc = @import("desktop-screenshot.zig");
 const protocols = sc.protocols;
 const cast = c.__zig.cast;
 pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;

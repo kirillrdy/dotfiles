@@ -1,8 +1,8 @@
 //! Runs only against a private test bus and an unprivileged fake helper.
 const std = @import("std");
-const polkit = @import("polkit");
+const polkit = @import("desktop").polkit;
 const c = polkit.c;
-const libc = @import("libc");
+const libc = @import("desktop").libc;
 fn stop(_: c.gpointer) callconv(.c) c.gboolean {
     c.gtk_main_quit();
     return 1;

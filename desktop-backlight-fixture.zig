@@ -1,9 +1,9 @@
 //! Test-only sysfs injection; the installed shell always uses /sys/class/backlight.
 const std = @import("std");
-const c = @import("gtk");
-const backlight = @import("backlight");
-const osd = @import("desktop-osd.zig");
-const quick = @import("desktop-quick-settings.zig");
+const c = @import("desktop").gtk;
+const backlight = @import("desktop").backlight;
+const osd = @import("desktop").osd;
+const quick = @import("desktop").quick;
 const assert = std.debug.assert;
 const cast = c.__zig.cast;
 fn pump() void {

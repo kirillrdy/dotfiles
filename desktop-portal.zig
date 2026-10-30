@@ -1,7 +1,7 @@
 //! Native portal broker, dialogs and capture for host desktop applications.
 const std = @import("std");
-const c = @import("gtk");
-const libc = @import("libc");
+const c = @import("desktop-gtk.zig");
+const libc = @import("desktop-libc.zig");
 var a: std.mem.Allocator = std.heap.page_allocator;
 const path = "/org/freedesktop/portal/desktop";
 const public = "org.freedesktop.portal.";

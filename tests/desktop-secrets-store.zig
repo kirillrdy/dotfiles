@@ -1,6 +1,6 @@
 const std = @import("std");
 const store = @import("../desktop-secrets-store.zig");
-const p = @import("secrets-posix");
+const p = @import("posix");
 test "vault rejects wrong passwords and tampering; locking erases values; restart restores binary secrets" {
     var wa = store.WipingAllocator{ .parent = std.testing.allocator };
     const a = wa.allocator();

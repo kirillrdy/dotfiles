@@ -1,6 +1,6 @@
 //! GNOME Shell 50 notification cards, shared by banners and the date menu.
 const std = @import("std");
-pub const c = @import("gtk");
+pub const c = @import("desktop-gtk.zig");
 const allocator = std.heap.page_allocator;
 const cast = c.__zig.cast;
 pub fn css(widget: [*c]c.GtkWidget, name: [*:0]const u8) void {

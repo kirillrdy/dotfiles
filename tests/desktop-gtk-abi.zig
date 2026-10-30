@@ -1,7 +1,6 @@
 //! Compare the checked-in ABI against independently translated system headers.
 const std = @import("std");
-const api = @import("api");
-const reference = @import("reference");
+const reference = @import("gtk-reference");
 
 fn checkType(comptime A: type, comptime B: type) void {
     const left = @typeInfo(A);
@@ -49,7 +48,7 @@ fn checkType(comptime A: type, comptime B: type) void {
     }
 }
 
-test "explicit desktop declarations match the installed C ABI" {
+fn checkDeclarations(comptime api: type) void {
     comptime {
         @setEvalBranchQuota(200000);
         for (std.meta.declarations(api)) |decl| {
@@ -67,4 +66,9 @@ test "explicit desktop declarations match the installed C ABI" {
             }
         }
     }
+}
+
+test "explicit toolkit and NetworkManager declarations match the installed C ABI" {
+    checkDeclarations(@import("../desktop-gtk.zig"));
+    checkDeclarations(@import("../desktop-network-api.zig"));
 }

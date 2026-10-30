@@ -1,6 +1,6 @@
 //! Exercise the real PAM dispatcher with private policies, never the host policy.
 const std = @import("std");
-const c = @import("pam");
+const c = @import("desktop").posix;
 var messages: usize = 0;
 fn converse(count: c_int, input: [*c]const [*c]const c.pam_message, output: [*c][*c]c.pam_response, _: ?*anyopaque) callconv(.c) c_int {
     output.* = null;

@@ -1,9 +1,9 @@
 //! Compare native metadata with independently compiled wayland-scanner output.
 const std = @import("std");
-const protocols = @import("protocols");
+const protocols = @import("../desktop-protocols.zig");
 const Interface = protocols.Interface;
 
-fn sameMessages(actual: [*c]const @import("gtk").struct_wl_message, expected: [*c]const @import("gtk").struct_wl_message, count: usize) !void {
+fn sameMessages(actual: [*c]const @import("../desktop-gtk.zig").struct_wl_message, expected: [*c]const @import("../desktop-gtk.zig").struct_wl_message, count: usize) !void {
     for (0..count) |i| {
         try std.testing.expectEqualStrings(std.mem.span(expected[i].name), std.mem.span(actual[i].name));
         const signature = std.mem.span(expected[i].signature);

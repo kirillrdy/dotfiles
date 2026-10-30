@@ -1,6 +1,6 @@
 //! GTK integration tests. Run under Xvfb; never uses the user's desktop.
 const std = @import("std");
-const p = @import("panel");
+const p = @import("desktop").widgets;
 const c = p.c;
 const assert = std.debug.assert;
 const cast = c.__zig.cast;
@@ -41,7 +41,7 @@ pub fn main(process_init: std.process.Init) !void {
     if (args.len == 5 and std.mem.eql(u8, args[1], "--power-fixture")) {
         assert(std.mem.eql(u8, args[2], "power"));
         assert(std.mem.eql(u8, args[3], "set"));
-        _ = try @import("power").Profile.parse(args[4]);
+        _ = try @import("desktop").power.Profile.parse(args[4]);
         if (std.mem.eql(u8, args[4], "power-saver")) {
             std.debug.print("fixture: permission denied", .{});
             std.process.exit(1);
@@ -105,7 +105,7 @@ pub fn main(process_init: std.process.Init) !void {
     eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_label)), "Balanced");
     eq(c.gtk_button_get_label(cast(c.GtkButton, m.power_buttons[1])), "Balanced  ✓");
     eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "");
-    const saver = @import("power").State{ .available = .{ true, true, true }, .active = .@"power-saver" };
+    const saver = @import("desktop").power.State{ .available = .{ true, true, true }, .active = .@"power-saver" };
     p.apply_power_state(&m, saver);
     eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_label)), "Power Saver");
     eq(c.gtk_button_get_label(cast(c.GtkButton, m.power_buttons[1])), "Balanced");
@@ -169,7 +169,7 @@ pub fn main(process_init: std.process.Init) !void {
     const refs_before_refresh = status.refs;
     // Refreshing the tile must never launch another profile change, including
     // transitions between balanced (inactive) and either active toggle state.
-    for ([_]?@import("power").Profile{ .performance, .balanced, .@"power-saver", .balanced, null }) |profile| {
+    for ([_]?@import("desktop").power.Profile{ .performance, .balanced, .@"power-saver", .balanced, null }) |profile| {
         p.apply_power_state(status, .{ .available = .{ true, true, true }, .active = profile });
         assert(status.power_pending == 0 and status.refs == refs_before_refresh);
         assert(c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, controls.power.button)) == @intFromBool(profile != null and profile.? != .balanced));

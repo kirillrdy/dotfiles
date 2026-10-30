@@ -1,7 +1,7 @@
 //! OpenSSH's askpass protocol, with a native GTK password/confirmation dialog.
 const std = @import("std");
-pub const c = @import("gtk");
-const libc = @import("libc");
+pub const c = @import("desktop-gtk.zig");
+const libc = @import("desktop-libc.zig");
 const cast = c.__zig.cast;
 pub const Mode = enum {
     password,

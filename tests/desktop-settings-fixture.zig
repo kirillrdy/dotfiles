@@ -1,6 +1,6 @@
 //! Settings window teardown while the native backend is connecting.
 const std = @import("std");
-const settings = @import("settings");
+const settings = @import("desktop").settings;
 const c = settings.c;
 pub fn main() !void {
     c.gtk_init(null, null);

@@ -1,6 +1,6 @@
 //! PolicyKit agent dialog and interaction tests under synthetic Xvfb.
 const std = @import("std");
-const polkit = @import("polkit");
+const polkit = @import("desktop").polkit;
 const c = polkit.c;
 const assert = std.debug.assert;
 

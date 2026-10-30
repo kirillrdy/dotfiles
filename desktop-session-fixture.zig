@@ -1,8 +1,8 @@
 //! Run only through tests/desktop-session-fixture.nix and its private system bus.
 const std = @import("std");
-const c = @import("gtk");
-const session = @import("desktop-session.zig");
-const quick = @import("desktop-quick-settings.zig");
+const c = @import("desktop").gtk;
+const session = @import("desktop").session_actions;
+const quick = @import("desktop").quick;
 
 fn env(key: [:0]const u8) []const u8 {
     return if (c.g_getenv(key)) |value| std.mem.span(value) else "";

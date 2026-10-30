@@ -1,7 +1,7 @@
 //! Native print dialogs and submission, with single-use, caller-owned settings.
 const std = @import("std");
-const c = @import("gtk");
-const libc = @import("libc");
+const c = @import("desktop-gtk.zig");
+const libc = @import("desktop-libc.zig");
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
 fn option(options: ?*c.GVariant, key: [*:0]const u8, signature: [:0]const u8) !?*c.GVariant {

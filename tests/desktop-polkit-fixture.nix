@@ -6,7 +6,7 @@ let
     outputs = [ "out" ];
     buildPhase = ''
       export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build polkit-agent-fixture test-gtk-abi test-libc-abi --prefix "$out" -Doptimize=ReleaseSafe
+      zig build polkit-agent-fixture --prefix "$out" -Doptimize=ReleaseSafe
     '';
     doCheck = false;
     installPhase = "true";

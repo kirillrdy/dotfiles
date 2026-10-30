@@ -1,7 +1,7 @@
 //! Native Linux power-supply monitoring, shared by the panel and system power policy.
 const std = @import("std");
-const c = @import("gtk");
-const libc = @import("libc");
+const c = @import("desktop-gtk.zig");
+const libc = @import("desktop-libc.zig");
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 

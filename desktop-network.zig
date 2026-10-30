@@ -1,7 +1,7 @@
 //! Shared, event-driven NetworkManager state and asynchronous actions on the system bus.
 const std = @import("std");
-const c = @import("gtk");
-const g = @import("network-api");
+const c = @import("desktop-gtk.zig");
+const g = @import("desktop-network-api.zig");
 pub const api = g;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const name = "org.freedesktop.NetworkManager";

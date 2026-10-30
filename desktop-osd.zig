@@ -1,9 +1,9 @@
 //! Media-key controller and passive Wayland overlays. Device calls are serialized
 //! asynchronously; repeated steps coalesce while a backend is busy.
 const std = @import("std");
-const c = @import("gtk");
-const audio = @import("audio");
-const backlight = @import("backlight");
+const c = @import("desktop-gtk.zig");
+const audio = @import("desktop-audio.zig");
+const backlight = @import("desktop-backlight.zig");
 const allocator = std.heap.page_allocator;
 const cast = c.__zig.cast;
 

@@ -112,3 +112,25 @@ test "disk panel queries the root filesystem without commands" {
     try expect(std.mem.indexOfScalar(u8, label, '/') != null);
     try strings("ghostty -e ncdu /", u.string(u.get(entry, "command")));
 }
+
+test {
+    _ = @import("desktop-runtime.zig");
+    _ = @import("desktop-secrets.zig");
+    _ = @import("desktop-portal-email.zig");
+    _ = @import("desktop-audio.zig");
+    _ = @import("desktop-audio-pod.zig");
+    _ = @import("desktop-battery.zig");
+    _ = @import("desktop-battery-monitor.zig");
+    _ = @import("desktop-backlight.zig");
+    _ = @import("desktop-network.zig");
+    _ = @import("desktop-portal-capture.zig");
+    _ = @import("desktop-output.zig");
+    _ = @import("desktop-lock.zig");
+    _ = @import("desktop-osd.zig");
+    _ = @import("desktop-wallpaper.zig");
+    _ = @import("desktop-settings.zig");
+    _ = @import("tests/desktop-http.zig");
+    _ = @import("tests/desktop-lock-auth.zig");
+    _ = @import("tests/desktop-virtual-pointer.zig");
+    _ = @import("tests/desktop-power-fixture.zig");
+}

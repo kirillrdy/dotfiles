@@ -1,5 +1,5 @@
 const std = @import("std");
-const http = @import("http");
+const http = @import("../desktop-http.zig");
 const io = std.testing.io;
 const a = std.testing.allocator;
 

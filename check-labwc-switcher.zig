@@ -1,7 +1,7 @@
 //! Exercise the native switcher in a private headless labwc session.
 //! Usage: check-labwc-switcher --system SYSTEM --fixture FIXTURE [--wtype PATH]
 const std = @import("std");
-const u = @import("desktop-util.zig");
+const u = @import("desktop").util;
 const A = u.Allocator;
 const Options = struct { system: []const u8 = "", fixture: []const u8 = "", wtype: []const u8 = "wtype", bus: []const u8 = "dbus-run-session", inside: bool = false };
 const Process = struct { id: std.posix.pid_t, done: bool = false, status: u32 = 0 };

@@ -11,7 +11,7 @@ let
     outputs = [ "out" ];
     buildPhase = ''
       export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build portal-fixture portal-chooser-fixture portal-print-fixture test-portal-email test-gtk-abi test-libc-abi --prefix "$out" -Doptimize=ReleaseSafe
+      zig build portal-fixture portal-chooser-fixture portal-print-fixture --prefix "$out" -Doptimize=ReleaseSafe
     '';
     doCheck = false;
     installPhase = "true";

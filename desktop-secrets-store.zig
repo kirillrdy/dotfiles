@@ -1,7 +1,7 @@
 //! Versioned authenticated vault. Metadata is public; secret values are encrypted.
 //! Every allocation used for keys, KDF scratch, and decoded values is wiped on free.
 const std = @import("std");
-const p = @import("secrets-posix");
+const p = @import("posix");
 const Aead = std.crypto.aead.chacha_poly.XChaCha20Poly1305;
 pub fn wipe(bytes: []u8) void {
     std.crypto.secureZero(u8, bytes);

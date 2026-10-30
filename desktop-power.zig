@@ -1,6 +1,6 @@
 //! Direct Linux power controls. Only main() runs privileged; the panel uses inspect().
 const std = @import("std");
-const c = @import("libc");
+const c = @import("desktop-libc.zig");
 const a = std.heap.page_allocator;
 
 pub const Profile = enum {

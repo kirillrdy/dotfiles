@@ -1,6 +1,6 @@
 //! Parent native portal dialogs to exported application windows.
 const std = @import("std");
-const c = @import("gtk");
+const c = @import("desktop-gtk.zig");
 const cast = c.__zig.cast;
 pub fn parentTo(widget: *c.GtkWidget, allocator: std.mem.Allocator, parent: [:0]const u8) void {
     const display = c.gdk_display_get_default();

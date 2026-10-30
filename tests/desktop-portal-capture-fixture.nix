@@ -6,7 +6,7 @@ let
     outputs = [ "out" ];
     buildPhase = ''
       export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build portal-capture-fixtures test-portal-capture --prefix "$out" -Doptimize=ReleaseSafe
+      zig build portal-capture-fixtures --prefix "$out" -Doptimize=ReleaseSafe
     '';
     doCheck = false;
     installPhase = "true";

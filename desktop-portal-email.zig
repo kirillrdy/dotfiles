@@ -1,7 +1,7 @@
 //! Compose mail through the configured mailto handler, without a portal backend.
 const std = @import("std");
-const c = @import("gtk");
-const libc = @import("libc");
+const c = @import("desktop-gtk.zig");
+const libc = @import("desktop-libc.zig");
 
 fn option(options: *c.GVariant, key: [*:0]const u8, signature: [:0]const u8) !?*c.GVariant {
     const value = c.g_variant_lookup_value(options, key, null) orelse return null;

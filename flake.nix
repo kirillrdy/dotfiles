@@ -112,6 +112,8 @@
         ];
       };
 
+      checks.x86_64-linux.desktop = import ./tests/desktop-vm.nix { inherit pkgs; };
+
       nixosConfigurations = builtins.mapAttrs mkSystem {
         # Lenovo X1 gen9, alderlake
         osaka = { };
