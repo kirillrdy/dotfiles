@@ -61,15 +61,11 @@ lib.mkIf enableLightDesktop {
         desktop = desktopZig;
         upstream = prev.xdg-desktop-portal;
       };
-      xdg-desktop-portal-wlr = prev.xdg-desktop-portal-wlr.override {
-        grim = desktopZig;
-        slurp = desktopZig;
-      };
     })
   ];
-  # The shell serves all general portals; retain WLR only for capture.
-  xdg.portal.extraPortals = lib.mkForce [ pkgs.xdg-desktop-portal-wlr ];
-  xdg.portal.config.wlroots.default = lib.mkForce [ "wlr" ];
+  # The broker is also the implementation; no separate portal backend runs.
+  xdg.portal.extraPortals = lib.mkForce [ desktopZig ];
+  xdg.portal.config.wlroots.default = lib.mkForce [ ];
   programs.labwc.enable = true;
   programs.labwc.package = desktopCompositor;
   services.greetd = {

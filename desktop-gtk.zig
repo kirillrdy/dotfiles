@@ -2096,6 +2096,12 @@ pub extern fn wl_display_get_fd(display: ?*struct_wl_display) c_int;
 
 pub extern fn wl_display_dispatch(display: ?*struct_wl_display) c_int;
 
+pub extern fn g_mkstemp([*c]u8) c_int;
+pub extern fn g_filename_to_uri([*c]const u8, [*c]const u8, [*c][*c]GError) [*c]u8;
+pub extern fn g_get_user_runtime_dir() [*:0]const u8;
+pub extern fn cairo_surface_status(?*cairo_surface_t) cairo_status_t;
+pub extern fn cairo_surface_mark_dirty(?*cairo_surface_t) void;
+
 pub extern fn wl_display_flush(display: ?*struct_wl_display) c_int;
 
 pub extern fn wl_display_roundtrip(display: ?*struct_wl_display) c_int;
@@ -2510,3 +2516,7 @@ pub const GAppLaunchContextClass = extern struct {
     _g_reserved2: ?*const fn () callconv(.c) void,
     _g_reserved3: ?*const fn () callconv(.c) void,
 };
+
+pub extern fn cairo_surface_reference(?*cairo_surface_t) ?*cairo_surface_t;
+pub extern fn g_variant_builder_add_value(?*GVariantBuilder, ?*GVariant) void;
+pub extern fn gtk_toggle_button_get_type() GType;

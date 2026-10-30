@@ -1,4 +1,4 @@
-"""Exercise the native broker on a private bus with mock GTK/WLR backends."""
+"""Exercise native broker ownership, validation, settings and notifications on a private bus."""
 import argparse
 import os
 from pathlib import Path
@@ -224,6 +224,8 @@ client.signal_subscribe(PUB + "Desktop", PUB + "Session", "Closed", None, None, 
 for directory in ("home", "config", "data/fonts", "cache"):
     (root / directory).mkdir(parents=True)
 env = dict(os.environ, XDG_RUNTIME_DIR=str(root), HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"), XDG_CACHE_HOME=str(root / "cache"), GSETTINGS_BACKEND="keyfile", DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDRESS"], G_DEBUG="fatal-criticals")
+env.pop("DISPLAY", None)
+env.pop("WAYLAND_DISPLAY", None)
 output = (root / "broker.log").open("w")
 process = subprocess.Popen([args.binary, "portal"], env=env, stdout=output, stderr=output)
 
@@ -259,22 +261,8 @@ try:
     wait(lambda: any(event[0] == "org.gnome.fontconfig" for event in settings_changed), "font serial invalidated")
     assert not any(entry[0] == IMP + "Settings" for entry in log), "settings still used GTK backend"
     print("PASS native settings reads, namespace filters, appearance updates and font invalidation", flush=True)
-    handle, response = request("Screenshot", "Screenshot", "(sa{sv})", ("", {"handle_token": GLib.Variant("s", "files")}))
-    assert response == (0, {"uri": "file:///tmp/screenshot.png"}), response
-    assert handle.endswith("/files")
-    assert any(entry[2][1] == "org.dotfiles.PortalFixture" for entry in log if entry[0] == IMP + "Screenshot")
-    _, response = request("Screenshot", "Screenshot", "(sa{sv})", ("", {}))
-    assert response == (0, {"uri": "file:///tmp/screenshot.png"})
     rejected(lambda: request("Screenshot", "Screenshot", "(sa{sv})", ("", {"handle_token": GLib.Variant("s", "bad/path")})), "invalid token accepted")
-    handle = request("Screenshot", "Screenshot", "(sa{sv})", ("", {"hold": GLib.Variant("b", True)}), expect_response=False)
-    wait(lambda: handle in held, "backend holds request")
-    rejected(lambda: call(other, PUB + "Request", "Close", path=handle), "foreign client closed request")
-    call(client, PUB + "Request", "Close", path=handle)
-    wait(lambda: handle not in held, "Close propagated to backend")
-    assert handle not in responses, "cancelled request emitted Response"
-    _, response = request("Screenshot", "Screenshot", "(sa{sv})", ("", {"fail": GLib.Variant("b", True)}))
-    assert response[0] == 2
-    print("PASS settings, request responses, owner isolation, cancellation, backend errors", flush=True)
+    rejected(lambda: request("Screenshot", "Screenshot", "(sa{sv})", ("", {"interactive": GLib.Variant("s", "yes")})), "invalid interactive option accepted")
     _, implicit = request("ScreenCast", "CreateSession", "(a{sv})", ({},))
     call(client, PUB + "Session", "Close", path=implicit[1]["session_handle"])
     rejected(lambda: request("ScreenCast", "CreateSession", "(a{sv})", ({"session_handle_token": GLib.Variant("u", 1)},)), "non-string session token accepted")
@@ -283,33 +271,14 @@ try:
     rejected(lambda: call(other, PUB + "Session", "Close", path=session), "foreign client closed session")
     rejected(lambda: call(client, PUB + "ScreenCast", "OpenPipeWireRemote", GLib.Variant("(oa{sv})", (session, {}))), "unstarted session opened remote")
     rejected(lambda: request("ScreenCast", "Start", "(osa{sv})", (session, "", {})), "Start accepted before SelectSources")
-    request("ScreenCast", "SelectSources", "(oa{sv})", (session, {"types": GLib.Variant("u", 1)}))
-    _, response = request("ScreenCast", "Start", "(osa{sv})", (session, "", {}))
-    assert response[1]["streams"][0][0] == 777
-    listener = socket.socket(socket.AF_UNIX)
-    listener.bind(str(root / "pipewire-0"))
-    listener.listen()
-    def serve_socket():
-        remote, _ = listener.accept()
-        remote.sendall(b"private-pipewire")
-        remote.close()
-    worker = threading.Thread(target=serve_socket, daemon=True)
-    worker.start()
-    reply, fds = call(client, PUB + "ScreenCast", "OpenPipeWireRemote", GLib.Variant("(oa{sv})", (session, {})))
-    fd = fds.get(reply.unpack()[0])
-    assert os.read(fd, 100) == b"private-pipewire"
-    os.close(fd)
-    listener.close()
+    for options in ({"types": GLib.Variant("u", 2)}, {"types": GLib.Variant("s", "screen")}, {"cursor_mode": GLib.Variant("u", 4)}, {"multiple": GLib.Variant("s", "yes")}):
+        rejected(lambda: request("ScreenCast", "SelectSources", "(oa{sv})", (session, options)), "invalid source options accepted")
+    request("ScreenCast", "SelectSources", "(oa{sv})", (session, {"types": GLib.Variant("u", 1), "cursor_mode": GLib.Variant("u", 2)}))
+    rejected(lambda: request("ScreenCast", "SelectSources", "(oa{sv})", (session, {})), "sources selected twice")
     call(client, PUB + "Session", "Close", path=session)
-    wait(lambda: session not in sessions, "backend session closed")
-    print("PASS screencast sequencing, stream metadata, session ownership and PipeWire FD transfer", flush=True)
-    _, response = request("ScreenCast", "CreateSession", "(a{sv})", ({"session_handle_token": GLib.Variant("s", "vanish")},))
-    lost_session = response[1]["session_handle"]
-    backend.call_sync(BUS, "/org/freedesktop/DBus", BUS, "ReleaseName", GLib.Variant("(s)", (WLR,)), None, 0, 1000, None)
-    wait(lambda: lost_session in closed_sessions, "backend loss closes native session")
-    rejected(lambda: call(client, PUB + "ScreenCast", "OpenPipeWireRemote", GLib.Variant("(oa{sv})", (lost_session, {}))), "session survived backend loss")
-    backend.call_sync(BUS, "/org/freedesktop/DBus", BUS, "RequestName", GLib.Variant("(su)", (WLR, 4)), None, 0, 1000, None)
-    print("PASS screencast backend disappearance invalidates sessions", flush=True)
+    wait(lambda: session in closed_sessions, "native session closed")
+    assert not any(entry[0] in (IMP + "Screenshot", IMP + "ScreenCast") for entry in log), "capture forwarded to WLR"
+    print("PASS native screencast sequencing, option validation and session ownership", flush=True)
 
     call(client, PUB + "Notification", "AddNotification", GLib.Variant("(sa{sv})", ("notice", {"title": GLib.Variant("s", "Native portal"), "body": GLib.Variant("s", "plain <body> & text"), "priority": GLib.Variant("s", "high"), "default-action": GLib.Variant("s", "default")})))
     wait(lambda: notifications, "native notification delivered")
@@ -378,11 +347,8 @@ try:
     os.close(read_fd)
     print("PASS native logind inhibition and release on Close", flush=True)
     transient = connection()
-    transient.signal_subscribe(PUB + "Desktop", PUB + "Request", "Response", None, None, 0, lambda *_: None)
-    handle = request("Screenshot", "Screenshot", "(sa{sv})", ("", {"hold": GLib.Variant("b", True)}), conn=transient, expect_response=False)
-    wait(lambda: handle in held, "transient request pending")
+    reply, _ = call(transient, PUB + "ScreenCast", "CreateSession", GLib.Variant("(a{sv})", ({},)))
     transient.close_sync(None)
-    wait(lambda: handle not in held, "disconnect closes outstanding backend request")
     assert not foreign_responses, "Response broadcast to another client"
     print("PASS notifications, native network status and disconnect cleanup", flush=True)
     sandbox_code = """
@@ -399,8 +365,6 @@ else:
     wait(lambda: sandbox.poll() is not None, "sandbox client rejected")
     assert sandbox.returncode == 0, (root / "broker.log").read_text()
     print("PASS sandbox clients cannot obtain unmediated host access", flush=True)
-    # Shut down while an asynchronous backend request is still pending.
-    request("Screenshot", "Screenshot", "(sa{sv})", ("", {"hold": GLib.Variant("b", True)}), expect_response=False)
     process.send_signal(signal.SIGTERM)
     wait(lambda: process.poll() is not None, "broker shutdown")
     assert process.returncode == 0, (root / "broker.log").read_text()

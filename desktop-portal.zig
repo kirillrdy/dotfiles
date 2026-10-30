@@ -1,19 +1,18 @@
-//! Public portal broker for native desktop applications. UI backends remain
-//! behind the impl.portal interfaces until their dialogs move into the shell.
+//! Native portal broker, dialogs and capture for host desktop applications.
 const std = @import("std");
 const c = @import("gtk");
 const libc = @import("libc");
 var a: std.mem.Allocator = std.heap.page_allocator;
 const path = "/org/freedesktop/portal/desktop";
 const public = "org.freedesktop.portal.";
-const impl = "org.freedesktop.impl.portal.";
 const Account = @import("desktop-portal-account.zig").Dialog;
 const FileChooser = @import("desktop-portal-file-chooser.zig").Dialog;
 const Notifications = @import("desktop-portal-notification.zig").Service;
 const Settings = @import("desktop-portal-settings.zig").Service;
 const Printing = @import("desktop-portal-print.zig");
 const Email = @import("desktop-portal-email.zig");
-const wlr = "org.freedesktop.impl.portal.desktop.wlr";
+const Capture = @import("desktop-portal-capture.zig");
+const Video = @import("desktop-portal-screencast.zig");
 const bus = "org.freedesktop.DBus";
 const bus_path = "/org/freedesktop/DBus";
 fn cast(comptime T: type, value: anytype) *T {
@@ -71,7 +70,13 @@ const Session = struct {
     handle: [:0]const u8,
     registration: c.guint = 0,
     state: State = .creating,
+    cursor: bool = false,
+    stream: ?*Video.Stream = null,
+    pending: ?*Request = null,
+    width: i32 = 0,
+    height: i32 = 0,
     fn destroy(self: *Session) void {
+        if (self.stream) |stream| stream.destroy();
         _ = c.g_dbus_connection_unregister_object(self.server.connection, self.registration);
         self.arena.deinit();
         a.destroy(self);
@@ -113,7 +118,6 @@ const Server = struct {
         self.settings = try Settings.create(a, self.connection);
         self.notifications = try Notifications.create(a, self.connection);
         self.printing = try Printing.Service.create(a);
-        try self.subscriptions.append(a, c.g_dbus_connection_signal_subscribe(self.connection, wlr, impl ++ "Session", "Closed", null, null, 0, &sessionClosed, self, null));
         if (c.g_network_monitor_get_default()) |monitor| _ = c.g_signal_connect_data(monitor, "network-changed", @ptrCast(&networkChanged), self, null, 0);
     }
     fn deinit(self: *Server) void {
@@ -125,7 +129,7 @@ const Server = struct {
         self.cancelRequests(null);
         while (self.requests.items.len > 0) _ = c.g_main_context_iteration(null, 1);
         if (self.printing) |printing| printing.destroy();
-        while (self.sessions.items.len > 0) self.closeSession(self.sessions.items[0], true);
+        while (self.sessions.items.len > 0) self.closeSession(self.sessions.items[0]);
         for (self.registrations.items) |id| _ = c.g_dbus_connection_unregister_object(self.connection, id);
         for (self.clients.items) |client| client.destroy();
         self.registrations.deinit(a);
@@ -184,8 +188,12 @@ const Server = struct {
         for (self.sessions.items) |item| if (eq(item.handle, handle) and eq(item.owner, sender)) return item;
         return null;
     }
-    fn closeSession(self: *Server, item: *Session, tell_backend: bool) void {
-        if (tell_backend) c.g_dbus_connection_call(self.connection, wlr, item.handle, impl ++ "Session", "Close", null, null, 0, 1000, null, null, null);
+    fn closeSession(self: *Server, item: *Session) void {
+        if (item.pending) |request| {
+            item.pending = null;
+            request.session_handle = null;
+            request.close();
+        }
         _ = c.g_dbus_connection_emit_signal(self.connection, item.owner, item.handle, public ++ "Session", "Closed", tuple(&.{dict()}), null);
         for (self.sessions.items, 0..) |current, i| if (current == item) {
             _ = self.sessions.swapRemove(i);
@@ -224,27 +232,17 @@ const Server = struct {
         const owner = child(params, 2);
         defer c.g_variant_unref(owner);
         if (text(owner).len != 0) return;
-        if (eq(text(name), wlr)) {
-            while (self.sessions.items.len > 0) self.closeSession(self.sessions.items[0], false);
-        }
         if (!std.mem.startsWith(u8, text(name), ":")) return;
         self.cancelRequests(text(name));
         self.printing.?.removeOwner(text(name));
         var i: usize = 0;
         while (i < self.sessions.items.len) {
             const item = self.sessions.items[i];
-            if (eq(item.owner, text(name))) self.closeSession(item, true) else i += 1;
+            if (eq(item.owner, text(name))) self.closeSession(item) else i += 1;
         }
         for (self.clients.items, 0..) |client_info, index| if (eq(client_info.sender, text(name))) {
             _ = self.clients.swapRemove(index);
             client_info.destroy();
-            break;
-        };
-    }
-    fn sessionClosed(_: ?*c.GDBusConnection, _: [*c]const u8, handle: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
-        const self = cast(Server, data);
-        for (self.sessions.items) |item| if (eq(item.handle, std.mem.span(handle))) {
-            self.closeSession(item, false);
             break;
         };
     }
@@ -253,7 +251,7 @@ const Server = struct {
         _ = c.g_dbus_connection_emit_signal(self.connection, null, path, public ++ "NetworkMonitor", "changed", null, null);
     }
 };
-const Kind = enum { request, direct, uri, inhibit, dialog };
+const Kind = enum { direct, uri, inhibit, dialog };
 const Request = struct {
     server: *Server,
     arena: std.heap.ArenaAllocator,
@@ -271,6 +269,9 @@ const Request = struct {
     inhibitor_fd: c_int = -1,
     dialog: ?*FileChooser = null,
     account: ?*Account = null,
+    screenshot: ?*Capture.Operation = null,
+    picker: ?*Capture.Picker = null,
+    idle: c.guint = 0,
     print_operation: ?*Printing.Operation = null,
 
     fn create(server: *Server, client_info: *Client, interface: []const u8, method: []const u8, options: ?*c.GVariant, kind: Kind) !*Request {
@@ -318,7 +319,10 @@ const Request = struct {
             self.registration = 0;
         }
         c.g_cancellable_cancel(self.cancel);
-        if (self.session_handle) |handle| if (self.server.session(handle, self.owner)) |session_info| self.server.closeSession(session_info, true);
+        if (self.session_handle) |handle| if (self.server.session(handle, self.owner)) |session_info| {
+            session_info.pending = null;
+            self.server.closeSession(session_info);
+        };
         if (self.kind == .dialog) {
             if (self.print_operation) |operation| if (operation.pending()) return;
             self.destroy();
@@ -329,11 +333,16 @@ const Request = struct {
             self.destroy();
             return;
         }
-        if (self.kind == .request) c.g_dbus_connection_call(self.server.connection, wlr, self.handle, impl ++ "Request", "Close", null, null, 0, 1000, null, null, null);
     }
     fn destroy(self: *Request) void {
+        if (self.idle != 0) _ = c.g_source_remove(self.idle);
+        if (self.picker) |picker| picker.destroy();
+        if (self.session_handle) |handle| if (self.server.session(handle, self.owner)) |session_info| {
+            if (session_info.pending == self) session_info.pending = null;
+        };
         if (self.dialog) |dialog| dialog.destroy();
         if (self.account) |dialog| dialog.destroy();
+        if (self.screenshot) |operation| operation.destroy();
         if (self.print_operation) |operation| operation.destroy();
         if (self.registration != 0) _ = c.g_dbus_connection_unregister_object(self.server.connection, self.registration);
         if (self.invocation) |invocation| c.g_object_unref(invocation);
@@ -350,48 +359,61 @@ const Request = struct {
             c.g_variant_unref(c.g_variant_take_ref(results));
         }
     }
-    fn finish(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+    fn nativeFinished(data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Request, data);
+        self.idle = 0;
         defer self.destroy();
-        var err: ?*c.GError = null;
-        var fds: [*c]c.GUnixFDList = null;
-        const reply = c.g_dbus_connection_call_with_unix_fd_list_finish(self.server.connection, &fds, result, &err);
-        defer if (reply != null) c.g_variant_unref(reply);
-        defer if (fds != null) c.g_object_unref(fds);
-        defer if (err != null) c.g_error_free(err);
-        if (self.closed or self.server.quitting) {
-            if (self.invocation) |invocation| errorReply(invocation, "Portal request cancelled");
-            return;
+        const session_info = self.server.session(self.session_handle.?, self.owner) orelse return 0;
+        const values = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
+        defer c.g_variant_builder_unref(values);
+        if (eq(self.method, "CreateSession")) {
+            session_info.state = .created;
+            c.g_variant_builder_add(values, "{sv}", @as([*:0]const u8, "session_handle"), string(session_info.handle));
+        } else session_info.state = .selected;
+        self.respond(0, c.g_variant_builder_end(values));
+        return 0;
+    }
+    fn picked(data: ?*anyopaque, chosen: ?Capture.Picked, _: bool) void {
+        const self = cast(Request, data);
+        const session_info = self.server.session(self.session_handle.?, self.owner) orelse return;
+        if (chosen) |output| {
+            session_info.width = output.width;
+            session_info.height = output.height;
+            session_info.stream = Video.Stream.create(a, output.name, session_info.cursor, &streamReady, session_info) catch {
+                streamReady(session_info, null);
+                return;
+            };
+        } else {
+            self.respond(1, dict());
+            self.destroy();
+            session_info.server.closeSession(session_info);
         }
-        var code: u32 = 2;
-        var results = dict();
-        if (reply) |value| {
-            const status = child(value, 0);
-            defer c.g_variant_unref(status);
-            code = c.g_variant_get_uint32(status);
-            c.g_variant_unref(c.g_variant_take_ref(results));
-            results = child(value, 1);
+    }
+    fn streamReady(data: ?*anyopaque, node: ?u32) void {
+        const session_info = cast(Session, data);
+        const server = session_info.server;
+        if (node) |id| {
+            const request = session_info.pending orelse return;
+            session_info.state = .started;
+            const properties = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
+            defer c.g_variant_builder_unref(properties);
+            c.g_variant_builder_add(properties, "{sv}", @as([*:0]const u8, "source_type"), c.g_variant_new("u", @as(c_uint, 1)));
+            c.g_variant_builder_add(properties, "{sv}", @as([*:0]const u8, "size"), c.g_variant_new("(ii)", session_info.width, session_info.height));
+            const streams = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a(ua{sv})")));
+            defer c.g_variant_builder_unref(streams);
+            c.g_variant_builder_add_value(streams, tuple(&.{ c.g_variant_new("u", id), c.g_variant_builder_end(properties) }));
+            const results = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
+            defer c.g_variant_builder_unref(results);
+            c.g_variant_builder_add(results, "{sv}", @as([*:0]const u8, "streams"), c.g_variant_builder_end(streams));
+            request.respond(0, c.g_variant_builder_end(results));
+            request.destroy();
+        } else {
+            if (session_info.pending) |request| {
+                request.respond(2, dict());
+                request.destroy();
+            }
+            server.closeSession(session_info);
         }
-        if (self.session_handle) |handle| {
-            if (self.server.session(handle, self.owner)) |session_info| {
-                if (code == 0) {
-                    if (eq(self.method, "CreateSession")) {
-                        session_info.state = .created;
-                        const builder = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
-                        defer c.g_variant_builder_unref(builder);
-                        c.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "session_handle"), string(handle));
-                        c.g_variant_unref(c.g_variant_take_ref(results));
-                        results = c.g_variant_builder_end(builder);
-                    } else if (eq(self.method, "SelectSources")) session_info.state = .selected else if (eq(self.method, "Start")) {
-                        const streams = c.g_variant_lookup_value(results, "streams", @ptrCast(@as([*:0]const u8, "a(ua{sv})")));
-                        defer if (streams != null) c.g_variant_unref(streams);
-                        if (streams == null or c.g_variant_n_children(streams) == 0) code = 2 else session_info.state = .started;
-                    }
-                }
-                if (code != 0) self.server.closeSession(session_info, true);
-            } else code = 2;
-        }
-        self.respond(code, results);
     }
     fn dialogFinished(data: ?*anyopaque, code: u32, results: ?*c.GVariant) void {
         const self = cast(Request, data);
@@ -431,50 +453,60 @@ const Request = struct {
     }
 };
 
-fn forward(server: *Server, client_info: *Client, interface: []const u8, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+fn screencast(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
     const count = c.g_variant_n_children(params);
     const options = child(params, count - 1);
-    defer if (options != null) c.g_variant_unref(options);
-    var session_info: ?*Session = null;
-    if (eq(interface, "ScreenCast")) {
-        if (eq(method, "CreateSession")) {
-            session_info = try server.createSession(client_info, options);
-        } else {
-            const handle = child(params, 0);
-            defer c.g_variant_unref(handle);
-            session_info = server.session(text(handle), client_info.sender) orelse return error.InvalidSession;
-            const needed: State = if (eq(method, "SelectSources")) .created else .selected;
-            if (session_info.?.state != needed) return error.InvalidSessionState;
-        }
-    }
-    var request = Request.create(server, client_info, interface, method, options, .request) catch |err| {
-        if (session_info != null and eq(method, "CreateSession")) server.closeSession(session_info.?, true);
-        return err;
+    defer c.g_variant_unref(options);
+    const session_info = if (eq(method, "CreateSession")) try server.createSession(client_info, options) else blk: {
+        const handle = child(params, 0);
+        defer c.g_variant_unref(handle);
+        break :blk server.session(text(handle), client_info.sender) orelse return error.InvalidSession;
     };
+    errdefer if (eq(method, "CreateSession")) server.closeSession(session_info);
+    if (!eq(method, "CreateSession")) {
+        const needed: State = if (eq(method, "SelectSources")) .created else .selected;
+        if (session_info.state != needed) return error.InvalidSessionState;
+    }
+    if (eq(method, "SelectSources")) {
+        const types = c.g_variant_lookup_value(options, "types", null);
+        defer if (types != null) c.g_variant_unref(types);
+        if (types != null and (!eq(std.mem.span(c.g_variant_get_type_string(types)), "u") or c.g_variant_get_uint32(types) & 1 == 0)) return error.UnsupportedSourceTypes;
+        const cursor = c.g_variant_lookup_value(options, "cursor_mode", null);
+        defer if (cursor != null) c.g_variant_unref(cursor);
+        if (cursor != null) {
+            if (!eq(std.mem.span(c.g_variant_get_type_string(cursor)), "u")) return error.InvalidCursorMode;
+            const mode = c.g_variant_get_uint32(cursor);
+            if (mode != 1 and mode != 2) return error.UnsupportedCursorMode;
+            session_info.cursor = mode == 2;
+        }
+        const multiple = c.g_variant_lookup_value(options, "multiple", null);
+        defer if (multiple != null) c.g_variant_unref(multiple);
+        if (multiple != null and !eq(std.mem.span(c.g_variant_get_type_string(multiple)), "b")) return error.InvalidMultipleOption;
+    }
+    const request = try Request.create(server, client_info, "ScreenCast", method, options, .dialog);
     errdefer request.destroy();
-    if (session_info) |item| {
-        request.session_handle = try request.arena.allocator().dupeSentinel(u8, item.handle, 0);
-        item.state = if (eq(method, "CreateSession")) .creating else if (eq(method, "SelectSources")) .selecting else .starting;
+    request.session_handle = try request.arena.allocator().dupeSentinel(u8, session_info.handle, 0);
+    session_info.pending = request;
+    if (eq(method, "Start")) {
+        const parent = child(params, 1);
+        defer c.g_variant_unref(parent);
+        request.picker = try Capture.Picker.create(a, client_info.app, std.mem.span(c.g_variant_get_string(parent, null)), "Share your screen", false, &Request.picked, request);
+        session_info.state = .starting;
+    } else {
+        session_info.state = if (eq(method, "CreateSession")) .creating else .selecting;
+        request.idle = c.g_idle_add(&Request.nativeFinished, request);
     }
-    var args: [16]?*c.GVariant = undefined;
-    var size: usize = 0;
-    args[size] = object(request.handle);
-    size += 1;
-    if (session_info) |item| {
-        args[size] = object(item.handle);
-        size += 1;
-    }
-    args[size] = string(request.app);
-    size += 1;
-    const first: usize = if (session_info != null and !eq(method, "CreateSession")) 1 else 0;
-    for (first..count) |index| {
-        args[size] = child(params, index);
-        size += 1;
-    }
-    const backend_interface = try std.fmt.allocPrintSentinel(request.arena.allocator(), impl ++ "{s}", .{interface}, 0);
-    const fds = c.g_dbus_message_get_unix_fd_list(c.g_dbus_method_invocation_get_message(invocation));
     c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
-    c.g_dbus_connection_call_with_unix_fd_list(server.connection, wlr, path, backend_interface, request.method, tuple(args[0..size]), @ptrCast(@as([*:0]const u8, "(ua{sv})")), 0, 120000, fds, request.cancel, &Request.finish, request);
+}
+fn screenshot(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+    const parent = child(params, 0);
+    defer c.g_variant_unref(parent);
+    const options = child(params, 1);
+    defer c.g_variant_unref(options);
+    const request = try Request.create(server, client_info, "Screenshot", method, options, .dialog);
+    errdefer request.destroy();
+    request.screenshot = try Capture.Operation.create(a, client_info.app, std.mem.span(c.g_variant_get_string(parent, null)), method, options.?, &Request.dialogFinished, request);
+    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
 }
 fn chooseFile(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
     const parent = child(params, 0);
@@ -698,23 +730,19 @@ fn dispatch(server: *Server, sender: [*:0]const u8, interface: []const u8, metho
     if (eq(short, "OpenURI")) return openUri(server, client_info, method, params, invocation);
     if (eq(short, "NetworkMonitor")) return network(server, client_info, method, params, invocation);
     if (eq(short, "ScreenCast") and eq(method, "OpenPipeWireRemote")) return openRemote(server, client_info, params, invocation);
-    if (eq(short, "ScreenCast") or eq(short, "Screenshot")) return forward(server, client_info, short, method, params, invocation);
+    if (eq(short, "Screenshot")) return screenshot(server, client_info, method, params, invocation);
+    if (eq(short, "ScreenCast")) return screencast(server, client_info, method, params, invocation);
     return error.NotSupported;
 }
-fn getProperty(connection: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, interface_name: [*c]const u8, property: [*c]const u8, _: [*c][*c]c.GError, _: ?*anyopaque) callconv(.c) ?*c.GVariant {
+fn getProperty(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, interface_name: [*c]const u8, property: [*c]const u8, _: [*c][*c]c.GError, _: ?*anyopaque) callconv(.c) ?*c.GVariant {
     const short = std.mem.span(interface_name)[public.len..];
     if (eq(std.mem.span(property), "version")) {
         const version: c_uint = if (eq(short, "Settings") or eq(short, "Screenshot")) 2 else if (eq(short, "ScreenCast") or eq(short, "FileChooser") or eq(short, "NetworkMonitor")) 3 else if (eq(short, "OpenURI")) 5 else if (eq(short, "Email") or eq(short, "Print")) 4 else 1;
         return c.g_variant_new("u", version);
     }
     if (eq(short, "Notification")) return dict();
-    var buffer: [128]u8 = undefined;
-    const backend_interface = std.fmt.bufPrintSentinel(&buffer, impl ++ "{s}", .{short}, 0) catch return null;
-    const reply = c.g_dbus_connection_call_sync(connection, wlr, path, "org.freedesktop.DBus.Properties", "Get", c.g_variant_new("(ss)", backend_interface.ptr, property), @ptrCast(@as([*:0]const u8, "(v)")), 0, 1000, null, null) orelse return c.g_variant_new("u", @as(c_uint, 0));
-    defer c.g_variant_unref(reply);
-    const wrapped = child(reply, 0);
-    defer c.g_variant_unref(wrapped);
-    return c.g_variant_get_variant(wrapped);
+    if (eq(short, "ScreenCast")) return c.g_variant_new("u", @as(c_uint, if (eq(std.mem.span(property), "AvailableSourceTypes")) 1 else 3));
+    return null;
 }
 fn closeRequest(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: ?*anyopaque) callconv(.c) void {
     const request = cast(Request, data);
@@ -732,10 +760,7 @@ fn closeSession(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, _
         return;
     }
     const server = session_info.server;
-    for (server.requests.items) |request| if (request.session_handle) |handle| {
-        if (eq(handle, session_info.handle)) request.close();
-    };
-    server.closeSession(session_info, true);
+    server.closeSession(session_info);
     c.g_dbus_method_invocation_return_value(invocation, null);
 }
 const main_vtable = c.GDBusInterfaceVTable{ .method_call = &methodCall, .get_property = &getProperty };

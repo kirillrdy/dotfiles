@@ -2,7 +2,7 @@
 const std = @import("std");
 const c = @import("gtk");
 const p = @import("pipewire");
-const Pod = @import("desktop-audio-pod.zig");
+const Pod = @import("audio-pod");
 const defaults = @import("desktop-audio-defaults.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 var initialized = false;

@@ -1,7 +1,7 @@
 { pkgs }:
 let
-  # This process is a control client. Hardware, codecs, and session policy run
-  # in the system's normal PipeWire/WirePlumber services, not in these libraries.
+  # The desktop controls audio and produces raw screen video. Hardware, codecs,
+  # and session policy run in the system's normal PipeWire/WirePlumber services.
   pipewire = pkgs.pipewire.overrideAttrs {
     pname = "desktop-pipewire-client";
     outputs = [
@@ -27,7 +27,8 @@ let
       # native socket; RTKit and portal integration belong to the system daemon.
       "-Ddbus=disabled"
       "-Daudiotestsrc=disabled"
-      "-Dvideoconvert=disabled"
+      # pw_stream uses the SPA video adapter even for matching raw formats.
+      "-Dvideoconvert=enabled"
       "-Dvideotestsrc=disabled"
       "-Dsession-managers=[]"
       "-Drlimits-install=false"
@@ -36,7 +37,7 @@ let
     postInstall = ''
       rm -rf "$out/bin"
       # The default client config uses these modules for native controls and
-      # PCM event playback. Server factories, network protocols, and filters
+      # PCM event playback and raw screen video. Server factories and filters
       # run in the system PipeWire daemon rather than in the desktop process.
       for module in "$out"/lib/pipewire-0.3/libpipewire-module-*.so; do
         case "$(basename "$module")" in

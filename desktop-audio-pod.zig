@@ -100,6 +100,17 @@ pub const Builder = struct {
         self.used += length;
         put(self.bytes, @intCast(self.used - 8));
     }
+    pub fn identifier(self: *Builder, key: u32, value: u32) Error!void {
+        var bytes: [4]u8 = undefined;
+        put(&bytes, value);
+        try self.add(key, p.SPA_TYPE_Id, &bytes);
+    }
+    pub fn pair(self: *Builder, key: u32, kind: u32, first: u32, second: u32) Error!void {
+        var bytes: [8]u8 = undefined;
+        put(&bytes, first);
+        put(bytes[4..], second);
+        try self.add(key, kind, &bytes);
+    }
     pub fn boolean(self: *Builder, key: u32, value: bool) Error!void {
         var bytes: [4]u8 = undefined;
         put(&bytes, @intFromBool(value));

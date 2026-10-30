@@ -129,6 +129,8 @@ fn writeStdout(_: ?*anyopaque, data: [*c]const u8, length: c_uint) callconv(.c) 
 
 pub const Output = struct {
     wl_out: *c.wl_output,
+    global_name: u32 = 0,
+    available: bool = true,
     name: [64:0]u8 = @splat(0),
     x: i32 = 0,
     y: i32 = 0,
@@ -147,21 +149,24 @@ pub const WaylandClient = struct {
     seat: ?*c.wl_seat = null,
     outputs: std.ArrayList(Output) = .empty,
 
-    pub fn connect(allocator: std.mem.Allocator) !WaylandClient {
+    /// Initialize in the final location: Wayland listeners retain this address.
+    pub fn init(self: *WaylandClient, allocator: std.mem.Allocator) !void {
         const display = c.wl_display_connect(null) orelse return error.ConnectFailed;
         errdefer c.wl_display_disconnect(display);
 
         const registry = c.wl_display_get_registry(display) orelse return error.RegistryFailed;
-        var self = WaylandClient{
+        errdefer c.wl_registry_destroy(registry);
+        self.* = WaylandClient{
             .allocator = allocator,
             .display = display,
             .registry = registry,
         };
 
-        _ = c.wl_registry_add_listener(registry, &registry_listener, &self);
-        _ = c.wl_display_roundtrip(display);
-        _ = c.wl_display_roundtrip(display);
-        return self;
+        // Output listeners also need stable addresses while globals arrive.
+        try self.outputs.ensureTotalCapacity(allocator, 64);
+        errdefer self.outputs.deinit(allocator);
+        _ = c.wl_registry_add_listener(registry, &registry_listener, self);
+        if (c.wl_display_roundtrip(display) < 0 or c.wl_display_roundtrip(display) < 0) return error.DispatchFailed;
     }
 
     pub fn deinit(self: *WaylandClient) void {
@@ -187,14 +192,20 @@ pub const WaylandClient = struct {
         } else if (std.mem.eql(u8, iface, "wl_seat")) {
             self.seat = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_seat_interface, 1));
         } else if (std.mem.eql(u8, iface, "wl_output")) {
+            if (self.outputs.items.len == self.outputs.capacity) return;
             const out = @as(?*c.wl_output, @ptrCast(c.wl_registry_bind(registry, name, &c.wl_output_interface, @min(version, 4)))) orelse return;
-            self.outputs.append(self.allocator, .{ .wl_out = out }) catch return;
+            self.outputs.append(self.allocator, .{ .wl_out = out, .global_name = name }) catch return;
             const item = &self.outputs.items[self.outputs.items.len - 1];
             _ = c.wl_output_add_listener(out, &output_listener, item);
         }
     }
 
-    fn registryRemove(_: ?*anyopaque, _: ?*c.wl_registry, _: u32) callconv(.c) void {}
+    fn registryRemove(data: ?*anyopaque, _: ?*c.wl_registry, name: u32) callconv(.c) void {
+        const self = cast(WaylandClient, data);
+        for (self.outputs.items) |*output| if (output.global_name == name) {
+            output.available = false;
+        };
+    }
 
     const registry_listener = c.wl_registry_listener{
         .global = &registryGlobal,
@@ -254,6 +265,12 @@ pub const FrameCapture = struct {
 
     fn onBuffer(data: ?*anyopaque, frame: ?*protocols.zwlr_screencopy_frame_v1, format: u32, width: u32, height: u32, stride: u32) callconv(.c) void {
         const self: *FrameCapture = @ptrCast(@alignCast(data));
+        if (self.buffer != null or width == 0 or height == 0 or width > 16384 or height > 16384 or stride < width * 4 or @as(u64, stride) * height > 256 * 1024 * 1024 or
+            (format != c.WL_SHM_FORMAT_ARGB8888 and format != c.WL_SHM_FORMAT_XRGB8888))
+        {
+            self.failed = true;
+            return;
+        }
         self.format = format;
         self.width = width;
         self.height = height;
@@ -315,7 +332,7 @@ pub const FrameCapture = struct {
         self.failed = true;
     }
 
-    const listener = protocols.zwlr_screencopy_frame_v1_listener{
+    pub const listener = protocols.zwlr_screencopy_frame_v1_listener{
         .buffer = &onBuffer,
         .flags = &onFlags,
         .ready = &onReady,
@@ -530,7 +547,8 @@ pub fn copyToClipboard(client: *WaylandClient, png_data: []const u8) !void {
 }
 
 pub fn captureAndWrite(options: Options, allocator: std.mem.Allocator) !void {
-    var client = try WaylandClient.connect(allocator);
+    var client: WaylandClient = undefined;
+    try client.init(allocator);
     defer client.deinit();
 
     const screencopy_mgr = client.screencopy_mgr orelse return error.NoScreencopy;

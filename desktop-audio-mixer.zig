@@ -2,7 +2,7 @@
 const std = @import("std");
 const c = @import("gtk");
 const p = @import("pipewire");
-const Pod = @import("desktop-audio-pod.zig");
+const Pod = @import("audio-pod");
 const Registry = @import("desktop-audio-registry.zig").Registry;
 const Object = @import("desktop-audio-registry.zig").Object;
 const Parameter = struct {

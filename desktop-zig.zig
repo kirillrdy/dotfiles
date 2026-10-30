@@ -155,7 +155,7 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, name, "grim") or std.mem.eql(u8, name, "slurp")) {
         const forwarded = try arena.allocator().dupe([]const u8, args);
         forwarded[0] = name;
-        return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
+        return helperStatus(try @import("screenshot").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
         std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig portal | greeter|askpass|power|screenshot [ARGS...]\n", .{});
@@ -166,7 +166,7 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "greeter")) return @import("greeter").runArgs(init, args[1..]);
     if (std.mem.eql(u8, args[1], "power")) return @import("power").runArgs(init, args[1..]);
     if (std.mem.eql(u8, args[1], "askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args[1..]));
-    if (std.mem.eql(u8, args[1], "screenshot")) return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, args[1..]));
+    if (std.mem.eql(u8, args[1], "screenshot")) return helperStatus(try @import("screenshot").runArgs(init, args[1..]));
     if (std.mem.eql(u8, args[1], "output")) return @import("output").run(args[2..]);
     if (std.mem.eql(u8, args[1], "lock")) return @import("lock").run(args[2..]);
     if (!std.mem.eql(u8, args[1], "serve")) try requireSession();
