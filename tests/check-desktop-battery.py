@@ -236,6 +236,8 @@ try:
     expect(lambda v: v["text"] == "85%" and v["icon"] == "battery-level-80-charging-symbolic" and v["duration"] == "0∶15", "charging widgets")
     device("BAT0", energy_now=100000000, status="Full")
     expect(lambda v: v["text"] == "100%" and v["icon"] == "battery-level-100-charged-symbolic", "charged widgets")
+    device("BAT0", energy_now=99880000)
+    expect(lambda v: v["percent"] == 99.88 and v["icon"] == "battery-level-100-charged-symbolic", "full battery below 100% uses the available charged icon")
     device("BAT0", energy_now=80000000, status="Not charging", charge_control_end_threshold=80)
     expect(lambda v: v["text"] == "80%" and v["icon"] == "battery-level-80-plugged-in-symbolic", "charge limit widgets")
     for percent, title in ((20, "Battery Low"), (5, "Battery Critically Low"), (2, "Battery Almost Empty")):

@@ -29,8 +29,11 @@ pub const State = struct {
     }
     pub fn icon(self: State, buffer: []u8) ![:0]u8 {
         if (!self.visible()) return std.fmt.bufPrintSentinel(buffer, "battery-missing-symbolic", .{}, 0);
+        // Full batteries can report slightly less than 100%; Adwaita only
+        // provides the charged icon at level 100.
+        if (self.state == 4 or (self.state == 1 and self.percent >= 100)) return std.fmt.bufPrintSentinel(buffer, "battery-level-100-charged-symbolic", .{}, 0);
         const level: u32 = @as(u32, @intFromFloat(self.percent)) / 10 * 10;
-        const suffix: []const u8 = if (self.state == 4 or (self.state == 1 and level == 100)) "-charged" else if (self.state == 1) "-charging" else if (self.state == 5 and self.charge_threshold) "-plugged-in" else "";
+        const suffix: []const u8 = if (self.state == 1) "-charging" else if (self.state == 5 and self.charge_threshold) "-plugged-in" else "";
         return std.fmt.bufPrintSentinel(buffer, "battery-level-{d}{s}-symbolic", .{ level, suffix }, 0);
     }
     pub fn duration(self: State, buffer: []u8) ![]const u8 {
@@ -56,9 +59,11 @@ test "battery presentation preserves levels, charging states, and exact estimate
     const state = State{ .present = true, .percent = 80, .state = 2, .time_to_empty = 9000 };
     try std.testing.expectEqualStrings("battery-level-80-symbolic", try state.icon(&buffer));
     try std.testing.expectEqualStrings("2∶30", try state.duration(&buffer));
-    for ([_]u32{ 1, 4, 5 }, [_][]const u8{ "battery-level-80-charging-symbolic", "battery-level-80-charged-symbolic", "battery-level-80-plugged-in-symbolic" }) |kind, icon| {
+    for ([_]u32{ 1, 4, 5 }, [_][]const u8{ "battery-level-80-charging-symbolic", "battery-level-100-charged-symbolic", "battery-level-80-plugged-in-symbolic" }) |kind, icon| {
         try std.testing.expectEqualStrings(icon, try (State{ .present = true, .percent = 85, .state = kind, .charge_threshold = true }).icon(&buffer));
     }
+    try std.testing.expectEqualStrings("battery-level-100-charged-symbolic", try (State{ .present = true, .percent = 99.88, .state = 4 }).icon(&buffer));
+    try std.testing.expectEqualStrings("battery-level-100-charged-symbolic", try (State{ .present = true, .percent = 100, .state = 1 }).icon(&buffer));
     for ([_]f64{ -1, 101, std.math.nan(f64), std.math.inf(f64) }) |percent| try std.testing.expect(!(State{ .present = true, .percent = percent }).visible());
     try std.testing.expect(!(State{}).visible());
     try std.testing.expectEqualStrings("", try (State{ .state = 4, .time_to_full = 9000 }).duration(&buffer));
