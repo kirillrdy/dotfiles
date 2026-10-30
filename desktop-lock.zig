@@ -258,6 +258,10 @@ const State = struct {
     fn authWork(task: ?*c.GTask, _: ?*anyopaque, data: ?*anyopaque, _: [*c]c.GCancellable) callconv(.c) void {
         const self = cast(State, data);
         const success = auth.authenticate(self.user, &self.password.bytes);
+        if (success) {
+            @import("desktop-secrets-client.zig").screenLocked(false);
+            @import("desktop-secrets-client.zig").unlock(self.password.bytes[0..self.password.len]);
+        }
         self.password.clear();
         c.g_task_return_boolean(task, @intFromBool(success));
     }
@@ -292,6 +296,7 @@ const State = struct {
     fn lockedEvent(data: ?*anyopaque, _: ?*Proxy) callconv(.c) void {
         const self = cast(State, data);
         self.locked = true;
+        @import("desktop-secrets-client.zig").screenLocked(true);
         if (self.ready_fd >= 0) {
             // Keep protecting the session if the requesting shell has exited.
             if (libc.write(self.ready_fd, "1", 1) != 1) std.log.warn("lock readiness receiver disconnected", .{});

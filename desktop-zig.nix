@@ -82,6 +82,7 @@ pkgs.stdenv.mkDerivation {
     mkdir -p "$XDG_CACHE_HOME"
     python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-zig" --subcommand greeter
     zig build test-gtk-abi test-libc-abi -Doptimize=ReleaseSafe
+    zig build test-secrets -Doptimize=ReleaseSafe
     zig build test-runtime test-power test-portal-email -Doptimize=ReleaseSafe
     zig build test -Doptimize=ReleaseSafe
     mkdir -p "$TMPDIR/labwc-cfg"
@@ -132,6 +133,13 @@ EOF
       mv "$out/bin/$name" "$tests/bin/$name"
     done
     ln -s "$out/bin/desktop-zig" "$tests/bin/desktop-zig"
+    mkdir -p "$out/share/dbus-1/services"
+    cat > "$out/share/dbus-1/services/org.freedesktop.secrets.service" <<EOF_SECRETS_SERVICE
+    [D-BUS Service]
+    Name=org.freedesktop.secrets
+    Exec=$out/bin/desktop-zig secrets
+    SystemdService=desktop-secrets.service
+    EOF_SECRETS_SERVICE
     mkdir -p "$out/share/dbus-1/system.d" "$out/share/dbus-1/system-services"
     cat > "$out/share/dbus-1/system.d/org.freedesktop.UPower.conf" <<'EOF_BATTERY_POLICY'
     <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">

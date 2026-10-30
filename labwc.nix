@@ -1,6 +1,7 @@
 {
   lib,
   pkgs,
+  config ? null,
   enableLightDesktop ? false,
   ...
 }:
@@ -114,7 +115,26 @@ lib.mkIf enableLightDesktop {
       RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
     };
   };
-  services.gnome.gnome-keyring.enable = true;
+  services.gnome.gnome-keyring.enable = false;
+  security.pam.services.greetd = {
+    enableGnomeKeyring = false;
+    rules.auth = {
+      # greetd runs login as a substack, so capture its token after it returns.
+      desktop-secrets = {
+        order =
+          if config == null then 10001 else config.security.pam.services.greetd.rules.auth.login.order + 1;
+        control = "optional";
+        modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
+      };
+    };
+    rules.session.desktop-secrets = {
+      order =
+        if config == null then 10001 else config.security.pam.services.greetd.rules.session.login.order + 1;
+      control = "optional";
+      modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
+      settings.helper = "${shell}";
+    };
+  };
   services.gnome.gcr-ssh-agent.enable = false;
   programs.ssh = {
     startAgent = true;
@@ -133,6 +153,22 @@ lib.mkIf enableLightDesktop {
   ];
   systemd.packages = [ desktopCompositor ];
   systemd.user.services = {
+    desktop-secrets = {
+      description = "Native desktop Secret Service";
+      wantedBy = [ "default.target" ];
+      partOf = [ "graphical-session.target" ];
+      serviceConfig = {
+        Type = "dbus";
+        BusName = "org.freedesktop.secrets";
+        ExecStart = "${shell} secrets";
+        Restart = "on-failure";
+        UMask = "0077";
+        NoNewPrivileges = true;
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        LimitCORE = 0;
+        Environment = "GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-0";
+      };
+    };
     desktop-zig = (sessionService "${shell} serve ${gnomeWallpaper}") // {
       conflicts = [ "mako.service" ];
       after = [ "mako.service" ];

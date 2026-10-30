@@ -158,9 +158,33 @@ pub fn main(init: std.process.Init) !void {
         return helperStatus(try @import("screenshot").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig battery-monitor | portal | greeter|askpass|power|screenshot [ARGS...]\n", .{});
+        std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | greeter|askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;
         return;
+    }
+    if (std.mem.eql(u8, args[1], "secrets-import")) {
+        if (args.len != 2) return error.InvalidSecretsArguments;
+        return @import("secrets").runImport();
+    }
+    if (std.mem.eql(u8, args[1], "secrets")) {
+        if (args.len != 2) return error.InvalidSecretsArguments;
+        return @import("secrets").run();
+    }
+    if (std.mem.eql(u8, args[1], "secrets-login")) {
+        if (args.len != 2) return error.InvalidSecretsArguments;
+        if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
+        var password: [4097]u8 = undefined;
+        defer std.crypto.secureZero(u8, &password);
+        var length: usize = 0;
+        while (length < password.len) {
+            const n = libc.read(0, password[length..].ptr, password.len - length);
+            if (n < 0 and libc.__errno_location().* == libc.EINTR) continue;
+            if (n < 0) return error.ReadPassword;
+            if (n == 0) break;
+            length += @intCast(n);
+        }
+        if (length == 0 or length > 4096) return error.InvalidPassword;
+        return @import("secrets").loginUnlock(password[0..length]);
     }
     if (std.mem.eql(u8, args[1], "battery-monitor")) {
         if (args.len != 2) return error.InvalidBatteryMonitorArguments;
