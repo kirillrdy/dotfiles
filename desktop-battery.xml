@@ -1,0 +1,48 @@
+<!-- Core UPower power-status compatibility. Read-only aggregate system battery. -->
+<node>
+  <interface name="org.freedesktop.UPower">
+    <method name="EnumerateDevices"><arg type="ao" direction="out"/></method>
+    <method name="EnumerateKbdBacklights"><arg type="ao" direction="out"/></method>
+    <method name="GetDisplayDevice"><arg type="o" direction="out"/></method>
+    <method name="GetCriticalAction"><arg type="s" direction="out"/></method>
+    <property name="DaemonVersion" type="s" access="read"/>
+    <property name="OnBattery" type="b" access="read"/>
+    <property name="LidIsPresent" type="b" access="read"/>
+    <property name="LidIsClosed" type="b" access="read"/>
+    <signal name="DeviceAdded"><arg type="o"/></signal>
+    <signal name="DeviceRemoved"><arg type="o"/></signal>
+  </interface>
+  <interface name="org.freedesktop.UPower.Device">
+    <method name="Refresh"/>
+    <property name="NativePath" type="s" access="read"/>
+    <property name="Vendor" type="s" access="read"/>
+    <property name="Model" type="s" access="read"/>
+    <property name="Serial" type="s" access="read"/>
+    <property name="UpdateTime" type="t" access="read"/>
+    <property name="Type" type="u" access="read"/>
+    <property name="PowerSupply" type="b" access="read"/>
+    <property name="HasHistory" type="b" access="read"/>
+    <property name="HasStatistics" type="b" access="read"/>
+    <property name="Online" type="b" access="read"/>
+    <property name="Energy" type="d" access="read"/>
+    <property name="EnergyEmpty" type="d" access="read"/>
+    <property name="EnergyFull" type="d" access="read"/>
+    <property name="EnergyFullDesign" type="d" access="read"/>
+    <property name="EnergyRate" type="d" access="read"/>
+    <property name="Voltage" type="d" access="read"/>
+    <property name="ChargeCycles" type="i" access="read"/>
+    <property name="Luminosity" type="d" access="read"/>
+    <property name="TimeToEmpty" type="x" access="read"/>
+    <property name="TimeToFull" type="x" access="read"/>
+    <property name="Percentage" type="d" access="read"/>
+    <property name="Temperature" type="d" access="read"/>
+    <property name="IsPresent" type="b" access="read"/>
+    <property name="State" type="u" access="read"/>
+    <property name="IsRechargeable" type="b" access="read"/>
+    <property name="Capacity" type="d" access="read"/>
+    <property name="Technology" type="u" access="read"/>
+    <property name="WarningLevel" type="u" access="read"/>
+    <property name="IconName" type="s" access="read"/>
+    <property name="ChargeThresholdEnabled" type="b" access="read"/>
+  </interface>
+</node>

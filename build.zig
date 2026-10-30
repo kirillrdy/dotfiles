@@ -114,8 +114,18 @@ pub fn build(b: *std.Build) void {
     b.step("test-audio", "Check native PipeWire controls and parameter codecs").dependOn(&b.addRunArtifact(audio_tests).step);
     const battery = b.createModule(.{ .root_source_file = b.path("desktop-battery.zig"), .target = target, .optimize = optimize });
     battery.addImport("gtk", gtk);
+    battery.addImport("libc", libc);
     battery.link_libc = true;
     battery.linkSystemLibrary("gio-2.0", .{});
+    const battery_monitor = b.createModule(.{ .root_source_file = b.path("desktop-battery-monitor.zig"), .target = target, .optimize = optimize });
+    battery_monitor.addImport("battery", battery);
+    battery_monitor.addImport("gtk", gtk);
+    battery_monitor.addImport("libc", libc);
+    battery_monitor.link_libc = true;
+    battery_monitor.linkSystemLibrary("gio-2.0", .{});
+    session.root_module.addImport("battery-monitor", battery_monitor);
+    const battery_policy_tests = b.addTest(.{ .root_module = battery_monitor });
+    b.step("test-battery-policy", "Check critical battery grace period and cancellation").dependOn(&b.addRunArtifact(battery_policy_tests).step);
     const battery_tests = b.addTest(.{ .root_module = battery });
     b.step("test-battery", "Check native battery state and presentation").dependOn(&b.addRunArtifact(battery_tests).step);
     const backlight = b.createModule(.{ .root_source_file = b.path("desktop-backlight.zig"), .target = target, .optimize = optimize });
@@ -139,7 +149,7 @@ pub fn build(b: *std.Build) void {
     const protocols = b.createModule(.{ .root_source_file = b.path("desktop-protocols.zig"), .target = target, .optimize = optimize });
     protocols.addImport("gtk", gtk);
     var protocol_references: [10]std.Build.LazyPath = undefined;
-    const libc_reference = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{});
+    const libc_reference = bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{});
     const libc_abi = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-libc-abi.zig"), .target = target, .optimize = optimize }) });
     libc_abi.root_module.addImport("api", libc);
     libc_abi.root_module.addImport("reference", libc_reference);
@@ -166,6 +176,7 @@ pub fn build(b: *std.Build) void {
     const battery_fixture = b.addExecutable(.{ .name = "desktop-battery-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-battery-fixture.zig"), .target = target, .optimize = optimize }) });
     battery_fixture.root_module.addImport("gtk", gtk);
     battery_fixture.root_module.addImport("battery", battery);
+    battery_fixture.root_module.addImport("battery-monitor", battery_monitor);
     battery_fixture.root_module.addImport("quick", quick_module);
     battery_fixture.root_module.addImport("panel-data", panel_data);
     linkGtk(battery_fixture);
@@ -511,6 +522,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(capture_tests).step);
     test_step.dependOn(network_check);
     test_step.dependOn(&b.addRunArtifact(battery_tests).step);
+    test_step.dependOn(&b.addRunArtifact(battery_policy_tests).step);
     test_step.dependOn(&b.addRunArtifact(output_tests).step);
     test_step.dependOn(&b.addRunArtifact(backlight_tests).step);
     test_step.dependOn(&b.addRunArtifact(lock_tests).step);

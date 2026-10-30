@@ -2351,7 +2351,7 @@ pub extern fn g_subprocess_launcher_take_fd(?*GSubprocessLauncher, gint, gint) v
 
 pub extern fn g_cancellable_is_cancelled([*c]GCancellable) gboolean;
 
-// Native UPower property monitoring through GIO.
+// GIO proxy properties and variant helpers.
 pub const GDBusProxy = extern struct {};
 pub const GDBusProxyFlags = c_uint;
 pub const G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START: GDBusProxyFlags = 4;

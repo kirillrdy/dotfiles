@@ -158,9 +158,13 @@ pub fn main(init: std.process.Init) !void {
         return helperStatus(try @import("screenshot").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig portal | greeter|askpass|power|screenshot [ARGS...]\n", .{});
+        std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig battery-monitor | portal | greeter|askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;
         return;
+    }
+    if (std.mem.eql(u8, args[1], "battery-monitor")) {
+        if (args.len != 2) return error.InvalidBatteryMonitorArguments;
+        return @import("battery-monitor").run();
     }
     if (std.mem.eql(u8, args[1], "portal")) return @import("portal").run();
     if (std.mem.eql(u8, args[1], "greeter")) return @import("greeter").runArgs(init, args[1..]);

@@ -86,7 +86,6 @@ fn batteryLifetime(settle: bool) !void {
         try std.testing.expect(!service.pending);
     }
     objects.watch(service.cancel);
-    if (service.proxy) |proxy| objects.watch(proxy);
     service.destroy();
     try objects.wait(15_000_000);
 }

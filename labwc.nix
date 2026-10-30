@@ -95,7 +95,25 @@ lib.mkIf enableLightDesktop {
   powerManagement.resumeCommands = ''
     ${shell} power restore
   '';
-  services.upower.enable = true;
+  services.upower.enable = lib.mkForce false;
+  services.dbus.packages = [ desktopZig ];
+  systemd.services.desktop-battery = {
+    description = "Native battery monitoring and critical power protection";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "dbus.service" ];
+    serviceConfig = {
+      Type = "dbus";
+      BusName = "org.freedesktop.UPower";
+      ExecStart = "${shell} battery-monitor";
+      Restart = "on-failure";
+      RestartSec = 2;
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
+    };
+  };
   services.gnome.gnome-keyring.enable = true;
   services.gnome.gcr-ssh-agent.enable = false;
   programs.ssh = {

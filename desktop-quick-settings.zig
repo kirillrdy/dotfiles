@@ -559,6 +559,10 @@ pub const Controls = struct {
             .failure => |err| c.gtk_widget_set_tooltip_text(self.volume_row, @errorName(err).ptr),
         }
     }
+    pub fn monitorBattery(self: *Controls, options: battery_backend.Options) void {
+        if (self.battery_service) |service| service.destroy();
+        self.battery_service = battery_backend.Service.createWithOptions(options, &batteryChanged, self) catch null;
+    }
     fn batteryChanged(ptr: ?*anyopaque, state: battery_backend.State) void {
         const self = cast(Controls, ptr);
         if (self.dead) return;

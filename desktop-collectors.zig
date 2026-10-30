@@ -20,6 +20,7 @@ pub const Service = struct {
     revision: u64 = 0,
     battery_service: ?*battery.Service = null,
     battery_state: battery.State = .{},
+    battery_alerts: battery.Alerts = .{},
     network_client: ?*network.Client = null,
     audio_service: ?*audio.Service = null,
     output_state: ?audio.State = null,
@@ -68,7 +69,10 @@ pub const Service = struct {
     fn batteryChanged(ptr: ?*anyopaque, state: battery.State) void {
         const self: *Service = @ptrCast(@alignCast(ptr));
         self.battery_state = state;
-        if (!self.dead) self.sources[1].publish("status");
+        if (!self.dead) {
+            if (self.battery_alerts.update(state)) |level| battery.notifyWarning(level);
+            self.sources[1].publish("status");
+        }
     }
     pub fn deinit(self: *Service) void {
         self.dead = true;

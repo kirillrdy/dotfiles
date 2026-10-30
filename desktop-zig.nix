@@ -132,6 +132,21 @@ EOF
       mv "$out/bin/$name" "$tests/bin/$name"
     done
     ln -s "$out/bin/desktop-zig" "$tests/bin/desktop-zig"
+    mkdir -p "$out/share/dbus-1/system.d" "$out/share/dbus-1/system-services"
+    cat > "$out/share/dbus-1/system.d/org.freedesktop.UPower.conf" <<'EOF_BATTERY_POLICY'
+    <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+    <busconfig>
+      <policy user="root"><allow own="org.freedesktop.UPower"/></policy>
+      <policy context="default"><allow send_destination="org.freedesktop.UPower"/></policy>
+    </busconfig>
+    EOF_BATTERY_POLICY
+    cat > "$out/share/dbus-1/system-services/org.freedesktop.UPower.service" <<EOF_BATTERY_SERVICE
+    [D-BUS Service]
+    Name=org.freedesktop.UPower
+    Exec=$out/bin/desktop-zig battery-monitor
+    User=root
+    SystemdService=desktop-battery.service
+    EOF_BATTERY_SERVICE
     mkdir -p "$out/share/polkit-1/actions"
     cat > "$out/share/polkit-1/actions/org.dotfiles.desktop-power.policy" <<EOF
     <?xml version="1.0" encoding="UTF-8"?>

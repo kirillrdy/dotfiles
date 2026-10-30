@@ -186,6 +186,18 @@ pub const struct_sockaddr_un = extern struct {
 };
 
 pub extern fn socket(__domain: c_int, __type: c_int, __protocol: c_int) c_int;
+pub const AF_NETLINK: c_int = @intCast(std.c.AF.NETLINK);
+pub const SOCK_DGRAM: c_int = @intCast(std.c.SOCK.DGRAM);
+pub const SOCK_NONBLOCK: c_int = @intCast(std.c.SOCK.NONBLOCK);
+pub const NETLINK_KOBJECT_UEVENT: c_int = 15;
+pub const struct_sockaddr_nl = extern struct {
+    nl_family: sa_family_t = 0,
+    nl_pad: c_ushort = 0,
+    nl_pid: u32 = 0,
+    nl_groups: u32 = 0,
+};
+pub extern fn bind(c_int, *const std.c.sockaddr, socklen_t) c_int;
+pub extern fn recvfrom(c_int, ?*anyopaque, usize, c_int, [*c]std.c.sockaddr, [*c]socklen_t) isize;
 
 pub extern fn connect(fd: c_int, address: *const std.c.sockaddr, length: std.c.socklen_t) c_int;
 
