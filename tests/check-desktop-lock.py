@@ -10,7 +10,7 @@ import time
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--fixture", required=True)
 parser.add_argument("--binary", required=True)
-parser.add_argument("--compositor", default="labwc")
+parser.add_argument("--compositor", default="desktop-zig")
 parser.add_argument("--wtype", default="wtype")
 parser.add_argument("--randr", default="wlr-randr")
 args = parser.parse_args()
@@ -58,7 +58,7 @@ def type_password(password):
     run([args.wtype, "-d", "10", password, "-k", "Return"])
 
 try:
-    compositor = start([args.compositor, "-C", str(config)], "compositor.log")
+    compositor = start([args.compositor, "compositor-only"], "compositor.log")
     wait_until(lambda: list((root / "runtime").glob("wayland-*.lock")), "No Wayland socket")
     env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem
     locker = start([args.fixture], "lock.log")

@@ -28,7 +28,7 @@ parser.add_argument("--style", required=True, type=Path, help="Panel stylesheet"
 args = parser.parse_args()
 args.bin = args.bin.resolve()
 args.style = args.style.resolve()
-for tool in ("labwc", "wlr-randr", "wlrctl", "wtype", "grim"):
+for tool in ("desktop-zig", "wlr-randr", "wlrctl", "wtype", "grim"):
     if shutil.which(tool) is None:
         parser.error(f"Missing executable: {tool}")
 root = Path(tempfile.mkdtemp(prefix="desktop-panel-check-"))
@@ -110,7 +110,7 @@ def check():
 wlrctl = "wlrctl"
 wtype = "wtype"
 try:
-    compositor = start(["labwc", "-C", str(root / "config/labwc"), "-d"], "labwc.log")
+    compositor = start(["desktop-zig", "compositor-only"], "labwc.log")
     for _ in range(100):
         if (root / "runtime/wayland-0").exists():
             break

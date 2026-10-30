@@ -66,7 +66,7 @@ def saved():
 
 
 try:
-    compositor = start(["labwc"], "labwc.log", stdout=sp.DEVNULL)
+    compositor = start(["desktop-zig", "compositor-only"], "labwc.log", stdout=sp.DEVNULL)
     deadline = time.monotonic() + 10
     while not list((root / "runtime").glob("wayland-*.lock")):
         assert compositor.poll() is None, (root / "labwc.log").read_text()

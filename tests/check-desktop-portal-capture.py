@@ -152,7 +152,7 @@ def node_exists(node):
 
 
 try:
-    compositor = start(["labwc", "-C", str(root / "config/labwc")], "labwc.log", stdout=sp.DEVNULL)
+    compositor = start(["desktop-zig", "compositor-only"], "labwc.log", stdout=sp.DEVNULL)
     wait(lambda: list((root / "runtime").glob("wayland-*.lock")), "private compositor")
     env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem
     pipewire = start(["pipewire", "-c", str(root / "pipewire.conf")], "pipewire.log", stdout=sp.DEVNULL)

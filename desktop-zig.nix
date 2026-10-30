@@ -3,6 +3,7 @@
   llvm ? false,
 }:
 let
+  compositorLibraries = import ./desktop-compositor-libs.nix { inherit pkgs; };
   dbusLibraries = import ./desktop-dbus-libs.nix { inherit pkgs; };
   gtkLibraries = import ./desktop-gtk-libs.nix {
     inherit pkgs;
@@ -40,15 +41,17 @@ pkgs.stdenv.mkDerivation {
     fileset = pkgs.lib.fileset.fileFilter (
       file:
       file.hasExt "zig"
+      || file.hasExt "h"
       || file.hasExt "svg"
       || file.hasExt "xml"
       || file.name == "check-desktop-greeter.py"
+      || file.name == "check-desktop-compositor.py"
     ) ./.;
   };
   nativeBuildInputs = [
     pkgs.zig_0_17
     pkgs.pkg-config
-    pkgs.labwc
+    pkgs.wtype
     pkgs.wayland-scanner
     pkgs.python3
   ];
@@ -58,6 +61,10 @@ pkgs.stdenv.mkDerivation {
     gtkLibraries.gtk
     gtkLibraries.layerShell
     pkgs.wayland
+    compositorLibraries
+    pkgs.libinput
+    pkgs.libdrm
+    pkgs.pixman
     pamLibraries
     textLibraries.xkbcommon
     audioLibraries.pipewire
@@ -84,16 +91,13 @@ pkgs.stdenv.mkDerivation {
     export XDG_CACHE_HOME="$TMPDIR/cache"
     mkdir -p "$XDG_CACHE_HOME"
     python3 tests/check-desktop-greeter.py --binary "$out/bin/desktop-zig" --subcommand greeter
-    mkdir -p "$TMPDIR/labwc-cfg"
-    echo '<labwc_config><desktops><names><name>1</name></names></desktops><keyboard><default /></keyboard></labwc_config>' > "$TMPDIR/labwc-cfg/rc.xml"
-    touch "$TMPDIR/labwc-cfg/autostart"
     export XDG_RUNTIME_DIR="$TMPDIR/runtime"
     mkdir -p "$XDG_RUNTIME_DIR"
     chmod 700 "$XDG_RUNTIME_DIR"
     export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=1
-    labwc -C "$TMPDIR/labwc-cfg" &
-    labwc_pid=$!
-    trap 'kill -9 "$labwc_pid"' EXIT
+    "$out/bin/desktop-zig" compositor-only > "$TMPDIR/compositor.log" 2>&1 &
+    compositor_pid=$!
+    trap 'kill "$compositor_pid"' EXIT
     for attempt in $(seq 1 100); do
       test -S "$XDG_RUNTIME_DIR/wayland-0" && break
       sleep 0.05
@@ -103,13 +107,14 @@ pkgs.stdenv.mkDerivation {
     export GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
     export DESKTOP_PANEL_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
     export DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
-    G_DEBUG=fatal-criticals zig build test -Doptimize=ReleaseSafe -Dllvm=${pkgs.lib.boolToString llvm} --summary all
+    G_DEBUG=fatal-criticals zig build test compositor-fixture --prefix "$out" -Doptimize=ReleaseSafe -Dllvm=${pkgs.lib.boolToString llvm} --summary all
+    python3 tests/check-desktop-compositor.py --bin-dir "$out/bin" --wtype "$(command -v wtype)"
   '';
   installPhase = ''
     # Keep test programs outside the desktop output.
     mkdir -p "$tests/bin"
     for name in desktop-apps-fixture desktop-audio-fixture desktop-battery-fixture desktop-backlight-fixture desktop-lock-fixture desktop-idle-fixture waybar-power-fixture labwc-switcher-fixture \
-      desktop-pointer-fixture check-labwc-switcher; do
+      desktop-pointer-fixture desktop-compositor-fixture; do
       mv "$out/bin/$name" "$tests/bin/$name"
     done
     ln -s "$out/bin/desktop-zig" "$tests/bin/desktop-zig"

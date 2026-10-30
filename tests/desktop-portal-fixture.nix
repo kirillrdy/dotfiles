@@ -22,7 +22,7 @@ pkgs.runCommand "desktop-portal-check"
     nativeBuildInputs = [
       (pkgs.python3.withPackages (p: [ p.pygobject3 ]))
       pkgs.dbus
-      pkgs.labwc
+      desktop
       pkgs.wlrctl
       pkgs.wtype
       pkgs.grim
@@ -52,7 +52,7 @@ pkgs.runCommand "desktop-portal-check"
     touch "$TMPDIR/labwc/autostart"
     export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=1
     export LABWC_UPDATE_ACTIVATION_ENV=false
-    labwc -C "$TMPDIR/labwc" > "$TMPDIR/labwc.log" 2>&1 &
+    ${desktop}/bin/desktop-zig compositor-only > "$TMPDIR/labwc.log" 2>&1 &
     compositor_pid=$!
     trap 'kill "$compositor_pid"' EXIT
     for attempt in $(seq 1 100); do

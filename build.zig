@@ -28,6 +28,18 @@ pub fn build(b: *std.Build) void {
     desktop.addOptions("options", options);
     desktop.addImport("posix", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <fcntl.h>\n#include <errno.h>\n#include <sys/stat.h>\n#include <sys/file.h>\n#include <sys/random.h>\n#include <stdlib.h>\n#include <sys/prctl.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <grp.h>\n#include <sys/wait.h>\n#include <sys/socket.h>\n#include <security/pam_appl.h>\n#include <security/pam_modules.h>\n", &.{"pam"}));
     desktop.addImport("pipewire", bindings(b, target, optimize, "#include <pipewire/pipewire.h>\n#include <pipewire/extensions/metadata.h>\n#include <spa/param/audio/format.h>\n#include <spa/param/video/format.h>\n#include <spa/param/buffers.h>\n#include <spa/param/props.h>\n#include <spa/param/route.h>\n", &.{"libpipewire-0.3"}));
+    const compositor_headers = b.addWriteFiles();
+    const layer_header = b.addSystemCommand(&.{ "wayland-scanner", "server-header" });
+    const wlr_dir = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
+    layer_header.addFileArg(.{ .cwd_relative = b.fmt("{s}/unstable/wlr-layer-shell-unstable-v1.xml", .{wlr_dir}) });
+    _ = compositor_headers.addCopyFile(layer_header.addOutputFileArg("wlr-layer-shell-unstable-v1-protocol.h"), "wlr-layer-shell-unstable-v1-protocol.h");
+    const compositor = b.addTranslateC(.{ .root_source_file = b.path("desktop-compositor.h"), .target = target, .optimize = optimize });
+    compositor.addIncludePath(compositor_headers.getDirectory());
+    for ([_][]const u8{ "wlroots-0.20", "wayland-server", "xkbcommon", "libinput", "libdrm", "pixman-1" }) |name| {
+        compositor.linkSystemLibrary(name, .{});
+        desktop.linkSystemLibrary(name, .{});
+    }
+    desktop.addImport("compositor-abi", compositor.createModule());
     const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = desktop, .use_llvm = llvm });
     b.installArtifact(session);
     b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
@@ -96,6 +108,7 @@ pub fn build(b: *std.Build) void {
 
     const Fixture = struct { name: []const u8, source: []const u8, step: []const u8, install: bool = false, run: bool = false, library: bool = false, test_runner: bool = false };
     const fixtures = [_]Fixture{
+        .{ .name = "desktop-compositor-fixture", .source = "tests/desktop-compositor-fixture.zig", .step = "compositor-fixture" },
         .{ .name = "pam_desktop_secrets", .source = "desktop-secrets-pam.zig", .step = "secrets-pam", .install = true, .library = true },
         .{ .name = "desktop-secrets-pam-fixture", .source = "tests/desktop-secrets-pam-fixture.zig", .step = "secrets-pam-fixture" },
         .{ .name = "desktop_secrets_test_token", .source = "tests/desktop-secrets-pam-token.zig", .step = "secrets-pam-fixture", .library = true },
@@ -114,7 +127,6 @@ pub fn build(b: *std.Build) void {
         .{ .name = "desktop-apps-fixture", .source = "tests/desktop-apps-fixture.zig", .step = "apps-fixture", .install = true, .run = true },
         .{ .name = "waybar-power-fixture", .source = "tests/waybar-power-fixture.zig", .step = "widgets-fixture", .install = true, .run = true },
         .{ .name = "labwc-switcher-fixture", .source = "tests/labwc-switcher-fixture.zig", .step = "switcher-fixture", .install = true },
-        .{ .name = "check-labwc-switcher", .source = "check-labwc-switcher.zig", .step = "switcher-checker", .install = true },
         .{ .name = "desktop-settings-fixture", .source = "tests/desktop-settings-fixture.zig", .step = "settings-fixture", .run = true },
         .{ .name = "desktop-askpass-fixture", .source = "tests/desktop-askpass-fixture.zig", .step = "askpass-fixture", .run = true },
         .{ .name = "desktop-polkit-fixture", .source = "tests/desktop-polkit-fixture.zig", .step = "polkit-fixture", .run = true },

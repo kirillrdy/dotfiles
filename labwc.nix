@@ -17,42 +17,23 @@ let
     gtk-cursor-theme-name=${cursorTheme}
     gtk-cursor-theme-size=${toString cursorSize}
   '';
-  desktopCompositor = (pkgs.labwc.override {
-    wlroots_0_20 = pkgs.wlroots_0_20.overrideAttrs (old: {
-      patches = (old.patches or [ ]) ++ [ ./wlroots-capture-bounds.patch ];
-    });
-  }).overrideAttrs (old: {
-    patches = (old.patches or [ ]) ++ [
-      ./labwc-gnome-switcher.patch
-      ./labwc-overview.patch
-    ];
-    postPatch = (old.postPatch or "") + ''
-      cp ${./desktop-overview-v1.xml} protocols/desktop-overview-v1.xml
-    '';
-  });
   codexIcon = pkgs.fetchurl {
     url = "https://raw.githubusercontent.com/kevinpita/codex-usage-extension/b88a5d0b02b37e9a06b8266bd5f29fa6a5f16213/codex-icon-22.png";
     hash = "sha256-kI1mut3KtZNahi8btZNSdogSrF+Z44yXqaZ4Jxf5L+E=";
   };
   desktopZig = import ./desktop-zig.nix { inherit pkgs; };
-  osd = shell;
-  session = pkgs.writeShellScript "labwc-session" ''
+  session = pkgs.writeShellScript "desktop-session" ''
     . /etc/profile
-    export XDG_CURRENT_DESKTOP=labwc:wlroots
-    export XDG_SESSION_DESKTOP=labwc
+    export XDG_CURRENT_DESKTOP=desktop:wlroots
+    export XDG_SESSION_DESKTOP=desktop
     export XDG_SESSION_TYPE=wayland
-    trap '${pkgs.systemd}/bin/systemctl --user stop labwc-session.target' EXIT
-    ${desktopCompositor}/bin/labwc
+    export XCURSOR_THEME=${cursorTheme}
+    export XCURSOR_SIZE=${toString cursorSize}
+    export DESKTOP_CODEX_ICON=${codexIcon}
+    export DESKTOP_SESSION_MANAGED=1
+    exec ${shell} compositor ${gnomeWallpaper}
   '';
-  sessionService = command: {
-    wantedBy = [ "graphical-session.target" ];
-    partOf = [ "graphical-session.target" ];
-    enableDefaultPath = false;
-    serviceConfig = {
-      ExecStart = command;
-      Restart = "on-failure";
-    };
-  };
+
 in
 lib.mkIf enableLightDesktop {
   nixpkgs.overlays = [
@@ -67,8 +48,10 @@ lib.mkIf enableLightDesktop {
   # The broker is also the implementation; no separate portal backend runs.
   xdg.portal.extraPortals = lib.mkForce [ desktopZig ];
   xdg.portal.config.wlroots.default = lib.mkForce [ ];
-  programs.labwc.enable = true;
-  programs.labwc.package = desktopCompositor;
+  programs.dconf.enable = true;
+  services.graphical-desktop.enable = true;
+  xdg.portal.enable = true;
+  services.xserver.desktopManager.runXdgAutostartIfNone = lib.mkDefault true;
   services.greetd = {
     enable = true;
     useTextGreeter = true;
@@ -112,7 +95,10 @@ lib.mkIf enableLightDesktop {
       ProtectSystem = "strict";
       ProtectHome = true;
       PrivateTmp = true;
-      RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
+      RestrictAddressFamilies = [
+        "AF_UNIX"
+        "AF_NETLINK"
+      ];
     };
   };
   services.gnome.gnome-keyring.enable = false;
@@ -151,7 +137,12 @@ lib.mkIf enableLightDesktop {
       };
     }
   ];
-  systemd.packages = [ desktopCompositor ];
+  systemd.user.targets.desktop-session = {
+    description = "Desktop compositor session";
+    bindsTo = [ "graphical-session.target" ];
+    wants = [ "graphical-session-pre.target" ];
+    after = [ "graphical-session-pre.target" ];
+  };
   systemd.user.services = {
     desktop-secrets = {
       description = "Native desktop Secret Service";
@@ -169,14 +160,7 @@ lib.mkIf enableLightDesktop {
         Environment = "GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-0";
       };
     };
-    desktop-zig = (sessionService "${shell} serve ${gnomeWallpaper}") // {
-      conflicts = [ "mako.service" ];
-      after = [ "mako.service" ];
-      serviceConfig = (sessionService "").serviceConfig // {
-        ExecStart = "${shell} serve ${gnomeWallpaper}";
-        Environment = "DESKTOP_CODEX_ICON=${codexIcon}";
-      };
-    };
+
   };
 
   environment.systemPackages = with pkgs; [
@@ -212,61 +196,6 @@ lib.mkIf enableLightDesktop {
       window#osd progressbar:disabled, window#osd image:disabled { opacity: 0.5; }
     '';
     "xdg/desktop-notifications/style.css".text = builtins.readFile ./desktop-notifications.css;
-    "xdg/labwc/rc.xml".text = ''
-      <?xml version="1.0"?>
-      <labwc_config>
-        <core>
-          <!-- Let applications draw their own GNOME-style window frames. -->
-          <decoration>client</decoration>
-        </core>
-        <desktops><names><name>1</name><name>2</name><name>3</name><name>4</name></names></desktops>
-        <theme>
-          <icon>Adwaita</icon>
-          <font place="OnScreenDisplay" name="Adwaita Sans" size="11" />
-        </theme>
-        <windowSwitcher preview="no" outlines="no">
-          <osd show="yes" style="applications" output="focused" />
-        </windowSwitcher>
-        <keyboard>
-          <default />
-          <keybind key="W-Tab"><action name="NextWindow" /></keybind>
-          <keybind key="W-S-Tab"><action name="PreviousWindow" /></keybind>
-          <keybind key="A-grave"><action name="NextWindow" identifier="current" /></keybind>
-          <keybind key="A-S-grave"><action name="PreviousWindow" identifier="current" /></keybind>
-          <keybind key="W-Return"><action name="Execute" command="ghostty" /></keybind>
-          <keybind key="W-d"><action name="Execute" command="${appLauncher}" /></keybind>
-          <keybind key="W-a"><action name="Execute" command="${appLauncher}" /></keybind>
-          <keybind key="Super_L" onRelease="yes"><action name="Execute" command="${appLauncher}" /></keybind>
-          <keybind key="W-l"><action name="Execute" command="${shell} lock --daemonize" /></keybind>
-          <keybind key="W-S-e"><action name="Exit" /></keybind>
-          <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="${osd} volume up" /></keybind>
-          <keybind key="XF86AudioLowerVolume"><action name="Execute" command="${osd} volume down" /></keybind>
-          <keybind key="XF86AudioMute"><action name="Execute" command="${osd} volume mute" /></keybind>
-          <keybind key="XF86AudioMicMute"><action name="Execute" command="${osd} microphone mute" /></keybind>
-          <keybind key="XF86MonBrightnessUp"><action name="Execute" command="${osd} brightness up" /></keybind>
-          <keybind key="XF86MonBrightnessDown"><action name="Execute" command="${osd} brightness down" /></keybind>
-          <keybind key="Print"><action name="Execute" command="${shell} screenshot" /></keybind>
-        </keyboard>
-        <mouse><default /></mouse>
-        <libinput><device category="touchpad"><tap>no</tap><naturalScroll>yes</naturalScroll></device></libinput>
-        <windowRules>
-          <windowRule identifier="*" type="normal"><action name="Maximize" /></windowRule>
-          <windowRule identifier="org.dotfiles.DesktopApps" serverDecoration="no" />
-        </windowRules>
-      </labwc_config>
-    '';
-    "xdg/labwc/environment".text = ''
-      XKB_DEFAULT_OPTIONS=caps:none
-      XCURSOR_THEME=${cursorTheme}
-      XCURSOR_SIZE=${toString cursorSize}
-    '';
-    "xdg/labwc/autostart".text = ''
-      # Stay near GNOME's 5/3 scale on hagi using an exact multiple of 1/8,
-      # representable in both Wayland's 1/256 and fractional-scale's 1/120 units.
-      ${shell} output --output eDP-1 --scale 1.625
-      ${pkgs.systemd}/bin/systemctl --user import-environment PATH XDG_SESSION_ID
-      ${pkgs.systemd}/bin/systemctl --user --no-block start labwc-session.target
-    '';
     "xdg/desktop-panel/config.json".text = builtins.toJSON {
       height = 32;
       left = [

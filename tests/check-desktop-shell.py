@@ -15,7 +15,7 @@ from audio_server import AudioServer
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True, type=Path)
-parser.add_argument("--compositor", default="labwc")
+parser.add_argument("--compositor", default="desktop-zig")
 parser.add_argument("--panel-config", type=Path)
 parser.add_argument("--panel-style", type=Path)
 parser.add_argument("--notification-style", type=Path)
@@ -111,7 +111,7 @@ def owner_pid(name):
 
 try:
     audio.start()
-    compositor = start([args.compositor, "-C", str(root / "config")], "labwc.log")
+    compositor = start([args.compositor, "compositor-only"], "labwc.log")
     wait_for(lambda: (root / "runtime/wayland-0").exists(), "compositor socket")
     env["WAYLAND_DISPLAY"] = "wayland-0"
     assert run([binary, "ping"], ok=False).returncode != 0, "client must not start a desktop"

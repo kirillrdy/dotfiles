@@ -35,7 +35,7 @@ if args.compositor:
     os.environ.update(XDG_RUNTIME_DIR=str(runtime), GDK_BACKEND="wayland", WAYLAND_DISPLAY="wayland-0",
         WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1",
         LABWC_UPDATE_ACTIVATION_ENV="false", DESKTOP_SECRETS_FIXTURE_PROMPTS="accept")
-    compositor = subprocess.Popen([args.compositor, "-C", str(config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    compositor = subprocess.Popen([args.compositor, "compositor-only"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(150):
         if (runtime / "wayland-0").exists():
             break

@@ -17,7 +17,7 @@ from gi.repository import Gio, GLib
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--fixture", required=True)
 parser.add_argument("--locker", required=True)
-parser.add_argument("--compositor", default="labwc")
+parser.add_argument("--compositor", default="desktop-zig")
 parser.add_argument("--dbus-daemon", default="dbus-daemon")
 parser.add_argument("--dbus-config")
 parser.add_argument("--wtype", default="wtype")
@@ -172,7 +172,7 @@ try:
     env["DBUS_SYSTEM_BUS_ADDRESS"] = address
     mock = Logind(address)
     mocks = [mock]
-    compositor = start([args.compositor, "-C", str(config)], "compositor.log")
+    compositor = start([args.compositor, "compositor-only"], "compositor.log")
     wait_until(lambda: list((root / "runtime").glob("wayland-*.lock")), "Compositor startup")
     env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem
 

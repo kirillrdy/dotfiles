@@ -19,7 +19,7 @@ pkgs.runCommand "desktop-secrets-check"
       pkgs.dbus
       pkgs.glib
       pkgs.libsecret
-      pkgs.labwc
+      desktop
     ];
   }
   ''
@@ -31,7 +31,7 @@ pkgs.runCommand "desktop-secrets-check"
       python3 ${./check-desktop-secrets.py} \
         --fixture ${fixture}/bin/desktop-secrets-fixture \
         --secret-tool ${pkgs.libsecret}/bin/secret-tool \
-        --compositor ${pkgs.labwc}/bin/labwc
+        --compositor ${desktop}/bin/desktop-zig
     python3 ${./check-desktop-secrets-pam.py} \
       --fixture ${fixture}/bin/desktop-secrets-pam-fixture \
       --bridge ${fixture}/lib/libpam_desktop_secrets.so \

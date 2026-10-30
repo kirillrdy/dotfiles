@@ -121,7 +121,7 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds(user("desktop-zig ping"))
 
     with subtest("production services and D-Bus activation"):
-        for service in ("desktop-zig.service", "desktop-secrets.service"):
+        for service in ("desktop-session.target", "desktop-secrets.service"):
             machine.wait_until_succeeds(user("systemctl --user is-active " + service))
         machine.succeed(user("busctl --user introspect org.freedesktop.Notifications /org/freedesktop/Notifications"))
         machine.succeed(user("busctl --user introspect org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop"))

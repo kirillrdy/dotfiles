@@ -208,7 +208,7 @@ try:
 
     reset()
     energy()
-    compositor = start(["labwc", "-C", str(root / "config/labwc")], "labwc.log")
+    compositor = start(["desktop-zig", "compositor-only"], "labwc.log")
     wait(lambda: list((root / "runtime").glob("wayland-*.lock")), "private Wayland compositor")
     env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem
     disposed = sp.run([args.fixture, "--dispose", str(supplies)], env=env, capture_output=True, text=True, timeout=5)

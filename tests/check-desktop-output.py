@@ -15,7 +15,7 @@ import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True)
-parser.add_argument("--compositor", default="labwc")
+parser.add_argument("--compositor", default="desktop-zig")
 args = parser.parse_args()
 root = Path(tempfile.mkdtemp(prefix="desktop-output-check-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
@@ -49,7 +49,7 @@ def scale(name, value, error=None):
 
 
 with (root / "compositor.log").open("w") as log:
-    compositor = sp.Popen([args.compositor, "-C", str(config)], env=env, stdout=log, stderr=sp.STDOUT)
+    compositor = sp.Popen([args.compositor, "compositor-only"], env=env, stdout=log, stderr=sp.STDOUT)
 try:
     deadline = time.monotonic() + 10
     while True:

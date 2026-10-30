@@ -25,7 +25,7 @@ parser.add_argument("--style", required=True, type=Path)
 parser.add_argument("--loader-cache", type=Path)
 parser.add_argument("--dbus-config", type=Path)
 args = parser.parse_args()
-for tool in ("labwc", "grim", "wlr-randr", "wtype", "dbus-send"):
+for tool in ("desktop-zig", "grim", "wlr-randr", "wtype", "dbus-send"):
     if shutil.which(tool) is None:
         parser.error(f"Missing executable: {tool}")
 root = Path(tempfile.mkdtemp(prefix="desktop-osd-check-"))
@@ -126,7 +126,7 @@ try:
     audio.command("set-volume", "@DEFAULT_AUDIO_SINK@", "0.5")
     audio.command("set-mute", "@DEFAULT_AUDIO_SINK@", "1")
     audio.command("set-mute", "@DEFAULT_AUDIO_SOURCE@", "0")
-    compositor = start(["labwc", "-C", str(root / "config/labwc")], "labwc.log")
+    compositor = start(["desktop-zig", "compositor-only"], "labwc.log")
     for _ in range(100):
         if (root / "runtime/wayland-0").exists():
             break

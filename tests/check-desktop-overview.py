@@ -142,7 +142,7 @@ def main():
             time.sleep(0.6)
 
         try:
-            compositor = start([args.labwc, "-C", str(config)], "labwc")
+            compositor = start([args.labwc, "compositor-only"], "labwc")
             wait_for(
                 lambda: (runtime / "wayland-0").exists(), "Compositor did not start"
             )

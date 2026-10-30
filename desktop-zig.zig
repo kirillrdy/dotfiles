@@ -147,7 +147,27 @@ pub fn main(init: std.process.Init) !void {
     @import("desktop-util.zig").io = init.io;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
-    const args = try init.minimal.args.toSlice(arena.allocator());
+    var args = try init.minimal.args.toSlice(arena.allocator());
+    var managed_session = false;
+    var compositor: ?*@import("desktop-compositor.zig").Handle = null;
+    defer if (compositor) |handle| handle.stop();
+    defer if (managed_session) sessionControl(init.io, &.{ "systemctl", "--user", "stop", "desktop-session.target" }) catch {};
+    if (args.len >= 2 and (std.mem.eql(u8, args[1], "compositor") or std.mem.eql(u8, args[1], "compositor-only"))) {
+        compositor = try @import("desktop-compositor.zig").Handle.start(std.mem.eql(u8, args[1], "compositor"));
+        if (std.mem.eql(u8, args[1], "compositor-only")) {
+            compositor.?.wait();
+            compositor = null;
+            return;
+        }
+        if (libc.getenv("DESKTOP_SESSION_MANAGED") != null) {
+            try sessionControl(init.io, &.{ "systemctl", "--user", "import-environment", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "XDG_SESSION_TYPE", "XDG_SESSION_ID", "PATH", "DISPLAY", "XCURSOR_THEME", "XCURSOR_SIZE" });
+            try sessionControl(init.io, &.{ "systemctl", "--user", "start", "desktop-session.target" });
+            managed_session = true;
+        }
+        const forwarded = try arena.allocator().dupe([:0]const u8, args);
+        forwarded[1] = "serve";
+        args = forwarded;
+    }
     const name = std.fs.path.basename(args[0]);
     // Executable aliases implement the portal and SSH askpass protocols.
     if (std.mem.eql(u8, name, "xdg-desktop-portal")) return @import("desktop-portal.zig").run();
@@ -158,7 +178,7 @@ pub fn main(init: std.process.Init) !void {
         return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | greeter|askpass|power|screenshot [ARGS...]\n", .{});
+        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | greeter|askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;
         return;
     }
@@ -203,6 +223,7 @@ pub fn main(init: std.process.Init) !void {
     defer c.g_object_unref(app);
     var session = Session{ .app = app };
     defer session.deinit();
+    defer @import("desktop-switcher.zig").deinit();
     _ = c.g_signal_connect_data(app, "command-line", @ptrCast(&commandLine), &session, null, 0);
     const term = c.g_unix_signal_add(c.SIGTERM, &quit, app);
     const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, app);
@@ -213,6 +234,13 @@ pub fn main(init: std.process.Init) !void {
     const status = c.g_application_run(@ptrCast(app), @intCast(args.len), @ptrCast(argv.ptr));
     if (status != 0) return error.CommandFailed;
     if (session.serving and !session.notices.?.isOwned()) return error.NotificationNameUnavailable;
+}
+fn sessionControl(io: std.Io, argv: []const []const u8) !void {
+    const current_environment: std.process.Environ = .{ .block = .{ .slice = std.mem.span(std.c.environ) } };
+    var environment = try current_environment.createMap(a);
+    defer environment.deinit();
+    var child = try std.process.spawn(io, .{ .argv = argv, .environ_map = &environment, .stdin = .ignore, .stdout = .ignore, .stderr = .inherit });
+    if (!(try child.wait(io)).success()) return error.SessionControlFailed;
 }
 fn helperStatus(status: u8) void {
     if (status != 0) std.process.exit(status);
@@ -231,6 +259,7 @@ fn requireSession() !void {
 
 // Shared production namespace for isolated protocol and lifecycle clients.
 pub const gtk = @import("desktop-gtk.zig");
+pub const capture = @import("desktop-capture.zig");
 pub const runtime = @import("desktop-runtime.zig");
 pub const power = @import("desktop-power.zig");
 pub const secrets = @import("desktop-secrets.zig");

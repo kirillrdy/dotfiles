@@ -91,7 +91,7 @@ def main():
 
         log = args.artifacts / "overview.log"
         try:
-            start([args.labwc, "-C", str(config)], "labwc")
+            start([args.labwc, "compositor-only"], "labwc")
             wait_for(lambda: (root / "runtime/wayland-0").exists(), "Labwc did not start")
             env["WAYLAND_DISPLAY"] = "wayland-0"
             run(["wlr-randr", "--output", "HEADLESS-1", "--custom-mode", "1728x1080",
