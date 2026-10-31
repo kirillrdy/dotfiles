@@ -1,7 +1,7 @@
 //! Native Secret Service. Bus sessions and prompts belong to their unique caller.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
-const p = @import("posix");
+const libc = @import("desktop-libc.zig");
 pub const store = @import("desktop-secrets-store.zig");
 const transport = @import("desktop-secrets-transport.zig");
 const root = "/org/freedesktop/secrets";
@@ -795,7 +795,7 @@ pub fn runAt(directory: [:0]const u8) !void {
     return runAtWithOptions(directory, .{});
 }
 pub fn runAtWithOptions(directory: [:0]const u8, options: Options) !void {
-    if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
+    if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
     var wa = store.WipingAllocator{ .parent = std.heap.page_allocator };
     const a = wa.allocator();
     const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return error.NoSessionBus;
@@ -832,7 +832,7 @@ pub fn runAtWithOptions(directory: [:0]const u8, options: Options) !void {
         c.g_object_unref(connection);
     };
     if (system) |connection| {
-        const session = c.g_dbus_connection_call_sync(connection, "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", "GetSessionByPID", c.g_variant_new("(u)", @as(c_uint, @intCast(p.getpid()))), @ptrCast(@as([*:0]const u8, "(o)")), 0, 3000, null, null);
+        const session = c.g_dbus_connection_call_sync(connection, "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", "GetSessionByPID", c.g_variant_new("(u)", @as(c_uint, @intCast(libc.getpid()))), @ptrCast(@as([*:0]const u8, "(o)")), 0, 3000, null, null);
         if (session) |v| {
             defer c.g_variant_unref(v);
             server.logind = try a.dupeSentinel(u8, text(v, 0), 0);
@@ -962,7 +962,7 @@ pub fn importAt(directory: [:0]const u8, password: []const u8) !void {
     try vault.save();
 }
 pub fn runImport() !void {
-    if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
+    if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
     if (c.gtk_init_check(null, null) == 0) return error.DisplayUnavailable;
     var wa = store.WipingAllocator{ .parent = std.heap.page_allocator };
     const a = wa.allocator();

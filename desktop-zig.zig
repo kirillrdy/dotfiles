@@ -284,7 +284,7 @@ pub const virtual_pointer = @import("desktop-virtual-pointer.zig");
 pub const printing = @import("desktop-portal-print.zig");
 pub const chooser = @import("desktop-portal-file-chooser.zig");
 pub const util = @import("desktop-util.zig");
-pub const posix = @import("posix");
+pub const pam = @import("desktop-pam.zig");
 pub const pipewire = @import("pipewire");
 
 test {

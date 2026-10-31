@@ -88,6 +88,8 @@ pub const WNOHANG: c_int = @intCast(std.c.W.NOHANG);
 
 pub const O_RDONLY: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{}))));
 
+pub const O_RDWR: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{ .ACCMODE = .RDWR }))));
+
 pub const O_WRONLY: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{ .ACCMODE = .WRONLY }))));
 
 pub const O_CREAT: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{ .CREAT = true }))));
@@ -102,9 +104,19 @@ pub const O_CLOEXEC: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{ .CLOEXEC
 
 pub const LOCK_EX: c_int = @intCast(std.c.LOCK.EX);
 
+pub const LOCK_NB: c_int = @intCast(std.c.LOCK.NB);
+
 pub const ENOENT: c_int = @intCast(@backingInt(std.c.E.NOENT));
 
+pub const EEXIST: c_int = @intCast(@backingInt(std.c.E.EXIST));
+
 pub const EINTR: c_int = @intCast(@backingInt(std.c.E.INTR));
+
+pub const S_IFMT = @as(c_uint, 0o170000);
+pub const S_IFDIR = @as(c_uint, 0o040000);
+pub const S_IFREG = @as(c_uint, 0o100000);
+pub const F_SETFD = @as(c_int, 2);
+pub const FD_CLOEXEC = @as(c_int, 1);
 
 pub const __sighandler_t = ?*const fn (c_int) callconv(.c) void;
 
@@ -274,3 +286,53 @@ pub const MAP_FAILED = @as(?*anyopaque, @ptrFromInt(std.math.maxInt(usize)));
 pub const SIGUSR1: c_int = @intCast(@backingInt(std.posix.SIG.USR1));
 
 pub const STDOUT_FILENO = @as(c_int, 1);
+
+pub const __dev_t = c_ulong;
+pub const __mode_t = c_uint;
+pub const __nlink_t = c_ulong;
+pub const __blksize_t = c_long;
+pub const __blkcnt_t = c_long;
+pub const __syscall_slong_t = c_long;
+
+pub const struct_timespec = extern struct {
+    tv_sec: time_t = 0,
+    tv_nsec: __syscall_slong_t = 0,
+};
+
+pub const struct_stat = extern struct {
+    st_dev: __dev_t = 0,
+    st_ino: __ino_t = 0,
+    st_nlink: __nlink_t = 0,
+    st_mode: __mode_t = 0,
+    st_uid: __uid_t = 0,
+    st_gid: __gid_t = 0,
+    __pad0: c_int = 0,
+    st_rdev: __dev_t = 0,
+    st_size: __off_t = 0,
+    st_blksize: __blksize_t = 0,
+    st_blocks: __blkcnt_t = 0,
+    st_atim: struct_timespec = @import("std").mem.zeroes(struct_timespec),
+    st_mtim: struct_timespec = @import("std").mem.zeroes(struct_timespec),
+    st_ctim: struct_timespec = @import("std").mem.zeroes(struct_timespec),
+    __glibc_reserved: [3]__syscall_slong_t = @import("std").mem.zeroes([3]__syscall_slong_t),
+};
+
+pub extern fn fstat(__fd: c_int, __buf: [*c]struct_stat) c_int;
+pub extern fn lstat(noalias __file: [*c]const u8, noalias __buf: [*c]struct_stat) c_int;
+pub extern fn mkdir(__path: [*c]const u8, __mode: __mode_t) c_int;
+pub extern fn getrandom(__buffer: ?*anyopaque, __length: usize, __flags: c_uint) isize;
+pub extern fn initgroups(__user: [*c]const u8, __group: __gid_t) c_int;
+pub extern fn dup2(__fd: c_int, __fd2: c_int) c_int;
+pub extern fn execve(__path: [*c]const u8, __argv: [*c]const [*c]u8, __envp: [*c]const [*c]u8) c_int;
+pub extern fn _exit(__status: c_int) noreturn;
+pub extern fn getegid() __gid_t;
+pub extern fn setuid(__uid: __uid_t) c_int;
+pub extern fn setgid(__gid: __gid_t) c_int;
+pub extern fn rmdir(__path: [*c]const u8) c_int;
+pub extern fn close_range(__fd: c_uint, __max_fd: c_uint, __flags: c_int) c_int;
+pub extern fn socketpair(__domain: c_int, __type: c_int, __protocol: c_int, __fds: [*c]c_int) c_int;
+pub extern fn getpwnam(__name: [*c]const u8) [*c]struct_passwd;
+pub extern fn mlock(__addr: ?*const anyopaque, __len: usize) c_int;
+pub extern fn munlock(__addr: ?*const anyopaque, __len: usize) c_int;
+pub extern fn fcntl(__fd: c_int, __cmd: c_int, ...) c_int;
+pub extern fn calloc(__nmemb: usize, __size: usize) ?*anyopaque;
