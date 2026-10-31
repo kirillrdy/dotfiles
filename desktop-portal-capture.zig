@@ -3,6 +3,7 @@ const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const sc = @import("desktop-screenshot.zig");
+const png = @import("desktop-png.zig");
 const protocols = sc.protocols;
 const cast = c.__zig.cast;
 pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;
@@ -374,18 +375,33 @@ pub const Operation = struct {
             const pixel = std.mem.readInt(u32, pixels[@as(usize, @intCast(y)) * stride + @as(usize, @intCast(x)) * 4 ..][0..4], @import("builtin").cpu.arch.endian());
             c.g_variant_builder_add(results, "{sv}", @as([*:0]const u8, "color"), c.g_variant_new("(ddd)", @as(f64, @floatFromInt((pixel >> 16) & 255)) / 255, @as(f64, @floatFromInt((pixel >> 8) & 255)) / 255, @as(f64, @floatFromInt(pixel & 255)) / 255));
         } else {
-            const crop = c.cairo_image_surface_create(c.CAIRO_FORMAT_RGB24, w, h) orelse return self.finish(2, null);
-            defer c.cairo_surface_destroy(crop);
-            const cr = c.cairo_create(crop);
-            defer c.cairo_destroy(cr);
-            c.cairo_set_source_surface(cr, surface, @floatFromInt(-x), @floatFromInt(-y));
-            c.cairo_paint(cr);
+            const crop_w: usize = @intCast(w);
+            const crop_h: usize = @intCast(h);
+            const crop_buf = self.allocator.alloc(u8, crop_w * crop_h * 4) catch return self.finish(2, null);
+            defer self.allocator.free(crop_buf);
+            const src_pixels: [*]const u8 = c.cairo_image_surface_get_data(surface);
+            const src_stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
+            for (0..crop_h) |cy| {
+                const sy: usize = @intCast(y + @as(i32, @intCast(cy)));
+                const sx: usize = @intCast(x);
+                @memcpy(crop_buf[cy * crop_w * 4 .. (cy + 1) * crop_w * 4], src_pixels[sy * src_stride + sx * 4 .. sy * src_stride + (sx + crop_w) * 4]);
+            }
+            const png_bytes = png.encode(self.allocator, .{
+                .pixels = crop_buf,
+                .width = @intCast(crop_w),
+                .height = @intCast(crop_h),
+                .stride = @intCast(crop_w * 4),
+                .alpha = false,
+                .y_invert = false,
+            }) catch return self.finish(2, null);
+            defer self.allocator.free(png_bytes);
+
             const filename = std.fmt.allocPrintSentinel(self.allocator, "{s}/desktop-screenshot-XXXXXX", .{c.g_get_user_runtime_dir()}, 0) catch return self.finish(2, null);
             defer self.allocator.free(filename);
             const fd = c.g_mkstemp(filename);
             if (fd < 0) return self.finish(2, null);
-            _ = libc.close(fd);
-            if (c.cairo_surface_write_to_png(crop, filename) != c.CAIRO_STATUS_SUCCESS) {
+            defer _ = libc.close(fd);
+            if (libc.write(fd, png_bytes.ptr, png_bytes.len) != png_bytes.len) {
                 _ = libc.unlink(filename);
                 return self.finish(2, null);
             }
