@@ -744,60 +744,127 @@ pub fn update_codex(m: *Module, o: std.json.Value, a: std.mem.Allocator) void {
     c.gtk_label_set_text(cast(c.GtkLabel, m.codex_error), jsonStringZ(a, o.object.get("error")));
     c.gtk_widget_set_sensitive(m.codex_refresh, 1);
 }
+fn blendPixel(dest: *u32, src: u32) void {
+    const sa = (src >> 24) & 0xff;
+    if (sa == 255) {
+        dest.* = src;
+        return;
+    }
+    if (sa == 0) return;
+    const da = (dest.* >> 24) & 0xff;
+    const inv_sa = 255 - sa;
+    const out_a = sa + (da * inv_sa + 127) / 255;
+    const sr = (src >> 16) & 0xff;
+    const sg = (src >> 8) & 0xff;
+    const sb = src & 0xff;
+    const dr = (dest.* >> 16) & 0xff;
+    const dg = (dest.* >> 8) & 0xff;
+    const db = dest.* & 0xff;
+    const out_r = sr + (dr * inv_sa + 127) / 255;
+    const out_g = sg + (dg * inv_sa + 127) / 255;
+    const out_b = sb + (db * inv_sa + 127) / 255;
+    dest.* = (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b;
+}
+
 pub fn draw_graph(widget: [*c]c.GtkWidget, cr: ?*c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
-    var g: *Graph = @as(*Graph, @ptrCast(@alignCast(data)));
-    if ((g.series == 0)) return 0;
-    const width: f64 = @as(f64, @floatFromInt(c.gtk_widget_get_allocated_width(widget)));
-    const height: f64 = @as(f64, @floatFromInt(c.gtk_widget_get_allocated_height(widget)));
+    const context = cr orelse return 0;
+    const g: *Graph = @as(*Graph, @ptrCast(@alignCast(data)));
+    if (g.series == 0) return 0;
+    const alloc_w = c.gtk_widget_get_allocated_width(widget);
+    const alloc_h = c.gtk_widget_get_allocated_height(widget);
+    if (alloc_w <= 0 or alloc_h <= 0) return 0;
+    const width: usize = @intCast(alloc_w);
+    const height: usize = @intCast(alloc_h);
+    const height_f: f64 = @floatFromInt(height);
+
     var max: f64 = g.maximum;
     if (g.autoscale != 0) {
         max = 1;
-        {
-            var j: c.guint = 0;
-            while (j < g.count) : (j += 1) {
-                max = if (max > g.history[g.series - 1][j]) max else g.history[g.series - 1][j];
-            }
+        var j: c.guint = 0;
+        while (j < g.count) : (j += 1) {
+            max = if (max > g.history[g.series - 1][j]) max else g.history[g.series - 1][j];
         }
         max = std.math.pow(f64, 2, @ceil(std.math.log2(max)));
     }
-    if ((max <= 0) or (g.count < 2)) return 0;
-    c.cairo_rectangle(cr, 0, 0, width, height);
-    c.cairo_clip(cr);
-    {
-        var i: c.gint = @as(c.gint, @bitCast(g.series)) - 1;
-        while (i >= 0) : (i -= 1) {
-            c.cairo_move_to(cr, width, height);
-            var x: f64 = width - 0.25;
-            c.cairo_line_to(cr, x, height * (1 - (g.history[@as(c_uint, @intCast(i))][g.count - 1] / max)));
-            x -= 0.5;
-            {
-                var j: c.gint = @as(c.gint, @bitCast(g.count)) - 1;
-                while (j >= 0) : (j -= 1) {
-                    const y: f64 = height * (1 - (g.history[@as(c_uint, @intCast(i))][@as(c_uint, @intCast(j))] / max));
-                    c.cairo_line_to(cr, x, y);
-                    x -= 0.5;
-                    c.cairo_line_to(cr, x, y);
-                    x -= 0.5;
-                }
+    if (max <= 0 or g.count < 2) return 0;
+
+    var stack_buf: [256 * 64]u32 = undefined;
+    const total_pixels = width * height;
+    const pixels = if (total_pixels <= stack_buf.len) stack_buf[0..total_pixels] else std.heap.page_allocator.alloc(u32, total_pixels) catch return 0;
+    defer if (total_pixels > stack_buf.len) std.heap.page_allocator.free(pixels);
+    @memset(pixels, 0);
+
+    var i: c.gint = @as(c.gint, @bitCast(g.series)) - 1;
+    while (i >= 0) : (i -= 1) {
+        const u_i: usize = @intCast(i);
+        const c_rgba = g.colors[u_i];
+        const a_u8: u32 = @intFromFloat(std.math.clamp(c_rgba.alpha, 0.0, 1.0) * 255.0);
+        const r_u8: u32 = @intFromFloat(std.math.clamp(c_rgba.red * c_rgba.alpha, 0.0, 1.0) * 255.0);
+        const g_u8: u32 = @intFromFloat(std.math.clamp(c_rgba.green * c_rgba.alpha, 0.0, 1.0) * 255.0);
+        const b_u8: u32 = @intFromFloat(std.math.clamp(c_rgba.blue * c_rgba.alpha, 0.0, 1.0) * 255.0);
+        const color: u32 = (a_u8 << 24) | (r_u8 << 16) | (g_u8 << 8) | b_u8;
+        if (a_u8 == 0) continue;
+
+        for (0..width) |col| {
+            const from_right: usize = (width - 1) - col;
+            if (from_right >= g.count) continue;
+            const sample_idx: usize = @as(usize, g.count) - 1 - from_right;
+            const val = g.history[u_i][sample_idx];
+            const ratio = std.math.clamp(val / max, 0.0, 1.0);
+            const y_top_f = height_f * (1.0 - ratio);
+            const y_top: usize = @min(height, @as(usize, @intFromFloat(@max(0.0, @round(y_top_f)))));
+            for (y_top..height) |py| {
+                blendPixel(&pixels[py * width + col], color);
             }
-            c.cairo_line_to(cr, x + 0.75, height);
-            c.cairo_close_path(cr);
-            c.gdk_cairo_set_source_rgba(cr, &g.colors[@as(c_uint, @intCast(i))]);
-            c.cairo_fill(cr);
         }
     }
+
+    const surf = c.cairo_image_surface_create_for_data(@ptrCast(pixels.ptr), c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height), @intCast(width * 4));
+    defer c.cairo_surface_destroy(surf);
+    c.cairo_set_source_surface(context, surf, 0, 0);
+    c.cairo_paint(context);
     return 0;
 }
 pub fn draw_activities(widget: [*c]c.GtkWidget, cr: ?*c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
     _ = data;
-    const y: f64 = @as(f64, @floatFromInt(c.gtk_widget_get_allocated_height(widget))) / 2.0;
-    c.cairo_set_source_rgb(cr, 1, 1, 1);
-    c.cairo_arc(cr, 6, y, 4, 1.5707963267948966, 3 * 1.5707963267948966);
-    c.cairo_arc(cr, 24, y, 4, 3 * 1.5707963267948966, 1.5707963267948966);
-    c.cairo_close_path(cr);
-    c.cairo_fill(cr);
-    c.cairo_arc(cr, 37, y, 4, 0, 2 * 3.141592653589793);
-    c.cairo_fill(cr);
+    const context = cr orelse return 0;
+    const w = c.gtk_widget_get_allocated_width(widget);
+    const h = c.gtk_widget_get_allocated_height(widget);
+    if (w <= 0 or h <= 0) return 0;
+    const width: usize = @intCast(w);
+    const height: usize = @intCast(h);
+    const y: f64 = @as(f64, @floatFromInt(h)) / 2.0;
+
+    var stack_buf: [128 * 64]u32 = undefined;
+    const total_pixels = width * height;
+    const pixels = if (total_pixels <= stack_buf.len) stack_buf[0..total_pixels] else std.heap.page_allocator.alloc(u32, total_pixels) catch return 0;
+    defer if (total_pixels > stack_buf.len) std.heap.page_allocator.free(pixels);
+    @memset(pixels, 0);
+
+    for (0..height) |py_u| {
+        const py: f64 = @as(f64, @floatFromInt(py_u)) + 0.5;
+        const dy = py - y;
+        for (0..width) |px_u| {
+            const px: f64 = @as(f64, @floatFromInt(px_u)) + 0.5;
+            const cx = std.math.clamp(px, 6.0, 24.0);
+            const pill_dx = px - cx;
+            const dist_pill = @sqrt(pill_dx * pill_dx + dy * dy);
+            const dot_dx = px - 37.0;
+            const dist_dot = @sqrt(dot_dx * dot_dx + dy * dy);
+
+            const dist = @min(dist_pill, dist_dot);
+            if (dist <= 4.5) {
+                const alpha_f = std.math.clamp(4.5 - dist, 0.0, 1.0);
+                const alpha: u32 = @intFromFloat(@round(alpha_f * 255.0));
+                pixels[py_u * width + px_u] = (alpha << 24) | (alpha << 16) | (alpha << 8) | alpha;
+            }
+        }
+    }
+
+    const surf = c.cairo_image_surface_create_for_data(@ptrCast(pixels.ptr), c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height), @intCast(width * 4));
+    defer c.cairo_surface_destroy(surf);
+    c.cairo_set_source_surface(context, surf, 0, 0);
+    c.cairo_paint(context);
     return 0;
 }
 pub fn make_graph(m: *Module, index_1: c.guint, name: [*c]const u8) callconv(.c) void {

@@ -330,7 +330,7 @@ const frame_listener = protocols.ext_image_copy_capture_frame_v1_listener{ .tran
 fn transform(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {}
 fn damage(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: i32, _: i32, _: i32, _: i32) callconv(.c) void {}
 fn presentation(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {}
-fn scalePixels(
+pub fn scalePixels(
     src: [*]const u32,
     sw_u: u32,
     sh_u: u32,
