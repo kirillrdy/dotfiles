@@ -301,8 +301,13 @@ pub fn set_monitor(window: [*c]c.GtkWindow, monitor: ?*c.GdkMonitor) void {
 pub fn set_anchor(window: [*c]c.GtkWindow, edge: Edge, enabled: c.gboolean) void {
     const self = State.get(window);
     self.anchors[@backingInt(edge)] = enabled != 0;
-    if (self.role) |role| request(role, 1, .{self.anchorBits()});
-    self.hints();
+    // Before the first configure, GTK resolves -1 geometry limits against the
+    // widget requisition. Empty windows then collapse to 1x1 and never paint.
+    // The initial configure applies the compositor's dimensions instead.
+    if (self.role) |role| {
+        request(role, 1, .{self.anchorBits()});
+        self.hints();
+    }
     self.updateZone();
     self.invalidate();
 }

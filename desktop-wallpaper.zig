@@ -125,6 +125,47 @@ test "fill crops the center of wide and tall images at both buffer scales" {
     }
 }
 
+test "background layer paints wallpaper pixels on the desktop" {
+    const sc = @import("desktop-screenshot.zig");
+    const libc = @import("desktop-libc.zig");
+    try std.testing.expect(c.gtk_init_check(null, null) != 0);
+    const image = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 0, 8, 2, 2).?;
+    defer c.g_object_unref(image);
+    const pixels = c.gdk_pixbuf_get_pixels(image);
+    const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(image));
+    for (0..2) |y| for (0..2) |x| {
+        pixels[y * stride + x * 3 ..][0..3].* = .{ 20, 40, 80 };
+    };
+    const background = Background.create(c.gdk_display_get_monitor(c.gdk_display_get_default(), 0).?, image);
+    defer background.destroy();
+    // Allow GTK to paint and commit the first background buffer.
+    for (0..20) |_| {
+        while (c.gtk_events_pending() != 0) _ = c.gtk_main_iteration();
+        _ = libc.poll(null, 0, 10);
+    }
+    var client: sc.WaylandClient = undefined;
+    try client.init(std.testing.allocator);
+    defer client.deinit();
+    const output = client.outputs.items[0];
+    var frame: sc.FrameCapture = .{
+        .shm = client.shm.?,
+        .frame = sc.protocols.zwlr_screencopy_manager_v1_capture_output(client.screencopy_mgr.?, 0, output.wl_out).?,
+    };
+    defer sc.protocols.zwlr_screencopy_frame_v1_destroy(frame.frame);
+    defer {
+        if (frame.buffer) |buffer| c.wl_buffer_destroy(buffer);
+        if (frame.memory) |memory| _ = libc.munmap(memory, frame.length);
+    }
+    _ = sc.protocols.zwlr_screencopy_frame_v1_add_listener(frame.frame, &sc.FrameCapture.listener, &frame);
+    while (!frame.done and !frame.failed) try std.testing.expect(c.wl_display_dispatch(client.display) >= 0);
+    try std.testing.expect(!frame.failed and frame.memory != null);
+    for ([_][2]u32{ .{ 1, 1 }, .{ frame.width / 2, frame.height / 2 }, .{ frame.width - 2, frame.height - 2 } }) |point| {
+        const offset = @as(usize, point[1]) * frame.stride + @as(usize, point[0]) * 4;
+        const pixel = std.mem.readInt(u32, frame.memory.?[offset..][0..4], @import("builtin").cpu.arch.endian());
+        try std.testing.expectEqual(@as(u32, 0x142850), pixel & 0xffffff);
+    }
+}
+
 pub const Service = struct {
     app: App,
     added: c.gulong,
