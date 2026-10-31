@@ -19,7 +19,7 @@ parser.add_argument("--compositor", default="desktop-zig")
 parser.add_argument("--panel-config", type=Path)
 parser.add_argument("--panel-style", type=Path)
 parser.add_argument("--notification-style", type=Path)
-parser.add_argument("--osd-style", type=Path)
+parser.add_argument("--osd-config", type=Path)
 args = parser.parse_args()
 binary = str(args.binary.resolve())
 root = Path(tempfile.mkdtemp(prefix="desktop-shell-check-", dir="/tmp"))
@@ -33,6 +33,7 @@ print(f"Artifacts: {root}", flush=True)
 (root / "config/autostart").write_text("")
 (root / "config/environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
 (root / "style.css").write_text("window#desktop-panel { background: #000; color: #fff; }\n")
+(root / "osd.json").write_text("{}")
 # GdkPixbuf's built-in PPM decoder needs no external image module.
 (root / "wallpaper.ppm").write_bytes(b"P6\n2 2\n255\n" + bytes([20, 40, 80]) * 4)
 (root / "panel.json").write_text(json.dumps({
@@ -119,7 +120,7 @@ try:
                str(args.panel_config or root / "panel.json"),
                str(args.panel_style or root / "style.css"),
                str(args.notification_style or root / "style.css"),
-               str(args.osd_style or root / "style.css")]
+               str(args.osd_config or root / "osd.json")]
     shell = start(command, "shell.log")
     wait_for(lambda: run([binary, "ping"], ok=False).returncode == 0, "shell ready")
     wait_for(lambda: shell_log().count('"desktop-panel"') >= 2, "panel on both outputs")

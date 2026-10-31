@@ -714,6 +714,7 @@ pub extern fn g_app_info_should_show(appinfo: ?*GAppInfo) gboolean;
 pub extern fn g_app_info_get_all() [*c]GList;
 
 pub extern fn g_application_get_dbus_connection(application: [*c]GApplication) ?*GDBusConnection;
+pub extern fn g_application_new(application_id: [*c]const gchar, flags: GApplicationFlags) [*c]GApplication;
 
 pub extern fn g_application_hold(application: [*c]GApplication) void;
 

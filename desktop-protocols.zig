@@ -55,6 +55,45 @@ const layer_surface_events = [_]Message{
 pub export const zwlr_layer_shell_v1_interface = Interface{ .name = "zwlr_layer_shell_v1", .version = 4, .method_count = layer_shell_requests.len, .methods = &layer_shell_requests, .event_count = 0, .events = null };
 pub export const zwlr_layer_surface_v1_interface = Interface{ .name = "zwlr_layer_surface_v1", .version = 4, .method_count = layer_surface_requests.len, .methods = &layer_surface_requests, .event_count = layer_surface_events.len, .events = &layer_surface_events };
 
+// Copyright © 2017 Red Hat Inc.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
+// Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice (including the next
+// paragraph) shall be included in all copies or substantial portions of the
+// Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+// Logical output sizes keep percentage placement accurate at fractional scales.
+const xdg_output_types = [_][*c]const Interface{ &zxdg_output_v1_interface, &wl_output_interface };
+const xdg_output_manager_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "get_xdg_output", .signature = "no", .types = @constCast(&xdg_output_types) },
+};
+const xdg_output_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = @constCast(&layer_scalar_types) },
+};
+const xdg_output_events = [_]Message{
+    .{ .name = "logical_position", .signature = "ii", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "logical_size", .signature = "ii", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "done", .signature = "", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "name", .signature = "2s", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "description", .signature = "2s", .types = @constCast(&layer_scalar_types) },
+};
+pub export const zxdg_output_manager_v1_interface = Interface{ .name = "zxdg_output_manager_v1", .version = 3, .method_count = xdg_output_manager_requests.len, .methods = &xdg_output_manager_requests, .event_count = 0, .events = null };
+pub export const zxdg_output_v1_interface = Interface{ .name = "zxdg_output_v1", .version = 3, .method_count = xdg_output_requests.len, .methods = &xdg_output_requests, .event_count = xdg_output_events.len, .events = &xdg_output_events };
+
 extern const wl_buffer_interface: Interface;
 extern const wl_output_interface: Interface;
 extern const wl_pointer_interface: Interface;

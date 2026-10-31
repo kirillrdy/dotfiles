@@ -4,6 +4,7 @@ const c = @import("desktop-gtk.zig");
 const allocator = std.heap.page_allocator;
 
 const surfaces = @import("desktop-surface.zig");
+const Loop = @import("desktop-surface-loop.zig").Loop;
 
 fn paint(cr: *c.cairo_t, image: *c.GdkPixbuf, width: f64, height: f64) void {
     if (width <= 0 or height <= 0) return;
@@ -58,8 +59,7 @@ test "fill crops the center of wide and tall images at both buffer scales" {
 pub const Service = struct {
     image: *c.GdkPixbuf,
     client: *surfaces.Client = undefined,
-    reader: c.guint = 0,
-    writer: c.guint = 0,
+    loop: Loop = .{},
 
     fn draw(context: ?*anyopaque, frame: surfaces.Frame) !void {
         const self: *Service = @ptrCast(@alignCast(context));
@@ -84,60 +84,12 @@ pub const Service = struct {
         self.* = .{ .image = image };
         self.client = try surfaces.Client.create(.{ .namespace = "desktop-wallpaper" }, self, draw);
         errdefer self.client.destroy();
-        self.reader = c.g_unix_fd_add(c.wl_display_get_fd(self.client.display), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, readable, self);
-        if (self.reader == 0) return error.EventSourceFailed;
-        errdefer _ = c.g_source_remove(self.reader);
-        try self.flush();
+        try self.loop.start(self.client, "wallpaper");
         return self;
     }
 
-    fn flush(self: *Service) !void {
-        if (!try self.client.flush() and self.writer == 0) {
-            self.writer = c.g_unix_fd_add(c.wl_display_get_fd(self.client.display), c.G_IO_OUT | c.G_IO_ERR | c.G_IO_HUP, writable, self);
-            if (self.writer == 0) return error.EventSourceFailed;
-        }
-    }
-    fn failed(self: *Service, err: anyerror) void {
-        std.log.err("wallpaper: {s}", .{@errorName(err)});
-        if (self.reader != 0) _ = c.g_source_remove(self.reader);
-        if (self.writer != 0) _ = c.g_source_remove(self.writer);
-        self.reader = 0;
-        self.writer = 0;
-    }
-    fn readable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c.gboolean {
-        const self: *Service = @ptrCast(@alignCast(data));
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) {
-            self.failed(error.WaylandDisconnected);
-            return 0;
-        }
-        self.client.dispatch() catch |err| {
-            self.failed(err);
-            return 0;
-        };
-        self.flush() catch |err| {
-            self.failed(err);
-            return 0;
-        };
-        return 1;
-    }
-    fn writable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c.gboolean {
-        const self: *Service = @ptrCast(@alignCast(data));
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) {
-            self.failed(error.WaylandDisconnected);
-            return 0;
-        }
-        const flushed = self.client.flush() catch |err| {
-            self.failed(err);
-            return 0;
-        };
-        if (!flushed) return 1;
-        self.writer = 0;
-        return 0;
-    }
-
     pub fn destroy(self: *Service) void {
-        if (self.reader != 0) _ = c.g_source_remove(self.reader);
-        if (self.writer != 0) _ = c.g_source_remove(self.writer);
+        self.loop.stop();
         self.client.destroy();
         c.g_object_unref(self.image);
         allocator.destroy(self);

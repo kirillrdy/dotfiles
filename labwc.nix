@@ -175,29 +175,37 @@ lib.mkIf enableLightDesktop {
     # Keep GTK clients and compositor-rendered Wayland cursors consistent.
     "xdg/gtk-3.0/settings.ini".text = gtkCursorSettings;
     "xdg/gtk-4.0/settings.ini".text = gtkCursorSettings;
-    "xdg/desktop-osd/style.css".text = ''
-      window#osd {
-        /* GNOME Shell's OSD palette and dimensions. */
-        background: #2e2e33;
-        color: #fff;
-        border: 1px solid rgba(255,255,255,0.02);
-        border-radius: 999px;
-        font-family: "Adwaita Sans";
-        font-size: 11pt;
-        font-weight: bold;
-      }
-      window#osd #container { margin: 12px 18px; }
-      window#osd image, window#osd label { color: #fff; }
-      window#osd progressbar { min-width: 160px; min-height: 6px; margin-right: 6px; }
-      window#osd trough, window#osd progress {
-        min-height: 6px;
-        border: none;
-        border-radius: 999px;
-      }
-      window#osd trough { background: rgba(255,255,255,0.1); }
-      window#osd progress { background: #fff; }
-      window#osd progressbar:disabled, window#osd image:disabled { opacity: 0.5; }
-    '';
+    "xdg/desktop-osd/config.json".text = builtins.toJSON {
+      width = 240;
+      height = 50;
+      bottom_margin_percent = 6;
+      duration_ms = 1500;
+      background = [
+        46
+        46
+        51
+        255
+      ];
+      foreground = [
+        255
+        255
+        255
+        255
+      ];
+      border = [
+        255
+        255
+        255
+        5
+      ];
+      trough = [
+        255
+        255
+        255
+        26
+      ];
+      muted_opacity = 0.5;
+    };
     "xdg/desktop-notifications/style.css".text = builtins.readFile ./desktop-notifications.css;
     "xdg/desktop-panel/config.json".text = builtins.toJSON {
       height = 32;

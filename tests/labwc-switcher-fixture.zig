@@ -11,6 +11,10 @@ fn activeChanged(object: *c.GObject, _: ?*c.GParamSpec, _: ?*anyopaque) callconv
 fn quit(_: ?*c.GtkWidget, _: ?*anyopaque) callconv(.c) void {
     c.gtk_main_quit();
 }
+fn clicked(_: ?*c.GtkWidget, _: ?*c.GdkEventButton, _: ?*anyopaque) callconv(.c) c.gboolean {
+    c.g_print("clicked\n");
+    return 0;
+}
 fn animate(data: c.gpointer) callconv(.c) c.gboolean {
     const text = c.g_strdup_printf("Live frame %lld", @as(c_longlong, @divTrunc(c.g_get_monotonic_time(), 100000)));
     defer c.g_free(text);
@@ -28,6 +32,11 @@ pub fn main(init: std.process.Init) !void {
     c.gtk_window_set_default_size(cast(c.GtkWindow, window), 640, 420);
     const label = c.gtk_label_new(args[2]);
     c.gtk_container_add(cast(c.GtkContainer, window), label);
+    if (c.g_getenv("DESKTOP_FIXTURE_MAXIMIZED") != null) c.gtk_window_maximize(cast(c.GtkWindow, window));
+    if (c.g_getenv("DESKTOP_FIXTURE_CLICKS") != null) {
+        c.gtk_widget_add_events(window, c.GDK_BUTTON_PRESS_MASK);
+        _ = c.g_signal_connect_data(window, "button-press-event", @ptrCast(&clicked), null, null, 0);
+    }
     const timer = if (c.g_getenv("DESKTOP_FIXTURE_ANIMATE") != null) c.g_timeout_add(100, &animate, label) else 0;
     defer if (timer != 0) {
         _ = c.g_source_remove(timer);

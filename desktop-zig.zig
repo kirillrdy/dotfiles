@@ -48,11 +48,11 @@ const Session = struct {
         const config = try alloc.dupeSentinel(u8, if (args.len == 5) args[1] else "/etc/xdg/desktop-panel/config.json", 0);
         const panel_style = try alloc.dupeSentinel(u8, if (args.len == 5) args[2] else "/etc/xdg/desktop-panel/style.css", 0);
         const notice_style = try alloc.dupeSentinel(u8, if (args.len == 5) args[3] else "/etc/xdg/desktop-notifications/style.css", 0);
-        const osd_style = try alloc.dupeSentinel(u8, if (args.len == 5) args[4] else "/etc/xdg/desktop-osd/style.css", 0);
+        const osd_config = try alloc.dupeSentinel(u8, if (args.len == 5) args[4] else "/etc/xdg/desktop-osd/config.json", 0);
         self.background = try wallpaper.Service.create(self.image.?);
         self.panels = try panel.Service.create(config, panel_style);
         self.notices = try notifications.Service.create(notice_style);
-        try self.media.start(osd_style);
+        try self.media.start(osd_config);
         self.media.connection = c.g_application_get_dbus_connection(@ptrCast(self.app));
         self.agent = polkit.Service.init() catch |err| blk: {
             std.log.warn("PolicyKit agent: {s}; will retry", .{@errorName(err)});
@@ -178,7 +178,7 @@ pub fn main(init: std.process.Init) !void {
         return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | askpass|power|screenshot [ARGS...]\n", .{});
+        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_CONFIG]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;
         return;
     }

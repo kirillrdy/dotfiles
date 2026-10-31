@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import select
 import shutil
 import struct
 import subprocess as sp
@@ -21,14 +22,14 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True, type=Path)
-parser.add_argument("--style", required=True, type=Path)
+parser.add_argument("--config", required=True, type=Path)
 parser.add_argument("--loader-cache", type=Path)
 parser.add_argument("--dbus-config", type=Path)
 args = parser.parse_args()
 for tool in ("desktop-zig", "grim", "wlr-randr", "wtype", "dbus-send"):
     if shutil.which(tool) is None:
         parser.error(f"Missing executable: {tool}")
-root = Path(tempfile.mkdtemp(prefix="desktop-osd-check-"))
+root = Path(tempfile.mkdtemp(prefix="desktop-osd-check-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
 (root / "runtime").mkdir(mode=0o700)
 (root / "config/labwc").mkdir(parents=True)
@@ -121,6 +122,13 @@ def log():
     return (root / "osd.log").read_text()
 
 
+def pointer_command(command):
+    pointer.stdin.write(command + "\n")
+    pointer.stdin.flush()
+    assert select.select([pointer.stdout], [], [], 3)[0], "pointer timed out"
+    assert pointer.stdout.readline() == "ok\n"
+
+
 try:
     audio.start()
     audio.command("set-volume", "@DEFAULT_AUDIO_SINK@", "0.5")
@@ -153,6 +161,18 @@ try:
     # A missing daemon must fail without touching any hardware backend.
     assert run([str(args.binary), "volume", "up"], check=False).returncode != 0
     assert not (root / "calls.log").exists()
+    bad_config = root / "invalid-osd.json"
+    bad_config.write_text('{"width": 0}')
+    assert run([str(args.binary), "serve", str(bad_config)], check=False).returncode != 0
+    with (root / "pointer.log").open("w") as output:
+        pointer = sp.Popen([str(args.binary.parent / "desktop-pointer-fixture")], env=env,
+                           stdin=sp.PIPE, stdout=sp.PIPE, stderr=output, text=True)
+    processes.append(pointer)
+    assert select.select([pointer.stdout], [], [], 3)[0], "pointer startup timed out"
+    assert pointer.stdout.readline() == "ready\n"
+    # The fixture normalizes pointer coordinates to 1728x1080; the real layout
+    # includes the second output, so account for its extra width.
+    pointer_command(f"move {864 * 1728 // 3008} 991")
     start(["wtype", "-s", "55000"], "keyboard.log")
     start(
         [
@@ -161,13 +181,14 @@ try:
             "OSD focus fixture",
         ],
         "focus.log",
+        {"DESKTOP_FIXTURE_MAXIMIZED": "1", "DESKTOP_FIXTURE_CLICKS": "1"},
     )
     wait_for(lambda: "OSD focus fixture" in (root / "focus.log").read_text())
     time.sleep(0.2)
     server = start(
-        [str(args.binary), "serve", str(args.style)],
+        [str(args.binary), "serve", str(args.config)],
         "osd.log",
-        {"G_DEBUG": "fatal-criticals", "WAYLAND_DEBUG": "1"},
+        {"G_DEBUG": "fatal-criticals", "WAYLAND_DEBUG": "1", "GDK_BACKEND": "invalid-native-osd-test"},
     )
 
     def registered():
@@ -196,9 +217,20 @@ try:
     assert log().count('"desktop-osd")') == 2
     assert "set_exclusive_zone(-1)" in log()
     assert "set_keyboard_interactivity(0)" in log()
+    assert "set_input_region(wl_region" in log()
+    assert "set_margin(0, 0, 64, 0)" in log(), "incorrect output-relative placement"
+    assert "create_buffer" in log() and re.search(r"create_buffer\(.*240, 50, 960, 0\)", log()), "OSD buffer must have alpha"
     assert not re.search(r"wl_keyboard#\d+\.enter\(", log()), "OSD stole keyboard focus"
+    # Refresh pointer focus after the application maps and the OSD appears.
+    pointer_command(f"move {864 * 1728 // 3008} 991")
+    pointer_command("button 1")
+    pointer_command("button 0")
+    wait_for(lambda: "clicked" in (root / "focus.log").read_text())
+    commits = log().count(".attach(")
+    time.sleep(0.1)
+    assert log().count(".attach(") == commits, "OSD repaints while idle"
     print(
-        "PASS unmute, volume step, two passive overlays and icon rendering", flush=True
+        "PASS unmute, volume step, two native overlays, alpha, placement, idle rendering and click-through", flush=True
     )
     # Each command is accepted through the one daemon even when keys repeat rapidly.
     clients = [
@@ -264,13 +296,14 @@ try:
     send("brightness", "down")
     wait_for(lambda: state()["brightness"] == 90)
     print("PASS native audio timeout, disconnect and queue recovery", flush=True)
+    before_scale = len(log())
     run(
         [
             "wlr-randr",
             "--output",
             "HEADLESS-1",
             "--custom-mode",
-            "2808x1755",
+            "2808x1950",
             "--scale",
             "1.625",
         ]
@@ -284,6 +317,8 @@ try:
     time.sleep(0.2)
     pixels("fractional-scale")
     pixels("reenabled-output", "HEADLESS-2")
+    assert "set_buffer_scale(2)" in log()
+    assert "set_margin(0, 0, 72, 0)" in log()[before_scale:], "incorrect margin for 1200 logical pixels at fractional scale"
     assert server.poll() is None
     assert not re.search(r"CRITICAL|panic:|assertion", log()), log()[-3000:]
     # GTK/font diagnostics share this log; only timestamped records are focus events.

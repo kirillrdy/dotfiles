@@ -12,7 +12,7 @@ let
   notificationStyle =
     pkgs.writeText "desktop-notifications-style.css"
       etc."xdg/desktop-notifications/style.css".text;
-  osdStyle = pkgs.writeText "desktop-osd-style.css" etc."xdg/desktop-osd/style.css".text;
+  osdConfig = pkgs.writeText "desktop-osd-config.json" etc."xdg/desktop-osd/config.json".text;
 in
 pkgs.runCommand "desktop-shell-check"
   {
@@ -31,6 +31,6 @@ pkgs.runCommand "desktop-shell-check"
       --binary ${desktop}/bin/desktop-zig \
       --compositor ${desktop}/bin/desktop-zig \
       --panel-config ${panelConfig} --panel-style ${panelStyle} \
-      --notification-style ${notificationStyle} --osd-style ${osdStyle}
+      --notification-style ${notificationStyle} --osd-config ${osdConfig}
     touch "$out"
   ''

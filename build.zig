@@ -78,6 +78,8 @@ pub fn build(b: *std.Build) void {
     const decoration_fixture = b.addExecutable(.{ .name = "desktop-decoration-fixture", .root_module = decoration_module });
     b.step("compositor-fixture", "Build compositor protocol test clients").dependOn(&b.addInstallArtifact(decoration_fixture, .{}).step);
     const protocol_names = [_][]const u8{
+        "zxdg_output_manager_v1_interface",
+        "zxdg_output_v1_interface",
         "zwlr_layer_shell_v1_interface",
         "zwlr_layer_surface_v1_interface",
         "zwlr_output_manager_v1_interface",
@@ -112,6 +114,7 @@ pub fn build(b: *std.Build) void {
     var reference_flags: [protocol_names.len][]const u8 = undefined;
     for (protocol_names, &reference_flags) |name, *flag| flag.* = b.fmt("-D{s}=reference_{s}", .{ name, name });
     const protocol_files = [_]std.Build.LazyPath{
+        .{ .cwd_relative = b.fmt("{s}/unstable/xdg-output/xdg-output-unstable-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-layer-shell-unstable-v1.xml", .{wlr_protocols}) },
         .{ .cwd_relative = b.fmt("{s}/stable/xdg-shell/xdg-shell.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-screencopy-unstable-v1.xml", .{wlr_protocols}) },

@@ -58,6 +58,7 @@ const Completion = struct {
     }
 };
 pub fn main(init: std.process.Init) !void {
+    @import("desktop").util.io = init.io;
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
@@ -116,11 +117,10 @@ fn runOsd(init: std.process.Init, backend: backlight.Backend) !void {
     const args = try init.minimal.args.toSlice(arena.allocator());
     const serve = args.len == 3 and std.mem.eql(u8, args[1], "serve");
     if (!serve and osd.parseCommand(args[1..]) == null) {
-        std.debug.print("Usage: desktop-osd serve STYLE.css | volume up|down|mute | microphone mute | brightness up|down\n", .{});
+        std.debug.print("Usage: desktop-osd serve CONFIG.json | volume up|down|mute | microphone mute | brightness up|down\n", .{});
         return error.InvalidArguments;
     }
-    _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
-    const app = c.gtk_application_new("org.dotfiles.DesktopOsd", c.G_APPLICATION_HANDLES_COMMAND_LINE);
+    const app = c.g_application_new("org.dotfiles.DesktopOsd", c.G_APPLICATION_HANDLES_COMMAND_LINE);
     defer c.g_object_unref(app);
     var server = osd.Server{ .backlight_backend = backend };
     defer server.deinit();

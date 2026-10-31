@@ -53,6 +53,9 @@ pub const Options = struct {
     height: u32 = 0,
     anchors: u32 = 15,
     exclusive_zone: i32 = -1,
+    format: enum { xrgb, argb } = .xrgb,
+    initially_visible: bool = true,
+    bottom_margin_percent: u8 = 0,
 };
 
 const Buffer = struct {
@@ -72,7 +75,8 @@ const Buffer = struct {
         errdefer _ = libc.munmap(memory, layout.size);
         const pool = c.wl_shm_create_pool(output.client.shm, fd, @intCast(layout.size)) orelse return error.SharedMemoryFailed;
         defer c.wl_shm_pool_destroy(pool);
-        const proxy = c.wl_shm_pool_create_buffer(pool, 0, layout.width, layout.height, layout.stride, c.WL_SHM_FORMAT_XRGB8888) orelse return error.SharedMemoryFailed;
+        const format: u32 = if (output.client.options.format == .argb) c.WL_SHM_FORMAT_ARGB8888 else c.WL_SHM_FORMAT_XRGB8888;
+        const proxy = c.wl_shm_pool_create_buffer(pool, 0, layout.width, layout.height, layout.stride, format) orelse return error.SharedMemoryFailed;
         errdefer c.wl_buffer_destroy(proxy);
         const self = try a.create(Buffer);
         errdefer a.destroy(self);
@@ -102,6 +106,7 @@ const Output = struct {
     client: *Client,
     name: u32,
     proxy: *c.wl_output,
+    info: ?*Proxy = null,
     surface: ?*Proxy = null,
     layer: ?*Proxy = null,
     width: u32 = 0,
@@ -110,10 +115,16 @@ const Output = struct {
     pending_scale: i32 = 1,
     dirty: bool = false,
     closed: bool = false,
+    physical_width: i32 = 0,
+    physical_height: i32 = 0,
+    transform: i32 = 0,
+    logical_height: i32 = 0,
+    pending_logical_height: i32 = 0,
+    margin: i32 = -1,
     buffers: [2]?*Buffer = .{ null, null },
 
     fn open(self: *Output) !void {
-        if (self.surface != null or self.closed) return;
+        if (self.surface != null or self.closed or !self.client.visible) return;
         const client = self.client;
         self.surface = request(client.compositor.?, 0, &wl_surface_interface, 0, &.{.{ .o = null }}) orelse return error.SurfaceUnavailable;
         try listen(self.surface.?, &surface_listener, self);
@@ -126,6 +137,7 @@ const Output = struct {
         _ = request(self.layer.?, 1, null, 0, &.{.{ .u = client.options.anchors }});
         _ = request(self.layer.?, 2, null, 0, &.{.{ .i = client.options.exclusive_zone }});
         _ = request(self.layer.?, 4, null, 0, &.{.{ .u = 0 }});
+        self.updateMargin(false);
         // Initial commit must have no buffer; wait for and acknowledge configure.
         _ = request(self.surface.?, 6, null, 0, &.{});
     }
@@ -178,41 +190,89 @@ const Output = struct {
             self.client.failure = err;
         };
     }
-    fn close(self: *Output) void {
-        self.closed = true;
+    fn unmap(self: *Output) void {
         if (self.layer) |proxy| _ = request(proxy, 7, null, 1, &.{});
         if (self.surface) |proxy| _ = request(proxy, 0, null, 1, &.{});
         self.layer = null;
         self.surface = null;
+        self.width = 0;
+        self.height = 0;
+        self.margin = -1;
+        self.dirty = false;
         for (&self.buffers) |*item| {
             if (item.*) |buffer| buffer.destroy();
             item.* = null;
         }
     }
     fn closedEvent(data: ?*anyopaque, _: ?*Proxy) callconv(.c) void {
-        cast(Output, data).close();
+        const self = cast(Output, data);
+        self.closed = true;
+        self.unmap();
     }
     fn destroy(self: *Output) void {
-        self.close();
+        self.unmap();
+        if (self.info) |info| _ = request(info, 0, null, 1, &.{});
         releaseOutput(self.proxy);
         a.destroy(self);
     }
-    fn geometry(_: ?*anyopaque, _: ?*c.wl_output, _: i32, _: i32, _: i32, _: i32, _: i32, _: [*c]const u8, _: [*c]const u8, _: i32) callconv(.c) void {}
+    fn geometry(data: ?*anyopaque, _: ?*c.wl_output, _: i32, _: i32, _: i32, _: i32, _: i32, _: [*c]const u8, _: [*c]const u8, transform: i32) callconv(.c) void {
+        cast(Output, data).transform = transform;
+    }
     fn entered(_: ?*anyopaque, _: ?*Proxy, _: ?*c.wl_output) callconv(.c) void {}
-    fn mode(_: ?*anyopaque, _: ?*c.wl_output, _: u32, _: i32, _: i32, _: i32) callconv(.c) void {}
+    fn mode(data: ?*anyopaque, _: ?*c.wl_output, flags: u32, width: i32, height: i32, _: i32) callconv(.c) void {
+        if (flags & c.WL_OUTPUT_MODE_CURRENT == 0) return;
+        const self = cast(Output, data);
+        self.physical_width = width;
+        self.physical_height = height;
+    }
     fn scaleEvent(data: ?*anyopaque, _: ?*c.wl_output, scale: i32) callconv(.c) void {
         cast(Output, data).pending_scale = @max(1, scale);
     }
     fn done(data: ?*anyopaque, _: ?*c.wl_output) callconv(.c) void {
         const self = cast(Output, data);
-        if (self.scale == self.pending_scale) return;
-        self.scale = self.pending_scale;
-        self.dirty = true;
+        if (self.info == null) {
+            self.logical_height = @divTrunc(if (self.transform & 1 != 0) self.physical_width else self.physical_height, self.pending_scale);
+            self.updateMargin(true);
+        }
+        if (self.scale != self.pending_scale) {
+            self.scale = self.pending_scale;
+            self.dirty = self.surface != null;
+        }
         self.render() catch |err| {
             self.client.failure = err;
         };
     }
+    fn updateMargin(self: *Output, commit: bool) void {
+        const layer = self.layer orelse return;
+        const margin: i32 = @intCast(@divTrunc(@as(i64, @max(0, self.logical_height)) * self.client.options.bottom_margin_percent, 100));
+        if (self.margin == margin) return;
+        self.margin = margin;
+        _ = request(layer, 3, null, 0, &.{ .{ .i = 0 }, .{ .i = 0 }, .{ .i = margin }, .{ .i = 0 } });
+        if (commit) _ = request(self.surface.?, 6, null, 0, &.{});
+    }
+    fn attachInfo(self: *Output) !void {
+        if (self.info != null or self.client.output_manager == null) return;
+        self.info = request(self.client.output_manager.?, 1, &p.zxdg_output_v1_interface, 0, &.{ .{ .o = null }, .{ .o = @ptrCast(self.proxy) } }) orelse return error.OutputUnavailable;
+        try listen(self.info.?, &info_listener, self);
+    }
+    fn logicalPosition(_: ?*anyopaque, _: ?*Proxy, _: i32, _: i32) callconv(.c) void {}
+    fn logicalSize(data: ?*anyopaque, _: ?*Proxy, _: i32, height: i32) callconv(.c) void {
+        cast(Output, data).pending_logical_height = height;
+    }
+    fn infoDone(data: ?*anyopaque, _: ?*Proxy) callconv(.c) void {
+        const self = cast(Output, data);
+        self.logical_height = self.pending_logical_height;
+        self.updateMargin(true);
+    }
+    fn infoText(_: ?*anyopaque, _: ?*Proxy, _: [*:0]const u8) callconv(.c) void {}
 };
+const info_listener = extern struct {
+    logical_position: *const @TypeOf(Output.logicalPosition) = Output.logicalPosition,
+    logical_size: *const @TypeOf(Output.logicalSize) = Output.logicalSize,
+    done: *const @TypeOf(Output.infoDone) = Output.infoDone,
+    name: *const @TypeOf(Output.infoText) = Output.infoText,
+    description: *const @TypeOf(Output.infoText) = Output.infoText,
+}{};
 const layer_listener = extern struct {
     configure: *const @TypeOf(Output.configure) = Output.configure,
     closed: *const @TypeOf(Output.closedEvent) = Output.closedEvent,
@@ -235,12 +295,14 @@ pub const Client = struct {
     compositor: ?*Proxy = null,
     shell: ?*Proxy = null,
     shm: ?*c.wl_shm = null,
+    output_manager: ?*Proxy = null,
     outputs: std.ArrayList(*Output) = .empty,
     options: Options,
     context: ?*anyopaque,
     paint: *const fn (?*anyopaque, Frame) anyerror!void,
     failure: ?anyerror = null,
     ready: bool = false,
+    visible: bool,
 
     pub fn create(options: Options, context: ?*anyopaque, paint: *const fn (?*anyopaque, Frame) anyerror!void) !*Client {
         const display = c.wl_display_connect(null) orelse return error.WaylandUnavailable;
@@ -250,7 +312,7 @@ pub const Client = struct {
             c.wl_registry_destroy(registry);
             return err;
         };
-        self.* = .{ .display = display, .registry = registry, .options = options, .context = context, .paint = paint };
+        self.* = .{ .display = display, .registry = registry, .options = options, .context = context, .paint = paint, .visible = options.initially_visible };
         errdefer {
             self.deinit();
             a.destroy(self);
@@ -267,6 +329,7 @@ pub const Client = struct {
     fn deinit(self: *Client) void {
         for (self.outputs.items) |output| output.destroy();
         self.outputs.deinit(a);
+        if (self.output_manager) |manager| _ = request(manager, 0, null, 1, &.{});
         if (self.shell) |shell| c.wl_proxy_destroy(shell); // Bound at v1.
         if (self.shm) |shm| c.wl_shm_destroy(shm);
         if (self.compositor) |compositor| c.wl_proxy_destroy(compositor);
@@ -280,6 +343,19 @@ pub const Client = struct {
     pub fn dispatch(self: *Client) !void {
         if (c.wl_display_dispatch(self.display) < 0) return error.WaylandDisconnected;
         if (self.failure) |err| return err;
+    }
+    pub fn setVisible(self: *Client, visible: bool) !void {
+        self.visible = visible;
+        for (self.outputs.items) |output| {
+            if (visible) try output.open() else output.unmap();
+        }
+    }
+    pub fn invalidate(self: *Client) !void {
+        if (self.failure) |err| return err;
+        for (self.outputs.items) |output| {
+            output.dirty = output.surface != null;
+            try output.render();
+        }
     }
     // False means the caller must watch for writability before retrying.
     pub fn flush(self: *Client) !bool {
@@ -300,6 +376,9 @@ pub const Client = struct {
             self.shm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1) orelse return error.SharedMemoryFailed);
         } else if (std.mem.eql(u8, interface, "zwlr_layer_shell_v1") and self.shell == null) {
             self.shell = @ptrCast(c.wl_registry_bind(registry, name, &p.zwlr_layer_shell_v1_interface, 1) orelse return error.LayerShellUnavailable);
+        } else if (std.mem.eql(u8, interface, "zxdg_output_manager_v1") and self.options.bottom_margin_percent != 0 and self.output_manager == null) {
+            self.output_manager = @ptrCast(c.wl_registry_bind(registry, name, &p.zxdg_output_manager_v1_interface, @min(version, 2)) orelse return error.OutputUnavailable);
+            for (self.outputs.items) |output| try output.attachInfo();
         } else if (std.mem.eql(u8, interface, "wl_output") and version >= 2) {
             const proxy: *c.wl_output = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_output_interface, @min(version, 3)) orelse return error.OutputUnavailable);
             const output = a.create(Output) catch |err| {
@@ -309,6 +388,7 @@ pub const Client = struct {
             output.* = .{ .client = self, .name = name, .proxy = proxy };
             errdefer output.destroy();
             try listen(proxy, &output_listener, output);
+            try output.attachInfo();
             if (self.ready) try output.open();
             try self.outputs.append(a, output);
         }
