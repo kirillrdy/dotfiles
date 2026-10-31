@@ -45,6 +45,7 @@ pkgs.stdenv.mkDerivation {
       || file.hasExt "xml"
       || file.name == "check-desktop-compositor.py"
       || file.name == "check-desktop-wallpaper.py"
+      || file.name == "check-desktop-screenshot.py"
     ) ./.;
   };
   nativeBuildInputs = [
@@ -53,6 +54,8 @@ pkgs.stdenv.mkDerivation {
     pkgs.wtype
     pkgs.grim
     pkgs.wlr-randr
+    pkgs.wl-clipboard
+    pkgs.dbus
     pkgs.wayland-scanner
     pkgs.python3
     pkgs.removeReferencesTo
@@ -114,6 +117,7 @@ pkgs.stdenv.mkDerivation {
     NIX_LDFLAGS= G_DEBUG=fatal-criticals zig build test compositor-fixture wallpaper-fixture --prefix "$out" --release=safe --summary all
     python3 tests/check-desktop-compositor.py --bin-dir "$out/bin" --wtype "$(command -v wtype)"
     python3 tests/check-desktop-wallpaper.py --bin-dir "$out/bin" --grim "$(command -v grim)" --wlr-randr "$(command -v wlr-randr)"
+    PATH="$out/bin:$PATH" dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- python3 tests/check-desktop-screenshot.py --bin-dir "$out/bin"
     kill "$compositor_pid"
     wait "$compositor_pid" || true
     trap - EXIT

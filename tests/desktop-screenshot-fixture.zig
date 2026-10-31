@@ -51,6 +51,9 @@ fn testOptionsParsing() !void {
     const region = screenshot.Options.parse(&.{ "screenshot", "-g", "0,0 32x32" });
     try std.testing.expect(region.save_default);
     try std.testing.expect(!region.interactive);
+    const stdout = screenshot.Options.parse(&.{ "screenshot", "-g", "0,0 32x32", "-" });
+    try std.testing.expectEqualStrings("-", stdout.file_path.?);
+    try std.testing.expect(!stdout.save_default);
 
     const args3 = [_][]const u8{ "slurp", "-f", "%o", "-or" };
     const opt3 = screenshot.Options.parse(&args3);
@@ -64,38 +67,69 @@ fn testOptionsParsing() !void {
     try std.testing.expectEqual(@as(i32, 1920), opt4.geometry.?.w);
 }
 
-fn testPngEncoding(allocator: std.mem.Allocator) !void {
-    const width: c_int = 64;
-    const height: c_int = 64;
-    const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, width, height);
-    defer c.cairo_surface_destroy(surface);
-
-    const cr = c.cairo_create(surface);
-    defer c.cairo_destroy(cr);
-
-    c.cairo_set_source_rgb(cr, 0.2, 0.5, 0.9);
-    c.cairo_paint(cr);
-
-    var png = screenshot.PngBuffer.init(allocator);
-    defer png.deinit();
-
-    const status = c.cairo_surface_write_to_png_stream(surface, &screenshot.PngBuffer.writeCallback, &png);
-    try std.testing.expect(status == c.CAIRO_STATUS_SUCCESS);
-    try std.testing.expect(png.bytes.items.len > 8);
-
-    // Verify PNG header signature: 0x89 'P' 'N' 'G' 0x0D 0x0A 0x1A 0x0A
-    const png_magic = "\x89PNG\r\n\x1a\n";
-    try std.testing.expectEqualStrings(png_magic, png.bytes.items[0..8]);
+fn testPngEncoding(allocator: std.mem.Allocator, io: std.Io) !void {
+    // Decode with GdkPixbuf/libpng, independently of the Zig encoder.
+    var template = "/tmp/desktop-png-XXXXXX".*;
+    const fd = c.g_mkstemp(&template);
+    try std.testing.expect(fd >= 0);
+    _ = @import("desktop").libc.close(fd);
+    defer _ = @import("desktop").libc.unlink(&template);
+    for ([_]bool{ false, true }) |alpha| {
+        for ([_]bool{ false, true }) |invert| {
+            const pixels = [_]u32{ 0x00804020, 0x80004000, 0xdeadbeef, 0xff123456, 0x000000ff, 0xdeadbeef };
+            const bytes = try screenshot.png.encode(allocator, .{
+                .pixels = std.mem.sliceAsBytes(&pixels),
+                .width = 2,
+                .height = 2,
+                .stride = 12,
+                .alpha = alpha,
+                .y_invert = invert,
+            });
+            defer allocator.free(bytes);
+            try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = std.mem.span(@as([*:0]const u8, &template)), .data = bytes });
+            const decoded = c.gdk_pixbuf_new_from_file(&template, null) orelse return error.PngDecodeFailed;
+            defer c.g_object_unref(decoded);
+            try std.testing.expectEqual(@as(c_int, 2), c.gdk_pixbuf_get_width(decoded));
+            try std.testing.expectEqual(@as(c_int, 2), c.gdk_pixbuf_get_height(decoded));
+            const channels: usize = if (alpha) 4 else 3;
+            try std.testing.expectEqual(@as(c_int, @intCast(channels)), c.gdk_pixbuf_get_n_channels(decoded));
+            const data = c.gdk_pixbuf_get_pixels(decoded);
+            const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(decoded));
+            const rgba = [_][4]u8{ .{ 0, 0, 0, 0 }, .{ 0, 128, 0, 128 }, .{ 18, 52, 86, 255 }, .{ 0, 0, 0, 0 } };
+            const rgb = [_][3]u8{ .{ 128, 64, 32 }, .{ 0, 64, 0 }, .{ 18, 52, 86 }, .{ 0, 0, 255 } };
+            for (0..2) |y| for (0..2) |x| {
+                const source_y = if (invert) 1 - y else y;
+                const expected: []const u8 = if (alpha) &rgba[source_y * 2 + x] else &rgb[source_y * 2 + x];
+                try std.testing.expectEqualSlices(u8, expected, data[y * stride + x * channels ..][0..channels]);
+            };
+        }
+    }
+    // Noisy pixels exercise multiple IDAT chunks and compressor window turns.
+    const pixels = try allocator.alloc(u32, 256 * 256);
+    defer allocator.free(pixels);
+    var random = std.Random.DefaultPrng.init(42);
+    random.random().bytes(std.mem.sliceAsBytes(pixels));
+    const bytes = try screenshot.png.encode(allocator, .{ .pixels = std.mem.sliceAsBytes(pixels), .width = 256, .height = 256, .stride = 1024 });
+    defer allocator.free(bytes);
+    try std.testing.expect(bytes.len > 65536);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = std.mem.span(@as([*:0]const u8, &template)), .data = bytes });
+    const decoded = c.gdk_pixbuf_new_from_file(&template, null) orelse return error.PngDecodeFailed;
+    defer c.g_object_unref(decoded);
+    const data = c.gdk_pixbuf_get_pixels(decoded);
+    const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(decoded));
+    for (pixels, 0..) |pixel, i| {
+        const expected = [_]u8{ @truncate(pixel >> 16), @truncate(pixel >> 8), @truncate(pixel) };
+        try std.testing.expectEqualSlices(u8, &expected, data[(i / 256) * stride + (i % 256) * 3 ..][0..3]);
+    }
 }
 
 pub fn main(init: std.process.Init) !void {
-    _ = init;
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
     try testGeometryParsing();
     try testOptionsParsing();
-    try testPngEncoding(arena.allocator());
+    try testPngEncoding(arena.allocator(), init.io);
 
-    std.debug.print("desktop-screenshot: geometry parsing, CLI options, Cairo surface creation and PNG stream encoding passed\n", .{});
+    std.debug.print("desktop-screenshot: geometry, CLI, native PNG, RGB/ARGB, alpha, row padding, inversion and multiple chunks passed\n", .{});
 }

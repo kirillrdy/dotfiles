@@ -3,6 +3,7 @@ const std = @import("std");
 pub const protocols = @import("desktop-protocols.zig");
 const libc = @import("desktop-libc.zig");
 pub const c = @import("desktop-gtk.zig");
+pub const png = @import("desktop-png.zig");
 
 const cast = c.__zig.cast;
 
@@ -79,6 +80,8 @@ pub const Options = struct {
                 opt.clipboard = true;
             } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--interactive") or std.mem.eql(u8, arg, "--select")) {
                 opt.interactive = true;
+            } else if (std.mem.eql(u8, arg, "-")) {
+                opt.file_path = arg;
             } else if (std.mem.startsWith(u8, arg, "-")) {
                 // Ignore other flags like -p, -or
                 continue;
@@ -97,32 +100,24 @@ pub const Options = struct {
     }
 };
 
-pub const PngBuffer = struct {
-    allocator: std.mem.Allocator,
-    bytes: std.ArrayList(u8) = .empty,
-
-    pub fn init(allocator: std.mem.Allocator) PngBuffer {
-        return .{
-            .allocator = allocator,
-            .bytes = .empty,
-        };
+fn writeAll(fd: c_int, bytes: []const u8) !void {
+    var remaining = bytes;
+    while (remaining.len > 0) {
+        const count = libc.write(fd, remaining.ptr, remaining.len);
+        if (count < 0) {
+            if (libc.__errno_location().* == @backingInt(std.c.E.INTR)) continue;
+            return error.WriteFailed;
+        }
+        if (count == 0) return error.WriteFailed;
+        remaining = remaining[@intCast(count)..];
     }
+}
 
-    pub fn deinit(self: *PngBuffer) void {
-        self.bytes.deinit(self.allocator);
-    }
-
-    pub fn writeCallback(closure: ?*anyopaque, data: [*c]const u8, length: c_uint) callconv(.c) c.cairo_status_t {
-        const self: *PngBuffer = @ptrCast(@alignCast(closure));
-        self.bytes.appendSlice(self.allocator, data[0..length]) catch return c.CAIRO_STATUS_WRITE_ERROR;
-        return c.CAIRO_STATUS_SUCCESS;
-    }
-};
-
-fn writeStdout(_: ?*anyopaque, data: [*c]const u8, length: c_uint) callconv(.c) c.cairo_status_t {
-    const written = libc.write(libc.STDOUT_FILENO, data, length);
-    if (written < 0 or @as(c_uint, @intCast(written)) != length) return c.CAIRO_STATUS_WRITE_ERROR;
-    return c.CAIRO_STATUS_SUCCESS;
+fn writePngFile(path: [*:0]const u8, bytes: []const u8) !void {
+    const fd = libc.open(path, libc.O_WRONLY | libc.O_CREAT | libc.O_TRUNC | libc.O_CLOEXEC, @as(c_uint, 0o666));
+    if (fd < 0) return error.WriteFailed;
+    defer _ = libc.close(fd);
+    try writeAll(fd, bytes);
 }
 
 pub const Output = struct {
@@ -585,22 +580,23 @@ pub fn captureAndWrite(options: Options, allocator: std.mem.Allocator) !void {
     }
     if (capture.failed or capture.memory == null) return error.CaptureFailed;
 
-    const surface = c.cairo_image_surface_create_for_data(
-        capture.memory,
-        c.CAIRO_FORMAT_ARGB32,
-        @intCast(capture.width),
-        @intCast(capture.height),
-        @intCast(capture.stride),
-    ) orelse return error.SurfaceFailed;
-    defer c.cairo_surface_destroy(surface);
+    const bytes = try png.encode(allocator, .{
+        .pixels = capture.memory.?[0..capture.length],
+        .width = capture.width,
+        .height = capture.height,
+        .stride = capture.stride,
+        .alpha = capture.format == c.WL_SHM_FORMAT_ARGB8888,
+        .y_invert = capture.y_invert,
+    });
+    defer allocator.free(bytes);
 
     if (options.file_path) |path| {
         if (std.mem.eql(u8, path, "-")) {
-            if (c.cairo_surface_write_to_png_stream(surface, &writeStdout, null) != c.CAIRO_STATUS_SUCCESS) return error.WriteFailed;
+            try writeAll(libc.STDOUT_FILENO, bytes);
         } else {
             const zpath = try allocator.dupeSentinel(u8, path, 0);
             defer allocator.free(zpath);
-            if (c.cairo_surface_write_to_png(surface, zpath.ptr) != c.CAIRO_STATUS_SUCCESS) return error.WriteFailed;
+            try writePngFile(zpath, bytes);
         }
     } else if (options.save_default) {
         const pictures = c.g_get_user_special_dir(c.G_USER_DIRECTORY_PICTURES);
@@ -616,15 +612,12 @@ pub fn captureAndWrite(options: Options, allocator: std.mem.Allocator) !void {
         defer c.g_free(timestamp);
         const path = try std.fmt.allocPrintSentinel(allocator, "{s}/Screenshot_{s}.png", .{ directory, std.mem.span(timestamp) }, 0);
         defer allocator.free(path);
-        if (c.cairo_surface_write_to_png(surface, path) != c.CAIRO_STATUS_SUCCESS) return error.WriteFailed;
+        try writePngFile(path, bytes);
         std.debug.print("Screenshot saved to {s}\n", .{path});
     }
 
     if (options.clipboard) {
-        var png = PngBuffer.init(allocator);
-        defer png.deinit();
-        if (c.cairo_surface_write_to_png_stream(surface, &PngBuffer.writeCallback, &png) != c.CAIRO_STATUS_SUCCESS) return error.PngEncodeFailed;
-        try copyToClipboard(&client, png.bytes.items);
+        try copyToClipboard(&client, bytes);
     }
 }
 
