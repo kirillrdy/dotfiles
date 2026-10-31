@@ -603,7 +603,15 @@ const Server = struct {
                 var link = config.heads.next;
                 while (link != &config.heads) : (link = link.*.next) {
                     const head: *c.wlr_output_configuration_head_v1 = @fieldParentPtr("link", @as(*c.wl_list, link));
-                    if (head.state.enabled) _ = c.wlr_output_layout_add(self.layout, head.state.output, head.state.x, head.state.y) else c.wlr_output_layout_remove(self.layout, head.state.output);
+                    if (head.state.enabled) {
+                        const attached = c.wlr_output_layout_get(self.layout, head.state.output) != null;
+                        const layout = c.wlr_output_layout_add(self.layout, head.state.output, head.state.x, head.state.y) orelse continue;
+                        // Removing a layout output also removes its scene-layout
+                        // association. Reconnect it when the output is enabled.
+                        if (!attached) for (self.outputs.items) |output| {
+                            if (output.wlr == head.state.output) c.wlr_scene_output_layout_add_output(self.scene_layout, layout, output.scene);
+                        };
+                    } else c.wlr_output_layout_remove(self.layout, head.state.output);
                 }
                 for (self.outputs.items) |output| output.arrange();
                 self.publishOutputs();

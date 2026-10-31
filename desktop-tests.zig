@@ -128,6 +128,7 @@ test {
     _ = @import("desktop-lock.zig");
     _ = @import("desktop-osd.zig");
     _ = @import("desktop-wallpaper.zig");
+    _ = @import("desktop-surface.zig");
     _ = @import("desktop-settings.zig");
     _ = @import("tests/desktop-http.zig");
     _ = @import("tests/desktop-lock-auth.zig");

@@ -78,6 +78,8 @@ pub fn build(b: *std.Build) void {
     const decoration_fixture = b.addExecutable(.{ .name = "desktop-decoration-fixture", .root_module = decoration_module });
     b.step("compositor-fixture", "Build compositor protocol test clients").dependOn(&b.addInstallArtifact(decoration_fixture, .{}).step);
     const protocol_names = [_][]const u8{
+        "zwlr_layer_shell_v1_interface",
+        "zwlr_layer_surface_v1_interface",
         "zwlr_output_manager_v1_interface",
         "zwlr_output_head_v1_interface",
         "zwlr_output_mode_v1_interface",
@@ -110,6 +112,8 @@ pub fn build(b: *std.Build) void {
     var reference_flags: [protocol_names.len][]const u8 = undefined;
     for (protocol_names, &reference_flags) |name, *flag| flag.* = b.fmt("-D{s}=reference_{s}", .{ name, name });
     const protocol_files = [_]std.Build.LazyPath{
+        .{ .cwd_relative = b.fmt("{s}/unstable/wlr-layer-shell-unstable-v1.xml", .{wlr_protocols}) },
+        .{ .cwd_relative = b.fmt("{s}/stable/xdg-shell/xdg-shell.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-screencopy-unstable-v1.xml", .{wlr_protocols}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-data-control-unstable-v1.xml", .{wlr_protocols}) },
         .{ .cwd_relative = b.fmt("{s}/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml", .{protocol_dir}) },
@@ -128,6 +132,7 @@ pub fn build(b: *std.Build) void {
 
     const Fixture = struct { name: []const u8, source: []const u8, step: []const u8, install: bool = false, run: bool = false, library: bool = false, test_runner: bool = false };
     const fixtures = [_]Fixture{
+        .{ .name = "desktop-wallpaper-fixture", .source = "tests/desktop-wallpaper-fixture.zig", .step = "wallpaper-fixture" },
         .{ .name = "desktop-compositor-fixture", .source = "tests/desktop-compositor-fixture.zig", .step = "compositor-fixture" },
         .{ .name = "pam_desktop_secrets", .source = "desktop-secrets-pam.zig", .step = "secrets-pam", .install = true, .library = true },
         .{ .name = "desktop-secrets-pam-fixture", .source = "tests/desktop-secrets-pam-fixture.zig", .step = "secrets-pam-fixture" },

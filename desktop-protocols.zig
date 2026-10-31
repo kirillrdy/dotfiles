@@ -5,6 +5,56 @@ const c = @import("desktop-gtk.zig");
 pub const Interface = c.struct_wl_interface;
 const Message = c.struct_wl_message;
 
+// Copyright © 2017 Drew DeVault
+//
+// Permission to use, copy, modify, distribute, and sell this
+// software and its documentation for any purpose is hereby granted
+// without fee, provided that the above copyright notice appear in
+// all copies and that both that copyright notice and this permission
+// notice appear in supporting documentation, and that the name of
+// the copyright holders not be used in advertising or publicity
+// pertaining to distribution of the software without specific,
+// written prior permission.  The copyright holders make no
+// representations about the suitability of this software for any
+// purpose.  It is provided "as is" without express or implied
+// warranty.
+//
+// THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
+// SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+// FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+// AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+// ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+// THIS SOFTWARE.
+// Layer-shell v4. Popup creation is not exposed by our surface API; only its
+// interface identity is needed by the get_popup request's type table.
+const layer_popup_type = Interface{ .name = "xdg_popup", .version = 7, .method_count = 0, .methods = null, .event_count = 0, .events = null };
+const layer_shell_types = [_][*c]const Interface{ &zwlr_layer_surface_v1_interface, &wl_surface_interface, &wl_output_interface, null, null };
+const layer_scalar_types = [_][*c]const Interface{ null, null, null, null };
+const layer_popup_types = [_][*c]const Interface{&layer_popup_type};
+const layer_shell_requests = [_]Message{
+    .{ .name = "get_layer_surface", .signature = "no?ous", .types = @constCast(&layer_shell_types) },
+    .{ .name = "destroy", .signature = "3", .types = @constCast(&layer_scalar_types) },
+};
+const layer_surface_requests = [_]Message{
+    .{ .name = "set_size", .signature = "uu", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "set_anchor", .signature = "u", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "set_exclusive_zone", .signature = "i", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "set_margin", .signature = "iiii", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "set_keyboard_interactivity", .signature = "u", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "get_popup", .signature = "o", .types = @constCast(&layer_popup_types) },
+    .{ .name = "ack_configure", .signature = "u", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "destroy", .signature = "", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "set_layer", .signature = "2u", .types = @constCast(&layer_scalar_types) },
+};
+const layer_surface_events = [_]Message{
+    .{ .name = "configure", .signature = "uuu", .types = @constCast(&layer_scalar_types) },
+    .{ .name = "closed", .signature = "", .types = @constCast(&layer_scalar_types) },
+};
+pub export const zwlr_layer_shell_v1_interface = Interface{ .name = "zwlr_layer_shell_v1", .version = 4, .method_count = layer_shell_requests.len, .methods = &layer_shell_requests, .event_count = 0, .events = null };
+pub export const zwlr_layer_surface_v1_interface = Interface{ .name = "zwlr_layer_surface_v1", .version = 4, .method_count = layer_surface_requests.len, .methods = &layer_surface_requests, .event_count = layer_surface_events.len, .events = &layer_surface_events };
+
 extern const wl_buffer_interface: Interface;
 extern const wl_output_interface: Interface;
 extern const wl_pointer_interface: Interface;

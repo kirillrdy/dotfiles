@@ -1,9 +1,9 @@
-//! One input-transparent background layer per monitor, sharing a decoded image.
+//! Native Wayland backgrounds sharing a decoded image; GTK owns no windows here.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const allocator = std.heap.page_allocator;
 
-const cast = c.__zig.cast;
+const surfaces = @import("desktop-surface.zig");
 
 fn paint(cr: *c.cairo_t, image: *c.GdkPixbuf, width: f64, height: f64) void {
     if (width <= 0 or height <= 0) return;
@@ -23,75 +23,6 @@ fn paint(cr: *c.cairo_t, image: *c.GdkPixbuf, width: f64, height: f64) void {
     c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
     c.cairo_paint(cr);
 }
-
-const Background = struct {
-    window: *c.GtkWidget,
-    monitor: *c.GdkMonitor,
-    image: *c.GdkPixbuf, // Owned by App; shared across outputs.
-
-    fn create(monitor: *c.GdkMonitor, image: *c.GdkPixbuf) *Background {
-        const self = allocator.create(Background) catch @panic("out of memory");
-        self.* = .{ .window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL).?, .monitor = monitor, .image = image };
-        _ = c.g_object_ref(monitor);
-        const window = cast(c.GtkWindow, self.window);
-        c.gtk_widget_set_name(self.window, "desktop-wallpaper");
-        c.gtk_window_set_title(window, "Desktop Wallpaper");
-        c.gtk_window_set_decorated(window, 0);
-        c.gtk_window_set_accept_focus(window, 0);
-        c.gtk_widget_set_app_paintable(self.window, 1);
-        c.gtk_layer_init_for_window(window);
-        c.gtk_layer_set_namespace(window, "desktop-wallpaper");
-        c.gtk_layer_set_monitor(window, monitor);
-        c.gtk_layer_set_layer(window, c.GTK_LAYER_SHELL_LAYER_BACKGROUND);
-        for ([_]c.GtkLayerShellEdge{ c.GTK_LAYER_SHELL_EDGE_TOP, c.GTK_LAYER_SHELL_EDGE_BOTTOM, c.GTK_LAYER_SHELL_EDGE_LEFT, c.GTK_LAYER_SHELL_EDGE_RIGHT }) |edge| c.gtk_layer_set_anchor(window, edge, 1);
-        // Cover the entire output, including the area behind the panel.
-        c.gtk_layer_set_exclusive_zone(window, -1);
-        c.gtk_layer_set_keyboard_mode(window, c.GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
-        _ = c.g_signal_connect_data(self.window, "draw", @ptrCast(&draw), self, null, 0);
-        _ = c.g_signal_connect_data(self.window, "realize", @ptrCast(&realized), null, null, 0);
-        c.gtk_widget_show(self.window);
-        return self;
-    }
-
-    fn realized(widget: *c.GtkWidget, _: c.gpointer) callconv(.c) void {
-        const empty = c.cairo_region_create();
-        defer c.cairo_region_destroy(empty);
-        c.gtk_widget_input_shape_combine_region(widget, empty);
-    }
-
-    fn draw(widget: *c.GtkWidget, cr: *c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Background, data);
-        // GTK supplies logical dimensions and a Cairo context with the output's
-        // buffer scale already applied, including after mode/scale changes.
-        paint(cr, self.image, @floatFromInt(c.gtk_widget_get_allocated_width(widget)), @floatFromInt(c.gtk_widget_get_allocated_height(widget)));
-        return 1;
-    }
-
-    fn destroy(self: *Background) void {
-        c.gtk_widget_destroy(self.window);
-        c.g_object_unref(self.monitor);
-        allocator.destroy(self);
-    }
-};
-
-const App = struct {
-    image: *c.GdkPixbuf,
-    backgrounds: std.ArrayList(*Background) = .empty,
-
-    fn add(_: *c.GdkDisplay, monitor: *c.GdkMonitor, data: c.gpointer) callconv(.c) void {
-        const self = cast(App, data);
-        self.backgrounds.append(allocator, Background.create(monitor, self.image)) catch @panic("out of memory");
-    }
-
-    fn remove(_: *c.GdkDisplay, monitor: *c.GdkMonitor, data: c.gpointer) callconv(.c) void {
-        const self = cast(App, data);
-        for (self.backgrounds.items, 0..) |background, i| if (background.monitor == monitor) {
-            _ = self.backgrounds.orderedRemove(i);
-            background.destroy();
-            return;
-        };
-    }
-};
 
 test "fill crops the center of wide and tall images at both buffer scales" {
     for ([_]bool{ false, true }) |vertical| {
@@ -118,16 +49,30 @@ test "fill crops the center of wide and tall images at both buffer scales" {
             const mid: usize = @intCast(2 * scale);
             try std.testing.expectEqual(@as(u32, 0xff00ff00), data[mid * row + mid]);
             // Opaque green at opposite corners also catches letterboxing and
-            // sampling past the source edge when GTK doubles the buffer scale.
+            // sampling past the source edge when the output doubles the buffer scale.
             try std.testing.expectEqual(@as(u32, 0xff00ff00), data[row + 1]);
         }
     }
 }
 
 pub const Service = struct {
-    app: App,
-    added: c.gulong,
-    removed: c.gulong,
+    image: *c.GdkPixbuf,
+    client: *surfaces.Client = undefined,
+    reader: c.guint = 0,
+    writer: c.guint = 0,
+
+    fn draw(context: ?*anyopaque, frame: surfaces.Frame) !void {
+        const self: *Service = @ptrCast(@alignCast(context));
+        const image = c.cairo_image_surface_create_for_data(frame.pixels, c.CAIRO_FORMAT_RGB24, frame.layout.width, frame.layout.height, frame.layout.stride) orelse return error.ImageSurfaceFailed;
+        defer c.cairo_surface_destroy(image);
+        if (c.cairo_surface_status(image) != c.CAIRO_STATUS_SUCCESS) return error.ImageSurfaceFailed;
+        c.cairo_surface_set_device_scale(image, @floatFromInt(frame.scale), @floatFromInt(frame.scale));
+        const cr = c.cairo_create(image) orelse return error.ImageSurfaceFailed;
+        defer c.cairo_destroy(cr);
+        paint(cr, self.image, @floatFromInt(frame.width), @floatFromInt(frame.height));
+        c.cairo_surface_flush(image);
+        if (c.cairo_status(cr) != c.CAIRO_STATUS_SUCCESS or c.cairo_surface_status(image) != c.CAIRO_STATUS_SUCCESS) return error.ImageSurfaceFailed;
+    }
 
     pub fn create(path: [:0]const u8) !*Service {
         const decoded = c.gdk_pixbuf_new_from_file(path, null) orelse return error.InvalidImage;
@@ -135,22 +80,66 @@ pub const Service = struct {
         const image = c.gdk_pixbuf_apply_embedded_orientation(decoded) orelse return error.InvalidImage;
         errdefer c.g_object_unref(image);
         const self = try allocator.create(Service);
-        self.* = .{ .app = .{ .image = image }, .added = 0, .removed = 0 };
-        const display = c.gdk_display_get_default().?;
-        self.added = c.g_signal_connect_data(display, "monitor-added", @ptrCast(&App.add), &self.app, null, 0);
-        self.removed = c.g_signal_connect_data(display, "monitor-removed", @ptrCast(&App.remove), &self.app, null, 0);
-        var i: c_int = 0;
-        while (i < c.gdk_display_get_n_monitors(display)) : (i += 1) App.add(display, c.gdk_display_get_monitor(display, i).?, &self.app);
+        errdefer allocator.destroy(self);
+        self.* = .{ .image = image };
+        self.client = try surfaces.Client.create(.{ .namespace = "desktop-wallpaper" }, self, draw);
+        errdefer self.client.destroy();
+        self.reader = c.g_unix_fd_add(c.wl_display_get_fd(self.client.display), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, readable, self);
+        if (self.reader == 0) return error.EventSourceFailed;
+        errdefer _ = c.g_source_remove(self.reader);
+        try self.flush();
         return self;
     }
 
+    fn flush(self: *Service) !void {
+        if (!try self.client.flush() and self.writer == 0) {
+            self.writer = c.g_unix_fd_add(c.wl_display_get_fd(self.client.display), c.G_IO_OUT | c.G_IO_ERR | c.G_IO_HUP, writable, self);
+            if (self.writer == 0) return error.EventSourceFailed;
+        }
+    }
+    fn failed(self: *Service, err: anyerror) void {
+        std.log.err("wallpaper: {s}", .{@errorName(err)});
+        if (self.reader != 0) _ = c.g_source_remove(self.reader);
+        if (self.writer != 0) _ = c.g_source_remove(self.writer);
+        self.reader = 0;
+        self.writer = 0;
+    }
+    fn readable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c.gboolean {
+        const self: *Service = @ptrCast(@alignCast(data));
+        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) {
+            self.failed(error.WaylandDisconnected);
+            return 0;
+        }
+        self.client.dispatch() catch |err| {
+            self.failed(err);
+            return 0;
+        };
+        self.flush() catch |err| {
+            self.failed(err);
+            return 0;
+        };
+        return 1;
+    }
+    fn writable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c.gboolean {
+        const self: *Service = @ptrCast(@alignCast(data));
+        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) {
+            self.failed(error.WaylandDisconnected);
+            return 0;
+        }
+        const flushed = self.client.flush() catch |err| {
+            self.failed(err);
+            return 0;
+        };
+        if (!flushed) return 1;
+        self.writer = 0;
+        return 0;
+    }
+
     pub fn destroy(self: *Service) void {
-        const display = c.gdk_display_get_default().?;
-        c.g_signal_handler_disconnect(display, self.added);
-        c.g_signal_handler_disconnect(display, self.removed);
-        for (self.app.backgrounds.items) |background| background.destroy();
-        self.app.backgrounds.deinit(allocator);
-        c.g_object_unref(self.app.image);
+        if (self.reader != 0) _ = c.g_source_remove(self.reader);
+        if (self.writer != 0) _ = c.g_source_remove(self.writer);
+        self.client.destroy();
+        c.g_object_unref(self.image);
         allocator.destroy(self);
     }
 };

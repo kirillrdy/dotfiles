@@ -44,12 +44,15 @@ pkgs.stdenv.mkDerivation {
       || file.hasExt "svg"
       || file.hasExt "xml"
       || file.name == "check-desktop-compositor.py"
+      || file.name == "check-desktop-wallpaper.py"
     ) ./.;
   };
   nativeBuildInputs = [
     pkgs.zig_0_17
     pkgs.pkg-config
     pkgs.wtype
+    pkgs.grim
+    pkgs.wlr-randr
     pkgs.wayland-scanner
     pkgs.python3
     pkgs.removeReferencesTo
@@ -108,8 +111,9 @@ pkgs.stdenv.mkDerivation {
     export GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
     export DESKTOP_PANEL_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
     export DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
-    NIX_LDFLAGS= G_DEBUG=fatal-criticals zig build test compositor-fixture --prefix "$out" --release=safe --summary all
+    NIX_LDFLAGS= G_DEBUG=fatal-criticals zig build test compositor-fixture wallpaper-fixture --prefix "$out" --release=safe --summary all
     python3 tests/check-desktop-compositor.py --bin-dir "$out/bin" --wtype "$(command -v wtype)"
+    python3 tests/check-desktop-wallpaper.py --bin-dir "$out/bin" --grim "$(command -v grim)" --wlr-randr "$(command -v wlr-randr)"
     kill "$compositor_pid"
     wait "$compositor_pid" || true
     trap - EXIT
@@ -122,7 +126,7 @@ pkgs.stdenv.mkDerivation {
     # Keep test programs outside the desktop output.
     mkdir -p "$tests/bin"
     for name in desktop-apps-fixture desktop-audio-fixture desktop-battery-fixture desktop-backlight-fixture desktop-lock-fixture desktop-idle-fixture waybar-power-fixture labwc-switcher-fixture \
-      desktop-pointer-fixture desktop-compositor-fixture desktop-decoration-fixture; do
+      desktop-pointer-fixture desktop-compositor-fixture desktop-decoration-fixture desktop-wallpaper-fixture; do
       mv "$out/bin/$name" "$tests/bin/$name"
     done
     ln -s "$out/bin/desktop-zig" "$tests/bin/desktop-zig"
