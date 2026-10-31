@@ -1,0 +1,462 @@
+//! Passive native Wayland layer surfaces with Cairo SHM rendering.
+//! Each client has a private connection, driven by GLib rather than GDK.
+const std = @import("std");
+const c = @import("desktop-gtk.zig");
+const libc = @import("desktop-libc.zig");
+const p = @import("desktop-protocols.zig");
+const a = std.heap.page_allocator;
+const Proxy = c.wl_proxy;
+const cast = c.__zig.cast;
+extern const wl_compositor_interface: c.wl_interface;
+extern const wl_surface_interface: c.wl_interface;
+extern const wl_region_interface: c.wl_interface;
+
+pub const top = 1;
+pub const bottom = 2;
+pub const left = 4;
+pub const right = 8;
+
+fn send(proxy: *Proxy, opcode: u32, args: anytype) void {
+    _ = @call(.auto, c.wl_proxy_marshal_flags, .{ proxy, opcode, @as([*c]const c.wl_interface, null), c.wl_proxy_get_version(proxy), @as(u32, 0) } ++ args);
+}
+fn destroyProxy(proxy: *Proxy, opcode: u32) void {
+    _ = c.wl_proxy_marshal_flags(proxy, opcode, null, c.wl_proxy_get_version(proxy), 1);
+}
+fn listen(proxy: anytype, listener: anytype, data: anytype) void {
+    if (c.wl_proxy_add_listener(@ptrCast(proxy), @ptrCast(@constCast(listener)), data) != 0) @panic("Wayland listener allocation");
+}
+fn erase(comptime T: type, list: *std.ArrayList(T), value: T) void {
+    for (list.items, 0..) |entry, i| if (entry == value) {
+        _ = list.orderedRemove(i);
+        return;
+    };
+}
+
+pub const Callbacks = struct {
+    added: *const fn (?*anyopaque, *Output) void,
+    removed: *const fn (?*anyopaque, *Output) void,
+    changed: ?*const fn (?*anyopaque, *Output) void = null,
+};
+
+pub const Client = struct {
+    display: *c.wl_display,
+    registry: *c.wl_registry,
+    compositor: ?*Proxy = null,
+    shm: ?*c.wl_shm = null,
+    shell: ?*Proxy = null,
+    output_manager: ?*Proxy = null,
+    outputs: std.ArrayList(*Output) = .empty,
+    surfaces: std.ArrayList(*Surface) = .empty,
+    buffers: std.ArrayList(*Buffer) = .empty,
+    callbacks: Callbacks,
+    data: ?*anyopaque,
+    source: c.guint = 0,
+    write_source: c.guint = 0,
+    running: bool = false,
+    failed: bool = false,
+
+    pub fn create(callbacks: Callbacks, data: ?*anyopaque) !*Client {
+        const self = try a.create(Client);
+        errdefer a.destroy(self);
+        const display = c.wl_display_connect(null) orelse return error.WaylandConnection;
+        const registry = c.wl_display_get_registry(display) orelse {
+            c.wl_display_disconnect(display);
+            return error.WaylandRegistry;
+        };
+        self.* = .{ .display = display, .registry = registry, .callbacks = callbacks, .data = data };
+        errdefer self.clear();
+        _ = c.wl_registry_add_listener(registry, &registry_listener, self);
+        if (c.wl_display_roundtrip(display) < 0) return error.WaylandDispatch;
+        if (self.compositor == null or self.shm == null or self.shell == null) return error.MissingWaylandGlobals;
+        if (c.wl_proxy_get_version(self.compositor.?) < 3) return error.UnsupportedCompositor;
+        // xdg-output can be advertised after wl_output. Bind it after discovery.
+        for (self.outputs.items) |output| output.bindLogical();
+        if (c.wl_display_roundtrip(display) < 0) return error.WaylandDispatch;
+        return self;
+    }
+    pub fn start(self: *Client) !void {
+        self.source = c.g_unix_fd_add(c.wl_display_get_fd(self.display), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
+        if (self.source == 0) return error.WaylandEventSource;
+        self.running = true;
+        for (self.outputs.items) |output| {
+            output.announced = true;
+            self.callbacks.added(self.data, output);
+        }
+        self.flush();
+    }
+    pub fn destroy(self: *Client) void {
+        self.clear();
+        a.destroy(self);
+    }
+    fn clear(self: *Client) void {
+        self.running = false;
+        self.failed = true;
+        if (self.source != 0) _ = c.g_source_remove(self.source);
+        if (self.write_source != 0) _ = c.g_source_remove(self.write_source);
+        while (self.surfaces.items.len > 0) self.surfaces.items[0].destroy();
+        while (self.buffers.items.len > 0) self.buffers.items[0].destroy();
+        for (self.outputs.items) |output| output.destroy();
+        self.outputs.deinit(a);
+        self.surfaces.deinit(a);
+        self.buffers.deinit(a);
+        if (self.output_manager) |proxy| destroyProxy(proxy, 0);
+        if (self.shell) |proxy| c.wl_proxy_destroy(proxy);
+        if (self.shm) |shm| c.wl_shm_destroy(shm);
+        if (self.compositor) |proxy| c.wl_proxy_destroy(proxy);
+        c.wl_registry_destroy(self.registry);
+        c.wl_display_disconnect(self.display);
+    }
+    fn fail(self: *Client) void {
+        if (!self.failed) std.log.err("native Wayland surface connection failed", .{});
+        self.failed = true;
+    }
+    pub fn flush(self: *Client) void {
+        if (self.failed) return;
+        if (c.wl_display_flush(self.display) >= 0) return;
+        if (libc.__errno_location().* != @backingInt(std.c.E.AGAIN)) {
+            self.fail();
+            return;
+        }
+        if (self.write_source == 0) self.write_source = c.g_unix_fd_add(c.wl_display_get_fd(self.display), c.G_IO_OUT | c.G_IO_ERR | c.G_IO_HUP, &writable, self);
+    }
+    fn writable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c.gboolean {
+        const self = cast(Client, data);
+        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) self.fail() else if (c.wl_display_flush(self.display) < 0) {
+            if (libc.__errno_location().* == @backingInt(std.c.E.AGAIN)) return 1;
+            self.fail();
+        }
+        self.write_source = 0;
+        return 0;
+    }
+    fn dispatch(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c.gboolean {
+        const self = cast(Client, data);
+        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0 or c.wl_display_dispatch(self.display) < 0) {
+            self.source = 0;
+            self.fail();
+            return 0;
+        }
+        self.flush();
+        return 1;
+    }
+    fn global(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*c]const u8, version: u32) callconv(.c) void {
+        const self = cast(Client, data);
+        const kind = std.mem.span(interface);
+        if (std.mem.eql(u8, kind, "wl_compositor")) {
+            self.compositor = @ptrCast(c.wl_registry_bind(registry, name, &wl_compositor_interface, @min(version, 4)));
+        } else if (std.mem.eql(u8, kind, "wl_shm")) {
+            self.shm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1));
+        } else if (std.mem.eql(u8, kind, "zwlr_layer_shell_v1")) {
+            self.shell = @ptrCast(c.wl_registry_bind(registry, name, &p.zwlr_layer_shell_v1_interface, @min(version, 4)));
+        } else if (std.mem.eql(u8, kind, "zxdg_output_manager_v1")) {
+            // Version 2 has an explicit done event, independent of wl_output.
+            self.output_manager = @ptrCast(c.wl_registry_bind(registry, name, &p.zxdg_output_manager_v1_interface, @min(version, 2)));
+        } else if (std.mem.eql(u8, kind, "wl_output")) {
+            if (version < 2) return; // Buffer scale requires wl_output version 2.
+            const output = a.create(Output) catch @panic("out of memory");
+            output.* = .{ .client = self, .name = name, .proxy = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_output_interface, @min(version, 4))) };
+            self.outputs.append(a, output) catch @panic("out of memory");
+            _ = c.wl_output_add_listener(output.proxy, &Output.listener, output);
+            output.bindLogical();
+        }
+    }
+    fn remove(data: ?*anyopaque, _: ?*c.wl_registry, name: u32) callconv(.c) void {
+        const self = cast(Client, data);
+        for (self.outputs.items) |output| if (output.name == name) {
+            if (self.running and output.announced) self.callbacks.removed(self.data, output);
+            // Also revoke any surfaces whose owner did not remove them.
+            var i: usize = 0;
+            while (i < self.surfaces.items.len) {
+                if (self.surfaces.items[i].output == output) self.surfaces.items[i].destroy() else i += 1;
+            }
+            erase(*Output, &self.outputs, output);
+            output.destroy();
+            return;
+        };
+    }
+    const registry_listener: c.wl_registry_listener = .{ .global = &global, .global_remove = &remove };
+};
+
+pub const Output = struct {
+    client: *Client,
+    name: u32,
+    proxy: *c.wl_output,
+    logical: ?*Proxy = null,
+    scale: u32 = 1,
+    pixel_width: i32 = 0,
+    pixel_height: i32 = 0,
+    logical_width: i32 = 0,
+    logical_height: i32 = 0,
+    transform: i32 = 0,
+    announced: bool = false,
+
+    pub fn height(self: *Output) i32 {
+        if (self.logical_height > 0) return self.logical_height;
+        const pixels = if (self.transform & 1 != 0) self.pixel_width else self.pixel_height;
+        return @divTrunc(pixels, @as(i32, @intCast(self.scale)));
+    }
+    fn bindLogical(self: *Output) void {
+        if (self.logical != null) return;
+        const manager = self.client.output_manager orelse return;
+        self.logical = c.wl_proxy_marshal_flags(manager, 1, &p.zxdg_output_v1_interface, c.wl_proxy_get_version(manager), 0, @as(?*anyopaque, null), self.proxy);
+        if (self.logical) |proxy| listen(proxy, &logical_listener, self);
+    }
+    fn destroy(self: *Output) void {
+        if (self.logical) |proxy| destroyProxy(proxy, 0);
+        const proxy: *Proxy = @ptrCast(self.proxy);
+        if (c.wl_proxy_get_version(proxy) >= 3) destroyProxy(proxy, 0) else c.wl_output_destroy(self.proxy);
+        a.destroy(self);
+    }
+    fn changed(self: *Output) void {
+        if (!self.client.running) return;
+        if (!self.announced) {
+            self.announced = true;
+            self.client.callbacks.added(self.client.data, self);
+        } else if (self.client.callbacks.changed) |callback| callback(self.client.data, self);
+        for (self.client.surfaces.items) |surface| if (surface.output == self) surface.redraw();
+    }
+    fn geometry(data: ?*anyopaque, _: ?*c.wl_output, _: i32, _: i32, _: i32, _: i32, _: i32, _: [*c]const u8, _: [*c]const u8, transform: i32) callconv(.c) void {
+        cast(Output, data).transform = transform;
+    }
+    fn mode(data: ?*anyopaque, _: ?*c.wl_output, flags: u32, width: i32, height_: i32, _: i32) callconv(.c) void {
+        if (flags & c.WL_OUTPUT_MODE_CURRENT == 0) return;
+        const self = cast(Output, data);
+        self.pixel_width = width;
+        self.pixel_height = height_;
+    }
+    fn done(data: ?*anyopaque, _: ?*c.wl_output) callconv(.c) void {
+        cast(Output, data).changed();
+    }
+    fn scaled(data: ?*anyopaque, _: ?*c.wl_output, scale: i32) callconv(.c) void {
+        cast(Output, data).scale = @intCast(std.math.clamp(scale, 1, 8));
+    }
+    fn text(_: ?*anyopaque, _: ?*c.wl_output, _: [*c]const u8) callconv(.c) void {}
+    const listener: c.wl_output_listener = .{ .geometry = &geometry, .mode = &mode, .done = &done, .scale = &scaled, .name = &text, .description = &text };
+    fn logicalPosition(_: ?*anyopaque, _: *Proxy, _: i32, _: i32) callconv(.c) void {}
+    fn logicalSize(data: ?*anyopaque, _: *Proxy, width: i32, height_: i32) callconv(.c) void {
+        const self = cast(Output, data);
+        self.logical_width = width;
+        self.logical_height = height_;
+    }
+    fn logicalDone(data: ?*anyopaque, _: *Proxy) callconv(.c) void {
+        cast(Output, data).changed();
+    }
+    fn logicalText(_: ?*anyopaque, _: *Proxy, _: [*c]const u8) callconv(.c) void {}
+    const logical_listener = extern struct {
+        position: *const @TypeOf(logicalPosition) = &logicalPosition,
+        size: *const @TypeOf(logicalSize) = &logicalSize,
+        done: *const @TypeOf(logicalDone) = &logicalDone,
+        name: *const @TypeOf(logicalText) = &logicalText,
+        description: *const @TypeOf(logicalText) = &logicalText,
+    }{};
+};
+
+const Buffer = struct {
+    client: *Client,
+    owner: ?*Surface,
+    proxy: *c.wl_buffer,
+    memory: [*]u8,
+    size: usize,
+    width: u32,
+    height: u32,
+    busy: bool = false,
+
+    fn create(owner: *Surface, width: u32, height: u32) !*Buffer {
+        const size = try bufferSize(width, height);
+        const fd = libc.memfd_create("desktop-surface", libc.MFD_CLOEXEC);
+        if (fd < 0) return error.SharedMemory;
+        defer _ = libc.close(fd);
+        if (libc.ftruncate(fd, @intCast(size)) != 0) return error.SharedMemory;
+        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
+        if (memory == libc.MAP_FAILED or memory == null) return error.SharedMemory;
+        errdefer _ = libc.munmap(memory, size);
+        const pool = c.wl_shm_create_pool(owner.client.shm, fd, @intCast(size)) orelse return error.SharedMemory;
+        defer c.wl_shm_pool_destroy(pool);
+        const proxy = c.wl_shm_pool_create_buffer(pool, 0, @intCast(width), @intCast(height), @intCast(width * 4), c.WL_SHM_FORMAT_ARGB8888) orelse return error.SharedMemory;
+        errdefer c.wl_buffer_destroy(proxy);
+        const self = try a.create(Buffer);
+        errdefer a.destroy(self);
+        self.* = .{ .client = owner.client, .owner = owner, .proxy = proxy, .memory = @ptrCast(memory), .size = size, .width = width, .height = height };
+        try owner.client.buffers.append(a, self);
+        listen(proxy, &listener, self);
+        return self;
+    }
+    fn release(data: ?*anyopaque, _: ?*c.wl_buffer) callconv(.c) void {
+        const self = cast(Buffer, data);
+        self.busy = false;
+        if (self.owner) |owner| {
+            if (owner.pending) owner.render() catch |err| std.log.err("native surface render: {s}", .{@errorName(err)});
+        } else self.destroy();
+    }
+    const listener = extern struct { release: *const @TypeOf(release) = &release }{};
+    fn destroy(self: *Buffer) void {
+        erase(*Buffer, &self.client.buffers, self);
+        c.wl_buffer_destroy(self.proxy);
+        _ = libc.munmap(self.memory, self.size);
+        a.destroy(self);
+    }
+};
+
+pub fn bufferSize(width: u32, height: u32) !usize {
+    if (width == 0 or height == 0 or width > 16384 or height > 16384 or @as(u64, width) * height > 64 * 1024 * 1024) return error.SurfaceTooLarge;
+    return @as(usize, width) * height * 4;
+}
+
+pub const Options = struct {
+    namespace: [:0]const u8,
+    layer: u32,
+    anchors: u32,
+    width: u32 = 0,
+    height: u32 = 0,
+    bottom_margin: i32 = 0,
+};
+pub const Paint = *const fn (?*anyopaque, *c.cairo_t, f64, f64) void;
+
+pub const Surface = struct {
+    client: *Client,
+    output: *Output,
+    options: Options,
+    paint: Paint,
+    data: ?*anyopaque,
+    proxy: ?*Proxy = null,
+    role: ?*Proxy = null,
+    width: u32 = 0,
+    height: u32 = 0,
+    configured: bool = false,
+    pending: bool = false,
+    buffers: [2]?*Buffer = .{ null, null },
+
+    pub fn create(output: *Output, options: Options, paint: Paint, data: ?*anyopaque) !*Surface {
+        const self = try a.create(Surface);
+        errdefer a.destroy(self);
+        self.* = .{ .client = output.client, .output = output, .options = options, .paint = paint, .data = data };
+        try self.client.surfaces.append(a, self);
+        return self;
+    }
+    pub fn show(self: *Surface) !void {
+        if (self.client.failed) return error.WaylandDispatch;
+        if (self.role != null) {
+            self.redraw();
+            return;
+        }
+        const compositor = self.client.compositor.?;
+        self.proxy = c.wl_proxy_marshal_flags(compositor, 0, &wl_surface_interface, c.wl_proxy_get_version(compositor), 0, @as(?*anyopaque, null)) orelse return error.WaylandSurface;
+        errdefer self.hide();
+        listen(self.proxy.?, &surface_listener, self);
+        const region = c.wl_proxy_marshal_flags(compositor, 1, &wl_region_interface, 1, 0, @as(?*anyopaque, null)) orelse return error.WaylandSurface;
+        send(self.proxy.?, 5, .{region}); // Empty input region: passive feedback.
+        destroyProxy(region, 0);
+        const shell = self.client.shell.?;
+        self.role = c.wl_proxy_marshal_flags(shell, 0, &p.zwlr_layer_surface_v1_interface, c.wl_proxy_get_version(shell), 0, @as(?*anyopaque, null), self.proxy.?, self.output.proxy, self.options.layer, self.options.namespace.ptr) orelse return error.WaylandSurface;
+        listen(self.role.?, &layer_listener, self);
+        send(self.role.?, 0, .{ self.options.width, self.options.height });
+        send(self.role.?, 1, .{self.options.anchors});
+        send(self.role.?, 2, .{@as(i32, -1)});
+        send(self.role.?, 3, .{ @as(i32, 0), @as(i32, 0), self.options.bottom_margin, @as(i32, 0) });
+        send(self.role.?, 4, .{@as(u32, 0)});
+        send(self.proxy.?, 6, .{});
+        self.client.flush();
+    }
+    pub fn hide(self: *Surface) void {
+        if (self.role) |role| destroyProxy(role, 7);
+        if (self.proxy) |proxy| destroyProxy(proxy, 0);
+        self.role = null;
+        self.proxy = null;
+        self.configured = false;
+        self.pending = false;
+        for (&self.buffers) |*slot| if (slot.*) |buffer| {
+            buffer.owner = null;
+            if (!buffer.busy) buffer.destroy();
+            slot.* = null;
+        };
+        self.client.flush();
+    }
+    pub fn destroy(self: *Surface) void {
+        self.hide();
+        erase(*Surface, &self.client.surfaces, self);
+        a.destroy(self);
+    }
+    pub fn setBottomMargin(self: *Surface, margin: i32) void {
+        if (margin == self.options.bottom_margin) return;
+        self.options.bottom_margin = margin;
+        if (self.role) |role| {
+            send(role, 3, .{ @as(i32, 0), @as(i32, 0), margin, @as(i32, 0) });
+            send(self.proxy.?, 6, .{});
+            self.client.flush();
+        }
+    }
+    pub fn redraw(self: *Surface) void {
+        if (self.role == null) return;
+        self.pending = true;
+        self.render() catch |err| std.log.err("native surface render: {s}", .{@errorName(err)});
+    }
+    fn render(self: *Surface) !void {
+        if (!self.pending or !self.configured or self.client.failed) return;
+        const width = std.math.mul(u32, self.width, self.output.scale) catch return error.SurfaceTooLarge;
+        const height = std.math.mul(u32, self.height, self.output.scale) catch return error.SurfaceTooLarge;
+        _ = try bufferSize(width, height);
+        var available: ?*Buffer = null;
+        for (&self.buffers) |*slot| {
+            if (slot.*) |buffer| {
+                if (buffer.busy) continue;
+                if (buffer.width != width or buffer.height != height) {
+                    buffer.destroy();
+                    slot.* = null;
+                }
+            }
+            if (slot.* == null) slot.* = try Buffer.create(self, width, height);
+            available = slot.*;
+            break;
+        }
+        const buffer = available orelse return; // release retries the newest state.
+        const image = c.cairo_image_surface_create_for_data(buffer.memory, c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height), @intCast(width * 4)) orelse return error.CairoSurface;
+        defer c.cairo_surface_destroy(image);
+        if (c.cairo_surface_status(image) != c.CAIRO_STATUS_SUCCESS) return error.CairoSurface;
+        c.cairo_surface_set_device_scale(image, @floatFromInt(self.output.scale), @floatFromInt(self.output.scale));
+        const cr = c.cairo_create(image).?;
+        defer c.cairo_destroy(cr);
+        c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
+        c.cairo_paint(cr);
+        c.cairo_set_operator(cr, c.CAIRO_OPERATOR_OVER);
+        self.paint(self.data, cr, @floatFromInt(self.width), @floatFromInt(self.height));
+        c.cairo_surface_flush(image);
+        send(self.proxy.?, 8, .{@as(i32, @intCast(self.output.scale))});
+        send(self.proxy.?, 1, .{ buffer.proxy, @as(i32, 0), @as(i32, 0) });
+        send(self.proxy.?, 2, .{ @as(i32, 0), @as(i32, 0), @as(i32, @intCast(self.width)), @as(i32, @intCast(self.height)) });
+        buffer.busy = true;
+        self.pending = false;
+        send(self.proxy.?, 6, .{});
+        self.client.flush();
+    }
+    fn configure(data: ?*anyopaque, role: *Proxy, serial: u32, width: u32, height: u32) callconv(.c) void {
+        const self = cast(Surface, data);
+        send(role, 6, .{serial});
+        const next_width = if (width == 0) self.options.width else width;
+        const next_height = if (height == 0) self.options.height else height;
+        const changed = !self.configured or self.width != next_width or self.height != next_height;
+        self.width = next_width;
+        self.height = next_height;
+        self.configured = true;
+        // Layout can be configured again after any layer commits. Acknowledge
+        // unchanged geometry without creating a commit/configure feedback loop.
+        if (changed) self.redraw() else self.client.flush();
+    }
+    fn closed(data: ?*anyopaque, _: *Proxy) callconv(.c) void {
+        cast(Surface, data).hide();
+    }
+    const layer_listener = extern struct {
+        configure: *const @TypeOf(configure) = &configure,
+        closed: *const @TypeOf(closed) = &closed,
+    }{};
+    fn entered(_: ?*anyopaque, _: *Proxy, _: ?*c.wl_output) callconv(.c) void {}
+    const surface_listener = extern struct {
+        enter: *const @TypeOf(entered) = &entered,
+        leave: *const @TypeOf(entered) = &entered,
+    }{};
+};
+
+test "native buffer bounds reject empty images and oversized allocations" {
+    try std.testing.expectError(error.SurfaceTooLarge, bufferSize(0, 1));
+    try std.testing.expectError(error.SurfaceTooLarge, bufferSize(16385, 1));
+    try std.testing.expectError(error.SurfaceTooLarge, bufferSize(16384, 16384));
+    try std.testing.expectEqual(@as(usize, 3840 * 2160 * 4), try bufferSize(3840, 2160));
+}

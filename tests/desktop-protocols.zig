@@ -24,6 +24,7 @@ fn sameMessages(actual: [*c]const @import("../desktop-gtk.zig").struct_wl_messag
 }
 
 test "native Wayland metadata matches every reference interface and message" {
+    @setEvalBranchQuota(10000);
     var checked: usize = 0;
     inline for (comptime std.meta.declarations(protocols)) |name| {
         if (comptime !std.mem.endsWith(u8, name, "_interface")) continue;
@@ -38,5 +39,5 @@ test "native Wayland metadata matches every reference interface and message" {
         try sameMessages(actual.events, expected.events, @intCast(actual.event_count));
         checked += 1;
     }
-    try std.testing.expectEqual(@as(usize, 35), checked);
+    try std.testing.expectEqual(@as(usize, 37), checked);
 }

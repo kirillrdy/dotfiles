@@ -40,7 +40,9 @@ state_file.write_text(json.dumps({"brightness": 20}))
 def set_brightness(percent):
     state = json.loads(state_file.read_text())
     state["brightness"] = percent
-    state_file.write_text(json.dumps(state))
+    updated = state_file.with_suffix(".tmp")
+    updated.write_text(json.dumps(state))
+    updated.replace(state_file)
 
 backlight = BacklightMock(root, args.dbus_config, on_set=set_brightness)
 env = dict(os.environ)

@@ -1,5 +1,5 @@
 //! One input-transparent background layer per monitor, sharing a decoded image.
-const layer = @import("desktop-layer-shell.zig");
+const native = @import("desktop-surface.zig");
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const allocator = std.heap.page_allocator;
@@ -26,51 +26,26 @@ fn paint(cr: *c.cairo_t, image: *c.GdkPixbuf, width: f64, height: f64) void {
 }
 
 const Background = struct {
-    window: *c.GtkWidget,
-    monitor: *c.GdkMonitor,
+    surface: *native.Surface,
     image: *c.GdkPixbuf, // Owned by App; shared across outputs.
 
-    fn create(monitor: *c.GdkMonitor, image: *c.GdkPixbuf) *Background {
-        const self = allocator.create(Background) catch @panic("out of memory");
-        self.* = .{ .window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL).?, .monitor = monitor, .image = image };
-        _ = c.g_object_ref(monitor);
-        const window = cast(c.GtkWindow, self.window);
-        c.gtk_widget_set_name(self.window, "desktop-wallpaper");
-        c.gtk_window_set_title(window, "Desktop Wallpaper");
-        c.gtk_window_set_decorated(window, 0);
-        c.gtk_window_set_accept_focus(window, 0);
-        c.gtk_widget_set_app_paintable(self.window, 1);
-        layer.init_for_window(window);
-        layer.set_namespace(window, "desktop-wallpaper");
-        layer.set_monitor(window, monitor);
-        layer.set_layer(window, .background);
-        for ([_]layer.Edge{ .top, .bottom, .left, .right }) |edge| layer.set_anchor(window, edge, 1);
-        // Cover the entire output, including the area behind the panel.
-        layer.set_exclusive_zone(window, -1);
-        layer.set_keyboard_mode(window, .none);
-        _ = c.g_signal_connect_data(self.window, "draw", @ptrCast(&draw), self, null, 0);
-        _ = c.g_signal_connect_data(self.window, "realize", @ptrCast(&realized), null, null, 0);
-        c.gtk_widget_show(self.window);
+    fn create(output: *native.Output, image: *c.GdkPixbuf) !*Background {
+        const self = try allocator.create(Background);
+        errdefer allocator.destroy(self);
+        self.* = .{ .surface = try native.Surface.create(output, .{
+            .namespace = "desktop-wallpaper",
+            .layer = 0,
+            .anchors = native.top | native.bottom | native.left | native.right,
+        }, &draw, self), .image = image };
+        errdefer self.surface.destroy();
+        try self.surface.show();
         return self;
     }
-
-    fn realized(widget: *c.GtkWidget, _: c.gpointer) callconv(.c) void {
-        const empty = c.cairo_region_create();
-        defer c.cairo_region_destroy(empty);
-        c.gtk_widget_input_shape_combine_region(widget, empty);
+    fn draw(data: ?*anyopaque, cr: *c.cairo_t, width: f64, height: f64) void {
+        paint(cr, cast(Background, data).image, width, height);
     }
-
-    fn draw(widget: *c.GtkWidget, cr: *c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Background, data);
-        // GTK supplies logical dimensions and a Cairo context with the output's
-        // buffer scale already applied, including after mode/scale changes.
-        paint(cr, self.image, @floatFromInt(c.gtk_widget_get_allocated_width(widget)), @floatFromInt(c.gtk_widget_get_allocated_height(widget)));
-        return 1;
-    }
-
     fn destroy(self: *Background) void {
-        c.gtk_widget_destroy(self.window);
-        c.g_object_unref(self.monitor);
+        self.surface.destroy();
         allocator.destroy(self);
     }
 };
@@ -79,14 +54,17 @@ const App = struct {
     image: *c.GdkPixbuf,
     backgrounds: std.ArrayList(*Background) = .empty,
 
-    fn add(_: *c.GdkDisplay, monitor: *c.GdkMonitor, data: c.gpointer) callconv(.c) void {
+    fn add(data: ?*anyopaque, output: *native.Output) void {
         const self = cast(App, data);
-        self.backgrounds.append(allocator, Background.create(monitor, self.image)) catch @panic("out of memory");
+        const background = Background.create(output, self.image) catch |err| {
+            std.log.err("wallpaper: {s}", .{@errorName(err)});
+            return;
+        };
+        self.backgrounds.append(allocator, background) catch @panic("out of memory");
     }
-
-    fn remove(_: *c.GdkDisplay, monitor: *c.GdkMonitor, data: c.gpointer) callconv(.c) void {
+    fn remove(data: ?*anyopaque, output: *native.Output) void {
         const self = cast(App, data);
-        for (self.backgrounds.items, 0..) |background, i| if (background.monitor == monitor) {
+        for (self.backgrounds.items, 0..) |background, i| if (background.surface.output == output) {
             _ = self.backgrounds.orderedRemove(i);
             background.destroy();
             return;
@@ -126,8 +104,7 @@ test "fill crops the center of wide and tall images at both buffer scales" {
 }
 
 test "background layer paints wallpaper pixels on the desktop" {
-    const sc = @import("desktop-screenshot.zig");
-    const libc = @import("desktop-libc.zig");
+    const capture = @import("tests/desktop-surface-capture.zig");
     try std.testing.expect(c.gtk_init_check(null, null) != 0);
     const image = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 0, 8, 2, 2).?;
     defer c.g_object_unref(image);
@@ -136,40 +113,38 @@ test "background layer paints wallpaper pixels on the desktop" {
     for (0..2) |y| for (0..2) |x| {
         pixels[y * stride + x * 3 ..][0..3].* = .{ 20, 40, 80 };
     };
-    const background = Background.create(c.gdk_display_get_monitor(c.gdk_display_get_default(), 0).?, image);
-    defer background.destroy();
-    // Allow GTK to paint and commit the first background buffer.
-    for (0..20) |_| {
-        while (c.gtk_events_pending() != 0) _ = c.gtk_main_iteration();
-        _ = libc.poll(null, 0, 10);
-    }
-    var client: sc.WaylandClient = undefined;
-    try client.init(std.testing.allocator);
-    defer client.deinit();
-    const output = client.outputs.items[0];
-    var frame: sc.FrameCapture = .{
-        .shm = client.shm.?,
-        .frame = sc.protocols.zwlr_screencopy_manager_v1_capture_output(client.screencopy_mgr.?, 0, output.wl_out).?,
-    };
-    defer sc.protocols.zwlr_screencopy_frame_v1_destroy(frame.frame);
+    var app: App = .{ .image = image };
+    const native_client = try native.Client.create(.{ .added = &App.add, .removed = &App.remove }, &app);
+    defer native_client.destroy();
     defer {
-        if (frame.buffer) |buffer| c.wl_buffer_destroy(buffer);
-        if (frame.memory) |memory| _ = libc.munmap(memory, frame.length);
+        for (app.backgrounds.items) |background| background.destroy();
+        app.backgrounds.deinit(allocator);
     }
-    _ = sc.protocols.zwlr_screencopy_frame_v1_add_listener(frame.frame, &sc.FrameCapture.listener, &frame);
-    while (!frame.done and !frame.failed) try std.testing.expect(c.wl_display_dispatch(client.display) >= 0);
-    try std.testing.expect(!frame.failed and frame.memory != null);
+    try native_client.start();
+    const Probe = struct {
+        var paints: usize = 0;
+        fn draw(data: ?*anyopaque, cr: *c.cairo_t, width: f64, height: f64) void {
+            paints += 1;
+            Background.draw(data, cr, width, height);
+        }
+    };
+    Probe.paints = 0;
+    for (app.backgrounds.items) |background| background.surface.paint = &Probe.draw;
+    capture.pump();
+    try std.testing.expectEqual(@as(usize, 1), app.backgrounds.items.len);
+    try std.testing.expect(app.backgrounds.items[0].surface.configured);
+    try std.testing.expect(app.backgrounds.items[0].surface.buffers[0] != null);
+    try std.testing.expectEqual(@as(usize, 1), Probe.paints);
+    const frame = try capture.capture();
+    defer frame.deinit();
     for ([_][2]u32{ .{ 1, 1 }, .{ frame.width / 2, frame.height / 2 }, .{ frame.width - 2, frame.height - 2 } }) |point| {
-        const offset = @as(usize, point[1]) * frame.stride + @as(usize, point[0]) * 4;
-        const pixel = std.mem.readInt(u32, frame.memory.?[offset..][0..4], @import("builtin").cpu.arch.endian());
-        try std.testing.expectEqual(@as(u32, 0x142850), pixel & 0xffffff);
+        try std.testing.expectEqual(@as(u32, 0x142850), frame.pixel(point[0], point[1]));
     }
 }
 
 pub const Service = struct {
     app: App,
-    added: c.gulong,
-    removed: c.gulong,
+    client: *native.Client,
 
     pub fn create(path: [:0]const u8) !*Service {
         const decoded = c.gdk_pixbuf_new_from_file(path, null) orelse return error.InvalidImage;
@@ -177,21 +152,18 @@ pub const Service = struct {
         const image = c.gdk_pixbuf_apply_embedded_orientation(decoded) orelse return error.InvalidImage;
         errdefer c.g_object_unref(image);
         const self = try allocator.create(Service);
-        self.* = .{ .app = .{ .image = image }, .added = 0, .removed = 0 };
-        const display = c.gdk_display_get_default().?;
-        self.added = c.g_signal_connect_data(display, "monitor-added", @ptrCast(&App.add), &self.app, null, 0);
-        self.removed = c.g_signal_connect_data(display, "monitor-removed", @ptrCast(&App.remove), &self.app, null, 0);
-        var i: c_int = 0;
-        while (i < c.gdk_display_get_n_monitors(display)) : (i += 1) App.add(display, c.gdk_display_get_monitor(display, i).?, &self.app);
+        self.* = .{ .app = .{ .image = image }, .client = undefined };
+        errdefer allocator.destroy(self);
+        self.client = try native.Client.create(.{ .added = &App.add, .removed = &App.remove }, &self.app);
+        errdefer self.client.destroy();
+        try self.client.start();
         return self;
     }
 
     pub fn destroy(self: *Service) void {
-        const display = c.gdk_display_get_default().?;
-        c.g_signal_handler_disconnect(display, self.added);
-        c.g_signal_handler_disconnect(display, self.removed);
         for (self.app.backgrounds.items) |background| background.destroy();
         self.app.backgrounds.deinit(allocator);
+        self.client.destroy();
         c.g_object_unref(self.app.image);
         allocator.destroy(self);
     }
