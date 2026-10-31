@@ -1998,51 +1998,34 @@ pub extern fn g_desktop_app_info_get_string(info: ?*GDesktopAppInfo, key: [*c]co
 
 pub extern fn g_desktop_app_info_get_boolean(info: ?*GDesktopAppInfo, key: [*c]const u8) gboolean;
 
-pub const GTK_LAYER_SHELL_LAYER_BACKGROUND: c_int = 0;
-
-pub const GTK_LAYER_SHELL_LAYER_TOP: c_int = 2;
-
-pub const GTK_LAYER_SHELL_LAYER_OVERLAY: c_int = 3;
-
-pub const GtkLayerShellLayer = c_uint;
-
-pub const GTK_LAYER_SHELL_EDGE_LEFT: c_int = 0;
-
-pub const GTK_LAYER_SHELL_EDGE_RIGHT: c_int = 1;
-
-pub const GTK_LAYER_SHELL_EDGE_TOP: c_int = 2;
-
-pub const GTK_LAYER_SHELL_EDGE_BOTTOM: c_int = 3;
-
-pub const GtkLayerShellEdge = c_uint;
-
-pub const GTK_LAYER_SHELL_KEYBOARD_MODE_NONE: c_int = 0;
-
-pub const GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE: c_int = 1;
-
-pub const GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND: c_int = 2;
-
-pub const GtkLayerShellKeyboardMode = c_uint;
-
-pub extern fn gtk_layer_is_supported(...) gboolean;
-
-pub extern fn gtk_layer_init_for_window(window: [*c]GtkWindow) void;
-
-pub extern fn gtk_layer_set_namespace(window: [*c]GtkWindow, name_space: [*c]const u8) void;
-
-pub extern fn gtk_layer_set_layer(window: [*c]GtkWindow, layer: GtkLayerShellLayer) void;
-
-pub extern fn gtk_layer_set_monitor(window: [*c]GtkWindow, monitor: ?*GdkMonitor) void;
-
-pub extern fn gtk_layer_set_anchor(window: [*c]GtkWindow, edge: GtkLayerShellEdge, anchor_to_edge: gboolean) void;
-
-pub extern fn gtk_layer_set_margin(window: [*c]GtkWindow, edge: GtkLayerShellEdge, margin_size: c_int) void;
-
-pub extern fn gtk_layer_set_exclusive_zone(window: [*c]GtkWindow, exclusive_zone: c_int) void;
-
-pub extern fn gtk_layer_auto_exclusive_zone_enable(window: [*c]GtkWindow) void;
-
-pub extern fn gtk_layer_set_keyboard_mode(window: [*c]GtkWindow, mode: GtkLayerShellKeyboardMode) void;
+// Public GDK Wayland APIs used by the native layer-shell integration.
+pub const wl_surface = opaque {};
+pub extern fn gdk_wayland_window_get_wl_surface(?*GdkWindow) ?*wl_surface;
+pub extern fn gdk_wayland_window_set_use_custom_surface(?*GdkWindow) void;
+pub extern fn gdk_wayland_display_get_wl_display(?*GdkDisplay) ?*wl_display;
+pub extern fn gdk_wayland_monitor_get_wl_output(?*GdkMonitor) ?*wl_output;
+pub extern fn gdk_window_invalidate_rect(?*GdkWindow, [*c]const GdkRectangle, gboolean) void;
+pub const GdkWindowHints = c_uint;
+pub const GDK_HINT_MIN_SIZE = 1 << 1;
+pub const GDK_HINT_MAX_SIZE = 1 << 2;
+pub const GdkGeometry = extern struct {
+    min_width: c_int = 0,
+    min_height: c_int = 0,
+    max_width: c_int = 0,
+    max_height: c_int = 0,
+    base_width: c_int = 0,
+    base_height: c_int = 0,
+    width_inc: c_int = 0,
+    height_inc: c_int = 0,
+    min_aspect: f64 = 0,
+    max_aspect: f64 = 0,
+    win_gravity: c_uint = 0,
+};
+pub extern fn gtk_window_set_geometry_hints([*c]GtkWindow, [*c]GtkWidget, [*c]GdkGeometry, GdkWindowHints) void;
+pub extern fn gtk_popover_set_modal([*c]GtkPopover, gboolean) void;
+pub extern fn gtk_window_set_transient_for([*c]GtkWindow, [*c]GtkWindow) void;
+pub const GTK_WINDOW_POPUP = 1;
+pub const GDK_WINDOW_TYPE_HINT_POPUP_MENU = 9;
 
 pub extern fn g_unix_signal_add(signum: gint, handler: GSourceFunc, user_data: gpointer) guint;
 

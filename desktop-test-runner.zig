@@ -5,4 +5,5 @@ test {
     _ = @import("tests/desktop-libc-abi.zig");
     _ = @import("tests/desktop-protocols.zig");
     _ = @import("desktop-switcher.zig");
+    _ = @import("desktop-layer-shell.zig");
 }

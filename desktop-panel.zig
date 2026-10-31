@@ -1,4 +1,5 @@
 //! Layer-shell host for the desktop's GTK widgets.
+const layer = @import("desktop-layer-shell.zig");
 const std = @import("std");
 const widgets = @import("desktop-widgets.zig");
 const c = widgets.c;
@@ -42,15 +43,15 @@ const Panel = struct {
         c.gtk_window_set_title(window, "Desktop Panel");
         c.gtk_window_set_resizable(window, 0);
         c.gtk_widget_set_size_request(self.window, -1, config.height);
-        c.gtk_layer_init_for_window(window);
-        c.gtk_layer_set_namespace(window, "desktop-panel");
-        c.gtk_layer_set_monitor(window, monitor);
-        c.gtk_layer_set_layer(window, c.GTK_LAYER_SHELL_LAYER_TOP);
-        c.gtk_layer_set_anchor(window, c.GTK_LAYER_SHELL_EDGE_TOP, 1);
-        c.gtk_layer_set_anchor(window, c.GTK_LAYER_SHELL_EDGE_LEFT, 1);
-        c.gtk_layer_set_anchor(window, c.GTK_LAYER_SHELL_EDGE_RIGHT, 1);
-        c.gtk_layer_set_keyboard_mode(window, c.GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
-        c.gtk_layer_auto_exclusive_zone_enable(window);
+        layer.init_for_window(window);
+        layer.set_namespace(window, "desktop-panel");
+        layer.set_monitor(window, monitor);
+        layer.set_layer(window, .top);
+        layer.set_anchor(window, .top, 1);
+        layer.set_anchor(window, .left, 1);
+        layer.set_anchor(window, .right, 1);
+        layer.set_keyboard_mode(window, .on_demand);
+        layer.auto_exclusive_zone_enable(window);
         const layout = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0);
         c.gtk_box_pack_start(cast(c.GtkBox, layout), self.group(config.left), 0, 0, 0);
         c.gtk_box_set_center_widget(cast(c.GtkBox, layout), self.group(config.center));

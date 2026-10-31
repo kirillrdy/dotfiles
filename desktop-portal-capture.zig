@@ -1,4 +1,5 @@
 //! Native capture requests on the broker's GLib context.
+const layer = @import("desktop-layer-shell.zig");
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
@@ -243,11 +244,11 @@ pub const Operation = struct {
         if (area or self.point) {
             const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
             self.overlay = window;
-            c.gtk_layer_init_for_window(cast(c.GtkWindow, window));
-            c.gtk_layer_set_monitor(cast(c.GtkWindow, window), chosen.monitor);
-            c.gtk_layer_set_layer(cast(c.GtkWindow, window), c.GTK_LAYER_SHELL_LAYER_OVERLAY);
-            c.gtk_layer_set_keyboard_mode(cast(c.GtkWindow, window), c.GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
-            for ([_]c_uint{ c.GTK_LAYER_SHELL_EDGE_TOP, c.GTK_LAYER_SHELL_EDGE_BOTTOM, c.GTK_LAYER_SHELL_EDGE_LEFT, c.GTK_LAYER_SHELL_EDGE_RIGHT }) |edge| c.gtk_layer_set_anchor(cast(c.GtkWindow, window), edge, 1);
+            layer.init_for_window(cast(c.GtkWindow, window));
+            layer.set_monitor(cast(c.GtkWindow, window), chosen.monitor);
+            layer.set_layer(cast(c.GtkWindow, window), .overlay);
+            layer.set_keyboard_mode(cast(c.GtkWindow, window), .exclusive);
+            for ([_]layer.Edge{ .top, .bottom, .left, .right }) |edge| layer.set_anchor(cast(c.GtkWindow, window), edge, 1);
             c.gtk_widget_set_app_paintable(window, 1);
             if (c.gdk_screen_get_rgba_visual(c.gtk_widget_get_screen(window))) |visual| c.gtk_widget_set_visual(window, visual);
             c.gtk_widget_add_events(window, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_KEY_PRESS_MASK | c.GDK_POINTER_MOTION_MASK);

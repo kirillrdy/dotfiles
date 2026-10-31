@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client", "libpipewire-0.3", "pam", "xkbcommon", "pangoft2" }) |name| desktop.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "wayland-client", "libpipewire-0.3", "pam", "xkbcommon", "pangoft2" }) |name| desktop.linkSystemLibrary(name, .{});
     const options = b.addOptions();
     for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "PIXBUF_LOADERS", "SOUND_FILE", "DATA_DIRS" }) |name| {
         options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module });
     const test_step = b.step("test", "Run unit, ABI, protocol and widget checks (requires Wayland)");
     test_step.dependOn(&b.addRunArtifact(tests).step);
-    test_module.addImport("gtk-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <gtk-layer-shell.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n", &.{ "gtk+-unix-print-3.0", "gio-unix-2.0", "gtk-layer-shell-0", "wayland-client" }));
+    test_module.addImport("gtk-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n", &.{ "gtk+-unix-print-3.0", "gio-unix-2.0", "wayland-client" }));
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
     const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
@@ -78,6 +78,13 @@ pub fn build(b: *std.Build) void {
     const decoration_fixture = b.addExecutable(.{ .name = "desktop-decoration-fixture", .root_module = decoration_module });
     b.step("compositor-fixture", "Build compositor protocol test clients").dependOn(&b.addInstallArtifact(decoration_fixture, .{}).step);
     const protocol_names = [_][]const u8{
+        "xdg_wm_base_interface",
+        "xdg_positioner_interface",
+        "xdg_surface_interface",
+        "xdg_toplevel_interface",
+        "xdg_popup_interface",
+        "zwlr_layer_shell_v1_interface",
+        "zwlr_layer_surface_v1_interface",
         "zwlr_output_manager_v1_interface",
         "zwlr_output_head_v1_interface",
         "zwlr_output_mode_v1_interface",
@@ -110,6 +117,8 @@ pub fn build(b: *std.Build) void {
     var reference_flags: [protocol_names.len][]const u8 = undefined;
     for (protocol_names, &reference_flags) |name, *flag| flag.* = b.fmt("-D{s}=reference_{s}", .{ name, name });
     const protocol_files = [_]std.Build.LazyPath{
+        .{ .cwd_relative = b.fmt("{s}/stable/xdg-shell/xdg-shell.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/unstable/wlr-layer-shell-unstable-v1.xml", .{wlr_protocols}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-screencopy-unstable-v1.xml", .{wlr_protocols}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-data-control-unstable-v1.xml", .{wlr_protocols}) },
         .{ .cwd_relative = b.fmt("{s}/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml", .{protocol_dir}) },

@@ -1,0 +1,85 @@
+--- a/gdk/wayland/gdkwindow-wayland.c
++++ b/gdk/wayland/gdkwindow-wayland.c
+@@ -3024,7 +3024,8 @@
+   if (!impl->display_server.wl_surface)
+     return;
+ 
+-  if (!is_realized_shell_surface (parent))
++  if (!is_realized_shell_surface (parent) &&
++      !g_object_get_data (G_OBJECT (parent), "desktop-layer-surface"))
+     return;
+ 
+   if (is_realized_toplevel (window))
+@@ -3040,7 +3041,8 @@
+   if ((display->current_popups &&
+        g_list_last (display->current_popups)->data != parent) ||
+       (!display->current_popups &&
+-       !is_realized_toplevel (parent)))
++       !is_realized_toplevel (parent) &&
++       !g_object_get_data (G_OBJECT (parent), "desktop-layer-surface")))
+     {
+       g_warning ("Tried to map a popup with a non-top most parent");
+       return;
+@@ -3069,6 +3071,13 @@
+       xdg_popup_add_listener (impl->display_server.xdg_popup,
+                               &xdg_popup_listener,
+                               window);
++      /* The Zig layer owner attaches this otherwise ordinary GTK popup. */
++      if (g_object_get_data (G_OBJECT (parent), "desktop-layer-popup"))
++        {
++          void (*attach_popup) (GdkWindow *, struct xdg_popup *) =
++            g_object_get_data (G_OBJECT (parent), "desktop-layer-popup");
++          attach_popup (parent, impl->display_server.xdg_popup);
++        }
+       xdg_positioner_destroy (positioner);
+       break;
+     case GDK_WAYLAND_SHELL_VARIANT_ZXDG_SHELL_V6:
+@@ -3244,7 +3253,8 @@
+     {
+       GdkWindowImplWayland *impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
+ 
+-      if (is_realized_popup (window) || is_realized_toplevel (window))
++      if (is_realized_popup (window) || is_realized_toplevel (window) ||
++          g_object_get_data (G_OBJECT (window), "desktop-layer-surface"))
+         return window;
+ 
+       window = impl->transient_for;
+@@ -3262,8 +3272,20 @@
+   if (!should_be_mapped (window))
+     return;
+ 
+-  if (impl->mapped || impl->use_custom_surface)
+-    return;
++  if (impl->mapped)
++    return;
++
++  if (impl->use_custom_surface)
++    {
++      /* Private integration contract with desktop-layer-shell.zig. The owner
++       * assigns the role and waits for configure before GDK can attach a buffer.
++       * No GTK private layouts or process-wide vfunc overrides are needed. */
++      gboolean (*map) (GdkWindow *) =
++        g_object_get_data (G_OBJECT (window), "desktop-layer-map");
++      if (map)
++        impl->mapped = map (window);
++      return;
++    }
+ 
+   if (GDK_WINDOW_TYPE (window) == GDK_WINDOW_TEMP)
+     {
+@@ -3441,6 +3463,15 @@
+   GdkWindowImplWayland *impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
+ 
+   unmap_popups_for_window (window);
++
++  /* Destroy the role after child popups and before its wl_surface. */
++  if (impl->mapped && impl->use_custom_surface)
++    {
++      void (*unmap) (GdkWindow *) =
++        g_object_get_data (G_OBJECT (window), "desktop-layer-unmap");
++      if (unmap)
++        unmap (window);
++    }
+ 
+   if (impl->display_server.wl_surface)
+     {

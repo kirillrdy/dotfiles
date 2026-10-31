@@ -1,3 +1,4 @@
+const layer = @import("desktop").layer_shell;
 const std = @import("std");
 const c = @import("desktop").gtk;
 const cast = c.__zig.cast;
@@ -30,9 +31,9 @@ fn method(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const
             const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
             background = window;
             c.gtk_widget_set_app_paintable(window, 1);
-            c.gtk_layer_init_for_window(cast(c.GtkWindow, window));
-            c.gtk_layer_set_layer(cast(c.GtkWindow, window), c.GTK_LAYER_SHELL_LAYER_BACKGROUND);
-            for ([_]c_uint{ c.GTK_LAYER_SHELL_EDGE_TOP, c.GTK_LAYER_SHELL_EDGE_BOTTOM, c.GTK_LAYER_SHELL_EDGE_LEFT, c.GTK_LAYER_SHELL_EDGE_RIGHT }) |edge| c.gtk_layer_set_anchor(cast(c.GtkWindow, window), edge, 1);
+            layer.init_for_window(cast(c.GtkWindow, window));
+            layer.set_layer(cast(c.GtkWindow, window), .background);
+            for ([_]layer.Edge{ .top, .bottom, .left, .right }) |edge| layer.set_anchor(cast(c.GtkWindow, window), edge, 1);
             _ = c.g_signal_connect_data(window, "draw", @ptrCast(&draw), null, null, 0);
             c.gtk_widget_show_all(window);
         }

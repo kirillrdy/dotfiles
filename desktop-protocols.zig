@@ -1042,3 +1042,145 @@ pub export const zwlr_output_configuration_head_v1_interface: Interface = .{
     .event_count = 0,
     .events = null,
 };
+
+// Native metadata for xdg_shell.
+// Copyright © 2008-2013 Kristian Høgsberg
+//     Copyright © 2013      Rafael Antognolli
+//     Copyright © 2013      Jasper St. Pierre
+//     Copyright © 2010-2013 Intel Corporation
+//     Copyright © 2015-2017 Samsung Electronics Co., Ltd
+//     Copyright © 2015-2017 Red Hat Inc.
+//
+//     Permission is hereby granted, free of charge, to any person obtaining a
+//     copy of this software and associated documentation files (the "Software"),
+//     to deal in the Software without restriction, including without limitation
+//     the rights to use, copy, modify, merge, publish, distribute, sublicense,
+//     and/or sell copies of the Software, and to permit persons to whom the
+//     Software is furnished to do so, subject to the following conditions:
+//
+//     The above copyright notice and this permission notice (including the next
+//     paragraph) shall be included in all copies or substantial portions of the
+//     Software.
+//
+//     THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//     IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//     FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+//     THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+//     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+//     FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+//     DEALINGS IN THE SOFTWARE.
+const xdg_wm_base_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = null },
+    .{ .name = "create_positioner", .signature = "n", .types = @constCast(&[_][*c]const Interface{&xdg_positioner_interface}) },
+    .{ .name = "get_xdg_surface", .signature = "no", .types = @constCast(&[_][*c]const Interface{ &xdg_surface_interface, &wl_surface_interface }) },
+    .{ .name = "pong", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
+};
+const xdg_wm_base_events = [_]Message{
+    .{ .name = "ping", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
+};
+pub export const xdg_wm_base_interface: Interface = .{ .name = "xdg_wm_base", .version = 7, .method_count = 4, .methods = &xdg_wm_base_requests, .event_count = 1, .events = &xdg_wm_base_events };
+const xdg_positioner_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = null },
+    .{ .name = "set_size", .signature = "ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
+    .{ .name = "set_anchor_rect", .signature = "iiii", .types = @constCast(&[_][*c]const Interface{ null, null, null, null }) },
+    .{ .name = "set_anchor", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
+    .{ .name = "set_gravity", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
+    .{ .name = "set_constraint_adjustment", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
+    .{ .name = "set_offset", .signature = "ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
+    .{ .name = "set_reactive", .signature = "3", .types = null },
+    .{ .name = "set_parent_size", .signature = "3ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
+    .{ .name = "set_parent_configure", .signature = "3u", .types = @constCast(&[_][*c]const Interface{null}) },
+};
+const xdg_positioner_events = [_]Message{};
+pub export const xdg_positioner_interface: Interface = .{ .name = "xdg_positioner", .version = 7, .method_count = 10, .methods = &xdg_positioner_requests, .event_count = 0, .events = &xdg_positioner_events };
+const xdg_surface_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = null },
+    .{ .name = "get_toplevel", .signature = "n", .types = @constCast(&[_][*c]const Interface{&xdg_toplevel_interface}) },
+    .{ .name = "get_popup", .signature = "n?oo", .types = @constCast(&[_][*c]const Interface{ &xdg_popup_interface, &xdg_surface_interface, &xdg_positioner_interface }) },
+    .{ .name = "set_window_geometry", .signature = "iiii", .types = @constCast(&[_][*c]const Interface{ null, null, null, null }) },
+    .{ .name = "ack_configure", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
+};
+const xdg_surface_events = [_]Message{
+    .{ .name = "configure", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
+};
+pub export const xdg_surface_interface: Interface = .{ .name = "xdg_surface", .version = 7, .method_count = 5, .methods = &xdg_surface_requests, .event_count = 1, .events = &xdg_surface_events };
+const xdg_toplevel_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = null },
+    .{ .name = "set_parent", .signature = "?o", .types = @constCast(&[_][*c]const Interface{&xdg_toplevel_interface}) },
+    .{ .name = "set_title", .signature = "s", .types = @constCast(&[_][*c]const Interface{null}) },
+    .{ .name = "set_app_id", .signature = "s", .types = @constCast(&[_][*c]const Interface{null}) },
+    .{ .name = "show_window_menu", .signature = "ouii", .types = @constCast(&[_][*c]const Interface{ &wl_seat_interface, null, null, null }) },
+    .{ .name = "move", .signature = "ou", .types = @constCast(&[_][*c]const Interface{ &wl_seat_interface, null }) },
+    .{ .name = "resize", .signature = "ouu", .types = @constCast(&[_][*c]const Interface{ &wl_seat_interface, null, null }) },
+    .{ .name = "set_max_size", .signature = "ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
+    .{ .name = "set_min_size", .signature = "ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
+    .{ .name = "set_maximized", .signature = "", .types = null },
+    .{ .name = "unset_maximized", .signature = "", .types = null },
+    .{ .name = "set_fullscreen", .signature = "?o", .types = @constCast(&[_][*c]const Interface{&wl_output_interface}) },
+    .{ .name = "unset_fullscreen", .signature = "", .types = null },
+    .{ .name = "set_minimized", .signature = "", .types = null },
+};
+const xdg_toplevel_events = [_]Message{
+    .{ .name = "configure", .signature = "iia", .types = @constCast(&[_][*c]const Interface{ null, null, null }) },
+    .{ .name = "close", .signature = "", .types = null },
+    .{ .name = "configure_bounds", .signature = "4ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
+    .{ .name = "wm_capabilities", .signature = "5a", .types = @constCast(&[_][*c]const Interface{null}) },
+};
+pub export const xdg_toplevel_interface: Interface = .{ .name = "xdg_toplevel", .version = 7, .method_count = 14, .methods = &xdg_toplevel_requests, .event_count = 4, .events = &xdg_toplevel_events };
+const xdg_popup_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = null },
+    .{ .name = "grab", .signature = "ou", .types = @constCast(&[_][*c]const Interface{ &wl_seat_interface, null }) },
+    .{ .name = "reposition", .signature = "3ou", .types = @constCast(&[_][*c]const Interface{ &xdg_positioner_interface, null }) },
+};
+const xdg_popup_events = [_]Message{
+    .{ .name = "configure", .signature = "iiii", .types = @constCast(&[_][*c]const Interface{ null, null, null, null }) },
+    .{ .name = "popup_done", .signature = "", .types = null },
+    .{ .name = "repositioned", .signature = "3u", .types = @constCast(&[_][*c]const Interface{null}) },
+};
+pub export const xdg_popup_interface: Interface = .{ .name = "xdg_popup", .version = 7, .method_count = 3, .methods = &xdg_popup_requests, .event_count = 3, .events = &xdg_popup_events };
+
+// Native metadata for wlr_layer_shell_unstable_v1.
+// Copyright © 2017 Drew DeVault
+//
+//     Permission to use, copy, modify, distribute, and sell this
+//     software and its documentation for any purpose is hereby granted
+//     without fee, provided that the above copyright notice appear in
+//     all copies and that both that copyright notice and this permission
+//     notice appear in supporting documentation, and that the name of
+//     the copyright holders not be used in advertising or publicity
+//     pertaining to distribution of the software without specific,
+//     written prior permission.  The copyright holders make no
+//     representations about the suitability of this software for any
+//     purpose.  It is provided "as is" without express or implied
+//     warranty.
+//
+//     THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
+//     SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+//     FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
+//     SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+//     WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+//     AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+//     ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+//     THIS SOFTWARE.
+const zwlr_layer_shell_v1_requests = [_]Message{
+    .{ .name = "get_layer_surface", .signature = "no?ous", .types = @constCast(&[_][*c]const Interface{ &zwlr_layer_surface_v1_interface, &wl_surface_interface, &wl_output_interface, null, null }) },
+    .{ .name = "destroy", .signature = "3", .types = null },
+};
+const zwlr_layer_shell_v1_events = [_]Message{};
+pub export const zwlr_layer_shell_v1_interface: Interface = .{ .name = "zwlr_layer_shell_v1", .version = 4, .method_count = 2, .methods = &zwlr_layer_shell_v1_requests, .event_count = 0, .events = &zwlr_layer_shell_v1_events };
+const zwlr_layer_surface_v1_requests = [_]Message{
+    .{ .name = "set_size", .signature = "uu", .types = @constCast(&[_][*c]const Interface{ null, null }) },
+    .{ .name = "set_anchor", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
+    .{ .name = "set_exclusive_zone", .signature = "i", .types = @constCast(&[_][*c]const Interface{null}) },
+    .{ .name = "set_margin", .signature = "iiii", .types = @constCast(&[_][*c]const Interface{ null, null, null, null }) },
+    .{ .name = "set_keyboard_interactivity", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
+    .{ .name = "get_popup", .signature = "o", .types = @constCast(&[_][*c]const Interface{&xdg_popup_interface}) },
+    .{ .name = "ack_configure", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
+    .{ .name = "destroy", .signature = "", .types = null },
+    .{ .name = "set_layer", .signature = "2u", .types = @constCast(&[_][*c]const Interface{null}) },
+};
+const zwlr_layer_surface_v1_events = [_]Message{
+    .{ .name = "configure", .signature = "uuu", .types = @constCast(&[_][*c]const Interface{ null, null, null }) },
+    .{ .name = "closed", .signature = "", .types = null },
+};
+pub export const zwlr_layer_surface_v1_interface: Interface = .{ .name = "zwlr_layer_surface_v1", .version = 4, .method_count = 9, .methods = &zwlr_layer_surface_v1_requests, .event_count = 2, .events = &zwlr_layer_surface_v1_events };

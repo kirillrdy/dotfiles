@@ -1,4 +1,5 @@
 //! Freedesktop notification service with GNOME banners and persistent history.
+const layer = @import("desktop-layer-shell.zig");
 const std = @import("std");
 const view = @import("desktop-notification-view.zig");
 const c = view.c;
@@ -71,14 +72,14 @@ const Server = struct {
         c.gtk_window_set_resizable(cast(c.GtkWindow, window), 0);
         c.gtk_window_set_accept_focus(cast(c.GtkWindow, window), 0);
         if (c.gdk_screen_get_rgba_visual(c.gtk_widget_get_screen(window))) |visual| c.gtk_widget_set_visual(window, visual);
-        c.gtk_layer_init_for_window(cast(c.GtkWindow, window));
-        c.gtk_layer_set_namespace(cast(c.GtkWindow, window), "desktop-notifications");
-        c.gtk_layer_set_layer(cast(c.GtkWindow, window), c.GTK_LAYER_SHELL_LAYER_OVERLAY);
-        c.gtk_layer_set_anchor(cast(c.GtkWindow, window), c.GTK_LAYER_SHELL_EDGE_TOP, 1);
-        c.gtk_layer_set_anchor(cast(c.GtkWindow, window), c.GTK_LAYER_SHELL_EDGE_LEFT, 1);
-        c.gtk_layer_set_exclusive_zone(cast(c.GtkWindow, window), 0);
-        c.gtk_layer_set_margin(cast(c.GtkWindow, window), c.GTK_LAYER_SHELL_EDGE_TOP, -4);
-        c.gtk_layer_set_keyboard_mode(cast(c.GtkWindow, window), c.GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
+        layer.init_for_window(cast(c.GtkWindow, window));
+        layer.set_namespace(cast(c.GtkWindow, window), "desktop-notifications");
+        layer.set_layer(cast(c.GtkWindow, window), .overlay);
+        layer.set_anchor(cast(c.GtkWindow, window), .top, 1);
+        layer.set_anchor(cast(c.GtkWindow, window), .left, 1);
+        layer.set_exclusive_zone(cast(c.GtkWindow, window), 0);
+        layer.set_margin(cast(c.GtkWindow, window), .top, -4);
+        layer.set_keyboard_mode(cast(c.GtkWindow, window), .none);
         const box = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0);
         view.css(box, "notification-shadow");
         c.gtk_container_add(cast(c.GtkContainer, window), box);
@@ -120,10 +121,10 @@ const Server = struct {
         _ = c.g_signal_connect_data(widget.root, "leave-notify-event", @ptrCast(&left), self, null, 0);
         const display = c.gdk_display_get_default();
         const monitor = c.gdk_display_get_primary_monitor(display) orelse c.gdk_display_get_monitor(display, 0);
-        c.gtk_layer_set_monitor(cast(c.GtkWindow, self.window), monitor);
+        layer.set_monitor(cast(c.GtkWindow, self.window), monitor);
         var geometry: c.GdkRectangle = undefined;
         c.gdk_monitor_get_geometry(monitor, &geometry);
-        c.gtk_layer_set_margin(cast(c.GtkWindow, self.window), c.GTK_LAYER_SHELL_EDGE_LEFT, @max(0, @divTrunc(geometry.width - 529, 2)));
+        layer.set_margin(cast(c.GtkWindow, self.window), .left, @max(0, @divTrunc(geometry.width - 529, 2)));
         c.gtk_window_resize(cast(c.GtkWindow, self.window), 1, 1);
         c.gtk_widget_show_all(self.window);
         if (!notice.critical) self.timer = c.g_timeout_add(4000, &expired, self);

@@ -77,6 +77,7 @@ let
     }).overrideAttrs
       (old: {
         pname = "desktop-gtk";
+        patches = (old.patches or [ ]) ++ [ ./gtk-wayland-custom-shell.patch ];
         separateDebugInfo = false;
         mesonFlags = old.mesonFlags ++ [
           "-Dprint_backends=file${pkgs.lib.optionalString printingSupport ",cups"}"
@@ -103,27 +104,7 @@ let
         postFixup = "";
       });
 
-  layerShell = (pkgs.gtk-layer-shell.override { gtk3 = gtk; }).overrideAttrs {
-    pname = "desktop-gtk-layer-shell";
-    outputs = [
-      "out"
-      "dev"
-    ];
-    outputBin = "dev";
-    nativeBuildInputs = with pkgs; [
-      meson
-      ninja
-      pkg-config
-      wayland-scanner
-    ];
-    mesonFlags = [
-      "-Ddocs=false"
-      "-Dexamples=false"
-      "-Dintrospection=false"
-      "-Dvapi=false"
-    ];
-  };
 in
 {
-  inherit accessibility gtk layerShell;
+  inherit accessibility gtk;
 }

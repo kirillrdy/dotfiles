@@ -1,4 +1,5 @@
 //! Wayland screenshot tool with region selection and clipboard support.
+const layer = @import("desktop-layer-shell.zig");
 const std = @import("std");
 pub const protocols = @import("desktop-protocols.zig");
 const libc = @import("desktop-libc.zig");
@@ -357,13 +358,13 @@ pub const SelectionOverlay = struct {
             .window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL),
         };
 
-        c.gtk_layer_init_for_window(cast(c.GtkWindow, overlay.window));
-        c.gtk_layer_set_layer(cast(c.GtkWindow, overlay.window), c.GTK_LAYER_SHELL_LAYER_OVERLAY);
-        c.gtk_layer_set_keyboard_mode(cast(c.GtkWindow, overlay.window), c.GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
-        c.gtk_layer_set_anchor(cast(c.GtkWindow, overlay.window), c.GTK_LAYER_SHELL_EDGE_TOP, 1);
-        c.gtk_layer_set_anchor(cast(c.GtkWindow, overlay.window), c.GTK_LAYER_SHELL_EDGE_BOTTOM, 1);
-        c.gtk_layer_set_anchor(cast(c.GtkWindow, overlay.window), c.GTK_LAYER_SHELL_EDGE_LEFT, 1);
-        c.gtk_layer_set_anchor(cast(c.GtkWindow, overlay.window), c.GTK_LAYER_SHELL_EDGE_RIGHT, 1);
+        layer.init_for_window(cast(c.GtkWindow, overlay.window));
+        layer.set_layer(cast(c.GtkWindow, overlay.window), .overlay);
+        layer.set_keyboard_mode(cast(c.GtkWindow, overlay.window), .exclusive);
+        layer.set_anchor(cast(c.GtkWindow, overlay.window), .top, 1);
+        layer.set_anchor(cast(c.GtkWindow, overlay.window), .bottom, 1);
+        layer.set_anchor(cast(c.GtkWindow, overlay.window), .left, 1);
+        layer.set_anchor(cast(c.GtkWindow, overlay.window), .right, 1);
 
         c.gtk_widget_set_app_paintable(overlay.window, 1);
         const visual = c.gdk_screen_get_rgba_visual(c.gtk_widget_get_screen(overlay.window));

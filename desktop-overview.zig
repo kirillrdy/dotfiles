@@ -1,4 +1,5 @@
 //! Activities: live window previews, workspace navigation, search and app grid.
+const layer = @import("desktop-layer-shell.zig");
 const std = @import("std");
 comptime {
     _ = @import("desktop-protocols.zig");
@@ -64,12 +65,12 @@ const Overview = struct {
         const window = cast(c.GtkWindow, l.window);
         c.gtk_window_unmaximize(window);
         c.gtk_window_set_title(window, "Activities");
-        c.gtk_layer_init_for_window(window);
-        c.gtk_layer_set_namespace(window, "desktop-overview");
-        c.gtk_layer_set_layer(window, c.GTK_LAYER_SHELL_LAYER_OVERLAY);
-        c.gtk_layer_set_exclusive_zone(window, 0);
-        c.gtk_layer_set_keyboard_mode(window, c.GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
-        for ([_]c.GtkLayerShellEdge{ c.GTK_LAYER_SHELL_EDGE_TOP, c.GTK_LAYER_SHELL_EDGE_BOTTOM, c.GTK_LAYER_SHELL_EDGE_LEFT, c.GTK_LAYER_SHELL_EDGE_RIGHT }) |edge| c.gtk_layer_set_anchor(window, edge, 1);
+        layer.init_for_window(window);
+        layer.set_namespace(window, "desktop-overview");
+        layer.set_layer(window, .overlay);
+        layer.set_exclusive_zone(window, 0);
+        layer.set_keyboard_mode(window, .exclusive);
+        for ([_]layer.Edge{ .top, .bottom, .left, .right }) |edge| layer.set_anchor(window, edge, 1);
         const provider = c.gtk_css_provider_new();
         _ = c.gtk_css_provider_load_from_data(provider, style, style.len, null);
         c.gtk_style_context_add_provider_for_screen(c.gtk_widget_get_screen(l.window), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
@@ -127,7 +128,7 @@ const Overview = struct {
         c.gdk_device_get_position(c.gdk_seat_get_pointer(seat), null, &x, &y);
         const monitor = c.gdk_display_get_monitor_at_point(display, x, y);
         c.gdk_monitor_get_geometry(monitor, &self.monitor);
-        c.gtk_layer_set_monitor(cast(c.GtkWindow, self.launcher.window), monitor);
+        layer.set_monitor(cast(c.GtkWindow, self.launcher.window), monitor);
         self.apps_mode = false;
         self.selected = 0;
         self.hover = null;

@@ -1,4 +1,6 @@
 //! Session shell. Compositor-specific operations stay behind Wayland protocols.
+pub const layer_shell = @import("desktop-layer-shell.zig");
+const layer = layer_shell;
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 pub const libc = @import("desktop-libc.zig");
@@ -38,7 +40,7 @@ const Session = struct {
         if (self.stopping) return error.SessionStopping;
         if (self.serving) return error.AlreadyRunning;
         if (args.len != 1 and args.len != 5) return error.InvalidServeArguments;
-        if (c.gtk_layer_is_supported() == 0) return error.LayerShellUnavailable;
+        if (layer.is_supported() == 0) return error.LayerShellUnavailable;
         if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
         self.image = try a.dupeSentinel(u8, args[0], 0);
         self.activities.wallpaper = self.image.?.ptr;

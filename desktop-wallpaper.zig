@@ -1,4 +1,5 @@
 //! One input-transparent background layer per monitor, sharing a decoded image.
+const layer = @import("desktop-layer-shell.zig");
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const allocator = std.heap.page_allocator;
@@ -39,14 +40,14 @@ const Background = struct {
         c.gtk_window_set_decorated(window, 0);
         c.gtk_window_set_accept_focus(window, 0);
         c.gtk_widget_set_app_paintable(self.window, 1);
-        c.gtk_layer_init_for_window(window);
-        c.gtk_layer_set_namespace(window, "desktop-wallpaper");
-        c.gtk_layer_set_monitor(window, monitor);
-        c.gtk_layer_set_layer(window, c.GTK_LAYER_SHELL_LAYER_BACKGROUND);
-        for ([_]c.GtkLayerShellEdge{ c.GTK_LAYER_SHELL_EDGE_TOP, c.GTK_LAYER_SHELL_EDGE_BOTTOM, c.GTK_LAYER_SHELL_EDGE_LEFT, c.GTK_LAYER_SHELL_EDGE_RIGHT }) |edge| c.gtk_layer_set_anchor(window, edge, 1);
+        layer.init_for_window(window);
+        layer.set_namespace(window, "desktop-wallpaper");
+        layer.set_monitor(window, monitor);
+        layer.set_layer(window, .background);
+        for ([_]layer.Edge{ .top, .bottom, .left, .right }) |edge| layer.set_anchor(window, edge, 1);
         // Cover the entire output, including the area behind the panel.
-        c.gtk_layer_set_exclusive_zone(window, -1);
-        c.gtk_layer_set_keyboard_mode(window, c.GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
+        layer.set_exclusive_zone(window, -1);
+        layer.set_keyboard_mode(window, .none);
         _ = c.g_signal_connect_data(self.window, "draw", @ptrCast(&draw), self, null, 0);
         _ = c.g_signal_connect_data(self.window, "realize", @ptrCast(&realized), null, null, 0);
         c.gtk_widget_show(self.window);

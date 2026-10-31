@@ -59,7 +59,6 @@ pkgs.stdenv.mkDerivation {
   WLR_PROTOCOLS_DIR = "${pkgs.wlr-protocols}/share/wlr-protocols";
   buildInputs = [
     gtkLibraries.gtk
-    gtkLibraries.layerShell
     pkgs.wayland
     compositorLibraries
     pkgs.libinput

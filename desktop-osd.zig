@@ -1,5 +1,6 @@
 //! Media-key controller and passive Wayland overlays. Device calls are serialized
 //! asynchronously; repeated steps coalesce while a backend is busy.
+const layer = @import("desktop-layer-shell.zig");
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const audio = @import("desktop-audio.zig");
@@ -45,13 +46,13 @@ const Overlay = struct {
         c.gtk_window_set_accept_focus(cast(c.GtkWindow, window), 0);
         c.gtk_window_set_resizable(cast(c.GtkWindow, window), 0);
         if (c.gdk_screen_get_rgba_visual(c.gtk_widget_get_screen(window))) |visual| c.gtk_widget_set_visual(window, visual);
-        c.gtk_layer_init_for_window(cast(c.GtkWindow, window));
-        c.gtk_layer_set_namespace(cast(c.GtkWindow, window), "desktop-osd");
-        c.gtk_layer_set_monitor(cast(c.GtkWindow, window), monitor);
-        c.gtk_layer_set_layer(cast(c.GtkWindow, window), c.GTK_LAYER_SHELL_LAYER_OVERLAY);
-        c.gtk_layer_set_anchor(cast(c.GtkWindow, window), c.GTK_LAYER_SHELL_EDGE_BOTTOM, 1);
-        c.gtk_layer_set_exclusive_zone(cast(c.GtkWindow, window), -1);
-        c.gtk_layer_set_keyboard_mode(cast(c.GtkWindow, window), c.GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
+        layer.init_for_window(cast(c.GtkWindow, window));
+        layer.set_namespace(cast(c.GtkWindow, window), "desktop-osd");
+        layer.set_monitor(cast(c.GtkWindow, window), monitor);
+        layer.set_layer(cast(c.GtkWindow, window), .overlay);
+        layer.set_anchor(cast(c.GtkWindow, window), .bottom, 1);
+        layer.set_exclusive_zone(cast(c.GtkWindow, window), -1);
+        layer.set_keyboard_mode(cast(c.GtkWindow, window), .none);
         _ = c.g_signal_connect_data(window, "realize", @ptrCast(&realized), null, null, 0);
         const box = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 12);
         c.gtk_widget_set_name(box, "container");
@@ -75,7 +76,7 @@ const Overlay = struct {
     fn show(self: *Overlay, kind: Kind, state: State) void {
         var geometry: c.GdkRectangle = undefined;
         c.gdk_monitor_get_geometry(self.monitor, &geometry);
-        c.gtk_layer_set_margin(cast(c.GtkWindow, self.window), c.GTK_LAYER_SHELL_EDGE_BOTTOM, @divTrunc(geometry.height * 6, 100));
+        layer.set_margin(cast(c.GtkWindow, self.window), .bottom, @divTrunc(geometry.height * 6, 100));
         const icon: [*:0]const u8 = switch (kind) {
             .brightness => "display-brightness-symbolic",
             .microphone => if (state.muted) "microphone-sensitivity-muted-symbolic" else "microphone-sensitivity-high-symbolic",
@@ -113,7 +114,7 @@ pub const Server = struct {
     feedback_player: audio.Feedback = .{},
 
     pub fn start(self: *Server, style: [*:0]const u8) !void {
-        if (c.gtk_layer_is_supported() == 0) return error.LayerShellUnavailable;
+        if (layer.is_supported() == 0) return error.LayerShellUnavailable;
         const provider = c.gtk_css_provider_new();
         defer c.g_object_unref(provider);
         var err: [*c]c.GError = null;

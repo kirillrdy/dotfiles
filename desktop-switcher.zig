@@ -1,4 +1,5 @@
 //! Main-thread GTK presentation for the compositor's fixed application switcher.
+const layer = @import("desktop-layer-shell.zig");
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const cast = c.__zig.cast;
@@ -92,7 +93,7 @@ fn update(data: c.gpointer) callconv(.c) c.gboolean {
     monitor = c.gdk_display_get_monitor_at_point(c.gdk_display_get_default(), snapshot.output_x, snapshot.output_y);
     if (window == null) create();
     const w = window.?;
-    c.gtk_layer_set_monitor(cast(c.GtkWindow, w), monitor);
+    layer.set_monitor(cast(c.GtkWindow, w), monitor);
     const apps = applications(snapshot);
     // Selection changes must not unmap the layer surface or reload its icons.
     const width = geometry().width;
@@ -150,12 +151,12 @@ fn create() void {
     c.gtk_widget_set_name(w, "desktop-switcher");
     c.gtk_window_set_decorated(cast(c.GtkWindow, w), 0);
     c.gtk_window_set_resizable(cast(c.GtkWindow, w), 0);
-    c.gtk_layer_init_for_window(cast(c.GtkWindow, w));
-    c.gtk_layer_set_namespace(cast(c.GtkWindow, w), "desktop-switcher");
-    c.gtk_layer_set_layer(cast(c.GtkWindow, w), c.GTK_LAYER_SHELL_LAYER_OVERLAY);
-    c.gtk_layer_set_keyboard_mode(cast(c.GtkWindow, w), c.GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
+    layer.init_for_window(cast(c.GtkWindow, w));
+    layer.set_namespace(cast(c.GtkWindow, w), "desktop-switcher");
+    layer.set_layer(cast(c.GtkWindow, w), .overlay);
+    layer.set_keyboard_mode(cast(c.GtkWindow, w), .none);
     // Center against the full output, as the compositor-owned popup did.
-    c.gtk_layer_set_exclusive_zone(cast(c.GtkWindow, w), -1);
+    layer.set_exclusive_zone(cast(c.GtkWindow, w), -1);
     if (!styled) {
         const provider = c.gtk_css_provider_new();
         defer c.g_object_unref(provider);
@@ -278,13 +279,13 @@ fn showPreviews() void {
         c.gtk_widget_set_name(pw, "desktop-switcher-windows");
         c.gtk_window_set_decorated(cast(c.GtkWindow, pw), 0);
         c.gtk_window_set_resizable(cast(c.GtkWindow, pw), 0);
-        c.gtk_layer_init_for_window(cast(c.GtkWindow, pw));
-        c.gtk_layer_set_namespace(cast(c.GtkWindow, pw), "desktop-switcher-windows");
-        c.gtk_layer_set_layer(cast(c.GtkWindow, pw), c.GTK_LAYER_SHELL_LAYER_OVERLAY);
-        c.gtk_layer_set_keyboard_mode(cast(c.GtkWindow, pw), c.GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
-        c.gtk_layer_set_exclusive_zone(cast(c.GtkWindow, pw), -1);
-        c.gtk_layer_set_anchor(cast(c.GtkWindow, pw), c.GTK_LAYER_SHELL_EDGE_TOP, 1);
-        c.gtk_layer_set_anchor(cast(c.GtkWindow, pw), c.GTK_LAYER_SHELL_EDGE_LEFT, 1);
+        layer.init_for_window(cast(c.GtkWindow, pw));
+        layer.set_namespace(cast(c.GtkWindow, pw), "desktop-switcher-windows");
+        layer.set_layer(cast(c.GtkWindow, pw), .overlay);
+        layer.set_keyboard_mode(cast(c.GtkWindow, pw), .none);
+        layer.set_exclusive_zone(cast(c.GtkWindow, pw), -1);
+        layer.set_anchor(cast(c.GtkWindow, pw), .top, 1);
+        layer.set_anchor(cast(c.GtkWindow, pw), .left, 1);
         preview_row = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 12);
         c.gtk_style_context_add_class(c.gtk_widget_get_style_context(preview_row.?), "switcher-panel");
         c.gtk_container_add(cast(c.GtkContainer, pw), preview_row.?);
@@ -329,9 +330,9 @@ fn showPreviews() void {
     const panel_width = count * (thumb_width + 16) + (count - 1) * 12 + 26;
     const app_width = @as(c_int, @intCast(displayed.len)) * (icon_size + 43) - 12 + 26;
     const x = @divTrunc(screen.width - app_width, 2) + 13 + active_index * (icon_size + 43) + @divTrunc(icon_size + 31, 2) - @divTrunc(panel_width, 2);
-    c.gtk_layer_set_monitor(cast(c.GtkWindow, preview_window.?), monitor);
-    c.gtk_layer_set_margin(cast(c.GtkWindow, preview_window.?), c.GTK_LAYER_SHELL_EDGE_LEFT, @max(0, @min(x, screen.width - panel_width)));
-    c.gtk_layer_set_margin(cast(c.GtkWindow, preview_window.?), c.GTK_LAYER_SHELL_EDGE_TOP, panel_y);
+    layer.set_monitor(cast(c.GtkWindow, preview_window.?), monitor);
+    layer.set_margin(cast(c.GtkWindow, preview_window.?), .left, @max(0, @min(x, screen.width - panel_width)));
+    layer.set_margin(cast(c.GtkWindow, preview_window.?), .top, panel_y);
     c.gtk_widget_show_all(preview_window.?);
     if (client == null) client = capture.Client.create(null, &captureChanged) catch null;
     if (client) |connection| {
