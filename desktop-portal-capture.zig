@@ -4,9 +4,31 @@ const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const sc = @import("desktop-screenshot.zig");
 const png = @import("desktop-png.zig");
+const font = @import("desktop-font.zig");
 const protocols = sc.protocols;
 const cast = c.__zig.cast;
 pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;
+
+pub const Image = struct {
+    width: u32,
+    height: u32,
+    stride: usize,
+    pixels: []u8,
+    allocator: std.mem.Allocator,
+    rc: usize = 1,
+
+    pub fn ref(self: *Image) *Image {
+        self.rc += 1;
+        return self;
+    }
+    pub fn unref(self: *Image) void {
+        self.rc -= 1;
+        if (self.rc == 0) {
+            self.allocator.free(self.pixels);
+            self.allocator.destroy(self);
+        }
+    }
+};
 
 /// A private Wayland connection keeps capture traffic off GTK's event queue.
 pub const Capture = struct {
@@ -15,11 +37,11 @@ pub const Capture = struct {
     frame: ?sc.FrameCapture = null,
     source: c.guint = 0,
     timeout: c.guint = 0,
-    surface: ?*c.cairo_surface_t = null,
-    callback: *const fn (?*anyopaque, ?*c.cairo_surface_t) void,
+    image: ?*Image = null,
+    callback: *const fn (?*anyopaque, ?*Image) void,
     data: ?*anyopaque,
 
-    pub fn create(allocator: std.mem.Allocator, name: []const u8, cursor: bool, callback: *const fn (?*anyopaque, ?*c.cairo_surface_t) void, data: ?*anyopaque) !*Capture {
+    pub fn create(allocator: std.mem.Allocator, name: []const u8, cursor: bool, callback: *const fn (?*anyopaque, ?*Image) void, data: ?*anyopaque) !*Capture {
         const self = try allocator.create(Capture);
         errdefer allocator.destroy(self);
         self.* = .{ .allocator = allocator, .client = undefined, .callback = callback, .data = data };
@@ -47,8 +69,8 @@ pub const Capture = struct {
         self.timeout = c.g_timeout_add_seconds(10, &expired, self);
     }
     fn clearFrame(self: *Capture) void {
-        if (self.surface) |surface| c.cairo_surface_destroy(surface);
-        self.surface = null;
+        if (self.image) |img| img.unref();
+        self.image = null;
         if (self.frame) |frame| {
             protocols.zwlr_screencopy_frame_v1_destroy(frame.frame);
             if (frame.buffer) |buffer| c.wl_buffer_destroy(buffer);
@@ -80,27 +102,32 @@ pub const Capture = struct {
         self.source = 0;
         if (self.timeout != 0) _ = c.g_source_remove(self.timeout);
         self.timeout = 0;
-        if (ok and frame.done and !frame.failed) self.surface = image(frame) catch null;
-        self.callback(self.data, self.surface);
+        if (ok and frame.done and !frame.failed) self.image = image(self.allocator, frame) catch null;
+        self.callback(self.data, self.image);
         return 0;
     }
 };
 
-/// Normalize XRGB/ARGB and bottom-up buffers to an opaque Cairo RGB image.
-pub fn image(frame: *const sc.FrameCapture) !*c.cairo_surface_t {
+/// Normalize XRGB/ARGB and bottom-up buffers to an opaque RGB image.
+pub fn image(allocator: std.mem.Allocator, frame: *const sc.FrameCapture) !*Image {
     if (frame.memory == null or frame.width == 0 or frame.height == 0 or frame.stride < frame.width * 4 or frame.length < @as(usize, frame.stride) * frame.height) return error.InvalidFrame;
     if (frame.format != c.WL_SHM_FORMAT_XRGB8888 and frame.format != c.WL_SHM_FORMAT_ARGB8888) return error.UnsupportedFormat;
-    const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_RGB24, @intCast(frame.width), @intCast(frame.height)) orelse return error.SurfaceFailed;
-    errdefer c.cairo_surface_destroy(surface);
-    if (c.cairo_surface_status(surface) != c.CAIRO_STATUS_SUCCESS) return error.SurfaceFailed;
-    const pixels = c.cairo_image_surface_get_data(surface);
-    const stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
+    const stride = @as(usize, frame.width) * 4;
+    const pixels = try allocator.alloc(u8, stride * frame.height);
+    errdefer allocator.free(pixels);
     for (0..frame.height) |y| {
         const source_y = if (frame.y_invert) frame.height - 1 - y else y;
-        @memcpy(pixels[y * stride ..][0 .. frame.width * 4], frame.memory.?[source_y * frame.stride ..][0 .. frame.width * 4]);
+        @memcpy(pixels[y * stride ..][0..stride], frame.memory.?[source_y * frame.stride ..][0..stride]);
     }
-    c.cairo_surface_mark_dirty(surface);
-    return surface;
+    const self = try allocator.create(Image);
+    self.* = .{
+        .width = frame.width,
+        .height = frame.height,
+        .stride = stride,
+        .pixels = pixels,
+        .allocator = allocator,
+    };
+    return self;
 }
 
 pub const Picked = struct { name: [:0]const u8, monitor: ?*c.GdkMonitor, width: i32, height: i32 };
@@ -266,30 +293,49 @@ pub const Operation = struct {
             }
         } else self.schedule();
     }
-    fn draw(_: *c.GtkWidget, cr: *c.cairo_t, data: ?*anyopaque) callconv(.c) c.gboolean {
+    fn draw(widget: *c.GtkWidget, cr: *c.cairo_t, data: ?*anyopaque) callconv(.c) c.gboolean {
         const self = cast(Operation, data);
-        c.cairo_set_source_rgba(cr, 0, 0, 0, 0.35);
-        c.cairo_paint(cr);
+        const w_i = c.gtk_widget_get_allocated_width(widget);
+        const h_i = c.gtk_widget_get_allocated_height(widget);
+        if (w_i <= 0 or h_i <= 0) return 1;
+        const width: usize = @intCast(w_i);
+        const height: usize = @intCast(h_i);
+        const total = width * height;
+        const pixels = self.allocator.alloc(u32, total) catch return 1;
+        defer self.allocator.free(pixels);
+
+        @memset(pixels, 0x59000000);
+
         if (self.dragging and !self.point) {
-            const x = @min(self.start_x, self.current_x);
-            const y = @min(self.start_y, self.current_y);
-            const w = @abs(self.current_x - self.start_x);
-            const h = @abs(self.current_y - self.start_y);
-            c.cairo_save(cr);
-            c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
-            c.cairo_rectangle(cr, x, y, w, h);
-            c.cairo_fill(cr);
-            c.cairo_restore(cr);
-            c.cairo_set_source_rgb(cr, 0.208, 0.518, 0.894);
-            c.cairo_set_line_width(cr, 2);
-            c.cairo_rectangle(cr, x, y, w, h);
-            c.cairo_stroke(cr);
+            const rx: usize = @intCast(@max(0, @min(width - 1, @as(usize, @intFromFloat(@min(self.start_x, self.current_x))))));
+            const ry: usize = @intCast(@max(0, @min(height - 1, @as(usize, @intFromFloat(@min(self.start_y, self.current_y))))));
+            const rw: usize = @intCast(@min(width - rx, @as(usize, @intFromFloat(@abs(self.current_x - self.start_x)))));
+            const rh: usize = @intCast(@min(height - ry, @as(usize, @intFromFloat(@abs(self.current_y - self.start_y)))));
+            for (ry..ry + rh) |y| {
+                @memset(pixels[y * width + rx ..][0..rw], 0x00000000);
+            }
+            const blue = 0xff3584e4;
+            for (0..2) |b| {
+                if (ry + b < height) {
+                    for (rx..rx + rw) |x| pixels[(ry + b) * width + x] = blue;
+                }
+                if (ry + rh > b and ry + rh - 1 - b < height) {
+                    for (rx..rx + rw) |x| pixels[(ry + rh - 1 - b) * width + x] = blue;
+                }
+                for (ry..ry + rh) |y| {
+                    if (rx + b < width) pixels[y * width + (rx + b)] = blue;
+                    if (rx + rw > b and rx + rw - 1 - b < width) pixels[y * width + (rx + rw - 1 - b)] = blue;
+                }
+            }
         }
-        c.cairo_set_source_rgb(cr, 1, 1, 1);
-        c.cairo_select_font_face(cr, "Adwaita Sans", c.CAIRO_FONT_SLANT_NORMAL, c.CAIRO_FONT_WEIGHT_BOLD);
-        c.cairo_set_font_size(cr, 16);
-        c.cairo_move_to(cr, 32, 40);
-        c.cairo_show_text(cr, if (self.point) "Click to pick a color. Esc to cancel." else "Drag to select an area. Esc to cancel.");
+
+        const msg = if (self.point) "Click to pick a color. Esc to cancel." else "Drag to select an area. Esc to cancel.";
+        font.drawText(pixels.ptr, width, 32, 40, msg, 1, 0xffffffff);
+
+        const surf = c.cairo_image_surface_create_for_data(@ptrCast(pixels.ptr), c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height), @intCast(width * 4));
+        defer c.cairo_surface_destroy(surf);
+        c.cairo_set_source_surface(cr, surf, 0, 0);
+        c.cairo_paint(cr);
         return 1;
     }
     fn motion(_: *c.GtkWidget, event: ?*c.GdkEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
@@ -347,11 +393,11 @@ pub const Operation = struct {
         };
         return 0;
     }
-    fn captured(data: ?*anyopaque, source: ?*c.cairo_surface_t) void {
+    fn captured(data: ?*anyopaque, source: ?*Image) void {
         const self = cast(Operation, data);
-        const surface = source orelse return self.finish(2, null);
-        const width = c.cairo_image_surface_get_width(surface);
-        const height = c.cairo_image_surface_get_height(surface);
+        const img = source orelse return self.finish(2, null);
+        const width: i32 = @intCast(img.width);
+        const height: i32 = @intCast(img.height);
         var x: i32 = 0;
         var y: i32 = 0;
         var w = width;
@@ -370,8 +416,8 @@ pub const Operation = struct {
         const results = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
         defer c.g_variant_builder_unref(results);
         if (self.point) {
-            const pixels: [*]const u8 = c.cairo_image_surface_get_data(surface);
-            const stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
+            const pixels: [*]const u8 = img.pixels.ptr;
+            const stride: usize = img.stride;
             const pixel = std.mem.readInt(u32, pixels[@as(usize, @intCast(y)) * stride + @as(usize, @intCast(x)) * 4 ..][0..4], @import("builtin").cpu.arch.endian());
             c.g_variant_builder_add(results, "{sv}", @as([*:0]const u8, "color"), c.g_variant_new("(ddd)", @as(f64, @floatFromInt((pixel >> 16) & 255)) / 255, @as(f64, @floatFromInt((pixel >> 8) & 255)) / 255, @as(f64, @floatFromInt(pixel & 255)) / 255));
         } else {
@@ -379,8 +425,8 @@ pub const Operation = struct {
             const crop_h: usize = @intCast(h);
             const crop_buf = self.allocator.alloc(u8, crop_w * crop_h * 4) catch return self.finish(2, null);
             defer self.allocator.free(crop_buf);
-            const src_pixels: [*]const u8 = c.cairo_image_surface_get_data(surface);
-            const src_stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
+            const src_pixels: [*]const u8 = img.pixels.ptr;
+            const src_stride: usize = img.stride;
             for (0..crop_h) |cy| {
                 const sy: usize = @intCast(y + @as(i32, @intCast(cy)));
                 const sx: usize = @intCast(x);
@@ -433,21 +479,21 @@ test "capture images normalize inverted rows and preserve padding and RGB channe
         .length = @sizeOf(@TypeOf(pixels)),
         .y_invert = true,
     };
-    const surface = try image(&frame);
-    defer c.cairo_surface_destroy(surface);
-    const bytes = c.cairo_image_surface_get_data(surface);
-    const stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
+    const img = try image(std.testing.allocator, &frame);
+    defer img.unref();
+    const bytes = img.pixels.ptr;
+    const stride: usize = img.stride;
     const endian = @import("builtin").cpu.arch.endian();
     try std.testing.expectEqual(@as(u32, 0xff), std.mem.readInt(u32, bytes[0..4], endian) & 0xffffff);
     try std.testing.expectEqual(@as(u32, 0xffffff), std.mem.readInt(u32, bytes[4..8], endian) & 0xffffff);
     try std.testing.expectEqual(@as(u32, 0xff0000), std.mem.readInt(u32, bytes[stride..][0..4], endian) & 0xffffff);
     var invalid = frame;
     invalid.length -= 1;
-    try std.testing.expectError(error.InvalidFrame, image(&invalid));
+    try std.testing.expectError(error.InvalidFrame, image(std.testing.allocator, &invalid));
     invalid = frame;
     invalid.stride = 4;
-    try std.testing.expectError(error.InvalidFrame, image(&invalid));
+    try std.testing.expectError(error.InvalidFrame, image(std.testing.allocator, &invalid));
     invalid = frame;
     invalid.format = 0xdeadbeef;
-    try std.testing.expectError(error.UnsupportedFormat, image(&invalid));
+    try std.testing.expectError(error.UnsupportedFormat, image(std.testing.allocator, &invalid));
 }

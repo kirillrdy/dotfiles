@@ -361,10 +361,10 @@ fn drawPreview(widget: *c.GtkWidget, cr: *c.cairo_t, _: c.gpointer) callconv(.c)
         if (image != widget) continue;
         for (connection.windows.items) |view| {
             if (view.id == null or !std.mem.eql(u8, std.mem.span(view.id), std.mem.sliceTo(&item.id, 0))) continue;
-            const surface = view.image orelse return 0;
-            const width_i = c.cairo_image_surface_get_width(surface);
-            const height_i = c.cairo_image_surface_get_height(surface);
-            if (width_i <= 0 or height_i <= 0) return 0;
+            const img = view.image orelse return 0;
+            const width_i = img.width;
+            const height_i = img.height;
+            if (width_i == 0 or height_i == 0) return 0;
             const width: f64 = @floatFromInt(width_i);
             const height: f64 = @floatFromInt(height_i);
             const scale = @min(@as(f64, @floatFromInt(preview_width)) / width, @as(f64, @floatFromInt(preview_height)) / height);
@@ -374,14 +374,13 @@ fn drawPreview(widget: *c.GtkWidget, cr: *c.cairo_t, _: c.gpointer) callconv(.c)
             const scaled = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(dw), @intCast(dh)) orelse return 0;
             defer c.cairo_surface_destroy(scaled);
 
-            c.cairo_surface_flush(surface);
             c.cairo_surface_flush(scaled);
-            const src_pixels: [*]const u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(surface)));
-            const src_stride: usize = @intCast(@divTrunc(c.cairo_image_surface_get_stride(surface), 4));
+            const src_pixels: [*]const u32 = img.pixels.ptr;
+            const src_stride: usize = img.stride;
             const dest_pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(scaled)));
             const dest_stride: usize = @intCast(@divTrunc(c.cairo_image_surface_get_stride(scaled), 4));
 
-            capture.scalePixels(src_pixels, @intCast(width_i), @intCast(height_i), src_stride, dest_pixels, dw, dh, dest_stride, false);
+            capture.scalePixels(src_pixels, width_i, height_i, src_stride, dest_pixels, dw, dh, dest_stride, false);
             c.cairo_surface_mark_dirty(scaled);
 
             const ox = (@as(f64, @floatFromInt(c.gtk_widget_get_allocated_width(widget))) - @as(f64, @floatFromInt(dw))) / 2;

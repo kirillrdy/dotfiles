@@ -240,9 +240,23 @@ const Overview = struct {
         c.gtk_box_pack_start(cast(c.GtkBox, self.dash), button, 0, 0, 0);
     }
     fn drawRunningDot(_: *c.GtkWidget, cr: *c.cairo_t, _: c.gpointer) callconv(.c) c.gboolean {
-        c.cairo_arc(cr, 2.5, 2.5, 2.5, 0, 2 * std.math.pi);
-        c.cairo_set_source_rgb(cr, 1, 1, 1);
-        c.cairo_fill(cr);
+        var pixels: [5 * 5]u32 = @splat(0);
+        for (0..5) |y| {
+            const dy = @as(f64, @floatFromInt(y)) + 0.5 - 2.5;
+            for (0..5) |x| {
+                const dx = @as(f64, @floatFromInt(x)) + 0.5 - 2.5;
+                const dist = @sqrt(dx * dx + dy * dy);
+                if (dist <= 2.5) {
+                    const alpha_f = std.math.clamp(2.5 - dist + 0.5, 0.0, 1.0);
+                    const a_u8: u32 = @intFromFloat(@round(alpha_f * 255.0));
+                    pixels[y * 5 + x] = (a_u8 << 24) | (a_u8 << 16) | (a_u8 << 8) | a_u8;
+                }
+            }
+        }
+        const surf = c.cairo_image_surface_create_for_data(@ptrCast(&pixels), c.CAIRO_FORMAT_ARGB32, 5, 5, 5 * 4);
+        defer c.cairo_surface_destroy(surf);
+        c.cairo_set_source_surface(cr, surf, 0, 0);
+        c.cairo_paint(cr);
         return 1;
     }
     fn changed(data: ?*anyopaque) void {
@@ -622,19 +636,33 @@ fn rounded(cr: *c.cairo_t, r: Rect, radius: f64) void {
     c.cairo_arc(cr, r.x + rad, r.y + rad, rad, std.math.pi, 1.5 * std.math.pi);
     c.cairo_close_path(cr);
 }
-fn drawImage(cr: *c.cairo_t, image: ?*c.cairo_surface_t, r: Rect, opacity: f64) void {
+fn drawImage(cr: *c.cairo_t, image: ?capture.CapturedImage, r: Rect, opacity: f64) void {
     c.cairo_save(cr);
     defer c.cairo_restore(cr);
     c.cairo_translate(cr, r.x, r.y);
-    if (image) |surface| {
-        c.cairo_scale(cr, r.w / @as(f64, @floatFromInt(c.cairo_image_surface_get_width(surface))), r.h / @as(f64, @floatFromInt(c.cairo_image_surface_get_height(surface))));
-        c.cairo_set_source_surface(cr, surface, 0, 0);
-        c.cairo_paint_with_alpha(cr, opacity);
-    } else {
-        c.cairo_rectangle(cr, 0, 0, r.w, r.h);
-        c.cairo_set_source_rgb(cr, 0.3, 0.3, 0.33);
-        c.cairo_fill(cr);
+    if (image) |img| {
+        const iw: u32 = img.width;
+        const ih: u32 = img.height;
+        if (iw > 0 and ih > 0 and r.w > 0 and r.h > 0) {
+            const dw: u32 = @max(1, @as(u32, @intFromFloat(@round(r.w))));
+            const dh: u32 = @max(1, @as(u32, @intFromFloat(@round(r.h))));
+            const scaled = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(dw), @intCast(dh));
+            if (scaled) |surface| {
+                defer c.cairo_surface_destroy(surface);
+                c.cairo_surface_flush(surface);
+                const dest_pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(surface)));
+                const dest_stride: usize = @intCast(@divTrunc(c.cairo_image_surface_get_stride(surface), 4));
+                capture.scalePixels(img.pixels.ptr, iw, ih, img.stride, dest_pixels, dw, dh, dest_stride, false);
+                c.cairo_surface_mark_dirty(surface);
+                c.cairo_set_source_surface(cr, surface, 0, 0);
+                c.cairo_paint_with_alpha(cr, opacity);
+                return;
+            }
+        }
     }
+    c.cairo_rectangle(cr, 0, 0, r.w, r.h);
+    c.cairo_set_source_rgb(cr, 0.3, 0.3, 0.33);
+    c.cairo_fill(cr);
 }
 
 pub const State = struct { overview: ?*Overview = null, wallpaper: [*:0]const u8 };

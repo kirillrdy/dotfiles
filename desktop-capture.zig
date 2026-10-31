@@ -8,6 +8,17 @@ const cast = c.__zig.cast;
 pub const Rect = struct { x: f64 = 0, y: f64 = 0, w: f64 = 1, h: f64 = 1 };
 pub const Workspace = struct { name: [128:0]u8 = @splat(0) };
 
+pub const CapturedImage = struct {
+    width: u32,
+    height: u32,
+    stride: usize,
+    pixels: []u32,
+
+    pub fn deinit(self: *CapturedImage, allocator: std.mem.Allocator) void {
+        allocator.free(self.pixels);
+    }
+};
+
 pub const Window = struct {
     client: *Client,
     handle: *protocols.ext_foreign_toplevel_handle_v1,
@@ -19,7 +30,7 @@ pub const Window = struct {
     geometry: Rect = .{},
     target: Rect = .{},
     icon: ?*c.GdkPixbuf = null,
-    image: ?*c.cairo_surface_t = null,
+    image: ?CapturedImage = null,
     source: ?*protocols.ext_image_capture_source_v1 = null,
     session: ?*protocols.ext_image_copy_capture_session_v1 = null,
     frame: ?*protocols.ext_image_copy_capture_frame_v1 = null,
@@ -55,7 +66,8 @@ pub const Window = struct {
     }
     fn destroy(self: *Window) void {
         self.stop();
-        if (self.image) |image| c.cairo_surface_destroy(image);
+        if (self.image) |*img| img.deinit(a);
+        self.image = null;
         if (self.icon) |icon| c.g_object_unref(icon);
         c.g_free(self.id);
         c.g_free(self.title);
@@ -391,13 +403,23 @@ fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) 
     protocols.ext_image_copy_capture_frame_v1_destroy(frame);
     w.frame = null;
     const ratio = @min(1.0, 1024.0 / @as(f64, @floatFromInt(@max(w.buffer_width, w.buffer_height))));
-    const width: c_int = @max(1, @as(c_int, @intFromFloat(@as(f64, @floatFromInt(w.buffer_width)) * ratio)));
-    const height: c_int = @max(1, @as(c_int, @intFromFloat(@as(f64, @floatFromInt(w.buffer_height)) * ratio)));
-    if (w.image) |image| if (c.cairo_image_surface_get_width(image) != width or c.cairo_image_surface_get_height(image) != height) {
-        c.cairo_surface_destroy(image);
-        w.image = null;
-    };
-    if (w.image == null) w.image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, width, height);
+    const width: u32 = @max(1, @as(u32, @intFromFloat(@as(f64, @floatFromInt(w.buffer_width)) * ratio)));
+    const height: u32 = @max(1, @as(u32, @intFromFloat(@as(f64, @floatFromInt(w.buffer_height)) * ratio)));
+    if (w.image) |img| {
+        if (img.width != width or img.height != height) {
+            a.free(img.pixels);
+            w.image = null;
+        }
+    }
+    if (w.image == null) {
+        const dest_pixels = a.alloc(u32, @as(usize, width) * height) catch return;
+        w.image = .{
+            .width = width,
+            .height = height,
+            .stride = width,
+            .pixels = dest_pixels,
+        };
+    }
     // GLES renderers may offer ABGR instead of ARGB words.
     // The compositor has finished writing and will not reuse this buffer until
     // the next capture, which damages the entire buffer.
@@ -410,13 +432,11 @@ fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) 
         }
     }
     const is_opaque = w.buffer_format == c.WL_SHM_FORMAT_XRGB8888 or w.buffer_format == c.WL_SHM_FORMAT_XBGR8888;
-    c.cairo_surface_flush(w.image.?);
-    const dest: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(w.image.?)));
-    const dest_stride: usize = @intCast(@divTrunc(c.cairo_image_surface_get_stride(w.image.?), 4));
+    const dest = w.image.?.pixels.ptr;
+    const dest_stride = w.image.?.stride;
     const src: [*]const u32 = @ptrCast(@alignCast(w.mapped.?));
     const src_stride: usize = w.buffer_width;
-    scalePixels(src, w.buffer_width, w.buffer_height, src_stride, dest, @intCast(width), @intCast(height), dest_stride, is_opaque);
-    c.cairo_surface_mark_dirty(w.image.?);
+    scalePixels(src, w.buffer_width, w.buffer_height, src_stride, dest, width, height, dest_stride, is_opaque);
     w.client.changed(w.client.context);
 }
 fn failed(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {

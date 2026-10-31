@@ -3,7 +3,9 @@ const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const p = @import("pipewire");
 const Pod = @import("desktop-audio-pod.zig");
-const Capture = @import("desktop-portal-capture.zig").Capture;
+const portal_capture = @import("desktop-portal-capture.zig");
+const Capture = portal_capture.Capture;
+const Image = portal_capture.Image;
 const cast = c.__zig.cast;
 fn control(loop: *p.pw_loop) struct { methods: *const p.spa_loop_control_methods, data: ?*anyopaque } {
     const iface = cast(p.spa_interface, loop.*.control);
@@ -15,7 +17,7 @@ pub const Stream = struct {
     name: [:0]u8,
     cursor: bool,
     capture: ?*Capture = null,
-    surface: ?*c.cairo_surface_t = null,
+    image: ?*Image = null,
     loop: ?*p.pw_loop = null,
     stream: ?*p.pw_stream = null,
     timer: c.guint = 0,
@@ -45,17 +47,17 @@ pub const Stream = struct {
             ctl.methods.leave.?(ctl.data);
             p.pw_loop_destroy(loop);
         }
-        if (self.surface) |surface| c.cairo_surface_destroy(surface);
+        if (self.image) |img| img.unref();
         self.allocator.free(self.name);
         self.allocator.destroy(self);
     }
-    fn captured(data: ?*anyopaque, surface: ?*c.cairo_surface_t) void {
+    fn captured(data: ?*anyopaque, img: ?*Image) void {
         const self = cast(Stream, data);
-        if (self.surface) |old| c.cairo_surface_destroy(old);
-        self.surface = if (surface) |value| c.cairo_surface_reference(value) else null;
-        if (self.surface) |value| {
-            const width: u32 = @intCast(c.cairo_image_surface_get_width(value));
-            const height: u32 = @intCast(c.cairo_image_surface_get_height(value));
+        if (self.image) |old| old.unref();
+        self.image = if (img) |value| value.ref() else null;
+        if (self.image) |value| {
+            const width: u32 = value.width;
+            const height: u32 = value.height;
             if (self.stream == null) {
                 self.width = width;
                 self.height = height;
@@ -149,14 +151,14 @@ pub const Stream = struct {
         if (dest.chunk == null) return;
         dest.chunk.*.offset = 0;
         dest.chunk.*.size = 0;
-        const surface = self.surface orelse return;
+        const img = self.image orelse return;
         const size = self.width * self.height * 4;
         if (dest.data == null or dest.maxsize < size) {
             self.failed = true;
             return;
         }
-        const src: [*]const u8 = c.cairo_image_surface_get_data(surface);
-        const stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
+        const src: [*]const u8 = img.pixels.ptr;
+        const stride: usize = img.stride;
         const pixels: [*]u8 = @ptrCast(dest.data);
         for (0..self.height) |y| @memcpy(pixels[y * self.width * 4 ..][0 .. self.width * 4], src[y * stride ..][0 .. self.width * 4]);
         dest.chunk.*.size = size;
