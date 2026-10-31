@@ -5,6 +5,7 @@ comptime {
 }
 const apps = @import("desktop-apps.zig");
 const capture = @import("desktop-capture.zig");
+const wallpaper_mod = @import("desktop-wallpaper.zig");
 const c = capture.c;
 const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
@@ -29,7 +30,7 @@ const Overview = struct {
     strip: *c.GtkWidget,
     stage: *c.GtkWidget,
     dash: *c.GtkWidget,
-    wallpaper: ?*c.cairo_surface_t,
+    wallpaper: ?capture.CapturedImage,
     timer: c.guint = 0,
     tick_count: u32 = 0,
     apps_mode: bool = false,
@@ -47,18 +48,75 @@ const Overview = struct {
     workspace_rect: Rect = .{},
     monitor: c.GdkRectangle = .{ .x = 0, .y = 0, .width = 1728, .height = 1080 },
 
+    fn loadWallpaper(path: [*:0]const u8) ?capture.CapturedImage {
+        const span = std.mem.span(path);
+        if (span.len == 0) return null;
+        if (wallpaper_mod.loadImage(a, span)) |decoded| {
+            var dec = decoded;
+            defer dec.deinit(a);
+            const count = @as(usize, dec.width) * dec.height;
+            const u32_pixels = a.alloc(u32, count) catch return null;
+            if (dec.channels == 4) {
+                for (0..count) |i| {
+                    const r = dec.pixels[i * 4 + 0];
+                    const g = dec.pixels[i * 4 + 1];
+                    const b = dec.pixels[i * 4 + 2];
+                    const alpha = dec.pixels[i * 4 + 3];
+                    u32_pixels[i] = (@as(u32, alpha) << 24) | (@as(u32, r) << 16) | (@as(u32, g) << 8) | b;
+                }
+            } else if (dec.channels == 3) {
+                for (0..count) |i| {
+                    const r = dec.pixels[i * 3 + 0];
+                    const g = dec.pixels[i * 3 + 1];
+                    const b = dec.pixels[i * 3 + 2];
+                    u32_pixels[i] = 0xFF000000 | (@as(u32, r) << 16) | (@as(u32, g) << 8) | b;
+                }
+            } else {
+                a.free(u32_pixels);
+                return null;
+            }
+            return .{
+                .width = dec.width,
+                .height = dec.height,
+                .stride = dec.width,
+                .pixels = u32_pixels,
+            };
+        } else |_| {
+            if (c.gdk_pixbuf_new_from_file(path, null)) |pixbuf| {
+                defer c.g_object_unref(pixbuf);
+                const w: u32 = @intCast(c.gdk_pixbuf_get_width(pixbuf));
+                const h: u32 = @intCast(c.gdk_pixbuf_get_height(pixbuf));
+                const n_channels: usize = @intCast(c.gdk_pixbuf_get_n_channels(pixbuf));
+                const rowstride: usize = @intCast(c.gdk_pixbuf_get_rowstride(pixbuf));
+                const pb_pixels = c.gdk_pixbuf_get_pixels(pixbuf);
+                const count = @as(usize, w) * h;
+                const u32_pixels = a.alloc(u32, count) catch return null;
+                var y: usize = 0;
+                while (y < h) : (y += 1) {
+                    const row = pb_pixels + y * rowstride;
+                    var x: usize = 0;
+                    while (x < w) : (x += 1) {
+                        const r = row[x * n_channels + 0];
+                        const g = row[x * n_channels + 1];
+                        const b = row[x * n_channels + 2];
+                        const alpha: u32 = if (n_channels >= 4) row[x * n_channels + 3] else 0xFF;
+                        u32_pixels[y * w + x] = (alpha << 24) | (@as(u32, r) << 16) | (@as(u32, g) << 8) | b;
+                    }
+                }
+                return .{
+                    .width = w,
+                    .height = h,
+                    .stride = w,
+                    .pixels = u32_pixels,
+                };
+            }
+            return null;
+        }
+    }
+
     fn create(application: *c.GtkApplication, path: [*:0]const u8) *Overview {
         const self = a.create(Overview) catch @panic("out of memory");
-        var wallpaper: ?*c.cairo_surface_t = null;
-        if (c.gdk_pixbuf_new_from_file(path, null)) |pixbuf| {
-            defer c.g_object_unref(pixbuf);
-            wallpaper = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, c.gdk_pixbuf_get_width(pixbuf), c.gdk_pixbuf_get_height(pixbuf));
-            const cr = c.cairo_create(wallpaper);
-            defer c.cairo_destroy(cr);
-            c.gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
-            c.cairo_paint(cr);
-        }
-        self.* = .{ .launcher = apps.Launcher.init(application), .strip = c.gtk_drawing_area_new().?, .stage = c.gtk_drawing_area_new().?, .dash = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0).?, .wallpaper = wallpaper };
+        self.* = .{ .launcher = apps.Launcher.init(application), .strip = c.gtk_drawing_area_new().?, .stage = c.gtk_drawing_area_new().?, .dash = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0).?, .wallpaper = loadWallpaper(path) };
         const l = &self.launcher;
         l.bindControls();
         const window = cast(c.GtkWindow, l.window);
@@ -114,7 +172,7 @@ const Overview = struct {
         if (self.client) |client| client.destroy();
         self.client = null;
         self.launcher.deinit();
-        if (self.wallpaper) |image| c.cairo_surface_destroy(image);
+        if (self.wallpaper) |image| a.free(image.pixels);
         a.destroy(self);
     }
     fn present(self: *Overview) void {
@@ -581,16 +639,7 @@ const Overview = struct {
                 c.cairo_set_source_rgb(cr, 1, 1, 1);
                 c.cairo_set_line_width(cr, 2);
                 c.cairo_stroke(cr);
-                c.cairo_arc(cr, r.x + r.w, r.y, 16, 0, 2 * std.math.pi);
-                c.cairo_set_source_rgb(cr, 0.3, 0.3, 0.33);
-                c.cairo_fill(cr);
-                c.cairo_set_source_rgb(cr, 1, 1, 1);
-                c.cairo_set_line_width(cr, 2);
-                c.cairo_move_to(cr, r.x + r.w - 4, r.y - 4);
-                c.cairo_line_to(cr, r.x + r.w + 4, r.y + 4);
-                c.cairo_move_to(cr, r.x + r.w + 4, r.y - 4);
-                c.cairo_line_to(cr, r.x + r.w - 4, r.y + 4);
-                c.cairo_stroke(cr);
+                drawCloseBadge(cr, r.x + r.w, r.y);
             }
             if (window.icon) |icon| {
                 c.cairo_save(cr);
@@ -610,17 +659,82 @@ const Overview = struct {
         c.cairo_clip(cr);
         c.cairo_set_source_rgb(cr, 0.015, 0.235, 0.53);
         c.cairo_paint(cr);
-        if (self.wallpaper) |image| {
-            const iw: f64 = @floatFromInt(c.cairo_image_surface_get_width(image));
-            const ih: f64 = @floatFromInt(c.cairo_image_surface_get_height(image));
-            const scale = @max(r.w / iw, r.h / ih);
-            c.cairo_translate(cr, r.x + (r.w - iw * scale) / 2, r.y + (r.h - ih * scale) / 2);
-            c.cairo_scale(cr, scale, scale);
-            c.cairo_set_source_surface(cr, image, 0, 0);
-            c.cairo_paint(cr);
+        if (self.wallpaper) |img| {
+            const iw: f64 = @floatFromInt(img.width);
+            const ih: f64 = @floatFromInt(img.height);
+            if (iw > 0 and ih > 0 and r.w > 0 and r.h > 0) {
+                const scale = @max(r.w / iw, r.h / ih);
+                const scaled_w = iw * scale;
+                const scaled_h = ih * scale;
+                const dw: u32 = @max(1, @as(u32, @intFromFloat(@round(scaled_w))));
+                const dh: u32 = @max(1, @as(u32, @intFromFloat(@round(scaled_h))));
+                const scaled = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(dw), @intCast(dh));
+                if (scaled) |surface| {
+                    defer c.cairo_surface_destroy(surface);
+                    c.cairo_surface_flush(surface);
+                    const dest_pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(surface)));
+                    const dest_stride: usize = @intCast(@divTrunc(c.cairo_image_surface_get_stride(surface), 4));
+                    capture.scalePixels(img.pixels.ptr, img.width, img.height, img.stride, dest_pixels, dw, dh, dest_stride, false);
+                    c.cairo_surface_mark_dirty(surface);
+                    c.cairo_set_source_surface(cr, surface, r.x + (r.w - scaled_w) / 2, r.y + (r.h - scaled_h) / 2);
+                    c.cairo_paint(cr);
+                }
+            }
         }
     }
 };
+const close_badge_pixels: [32 * 32]u32 = blk: {
+    @setEvalBranchQuota(50000);
+    var buf: [32 * 32]u32 = @splat(0);
+    const bg_r: f64 = 0.3 * 255.0;
+    const bg_g: f64 = 0.3 * 255.0;
+    const bg_b: f64 = 0.33 * 255.0;
+    const radius: f64 = 16.0;
+    for (0..32) |y| {
+        const dy = @as(f64, @floatFromInt(y)) + 0.5 - 16.0;
+        for (0..32) |x| {
+            const dx = @as(f64, @floatFromInt(x)) + 0.5 - 16.0;
+            const dist = @sqrt(dx * dx + dy * dy);
+            if (dist < radius) {
+                const circle_alpha = std.math.clamp(radius - dist, 0.0, 1.0);
+                var r: f64 = bg_r;
+                var g: f64 = bg_g;
+                var b: f64 = bg_b;
+                if (@abs(dx) <= 4.75 and @abs(dy) <= 4.75) {
+                    const d1 = @abs(dx - dy) / 1.41421356237;
+                    const d2 = @abs(dx + dy) / 1.41421356237;
+                    const d_x = @min(d1, d2);
+                    if (d_x <= 1.2) {
+                        const x_alpha = std.math.clamp(1.2 - d_x, 0.0, 1.0);
+                        r = r * (1.0 - x_alpha) + 255.0 * x_alpha;
+                        g = g * (1.0 - x_alpha) + 255.0 * x_alpha;
+                        b = b * (1.0 - x_alpha) + 255.0 * x_alpha;
+                    }
+                }
+                const ir: u32 = @intFromFloat(@round(r));
+                const ig: u32 = @intFromFloat(@round(g));
+                const ib: u32 = @intFromFloat(@round(b));
+                const ia: u32 = @intFromFloat(@round(circle_alpha * 255.0));
+                buf[y * 32 + x] = (ia << 24) | (ir << 16) | (ig << 8) | ib;
+            }
+        }
+    }
+    break :blk buf;
+};
+fn drawCloseBadge(cr: *c.cairo_t, cx: f64, cy: f64) void {
+    const surface = c.cairo_image_surface_create_for_data(
+        @ptrCast(@constCast(&close_badge_pixels)),
+        c.CAIRO_FORMAT_ARGB32,
+        32,
+        32,
+        32 * 4,
+    );
+    if (surface) |s| {
+        defer c.cairo_surface_destroy(s);
+        c.cairo_set_source_surface(cr, s, cx - 16, cy - 16);
+        c.cairo_paint(cr);
+    }
+}
 fn matchesApp(app_id: [*c]const u8, desktop_id: [*c]const u8) bool {
     if (app_id == null or desktop_id == null) return false;
     const id = std.mem.span(desktop_id);
