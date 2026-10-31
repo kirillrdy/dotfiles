@@ -330,6 +330,62 @@ const frame_listener = protocols.ext_image_copy_capture_frame_v1_listener{ .tran
 fn transform(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {}
 fn damage(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: i32, _: i32, _: i32, _: i32) callconv(.c) void {}
 fn presentation(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {}
+fn scalePixels(
+    src: [*]const u32,
+    sw_u: u32,
+    sh_u: u32,
+    src_stride: usize,
+    dest: [*]u32,
+    dw_u: u32,
+    dh_u: u32,
+    dest_stride: usize,
+    is_opaque: bool,
+) void {
+    const sw: f64 = @floatFromInt(sw_u);
+    const sh: f64 = @floatFromInt(sh_u);
+    const dw: f64 = @floatFromInt(dw_u);
+    const dh: f64 = @floatFromInt(dh_u);
+    const scale_x = sw / dw;
+    const scale_y = sh / dh;
+
+    for (0..dh_u) |dy| {
+        const sy = (@as(f64, @floatFromInt(dy)) + 0.5) * scale_y - 0.5;
+        const y0: usize = @intFromFloat(std.math.clamp(sy, 0, sh - 1));
+        const y1 = @min(y0 + 1, sh_u - 1);
+        const fy = std.math.clamp(sy - @as(f64, @floatFromInt(y0)), 0, 1);
+
+        for (0..dw_u) |dx| {
+            const sx = (@as(f64, @floatFromInt(dx)) + 0.5) * scale_x - 0.5;
+            const x0: usize = @intFromFloat(std.math.clamp(sx, 0, sw - 1));
+            const x1 = @min(x0 + 1, sw_u - 1);
+            const fx = std.math.clamp(sx - @as(f64, @floatFromInt(x0)), 0, 1);
+
+            const p00 = src[y0 * src_stride + x0];
+            const p10 = src[y0 * src_stride + x1];
+            const p01 = src[y1 * src_stride + x0];
+            const p11 = src[y1 * src_stride + x1];
+
+            const w00 = (1.0 - fx) * (1.0 - fy);
+            const w10 = fx * (1.0 - fy);
+            const w01 = (1.0 - fx) * fy;
+            const w11 = fx * fy;
+
+            if (is_opaque) {
+                const r = @round(@as(f64, @floatFromInt((p00 >> 16) & 0xff)) * w00 + @as(f64, @floatFromInt((p10 >> 16) & 0xff)) * w10 + @as(f64, @floatFromInt((p01 >> 16) & 0xff)) * w01 + @as(f64, @floatFromInt((p11 >> 16) & 0xff)) * w11);
+                const g = @round(@as(f64, @floatFromInt((p00 >> 8) & 0xff)) * w00 + @as(f64, @floatFromInt((p10 >> 8) & 0xff)) * w10 + @as(f64, @floatFromInt((p01 >> 8) & 0xff)) * w01 + @as(f64, @floatFromInt((p11 >> 8) & 0xff)) * w11);
+                const b = @round(@as(f64, @floatFromInt(p00 & 0xff)) * w00 + @as(f64, @floatFromInt(p10 & 0xff)) * w10 + @as(f64, @floatFromInt(p01 & 0xff)) * w01 + @as(f64, @floatFromInt(p11 & 0xff)) * w11);
+                dest[dy * dest_stride + dx] = 0xff000000 | (@as(u32, @intFromFloat(r)) << 16) | (@as(u32, @intFromFloat(g)) << 8) | @as(u32, @intFromFloat(b));
+            } else {
+                const alpha = @round(@as(f64, @floatFromInt((p00 >> 24) & 0xff)) * w00 + @as(f64, @floatFromInt((p10 >> 24) & 0xff)) * w10 + @as(f64, @floatFromInt((p01 >> 24) & 0xff)) * w01 + @as(f64, @floatFromInt((p11 >> 24) & 0xff)) * w11);
+                const r = @round(@as(f64, @floatFromInt((p00 >> 16) & 0xff)) * w00 + @as(f64, @floatFromInt((p10 >> 16) & 0xff)) * w10 + @as(f64, @floatFromInt((p01 >> 16) & 0xff)) * w01 + @as(f64, @floatFromInt((p11 >> 16) & 0xff)) * w11);
+                const g = @round(@as(f64, @floatFromInt((p00 >> 8) & 0xff)) * w00 + @as(f64, @floatFromInt((p10 >> 8) & 0xff)) * w10 + @as(f64, @floatFromInt((p01 >> 8) & 0xff)) * w01 + @as(f64, @floatFromInt((p11 >> 8) & 0xff)) * w11);
+                const b = @round(@as(f64, @floatFromInt(p00 & 0xff)) * w00 + @as(f64, @floatFromInt(p10 & 0xff)) * w10 + @as(f64, @floatFromInt(p01 & 0xff)) * w01 + @as(f64, @floatFromInt(p11 & 0xff)) * w11);
+                dest[dy * dest_stride + dx] = (@as(u32, @intFromFloat(alpha)) << 24) | (@as(u32, @intFromFloat(r)) << 16) | (@as(u32, @intFromFloat(g)) << 8) | @as(u32, @intFromFloat(b));
+            }
+        }
+    }
+}
+
 fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) callconv(.c) void {
     const w = cast(Window, data);
     protocols.ext_image_copy_capture_frame_v1_destroy(frame);
@@ -342,7 +398,7 @@ fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) 
         w.image = null;
     };
     if (w.image == null) w.image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, width, height);
-    // Cairo uses native ARGB words; GLES renderers may offer ABGR instead.
+    // GLES renderers may offer ABGR instead of ARGB words.
     // The compositor has finished writing and will not reuse this buffer until
     // the next capture, which damages the entire buffer.
     const swapped = w.buffer_format == c.WL_SHM_FORMAT_ABGR8888 or w.buffer_format == c.WL_SHM_FORMAT_XBGR8888;
@@ -354,14 +410,13 @@ fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) 
         }
     }
     const is_opaque = w.buffer_format == c.WL_SHM_FORMAT_XRGB8888 or w.buffer_format == c.WL_SHM_FORMAT_XBGR8888;
-    const source = c.cairo_image_surface_create_for_data(@ptrCast(w.mapped), if (is_opaque) c.CAIRO_FORMAT_RGB24 else c.CAIRO_FORMAT_ARGB32, @intCast(w.buffer_width), @intCast(w.buffer_height), @intCast(w.buffer_width * 4));
-    defer c.cairo_surface_destroy(source);
-    const cr = c.cairo_create(w.image);
-    defer c.cairo_destroy(cr);
-    c.cairo_scale(cr, @as(f64, @floatFromInt(width)) / @as(f64, @floatFromInt(w.buffer_width)), @as(f64, @floatFromInt(height)) / @as(f64, @floatFromInt(w.buffer_height)));
-    c.cairo_set_operator(cr, c.CAIRO_OPERATOR_SOURCE);
-    c.cairo_set_source_surface(cr, source, 0, 0);
-    c.cairo_paint(cr);
+    c.cairo_surface_flush(w.image.?);
+    const dest: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(w.image.?)));
+    const dest_stride: usize = @intCast(@divTrunc(c.cairo_image_surface_get_stride(w.image.?), 4));
+    const src: [*]const u32 = @ptrCast(@alignCast(w.mapped.?));
+    const src_stride: usize = w.buffer_width;
+    scalePixels(src, w.buffer_width, w.buffer_height, src_stride, dest, @intCast(width), @intCast(height), dest_stride, is_opaque);
+    c.cairo_surface_mark_dirty(w.image.?);
     w.client.changed(w.client.context);
 }
 fn failed(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {
