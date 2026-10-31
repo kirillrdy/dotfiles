@@ -368,24 +368,24 @@ fn drawPreview(widget: *c.GtkWidget, cr: *c.cairo_t, _: c.gpointer) callconv(.c)
             const width: f64 = @floatFromInt(width_i);
             const height: f64 = @floatFromInt(height_i);
             const scale = @min(@as(f64, @floatFromInt(preview_width)) / width, @as(f64, @floatFromInt(preview_height)) / height);
-            const dw: u32 = @intFromFloat(@max(1.0, @round(width * scale)));
-            const dh: u32 = @intFromFloat(@max(1.0, @round(height * scale)));
+            const ox = (@as(f64, @floatFromInt(c.gtk_widget_get_allocated_width(widget))) - width * scale) / 2;
+            const oy = (@as(f64, @floatFromInt(c.gtk_widget_get_allocated_height(widget))) - height * scale) / 2;
 
-            const scaled = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(dw), @intCast(dh)) orelse return 0;
-            defer c.cairo_surface_destroy(scaled);
+            c.cairo_save(cr);
+            defer c.cairo_restore(cr);
+            c.cairo_translate(cr, ox, oy);
+            c.cairo_scale(cr, scale, scale);
 
-            c.cairo_surface_flush(scaled);
-            const src_pixels: [*]const u32 = img.pixels.ptr;
-            const src_stride: usize = img.stride;
-            const dest_pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(scaled)));
-            const dest_stride: usize = @intCast(@divTrunc(c.cairo_image_surface_get_stride(scaled), 4));
+            const surface = c.cairo_image_surface_create_for_data(
+                @ptrCast(@alignCast(img.pixels.ptr)),
+                c.CAIRO_FORMAT_ARGB32,
+                @intCast(width_i),
+                @intCast(height_i),
+                @intCast(img.stride * 4),
+            ) orelse return 0;
+            defer c.cairo_surface_destroy(surface);
 
-            capture.scalePixels(src_pixels, width_i, height_i, src_stride, dest_pixels, dw, dh, dest_stride, false);
-            c.cairo_surface_mark_dirty(scaled);
-
-            const ox = (@as(f64, @floatFromInt(c.gtk_widget_get_allocated_width(widget))) - @as(f64, @floatFromInt(dw))) / 2;
-            const oy = (@as(f64, @floatFromInt(c.gtk_widget_get_allocated_height(widget))) - @as(f64, @floatFromInt(dh))) / 2;
-            c.cairo_set_source_surface(cr, scaled, ox, oy);
+            c.cairo_set_source_surface(cr, surface, 0, 0);
             c.cairo_paint(cr);
             return 0;
         }

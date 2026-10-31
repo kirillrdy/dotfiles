@@ -31,6 +31,7 @@ const Overview = struct {
     stage: *c.GtkWidget,
     dash: *c.GtkWidget,
     wallpaper: ?capture.CapturedImage,
+    wallpaper_surface: ?*c.cairo_surface_t = null,
     timer: c.guint = 0,
     tick_count: u32 = 0,
     apps_mode: bool = false,
@@ -116,7 +117,25 @@ const Overview = struct {
 
     fn create(application: *c.GtkApplication, path: [*:0]const u8) *Overview {
         const self = a.create(Overview) catch @panic("out of memory");
-        self.* = .{ .launcher = apps.Launcher.init(application), .strip = c.gtk_drawing_area_new().?, .stage = c.gtk_drawing_area_new().?, .dash = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0).?, .wallpaper = loadWallpaper(path) };
+        const wp = loadWallpaper(path);
+        var wp_surf: ?*c.cairo_surface_t = null;
+        if (wp) |img| {
+            wp_surf = c.cairo_image_surface_create_for_data(
+                @ptrCast(@alignCast(img.pixels.ptr)),
+                c.CAIRO_FORMAT_ARGB32,
+                @intCast(img.width),
+                @intCast(img.height),
+                @intCast(img.stride * 4),
+            );
+        }
+        self.* = .{
+            .launcher = apps.Launcher.init(application),
+            .strip = c.gtk_drawing_area_new().?,
+            .stage = c.gtk_drawing_area_new().?,
+            .dash = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0).?,
+            .wallpaper = wp,
+            .wallpaper_surface = wp_surf,
+        };
         const l = &self.launcher;
         l.bindControls();
         const window = cast(c.GtkWindow, l.window);
@@ -172,6 +191,7 @@ const Overview = struct {
         if (self.client) |client| client.destroy();
         self.client = null;
         self.launcher.deinit();
+        if (self.wallpaper_surface) |surf| c.cairo_surface_destroy(surf);
         if (self.wallpaper) |image| a.free(image.pixels);
         a.destroy(self);
     }
@@ -660,23 +680,14 @@ const Overview = struct {
         c.cairo_set_source_rgb(cr, 0.015, 0.235, 0.53);
         c.cairo_paint(cr);
         if (self.wallpaper) |img| {
-            const iw: f64 = @floatFromInt(img.width);
-            const ih: f64 = @floatFromInt(img.height);
-            if (iw > 0 and ih > 0 and r.w > 0 and r.h > 0) {
-                const scale = @max(r.w / iw, r.h / ih);
-                const scaled_w = iw * scale;
-                const scaled_h = ih * scale;
-                const dw: u32 = @max(1, @as(u32, @intFromFloat(@round(scaled_w))));
-                const dh: u32 = @max(1, @as(u32, @intFromFloat(@round(scaled_h))));
-                const scaled = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(dw), @intCast(dh));
-                if (scaled) |surface| {
-                    defer c.cairo_surface_destroy(surface);
-                    c.cairo_surface_flush(surface);
-                    const dest_pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(surface)));
-                    const dest_stride: usize = @intCast(@divTrunc(c.cairo_image_surface_get_stride(surface), 4));
-                    capture.scalePixels(img.pixels.ptr, img.width, img.height, img.stride, dest_pixels, dw, dh, dest_stride, false);
-                    c.cairo_surface_mark_dirty(surface);
-                    c.cairo_set_source_surface(cr, surface, r.x + (r.w - scaled_w) / 2, r.y + (r.h - scaled_h) / 2);
+            if (self.wallpaper_surface) |surface| {
+                const iw: f64 = @floatFromInt(img.width);
+                const ih: f64 = @floatFromInt(img.height);
+                if (iw > 0 and ih > 0 and r.w > 0 and r.h > 0) {
+                    const scale = @max(r.w / iw, r.h / ih);
+                    c.cairo_translate(cr, r.x + (r.w - iw * scale) / 2, r.y + (r.h - ih * scale) / 2);
+                    c.cairo_scale(cr, scale, scale);
+                    c.cairo_set_source_surface(cr, surface, 0, 0);
                     c.cairo_paint(cr);
                 }
             }
@@ -755,20 +766,20 @@ fn drawImage(cr: *c.cairo_t, image: ?capture.CapturedImage, r: Rect, opacity: f6
     defer c.cairo_restore(cr);
     c.cairo_translate(cr, r.x, r.y);
     if (image) |img| {
-        const iw: u32 = img.width;
-        const ih: u32 = img.height;
+        const iw: f64 = @floatFromInt(img.width);
+        const ih: f64 = @floatFromInt(img.height);
         if (iw > 0 and ih > 0 and r.w > 0 and r.h > 0) {
-            const dw: u32 = @max(1, @as(u32, @intFromFloat(@round(r.w))));
-            const dh: u32 = @max(1, @as(u32, @intFromFloat(@round(r.h))));
-            const scaled = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(dw), @intCast(dh));
-            if (scaled) |surface| {
-                defer c.cairo_surface_destroy(surface);
-                c.cairo_surface_flush(surface);
-                const dest_pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(surface)));
-                const dest_stride: usize = @intCast(@divTrunc(c.cairo_image_surface_get_stride(surface), 4));
-                capture.scalePixels(img.pixels.ptr, iw, ih, img.stride, dest_pixels, dw, dh, dest_stride, false);
-                c.cairo_surface_mark_dirty(surface);
-                c.cairo_set_source_surface(cr, surface, 0, 0);
+            c.cairo_scale(cr, r.w / iw, r.h / ih);
+            const surface = c.cairo_image_surface_create_for_data(
+                @ptrCast(@alignCast(img.pixels.ptr)),
+                c.CAIRO_FORMAT_ARGB32,
+                @intCast(img.width),
+                @intCast(img.height),
+                @intCast(img.stride * 4),
+            );
+            if (surface) |s| {
+                defer c.cairo_surface_destroy(s);
+                c.cairo_set_source_surface(cr, s, 0, 0);
                 c.cairo_paint_with_alpha(cr, opacity);
                 return;
             }
