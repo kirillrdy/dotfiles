@@ -119,6 +119,36 @@ fn testPngEncoding(allocator: std.mem.Allocator) !void {
     }
 }
 
+fn testCaptureFormats(allocator: std.mem.Allocator) !void {
+    const endian = @import("builtin").cpu.arch.endian();
+    for ([_]u32{ c.WL_SHM_FORMAT_XRGB8888, c.WL_SHM_FORMAT_ARGB8888, c.WL_SHM_FORMAT_XBGR8888, c.WL_SHM_FORMAT_ABGR8888 }) |format| {
+        var pixels: [24]u8 = @splat(0xa5); // Two rows, including stride padding.
+        const swapped = format == c.WL_SHM_FORMAT_XBGR8888 or format == c.WL_SHM_FORMAT_ABGR8888;
+        for (0..2) |y| for (0..2) |x| {
+            std.mem.writeInt(u32, pixels[y * 12 + x * 4 ..][0..4], if (swapped) 0x7f332211 else 0x7f112233, endian);
+        };
+        var frame: screenshot.FrameCapture = .{
+            .shm = undefined,
+            .frame = undefined,
+            .format = format,
+            .width = 2,
+            .height = 2,
+            .stride = 12,
+            .memory = &pixels,
+            .length = pixels.len,
+            .y_invert = true,
+        };
+        screenshot.FrameCapture.listener.ready.?(&frame, null, 0, 0, 0);
+        try std.testing.expect(frame.done and !frame.failed and frame.y_invert);
+        try std.testing.expectEqual(@as(u32, if (format == c.WL_SHM_FORMAT_XRGB8888 or format == c.WL_SHM_FORMAT_XBGR8888) c.WL_SHM_FORMAT_XRGB8888 else c.WL_SHM_FORMAT_ARGB8888), frame.format);
+        for (0..2) |y| {
+            for (0..2) |x| try std.testing.expectEqual(@as(u32, 0x7f112233), std.mem.readInt(u32, pixels[y * 12 + x * 4 ..][0..4], endian));
+            try std.testing.expectEqualSlices(u8, &.{ 0xa5, 0xa5, 0xa5, 0xa5 }, pixels[y * 12 + 8 ..][0..4]);
+        }
+        try roundTrip(allocator, .{ .pixels = &pixels, .width = 2, .height = 2, .stride = 12, .y_invert = true });
+    }
+}
+
 pub fn main(init: std.process.Init) !void {
     _ = init;
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -127,6 +157,7 @@ pub fn main(init: std.process.Init) !void {
     try testGeometryParsing();
     try testOptionsParsing();
     try testPngEncoding(arena.allocator());
+    try testCaptureFormats(arena.allocator());
 
     std.debug.print("desktop-screenshot: geometry parsing, CLI options, Zig PNG encoding, independent RGB decoding, inverted rows, padding and crops passed\n", .{});
 }

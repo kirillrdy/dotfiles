@@ -262,7 +262,8 @@ pub const FrameCapture = struct {
     fn onBuffer(data: ?*anyopaque, frame: ?*protocols.zwlr_screencopy_frame_v1, format: u32, width: u32, height: u32, stride: u32) callconv(.c) void {
         const self: *FrameCapture = @ptrCast(@alignCast(data));
         if (self.buffer != null or width == 0 or height == 0 or width > 16384 or height > 16384 or stride < width * 4 or @as(u64, stride) * height > 256 * 1024 * 1024 or
-            (format != c.WL_SHM_FORMAT_ARGB8888 and format != c.WL_SHM_FORMAT_XRGB8888))
+            (format != c.WL_SHM_FORMAT_ARGB8888 and format != c.WL_SHM_FORMAT_XRGB8888 and
+                format != c.WL_SHM_FORMAT_ABGR8888 and format != c.WL_SHM_FORMAT_XBGR8888))
         {
             self.failed = true;
             return;
@@ -320,6 +321,19 @@ pub const FrameCapture = struct {
 
     fn onReady(data: ?*anyopaque, _: ?*protocols.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {
         const self: *FrameCapture = @ptrCast(@alignCast(data));
+        // GPU renderers can offer XBGR/ABGR instead of XRGB/ARGB. Normalize
+        // once here so PNG, clipboard, portal images and color picking agree.
+        if (self.memory) |memory| {
+            if (self.format == c.WL_SHM_FORMAT_XBGR8888 or self.format == c.WL_SHM_FORMAT_ABGR8888) {
+                for (0..self.height) |y| for (0..self.width) |x| {
+                    const pixel = memory[y * self.stride + x * 4 ..][0..4];
+                    const value = std.mem.readInt(u32, pixel, @import("builtin").cpu.arch.endian());
+                    const swapped = (value & 0xff00ff00) | ((value & 0xff) << 16) | ((value >> 16) & 0xff);
+                    std.mem.writeInt(u32, pixel, swapped, @import("builtin").cpu.arch.endian());
+                };
+                self.format = if (self.format == c.WL_SHM_FORMAT_XBGR8888) c.WL_SHM_FORMAT_XRGB8888 else c.WL_SHM_FORMAT_ARGB8888;
+            }
+        }
         self.done = true;
     }
 
