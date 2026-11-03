@@ -11,4 +11,5 @@ test {
     _ = @import("desktop-osd-view.zig");
     _ = @import("desktop-screenshot.zig");
     _ = @import("desktop-png.zig");
+    _ = @import("desktop-raster.zig");
 }

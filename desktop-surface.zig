@@ -1,10 +1,11 @@
-//! Native Wayland layer surfaces with Cairo SHM rendering and optional input.
+//! Native Wayland layer surfaces with pixel or Cairo SHM rendering and optional input.
 //! Each client has a private connection, driven by GLib rather than GDK.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const p = @import("desktop-protocols.zig");
 const input = @import("desktop-input.zig");
+const raster = @import("desktop-raster.zig");
 const a = std.heap.page_allocator;
 const Proxy = c.wl_proxy;
 const cast = c.__zig.cast;
@@ -364,6 +365,10 @@ pub const Options = struct {
     keyboard: enum(u32) { none, exclusive, on_demand } = .none,
 };
 pub const Paint = *const fn (?*anyopaque, *c.cairo_t, f64, f64) void;
+pub const Pixels = raster.Buffer;
+/// Cleared physical pixels, writable only for the duration of the callback.
+pub const PixelPaint = *const fn (?*anyopaque, Pixels) void;
+pub const Painter = union(enum) { cairo: Paint, pixels: PixelPaint };
 
 /// A small SHM cursor keeps interactive clients independent of GTK cursor APIs.
 pub fn crosshair(owner: *Surface, cursor: *Proxy, pointer: *Proxy, serial: u32) !void {
@@ -371,26 +376,8 @@ pub fn crosshair(owner: *Surface, cursor: *Proxy, pointer: *Proxy, serial: u32) 
     const buffer = try Buffer.create(owner, 24 * scale, 24 * scale);
     buffer.owner = null;
     errdefer buffer.destroy();
-    const image = c.cairo_image_surface_create_for_data(buffer.memory, c.CAIRO_FORMAT_ARGB32, @intCast(buffer.width), @intCast(buffer.height), @intCast(buffer.width * 4)).?;
-    defer c.cairo_surface_destroy(image);
-    if (c.cairo_surface_status(image) != c.CAIRO_STATUS_SUCCESS) return error.CairoSurface;
-    c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-    const cr = c.cairo_create(image).?;
-    defer c.cairo_destroy(cr);
-    c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
-    c.cairo_paint(cr);
-    c.cairo_set_operator(cr, c.CAIRO_OPERATOR_OVER);
-    for ([_]f64{ 4, 2 }, 0..) |width, i| {
-        const color: f64 = if (i == 0) 0 else 1;
-        c.cairo_set_source_rgba(cr, color, color, color, 1);
-        c.cairo_set_line_width(cr, width);
-        c.cairo_move_to(cr, 12, 2);
-        c.cairo_line_to(cr, 12, 22);
-        c.cairo_move_to(cr, 2, 12);
-        c.cairo_line_to(cr, 22, 12);
-        c.cairo_stroke(cr);
-    }
-    c.cairo_surface_flush(image);
+    const pixels: [*]u32 = @ptrCast(@alignCast(buffer.memory));
+    raster.crosshair(pixels[0 .. buffer.size / 4], scale);
     send(cursor, 8, .{@as(i32, @intCast(scale))});
     send(cursor, 1, .{ buffer.proxy, @as(i32, 0), @as(i32, 0) });
     send(cursor, 2, .{ @as(i32, 0), @as(i32, 0), @as(i32, 24), @as(i32, 24) });
@@ -404,7 +391,7 @@ pub const Surface = struct {
     client: *Client,
     output: *Output,
     options: Options,
-    paint: Paint,
+    paint: Painter,
     data: ?*anyopaque,
     input: input.Events = .{},
     proxy: ?*Proxy = null,
@@ -416,6 +403,12 @@ pub const Surface = struct {
     buffers: [2]?*Buffer = .{ null, null },
 
     pub fn create(output: *Output, options: Options, paint: Paint, data: ?*anyopaque) !*Surface {
+        return createWithPainter(output, options, .{ .cairo = paint }, data);
+    }
+    pub fn createPixels(output: *Output, options: Options, paint: PixelPaint, data: ?*anyopaque) !*Surface {
+        return createWithPainter(output, options, .{ .pixels = paint }, data);
+    }
+    fn createWithPainter(output: *Output, options: Options, paint: Painter, data: ?*anyopaque) !*Surface {
         const self = try a.create(Surface);
         errdefer a.destroy(self);
         self.* = .{ .client = output.client, .output = output, .options = options, .paint = paint, .data = data };
@@ -517,17 +510,26 @@ pub const Surface = struct {
             break;
         }
         const buffer = available orelse return; // release retries the newest state.
-        const image = c.cairo_image_surface_create_for_data(buffer.memory, c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height), @intCast(width * 4)) orelse return error.CairoSurface;
-        defer c.cairo_surface_destroy(image);
-        if (c.cairo_surface_status(image) != c.CAIRO_STATUS_SUCCESS) return error.CairoSurface;
-        c.cairo_surface_set_device_scale(image, @floatFromInt(self.output.scale), @floatFromInt(self.output.scale));
-        const cr = c.cairo_create(image).?;
-        defer c.cairo_destroy(cr);
-        c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
-        c.cairo_paint(cr);
-        c.cairo_set_operator(cr, c.CAIRO_OPERATOR_OVER);
-        self.paint(self.data, cr, @floatFromInt(self.width), @floatFromInt(self.height));
-        c.cairo_surface_flush(image);
+        switch (self.paint) {
+            .pixels => |paint| {
+                const pixels: [*]u32 = @ptrCast(@alignCast(buffer.memory));
+                @memset(pixels[0 .. buffer.size / 4], 0);
+                paint(self.data, .{ .pixels = pixels[0 .. buffer.size / 4], .width = width, .height = height });
+            },
+            .cairo => |paint| {
+                const image = c.cairo_image_surface_create_for_data(buffer.memory, c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height), @intCast(width * 4)) orelse return error.CairoSurface;
+                defer c.cairo_surface_destroy(image);
+                if (c.cairo_surface_status(image) != c.CAIRO_STATUS_SUCCESS) return error.CairoSurface;
+                c.cairo_surface_set_device_scale(image, @floatFromInt(self.output.scale), @floatFromInt(self.output.scale));
+                const cr = c.cairo_create(image).?;
+                defer c.cairo_destroy(cr);
+                c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
+                c.cairo_paint(cr);
+                c.cairo_set_operator(cr, c.CAIRO_OPERATOR_OVER);
+                paint(self.data, cr, @floatFromInt(self.width), @floatFromInt(self.height));
+                c.cairo_surface_flush(image);
+            },
+        }
         send(self.proxy.?, 8, .{@as(i32, @intCast(self.output.scale))});
         send(self.proxy.?, 1, .{ buffer.proxy, @as(i32, 0), @as(i32, 0) });
         send(self.proxy.?, 2, .{ @as(i32, 0), @as(i32, 0), @as(i32, @intCast(self.width)), @as(i32, @intCast(self.height)) });
@@ -583,4 +585,36 @@ test "passive clients do not bind input seats or accept interactive surfaces" {
     defer surface.destroy();
     try std.testing.expectError(error.InputNotEnabled, surface.show());
     try std.testing.expect(surface.proxy == null);
+}
+
+test "native cursor matches Cairo strokes and transparency at every output scale" {
+    for (1..9) |value| {
+        const scale: u32 = @intCast(value);
+        const size = 24 * scale;
+        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(size), @intCast(size)).?;
+        defer c.cairo_surface_destroy(image);
+        c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
+        const cr = c.cairo_create(image).?;
+        defer c.cairo_destroy(cr);
+        c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
+        c.cairo_paint(cr);
+        c.cairo_set_operator(cr, c.CAIRO_OPERATOR_OVER);
+        for ([_]f64{ 4, 2 }, 0..) |width, i| {
+            const color: f64 = if (i == 0) 0 else 1;
+            c.cairo_set_source_rgba(cr, color, color, color, 1);
+            c.cairo_set_line_width(cr, width);
+            c.cairo_move_to(cr, 12, 2);
+            c.cairo_line_to(cr, 12, 22);
+            c.cairo_move_to(cr, 2, 12);
+            c.cairo_line_to(cr, 22, 12);
+            c.cairo_stroke(cr);
+        }
+        c.cairo_surface_flush(image);
+
+        const expected: [*]const u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
+        const pixels = try std.testing.allocator.alloc(u32, size * size);
+        defer std.testing.allocator.free(pixels);
+        raster.crosshair(pixels, scale);
+        try std.testing.expectEqualSlices(u32, expected[0..pixels.len], pixels);
+    }
 }
