@@ -13,4 +13,5 @@ test {
     _ = @import("desktop-png.zig");
     _ = @import("desktop-raster.zig");
     _ = @import("desktop-text.zig");
+    _ = @import("desktop-notification-banner.zig");
 }

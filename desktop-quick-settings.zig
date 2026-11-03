@@ -660,7 +660,7 @@ pub const Controls = struct {
         if (!self.dead) {
             const executable: [*:0]const u8 = if (c.g_getenv("DESKTOP_POWER_HELPER")) |value| @ptrCast(value) else "desktop-zig";
             const argv = [_:null]?[*:0]const u8{ executable, "screenshot" };
-            if (c.g_subprocess_newv(@ptrCast(&argv), c.G_SUBPROCESS_FLAGS_NONE, null)) |process| c.g_object_unref(process);
+            @import("desktop-command.zig").launch("Screenshot", @ptrCast(&argv));
         }
         self.release();
         return 0;

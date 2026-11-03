@@ -12,6 +12,7 @@ extern const wl_keyboard_interface: c.wl_interface;
 extern const wl_surface_interface: c.wl_interface;
 
 pub const Events = struct {
+    leave: ?*const fn (?*anyopaque, *native.Surface) void = null,
     motion: ?*const fn (?*anyopaque, *native.Surface, f64, f64) void = null,
     button: ?*const fn (?*anyopaque, *native.Surface, u32, bool, f64, f64) void = null,
     key: ?*const fn (?*anyopaque, *native.Surface, u32, bool) void = null,
@@ -46,6 +47,7 @@ pub const Seat = struct {
         return self;
     }
     pub fn destroy(self: *Seat) void {
+        self.leaveFocus();
         if (self.cursor) |proxy| releaseProxy(proxy, 0, 1);
         if (self.pointer) |proxy| releaseProxy(proxy, 1, 3);
         if (self.keyboard) |proxy| releaseProxy(proxy, 0, 3);
@@ -72,6 +74,7 @@ pub const Seat = struct {
             self.pointer = self.device(0, &wl_pointer_interface);
             listen(self.pointer.?, &pointer_listener, self);
         } else if (flags & 1 == 0 and self.pointer != null) {
+            self.leaveFocus();
             releaseProxy(self.pointer.?, 1, 3);
             self.pointer = null;
             self.pointer_focus = null;
@@ -101,12 +104,17 @@ pub const Seat = struct {
                 const compositor = self.client.compositor.?;
                 self.cursor = c.wl_proxy_marshal_flags(compositor, 0, &wl_surface_interface, c.wl_proxy_get_version(compositor), 0, @as(?*anyopaque, null));
             }
-            if (self.cursor) |cursor| native.crosshair(surface, cursor, pointer, serial) catch |err| std.log.warn("selection cursor: {s}", .{@errorName(err)});
+            if (self.cursor) |cursor| native.setCursor(surface, cursor, pointer, serial) catch |err| std.log.warn("native cursor: {s}", .{@errorName(err)});
             if (surface.input.motion) |callback| callback(surface.data, surface, self.x, self.y);
         }
     }
     fn leave(data: ?*anyopaque, _: *Proxy, _: u32, _: ?*Proxy) callconv(.c) void {
-        cast(Seat, data).pointer_focus = null;
+        cast(Seat, data).leaveFocus();
+    }
+    fn leaveFocus(self: *Seat) void {
+        const surface = self.pointer_focus orelse return;
+        self.pointer_focus = null;
+        if (surface.input.leave) |callback| callback(surface.data, surface);
     }
     fn motion(data: ?*anyopaque, _: *Proxy, _: u32, x: i32, y: i32) callconv(.c) void {
         const self = cast(Seat, data);

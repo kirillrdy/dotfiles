@@ -6,7 +6,7 @@ const c = @import("desktop-gtk.zig");
 pub const libc = @import("desktop-libc.zig");
 const panel = @import("desktop-panel.zig");
 const wallpaper = @import("desktop-wallpaper.zig");
-const notifications = @import("desktop-notifications.zig");
+pub const notifications = @import("desktop-notifications.zig");
 pub const osd = @import("desktop-osd.zig");
 pub const polkit = @import("desktop-polkit.zig");
 const overview = @import("desktop-overview.zig");
@@ -296,3 +296,4 @@ test {
 pub const network_editor = @import("desktop-network-editor.zig");
 
 pub const session_actions = @import("desktop-session.zig");
+pub const commands = @import("desktop-command.zig");

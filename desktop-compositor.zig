@@ -1152,14 +1152,12 @@ const Keyboard = struct {
         if (self.s.keyboards.items.len > 0) c.wlr_seat_set_keyboard(self.s.seat, self.s.keyboards.items[0].wlr);
     }
 };
-// posix_spawn avoids running allocator or GTK code after fork in this threaded process.
+// GIO launches and observes helpers without blocking the compositor thread.
 fn launch(comptime command: [:0]const u8) void {
-    const gtk = @import("desktop-gtk.zig");
-    _ = gtk.g_spawn_command_line_async("/proc/self/exe " ++ command, null);
+    @import("desktop-command.zig").commandLine(command, "/proc/self/exe " ++ command);
 }
 fn launchTerminal() void {
-    const gtk = @import("desktop-gtk.zig");
-    _ = gtk.g_spawn_command_line_async("ghostty", null);
+    @import("desktop-command.zig").commandLine("Terminal", "ghostty");
 }
 
 const Lock = struct {

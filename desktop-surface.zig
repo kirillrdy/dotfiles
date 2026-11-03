@@ -363,6 +363,8 @@ pub const Options = struct {
     left_margin: i32 = 0,
     interactive: bool = false,
     keyboard: enum(u32) { none, exclusive, on_demand } = .none,
+    cursor: enum { crosshair, arrow } = .crosshair,
+    exclusive_zone: i32 = -1,
 };
 pub const Paint = *const fn (?*anyopaque, *c.cairo_t, f64, f64) void;
 pub const Pixels = raster.Buffer;
@@ -371,17 +373,26 @@ pub const PixelPaint = *const fn (?*anyopaque, Pixels) void;
 pub const Painter = union(enum) { cairo: Paint, pixels: PixelPaint };
 
 /// A small SHM cursor keeps interactive clients independent of GTK cursor APIs.
-pub fn crosshair(owner: *Surface, cursor: *Proxy, pointer: *Proxy, serial: u32) !void {
+pub fn setCursor(owner: *Surface, cursor: *Proxy, pointer: *Proxy, serial: u32) !void {
     const scale = owner.output.scale;
     const buffer = try Buffer.create(owner, 24 * scale, 24 * scale);
     buffer.owner = null;
     errdefer buffer.destroy();
     const pixels: [*]u32 = @ptrCast(@alignCast(buffer.memory));
-    raster.crosshair(pixels[0 .. buffer.size / 4], scale);
+    if (owner.options.cursor == .crosshair) {
+        raster.crosshair(pixels[0 .. buffer.size / 4], scale);
+    } else {
+        const target: Pixels = .{ .pixels = pixels[0 .. buffer.size / 4], .width = 24 * scale, .height = 24 * scale };
+        @memset(target.pixels, 0);
+        const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(scale) };
+        canvas.draw(&.{.{ .polygon = &.{ .{ .x = 2, .y = 1 }, .{ .x = 2, .y = 20 }, .{ .x = 7, .y = 15 }, .{ .x = 11, .y = 23 }, .{ .x = 15, .y = 21 }, .{ .x = 11, .y = 13 }, .{ .x = 18, .y = 13 } } }}, .{ .red = 0, .green = 0, .blue = 0 });
+        canvas.draw(&.{.{ .polygon = &.{ .{ .x = 3, .y = 3 }, .{ .x = 3, .y = 17 }, .{ .x = 7, .y = 13 }, .{ .x = 12, .y = 21 }, .{ .x = 13, .y = 20 }, .{ .x = 9, .y = 12 }, .{ .x = 15, .y = 12 } } }}, .{ .red = 1, .green = 1, .blue = 1 });
+    }
     send(cursor, 8, .{@as(i32, @intCast(scale))});
     send(cursor, 1, .{ buffer.proxy, @as(i32, 0), @as(i32, 0) });
     send(cursor, 2, .{ @as(i32, 0), @as(i32, 0), @as(i32, 24), @as(i32, 24) });
-    send(pointer, 0, .{ serial, cursor, @as(i32, 12), @as(i32, 12) });
+    const hotspot: i32 = if (owner.options.cursor == .crosshair) 12 else 2;
+    send(pointer, 0, .{ serial, cursor, hotspot, hotspot });
     buffer.busy = true;
     send(cursor, 6, .{});
     owner.client.flush();
@@ -436,7 +447,7 @@ pub const Surface = struct {
         listen(self.role.?, &layer_listener, self);
         send(self.role.?, 0, .{ self.options.width, self.options.height });
         send(self.role.?, 1, .{self.options.anchors});
-        send(self.role.?, 2, .{@as(i32, -1)});
+        send(self.role.?, 2, .{self.options.exclusive_zone});
         send(self.role.?, 3, .{ self.options.top_margin, @as(i32, 0), self.options.bottom_margin, self.options.left_margin });
         const keyboard: u32 = if (self.options.keyboard == .on_demand and c.wl_proxy_get_version(shell) < 4) 1 else @backingInt(self.options.keyboard);
         send(self.role.?, 4, .{keyboard});

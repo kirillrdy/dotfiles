@@ -1,4 +1,4 @@
-//! GNOME Shell 50 notification cards, shared by banners and the date menu.
+//! Notification data and GTK history cards for the date menu.
 const std = @import("std");
 pub const c = @import("desktop-gtk.zig");
 const allocator = std.heap.page_allocator;

@@ -28,6 +28,9 @@ pub const api = struct {
     pub extern fn pango_layout_set_single_paragraph_mode(*c.PangoLayout, c.gboolean) void;
     pub extern fn pango_layout_set_width(*c.PangoLayout, c_int) void;
     pub extern fn pango_layout_set_ellipsize(*c.PangoLayout, c_uint) void;
+    pub extern fn pango_layout_set_height(*c.PangoLayout, c_int) void;
+    pub extern fn pango_layout_set_wrap(*c.PangoLayout, c_uint) void;
+    pub extern fn pango_layout_set_markup(*c.PangoLayout, [*:0]const u8, c_int) void;
     pub extern fn pango_layout_set_alignment(*c.PangoLayout, c_uint) void;
     pub extern fn pango_layout_get_pixel_extents(*c.PangoLayout, ?*PangoRectangle, ?*PangoRectangle) void;
     pub extern fn pango_layout_get_baseline(*c.PangoLayout) c_int;
@@ -40,6 +43,8 @@ pub const Mask = struct {
     height: u32,
     left: i32,
     top: i32, // Relative to the requested baseline, in physical pixels.
+    logical_height: u32 = 0,
+    ellipsized: bool = false,
 
     pub fn deinit(self: Mask, allocator: std.mem.Allocator) void {
         allocator.free(self.pixels);
@@ -63,10 +68,13 @@ pub const Renderer = struct {
         alignment: enum(c_uint) { left, center, right } = .left,
         ellipsize: bool = false,
         origin: enum { baseline, top } = .baseline,
+        lines: ?u32 = null,
+        markup: bool = false,
     };
     pub fn renderLayout(self: *Renderer, allocator: std.mem.Allocator, value: [:0]const u8, options: Options) !Mask {
         if (!std.math.isFinite(options.size) or options.size <= 0 or options.size > 1024 or value.len > 4096 or !std.unicode.utf8ValidateSlice(value)) return error.InvalidText;
         if (options.width) |limit| if (limit == 0 or limit > 32768) return error.InvalidText;
+        if (options.lines) |lines| if (lines == 0 or lines > 64) return error.InvalidText;
         if (self.context == null) {
             const map = api.pango_ft2_font_map_new() orelse return error.FontMap;
             defer c.g_object_unref(map);
@@ -78,13 +86,21 @@ pub const Renderer = struct {
         defer api.pango_font_description_free(description);
         api.pango_font_description_set_absolute_size(description, options.size * 1024);
         api.pango_layout_set_font_description(layout, description);
-        api.pango_layout_set_single_paragraph_mode(layout, 1);
+        api.pango_layout_set_single_paragraph_mode(layout, @intFromBool(options.lines == null));
         api.pango_layout_set_text(layout, value, @intCast(value.len));
+        // Match GTK labels: malformed markup is displayed literally.
+        if (options.markup and c.pango_parse_markup(value, @intCast(value.len), 0, null, null, null, null) != 0)
+            api.pango_layout_set_markup(layout, value, @intCast(value.len));
         if (options.width) |limit| api.pango_layout_set_width(layout, @intCast(limit * 1024));
+        if (options.lines) |lines| {
+            api.pango_layout_set_height(layout, -@as(c_int, @intCast(lines)));
+            api.pango_layout_set_wrap(layout, c.PANGO_WRAP_WORD_CHAR);
+        }
         api.pango_layout_set_alignment(layout, @backingInt(options.alignment));
         if (options.ellipsize) api.pango_layout_set_ellipsize(layout, c.PANGO_ELLIPSIZE_END);
         var ink: api.PangoRectangle = .{};
-        api.pango_layout_get_pixel_extents(layout, &ink, null);
+        var logical: api.PangoRectangle = .{};
+        api.pango_layout_get_pixel_extents(layout, &ink, &logical);
         if (ink.width < 0 or ink.height < 0 or ink.width > 32768 or ink.height > 4096 or @as(i64, ink.width) * ink.height > 16 * 1024 * 1024) return error.TextTooLarge;
         const width: u32 = @intCast(ink.width);
         const height: u32 = @intCast(ink.height);
@@ -94,7 +110,7 @@ pub const Renderer = struct {
             var bitmap: api.FT_Bitmap = .{ .rows = height, .width = width, .pitch = @intCast(width), .buffer = pixels.ptr };
             api.pango_ft2_render_layout(&bitmap, layout, -ink.x, -ink.y);
         }
-        return .{ .pixels = pixels, .width = width, .height = height, .left = ink.x, .top = ink.y - (if (options.origin == .baseline) @divTrunc(api.pango_layout_get_baseline(layout), 1024) else @as(c_int, 0)) };
+        return .{ .pixels = pixels, .width = width, .height = height, .left = ink.x, .top = ink.y - (if (options.origin == .baseline) @divTrunc(api.pango_layout_get_baseline(layout), 1024) else @as(c_int, 0)), .logical_height = @intCast(@max(0, logical.height)), .ellipsized = c.pango_layout_is_ellipsized(layout) != 0 };
     }
 };
 
@@ -131,4 +147,22 @@ test "bounded text masks center short labels and ellipsize Unicode at both scale
         try std.testing.expect(long.width > 0 and long.width <= 82 * scale);
         try std.testing.expect(long.height > 0);
     }
+}
+
+test "wrapped text masks preserve markup and fall back to literal invalid markup" {
+    var renderer: Renderer = .{};
+    defer renderer.deinit();
+    const allocator = std.testing.allocator;
+    const options: Renderer.Options = .{ .size = 15, .width = 100, .lines = 3, .ellipsize = true, .markup = true, .origin = .top };
+    const wrapped = try renderer.renderLayout(allocator, "<b>Hello 東京</b> world. More text wraps onto several lines, with an ellipsis after the third line and no visible markup delimiters.", options);
+    defer wrapped.deinit(allocator);
+    try std.testing.expect(wrapped.ellipsized);
+    try std.testing.expect(wrapped.logical_height > 35 and wrapped.logical_height < 80);
+    const invalid = try renderer.renderLayout(allocator, "<broken markup", options);
+    defer invalid.deinit(allocator);
+    var literal_options = options;
+    literal_options.markup = false;
+    const literal = try renderer.renderLayout(allocator, "<broken markup", literal_options);
+    defer literal.deinit(allocator);
+    try std.testing.expectEqualSlices(u8, literal.pixels, invalid.pixels);
 }

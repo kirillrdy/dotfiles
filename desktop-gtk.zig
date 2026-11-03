@@ -817,6 +817,9 @@ pub extern fn g_subprocess_wait_async(subprocess: ?*GSubprocess, cancellable: [*
 
 pub extern fn g_subprocess_wait_finish(subprocess: ?*GSubprocess, result: ?*GAsyncResult, @"error": [*c][*c]GError) gboolean;
 
+pub extern fn g_subprocess_wait_check_async(subprocess: ?*GSubprocess, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
+pub extern fn g_subprocess_wait_check_finish(subprocess: ?*GSubprocess, result: ?*GAsyncResult, @"error": [*c][*c]GError) gboolean;
+
 pub extern fn g_subprocess_get_successful(subprocess: ?*GSubprocess) gboolean;
 
 pub extern fn g_subprocess_communicate_utf8_async(subprocess: ?*GSubprocess, stdin_buf: [*c]const u8, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
@@ -1845,6 +1848,8 @@ pub extern fn gtk_icon_theme_load_icon_for_scale(icon_theme: [*c]GtkIconTheme, i
 pub extern fn gtk_icon_theme_lookup_by_gicon(icon_theme: [*c]GtkIconTheme, icon: ?*GIcon, size: gint, flags: GtkIconLookupFlags) ?*GtkIconInfo;
 
 pub extern fn gtk_icon_info_load_icon(icon_info: ?*GtkIconInfo, @"error": [*c][*c]GError) ?*GdkPixbuf;
+pub extern fn gtk_icon_theme_lookup_icon(*GtkIconTheme, [*c]const u8, gint, GtkIconLookupFlags) ?*GtkIconInfo;
+pub extern fn gtk_icon_info_load_symbolic(*GtkIconInfo, *const GdkRGBA, ?*const GdkRGBA, ?*const GdkRGBA, ?*const GdkRGBA, ?*gboolean, [*c][*c]GError) ?*GdkPixbuf;
 
 pub extern fn gtk_init(argc: [*c]c_int, argv: [*c][*c][*c]u8) void;
 
@@ -2027,6 +2032,9 @@ pub extern fn gtk_widget_path_unref(*GtkWidgetPath) void;
 pub extern fn gtk_widget_path_append_type(*GtkWidgetPath, GType) c_int;
 pub extern fn gtk_widget_path_iter_set_object_name(*GtkWidgetPath, c_int, [*c]const u8) void;
 pub extern fn gtk_widget_path_iter_set_name(*GtkWidgetPath, c_int, [*c]const u8) void;
+pub extern fn gtk_widget_path_iter_add_class(*GtkWidgetPath, c_int, [*c]const u8) void;
+pub const GTK_STATE_FLAG_ACTIVE = @as(c_uint, 1);
+pub const GTK_STATE_FLAG_PRELIGHT = @as(c_uint, 2);
 pub extern fn gtk_style_context_new() *GtkStyleContext;
 pub extern fn gtk_style_context_get_path(*GtkStyleContext) *const GtkWidgetPath;
 pub extern fn gtk_style_context_set_path(*GtkStyleContext, *GtkWidgetPath) void;

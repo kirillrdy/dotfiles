@@ -165,6 +165,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "desktop-polkit-fixture", .source = "tests/desktop-polkit-fixture.zig", .step = "polkit-fixture", .run = true },
         .{ .name = "desktop-polkit-agent-fixture", .source = "tests/desktop-polkit-agent-fixture.zig", .step = "polkit-agent-fixture" },
         .{ .name = "desktop-screenshot-fixture", .source = "tests/desktop-screenshot-fixture.zig", .step = "screenshot-fixture", .run = true },
+        .{ .name = "desktop-command-fixture", .source = "tests/desktop-command-fixture.zig", .step = "command-fixture", .install = true },
+        .{ .name = "desktop-notifications-fixture", .source = "tests/desktop-notifications-fixture.zig", .step = "notifications-fixture", .install = true },
         .{ .name = "desktop-session-fixture", .source = "desktop-session-fixture.zig", .step = "session-fixture", .test_runner = true },
         .{ .name = "desktop-memory-tests", .source = "desktop-memory-tests.zig", .step = "memory-tests", .test_runner = true },
     };

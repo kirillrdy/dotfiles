@@ -1,5 +1,6 @@
 //! Freedesktop notification service with GNOME banners and persistent history.
-const layer = @import("desktop-layer-shell.zig");
+const native = @import("desktop-surface.zig");
+const banner = @import("desktop-notification-banner.zig");
 const std = @import("std");
 const view = @import("desktop-notification-view.zig");
 const c = view.c;
@@ -58,32 +59,133 @@ const Server = struct {
     notices: std.ArrayList(*Notice) = .empty,
     next_id: u32 = 1,
     active: ?*Notice = null,
-    widget: ?*view.View = null,
-    window: *c.GtkWidget,
-    box: *c.GtkWidget,
+    card: ?banner.View = null,
+    client: ?*native.Client = null,
+    surface: ?*native.Surface = null,
+    theme: banner.Theme = .{},
     timer: c.guint = 0,
     hovered: bool = false,
     calendar_open: bool = false,
 
-    fn create(node: *c.GDBusNodeInfo) Server {
-        const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
-        view.css(window, "notification-banner");
-        c.gtk_window_set_title(cast(c.GtkWindow, window), "Notification");
-        c.gtk_window_set_resizable(cast(c.GtkWindow, window), 0);
-        c.gtk_window_set_accept_focus(cast(c.GtkWindow, window), 0);
-        if (c.gdk_screen_get_rgba_visual(c.gtk_widget_get_screen(window))) |visual| c.gtk_widget_set_visual(window, visual);
-        layer.init_for_window(cast(c.GtkWindow, window));
-        layer.set_namespace(cast(c.GtkWindow, window), "desktop-notifications");
-        layer.set_layer(cast(c.GtkWindow, window), .overlay);
-        layer.set_anchor(cast(c.GtkWindow, window), .top, 1);
-        layer.set_anchor(cast(c.GtkWindow, window), .left, 1);
-        layer.set_exclusive_zone(cast(c.GtkWindow, window), 0);
-        layer.set_margin(cast(c.GtkWindow, window), .top, -4);
-        layer.set_keyboard_mode(cast(c.GtkWindow, window), .none);
-        const box = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0);
-        view.css(box, "notification-shadow");
-        c.gtk_container_add(cast(c.GtkContainer, window), box);
-        return .{ .node = node, .window = window, .box = box };
+    fn start(self: *Server) !void {
+        self.client = try native.Client.createInteractive(.{ .added = &outputAdded, .removed = &outputRemoved, .changed = &outputChanged }, self);
+        errdefer {
+            self.client.?.destroy();
+            self.client = null;
+        }
+        try self.client.?.start();
+    }
+    fn outputAdded(data: ?*anyopaque, _: *native.Output) void {
+        const self = cast(Server, data);
+        if (self.active != null and self.surface == null) self.present() catch |err| std.log.err("notification output: {s}", .{@errorName(err)});
+    }
+    fn outputRemoved(data: ?*anyopaque, output: *native.Output) void {
+        const self = cast(Server, data);
+        if (self.surface) |surface| if (surface.output == output) {
+            surface.destroy();
+            self.surface = null;
+            self.resetHover();
+            // The registry callback runs before the removed output is erased.
+            for (self.client.?.outputs.items) |other| if (other != output) {
+                self.map(other) catch |err| std.log.err("notification output: {s}", .{@errorName(err)});
+                break;
+            };
+        };
+    }
+    fn outputChanged(data: ?*anyopaque, output: *native.Output) void {
+        const self = cast(Server, data);
+        if (self.surface) |surface| if (surface.output == output) self.layout() catch |err| std.log.err("notification layout: {s}", .{@errorName(err)});
+    }
+    fn present(self: *Server) !void {
+        const client = self.client orelse return;
+        if (client.outputs.items.len == 0) return;
+        // Match GDK's primary monitor when available, then use the first output.
+        var output = client.outputs.items[0];
+        const display = c.gdk_display_get_default();
+        if (c.gdk_display_get_primary_monitor(display)) |monitor| {
+            var geometry: c.GdkRectangle = undefined;
+            c.gdk_monitor_get_geometry(monitor, &geometry);
+            for (client.outputs.items) |candidate| if (candidate.x == geometry.x and candidate.y == geometry.y) {
+                output = candidate;
+                break;
+            };
+        }
+        try self.map(output);
+    }
+    fn map(self: *Server, output: *native.Output) !void {
+        const notice = self.active orelse return;
+        if (self.card == null) self.card = banner.View.init(notice.data(), self.theme, 529);
+        const surface = try native.Surface.createPixels(output, .{
+            .namespace = "desktop-notifications",
+            .layer = 3,
+            .anchors = native.top,
+            .interactive = true,
+            .cursor = .arrow,
+            .exclusive_zone = 0,
+        }, &paint, self);
+        errdefer surface.destroy();
+        self.surface = surface;
+        errdefer self.surface = null;
+        surface.input = .{ .motion = &motion, .leave = &left, .button = &button };
+        try self.layout();
+        try surface.show();
+    }
+    fn layout(self: *Server) !void {
+        const surface = self.surface orelse return;
+        const card = if (self.card) |*card| card else return;
+        const width: u32 = @intCast(std.math.clamp(surface.output.width(), 160, 529));
+        if (card.width != width) {
+            card.width = width;
+            card.scale = 0;
+        }
+        try card.prepare(surface.output.scale);
+        surface.setLayout(card.width, card.height, -4, 0);
+        surface.redraw();
+    }
+    fn paint(data: ?*anyopaque, buffer: native.Pixels) void {
+        const self = cast(Server, data);
+        if (self.card) |*card| card.paint(buffer);
+    }
+    fn motion(data: ?*anyopaque, surface: *native.Surface, x: f64, y: f64) void {
+        const self = cast(Server, data);
+        const card = if (self.card) |*card| card else return;
+        const target = card.hit(x, y);
+        if (card.hover != target) {
+            card.hover = target;
+            surface.redraw();
+        }
+        self.hovered = true;
+        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        self.timer = 0;
+    }
+    fn button(data: ?*anyopaque, surface: *native.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
+        if (code != 272) return;
+        const self = cast(Server, data);
+        const card = if (self.card) |*card| card else return;
+        const target = card.hit(x, y);
+        if (pressed) {
+            card.pressed = target;
+            surface.redraw();
+            return;
+        }
+        const was_pressed = card.pressed;
+        card.pressed = .none;
+        surface.redraw();
+        if (was_pressed != target) return;
+        const id = card.notice.id;
+        switch (target) {
+            .close => self.close(id, 2),
+            .card => activate(self, id, "default"),
+            .expand => {
+                card.toggle();
+                self.layout() catch |err| std.log.err("notification expansion: {s}", .{@errorName(err)});
+            },
+            .action0, .action1, .action2 => {
+                const index = @backingInt(target) - @backingInt(banner.Target.action0);
+                if (card.action_keys[index]) |key| activate(self, id, key);
+            },
+            .none => {},
+        }
     }
     fn find(self: *Server, id: u32) ?*Notice {
         for (self.notices.items) |notice| if (notice.id == id) return notice;
@@ -96,10 +198,11 @@ const Server = struct {
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         self.timer = 0;
         self.active = null;
-        if (self.widget) |widget| c.gtk_widget_destroy(widget.root);
-        self.widget = null;
+        if (self.surface) |surface| surface.destroy();
+        self.surface = null;
+        if (self.card) |*card| card.deinit();
+        self.card = null;
         self.hovered = false;
-        c.gtk_widget_hide(self.window);
     }
     fn showNext(self: *Server) void {
         if (self.active != null or self.calendar_open) return;
@@ -112,21 +215,7 @@ const Server = struct {
         const notice = next orelse return;
         notice.pending = false;
         self.active = notice;
-        const widget = view.View.create(notice.data(), .{ .context = self, .close = &dismiss, .activate = &activate, .resized = &resized });
-        self.widget = widget;
-        c.gtk_widget_set_size_request(widget.root, 513, -1);
-        c.gtk_box_pack_start(cast(c.GtkBox, self.box), widget.root, 0, 0, 0);
-        c.gtk_widget_add_events(widget.root, c.GDK_ENTER_NOTIFY_MASK | c.GDK_LEAVE_NOTIFY_MASK);
-        _ = c.g_signal_connect_data(widget.root, "enter-notify-event", @ptrCast(&entered), self, null, 0);
-        _ = c.g_signal_connect_data(widget.root, "leave-notify-event", @ptrCast(&left), self, null, 0);
-        const display = c.gdk_display_get_default();
-        const monitor = c.gdk_display_get_primary_monitor(display) orelse c.gdk_display_get_monitor(display, 0);
-        layer.set_monitor(cast(c.GtkWindow, self.window), monitor);
-        var geometry: c.GdkRectangle = undefined;
-        c.gdk_monitor_get_geometry(monitor, &geometry);
-        layer.set_margin(cast(c.GtkWindow, self.window), .left, @max(0, @divTrunc(geometry.width - 529, 2)));
-        c.gtk_window_resize(cast(c.GtkWindow, self.window), 1, 1);
-        c.gtk_widget_show_all(self.window);
+        self.present() catch |err| std.log.err("notification banner: {s}", .{@errorName(err)});
         if (!notice.critical) self.timer = c.g_timeout_add(4000, &expired, self);
     }
     fn close(self: *Server, id: u32, reason: u32) void {
@@ -140,9 +229,6 @@ const Server = struct {
             return;
         };
     }
-    fn dismiss(data: ?*anyopaque, id: u32) void {
-        cast(Server, data).close(id, 2);
-    }
     fn activate(data: ?*anyopaque, id: u32, key: [:0]const u8) void {
         const self = cast(Server, data);
         const notice = self.find(id) orelse return;
@@ -153,10 +239,6 @@ const Server = struct {
         };
         if (exists) _ = c.g_dbus_connection_emit_signal(self.connection, notice.sender, path, name, "ActionInvoked", c.g_variant_new("(us)", id, key.ptr), null);
         if (!notice.resident) self.close(id, 2);
-    }
-    fn resized(data: ?*anyopaque) void {
-        const self = cast(Server, data);
-        c.gtk_window_resize(cast(c.GtkWindow, self.window), 1, 1);
     }
     fn expired(data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Server, data);
@@ -169,27 +251,27 @@ const Server = struct {
         }
         return 0;
     }
-    fn entered(_: *c.GtkWidget, event: *c.GdkEventCrossing, data: c.gpointer) callconv(.c) c.gboolean {
-        if (event.detail == c.GDK_NOTIFY_INFERIOR) return 0;
+    fn left(data: ?*anyopaque, surface: *native.Surface) void {
         const self = cast(Server, data);
-        self.hovered = true;
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
-        self.timer = 0;
-        return 0;
+        // Another seat can still be pointing at this banner.
+        for (surface.client.seats.items) |seat| if (seat.pointer_focus == surface) return;
+        if (self.card) |*card| {
+            card.hover = .none;
+            card.pressed = .none;
+            surface.redraw();
+        }
+        self.resetHover();
     }
-    fn left(_: *c.GtkWidget, event: *c.GdkEventCrossing, data: c.gpointer) callconv(.c) c.gboolean {
-        if (event.detail == c.GDK_NOTIFY_INFERIOR) return 0;
-        const self = cast(Server, data);
+    fn resetHover(self: *Server) void {
         self.hovered = false;
         if (self.active) |notice| if (!notice.critical) {
             if (self.timer != 0) _ = c.g_source_remove(self.timer);
             self.timer = c.g_timeout_add(200, &expired, self);
         };
-        return 0;
     }
     fn deinit(self: *Server) void {
         self.hide();
-        c.gtk_widget_destroy(self.window);
+        if (self.client) |client| client.destroy();
         for (self.notices.items) |notice| notice.destroy();
         self.notices.deinit(allocator);
         if (self.connection != null) {
@@ -401,8 +483,10 @@ pub const Service = struct {
         errdefer c.g_object_unref(provider);
         if (c.gtk_css_provider_load_from_path(provider, style, null) == 0) return error.InvalidStyle;
         const node = c.g_dbus_node_info_new_for_xml(xml, null) orelse return error.InvalidInterface;
+        errdefer c.g_dbus_node_info_unref(node);
+        self.* = .{ .server = .{ .node = node, .theme = banner.Theme.load(provider) }, .node = node, .provider = provider };
+        try self.server.start();
         c.gtk_style_context_add_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-        self.* = .{ .server = Server.create(node), .node = node, .provider = provider };
         self.owner = c.g_bus_own_name(c.G_BUS_TYPE_SESSION, name, c.G_BUS_NAME_OWNER_FLAGS_NONE, &acquired, &owned, &serviceLost, &self.server, null);
         return self;
     }

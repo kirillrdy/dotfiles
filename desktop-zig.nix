@@ -44,6 +44,9 @@ pkgs.stdenv.mkDerivation {
       || file.hasExt "svg"
       || file.hasExt "xml"
       || file.name == "check-desktop-compositor.py"
+      || file.name == "check-desktop-command.py"
+      || file.name == "check-desktop-notifications.py"
+      || file.name == "desktop-notifications.css"
     ) ./.;
   };
   nativeBuildInputs = [
@@ -51,7 +54,8 @@ pkgs.stdenv.mkDerivation {
     pkgs.pkg-config
     pkgs.wtype
     pkgs.wayland-scanner
-    pkgs.python3
+    (pkgs.python3.withPackages (p: [ p.pygobject3 ]))
+    pkgs.dbus
     pkgs.removeReferencesTo
   ];
   dontStrip = true;
@@ -109,6 +113,10 @@ pkgs.stdenv.mkDerivation {
     export DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
     NIX_LDFLAGS= G_DEBUG=fatal-criticals zig build test compositor-fixture --prefix "$out" --release=safe --summary all
     python3 tests/check-desktop-compositor.py --bin-dir "$out/bin" --wtype "$(command -v wtype)"
+    dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
+      python3 tests/check-desktop-command.py "$out/bin/desktop-command-fixture"
+    dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
+      python3 tests/check-desktop-notifications.py "$out/bin" desktop-notifications.css
     kill "$compositor_pid"
     wait "$compositor_pid" || true
     trap - EXIT
@@ -121,7 +129,7 @@ pkgs.stdenv.mkDerivation {
     # Keep test programs outside the desktop output.
     mkdir -p "$tests/bin"
     for name in desktop-apps-fixture desktop-audio-fixture desktop-battery-fixture desktop-backlight-fixture desktop-lock-fixture desktop-idle-fixture waybar-power-fixture labwc-switcher-fixture \
-      desktop-pointer-fixture desktop-compositor-fixture desktop-decoration-fixture; do
+      desktop-pointer-fixture desktop-compositor-fixture desktop-decoration-fixture desktop-command-fixture desktop-notifications-fixture; do
       mv "$out/bin/$name" "$tests/bin/$name"
     done
     ln -s "$out/bin/desktop-zig" "$tests/bin/desktop-zig"
