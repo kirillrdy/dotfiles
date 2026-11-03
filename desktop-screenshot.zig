@@ -1,5 +1,5 @@
 //! Wayland screenshot tool with region selection and clipboard support.
-const layer = @import("desktop-layer-shell.zig");
+const native = @import("desktop-surface.zig");
 const std = @import("std");
 pub const protocols = @import("desktop-protocols.zig");
 const libc = @import("desktop-libc.zig");
@@ -343,152 +343,191 @@ pub const FrameCapture = struct {
 };
 
 pub const SelectionOverlay = struct {
-    window: *c.GtkWidget,
+    const allocator = std.heap.page_allocator;
+    pub const Result = struct {
+        rect: Rect,
+        output_name: [64:0]u8,
+        origin_x: i32,
+        origin_y: i32,
+        fn globalRect(self: Result) ?Rect {
+            var rect = self.rect;
+            rect.x = std.math.add(i32, rect.x, self.origin_x) catch return null;
+            rect.y = std.math.add(i32, rect.y, self.origin_y) catch return null;
+            return rect;
+        }
+    };
+    const Layer = struct {
+        owner: *SelectionOverlay,
+        surface: *native.Surface,
+        fn create(owner: *SelectionOverlay, output: *native.Output) !*Layer {
+            const self = try allocator.create(Layer);
+            errdefer allocator.destroy(self);
+            self.* = .{ .owner = owner, .surface = try native.Surface.create(output, .{
+                .namespace = "desktop-selection",
+                .layer = 3,
+                .anchors = native.top | native.bottom | native.left | native.right,
+                .interactive = true,
+                .keyboard = .exclusive,
+            }, &paint, self) };
+            errdefer self.surface.destroy();
+            self.surface.input = .{ .motion = &motion, .button = &button, .key = &key };
+            try self.surface.show();
+            return self;
+        }
+        fn destroy(self: *Layer) void {
+            self.surface.destroy();
+            allocator.destroy(self);
+        }
+        fn paint(data: ?*anyopaque, cr: *c.cairo_t, width: f64, height: f64) void {
+            const self = cast(Layer, data);
+            self.owner.draw(self, cr, width, height);
+        }
+        fn motion(data: ?*anyopaque, _: *native.Surface, x: f64, y: f64) void {
+            const self = cast(Layer, data);
+            if (self.owner.done or !self.owner.dragging or self.owner.active != self) return;
+            self.owner.current_x = x;
+            self.owner.current_y = y;
+            self.surface.redraw();
+        }
+        fn button(data: ?*anyopaque, _: *native.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
+            if (code != 272) return; // BTN_LEFT, independent of keyboard layout.
+            const self = cast(Layer, data);
+            const owner = self.owner;
+            if (owner.done) return;
+            if (pressed) {
+                if (owner.dragging) return;
+                owner.active = self;
+                owner.start_x = x;
+                owner.start_y = y;
+                owner.current_x = x;
+                owner.current_y = y;
+                owner.dragging = true;
+                self.surface.redraw();
+            } else if (owner.dragging and owner.active == self) {
+                owner.current_x = x;
+                owner.current_y = y;
+                const rect = owner.rectangle(self.surface.width, self.surface.height);
+                if (rect.w > 4 and rect.h > 4) owner.selected = .{
+                    .rect = rect,
+                    .output_name = self.surface.output.label,
+                    .origin_x = self.surface.output.x,
+                    .origin_y = self.surface.output.y,
+                };
+                owner.dragging = false;
+                owner.done = true;
+            }
+        }
+        fn key(data: ?*anyopaque, _: *native.Surface, code: u32, pressed: bool) void {
+            if (code != 1 or !pressed) return; // KEY_ESC.
+            const owner = cast(Layer, data).owner;
+            if (owner.done) return;
+            owner.dragging = false;
+            owner.selected = null;
+            owner.done = true;
+        }
+    };
+    layers: std.ArrayList(*Layer) = .empty,
+    requested: ?[]const u8 = null,
+    active: ?*Layer = null,
     start_x: f64 = 0,
     start_y: f64 = 0,
     current_x: f64 = 0,
     current_y: f64 = 0,
     dragging: bool = false,
-    selected: ?Rect = null,
+    selected: ?Result = null,
     done: bool = false,
 
     pub fn run() ?Rect {
-        if (c.gtk_init_check(null, null) == 0) return null;
-        var overlay = SelectionOverlay{
-            .window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL),
-        };
-
-        layer.init_for_window(cast(c.GtkWindow, overlay.window));
-        layer.set_layer(cast(c.GtkWindow, overlay.window), .overlay);
-        layer.set_keyboard_mode(cast(c.GtkWindow, overlay.window), .exclusive);
-        layer.set_anchor(cast(c.GtkWindow, overlay.window), .top, 1);
-        layer.set_anchor(cast(c.GtkWindow, overlay.window), .bottom, 1);
-        layer.set_anchor(cast(c.GtkWindow, overlay.window), .left, 1);
-        layer.set_anchor(cast(c.GtkWindow, overlay.window), .right, 1);
-
-        c.gtk_widget_set_app_paintable(overlay.window, 1);
-        const visual = c.gdk_screen_get_rgba_visual(c.gtk_widget_get_screen(overlay.window));
-        if (visual != null) c.gtk_widget_set_visual(overlay.window, visual);
-
-        c.gtk_widget_add_events(overlay.window, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_KEY_PRESS_MASK);
-        _ = c.g_signal_connect_data(cast(c.GObject, overlay.window), "draw", @ptrCast(&onDraw), &overlay, null, 0);
-        _ = c.g_signal_connect_data(cast(c.GObject, overlay.window), "button-press-event", @ptrCast(&onButtonPress), &overlay, null, 0);
-        _ = c.g_signal_connect_data(cast(c.GObject, overlay.window), "motion-notify-event", @ptrCast(&onMotion), &overlay, null, 0);
-        _ = c.g_signal_connect_data(cast(c.GObject, overlay.window), "button-release-event", @ptrCast(&onButtonRelease), &overlay, null, 0);
-        _ = c.g_signal_connect_data(cast(c.GObject, overlay.window), "key-press-event", @ptrCast(&onKeyPress), &overlay, null, 0);
-
-        c.gtk_widget_show_all(overlay.window);
-        if (c.gtk_widget_get_window(overlay.window)) |gdk_win| {
-            const cursor = c.gdk_cursor_new_from_name(c.gdk_window_get_display(gdk_win), "crosshair");
-            c.gdk_window_set_cursor(gdk_win, cursor);
-        }
-
-        while (!overlay.done and c.gtk_events_pending() != 0) {
-            _ = c.gtk_main_iteration();
-        }
-        if (!overlay.done) c.gtk_main();
-
-        c.gtk_widget_destroy(overlay.window);
-        while (c.gtk_events_pending() != 0) _ = c.gtk_main_iteration();
-
-        return overlay.selected;
+        const result = runForOutput(null) orelse return null;
+        return result.globalRect();
     }
-
-    fn onDraw(_: *c.GtkWidget, cr: *c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
-        const self: *SelectionOverlay = @ptrCast(@alignCast(data));
+    pub fn runForOutput(requested: ?[]const u8) ?Result {
+        var self: SelectionOverlay = .{ .requested = requested };
+        const client = native.Client.createInteractive(.{ .added = &added, .removed = &removed }, &self) catch |err| {
+            std.log.err("screenshot selection: {s}", .{@errorName(err)});
+            return null;
+        };
+        defer client.destroy();
+        defer {
+            self.done = true;
+            while (self.layers.pop()) |layer| layer.destroy();
+            self.layers.deinit(allocator);
+            self.layers = .empty;
+            // Ensure overlays are gone before a new connection captures pixels.
+            if (!client.failed) _ = c.wl_display_roundtrip(client.display);
+        }
+        client.start() catch return null;
+        while (!self.done and !client.failed and client.hasInput() and self.hasLayers()) _ = c.g_main_context_iteration(null, 1);
+        return self.selected;
+    }
+    fn hasLayers(self: *SelectionOverlay) bool {
+        for (self.layers.items) |layer| if (layer.surface.role != null) return true;
+        return false;
+    }
+    fn added(data: ?*anyopaque, output: *native.Output) void {
+        const self = cast(SelectionOverlay, data);
+        if (self.done) return;
+        if (self.requested) |name| if (!std.mem.eql(u8, name, std.mem.sliceTo(&output.label, 0))) return;
+        const layer = Layer.create(self, output) catch |err| {
+            std.log.err("screenshot selection: {s}", .{@errorName(err)});
+            self.done = true;
+            return;
+        };
+        self.layers.append(allocator, layer) catch @panic("out of memory");
+    }
+    fn removed(data: ?*anyopaque, output: *native.Output) void {
+        const self = cast(SelectionOverlay, data);
+        for (self.layers.items, 0..) |layer, i| if (layer.surface.output == output) {
+            if (self.active == layer) {
+                self.active = null;
+                self.selected = null;
+                self.done = true;
+            }
+            _ = self.layers.orderedRemove(i);
+            layer.destroy();
+            return;
+        };
+    }
+    fn rectangle(self: *const SelectionOverlay, width: u32, height: u32) Rect {
+        const max_x: f64 = @floatFromInt(@min(width, 16384));
+        const max_y: f64 = @floatFromInt(@min(height, 16384));
+        const x1 = std.math.clamp(self.start_x, 0, max_x);
+        const x2 = std.math.clamp(self.current_x, 0, max_x);
+        const y1 = std.math.clamp(self.start_y, 0, max_y);
+        const y2 = std.math.clamp(self.current_y, 0, max_y);
+        return .{ .x = @intFromFloat(@min(x1, x2)), .y = @intFromFloat(@min(y1, y2)), .w = @intFromFloat(@abs(x2 - x1)), .h = @intFromFloat(@abs(y2 - y1)) };
+    }
+    fn draw(self: *SelectionOverlay, layer: *Layer, cr: *c.cairo_t, width: f64, height: f64) void {
         c.cairo_set_source_rgba(cr, 0, 0, 0, 0.35);
         c.cairo_paint(cr);
-
-        if (self.dragging) {
-            const rx = @min(self.start_x, self.current_x);
-            const ry = @min(self.start_y, self.current_y);
-            const rw = @abs(self.current_x - self.start_x);
-            const rh = @abs(self.current_y - self.start_y);
-
-            if (rw > 1 and rh > 1) {
-                c.cairo_save(cr);
-                c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
-                c.cairo_rectangle(cr, rx, ry, rw, rh);
-                c.cairo_fill(cr);
-                c.cairo_restore(cr);
-
-                c.cairo_set_source_rgb(cr, 0.208, 0.518, 0.894);
-                c.cairo_set_line_width(cr, 2.0);
-                c.cairo_rectangle(cr, rx, ry, rw, rh);
-                c.cairo_stroke(cr);
-
-                var buf: [64:0]u8 = undefined;
-                const label = std.fmt.bufPrintSentinel(&buf, "{d:.0} × {d:.0}", .{ rw, rh }, 0) catch return 0;
-                c.cairo_set_source_rgba(cr, 0.1, 0.1, 0.1, 0.85);
-                c.cairo_rectangle(cr, rx, ry + rh + 6, 90, 22);
-                c.cairo_fill(cr);
-                c.cairo_set_source_rgb(cr, 1, 1, 1);
-                c.cairo_select_font_face(cr, "Adwaita Sans", c.CAIRO_FONT_SLANT_NORMAL, c.CAIRO_FONT_WEIGHT_BOLD);
-                c.cairo_set_font_size(cr, 11);
-                c.cairo_move_to(cr, rx + 8, ry + rh + 21);
-                c.cairo_show_text(cr, label.ptr);
-            }
-        }
-        return 0;
-    }
-
-    fn onButtonPress(_: *c.GtkWidget, event: ?*anyopaque, data: c.gpointer) callconv(.c) c.gboolean {
-        const self: *SelectionOverlay = @ptrCast(@alignCast(data));
-        var btn: c.guint = 0;
-        _ = c.gdk_event_get_button(cast(c.GdkEvent, event), &btn);
-        if (btn == 1) {
-            _ = c.gdk_event_get_coords(cast(c.GdkEvent, event), &self.start_x, &self.start_y);
-            self.current_x = self.start_x;
-            self.current_y = self.start_y;
-            self.dragging = true;
-        }
-        return 1;
-    }
-
-    fn onMotion(_: *c.GtkWidget, event: ?*anyopaque, data: c.gpointer) callconv(.c) c.gboolean {
-        const self: *SelectionOverlay = @ptrCast(@alignCast(data));
-        if (self.dragging) {
-            _ = c.gdk_event_get_coords(cast(c.GdkEvent, event), &self.current_x, &self.current_y);
-            c.gtk_widget_queue_draw(self.window);
-        }
-        return 1;
-    }
-
-    fn onButtonRelease(_: *c.GtkWidget, event: ?*anyopaque, data: c.gpointer) callconv(.c) c.gboolean {
-        const self: *SelectionOverlay = @ptrCast(@alignCast(data));
-        var btn: c.guint = 0;
-        _ = c.gdk_event_get_button(cast(c.GdkEvent, event), &btn);
-        if (btn == 1 and self.dragging) {
-            self.dragging = false;
-            _ = c.gdk_event_get_coords(cast(c.GdkEvent, event), &self.current_x, &self.current_y);
-            const rx = @min(self.start_x, self.current_x);
-            const ry = @min(self.start_y, self.current_y);
-            const rw = @abs(self.current_x - self.start_x);
-            const rh = @abs(self.current_y - self.start_y);
-            if (rw > 4 and rh > 4) {
-                self.selected = Rect{
-                    .x = @intFromFloat(rx),
-                    .y = @intFromFloat(ry),
-                    .w = @intFromFloat(rw),
-                    .h = @intFromFloat(rh),
-                };
-            }
-            self.done = true;
-            c.gtk_main_quit();
-        }
-        return 1;
-    }
-
-    fn onKeyPress(_: *c.GtkWidget, event: ?*anyopaque, data: c.gpointer) callconv(.c) c.gboolean {
-        const self: *SelectionOverlay = @ptrCast(@alignCast(data));
-        var keyval: c.guint = 0;
-        _ = c.gdk_event_get_keyval(cast(c.GdkEvent, event), &keyval);
-        if (keyval == c.GDK_KEY_Escape) {
-            self.selected = null;
-            self.done = true;
-            c.gtk_main_quit();
-        }
-        return 1;
+        if (!self.dragging or self.active != layer) return;
+        const rect = self.rectangle(@intFromFloat(width), @intFromFloat(height));
+        if (rect.w <= 1 or rect.h <= 1) return;
+        const rx: f64 = @floatFromInt(rect.x);
+        const ry: f64 = @floatFromInt(rect.y);
+        const rw: f64 = @floatFromInt(rect.w);
+        const rh: f64 = @floatFromInt(rect.h);
+        c.cairo_save(cr);
+        c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
+        c.cairo_rectangle(cr, rx, ry, rw, rh);
+        c.cairo_fill(cr);
+        c.cairo_restore(cr);
+        c.cairo_set_source_rgb(cr, 0.208, 0.518, 0.894);
+        c.cairo_set_line_width(cr, 2);
+        c.cairo_rectangle(cr, rx, ry, rw, rh);
+        c.cairo_stroke(cr);
+        var buf: [64:0]u8 = undefined;
+        const label = std.fmt.bufPrintSentinel(&buf, "{d} × {d}", .{ rect.w, rect.h }, 0) catch return;
+        const label_x = @max(0, @min(rx, width - 90));
+        const label_y = @max(0, @min(ry + rh + 6, height - 22));
+        c.cairo_set_source_rgba(cr, 0.1, 0.1, 0.1, 0.85);
+        c.cairo_rectangle(cr, label_x, label_y, 90, 22);
+        c.cairo_fill(cr);
+        c.cairo_set_source_rgb(cr, 1, 1, 1);
+        c.cairo_select_font_face(cr, "Adwaita Sans", c.CAIRO_FONT_SLANT_NORMAL, c.CAIRO_FONT_WEIGHT_BOLD);
+        c.cairo_set_font_size(cr, 11);
+        c.cairo_move_to(cr, label_x + 8, label_y + 15);
+        c.cairo_show_text(cr, label.ptr);
     }
 };
 
@@ -647,7 +686,8 @@ pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
     var opt = Options.parse(args);
 
     if (opt.slurp_mode) {
-        if (SelectionOverlay.run()) |rect| {
+        if (SelectionOverlay.runForOutput(opt.output_name)) |selection| {
+            const rect = selection.globalRect() orelse return 1;
             var buf: [64]u8 = undefined;
             const text = std.fmt.bufPrint(&buf, "{d},{d} {d}x{d}\n", .{ rect.x, rect.y, rect.w, rect.h }) catch return 1;
             _ = libc.write(libc.STDOUT_FILENO, text.ptr, text.len);
@@ -658,7 +698,9 @@ pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
     }
 
     if (opt.interactive) {
-        opt.geometry = SelectionOverlay.run() orelse return 0; // Cancelled
+        const selection = SelectionOverlay.runForOutput(opt.output_name) orelse return 0; // Cancelled.
+        opt.geometry = selection.rect;
+        opt.output_name = try arena.allocator().dupe(u8, std.mem.sliceTo(&selection.output_name, 0));
     }
 
     captureAndWrite(opt, arena.allocator()) catch |err| {
@@ -666,4 +708,33 @@ pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
         return 1;
     };
     return 0;
+}
+
+test "selection rectangles normalize reverse drags and clamp to one output" {
+    var selection: SelectionOverlay = .{ .start_x = 400, .start_y = 270, .current_x = 100, .current_y = 90 };
+    try std.testing.expectEqual(Rect{ .x = 100, .y = 90, .w = 300, .h = 180 }, selection.rectangle(1280, 720));
+    selection.start_x = -30;
+    selection.start_y = -50;
+    selection.current_x = 2000;
+    selection.current_y = 1000;
+    try std.testing.expectEqual(Rect{ .x = 0, .y = 0, .w = 1280, .h = 720 }, selection.rectangle(1280, 720));
+}
+
+test "slurp returns global coordinates while screenshot regions remain output-local" {
+    const selection: SelectionOverlay.Result = .{ .rect = .{ .x = 100, .y = 90, .w = 300, .h = 180 }, .output_name = @splat(0), .origin_x = -1280, .origin_y = 200 };
+    try std.testing.expectEqual(Rect{ .x = -1180, .y = 290, .w = 300, .h = 180 }, selection.globalRect().?);
+    try std.testing.expectEqual(@as(i32, 100), selection.rect.x);
+}
+
+test "Escape during a drag ignores queued pointer events" {
+    var selection: SelectionOverlay = .{ .dragging = true };
+    var surface: native.Surface = undefined;
+    var layer: SelectionOverlay.Layer = .{ .owner = &selection, .surface = &surface };
+    selection.active = &layer;
+    SelectionOverlay.Layer.key(&layer, &surface, 1, true);
+    SelectionOverlay.Layer.motion(&layer, &surface, 400, 270);
+    SelectionOverlay.Layer.button(&layer, &surface, 272, false, 400, 270);
+    try std.testing.expect(selection.done);
+    try std.testing.expect(!selection.dragging);
+    try std.testing.expect(selection.selected == null);
 }

@@ -9,4 +9,5 @@ test {
     _ = @import("desktop-wallpaper.zig");
     _ = @import("desktop-surface.zig");
     _ = @import("desktop-osd-view.zig");
+    _ = @import("desktop-screenshot.zig");
 }

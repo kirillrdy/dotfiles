@@ -1,6 +1,6 @@
-"""Test capture, default saving and selection in an isolated Labwc session.
+"""Test native capture and selection in an isolated headless Wayland session.
 
-Run under dbus-run-session; requires labwc and wl-paste on PATH.
+Run under dbus-run-session; requires wtype, wlr-randr and wl-paste on PATH.
 """
 
 import argparse
@@ -14,6 +14,7 @@ import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--bin-dir", required=True, type=Path)
+parser.add_argument("--pointer-fixture", type=Path)
 args = parser.parse_args()
 command = [str(args.bin_dir / "desktop-zig"), "screenshot"]
 root = Path(tempfile.mkdtemp(prefix="desktop-screenshot-check-"))
@@ -35,11 +36,12 @@ env.update(
     XDG_CACHE_HOME=str(root / "cache"),
     WLR_BACKENDS="headless",
     WLR_RENDERER="pixman",
-    WLR_HEADLESS_OUTPUTS="1",
+    WLR_HEADLESS_OUTPUTS="2",
     LABWC_UPDATE_ACTIVATION_ENV="false",
     NO_AT_BRIDGE="1",
     GTK_USE_PORTAL="0",
     GIO_USE_VFS="local",
+    GDK_BACKEND="invalid-native-test",
 )
 processes = []
 
@@ -73,6 +75,8 @@ try:
         assert time.monotonic() < deadline, "Compositor startup timed out"
         time.sleep(0.05)
     env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem
+    run(["wlr-randr", "--output", "HEADLESS-1", "--pos", "0,0"])
+    run(["wlr-randr", "--output", "HEADLESS-2", "--pos", "1280,0"])
     explicit = root / "explicit.png"
     run([*command, "-g", "10,20 64x48", str(explicit)])
     assert dimensions(explicit) == (64, 48)
@@ -82,24 +86,75 @@ try:
     assert len(saved()) == 2, "Successive captures overwrote a file"
 
     pointer = start(
-        [str(args.bin_dir / "desktop-pointer-fixture")],
+        [str(args.pointer_fixture or args.bin_dir / "desktop-pointer-fixture")],
         "pointer.log", stdin=sp.PIPE, stdout=sp.PIPE, text=True,
     )
     assert select.select([pointer.stdout], [], [], 5)[0]
     assert pointer.stdout.readline().strip() == "ready"
-    capture = start(command, "interactive.log", stdout=sp.DEVNULL)
-    time.sleep(0.7)
-    for command in ("move 100 100", "button 1", "move 400 300", "button 0"):
-        pointer.stdin.write(command + "\n")
+    def point(instruction):
+        pointer.stdin.write(instruction + "\n")
         pointer.stdin.flush()
         assert select.select([pointer.stdout], [], [], 5)[0]
         assert pointer.stdout.readline().strip() == "ok"
-        time.sleep(0.1)
-    assert capture.wait(timeout=10) == 0, (root / "interactive.log").read_text()
-    assert len(saved()) == 3, (root / "interactive.log").read_text()
+        time.sleep(0.06)
+
+    point("size 2560 720")
+    start(["wtype", "-s", "55000"], "keyboard.log", stdout=sp.DEVNULL)
+
+    def choose(arguments, name, steps):
+        slurp = "--slurp" in arguments
+        capture = start([*command, *arguments], name + ".log", stdout=sp.PIPE if slurp else sp.DEVNULL, text=True)
+        time.sleep(0.5)
+        for instruction in steps:
+            point(instruction)
+        if slurp:
+            stdout, _ = capture.communicate(timeout=10)
+        else:
+            capture.wait(timeout=10)
+            stdout = ""
+        return capture.returncode, stdout
+
+    code, _ = choose([], "interactive", ("move 100 90", "button 1", "move 400 270", "button 0"))
+    assert code == 0, (root / "interactive.log").read_text()
+    assert len(saved()) == 3
+    newest = max(saved(), key=lambda path: path.stat().st_mtime_ns)
+    assert dimensions(newest) == (300, 180)
     clipboard = run(["wl-paste", "--type", "image/png"]).stdout
     assert clipboard.startswith(b"\x89PNG\r\n\x1a\n"), "Clipboard image missing"
-    print("PASS: region capture, default Pictures saving, unique names, selection and clipboard")
+    print("PASS: region capture, default saving, native selection, and clipboard", flush=True)
+
+    code, text = choose(["--slurp"], "reverse", ("move 400 270", "button 1", "move 100 90", "button 0"))
+    assert code == 0 and text.strip() == "100,90 300x180", (code, text)
+    code, text = choose(["--slurp"], "tiny", ("move 100 90", "button 1", "move 103 93", "button 0"))
+    assert code == 1 and not text
+
+    previous = len(saved())
+    cancelled = start(command, "cancelled.log", stdout=sp.DEVNULL)
+    time.sleep(0.5)
+    point("move 100 90")
+    point("button 1")
+    point("move 400 270")
+    run(["wtype", "-k", "Escape"])
+    point("button 0")
+    assert cancelled.wait(timeout=10) == 0
+    assert len(saved()) == previous, "Escape saved a screenshot"
+    print("PASS: reverse drags, tiny selection rejection, and Escape cancellation", flush=True)
+
+    second = root / "second.png"
+    code, _ = choose(["-i", "-o", "HEADLESS-2", str(second)], "second", ("move 1380 90", "button 1", "move 1680 270", "button 0"))
+    assert code == 0 and dimensions(second) == (300, 180)
+    code, text = choose(["--slurp", "-o", "HEADLESS-2"], "global", ("move 1380 90", "button 1", "move 1680 270", "button 0"))
+    assert code == 0 and text.strip() == "1380,90 300x180", (code, text)
+    print("PASS: requested output and global slurp coordinates", flush=True)
+
+    run(["wlr-randr", "--output", "HEADLESS-2", "--scale", "2"])
+    time.sleep(0.2)
+    point("size 1920 720")
+    scaled = root / "scaled.png"
+    code, _ = choose(["-i", "-o", "HEADLESS-2", str(scaled)], "scaled", ("move 1440 90", "button 1", "move 1680 270", "button 0"))
+    assert code == 0 and dimensions(scaled) == (480, 360)
+    print("PASS: scaled selection uses logical input coordinates and physical capture pixels", flush=True)
+
 finally:
     for process in reversed(processes):
         if process.poll() is None:

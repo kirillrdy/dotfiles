@@ -1,9 +1,10 @@
-//! Passive native Wayland layer surfaces with Cairo SHM rendering.
+//! Native Wayland layer surfaces with Cairo SHM rendering and optional input.
 //! Each client has a private connection, driven by GLib rather than GDK.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const p = @import("desktop-protocols.zig");
+const input = @import("desktop-input.zig");
 const a = std.heap.page_allocator;
 const Proxy = c.wl_proxy;
 const cast = c.__zig.cast;
@@ -48,6 +49,8 @@ pub const Client = struct {
     outputs: std.ArrayList(*Output) = .empty,
     surfaces: std.ArrayList(*Surface) = .empty,
     buffers: std.ArrayList(*Buffer) = .empty,
+    seats: std.ArrayList(*input.Seat) = .empty,
+    input_enabled: bool = false,
     callbacks: Callbacks,
     data: ?*anyopaque,
     source: c.guint = 0,
@@ -56,6 +59,12 @@ pub const Client = struct {
     failed: bool = false,
 
     pub fn create(callbacks: Callbacks, data: ?*anyopaque) !*Client {
+        return createWithInput(callbacks, data, false);
+    }
+    pub fn createInteractive(callbacks: Callbacks, data: ?*anyopaque) !*Client {
+        return createWithInput(callbacks, data, true);
+    }
+    fn createWithInput(callbacks: Callbacks, data: ?*anyopaque, enabled: bool) !*Client {
         const self = try a.create(Client);
         errdefer a.destroy(self);
         const display = c.wl_display_connect(null) orelse return error.WaylandConnection;
@@ -63,7 +72,7 @@ pub const Client = struct {
             c.wl_display_disconnect(display);
             return error.WaylandRegistry;
         };
-        self.* = .{ .display = display, .registry = registry, .callbacks = callbacks, .data = data };
+        self.* = .{ .display = display, .registry = registry, .callbacks = callbacks, .data = data, .input_enabled = enabled };
         errdefer self.clear();
         _ = c.wl_registry_add_listener(registry, &registry_listener, self);
         if (c.wl_display_roundtrip(display) < 0) return error.WaylandDispatch;
@@ -94,6 +103,8 @@ pub const Client = struct {
         if (self.source != 0) _ = c.g_source_remove(self.source);
         if (self.write_source != 0) _ = c.g_source_remove(self.write_source);
         while (self.surfaces.items.len > 0) self.surfaces.items[0].destroy();
+        for (self.seats.items) |seat| seat.destroy();
+        self.seats.deinit(a);
         while (self.buffers.items.len > 0) self.buffers.items[0].destroy();
         for (self.outputs.items) |output| output.destroy();
         self.outputs.deinit(a);
@@ -150,6 +161,9 @@ pub const Client = struct {
         } else if (std.mem.eql(u8, kind, "zxdg_output_manager_v1")) {
             // Version 2 has an explicit done event, independent of wl_output.
             self.output_manager = @ptrCast(c.wl_registry_bind(registry, name, &p.zxdg_output_manager_v1_interface, @min(version, 2)));
+        } else if (self.input_enabled and std.mem.eql(u8, kind, "wl_seat")) {
+            const seat = input.Seat.create(self, registry.?, name, version) catch @panic("Wayland seat allocation");
+            self.seats.append(a, seat) catch @panic("out of memory");
         } else if (std.mem.eql(u8, kind, "wl_output")) {
             if (version < 2) return; // Buffer scale requires wl_output version 2.
             const output = a.create(Output) catch @panic("out of memory");
@@ -172,6 +186,15 @@ pub const Client = struct {
             output.destroy();
             return;
         };
+        for (self.seats.items) |seat| if (seat.name == name) {
+            erase(*input.Seat, &self.seats, seat);
+            seat.destroy();
+            return;
+        };
+    }
+    pub fn hasInput(self: *Client) bool {
+        for (self.seats.items) |seat| if (seat.pointer != null or seat.keyboard != null) return true;
+        return false;
     }
     const registry_listener: c.wl_registry_listener = .{ .global = &global, .global_remove = &remove };
 };
@@ -186,6 +209,9 @@ pub const Output = struct {
     pixel_height: i32 = 0,
     logical_width: i32 = 0,
     logical_height: i32 = 0,
+    x: i32 = 0,
+    y: i32 = 0,
+    label: [64:0]u8 = @splat(0),
     transform: i32 = 0,
     announced: bool = false,
 
@@ -214,8 +240,11 @@ pub const Output = struct {
         } else if (self.client.callbacks.changed) |callback| callback(self.client.data, self);
         for (self.client.surfaces.items) |surface| if (surface.output == self) surface.redraw();
     }
-    fn geometry(data: ?*anyopaque, _: ?*c.wl_output, _: i32, _: i32, _: i32, _: i32, _: i32, _: [*c]const u8, _: [*c]const u8, transform: i32) callconv(.c) void {
-        cast(Output, data).transform = transform;
+    fn geometry(data: ?*anyopaque, _: ?*c.wl_output, x: i32, y: i32, _: i32, _: i32, _: i32, _: [*c]const u8, _: [*c]const u8, transform: i32) callconv(.c) void {
+        const self = cast(Output, data);
+        self.transform = transform;
+        self.x = x;
+        self.y = y;
     }
     fn mode(data: ?*anyopaque, _: ?*c.wl_output, flags: u32, width: i32, height_: i32, _: i32) callconv(.c) void {
         if (flags & c.WL_OUTPUT_MODE_CURRENT == 0) return;
@@ -230,8 +259,21 @@ pub const Output = struct {
         cast(Output, data).scale = @intCast(std.math.clamp(scale, 1, 8));
     }
     fn text(_: ?*anyopaque, _: ?*c.wl_output, _: [*c]const u8) callconv(.c) void {}
-    const listener: c.wl_output_listener = .{ .geometry = &geometry, .mode = &mode, .done = &done, .scale = &scaled, .name = &text, .description = &text };
-    fn logicalPosition(_: ?*anyopaque, _: *Proxy, _: i32, _: i32) callconv(.c) void {}
+    fn named(data: ?*anyopaque, _: ?*c.wl_output, name: [*c]const u8) callconv(.c) void {
+        cast(Output, data).setName(name);
+    }
+    fn setName(self: *Output, name: [*c]const u8) void {
+        const bytes = std.mem.span(name);
+        if (bytes.len >= self.label.len) return;
+        @memset(&self.label, 0);
+        @memcpy(self.label[0..bytes.len], bytes);
+    }
+    const listener: c.wl_output_listener = .{ .geometry = &geometry, .mode = &mode, .done = &done, .scale = &scaled, .name = &named, .description = &text };
+    fn logicalPosition(data: ?*anyopaque, _: *Proxy, x: i32, y: i32) callconv(.c) void {
+        const self = cast(Output, data);
+        self.x = x;
+        self.y = y;
+    }
     fn logicalSize(data: ?*anyopaque, _: *Proxy, width: i32, height_: i32) callconv(.c) void {
         const self = cast(Output, data);
         self.logical_width = width;
@@ -241,11 +283,14 @@ pub const Output = struct {
         cast(Output, data).changed();
     }
     fn logicalText(_: ?*anyopaque, _: *Proxy, _: [*c]const u8) callconv(.c) void {}
+    fn logicalName(data: ?*anyopaque, _: *Proxy, name: [*c]const u8) callconv(.c) void {
+        cast(Output, data).setName(name);
+    }
     const logical_listener = extern struct {
         position: *const @TypeOf(logicalPosition) = &logicalPosition,
         size: *const @TypeOf(logicalSize) = &logicalSize,
         done: *const @TypeOf(logicalDone) = &logicalDone,
-        name: *const @TypeOf(logicalText) = &logicalText,
+        name: *const @TypeOf(logicalName) = &logicalName,
         description: *const @TypeOf(logicalText) = &logicalText,
     }{};
 };
@@ -308,8 +353,45 @@ pub const Options = struct {
     width: u32 = 0,
     height: u32 = 0,
     bottom_margin: i32 = 0,
+    interactive: bool = false,
+    keyboard: enum(u32) { none, exclusive, on_demand } = .none,
 };
 pub const Paint = *const fn (?*anyopaque, *c.cairo_t, f64, f64) void;
+
+/// A small SHM cursor keeps interactive clients independent of GTK cursor APIs.
+pub fn crosshair(owner: *Surface, cursor: *Proxy, pointer: *Proxy, serial: u32) !void {
+    const scale = owner.output.scale;
+    const buffer = try Buffer.create(owner, 24 * scale, 24 * scale);
+    buffer.owner = null;
+    errdefer buffer.destroy();
+    const image = c.cairo_image_surface_create_for_data(buffer.memory, c.CAIRO_FORMAT_ARGB32, @intCast(buffer.width), @intCast(buffer.height), @intCast(buffer.width * 4)).?;
+    defer c.cairo_surface_destroy(image);
+    if (c.cairo_surface_status(image) != c.CAIRO_STATUS_SUCCESS) return error.CairoSurface;
+    c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
+    const cr = c.cairo_create(image).?;
+    defer c.cairo_destroy(cr);
+    c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
+    c.cairo_paint(cr);
+    c.cairo_set_operator(cr, c.CAIRO_OPERATOR_OVER);
+    for ([_]f64{ 4, 2 }, 0..) |width, i| {
+        const color: f64 = if (i == 0) 0 else 1;
+        c.cairo_set_source_rgba(cr, color, color, color, 1);
+        c.cairo_set_line_width(cr, width);
+        c.cairo_move_to(cr, 12, 2);
+        c.cairo_line_to(cr, 12, 22);
+        c.cairo_move_to(cr, 2, 12);
+        c.cairo_line_to(cr, 22, 12);
+        c.cairo_stroke(cr);
+    }
+    c.cairo_surface_flush(image);
+    send(cursor, 8, .{@as(i32, @intCast(scale))});
+    send(cursor, 1, .{ buffer.proxy, @as(i32, 0), @as(i32, 0) });
+    send(cursor, 2, .{ @as(i32, 0), @as(i32, 0), @as(i32, 24), @as(i32, 24) });
+    send(pointer, 0, .{ serial, cursor, @as(i32, 12), @as(i32, 12) });
+    buffer.busy = true;
+    send(cursor, 6, .{});
+    owner.client.flush();
+}
 
 pub const Surface = struct {
     client: *Client,
@@ -317,6 +399,7 @@ pub const Surface = struct {
     options: Options,
     paint: Paint,
     data: ?*anyopaque,
+    input: input.Events = .{},
     proxy: ?*Proxy = null,
     role: ?*Proxy = null,
     width: u32 = 0,
@@ -334,6 +417,7 @@ pub const Surface = struct {
     }
     pub fn show(self: *Surface) !void {
         if (self.client.failed) return error.WaylandDispatch;
+        if (self.options.interactive and !self.client.input_enabled) return error.InputNotEnabled;
         if (self.role != null) {
             self.redraw();
             return;
@@ -342,9 +426,11 @@ pub const Surface = struct {
         self.proxy = c.wl_proxy_marshal_flags(compositor, 0, &wl_surface_interface, c.wl_proxy_get_version(compositor), 0, @as(?*anyopaque, null)) orelse return error.WaylandSurface;
         errdefer self.hide();
         listen(self.proxy.?, &surface_listener, self);
-        const region = c.wl_proxy_marshal_flags(compositor, 1, &wl_region_interface, 1, 0, @as(?*anyopaque, null)) orelse return error.WaylandSurface;
-        send(self.proxy.?, 5, .{region}); // Empty input region: passive feedback.
-        destroyProxy(region, 0);
+        if (!self.options.interactive) {
+            const region = c.wl_proxy_marshal_flags(compositor, 1, &wl_region_interface, 1, 0, @as(?*anyopaque, null)) orelse return error.WaylandSurface;
+            send(self.proxy.?, 5, .{region}); // Passive feedback never intercepts input.
+            destroyProxy(region, 0);
+        }
         const shell = self.client.shell.?;
         self.role = c.wl_proxy_marshal_flags(shell, 0, &p.zwlr_layer_surface_v1_interface, c.wl_proxy_get_version(shell), 0, @as(?*anyopaque, null), self.proxy.?, self.output.proxy, self.options.layer, self.options.namespace.ptr) orelse return error.WaylandSurface;
         listen(self.role.?, &layer_listener, self);
@@ -352,11 +438,13 @@ pub const Surface = struct {
         send(self.role.?, 1, .{self.options.anchors});
         send(self.role.?, 2, .{@as(i32, -1)});
         send(self.role.?, 3, .{ @as(i32, 0), @as(i32, 0), self.options.bottom_margin, @as(i32, 0) });
-        send(self.role.?, 4, .{@as(u32, 0)});
+        const keyboard: u32 = if (self.options.keyboard == .on_demand and c.wl_proxy_get_version(shell) < 4) 1 else @backingInt(self.options.keyboard);
+        send(self.role.?, 4, .{keyboard});
         send(self.proxy.?, 6, .{});
         self.client.flush();
     }
     pub fn hide(self: *Surface) void {
+        for (self.client.seats.items) |seat| seat.forget(self);
         if (self.role) |role| destroyProxy(role, 7);
         if (self.proxy) |proxy| destroyProxy(proxy, 0);
         self.role = null;
@@ -459,4 +547,19 @@ test "native buffer bounds reject empty images and oversized allocations" {
     try std.testing.expectError(error.SurfaceTooLarge, bufferSize(16385, 1));
     try std.testing.expectError(error.SurfaceTooLarge, bufferSize(16384, 16384));
     try std.testing.expectEqual(@as(usize, 3840 * 2160 * 4), try bufferSize(3840, 2160));
+}
+
+test "passive clients do not bind input seats or accept interactive surfaces" {
+    const Noop = struct {
+        fn output(_: ?*anyopaque, _: *Output) void {}
+        fn paint(_: ?*anyopaque, _: *c.cairo_t, _: f64, _: f64) void {}
+    };
+    const client = try Client.create(.{ .added = &Noop.output, .removed = &Noop.output }, null);
+    defer client.destroy();
+    try std.testing.expectEqual(@as(usize, 0), client.seats.items.len);
+    try std.testing.expect(!client.hasInput());
+    const surface = try Surface.create(client.outputs.items[0], .{ .namespace = "input-guard", .layer = 3, .anchors = 0, .width = 32, .height = 32, .interactive = true }, &Noop.paint, null);
+    defer surface.destroy();
+    try std.testing.expectError(error.InputNotEnabled, surface.show());
+    try std.testing.expect(surface.proxy == null);
 }
