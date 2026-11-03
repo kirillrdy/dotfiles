@@ -12,4 +12,5 @@ test {
     _ = @import("desktop-screenshot.zig");
     _ = @import("desktop-png.zig");
     _ = @import("desktop-raster.zig");
+    _ = @import("desktop-text.zig");
 }

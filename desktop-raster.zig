@@ -9,6 +9,67 @@ pub const Buffer = struct {
 
 pub const Point = struct { x: f64, y: f64 };
 pub const Color = struct { red: f64, green: f64, blue: f64, alpha: f64 = 1 };
+pub const Region = struct { x: i32, y: i32, width: u32, height: u32 };
+
+/// Composite a premultiplied ARGB source over a premultiplied destination.
+pub fn over(destination: u32, source: u32) u32 {
+    const remaining = 255 - (source >> 24);
+    var result: u32 = 0;
+    inline for (.{ 0, 8, 16, 24 }) |shift| {
+        const channel = ((source >> shift) & 255) + (((destination >> shift) & 255) * remaining + 127) / 255;
+        result |= @as(u32, @min(channel, 255)) << shift;
+    }
+    return result;
+}
+fn colorPixel(color: Color, coverage: f64) u32 {
+    const alpha: u32 = @intFromFloat(@round(std.math.clamp(color.alpha, 0, 1) * coverage * 255));
+    var result = alpha << 24;
+    inline for (.{ 0, 8, 16 }, .{ color.blue, color.green, color.red }) |shift, channel| {
+        const value: u32 = @intFromFloat(@round(std.math.clamp(channel, 0, 1) * @as(f64, @floatFromInt(alpha))));
+        result |= value << shift;
+    }
+    return result;
+}
+
+/// Clip integer pixel rectangles, including source replacement for clear holes.
+pub fn fill(target: Buffer, rect: Region, pixel_value: u32, operation: enum { source, over }) void {
+    const x0: usize = @intCast(std.math.clamp(@as(i64, rect.x), 0, target.width));
+    const y0: usize = @intCast(std.math.clamp(@as(i64, rect.y), 0, target.height));
+    const x1: usize = @intCast(std.math.clamp(@as(i64, rect.x) + rect.width, 0, target.width));
+    const y1: usize = @intCast(std.math.clamp(@as(i64, rect.y) + rect.height, 0, target.height));
+    for (y0..y1) |y| {
+        const row = target.pixels[y * target.width + x0 .. y * target.width + x1];
+        if (operation == .source or pixel_value >> 24 == 255) @memset(row, pixel_value) else for (row) |*dest| dest.* = over(dest.*, pixel_value);
+    }
+}
+
+/// Composite a grayscale mask, preserving clipping and premultiplied alpha.
+pub fn mask(target: Buffer, rect: Region, coverage: []const u8, color: Color) void {
+    std.debug.assert(coverage.len == @as(usize, rect.width) * rect.height);
+    const x0: usize = @intCast(std.math.clamp(-@as(i64, rect.x), 0, rect.width));
+    const y0: usize = @intCast(std.math.clamp(-@as(i64, rect.y), 0, rect.height));
+    const x1: usize = @intCast(std.math.clamp(@as(i64, target.width) - rect.x, 0, rect.width));
+    const y1: usize = @intCast(std.math.clamp(@as(i64, target.height) - rect.y, 0, rect.height));
+    for (y0..y1) |y| for (x0..x1) |x| {
+        const alpha = coverage[y * rect.width + x];
+        if (alpha == 0) continue;
+        const dest_x: usize = @intCast(@as(i64, rect.x) + @as(i64, @intCast(x)));
+        const dest_y: usize = @intCast(@as(i64, rect.y) + @as(i64, @intCast(y)));
+        const dest = &target.pixels[dest_y * target.width + dest_x];
+        dest.* = over(dest.*, colorPixel(color, @as(f64, @floatFromInt(alpha)) / 255));
+    };
+}
+
+test "rectangle replacement clears holes while masks clip and blend alpha" {
+    var pixels: [8]u32 = @splat(0x12345678);
+    const target: Buffer = .{ .pixels = pixels[1..7], .width = 3, .height = 2 };
+    fill(target, .{ .x = -1, .y = -1, .width = 5, .height = 4 }, 0x80000000, .source);
+    fill(target, .{ .x = 1, .y = 0, .width = 1, .height = 2 }, 0, .source);
+    mask(target, .{ .x = -1, .y = -1, .width = 3, .height = 3 }, &.{ 0, 0, 0, 0, 255, 128, 0, 0, 0 }, .{ .red = 1, .green = 1, .blue = 1 });
+    try std.testing.expectEqualSlices(u32, &.{ 0x12345678, 0xffffffff, 0x80808080, 0x80000000, 0x80000000, 0, 0x80000000, 0x12345678 }, &pixels);
+    mask(target, .{ .x = 20, .y = 20, .width = 1, .height = 1 }, &.{255}, .{ .red = 1, .green = 0, .blue = 0 });
+    try std.testing.expectEqual(@as(u32, 0x12345678), pixels[7]);
+}
 pub const Rect = struct { x: f64, y: f64, width: f64, height: f64 };
 pub const Shape = union(enum) {
     rounded: Rect,
@@ -110,16 +171,9 @@ pub const Canvas = struct {
             var distance = std.math.inf(f64);
             for (shapes) |shape| distance = @min(distance, shape.distance(p));
             const coverage = std.math.clamp(0.5 - distance * self.scale, 0, 1);
-            const alpha: u32 = @intFromFloat(@round(std.math.clamp(color.alpha, 0, 1) * coverage * 255));
-            if (alpha == 0) continue;
+            if (coverage == 0) continue;
             const dest = &self.target.pixels[y * self.target.width + x];
-            var result: u32 = 0;
-            inline for (.{ 0, 8, 16, 24 }, .{ color.blue, color.green, color.red, @as(f64, 1) }) |shift, channel| {
-                const source: u32 = @intFromFloat(@round(std.math.clamp(channel, 0, 1) * @as(f64, @floatFromInt(alpha))));
-                const value = source + (((dest.* >> shift) & 255) * (255 - alpha) + 127) / 255;
-                result |= @as(u32, @min(value, 255)) << shift;
-            }
-            dest.* = result;
+            dest.* = over(dest.*, colorPixel(color, coverage));
         };
     }
 };

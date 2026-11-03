@@ -53,7 +53,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit, ABI, protocol and widget checks (requires Wayland)");
     const unit_run = b.addRunArtifact(tests);
     test_step.dependOn(&unit_run.step);
-    test_module.addImport("gtk-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n", &.{ "gtk+-unix-print-3.0", "gio-unix-2.0", "wayland-client" }));
+    test_module.addImport("gtk-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n#include <pango/pangoft2.h>\n", &.{ "gtk+-unix-print-3.0", "gio-unix-2.0", "wayland-client", "pangoft2" }));
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
     const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";

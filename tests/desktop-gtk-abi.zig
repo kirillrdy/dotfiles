@@ -71,4 +71,5 @@ fn checkDeclarations(comptime api: type) void {
 test "explicit toolkit and NetworkManager declarations match the installed C ABI" {
     checkDeclarations(@import("../desktop-gtk.zig"));
     checkDeclarations(@import("../desktop-network-api.zig"));
+    checkDeclarations(@import("../desktop-text.zig").api);
 }
