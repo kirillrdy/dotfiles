@@ -17,7 +17,7 @@ fn imageView(image: *c.GdkPixbuf) raster.Image {
         .width = width,
         .height = height,
         .stride = stride,
-        .channels = if (channels == 4) .rgba else .rgb,
+        .format = if (channels == 4) .rgba else .rgb,
     };
 }
 fn paint(target: native.Pixels, image: *c.GdkPixbuf) void {

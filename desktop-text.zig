@@ -26,6 +26,9 @@ pub const api = struct {
     pub extern fn pango_layout_set_font_description(*c.PangoLayout, *const PangoFontDescription) void;
     pub extern fn pango_layout_set_text(*c.PangoLayout, [*:0]const u8, c_int) void;
     pub extern fn pango_layout_set_single_paragraph_mode(*c.PangoLayout, c.gboolean) void;
+    pub extern fn pango_layout_set_width(*c.PangoLayout, c_int) void;
+    pub extern fn pango_layout_set_ellipsize(*c.PangoLayout, c_uint) void;
+    pub extern fn pango_layout_set_alignment(*c.PangoLayout, c_uint) void;
     pub extern fn pango_layout_get_pixel_extents(*c.PangoLayout, ?*PangoRectangle, ?*PangoRectangle) void;
     pub extern fn pango_layout_get_baseline(*c.PangoLayout) c_int;
     pub extern fn pango_ft2_render_layout(*FT_Bitmap, *c.PangoLayout, c_int, c_int) void;
@@ -51,7 +54,19 @@ pub const Renderer = struct {
         self.* = .{};
     }
     pub fn render(self: *Renderer, allocator: std.mem.Allocator, font: [:0]const u8, size: u32, value: [:0]const u8) !Mask {
-        if (size == 0 or size > 1024 or value.len > 4096 or !std.unicode.utf8ValidateSlice(value)) return error.InvalidText;
+        return self.renderLayout(allocator, value, .{ .font = font, .size = @floatFromInt(size) });
+    }
+    pub const Options = struct {
+        font: [:0]const u8 = "Adwaita Sans",
+        size: f64,
+        width: ?u32 = null,
+        alignment: enum(c_uint) { left, center, right } = .left,
+        ellipsize: bool = false,
+        origin: enum { baseline, top } = .baseline,
+    };
+    pub fn renderLayout(self: *Renderer, allocator: std.mem.Allocator, value: [:0]const u8, options: Options) !Mask {
+        if (!std.math.isFinite(options.size) or options.size <= 0 or options.size > 1024 or value.len > 4096 or !std.unicode.utf8ValidateSlice(value)) return error.InvalidText;
+        if (options.width) |limit| if (limit == 0 or limit > 32768) return error.InvalidText;
         if (self.context == null) {
             const map = api.pango_ft2_font_map_new() orelse return error.FontMap;
             defer c.g_object_unref(map);
@@ -59,12 +74,15 @@ pub const Renderer = struct {
         }
         const layout = api.pango_layout_new(self.context.?) orelse return error.TextLayout;
         defer c.g_object_unref(layout);
-        const description = api.pango_font_description_from_string(font) orelse return error.FontDescription;
+        const description = api.pango_font_description_from_string(options.font) orelse return error.FontDescription;
         defer api.pango_font_description_free(description);
-        api.pango_font_description_set_absolute_size(description, @as(f64, @floatFromInt(size)) * 1024);
+        api.pango_font_description_set_absolute_size(description, options.size * 1024);
         api.pango_layout_set_font_description(layout, description);
         api.pango_layout_set_single_paragraph_mode(layout, 1);
         api.pango_layout_set_text(layout, value, @intCast(value.len));
+        if (options.width) |limit| api.pango_layout_set_width(layout, @intCast(limit * 1024));
+        api.pango_layout_set_alignment(layout, @backingInt(options.alignment));
+        if (options.ellipsize) api.pango_layout_set_ellipsize(layout, c.PANGO_ELLIPSIZE_END);
         var ink: api.PangoRectangle = .{};
         api.pango_layout_get_pixel_extents(layout, &ink, null);
         if (ink.width < 0 or ink.height < 0 or ink.width > 32768 or ink.height > 4096 or @as(i64, ink.width) * ink.height > 16 * 1024 * 1024) return error.TextTooLarge;
@@ -76,7 +94,7 @@ pub const Renderer = struct {
             var bitmap: api.FT_Bitmap = .{ .rows = height, .width = width, .pitch = @intCast(width), .buffer = pixels.ptr };
             api.pango_ft2_render_layout(&bitmap, layout, -ink.x, -ink.y);
         }
-        return .{ .pixels = pixels, .width = width, .height = height, .left = ink.x, .top = ink.y - @divTrunc(api.pango_layout_get_baseline(layout), 1024) };
+        return .{ .pixels = pixels, .width = width, .height = height, .left = ink.x, .top = ink.y - (if (options.origin == .baseline) @divTrunc(api.pango_layout_get_baseline(layout), 1024) else @as(c_int, 0)) };
     }
 };
 
@@ -96,4 +114,21 @@ test "text masks preserve Unicode, physical scale, baseline and empty strings" {
     try std.testing.expectEqual(@as(usize, 0), empty.pixels.len);
     try std.testing.expectError(error.InvalidText, renderer.render(a, "Adwaita Sans", 0, "text"));
     try std.testing.expectError(error.InvalidText, renderer.render(a, "Adwaita Sans", 11, "\xff"));
+}
+
+test "bounded text masks center short labels and ellipsize Unicode at both scales" {
+    var renderer: Renderer = .{};
+    defer renderer.deinit();
+    const a = std.testing.allocator;
+    for ([_]u32{ 1, 2 }) |scale| {
+        const short = try renderer.renderLayout(a, "X", .{ .size = 14.6666666667 * @as(f64, @floatFromInt(scale)), .width = 200 * scale, .alignment = .center, .ellipsize = true, .origin = .top });
+        defer short.deinit(a);
+        try std.testing.expect(short.left > @as(i32, @intCast(80 * scale)));
+        try std.testing.expect(short.width < 40 * scale);
+        try std.testing.expect(short.top >= 0);
+        const long = try renderer.renderLayout(a, "A long window title — 東京 نافذة 🌍", .{ .size = 14.6666666667 * @as(f64, @floatFromInt(scale)), .width = 80 * scale, .alignment = .center, .ellipsize = true, .origin = .top });
+        defer long.deinit(a);
+        try std.testing.expect(long.width > 0 and long.width <= 82 * scale);
+        try std.testing.expect(long.height > 0);
+    }
 }

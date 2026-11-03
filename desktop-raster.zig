@@ -73,6 +73,8 @@ test "rectangle replacement clears holes while masks clip and blend alpha" {
 pub const Rect = struct { x: f64, y: f64, width: f64, height: f64 };
 pub const Shape = union(enum) {
     rounded: Rect,
+    rounded_rect: struct { rect: Rect, radius: f64 },
+    rounded_stroke: struct { rect: Rect, radius: f64, width: f64 = 1 },
     circle: struct { center: Point, radius: f64 },
     line: struct { start: Point, end: Point, radius: f64 = 1 },
     /// Counterclockwise arc, with a sweep of at most pi and round caps.
@@ -82,6 +84,8 @@ pub const Shape = union(enum) {
     fn bounds(self: Shape) Rect {
         return switch (self) {
             .rounded => |r| r,
+            .rounded_rect => |v| v.rect,
+            .rounded_stroke => |v| .{ .x = v.rect.x - v.width / 2, .y = v.rect.y - v.width / 2, .width = v.rect.width + v.width, .height = v.rect.height + v.width },
             .circle => |v| .{ .x = v.center.x - v.radius, .y = v.center.y - v.radius, .width = 2 * v.radius, .height = 2 * v.radius },
             .arc => |v| .{ .x = v.center.x - v.radius - v.stroke, .y = v.center.y - v.radius - v.stroke, .width = 2 * (v.radius + v.stroke), .height = 2 * (v.radius + v.stroke) },
             .line => |v| .{ .x = @min(v.start.x, v.end.x) - v.radius, .y = @min(v.start.y, v.end.y) - v.radius, .width = @abs(v.end.x - v.start.x) + 2 * v.radius, .height = @abs(v.end.y - v.start.y) + 2 * v.radius },
@@ -98,12 +102,9 @@ pub const Shape = union(enum) {
     }
     fn distance(self: Shape, p: Point) f64 {
         return switch (self) {
-            .rounded => |v| blk: {
-                const radius = @min(v.width, v.height) / 2;
-                const x = @abs(p.x - v.x - v.width / 2) - v.width / 2 + radius;
-                const y = @abs(p.y - v.y - v.height / 2) - v.height / 2 + radius;
-                break :blk length(@max(x, 0), @max(y, 0)) + @min(@max(x, y), 0) - radius;
-            },
+            .rounded => |v| roundedDistance(v, @min(v.width, v.height) / 2, p),
+            .rounded_rect => |v| roundedDistance(v.rect, v.radius, p),
+            .rounded_stroke => |v| @abs(roundedDistance(v.rect, v.radius, p)) - v.width / 2,
             .circle => |v| length(p.x - v.center.x, p.y - v.center.y) - v.radius,
             .line => |v| segmentDistance(p, v.start, v.end) - v.radius,
             .arc => |v| blk: {
@@ -130,6 +131,13 @@ pub const Shape = union(enum) {
         };
     }
 };
+
+fn roundedDistance(rect: Rect, requested: f64, p: Point) f64 {
+    const radius = @min(requested, @min(rect.width, rect.height) / 2);
+    const x = @abs(p.x - rect.x - rect.width / 2) - rect.width / 2 + radius;
+    const y = @abs(p.y - rect.y - rect.height / 2) - rect.height / 2 + radius;
+    return length(@max(x, 0), @max(y, 0)) + @min(@max(x, y), 0) - radius;
+}
 
 fn length(x: f64, y: f64) f64 {
     return @sqrt(x * x + y * y);
@@ -218,13 +226,23 @@ test "combined shape bounds retain every direction regardless of draw order" {
     }
 }
 
-/// RGB or straight-alpha RGBA, with optional padding between rows.
+/// Byte RGB/RGBA or native-endian premultiplied ARGB/XRGB, with row padding.
 pub const Image = struct {
     pixels: []const u8,
     width: u32,
     height: u32,
     stride: usize,
-    channels: enum(u3) { rgb = 3, rgba = 4 },
+    format: enum { rgb, rgba, argb, xrgb },
+
+    fn bytesPerPixel(self: Image) usize {
+        return if (self.format == .rgb) 3 else 4;
+    }
+    fn validate(self: Image) !void {
+        if (self.width == 0 or self.height == 0) return error.InvalidImage;
+        const row_size = try std.math.mul(usize, self.width, self.bytesPerPixel());
+        const required = try std.math.add(usize, try std.math.mul(usize, self.height - 1, self.stride), row_size);
+        if (self.stride < row_size or self.pixels.len < required) return error.InvalidImage;
+    }
 };
 
 /// The 24-logical-pixel selection cursor at an integer Wayland buffer scale.
@@ -260,22 +278,158 @@ const Sample = struct {
     }
 };
 
-fn pixel(image: Image, x: usize, y: usize) [3]u32 {
-    const offset = y * image.stride + x * @backingInt(image.channels);
+fn pixel(image: Image, x: usize, y: usize) [4]u32 {
+    const offset = y * image.stride + x * image.bytesPerPixel();
+    if (image.format == .argb or image.format == .xrgb) {
+        const word = std.mem.readInt(u32, image.pixels[offset..][0..4], @import("builtin").cpu.arch.endian());
+        return .{ (word >> 16) & 255, (word >> 8) & 255, word & 255, if (image.format == .xrgb) 255 else word >> 24 };
+    }
     const rgb = image.pixels[offset..][0..3];
-    const alpha: u32 = if (image.channels == .rgba) image.pixels[offset + 3] else 255;
+    const alpha: u32 = if (image.format == .rgba) image.pixels[offset + 3] else 255;
     // Premultiply before interpolation to keep invisible RGB out of the edges.
-    return .{ (@as(u32, rgb[0]) * alpha + 127) / 255, (@as(u32, rgb[1]) * alpha + 127) / 255, (@as(u32, rgb[2]) * alpha + 127) / 255 };
+    return .{ (@as(u32, rgb[0]) * alpha + 127) / 255, (@as(u32, rgb[1]) * alpha + 127) / 255, (@as(u32, rgb[2]) * alpha + 127) / 255, alpha };
+}
+
+fn transparentPixel(image: Image, x: i64, y: i64) [4]u32 {
+    if (x < 0 or y < 0 or x >= image.width or y >= image.height) return @splat(0);
+    return pixel(image, @intCast(x), @intCast(y));
+}
+
+fn sampleImage(image: Image, x: f64, y: f64) u32 {
+    if (x < -1 or y < -1 or x >= @as(f64, @floatFromInt(image.width)) or y >= @as(f64, @floatFromInt(image.height))) return 0;
+    const sx = @floor(x);
+    const sy = @floor(y);
+    const ix: i64 = @intFromFloat(sx);
+    const iy: i64 = @intFromFloat(sy);
+    const fx: u32 = @intFromFloat((x - sx) * 256);
+    const fy: u32 = @intFromFloat((y - sy) * 256);
+    const a = transparentPixel(image, ix, iy);
+    const b = transparentPixel(image, ix + 1, iy);
+    const c = transparentPixel(image, ix, iy + 1);
+    const d = transparentPixel(image, ix + 1, iy + 1);
+    var result: u32 = 0;
+    inline for (.{ 16, 8, 0, 24 }, 0..) |shift, i| {
+        const top = a[i] * (256 - fx) + b[i] * fx;
+        const bottom = c[i] * (256 - fx) + d[i] * fx;
+        const value = (top * (256 - fy) + bottom * fy + 32768) >> 16;
+        result |= value << shift;
+    }
+    return result;
+}
+
+const FilterAxis = struct {
+    center: f64,
+    step: f64,
+    area: bool,
+    first: i64,
+    last: i64,
+
+    fn init(center: f64, step: f64) FilterAxis {
+        // Cairo's GOOD filter switches to area averaging below 3/4 scale.
+        const area = step > 4.0 / 3.0;
+        const start = if (area) center + 0.5 - step / 2 else @floor(center);
+        const end = if (area) center + 0.5 + step / 2 else start + 2;
+        return .{ .center = center, .step = step, .area = area, .first = @intFromFloat(@floor(start)), .last = @intFromFloat(@ceil(end)) };
+    }
+    fn weight(self: FilterAxis, position: usize) f64 {
+        const index: f64 = @floatFromInt(position);
+        if (!self.area) return @max(0, 1 - @abs(index - self.center));
+        const start = self.center + 0.5 - self.step / 2;
+        const end = self.center + 0.5 + self.step / 2;
+        return @max(0, @min(index + 1, end) - @max(index, start)) / self.step;
+    }
+};
+
+fn filteredImage(image: Image, x: f64, y: f64, step_x: f64, step_y: f64) u32 {
+    if (step_x <= 4.0 / 3.0 and step_y <= 4.0 / 3.0) return sampleImage(image, x, y);
+    const horizontal = FilterAxis.init(x, step_x);
+    const vertical = FilterAxis.init(y, step_y);
+    const x0: usize = @intCast(std.math.clamp(horizontal.first, 0, image.width));
+    const x1: usize = @intCast(std.math.clamp(horizontal.last, 0, image.width));
+    const y0: usize = @intCast(std.math.clamp(vertical.first, 0, image.height));
+    const y1: usize = @intCast(std.math.clamp(vertical.last, 0, image.height));
+    var sum: [4]f64 = @splat(0);
+    for (y0..y1) |sy| {
+        const wy = vertical.weight(sy);
+        for (x0..x1) |sx| {
+            const weight = wy * horizontal.weight(sx);
+            const value = pixel(image, sx, sy);
+            for (&sum, value) |*channel, sample| channel.* += @as(f64, @floatFromInt(sample)) * weight;
+        }
+    }
+    var result: u32 = 0;
+    inline for (.{ 16, 8, 0, 24 }, 0..) |shift, i| {
+        const value: u32 = @intFromFloat(@round(std.math.clamp(sum[i], 0, 255)));
+        result |= value << shift;
+    }
+    return result;
+}
+
+/// Scale and composite with bilinear magnification and area minification.
+/// Source edges are transparent, including under partially covered filters.
+/// Destination coordinates and the optional clip are in physical pixels.
+pub fn blit(target: Buffer, image: Image, destination: Rect, clip: ?Region) !void {
+    try image.validate();
+    if (!std.math.isFinite(destination.x) or !std.math.isFinite(destination.y) or !std.math.isFinite(destination.width) or !std.math.isFinite(destination.height) or destination.width < 0.001 or destination.height < 0.001) return error.InvalidImage;
+    if (target.pixels.len < try std.math.mul(usize, target.width, target.height)) return error.InvalidImage;
+    const width: f64 = @floatFromInt(target.width);
+    const height: f64 = @floatFromInt(target.height);
+    var x0: usize = @intFromFloat(std.math.clamp(@floor(destination.x), 0, width));
+    var y0: usize = @intFromFloat(std.math.clamp(@floor(destination.y), 0, height));
+    var x1: usize = @intFromFloat(std.math.clamp(@ceil(destination.x + destination.width), 0, width));
+    var y1: usize = @intFromFloat(std.math.clamp(@ceil(destination.y + destination.height), 0, height));
+    if (clip) |rect| {
+        x0 = @max(x0, @as(usize, @intCast(std.math.clamp(@as(i64, rect.x), 0, target.width))));
+        y0 = @max(y0, @as(usize, @intCast(std.math.clamp(@as(i64, rect.y), 0, target.height))));
+        x1 = @min(x1, @as(usize, @intCast(std.math.clamp(@as(i64, rect.x) + rect.width, 0, target.width))));
+        y1 = @min(y1, @as(usize, @intCast(std.math.clamp(@as(i64, rect.y) + rect.height, 0, target.height))));
+    }
+    if (x1 <= x0 or y1 <= y0) return;
+    const step_x = @as(f64, @floatFromInt(image.width)) / destination.width;
+    const step_y = @as(f64, @floatFromInt(image.height)) / destination.height;
+    for (y0..y1) |y| for (x0..x1) |x| {
+        const sx = (@as(f64, @floatFromInt(x)) + 0.5 - destination.x) * step_x - 0.5;
+        const sy = (@as(f64, @floatFromInt(y)) + 0.5 - destination.y) * step_y - 0.5;
+        const dest = &target.pixels[y * target.width + x];
+        dest.* = over(dest.*, filteredImage(image, sx, sy, step_x, step_y));
+    };
+}
+
+test "image compositing preserves premultiplied alpha and ignores unused XRGB bits" {
+    var pixels: [1]u32 = .{0xff000000};
+    const target: Buffer = .{ .pixels = &pixels, .width = 1, .height = 1 };
+    const rect: Rect = .{ .x = 0, .y = 0, .width = 1, .height = 1 };
+    try blit(target, .{ .pixels = &.{ 255, 0, 0, 128 }, .width = 1, .height = 1, .stride = 4, .format = .rgba }, rect, null);
+    try std.testing.expectEqual(@as(u32, 0xff800000), pixels[0]);
+    var word = [_]u32{0x80800000};
+    pixels[0] = 0xff000000;
+    try blit(target, .{ .pixels = std.mem.sliceAsBytes(&word), .width = 1, .height = 1, .stride = 4, .format = .argb }, rect, null);
+    try std.testing.expectEqual(@as(u32, 0xff800000), pixels[0]);
+    word[0] = 0x00112233;
+    try blit(target, .{ .pixels = std.mem.sliceAsBytes(&word), .width = 1, .height = 1, .stride = 4, .format = .xrgb }, rect, null);
+    try std.testing.expectEqual(@as(u32, 0xff112233), pixels[0]);
+}
+
+test "image compositing respects destination clips and transparent source edges" {
+    var pixels: [3]u32 = @splat(0xff000000);
+    const target: Buffer = .{ .pixels = &pixels, .width = 3, .height = 1 };
+    const image: Image = .{ .pixels = &.{ 255, 0, 0 }, .width = 1, .height = 1, .stride = 3, .format = .rgb };
+    try blit(target, image, .{ .x = 0, .y = 0, .width = 3, .height = 1 }, .{ .x = 1, .y = 0, .width = 1, .height = 1 });
+    try std.testing.expectEqualSlices(u32, &.{ 0xff000000, 0xffff0000, 0xff000000 }, &pixels);
+    try blit(target, image, .{ .x = 10, .y = 0, .width = 3, .height = 1 }, null);
+    try std.testing.expectEqual(@as(u32, 0xff000000), pixels[2]);
+    var scaled: [4]u32 = @splat(0);
+    try blit(.{ .pixels = &scaled, .width = 2, .height = 2 }, image, .{ .x = 0, .y = 0, .width = 2, .height = 2 }, null);
+    try std.testing.expectEqual(@as(u32, 0x8f8f0000), scaled[0]);
 }
 
 /// Center-crop to fill the physical buffer, bilinearly sample with padded edges,
 /// and composite over opaque black. Physical dimensions include output scaling.
 pub fn cover(target: Buffer, image: Image) !void {
-    if (image.width == 0 or image.height == 0 or target.width == 0 or target.height == 0) return error.InvalidImage;
-    const row_size = try std.math.mul(usize, image.width, @backingInt(image.channels));
-    const required = try std.math.add(usize, try std.math.mul(usize, image.height - 1, image.stride), row_size);
+    try image.validate();
+    if (target.width == 0 or target.height == 0) return error.InvalidImage;
     const size = try std.math.mul(usize, target.width, target.height);
-    if (image.stride < row_size or image.pixels.len < required or target.pixels.len < size) return error.InvalidImage;
+    if (target.pixels.len < size) return error.InvalidImage;
     const iw: f64 = @floatFromInt(image.width);
     const ih: f64 = @floatFromInt(image.height);
     const width: f64 = @floatFromInt(target.width);
@@ -303,7 +457,7 @@ pub fn cover(target: Buffer, image: Image) !void {
 }
 
 test "bilinear fill premultiplies alpha before sampling and pads source edges" {
-    const image: Image = .{ .pixels = &.{ 255, 0, 0, 255, 0, 255, 0, 0 }, .width = 2, .height = 1, .stride = 8, .channels = .rgba };
+    const image: Image = .{ .pixels = &.{ 255, 0, 0, 255, 0, 255, 0, 0 }, .width = 2, .height = 1, .stride = 8, .format = .rgba };
     var pixels: [8]u32 = undefined;
     try cover(.{ .pixels = &pixels, .width = 4, .height = 2 }, image);
     try std.testing.expectEqualSlices(u32, &.{ 0xffff0000, 0xffbf0000, 0xff400000, 0xff000000 }, pixels[0..4]);
@@ -313,7 +467,7 @@ test "bilinear fill premultiplies alpha before sampling and pads source edges" {
 test "bilinear fill rejects invalid source and destination bounds" {
     var pixels: [1]u32 = undefined;
     const target: Buffer = .{ .pixels = &pixels, .width = 1, .height = 1 };
-    var image: Image = .{ .pixels = &.{ 1, 2, 3 }, .width = 1, .height = 1, .stride = 3, .channels = .rgb };
+    var image: Image = .{ .pixels = &.{ 1, 2, 3 }, .width = 1, .height = 1, .stride = 3, .format = .rgb };
     try cover(target, image);
     try std.testing.expectEqual(@as(u32, 0xff010203), pixels[0]);
     image.stride = 2;
