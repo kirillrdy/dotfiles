@@ -220,6 +220,11 @@ pub const Output = struct {
         const pixels = if (self.transform & 1 != 0) self.pixel_width else self.pixel_height;
         return @divTrunc(pixels, @as(i32, @intCast(self.scale)));
     }
+    pub fn width(self: *Output) i32 {
+        if (self.logical_width > 0) return self.logical_width;
+        const pixels = if (self.transform & 1 != 0) self.pixel_height else self.pixel_width;
+        return @divTrunc(pixels, @as(i32, @intCast(self.scale)));
+    }
     fn bindLogical(self: *Output) void {
         if (self.logical != null) return;
         const manager = self.client.output_manager orelse return;
@@ -246,10 +251,10 @@ pub const Output = struct {
         self.x = x;
         self.y = y;
     }
-    fn mode(data: ?*anyopaque, _: ?*c.wl_output, flags: u32, width: i32, height_: i32, _: i32) callconv(.c) void {
+    fn mode(data: ?*anyopaque, _: ?*c.wl_output, flags: u32, width_: i32, height_: i32, _: i32) callconv(.c) void {
         if (flags & c.WL_OUTPUT_MODE_CURRENT == 0) return;
         const self = cast(Output, data);
-        self.pixel_width = width;
+        self.pixel_width = width_;
         self.pixel_height = height_;
     }
     fn done(data: ?*anyopaque, _: ?*c.wl_output) callconv(.c) void {
@@ -274,9 +279,9 @@ pub const Output = struct {
         self.x = x;
         self.y = y;
     }
-    fn logicalSize(data: ?*anyopaque, _: *Proxy, width: i32, height_: i32) callconv(.c) void {
+    fn logicalSize(data: ?*anyopaque, _: *Proxy, width_: i32, height_: i32) callconv(.c) void {
         const self = cast(Output, data);
-        self.logical_width = width;
+        self.logical_width = width_;
         self.logical_height = height_;
     }
     fn logicalDone(data: ?*anyopaque, _: *Proxy) callconv(.c) void {
@@ -353,6 +358,8 @@ pub const Options = struct {
     width: u32 = 0,
     height: u32 = 0,
     bottom_margin: i32 = 0,
+    top_margin: i32 = 0,
+    left_margin: i32 = 0,
     interactive: bool = false,
     keyboard: enum(u32) { none, exclusive, on_demand } = .none,
 };
@@ -437,7 +444,7 @@ pub const Surface = struct {
         send(self.role.?, 0, .{ self.options.width, self.options.height });
         send(self.role.?, 1, .{self.options.anchors});
         send(self.role.?, 2, .{@as(i32, -1)});
-        send(self.role.?, 3, .{ @as(i32, 0), @as(i32, 0), self.options.bottom_margin, @as(i32, 0) });
+        send(self.role.?, 3, .{ self.options.top_margin, @as(i32, 0), self.options.bottom_margin, self.options.left_margin });
         const keyboard: u32 = if (self.options.keyboard == .on_demand and c.wl_proxy_get_version(shell) < 4) 1 else @backingInt(self.options.keyboard);
         send(self.role.?, 4, .{keyboard});
         send(self.proxy.?, 6, .{});
@@ -467,7 +474,21 @@ pub const Surface = struct {
         if (margin == self.options.bottom_margin) return;
         self.options.bottom_margin = margin;
         if (self.role) |role| {
-            send(role, 3, .{ @as(i32, 0), @as(i32, 0), margin, @as(i32, 0) });
+            send(role, 3, .{ self.options.top_margin, @as(i32, 0), margin, self.options.left_margin });
+            send(self.proxy.?, 6, .{});
+            self.client.flush();
+        }
+    }
+    pub fn setLayout(self: *Surface, width: u32, height: u32, top_margin: i32, left_margin: i32) void {
+        const changed = self.options.width != width or self.options.height != height or self.options.top_margin != top_margin or self.options.left_margin != left_margin;
+        if (!changed) return;
+        self.options.width = width;
+        self.options.height = height;
+        self.options.top_margin = top_margin;
+        self.options.left_margin = left_margin;
+        if (self.role) |role| {
+            send(role, 0, .{ width, height });
+            send(role, 3, .{ top_margin, @as(i32, 0), self.options.bottom_margin, left_margin });
             send(self.proxy.?, 6, .{});
             self.client.flush();
         }

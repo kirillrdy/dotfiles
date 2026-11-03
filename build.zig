@@ -51,7 +51,8 @@ pub fn build(b: *std.Build) void {
     test_module.link_objects.appendSlice(b.graph.arena, desktop.link_objects.items) catch @panic("OOM");
     const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module });
     const test_step = b.step("test", "Run unit, ABI, protocol and widget checks (requires Wayland)");
-    test_step.dependOn(&b.addRunArtifact(tests).step);
+    const unit_run = b.addRunArtifact(tests);
+    test_step.dependOn(&unit_run.step);
     test_module.addImport("gtk-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n", &.{ "gtk+-unix-print-3.0", "gio-unix-2.0", "wayland-client" }));
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
@@ -183,6 +184,9 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, fixture.step, "portal-fixture") or std.mem.eql(u8, fixture.step, "portal-video-fixture") or std.mem.eql(u8, fixture.step, "pointer-fixture")) capture.dependOn(&b.addInstallArtifact(artifact, .{}).step);
         if (fixture.run) {
             const run = b.addRunArtifact(artifact);
+            // Pixel assertions need an unobstructed compositor output before
+            // the separate GTK fixtures map their windows on that display.
+            run.step.dependOn(&unit_run.step);
             if (std.mem.eql(u8, fixture.step, "askpass-fixture")) run.addArtifactArg(session);
             test_step.dependOn(&run.step);
         }
