@@ -375,21 +375,27 @@ pub const Operation = struct {
             const pixel = std.mem.readInt(u32, pixels[@as(usize, @intCast(y)) * stride + @as(usize, @intCast(x)) * 4 ..][0..4], @import("builtin").cpu.arch.endian());
             c.g_variant_builder_add(results, "{sv}", @as([*:0]const u8, "color"), c.g_variant_new("(ddd)", @as(f64, @floatFromInt((pixel >> 16) & 255)) / 255, @as(f64, @floatFromInt((pixel >> 8) & 255)) / 255, @as(f64, @floatFromInt(pixel & 255)) / 255));
         } else {
-            const crop = c.cairo_image_surface_create(c.CAIRO_FORMAT_RGB24, w, h) orelse return self.finish(2, null);
-            defer c.cairo_surface_destroy(crop);
-            const cr = c.cairo_create(crop);
-            defer c.cairo_destroy(cr);
-            c.cairo_set_source_surface(cr, surface, @floatFromInt(-x), @floatFromInt(-y));
-            c.cairo_paint(cr);
+            c.cairo_surface_flush(surface);
+            const stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
+            const pixels: [*]const u8 = c.cairo_image_surface_get_data(surface);
+            const offset = @as(usize, @intCast(y)) * stride + @as(usize, @intCast(x)) * 4;
+            const length = @as(usize, @intCast(h - 1)) * stride + @as(usize, @intCast(w)) * 4;
+            const encoded = sc.png.encode(self.allocator, .{
+                .pixels = pixels[offset..][0..length],
+                .width = @intCast(w),
+                .height = @intCast(h),
+                .stride = stride,
+            }) catch return self.finish(2, null);
+            defer self.allocator.free(encoded);
             const filename = std.fmt.allocPrintSentinel(self.allocator, "{s}/desktop-screenshot-XXXXXX", .{c.g_get_user_runtime_dir()}, 0) catch return self.finish(2, null);
             defer self.allocator.free(filename);
             const fd = c.g_mkstemp(filename);
             if (fd < 0) return self.finish(2, null);
-            _ = libc.close(fd);
-            if (c.cairo_surface_write_to_png(crop, filename) != c.CAIRO_STATUS_SUCCESS) {
+            defer _ = libc.close(fd);
+            sc.writeAll(fd, encoded) catch {
                 _ = libc.unlink(filename);
                 return self.finish(2, null);
-            }
+            };
             const uri = c.g_filename_to_uri(filename, null, null);
             if (uri == null) {
                 _ = libc.unlink(filename);

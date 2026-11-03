@@ -80,6 +80,8 @@ try:
     explicit = root / "explicit.png"
     run([*command, "-g", "10,20 64x48", str(explicit)])
     assert dimensions(explicit) == (64, 48)
+    stdout = run([*command, "-g", "10,20 64x48", "-"]).stdout
+    assert stdout == explicit.read_bytes(), "stdout PNG differs from saved capture"
     run([*command, "-g", "10,20 64x48"])
     assert len(saved()) == 1 and dimensions(saved()[0]) == (64, 48)
     run([*command, "-g", "10,20 64x48"])

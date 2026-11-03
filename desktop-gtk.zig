@@ -895,8 +895,6 @@ pub const enum__cairo_format = c_int;
 
 pub const cairo_format_t = enum__cairo_format;
 
-pub const cairo_write_func_t = ?*const fn (closure: ?*anyopaque, data: [*c]const u8, length: c_uint) callconv(.c) cairo_status_t;
-
 pub const struct__cairo_rectangle_int = extern struct {
     x: c_int = 0,
     y: c_int = 0,
@@ -982,10 +980,6 @@ pub extern fn cairo_get_source(cr: ?*cairo_t) ?*cairo_pattern_t;
 pub extern fn cairo_status(cr: ?*cairo_t) cairo_status_t;
 
 pub extern fn cairo_surface_destroy(surface: ?*cairo_surface_t) void;
-
-pub extern fn cairo_surface_write_to_png(surface: ?*cairo_surface_t, filename: [*c]const u8) cairo_status_t;
-
-pub extern fn cairo_surface_write_to_png_stream(surface: ?*cairo_surface_t, write_func: cairo_write_func_t, closure: ?*anyopaque) cairo_status_t;
 
 pub extern fn cairo_surface_flush(surface: ?*cairo_surface_t) void;
 

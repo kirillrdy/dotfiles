@@ -3,6 +3,7 @@ const std = @import("std");
 const screenshot = @import("desktop").screenshot;
 const c = screenshot.c;
 const assert = std.debug.assert;
+const libc = @import("desktop").libc;
 
 fn testGeometryParsing() !void {
     const r1 = screenshot.Rect.parse("350,280 1028x720").?;
@@ -62,30 +63,60 @@ fn testOptionsParsing() !void {
     try std.testing.expectEqualStrings("shot.png", opt4.file_path.?);
     try std.testing.expect(!opt4.save_default);
     try std.testing.expectEqual(@as(i32, 1920), opt4.geometry.?.w);
+    const stdout = screenshot.Options.parse(&.{ "grim", "-" });
+    try std.testing.expectEqualStrings("-", stdout.file_path.?);
+    try std.testing.expect(!stdout.interactive);
+    try std.testing.expect(!stdout.save_default);
+}
+
+fn roundTrip(allocator: std.mem.Allocator, image: screenshot.png.Image) !void {
+    const encoded = try screenshot.png.encode(allocator, image);
+    defer allocator.free(encoded);
+    try std.testing.expectEqualStrings("\x89PNG\r\n\x1a\n", encoded[0..8]);
+    var path = "/tmp/desktop-png-XXXXXX".*;
+    const fd = c.g_mkstemp(&path);
+    defer _ = libc.unlink(&path);
+    try std.testing.expect(fd >= 0);
+    {
+        defer _ = libc.close(fd);
+        try screenshot.writeAll(fd, encoded);
+    }
+    // Decode with the existing C library as an independent reference.
+    const decoded = c.gdk_pixbuf_new_from_file(&path, null) orelse return error.PngDecodeFailed;
+    defer c.g_object_unref(decoded);
+    try std.testing.expectEqual(image.width, @as(u32, @intCast(c.gdk_pixbuf_get_width(decoded))));
+    try std.testing.expectEqual(image.height, @as(u32, @intCast(c.gdk_pixbuf_get_height(decoded))));
+    try std.testing.expectEqual(@as(c_int, 3), c.gdk_pixbuf_get_n_channels(decoded));
+    const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(decoded));
+    const pixels = c.gdk_pixbuf_get_pixels(decoded);
+    for (0..image.height) |y| {
+        const source_y = if (image.y_invert) image.height - 1 - y else y;
+        for (0..image.width) |x| {
+            const original = std.mem.readInt(u32, image.pixels[source_y * image.stride + x * 4 ..][0..4], @import("builtin").cpu.arch.endian());
+            const expected: [3]u8 = .{ @truncate(original >> 16), @truncate(original >> 8), @truncate(original) };
+            try std.testing.expectEqualSlices(u8, &expected, pixels[y * stride + x * 3 ..][0..3]);
+        }
+    }
 }
 
 fn testPngEncoding(allocator: std.mem.Allocator) !void {
-    const width: c_int = 64;
-    const height: c_int = 64;
-    const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, width, height);
-    defer c.cairo_surface_destroy(surface);
-
-    const cr = c.cairo_create(surface);
-    defer c.cairo_destroy(cr);
-
-    c.cairo_set_source_rgb(cr, 0.2, 0.5, 0.9);
-    c.cairo_paint(cr);
-
-    var png = screenshot.PngBuffer.init(allocator);
-    defer png.deinit();
-
-    const status = c.cairo_surface_write_to_png_stream(surface, &screenshot.PngBuffer.writeCallback, &png);
-    try std.testing.expect(status == c.CAIRO_STATUS_SUCCESS);
-    try std.testing.expect(png.bytes.items.len > 8);
-
-    // Verify PNG header signature: 0x89 'P' 'N' 'G' 0x0D 0x0A 0x1A 0x0A
-    const png_magic = "\x89PNG\r\n\x1a\n";
-    try std.testing.expectEqualStrings(png_magic, png.bytes.items[0..8]);
+    var random: std.Random.DefaultPrng = .init(1234);
+    // Include incompressible data crossing the compressor window and IDAT chunks.
+    for ([_][2]u32{ .{ 1, 1 }, .{ 64, 64 }, .{ 257, 129 } }) |size| {
+        const stride = @as(usize, size[0]) * 4 + 12;
+        const pixels = try allocator.alloc(u8, stride * size[1]);
+        defer allocator.free(pixels);
+        random.random().bytes(pixels);
+        for ([_]bool{ false, true }) |inverted| {
+            try roundTrip(allocator, .{ .pixels = pixels, .width = size[0], .height = size[1], .stride = stride, .y_invert = inverted });
+        }
+        if (size[0] > 1) {
+            // A portal crop ends before the source stride, including on its last row.
+            const offset = stride + 4;
+            const length = (size[1] - 2) * stride + (size[0] - 1) * 4;
+            try roundTrip(allocator, .{ .pixels = pixels[offset..][0..length], .width = size[0] - 1, .height = size[1] - 1, .stride = stride });
+        }
+    }
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -97,5 +128,5 @@ pub fn main(init: std.process.Init) !void {
     try testOptionsParsing();
     try testPngEncoding(arena.allocator());
 
-    std.debug.print("desktop-screenshot: geometry parsing, CLI options, Cairo surface creation and PNG stream encoding passed\n", .{});
+    std.debug.print("desktop-screenshot: geometry parsing, CLI options, Zig PNG encoding, independent RGB decoding, inverted rows, padding and crops passed\n", .{});
 }
