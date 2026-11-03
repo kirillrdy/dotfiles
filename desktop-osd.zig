@@ -43,7 +43,7 @@ const Overlay = struct {
     fn create(output: *native.Output, theme: *const view.Theme) !*Overlay {
         const self = try allocator.create(Overlay);
         errdefer allocator.destroy(self);
-        self.* = .{ .theme = theme, .surface = try native.Surface.create(output, .{
+        self.* = .{ .theme = theme, .surface = try native.Surface.createPixels(output, .{
             .namespace = "desktop-osd",
             .layer = 3,
             .anchors = native.bottom,
@@ -53,9 +53,9 @@ const Overlay = struct {
         }, &draw, self) };
         return self;
     }
-    fn draw(data: ?*anyopaque, cr: *c.cairo_t, width: f64, height: f64) void {
+    fn draw(data: ?*anyopaque, buffer: native.Pixels) void {
         const self = cast(Overlay, data);
-        view.paint(cr, self.theme.*, self.kind, self.state.percent, self.state.muted, width, height);
+        view.paint(buffer, self.surface.output.scale, self.theme.*, self.kind, self.state.percent, self.state.muted);
     }
     fn show(self: *Overlay, kind: Kind, state: State) void {
         self.kind = kind;
