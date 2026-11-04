@@ -6,6 +6,8 @@ pub const api = struct {
     pub const PangoFontMap = opaque {};
     pub const PangoContext = opaque {};
     pub const PangoFontDescription = opaque {};
+    pub const PangoAttrList = opaque {};
+    pub const PangoAttribute = opaque {};
     pub const PangoRectangle = extern struct { x: c_int = 0, y: c_int = 0, width: c_int = 0, height: c_int = 0 };
     pub const FT_Bitmap = extern struct {
         rows: c_uint,
@@ -18,7 +20,10 @@ pub const api = struct {
         palette: ?*anyopaque = null,
     };
     pub extern fn pango_ft2_font_map_new() ?*PangoFontMap;
+    pub extern fn pango_ft2_font_map_set_resolution(*PangoFontMap, f64, f64) void;
     pub extern fn pango_font_map_create_context(*PangoFontMap) ?*PangoContext;
+    pub extern fn pango_context_get_font_map(*PangoContext) *PangoFontMap;
+    pub extern fn pango_context_changed(*PangoContext) void;
     pub extern fn pango_layout_new(*PangoContext) ?*c.PangoLayout;
     pub extern fn pango_font_description_from_string([*:0]const u8) ?*PangoFontDescription;
     pub extern fn pango_font_description_set_absolute_size(*PangoFontDescription, f64) void;
@@ -31,6 +36,13 @@ pub const api = struct {
     pub extern fn pango_layout_set_height(*c.PangoLayout, c_int) void;
     pub extern fn pango_layout_set_wrap(*c.PangoLayout, c_uint) void;
     pub extern fn pango_layout_set_markup(*c.PangoLayout, [*:0]const u8, c_int) void;
+    pub extern fn pango_layout_get_attributes(*c.PangoLayout) ?*PangoAttrList;
+    pub extern fn pango_layout_set_attributes(*c.PangoLayout, *PangoAttrList) void;
+    pub extern fn pango_attr_list_new() *PangoAttrList;
+    pub extern fn pango_attr_list_copy(*PangoAttrList) *PangoAttrList;
+    pub extern fn pango_attr_list_insert(*PangoAttrList, *PangoAttribute) void;
+    pub extern fn pango_attr_list_unref(*PangoAttrList) void;
+    pub extern fn pango_attr_line_height_new_absolute(c_int) *PangoAttribute;
     pub extern fn pango_layout_set_alignment(*c.PangoLayout, c_uint) void;
     pub extern fn pango_layout_get_pixel_extents(*c.PangoLayout, ?*PangoRectangle, ?*PangoRectangle) void;
     pub extern fn pango_layout_get_baseline(*c.PangoLayout) c_int;
@@ -44,6 +56,7 @@ pub const Mask = struct {
     left: i32,
     top: i32, // Relative to the requested baseline, in physical pixels.
     logical_height: u32 = 0,
+    logical_width: u32 = 0,
     ellipsized: bool = false,
 
     pub fn deinit(self: Mask, allocator: std.mem.Allocator) void {
@@ -53,6 +66,7 @@ pub const Mask = struct {
 
 pub const Renderer = struct {
     context: ?*api.PangoContext = null,
+    dpi: f64 = 0,
 
     pub fn deinit(self: *Renderer) void {
         if (self.context) |context| c.g_object_unref(context);
@@ -64,6 +78,8 @@ pub const Renderer = struct {
     pub const Options = struct {
         font: [:0]const u8 = "Adwaita Sans",
         size: f64,
+        dpi: f64 = 96,
+        line_height: ?u32 = null,
         width: ?u32 = null,
         alignment: enum(c_uint) { left, center, right } = .left,
         ellipsize: bool = false,
@@ -72,13 +88,23 @@ pub const Renderer = struct {
         markup: bool = false,
     };
     pub fn renderLayout(self: *Renderer, allocator: std.mem.Allocator, value: [:0]const u8, options: Options) !Mask {
-        if (!std.math.isFinite(options.size) or options.size <= 0 or options.size > 1024 or value.len > 4096 or !std.unicode.utf8ValidateSlice(value)) return error.InvalidText;
+        if (!std.math.isFinite(options.size) or options.size <= 0 or options.size > 1024 or !std.math.isFinite(options.dpi) or options.dpi <= 0 or options.dpi > 1536 or value.len > 4096 or !std.unicode.utf8ValidateSlice(value)) return error.InvalidText;
         if (options.width) |limit| if (limit == 0 or limit > 32768) return error.InvalidText;
         if (options.lines) |lines| if (lines == 0 or lines > 64) return error.InvalidText;
+        if (options.line_height) |height| if (height == 0 or height > 4096) return error.InvalidText;
         if (self.context == null) {
             const map = api.pango_ft2_font_map_new() orelse return error.FontMap;
             defer c.g_object_unref(map);
+            // Match GTK/Clutter's 96 DPI, including variable-font optical size.
+            // Layout sizes below remain absolute physical pixels.
+            api.pango_ft2_font_map_set_resolution(map, options.dpi, options.dpi);
             self.context = api.pango_font_map_create_context(map) orelse return error.FontContext;
+            self.dpi = options.dpi;
+        }
+        if (self.dpi != options.dpi) {
+            api.pango_ft2_font_map_set_resolution(api.pango_context_get_font_map(self.context.?), options.dpi, options.dpi);
+            api.pango_context_changed(self.context.?);
+            self.dpi = options.dpi;
         }
         const layout = api.pango_layout_new(self.context.?) orelse return error.TextLayout;
         defer c.g_object_unref(layout);
@@ -91,6 +117,12 @@ pub const Renderer = struct {
         // Match GTK labels: malformed markup is displayed literally.
         if (options.markup and c.pango_parse_markup(value, @intCast(value.len), 0, null, null, null, null) != 0)
             api.pango_layout_set_markup(layout, value, @intCast(value.len));
+        if (options.line_height) |height| {
+            const attrs = if (api.pango_layout_get_attributes(layout)) |existing| api.pango_attr_list_copy(existing) else api.pango_attr_list_new();
+            defer api.pango_attr_list_unref(attrs);
+            api.pango_attr_list_insert(attrs, api.pango_attr_line_height_new_absolute(@intCast(height * 1024)));
+            api.pango_layout_set_attributes(layout, attrs);
+        }
         if (options.width) |limit| api.pango_layout_set_width(layout, @intCast(limit * 1024));
         if (options.lines) |lines| {
             api.pango_layout_set_height(layout, -@as(c_int, @intCast(lines)));
@@ -110,9 +142,23 @@ pub const Renderer = struct {
             var bitmap: api.FT_Bitmap = .{ .rows = height, .width = width, .pitch = @intCast(width), .buffer = pixels.ptr };
             api.pango_ft2_render_layout(&bitmap, layout, -ink.x, -ink.y);
         }
-        return .{ .pixels = pixels, .width = width, .height = height, .left = ink.x, .top = ink.y - (if (options.origin == .baseline) @divTrunc(api.pango_layout_get_baseline(layout), 1024) else @as(c_int, 0)), .logical_height = @intCast(@max(0, logical.height)), .ellipsized = c.pango_layout_is_ellipsized(layout) != 0 };
+        return .{ .pixels = pixels, .width = width, .height = height, .left = ink.x, .top = ink.y - (if (options.origin == .baseline) @divTrunc(api.pango_layout_get_baseline(layout), 1024) else @as(c_int, 0)), .logical_height = @intCast(@max(0, logical.height)), .logical_width = @intCast(@max(0, logical.width)), .ellipsized = c.pango_layout_is_ellipsized(layout) != 0 };
     }
 };
+
+test "variable font weight changes native glyph coverage" {
+    var renderer: Renderer = .{};
+    defer renderer.deinit();
+    const regular = try renderer.renderLayout(std.testing.allocator, "Build complete", .{ .size = 14.666, .origin = .top });
+    defer regular.deinit(std.testing.allocator);
+    const bold = try renderer.renderLayout(std.testing.allocator, "Build complete", .{ .font = "Adwaita Sans Bold", .size = 14.666, .origin = .top });
+    defer bold.deinit(std.testing.allocator);
+    var regular_coverage: u64 = 0;
+    for (regular.pixels) |value| regular_coverage += value;
+    var bold_coverage: u64 = 0;
+    for (bold.pixels) |value| bold_coverage += value;
+    try std.testing.expect(bold_coverage > regular_coverage * 12 / 10);
+}
 
 test "text masks preserve Unicode, physical scale, baseline and empty strings" {
     var renderer: Renderer = .{};

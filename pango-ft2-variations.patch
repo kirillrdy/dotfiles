@@ -1,0 +1,36 @@
+Apply the shaping font's variable axes to the FT2 rasterization face too.
+
+--- a/pango/pangoft2.c
++++ b/pango/pangoft2.c
+@@ -29,6 +29,7 @@
+ #include <glib/gprintf.h>
+ 
+ #include "pangoft2.h"
++#include FT_MULTIPLE_MASTERS_H
+ #include "pangoft2-private.h"
+ #include "pangofc-fontmap-private.h"
+ #include "pangofc-private.h"
+@@ -242,6 +243,23 @@
+         }
+ 
+       g_assert (ft2font->face);
++
++      if (FT_HAS_MULTIPLE_MASTERS (ft2font->face))
++        {
++          unsigned int n_coords = 0;
++          const float *coords = hb_font_get_var_coords_design (
++            pango_font_get_hb_font (font), &n_coords);
++          if (n_coords > 0)
++            {
++              FT_Fixed *fixed = g_new (FT_Fixed, n_coords);
++              for (unsigned int i = 0; i < n_coords; i++)
++                fixed[i] = (FT_Fixed) round (coords[i] * 65536.0);
++              error = FT_Set_Var_Design_Coordinates (ft2font->face, n_coords, fixed);
++              if (error)
++                g_warning ("Error setting FT2 variation coordinates: %d", error);
++              g_free (fixed);
++            }
++        }
+ 
+       set_transform (ft2font);
+ 

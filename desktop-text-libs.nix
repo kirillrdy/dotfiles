@@ -14,11 +14,12 @@ let
       x11Support = false;
       withIntrospection = false;
     }).overrideAttrs
-      {
+      (old: {
         pname = "desktop-pango";
+        patches = (old.patches or [ ]) ++ [ ./pango-ft2-variations.patch ];
         separateDebugInfo = false;
         postFixup = "";
-      };
+      });
   # Wayland supplies complete keymaps. Keep the compiler, layouts, and compose
   # data, without registry enumeration, X11 helpers, or interactive CLI tools.
   xkbcommon = (pkgs.libxkbcommon.override { withWaylandTools = false; }).overrideAttrs (old: {

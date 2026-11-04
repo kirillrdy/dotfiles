@@ -92,7 +92,7 @@ pkgs.stdenv.mkDerivation {
   checkPhase = ''
     export GSETTINGS_BACKEND=memory
     export GSETTINGS_SCHEMA_DIR=${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}/glib-2.0/schemas
-    export FONTCONFIG_FILE=${pkgs.fontconfig.out}/etc/fonts/fonts.conf
+    export FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.adwaita-fonts pkgs.dejavu_fonts ]; }}
     export XDG_CACHE_HOME="$TMPDIR/cache"
     mkdir -p "$XDG_CACHE_HOME"
     export XDG_RUNTIME_DIR="$TMPDIR/runtime"

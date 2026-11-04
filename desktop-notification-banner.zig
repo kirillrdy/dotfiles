@@ -82,16 +82,21 @@ pub const View = struct {
     scale: u32 = 0,
     renderer: text.Renderer = .{},
     masks: [7]?text.Mask = @splat(null), // app, title, body, three actions, age
+    shadow: ?[]u8 = null,
     icon: ?*c.GdkPixbuf = null,
     action_keys: [3]?[:0]const u8 = @splat(null),
+    action_labels: [3]?[:0]const u8 = @splat(null),
     action_count: usize = 0,
+    action_widths: [3]f64 = @splat(0),
     body_height: u32 = 19,
+    age_x: f64 = 0,
 
     pub fn init(notice: data.Data, theme: Theme, width: u32) View {
         var self: View = .{ .notice = notice, .theme = theme, .width = @max(160, width) };
         for (notice.actions) |action| {
             if (std.mem.eql(u8, action.key, "default") or self.action_count == 3) continue;
             self.action_keys[self.action_count] = action.key;
+            self.action_labels[self.action_count] = action.label;
             self.action_count += 1;
         }
         return self;
@@ -101,6 +106,8 @@ pub const View = struct {
         self.renderer.deinit();
     }
     fn clear(self: *View) void {
+        if (self.shadow) |pixels| a.free(pixels);
+        self.shadow = null;
         for (&self.masks) |*slot| {
             if (slot.*) |mask| mask.deinit(a);
             slot.* = null;
@@ -110,7 +117,7 @@ pub const View = struct {
         self.scale = 0;
     }
     fn closeRect(self: *const View) Rect {
-        return .{ .x = @as(f64, @floatFromInt(self.width)) - 51, .y = 18, .width = 28, .height = 28 };
+        return .{ .x = @as(f64, @floatFromInt(self.width)) - 46, .y = 18, .width = 28, .height = 28 };
     }
     fn expandRect(self: *const View) Rect {
         var rect = self.closeRect();
@@ -119,8 +126,14 @@ pub const View = struct {
     }
     fn actionRect(self: *const View, index: usize) Rect {
         const count: f64 = @floatFromInt(self.action_count);
-        const width = (@as(f64, @floatFromInt(self.width)) - 54 - (count - 1) * 8) / count;
-        return .{ .x = 27 + @as(f64, @floatFromInt(index)) * (width + 8), .y = @as(f64, @floatFromInt(self.height)) - 51, .width = width, .height = 31 };
+        const available = @as(f64, @floatFromInt(self.width)) - 38 - (count - 1) * 8;
+        var natural: f64 = 0;
+        for (self.action_widths[0..self.action_count]) |width| natural += width;
+        const extra = @max(0, available - natural) / count;
+        const ratio = if (natural > available) available / natural else 1;
+        var x: f64 = 19;
+        for (self.action_widths[0..index]) |width| x += width * ratio + extra + 8;
+        return .{ .x = x, .y = @as(f64, @floatFromInt(self.height)) - 50, .width = self.action_widths[index] * ratio + extra, .height = 31 };
     }
     pub fn hit(self: *const View, x: f64, y: f64) Target {
         if (self.closeRect().contains(x, y)) return .close;
@@ -140,6 +153,8 @@ pub const View = struct {
         return self.renderer.renderLayout(a, value, .{
             .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans",
             .size = 14.666 * @as(f64, @floatFromInt(scale)),
+            .dpi = 96 * @as(f64, @floatFromInt(scale)),
+            .line_height = 19 * scale,
             .width = @max(1, width) * scale,
             .ellipsize = true,
             .origin = .top,
@@ -151,22 +166,34 @@ pub const View = struct {
         if (self.scale == scale) return;
         self.clear();
         errdefer self.clear();
-        const content_width = self.width - 50 - @as(u32, if (self.notice.image != null) 60 else 0);
-        self.masks[0] = try self.label(if (self.notice.app.len == 0) "Unknown App" else self.notice.app, self.width -| 250, true, false, scale);
+        const content_width = self.width - 48 - @as(u32, if (self.notice.image != null) 60 else 0);
         self.masks[1] = try self.label(self.notice.title, content_width, true, false, scale);
         self.masks[2] = try self.label(self.notice.body, content_width, false, true, scale);
         const age = @max(0, @divTrunc(c.g_get_real_time(), 1000000) - self.notice.created);
         var buffer: [64]u8 = undefined;
         const age_text: [:0]const u8 = if (age < 60) "Just now" else if (age < 3600) std.fmt.bufPrintSentinel(&buffer, "{d}m ago", .{@divTrunc(age, 60)}, 0) catch unreachable else std.fmt.bufPrintSentinel(&buffer, "{d}h ago", .{@divTrunc(age, 3600)}, 0) catch unreachable;
-        self.masks[6] = try self.renderer.renderLayout(a, age_text, .{ .size = 12 * @as(f64, @floatFromInt(scale)), .width = 65 * scale, .ellipsize = true, .origin = .top });
+        self.masks[6] = try self.renderer.renderLayout(a, age_text, .{ .size = 12 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = 65 * scale, .ellipsize = true, .origin = .top });
         self.expandable = self.expanded or self.masks[2].?.ellipsized or self.action_count > 0;
+        const age_width = std.math.divCeil(u32, self.masks[6].?.logical_width, scale) catch unreachable;
+        const header_end: u32 = @intFromFloat((if (self.expandable) self.expandRect() else self.closeRect()).x - 9);
+        self.masks[0] = try self.label(if (self.notice.app.len == 0) "Unknown App" else self.notice.app, header_end -| (43 + 6 + age_width), true, false, scale);
+        self.age_x = 43 + @as(f64, @floatFromInt(self.masks[0].?.logical_width)) / @as(f64, @floatFromInt(scale)) + 6;
         self.body_height = @max(19, std.math.divCeil(u32, self.masks[2].?.logical_height, scale) catch unreachable);
-        self.height = 99 + @max(self.body_height, @as(u32, if (self.notice.image != null) 25 else 19)) + @as(u32, if (self.expanded and self.action_count > 0) 43 else 0);
+        self.height = 99 + @max(self.body_height, @as(u32, if (self.notice.image != null) 25 else 19)) + @as(u32, if (self.expanded and self.action_count > 0) 39 else 0);
         var i: usize = 0;
         for (self.notice.actions) |action| {
             if (std.mem.eql(u8, action.key, "default") or i == 3) continue;
-            self.masks[3 + i] = try self.label(action.label, @intFromFloat(@max(1, self.actionRect(i).width - 24)), true, false, scale);
+            self.masks[3 + i] = try self.label(action.label, self.width - 62, true, false, scale);
+            self.action_widths[i] = @as(f64, @floatFromInt(self.masks[3 + i].?.logical_width)) / @as(f64, @floatFromInt(scale)) + 24;
             i += 1;
+        }
+        for (0..self.action_count) |index| {
+            const limit: u32 = @intFromFloat(@max(1, self.actionRect(index).width - 24));
+            if (self.masks[3 + index].?.logical_width > limit * scale) {
+                self.masks[3 + index].?.deinit(a);
+                self.masks[3 + index] = null;
+                self.masks[3 + index] = try self.label(self.action_labels[index].?, limit, true, false, scale);
+            }
         }
         const size: c_int = @intCast(16 * scale);
         if (c.g_path_is_absolute(self.notice.icon) != 0) {
@@ -177,16 +204,14 @@ pub const View = struct {
             self.icon = c.gtk_icon_info_load_symbolic(info, &foreground, null, null, null, null, null);
         }
         self.scale = scale;
+        self.shadow = try shadowMask(self.width, self.height, scale);
     }
     pub fn paint(self: *const View, buffer: raster.Buffer) void {
         const canvas: raster.Canvas = .{ .target = buffer, .scale = @floatFromInt(self.scale) };
         const card: Rect = .{ .x = 8, .y = 8, .width = @floatFromInt(self.width - 16), .height = @floatFromInt(self.height - 16) };
-        // Layered translucent outlines approximate the existing soft shadow.
-        for (0..4) |i| {
-            const spread: f64 = @floatFromInt(4 - i);
-            const shadow: Rect = .{ .x = card.x - spread, .y = card.y + 2 - spread, .width = card.width + spread * 2, .height = card.height + spread * 2 };
-            canvas.draw(&.{shadow.shape(16 + spread)}, .{ .red = 0, .green = 0, .blue = 0, .alpha = 0.035 });
-        }
+        // A released buffer can be repainted before the compositor acknowledges
+        // an expanded size. Clip the new mask to that older destination.
+        if (self.shadow) |pixels| raster.mask(buffer, .{ .x = 0, .y = 0, .width = self.width * self.scale, .height = self.height * self.scale }, pixels, .{ .red = 0, .green = 0, .blue = 0, .alpha = 0.2 });
         canvas.draw(&.{card.shape(16)}, self.theme.background);
         self.button(canvas, self.closeRect(), .close, 14);
         const close = self.closeRect();
@@ -205,12 +230,12 @@ pub const View = struct {
             }, self.theme.foreground);
         }
         if (self.icon) |icon| image(canvas, icon, .{ .x = 21, .y = 24, .width = 16, .height = 16 });
-        paintMask(canvas, self.masks[0], 43, 20, self.theme.secondary);
-        paintMask(canvas, self.masks[6], @floatFromInt(self.width -| 170), 22, self.theme.secondary);
-        const x: f64 = if (self.notice.image != null) 82 else 22;
+        paintMask(canvas, self.masks[0], 43, 22, self.theme.secondary);
+        paintMask(canvas, self.masks[6], self.age_x, 25, self.theme.secondary);
+        const x: f64 = if (self.notice.image != null) 81 else 21;
         paintMask(canvas, self.masks[1], x, 55, self.theme.foreground);
         paintMask(canvas, self.masks[2], x, 78, self.theme.foreground);
-        if (self.notice.image) |pixbuf| image(canvas, pixbuf, .{ .x = 22, .y = 55, .width = 48, .height = 48 });
+        if (self.notice.image) |pixbuf| image(canvas, pixbuf, .{ .x = 21, .y = 55, .width = 48, .height = 48 });
         if (self.expanded) for (0..self.action_count) |i| {
             const rect = self.actionRect(i);
             self.button(canvas, rect, @fromBackingInt(@intCast(@backingInt(Target.action0) + i)), 8);
@@ -223,6 +248,51 @@ pub const View = struct {
         canvas.draw(&.{rect.shape(radius)}, if (self.pressed == target and self.hover == target) self.theme.pressed else if (self.hover == target) self.theme.hover else self.theme.button);
     }
 };
+
+// GNOME's 0 2px 4px 2px shadow: spread the rounded outline, then blur it.
+// Cache the mask alongside text so pointer motion only composites pixels.
+fn shadowMask(width: u32, height: u32, scale: u32) ![]u8 {
+    const w = width * scale;
+    const h = height * scale;
+    const pixels = try a.alloc(u32, w * h);
+    defer a.free(pixels);
+    @memset(pixels, 0);
+    const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = w, .height = h }, .scale = @floatFromInt(scale) };
+    const outline: Rect = .{ .x = 6, .y = 8, .width = @floatFromInt(width - 12), .height = @floatFromInt(height - 12) };
+    canvas.draw(&.{outline.shape(18)}, .{ .red = 0, .green = 0, .blue = 0 });
+    const horizontal = try a.alloc(f64, pixels.len);
+    defer a.free(horizontal);
+    const result = try a.alloc(u8, pixels.len);
+    errdefer a.free(result);
+    const radius: i32 = @intCast(6 * scale);
+    const sigma: f64 = @floatFromInt(2 * scale);
+    const kernel = try a.alloc(f64, @intCast(2 * radius + 1));
+    defer a.free(kernel);
+    var total: f64 = 0;
+    for (kernel, 0..) |*weight, i| {
+        const offset: f64 = @floatFromInt(@as(i32, @intCast(i)) - radius);
+        weight.* = @exp(-offset * offset / (2 * sigma * sigma));
+        total += weight.*;
+    }
+    for (kernel) |*weight| weight.* /= total;
+    for (0..h) |y| for (0..w) |x| {
+        var value: f64 = 0;
+        for (kernel, 0..) |weight, i| {
+            const source = @as(i64, @intCast(x)) + @as(i64, @intCast(i)) - radius;
+            if (source >= 0 and source < w) value += weight * @as(f64, @floatFromInt(pixels[y * w + @as(usize, @intCast(source))] >> 24));
+        }
+        horizontal[y * w + x] = value;
+    };
+    for (0..h) |y| for (0..w) |x| {
+        var value: f64 = 0;
+        for (kernel, 0..) |weight, i| {
+            const source = @as(i64, @intCast(y)) + @as(i64, @intCast(i)) - radius;
+            if (source >= 0 and source < h) value += weight * horizontal[@as(usize, @intCast(source)) * w + x];
+        }
+        result[y * w + x] = @intFromFloat(@round(value));
+    };
+    return result;
+}
 fn paintMask(canvas: raster.Canvas, value: ?text.Mask, x: f64, y: f64, color: raster.Color) void {
     const mask = value orelse return;
     raster.mask(canvas.target, .{ .x = @as(i32, @intFromFloat(x * canvas.scale)) + mask.left, .y = @as(i32, @intFromFloat(y * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color);
@@ -277,6 +347,11 @@ test "native notification expansion wraps markup and keeps action hit regions in
         try std.testing.expectEqual(Target.action0, card.hit(rect.x + 10, rect.y + 10));
         const width = card.width * scale;
         const height = card.height * scale;
+        const old_height = collapsed_height * scale;
+        const old_pixels = try std.testing.allocator.alloc(u32, width * old_height);
+        defer std.testing.allocator.free(old_pixels);
+        @memset(old_pixels, 0);
+        card.paint(.{ .pixels = old_pixels, .width = width, .height = old_height });
         const pixels = try std.testing.allocator.alloc(u32, width * height);
         defer std.testing.allocator.free(pixels);
         @memset(pixels, 0);
@@ -286,5 +361,45 @@ test "native notification expansion wraps markup and keeps action hit regions in
         card.toggle();
         try card.prepare(scale);
         try std.testing.expectEqual(collapsed_height, card.height);
+    }
+}
+
+test "GNOME header keeps the age beside the source and reserves button space" {
+    c.gtk_init(null, null);
+    for ([_]u32{ 1, 2 }) |scale| {
+        var card = View.init(.{ .id = 1, .app = "Terminal", .title = "Build complete", .body = "All checks passed. Your desktop is ready.", .created = @divTrunc(c.g_get_real_time(), 1000000) }, .{}, 529);
+        defer card.deinit();
+        try card.prepare(scale);
+        try std.testing.expectEqual(@as(u32, 118), card.height);
+        try std.testing.expect(card.age_x > 100 and card.age_x < 125);
+        try std.testing.expectEqual(@as(f64, 483), card.closeRect().x);
+        // A long application name must ellipsize before reaching the controls.
+        card.notice.app = "An application with an extremely long source name that must be ellipsized";
+        card.scale = 0;
+        try card.prepare(scale);
+        try std.testing.expect(card.masks[0].?.ellipsized);
+        const age_end = card.age_x + @as(f64, @floatFromInt(card.masks[6].?.logical_width)) / @as(f64, @floatFromInt(scale));
+        try std.testing.expect(age_end <= card.closeRect().x - 9);
+    }
+}
+
+test "expanded banner matches GNOME's measured line and action geometry" {
+    c.gtk_init(null, null);
+    const actions = [_]data.Action{ .{ .key = "open", .label = "Open Settings" }, .{ .key = "later", .label = "Later" } };
+    for ([_]u32{ 1, 2 }) |scale| {
+        var card = View.init(.{ .id = 1, .app = "Terminal", .title = "A longer notification title that should fit on one line", .body = "This notification contains a longer message that wraps onto multiple lines. Expand it to read the complete notification and choose an action.", .created = @divTrunc(c.g_get_real_time(), 1000000), .actions = &actions }, .{}, 529);
+        defer card.deinit();
+        try card.prepare(scale);
+        card.toggle();
+        try card.prepare(scale);
+        try std.testing.expectEqual(@as(u32, 57), card.body_height);
+        try std.testing.expectEqual(@as(u32, 195), card.height);
+        const first = card.actionRect(0);
+        const second = card.actionRect(1);
+        try std.testing.expectEqual(@as(f64, 19), first.x);
+        try std.testing.expectEqual(@as(f64, 145), first.y);
+        try std.testing.expect(first.width > second.width);
+        try std.testing.expectApproxEqAbs(@as(f64, 8), second.x - first.x - first.width, 0.001);
+        try std.testing.expectApproxEqAbs(@as(f64, 510), second.x + second.width, 0.001);
     }
 }
