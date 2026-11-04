@@ -1166,6 +1166,7 @@ pub const GDK_SCROLL_UP: c_int = 0;
 pub const GDK_SCROLL_LEFT: c_int = 2;
 
 pub const GdkScrollDirection = c_uint;
+pub const GdkModifierType = c_uint;
 
 pub const GDK_NOTIFY_INFERIOR: c_int = 2;
 
@@ -1180,6 +1181,8 @@ pub extern fn gdk_event_get_button(event: ?*const GdkEvent, button: [*c]guint) g
 pub extern fn gdk_event_get_keyval(event: ?*const GdkEvent, keyval: [*c]guint) gboolean;
 
 pub extern fn gdk_event_get_scroll_direction(event: ?*const GdkEvent, direction: [*c]GdkScrollDirection) gboolean;
+pub extern fn gdk_event_get_scroll_deltas(event: ?*const GdkEvent, delta_x: [*c]gdouble, delta_y: [*c]gdouble) gboolean;
+pub extern fn gdk_event_get_state(event: ?*const GdkEvent, state: [*c]GdkModifierType) gboolean;
 
 pub extern fn gdk_window_get_display(window: ?*GdkWindow) ?*GdkDisplay;
 
@@ -1210,6 +1213,7 @@ pub extern fn gdk_display_get_monitor(display: ?*GdkDisplay, monitor_num: c_int)
 pub extern fn gdk_display_get_primary_monitor(display: ?*GdkDisplay) ?*GdkMonitor;
 
 pub extern fn gdk_display_get_monitor_at_point(display: ?*GdkDisplay, x: c_int, y: c_int) ?*GdkMonitor;
+pub extern fn gdk_display_get_monitor_at_window(display: ?*GdkDisplay, window: ?*GdkWindow) ?*GdkMonitor;
 
 pub extern fn gdk_screen_get_rgba_visual(screen: ?*GdkScreen) ?*GdkVisual;
 
@@ -1367,6 +1371,7 @@ pub extern fn gtk_widget_queue_draw(widget: [*c]GtkWidget) void;
 pub extern fn gtk_widget_set_can_focus(widget: [*c]GtkWidget, can_focus: gboolean) void;
 
 pub extern fn gtk_widget_has_focus(widget: [*c]GtkWidget) gboolean;
+pub extern fn gtk_widget_get_scale_factor(widget: [*c]GtkWidget) gint;
 
 pub extern fn gtk_widget_grab_focus(widget: [*c]GtkWidget) void;
 
@@ -1968,6 +1973,9 @@ pub const GtkPolicyType = c_uint;
 pub extern fn gtk_scrolled_window_new(hadjustment: [*c]GtkAdjustment, vadjustment: [*c]GtkAdjustment) [*c]GtkWidget;
 
 pub extern fn gtk_scrolled_window_get_vadjustment(scrolled_window: [*c]GtkScrolledWindow) [*c]GtkAdjustment;
+pub extern fn gtk_scrolled_window_set_propagate_natural_height(scrolled_window: [*c]GtkScrolledWindow, propagate: gboolean) void;
+pub extern fn gtk_scrolled_window_set_max_content_height(scrolled_window: [*c]GtkScrolledWindow, height: gint) void;
+pub extern fn gtk_adjustment_clamp_page(adjustment: [*c]GtkAdjustment, lower: gdouble, upper: gdouble) void;
 
 pub extern fn gtk_scrolled_window_set_policy(scrolled_window: [*c]GtkScrolledWindow, hscrollbar_policy: GtkPolicyType, vscrollbar_policy: GtkPolicyType) void;
 

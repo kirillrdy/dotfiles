@@ -71,8 +71,8 @@ fn ui(service: *audio.Service) !void {
     var deadline = c.g_get_monotonic_time() + 8_000_000;
     while ((controls.audio_service == null or controls.audio_service.?.state(.output) == null or sound.rows.items.len < 5) and c.g_get_monotonic_time() < deadline) pump();
     assert(sound.rows.items.len >= 5);
-    assert(c.gtk_widget_get_visible(controls.volume_row) != 0);
-    c.gtk_range_set_value(cast(c.GtkRange, controls.volume), 63);
+    assert(controls.view.model.volume != null);
+    controls.setSlider(.volume, 63);
     deadline = c.g_get_monotonic_time() + 5_000_000;
     while ((controls.volume_timer != 0 or @abs((service.state(.output) orelse return error.NoOutput).percent - 63) > 0.01) and c.g_get_monotonic_time() < deadline) pump();
     assert(@abs(service.state(.output).?.percent - 63) < 0.01);
@@ -83,7 +83,7 @@ fn ui(service: *audio.Service) !void {
     while ((row.timer != 0 or sound.audio_operations != 0 or @abs(service.state(.output).?.percent - 47) > 0.01) and c.g_get_monotonic_time() < deadline) pump();
     assert(sound.rows.items[0] == row);
     assert(@abs(service.state(.output).?.percent - 47) < 0.01);
-    assert(@abs(c.gtk_range_get_value(cast(c.GtkRange, controls.volume)) - 47) < 0.01);
+    assert(@abs(controls.view.model.volume.? - 47) < 0.01);
     c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, sound.rows.items[1].mute), 1);
     deadline = c.g_get_monotonic_time() + 5_000_000;
     while ((!service.state(.input).?.muted or sound.audio_operations != 0) and c.g_get_monotonic_time() < deadline) pump();

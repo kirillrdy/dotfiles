@@ -24,8 +24,8 @@ fn report(_: ?*anyopaque) callconv(.c) c_int {
     const alloc = arena.allocator();
     const info = data.batteryInfo(alloc, latest) catch unreachable;
     const json = std.json.Stringify.valueAlloc(alloc, .{
-        .visible = if (controls) |ui| c.gtk_widget_get_visible(ui.battery) != 0 else latest.visible(),
-        .text = if (controls) |ui| std.mem.span(c.gtk_label_get_text(@ptrCast(ui.battery_label))) else "",
+        .visible = if (controls) |ui| ui.view.model.battery.len > 0 else latest.visible(),
+        .text = if (controls) |ui| ui.view.model.battery.slice() else "",
         .present = latest.present,
         .percent = if (latest.visible()) @as(?f64, latest.percent) else null,
         .state = latest.state,

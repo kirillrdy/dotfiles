@@ -51,14 +51,16 @@ test "session: private logind actions and quick-settings lifecycle" {
         const controls = quick.Controls.create(popover, "true", "true");
         var live = true;
         g_object_weak_ref(@ptrCast(controls.cancel), &finalized, &live);
+        var battery_live = controls.battery_service != null;
+        if (controls.battery_service) |service| g_object_weak_ref(@ptrCast(service.cancel), &finalized, &battery_live);
+        var network_live = controls.network_client != null;
+        if (controls.network_client) |client| g_object_weak_ref(@ptrCast(client.service.cancel), &finalized, &network_live);
         controls.sessionAction(.@"suspend");
         controls.sessionAction(.reboot); // A pending action must prevent duplicate requests.
         if (std.mem.eql(u8, scenario, "ui-denied")) {
             while (controls.session_busy and c.g_get_monotonic_time() < deadline) pump();
             try std.testing.expect(!controls.session_busy);
-            const tooltip = c.gtk_widget_get_tooltip_text(controls.content);
-            defer c.g_free(tooltip);
-            try std.testing.expect(std.mem.indexOf(u8, std.mem.span(tooltip), "denied") != null);
+            try std.testing.expect(std.mem.indexOf(u8, controls.view.model.message.slice(), "denied") != null);
         } else {
             const ready = c.g_get_monotonic_time() + 100_000;
             while (c.g_get_monotonic_time() < ready) pump();
@@ -66,8 +68,10 @@ test "session: private logind actions and quick-settings lifecycle" {
         }
         controls.deinit();
         c.gtk_widget_destroy(window);
-        while (live and c.g_get_monotonic_time() < deadline) pump();
-        try std.testing.expect(!live);
+        // Device workers retain their own cancellation objects after Controls
+        // is freed. Drain their completion callbacks before the allocator audit.
+        while ((live or battery_live or network_live) and c.g_get_monotonic_time() < deadline) pump();
+        try std.testing.expect(!live and !battery_live and !network_live);
         return;
     }
     const action = std.meta.stringToEnum(session.Action, env("SESSION_ACTION")) orelse return error.UnknownAction;

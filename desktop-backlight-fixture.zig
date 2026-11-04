@@ -27,24 +27,24 @@ fn controlsTest(backend: backlight.Backend, empty: bool, denied: bool) !void {
     controls.refresh();
     waitControls(controls);
     if (empty) {
-        assert(c.gtk_widget_get_visible(controls.brightness_row) == 0);
+        assert(controls.view.model.brightness == null);
     } else if (denied) {
-        c.gtk_range_set_value(cast(c.GtkRange, controls.brightness), 75);
+        controls.setSlider(.brightness, 75);
         waitControls(controls);
-        assert(@abs(c.gtk_range_get_value(cast(c.GtkRange, controls.brightness)) - 20) < 0.01);
+        assert(@abs(controls.view.model.brightness.? - 20) < 0.01);
     } else {
-        assert(c.gtk_widget_get_visible(controls.brightness_row) != 0);
-        assert(@abs(c.gtk_range_get_value(cast(c.GtkRange, controls.brightness)) - 20) < 0.01);
-        c.gtk_range_set_value(cast(c.GtkRange, controls.brightness), 75);
+        assert(controls.view.model.brightness != null);
+        assert(@abs(controls.view.model.brightness.? - 20) < 0.01);
+        controls.setSlider(.brightness, 75);
         const deadline = c.g_get_monotonic_time() + 3_000_000;
         while (!controls.brightness_busy and c.g_get_monotonic_time() < deadline) pump();
         assert(controls.brightness_busy);
-        c.gtk_range_set_value(cast(c.GtkRange, controls.brightness), 38);
+        controls.setSlider(.brightness, 38);
         waitControls(controls);
-        assert(@abs(c.gtk_range_get_value(cast(c.GtkRange, controls.brightness)) - 38) < 0.01);
-        c.gtk_range_set_value(cast(c.GtkRange, controls.brightness), 0);
+        assert(@abs(controls.view.model.brightness.? - 38) < 0.01);
+        controls.setSlider(.brightness, 0);
         waitControls(controls);
-        assert(@abs(c.gtk_range_get_value(cast(c.GtkRange, controls.brightness)) - 1) < 0.01);
+        assert(@abs(controls.view.model.brightness.? - 1) < 0.01);
         controls.refresh(); // Exercise disposal while a native read is in flight.
     }
     controls.deinit();

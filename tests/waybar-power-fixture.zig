@@ -34,6 +34,20 @@ fn root() *c.GtkWidget {
     _ = c.g_object_ref_sink(widget);
     return widget;
 }
+fn clickControl(controls: *@import("desktop").quick.Controls, target: @import("desktop").quick.Target) void {
+    const rect = controls.view.item(target).?.rect;
+    var event = std.mem.zeroes(c.GdkEventButton);
+    event.button = 1;
+    event.x = rect.x + rect.width / 2;
+    event.y = rect.y + rect.height / 2;
+    event.type = c.GDK_BUTTON_PRESS;
+    var handled: c.gboolean = 0;
+    c.g_signal_emit_by_name(controls.canvas, "button-press-event", &event, &handled);
+    assert(handled != 0);
+    event.type = 7; // GDK_BUTTON_RELEASE
+    c.g_signal_emit_by_name(controls.canvas, "button-release-event", &event, &handled);
+    assert(handled != 0);
+}
 pub fn main(process_init: std.process.Init) !void {
     const args = try process_init.minimal.args.toSlice(process_init.arena.allocator());
     // Re-exec this fixture in place of pkexec to exercise argv, async completion,
@@ -84,122 +98,121 @@ pub fn main(process_init: std.process.Init) !void {
         c.gtk_style_context_add_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_USER);
         c.g_object_unref(provider);
     }
-    var m = p.Module{};
-    m.refs = 1;
-    const box = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0);
-    _ = c.g_object_ref_sink(box);
-    m.power_label = c.gtk_label_new("");
-    m.power_icon = c.gtk_image_new();
-    m.power_message = c.gtk_label_new("");
-    for ([_][*c]c.GtkWidget{ m.power_label, m.power_icon, m.power_message }) |widget| c.gtk_container_add(cast(c.GtkContainer, box), widget);
-    for (&m.power_buttons) |*button| {
-        button.* = c.gtk_button_new();
-        c.gtk_container_add(cast(c.GtkContainer, box), button.*);
-    }
-    p.apply_power_state(&m, .{});
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "Power profiles unavailable");
-    for (m.power_buttons) |button| assert(c.gtk_widget_get_visible(button) == 0);
-    p.apply_power_state(&m, .{ .available = .{ false, true, true }, .active = .balanced });
-    assert(c.gtk_widget_get_visible(m.power_buttons[0]) == 0);
-    assert(c.gtk_widget_get_visible(m.power_buttons[1]) != 0 and c.gtk_widget_get_visible(m.power_buttons[2]) != 0);
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_label)), "Balanced");
-    eq(c.gtk_button_get_label(cast(c.GtkButton, m.power_buttons[1])), "Balanced  ✓");
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "");
-    const saver = @import("desktop").power.State{ .available = .{ true, true, true }, .active = .@"power-saver" };
-    p.apply_power_state(&m, saver);
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_label)), "Power Saver");
-    eq(c.gtk_button_get_label(cast(c.GtkButton, m.power_buttons[1])), "Balanced");
-    eq(c.gtk_button_get_label(cast(c.GtkButton, m.power_buttons[2])), "Power Saver  ✓");
-    m.power_pending = 1;
-    p.apply_power_state(&m, saver);
-    assert(c.gtk_widget_get_sensitive(m.power_buttons[2]) == 0);
-    m.power_pending = 0;
-    p.apply_power_state(&m, saver);
-    assert(c.gtk_widget_get_sensitive(m.power_buttons[2]) != 0);
-    assert(c.gtk_widget_get_visible(m.power_buttons[0]) != 0);
-    p.apply_power_state(&m, .{ .available = .{ true, true, true } });
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_label)), "Custom");
     const executable = try process_init.arena.allocator().dupeSentinel(u8, args[0], 0);
     _ = c.g_setenv("DESKTOP_POWER_PKEXEC", executable.ptr, 1);
     _ = c.g_setenv("DESKTOP_POWER_HELPER", "--power-fixture", 1);
-    c.g_object_set_data(cast(c.GObject, m.power_buttons[0]), "profile", @constCast("performance"));
-    p.power_select(cast(c.GtkButton, m.power_buttons[0]), &m);
-    assert(m.power_pending != 0);
-    pumpEvents(500);
-    assert(m.power_pending == 0 and m.refs == 1);
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "");
-    c.g_object_set_data(cast(c.GObject, m.power_buttons[2]), "profile", @constCast("power-saver"));
-    p.power_select(cast(c.GtkButton, m.power_buttons[2]), &m);
-    pumpEvents(500);
-    assert(m.power_pending == 0 and m.refs == 1);
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, m.power_message)), "fixture: permission denied");
-
     const status_window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
     c.gtk_widget_set_name(status_window, "desktop-panel");
     const status_root = root();
     c.gtk_container_add(cast(c.GtkContainer, status_window), status_root);
     const status = p.init(status_root, .{ .name = "gnome-status" });
-    for ([_][*c]c.GtkWidget{ status.power_label, status.network_icon }) |widget| assert(c.gtk_widget_is_ancestor(widget, status.power_menu) != 0);
-    assert(c.gtk_widget_is_ancestor(status.power_label, status.box) == 0);
+    assert(c.gtk_widget_is_ancestor(status.quick.?.canvas, status.power_menu) != 0);
+    assert(c.gtk_widget_is_ancestor(status.quick.?.canvas, status.box) == 0);
     p.update_line(status, "{\"items\":[{\"icon\":\"audio-volume-high-symbolic\"},{\"icon\":\"battery-level-80-symbolic\"}]}");
     assert(c.gtk_widget_get_visible(status.item[0].box) != 0 and c.gtk_widget_get_visible(status.item[1].box) != 0);
     p.update_line(status, "{\"items\":[{\"icon\":\"network-wired-symbolic\",\"tooltip\":\"Wired network\"}]}");
     // Collector tooltips must not overwrite the quick-settings connection name.
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, status.network_label)), "");
+    assert(status.quick.?.view.model.network_title.len == 0);
     if (args.len > 1) {
         c.gtk_widget_show_all(status_window);
         pumpEvents(50);
-        // A panel-scoped reset must not override the popup's more specific styles.
-        const content = c.gtk_bin_get_child(cast(c.GtkBin, status.power_menu));
+        // The panel's CSS reset cannot alter the native tile geometry.
         var border: c.GtkBorder = undefined;
-        c.gtk_style_context_get_border(c.gtk_widget_get_style_context(content), c.GTK_STATE_FLAG_NORMAL, &border);
-        std.debug.print("quick settings: content border {d}px\n", .{border.top});
-        assert(border.top == 1 and border.left == 1);
         c.gtk_style_context_get_border(c.gtk_widget_get_style_context(status_root), c.GTK_STATE_FLAG_NORMAL, &border);
-        std.debug.print("quick settings: panel module border {d}px\n", .{border.top});
         assert(border.top == 3 and border.left == 3);
-        const network = status.quick.?.network.button;
-        var height: c.GValue = std.mem.zeroes(c.GValue);
-        c.gtk_style_context_get_property(c.gtk_widget_get_style_context(network), "min-height", c.GTK_STATE_FLAG_NORMAL, &height);
-        std.debug.print("quick settings: tile minimum height {d}px\n", .{c.g_value_get_int(&height)});
-        assert(c.g_value_get_int(&height) == 48);
-        c.g_value_unset(&height);
+        assert(status.quick.?.view.item(.wifi).?.rect.height == 48);
     }
     const controls = status.quick.?;
+    p.apply_power_state(status, .{});
+    assert(std.mem.eql(u8, controls.view.model.message.slice(), "Power profiles unavailable"));
+    clickControl(controls, .profiles);
+    assert(controls.view.item(.profile0) == null and controls.view.item(.profile1) == null);
+    p.apply_power_state(status, .{ .available = .{ false, true, true }, .active = .balanced });
+    assert(controls.view.item(.profile0) == null and controls.view.item(.profile1) != null);
+    assert(std.mem.eql(u8, controls.view.item(.profile_toggle).?.subtitle, "Balanced"));
+    p.apply_power_state(status, .{ .available = .{ true, true, true }, .active = .balanced });
+    clickControl(controls, .profile0);
+    assert(status.power_pending != 0 and !controls.view.enabled(.profile0));
+    pumpEvents(500);
+    assert(status.power_pending == 0);
+    assert(controls.view.model.message.len == 0);
+    p.apply_power_state(status, .{ .available = .{ true, true, true }, .active = .balanced });
+    clickControl(controls, .profile2);
+    pumpEvents(500);
+    assert(status.power_pending == 0);
+    assert(std.mem.eql(u8, controls.view.model.message.slice(), "fixture: permission denied"));
+    clickControl(controls, .profiles);
+
     const refs_before_refresh = status.refs;
     // Refreshing the tile must never launch another profile change, including
     // transitions between balanced (inactive) and either active toggle state.
     for ([_]?@import("desktop").power.Profile{ .performance, .balanced, .@"power-saver", .balanced, null }) |profile| {
         p.apply_power_state(status, .{ .available = .{ true, true, true }, .active = profile });
         assert(status.power_pending == 0 and status.refs == refs_before_refresh);
-        assert(c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, controls.power.button)) == @intFromBool(profile != null and profile.? != .balanced));
+        assert(controls.view.item(.profile_toggle).?.active == (profile != null and profile.? != .balanced));
     }
     // User clicks still dispatch once; async completion must not dispatch again.
-    c.gtk_button_clicked(cast(c.GtkButton, controls.power.button));
+    clickControl(controls, .profile_toggle);
     assert(status.power_pending != 0);
     pumpEvents(500);
     assert(status.power_pending == 0);
     if (controls.interface) |prefs| {
-        const before = c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, controls.dark.button));
-        c.gtk_button_clicked(cast(c.GtkButton, controls.dark.button));
-        assert(c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, controls.dark.button)) != before);
+        const before = controls.view.model.dark;
+        clickControl(controls, .dark);
+        assert(controls.view.model.dark != before);
         const color_scheme = c.g_settings_get_string(prefs, "color-scheme");
-        eq(color_scheme, if (before == 0) "prefer-dark" else "default");
+        eq(color_scheme, if (!before) "prefer-dark" else "default");
         c.g_free(color_scheme);
     }
     if (controls.notifications) |prefs| {
         const before = c.g_settings_get_boolean(prefs, "show-banners");
-        c.gtk_button_clicked(cast(c.GtkButton, controls.dnd.button));
+        clickControl(controls, .dnd);
         assert(c.g_settings_get_boolean(prefs, "show-banners") != before);
         _ = c.g_settings_set_boolean(prefs, "show-banners", before);
     }
-    c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, controls.power.arrow.?), 1);
-    assert(c.gtk_widget_get_visible(controls.profile_menu) != 0);
-    c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, controls.network.arrow.?), 1);
-    assert(c.gtk_widget_get_visible(controls.network_menu) != 0 and c.gtk_widget_get_visible(controls.profile_menu) == 0);
-    c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, controls.network.arrow.?), 0);
-    assert(c.gtk_widget_get_visible(controls.network_menu) == 0);
-    p.power_select(cast(c.GtkButton, status.power_buttons[0]), status);
+    clickControl(controls, .profiles);
+    assert(controls.view.submenu == .profiles);
+    clickControl(controls, .network);
+    assert(controls.view.submenu == .network and controls.view.item(.power_settings) == null);
+    clickControl(controls, .network);
+    assert(controls.view.submenu == .none);
+    const previous_volume = controls.view.model.volume;
+    controls.view.model.volume = 50;
+    controls.redraw();
+    const slider = controls.view.item(.volume).?.rect;
+    var drag = std.mem.zeroes(c.GdkEventButton);
+    drag.type = c.GDK_BUTTON_PRESS;
+    drag.button = 1;
+    drag.x = slider.x + 8;
+    drag.y = slider.y + slider.height / 2;
+    var drag_handled: c.gboolean = 0;
+    c.g_signal_emit_by_name(controls.canvas, "button-press-event", &drag, &drag_handled);
+    assert(drag_handled != 0 and controls.view.model.volume.? == 0);
+    var motion = std.mem.zeroes(c.GdkEventMotion);
+    motion.type = 3; // GDK_MOTION_NOTIFY
+    motion.x = slider.x + slider.width + 100;
+    motion.y = slider.y + 100;
+    c.g_signal_emit_by_name(controls.canvas, "motion-notify-event", &motion, &drag_handled);
+    assert(controls.view.model.volume.? == 100);
+    drag.type = 7;
+    drag.x = motion.x;
+    drag.y = motion.y;
+    c.g_signal_emit_by_name(controls.canvas, "button-release-event", &drag, &drag_handled);
+    assert(controls.view.pressed == .none and controls.view.model.volume.? == 100);
+    controls.view.focus = .volume;
+    assert(controls.handleKey(0xff50, 0) != 0 and controls.view.model.volume.? == 0); // Home
+    assert(controls.handleKey(0xff53, 0) != 0 and controls.view.model.volume.? == 5); // Right
+    assert(controls.handleKey(0xff57, 0) != 0 and controls.view.model.volume.? == 100); // End
+    controls.view.focus = .network;
+    assert(controls.handleKey(0xff0d, 0) != 0 and controls.view.submenu == .network);
+    assert(controls.handleKey(0xff1b, 0) != 0 and controls.view.submenu == .none and controls.view.focus == .network);
+    _ = c.g_source_remove(controls.volume_timer);
+    controls.volume_timer = 0;
+    controls.view.model.volume = previous_volume;
+    controls.redraw();
+    p.apply_power_state(status, .{ .available = .{ true, true, true }, .active = .balanced });
+    clickControl(controls, .profiles);
+    clickControl(controls, .profile0);
     p.deinit(status);
     pumpEvents(500);
     c.gtk_widget_destroy(status_window);
@@ -305,7 +318,5 @@ pub fn main(process_init: std.process.Init) !void {
     p.deinit(monitors);
     c.gtk_widget_destroy(graph_root);
     c.g_object_unref(graph_root);
-    c.gtk_widget_destroy(box);
-    c.g_object_unref(box);
     std.debug.print("desktop-widgets: power controls, quick settings, calendar, codex and monitors graph passed\n", .{});
 }
