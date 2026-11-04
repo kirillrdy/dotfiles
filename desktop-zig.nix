@@ -44,6 +44,7 @@ pkgs.stdenv.mkDerivation {
       || file.hasExt "svg"
       || file.hasExt "xml"
       || file.name == "check-desktop-compositor.py"
+      || file.name == "check-desktop-askpass.py"
       || file.name == "check-desktop-command.py"
       || file.name == "check-desktop-notifications.py"
       || file.name == "desktop-notifications.css"
@@ -113,6 +114,7 @@ pkgs.stdenv.mkDerivation {
     export DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
     NIX_LDFLAGS= G_DEBUG=fatal-criticals zig build test compositor-fixture --prefix "$out" --release=safe --summary all
     python3 tests/check-desktop-compositor.py --bin-dir "$out/bin" --wtype "$(command -v wtype)"
+    python3 tests/check-desktop-askpass.py --binary "$out/bin/desktop-zig" --wtype "$(command -v wtype)"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
       python3 tests/check-desktop-command.py "$out/bin/desktop-command-fixture"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \

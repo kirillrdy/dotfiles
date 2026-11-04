@@ -260,6 +260,8 @@ pub extern fn memfd_create(__name: [*c]const u8, __flags: c_uint) c_int;
 pub extern fn mmap(__addr: ?*anyopaque, __len: usize, __prot: c_int, __flags: c_int, __fd: c_int, __offset: __off_t) ?*anyopaque;
 
 pub extern fn munmap(__addr: ?*anyopaque, __len: usize) c_int;
+pub extern fn mlock(addr: ?*const anyopaque, len: usize) c_int;
+pub extern fn munlock(addr: ?*const anyopaque, len: usize) c_int;
 
 pub const PROT_READ = @as(c_int, 0x1);
 
