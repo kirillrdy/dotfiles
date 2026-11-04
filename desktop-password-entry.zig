@@ -1,4 +1,4 @@
-//! Native masked entry. Plaintext stays in a locked buffer, never in text layouts.
+//! Locked native entry. Masked responses never enter text layouts; PAM can opt into echo.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
@@ -111,6 +111,8 @@ pub const Entry = struct {
     data: ?*anyopaque,
     rect: Rect = .{ .x = 0, .y = 0, .width = 400, .height = 42 },
     focused: bool = false,
+    // Only PAM ECHO_ON challenges opt into visible, uncached glyphs.
+    echo: bool = false,
     dragging: bool = false,
     caret: bool = true,
     blink: c.guint = 0,
@@ -327,10 +329,21 @@ pub const Entry = struct {
         if (caret_index >= self.first + visible) self.first = caret_index - visible + 1;
         const total = self.buffer.characters(self.buffer.len) + self.preedit;
         const last = @min(total, self.first + visible);
-        const mask = self.bullet.?;
         for (self.first..@max(self.first, last)) |index| {
             const x = rect.x + 12 + @as(f64, @floatFromInt(index - self.first)) * self.advance;
             if (index >= @min(cursor, anchor) and index < @max(cursor, anchor)) canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = x, .y = rect.y + 9, .width = self.advance, .height = rect.height - 18 }, .radius = 0 } }}, color(0x3584e4));
+            var glyph: ?text.Mask = null;
+            defer if (glyph) |mask| mask.deinit(a);
+            if (self.echo and index < self.buffer.characters(self.buffer.len)) {
+                const start = self.buffer.byteOffset(index);
+                const end = self.buffer.byteOffset(index + 1);
+                var bytes: [4:0]u8 = @splat(0);
+                defer std.crypto.secureZero(u8, &bytes);
+                const len = end - start;
+                @memcpy(bytes[0..len], self.buffer.bytes[start..end]);
+                glyph = try self.renderer.renderLayout(a, bytes[0..len :0], .{ .font = "monospace", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(self.advance * canvas.scale), .lines = 1, .origin = .top });
+            }
+            const mask = glyph orelse self.bullet.?;
             raster.mask(target, .{ .x = @as(i32, @intFromFloat(x * canvas.scale)) + mask.left, .y = @as(i32, @intFromFloat((rect.y + (rect.height - @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale) / 2) * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(0xffffff));
         }
         const caret_x = rect.x + 12 + @as(f64, @floatFromInt(caret_index - self.first)) * self.advance;
@@ -413,6 +426,16 @@ test "native password pixels depend on character count rather than plaintext" {
         try entry.paint(.{ .pixels = first, .width = width, .height = height }, scale);
         entry.clear();
         try entry.insert("秘密abcde");
+        try entry.paint(.{ .pixels = second, .width = width, .height = height }, scale);
+        try std.testing.expectEqualSlices(u32, first, second);
+        // PAM ECHO_ON draws visible glyphs; returning to ECHO_OFF restores
+        // identical masked pixels without retaining a plaintext layout.
+        entry.echo = true;
+        @memset(second, 0);
+        try entry.paint(.{ .pixels = second, .width = width, .height = height }, scale);
+        try std.testing.expect(!std.mem.eql(u32, first, second));
+        entry.echo = false;
+        @memset(second, 0);
         try entry.paint(.{ .pixels = second, .width = width, .height = height }, scale);
         try std.testing.expectEqualSlices(u32, first, second);
     }

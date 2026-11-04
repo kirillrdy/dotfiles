@@ -6,10 +6,13 @@ let
     outputs = [ "out" ];
     buildPhase = ''
       export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build polkit-agent-fixture --prefix "$out" -Doptimize=ReleaseSafe
+      NIX_LDFLAGS= zig build shell polkit-fixture polkit-agent-fixture --prefix "$out" -Doptimize=ReleaseSafe
     '';
     doCheck = false;
     installPhase = "true";
+    postFixup = ''
+      find "$out" -type f -exec remove-references-to -t ${pkgs.zig_0_17} {} +
+    '';
   };
 in
 pkgs.runCommand "desktop-polkit-check"
@@ -17,8 +20,7 @@ pkgs.runCommand "desktop-polkit-check"
     nativeBuildInputs = [
       (pkgs.python3.withPackages (p: [ p.pygobject3 ]))
       pkgs.dbus
-      pkgs.xorg-server
-      pkgs.xdotool
+      pkgs.wtype
     ];
     FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; };
   }
@@ -27,14 +29,8 @@ pkgs.runCommand "desktop-polkit-check"
     export XDG_DATA_DIRS=${pkgs.adwaita-icon-theme}/share
     export GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
     export PYTHONDONTWRITEBYTECODE=1
-    Xvfb :93 -nolisten tcp &
-    polkit_xvfb=$!
-    trap 'kill "$polkit_xvfb"' EXIT
-    for attempt in $(seq 1 100); do
-      test -S /tmp/.X11-unix/X93 && break
-      sleep 0.05
-    done
-    DISPLAY=:93 GDK_BACKEND=x11 dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
-      python3 ${./check-desktop-polkit.py} --binary ${fixture}/bin/desktop-polkit-agent-fixture
+    dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
+      python3 ${./check-desktop-polkit.py} --binary ${fixture}/bin/desktop-polkit-agent-fixture \
+        --compositor ${fixture}/bin/desktop-zig --dialog-fixture ${fixture}/bin/desktop-polkit-fixture
     touch "$out"
   ''

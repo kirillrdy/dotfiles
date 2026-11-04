@@ -1,4 +1,4 @@
-//! Public askpass labels and native geometry. Passwords are drawn by the entry.
+//! Public authentication labels and native geometry. Passwords are drawn by the entry.
 const std = @import("std");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
@@ -30,6 +30,12 @@ pub const Rect = struct {
 const Part = struct { mask: text.Mask, y: u32 };
 pub const View = struct {
     mode: Mode,
+    title: [:0]const u8 = "SSH Authentication",
+    accept_label: ?[:0]const u8 = null,
+    enabled: bool = true,
+    status: ?[:0]const u8 = null,
+    status_error: bool = false,
+    status_height: u32 = 0,
     width: u32 = 460,
     height: u32 = 0,
     prompt_height: u32 = 0,
@@ -39,7 +45,7 @@ pub const View = struct {
     hover: Target = .none,
     pressed: Target = .none,
     renderer: text.Renderer = .{},
-    masks: [3]?text.Mask = @splat(null),
+    masks: [4]?text.Mask = @splat(null),
     parts: std.ArrayList(Part) = .empty,
 
     pub fn init(mode: Mode) View {
@@ -49,7 +55,7 @@ pub const View = struct {
             .information => .accept,
         } };
     }
-    fn clear(self: *View, allocator: std.mem.Allocator) void {
+    pub fn invalidate(self: *View, allocator: std.mem.Allocator) void {
         for (&self.masks) |*slot| {
             if (slot.*) |mask| mask.deinit(allocator);
             slot.* = null;
@@ -58,18 +64,19 @@ pub const View = struct {
         self.parts.clearRetainingCapacity();
         self.scale = 0;
         self.prompt_height = 0;
+        self.status_height = 0;
     }
     pub fn deinit(self: *View, allocator: std.mem.Allocator) void {
-        self.clear(allocator);
+        self.invalidate(allocator);
         self.parts.deinit(allocator);
         self.renderer.deinit();
     }
     pub fn prepare(self: *View, allocator: std.mem.Allocator, prompt: [:0]const u8, scale: u32) !void {
         if (self.scale == scale) return;
         if (!std.unicode.utf8ValidateSlice(prompt)) return error.InvalidText;
-        self.clear(allocator);
-        errdefer self.clear(allocator);
-        for ([_][:0]const u8{ "SSH Authentication", if (self.mode == .confirm) "Deny" else "Cancel", switch (self.mode) {
+        self.invalidate(allocator);
+        errdefer self.invalidate(allocator);
+        for ([_][:0]const u8{ self.title, if (self.mode == .confirm) "Deny" else "Cancel", self.accept_label orelse switch (self.mode) {
             .password => "Unlock",
             .confirm => "Allow",
             .information => "Close",
@@ -97,6 +104,10 @@ pub const View = struct {
                 if (remaining.len == 0) break;
             }
         }
+        if (self.status) |value| {
+            self.masks[3] = try self.renderer.renderLayout(allocator, value, .{ .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = (self.width - 48) * scale, .line_height = 20 * scale, .lines = 64, .origin = .top });
+            self.status_height = 12 + (std.math.divCeil(u32, self.masks[3].?.logical_height, scale) catch unreachable);
+        }
         self.height = @intFromFloat(self.buttonRect(.accept).y + 62);
         self.scale = scale;
     }
@@ -104,7 +115,7 @@ pub const View = struct {
         return .{ .x = 24, .y = 88 + @as(f64, @floatFromInt(self.prompt_height)), .width = @floatFromInt(self.width - 48), .height = 42 };
     }
     pub fn buttonRect(self: *const View, target: Target) Rect {
-        return .{ .x = if (target == .cancel) 24 else @as(f64, @floatFromInt(self.width)) - 148, .y = self.entryRect().y + (if (self.mode == .password) @as(f64, 62) else @as(f64, 0)), .width = 124, .height = 38 };
+        return .{ .x = if (target == .cancel) 24 else @as(f64, @floatFromInt(self.width)) - 148, .y = self.entryRect().y + @as(f64, @floatFromInt(self.status_height)) + (if (self.mode == .password) @as(f64, 62) else @as(f64, 0)), .width = 124, .height = 38 };
     }
     pub fn hit(self: *const View, x: f64, y: f64) Target {
         if (self.mode == .password and self.entryRect().contains(x, y)) return .entry;
@@ -131,11 +142,14 @@ pub const View = struct {
         const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(self.scale) };
         paintMask(canvas, self.masks[0].?, 24, 24);
         for (self.parts.items) |part| paintMask(canvas, part.mask, 24, 68 + @as(f64, @floatFromInt(part.y)));
+        if (self.masks[3]) |mask| {
+            raster.mask(target, .{ .x = @intFromFloat(24 * canvas.scale), .y = @as(i32, @intFromFloat((self.entryRect().y + 54) * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(if (self.status_error) 0xff7b83 else 0xffffff));
+        }
         for ([_]Target{ .cancel, .accept }, 0..) |button, i| {
             if (button == .cancel and self.mode == .information) continue;
             const rect = self.buttonRect(button);
             const pressed = self.pressed == button and self.hover == button;
-            canvas.draw(&.{rect.shape(10)}, color(if (button == .accept) (if (pressed) @as(u32, 0x2265b5) else if (self.hover == button) @as(u32, 0x4390e8) else @as(u32, 0x3584e4)) else (if (pressed) @as(u32, 0x5f5f63) else if (self.hover == button) @as(u32, 0x525256) else @as(u32, 0x48484b))));
+            canvas.draw(&.{rect.shape(10)}, color(if (button == .accept and !self.enabled) @as(u32, 0x48484b) else if (button == .accept) (if (pressed) @as(u32, 0x2265b5) else if (self.hover == button) @as(u32, 0x4390e8) else @as(u32, 0x3584e4)) else (if (pressed) @as(u32, 0x5f5f63) else if (self.hover == button) @as(u32, 0x525256) else @as(u32, 0x48484b))));
             const mask = self.masks[1 + i].?;
             paintMask(canvas, mask, rect.x + (rect.width - @as(f64, @floatFromInt(mask.logical_width)) / canvas.scale) / 2, rect.y + (rect.height - @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale) / 2);
             if (self.focus == button and self.keyboard_focus) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = rect.x + 2, .y = rect.y + 2, .width = rect.width - 4, .height = rect.height - 4 }, .radius = 8, .width = 2 } }}, color(0x99c1f1));

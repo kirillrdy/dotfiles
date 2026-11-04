@@ -268,7 +268,10 @@ const Auth = struct {
         return self;
     }
     fn start(self: *Auth) void {
-        self.dialog = Dialog.create(self.action, self.message, self.username, if (self.icon.len > 0) self.icon else null);
+        self.dialog = Dialog.create(self.action, self.message, self.username, if (self.icon.len > 0) self.icon else null) catch {
+            self.complete(false, false, "Could not create authentication dialog");
+            return;
+        };
         _ = c.g_signal_connect_data(self.dialog.?.window, "response", @ptrCast(&response), self, null, 0);
         self.restart();
     }
@@ -288,8 +291,7 @@ const Auth = struct {
         self.closeTransport();
         self.attempts += 1;
         self.waiting = false;
-        c.gtk_widget_set_sensitive(self.dialog.?.entry, 0);
-        c.gtk_widget_set_sensitive(self.dialog.?.auth_button, 0);
+        self.dialog.?.setEnabled(false);
         var address = std.mem.zeroes(libc.struct_sockaddr_un);
         const endpoint = self.state.options.socket_path;
         if (endpoint.len >= address.sun_path.len) {
@@ -392,25 +394,30 @@ const Auth = struct {
         if (std.mem.startsWith(u8, value, off) or std.mem.startsWith(u8, value, on)) {
             const echo = std.mem.startsWith(u8, value, on);
             const prompt = value[if (echo) on.len else off.len..];
-            const label = c.g_strdup_printf("%s (%s)", prompt.ptr, self.username.ptr);
-            defer c.g_free(label);
-            c.gtk_label_set_text(cast(c.GtkLabel, self.dialog.?.user_label.?), label);
-            c.gtk_entry_set_visibility(cast(c.GtkEntry, self.dialog.?.entry), @intFromBool(echo));
-            c.gtk_widget_set_sensitive(self.dialog.?.entry, 1);
-            c.gtk_widget_set_sensitive(self.dialog.?.auth_button, 1);
-            c.gtk_widget_grab_focus(self.dialog.?.entry);
+            self.dialog.?.setPrompt(prompt, echo) catch {
+                self.complete(false, false, "Could not render authentication prompt");
+                return false;
+            };
             self.waiting = true;
         } else if (std.mem.startsWith(u8, value, "PAM_ERROR_MSG ")) {
-            self.dialog.?.setError(value[14..]);
+            self.dialog.?.setError(value[14..]) catch {
+                self.complete(false, false, "Could not render authentication error");
+                return false;
+            };
         } else if (std.mem.startsWith(u8, value, "PAM_TEXT_INFO ")) {
-            c.gtk_label_set_text(cast(c.GtkLabel, self.dialog.?.error_label), value[14..].ptr);
-            c.gtk_widget_show(self.dialog.?.error_label);
+            self.dialog.?.setStatus(value[14..]) catch {
+                self.complete(false, false, "Could not render authentication status");
+                return false;
+            };
         } else if (std.mem.eql(u8, value, "SUCCESS")) {
             self.complete(true, false, "");
             return false;
         } else if (std.mem.eql(u8, value, "FAILURE")) {
             if (self.attempts < 3) {
-                self.dialog.?.setError("Authentication failed. Please try again.");
+                self.dialog.?.setError("Authentication failed. Please try again.") catch {
+                    self.complete(false, false, "Could not render authentication error");
+                    return false;
+                };
                 self.dialog.?.clear();
                 self.restart();
             } else self.complete(false, false, "Authentication failed");
@@ -428,9 +435,12 @@ const Auth = struct {
             return;
         }
         if (!self.waiting or self.output_len != 0) return;
-        const answer = std.mem.span(c.gtk_entry_get_text(cast(c.GtkEntry, self.dialog.?.entry)));
+        const answer = self.dialog.?.answer();
         if (answer.len > self.output.len - 1 or std.mem.indexOfAny(u8, answer, "\r\n") != null) {
-            self.dialog.?.setError("The authentication response is too long or contains a newline.");
+            self.dialog.?.setError("The authentication response is too long or contains a newline.") catch {
+                self.complete(false, false, "Could not render authentication error");
+                return;
+            };
             self.dialog.?.clear();
             return;
         }
@@ -439,8 +449,7 @@ const Auth = struct {
         self.output_len = answer.len + 1;
         self.waiting = false;
         self.dialog.?.clear();
-        c.gtk_widget_set_sensitive(self.dialog.?.entry, 0);
-        c.gtk_widget_set_sensitive(self.dialog.?.auth_button, 0);
+        self.dialog.?.setEnabled(false);
         _ = self.flush();
     }
     fn complete(self: *Auth, success: bool, cancelled: bool, message: [*:0]const u8) void {

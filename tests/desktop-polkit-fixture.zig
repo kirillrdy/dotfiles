@@ -1,56 +1,62 @@
-//! PolicyKit agent dialog and interaction tests under synthetic Xvfb.
+//! Native PolicyKit dialog checks with synthetic credentials on Wayland.
 const std = @import("std");
 const polkit = @import("desktop").polkit;
 const c = polkit.c;
-const assert = std.debug.assert;
-
 const cast = c.__zig.cast;
 
-const Response = struct {
-    window: *c.GtkWidget,
-    response: c_int,
-    fn send(data: c.gpointer) callconv(.c) c.gboolean {
-        const self: *Response = @ptrCast(@alignCast(data));
-        c.gtk_dialog_response(cast(c.GtkDialog, self.window), self.response);
-        return 0;
+const Reply = struct {
+    count: usize = 0,
+    id: c_int = 0,
+    fn response(_: ?*c.GtkDialog, id: c_int, data: c.gpointer) callconv(.c) void {
+        const self = cast(Reply, data);
+        self.count += 1;
+        self.id = id;
     }
 };
-
 fn checkDialog() !void {
-    const action = "org.dotfiles.test<&>";
-    const prompt = "Authentication is required to run the configuration tool: 東京";
-    const username = "test<&>";
-
-    var dialog = polkit.Dialog.create(action, prompt, username, null);
+    var dialog = try polkit.Dialog.create("org.dotfiles.test<&>", "Authentication is required: 東京", "test<&>", null);
     defer dialog.destroy();
-
-    try std.testing.expectEqualStrings(prompt, std.mem.span(c.gtk_label_get_text(cast(c.GtkLabel, dialog.prompt))));
-    try std.testing.expectEqualStrings("Action: " ++ action, std.mem.span(c.gtk_label_get_text(cast(c.GtkLabel, dialog.action_label.?))));
-    try std.testing.expectEqualStrings("Password for " ++ username ++ ":", std.mem.span(c.gtk_label_get_text(cast(c.GtkLabel, dialog.user_label.?))));
-    assert(c.gtk_entry_get_visibility(cast(c.GtkEntry, dialog.entry)) == 0);
-    assert(c.gtk_entry_get_input_purpose(cast(c.GtkEntry, dialog.entry)) == c.GTK_INPUT_PURPOSE_PASSWORD);
-
-    // Test error presentation
-    dialog.setError("Authentication failure: <&> password incorrect");
-    assert(c.gtk_widget_get_visible(dialog.error_label) != 0);
-    try std.testing.expectEqualStrings("Authentication failure: <&> password incorrect", std.mem.span(c.gtk_label_get_text(cast(c.GtkLabel, dialog.error_label))));
-
-    // Test password entry and clearing
-    c.gtk_entry_set_text(cast(c.GtkEntry, dialog.entry), "secret-pass-123");
-    try std.testing.expectEqualStrings("secret-pass-123", std.mem.span(c.gtk_entry_get_text(cast(c.GtkEntry, dialog.entry))));
+    var reply: Reply = .{};
+    _ = c.g_signal_connect_data(dialog.window, "response", @ptrCast(&Reply.response), &reply, null, 0);
+    defer _ = c.g_signal_handlers_disconnect_matched(dialog.window, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, &reply);
+    try std.testing.expect(std.mem.indexOf(u8, dialog.native.prompt, "Action: org.dotfiles.test<&>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dialog.native.prompt, "Password: (test<&>)") != null);
+    try std.testing.expectEqualStrings("Authentication Required", dialog.native.view.title);
+    try std.testing.expectEqualStrings("Authenticate", dialog.native.view.accept_label.?);
+    // Return cannot submit before the helper asks for a response.
+    try std.testing.expect(dialog.native.handleKey(0xff0d, 0));
+    try std.testing.expectEqual(@as(usize, 0), reply.count);
+    try dialog.setPrompt("Password: 東京 <&>", false);
+    try std.testing.expect(!dialog.native.entry.?.echo);
+    try dialog.native.entry.?.insert("synthetic-secret");
+    try std.testing.expectEqualStrings("synthetic-secret", dialog.answer());
+    try dialog.setError("Incorrect <&> password — try again");
+    try std.testing.expect(dialog.native.view.status_error);
+    try std.testing.expectEqualStrings("Incorrect <&> password — try again", dialog.native.view.status.?);
+    // Status and buttons remain below the entry at both scale factors.
+    for ([_]u32{ 1, 2 }) |scale| {
+        try dialog.native.view.prepare(std.heap.page_allocator, dialog.native.prompt, scale);
+        try std.testing.expect(dialog.native.view.buttonRect(.accept).y >= dialog.native.view.entryRect().y + 62 + @as(f64, @floatFromInt(dialog.native.view.status_height)));
+    }
+    // A new MFA challenge erases the previous response and can request echo.
+    try dialog.setPrompt("Token:", true);
+    try std.testing.expect(dialog.native.entry.?.echo);
+    try std.testing.expectEqualStrings("", dialog.answer());
+    for (dialog.native.entry.?.buffer.bytes) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
+    try dialog.native.entry.?.insert("123456");
+    try std.testing.expect(dialog.native.handleKey(0xff0d, 0));
+    try std.testing.expectEqual(c.GTK_RESPONSE_OK, reply.id);
     dialog.clear();
-    try std.testing.expectEqualStrings("", std.mem.span(c.gtk_entry_get_text(cast(c.GtkEntry, dialog.entry))));
-
-    // Test dialog response via timer
-    var reply = Response{ .window = dialog.window, .response = c.GTK_RESPONSE_CANCEL };
-    _ = c.g_timeout_add(25, &Response.send, &reply);
-    _ = c.gtk_dialog_run(cast(c.GtkDialog, dialog.window));
+    dialog.setEnabled(false);
+    try std.testing.expect(dialog.native.handleKey('x', 0));
+    try std.testing.expectEqualStrings("", dialog.answer());
+    try std.testing.expect(dialog.native.handleKey(0xff1b, 0));
+    try std.testing.expectEqual(c.GTK_RESPONSE_CANCEL, reply.id);
+    try std.testing.expectEqual(@as(usize, 2), reply.count);
 }
-
 pub fn main(init: std.process.Init) !void {
     _ = init;
     c.gtk_init(null, null);
     try checkDialog();
-
-    std.debug.print("desktop-polkit: masked input, Unicode labels, error display, cancel responses passed\n", .{});
+    std.debug.print("desktop-polkit: native labels, locked entry, helper wait, status, MFA clearing and cancellation passed\n", .{});
 }

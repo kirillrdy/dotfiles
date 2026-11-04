@@ -16,6 +16,9 @@ from gi.repository import Gio, GLib
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True)
+parser.add_argument("--compositor", required=True)
+parser.add_argument("--dialog-fixture")
+parser.add_argument("--wtype", default="wtype")
 args = parser.parse_args()
 NAME = "org.freedesktop.PolicyKit1"
 AUTH = NAME + ".Authority"
@@ -166,12 +169,8 @@ def answer(cookie, value="fake-response"):
     wait(lambda: not events.empty(), "helper prompt")
     assert events.get_nowait() == cookie
     pump(.15)
-    windows = subprocess.check_output(["xdotool", "search", "--onlyvisible", "--name", "^Authentication Required$"]).split()
-    assert len(windows) == 1, windows
-    window = windows[0].decode()
-    subprocess.run(["xdotool", "windowfocus", "--sync", window], check=True)
-    subprocess.run(["xdotool", "type", "--clearmodifiers", "--", value], check=True)
-    subprocess.run(["xdotool", "key", "--clearmodifiers", "Return"], check=True)
+    subprocess.run([args.wtype, "-s", "150", "--", value], env=env, check=True, timeout=10)
+    subprocess.run([args.wtype, "-k", "Return"], env=env, check=True, timeout=10)
 
 
 process = None
@@ -180,6 +179,14 @@ env = dict(os.environ, DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDR
            G_DEBUG="fatal-criticals", NO_AT_BRIDGE="1", GTK_USE_PORTAL="0",
            GIO_USE_VFS="local", GSETTINGS_BACKEND="memory")
 env.pop("XDG_SESSION_ID", None)
+(root / "runtime").mkdir(mode=0o700)
+env.update(XDG_RUNTIME_DIR=str(root / "runtime"), GDK_BACKEND="wayland",
+           WAYLAND_DISPLAY=str(root / "runtime/wayland-0"), WLR_BACKENDS="headless",
+           WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1")
+env.pop("DISPLAY", None)
+compositor_log = open(root / "compositor.log", "w+")
+compositor = None
+keyboard = None
 
 
 def start(peer=None):
@@ -206,6 +213,16 @@ def stop():
 
 
 try:
+    compositor = subprocess.Popen([args.compositor, "compositor-only"], env=env,
+                                  stdout=compositor_log, stderr=compositor_log)
+    wait(lambda: (root / "runtime/wayland-0").is_socket() or compositor.poll() is not None,
+         "private compositor startup")
+    assert compositor.poll() is None, "private compositor failed"
+    keyboard = subprocess.Popen([args.wtype, "-s", "120000"], env=env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    pump(.1)
+    if args.dialog_fixture:
+        subprocess.run([args.dialog_fixture], env=env, check=True, timeout=15)
     own(True)
     start()
     finished(begin("untrusted", outsider), "Only the registered")
@@ -257,9 +274,7 @@ try:
     wait(lambda: not events.empty(), "dialog cancellation prompt")
     assert events.get_nowait() == "cancel-ui"
     pump(.1)
-    window = subprocess.check_output(["xdotool", "search", "--onlyvisible", "--name", "^Authentication Required$"]).split()[0].decode()
-    subprocess.run(["xdotool", "windowfocus", "--sync", window], check=True)
-    subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"], check=True)
+    subprocess.run([args.wtype, "-k", "Escape"], env=env, check=True, timeout=10)
     finished(result, "Cancelled")
 
     for cookie, payload in (("malformed", b"SUCCESS-extra\n"), ("oversized", b"x" * 17000), ("invalid-utf8", b"PAM_TEXT_INFO \xff\n"), ("eof", b"")):
@@ -308,4 +323,9 @@ finally:
     if process is not None and process.poll() is None:
         process.kill()
         process.wait()
+    for child in (keyboard, compositor):
+        if child is not None and child.poll() is None:
+            child.terminate()
+            child.wait(timeout=5)
+    compositor_log.close()
     logs.close()
