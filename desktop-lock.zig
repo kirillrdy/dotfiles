@@ -4,6 +4,7 @@ const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const p = @import("desktop-protocols.zig");
 const auth = @import("desktop-lock-auth.zig");
+const view = @import("desktop-lock-view.zig");
 const a = std.heap.page_allocator;
 const Proxy = c.wl_proxy;
 extern const wl_compositor_interface: c.wl_interface;
@@ -99,23 +100,9 @@ const Output = struct {
         if (libc.ftruncate(fd, @intCast(size)) != 0) std.process.exit(1);
         const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
         if (memory == libc.MAP_FAILED or memory == null) std.process.exit(1);
-        const image = c.cairo_image_surface_create_for_data(@ptrCast(memory), c.CAIRO_FORMAT_RGB24, @intCast(width), @intCast(height), @intCast(width * 4));
-        const cr = c.cairo_create(image);
-        c.cairo_set_source_rgb(cr, 0.118, 0.118, 0.18);
-        c.cairo_paint(cr);
-        c.cairo_set_source_rgb(cr, 1, 1, 1);
-        c.cairo_select_font_face(cr, "Adwaita Sans", c.CAIRO_FONT_SLANT_NORMAL, c.CAIRO_FONT_WEIGHT_NORMAL);
-        c.cairo_set_font_size(cr, 26);
-        c.cairo_move_to(cr, @as(f64, @floatFromInt(width)) / 2 - 105, @as(f64, @floatFromInt(height)) / 2 - 35);
-        c.cairo_show_text(cr, "Session locked");
-        c.cairo_set_font_size(cr, 17);
-        c.cairo_move_to(cr, @as(f64, @floatFromInt(width)) / 2 - 105, @as(f64, @floatFromInt(height)) / 2 + 5);
         const s = self.state;
-        c.cairo_show_text(cr, if (s.failed) "Try again" else if (s.busy) "Authenticating…" else "Password, then Enter");
-        // Never render password length or password contents.
-        c.cairo_destroy(cr);
-        c.cairo_surface_flush(image);
-        c.cairo_surface_destroy(image);
+        const pixels: [*]u32 = @ptrCast(@alignCast(memory.?));
+        s.view.paint(.{ .pixels = pixels[0 .. size / 4], .width = width, .height = height }, if (s.failed) .failed else if (s.busy) .authenticating else .ready);
         const pool = c.wl_shm_create_pool(s.shm, fd, @intCast(size));
         const buffer = c.wl_shm_pool_create_buffer(pool, 0, @intCast(width), @intCast(height), @intCast(width * 4), c.WL_SHM_FORMAT_XRGB8888) orelse std.process.exit(1);
         c.wl_shm_pool_destroy(pool);
@@ -230,6 +217,7 @@ const State = struct {
     lock: ?*Proxy = null,
     outputs: ?*Output = null,
     seats: ?*Seat = null,
+    view: *const view.View,
     password: *Password,
     user: [*:0]const u8,
     authenticator: *const fn ([*:0]const u8, [*:0]const u8) bool = auth.authenticate,
@@ -432,7 +420,10 @@ pub fn runWithAuthenticator(args: []const []const u8, authenticator: *const fn (
     defer a.free(username);
     const display = c.wl_display_connect(null) orelse return error.NoWaylandDisplay;
     defer c.wl_display_disconnect(display);
-    var state = State{ .display = display, .password = password, .user = username.ptr, .authenticator = authenticator, .ready_fd = ready_fd, .managed_readiness = !daemonize and ready_fd >= 0 };
+    // Prepare public labels before requesting the session lock.
+    var lock_view = try view.View.init(a);
+    defer lock_view.deinit(a);
+    var state = State{ .view = &lock_view, .display = display, .password = password, .user = username.ptr, .authenticator = authenticator, .ready_fd = ready_fd, .managed_readiness = !daemonize and ready_fd >= 0 };
     const registry = c.wl_display_get_registry(display);
     _ = c.wl_registry_add_listener(registry, &registry_listener, &state);
     if (c.wl_display_roundtrip(display) < 0) return error.WaylandDisconnected;
