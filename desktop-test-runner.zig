@@ -21,5 +21,6 @@ test {
     _ = @import("desktop-panel-view.zig");
     _ = @import("desktop-form.zig");
     _ = @import("desktop-apps-view.zig");
+    _ = @import("desktop-dash-view.zig");
     _ = @import("desktop-password-entry.zig");
 }

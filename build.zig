@@ -158,6 +158,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "desktop-idle-fixture", .source = "tests/desktop-idle-fixture.zig", .step = "idle-fixture", .install = true },
         .{ .name = "desktop-lock-fixture", .source = "tests/desktop-lock-fixture.zig", .step = "lock-fixture", .install = true },
         .{ .name = "desktop-apps-fixture", .source = "tests/desktop-apps-fixture.zig", .step = "apps-fixture", .install = true, .run = true },
+        .{ .name = "desktop-dash-fixture", .source = "tests/desktop-dash-fixture.zig", .step = "dash-fixture", .run = true },
         .{ .name = "waybar-power-fixture", .source = "tests/waybar-power-fixture.zig", .step = "widgets-fixture", .install = true, .run = true },
         .{ .name = "labwc-switcher-fixture", .source = "tests/labwc-switcher-fixture.zig", .step = "switcher-fixture", .install = true },
         .{ .name = "desktop-settings-fixture", .source = "tests/desktop-settings-fixture.zig", .step = "settings-fixture", .run = true },

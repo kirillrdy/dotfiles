@@ -281,6 +281,7 @@ pub const output = @import("desktop-output.zig");
 pub const lock = @import("desktop-lock.zig");
 pub const auth = @import("desktop-lock-auth.zig");
 pub const apps = @import("desktop-apps.zig");
+pub const dash_view = @import("desktop-dash-view.zig");
 pub const http = @import("desktop-http.zig");
 pub const virtual_pointer = @import("desktop-virtual-pointer.zig");
 pub const printing = @import("desktop-portal-print.zig");

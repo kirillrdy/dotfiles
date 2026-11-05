@@ -240,6 +240,25 @@ def main():
                 "Capture continued after hiding the overview"
             )
             reopen()
+            # Stage -> dash; End targets Show Applications regardless of the
+            # number of running apps. Activating it returns focus to the grid.
+            key("Tab")
+            key("End")
+            key("Return")
+            shot("dash-keyboard-applications")
+            key("Escape")
+            # The running Terminal app remains a stable dock target even when
+            # its window is behind another application.
+            terminal_before = (artifacts / "window-2.log").read_text().splitlines()
+            pointer_command("move 824 1018")
+            time.sleep(0.4)
+            run(["grim", "-s", "1", "-g", "680,920 370x160", str(artifacts / "dash-tooltip.png")])
+            click(824, 1018)
+            wait_for(
+                lambda: len((artifacts / "window-2.log").read_text().splitlines()) > len(terminal_before),
+                "Native dash did not activate the Terminal window",
+            )
+            reopen()
             click(828, 126)
             wait_for(
                 lambda: '.workspace(1, "2", 1)' in log(),
@@ -304,7 +323,7 @@ def main():
                 -4000:
             ]
             print(
-                "PASS: live occluded captures, exact activation, idle cleanup, workspaces, drag, keyboard, search, app grid and close"
+                "PASS: live captures, exact activation, idle cleanup, workspaces, drag, keyboard, native dash, tooltips, search, app grid, close and Super"
             )
         finally:
             for process in reversed(processes):

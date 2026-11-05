@@ -296,11 +296,24 @@ const Server = struct {
         } else self.keyboardFocus(null);
     }
     fn refocus(self: *Server) void {
+        if (self.locked) return;
+        const keyboard_surface = self.seat.keyboard_state.focused_surface;
+        var next: ?*View = null;
         for (self.views.items) |v| if (v.mapped and v.workspace == self.workspace) {
-            self.focus(v);
-            return;
+            next = v;
+            break;
         };
-        self.focus(null);
+        self.focus(next);
+        // Updating the underlying active window must not break the overview's
+        // exclusive grab when a window closes or the workspace changes.
+        for (self.layers.items) |layer| {
+            if (layer.wlr.surface == keyboard_surface and layer.wlr.surface.*.mapped and
+                layer.wlr.current.keyboard_interactive == c.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)
+            {
+                self.keyboardFocus(layer.wlr.surface);
+                break;
+            }
+        }
     }
     fn switchWorkspace(self: *Server, index: u32) void {
         if (self.locked or index >= 4) return;
@@ -1336,19 +1349,8 @@ const Overview = struct {
     }
     fn switchWorkspace(_: ?*c.wl_client, resource: ?*c.wl_resource, index: u32) callconv(.c) void {
         const s = state(resource);
-        const keyboard_surface = s.seat.keyboard_state.focused_surface;
         s.switchWorkspace(index);
         s.refocus();
-        // The overview keeps its exclusive keyboard grab while changing the
-        // underlying workspace, including workspaces without any windows.
-        for (s.layers.items) |layer| {
-            if (layer.wlr.surface == keyboard_surface and layer.wlr.surface.*.mapped and
-                layer.wlr.current.keyboard_interactive == c.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)
-            {
-                s.keyboardFocus(layer.wlr.surface);
-                break;
-            }
-        }
     }
     fn move(_: ?*c.wl_client, resource: ?*c.wl_resource, id: [*c]const u8, index: u32) callconv(.c) void {
         const s = state(resource);

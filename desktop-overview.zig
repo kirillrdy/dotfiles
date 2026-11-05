@@ -6,6 +6,8 @@ comptime {
 }
 const apps = @import("desktop-apps.zig");
 const capture = @import("desktop-capture.zig");
+const native_dash = @import("desktop-dash-view.zig");
+const raster = @import("desktop-raster.zig");
 const c = capture.c;
 const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
@@ -15,13 +17,6 @@ fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anyt
 const Rect = capture.Rect;
 const style =
     \\window#desktop-apps { background: #222226; color: white; }
-    \\#desktop-apps entry { min-width: 352px; min-height: 19px; padding: 8px; border: 1px solid transparent; border-radius: 999px; background: #404045; font-size: 14.666px; }
-    \\#desktop-apps entry:focus { border-color: #78aeed; }
-    \\#desktop-apps .overview-dash { background: #38383b; border-radius: 28px; padding: 12px 10px; }
-    \\#desktop-apps .overview-dash button { min-width: 76px; min-height: 76px; margin: 0 2px; padding: 0; background: transparent; color: white; border: none; border-radius: 20px; box-shadow: none; text-shadow: none; }
-    \\#desktop-apps .overview-dash separator { min-width: 1px; background: rgba(255,255,255,0.1); margin: 6px 4px; }
-    \\#desktop-apps .overview-dash button:hover, #desktop-apps .overview-dash button:checked { background: rgba(255,255,255,0.1); }
-    \\#desktop-apps .overview-dash button:focus { box-shadow: inset 0 0 0 2px #78aeed; }
 ;
 
 const Overview = struct {
@@ -30,6 +25,9 @@ const Overview = struct {
     strip: *c.GtkWidget,
     stage: *c.GtkWidget,
     dash: *c.GtkWidget,
+    tooltip: *c.GtkWidget,
+    dash_view: native_dash.View = .{},
+    tooltip_timer: c.guint = 0,
     wallpaper: ?*c.cairo_surface_t,
     timer: c.guint = 0,
     tick_count: u32 = 0,
@@ -59,7 +57,7 @@ const Overview = struct {
             c.gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
             c.cairo_paint(cr);
         }
-        self.* = .{ .launcher = apps.Launcher.init(application), .strip = c.gtk_drawing_area_new().?, .stage = c.gtk_drawing_area_new().?, .dash = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0).?, .wallpaper = wallpaper };
+        self.* = .{ .launcher = apps.Launcher.init(application), .strip = c.gtk_drawing_area_new().?, .stage = c.gtk_drawing_area_new().?, .dash = c.gtk_drawing_area_new().?, .tooltip = c.gtk_drawing_area_new().?, .wallpaper = wallpaper };
         const l = &self.launcher;
         l.bindControls();
         const window = cast(c.GtkWindow, l.window);
@@ -86,8 +84,28 @@ const Overview = struct {
         c.gtk_box_pack_start(cast(c.GtkBox, l.layout), self.stage, 1, 1, 0);
         c.gtk_box_reorder_child(cast(c.GtkBox, l.layout), self.stage, 2);
         c.gtk_widget_set_halign(self.dash, c.GTK_ALIGN_CENTER);
-        c.gtk_widget_set_margin_bottom(self.dash, 12);
-        c.gtk_style_context_add_class(c.gtk_widget_get_style_context(self.dash), "overview-dash");
+        c.gtk_widget_set_can_focus(self.dash, 1);
+        const overlay = c.gtk_overlay_new().?;
+        _ = c.g_object_ref(l.layout);
+        c.gtk_container_remove(cast(c.GtkContainer, l.window), l.layout);
+        c.gtk_container_add(cast(c.GtkContainer, overlay), l.layout);
+        c.gtk_container_add(cast(c.GtkContainer, l.window), overlay);
+        c.g_object_unref(l.layout);
+        c.gtk_widget_set_halign(self.tooltip, c.GTK_ALIGN_START);
+        c.gtk_widget_set_valign(self.tooltip, c.GTK_ALIGN_END);
+        c.gtk_widget_set_no_show_all(self.tooltip, 1);
+        c.gtk_overlay_add_overlay(cast(c.GtkOverlay, overlay), self.tooltip);
+        c.gtk_overlay_set_overlay_pass_through(cast(c.GtkOverlay, overlay), self.tooltip, 1);
+        c.gtk_widget_add_events(self.dash, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_ENTER_NOTIFY_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_FOCUS_CHANGE_MASK);
+        connect(self.dash, "draw", &drawDash, self);
+        connect(self.dash, "button-press-event", &dashPress, self);
+        connect(self.dash, "button-release-event", &dashRelease, self);
+        connect(self.dash, "motion-notify-event", &dashMotion, self);
+        connect(self.dash, "enter-notify-event", &dashEnter, self);
+        connect(self.dash, "leave-notify-event", &dashLeave, self);
+        connect(self.dash, "focus-in-event", &dashFocus, self);
+        connect(self.dash, "focus-out-event", &dashFocus, self);
+        connect(self.tooltip, "draw", &drawDash, self);
         c.gtk_box_pack_end(cast(c.GtkBox, l.layout), self.dash, 0, 0, 0);
         c.gtk_widget_add_events(self.stage, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
         c.gtk_widget_add_events(self.strip, c.GDK_BUTTON_PRESS_MASK | c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
@@ -114,7 +132,9 @@ const Overview = struct {
         self.timer = 0;
         if (self.client) |client| client.destroy();
         self.client = null;
+        self.hideTooltip();
         self.launcher.deinit();
+        self.dash_view.deinit();
         if (self.wallpaper) |image| c.cairo_surface_destroy(image);
         a.destroy(self);
     }
@@ -150,16 +170,16 @@ const Overview = struct {
         const searching = self.launcher.searchText().len != 0;
         c.gtk_widget_set_visible(self.launcher.results, @intFromBool(self.apps_mode or searching));
         c.gtk_widget_set_visible(self.stage, @intFromBool(!self.apps_mode and !searching));
+        self.dash_view.apps_mode = self.apps_mode;
+        c.gtk_widget_queue_draw(self.dash);
         c.gtk_widget_hide(@ptrCast(self.launcher.message));
         if (self.client == null or !self.client.?.connected) {
             self.launcher.setMessage("The Activities overview requires the updated Labwc compositor. Log out and back in after switching the configuration.");
         }
     }
     fn rebuildDash(self: *Overview) void {
-        const children = c.gtk_container_get_children(cast(c.GtkContainer, self.dash));
-        defer c.g_list_free(children);
-        var child = children;
-        while (child != null) : (child = child.*.next) c.gtk_widget_destroy(cast(c.GtkWidget, child.*.data));
+        self.hideTooltip();
+        self.dash_view.clear();
         var favorites: [*c][*c]u8 = null;
         if (c.g_settings_schema_source_get_default()) |source| {
             if (c.g_settings_schema_source_lookup(source, "org.gnome.shell", 1)) |schema| {
@@ -198,51 +218,125 @@ const Overview = struct {
             };
             if (!duplicate) {
                 if (!separated) {
-                    const separator = c.gtk_separator_new(c.GTK_ORIENTATION_VERTICAL);
-                    c.gtk_box_pack_start(cast(c.GtkBox, self.dash), separator, 0, 0, 0);
+                    self.dash_view.separator = self.dash_view.items.items.len;
                     separated = true;
                 }
                 self.appendDash(null, window);
             }
         };
-        const show_apps = c.gtk_button_new();
-        const icon = c.gtk_image_new_from_icon_name("view-app-grid-symbolic", c.GTK_ICON_SIZE_DIALOG);
-        c.gtk_image_set_pixel_size(cast(c.GtkImage, icon), 64);
-        c.gtk_container_add(cast(c.GtkContainer, show_apps), icon);
-        c.gtk_widget_set_tooltip_text(show_apps, "Show Applications");
-        connect(show_apps, "clicked", &toggleApps, self);
-        c.gtk_box_pack_end(cast(c.GtkBox, self.dash), show_apps, 0, 0, 0);
-        c.gtk_widget_show_all(self.dash);
+        self.dash_view.add("Show Applications", null, null, null) catch @panic("out of memory");
+        self.dash_view.items.items[self.dash_view.items.items.len - 1].show_apps = true;
+        self.dash_view.relayout(@intCast(@max(1, self.monitor.width)), @intCast(@max(1, self.monitor.height)));
+        c.gtk_widget_set_size_request(self.dash, @intCast(self.dash_view.layout.width), @intCast(self.dash_view.layout.height));
+        c.gtk_widget_queue_draw(self.dash);
     }
     fn appendDash(self: *Overview, info: ?*c.GAppInfo, window: ?*capture.Window) void {
-        const button = c.gtk_button_new();
-        c.gtk_widget_set_tooltip_text(button, if (info != null) c.g_app_info_get_display_name(info) else if (window) |w| w.title else "Application");
-        const box = c.gtk_overlay_new();
-        const image = if (window) |w| c.gtk_image_new_from_pixbuf(w.icon) else c.gtk_image_new_from_gicon(c.g_app_info_get_icon(info), c.GTK_ICON_SIZE_DIALOG);
-        c.gtk_image_set_pixel_size(cast(c.GtkImage, image), 64);
-        c.gtk_widget_set_halign(image, c.GTK_ALIGN_CENTER);
-        c.gtk_widget_set_valign(image, c.GTK_ALIGN_CENTER);
-        c.gtk_container_add(cast(c.GtkContainer, box), image);
-        if (window != null) {
-            const dot = c.gtk_drawing_area_new();
-            c.gtk_widget_set_size_request(dot, 5, 5);
-            c.gtk_widget_set_halign(dot, c.GTK_ALIGN_CENTER);
-            c.gtk_widget_set_valign(dot, c.GTK_ALIGN_END);
-            connect(dot, "draw", &drawRunningDot, self);
-            c.gtk_overlay_add_overlay(cast(c.GtkOverlay, box), dot);
-            c.gtk_overlay_set_overlay_pass_through(cast(c.GtkOverlay, box), dot, 1);
-        }
-        c.gtk_container_add(cast(c.GtkContainer, button), box);
-        if (window) |w| c.g_object_set_data_full(cast(c.GObject, button), "window-id", c.g_strdup(w.id), &c.g_free);
-        if (info) |app| c.g_object_set_data_full(cast(c.GObject, button), "app-info", c.g_object_ref(app), &c.g_object_unref);
-        connect(button, "clicked", &dashActivate, self);
-        c.gtk_box_pack_start(cast(c.GtkBox, self.dash), button, 0, 0, 0);
+        var app = info;
+        if (app == null) if (window) |w| {
+            for (self.launcher.entries.items) |candidate| if (matchesApp(w.app_id, c.g_app_info_get_id(candidate.info))) {
+                app = candidate.info;
+                break;
+            };
+        };
+        const title: [*c]const u8 = if (app) |application| c.g_app_info_get_display_name(application) else if (window) |w| w.title else "Application";
+        self.dash_view.add(std.mem.span(title), app, if (window) |w| @ptrCast(w.id) else null, if (window) |w| w.icon else null) catch @panic("out of memory");
     }
-    fn drawRunningDot(_: *c.GtkWidget, cr: *c.cairo_t, _: c.gpointer) callconv(.c) c.gboolean {
-        c.cairo_arc(cr, 2.5, 2.5, 2.5, 0, 2 * std.math.pi);
-        c.cairo_set_source_rgb(cr, 1, 1, 1);
-        c.cairo_fill(cr);
+    fn hideTooltip(self: *Overview) void {
+        if (self.tooltip_timer != 0) _ = c.g_source_remove(self.tooltip_timer);
+        self.tooltip_timer = 0;
+        c.gtk_widget_hide(self.tooltip);
+    }
+    fn showTooltip(data: c.gpointer) callconv(.c) c.gboolean {
+        const self = cast(Overview, data);
+        self.tooltip_timer = 0;
+        const index = self.dash_view.hover orelse if (self.dash_view.keyboard_focus) self.dash_view.focus else return 0;
+        if (index >= self.dash_view.items.items.len) return 0;
+        const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(self.dash)));
+        self.dash_view.prepareTooltip(index, scale) catch return 0;
+        const mask = self.dash_view.tooltip_mask.?;
+        const width = @divTrunc(mask.logical_width, scale) + 26;
+        const height = @divTrunc(mask.logical_height, scale) + 14;
+        const rect = self.dash_view.layout.item(index);
+        const stage_width = c.gtk_widget_get_allocated_width(self.launcher.window);
+        const left = (@as(f64, @floatFromInt(stage_width)) - @as(f64, @floatFromInt(self.dash_view.layout.width))) / 2 + rect.x + rect.width / 2 - @as(f64, @floatFromInt(width)) / 2;
+        c.gtk_widget_set_margin_start(self.tooltip, @intFromFloat(std.math.clamp(left, 8, @as(f64, @floatFromInt(@max(8, stage_width - @as(c_int, @intCast(width)) - 8))))));
+        c.gtk_widget_set_margin_bottom(self.tooltip, @intCast(self.dash_view.layout.height + 8));
+        c.gtk_widget_set_size_request(self.tooltip, @intCast(width), @intCast(height));
+        c.gtk_widget_show(self.tooltip);
+        c.gtk_widget_queue_draw(self.tooltip);
+        return 0;
+    }
+    fn drawDash(widget: *c.GtkWidget, cr: *c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
+        const self = cast(Overview, data);
+        const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
+        const width: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)));
+        const height: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)));
+        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width * scale), @intCast(height * scale));
+        defer c.cairo_surface_destroy(image);
+        if (c.cairo_surface_status(image) != 0) return 1;
+        const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
+        const target: raster.Buffer = .{ .pixels = pixels[0 .. width * height * scale * scale], .width = width * scale, .height = height * scale };
+        if (widget == self.tooltip) self.dash_view.paintTooltip(target, scale) else self.dash_view.paint(target, scale) catch {};
+        c.cairo_surface_mark_dirty(image);
+        c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
+        c.cairo_set_source_surface(cr, image, 0, 0);
+        c.cairo_paint(cr);
         return 1;
+    }
+    fn dashPress(_: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
+        if (event.button != 1) return 0;
+        const self = cast(Overview, data);
+        self.hideTooltip();
+        c.gtk_widget_grab_focus(self.dash);
+        self.dash_view.keyboard_focus = false;
+        self.dash_view.pressed = self.dash_view.layout.hit(event.x, event.y);
+        c.gtk_widget_queue_draw(self.dash);
+        return 1;
+    }
+    fn dashRelease(_: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
+        if (event.button != 1) return 0;
+        const self = cast(Overview, data);
+        const pressed = self.dash_view.pressed;
+        self.dash_view.pressed = null;
+        if (pressed) |index| if (self.dash_view.layout.hit(event.x, event.y) == index) self.activateDash(index);
+        c.gtk_widget_queue_draw(self.dash);
+        return 1;
+    }
+    fn dashMotion(_: *c.GtkWidget, event: *c.GdkEventMotion, data: c.gpointer) callconv(.c) c.gboolean {
+        const self = cast(Overview, data);
+        self.hoverDash(event.x, event.y);
+        return 1;
+    }
+    fn dashEnter(_: *c.GtkWidget, event: *c.GdkEventCrossing, data: c.gpointer) callconv(.c) c.gboolean {
+        cast(Overview, data).hoverDash(event.x, event.y);
+        return 0;
+    }
+    fn hoverDash(self: *Overview, x: f64, y: f64) void {
+        const index = self.dash_view.layout.hit(x, y);
+        if (index != self.dash_view.hover) {
+            self.hideTooltip();
+            self.dash_view.hover = index;
+            if (index != null) self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
+            c.gtk_widget_queue_draw(self.dash);
+        }
+    }
+    fn dashLeave(_: *c.GtkWidget, _: *c.GdkEvent, data: c.gpointer) callconv(.c) c.gboolean {
+        const self = cast(Overview, data);
+        self.hideTooltip();
+        self.dash_view.hover = null;
+        if (self.dash_view.keyboard_focus) self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
+        c.gtk_widget_queue_draw(self.dash);
+        return 0;
+    }
+    fn dashFocus(_: *c.GtkWidget, _: *c.GdkEvent, data: c.gpointer) callconv(.c) c.gboolean {
+        const self = cast(Overview, data);
+        if (c.gtk_widget_has_focus(self.dash) == 0) {
+            self.hideTooltip();
+            self.dash_view.keyboard_focus = false;
+        }
+        self.dash_view.pressed = null;
+        c.gtk_widget_queue_draw(self.dash);
+        return 0;
     }
     fn changed(data: ?*anyopaque) void {
         const self = cast(Overview, data);
@@ -296,6 +390,10 @@ const Overview = struct {
     }
     fn hidden(_: *c.GtkWidget, data: c.gpointer) callconv(.c) void {
         const self = cast(Overview, data);
+        self.hideTooltip();
+        self.dash_view.hover = null;
+        self.dash_view.pressed = null;
+        self.dash_view.keyboard_focus = false;
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         self.timer = 0;
         if (self.client) |client| client.visible(false);
@@ -315,8 +413,7 @@ const Overview = struct {
         } else c.gtk_widget_hide(self.launcher.window);
         if (!self.apps_mode and c.gtk_widget_get_visible(self.launcher.window) != 0) c.gtk_widget_grab_focus(self.stage);
     }
-    fn toggleApps(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self = cast(Overview, data);
+    fn toggleApps(self: *Overview) void {
         self.apps_mode = !self.apps_mode;
         self.launcher.setSearch("") catch {};
         self.updateMode();
@@ -324,15 +421,20 @@ const Overview = struct {
             self.launcher.focusGrid();
         } else c.gtk_widget_grab_focus(self.stage);
     }
-    fn dashActivate(button: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self = cast(Overview, data);
-        const id: [*c]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, button), "window-id"));
-        if (id != null) if (self.client) |client| for (client.windows.items) |window| if (c.g_strcmp0(window.id, id) == 0) {
+    fn activateDash(self: *Overview, index: usize) void {
+        if (index >= self.dash_view.items.items.len) return;
+        self.hideTooltip();
+        const item = self.dash_view.items.items[index];
+        if (item.show_apps) {
+            self.toggleApps();
+            return;
+        }
+        if (item.window_id) |id| if (self.client) |client| for (client.windows.items) |window| if (c.g_strcmp0(window.id, id) == 0) {
             client.activate(window);
             c.gtk_widget_hide(self.launcher.window);
             return;
         };
-        if (c.g_object_get_data(cast(c.GObject, button), "app-info")) |info| _ = self.launcher.launch(cast(c.GAppInfo, info));
+        if (item.app) |app| _ = self.launcher.launch(app);
     }
     fn key(_: ?*c.GtkWidget, event: *apps.KeyEvent, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
@@ -340,7 +442,48 @@ const Overview = struct {
             escape(null, data);
             return 1;
         }
+        const dash_focused = c.gtk_widget_has_focus(self.dash) != 0;
         const window_mode = !self.apps_mode and self.launcher.searchText().len == 0;
+        if (event.keyval == 0xff09 or event.keyval == 0xfe20) {
+            const backwards = event.keyval == 0xfe20 or event.state & c.GDK_SHIFT_MASK != 0;
+            const search_focused = c.gtk_widget_has_focus(self.launcher.search) != 0;
+            if ((search_focused and backwards) or (!search_focused and !dash_focused and !backwards)) {
+                self.hideTooltip();
+                c.gtk_widget_grab_focus(self.dash);
+                self.dash_view.keyboard_focus = true;
+            } else if ((dash_focused and backwards) or (search_focused and !backwards)) {
+                if (window_mode) c.gtk_widget_grab_focus(self.stage) else self.launcher.focusGrid();
+            } else c.gtk_widget_grab_focus(self.launcher.search);
+            if (c.gtk_widget_has_focus(self.dash) != 0) {
+                self.hideTooltip();
+                self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
+            }
+            c.gtk_widget_queue_draw(self.dash);
+            return 1;
+        }
+        if (dash_focused) {
+            switch (event.keyval) {
+                c.GDK_KEY_Left, c.GDK_KEY_Right => self.dash_view.navigate(if (event.keyval == c.GDK_KEY_Left) -1 else 1),
+                0xff50 => {
+                    self.dash_view.focus = 0;
+                    self.dash_view.keyboard_focus = true;
+                },
+                0xff57 => {
+                    self.dash_view.focus = self.dash_view.items.items.len -| 1;
+                    self.dash_view.keyboard_focus = true;
+                },
+                c.GDK_KEY_Return, c.GDK_KEY_KP_Enter, 0x20 => self.activateDash(self.dash_view.focus),
+                c.GDK_KEY_Up => {
+                    if (window_mode) c.gtk_widget_grab_focus(self.stage) else self.launcher.focusGrid();
+                },
+                else => return apps.keyPress(null, event, &self.launcher),
+            }
+            self.hideTooltip();
+            if (self.dash_view.keyboard_focus and c.gtk_widget_has_focus(self.dash) != 0)
+                self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
+            c.gtk_widget_queue_draw(self.dash);
+            return 1;
+        }
         if ((window_mode and (event.keyval == c.GDK_KEY_Page_Up or event.keyval == c.GDK_KEY_Page_Down)) or (event.state & c.GDK_CONTROL_MASK != 0 and (event.keyval == c.GDK_KEY_Left or event.keyval == c.GDK_KEY_Right))) {
             const direction: i32 = if (event.keyval == c.GDK_KEY_Page_Up or event.keyval == c.GDK_KEY_Left) -1 else 1;
             if (event.state & c.GDK_SHIFT_MASK != 0) {

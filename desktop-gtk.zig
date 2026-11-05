@@ -706,6 +706,7 @@ pub extern fn g_app_info_get_display_name(appinfo: ?*GAppInfo) [*c]const u8;
 pub extern fn g_app_info_get_commandline(appinfo: ?*GAppInfo) [*c]const u8;
 
 pub extern fn g_app_info_get_icon(appinfo: ?*GAppInfo) ?*GIcon;
+pub extern fn g_app_info_get_id(appinfo: ?*GAppInfo) [*c]const gchar;
 
 pub extern fn g_app_info_launch(appinfo: ?*GAppInfo, files: [*c]GList, context: [*c]GAppLaunchContext, @"error": [*c][*c]GError) gboolean;
 
@@ -1448,6 +1449,7 @@ pub extern fn gtk_container_get_type() GType;
 pub extern fn gtk_container_set_border_width(container: [*c]GtkContainer, border_width: guint) void;
 
 pub extern fn gtk_container_add(container: [*c]GtkContainer, widget: [*c]GtkWidget) void;
+pub extern fn gtk_container_remove(container: [*c]GtkContainer, widget: [*c]GtkWidget) void;
 
 pub extern fn gtk_container_get_children(container: [*c]GtkContainer) [*c]GList;
 
