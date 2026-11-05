@@ -208,11 +208,13 @@ def main():
                 "Occluded live window did not update in the overview"
             )
             assert len(re.findall(r'\.workspace\(\d+, "[1-4]",', log())) >= 4
-            initial_ids = list(
-                dict.fromkeys(
-                    re.findall(r'dotfiles_overview_v1#\d+\.window\("([^"]+)"', log())
-                )
-            )
+            files_handle = re.search(
+                r'(ext_foreign_toplevel_handle_v1#\d+)\.app_id\("io.test.Files"\)',
+                log(),
+            ).group(1)
+            files_id = re.search(
+                re.escape(files_handle) + r'\.identifier\("([^"]+)"\)', log()
+            ).group(1)
             run(
                 ["grim", "-s", "1", "-o", "HEADLESS-1", str(artifacts / "overview.png")]
             )
@@ -245,12 +247,24 @@ def main():
             )
             key("Return")
             assert overview.poll() is None
+            first_workspace = log().count('.workspace(0, "1", 1)')
             click(756, 126)
-            key("Page_Down")
-            assert log().count('.workspace(1, "2", 1)') >= 2, (
-                "Keyboard workspace navigation failed"
+            wait_for(
+                lambda: log().count('.workspace(0, "1", 1)') > first_workspace,
+                "Workspace click did not finish before keyboard navigation",
             )
+            second_workspace = log().count('.workspace(1, "2", 1)')
+            key("Page_Down")
+            wait_for(
+                lambda: log().count('.workspace(1, "2", 1)') > second_workspace,
+                "Keyboard workspace navigation failed",
+            )
+            first_workspace = log().count('.workspace(0, "1", 1)')
             key("Page_Up")
+            wait_for(
+                lambda: log().count('.workspace(0, "1", 1)') > first_workspace,
+                "Keyboard workspace navigation did not return before dragging",
+            )
             pointer_command("move 1120 760")
             pointer_command("button 1")
             for x, y in [(1050, 600), (950, 400), (850, 200), (828, 126)]:
@@ -258,7 +272,7 @@ def main():
                 time.sleep(0.05)
             pointer_command("button 0")
             wait_for(
-                lambda: f'.window("{initial_ids[3]}", 1,' in log(),
+                lambda: f'.window("{files_id}", 1,' in log(),
                 "Dragging a window to another workspace failed",
             )
             run(["wtype", "Files"])
@@ -281,8 +295,10 @@ def main():
             reopen()
             key("Super_L")
             maps = len(re.findall(r'get_layer_surface\(.*"desktop-overview"', log()))
-            unmaps = len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log()))
-            assert maps == unmaps, "Super did not hide the overview"
+            wait_for(
+                lambda: len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log())) == maps,
+                "Super did not hide the overview",
+            )
             assert compositor.poll() is None
             assert not re.search(r"CRITICAL|panic:|protocol error", log()), log()[
                 -4000:

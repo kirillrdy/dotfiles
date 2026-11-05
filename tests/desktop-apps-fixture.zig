@@ -1,9 +1,11 @@
-//! Isolated desktop-entry and GTK integration checks, run under Xvfb.
+//! Isolated desktop-entry, native-control and launch integration checks.
 const std = @import("std");
 const apps = @import("desktop").apps;
 const c = apps.c;
 const assert = std.debug.assert;
 const cast = c.__zig.cast;
+extern fn gtk_widget_draw(*c.GtkWidget, *c.cairo_t) void;
+extern fn cairo_surface_write_to_png(*c.cairo_surface_t, [*:0]const u8) c_int;
 fn eq(actual: [*c]const u8, expected: []const u8) void {
     assert(std.mem.eql(u8, std.mem.span(actual), expected));
 }
@@ -15,11 +17,7 @@ fn pump() void {
     }
 }
 fn firstName(launcher: *apps.Launcher) [*c]const u8 {
-    const child = launcher.first().?;
-    const box = c.gtk_bin_get_child(cast(c.GtkBin, child));
-    const children = c.gtk_container_get_children(cast(c.GtkContainer, box));
-    defer c.g_list_free(children);
-    return c.gtk_label_get_text(cast(c.GtkLabel, children.*.next.*.data));
+    return launcher.first().?.name;
 }
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -99,23 +97,65 @@ pub fn main(init: std.process.Init) !void {
     assert(fixture_count == 4);
     launcher.present();
     pump();
-    c.gtk_entry_set_text(launcher.search, "EDITOR");
+    try launcher.setSearch("EDITOR");
     eq(firstName(&launcher), "A Text Editor");
-    c.gtk_entry_set_text(launcher.search, "text");
+    try launcher.setSearch("text");
     eq(firstName(&launcher), "Text Editor");
-    c.gtk_entry_set_text(launcher.search, "STRASSE");
+    try launcher.setSearch("STRASSE");
     eq(firstName(&launcher), "Straße");
-    c.gtk_entry_set_text(launcher.search, "Cafe\xcc\x81");
+    try launcher.setSearch("Cafe\xcc\x81");
     eq(firstName(&launcher), "Café");
     for ([_][*:0]const u8{ "unrelated", "/proc/self/exe", "txed", "missing" }) |query| {
-        c.gtk_entry_set_text(launcher.search, query);
+        try launcher.setSearch(std.mem.span(query));
         assert(launcher.first() == null);
-        assert(c.gtk_widget_get_visible(launcher.empty) != 0);
+        assert(launcher.visible.items.len == 0);
     }
     launcher.present();
     pump();
-    assert(c.gtk_widget_get_visible(launcher.empty) == 0);
-    eq(c.gtk_entry_get_text(launcher.search), "");
+    assert(launcher.visible.items.len > 0);
+    eq(launcher.searchText(), "");
+
+    // Paging and keyboard selection must stay on valid results, including the
+    // last partial page. Exercise actual native input-method commits as well.
+    for (0..30) |index| {
+        const key = c.g_key_file_new();
+        defer c.g_key_file_unref(key);
+        const source = try std.fmt.allocPrintSentinel(a, "[Desktop Entry]\nType=Application\nName=Paged fixture {d:0>2}\nExec=true\n", .{index}, 0);
+        assert(c.g_key_file_load_from_data(key, source, source.len, 0, null) != 0);
+        const info = c.g_desktop_app_info_new_from_keyfile(key).?;
+        try launcher.add(@ptrCast(info));
+        c.g_object_unref(info);
+    }
+    try launcher.setSearch("Paged fixture");
+    pump();
+    try std.testing.expectEqual(@as(usize, 30), launcher.visible.items.len);
+    launcher.focusGrid();
+    pump();
+    var navigation = apps.KeyEvent{ .event_type = c.GDK_KEY_PRESS, .window = null, .send_event = 1, .time = 0, .state = 0, .keyval = 0xff56 };
+    assert(apps.keyPress(launcher.window, &navigation, &launcher) != 0);
+    try std.testing.expectEqual(@as(usize, 1), launcher.page);
+    try std.testing.expectEqual(@as(usize, 24), launcher.selected);
+    navigation.keyval = 0xff57; // End
+    _ = apps.keyPress(launcher.window, &navigation, &launcher);
+    try std.testing.expectEqual(@as(usize, 29), launcher.selected);
+    navigation.keyval = c.GDK_KEY_Right;
+    _ = apps.keyPress(launcher.window, &navigation, &launcher);
+    try std.testing.expectEqual(@as(usize, 29), launcher.selected);
+    navigation.keyval = 0xff50; // Home
+    _ = apps.keyPress(launcher.window, &navigation, &launcher);
+    assert(launcher.page == 0 and launcher.selected == 0);
+    try launcher.setSearch("Paged fixture 29");
+    assert(launcher.page == 0 and launcher.visible.items.len == 1);
+    launcher.present();
+    pump();
+    // A headless compositor may have no keyboard device/focus yet.
+    launcher.search_input.?.focus(true);
+    c.g_signal_emit_by_name(launcher.search_input.?.im, "commit", @as([*:0]const u8, "東京"));
+    eq(launcher.searchText(), "東京");
+    assert(launcher.visible.items.len == 0);
+    try launcher.reload();
+    launcher.present();
+    pump();
 
     // Verify desktop Exec quoting/field expansion for terminal applications.
     const keyfile = c.g_key_file_new();
@@ -135,7 +175,7 @@ pub fn main(init: std.process.Init) !void {
     assert(!launcher.launch(failing));
     assert(c.gtk_widget_get_visible(launcher.window) != 0);
     assert(c.gtk_widget_get_visible(@ptrCast(launcher.message)) != 0);
-    assert(c.gtk_label_get_text(launcher.message)[0] != 0);
+    assert(launcher.status.len != 0);
 
     // Exercise Escape and repeat activation, including clearing a stale query.
     var escape = apps.KeyEvent{ .event_type = c.GDK_KEY_PRESS, .window = null, .send_event = 1, .time = 0, .state = 0, .keyval = c.GDK_KEY_Escape };
@@ -146,12 +186,12 @@ pub fn main(init: std.process.Init) !void {
     apps.activate(null, &state);
     const window = state.?.window;
     assert(c.gtk_widget_get_visible(window) != 0);
-    c.gtk_entry_set_text(state.?.search, "stale");
+    try state.?.setSearch("stale");
     apps.activate(null, &state);
     assert(c.gtk_widget_get_visible(window) == 0);
     apps.activate(null, &state);
     assert(state.?.window == window and c.gtk_widget_get_visible(window) != 0);
-    eq(c.gtk_entry_get_text(state.?.search), "");
+    eq(state.?.searchText(), "");
     c.gtk_widget_hide(window);
 
     launcher.present();
@@ -180,10 +220,14 @@ pub fn main(init: std.process.Init) !void {
     if (c.g_getenv("DESKTOP_APPS_SCREENSHOT")) |path| {
         launcher.present();
         pump();
-        const pixbuf = c.gdk_pixbuf_get_from_window(c.gtk_widget_get_window(launcher.window), 0, 0, c.gtk_widget_get_allocated_width(launcher.window), c.gtk_widget_get_allocated_height(launcher.window));
-        assert(pixbuf != null);
-        defer c.g_object_unref(pixbuf);
-        assert(c.gdk_pixbuf_save(pixbuf, path, "png", @as([*c][*c]c.GError, null), @as(?*anyopaque, null)) != 0);
+        const scale = @max(1, c.gtk_widget_get_scale_factor(launcher.window));
+        const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, c.gtk_widget_get_allocated_width(launcher.window) * scale, c.gtk_widget_get_allocated_height(launcher.window) * scale).?;
+        defer c.cairo_surface_destroy(surface);
+        c.cairo_surface_set_device_scale(surface, @floatFromInt(scale), @floatFromInt(scale));
+        const cr = c.cairo_create(surface).?;
+        defer c.cairo_destroy(cr);
+        gtk_widget_draw(launcher.window, cr);
+        assert(cairo_surface_write_to_png(surface, path) == 0);
     }
-    std.debug.print("desktop-apps: discovery, visibility, Unicode search, ranking, terminal argv and launch errors passed\n", .{});
+    std.debug.print("desktop-apps: discovery, Unicode search, IME, paging, keyboard selection, terminal argv and launch lifecycle passed\n", .{});
 }

@@ -100,8 +100,8 @@ const Overview = struct {
         connect(self.strip, "button-press-event", &workspaceClick, self);
         connect(self.stage, "scroll-event", &scroll, self);
         connect(self.strip, "scroll-event", &scroll, self);
-        connect(l.search, "changed", &searchChanged, self);
-        connect(l.search, "stop-search", &escape, self);
+        l.on_search = &searchChanged;
+        l.search_context = self;
         connect(l.window, "key-press-event", &key, self);
         connect(l.window, "key-release-event", &keyRelease, self);
         connect(l.window, "hide", &hidden, self);
@@ -133,8 +133,7 @@ const Overview = struct {
         self.selected = 0;
         self.hover = null;
         self.launcher.reload() catch |err| std.log.err("loading applications: {s}", .{@errorName(err)});
-        c.gtk_flow_box_set_max_children_per_line(self.launcher.grid, @intCast(@max(1, @divTrunc(self.monitor.width - 160, 170))));
-        c.gtk_entry_set_text(self.launcher.search, "");
+        self.launcher.setSearch("") catch {};
         self.started = c.g_get_monotonic_time();
         if (self.client) |client| {
             client.visible(true);
@@ -148,13 +147,12 @@ const Overview = struct {
         c.gtk_window_present(cast(c.GtkWindow, self.launcher.window));
     }
     fn updateMode(self: *Overview) void {
-        const searching = c.gtk_entry_get_text(self.launcher.search)[0] != 0;
+        const searching = self.launcher.searchText().len != 0;
         c.gtk_widget_set_visible(self.launcher.results, @intFromBool(self.apps_mode or searching));
         c.gtk_widget_set_visible(self.stage, @intFromBool(!self.apps_mode and !searching));
         c.gtk_widget_hide(@ptrCast(self.launcher.message));
         if (self.client == null or !self.client.?.connected) {
-            c.gtk_label_set_text(self.launcher.message, "The Activities overview requires the updated Labwc compositor. Log out and back in after switching the configuration.");
-            c.gtk_widget_show(@ptrCast(self.launcher.message));
+            self.launcher.setMessage("The Activities overview requires the updated Labwc compositor. Log out and back in after switching the configuration.");
         }
     }
     fn rebuildDash(self: *Overview) void {
@@ -306,12 +304,12 @@ const Overview = struct {
         c.gtk_widget_hide(widget);
         return 1;
     }
-    fn searchChanged(_: ?*c.GtkEditable, data: c.gpointer) callconv(.c) void {
+    fn searchChanged(data: ?*anyopaque) void {
         cast(Overview, data).updateMode();
     }
     fn escape(_: ?*c.GtkSearchEntry, data: c.gpointer) callconv(.c) void {
         const self = cast(Overview, data);
-        if (c.gtk_entry_get_text(self.launcher.search)[0] != 0) c.gtk_entry_set_text(self.launcher.search, "") else if (self.apps_mode) {
+        if (self.launcher.searchText().len != 0) self.launcher.setSearch("") catch {} else if (self.apps_mode) {
             self.apps_mode = false;
             self.updateMode();
         } else c.gtk_widget_hide(self.launcher.window);
@@ -320,10 +318,10 @@ const Overview = struct {
     fn toggleApps(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
         const self = cast(Overview, data);
         self.apps_mode = !self.apps_mode;
-        c.gtk_entry_set_text(self.launcher.search, "");
+        self.launcher.setSearch("") catch {};
         self.updateMode();
         if (self.apps_mode) {
-            if (self.launcher.first()) |child| c.gtk_widget_grab_focus(@ptrCast(child));
+            self.launcher.focusGrid();
         } else c.gtk_widget_grab_focus(self.stage);
     }
     fn dashActivate(button: *c.GtkButton, data: c.gpointer) callconv(.c) void {
@@ -342,7 +340,8 @@ const Overview = struct {
             escape(null, data);
             return 1;
         }
-        if (event.keyval == c.GDK_KEY_Page_Up or event.keyval == c.GDK_KEY_Page_Down or (event.state & c.GDK_CONTROL_MASK != 0 and (event.keyval == c.GDK_KEY_Left or event.keyval == c.GDK_KEY_Right))) {
+        const window_mode = !self.apps_mode and self.launcher.searchText().len == 0;
+        if ((window_mode and (event.keyval == c.GDK_KEY_Page_Up or event.keyval == c.GDK_KEY_Page_Down)) or (event.state & c.GDK_CONTROL_MASK != 0 and (event.keyval == c.GDK_KEY_Left or event.keyval == c.GDK_KEY_Right))) {
             const direction: i32 = if (event.keyval == c.GDK_KEY_Page_Up or event.keyval == c.GDK_KEY_Left) -1 else 1;
             if (event.state & c.GDK_SHIFT_MASK != 0) {
                 if (self.client) |client| {
@@ -352,7 +351,7 @@ const Overview = struct {
             } else self.stepWorkspace(direction);
             return 1;
         }
-        if (!self.apps_mode and c.gtk_entry_get_text(self.launcher.search)[0] == 0) {
+        if (!self.apps_mode and self.launcher.searchText().len == 0) {
             if (event.keyval == c.GDK_KEY_Return or event.keyval == c.GDK_KEY_KP_Enter) {
                 if (self.client) |client| if (self.selected < client.windows.items.len and (client.windows.items[self.selected].workspace == client.current or client.windows.items[self.selected].sticky)) {
                     client.activate(client.windows.items[self.selected]);
@@ -373,7 +372,7 @@ const Overview = struct {
             c.gtk_widget_hide(cast(Overview, data).launcher.window);
             return 1;
         }
-        return 0;
+        return apps.keyRelease(null, event, &cast(Overview, data).launcher);
     }
     fn selectNext(self: *Overview, direction: i32) void {
         const client = self.client orelse return;

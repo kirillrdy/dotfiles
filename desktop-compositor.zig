@@ -1336,8 +1336,19 @@ const Overview = struct {
     }
     fn switchWorkspace(_: ?*c.wl_client, resource: ?*c.wl_resource, index: u32) callconv(.c) void {
         const s = state(resource);
+        const keyboard_surface = s.seat.keyboard_state.focused_surface;
         s.switchWorkspace(index);
         s.refocus();
+        // The overview keeps its exclusive keyboard grab while changing the
+        // underlying workspace, including workspaces without any windows.
+        for (s.layers.items) |layer| {
+            if (layer.wlr.surface == keyboard_surface and layer.wlr.surface.*.mapped and
+                layer.wlr.current.keyboard_interactive == c.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)
+            {
+                s.keyboardFocus(layer.wlr.surface);
+                break;
+            }
+        }
     }
     fn move(_: ?*c.wl_client, resource: ?*c.wl_resource, id: [*c]const u8, index: u32) callconv(.c) void {
         const s = state(resource);

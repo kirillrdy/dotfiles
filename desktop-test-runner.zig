@@ -20,5 +20,6 @@ test {
     _ = @import("desktop-sound-view.zig");
     _ = @import("desktop-panel-view.zig");
     _ = @import("desktop-form.zig");
+    _ = @import("desktop-apps-view.zig");
     _ = @import("desktop-password-entry.zig");
 }
