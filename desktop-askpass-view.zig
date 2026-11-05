@@ -14,7 +14,7 @@ pub const Mode = enum {
         return .password;
     }
 };
-pub const Target = enum { none, entry, cancel, accept };
+pub const Target = enum { none, entry, confirmation, cancel, accept };
 pub const Rect = struct {
     x: f64,
     y: f64,
@@ -33,6 +33,7 @@ pub const View = struct {
     title: [:0]const u8 = "SSH Authentication",
     accept_label: ?[:0]const u8 = null,
     enabled: bool = true,
+    confirmation: bool = false,
     status: ?[:0]const u8 = null,
     status_error: bool = false,
     status_height: u32 = 0,
@@ -45,7 +46,7 @@ pub const View = struct {
     hover: Target = .none,
     pressed: Target = .none,
     renderer: text.Renderer = .{},
-    masks: [4]?text.Mask = @splat(null),
+    masks: [6]?text.Mask = @splat(null),
     parts: std.ArrayList(Part) = .empty,
 
     pub fn init(mode: Mode) View {
@@ -104,6 +105,11 @@ pub const View = struct {
                 if (remaining.len == 0) break;
             }
         }
+        if (self.confirmation) {
+            for ([_][:0]const u8{ "Password", "Confirm password" }, 4..) |value, i| {
+                self.masks[i] = try self.renderer.renderLayout(allocator, value, .{ .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .origin = .top });
+            }
+        }
         if (self.status) |value| {
             self.masks[3] = try self.renderer.renderLayout(allocator, value, .{ .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = (self.width - 48) * scale, .line_height = 20 * scale, .lines = 64, .origin = .top });
             self.status_height = 12 + (std.math.divCeil(u32, self.masks[3].?.logical_height, scale) catch unreachable);
@@ -112,12 +118,21 @@ pub const View = struct {
         self.scale = scale;
     }
     pub fn entryRect(self: *const View) Rect {
-        return .{ .x = 24, .y = 88 + @as(f64, @floatFromInt(self.prompt_height)), .width = @floatFromInt(self.width - 48), .height = 42 };
+        return .{ .x = 24, .y = (if (self.confirmation) @as(f64, 112) else 88) + @as(f64, @floatFromInt(self.prompt_height)), .width = @floatFromInt(self.width - 48), .height = 42 };
+    }
+    pub fn confirmationRect(self: *const View) Rect {
+        var rect = self.entryRect();
+        rect.y += 86;
+        return rect;
+    }
+    fn lastEntryRect(self: *const View) Rect {
+        return if (self.confirmation) self.confirmationRect() else self.entryRect();
     }
     pub fn buttonRect(self: *const View, target: Target) Rect {
-        return .{ .x = if (target == .cancel) 24 else @as(f64, @floatFromInt(self.width)) - 148, .y = self.entryRect().y + @as(f64, @floatFromInt(self.status_height)) + (if (self.mode == .password) @as(f64, 62) else @as(f64, 0)), .width = 124, .height = 38 };
+        return .{ .x = if (target == .cancel) 24 else @as(f64, @floatFromInt(self.width)) - 148, .y = self.lastEntryRect().y + @as(f64, @floatFromInt(self.status_height)) + (if (self.mode == .password) @as(f64, 62) else @as(f64, 0)), .width = 124, .height = 38 };
     }
     pub fn hit(self: *const View, x: f64, y: f64) Target {
+        if (self.confirmation and self.confirmationRect().contains(x, y)) return .confirmation;
         if (self.mode == .password and self.entryRect().contains(x, y)) return .entry;
         if (self.mode != .information and self.buttonRect(.cancel).contains(x, y)) return .cancel;
         if (self.buttonRect(.accept).contains(x, y)) return .accept;
@@ -125,7 +140,7 @@ pub const View = struct {
     }
     pub fn stepFocus(self: *View, backward: bool) void {
         const targets: []const Target = switch (self.mode) {
-            .password => &.{ .entry, .cancel, .accept },
+            .password => if (self.confirmation) &.{ .entry, .confirmation, .cancel, .accept } else &.{ .entry, .cancel, .accept },
             .confirm => &.{ .cancel, .accept },
             .information => &.{.accept},
         };
@@ -142,8 +157,12 @@ pub const View = struct {
         const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(self.scale) };
         paintMask(canvas, self.masks[0].?, 24, 24);
         for (self.parts.items) |part| paintMask(canvas, part.mask, 24, 68 + @as(f64, @floatFromInt(part.y)));
+        if (self.confirmation) {
+            paintMask(canvas, self.masks[4].?, 24, self.entryRect().y - 24);
+            paintMask(canvas, self.masks[5].?, 24, self.confirmationRect().y - 24);
+        }
         if (self.masks[3]) |mask| {
-            raster.mask(target, .{ .x = @intFromFloat(24 * canvas.scale), .y = @as(i32, @intFromFloat((self.entryRect().y + 54) * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(if (self.status_error) 0xff7b83 else 0xffffff));
+            raster.mask(target, .{ .x = @intFromFloat(24 * canvas.scale), .y = @as(i32, @intFromFloat((self.lastEntryRect().y + 54) * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(if (self.status_error) 0xff7b83 else 0xffffff));
         }
         for ([_]Target{ .cancel, .accept }, 0..) |button, i| {
             if (button == .cancel and self.mode == .information) continue;
@@ -193,4 +212,36 @@ test "askpass geometry scales, wraps public text and defaults confirmation to de
     defer allocator.free(excessive);
     // A preparation failure must release every partially prepared mask once.
     try std.testing.expectError(error.PromptTooLarge, long_view.prepare(allocator, excessive, 2));
+}
+
+test "password confirmation fields, status and actions stay distinct at both scales" {
+    const allocator = std.testing.allocator;
+    var view = View.init(.password);
+    defer view.deinit(allocator);
+    view.confirmation = true;
+    view.title = "Create Password Vault";
+    view.accept_label = "Create";
+    view.status = "Passwords do not match. Please try again.";
+    view.status_error = true;
+    for ([_]u32{ 1, 2 }) |scale| {
+        try view.prepare(allocator, "Choose a password for your new password vault. 東京", scale);
+        const first = view.entryRect();
+        const second = view.confirmationRect();
+        const button = view.buttonRect(.accept);
+        try std.testing.expect(first.y + first.height + 24 <= second.y);
+        try std.testing.expect(second.y + second.height + @as(f64, @floatFromInt(view.status_height)) <= button.y);
+        try std.testing.expectEqual(Target.confirmation, view.hit(second.x + 10, second.y + 10));
+        view.focus = .entry;
+        view.stepFocus(false);
+        try std.testing.expectEqual(Target.confirmation, view.focus);
+        view.stepFocus(true);
+        try std.testing.expectEqual(Target.entry, view.focus);
+        const count = view.width * view.height * scale * scale;
+        const pixels = try allocator.alloc(u32, count + 2);
+        defer allocator.free(pixels);
+        @memset(pixels, 0x12345678);
+        view.paint(.{ .pixels = pixels[1 .. count + 1], .width = view.width * scale, .height = view.height * scale });
+        try std.testing.expectEqual(@as(u32, 0x12345678), pixels[0]);
+        try std.testing.expectEqual(@as(u32, 0x12345678), pixels[count + 1]);
+    }
 }

@@ -1,23 +1,28 @@
 { pkgs }:
 let
   desktop = import ../desktop-zig.nix { inherit pkgs; };
-  fixture = desktop.overrideAttrs (old: {
+  fixture = desktop.overrideAttrs {
     pname = "desktop-secrets-fixture";
     outputs = [ "out" ];
     buildPhase = ''
       export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build secrets-fixture secrets-pam secrets-pam-fixture --prefix "$out" -Doptimize=ReleaseSafe
+      NIX_LDFLAGS= zig build secrets-fixture secrets-pam secrets-pam-fixture --prefix "$out" -Doptimize=ReleaseSafe
     '';
     doCheck = false;
     installPhase = "true";
-  });
+    postFixup = ''
+      find "$out" -type f -exec remove-references-to -t ${pkgs.zig_0_17} {} +
+    '';
+  };
 in
 pkgs.runCommand "desktop-secrets-check"
   {
+    FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ pkgs.adwaita-fonts pkgs.dejavu_fonts ]; };
     nativeBuildInputs = [
       (pkgs.python3.withPackages (python: [ python.pygobject3 ]))
       pkgs.dbus
       pkgs.glib
+      pkgs.wtype
       pkgs.libsecret
       desktop
     ];
@@ -26,6 +31,7 @@ pkgs.runCommand "desktop-secrets-check"
     export XDG_RUNTIME_DIR="$TMPDIR/runtime"
     mkdir -m 700 "$XDG_RUNTIME_DIR"
     export DBUS_SYSTEM_BUS_ADDRESS=unix:path="$TMPDIR/nonexistent-system-bus"
+    export XDG_CACHE_HOME="$TMPDIR/cache"
     export G_DEBUG=fatal-criticals
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
       python3 ${./check-desktop-secrets.py} \

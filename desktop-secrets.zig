@@ -4,11 +4,12 @@ const c = @import("desktop-gtk.zig");
 const p = @import("posix");
 pub const store = @import("desktop-secrets-store.zig");
 const transport = @import("desktop-secrets-transport.zig");
+pub const Dialog = @import("desktop-auth-dialog.zig").Dialog;
 const root = "/org/freedesktop/secrets";
 const name = "org.freedesktop.secrets";
 const prefix = "org.freedesktop.Secret.";
 pub const Options = struct {
-    prompt_ready: ?*const fn (*c.GtkWidget, *c.GtkWidget, ?*c.GtkWidget) void = null,
+    prompt_ready: ?*const fn (*Dialog) void = null,
 };
 const Kind = enum { service, collection, item, session, prompt, login };
 const Target = struct { kind: Kind, id: u64 };
@@ -73,9 +74,7 @@ const Object = struct {
     owner: [:0]const u8 = "",
     registration: c_uint = 0,
     key: ?[16]u8 = null,
-    dialog: ?*c.GtkWidget = null,
-    entry: ?*c.GtkWidget = null,
-    confirmation: ?*c.GtkWidget = null,
+    dialog: ?*Dialog = null,
     started: bool = false,
     create: bool = false,
     label: [:0]const u8 = "",
@@ -134,9 +133,8 @@ const Server = struct {
     }
     fn remove(self: *Server, o: *Object) void {
         if (o.dialog) |dialog| {
-            if (o.entry) |entry| c.gtk_entry_set_text(cast(c.GtkEntry, entry), "");
-            if (o.confirmation) |entry| c.gtk_entry_set_text(cast(c.GtkEntry, entry), "");
-            c.gtk_widget_destroy(dialog);
+            _ = c.g_signal_handlers_disconnect_matched(dialog.window, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, o);
+            dialog.destroy();
         }
         _ = c.g_dbus_connection_unregister_object(self.bus, o.registration);
         for (self.objects.items, 0..) |other, i| {
@@ -366,33 +364,16 @@ const Server = struct {
         o.started = true;
         // The service can start during PAM login before Wayland exists. GTK is initialized only here.
         if (c.gtk_init_check(null, null) == 0) return error.DisplayUnavailable;
-        const dialog = c.gtk_dialog_new().?;
+        const creating = self.vault.envelope == null;
+        const dialog = try Dialog.createWithOptions(.password, if (creating) "Choose a password for your new password vault." else "Enter your password to unlock saved passwords.", .{
+            .title = if (creating) "Create Password Vault" else "Unlock Passwords",
+            .role = "desktop-secrets",
+            .accept = if (creating) "Create" else "Unlock",
+            .confirmation = creating,
+        });
         o.dialog = dialog;
-        c.gtk_window_set_title(cast(c.GtkWindow, dialog), "Unlock Passwords");
-        c.gtk_window_set_modal(cast(c.GtkWindow, dialog), 1);
-        _ = c.gtk_dialog_add_button(cast(c.GtkDialog, dialog), "Cancel", c.GTK_RESPONSE_CANCEL);
-        _ = c.gtk_dialog_add_button(cast(c.GtkDialog, dialog), "Unlock", c.GTK_RESPONSE_OK);
-        c.gtk_dialog_set_default_response(cast(c.GtkDialog, dialog), c.GTK_RESPONSE_OK);
-        const area = c.gtk_dialog_get_content_area(cast(c.GtkDialog, dialog));
-        const label = c.gtk_label_new(if (self.vault.envelope == null) "Choose a password for your new password vault." else "Enter your password to unlock saved passwords.").?;
-        c.gtk_box_pack_start(cast(c.GtkBox, area), label, 0, 0, 12);
-        const entry = c.gtk_entry_new().?;
-        o.entry = entry;
-        c.gtk_entry_set_visibility(cast(c.GtkEntry, entry), 0);
-        c.gtk_entry_set_activates_default(cast(c.GtkEntry, entry), 1);
-        c.gtk_box_pack_start(cast(c.GtkBox, area), entry, 0, 0, 12);
-        if (self.vault.envelope == null) {
-            const confirmation = c.gtk_entry_new().?;
-            o.confirmation = confirmation;
-            c.gtk_entry_set_visibility(cast(c.GtkEntry, confirmation), 0);
-            c.gtk_entry_set_placeholder_text(cast(c.GtkEntry, confirmation), "Confirm password");
-            c.gtk_entry_set_activates_default(cast(c.GtkEntry, confirmation), 1);
-            c.gtk_box_pack_start(cast(c.GtkBox, area), confirmation, 0, 0, 12);
-        }
-        _ = c.g_signal_connect_data(dialog, "response", @ptrCast(&promptResponse), o, null, 0);
-        c.gtk_widget_show_all(dialog);
-        c.gtk_widget_grab_focus(entry);
-        if (self.options.prompt_ready) |ready| ready(dialog, entry, o.confirmation);
+        _ = c.g_signal_connect_data(dialog.window, "response", @ptrCast(&promptResponse), o, null, 0);
+        if (self.options.prompt_ready) |ready| ready(dialog);
     }
     fn method(self: *Server, o: *Object, owner: [:0]const u8, verb: []const u8, args: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, a: std.mem.Allocator) !void {
         if (o.owner.len != 0 and !eq(o.owner, owner)) return error.AccessDenied;
@@ -716,19 +697,21 @@ fn promptResponse(_: *c.GtkDialog, response: c_int, data: ?*anyopaque) callconv(
         self.complete(o, true, stringVariant(""));
         return;
     }
-    const password = std.mem.span(c.gtk_entry_get_text(cast(c.GtkEntry, o.entry.?)));
-    if (o.confirmation) |entry| {
-        if (!eq(password, std.mem.span(c.gtk_entry_get_text(cast(c.GtkEntry, entry))))) {
-            c.gtk_window_set_title(cast(c.GtkWindow, o.dialog.?), "Passwords do not match");
+    const dialog = o.dialog.?;
+    if (!(dialog.validatePassword() catch {
+        self.complete(o, true, stringVariant(""));
+        return;
+    })) return;
+    self.vault.unlock(dialog.entry.?.buffer.value()) catch {
+        dialog.clear();
+        dialog.setStatus("Could not unlock passwords. Please try again.", true) catch {
+            self.complete(o, true, stringVariant(""));
             return;
-        }
-    }
-    self.vault.unlock(password) catch {
-        c.gtk_entry_set_text(cast(c.GtkEntry, o.entry.?), "");
-        c.gtk_window_set_title(cast(c.GtkWindow, o.dialog.?), "Could not unlock passwords — try again");
+        };
+        dialog.focus(.entry);
         return;
     };
-    c.gtk_entry_set_text(cast(c.GtkEntry, o.entry.?), "");
+    dialog.clear();
     if (o.create) {
         const id = self.createCollection(o.label, o.alias) catch {
             self.vault.restore() catch self.lock();
@@ -964,38 +947,26 @@ pub fn importAt(directory: [:0]const u8, password: []const u8) !void {
 pub fn runImport() !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
     if (c.gtk_init_check(null, null) == 0) return error.DisplayUnavailable;
-    var wa = store.WipingAllocator{ .parent = std.heap.page_allocator };
-    const a = wa.allocator();
-    const password = try migrationPassword(a, "Choose the destination vault password. Use your login password for automatic unlock.");
-    defer a.free(password);
-    const confirmation = try migrationPassword(a, "Confirm the destination vault password.");
-    defer a.free(confirmation);
-    if (!eq(password, confirmation)) return error.PasswordsDoNotMatch;
+    const a = std.heap.page_allocator;
+    const dialog = try createImportDialog();
+    defer dialog.destroy();
+    while (true) {
+        dialog.run();
+        if (!dialog.accepted) return error.Cancelled;
+        if (try dialog.validatePassword()) break;
+    }
     const base = std.mem.span(c.g_get_user_data_dir());
     if (c.g_mkdir_with_parents(base.ptr, 0o700) != 0) return error.CreateDirectory;
     const directory = try std.fmt.allocPrintSentinel(a, "{s}/desktop-secrets", .{base}, 0);
     defer a.free(directory);
-    try importAt(directory, password);
+    try importAt(directory, dialog.entry.?.buffer.value());
     std.debug.print("Imported Secret Service collections. The source keyring is unchanged.\n", .{});
 }
-fn migrationPassword(a: std.mem.Allocator, prompt: [:0]const u8) ![]u8 {
-    const dialog = c.gtk_dialog_new().?;
-    defer c.gtk_widget_destroy(dialog);
-    c.gtk_window_set_title(cast(c.GtkWindow, dialog), "Import Saved Passwords");
-    _ = c.gtk_dialog_add_button(cast(c.GtkDialog, dialog), "Cancel", c.GTK_RESPONSE_CANCEL);
-    _ = c.gtk_dialog_add_button(cast(c.GtkDialog, dialog), "Continue", c.GTK_RESPONSE_OK);
-    c.gtk_dialog_set_default_response(cast(c.GtkDialog, dialog), c.GTK_RESPONSE_OK);
-    const area = c.gtk_dialog_get_content_area(cast(c.GtkDialog, dialog));
-    c.gtk_box_pack_start(cast(c.GtkBox, area), c.gtk_label_new(prompt.ptr), 0, 0, 12);
-    const entry = c.gtk_entry_new().?;
-    defer c.gtk_entry_set_text(cast(c.GtkEntry, entry), "");
-    c.gtk_entry_set_visibility(cast(c.GtkEntry, entry), 0);
-    c.gtk_entry_set_activates_default(cast(c.GtkEntry, entry), 1);
-    c.gtk_box_pack_start(cast(c.GtkBox, area), entry, 0, 0, 12);
-    c.gtk_widget_show_all(dialog);
-    c.gtk_widget_grab_focus(entry);
-    if (c.gtk_dialog_run(cast(c.GtkDialog, dialog)) != c.GTK_RESPONSE_OK) return error.Cancelled;
-    const value = std.mem.span(c.gtk_entry_get_text(cast(c.GtkEntry, entry)));
-    if (value.len == 0 or value.len > 4096) return error.InvalidPassword;
-    return a.dupe(u8, value);
+pub fn createImportDialog() !*Dialog {
+    return Dialog.createWithOptions(.password, "Choose the destination vault password. Use your login password for automatic unlock.", .{
+        .title = "Import Saved Passwords",
+        .role = "desktop-secrets-import",
+        .accept = "Continue",
+        .confirmation = true,
+    });
 }

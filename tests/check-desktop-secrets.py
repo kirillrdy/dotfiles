@@ -15,6 +15,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--fixture", required=True)
 parser.add_argument("--secret-tool", required=True)
 parser.add_argument("--compositor")
+parser.add_argument("--wtype", default="wtype")
 args = parser.parse_args()
 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
 root = "/org/freedesktop/secrets"
@@ -24,23 +25,22 @@ password = b"integration-vault-password"
 directory = Path(tempfile.mkdtemp(prefix="desktop-secrets-", dir="/tmp")) / "vault"
 proc = None
 compositor = None
+keyboard = None
 if args.compositor:
     runtime = directory.parent / "runtime"
     runtime.mkdir(mode=0o700)
-    config = directory.parent / "labwc"
-    config.mkdir()
-    (config / "rc.xml").write_text("<labwc_config/>")
-    (config / "autostart").write_text("")
-    (config / "environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
     os.environ.update(XDG_RUNTIME_DIR=str(runtime), GDK_BACKEND="wayland", WAYLAND_DISPLAY="wayland-0",
         WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1",
-        LABWC_UPDATE_ACTIVATION_ENV="false", DESKTOP_SECRETS_FIXTURE_PROMPTS="accept")
+        XDG_CACHE_HOME=str(directory.parent / "cache"), DESKTOP_SECRETS_FIXTURE_PROMPTS="accept")
     compositor = subprocess.Popen([args.compositor, "compositor-only"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(150):
         if (runtime / "wayland-0").exists():
             break
         time.sleep(.02)
     assert (runtime / "wayland-0").exists()
+    keyboard = subprocess.Popen([args.wtype, "-s", "120000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(.1)
+    subprocess.run([args.fixture, "dialogs"], check=True, timeout=15)
 
 def call(path, interface, method, signature=None, values=(), connection=bus):
     return connection.call_sync(name, path, interface, method,
@@ -58,9 +58,10 @@ def expect_error(suffix, *params, **kwargs):
 def prop(path, interface, key):
     return call(path, "org.freedesktop.DBus.Properties", "Get", "(ss)", (interface, key))[0]
 
-def start():
+def start(prompt_mode="accept"):
     global proc
-    proc = subprocess.Popen([args.fixture, str(directory)], stdout=subprocess.DEVNULL)
+    proc = subprocess.Popen([args.fixture, str(directory)], stdout=subprocess.DEVNULL,
+                            env=dict(os.environ, DESKTOP_SECRETS_FIXTURE_PROMPTS=prompt_mode))
     for _ in range(150):
         if proc.poll() is not None:
             raise AssertionError(f"Service exited: {proc.returncode}")
@@ -84,7 +85,53 @@ def stop():
             return
         time.sleep(.01)
 
+def pump(seconds=.1):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        while GLib.MainContext.default().pending():
+            GLib.MainContext.default().iteration(False)
+        time.sleep(.005)
+
+def keys(*values):
+    pump(.15)
+    subprocess.run([args.wtype, "-s", "100", *values], check=True, timeout=15)
+    pump(.1)
+
+def watch_prompt(prompt):
+    completed = []
+    def done(connection, sender, path, interface, member, values, data):
+        completed.append(values.unpack())
+    subscription = bus.signal_subscribe(name, prefix + "Prompt", "Completed", prompt, None, 0, done, None)
+    return completed, subscription
+
+def finish_prompt(completed, subscription, dismissed):
+    deadline = time.monotonic() + 10
+    while not completed and time.monotonic() < deadline:
+        pump(.01)
+    bus.signal_unsubscribe(subscription)
+    assert completed and completed[0][0] == dismissed, completed
+
 try:
+    if args.compositor:
+        # Create a vault through the actual two-field native UI. Cancellation
+        # and a mismatch must leave the destination untouched.
+        start("manual")
+        def create_prompt():
+            _, prompt = call(root, prefix + "Service", "CreateCollection", "(a{sv}s)",
+                ({prefix + "Collection.Label": GLib.Variant("s", "Login 東京 <&>")}, "default"))
+            completed, subscription = watch_prompt(prompt)
+            call(prompt, prefix + "Prompt", "Prompt", "(s)", ("",))
+            return completed, subscription
+        completed, subscription = create_prompt()
+        keys("unused-secret", "-k", "Tab", "unused-confirmation", "-k", "Escape")
+        finish_prompt(completed, subscription, True)
+        assert not (directory / "vault.json").exists()
+        completed, subscription = create_prompt()
+        keys("first", "-k", "Tab", "different", "-k", "Return")
+        assert not completed and not (directory / "vault.json").exists()
+        keys(password.decode(), "-k", "Tab", password.decode(), "-k", "Return")
+        finish_prompt(completed, subscription, False)
+        stop()
     start()
     call(root, "org.dotfiles.Desktop.Secrets", "LoginUnlock", "(ay)", (password,))
     collection = call(root, prefix + "Service", "ReadAlias", "(s)", ("default",))[0]
@@ -136,7 +183,23 @@ try:
     assert bytes(call(item, prefix + "Item", "GetSecret", "(o)", (session,))[0][2]) == b"replacement"
     assert (directory / "vault.json").read_bytes() == before_failure
     imported = directory.parent / "imported-vault"
-    subprocess.run([args.fixture, "import", str(imported)], check=True, timeout=30)
+    if args.compositor:
+        # Exercise runImport, including its retry loop, on a synthetic data directory.
+        destination = directory.parent / "import-ui"
+        importer = subprocess.Popen([args.compositor, "secrets-import"],
+            env=dict(os.environ, XDG_DATA_HOME=str(destination)))
+        try:
+            keys("first", "-k", "Tab", "different", "-k", "Return")
+            assert importer.poll() is None and not (destination / "desktop-secrets/vault.json").exists()
+            keys(password.decode(), "-k", "Tab", password.decode(), "-k", "Return")
+            assert importer.wait(timeout=30) == 0
+        finally:
+            if importer.poll() is None:
+                importer.kill()
+                importer.wait()
+        imported = destination / "desktop-secrets"
+    else:
+        subprocess.run([args.fixture, "import", str(imported)], check=True, timeout=30)
     imported_data = json.loads((imported / "vault.json").read_text())
     assert len(imported_data["index"]["items"]) == 1
     assert b"replacement" not in (imported / "vault.json").read_bytes()
@@ -188,6 +251,35 @@ try:
     assert call(root, prefix + "Service", "ReadAlias", "(s)", ("extra_alias",))[0] == extra
     call(extra, prefix + "Collection", "Delete")
     assert call(root, prefix + "Service", "ReadAlias", "(s)", ("extra_alias",))[0] == "/"
+    if args.compositor:
+        stop()
+        start("manual")
+        # Shown dialogs must clear and close on Dismiss, screen lock, caller
+        # disconnect, and service shutdown, without unlocking the vault.
+        def unlock_prompt(connection=bus):
+            _, prompt = call(root, prefix + "Service", "Unlock", "(ao)", ([collection],), connection=connection)
+            call(prompt, prefix + "Prompt", "Prompt", "(s)", ("",), connection=connection)
+            keys("pending-response")
+            return prompt
+        prompt = unlock_prompt()
+        completed, subscription = watch_prompt(prompt)
+        call(prompt, prefix + "Prompt", "Dismiss")
+        finish_prompt(completed, subscription, True)
+        assert prop(collection, prefix + "Collection", "Locked")
+        prompt = unlock_prompt()
+        completed, subscription = watch_prompt(prompt)
+        call(root, "org.dotfiles.Desktop.Secrets", "SetScreenLocked", "(b)", (True,))
+        finish_prompt(completed, subscription, True)
+        call(root, "org.dotfiles.Desktop.Secrets", "SetScreenLocked", "(b)", (False,))
+        peer = Gio.DBusConnection.new_for_address_sync(os.environ["DBUS_SESSION_BUS_ADDRESS"],
+            Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
+        prompt = unlock_prompt(peer)
+        expect_error("AccessDenied", prompt, prefix + "Prompt", "Dismiss")
+        peer.close_sync(None)
+        pump(.1)
+        expect_error("UnknownMethod", prompt, prefix + "Prompt", "Dismiss")
+        assert prop(collection, prefix + "Collection", "Locked")
+        unlock_prompt()
     stop()
     original_directory = directory
     directory = imported
@@ -204,6 +296,9 @@ try:
     print("Secret Service: protocol, libsecret DH, persistence, locking, ownership, and tampering checks passed")
 finally:
     stop()
+    if keyboard:
+        keyboard.terminate()
+        keyboard.wait(timeout=5)
     if compositor:
         compositor.terminate()
         compositor.wait(timeout=10)
