@@ -83,7 +83,7 @@ pub const Tile = struct {
         if (self.pixbuf) |image| c.g_object_unref(image);
         self.* = .{};
     }
-    pub fn paint(self: *Tile, canvas: raster.Canvas, scale: u32, renderer: *text.Renderer, name: [*c]const u8, icon: ?*c.GIcon, rect: Rect, size: u32, hover: bool, focused: bool, pressed: bool) !void {
+    pub fn paint(self: *Tile, canvas: raster.Canvas, scale: u32, renderer: *text.Renderer, name: [*c]const u8, icon: ?*c.GIcon, rect: Rect, size: u32, hover: bool, focused: bool, selected: bool, pressed: bool) !void {
         if (self.scale != scale or self.size != size) {
             self.deinit();
             self.mask = try renderer.renderLayout(a, std.mem.span(name), .{ .size = 14.6666666667 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat((rect.width - 24) * canvas.scale), .alignment = .center, .ellipsize = true, .origin = .top });
@@ -98,6 +98,8 @@ pub const Tile = struct {
         }
         // GNOME system base #222226; hover and press lighten by 7% / 9%.
         if (hover or focused or pressed) rounded(canvas, rect, 24, if (pressed) (if (hover) @as(u32, 0x484851) else @as(u32, 0x38383f)) else if (hover) 0x333339 else 0x292b34);
+        // GNOME :selected lightens the base by 8%, plus hover/active lightening.
+        if (selected) rounded(canvas, rect, 24, if (pressed) @as(u32, 0x4b4b54) else if (hover) 0x46464e else 0x35353c);
         if (focused) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = rect.x + 1, .y = rect.y + 1, .width = rect.width - 2, .height = rect.height - 2 }, .radius = 23, .width = 2 } }}, color(0x719ed2));
         const icon_size: f64 = @floatFromInt(size);
         if (self.pixbuf) |image| {

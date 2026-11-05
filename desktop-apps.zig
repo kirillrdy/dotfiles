@@ -333,6 +333,7 @@ fn focusChanged(widget: *c.GtkWidget, _: *c.GdkEvent, data: ?*anyopaque) callcon
     self.search_input.?.focus(self.search_focus);
     self.pressed = null;
     c.gtk_widget_queue_draw(widget);
+    c.gtk_widget_queue_draw(self.grid);
     c.gtk_widget_queue_draw(self.search);
     return 0;
 }
@@ -557,7 +558,11 @@ fn draw(widget: *c.GtkWidget, cr: *c.cairo_t, data: ?*anyopaque) callconv(.c) c.
         const end = @min(self.visible.items.len, start + self.geometry.capacity());
         for (start..@max(start, end)) |i| {
             const item = self.visible.items[i];
-            item.tile.paint(canvas, scale, &self.renderer, item.name, c.g_app_info_get_icon(item.info), self.geometry.tile(i - start), self.geometry.icon_size, self.hover == i, c.gtk_widget_has_focus(self.grid) != 0 and self.selected == i, self.pressed == i) catch {};
+            const focused = c.gtk_widget_has_focus(self.grid) != 0 and self.selected == i;
+            // GNOME marks the default search result selected while the entry
+            // retains focus; the keyboard focus ring belongs to the grid only.
+            const selected = self.search_focus and self.query[0] != 0 and self.selected == i;
+            item.tile.paint(canvas, scale, &self.renderer, item.name, c.g_app_info_get_icon(item.info), self.geometry.tile(i - start), self.geometry.icon_size, self.hover == i, focused, selected, self.pressed == i) catch {};
         }
         view.paintPages(canvas, self.geometry, self.page, self.pageCount());
     }
