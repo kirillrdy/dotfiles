@@ -1,4 +1,4 @@
-//! Native audio commands and GTK integration against an isolated PipeWire server.
+//! Native audio commands and raster control integration against an isolated PipeWire server.
 const std = @import("std");
 const c = @import("desktop").gtk;
 const audio = @import("desktop").audio;
@@ -54,6 +54,20 @@ fn ready(service: *audio.Service) !void {
     while ((!service.ready or service.nodes.items.len < 3 or service.state(.output) == null or service.state(.input) == null) and c.g_get_monotonic_time() < deadline) pump();
     if (!service.ready or service.state(.output) == null or service.state(.input) == null) return error.AudioNeverReady;
 }
+fn click(sound: *settings.Sound, row: usize, control: @import("desktop").settings.SoundControl) void {
+    const rect = sound.view.rect(.{ .row = row, .control = control });
+    var event = std.mem.zeroes(c.GdkEventButton);
+    event.type = c.GDK_BUTTON_PRESS;
+    event.button = 1;
+    event.x = rect.x + rect.width / 2;
+    event.y = rect.y + rect.height / 2;
+    var handled: c.gboolean = 0;
+    c.g_signal_emit_by_name(sound.canvas, "button-press-event", &event, &handled);
+    assert(handled != 0);
+    event.type = 7;
+    c.g_signal_emit_by_name(sound.canvas, "button-release-event", &event, &handled);
+    assert(handled != 0);
+}
 fn ui(service: *audio.Service) !void {
     if (c.gtk_init_check(null, null) == 0) return error.NoDisplay;
     const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
@@ -61,49 +75,75 @@ fn ui(service: *audio.Service) !void {
     const button = c.gtk_button_new();
     c.gtk_container_add(cast(c.GtkContainer, window), button);
     const controls = quick.Controls.create(c.gtk_popover_new(button).?, "true", "true");
-    const sound = settings.Settings.create(.sound);
+    const sound = try settings.Sound.create();
     defer {
-        c.gtk_widget_destroy(sound.window);
+        if (!sound.closed) c.gtk_widget_destroy(sound.window);
         controls.deinit();
-        while (sound.audio_operations != 0 or sound.network_operations != 0) pump();
+        while (sound.operations != 0) pump();
         sound.destroy();
     }
     var deadline = c.g_get_monotonic_time() + 8_000_000;
-    while ((controls.audio_service == null or controls.audio_service.?.state(.output) == null or sound.rows.items.len < 5) and c.g_get_monotonic_time() < deadline) pump();
-    assert(sound.rows.items.len >= 5);
+    while ((controls.audio_service == null or controls.audio_service.?.state(.output) == null or sound.view.rows.items.len < 5) and c.g_get_monotonic_time() < deadline) pump();
+    assert(sound.view.rows.items.len >= 5);
     assert(controls.view.model.volume != null);
     controls.setSlider(.volume, 63);
     deadline = c.g_get_monotonic_time() + 5_000_000;
     while ((controls.volume_timer != 0 or @abs((service.state(.output) orelse return error.NoOutput).percent - 63) > 0.01) and c.g_get_monotonic_time() < deadline) pump();
     assert(@abs(service.state(.output).?.percent - 63) < 0.01);
     // Rows survive volume-only changes, so dragging cannot target a freed row.
-    const row = sound.rows.items[0];
-    c.gtk_range_set_value(cast(c.GtkRange, row.scale), 47);
+    const row = sound.view.rows.items.ptr;
+    sound.setVolume(0, 47);
     deadline = c.g_get_monotonic_time() + 5_000_000;
-    while ((row.timer != 0 or sound.audio_operations != 0 or @abs(service.state(.output).?.percent - 47) > 0.01) and c.g_get_monotonic_time() < deadline) pump();
-    assert(sound.rows.items[0] == row);
+    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.output).?.percent - 47) > 0.01) and c.g_get_monotonic_time() < deadline) pump();
+    assert(sound.view.rows.items.ptr == row);
     assert(@abs(service.state(.output).?.percent - 47) < 0.01);
     assert(@abs(controls.view.model.volume.? - 47) < 0.01);
-    c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, sound.rows.items[1].mute), 1);
+    click(sound, 1, .mute);
     deadline = c.g_get_monotonic_time() + 5_000_000;
-    while ((!service.state(.input).?.muted or sound.audio_operations != 0) and c.g_get_monotonic_time() < deadline) pump();
+    while ((!service.state(.input).?.muted or sound.operations != 0) and c.g_get_monotonic_time() < deadline) pump();
     assert(service.state(.input).?.muted);
     const previous = service.node(.output).?.id;
     var selected: ?u32 = null;
-    for (sound.rows.items) |candidate| if (candidate.default_button) |widget| {
-        const id = std.fmt.parseInt(u32, candidate.id, 10) catch continue;
+    sound.setVolume(0, 52); // This pending write belongs to the current device.
+    for (sound.view.rows.items, 0..) |candidate, index| {
+        if (!candidate.device or candidate.target != .id) continue;
+        const id = candidate.target.id;
         const entry = service.node(.{ .id = id }) orelse continue;
         if (entry.class == .output and id != previous) {
             selected = id;
-            c.gtk_button_clicked(cast(c.GtkButton, widget));
+            click(sound, index, .default);
             break;
         }
-    };
+    }
     assert(selected != null);
     deadline = c.g_get_monotonic_time() + 5_000_000;
-    while ((service.node(.output).?.id != selected.? or sound.audio_operations != 0) and c.g_get_monotonic_time() < deadline) pump();
+    while ((service.node(.output).?.id != selected.? or sound.operations != 0) and c.g_get_monotonic_time() < deadline) pump();
     assert(service.node(.output).?.id == selected.?);
-    c.g_print("PASS native quick-settings sliders, sound rows, mute and default-device controls\n");
+    deadline = c.g_get_monotonic_time() + 5_000_000;
+    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.{ .id = previous }).?.percent - 52) > 0.01) and c.g_get_monotonic_time() < deadline) pump();
+    assert(@abs(service.state(.{ .id = previous }).?.percent - 52) < 0.01);
+    // Keyboard input uses the same path as real GDK key events.
+    sound.view.focus = null;
+    assert(sound.handleKey(0xff09, 0)); // Tab to the output slider.
+    assert(sound.view.focus.?.row == 0 and sound.view.focus.?.control == .volume);
+    assert(sound.handleKey(0xff50, 0)); // Home clamps to zero.
+    assert(sound.handleKey(0xff53, 0)); // Right increases by five.
+    deadline = c.g_get_monotonic_time() + 5_000_000;
+    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.output).?.percent - 5) > 0.01) and c.g_get_monotonic_time() < deadline) pump();
+    assert(@abs(service.state(.output).?.percent - 5) < 0.01);
+    // A pointer press/release on the track sets volume through native hit testing.
+    click(sound, 0, .volume);
+    deadline = c.g_get_monotonic_time() + 5_000_000;
+    while ((sound.operations != 0 or @abs(service.state(.output).?.percent - 50) > 0.01) and c.g_get_monotonic_time() < deadline) pump();
+    assert(@abs(service.state(.output).?.percent - 50) < 0.01);
+    // Closing with a debounced write must remove its timeout and drain callbacks.
+    sound.setVolume(0, 33);
+    assert(sound.timer != 0);
+    sound.activate(.{ .control = .mute });
+    assert(sound.operations != 0);
+    c.gtk_widget_destroy(sound.window);
+    assert(sound.closed and sound.timer == 0);
+    c.g_print("PASS native sound pointer, keyboard, volume, mute, defaults and pending-close controls\n");
 }
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(a);

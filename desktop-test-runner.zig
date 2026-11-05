@@ -17,5 +17,6 @@ test {
     _ = @import("desktop-quick-settings-view.zig");
     _ = @import("desktop-date-menu-view.zig");
     _ = @import("desktop-askpass-view.zig");
+    _ = @import("desktop-sound-view.zig");
     _ = @import("desktop-password-entry.zig");
 }

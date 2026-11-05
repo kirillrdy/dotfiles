@@ -151,21 +151,21 @@ fn networkLifetime(settle: bool) !void {
 }
 fn soundLifetime(settle: bool) !void {
     var objects = Objects{};
-    const sound = settings.Settings.create(.sound);
+    const sound = try settings.Sound.create();
     objects.watch(sound.window);
-    objects.watch(sound.audio_cancel);
-    if (sound.audio_service) |service| {
+    objects.watch(sound.cancel);
+    if (sound.service) |service| {
         if (settle) {
             try ready(service);
             const deadline = c.g_get_monotonic_time() + 15_000_000;
-            while (sound.rows.items.len == 0 and c.g_get_monotonic_time() < deadline) pump();
-            try std.testing.expect(sound.rows.items.len != 0);
+            while (sound.view.rows.items.len == 0 and c.g_get_monotonic_time() < deadline) pump();
+            try std.testing.expect(sound.view.rows.items.len != 0);
         }
     }
     c.gtk_widget_destroy(sound.window);
     const deadline = c.g_get_monotonic_time() + 15_000_000;
-    while ((sound.audio_operations != 0 or sound.network_operations != 0) and c.g_get_monotonic_time() < deadline) pump();
-    try std.testing.expect(sound.audio_operations == 0 and sound.network_operations == 0);
+    while (sound.operations != 0 and c.g_get_monotonic_time() < deadline) pump();
+    try std.testing.expect(sound.operations == 0);
     sound.destroy();
     try objects.wait(15_000_000);
 }

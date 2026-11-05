@@ -1,7 +1,8 @@
-//! Small GTK settings clients using the desktop's existing system services.
+//! Settings window lifecycle and the GTK network client.
 const std = @import("std");
 pub const c = @import("desktop-gtk.zig");
-const audio = @import("desktop-audio.zig");
+pub const SoundControl = @import("desktop-sound-view.zig").Control;
+pub const Sound = @import("desktop-sound-settings.zig").Sound;
 const network = @import("desktop-network.zig");
 const editor = @import("desktop-network-editor.zig");
 // Test builds account for service state and asynchronous callback allocations.
@@ -30,31 +31,17 @@ fn button(box: *c.GtkWidget, text: [*:0]const u8, callback: anytype, data: anyty
 }
 
 pub const Mode = enum { sound, network };
-pub const AudioRow = struct {
-    owner: *Settings,
-    id: [:0]u8,
-    box: *c.GtkWidget,
-    scale: *c.GtkWidget,
-    mute: *c.GtkWidget,
-    setting: bool = false,
-    timer: c.guint = 0,
-    default_button: ?*c.GtkWidget = null,
-};
 pub const Settings = struct {
     mode: Mode,
     window: *c.GtkWidget,
     body: *c.GtkWidget,
     message: *c.GtkWidget,
     refresh_button: *c.GtkWidget,
-    rows: std.ArrayList(*AudioRow) = .empty,
     network_client: ?*network.Client = null,
     network_operations: usize = 0,
     closed: bool = false,
     failed: bool = false,
-    audio_service: ?*audio.Service = null,
     audio_cancel: *c.GCancellable,
-    audio_operations: usize = 0,
-    audio_layout: ?u64 = null,
     ssids: ?*c.GtkWidget = null,
     password: ?*c.GtkWidget = null,
     hidden: ?*c.GtkWidget = null,
@@ -63,18 +50,19 @@ pub const Settings = struct {
     status: ?*c.GtkWidget = null,
 
     pub fn create(mode: Mode) *Settings {
+        std.debug.assert(mode == .network);
         const self = a.create(Settings) catch @panic("out of memory");
         const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
         self.* = .{ .mode = mode, .window = window, .body = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 14), .message = label(""), .refresh_button = c.gtk_button_new_with_label("Refresh"), .audio_cancel = c.g_cancellable_new().? };
-        c.gtk_window_set_title(cast(c.GtkWindow, window), if (mode == .sound) "Sound" else "Network");
+        c.gtk_window_set_title(cast(c.GtkWindow, window), "Network");
         c.gtk_window_set_default_size(cast(c.GtkWindow, window), 560, 600);
-        c.gtk_window_set_icon_name(cast(c.GtkWindow, window), if (mode == .sound) "preferences-desktop-sound" else "preferences-system-network");
+        c.gtk_window_set_icon_name(cast(c.GtkWindow, window), "preferences-system-network");
         const layout = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 12);
         c.gtk_container_set_border_width(cast(c.GtkContainer, layout), 18);
         c.gtk_container_add(cast(c.GtkContainer, window), layout);
         const toolbar = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 8);
         pack(layout, toolbar);
-        const title = label(if (mode == .sound) "Sound" else "Network");
+        const title = label("Network");
         c.gtk_box_pack_start(cast(c.GtkBox, toolbar), title, 1, 1, 0);
         pack(toolbar, self.refresh_button);
         connect(self.refresh_button, "clicked", &refreshClicked, self);
@@ -89,7 +77,7 @@ pub const Settings = struct {
         if (mode == .network) {
             self.makeNetwork();
             self.network_client = network.Client.create(&networkChanged, self) catch null;
-        } else self.audio_service = audio.Service.create(&audioChanged, self) catch null;
+        }
         c.gtk_widget_show_all(window);
         self.refresh();
         return self;
@@ -98,37 +86,21 @@ pub const Settings = struct {
         c.gtk_label_set_text(cast(c.GtkLabel, self.message), text);
     }
     fn sensitivity(self: *Settings) void {
-        const idle = self.audio_operations == 0 and self.network_operations == 0;
+        const idle = self.network_operations == 0;
         c.gtk_widget_set_sensitive(self.refresh_button, @intFromBool(idle));
-        const available = self.mode == .sound or (self.network_client != null and self.network_client.?.state().available);
+        const available = self.network_client != null and self.network_client.?.state().available;
         c.gtk_widget_set_sensitive(self.body, @intFromBool(idle and available));
-    }
-    fn clearRows(self: *Settings) void {
-        for (self.rows.items) |row| {
-            if (row.timer != 0) _ = c.g_source_remove(row.timer);
-            a.free(row.id);
-            a.destroy(row);
-        }
-        self.rows.clearRetainingCapacity();
     }
     /// The caller frees the state after asynchronous completions have drained.
     pub fn destroy(self: *Settings) void {
-        std.debug.assert(self.closed and self.network_operations == 0 and self.audio_operations == 0);
+        std.debug.assert(self.closed and self.network_operations == 0);
         c.g_object_unref(self.audio_cancel);
-        self.clearRows();
-        self.rows.deinit(a);
         a.destroy(self);
     }
     fn destroyed(_: *c.GtkWidget, data: c.gpointer) callconv(.c) void {
         const self: *Settings = @ptrCast(@alignCast(data));
         self.closed = true;
         c.g_cancellable_cancel(self.audio_cancel);
-        if (self.audio_service) |service| service.destroy();
-        self.audio_service = null;
-        for (self.rows.items) |row| {
-            if (row.timer != 0) _ = c.g_source_remove(row.timer);
-            row.timer = 0;
-        }
         if (self.network_client) |client| client.destroy();
         self.network_client = null;
     }
@@ -137,12 +109,9 @@ pub const Settings = struct {
         self.refresh();
     }
     pub fn refresh(self: *Settings) void {
-        if (self.closed or self.network_operations != 0 or self.audio_operations != 0) return;
+        if (self.closed or self.network_operations != 0) return;
         self.failed = false;
-        if (self.mode == .sound) {
-            self.audio_layout = null;
-            if (self.audio_service) |service| self.renderSound(service) else self.setMessage("Audio service unavailable");
-        } else if (self.network_client) |client| {
+        if (self.network_client) |client| {
             client.refresh();
             if (client.state().available) self.networkAction(.scan) else self.renderNetwork(client.state());
         } else self.setMessage("NetworkManager unavailable");
@@ -175,129 +144,6 @@ pub const Settings = struct {
             },
         }
         if (self.network_client) |client| self.renderNetwork(client.state());
-        self.sensitivity();
-    }
-    fn notifyDevices(_: *Settings) void {
-        const app = c.g_application_get_default() orelse return;
-        const bus = c.g_application_get_dbus_connection(app) orelse return;
-        _ = c.g_dbus_connection_emit_signal(bus, null, "/org/dotfiles/DesktopSettings", "org.dotfiles.DesktopSettings", "DeviceChanged", null, null);
-    }
-    fn audioChanged(ptr: ?*anyopaque, service: *audio.Service) void {
-        const self = cast(Settings, ptr);
-        if (!self.closed) self.renderSound(service);
-    }
-    pub fn renderSound(self: *Settings, service: *audio.Service) void {
-        var hash = std.hash.Wyhash.init(0);
-        for (service.nodes.items) |entry| {
-            hash.update(std.mem.asBytes(&entry.id));
-            hash.update(std.mem.asBytes(&entry.class));
-            hash.update(std.mem.sliceTo(&entry.title, 0));
-            hash.update(std.mem.sliceTo(&entry.name, 0));
-        }
-        const layout = hash.final();
-        if (self.audio_layout == null or self.audio_layout.? != layout) {
-            const children = c.gtk_container_get_children(cast(c.GtkContainer, self.body));
-            var child = children;
-            while (child != null) : (child = child.*.next) c.gtk_widget_destroy(cast(c.GtkWidget, child.*.data));
-            c.g_list_free(children);
-            self.clearRows();
-            self.audio_layout = layout;
-            self.audioRow("@DEFAULT_AUDIO_SINK@", "Output volume", false);
-            self.audioRow("@DEFAULT_AUDIO_SOURCE@", "Microphone volume", false);
-            for ([_]audio.Class{ .output, .input, .playback, .recording }, [_][*:0]const u8{ "Output devices", "Input devices", "Playback applications", "Recording applications" }) |class, heading| {
-                pack(self.body, label(heading));
-                var count: usize = 0;
-                for (service.nodes.items) |entry| {
-                    if (entry.class != class) continue;
-                    var buffer: [32]u8 = undefined;
-                    const id = std.fmt.bufPrintSentinel(&buffer, "{d}", .{entry.id}, 0) catch unreachable;
-                    self.audioRow(id, &entry.title, class == .output or class == .input);
-                    count += 1;
-                }
-                if (count == 0) pack(self.body, label("None available"));
-            }
-            c.gtk_widget_show_all(self.body);
-        }
-        for (self.rows.items) |row| {
-            const wanted = audio.target(row.id) catch continue;
-            const state = service.state(wanted);
-            row.setting = true;
-            if (state) |value| {
-                // Keep a slider being dragged until its debounced write is sent.
-                if (row.timer == 0) c.gtk_range_set_value(cast(c.GtkRange, row.scale), value.percent);
-                c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, row.mute), @intFromBool(value.muted));
-            }
-            row.setting = false;
-            c.gtk_widget_set_sensitive(row.box, @intFromBool(state != null));
-            if (row.default_button) |button_widget| {
-                const entry = service.node(wanted);
-                c.gtk_widget_set_sensitive(button_widget, @intFromBool(entry != null and !entry.?.is_default));
-            }
-        }
-        if (!service.ready) self.setMessage("Audio service unavailable") else if (!self.failed) self.setMessage("");
-        self.sensitivity();
-    }
-    fn audioRow(self: *Settings, id: [:0]const u8, title: [*:0]const u8, device: bool) void {
-        const row = a.create(AudioRow) catch @panic("out of memory");
-        const box = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 6);
-        row.* = .{ .owner = self, .id = z(id), .box = box, .scale = c.gtk_scale_new_with_range(c.GTK_ORIENTATION_HORIZONTAL, 0, 100, 1), .mute = c.gtk_check_button_new_with_label("Mute") };
-        self.rows.append(a, row) catch @panic("out of memory");
-        pack(box, label(title));
-        const controls = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 8);
-        pack(box, controls);
-        c.gtk_scale_set_digits(cast(c.GtkScale, row.scale), 0);
-        c.gtk_scale_set_value_pos(cast(c.GtkScale, row.scale), c.GTK_POS_RIGHT);
-        c.gtk_box_pack_start(cast(c.GtkBox, controls), row.scale, 1, 1, 0);
-        pack(controls, row.mute);
-        if (device) row.default_button = button(controls, "Use by default", &defaultClicked, row);
-        connect(row.scale, "value-changed", &volumeChanged, row);
-        connect(row.mute, "toggled", &muteChanged, row);
-        c.gtk_widget_set_sensitive(box, 0);
-        pack(self.body, box);
-    }
-    fn volumeChanged(_: *c.GtkRange, data: c.gpointer) callconv(.c) void {
-        const row: *AudioRow = @ptrCast(@alignCast(data));
-        if (row.setting or row.owner.closed) return;
-        if (row.timer != 0) _ = c.g_source_remove(row.timer);
-        row.timer = c.g_timeout_add(150, &setVolume, row);
-    }
-    fn setVolume(data: c.gpointer) callconv(.c) c.gboolean {
-        const row: *AudioRow = @ptrCast(@alignCast(data));
-        row.timer = 0;
-        row.owner.audioAction(row.id, .{ .volume = c.gtk_range_get_value(cast(c.GtkRange, row.scale)) });
-        return 0;
-    }
-    fn muteChanged(toggle: *c.GtkToggleButton, data: c.gpointer) callconv(.c) void {
-        const row: *AudioRow = @ptrCast(@alignCast(data));
-        if (row.setting) return;
-        row.owner.audioAction(row.id, .{ .mute = c.gtk_toggle_button_get_active(toggle) != 0 });
-    }
-    fn defaultClicked(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const row: *AudioRow = @ptrCast(@alignCast(data));
-        row.owner.audioAction(row.id, .default);
-    }
-    fn audioAction(self: *Settings, id: []const u8, change: audio.Change) void {
-        if (self.closed) return;
-        const service = self.audio_service orelse return;
-        const wanted = audio.target(id) catch return;
-        self.audio_operations += 1;
-        self.sensitivity();
-        service.apply(wanted, change, self.audio_cancel, &audioDone, self);
-    }
-    fn audioDone(ptr: ?*anyopaque, result: audio.Result) void {
-        const self = cast(Settings, ptr);
-        self.audio_operations -= 1;
-        if (self.closed) return;
-        switch (result) {
-            .failure => |err| {
-                self.failed = true;
-                self.setMessage(@errorName(err).ptr);
-            },
-            .value => {
-                self.notifyDevices();
-                if (self.audio_service) |service| self.renderSound(service);
-            },
-        }
         self.sensitivity();
     }
     fn makeNetwork(self: *Settings) void {
@@ -441,9 +287,23 @@ pub const Settings = struct {
 
 pub const Service = struct {
     windows: std.ArrayList(*Settings) = .empty,
+    sounds: std.ArrayList(*Sound) = .empty,
 
     pub fn show(self: *Service, app: *c.GtkApplication, mode: Mode) !void {
         self.reap();
+        if (mode == .sound) {
+            for (self.sounds.items) |sound| {
+                if (!sound.closed) {
+                    c.gtk_window_present(cast(c.GtkWindow, sound.window));
+                    return;
+                }
+            }
+            try self.sounds.ensureUnusedCapacity(a, 1);
+            const sound = try Sound.create();
+            self.sounds.appendAssumeCapacity(sound);
+            c.gtk_application_add_window(app, cast(c.GtkWindow, sound.window));
+            return;
+        }
         for (self.windows.items) |settings| {
             if (!settings.closed and settings.mode == mode) {
                 c.gtk_window_present(cast(c.GtkWindow, settings.window));
@@ -457,10 +317,18 @@ pub const Service = struct {
     }
 
     pub fn reap(self: *Service) void {
+        var sound_index: usize = 0;
+        while (sound_index < self.sounds.items.len) {
+            const sound = self.sounds.items[sound_index];
+            if (sound.closed and sound.operations == 0) {
+                _ = self.sounds.orderedRemove(sound_index);
+                sound.destroy();
+            } else sound_index += 1;
+        }
         var i: usize = 0;
         while (i < self.windows.items.len) {
             const settings = self.windows.items[i];
-            if (settings.closed and settings.network_operations == 0 and settings.audio_operations == 0) {
+            if (settings.closed and settings.network_operations == 0) {
                 _ = self.windows.orderedRemove(i);
                 settings.destroy();
             } else i += 1;
@@ -468,11 +336,13 @@ pub const Service = struct {
     }
 
     pub fn deinit(self: *Service) void {
+        for (self.sounds.items) |sound| if (!sound.closed) c.gtk_widget_destroy(sound.window);
         for (self.windows.items) |settings| if (!settings.closed) c.gtk_widget_destroy(settings.window);
-        while (self.windows.items.len > 0) {
+        while (self.windows.items.len > 0 or self.sounds.items.len > 0) {
             self.reap();
-            if (self.windows.items.len > 0) _ = c.g_main_context_iteration(null, 1);
+            if (self.windows.items.len > 0 or self.sounds.items.len > 0) _ = c.g_main_context_iteration(null, 1);
         }
         self.windows.deinit(a);
+        self.sounds.deinit(a);
     }
 };
