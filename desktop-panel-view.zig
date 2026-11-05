@@ -228,6 +228,8 @@ pub const Codex = struct {
     checked: Label = .{ .value = "Checked: —" },
     error_label: Label = .{},
     refresh: Label = .{ .value = "Refresh" },
+    refresh_icon: ?text.Mask = null,
+    refresh_icon_scale: u32 = 0,
     enabled: bool = false,
     hovered: bool = false,
     pressed: bool = false,
@@ -242,6 +244,7 @@ pub const Codex = struct {
         self.checked.deinit();
         self.error_label.deinit();
         self.refresh.deinit();
+        if (self.refresh_icon) |mask| mask.deinit(a);
         self.renderer.deinit();
     }
     pub fn prepare(self: *Codex, scale: u32) !void {
@@ -250,9 +253,30 @@ pub const Codex = struct {
         for (&self.percent) |*label| try label.prepare(&self.renderer, scale, 13, true, null, false);
         for (&self.reset) |*label| try label.prepare(&self.renderer, scale, 11, false, 300, false);
         try self.refresh.prepare(&self.renderer, scale, 12, true, null, false);
+        try self.prepareRefreshIcon(scale);
         try self.checked.prepare(&self.renderer, scale, 10, false, 174, false);
         try self.error_label.prepare(&self.renderer, scale, 11, false, 300, false);
         self.height = @intFromFloat(280 + (if (self.error_label.value.len == 0) @as(f64, 0) else self.error_label.height() + 12));
+    }
+    fn prepareRefreshIcon(self: *Codex, scale: u32) !void {
+        if (self.refresh_icon_scale == scale or c.gdk_display_get_default() == null) return;
+        const info = c.gtk_icon_theme_lookup_icon(c.gtk_icon_theme_get_default(), "view-refresh-symbolic", @intCast(14 * scale), c.GTK_ICON_LOOKUP_FORCE_SIZE) orelse return;
+        defer c.g_object_unref(info);
+        const foreground: c.GdkRGBA = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 };
+        const image = c.gtk_icon_info_load_symbolic(info, &foreground, null, null, null, null, null) orelse return;
+        defer c.g_object_unref(image);
+        const width: u32 = @intCast(c.gdk_pixbuf_get_width(image));
+        const height: u32 = @intCast(c.gdk_pixbuf_get_height(image));
+        const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(image));
+        const channels: usize = @intCast(c.gdk_pixbuf_get_n_channels(image));
+        const data = c.gdk_pixbuf_get_pixels(image);
+        const coverage = try a.alloc(u8, width * height);
+        for (0..height) |y| for (0..width) |x| {
+            coverage[y * width + x] = if (channels == 4) data[y * stride + x * channels + 3] else 255;
+        };
+        if (self.refresh_icon) |old| old.deinit(a);
+        self.refresh_icon = .{ .pixels = coverage, .width = width, .height = height, .left = 0, .top = 0 };
+        self.refresh_icon_scale = scale;
     }
     pub fn refreshRect(_: *const Codex) Rect {
         return .{ .x = 20, .y = 226, .width = 100, .height = 32 };
@@ -278,8 +302,10 @@ pub const Codex = struct {
         const button = self.refreshRect();
         canvas.draw(&.{.{ .rounded = .{ .x = button.x, .y = button.y, .width = button.width, .height = button.height } }}, .{ .red = 1, .green = 1, .blue = 1, .alpha = if (self.pressed) 0.18 else if (self.hovered) 0.12 else 0.06 });
         if (self.keyboard_focus and self.enabled) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = button.x, .y = button.y, .width = button.width, .height = button.height }, .radius = 16 } }}, .{ .red = 0.47, .green = 0.68, .blue = 0.93 });
-        canvas.draw(&.{ .{ .arc = .{ .center = .{ .x = 34, .y = 242 }, .radius = 5, .start = 0.4, .end = 3.3, .stroke = 0.8 } }, .{ .line = .{ .start = .{ .x = 29, .y = 241 }, .end = .{ .x = 29, .y = 245 }, .radius = 0.8 } }, .{ .line = .{ .start = .{ .x = 29, .y = 245 }, .end = .{ .x = 33, .y = 245 }, .radius = 0.8 } } }, .{ .red = 1, .green = 1, .blue = 1, .alpha = if (self.enabled) 1 else 0.5 });
-        self.refresh.paint(buffer, 46, 234, .{ .red = 1, .green = 1, .blue = 1, .alpha = if (self.enabled) 1 else 0.5 });
+        const foreground: raster.Color = .{ .red = 1, .green = 1, .blue = 1, .alpha = if (self.enabled) 1 else 0.5 };
+        const content_x = button.x + (button.width - 14 - 6 - self.refresh.width()) / 2;
+        if (self.refresh_icon) |mask| raster.mask(buffer, .{ .x = @intFromFloat(@round(content_x * canvas.scale)), .y = @intFromFloat(@round((button.y + (button.height - 14) / 2) * canvas.scale)), .width = mask.width, .height = mask.height }, mask.pixels, foreground);
+        self.refresh.paint(buffer, content_x + 20, button.y + (button.height - self.refresh.height()) / 2, foreground);
         self.checked.paint(buffer, 320 - self.checked.width(), 237, secondary);
         if (self.error_label.value.len != 0) self.error_label.paint(buffer, 20, 274, secondary);
     }
