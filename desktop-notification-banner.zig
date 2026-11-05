@@ -1,4 +1,4 @@
-//! Notification cards drawn into native Wayland pixels. History keeps its GTK view.
+//! Native notification cards shared by Wayland banners and date-menu history.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const data = @import("desktop-notification-view.zig");
@@ -57,7 +57,7 @@ fn context(provider: *c.GtkCssProvider, parent: ?*c.GtkStyleContext, kind: c.GTy
 }
 
 pub const Target = enum { none, card, close, expand, action0, action1, action2 };
-const Rect = struct {
+pub const Rect = struct {
     x: f64,
     y: f64,
     width: f64,
@@ -76,6 +76,7 @@ pub const View = struct {
     width: u32 = 529,
     height: u32 = 118,
     expanded: bool = false,
+    history: bool = false,
     expandable: bool = false,
     hover: Target = .none,
     pressed: Target = .none,
@@ -104,6 +105,9 @@ pub const View = struct {
     pub fn deinit(self: *View) void {
         self.clear();
         self.renderer.deinit();
+    }
+    pub fn invalidate(self: *View) void {
+        self.clear();
     }
     fn clear(self: *View) void {
         if (self.shadow) |pixels| a.free(pixels);
@@ -134,6 +138,23 @@ pub const View = struct {
         var x: f64 = 19;
         for (self.action_widths[0..index]) |width| x += width * ratio + extra + 8;
         return .{ .x = x, .y = @as(f64, @floatFromInt(self.height)) - 50, .width = self.action_widths[index] * ratio + extra, .height = 31 };
+    }
+    pub fn targetRect(self: *const View, target: Target) Rect {
+        return switch (target) {
+            .close => self.closeRect(),
+            .expand => self.expandRect(),
+            .action0, .action1, .action2 => self.actionRect(@backingInt(target) - @backingInt(Target.action0)),
+            .card => .{ .x = 8, .y = 8, .width = @floatFromInt(self.width - 16), .height = @floatFromInt(self.height - 16) },
+            .none => .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+        };
+    }
+    pub fn targetVisible(self: *const View, target: Target) bool {
+        return switch (target) {
+            .none => false,
+            .card, .close => true,
+            .expand => self.expandable,
+            .action0, .action1, .action2 => self.expanded and @backingInt(target) - @backingInt(Target.action0) < self.action_count,
+        };
     }
     pub fn hit(self: *const View, x: f64, y: f64) Target {
         if (self.closeRect().contains(x, y)) return .close;
@@ -204,7 +225,7 @@ pub const View = struct {
             self.icon = c.gtk_icon_info_load_symbolic(info, &foreground, null, null, null, null, null);
         }
         self.scale = scale;
-        self.shadow = try shadowMask(self.width, self.height, scale);
+        if (!self.history) self.shadow = try shadowMask(self.width, self.height, scale);
     }
     pub fn paint(self: *const View, buffer: raster.Buffer) void {
         const canvas: raster.Canvas = .{ .target = buffer, .scale = @floatFromInt(self.scale) };

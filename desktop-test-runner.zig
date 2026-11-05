@@ -15,6 +15,7 @@ test {
     _ = @import("desktop-text.zig");
     _ = @import("desktop-notification-banner.zig");
     _ = @import("desktop-quick-settings-view.zig");
+    _ = @import("desktop-date-menu-view.zig");
     _ = @import("desktop-askpass-view.zig");
     _ = @import("desktop-password-entry.zig");
 }

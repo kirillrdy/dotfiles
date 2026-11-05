@@ -47,6 +47,7 @@ pkgs.stdenv.mkDerivation {
       || file.name == "check-desktop-askpass.py"
       || file.name == "check-desktop-command.py"
       || file.name == "check-desktop-notifications.py"
+      || file.name == "check-desktop-date-menu.py"
       || file.name == "desktop-notifications.css"
     ) ./.;
   };
@@ -119,6 +120,8 @@ pkgs.stdenv.mkDerivation {
       python3 tests/check-desktop-command.py "$out/bin/desktop-command-fixture"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
       python3 tests/check-desktop-notifications.py "$out/bin" desktop-notifications.css
+    dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
+      python3 tests/check-desktop-date-menu.py "$out/bin" desktop-notifications.css
     kill "$compositor_pid"
     wait "$compositor_pid" || true
     trap - EXIT
