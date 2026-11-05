@@ -37,6 +37,63 @@ fn finalized(ptr: ?*anyopaque, _: ?*c.GObject) callconv(.c) void {
     live.* = false;
 }
 
+const Profiles = struct {
+    calls: usize = 0,
+    index: usize = 0,
+    fn selected(ptr: ?*anyopaque, index: usize) void {
+        const self: *Profiles = @ptrCast(@alignCast(ptr));
+        self.calls += 1;
+        self.index = index;
+    }
+};
+fn click(dialog: anytype, target: @import("desktop").askpass.native.Target) void {
+    const rect = dialog.view.targetRect(target);
+    var event = std.mem.zeroes(c.GdkEventButton);
+    event.type = c.GDK_BUTTON_PRESS;
+    event.button = 1;
+    event.x = rect.x + rect.width / 2;
+    event.y = rect.y + rect.height / 2;
+    var handled: c.gboolean = 0;
+    c.g_signal_emit_by_name(dialog.canvas, "button-press-event", &event, &handled);
+    event.type = 7;
+    c.g_signal_emit_by_name(dialog.canvas, "button-release-event", &event, &handled);
+}
+fn checkPowerDialog(controls: *quick.Controls) !void {
+    var profiles: Profiles = .{};
+    controls.profile_context = &profiles;
+    controls.profile_selected = &Profiles.selected;
+    defer {
+        controls.profile_context = null;
+        controls.profile_selected = null;
+    }
+    controls.setPowerState(.{ .available = .{ false, true, true }, .active = .balanced }, false);
+    controls.view.submenu = .profiles;
+    controls.redraw();
+    controls.activate(.power_settings);
+    const dialog = controls.dialog.?;
+    try std.testing.expect(dialog.view.choices[1].selected);
+    click(dialog, .choice0);
+    try std.testing.expectEqual(@as(usize, 0), profiles.calls);
+    dialog.focus(.accept);
+    try std.testing.expect(dialog.handleKey(0xff09, 0));
+    try std.testing.expectEqual(@import("desktop").askpass.native.Target.choice1, dialog.view.focus);
+    try std.testing.expect(dialog.handleKey(0xff54, 0));
+    try std.testing.expect(dialog.handleKey(0xff0d, 0));
+    try std.testing.expectEqual(@as(usize, 1), profiles.calls);
+    try std.testing.expectEqual(@as(usize, 2), profiles.index);
+    controls.setPowerState(.{ .available = .{ false, true, true }, .active = .balanced }, true);
+    try std.testing.expectEqual(@import("desktop").askpass.native.Target.accept, dialog.view.focus);
+    click(dialog, .choice2);
+    try std.testing.expectEqual(@as(usize, 1), profiles.calls);
+    controls.setPowerState(.{ .available = .{ false, true, true }, .active = .@"power-saver" }, false);
+    try std.testing.expect(dialog.view.choices[2].selected and !dialog.view.choices[1].selected);
+    click(dialog, .choice1);
+    try std.testing.expectEqual(@as(usize, 2), profiles.calls);
+    try std.testing.expectEqual(@as(usize, 1), profiles.index);
+    try std.testing.expect(dialog.handleKey(0xff1b, 0));
+    try std.testing.expect(controls.dialog == null);
+}
+
 test "session: private logind actions and quick-settings lifecycle" {
     try std.testing.expectEqualStrings("1", env("DESKTOP_SESSION_TEST_RUN"));
     try std.testing.expect(env("DBUS_SYSTEM_BUS_ADDRESS").len != 0);
@@ -55,7 +112,20 @@ test "session: private logind actions and quick-settings lifecycle" {
         if (controls.battery_service) |service| g_object_weak_ref(@ptrCast(service.cancel), &finalized, &battery_live);
         var network_live = controls.network_client != null;
         if (controls.network_client) |client| g_object_weak_ref(@ptrCast(client.service.cancel), &finalized, &network_live);
-        controls.sessionAction(.@"suspend");
+        try checkPowerDialog(controls);
+        // Enter defaults to Cancel. Explicit keyboard selection sends one action.
+        controls.view.submenu = .power;
+        controls.redraw();
+        controls.activate(.suspend_action);
+        try std.testing.expect(controls.dialog != null);
+        try std.testing.expectEqualStrings("Cancel", controls.dialog.?.view.cancel_label.?);
+        try std.testing.expect(controls.dialog.?.handleKey(0xff0d, 0));
+        try std.testing.expect(controls.dialog == null and !controls.session_busy);
+        controls.view.submenu = .power;
+        controls.redraw();
+        controls.activate(.suspend_action);
+        try std.testing.expect(controls.dialog.?.handleKey(0xff09, 0));
+        try std.testing.expect(controls.dialog.?.handleKey(0xff0d, 0));
         controls.sessionAction(.reboot); // A pending action must prevent duplicate requests.
         if (std.mem.eql(u8, scenario, "ui-denied")) {
             while (controls.session_busy and c.g_get_monotonic_time() < deadline) pump();
@@ -66,6 +136,11 @@ test "session: private logind actions and quick-settings lifecycle" {
             while (c.g_get_monotonic_time() < ready) pump();
             try std.testing.expect(controls.session_busy);
         }
+        // A shown native dialog must release its reference during shutdown.
+        controls.view.submenu = .profiles;
+        controls.redraw();
+        controls.activate(.power_settings);
+        try std.testing.expect(controls.dialog != null);
         controls.deinit();
         c.gtk_widget_destroy(window);
         // Device workers retain their own cancellation objects after Controls

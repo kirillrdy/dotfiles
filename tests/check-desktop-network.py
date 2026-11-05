@@ -93,7 +93,9 @@ def main():
             server.delay = False
             run('disconnect', DEVICE)
             run('deactivate', PROFILE)
+            server.change(AP, NAME+'.AccessPoint', {'RsnFlags': V('u', 0x100)})
             run('ui')
+            assert server.last_added['802-11-wireless-security']['psk'] == 'quick-native-secret'
             run('edit')
             assert server.settings['connection']['uuid'].unpack() == 'test-uuid'
             assert server.settings['connection']['id'].unpack() == 'Native connection'

@@ -14,7 +14,7 @@ pub const Mode = enum {
         return .password;
     }
 };
-pub const Target = enum { none, entry, confirmation, cancel, accept };
+pub const Target = enum { none, entry, confirmation, cancel, accept, choice0, choice1, choice2 };
 pub const Rect = struct {
     x: f64,
     y: f64,
@@ -27,6 +27,8 @@ pub const Rect = struct {
         return .{ .rounded_rect = .{ .rect = .{ .x = self.x, .y = self.y, .width = self.width, .height = self.height }, .radius = radius } };
     }
 };
+pub const Choice = struct { label: [:0]const u8, enabled: bool = true, selected: bool = false };
+pub const choice_targets = [_]Target{ .choice0, .choice1, .choice2 };
 const Part = struct { mask: text.Mask, y: u32 };
 pub const View = struct {
     mode: Mode,
@@ -34,6 +36,8 @@ pub const View = struct {
     accept_label: ?[:0]const u8 = null,
     enabled: bool = true,
     confirmation: bool = false,
+    cancel_label: ?[:0]const u8 = null,
+    choices: []const Choice = &.{},
     status: ?[:0]const u8 = null,
     status_error: bool = false,
     status_height: u32 = 0,
@@ -46,7 +50,7 @@ pub const View = struct {
     hover: Target = .none,
     pressed: Target = .none,
     renderer: text.Renderer = .{},
-    masks: [6]?text.Mask = @splat(null),
+    masks: [9]?text.Mask = @splat(null),
     parts: std.ArrayList(Part) = .empty,
 
     pub fn init(mode: Mode) View {
@@ -73,11 +77,12 @@ pub const View = struct {
         self.renderer.deinit();
     }
     pub fn prepare(self: *View, allocator: std.mem.Allocator, prompt: [:0]const u8, scale: u32) !void {
+        if (self.choices.len > 3 or (self.choices.len != 0 and self.mode != .information)) return error.InvalidChoices;
         if (self.scale == scale) return;
         if (!std.unicode.utf8ValidateSlice(prompt)) return error.InvalidText;
         self.invalidate(allocator);
         errdefer self.invalidate(allocator);
-        for ([_][:0]const u8{ self.title, if (self.mode == .confirm) "Deny" else "Cancel", self.accept_label orelse switch (self.mode) {
+        for ([_][:0]const u8{ self.title, self.cancel_label orelse (if (self.mode == .confirm) "Deny" else "Cancel"), self.accept_label orelse switch (self.mode) {
             .password => "Unlock",
             .confirm => "Allow",
             .information => "Close",
@@ -110,6 +115,9 @@ pub const View = struct {
                 self.masks[i] = try self.renderer.renderLayout(allocator, value, .{ .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .origin = .top });
             }
         }
+        for (self.choices, 6..) |choice, i| {
+            self.masks[i] = try self.renderer.renderLayout(allocator, choice.label, .{ .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .origin = .top });
+        }
         if (self.status) |value| {
             self.masks[3] = try self.renderer.renderLayout(allocator, value, .{ .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = (self.width - 48) * scale, .line_height = 20 * scale, .lines = 64, .origin = .top });
             self.status_height = 12 + (std.math.divCeil(u32, self.masks[3].?.logical_height, scale) catch unreachable);
@@ -128,10 +136,22 @@ pub const View = struct {
     fn lastEntryRect(self: *const View) Rect {
         return if (self.confirmation) self.confirmationRect() else self.entryRect();
     }
+    pub fn choiceRect(self: *const View, index: usize) Rect {
+        return .{ .x = 24, .y = self.entryRect().y + @as(f64, @floatFromInt(index * 50)), .width = @floatFromInt(self.width - 48), .height = 42 };
+    }
+    pub fn targetRect(self: *const View, target: Target) Rect {
+        for (choice_targets, 0..) |choice, i| if (target == choice) return self.choiceRect(i);
+        return if (target == .entry) self.entryRect() else if (target == .confirmation) self.confirmationRect() else self.buttonRect(target);
+    }
+    pub fn choiceEnabled(self: *const View, target: Target) bool {
+        for (choice_targets, 0..) |choice, i| if (target == choice) return i < self.choices.len and self.enabled and self.choices[i].enabled;
+        return false;
+    }
     pub fn buttonRect(self: *const View, target: Target) Rect {
-        return .{ .x = if (target == .cancel) 24 else @as(f64, @floatFromInt(self.width)) - 148, .y = self.lastEntryRect().y + @as(f64, @floatFromInt(self.status_height)) + (if (self.mode == .password) @as(f64, 62) else @as(f64, 0)), .width = 124, .height = 38 };
+        return .{ .x = if (target == .cancel) 24 else @as(f64, @floatFromInt(self.width)) - 148, .y = self.lastEntryRect().y + @as(f64, @floatFromInt(self.choices.len * 50)) + @as(f64, @floatFromInt(self.status_height)) + (if (self.mode == .password) @as(f64, 62) else @as(f64, 0)), .width = 124, .height = 38 };
     }
     pub fn hit(self: *const View, x: f64, y: f64) Target {
+        for (self.choices, 0..) |_, i| if (self.choiceEnabled(choice_targets[i]) and self.choiceRect(i).contains(x, y)) return choice_targets[i];
         if (self.confirmation and self.confirmationRect().contains(x, y)) return .confirmation;
         if (self.mode == .password and self.entryRect().contains(x, y)) return .entry;
         if (self.mode != .information and self.buttonRect(.cancel).contains(x, y)) return .cancel;
@@ -139,7 +159,14 @@ pub const View = struct {
         return .none;
     }
     pub fn stepFocus(self: *View, backward: bool) void {
-        const targets: []const Target = switch (self.mode) {
+        var choice_focus: [4]Target = undefined;
+        var choice_count: usize = 0;
+        for (self.choices, 0..) |_, i| if (self.choiceEnabled(choice_targets[i])) {
+            choice_focus[choice_count] = choice_targets[i];
+            choice_count += 1;
+        };
+        choice_focus[choice_count] = .accept;
+        const targets: []const Target = if (self.choices.len != 0) choice_focus[0 .. choice_count + 1] else switch (self.mode) {
             .password => if (self.confirmation) &.{ .entry, .confirmation, .cancel, .accept } else &.{ .entry, .cancel, .accept },
             .confirm => &.{ .cancel, .accept },
             .information => &.{.accept},
@@ -164,6 +191,15 @@ pub const View = struct {
         if (self.masks[3]) |mask| {
             raster.mask(target, .{ .x = @intFromFloat(24 * canvas.scale), .y = @as(i32, @intFromFloat((self.lastEntryRect().y + 54) * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(if (self.status_error) 0xff7b83 else 0xffffff));
         }
+        for (self.choices, 0..) |choice, i| {
+            const rect = self.choiceRect(i);
+            const button = choice_targets[i];
+            const active = self.choiceEnabled(button);
+            canvas.draw(&.{rect.shape(10)}, color(if (!active) @as(u32, 0x404044) else if (choice.selected) @as(u32, 0x2265b5) else if (self.hover == button) @as(u32, 0x525256) else @as(u32, 0x48484b)));
+            paintMaskTint(canvas, self.masks[6 + i].?, rect.x + 16, rect.y + 12, if (active) 0xffffff else 0x929296);
+            if (choice.selected) canvas.draw(&.{.{ .circle = .{ .center = .{ .x = rect.x + rect.width - 20, .y = rect.y + 21 }, .radius = 4 } }}, color(0xffffff));
+            if (self.focus == button and self.keyboard_focus) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = rect.x + 2, .y = rect.y + 2, .width = rect.width - 4, .height = rect.height - 4 }, .radius = 8, .width = 2 } }}, color(0x99c1f1));
+        }
         for ([_]Target{ .cancel, .accept }, 0..) |button, i| {
             if (button == .cancel and self.mode == .information) continue;
             const rect = self.buttonRect(button);
@@ -179,7 +215,10 @@ fn color(value: u32) raster.Color {
     return .{ .red = @as(f64, @floatFromInt((value >> 16) & 255)) / 255, .green = @as(f64, @floatFromInt((value >> 8) & 255)) / 255, .blue = @as(f64, @floatFromInt(value & 255)) / 255 };
 }
 fn paintMask(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64) void {
-    raster.mask(canvas.target, .{ .x = @as(i32, @intFromFloat(x * canvas.scale)) + mask.left, .y = @as(i32, @intFromFloat(y * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(0xffffff));
+    paintMaskTint(canvas, mask, x, y, 0xffffff);
+}
+fn paintMaskTint(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64, tint: u32) void {
+    raster.mask(canvas.target, .{ .x = @as(i32, @intFromFloat(x * canvas.scale)) + mask.left, .y = @as(i32, @intFromFloat(y * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(tint));
 }
 
 test "askpass geometry scales, wraps public text and defaults confirmation to denial" {
@@ -236,6 +275,40 @@ test "password confirmation fields, status and actions stay distinct at both sca
         try std.testing.expectEqual(Target.confirmation, view.focus);
         view.stepFocus(true);
         try std.testing.expectEqual(Target.entry, view.focus);
+        const count = view.width * view.height * scale * scale;
+        const pixels = try allocator.alloc(u32, count + 2);
+        defer allocator.free(pixels);
+        @memset(pixels, 0x12345678);
+        view.paint(.{ .pixels = pixels[1 .. count + 1], .width = view.width * scale, .height = view.height * scale });
+        try std.testing.expectEqual(@as(u32, 0x12345678), pixels[0]);
+        try std.testing.expectEqual(@as(u32, 0x12345678), pixels[count + 1]);
+    }
+}
+
+test "native dialog choices skip unavailable modes and keep actions below rows" {
+    const allocator = std.testing.allocator;
+    var view = View.init(.information);
+    defer view.deinit(allocator);
+    const choices = [_]Choice{
+        .{ .label = "Performance", .enabled = false },
+        .{ .label = "Balanced", .selected = true },
+        .{ .label = "Power Saver" },
+    };
+    view.choices = &choices;
+    for ([_]u32{ 1, 2 }) |scale| {
+        try view.prepare(allocator, "Choose a power mode.", scale);
+        try std.testing.expect(view.choiceRect(2).y + 42 <= view.buttonRect(.accept).y);
+        const rect = view.choiceRect(1);
+        try std.testing.expectEqual(Target.choice1, view.hit(rect.x + 1, rect.y + 1));
+        view.focus = .accept;
+        view.stepFocus(false);
+        try std.testing.expectEqual(Target.choice1, view.focus);
+        view.stepFocus(false);
+        try std.testing.expectEqual(Target.choice2, view.focus);
+        view.stepFocus(false);
+        try std.testing.expectEqual(Target.accept, view.focus);
+        view.stepFocus(true);
+        try std.testing.expectEqual(Target.choice2, view.focus);
         const count = view.width * view.height * scale * scale;
         const pixels = try allocator.alloc(u32, count + 2);
         defer allocator.free(pixels);

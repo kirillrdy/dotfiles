@@ -7,6 +7,7 @@ const backlight = @import("desktop-backlight.zig");
 pub const settings_client = @import("desktop-settings.zig");
 const network_backend = @import("desktop-network.zig");
 const session = @import("desktop-session.zig");
+const auth = @import("desktop-auth-dialog.zig");
 const native = @import("desktop-quick-settings-view.zig");
 pub const Target = native.Target;
 const power_backend = @import("desktop-power.zig");
@@ -18,14 +19,6 @@ fn css(widget: anytype, name: [*:0]const u8) void {
 }
 fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
     _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
-}
-fn pack(box: anytype, child: anytype, expand: bool) void {
-    c.gtk_box_pack_start(cast(c.GtkBox, box), child, @intFromBool(expand), @intFromBool(expand), 0);
-}
-fn label(text: [*:0]const u8) *c.GtkWidget {
-    const widget = c.gtk_label_new(text).?;
-    c.gtk_label_set_xalign(cast(c.GtkLabel, widget), 0);
-    return widget;
 }
 pub fn settings(schema: [*:0]const u8) ?*c.GSettings {
     const source = c.g_settings_schema_source_get_default() orelse return null;
@@ -64,7 +57,11 @@ pub const Controls = struct {
     refs: usize = 1,
     session_busy: bool = false,
     cancel: *c.GCancellable,
-    dialog: ?*c.GtkWidget = null,
+    dialog: ?*auth.Dialog = null,
+    dialog_power: bool = false,
+    power_choices: [3]auth.native.Choice = .{
+        .{ .label = "Performance" }, .{ .label = "Balanced" }, .{ .label = "Power Saver" },
+    },
 
     pub fn redraw(self: *Controls) void {
         if (self.dead) return;
@@ -79,6 +76,7 @@ pub const Controls = struct {
     pub fn setPowerState(self: *Controls, state: power_backend.State, pending: bool) void {
         self.view.model.power_state = state;
         self.view.model.power_pending = pending;
+        self.syncPowerDialog();
         self.redraw();
     }
     fn selectProfile(self: *Controls, index: usize) void {
@@ -323,43 +321,57 @@ pub const Controls = struct {
         if (!self.dead) self.syncPreferences();
     }
 
+    fn dialogError(self: *Controls, err: anyerror) void {
+        std.log.err("quick-settings dialog: {s}", .{@errorName(err)});
+        self.setMessage("Could not open dialog. Please try again.");
+    }
+    fn syncPowerDialog(self: *Controls) void {
+        for (&self.power_choices, 0..) |*choice, i| {
+            choice.enabled = self.view.model.power_state.available[i] and !self.view.model.power_pending;
+            choice.selected = if (self.view.model.power_state.active) |active| @backingInt(active) == i else false;
+        }
+        if (self.dialog_power) if (self.dialog) |dialog| {
+            if (dialog.view.focus != .accept and !dialog.view.choiceEnabled(dialog.view.focus)) dialog.focus(.accept);
+            c.gtk_widget_queue_draw(dialog.canvas);
+        };
+    }
     fn powerSettings(_: ?*c.GtkButton, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Controls, ptr);
         if (self.dialog) |dialog| {
-            c.gtk_window_present(cast(c.GtkWindow, dialog));
+            c.gtk_window_present(cast(c.GtkWindow, dialog.window));
             return;
         }
+        self.syncPowerDialog();
         c.gtk_popover_popdown(cast(c.GtkPopover, self.popover));
-        const dialog = c.gtk_dialog_new_with_buttons("Power", null, 0, @as([*:0]const u8, "Close"), @as(c_int, c.GTK_RESPONSE_CLOSE), @as(?*anyopaque, null)).?;
+        const dialog = auth.Dialog.createWithOptions(.information, "Choose a power mode.", .{
+            .title = "Power Mode",
+            .role = "desktop-power-settings",
+            .icon = "power-profile-balanced-symbolic",
+            .choices = &self.power_choices,
+        }) catch |err| {
+            self.dialogError(err);
+            return;
+        };
         self.dialog = dialog;
-        const box = c.gtk_dialog_get_content_area(cast(c.GtkDialog, dialog));
-        c.gtk_container_set_border_width(cast(c.GtkContainer, box), 18);
-        c.gtk_box_set_spacing(cast(c.GtkBox, box), 12);
-        c.gtk_window_set_default_size(cast(c.GtkWindow, dialog), 420, -1);
-        pack(box, label("Power Mode"), false);
-        for ([_][*:0]const u8{ "Performance", "Balanced", "Power Saver" }, 0..) |name, i| {
-            const button = c.gtk_button_new_with_label(name).?;
-            c.g_object_set_data(cast(c.GObject, button), "profile-index", @ptrFromInt(i + 1));
-            c.gtk_widget_set_sensitive(button, @intFromBool(self.view.model.power_state.available[i] and !self.view.model.power_pending));
-            connect(button, "clicked", &dialogProfile, self);
-            pack(box, button, false);
-        }
+        self.dialog_power = true;
+        dialog.choice_context = self;
+        dialog.choice_selected = &dialogProfile;
         self.refs += 1;
-        connect(dialog, "response", &powerSettingsClosed, self);
-        c.gtk_widget_show_all(dialog);
+        connect(dialog.window, "response", &powerSettingsClosed, self);
     }
-    fn dialogProfile(button: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
+    fn dialogProfile(ptr: ?*anyopaque, index: usize) void {
         const self = cast(Controls, ptr);
-        if (self.dead) return;
-        const profile_ptr = c.g_object_get_data(cast(c.GObject, button), "profile-index") orelse return;
-        const index = @intFromPtr(profile_ptr) - 1;
         self.selectProfile(index);
     }
-    fn powerSettingsClosed(dialog: *c.GtkDialog, _: c_int, ptr: c.gpointer) callconv(.c) void {
-        const self = cast(Controls, ptr);
+    fn closeDialog(self: *Controls) void {
+        const dialog = self.dialog orelse return;
         self.dialog = null;
-        c.gtk_widget_destroy(@ptrCast(dialog));
+        self.dialog_power = false;
+        dialog.destroy();
         self.release();
+    }
+    fn powerSettingsClosed(_: *c.GtkDialog, _: c_int, ptr: c.gpointer) callconv(.c) void {
+        cast(Controls, ptr).closeDialog();
     }
 
     fn launch(self: *Controls, command: [:0]const u8) void {
@@ -576,42 +588,38 @@ pub const Controls = struct {
             return;
         }
         if (self.dialog) |dialog| {
-            c.gtk_window_present(cast(c.GtkWindow, dialog));
+            c.gtk_window_present(cast(c.GtkWindow, dialog.window));
             return;
         }
         c.gtk_popover_popdown(cast(c.GtkPopover, self.popover));
-        const dialog = c.gtk_dialog_new_with_buttons("Authentication Required", null, c.GTK_DIALOG_MODAL, @as([*:0]const u8, "Cancel"), @as(c_int, c.GTK_RESPONSE_CANCEL), @as([*:0]const u8, "Connect"), @as(c_int, c.GTK_RESPONSE_ACCEPT), @as(?*anyopaque, null)).?;
+        const dialog = auth.Dialog.createWithOptions(.password, ap.title, .{
+            .title = "Authentication Required",
+            .role = "desktop-network-auth",
+            .accept = "Connect",
+            .icon = "network-wireless-symbolic",
+        }) catch |err| {
+            self.dialogError(err);
+            return;
+        };
         self.dialog = dialog;
-        const content = c.gtk_dialog_get_content_area(cast(c.GtkDialog, dialog));
-        c.gtk_container_set_border_width(cast(c.GtkContainer, content), 18);
-        c.gtk_box_set_spacing(cast(c.GtkBox, content), 12);
-        pack(content, label(ap.title), false);
-        const password = c.gtk_entry_new().?;
-        c.gtk_entry_set_visibility(cast(c.GtkEntry, password), 0);
-        c.gtk_entry_set_input_purpose(cast(c.GtkEntry, password), c.GTK_INPUT_PURPOSE_PASSWORD);
-        c.gtk_entry_set_placeholder_text(cast(c.GtkEntry, password), "Password");
-        c.gtk_entry_set_activates_default(cast(c.GtkEntry, password), 1);
-        c.gtk_dialog_set_default_response(cast(c.GtkDialog, dialog), c.GTK_RESPONSE_ACCEPT);
-        pack(content, password, false);
-        c.g_object_set_data(cast(c.GObject, dialog), "password", password);
-        c.g_object_set_data_full(cast(c.GObject, dialog), "ssid", c.g_strdup(ssid), &freeData);
+        c.g_object_set_data_full(cast(c.GObject, dialog.window), "ssid", c.g_strdup(ssid), &freeData);
         self.refs += 1;
-        connect(dialog, "response", &networkConfirmed, self);
-        c.gtk_widget_show_all(dialog);
+        connect(dialog.window, "response", &networkConfirmed, self);
     }
-    fn networkConfirmed(dialog: *c.GtkDialog, response: c_int, ptr: c.gpointer) callconv(.c) void {
+    fn networkConfirmed(window: *c.GtkDialog, response: c_int, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Controls, ptr);
-        const entry: *c.GtkEntry = @ptrCast(@alignCast(c.g_object_get_data(cast(c.GObject, dialog), "password")));
-        const ssid: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, dialog), "ssid"));
-        if (!self.dead and response == c.GTK_RESPONSE_ACCEPT) {
+        const dialog = self.dialog.?;
+        const ssid: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, window), "ssid"));
+        if (!self.dead and response == c.GTK_RESPONSE_OK) {
+            if (!(dialog.validatePassword() catch {
+                self.closeDialog();
+                return;
+            })) return;
             if (self.network_client) |client| if (client.state().ap(std.mem.span(ssid))) |ap| {
-                self.networkAction(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = std.mem.span(c.gtk_entry_get_text(entry)) } });
+                self.networkAction(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = dialog.entry.?.buffer.value() } });
             };
         }
-        c.gtk_entry_set_text(entry, "");
-        self.dialog = null;
-        c.gtk_widget_destroy(@ptrCast(dialog));
-        self.release();
+        self.closeDialog();
     }
 
     fn screenshot(ptr: c.gpointer) callconv(.c) c.gboolean {
@@ -627,38 +635,32 @@ pub const Controls = struct {
     fn confirmAction(self: *Controls, action: [:0]const u8, title: [:0]const u8) void {
         if (self.session_busy) return;
         if (self.dialog) |dialog| {
-            c.gtk_window_present(cast(c.GtkWindow, dialog));
+            c.gtk_window_present(cast(c.GtkWindow, dialog.window));
             return;
         }
         c.gtk_popover_popdown(cast(c.GtkPopover, self.popover));
-        const dialog = c.gtk_message_dialog_new(null, c.GTK_DIALOG_MODAL, c.GTK_MESSAGE_QUESTION, c.GTK_BUTTONS_CANCEL, "%s", title.ptr).?;
+        const dialog = auth.Dialog.createWithOptions(.confirm, title, .{
+            .title = "Confirm Session Action",
+            .role = "desktop-session-confirm",
+            .accept = "Confirm",
+            .cancel = "Cancel",
+            .icon = "system-shutdown-symbolic",
+        }) catch |err| {
+            self.dialogError(err);
+            return;
+        };
         self.dialog = dialog;
-        _ = c.gtk_dialog_add_button(cast(c.GtkDialog, dialog), "Confirm", c.GTK_RESPONSE_ACCEPT);
-        c.g_object_set_data(cast(c.GObject, dialog), "action", @constCast(action.ptr));
+        c.g_object_set_data(cast(c.GObject, dialog.window), "action", @constCast(action.ptr));
         self.refs += 1;
-        connect(dialog, "response", &confirmed, self);
-        c.gtk_widget_show(dialog);
+        connect(dialog.window, "response", &confirmed, self);
     }
-    fn confirmed(dialog: *c.GtkDialog, response: c_int, ptr: c.gpointer) callconv(.c) void {
+    fn confirmed(window: *c.GtkDialog, response: c_int, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Controls, ptr);
-        const action: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, dialog), "action"));
-        if (response == c.GTK_RESPONSE_ACCEPT and !self.dead) {
-            const name = std.mem.span(action);
-            const act: ?session.Action = if (std.mem.eql(u8, name, "suspend"))
-                .@"suspend"
-            else if (std.mem.eql(u8, name, "reboot"))
-                .reboot
-            else if (std.mem.eql(u8, name, "poweroff"))
-                .poweroff
-            else if (std.mem.eql(u8, name, "logout"))
-                .logout
-            else
-                null;
-            if (act) |selected| self.sessionAction(selected);
+        const action: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, window), "action"));
+        if (response == c.GTK_RESPONSE_OK and !self.dead) {
+            if (std.meta.stringToEnum(session.Action, std.mem.span(action))) |selected| self.sessionAction(selected);
         }
-        self.dialog = null;
-        c.gtk_widget_destroy(@ptrCast(dialog));
-        self.release();
+        self.closeDialog();
     }
     pub fn deinit(self: *Controls) void {
         self.dead = true;
@@ -667,7 +669,7 @@ pub const Controls = struct {
         if (self.network_client) |client| client.destroy();
         _ = c.g_signal_handlers_disconnect_matched(self.popover, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         _ = c.g_signal_handlers_disconnect_matched(self.canvas, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-        if (self.dialog) |dialog| c.gtk_dialog_response(cast(c.GtkDialog, dialog), c.GTK_RESPONSE_CANCEL);
+        if (self.dialog) |dialog| dialog.respond(false);
         _ = c.g_source_remove(self.timer);
         if (self.volume_timer != 0) _ = c.g_source_remove(self.volume_timer);
         if (self.brightness_timer != 0) _ = c.g_source_remove(self.brightness_timer);

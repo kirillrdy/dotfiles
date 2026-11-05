@@ -23,6 +23,8 @@ pub const Dialog = struct {
     accepted: bool = false,
     failed: bool = false,
     enabled: bool = true,
+    choice_context: ?*anyopaque = null,
+    choice_selected: ?*const fn (?*anyopaque, usize) void = null,
 
     pub fn create(mode: Mode, prompt_text: [:0]const u8) !*Dialog {
         return createWithOptions(mode, prompt_text, .{});
@@ -33,8 +35,12 @@ pub const Dialog = struct {
         accept: ?[:0]const u8 = null,
         icon: [:0]const u8 = "dialog-password",
         confirmation: bool = false,
+        cancel: ?[:0]const u8 = null,
+        // Choices and their labels must outlive the dialog; flags may update in place.
+        choices: []const native.Choice = &.{},
     };
     pub fn createWithOptions(mode: Mode, prompt_text: [:0]const u8, options: Options) !*Dialog {
+        if (options.choices.len > 3 or (options.choices.len != 0 and mode != .information)) return error.InvalidChoices;
         if (options.confirmation and mode != .password) return error.InvalidConfirmationMode;
         const self = try a.create(Dialog);
         errdefer a.destroy(self);
@@ -43,6 +49,8 @@ pub const Dialog = struct {
         var view = native.View.init(mode);
         errdefer view.deinit(a);
         view.confirmation = options.confirmation;
+        view.cancel_label = options.cancel;
+        view.choices = options.choices;
         view.title = options.title;
         view.accept_label = options.accept;
         try view.prepare(a, prompt, 1);
@@ -185,7 +193,7 @@ pub const Dialog = struct {
         self.view.focus = target;
         if (self.entry) |entry| entry.focus(self.enabled and target == .entry);
         if (self.confirmation) |entry| entry.focus(self.enabled and target == .confirmation);
-        const rect = if (target == .entry) self.view.entryRect() else if (target == .confirmation) self.view.confirmationRect() else self.view.buttonRect(target);
+        const rect = self.view.targetRect(target);
         c.gtk_adjustment_clamp_page(c.gtk_scrolled_window_get_vadjustment(cast(c.GtkScrolledWindow, self.scroll)), rect.y, rect.y + rect.height);
         changed(self);
     }
@@ -259,9 +267,9 @@ pub const Dialog = struct {
         self.view.pressed = .none;
         if (self.entry) |entry| entry.dragging = false;
         if (self.confirmation) |entry| entry.dragging = false;
-        const activate = (target == .accept or target == .cancel) and self.view.hit(event.x, event.y) == target;
+        const clicked = target != .none and self.view.hit(event.x, event.y) == target;
         changed(self);
-        if (activate) self.respond(target == .accept);
+        if (clicked) self.activate(target);
         return 1;
     }
     fn motion(_: *c.GtkWidget, event: *c.GdkEventMotion, data: c.gpointer) callconv(.c) c.gboolean {
@@ -303,7 +311,7 @@ pub const Dialog = struct {
                 self.focus(self.view.focus);
             },
             0xff0d, 0xff8d => {
-                self.respond(self.view.focus != .cancel);
+                self.activate(if (self.view.focus == .entry or self.view.focus == .confirmation) .accept else self.view.focus);
                 return true;
             },
             else => {
@@ -318,16 +326,23 @@ pub const Dialog = struct {
                         entry.insert(bytes[0..len]) catch {};
                     }
                 } else if (symbol == 0x20) {
-                    self.respond(self.view.focus == .accept);
+                    self.activate(self.view.focus);
                     return true;
-                } else if (symbol == 0xff51 or symbol == 0xff53) {
-                    self.view.stepFocus(symbol == 0xff51);
+                } else if (symbol == 0xff51 or symbol == 0xff53 or (self.view.choices.len != 0 and (symbol == 0xff52 or symbol == 0xff54))) {
+                    self.view.stepFocus(symbol == 0xff51 or symbol == 0xff52);
                     self.focus(self.view.focus);
                 } else return false;
             },
         }
         changed(self);
         return true;
+    }
+    pub fn activate(self: *Dialog, target: native.Target) void {
+        for (native.choice_targets, 0..) |choice, i| if (target == choice) {
+            if (self.view.choiceEnabled(target)) if (self.choice_selected) |callback| callback(self.choice_context, i);
+            return;
+        };
+        if (target == .accept or target == .cancel) self.respond(target == .accept);
     }
     pub fn respond(self: *Dialog, accepted: bool) void {
         if (accepted and !self.enabled) return;

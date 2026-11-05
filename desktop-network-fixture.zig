@@ -120,6 +120,24 @@ pub fn main(init: std.process.Init) !void {
         c.gtk_widget_destroy(ui.window);
         while (ui.network_operations != 0) pump();
         ui.destroy();
+        controls.view.submenu = .network;
+        controls.redraw();
+        controls.activate(.network0);
+        try std.testing.expect(controls.dialog != null);
+        try std.testing.expectEqualStrings(state.access_points.items[0].title, controls.dialog.?.prompt);
+        // Empty submissions stay open and display an inline error.
+        try std.testing.expect(controls.dialog.?.handleKey(0xff0d, 0));
+        try std.testing.expect(controls.dialog.?.view.status_error);
+        try controls.dialog.?.entry.?.insert("cancelled-quick-secret");
+        try std.testing.expect(controls.dialog.?.handleKey(0xff1b, 0));
+        try std.testing.expect(controls.dialog == null);
+        controls.activate(.network0);
+        try controls.dialog.?.entry.?.insert("quick-native-secret");
+        try std.testing.expect(controls.dialog.?.handleKey(0xff0d, 0));
+        try std.testing.expect(controls.dialog == null);
+        settle();
+        controls.activate(.network0);
+        try controls.dialog.?.entry.?.insert("teardown-quick-secret");
         controls.deinit();
         c.gtk_widget_destroy(window);
         settle();
