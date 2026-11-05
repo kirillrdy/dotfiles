@@ -9,7 +9,7 @@ const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.pa
 
 pub const Buffer = struct {
     pub const capacity = 4096;
-    bytes: [capacity]u8 = @splat(0),
+    bytes: [capacity:0]u8 = @splat(0),
     len: usize = 0,
     cursor: usize = 0,
     anchor: usize = 0,
@@ -35,6 +35,9 @@ pub const Buffer = struct {
     }
     pub fn value(self: *const Buffer) []const u8 {
         return self.bytes[0..self.len];
+    }
+    pub fn valueZ(self: *const Buffer) [:0]const u8 {
+        return self.bytes[0..self.len :0];
     }
     pub fn selectAll(self: *Buffer) void {
         self.anchor = 0;
@@ -111,8 +114,10 @@ pub const Entry = struct {
     data: ?*anyopaque,
     rect: Rect = .{ .x = 0, .y = 0, .width = 400, .height = 42 },
     focused: bool = false,
-    // Only PAM ECHO_ON challenges opt into visible, uncached glyphs.
+    // Echoed PAM challenges and public form fields use visible glyphs.
+    // Only explicitly public fields may copy their text to the clipboard.
     echo: bool = false,
+    public_text: bool = false,
     dragging: bool = false,
     caret: bool = true,
     blink: c.guint = 0,
@@ -141,6 +146,11 @@ pub const Entry = struct {
         self.connect(widget, "unrealize", &unrealized);
         if (c.gtk_widget_get_window(widget)) |window| c.gtk_im_context_set_client_window(im, window);
         return self;
+    }
+    pub fn makePublic(self: *Entry) void {
+        self.echo = true;
+        self.public_text = true;
+        c.g_object_set(self.im, "input-purpose", @as(c_int, 0), @as(?*anyopaque, null));
     }
     fn connect(self: *Entry, object: anytype, signal: [*:0]const u8, callback: anytype) void {
         _ = c.g_signal_connect_data(object, signal, @ptrCast(callback), self, null, 0);
@@ -263,7 +273,16 @@ pub const Entry = struct {
                 self.resetComposition();
                 self.buffer.erase(false, true);
             },
-            'c', 'C', 'x', 'X' => return control, // Never export a password to the clipboard.
+            'c', 'C', 'x', 'X' => {
+                if (!control) return false;
+                // Echoed authentication responses still remain private.
+                if (!self.public_text or !self.buffer.selected()) return true;
+                const clipboard = c.gtk_clipboard_get_default(c.gtk_widget_get_display(self.widget)) orelse return true;
+                const start = @min(self.buffer.cursor, self.buffer.anchor);
+                const end_offset = @max(self.buffer.cursor, self.buffer.anchor);
+                c.gtk_clipboard_set_text(clipboard, self.buffer.bytes[start..end_offset].ptr, @intCast(end_offset - start));
+                if (symbol == 'x' or symbol == 'X') self.buffer.erase(false, false);
+            },
             'v', 'V' => {
                 if (!control) return false;
                 self.paste();

@@ -1,6 +1,7 @@
 //! Native connection properties. Unknown settings round-trip without libnm.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
+const native = @import("desktop-form.zig");
 const network = @import("desktop-network.zig");
 const g = network.api;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
@@ -9,23 +10,8 @@ fn z(s: []const u8) [:0]u8 {
     return a.dupeSentinel(u8, s, 0) catch @panic("out of memory");
 }
 const eq = c.__zig.eq;
-fn pack(box: *c.GtkWidget, widget: *c.GtkWidget) void {
-    c.gtk_box_pack_start(cast(c.GtkBox, box), widget, 0, 0, 0);
-}
-fn label(caption: [*:0]const u8) *c.GtkWidget {
-    const w = c.gtk_label_new(caption).?;
-    c.gtk_label_set_xalign(cast(c.GtkLabel, w), 0);
-    return w;
-}
-fn entry(box: *c.GtkWidget, title: [*:0]const u8, hint: [*:0]const u8) *c.GtkWidget {
-    pack(box, label(title));
-    const w = c.gtk_entry_new().?;
-    c.gtk_entry_set_placeholder_text(cast(c.GtkEntry, w), hint);
-    pack(box, w);
-    return w;
-}
-fn text(w: *c.GtkWidget) [:0]const u8 {
-    return std.mem.span(c.gtk_entry_get_text(cast(c.GtkEntry, w)));
+fn text(w: *native.Item) [:0]const u8 {
+    return w.value();
 }
 fn builder(kind: [:0]const u8) *g.GVariantBuilder {
     return g.g_variant_builder_new(@ptrCast(kind));
@@ -84,10 +70,11 @@ pub const Row = struct {
     group: [:0]u8,
     key: [:0]u8,
     kind: [:0]u8,
-    widget: *c.GtkWidget,
-    remove: *c.GtkWidget,
+    widget: *native.Item,
+    remove: *native.Item,
     original: ?*c.GVariant,
     initial: [:0]u8,
+    preserve_original: bool = false,
     bytes_as_text: bool = false,
     addresses_as_text: bool = false,
     fn deinit(self: *Row) void {
@@ -98,9 +85,10 @@ pub const Row = struct {
         if (self.original) |v| c.g_variant_unref(v);
     }
     fn value(self: *Row) !?*c.GVariant {
-        if (c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, self.remove)) != 0) return null;
+        if (self.remove.checked) return null;
+        if (self.preserve_original) return g.g_variant_ref(self.original.?);
         if (eq(self.kind, "b")) {
-            const enabled = c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, self.widget));
+            const enabled: c_int = @intFromBool(self.widget.checked);
             return g.g_variant_ref_sink(c.g_variant_new("b", enabled));
         }
         const entered = text(self.widget);
@@ -152,9 +140,9 @@ pub fn parseAddresses(input: []const u8, ipv6: bool) !*c.GVariant {
 }
 pub const Editor = struct {
     window: *c.GtkWidget,
-    body: *c.GtkWidget,
-    message: *c.GtkWidget,
-    save_button: *c.GtkWidget,
+    ui: *native.Form,
+    message: *native.Item,
+    save_button: *native.Item,
     client: *network.Client,
     cancel: *c.GCancellable,
     path: ?[:0]u8,
@@ -163,27 +151,16 @@ pub const Editor = struct {
     refs: usize = 1,
     closed: bool = false,
     saving: bool = false,
-    property_group: *c.GtkWidget,
-    property_key: *c.GtkWidget,
-    property_type: *c.GtkWidget,
+    property_group: *native.Item,
+    property_key: *native.Item,
+    property_type: *native.Item,
     pub fn create(parent: *c.GtkWidget, profile: ?network.Profile) *Editor {
         const self = a.create(Editor) catch @panic("out of memory");
-        const window = c.gtk_dialog_new_with_buttons(if (profile != null) "Edit Connection" else "New Connection", cast(c.GtkWindow, parent), c.GTK_DIALOG_DESTROY_WITH_PARENT, @as([*:0]const u8, "Cancel"), c.GTK_RESPONSE_CANCEL, @as([*:0]const u8, "Save"), c.GTK_RESPONSE_OK, @as(?*anyopaque, null)).?;
-        c.gtk_window_set_default_size(cast(c.GtkWindow, window), 640, 700);
-        const content = c.gtk_dialog_get_content_area(cast(c.GtkDialog, window));
-        const scroll = c.gtk_scrolled_window_new(null, null).?;
-        c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_AUTOMATIC);
-        c.gtk_box_pack_start(cast(c.GtkBox, content), scroll, 1, 1, 0);
-        const body = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 8).?;
-        c.gtk_container_set_border_width(cast(c.GtkContainer, body), 16);
-        c.gtk_container_add(cast(c.GtkContainer, scroll), body);
-        const message = label("");
-        c.gtk_label_set_line_wrap(cast(c.GtkLabel, message), 1);
-        pack(cast(c.GtkWidget, content), message);
-        const extra = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 4).?;
-        self.* = .{ .window = window, .body = body, .message = message, .save_button = c.gtk_dialog_get_widget_for_response(cast(c.GtkDialog, window), c.GTK_RESPONSE_OK).?, .cancel = c.g_cancellable_new().?, .path = if (profile) |p| z(p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(&changed, self) catch @panic("out of memory"), .property_group = entry(extra, "Section", "e.g. ipv4, vlan, 802-1x"), .property_key = entry(extra, "Property", "e.g. mtu, parent, identity"), .property_type = entry(extra, "Value type", "s: text, b: boolean, u: unsigned integer, as: text list") };
-        _ = c.g_signal_connect_data(window, "response", @ptrCast(&response), self, null, 0);
-        _ = c.g_signal_connect_data(window, "destroy", @ptrCast(&destroyed), self, null, 0);
+        const ui = native.Form.create(if (profile != null) "Edit Connection" else "New Connection", self, &action, &fieldChanged) catch @panic("out of memory");
+        const window = ui.window;
+        c.gtk_window_set_transient_for(cast(c.GtkWindow, window), cast(c.GtkWindow, parent));
+        c.g_object_set(window, "destroy-with-parent", @as(c_int, 1), @as(?*anyopaque, null));
+        self.* = .{ .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = c.g_cancellable_new().?, .path = if (profile) |p| z(p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(&changed, self) catch @panic("out of memory"), .property_group = undefined, .property_key = undefined, .property_type = undefined };
         const base = if (profile) |p| g.g_variant_ref(p.base).? else template();
         defer c.g_variant_unref(base);
         // Known fields first; every other property remains editable below them.
@@ -214,13 +191,17 @@ pub const Editor = struct {
                 self.addRow(.{ .group = group_name, .key = key_name, .title = key_name, .kind = std.mem.span(c.g_variant_get_type_string(value)) }, value);
             }
         }
-        pack(body, label("Additional connection properties"));
-        pack(body, extra);
-        const add_button = c.gtk_button_new_with_label("Add property").?;
-        pack(extra, add_button);
-        _ = c.g_signal_connect_data(add_button, "clicked", @ptrCast(&addProperty), self, null, 0);
-        if (self.row("connection", "type")) |kind_row| _ = c.g_signal_connect_data(kind_row.widget, "changed", @ptrCast(&kindChanged), self, null, 0);
-        c.gtk_widget_show_all(window);
+        _ = ui.add(.heading, "Additional connection properties", "", false) catch @panic("out of memory");
+        self.property_group = ui.get(ui.add(.entry, "Section", "e.g. ipv4, vlan, 802-1x", false) catch @panic("out of memory"));
+        self.property_key = ui.get(ui.add(.entry, "Property", "e.g. mtu, parent, identity", false) catch @panic("out of memory"));
+        self.property_type = ui.get(ui.add(.entry, "Value type", "s: text, b: boolean, u: unsigned integer, as: text list", false) catch @panic("out of memory"));
+        _ = ui.add(.button, "Add property", "", false) catch @panic("out of memory");
+        self.message = ui.get(ui.addPinned(.label, "") catch @panic("out of memory"));
+        self.save_button = ui.get(ui.addPinned(.button, "Save") catch @panic("out of memory"));
+        const cancel_button = ui.get(ui.addPinned(.button, "Cancel") catch @panic("out of memory"));
+        cancel_button.always_enabled = true;
+        _ = c.g_signal_connect_data(window, "destroy", @ptrCast(&destroyed), self, null, 0);
+        ui.show();
         return self;
     }
     pub fn row(self: *Editor, group: []const u8, key: []const u8) ?*Row {
@@ -231,20 +212,17 @@ pub const Editor = struct {
         const kind = if (original) |v| std.mem.span(c.g_variant_get_type_string(v)) else field.kind;
         const caption = std.fmt.allocPrintSentinel(a, "{s} · {s}", .{ field.group, field.title }, 0) catch @panic("out of memory");
         defer a.free(caption);
-        const line = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 6).?;
-        pack(self.body, label(caption));
-        pack(self.body, line);
-        const widget = if (eq(kind, "b")) c.gtk_check_button_new_with_label(field.title).? else c.gtk_entry_new().?;
-        c.gtk_box_pack_start(cast(c.GtkBox, line), widget, 1, 1, 0);
-        const remove = c.gtk_check_button_new_with_label("Use default").?;
-        pack(line, remove);
-        if (original == null and eq(kind, "b")) c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, remove), 1);
-        if (eq(kind, "b")) _ = c.g_signal_connect_data(widget, "toggled", @ptrCast(&booleanChanged), remove, null, 0);
+        const widget = self.ui.get(self.ui.add(if (eq(kind, "b")) .toggle else .entry, caption, field.hint, network.secretProperty(field.key) and !std.mem.endsWith(u8, field.key, "-flags")) catch @panic("out of memory"));
+        const default_label = std.fmt.allocPrintSentinel(a, "Use default · {s}", .{field.key}, 0) catch @panic("out of memory");
+        defer a.free(default_label);
+        const remove = self.ui.get(self.ui.add(.toggle, default_label, "", false) catch @panic("out of memory"));
+        remove.checked = original == null and eq(kind, "b");
         var initial: [:0]u8 = z("");
+        var preserve_original = false;
         var byte_text = eq(field.key, "ssid");
         var address_text = eq(field.key, "address-data");
         if (original) |v| {
-            if (eq(kind, "b")) c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, widget), c.g_variant_get_boolean(v)) else {
+            if (eq(kind, "b")) widget.checked = c.g_variant_get_boolean(v) != 0 else {
                 a.free(initial);
                 if (eq(kind, "s")) initial = z(std.mem.span(c.g_variant_get_string(v, null))) else if (byte_text) blk: {
                     var len: usize = 0;
@@ -302,30 +280,46 @@ pub const Editor = struct {
                     defer c.g_free(printed);
                     initial = z(std.mem.span(printed));
                 }
-                c.gtk_entry_set_text(cast(c.GtkEntry, widget), initial);
+                self.ui.setText(widget.id, initial) catch {
+                    // Arbitrary GVariant data must still round-trip losslessly.
+                    preserve_original = true;
+                    self.ui.setText(widget.id, "[Original value preserved; too large or multiline to edit]") catch {};
+                    widget.enabled = false;
+                };
             }
         }
-        if (!eq(kind, "b")) {
-            c.gtk_entry_set_placeholder_text(cast(c.GtkEntry, widget), field.hint);
-            if (network.secretProperty(field.key) and !std.mem.endsWith(u8, field.key, "-flags")) c.gtk_entry_set_visibility(cast(c.GtkEntry, widget), 0);
-        }
-        self.rows.append(a, .{ .group = z(field.group), .key = z(field.key), .kind = z(kind), .widget = widget, .remove = remove, .original = original, .initial = initial, .bytes_as_text = byte_text, .addresses_as_text = address_text }) catch @panic("out of memory");
+        self.rows.append(a, .{ .group = z(field.group), .key = z(field.key), .kind = z(kind), .widget = widget, .remove = remove, .original = original, .initial = initial, .preserve_original = preserve_original, .bytes_as_text = byte_text, .addresses_as_text = address_text }) catch @panic("out of memory");
     }
-    fn booleanChanged(_: *c.GtkToggleButton, ptr: c.gpointer) callconv(.c) void {
-        c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, ptr), 0);
-    }
-    fn kindChanged(_: *c.GtkEntry, ptr: c.gpointer) callconv(.c) void {
+    fn fieldChanged(ptr: ?*anyopaque, id: usize) void {
         const self = cast(Editor, ptr);
+        if (self.closed or self.saving) return;
+        for (self.rows.items) |*r| if (r.widget.id == id and eq(r.kind, "b")) {
+            r.remove.checked = false;
+        };
+        const kind_row = self.row("connection", "type") orelse return;
+        if (kind_row.widget.id == id) self.kindChanged();
+    }
+    fn action(ptr: ?*anyopaque, id: usize) void {
+        const self = cast(Editor, ptr);
+        const title = self.ui.get(id).title;
+        if (eq(title, "Save")) self.save() else if (eq(title, "Cancel")) c.gtk_widget_destroy(self.window) else if (eq(title, "Add property")) self.addProperty();
+    }
+    pub fn setValue(self: *Editor, group: []const u8, key: []const u8, value: [:0]const u8) !void {
+        const field = self.row(group, key) orelse return error.UnknownProperty;
+        if (field.preserve_original) return error.ReadOnlyProperty;
+        try self.ui.setText(field.widget.id, value);
+        fieldChanged(self, field.widget.id);
+    }
+    fn kindChanged(self: *Editor) void {
         const kind_row = self.row("connection", "type") orelse return;
         const kind = text(kind_row.widget);
         for (fields) |field| {
             const wifi = eq(kind, "802-11-wireless") and (eq(field.group, "802-11-wireless-security") or eq(field.group, "802-1x"));
             if ((eq(field.group, kind) or wifi) and self.row(field.group, field.key) == null) self.addRow(field, null);
         }
-        c.gtk_widget_show_all(self.body);
+        self.ui.relayout();
     }
-    fn addProperty(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
-        const self = cast(Editor, ptr);
+    fn addProperty(self: *Editor) void {
         const group = text(self.property_group);
         const key = text(self.property_key);
         const kind = text(self.property_type);
@@ -334,7 +328,7 @@ pub const Editor = struct {
             return;
         }
         self.addRow(.{ .group = group, .key = key, .title = key, .kind = kind }, null);
-        c.gtk_widget_show_all(self.body);
+        self.ui.relayout();
     }
     pub fn values(self: *Editor) !*c.GVariant {
         const Group = struct { name: [:0]const u8, value: *g.GVariantBuilder };
@@ -346,7 +340,7 @@ pub const Editor = struct {
         for (self.rows.items) |*r| {
             const modern: ?[]const u8 = if (eq(r.key, "dns")) "dns-data" else if (eq(r.key, "addresses")) "address-data" else if (eq(r.key, "routes")) "route-data" else null;
             if (modern) |key| if (self.row(r.group, key)) |replacement| {
-                if (text(replacement.widget).len != 0 and c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, replacement.remove)) == 0) continue;
+                if (text(replacement.widget).len != 0 and !replacement.remove.checked) continue;
             };
             const value = r.value() catch |err| {
                 const message = std.fmt.allocPrintSentinel(a, "{s} · {s}: {s}", .{ r.group, r.key, @errorName(err) }, 0) catch @panic("out of memory");
@@ -391,8 +385,7 @@ pub const Editor = struct {
         }
         self.saving = true;
         self.refs += 1;
-        c.gtk_widget_set_sensitive(self.body, 0);
-        c.gtk_widget_set_sensitive(self.save_button, 0);
+        self.ui.setEnabled(false);
         self.setMessage("Saving connection…");
         self.client.perform(.{ .save = .{ .path = self.path, .settings = settings, .version = self.version } }, self.cancel, &saved, self);
     }
@@ -406,12 +399,7 @@ pub const Editor = struct {
             return;
         }
         self.setMessage(result.failure);
-        c.gtk_widget_set_sensitive(self.body, 1);
-        c.gtk_widget_set_sensitive(self.save_button, 1);
-    }
-    fn response(_: *c.GtkDialog, answer: c_int, ptr: c.gpointer) callconv(.c) void {
-        const self = cast(Editor, ptr);
-        if (answer == c.GTK_RESPONSE_OK) self.save() else c.gtk_widget_destroy(self.window);
+        self.ui.setEnabled(true);
     }
     fn changed(_: ?*anyopaque, _: *network.Client) void {}
     fn destroyed(_: *c.GtkWidget, ptr: c.gpointer) callconv(.c) void {
@@ -428,10 +416,12 @@ pub const Editor = struct {
         if (self.path) |path| a.free(path);
         for (self.rows.items) |*r| r.deinit();
         self.rows.deinit(a);
+        self.ui.deinit();
         a.destroy(self);
     }
     fn setMessage(self: *Editor, message: [:0]const u8) void {
-        c.gtk_label_set_text(cast(c.GtkLabel, self.message), message);
+        self.ui.setText(self.message.id, message) catch {};
+        self.ui.focusItem(self.message.id);
     }
 };
 fn template() *c.GVariant {

@@ -96,7 +96,10 @@ def main():
             server.change(AP, NAME+'.AccessPoint', {'RsnFlags': V('u', 0x100)})
             run('ui')
             assert server.last_added['802-11-wireless-security']['psk'] == 'quick-native-secret'
+            large_script = 'function FindProxyForURL(url, host) {\n' + '/* preserved */' * 400 + '\nreturn \"DIRECT\"; }'
+            server.settings['proxy']['pac-script'] = V('s', large_script)
             run('edit')
+            assert server.settings['proxy']['pac-script'].unpack() == large_script
             assert server.settings['connection']['uuid'].unpack() == 'test-uuid'
             assert server.settings['connection']['id'].unpack() == 'Native connection'
             assert server.settings['proxy']['pac-url'].unpack() == 'https://proxy.example/config'

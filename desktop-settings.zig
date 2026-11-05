@@ -1,287 +1,234 @@
-//! Settings window lifecycle and the GTK network client.
+//! Settings windows using native form controls and the existing system services.
 const std = @import("std");
 pub const c = @import("desktop-gtk.zig");
 pub const SoundControl = @import("desktop-sound-view.zig").Control;
 pub const Sound = @import("desktop-sound-settings.zig").Sound;
 const network = @import("desktop-network.zig");
 const editor = @import("desktop-network-editor.zig");
-// Test builds account for service state and asynchronous callback allocations.
+const native = @import("desktop-form.zig");
+const auth = @import("desktop-auth-dialog.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
-fn z(text: []const u8) [:0]u8 {
-    return a.dupeSentinel(u8, text, 0) catch @panic("out of memory");
+const eq = c.__zig.eq;
+fn z(value: []const u8) [:0]u8 {
+    return a.dupeSentinel(u8, value, 0) catch @panic("out of memory");
 }
-fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
-    _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
-}
-fn pack(box: *c.GtkWidget, child: *c.GtkWidget) void {
-    c.gtk_box_pack_start(cast(c.GtkBox, box), child, 0, 0, 0);
-}
-fn label(text: [*:0]const u8) *c.GtkWidget {
-    const widget = c.gtk_label_new(text);
-    c.gtk_label_set_xalign(cast(c.GtkLabel, widget), 0);
-    c.gtk_label_set_line_wrap(cast(c.GtkLabel, widget), 1);
-    return widget;
-}
-fn button(box: *c.GtkWidget, text: [*:0]const u8, callback: anytype, data: anytype) *c.GtkWidget {
-    const widget = c.gtk_button_new_with_label(text);
-    connect(widget, "clicked", callback, data);
-    pack(box, widget);
-    return widget;
-}
-
 pub const Mode = enum { sound, network };
 pub const Settings = struct {
-    mode: Mode,
+    mode: Mode = .network,
     window: *c.GtkWidget,
-    body: *c.GtkWidget,
-    message: *c.GtkWidget,
-    refresh_button: *c.GtkWidget,
+    ui: *native.Form,
+    message: *native.Item,
+    refresh_button: *native.Item,
     network_client: ?*network.Client = null,
     network_operations: usize = 0,
     closed: bool = false,
-    failed: bool = false,
     audio_cancel: *c.GCancellable,
-    ssids: ?*c.GtkWidget = null,
-    password: ?*c.GtkWidget = null,
-    hidden: ?*c.GtkWidget = null,
-    profiles: ?*c.GtkWidget = null,
-    devices: ?*c.GtkWidget = null,
-    status: ?*c.GtkWidget = null,
-
+    ssids: *native.Item,
+    manual: *native.Item,
+    password: *native.Item,
+    hidden: *native.Item,
+    profiles: *native.Item,
+    devices: *native.Item,
+    status: *native.Item,
     pub fn create(mode: Mode) *Settings {
         std.debug.assert(mode == .network);
         const self = a.create(Settings) catch @panic("out of memory");
-        const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
-        self.* = .{ .mode = mode, .window = window, .body = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 14), .message = label(""), .refresh_button = c.gtk_button_new_with_label("Refresh"), .audio_cancel = c.g_cancellable_new().? };
-        c.gtk_window_set_title(cast(c.GtkWindow, window), "Network");
-        c.gtk_window_set_default_size(cast(c.GtkWindow, window), 560, 600);
-        c.gtk_window_set_icon_name(cast(c.GtkWindow, window), "preferences-system-network");
-        const layout = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 12);
-        c.gtk_container_set_border_width(cast(c.GtkContainer, layout), 18);
-        c.gtk_container_add(cast(c.GtkContainer, window), layout);
-        const toolbar = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 8);
-        pack(layout, toolbar);
-        const title = label("Network");
-        c.gtk_box_pack_start(cast(c.GtkBox, toolbar), title, 1, 1, 0);
-        pack(toolbar, self.refresh_button);
-        connect(self.refresh_button, "clicked", &refreshClicked, self);
-        const scroll = c.gtk_scrolled_window_new(null, null);
-        c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_AUTOMATIC);
-        c.gtk_container_add(cast(c.GtkContainer, scroll), self.body);
-        c.gtk_box_pack_start(cast(c.GtkBox, layout), scroll, 1, 1, 0);
-        pack(layout, self.message);
-        c.gtk_label_set_max_width_chars(cast(c.GtkLabel, self.message), 60);
-        c.gtk_label_set_selectable(cast(c.GtkLabel, self.message), 1);
-        connect(window, "destroy", &destroyed, self);
-        if (mode == .network) {
-            self.makeNetwork();
-            self.network_client = network.Client.create(&networkChanged, self) catch null;
-        }
-        c.gtk_widget_show_all(window);
+        const ui = native.Form.create("Network", self, &action, &fieldChanged) catch @panic("out of memory");
+        self.* = .{ .window = ui.window, .ui = ui, .audio_cancel = c.g_cancellable_new().?, .message = undefined, .refresh_button = undefined, .ssids = undefined, .manual = undefined, .password = undefined, .hidden = undefined, .profiles = undefined, .devices = undefined, .status = undefined };
+        c.gtk_window_set_icon_name(cast(c.GtkWindow, self.window), "preferences-system-network");
+        self.status = self.add(.label, "Loading network devices…", "", false);
+        self.refresh_button = self.add(.button, "Refresh", "", false);
+        self.refresh_button.always_enabled = true;
+        const wifi_on = self.add(.button, "Enable Wi-Fi", "", false);
+        const wifi_off = self.add(.button, "Disable Wi-Fi", "", false);
+        ui.pair(wifi_on.id, wifi_off.id);
+        self.ssids = self.add(.choice, "Available Wi-Fi networks", "", false);
+        self.manual = self.add(.entry, "Wi-Fi network name", "Select a network above or enter its name", false);
+        self.password = self.add(.entry, "Password", "Leave empty for a saved or open network", true);
+        self.hidden = self.add(.toggle, "Hidden network", "", false);
+        _ = self.add(.button, "Connect to Wi-Fi", "", false);
+        self.profiles = self.add(.choice, "Saved connections", "", false);
+        const activate_profile = self.add(.button, "Connect", "", false);
+        const deactivate_profile = self.add(.button, "Disconnect", "", false);
+        ui.pair(activate_profile.id, deactivate_profile.id);
+        _ = self.add(.button, "Forget…", "", false);
+        self.devices = self.add(.choice, "Network devices", "", false);
+        _ = self.add(.button, "Disconnect device", "", false);
+        const edit_profile = self.add(.button, "Edit connection…", "", false);
+        const new_profile = self.add(.button, "New connection…", "", false);
+        ui.pair(edit_profile.id, new_profile.id);
+        self.message = ui.get(ui.addPinned(.label, "") catch @panic("out of memory"));
+        self.network_client = network.Client.create(&networkChanged, self) catch null;
+        _ = c.g_signal_connect_data(self.window, "destroy", @ptrCast(&destroyed), self, null, 0);
+        ui.show();
         self.refresh();
         return self;
     }
-    pub fn setMessage(self: *Settings, text: [*c]const u8) void {
-        c.gtk_label_set_text(cast(c.GtkLabel, self.message), text);
+    fn add(self: *Settings, kind: native.Kind, title: [:0]const u8, hint: [:0]const u8, secret: bool) *native.Item {
+        return self.ui.get(self.ui.add(kind, title, hint, secret) catch @panic("out of memory"));
+    }
+    pub fn setMessage(self: *Settings, message: [:0]const u8) void {
+        self.ui.setText(self.message.id, message) catch {};
+        if (message.len != 0) self.ui.focusItem(self.message.id);
     }
     fn sensitivity(self: *Settings) void {
         const idle = self.network_operations == 0;
-        c.gtk_widget_set_sensitive(self.refresh_button, @intFromBool(idle));
-        const available = self.network_client != null and self.network_client.?.state().available;
-        c.gtk_widget_set_sensitive(self.body, @intFromBool(idle and available));
+        self.refresh_button.enabled = idle;
+        self.ui.setEnabled(idle and self.network_client != null and self.network_client.?.state().available);
     }
-    /// The caller frees the state after asynchronous completions have drained.
     pub fn destroy(self: *Settings) void {
         std.debug.assert(self.closed and self.network_operations == 0);
         c.g_object_unref(self.audio_cancel);
+        self.ui.deinit();
         a.destroy(self);
     }
-    fn destroyed(_: *c.GtkWidget, data: c.gpointer) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(data));
+    fn destroyed(_: *c.GtkWidget, ptr: c.gpointer) callconv(.c) void {
+        const self = cast(Settings, ptr);
         self.closed = true;
         c.g_cancellable_cancel(self.audio_cancel);
         if (self.network_client) |client| client.destroy();
         self.network_client = null;
     }
-    fn refreshClicked(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(data));
-        self.refresh();
-    }
     pub fn refresh(self: *Settings) void {
         if (self.closed or self.network_operations != 0) return;
-        self.failed = false;
         if (self.network_client) |client| {
             client.refresh();
             if (client.state().available) self.networkAction(.scan) else self.renderNetwork(client.state());
-        } else self.setMessage("NetworkManager unavailable");
+        } else {
+            self.setMessage("NetworkManager unavailable");
+            self.sensitivity();
+        }
     }
     fn networkChanged(ptr: ?*anyopaque, client: *network.Client) void {
         const self = cast(Settings, ptr);
         if (!self.closed) self.renderNetwork(client.state());
     }
-    fn networkAction(self: *Settings, action: network.Action) void {
+    fn networkAction(self: *Settings, command: network.Action) void {
         if (self.closed or self.network_operations != 0) return;
         const client = self.network_client orelse {
             self.setMessage("NetworkManager unavailable");
             return;
         };
-        self.failed = false;
         self.network_operations += 1;
         self.setMessage("Working…");
         self.sensitivity();
-        client.perform(action, self.audio_cancel, &networkDone, self);
+        client.perform(command, self.audio_cancel, &networkDone, self);
     }
     fn networkDone(ptr: ?*anyopaque, result: network.Result) void {
         const self = cast(Settings, ptr);
         self.network_operations -= 1;
         if (self.closed) return;
-        switch (result) {
-            .success => self.setMessage(""),
-            .failure => |message| {
-                self.failed = true;
-                self.setMessage(message);
-            },
-        }
+        self.setMessage(if (result == .success) "" else result.failure);
         if (self.network_client) |client| self.renderNetwork(client.state());
         self.sensitivity();
-    }
-    fn makeNetwork(self: *Settings) void {
-        self.status = label("Loading network devices…");
-        pack(self.body, self.status.?);
-        const radio = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 8);
-        pack(self.body, radio);
-        _ = button(radio, "Enable Wi-Fi", &wifiOn, self);
-        _ = button(radio, "Disable Wi-Fi", &wifiOff, self);
-        pack(self.body, label("Wi-Fi network"));
-        self.ssids = c.gtk_combo_box_text_new_with_entry();
-        pack(self.body, self.ssids.?);
-        c.gtk_entry_set_placeholder_text(cast(c.GtkEntry, c.gtk_bin_get_child(cast(c.GtkBin, self.ssids.?))), "Select a network or enter its name");
-        self.password = c.gtk_entry_new();
-        c.gtk_entry_set_visibility(cast(c.GtkEntry, self.password.?), 0);
-        c.gtk_entry_set_input_purpose(cast(c.GtkEntry, self.password.?), c.GTK_INPUT_PURPOSE_PASSWORD);
-        c.gtk_entry_set_placeholder_text(cast(c.GtkEntry, self.password.?), "Password (leave empty for a saved or open network)");
-        pack(self.body, self.password.?);
-        self.hidden = c.gtk_check_button_new_with_label("Hidden network");
-        pack(self.body, self.hidden.?);
-        _ = button(self.body, "Connect to Wi-Fi", &wifiConnect, self);
-        pack(self.body, label("Saved connections"));
-        self.profiles = c.gtk_combo_box_text_new();
-        pack(self.body, self.profiles.?);
-        const profiles = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 8);
-        pack(self.body, profiles);
-        _ = button(profiles, "Connect", &profileConnect, self);
-        _ = button(profiles, "Disconnect", &profileDisconnect, self);
-        _ = button(profiles, "Forget…", &profileForget, self);
-        pack(self.body, label("Disconnect a device"));
-        self.devices = c.gtk_combo_box_text_new();
-        pack(self.body, self.devices.?);
-        _ = button(self.body, "Disconnect device", &deviceDisconnect, self);
-        _ = button(self.body, "Edit connection…", &editConnections, self);
-        _ = button(self.body, "New connection…", &newConnection, self);
     }
     pub fn renderNetwork(self: *Settings, state: *const network.State) void {
         var arena = std.heap.ArenaAllocator.init(a);
         defer arena.deinit();
         const alloc = arena.allocator();
-        const entry = cast(c.GtkEntry, c.gtk_bin_get_child(cast(c.GtkBin, self.ssids.?)));
-        const manual = alloc.dupeSentinel(u8, std.mem.span(c.gtk_entry_get_text(entry)), 0) catch @panic("out of memory");
-        const selected_ap = c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.ssids.?));
-        const ap_id = if (selected_ap != null) alloc.dupeSentinel(u8, std.mem.span(selected_ap), 0) catch @panic("out of memory") else null;
-        c.gtk_combo_box_text_remove_all(cast(c.GtkComboBoxText, self.ssids.?));
+        var options: std.ArrayList(native.Option) = .empty;
         var seen: std.StringHashMap(void) = .init(alloc);
         for (state.access_points.items) |ap| {
             if (ap.ssid.len == 0 or seen.contains(ap.ssid)) continue;
             seen.put(ap.ssid, {}) catch @panic("out of memory");
-            c.gtk_combo_box_text_append(cast(c.GtkComboBoxText, self.ssids.?), ap.path, ap.title);
+            options.append(alloc, .{ .id = ap.path, .label = ap.title }) catch @panic("out of memory");
         }
-        if (ap_id == null or c.gtk_combo_box_set_active_id(cast(c.GtkComboBox, self.ssids.?), ap_id.?) == 0) c.gtk_entry_set_text(entry, manual);
-        const profile_combo = cast(c.GtkComboBox, self.profiles.?);
-        const current_profile = c.gtk_combo_box_get_active_id(profile_combo);
-        const profile_id = if (current_profile != null) alloc.dupeSentinel(u8, std.mem.span(current_profile), 0) catch @panic("out of memory") else null;
-        c.gtk_combo_box_text_remove_all(cast(c.GtkComboBoxText, self.profiles.?));
-        for (state.profiles.items) |p| {
-            const title = std.fmt.allocPrintSentinel(alloc, "{s} ({s}){s}", .{ p.title, p.kind, if (p.active) " — connected" else "" }, 0) catch @panic("out of memory");
-            c.gtk_combo_box_text_append(cast(c.GtkComboBoxText, self.profiles.?), p.path, title);
+        self.ui.setOptions(self.ssids.id, options.items, false) catch @panic("out of memory");
+        if (self.ssids.selectedId()) |key| if (state.ap(key)) |ap| {
+            self.ui.setText(self.manual.id, ap.title) catch {};
+        };
+        options.clearRetainingCapacity();
+        for (state.profiles.items) |profile| {
+            const title = std.fmt.allocPrintSentinel(alloc, "{s} ({s}){s}", .{ profile.title, profile.kind, if (profile.active) " — connected" else "" }, 0) catch @panic("out of memory");
+            options.append(alloc, .{ .id = profile.path, .label = title }) catch @panic("out of memory");
         }
-        if (profile_id == null or c.gtk_combo_box_set_active_id(profile_combo, profile_id.?) == 0) c.gtk_combo_box_set_active(profile_combo, 0);
-        const device_combo = cast(c.GtkComboBox, self.devices.?);
-        const current_device = c.gtk_combo_box_get_active_id(device_combo);
-        const device_id = if (current_device != null) alloc.dupeSentinel(u8, std.mem.span(current_device), 0) catch @panic("out of memory") else null;
-        c.gtk_combo_box_text_remove_all(cast(c.GtkComboBoxText, self.devices.?));
+        self.ui.setOptions(self.profiles.id, options.items, true) catch @panic("out of memory");
+        options.clearRetainingCapacity();
         var summary: std.ArrayList(u8) = .empty;
-        for (state.devices.items) |d| {
-            if (d.kind == 32 or std.mem.eql(u8, d.interface, "lo")) continue;
-            const title = std.fmt.allocPrintSentinel(alloc, "{s}: {s} — {s}", .{ d.interface, network.deviceState(d.state), state.connectionName(d.active) }, 0) catch @panic("out of memory");
-            c.gtk_combo_box_text_append(cast(c.GtkComboBoxText, self.devices.?), d.path, title);
+        for (state.devices.items) |device| {
+            if (device.kind == 32 or eq(device.interface, "lo")) continue;
+            const title = std.fmt.allocPrintSentinel(alloc, "{s}: {s} — {s}", .{ device.interface, network.deviceState(device.state), state.connectionName(device.active) }, 0) catch @panic("out of memory");
+            options.append(alloc, .{ .id = device.path, .label = title }) catch @panic("out of memory");
             if (summary.items.len != 0) summary.append(alloc, '\n') catch @panic("out of memory");
             summary.appendSlice(alloc, title) catch @panic("out of memory");
         }
-        if (device_id == null or c.gtk_combo_box_set_active_id(device_combo, device_id.?) == 0) c.gtk_combo_box_set_active(device_combo, 0);
+        self.ui.setOptions(self.devices.id, options.items, true) catch @panic("out of memory");
         const status = alloc.dupeSentinel(u8, if (!state.available) "NetworkManager unavailable" else if (summary.items.len == 0) "No network devices available" else summary.items, 0) catch @panic("out of memory");
-        c.gtk_label_set_text(cast(c.GtkLabel, self.status.?), status);
+        self.ui.setText(self.status.id, status) catch {};
         self.sensitivity();
     }
-    fn wifiOn(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
-        cast(Settings, ptr).networkAction(.{ .wifi = true });
+    pub fn selectAP(self: *Settings, path: []const u8) bool {
+        if (!self.ui.select(self.ssids.id, path)) return false;
+        fieldChanged(self, self.ssids.id);
+        return true;
     }
-    fn wifiOff(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
-        cast(Settings, ptr).networkAction(.{ .wifi = false });
+    fn fieldChanged(ptr: ?*anyopaque, id: usize) void {
+        const self = cast(Settings, ptr);
+        if (self.closed) return;
+        if (id == self.manual.id) _ = self.ui.select(self.ssids.id, null);
+        if (id == self.ssids.id) {
+            const client = self.network_client orelse return;
+            const key = self.ssids.selectedId() orelse return;
+            const ap = client.state().ap(key) orelse return;
+            self.ui.setText(self.manual.id, ap.title) catch {};
+        }
     }
     pub fn wifiConnect(_: ?*c.GtkButton, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Settings, ptr);
         const client = self.network_client orelse return;
-        const entered = std.mem.span(c.gtk_entry_get_text(cast(c.GtkEntry, c.gtk_bin_get_child(cast(c.GtkBin, self.ssids.?)))));
-        const selected = c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.ssids.?));
-        const ap = if (selected != null) client.state().ap(std.mem.span(selected)) else null;
-        const password = c.gtk_entry_get_text(cast(c.GtkEntry, self.password.?));
-        self.networkAction(.{ .connect = .{ .ssid = if (ap) |p| p.ssid else entered, .password = std.mem.span(password), .hidden = c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, self.hidden.?)) != 0, .access_point = if (ap) |p| p.path else null } });
-        c.gtk_entry_set_text(cast(c.GtkEntry, self.password.?), "");
+        const ap = if (self.ssids.selectedId()) |key| client.state().ap(key) else null;
+        self.networkAction(.{ .connect = .{ .ssid = if (ap) |value| value.ssid else self.manual.value(), .password = self.password.value(), .hidden = self.hidden.checked, .access_point = if (ap) |value| value.path else null } });
+        self.password.entry.?.clear();
     }
-    fn profileAction(self: *Settings, action: enum { activate, deactivate, forget }) void {
-        const id = c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.profiles.?));
-        if (id == null) {
+    fn profileAction(self: *Settings, command: enum { activate, deactivate, forget }) void {
+        const key = self.profiles.selectedId() orelse {
             self.setMessage("Select a saved connection first.");
             return;
-        }
-        self.networkAction(switch (action) {
-            .activate => .{ .activate = std.mem.span(id) },
-            .deactivate => .{ .deactivate = std.mem.span(id) },
-            .forget => .{ .forget = std.mem.span(id) },
+        };
+        self.networkAction(switch (command) {
+            .activate => .{ .activate = key },
+            .deactivate => .{ .deactivate = key },
+            .forget => .{ .forget = key },
         });
     }
-    fn profileConnect(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
-        cast(Settings, ptr).profileAction(.activate);
+    fn cancelForget(_: *c.GtkWidget, ptr: c.gpointer) callconv(.c) void {
+        cast(auth.Dialog, ptr).respond(false);
     }
-    fn profileDisconnect(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
-        cast(Settings, ptr).profileAction(.deactivate);
+    fn forget(self: *Settings) void {
+        const key = self.profiles.selectedId() orelse return;
+        const owned_key = z(key);
+        defer a.free(owned_key);
+        const dialog = auth.Dialog.createWithOptions(.confirm, "Forget the selected connection and its saved credentials?", .{ .title = "Forget Connection", .role = "desktop-network-forget", .accept = "Forget", .cancel = "Cancel", .icon = "network-wireless" }) catch return;
+        defer dialog.destroy();
+        c.gtk_window_set_transient_for(cast(c.GtkWindow, dialog.window), cast(c.GtkWindow, self.window));
+        const handler = c.g_signal_connect_data(self.window, "destroy", @ptrCast(&cancelForget), dialog, null, 0);
+        // Hold the controller across the nested dialog loop, even if its parent closes.
+        self.network_operations += 1;
+        self.sensitivity();
+        dialog.run();
+        const accepted = dialog.accepted;
+        c.g_signal_handler_disconnect(self.window, handler);
+        self.network_operations -= 1;
+        if (self.closed) return;
+        self.sensitivity();
+        if (accepted) self.networkAction(.{ .forget = owned_key });
     }
-    fn profileForget(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
+    fn action(ptr: ?*anyopaque, id: usize) void {
         const self = cast(Settings, ptr);
-        if (c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.profiles.?)) == null) return;
-        const dialog = c.gtk_message_dialog_new(cast(c.GtkWindow, self.window), c.GTK_DIALOG_MODAL | c.GTK_DIALOG_DESTROY_WITH_PARENT, c.GTK_MESSAGE_QUESTION, c.GTK_BUTTONS_OK_CANCEL, "%s", @as([*:0]const u8, "Forget the selected connection and its saved credentials?"));
-        const response = c.gtk_dialog_run(cast(c.GtkDialog, dialog));
-        c.gtk_widget_destroy(dialog);
-        if (!self.closed and response == c.GTK_RESPONSE_OK) self.profileAction(.forget);
-    }
-    fn deviceDisconnect(_: *c.GtkButton, ptr: c.gpointer) callconv(.c) void {
-        const self = cast(Settings, ptr);
-        if (c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.devices.?))) |id| self.networkAction(.{ .disconnect = std.mem.span(id) });
-    }
-    fn editConnections(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self = cast(Settings, data);
-        const client = self.network_client orelse return;
-        const id = c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.profiles.?));
-        if (id == null) {
-            self.setMessage("Select a saved connection first.");
-            return;
+        const title = self.ui.get(id).title;
+        if (eq(title, "Refresh")) self.refresh() else if (eq(title, "Enable Wi-Fi")) self.networkAction(.{ .wifi = true }) else if (eq(title, "Disable Wi-Fi")) self.networkAction(.{ .wifi = false }) else if (eq(title, "Connect to Wi-Fi")) wifiConnect(null, self) else if (eq(title, "Connect")) self.profileAction(.activate) else if (eq(title, "Disconnect")) self.profileAction(.deactivate) else if (eq(title, "Forget…")) self.forget() else if (eq(title, "Disconnect device")) {
+            if (self.devices.selectedId()) |key| self.networkAction(.{ .disconnect = key });
+        } else if (eq(title, "New connection…")) {
+            _ = editor.Editor.create(self.window, null);
+        } else if (eq(title, "Edit connection…")) {
+            const client = self.network_client orelse return;
+            const key = self.profiles.selectedId() orelse {
+                self.setMessage("Select a saved connection first.");
+                return;
+            };
+            _ = editor.Editor.create(self.window, client.state().profile(key) orelse return);
         }
-        const profile = client.state().profile(std.mem.span(id)) orelse return;
-        _ = editor.Editor.create(self.window, profile);
-    }
-    fn newConnection(_: *c.GtkButton, data: c.gpointer) callconv(.c) void {
-        const self = cast(Settings, data);
-        _ = editor.Editor.create(self.window, null);
     }
 };
 

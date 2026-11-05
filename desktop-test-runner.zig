@@ -19,5 +19,6 @@ test {
     _ = @import("desktop-askpass-view.zig");
     _ = @import("desktop-sound-view.zig");
     _ = @import("desktop-panel-view.zig");
+    _ = @import("desktop-form.zig");
     _ = @import("desktop-password-entry.zig");
 }

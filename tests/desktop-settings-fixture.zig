@@ -6,12 +6,11 @@ pub fn main() !void {
     c.gtk_init(null, null);
     for (0..8) |_| {
         const ui = settings.Settings.create(.network);
-        const entry: *c.GtkEntry = @ptrCast(c.gtk_bin_get_child(@ptrCast(ui.ssids.?)));
-        c.gtk_entry_set_text(entry, "Cafe: Tokyo\\5G");
+        try ui.ui.setText(ui.manual.id, "Cafe: Tokyo\\5G");
         const state = ui.network_client.?.state();
         ui.renderNetwork(state);
-        try std.testing.expectEqualStrings("Cafe: Tokyo\\5G", std.mem.span(c.gtk_entry_get_text(entry)));
-        try std.testing.expect(c.gtk_entry_get_visibility(@ptrCast(ui.password.?)) == 0);
+        try std.testing.expectEqualStrings("Cafe: Tokyo\\5G", ui.manual.value());
+        try std.testing.expect(!ui.password.entry.?.echo);
         c.gtk_widget_destroy(ui.window);
         while (ui.network_operations != 0) _ = c.g_main_context_iteration(null, 1);
         ui.destroy();

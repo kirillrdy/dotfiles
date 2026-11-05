@@ -64,28 +64,29 @@ pub fn main(init: std.process.Init) !void {
         const is_new = std.mem.eql(u8, args[1], "new");
         const ui = editor.Editor.create(parent, if (is_new) null else state.profiles.items[0]);
         if (std.mem.eql(u8, args[1], "edit-cancel")) {
-            c.gtk_entry_set_text(@ptrCast(ui.row("802-11-wireless-security", "psk").?.widget), "cancel-secret");
+            try ui.setValue("802-11-wireless-security", "psk", "cancel-secret");
             ui.save();
             c.gtk_widget_destroy(ui.window);
             settle();
             return;
         }
-        c.gtk_entry_set_text(@ptrCast(ui.row("connection", "id").?.widget), "Native connection");
+        try ui.setValue("connection", "id", "Native connection");
         if (is_new) {
-            c.gtk_entry_set_text(@ptrCast(ui.row("connection", "type").?.widget), "bridge");
-            c.gtk_entry_set_text(@ptrCast(ui.row("connection", "interface-name").?.widget), "fixture-br0");
-            c.gtk_toggle_button_set_active(@ptrCast(ui.row("bridge", "stp").?.widget), 1);
+            try ui.setValue("connection", "type", "bridge");
+            try ui.setValue("connection", "interface-name", "fixture-br0");
+            ui.ui.activate(ui.row("bridge", "stp").?.widget.id);
+            try std.testing.expect(!ui.row("bridge", "stp").?.remove.checked);
         } else {
-            c.gtk_entry_set_text(@ptrCast(ui.row("ipv4", "address-data").?.widget), "invalid-address");
+            try ui.setValue("ipv4", "address-data", "invalid-address");
             try std.testing.expectError(error.AddressNeedsPrefix, ui.values());
-            c.gtk_entry_set_text(@ptrCast(ui.row("ipv4", "address-data").?.widget), "192.0.2.10/24, 192.0.2.11/24");
-            c.gtk_entry_set_text(@ptrCast(ui.row("ipv4", "dns-data").?.widget), "1.1.1.1, 9.9.9.9");
-            c.gtk_entry_set_text(@ptrCast(ui.row("ipv6", "method").?.widget), "manual");
-            c.gtk_entry_set_text(@ptrCast(ui.row("ipv6", "address-data").?.widget), "2001:db8::10/64");
+            try ui.setValue("ipv4", "address-data", "192.0.2.10/24, 192.0.2.11/24");
+            try ui.setValue("ipv4", "dns-data", "1.1.1.1, 9.9.9.9");
+            try ui.setValue("ipv6", "method", "manual");
+            try ui.setValue("ipv6", "address-data", "2001:db8::10/64");
             if (std.mem.eql(u8, args[1], "edit-secret")) {
                 const row = ui.row("802-11-wireless-security", "psk").?;
-                try std.testing.expect(c.gtk_entry_get_visibility(@ptrCast(row.widget)) == 0);
-                c.gtk_entry_set_text(@ptrCast(row.widget), "updated-wifi-secret");
+                try std.testing.expect(!row.widget.entry.?.echo);
+                try ui.setValue("802-11-wireless-security", "psk", "updated-wifi-secret");
             }
         }
         const values = try ui.values();
@@ -111,12 +112,11 @@ pub fn main(init: std.process.Init) !void {
         try std.testing.expect(ui.network_client.?.service == client.service);
         try std.testing.expect(controls.network_client.?.service == client.service);
         settle();
-        const model = c.gtk_combo_box_get_model(@ptrCast(ui.ssids.?));
-        try std.testing.expect(c.gtk_tree_model_iter_n_children(model, null) > 0);
-        try std.testing.expect(c.gtk_combo_box_set_active_id(@ptrCast(ui.ssids.?), state.access_points.items[0].path) != 0);
-        c.gtk_entry_set_text(@ptrCast(ui.password.?), "ui-secret");
+        try std.testing.expect(ui.ssids.options.items.len > 0);
+        try std.testing.expect(ui.selectAP(state.access_points.items[0].path));
+        try ui.ui.setText(ui.password.id, "ui-secret");
         settings.Settings.wifiConnect(null, ui);
-        try std.testing.expectEqualStrings("", std.mem.span(c.gtk_entry_get_text(@ptrCast(ui.password.?))));
+        try std.testing.expectEqualStrings("", ui.password.value());
         c.gtk_widget_destroy(ui.window);
         while (ui.network_operations != 0) pump();
         ui.destroy();
