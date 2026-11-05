@@ -18,5 +18,6 @@ test {
     _ = @import("desktop-date-menu-view.zig");
     _ = @import("desktop-askpass-view.zig");
     _ = @import("desktop-sound-view.zig");
+    _ = @import("desktop-panel-view.zig");
     _ = @import("desktop-password-entry.zig");
 }

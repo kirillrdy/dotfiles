@@ -109,7 +109,7 @@ pub fn main(process_init: std.process.Init) !void {
     assert(c.gtk_widget_is_ancestor(status.quick.?.canvas, status.power_menu) != 0);
     assert(c.gtk_widget_is_ancestor(status.quick.?.canvas, status.box) == 0);
     p.update_line(status, "{\"items\":[{\"icon\":\"audio-volume-high-symbolic\"},{\"icon\":\"battery-level-80-symbolic\"}]}");
-    assert(c.gtk_widget_get_visible(status.item[0].box) != 0 and c.gtk_widget_get_visible(status.item[1].box) != 0);
+    assert(status.view.items[0].visible and status.view.items[1].visible);
     p.update_line(status, "{\"items\":[{\"icon\":\"network-wired-symbolic\",\"tooltip\":\"Wired network\"}]}");
     // Collector tooltips must not overwrite the quick-settings connection name.
     assert(status.quick.?.view.model.network_title.len == 0);
@@ -119,7 +119,7 @@ pub fn main(process_init: std.process.Init) !void {
         // The panel's CSS reset cannot alter the native tile geometry.
         var border: c.GtkBorder = undefined;
         c.gtk_style_context_get_border(c.gtk_widget_get_style_context(status_root), c.GTK_STATE_FLAG_NORMAL, &border);
-        assert(border.top == 3 and border.left == 3);
+        assert(border.top == 0 and border.left == 0);
         assert(status.quick.?.view.item(.wifi).?.rect.height == 48);
     }
     const controls = status.quick.?;
@@ -234,12 +234,30 @@ pub fn main(process_init: std.process.Init) !void {
     assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
     c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
     assert(c.gtk_widget_get_visible(usage.codex_menu) == 0);
-    c.gtk_button_clicked(cast(c.GtkButton, usage.codex_refresh));
+    p.update_line(usage, "{}");
+    const refresh_rect = usage.codex.refreshRect();
+    var refresh_click = std.mem.zeroes(c.GdkEventButton);
+    refresh_click.button = 1;
+    refresh_click.x = refresh_rect.x + refresh_rect.width / 2;
+    refresh_click.y = refresh_rect.y + refresh_rect.height / 2;
+    refresh_click.type = c.GDK_BUTTON_PRESS;
+    c.g_signal_emit_by_name(usage.codex_canvas, "button-press-event", &refresh_click, &handled);
+    refresh_click.type = 7;
+    c.g_signal_emit_by_name(usage.codex_canvas, "button-release-event", &refresh_click, &handled);
     assert(refresh_count == 1);
-    assert(c.gtk_widget_get_sensitive(usage.codex_refresh) == 0);
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, usage.codex_checked)), "Refreshing…");
+    // Ignore another activation until the collector delivers completion.
+    p.codex_refresh(usage);
+    assert(refresh_count == 1);
+    assert(!usage.codex.enabled);
+    eq(usage.codex.checked.value, "Refreshing…");
     p.update_line(usage, "{\"items\":[{\"text\":\"54%\"}],\"tooltip\":\"5h: 54% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"checked\":\"Checked: 12:00:00\"}");
-    assert(c.gtk_widget_get_sensitive(usage.codex_refresh) != 0);
+    assert(usage.codex.enabled);
+    var refresh_key = std.mem.zeroes(@import("desktop").apps.KeyEvent);
+    refresh_key.event_type = 8; // GDK_KEY_PRESS
+    refresh_key.keyval = 0xff0d;
+    c.g_signal_emit_by_name(usage.codex_canvas, "key-press-event", &refresh_key, &handled);
+    assert(handled != 0 and refresh_count == 2 and !usage.codex.enabled);
+    p.update_line(usage, "{\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"tooltip\":\"5h: 54% remaining\"}");
     eq(c.gtk_widget_get_tooltip_text(usage.box), "5h: 54% remaining");
     pumpEvents(50);
     var x: c.gint = 0;
@@ -263,15 +281,15 @@ pub fn main(process_init: std.process.Init) !void {
     c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
     assert(c.gtk_widget_get_visible(usage.codex_menu) == 0);
     eq(c.gtk_widget_get_tooltip_text(usage.box), "5h: 54% remaining");
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, usage.codex_percent[0])), "54.0% remaining");
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, usage.codex_percent[1])), "93.0% remaining");
-    assert(@abs(c.gtk_progress_bar_get_fraction(cast(c.GtkProgressBar, usage.codex_progress[0])) - 0.54) < 0.001);
-    assert(c.gtk_style_context_has_class(c.gtk_widget_get_style_context(usage.codex_progress[0]), "usage-medium") != 0);
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, usage.codex_reset[1])), "Resets in 4d 8h");
-    assert(c.gtk_widget_get_visible(usage.codex_error) == 0);
+    eq(usage.codex.percent[0].value, "54.0% remaining");
+    eq(usage.codex.percent[1].value, "93.0% remaining");
+    assert(usage.codex.values[0] == 54);
+    assert(p.native.usageColor(54).green > 0.7);
+    eq(usage.codex.reset[1].value, "Resets in 4d 8h");
+    assert(usage.codex.error_label.value.len == 0);
     p.update_line(usage, "{\"items\":[{\"text\":\"—\"}],\"windows\":[],\"error\":\"Sign in with codex login\"}");
-    eq(c.gtk_label_get_text(cast(c.GtkLabel, usage.codex_percent[0])), "—");
-    assert(c.gtk_progress_bar_get_fraction(cast(c.GtkProgressBar, usage.codex_progress[0])) == 0 and c.gtk_widget_get_visible(usage.codex_error) != 0);
+    eq(usage.codex.percent[0].value, "—");
+    assert(usage.codex.values[0] == 0 and usage.codex.error_label.value.len > 0);
     p.deinit(usage);
     c.gtk_widget_destroy(window);
     c.g_object_unref(codex_root);
@@ -301,14 +319,11 @@ pub fn main(process_init: std.process.Init) !void {
         const sample = try std.fmt.bufPrintSentinel(&sample_buf, "{{\"monitors\":[{{\"sequence\":{d},\"values\":[{d}],\"colors\":[\"#0072b3\"],\"maximum\":100}}]}}", .{ i, i }, 0);
         p.update_line(monitors, sample);
     }
-    assert(monitors.graph[0].count == 100);
-    assert(monitors.graph[0].history[0][0] == 30 and monitors.graph[0].history[0][99] == 129);
-    const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, 100, 32);
-    const context = c.cairo_create(surface);
-    _ = p.draw_graph(monitors.graph[0].area, context, &monitors.graph[0]);
-    assert(c.cairo_status(context) == c.CAIRO_STATUS_SUCCESS);
-    c.cairo_destroy(context);
-    c.cairo_surface_destroy(surface);
+    assert(monitors.view.graphs[0].count == 100);
+    assert(monitors.view.graphs[0].history[0][0] == 30 and monitors.view.graphs[0].history[0][99] == 129);
+    var pixels: [100 * 32]u32 = @splat(0);
+    monitors.view.graphs[0].paint(.{ .target = .{ .pixels = &pixels, .width = 100, .height = 32 }, .scale = 1 }, 0, 100, 32);
+    assert(pixels[pixels.len - 1] != 0);
     p.deinit(monitors);
     c.gtk_widget_destroy(graph_root);
     c.g_object_unref(graph_root);

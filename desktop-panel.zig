@@ -1,4 +1,4 @@
-//! Layer-shell host for the desktop's GTK widgets.
+//! Layer-shell windows hosting the panel's native pixel views.
 const layer = @import("desktop-layer-shell.zig");
 const std = @import("std");
 const widgets = @import("desktop-widgets.zig");

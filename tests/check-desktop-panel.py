@@ -1,11 +1,13 @@
 """Exercise desktop-panel in an isolated headless Labwc session.
 
-Run under dbus-run-session. Requires labwc, wlr-randr, wlrctl, wtype, grim,
+Run under dbus-run-session. Requires wlr-randr, wtype, grim, desktop-pointer-fixture,
 and the normal desktop data-provider dependencies on PATH. Screenshots and logs
 are retained in a temporary directory printed at startup.
 """
 
 import argparse
+import sys
+sys.dont_write_bytecode = True
 from session_fixture import command as session_command, wait_ready
 import json
 import os
@@ -13,6 +15,8 @@ import re
 import shlex
 import shutil
 import subprocess as sp
+import struct
+import zlib
 import tempfile
 import time
 from pathlib import Path
@@ -28,7 +32,7 @@ parser.add_argument("--style", required=True, type=Path, help="Panel stylesheet"
 args = parser.parse_args()
 args.bin = args.bin.resolve()
 args.style = args.style.resolve()
-for tool in ("desktop-zig", "wlr-randr", "wlrctl", "wtype", "grim"):
+for tool in ("desktop-zig", "wlr-randr", "wtype", "grim"):
     if shutil.which(tool) is None:
         parser.error(f"Missing executable: {tool}")
 root = Path(tempfile.mkdtemp(prefix="desktop-panel-check-"))
@@ -74,19 +78,56 @@ def run(args):
     ).stdout
 
 
+def pointer_command(command):
+    pointer_process.stdin.write(command + "\n")
+    pointer_process.stdin.flush()
+    assert pointer_process.stdout.readline().strip() == "ok"
+
+
 def pointer(x, y):
-    run([wlrctl, "pointer", "move", "-10000", "-10000"])
-    run([wlrctl, "pointer", "move", str(x), str(y)])
+    pointer_command(f"move {x} {y}")
 
 
 def click(x, y):
     pointer(x, y)
-    run([wlrctl, "pointer", "click", "left"])
+    pointer_command("button 1")
+    pointer_command("button 0")
     time.sleep(0.4)
 
 
 def capture(name, output="HEADLESS-1"):
     run(["grim", "-o", output, str(root / (name + ".png"))])
+
+
+def check_clock():
+    # A live popup can still work when the initial label was clipped away.
+    path = root / "panel-clock.png"
+    run([str(args.bin / "desktop-zig"), "screenshot", "-o", "HEADLESS-1", str(path)])
+    png = path.read_bytes()
+    width, height = struct.unpack_from(">II", png, 16)
+    compressed = []
+    offset = 8
+    while offset < len(png):
+        length = struct.unpack_from(">I", png, offset)[0]
+        if png[offset + 4:offset + 8] == b"IDAT":
+            compressed.append(png[offset + 8:offset + 8 + length])
+        offset += length + 12
+    raw = zlib.decompress(b"".join(compressed))
+    rows = []
+    stride = width * 3
+    for y in range(32):
+        filter_type = raw[y * (stride + 1)]
+        row = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        assert filter_type in (0, 1), filter_type
+        if filter_type == 1:
+            for x in range(3, stride):
+                row[x] = (row[x] + row[x - 3]) & 255
+        rows.append(row)
+    for low, high in ((width // 2 - 128, width // 2),
+                      (width // 2, width // 2 + 128)):
+        bright = sum(min(rows[y][x * 3:x * 3 + 3]) > 180
+                     for y in range(4, 28) for x in range(low, high))
+        assert bright > 40, "Clock text missing or clipped on initial panel frame"
 
 
 def log():
@@ -107,7 +148,6 @@ def check():
     assert not re.search(r"CRITICAL|assertion|panic:|error:", log()), log()[-4000:]
 
 
-wlrctl = "wlrctl"
 wtype = "wtype"
 try:
     compositor = start(["desktop-zig", "compositor-only"], "labwc.log")
@@ -134,6 +174,11 @@ try:
             "1728,0",
         ]
     )
+    pointer_process = sp.Popen([args.bin / "desktop-pointer-fixture"], env=env,
+                                stdin=sp.PIPE, stdout=sp.PIPE, text=True)
+    procs.append(pointer_process)
+    assert pointer_process.stdout.readline().strip() == "ready"
+    pointer_command("size 3008 1080")
     seat = start([wtype, "-s", "55000"], "seat.log")
     config = json.loads(args.config.read_text())
     # Verify command launching without opening another app.
@@ -156,6 +201,7 @@ try:
     )
     assert "set_exclusive_zone(32)" in log(), "Panel must reserve 32 logical pixels"
     capture("panel")
+    check_clock()
     capture("second-monitor", "HEADLESS-2")
     click(35, 16)
     assert (root / "activities-clicked").exists(), "Activities command did not execute"
@@ -165,9 +211,15 @@ try:
     assert "get_subsurface" in log(), "Calendar surface was not created"
     dismiss()
     capture("calendar-dismissed")
+    pointer(112, 16)
+    time.sleep(1.0)
+    capture("codex-tooltip")
     before = log().count("get_subsurface")
     click(112, 16)
     capture("codex")
+    run([wtype, "-k", "Return"])
+    time.sleep(0.3)
+    capture("codex-keyboard-refresh")
     assert log().count("get_subsurface") > before, "Codex popover did not open"
     dismiss()
     before = log().count("get_subsurface")

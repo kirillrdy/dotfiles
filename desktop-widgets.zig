@@ -1,14 +1,13 @@
-//! Shared GTK widgets and popups for the desktop session.
+//! Panel data and actions, with native pixel views in GTK window hosts.
 const std = @import("std");
 const power_backend = @import("desktop-power.zig");
 const quick = @import("desktop-quick-settings.zig");
 pub const date_menu = @import("desktop-date-menu.zig");
 pub const c = @import("desktop-gtk.zig");
-fn cast(comptime T: type, p: anytype) [*c]T {
+pub const native = @import("desktop-panel-view.zig");
+const module_allocator = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
+fn cast(comptime T: type, p: anytype) *T {
     return @ptrCast(@alignCast(p));
-}
-fn finite(value: f64) c_int {
-    return @intFromBool(std.math.isFinite(value));
 }
 pub const Options = struct {
     name: [:0]const u8 = "",
@@ -18,41 +17,18 @@ pub const Options = struct {
     network_settings_command: ?[:0]const u8 = null,
     sound_settings_command: [:0]const u8 = "desktop-zig settings sound",
 };
-pub const Graph = extern struct {
-    box: [*c]c.GtkWidget = null,
-    label: [*c]c.GtkWidget = null,
-    value: [*c]c.GtkWidget = null,
-    area: [*c]c.GtkWidget = null,
-    history: [5][100]f64 = std.mem.zeroes([5][100]f64),
-    colors: [5]c.GdkRGBA = std.mem.zeroes([5]c.GdkRGBA),
-    count: c.guint = 0,
-    series: c.guint = 0,
-    sequence: c.gint64 = 0,
-    maximum: f64 = 0,
-    autoscale: c.gboolean = 0,
-};
-pub const Item = extern struct {
-    box: [*c]c.GtkWidget = null,
-    image: [*c]c.GtkWidget = null,
-    label: [*c]c.GtkWidget = null,
-    icon: [*c]u8 = null,
-    command: [*c]u8 = null,
-};
-pub const Module = extern struct {
-    refs: c.gint = 0,
+pub const Module = struct {
+    refs: c.gint = 1,
     dead: c.gboolean = 0,
     monitors: c.gboolean = 0,
     status: c.gboolean = 0,
     box: [*c]c.GtkWidget = null,
     root: [*c]c.GtkWidget = null,
-    clock: [*c]c.GtkWidget = null,
     calendar: [*c]c.GtkWidget = null,
     date_controls: ?*date_menu.Controls = null,
     history_subscription: c.guint = 0,
     history_busy: bool = false,
     history_dirty: bool = false,
-    graph: [3]Graph = std.mem.zeroes([3]Graph),
-    item: [8]Item = std.mem.zeroes([8]Item),
     source: [*:0]const u8 = "",
     cancel: [*c]c.GCancellable = null,
     clock_timer: c.guint = 0,
@@ -64,31 +40,23 @@ pub const Module = extern struct {
     quick: ?*quick.Controls = null,
     power_pending: c.gboolean = 0,
     codex_menu: [*c]c.GtkWidget = null,
-    codex_percent: [2][*c]c.GtkWidget = std.mem.zeroes([2][*c]c.GtkWidget),
-    codex_progress: [2][*c]c.GtkWidget = std.mem.zeroes([2][*c]c.GtkWidget),
-    codex_reset: [2][*c]c.GtkWidget = std.mem.zeroes([2][*c]c.GtkWidget),
-    codex_checked: [*c]c.GtkWidget = null,
-    codex_refresh: [*c]c.GtkWidget = null,
-    codex_error: [*c]c.GtkWidget = null,
+    codex_canvas: [*c]c.GtkWidget = null,
+    view: native.View = .{},
+    tip: native.Label = .{},
+    tip_canvas: [*c]c.GtkWidget = null,
+    codex: native.Codex = .{},
     tooltip: [*c]u8 = null,
 };
 pub fn unref_module(m: *Module) callconv(.c) void {
     m.refs -= 1;
     if (m.refs != 0) return;
-    if (m.cancel != null) {
-        c.g_object_unref(@as(c.gpointer, @ptrCast(m.cancel)));
-    }
-    m.cancel = null;
+    if (m.cancel != null) c.g_object_unref(m.cancel);
     if (m.session != null) c.g_object_unref(m.session);
-    c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
-    {
-        var i: c.guint = 0;
-        while (i < 8) : (i += 1) {
-            c.g_free(@as(c.gpointer, @ptrCast(m.item[i].icon)));
-            c.g_free(@as(c.gpointer, @ptrCast(m.item[i].command)));
-        }
-    }
-    c.g_free(@as(c.gpointer, @ptrCast(m)));
+    c.g_free(m.tooltip);
+    m.tip.deinit();
+    m.view.deinit();
+    m.codex.deinit();
+    module_allocator.destroy(m);
 }
 pub fn css(widget: [*c]c.GtkWidget, name: [*c]const u8) callconv(.c) void {
     c.gtk_style_context_add_class(c.gtk_widget_get_style_context(widget), name);
@@ -99,19 +67,11 @@ pub fn settings_launch(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) v
     c.gtk_widget_set_tooltip_text(cast(c.GtkWidget, button), if (@"error" != null) @"error".*.message else null);
     c.g_clear_error(&@"error");
 }
-fn free_command(data: c.gpointer, _: ?*c.GClosure) callconv(.c) void {
-    c.g_free(data);
-}
 pub var power_ids: [3][*c]const u8 = [3][*c]const u8{
     "performance",
     "balanced",
     "power-saver",
 };
-pub fn message_changed(label: [*c]c.GObject, property: [*c]c.GParamSpec, data: c.gpointer) callconv(.c) void {
-    _ = data;
-    _ = property;
-    c.gtk_widget_set_visible(cast(c.GtkWidget, label), @intFromBool(@as(c_int, @bitCast(@as(c_uint, c.gtk_label_get_text(cast(c.GtkLabel, label)).*))) != @as(c_int, '\x00')));
-}
 pub fn apply_power_state(m: *Module, state: power_backend.State) void {
     if (m.quick) |controls| {
         controls.setPowerState(state, m.power_pending != 0);
@@ -190,7 +150,8 @@ pub fn update_clock(data: c.gpointer) callconv(.c) c.gboolean {
     const month: [*c]u8 = c.g_date_time_format(now, "%b");
     const time_1: [*c]u8 = c.g_date_time_format(now, "%H:%M");
     const label: [*c]u8 = c.g_strdup_printf("%s %d %s", month, c.g_date_time_get_day_of_month(now), time_1);
-    c.gtk_label_set_text(cast(c.GtkLabel, m.clock), label);
+    m.view.clock.set(std.mem.span(label));
+    resize(m);
     c.g_free(@as(c.gpointer, @ptrCast(label)));
     c.g_free(@as(c.gpointer, @ptrCast(month)));
     c.g_free(@as(c.gpointer, @ptrCast(time_1)));
@@ -315,95 +276,39 @@ pub fn codex_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
     update_codex_tooltip(m);
     return 1;
 }
-pub fn codex_refresh(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) void {
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    if (std.mem.eql(u8, std.mem.span(m.source), "codex")) {
-        c.gtk_widget_set_sensitive(cast(c.GtkWidget, button), 0);
-        c.gtk_label_set_text(cast(c.GtkLabel, m.codex_checked), "Refreshing…");
-        if (refresh_source) |refresh| refresh("codex");
-    }
+pub fn codex_refresh(m: *Module) void {
+    if (!m.codex.enabled or !std.mem.eql(u8, std.mem.span(m.source), "codex")) return;
+    m.codex.enabled = false;
+    m.codex.checked.set("Refreshing…");
+    c.gtk_widget_queue_draw(m.codex_canvas);
+    if (refresh_source) |refresh| refresh("codex");
 }
 pub fn make_codex_menu(m: *Module) callconv(.c) void {
     m.codex_menu = c.gtk_popover_new(m.root);
     c.gtk_popover_set_constrain_to(cast(c.GtkPopover, m.codex_menu), c.GTK_POPOVER_CONSTRAINT_NONE);
     c.gtk_popover_set_position(cast(c.GtkPopover, m.codex_menu), c.GTK_POS_BOTTOM);
     css(m.codex_menu, "gnome-codex-menu");
-    const menu: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0);
-    css(menu, "codex-menu-content");
-    c.gtk_container_add(cast(c.GtkContainer, m.codex_menu), menu);
-    const titles: [2][*c]const u8 = [2][*c]const u8{
-        "5-Hour Remaining",
-        "Weekly Remaining",
-    };
-    {
-        var i: c.guint = 0;
-        while (i < 2) : (i += 1) {
-            const section: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 6);
-            css(section, "codex-usage-section");
-            const header: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 12);
-            const title: [*c]c.GtkWidget = c.gtk_label_new(titles[i]);
-            c.gtk_label_set_xalign(cast(c.GtkLabel, title), 0);
-            css(title, "codex-section-title");
-            m.codex_percent[i] = c.gtk_label_new("—");
-            css(m.codex_percent[i], "codex-percent-label");
-            c.gtk_box_pack_start(cast(c.GtkBox, header), title, 1, 1, 0);
-            c.gtk_box_pack_end(cast(c.GtkBox, header), m.codex_percent[i], 0, 0, 0);
-            c.gtk_box_pack_start(cast(c.GtkBox, section), header, 0, 0, 0);
-            m.codex_progress[i] = c.gtk_progress_bar_new();
-            c.gtk_widget_set_margin_top(m.codex_progress[i], 4);
-            c.gtk_widget_set_margin_bottom(m.codex_progress[i], 4);
-            c.gtk_box_pack_start(cast(c.GtkBox, section), m.codex_progress[i], 0, 0, 0);
-            m.codex_reset[i] = c.gtk_label_new("Resets: —");
-            c.gtk_label_set_xalign(cast(c.GtkLabel, m.codex_reset[i]), 0);
-            css(m.codex_reset[i], "codex-reset-label");
-            c.gtk_box_pack_start(cast(c.GtkBox, section), m.codex_reset[i], 0, 0, 0);
-            c.gtk_box_pack_start(cast(c.GtkBox, menu), section, 0, 0, 0);
-            const separator = c.gtk_separator_new(c.GTK_ORIENTATION_HORIZONTAL);
-            c.gtk_widget_set_margin_start(separator, 12);
-            c.gtk_widget_set_margin_end(separator, 12);
-            c.gtk_widget_set_margin_top(separator, 9);
-            c.gtk_widget_set_margin_bottom(separator, 9);
-            c.gtk_box_pack_start(cast(c.GtkBox, menu), separator, 0, 0, 0);
-        }
-    }
-    const footer: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 10);
-    css(footer, "codex-footer");
-    m.codex_refresh = c.gtk_button_new();
-    c.gtk_widget_set_sensitive(m.codex_refresh, 0);
-    const refresh_content = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 6);
-    const refresh_icon = c.gtk_image_new_from_icon_name("view-refresh-symbolic", c.GTK_ICON_SIZE_MENU);
-    c.gtk_image_set_pixel_size(cast(c.GtkImage, refresh_icon), 14);
-    c.gtk_box_pack_start(cast(c.GtkBox, refresh_content), refresh_icon, 0, 0, 0);
-    c.gtk_box_pack_start(cast(c.GtkBox, refresh_content), c.gtk_label_new("Refresh"), 0, 0, 0);
-    c.gtk_container_add(cast(c.GtkContainer, m.codex_refresh), refresh_content);
-    _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.codex_refresh)), "clicked", @as(c.GCallback, @ptrCast(@alignCast(&codex_refresh))), @as(c.gpointer, @ptrCast(m)), null, 0);
-    c.gtk_box_pack_start(cast(c.GtkBox, footer), m.codex_refresh, 0, 0, 0);
-    m.codex_checked = c.gtk_label_new("Checked: —");
-    css(m.codex_checked, "codex-checked");
-    c.gtk_box_pack_end(cast(c.GtkBox, footer), m.codex_checked, 0, 0, 0);
-    c.gtk_box_pack_start(cast(c.GtkBox, menu), footer, 0, 0, 0);
-    m.codex_error = c.gtk_label_new("");
-    c.gtk_label_set_line_wrap(cast(c.GtkLabel, m.codex_error), 1);
-    c.gtk_label_set_max_width_chars(cast(c.GtkLabel, m.codex_error), 40);
-    c.gtk_label_set_xalign(cast(c.GtkLabel, m.codex_error), 0);
-    css(m.codex_error, "codex-reset-label");
-    c.gtk_widget_set_no_show_all(m.codex_error, 1);
-    _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.codex_error)), "notify::label", @as(c.GCallback, @ptrCast(@alignCast(&message_changed))), @as(?*anyopaque, @ptrFromInt(0)), null, 0);
-    c.gtk_box_pack_start(cast(c.GtkBox, menu), m.codex_error, 0, 0, 0);
-    c.gtk_widget_show_all(menu);
-    _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.codex_menu)), "notify::visible", @as(c.GCallback, @ptrCast(@alignCast(&codex_menu_visibility))), @as(c.gpointer, @ptrCast(m)), null, 0);
-    _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.codex_menu)), "closed", @as(c.GCallback, @ptrCast(@alignCast(&codex_menu_closed))), @as(c.gpointer, @ptrCast(m)), null, 0);
-    _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&codex_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
+    m.codex_canvas = c.gtk_drawing_area_new();
+    c.gtk_widget_set_can_focus(m.codex_canvas, 1);
+    c.gtk_widget_add_events(m.codex_canvas, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_KEY_PRESS_MASK);
+    c.gtk_container_add(cast(c.GtkContainer, m.codex_menu), m.codex_canvas);
+    connect(m.codex_canvas, "draw", &draw_codex, m);
+    connect(m.codex_canvas, "notify::scale-factor", &codex_scale, m);
+    connect(m.codex_canvas, "button-press-event", &codex_press, m);
+    connect(m.codex_canvas, "button-release-event", &codex_release, m);
+    connect(m.codex_canvas, "motion-notify-event", &codex_motion, m);
+    connect(m.codex_canvas, "leave-notify-event", &codex_leave, m);
+    connect(m.codex_canvas, "key-press-event", &codex_key, m);
+    connect(m.codex_menu, "map", &codex_mapped, m);
+    connect(m.codex_menu, "notify::visible", &codex_menu_visibility, m);
+    connect(m.codex_menu, "closed", &codex_menu_closed, m);
+    connect(m.root, "button-press-event", &codex_click, m);
+    c.gtk_widget_set_size_request(m.codex_canvas, @intCast(m.codex.width), @intCast(m.codex.height));
+    c.gtk_widget_show_all(m.codex_canvas);
 }
 pub fn update_codex(m: *Module, o: std.json.Value, a: std.mem.Allocator) void {
     const windows_val = o.object.get("windows");
     const windows: ?[]const std.json.Value = if (windows_val) |w| if (w == .array) w.array.items else null else null;
-    const levels = [_][*:0]const u8{
-        "usage-low",
-        "usage-medium",
-        "usage-high",
-        "usage-critical",
-    };
     for (0..2) |i| {
         const window: ?std.json.Value = if (windows) |w| if (i < w.len and w[i] == .object) w[i] else null else null;
         const percent_val = if (window) |win| win.object.get("percent") else null;
@@ -422,177 +327,34 @@ pub fn update_codex(m: *Module, o: std.json.Value, a: std.mem.Allocator) void {
         };
         value = if (valid) std.math.clamp(value, 0, 100) else 0;
         const label = if (valid) c.g_strdup_printf("%.1f%% remaining", value) else c.g_strdup("—");
-        c.gtk_label_set_text(cast(c.GtkLabel, m.codex_percent[i]), label);
+        m.codex.percent[i].set(std.mem.span(label));
         c.g_free(@as(c.gpointer, @ptrCast(label)));
-        c.gtk_progress_bar_set_fraction(cast(c.GtkProgressBar, @as(?*anyopaque, @ptrCast(c.g_type_check_instance_cast(cast(c.GTypeInstance, m.codex_progress[i]), c.gtk_progress_bar_get_type())))), value / 100);
+        m.codex.values[i] = value;
         const reset_str = if (window) |win| jsonStringZ(a, win.object.get("reset")) else "Resets: —";
-        c.gtk_label_set_text(cast(c.GtkLabel, m.codex_reset[i]), reset_str);
-        const style: [*c]c.GtkStyleContext = c.gtk_widget_get_style_context(m.codex_progress[i]);
-        for (levels) |lvl| c.gtk_style_context_remove_class(style, lvl);
-        css(m.codex_progress[i], levels[if (value <= 10) 3 else if (value <= 30) 2 else if (value <= 60) 1 else 0]);
+        m.codex.reset[i].set(reset_str);
     }
     const checked_str = jsonStringZ(a, o.object.get("checked"));
-    c.gtk_label_set_text(cast(c.GtkLabel, m.codex_checked), if (checked_str.len != 0) checked_str else "Checked: —");
-    c.gtk_label_set_text(cast(c.GtkLabel, m.codex_error), jsonStringZ(a, o.object.get("error")));
-    c.gtk_widget_set_sensitive(m.codex_refresh, 1);
+    m.codex.checked.set(if (checked_str.len != 0) checked_str else "Checked: —");
+    m.codex.error_label.set(jsonStringZ(a, o.object.get("error")));
+    m.codex.enabled = true;
+    resize_codex(m);
 }
-pub fn draw_graph(widget: [*c]c.GtkWidget, cr: ?*c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
-    var g: *Graph = @as(*Graph, @ptrCast(@alignCast(data)));
-    if ((g.series == 0)) return 0;
-    const width: f64 = @as(f64, @floatFromInt(c.gtk_widget_get_allocated_width(widget)));
-    const height: f64 = @as(f64, @floatFromInt(c.gtk_widget_get_allocated_height(widget)));
-    var max: f64 = g.maximum;
-    if (g.autoscale != 0) {
-        max = 1;
-        {
-            var j: c.guint = 0;
-            while (j < g.count) : (j += 1) {
-                max = if (max > g.history[g.series - 1][j]) max else g.history[g.series - 1][j];
-            }
-        }
-        max = std.math.pow(f64, 2, @ceil(std.math.log2(max)));
-    }
-    if ((max <= 0) or (g.count < 2)) return 0;
-    c.cairo_rectangle(cr, 0, 0, width, height);
-    c.cairo_clip(cr);
-    {
-        var i: c.gint = @as(c.gint, @bitCast(g.series)) - 1;
-        while (i >= 0) : (i -= 1) {
-            c.cairo_move_to(cr, width, height);
-            var x: f64 = width - 0.25;
-            c.cairo_line_to(cr, x, height * (1 - (g.history[@as(c_uint, @intCast(i))][g.count - 1] / max)));
-            x -= 0.5;
-            {
-                var j: c.gint = @as(c.gint, @bitCast(g.count)) - 1;
-                while (j >= 0) : (j -= 1) {
-                    const y: f64 = height * (1 - (g.history[@as(c_uint, @intCast(i))][@as(c_uint, @intCast(j))] / max));
-                    c.cairo_line_to(cr, x, y);
-                    x -= 0.5;
-                    c.cairo_line_to(cr, x, y);
-                    x -= 0.5;
-                }
-            }
-            c.cairo_line_to(cr, x + 0.75, height);
-            c.cairo_close_path(cr);
-            c.gdk_cairo_set_source_rgba(cr, &g.colors[@as(c_uint, @intCast(i))]);
-            c.cairo_fill(cr);
-        }
-    }
-    return 0;
-}
-pub fn draw_activities(widget: [*c]c.GtkWidget, cr: ?*c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
-    _ = data;
-    const y: f64 = @as(f64, @floatFromInt(c.gtk_widget_get_allocated_height(widget))) / 2.0;
-    c.cairo_set_source_rgb(cr, 1, 1, 1);
-    c.cairo_arc(cr, 6, y, 4, 1.5707963267948966, 3 * 1.5707963267948966);
-    c.cairo_arc(cr, 24, y, 4, 3 * 1.5707963267948966, 1.5707963267948966);
-    c.cairo_close_path(cr);
-    c.cairo_fill(cr);
-    c.cairo_arc(cr, 37, y, 4, 0, 2 * 3.141592653589793);
-    c.cairo_fill(cr);
-    return 0;
-}
-pub fn make_graph(m: *Module, index_1: c.guint, name: [*c]const u8) callconv(.c) void {
-    const g: *Graph = &m.graph[index_1];
-    g.sequence = @as(c.gint64, -1);
-    g.maximum = 100;
-    g.box = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0);
-    css(g.box, "gnome-monitor");
-    g.label = c.gtk_label_new(name);
-    c.gtk_label_set_angle(cast(c.GtkLabel, g.label), 90);
-    css(g.label, "monitor-name");
-    c.gtk_widget_set_margin_end(g.label, 2);
-    g.value = c.gtk_label_new("—");
-    c.gtk_widget_set_no_show_all(g.value, 1);
-    c.gtk_label_set_xalign(cast(c.GtkLabel, g.value), 1);
-    css(g.value, "monitor-value");
-    g.area = c.gtk_drawing_area_new();
-    c.gtk_widget_set_size_request(g.area, 100, 1);
-    c.gtk_widget_set_valign(g.area, c.GTK_ALIGN_FILL);
-    c.gtk_widget_set_margin_start(g.area, 2);
-    c.gtk_widget_set_margin_end(g.area, 2);
-    css(g.area, "monitor-graph");
-    _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(g.area)), "draw", @as(c.GCallback, @ptrCast(@alignCast(&draw_graph))), @as(c.gpointer, @ptrCast(g)), null, 0);
-    c.gtk_box_pack_start(cast(c.GtkBox, g.box), g.label, 0, 0, 0);
-    c.gtk_box_pack_start(cast(c.GtkBox, g.box), g.value, 0, 0, 0);
-    c.gtk_box_pack_start(cast(c.GtkBox, g.box), g.area, 0, 0, 0);
-    c.gtk_box_pack_start(cast(c.GtkBox, m.box), g.box, 0, 0, 0);
-}
-pub fn item_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
-    _ = widget;
-    const item: *Item = @as(*Item, @ptrCast(@alignCast(data)));
-    if (((event.*.button != 1) or !(item.command != null)) or !(item.command.* != 0)) return 0;
-    var @"error": [*c]c.GError = null;
-    _ = c.g_spawn_command_line_async(item.command, &@"error");
-    c.g_clear_error(&@"error");
-    return 1;
-}
-fn update_items(m: *Module, items: []const std.json.Value, a: std.mem.Allocator) void {
-    const count: usize = @min(items.len, 8);
-    for (0..count) |i| {
-        const item_val = items[i];
-        if (item_val != .object) continue;
-        const item: *Item = &m.item[i];
-        if (item.box == null) {
-            item.box = c.gtk_event_box_new();
-            const row: [*c]c.GtkWidget = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, 0);
-            c.gtk_container_add(cast(c.GtkContainer, item.box), row);
-            css(item.box, "gnome-item");
-            if (m.status != 0) {
-                c.gtk_widget_set_margin_start(item.box, 4);
-                c.gtk_widget_set_margin_end(item.box, 4);
-            }
-            item.image = c.gtk_image_new();
-            item.label = c.gtk_label_new("");
-            css(item.image, "gnome-icon");
-            css(item.label, "gnome-text");
-            c.gtk_box_pack_start(cast(c.GtkBox, row), item.image, 0, 0, 0);
-            c.gtk_box_pack_start(cast(c.GtkBox, row), item.label, 0, 0, 0);
-            c.gtk_box_pack_start(cast(c.GtkBox, m.box), item.box, 0, 0, 0);
-            if (m.status == 0) {
-                _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(item.box)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&item_click))), @as(c.gpointer, @ptrCast(item)), null, 0);
-            }
-        }
-        const icon = jsonStringZ(a, item_val.object.get("icon"));
-        const tooltip = jsonStringZ(a, item_val.object.get("tooltip"));
-        const text_str = jsonStringZ(a, item_val.object.get("text"));
-        const command = jsonStringZ(a, item_val.object.get("command"));
-
-        if (c.g_strcmp0(icon, item.icon) != 0) {
-            c.g_free(@as(c.gpointer, @ptrCast(item.icon)));
-            item.icon = c.g_strdup(icon);
-            if (c.g_path_is_absolute(icon) != 0) {
-                var @"error": [*c]c.GError = null;
-                const pixbuf: ?*c.GdkPixbuf = c.gdk_pixbuf_new_from_file_at_scale(icon, 16, 16, 1, &@"error");
-                c.gtk_image_set_from_pixbuf(cast(c.GtkImage, item.image), pixbuf);
-                if (pixbuf != null) {
-                    c.g_object_unref(@as(c.gpointer, @ptrCast(pixbuf)));
-                }
-                c.g_clear_error(&@"error");
-            } else {
-                c.gtk_image_set_from_icon_name(cast(c.GtkImage, item.image), icon, c.GTK_ICON_SIZE_MENU);
-                c.gtk_image_set_pixel_size(cast(c.GtkImage, item.image), 16);
-            }
-        }
-        c.gtk_label_set_text(cast(c.GtkLabel, item.label), text_str);
-        c.gtk_widget_set_margin_start(item.label, if (icon.len > 0 and text_str.len > 0) 6 else 0);
-        c.gtk_widget_set_tooltip_text(item.box, tooltip);
-        c.g_free(@as(c.gpointer, @ptrCast(item.command)));
-        item.command = c.g_strdup(command);
-        c.gtk_widget_show_all(item.box);
-        c.gtk_widget_set_visible(item.image, @intFromBool(icon.len > 0));
-        c.gtk_widget_set_visible(item.label, @intFromBool(text_str.len > 0));
-    }
-    for (count..8) |i| {
-        if (m.item[i].box != null) c.gtk_widget_hide(m.item[i].box);
+fn update_items(m: *Module, items: []const std.json.Value, arena: std.mem.Allocator) void {
+    const count = @min(items.len, 8);
+    for (&m.view.items, 0..) |*item, i| {
+        item.visible = i < count and items[i] == .object;
+        if (!item.visible) continue;
+        const value = items[i];
+        item.setIcon(jsonStringZ(arena, value.object.get("icon")));
+        item.label.set(jsonStringZ(arena, value.object.get("text")));
+        item.tooltip.set(jsonStringZ(arena, value.object.get("tooltip")));
+        item.command.set(jsonStringZ(arena, value.object.get("command")));
     }
 }
 
-fn update_graph(g: *Graph, o: std.json.Value, a: std.mem.Allocator) void {
-    const markup = jsonStringZ(a, o.object.get("markup"));
+fn update_graph(g: *native.Graph, o: std.json.Value, a: std.mem.Allocator) void {
     const tooltip = jsonStringZ(a, o.object.get("tooltip"));
-    c.gtk_label_set_markup(cast(c.GtkLabel, g.value), markup);
-    c.gtk_widget_set_tooltip_text(g.box, tooltip);
+    g.tooltip.set(tooltip);
     const seq_val = o.object.get("sequence") orelse return;
     const sequence: i64 = switch (seq_val) {
         .integer => |v| v,
@@ -637,7 +399,6 @@ fn update_graph(g: *Graph, o: std.json.Value, a: std.mem.Allocator) void {
         _ = c.gdk_rgba_parse(&g.colors[i], color);
     }
     g.count += 1;
-    c.gtk_widget_queue_draw(g.area);
 }
 
 pub fn update_line(m: *Module, line: [*c]const u8) callconv(.c) void {
@@ -652,7 +413,7 @@ pub fn update_line(m: *Module, line: [*c]const u8) callconv(.c) void {
         if (o.object.get("monitors").? == .array) {
             const graphs = o.object.get("monitors").?.array.items;
             for (graphs[0..@min(3, graphs.len)], 0..) |graph_obj, i| {
-                if (graph_obj == .object) update_graph(&m.graph[i], graph_obj, arena.allocator());
+                if (graph_obj == .object) update_graph(&m.view.graphs[i], graph_obj, arena.allocator());
             }
         }
     } else if (m.monitors == 0 and o.object.get("items") != null) {
@@ -667,6 +428,7 @@ pub fn update_line(m: *Module, line: [*c]const u8) callconv(.c) void {
     if (m.codex_menu != null) {
         update_codex(m, o, arena.allocator());
     }
+    resize(m);
 }
 fn device_changed(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: c.gpointer) callconv(.c) void {
     const m: *Module = @ptrCast(@alignCast(data));
@@ -692,34 +454,35 @@ fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) c
     unref_module(m);
 }
 pub fn init(root: *c.GtkWidget, options: Options) *Module {
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(c.g_malloc0_n(@as(c.gsize, 1), @sizeOf(Module)))));
-    m.refs = 1;
+    const m = module_allocator.create(Module) catch @panic("out of memory");
+    m.* = .{};
     m.cancel = c.g_cancellable_new();
     const kind = options.kind.ptr;
     const name = options.name.ptr;
     m.monitors = @intFromBool(c.g_strcmp0(kind, "monitors") == 0);
     m.status = @intFromBool(c.g_strcmp0(name, "gnome-status") == 0);
-    m.box = c.gtk_box_new(c.GTK_ORIENTATION_HORIZONTAL, if ((m.monitors != 0) or (m.status != 0)) 4 else 0);
-    if (c.g_strcmp0(name, "gnome-disk") != 0) {
-        // GtkEventBox doesn't allocate the CSS border like St's PanelMenu.
-        const padding: c_int = if (c.g_strcmp0(name, "gnome-codex") == 0) 12 else 15;
-        c.gtk_widget_set_margin_start(m.box, padding);
-        c.gtk_widget_set_margin_end(m.box, padding);
-        if ((m.monitors == 0)) {
-            c.gtk_widget_set_margin_top(m.box, 3);
-            c.gtk_widget_set_margin_bottom(m.box, 3);
-        }
-    }
-    m.root = cast(c.GtkWidget, root);
-    if (options.name.len != 0) {
-        c.gtk_widget_set_name(cast(c.GtkWidget, root), name);
-    }
-    css(cast(c.GtkWidget, root), "gnome-panel-module");
+    m.view = .{ .monitors = m.monitors != 0, .status = m.status != 0, .activities = std.mem.eql(u8, options.kind, "activities"), .codex = std.mem.eql(u8, options.name, "gnome-codex"), .disk = std.mem.eql(u8, options.name, "gnome-disk") };
+    m.box = c.gtk_drawing_area_new();
+    m.root = root;
+    m.tip_canvas = c.gtk_drawing_area_new();
+    _ = c.g_object_ref_sink(m.tip_canvas);
+    connect(m.tip_canvas, "draw", &draw_tooltip, m);
+    connect(m.box, "query-tooltip", &query_tooltip, m);
+    if (options.name.len != 0) c.gtk_widget_set_name(root, name);
+    // The drawing area owns padding and hover rendering, independent of CSS borders.
     c.gtk_container_add(cast(c.GtkContainer, root), m.box);
+    c.gtk_widget_set_can_focus(root, 1);
+    c.gtk_widget_add_events(root, c.GDK_BUTTON_PRESS_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_KEY_PRESS_MASK | c.GDK_FOCUS_CHANGE_MASK);
+    connect(m.box, "draw", &draw_panel, m);
+    connect(m.box, "notify::scale-factor", &panel_scale, m);
+    connect(root, "motion-notify-event", &panel_motion, m);
+    connect(root, "leave-notify-event", &panel_leave, m);
+    connect(root, "button-press-event", &panel_press, m);
+    connect(root, "key-press-event", &panel_key, m);
+    connect(root, "focus-in-event", &panel_focus_in, m);
+    connect(root, "focus-out-event", &panel_focus_out, m);
     if (m.monitors != 0) {
-        make_graph(m, 0, "cpu");
-        make_graph(m, 1, "mem");
-        make_graph(m, 2, "net");
+        resize(m);
     } else if (c.g_strcmp0(name, "gnome-codex") == 0) {
         make_codex_menu(m);
     } else if (m.status != 0) {
@@ -737,8 +500,6 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
         m.refs += 1;
         c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
     } else if (c.g_strcmp0(kind, "clock") == 0) {
-        m.clock = c.gtk_label_new("");
-        c.gtk_container_add(cast(c.GtkContainer, m.box), m.clock);
         m.calendar = c.gtk_popover_new(m.root);
         c.gtk_popover_set_constrain_to(cast(c.GtkPopover, m.calendar), c.GTK_POPOVER_CONSTRAINT_NONE);
         c.gtk_popover_set_position(cast(c.GtkPopover, m.calendar), c.GTK_POS_BOTTOM);
@@ -750,12 +511,8 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
         _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&clock_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
         _ = update_clock(@as(c.gpointer, @ptrCast(m)));
         m.clock_timer = c.g_timeout_add_seconds(1, &update_clock, @as(c.gpointer, @ptrCast(m)));
-    } else if (c.g_strcmp0(kind, "activities") == 0) {
-        const area: [*c]c.GtkWidget = c.gtk_drawing_area_new();
-        c.gtk_widget_set_size_request(area, 42, 20);
-        _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(area)), "draw", @as(c.GCallback, @ptrCast(@alignCast(&draw_activities))), @as(?*anyopaque, @ptrFromInt(0)), null, 0);
-        c.gtk_container_add(cast(c.GtkContainer, m.box), area);
     }
+    resize(m);
     m.source = options.source.ptr;
     c.gtk_widget_show_all(m.box);
     return m;
@@ -789,20 +546,220 @@ pub fn deinit(m: *Module) void {
     if (m.power_timer != 0) _ = c.g_source_remove(m.power_timer);
     _ = c.g_signal_handlers_disconnect_matched(@as(c.gpointer, @ptrCast(m.root)), c.G_SIGNAL_MATCH_DATA, 0, @as(c.GQuark, 0), null, @as(?*anyopaque, @ptrFromInt(0)), @as(c.gpointer, @ptrCast(m)));
     c.g_cancellable_cancel(m.cancel);
-    {
-        var i: c.guint = 0;
-        while (i < 3) : (i += 1) if (m.graph[i].area != null) {
-            _ = c.g_signal_handlers_disconnect_matched(@as(c.gpointer, @ptrCast(m.graph[i].area)), c.G_SIGNAL_MATCH_DATA, 0, @as(c.GQuark, 0), null, @as(?*anyopaque, @ptrFromInt(0)), @as(c.gpointer, @ptrCast(&m.graph[i])));
-        };
-    }
-    {
-        var i: c.guint = 0;
-        while (i < 8) : (i += 1) if (m.item[i].box != null) {
-            _ = c.g_signal_handlers_disconnect_matched(@as(c.gpointer, @ptrCast(m.item[i].box)), c.G_SIGNAL_MATCH_DATA, 0, @as(c.GQuark, 0), null, @as(?*anyopaque, @ptrFromInt(0)), @as(c.gpointer, @ptrCast(&m.item[i])));
-        };
-    }
+    _ = c.g_signal_handlers_disconnect_matched(m.tip_canvas, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, m);
+    c.gtk_widget_destroy(m.tip_canvas);
+    c.g_object_unref(m.tip_canvas);
+    _ = c.g_signal_handlers_disconnect_matched(m.box, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, m);
     unref_module(m);
 }
 
 /// Session callback for built-in collectors; invoked only on the GTK thread.
 pub var refresh_source: ?*const fn ([]const u8) void = null;
+
+fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
+    _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
+}
+fn resize(m: *Module) void {
+    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(m.box)));
+    m.view.prepare(scale, @floatFromInt(@max(1, c.gtk_widget_get_allocated_height(m.box)))) catch |err| {
+        std.log.err("panel layout: {s}", .{@errorName(err)});
+        return;
+    };
+    c.gtk_widget_set_size_request(m.box, @intCast(m.view.width), 1);
+    c.gtk_widget_queue_draw(m.box);
+}
+fn draw_panel(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
+    const m = cast(Module, ptr);
+    paint(widget, cr, m, false) catch |err| std.log.err("panel paint: {s}", .{@errorName(err)});
+    return 1;
+}
+fn draw_codex(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
+    paint(widget, cr, cast(Module, ptr), true) catch |err| std.log.err("Codex paint: {s}", .{@errorName(err)});
+    return 1;
+}
+fn paint(widget: *c.GtkWidget, cr: *c.cairo_t, m: *Module, codex: bool) !void {
+    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
+    const logical_width = @max(1, c.gtk_widget_get_allocated_width(widget));
+    const logical_height = @max(1, c.gtk_widget_get_allocated_height(widget));
+    if (codex) {
+        try m.codex.prepare(scale);
+    } else {
+        try m.view.prepare(scale, @floatFromInt(logical_height));
+    }
+    const width = @as(u32, @intCast(logical_width)) * scale;
+    const height = @as(u32, @intCast(logical_height)) * scale;
+    const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height));
+    defer c.cairo_surface_destroy(image);
+    if (c.cairo_surface_status(image) != 0) return error.ImageAllocation;
+    const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
+    const buffer = @import("desktop-raster.zig").Buffer{ .pixels = pixels[0 .. width * height], .width = width, .height = height };
+    if (codex) m.codex.paint(buffer) else m.view.paint(buffer);
+    c.cairo_surface_mark_dirty(image);
+    c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
+    c.cairo_set_source_surface(cr, image, 0, 0);
+    c.cairo_paint(cr);
+}
+fn panel_motion(_: *c.GtkWidget, event: *c.GdkEventMotion, ptr: c.gpointer) callconv(.c) c.gboolean {
+    const m = cast(Module, ptr);
+    m.view.hovered = true;
+    c.gtk_widget_queue_draw(m.box);
+    var tooltip = m.tooltip;
+    if (m.view.monitors) {
+        const index: usize = @intFromFloat(@max(0, event.x - 18) / 118);
+        if (index < 3) tooltip = @constCast(m.view.graphs[index].tooltip.value.ptr);
+    } else if (m.codex_menu == null) {
+        if (m.view.hit(event.x, event.y)) |index| tooltip = @constCast(m.view.items[index].tooltip.value.ptr);
+    }
+    if (m.codex_menu != null and c.gtk_widget_get_visible(m.codex_menu) != 0) tooltip = null;
+    c.gtk_widget_set_tooltip_text(m.box, tooltip);
+    return 0;
+}
+fn panel_leave(_: *c.GtkWidget, _: *c.GdkEventCrossing, ptr: c.gpointer) callconv(.c) c.gboolean {
+    const m = cast(Module, ptr);
+    m.view.hovered = false;
+    c.gtk_widget_queue_draw(m.box);
+    return 0;
+}
+fn panel_focus_in(_: *c.GtkWidget, _: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
+    const m = cast(Module, ptr);
+    m.view.focus = true;
+    c.gtk_widget_queue_draw(m.box);
+    return 0;
+}
+fn panel_focus_out(_: *c.GtkWidget, _: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
+    const m = cast(Module, ptr);
+    m.view.focus = false;
+    c.gtk_widget_queue_draw(m.box);
+    return 0;
+}
+fn panel_press(_: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
+    const m = cast(Module, ptr);
+    if (event.button != 1 or m.status != 0 or m.codex_menu != null or m.calendar != null) return 0;
+    const index = m.view.hit(event.x, event.y) orelse return 0;
+    const command = m.view.items[index].command.value;
+    if (command.len == 0) return 0;
+    var err: ?*c.GError = null;
+    _ = c.g_spawn_command_line_async(command, &err);
+    c.g_clear_error(&err);
+    return 1;
+}
+fn panel_key(widget: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
+    var symbol: c.guint = 0;
+    _ = c.gdk_event_get_keyval(event, &symbol);
+    if (symbol != 0xff0d and symbol != 0xff8d and symbol != 0x20) return 0;
+    var click = std.mem.zeroes(c.GdkEventButton);
+    click.button = 1;
+    var handled: c.gboolean = 0;
+    c.g_signal_emit_by_name(widget, "button-press-event", &click, &handled);
+    _ = ptr;
+    return handled;
+}
+fn codex_press(_: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
+    if (event.button != 1) return 0;
+    const m = cast(Module, ptr);
+    m.codex.keyboard_focus = false;
+    m.codex.pressed = m.codex.enabled and m.codex.refreshRect().contains(event.x, event.y);
+    c.gtk_widget_grab_focus(m.codex_canvas);
+    c.gtk_widget_queue_draw(m.codex_canvas);
+    return 1;
+}
+fn codex_release(_: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
+    if (event.button != 1) return 0;
+    const m = cast(Module, ptr);
+    const activate = m.codex.pressed and m.codex.refreshRect().contains(event.x, event.y);
+    m.codex.pressed = false;
+    if (activate) codex_refresh(m);
+    c.gtk_widget_queue_draw(m.codex_canvas);
+    return 1;
+}
+fn codex_motion(_: *c.GtkWidget, event: *c.GdkEventMotion, ptr: c.gpointer) callconv(.c) c.gboolean {
+    const m = cast(Module, ptr);
+    m.codex.hovered = m.codex.refreshRect().contains(event.x, event.y);
+    c.gtk_widget_queue_draw(m.codex_canvas);
+    return 0;
+}
+fn codex_leave(_: *c.GtkWidget, _: *c.GdkEventCrossing, ptr: c.gpointer) callconv(.c) c.gboolean {
+    const m = cast(Module, ptr);
+    m.codex.hovered = false;
+    c.gtk_widget_queue_draw(m.codex_canvas);
+    return 0;
+}
+fn codex_key(_: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
+    const m = cast(Module, ptr);
+    var symbol: c.guint = 0;
+    _ = c.gdk_event_get_keyval(event, &symbol);
+    switch (symbol) {
+        0xff1b => c.gtk_popover_popdown(cast(c.GtkPopover, m.codex_menu)),
+        0xff09, 0xfe20 => m.codex.keyboard_focus = true,
+        0xff0d, 0xff8d, 0x20 => codex_refresh(m),
+        else => return 0,
+    }
+    c.gtk_widget_queue_draw(m.codex_canvas);
+    return 1;
+}
+fn codex_mapped(_: *c.GtkWidget, ptr: c.gpointer) callconv(.c) void {
+    const m = cast(Module, ptr);
+    m.codex.pressed = false;
+    m.codex.hovered = false;
+    m.codex.keyboard_focus = true;
+    c.gtk_widget_grab_focus(m.codex_canvas);
+}
+
+fn query_tooltip(_: *c.GtkWidget, x: c_int, y: c_int, keyboard: c.gboolean, tooltip: ?*c.GtkTooltip, ptr: c.gpointer) callconv(.c) c.gboolean {
+    const m = cast(Module, ptr);
+    if (m.codex_menu != null and c.gtk_widget_get_visible(m.codex_menu) != 0) return 0;
+    var value: [:0]const u8 = if (m.tooltip != null) std.mem.span(m.tooltip) else "";
+    if (keyboard == 0) {
+        if (m.monitors != 0) {
+            const index: usize = @intCast(@max(0, x - 18));
+            if (index / 118 < 3) value = m.view.graphs[index / 118].tooltip.value;
+        } else if (!m.view.codex) {
+            if (m.view.hit(@floatFromInt(x), @floatFromInt(y))) |index| value = m.view.items[index].tooltip.value;
+        }
+    }
+    if (value.len == 0) return 0;
+    m.tip.set(value);
+    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(m.box)));
+    m.tip.prepare(&m.view.renderer, scale, 13.333, false, null, false) catch return 0;
+    if (m.tip.width() > 480) m.tip.prepare(&m.view.renderer, scale, 13.333, false, 480, false) catch return 0;
+    c.gtk_widget_set_size_request(m.tip_canvas, @intFromFloat(m.tip.width() + 16), @intFromFloat(m.tip.height() + 16));
+    c.gtk_widget_show(m.tip_canvas);
+    c.gtk_tooltip_set_custom(tooltip, m.tip_canvas);
+    c.gtk_widget_queue_draw(m.tip_canvas);
+    return 1;
+}
+fn draw_tooltip(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
+    const m = cast(Module, ptr);
+    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
+    const limit = m.tip.limit;
+    m.tip.prepare(&m.view.renderer, scale, 13.333, false, limit, false) catch return 1;
+    const width = @as(u32, @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)))) * scale;
+    const height = @as(u32, @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)))) * scale;
+    const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height));
+    defer c.cairo_surface_destroy(image);
+    if (c.cairo_surface_status(image) != 0) return 1;
+    const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
+    @memset(pixels[0 .. width * height], 0);
+    m.tip.paint(.{ .pixels = pixels[0 .. width * height], .width = width, .height = height }, 8, 8, .{ .red = 1, .green = 1, .blue = 1 });
+    c.cairo_surface_mark_dirty(image);
+    c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
+    c.cairo_set_source_surface(cr, image, 0, 0);
+    c.cairo_paint(cr);
+    return 1;
+}
+
+fn panel_scale(_: *c.GObject, _: *c.GParamSpec, ptr: c.gpointer) callconv(.c) void {
+    resize(cast(Module, ptr));
+}
+fn codex_scale(_: *c.GObject, _: *c.GParamSpec, ptr: c.gpointer) callconv(.c) void {
+    resize_codex(cast(Module, ptr));
+}
+fn resize_codex(m: *Module) void {
+    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(m.codex_canvas)));
+    m.codex.prepare(scale) catch |err| {
+        std.log.err("Codex layout: {s}", .{@errorName(err)});
+        return;
+    };
+    c.gtk_widget_set_size_request(m.codex_canvas, @intCast(m.codex.width), @intCast(m.codex.height));
+    c.gtk_widget_queue_draw(m.codex_canvas);
+}

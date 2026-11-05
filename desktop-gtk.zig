@@ -2571,3 +2571,6 @@ pub extern fn gtk_toggle_button_get_type() GType;
 
 pub extern fn g_dbus_error_set_dbus_error([*c][*c]GError, [*c]const gchar, [*c]const gchar, [*c]const gchar, ...) void;
 pub const G_DBUS_CALL_FLAGS_NO_AUTO_START = 1;
+
+pub const GtkTooltip = opaque {};
+pub extern fn gtk_tooltip_set_custom(tooltip: ?*GtkTooltip, custom_widget: [*c]GtkWidget) void;
