@@ -112,6 +112,7 @@
     initialPassword = "password";
     extraGroups = [
       "wheel"
+      "networkmanager"
     ];
   };
   hardware.nvidia-container-toolkit.enable = enableNvidia;
