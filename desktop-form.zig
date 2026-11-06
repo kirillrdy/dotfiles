@@ -62,6 +62,7 @@ pub const Form = struct {
     context: ?*anyopaque,
     action: *const fn (?*anyopaque, usize) void,
     changed: *const fn (?*anyopaque, usize) void,
+    shortcut: ?*const fn (?*anyopaque, u32, u32) bool = null,
     focus: ?usize = null,
     hover: ?usize = null,
     pressed: ?usize = null,
@@ -176,6 +177,33 @@ pub const Form = struct {
     }
     pub fn get(self: *Form, id: usize) *Item {
         return self.items.items[id];
+    }
+    /// Remove a dynamic suffix without replacing the window or fixed controls.
+    pub fn truncate(self: *Form, count: usize) void {
+        std.debug.assert(count <= self.items.items.len);
+        if (self.focus) |id| if (id >= count) {
+            self.focus = null;
+        };
+        if (self.hover) |id| if (id >= count) {
+            self.hover = null;
+        };
+        if (self.pressed) |id| if (id >= count) {
+            self.pressed = null;
+        };
+        if (self.expanded) |id| if (id >= count) {
+            self.expanded = null;
+        };
+        for (self.items.items[count..]) |item| {
+            if (item.entry) |entry| entry.destroy();
+            item.clearOptions();
+            item.options.deinit(a);
+            item.option_masks.deinit(a);
+            a.free(item.title);
+            a.free(item.hint);
+            a.destroy(item);
+        }
+        self.items.shrinkRetainingCapacity(count);
+        self.relayout();
     }
     pub fn setText(self: *Form, id: usize, value: [:0]const u8) !void {
         const field = self.get(id);
@@ -433,11 +461,12 @@ pub const Form = struct {
     }
     fn key(_: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Form, ptr);
-        if (self.focus) |id| if (self.active(id)) if (self.get(id).entry) |entry| if (entry.filter(event)) return 1;
         var symbol: c.guint = 0;
         var modifiers: c.GdkModifierType = 0;
         _ = c.gdk_event_get_keyval(event, &symbol);
         _ = c.gdk_event_get_state(event, &modifiers);
+        if (self.shortcut) |callback| if (callback(self.context, symbol, modifiers)) return 1;
+        if (self.focus) |id| if (self.active(id)) if (self.get(id).entry) |entry| if (entry.filter(event)) return 1;
         return @intFromBool(self.handleKey(symbol, modifiers));
     }
     fn keyRelease(_: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {

@@ -1,4 +1,4 @@
-//! Real GTK widgets under headless labwc; no portal backend or public test controls.
+//! Native file controls under the headless compositor; portal result contracts.
 const std = @import("std");
 const c = @import("desktop").gtk;
 const Dialog = @import("desktop").chooser.Dialog;
@@ -34,43 +34,19 @@ const Done = struct {
         const deadline = c.g_get_monotonic_time() + 5_000_000;
         while (self.code == null and c.g_get_monotonic_time() < deadline) {
             pump();
-            c.gtk_dialog_response(cast(c.GtkDialog, dialog.window), c.GTK_RESPONSE_OK);
+            dialog.accept();
         }
         try expectEqual(@as(?u32, 0), self.code);
     }
 };
-fn selectedCount(dialog: *Dialog) usize {
-    const list = c.gtk_file_chooser_get_uris(dialog.chooser());
-    defer c.g_slist_free(list);
-    var count: usize = 0;
-    var node = list;
-    while (node != null) : (node = node.*.next) {
-        count += 1;
-        c.g_free(node.*.data);
-    }
-    return count;
-}
-fn select(dialog: *Dialog, files: []const [:0]const u8) !void {
+fn loaded(dialog: *Dialog) !void {
     const deadline = c.g_get_monotonic_time() + 5_000_000;
-    try expect(c.gtk_file_chooser_select_filename(dialog.chooser(), files[0]) != 0);
-    while (selectedCount(dialog) == 0 and c.g_get_monotonic_time() < deadline) pump();
-    while (selectedCount(dialog) != files.len and c.g_get_monotonic_time() < deadline) {
-        pump();
-        if (files.len > 1) c.gtk_file_chooser_select_all(dialog.chooser());
-    }
-    if (selectedCount(dialog) != files.len) {
-        const folder = c.gtk_file_chooser_get_current_folder(dialog.chooser());
-        defer c.g_free(folder);
-        std.debug.print("select: expected {d} files, got {d}, folder={s}\n", .{ files.len, selectedCount(dialog), std.mem.span(folder) });
-        const list = c.gtk_file_chooser_get_uris(dialog.chooser());
-        defer c.g_slist_free(list);
-        var node = list;
-        while (node != null) : (node = node.*.next) {
-            std.debug.print("selected: {s}\n", .{@as([*:0]const u8, @ptrCast(node.*.data))});
-            c.g_free(node.*.data);
-        }
-    }
-    try expectEqual(files.len, selectedCount(dialog));
+    while (dialog.pending != null and c.g_get_monotonic_time() < deadline) pump();
+    try expect(dialog.pending == null and dialog.listing != null);
+}
+fn select(dialog: *Dialog, paths: []const [:0]const u8) !void {
+    try loaded(dialog);
+    for (paths) |path| try dialog.selectPath(path);
 }
 fn uris(result: ?*c.GVariant) *c.GVariant {
     return c.g_variant_lookup_value(result, "uris", @ptrCast(@as([*:0]const u8, "as"))).?;
@@ -133,14 +109,14 @@ pub fn main(init: std.process.Init) !void {
         defer done.deinit();
         const dialog = try Dialog.create(a, "OpenFile", "", "Open fixture", options, &Done.completed, &done);
         defer dialog.destroy();
-        try expect(c.gtk_file_chooser_get_select_multiple(dialog.chooser()) != 0);
-        try expectStrings("Text", std.mem.span(c.gtk_file_filter_get_name(c.gtk_file_chooser_get_filter(dialog.chooser()))));
+        try expect(dialog.multiple);
+        try expectStrings("Text", dialog.currentFilter().?.name);
         try expectEqual(@as(usize, 2), dialog.choices.items.len);
-        try expectStrings("raw", std.mem.span(c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, dialog.choices.items[0].widget))));
-        try expect(c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, dialog.choices.items[1].widget)) != 0);
-        _ = c.gtk_combo_box_set_active_id(cast(c.GtkComboBox, dialog.choices.items[0].widget), "utf8");
-        c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, dialog.choices.items[1].widget), 0);
-        c.gtk_toggle_button_set_active(cast(c.GtkToggleButton, dialog.read_only.?), 1);
+        try expectStrings("raw", dialog.ui.get(dialog.choices.items[0].item).selectedId().?);
+        try expect(dialog.ui.get(dialog.choices.items[1].item).checked);
+        _ = dialog.ui.select(dialog.choices.items[0].item, "utf8");
+        dialog.ui.setChecked(dialog.choices.items[1].item, false);
+        dialog.ui.setChecked(dialog.read_only.?, true);
         try select(dialog, &.{ first, unicode, report });
         try done.accept(dialog);
         const values = uris(done.result);
@@ -170,7 +146,7 @@ pub fn main(init: std.process.Init) !void {
         defer done.deinit();
         const dialog = try Dialog.create(a, "SaveFile", "", "Save fixture", options, &Done.completed, &done);
         defer dialog.destroy();
-        try expectEqual(c.GTK_FILE_CHOOSER_ACTION_SAVE, c.gtk_file_chooser_get_action(dialog.chooser()));
+        try expect(dialog.method == .save);
         try done.accept(dialog);
         const target = try std.fmt.allocPrintSentinel(a, "{s}/native-save.txt", .{root}, 0);
         defer a.free(target);
@@ -188,15 +164,8 @@ pub fn main(init: std.process.Init) !void {
         defer done.deinit();
         const dialog = try Dialog.create(a, "SaveFiles", "", "Save files fixture", options, &Done.completed, &done);
         defer dialog.destroy();
-        try expectEqual(c.GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, c.gtk_file_chooser_get_action(dialog.chooser()));
-        const deadline = c.g_get_monotonic_time() + 5_000_000;
-        while (c.g_get_monotonic_time() < deadline) {
-            const folder = c.gtk_file_chooser_get_current_folder(dialog.chooser());
-            const ready = folder != null and std.mem.eql(u8, std.mem.span(folder), root);
-            c.g_free(folder);
-            if (ready) break;
-            pump();
-        }
+        try expect(dialog.directory);
+        try loaded(dialog);
         try done.accept(dialog);
         const one = try std.fmt.allocPrintSentinel(a, "{s}/report(1).txt", .{root}, 0);
         defer a.free(one);
@@ -212,9 +181,109 @@ pub fn main(init: std.process.Init) !void {
         defer done.deinit();
         const dialog = try Dialog.create(a, "OpenFile", "", "Cancel fixture", options, &Done.completed, &done);
         defer dialog.destroy();
-        try expectEqual(c.GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, c.gtk_file_chooser_get_action(dialog.chooser()));
-        c.gtk_dialog_response(cast(c.GtkDialog, dialog.window), c.GTK_RESPONSE_CANCEL);
+        try expect(dialog.directory);
+        dialog.cancel();
         try expectEqual(@as(?u32, 1), done.code);
+    }
+    {
+        // An existing output requires a second, explicit acceptance. Editing
+        // the name after the warning must not retain overwrite consent.
+        const b = optionBuilder(root);
+        defer c.g_variant_builder_unref(b);
+        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "current_name"), c.g_variant_new("s", @as([*:0]const u8, "report.txt")));
+        const options = c.g_variant_take_ref(c.g_variant_builder_end(b)).?;
+        defer c.g_variant_unref(options);
+        var done: Done = .{};
+        defer done.deinit();
+        const dialog = try Dialog.create(a, "SaveFile", "", "Overwrite fixture", options, &Done.completed, &done);
+        defer dialog.destroy();
+        try loaded(dialog);
+        dialog.accept();
+        try expect(done.code == null);
+        try expect(dialog.overwrite != null);
+        dialog.ui.focusItem(dialog.name_item.?);
+        try expect(dialog.ui.handleKey('a', c.GDK_CONTROL_MASK));
+        try expect(dialog.ui.handleKey('b', 0));
+        try expect(dialog.overwrite == null);
+        try dialog.ui.setText(dialog.name_item.?, "report.txt");
+        dialog.accept();
+        try expect(done.code == null);
+        try done.accept(dialog);
+        try checkUri(done.result, report);
+    }
+    {
+        const left = try std.fmt.allocPrintSentinel(a, "{s}/folder-a", .{root}, 0);
+        defer a.free(left);
+        const right = try std.fmt.allocPrintSentinel(a, "{s}/folder-b", .{root}, 0);
+        defer a.free(right);
+        try std.Io.Dir.cwd().createDirPath(io, left);
+        try std.Io.Dir.cwd().createDirPath(io, right);
+        const b = optionBuilder(root);
+        defer c.g_variant_builder_unref(b);
+        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "directory"), c.g_variant_new("b", @as(c_int, 1)));
+        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "multiple"), c.g_variant_new("b", @as(c_int, 1)));
+        const options = c.g_variant_take_ref(c.g_variant_builder_end(b)).?;
+        defer c.g_variant_unref(options);
+        var done: Done = .{};
+        defer done.deinit();
+        const dialog = try Dialog.create(a, "OpenFile", "", "Multiple folders fixture", options, &Done.completed, &done);
+        defer dialog.destroy();
+        try loaded(dialog);
+        try dialog.selectPath(left);
+        try dialog.selectPath(right);
+        try done.accept(dialog);
+        const values = uris(done.result);
+        defer c.g_variant_unref(values);
+        try expectEqual(@as(usize, 2), c.g_variant_n_children(values));
+        try checkUri(done.result, left);
+        try checkUri(done.result, right);
+    }
+    {
+        const hidden = try std.fmt.allocPrintSentinel(a, "{s}/.hidden.txt", .{root}, 0);
+        defer a.free(hidden);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = hidden, .data = "hidden" });
+        for (0..40) |index| {
+            const path = try std.fmt.allocPrint(a, "{s}/page-{d}.txt", .{ root, index });
+            defer a.free(path);
+            try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "page" });
+        }
+        const b = optionBuilder(root);
+        defer c.g_variant_builder_unref(b);
+        const options = c.g_variant_take_ref(c.g_variant_builder_end(b)).?;
+        defer c.g_variant_unref(options);
+        var done: Done = .{};
+        defer done.deinit();
+        const dialog = try Dialog.create(a, "OpenFile", "", "Paging fixture", options, &Done.completed, &done);
+        defer dialog.destroy();
+        try loaded(dialog);
+        try expect(dialog.ui.get(dialog.next_item).enabled);
+        dialog.ui.activate(dialog.next_item);
+        try expectEqual(@as(usize, 1), dialog.page);
+        try expect(dialog.ui.get(dialog.previous_item).enabled);
+        try std.testing.expectError(error.NoSelection, dialog.selectPath(hidden));
+        dialog.ui.activate(dialog.hidden_item);
+        try expectEqual(@as(usize, 0), dialog.page);
+        try dialog.selectPath(first);
+        try dialog.selectPath(hidden);
+        try done.accept(dialog);
+        const values = uris(done.result);
+        defer c.g_variant_unref(values);
+        try expectEqual(@as(usize, 1), c.g_variant_n_children(values));
+        try checkUri(done.result, hidden);
+    }
+    {
+        const b = optionBuilder(root);
+        defer c.g_variant_builder_unref(b);
+        const options = c.g_variant_take_ref(c.g_variant_builder_end(b)).?;
+        defer c.g_variant_unref(options);
+        var done: Done = .{};
+        // Both scans may finish after the dialog has been destroyed. Neither
+        // may touch its controls or deliver a portal response.
+        const dialog = try Dialog.create(a, "OpenFile", "", "Cancelled scan fixture", options, &Done.completed, &done);
+        try dialog.navigate(root);
+        dialog.destroy();
+        for (0..100) |_| pump();
+        try expect(done.code == null);
     }
     {
         const invalid = parse("{'current_folder': <[byte 47, 116, 109, 112]>}");
@@ -228,7 +297,7 @@ pub fn main(init: std.process.Init) !void {
         defer c.g_variant_unref(choice);
         try std.testing.expectError(error.InvalidFileChoice, Dialog.create(a, "OpenFile", "", "Invalid", choice, &Done.completed, &done));
     }
-    // Let GTK finish cancelled file enumeration before the leak assertion.
+    // Drain cancelled asynchronous enumeration before the leak assertion.
     for (0..30) |_| pump();
-    std.debug.print("PASS native file dialogs: multiple/Unicode files, filters, choices, read-only, save, collision-free multi-save, cancellation and invalid options\n", .{});
+    std.debug.print("PASS native file dialogs: Unicode, filters, choices, read-only, overwrite consent, multi-save, multiple folders, paging, hidden files, cancelled scans and invalid options\n", .{});
 }

@@ -1,4 +1,4 @@
-//! Native Wayland layer surfaces with pixel or Cairo SHM rendering and optional input.
+//! Native Wayland layer surfaces and application windows with SHM rendering.
 //! Each client has a private connection, driven by GLib rather than GDK.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
@@ -46,6 +46,8 @@ pub const Client = struct {
     compositor: ?*Proxy = null,
     shm: ?*c.wl_shm = null,
     shell: ?*Proxy = null,
+    wm_base: ?*Proxy = null,
+    importer: ?*Proxy = null,
     output_manager: ?*Proxy = null,
     outputs: std.ArrayList(*Output) = .empty,
     surfaces: std.ArrayList(*Surface) = .empty,
@@ -77,7 +79,7 @@ pub const Client = struct {
         errdefer self.clear();
         _ = c.wl_registry_add_listener(registry, &registry_listener, self);
         if (c.wl_display_roundtrip(display) < 0) return error.WaylandDispatch;
-        if (self.compositor == null or self.shm == null or self.shell == null) return error.MissingWaylandGlobals;
+        if (self.compositor == null or self.shm == null) return error.MissingWaylandGlobals;
         if (c.wl_proxy_get_version(self.compositor.?) < 3) return error.UnsupportedCompositor;
         // xdg-output can be advertised after wl_output. Bind it after discovery.
         for (self.outputs.items) |output| output.bindLogical();
@@ -113,6 +115,8 @@ pub const Client = struct {
         self.buffers.deinit(a);
         if (self.output_manager) |proxy| destroyProxy(proxy, 0);
         if (self.shell) |proxy| c.wl_proxy_destroy(proxy);
+        if (self.wm_base) |proxy| destroyProxy(proxy, 0);
+        if (self.importer) |proxy| destroyProxy(proxy, 0);
         if (self.shm) |shm| c.wl_shm_destroy(shm);
         if (self.compositor) |proxy| c.wl_proxy_destroy(proxy);
         c.wl_registry_destroy(self.registry);
@@ -159,6 +163,11 @@ pub const Client = struct {
             self.shm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1));
         } else if (std.mem.eql(u8, kind, "zwlr_layer_shell_v1")) {
             self.shell = @ptrCast(c.wl_registry_bind(registry, name, &p.zwlr_layer_shell_v1_interface, @min(version, 4)));
+        } else if (std.mem.eql(u8, kind, "xdg_wm_base")) {
+            self.wm_base = @ptrCast(c.wl_registry_bind(registry, name, &p.xdg_wm_base_interface, @min(version, 3)));
+            listen(self.wm_base.?, &wm_listener, self);
+        } else if (std.mem.eql(u8, kind, "zxdg_importer_v2")) {
+            self.importer = @ptrCast(c.wl_registry_bind(registry, name, &p.zxdg_importer_v2_interface, 1));
         } else if (std.mem.eql(u8, kind, "zxdg_output_manager_v1")) {
             // Version 2 has an explicit done event, independent of wl_output.
             self.output_manager = @ptrCast(c.wl_registry_bind(registry, name, &p.zxdg_output_manager_v1_interface, @min(version, 2)));
@@ -197,6 +206,10 @@ pub const Client = struct {
         for (self.seats.items) |seat| if (seat.pointer != null or seat.keyboard != null) return true;
         return false;
     }
+    fn ping(_: ?*anyopaque, base: *Proxy, serial: u32) callconv(.c) void {
+        send(base, 3, .{serial});
+    }
+    const wm_listener = extern struct { ping: *const @TypeOf(ping) = &ping }{};
     const registry_listener: c.wl_registry_listener = .{ .global = &global, .global_remove = &remove };
 };
 
@@ -354,8 +367,11 @@ pub fn bufferSize(width: u32, height: u32) !usize {
 
 pub const Options = struct {
     namespace: [:0]const u8,
-    layer: u32,
-    anchors: u32,
+    layer: u32 = 2,
+    anchors: u32 = 0,
+    role: enum { layer, toplevel } = .layer,
+    title: [:0]const u8 = "Desktop",
+    parent: [:0]const u8 = "",
     width: u32 = 0,
     height: u32 = 0,
     bottom_margin: i32 = 0,
@@ -407,6 +423,11 @@ pub const Surface = struct {
     input: input.Events = .{},
     proxy: ?*Proxy = null,
     role: ?*Proxy = null,
+    xdg_surface: ?*Proxy = null,
+    imported_parent: ?*Proxy = null,
+    close: ?*const fn (?*anyopaque) void = null,
+    pending_width: u32 = 0,
+    pending_height: u32 = 0,
     width: u32 = 0,
     height: u32 = 0,
     configured: bool = false,
@@ -442,7 +463,28 @@ pub const Surface = struct {
             send(self.proxy.?, 5, .{region}); // Passive feedback never intercepts input.
             destroyProxy(region, 0);
         }
-        const shell = self.client.shell.?;
+        if (self.options.role == .toplevel) {
+            const base = self.client.wm_base orelse return error.MissingWaylandGlobals;
+            self.xdg_surface = c.wl_proxy_marshal_flags(base, 2, &p.xdg_surface_interface, c.wl_proxy_get_version(base), 0, @as(?*anyopaque, null), self.proxy.?) orelse return error.WaylandSurface;
+            listen(self.xdg_surface.?, &xdg_surface_listener, self);
+            self.role = c.wl_proxy_marshal_flags(self.xdg_surface.?, 1, &p.xdg_toplevel_interface, c.wl_proxy_get_version(self.xdg_surface.?), 0, @as(?*anyopaque, null)) orelse return error.WaylandSurface;
+            listen(self.role.?, &toplevel_listener, self);
+            send(self.role.?, 2, .{self.options.title.ptr});
+            send(self.role.?, 3, .{self.options.namespace.ptr});
+            if (std.mem.startsWith(u8, self.options.parent, "wayland:")) if (self.client.importer) |importer| {
+                const handle: [*:0]const u8 = self.options.parent.ptr + 8;
+                self.imported_parent = c.wl_proxy_marshal_flags(importer, 1, &p.zxdg_imported_v2_interface, 1, 0, @as(?*anyopaque, null), handle) orelse return error.WaylandSurface;
+                listen(self.imported_parent.?, &parent_listener, self);
+                send(self.imported_parent.?, 1, .{self.proxy.?});
+            };
+            send(self.role.?, 8, .{ @as(i32, 240), @as(i32, 120) });
+            self.pending_width = @max(1, self.options.width);
+            self.pending_height = @max(1, self.options.height);
+            send(self.proxy.?, 6, .{});
+            self.client.flush();
+            return;
+        }
+        const shell = self.client.shell orelse return error.MissingWaylandGlobals;
         self.role = c.wl_proxy_marshal_flags(shell, 0, &p.zwlr_layer_surface_v1_interface, c.wl_proxy_get_version(shell), 0, @as(?*anyopaque, null), self.proxy.?, self.output.proxy, self.options.layer, self.options.namespace.ptr) orelse return error.WaylandSurface;
         listen(self.role.?, &layer_listener, self);
         send(self.role.?, 0, .{ self.options.width, self.options.height });
@@ -456,9 +498,13 @@ pub const Surface = struct {
     }
     pub fn hide(self: *Surface) void {
         for (self.client.seats.items) |seat| seat.forget(self);
-        if (self.role) |role| destroyProxy(role, 7);
+        if (self.role) |role| destroyProxy(role, if (self.options.role == .toplevel) 0 else 7);
+        if (self.imported_parent) |proxy| destroyProxy(proxy, 0);
+        if (self.xdg_surface) |proxy| destroyProxy(proxy, 0);
         if (self.proxy) |proxy| destroyProxy(proxy, 0);
         self.role = null;
+        self.xdg_surface = null;
+        self.imported_parent = null;
         self.proxy = null;
         self.configured = false;
         self.pending = false;
@@ -475,6 +521,7 @@ pub const Surface = struct {
         a.destroy(self);
     }
     pub fn setBottomMargin(self: *Surface, margin: i32) void {
+        std.debug.assert(self.options.role == .layer);
         if (margin == self.options.bottom_margin) return;
         self.options.bottom_margin = margin;
         if (self.role) |role| {
@@ -484,6 +531,7 @@ pub const Surface = struct {
         }
     }
     pub fn setLayout(self: *Surface, width: u32, height: u32, top_margin: i32, left_margin: i32) void {
+        std.debug.assert(self.options.role == .layer);
         const changed = self.options.width != width or self.options.height != height or self.options.top_margin != top_margin or self.options.left_margin != left_margin;
         if (!changed) return;
         self.options.width = width;
@@ -569,6 +617,35 @@ pub const Surface = struct {
         configure: *const @TypeOf(configure) = &configure,
         closed: *const @TypeOf(closed) = &closed,
     }{};
+    fn xdgConfigured(data: ?*anyopaque, proxy: *Proxy, serial: u32) callconv(.c) void {
+        const self = cast(Surface, data);
+        send(proxy, 4, .{serial});
+        self.width = self.pending_width;
+        self.height = self.pending_height;
+        self.configured = true;
+        self.redraw();
+    }
+    const xdg_surface_listener = extern struct { configure: *const @TypeOf(xdgConfigured) = &xdgConfigured }{};
+    fn toplevelConfigured(data: ?*anyopaque, _: *Proxy, width: i32, height: i32, _: ?*c.wl_array) callconv(.c) void {
+        const self = cast(Surface, data);
+        if (width > 0) self.pending_width = @intCast(width);
+        if (height > 0) self.pending_height = @intCast(height);
+    }
+    fn toplevelClosed(data: ?*anyopaque, _: *Proxy) callconv(.c) void {
+        const self = cast(Surface, data);
+        self.hide();
+        if (self.close) |callback| callback(self.data);
+    }
+    const toplevel_listener = extern struct {
+        configure: *const @TypeOf(toplevelConfigured) = &toplevelConfigured,
+        close: *const @TypeOf(toplevelClosed) = &toplevelClosed,
+    }{};
+    fn parentDestroyed(data: ?*anyopaque, _: *Proxy) callconv(.c) void {
+        const self = cast(Surface, data);
+        if (self.imported_parent) |proxy| destroyProxy(proxy, 0);
+        self.imported_parent = null;
+    }
+    const parent_listener = extern struct { destroyed: *const @TypeOf(parentDestroyed) = &parentDestroyed }{};
     fn entered(_: ?*anyopaque, _: *Proxy, _: ?*c.wl_output) callconv(.c) void {}
     const surface_listener = extern struct {
         enter: *const @TypeOf(entered) = &entered,

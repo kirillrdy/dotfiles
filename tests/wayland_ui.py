@@ -10,6 +10,10 @@ import time
 class WaylandUI:
     def __init__(self, env):
         self.env = env
+        # Keep a keyboard capability present in headless sessions. A one-shot
+        # wtype process can send its keys and disconnect before an application
+        # has received capabilities and bound its wl_keyboard object.
+        self.keyboard = VirtualKeyboard(env)
 
     def run(self, *command, check=True):
         result = sp.run(command, env=self.env, capture_output=True, text=True, timeout=5)

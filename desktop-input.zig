@@ -3,6 +3,7 @@ const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const native = @import("desktop-surface.zig");
+const keyboard = @import("desktop-keyboard.zig");
 const a = std.heap.page_allocator;
 const Proxy = c.wl_proxy;
 const cast = c.__zig.cast;
@@ -16,6 +17,10 @@ pub const Events = struct {
     motion: ?*const fn (?*anyopaque, *native.Surface, f64, f64) void = null,
     button: ?*const fn (?*anyopaque, *native.Surface, u32, bool, f64, f64) void = null,
     key: ?*const fn (?*anyopaque, *native.Surface, u32, bool) void = null,
+    symbol: ?*const fn (?*anyopaque, *native.Surface, u32, u32, bool) bool = null,
+    text: ?*const fn (?*anyopaque, *native.Surface, []const u8) void = null,
+    focus: ?*const fn (?*anyopaque, *native.Surface, bool) void = null,
+    scroll: ?*const fn (?*anyopaque, *native.Surface, u32, f64) void = null,
 };
 
 fn releaseProxy(proxy: *Proxy, opcode: u32, since: u32) void {
@@ -38,6 +43,11 @@ pub const Seat = struct {
     cursor: ?*Proxy = null,
     x: f64 = 0,
     y: f64 = 0,
+    xkb: keyboard.Keyboard = .{},
+    repeat_rate: u32 = 0,
+    repeat_delay: u32 = 0,
+    repeat_code: ?u32 = null,
+    repeat_source: c.guint = 0,
 
     pub fn create(client: *native.Client, registry: *c.wl_registry, name: u32, version: u32) !*Seat {
         const self = try a.create(Seat);
@@ -48,6 +58,8 @@ pub const Seat = struct {
     }
     pub fn destroy(self: *Seat) void {
         self.leaveFocus();
+        self.stopRepeat();
+        self.xkb.deinit();
         if (self.cursor) |proxy| releaseProxy(proxy, 0, 1);
         if (self.pointer) |proxy| releaseProxy(proxy, 1, 3);
         if (self.keyboard) |proxy| releaseProxy(proxy, 0, 3);
@@ -56,7 +68,11 @@ pub const Seat = struct {
     }
     pub fn forget(self: *Seat, surface: *native.Surface) void {
         if (self.pointer_focus == surface) self.pointer_focus = null;
-        if (self.keyboard_focus == surface) self.keyboard_focus = null;
+        if (self.keyboard_focus == surface) {
+            self.keyboard_focus = null;
+            self.stopRepeat();
+            self.xkb.reset();
+        }
     }
     fn find(self: *Seat, proxy: ?*Proxy) ?*native.Surface {
         if (proxy == null) return null;
@@ -83,6 +99,8 @@ pub const Seat = struct {
             self.keyboard = self.device(1, &wl_keyboard_interface);
             listen(self.keyboard.?, &keyboard_listener, self);
         } else if (flags & 2 == 0 and self.keyboard != null) {
+            self.leaveKeyboard();
+            self.xkb.deinit();
             releaseProxy(self.keyboard.?, 0, 3);
             self.keyboard = null;
             self.keyboard_focus = null;
@@ -126,7 +144,10 @@ pub const Seat = struct {
         const self = cast(Seat, data);
         if (self.pointer_focus) |surface| if (surface.input.button) |callback| callback(surface.data, surface, code, state == 1, self.x, self.y);
     }
-    fn axis(_: ?*anyopaque, _: *Proxy, _: u32, _: u32, _: i32) callconv(.c) void {}
+    fn axis(data: ?*anyopaque, _: *Proxy, _: u32, direction: u32, value: i32) callconv(.c) void {
+        const self = cast(Seat, data);
+        if (self.pointer_focus) |surface| if (surface.input.scroll) |callback| callback(surface.data, surface, direction, @as(f64, @floatFromInt(value)) / 256);
+    }
     fn frame(_: ?*anyopaque, _: *Proxy) callconv(.c) void {}
     fn axisSource(_: ?*anyopaque, _: *Proxy, _: u32) callconv(.c) void {}
     fn axisStop(_: ?*anyopaque, _: *Proxy, _: u32, _: u32) callconv(.c) void {}
@@ -143,23 +164,79 @@ pub const Seat = struct {
         discrete: *const @TypeOf(axisDiscrete) = &axisDiscrete,
     }{};
 
-    fn keymap(_: ?*anyopaque, _: *Proxy, _: u32, fd: c_int, _: u32) callconv(.c) void {
-        // Escape uses its evdev key code; text clients will need an XKB state.
-        _ = libc.close(fd);
+    fn keymap(data: ?*anyopaque, _: *Proxy, format: u32, fd: c_int, size: u32) callconv(.c) void {
+        const self = cast(Seat, data);
+        self.stopRepeat();
+        self.xkb.load(fd, format, size);
     }
     fn keyboardEnter(data: ?*anyopaque, _: *Proxy, _: u32, proxy: ?*Proxy, _: ?*c.wl_array) callconv(.c) void {
         const self = cast(Seat, data);
+        self.leaveKeyboard();
         self.keyboard_focus = self.find(proxy);
+        if (self.keyboard_focus) |surface| if (surface.input.focus) |callback| callback(surface.data, surface, true);
     }
     fn keyboardLeave(data: ?*anyopaque, _: *Proxy, _: u32, _: ?*Proxy) callconv(.c) void {
-        cast(Seat, data).keyboard_focus = null;
+        cast(Seat, data).leaveKeyboard();
+    }
+    fn leaveKeyboard(self: *Seat) void {
+        self.stopRepeat();
+        self.xkb.reset();
+        const surface = self.keyboard_focus orelse return;
+        self.keyboard_focus = null;
+        if (surface.input.focus) |callback| callback(surface.data, surface, false);
     }
     fn key(data: ?*anyopaque, _: *Proxy, _: u32, _: u32, code: u32, state: u32) callconv(.c) void {
         const self = cast(Seat, data);
-        if (self.keyboard_focus) |surface| if (surface.input.key) |callback| callback(surface.data, surface, code, state == 1);
+        if (state == 1) {
+            self.stopRepeat();
+            if (self.repeat_rate > 0 and self.xkb.repeats(code)) {
+                self.repeat_code = code;
+                self.repeat_source = c.g_timeout_add(self.repeat_delay, &repeatBegin, self);
+            }
+        } else if (self.repeat_code == code) self.stopRepeat();
+        self.dispatchKey(code, state == 1);
     }
-    fn modifiers(_: ?*anyopaque, _: *Proxy, _: u32, _: u32, _: u32, _: u32, _: u32) callconv(.c) void {}
-    fn repeat(_: ?*anyopaque, _: *Proxy, _: i32, _: i32) callconv(.c) void {}
+    fn dispatchKey(self: *Seat, code: u32, pressed: bool) void {
+        const surface = self.keyboard_focus orelse return;
+        if (surface.input.symbol) |callback| {
+            if (callback(surface.data, surface, self.xkb.symbol(code), self.xkb.modifiers(), pressed)) return;
+        }
+        if (pressed) if (surface.input.text) |callback| {
+            var buffer: [128]u8 = @splat(0);
+            defer std.crypto.secureZero(u8, &buffer);
+            const value = self.xkb.text(code, &buffer);
+            if (value.len > 0) callback(surface.data, surface, value);
+        };
+        if (surface.input.key) |callback| callback(surface.data, surface, code, pressed);
+    }
+    fn stopRepeat(self: *Seat) void {
+        if (self.repeat_source != 0) _ = c.g_source_remove(self.repeat_source);
+        self.repeat_source = 0;
+        self.repeat_code = null;
+    }
+    fn repeatBegin(ptr: ?*anyopaque) callconv(.c) c.gboolean {
+        const self = cast(Seat, ptr);
+        self.repeat_source = 0;
+        const code = self.repeat_code orelse return 0;
+        self.repeat_source = c.g_timeout_add(@max(1, 1000 / self.repeat_rate), &repeatTick, self);
+        self.dispatchKey(code, true);
+        return 0;
+    }
+    fn repeatTick(ptr: ?*anyopaque) callconv(.c) c.gboolean {
+        const self = cast(Seat, ptr);
+        const code = self.repeat_code orelse return 0;
+        self.dispatchKey(code, true);
+        return @intFromBool(self.repeat_source != 0);
+    }
+    fn modifiers(data: ?*anyopaque, _: *Proxy, _: u32, depressed: u32, latched: u32, locked: u32, group: u32) callconv(.c) void {
+        cast(Seat, data).xkb.update(depressed, latched, locked, group);
+    }
+    fn repeat(data: ?*anyopaque, _: *Proxy, rate: i32, delay: i32) callconv(.c) void {
+        const self = cast(Seat, data);
+        self.stopRepeat();
+        self.repeat_rate = @intCast(std.math.clamp(rate, 0, 200));
+        self.repeat_delay = @intCast(std.math.clamp(delay, 1, 10000));
+    }
     const keyboard_listener = extern struct {
         keymap: *const @TypeOf(keymap) = &keymap,
         enter: *const @TypeOf(keyboardEnter) = &keyboardEnter,

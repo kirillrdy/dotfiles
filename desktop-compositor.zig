@@ -1043,14 +1043,37 @@ const Keyboard = struct {
             c.wlr_keyboard_set_repeat_info(wlr, 25, 600);
         }
         self.hooks.add(&wlr.events.modifiers, self, &modifiers);
+        self.hooks.add(&wlr.events.keymap, self, &keymapChanged);
         self.hooks.add(&wlr.events.key, self, &key);
         self.hooks.add(&wlr.base.events.destroy, self, &destroy);
         s.keyboards.append(s.a, self) catch @panic("keyboards");
         c.wlr_seat_set_keyboard(s.seat, wlr);
         s.capabilities();
+        self.restoreFocus();
+    }
+    fn keymapChanged(ptr: *anyopaque, _: ?*anyopaque) void {
+        const self = cast(Keyboard, ptr);
+        c.wlr_seat_set_keyboard(self.s.seat, self.wlr);
+        self.restoreFocus();
+    }
+    fn restoreFocus(self: *Keyboard) void {
+        const s = self.s;
         if (s.locked) {
             if (s.lock) |lock| lock.focus();
-        } else if (s.seat.keyboard_state.focused_surface) |surface| s.keyboardFocus(surface);
+        } else if (s.seat.keyboard_state.focused_surface) |surface| {
+            s.keyboardFocus(surface);
+        } else {
+            // A window can become active before the first keyboard exists
+            // (headless sessions and hotplug). Activation alone did not enter
+            // the seat, so restore that focus when a keyboard arrives.
+            for (s.layers.items) |layer| {
+                if (layer.wlr.surface.*.mapped and layer.wlr.current.keyboard_interactive == c.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) {
+                    s.keyboardFocus(layer.wlr.surface);
+                    return;
+                }
+            }
+            if (s.focused) |view| if (view.mapped) s.keyboardFocus(view.xdg.base.*.surface);
+        }
     }
     fn modifiers(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Keyboard, ptr);

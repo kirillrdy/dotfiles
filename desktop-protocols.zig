@@ -1223,3 +1223,16 @@ const zxdg_output_v1_events = [_]Message{
     .{ .name = "description", .signature = "2s", .types = @constCast(&[_][*c]const Interface{null}) },
 };
 pub export const zxdg_output_v1_interface: Interface = .{ .name = "zxdg_output_v1", .version = 3, .method_count = 1, .methods = &zxdg_output_v1_requests, .event_count = 5, .events = &zxdg_output_v1_events };
+
+// xdg-foreign v2 lets native portal windows parent to a caller's exported handle.
+const importer_v2_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = null },
+    .{ .name = "import_toplevel", .signature = "ns", .types = @constCast(&[_][*c]const Interface{ &zxdg_imported_v2_interface, null }) },
+};
+pub export const zxdg_importer_v2_interface: Interface = .{ .name = "zxdg_importer_v2", .version = 1, .method_count = 2, .methods = &importer_v2_requests, .event_count = 0, .events = null };
+const imported_v2_requests = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = null },
+    .{ .name = "set_parent_of", .signature = "o", .types = @constCast(&[_][*c]const Interface{&wl_surface_interface}) },
+};
+const imported_v2_events = [_]Message{.{ .name = "destroyed", .signature = "", .types = null }};
+pub export const zxdg_imported_v2_interface: Interface = .{ .name = "zxdg_imported_v2", .version = 1, .method_count = 2, .methods = &imported_v2_requests, .event_count = 1, .events = &imported_v2_events };

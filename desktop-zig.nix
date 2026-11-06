@@ -48,6 +48,8 @@ pkgs.stdenv.mkDerivation {
       || file.name == "check-desktop-command.py"
       || file.name == "check-desktop-notifications.py"
       || file.name == "check-desktop-date-menu.py"
+      || file.name == "check-desktop-window.py"
+      || file.name == "wayland_ui.py"
       || file.name == "desktop-notifications.css"
     ) ./.;
   };
@@ -55,6 +57,7 @@ pkgs.stdenv.mkDerivation {
     pkgs.zig_0_17
     pkgs.pkg-config
     pkgs.wtype
+    pkgs.wlrctl
     pkgs.wayland-scanner
     (pkgs.python3.withPackages (p: [ p.pygobject3 ]))
     pkgs.dbus
@@ -94,7 +97,14 @@ pkgs.stdenv.mkDerivation {
   checkPhase = ''
     export GSETTINGS_BACKEND=memory
     export GSETTINGS_SCHEMA_DIR=${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}/glib-2.0/schemas
-    export FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.adwaita-fonts pkgs.dejavu_fonts ]; }}
+    export FONTCONFIG_FILE=${
+      pkgs.makeFontsConf {
+        fontDirectories = [
+          pkgs.adwaita-fonts
+          pkgs.dejavu_fonts
+        ];
+      }
+    }
     export XDG_CACHE_HOME="$TMPDIR/cache"
     mkdir -p "$XDG_CACHE_HOME"
     export XDG_RUNTIME_DIR="$TMPDIR/runtime"
@@ -113,7 +123,8 @@ pkgs.stdenv.mkDerivation {
     export GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
     export DESKTOP_PANEL_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
     export DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
-    NIX_LDFLAGS= G_DEBUG=fatal-criticals zig build test compositor-fixture --prefix "$out" --release=safe --summary all
+    NIX_LDFLAGS= G_DEBUG=fatal-criticals zig build test compositor-fixture window-fixture --prefix "$out" --release=safe --summary all
+    python3 tests/check-desktop-window.py --binary "$out/bin/desktop-window-fixture"
     python3 tests/check-desktop-compositor.py --bin-dir "$out/bin" --wtype "$(command -v wtype)"
     python3 tests/check-desktop-askpass.py --binary "$out/bin/desktop-zig" --wtype "$(command -v wtype)"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
@@ -128,13 +139,13 @@ pkgs.stdenv.mkDerivation {
   '';
   # Keep debug information without retaining the compiler through source paths.
   postFixup = ''
-    find "$out" "$tests" -type f -exec remove-references-to -t ${pkgs.zig_0_17} {} +
+    find "$out" ''${tests:+"$tests"} -type f -exec remove-references-to -t ${pkgs.zig_0_17} {} +
   '';
   installPhase = ''
     # Keep test programs outside the desktop output.
     mkdir -p "$tests/bin"
     for name in desktop-apps-fixture desktop-audio-fixture desktop-battery-fixture desktop-backlight-fixture desktop-lock-fixture desktop-idle-fixture waybar-power-fixture labwc-switcher-fixture \
-      desktop-pointer-fixture desktop-compositor-fixture desktop-decoration-fixture desktop-command-fixture desktop-notifications-fixture; do
+      desktop-pointer-fixture desktop-compositor-fixture desktop-decoration-fixture desktop-command-fixture desktop-notifications-fixture desktop-window-fixture; do
       mv "$out/bin/$name" "$tests/bin/$name"
     done
     ln -s "$out/bin/desktop-zig" "$tests/bin/desktop-zig"

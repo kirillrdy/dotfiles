@@ -44,6 +44,14 @@ pub fn build(b: *std.Build) void {
     b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
     b.step("shell", "Build the desktop shell").dependOn(&b.addInstallArtifact(session, .{}).step);
 
+    // Prove the replacement window host has no GTK/GDK link dependency.
+    const native = b.createModule(.{ .root_source_file = b.path("desktop-native.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    for ([_][]const u8{ "gio-unix-2.0", "wayland-client", "cairo", "xkbcommon", "pangoft2" }) |name| native.linkSystemLibrary(name, .{});
+    const window_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-window-fixture.zig"), .target = target, .optimize = optimize });
+    window_module.addImport("native", native);
+    const window_fixture = b.addExecutable(.{ .name = "desktop-window-fixture", .root_module = window_module });
+    b.step("window-fixture", "Build the GTK-free native window test client").dependOn(&b.addInstallArtifact(window_fixture, .{}).step);
+
     // Zig collects tests from files in the root module, not imported modules.
     // Compile the same production files with the same dependencies in one test root.
     const test_module = b.createModule(.{ .root_source_file = b.path("desktop-test-runner.zig"), .target = target, .optimize = optimize, .link_libc = true });
@@ -86,6 +94,8 @@ pub fn build(b: *std.Build) void {
         "xdg_surface_interface",
         "xdg_toplevel_interface",
         "xdg_popup_interface",
+        "zxdg_importer_v2_interface",
+        "zxdg_imported_v2_interface",
         "zwlr_layer_shell_v1_interface",
         "zwlr_layer_surface_v1_interface",
         "zwlr_output_manager_v1_interface",
@@ -122,6 +132,7 @@ pub fn build(b: *std.Build) void {
     const protocol_files = [_]std.Build.LazyPath{
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-output/xdg-output-unstable-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/stable/xdg-shell/xdg-shell.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/unstable/xdg-foreign/xdg-foreign-unstable-v2.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-layer-shell-unstable-v1.xml", .{wlr_protocols}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-screencopy-unstable-v1.xml", .{wlr_protocols}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-data-control-unstable-v1.xml", .{wlr_protocols}) },
