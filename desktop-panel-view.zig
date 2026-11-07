@@ -129,8 +129,10 @@ pub const Graph = struct {
             series -= 1;
             const color = self.colors[series];
             for (0..self.count) |i| {
+                const value = self.history[series][i];
+                if (value <= 0) continue;
                 const right = x + width - @as(f64, @floatFromInt(self.count - 1 - i));
-                const top = height * (1 - std.math.clamp(self.history[series][i] / maximum, 0, 1));
+                const top = height * (1 - std.math.clamp(value / maximum, 0, 1));
                 canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = right - 1, .y = top, .width = 1, .height = height - top }, .radius = 0 } }}, .{ .red = color.red, .green = color.green, .blue = color.blue, .alpha = color.alpha });
             }
         }

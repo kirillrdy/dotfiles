@@ -159,6 +159,7 @@ pub const Service = struct {
         }
         if (self.notifier == null) std.log.warn("idle: ext-idle-notify unavailable", .{});
         self.wayland_source = c.g_unix_fd_add(c.wl_display_get_fd(self.display), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
+        _ = c.wl_display_dispatch_pending(self.display);
         _ = c.wl_display_flush(self.display);
     }
     fn disconnectWayland(self: *Service) void {
@@ -215,7 +216,7 @@ pub const Service = struct {
     }
     fn dispatch(_: c_int, flags: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Service, data);
-        if (flags & (c.G_IO_HUP | c.G_IO_ERR) != 0 or c.wl_display_dispatch(self.display) < 0) {
+        if (flags & (c.G_IO_HUP | c.G_IO_ERR) != 0 or !c.__zig.dispatchWayland(self.display)) {
             self.wayland_source = 0;
             self.disconnectWayland();
             return 0;

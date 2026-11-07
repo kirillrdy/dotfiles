@@ -130,6 +130,7 @@ pub const Client = struct {
         if (c.wl_display_roundtrip(display) < 0 or c.wl_display_roundtrip(display) < 0) return error.WaylandDisconnected;
         if (self.shm == null or self.list == null or self.sources == null or self.captures == null or self.control == null) return error.OverviewProtocolUnavailable;
         self.fd_source = c.g_unix_fd_add(c.wl_display_get_fd(display), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
+        _ = c.wl_display_dispatch_pending(display);
         return self;
     }
     pub fn destroy(self: *Client) void {
@@ -190,7 +191,7 @@ pub const Client = struct {
 
 fn dispatch(_: c_int, condition: c.GIOCondition, data: c.gpointer) callconv(.c) c.gboolean {
     const self = cast(Client, data);
-    if (condition & (c.G_IO_HUP | c.G_IO_ERR) != 0 or c.wl_display_dispatch(self.display) < 0) {
+    if (condition & (c.G_IO_HUP | c.G_IO_ERR) != 0 or !c.__zig.dispatchWayland(self.display)) {
         self.connected = false;
         self.fd_source = 0;
         self.changed(self.context);

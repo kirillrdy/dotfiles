@@ -201,8 +201,11 @@ pub const Controls = struct {
             .dnd => "Do Not Disturb",
             else => null,
         });
-        if (native.View.slider(self.view.pressed)) self.setSlider(self.view.pressed, self.view.sliderValue(self.view.pressed, event.x));
-        self.redraw();
+        if (native.View.slider(self.view.pressed)) {
+            self.setSlider(self.view.pressed, self.view.sliderValue(self.view.pressed, event.x));
+        } else if (previous != self.view.hover) {
+            self.redraw();
+        }
         return 1;
     }
     fn leave(_: *c.GtkWidget, _: *c.GdkEventCrossing, ptr: c.gpointer) callconv(.c) c.gboolean {

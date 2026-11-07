@@ -69,7 +69,8 @@ pub fn ensureStyle() void {
         \\.gnome-panel-module, .gnome-panel-module * { border: none; border-radius: 0; min-height: 0; padding: 0; margin: 0; }
         \\popover.gnome-calendar, popover.gnome-calendar.background, popover.gnome-calendar > contents,
         \\popover.gnome-codex-menu, popover.gnome-codex-menu.background, popover.gnome-codex-menu > contents,
-        \\popover.gnome-power-menu, popover.gnome-power-menu.background, popover.gnome-power-menu > contents {
+        \\popover.gnome-power-menu, popover.gnome-power-menu.background, popover.gnome-power-menu > contents,
+        \\.gnome-power-menu .quick-native-host, .gnome-power-menu .quick-native-host viewport {
         \\  background: transparent; background-image: none; border: none; border-radius: 0; padding: 0; margin: 0; box-shadow: none;
         \\}
         \\tooltip, tooltip.background {

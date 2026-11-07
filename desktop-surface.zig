@@ -94,6 +94,7 @@ pub const Client = struct {
             output.announced = true;
             self.callbacks.added(self.data, output);
         }
+        _ = c.wl_display_dispatch_pending(self.display);
         self.flush();
     }
     pub fn destroy(self: *Client) void {
@@ -146,7 +147,7 @@ pub const Client = struct {
     }
     fn dispatch(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c.gboolean {
         const self = cast(Client, data);
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0 or c.wl_display_dispatch(self.display) < 0) {
+        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0 or !c.__zig.dispatchWayland(self.display)) {
             self.source = 0;
             self.fail();
             return 0;

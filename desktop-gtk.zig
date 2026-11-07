@@ -77,6 +77,14 @@ pub const __zig = struct {
         out_height.* = height;
         return mask;
     }
+    pub fn dispatchWayland(display: ?*wl_display) bool {
+        const libc = @import("desktop-libc.zig");
+        while (wl_display_prepare_read(display) != 0) {
+            if (wl_display_dispatch_pending(display) < 0) return false;
+        }
+        if (wl_display_read_events(display) < 0 and libc.__errno_location().* != @backingInt(std.c.E.AGAIN)) return false;
+        return wl_display_dispatch_pending(display) >= 0;
+    }
 };
 
 pub const gint8 = i8;
@@ -1796,6 +1804,10 @@ pub extern fn wl_display_disconnect(display: ?*struct_wl_display) void;
 pub extern fn wl_display_get_fd(display: ?*struct_wl_display) c_int;
 
 pub extern fn wl_display_dispatch(display: ?*struct_wl_display) c_int;
+pub extern fn wl_display_dispatch_pending(display: ?*struct_wl_display) c_int;
+pub extern fn wl_display_prepare_read(display: ?*struct_wl_display) c_int;
+pub extern fn wl_display_cancel_read(display: ?*struct_wl_display) void;
+pub extern fn wl_display_read_events(display: ?*struct_wl_display) c_int;
 
 pub extern fn g_mkstemp([*c]u8) c_int;
 pub extern fn g_filename_to_uri([*c]const u8, [*c]const u8, [*c][*c]GError) [*c]u8;

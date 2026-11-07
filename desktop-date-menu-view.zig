@@ -12,6 +12,7 @@ pub const Effect = union(enum) { none, clear, dismiss: u32, activate: struct { i
 const Card = struct { view: banner.View, y: f64 = 0 };
 const Snapshot = struct {
     arena: std.heap.ArenaAllocator,
+    raw: []const u8 = "",
     cards: std.ArrayList(Card) = .empty,
     fn deinit(self: *Snapshot, a: std.mem.Allocator) void {
         for (self.cards.items) |*card| card.view.deinit();
@@ -59,6 +60,10 @@ pub const View = struct {
         self.scale = 0;
     }
     pub fn setDate(self: *View, value: *c.GDateTime) void {
+        if (sameDate(self.selected, value)) {
+            c.g_date_time_unref(value);
+            return;
+        }
         c.g_date_time_unref(self.selected);
         self.selected = value;
         self.invalidate();
@@ -118,11 +123,19 @@ pub const View = struct {
         return self.snapshot.cards.items.len;
     }
     pub fn load(self: *View, raw: []const u8) !void {
+        if (self.snapshot.raw.len != 0 and std.mem.eql(u8, self.snapshot.raw, raw)) {
+            self.pressed = .none;
+            self.hover = .none;
+            try self.layout();
+            self.ensureFocusVisible();
+            return;
+        }
         // Commit only a fully parsed, prepared snapshot. Existing cards own the
         // strings referenced by their masks and callbacks until replacement.
         var next: Snapshot = .{ .arena = std.heap.ArenaAllocator.init(self.allocator) };
         errdefer next.deinit(self.allocator);
         const a = next.arena.allocator();
+        next.raw = try a.dupe(u8, raw);
         const parsed = try std.json.parseFromSlice(std.json.Value, a, raw, .{});
         if (parsed.value != .array) return error.InvalidHistory;
         var i = parsed.value.array.items.len;

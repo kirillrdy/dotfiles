@@ -155,9 +155,11 @@ pub const Controls = struct {
     }
     fn motion(_: *c.GtkWidget, event: *c.GdkEventMotion, ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Controls, ptr);
+        const previous = self.view.hover;
+        const previous_scroll = self.view.scroll;
         if (self.scroll_grab) |grab| self.view.dragScroll(event.y, grab);
         self.view.hover = self.view.hit(event.x, event.y);
-        self.redraw();
+        if (!std.meta.eql(previous, self.view.hover) or self.view.scroll != previous_scroll) self.redraw();
         return 1;
     }
     fn leave(_: *c.GtkWidget, _: *c.GdkEventCrossing, ptr: c.gpointer) callconv(.c) c.gboolean {

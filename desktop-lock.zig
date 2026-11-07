@@ -356,7 +356,7 @@ const State = struct {
     }
     fn readable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(State, data);
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0 or c.wl_display_dispatch(self.display) < 0) std.process.exit(1);
+        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0 or !c.__zig.dispatchWayland(self.display)) std.process.exit(1);
         return 1;
     }
 };

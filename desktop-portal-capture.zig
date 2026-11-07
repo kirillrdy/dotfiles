@@ -73,7 +73,7 @@ pub const Capture = struct {
     }
     fn dispatch(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Capture, data);
-        const ok = condition & (c.G_IO_ERR | c.G_IO_HUP) == 0 and c.wl_display_dispatch(self.client.display) >= 0;
+        const ok = condition & (c.G_IO_ERR | c.G_IO_HUP) == 0 and c.__zig.dispatchWayland(self.client.display);
         if (ok) _ = c.wl_display_flush(self.client.display);
         const frame = &self.frame.?;
         if (ok and !frame.done and !frame.failed) return 1;

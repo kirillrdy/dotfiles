@@ -119,7 +119,7 @@ const Client = struct {
     }
     fn dispatch(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Client, data);
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0 or c.wl_display_dispatch(self.display) < 0) self.failure = error.WaylandDisconnected;
+        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0 or !c.__zig.dispatchWayland(self.display)) self.failure = error.WaylandDisconnected;
         _ = c.wl_display_flush(self.display);
         return 1;
     }

@@ -165,7 +165,7 @@ fn roundedDistance(rect: Rect, requested: f64, p: Point) f64 {
     const radius = @min(requested, @min(rect.width, rect.height) / 2);
     const x = @abs(p.x - rect.x - rect.width / 2) - rect.width / 2 + radius;
     const y = @abs(p.y - rect.y - rect.height / 2) - rect.height / 2 + radius;
-    return length(@max(x, 0), @max(y, 0)) + @min(@max(x, y), 0) - radius;
+    return (if (x > 0 and y > 0) length(x, y) else @max(x, y)) - radius;
 }
 
 fn length(x: f64, y: f64) f64 {
@@ -188,6 +188,8 @@ pub const Canvas = struct {
     /// Shapes in one call form a single fill/stroke, including at intersections.
     pub fn draw(self: Canvas, shapes: []const Shape, color: Color) void {
         if (shapes.len == 0 or color.alpha <= 0) return;
+        const solid = colorPixel(color, 1);
+        if (solid == 0) return;
         var bounds = shapes[0].bounds();
         for (shapes[1..]) |shape| {
             const next = shape.bounds();
@@ -210,7 +212,7 @@ pub const Canvas = struct {
             const coverage = std.math.clamp(0.5 - distance * self.scale, 0, 1);
             if (coverage == 0) continue;
             const dest = &self.target.pixels[y * self.target.width + x];
-            dest.* = over(dest.*, colorPixel(color, coverage));
+            dest.* = if (coverage >= 1) (if (solid >> 24 == 255) solid else over(dest.*, solid)) else over(dest.*, colorPixel(color, coverage));
         };
     }
 };
