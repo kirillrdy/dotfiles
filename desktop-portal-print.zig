@@ -204,7 +204,7 @@ pub const Operation = struct {
         _ = c.g_signal_connect_data(self.window, "response", @ptrCast(&responded), self, null, 0);
         c.gtk_widget_show(self.window);
         c.gtk_window_present(cast(c.GtkWindow, self.window));
-        @import("desktop-portal-window.zig").parentTo(self.window.?, a, parent);
+        c.__zig.parentTo(self.window.?, a, parent);
         return self;
     }
     // A submitted job owns an asynchronous callback; keep its request alive

@@ -12,7 +12,7 @@ pkgs.testers.runNixOSTest {
       ...
     }:
     {
-      imports = [ ../labwc.nix ];
+      imports = [ ../desktop.nix ];
       virtualisation = {
         memorySize = 2048;
         cores = 2;

@@ -1,11 +1,6 @@
 { pkgs }:
 let
   desktop = import ../desktop-zig.nix { inherit pkgs; };
-  config = import ../labwc.nix {
-    inherit pkgs;
-    lib = pkgs.lib;
-    enableLightDesktop = true;
-  };
 in
 pkgs.runCommand "desktop-lock-check"
   {

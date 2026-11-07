@@ -382,11 +382,9 @@ pub const Options = struct {
     cursor: enum { crosshair, arrow } = .crosshair,
     exclusive_zone: i32 = -1,
 };
-pub const Paint = *const fn (?*anyopaque, *c.cairo_t, f64, f64) void;
 pub const Pixels = raster.Buffer;
 /// Cleared physical pixels, writable only for the duration of the callback.
 pub const PixelPaint = *const fn (?*anyopaque, Pixels) void;
-pub const Painter = union(enum) { cairo: Paint, pixels: PixelPaint };
 
 /// A small SHM cursor keeps interactive clients independent of GTK cursor APIs.
 pub fn setCursor(owner: *Surface, cursor: *Proxy, pointer: *Proxy, serial: u32) !void {
@@ -418,7 +416,7 @@ pub const Surface = struct {
     client: *Client,
     output: *Output,
     options: Options,
-    paint: Painter,
+    paint: PixelPaint,
     data: ?*anyopaque,
     input: input.Events = .{},
     proxy: ?*Proxy = null,
@@ -434,13 +432,7 @@ pub const Surface = struct {
     pending: bool = false,
     buffers: [2]?*Buffer = .{ null, null },
 
-    pub fn create(output: *Output, options: Options, paint: Paint, data: ?*anyopaque) !*Surface {
-        return createWithPainter(output, options, .{ .cairo = paint }, data);
-    }
     pub fn createPixels(output: *Output, options: Options, paint: PixelPaint, data: ?*anyopaque) !*Surface {
-        return createWithPainter(output, options, .{ .pixels = paint }, data);
-    }
-    fn createWithPainter(output: *Output, options: Options, paint: Painter, data: ?*anyopaque) !*Surface {
         const self = try a.create(Surface);
         errdefer a.destroy(self);
         self.* = .{ .client = output.client, .output = output, .options = options, .paint = paint, .data = data };
@@ -569,26 +561,9 @@ pub const Surface = struct {
             break;
         }
         const buffer = available orelse return; // release retries the newest state.
-        switch (self.paint) {
-            .pixels => |paint| {
-                const pixels: [*]u32 = @ptrCast(@alignCast(buffer.memory));
-                @memset(pixels[0 .. buffer.size / 4], 0);
-                paint(self.data, .{ .pixels = pixels[0 .. buffer.size / 4], .width = width, .height = height });
-            },
-            .cairo => |paint| {
-                const image = c.cairo_image_surface_create_for_data(buffer.memory, c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height), @intCast(width * 4)) orelse return error.CairoSurface;
-                defer c.cairo_surface_destroy(image);
-                if (c.cairo_surface_status(image) != c.CAIRO_STATUS_SUCCESS) return error.CairoSurface;
-                c.cairo_surface_set_device_scale(image, @floatFromInt(self.output.scale), @floatFromInt(self.output.scale));
-                const cr = c.cairo_create(image).?;
-                defer c.cairo_destroy(cr);
-                c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
-                c.cairo_paint(cr);
-                c.cairo_set_operator(cr, c.CAIRO_OPERATOR_OVER);
-                paint(self.data, cr, @floatFromInt(self.width), @floatFromInt(self.height));
-                c.cairo_surface_flush(image);
-            },
-        }
+        const pixels: [*]u32 = @ptrCast(@alignCast(buffer.memory));
+        @memset(pixels[0 .. buffer.size / 4], 0);
+        self.paint(self.data, .{ .pixels = pixels[0 .. buffer.size / 4], .width = width, .height = height });
         send(self.proxy.?, 8, .{@as(i32, @intCast(self.output.scale))});
         send(self.proxy.?, 1, .{ buffer.proxy, @as(i32, 0), @as(i32, 0) });
         send(self.proxy.?, 2, .{ @as(i32, 0), @as(i32, 0), @as(i32, @intCast(self.width)), @as(i32, @intCast(self.height)) });
@@ -663,13 +638,13 @@ test "native buffer bounds reject empty images and oversized allocations" {
 test "passive clients do not bind input seats or accept interactive surfaces" {
     const Noop = struct {
         fn output(_: ?*anyopaque, _: *Output) void {}
-        fn paint(_: ?*anyopaque, _: *c.cairo_t, _: f64, _: f64) void {}
+        fn paint(_: ?*anyopaque, _: Pixels) void {}
     };
     const client = try Client.create(.{ .added = &Noop.output, .removed = &Noop.output }, null);
     defer client.destroy();
     try std.testing.expectEqual(@as(usize, 0), client.seats.items.len);
     try std.testing.expect(!client.hasInput());
-    const surface = try Surface.create(client.outputs.items[0], .{ .namespace = "input-guard", .layer = 3, .anchors = 0, .width = 32, .height = 32, .interactive = true }, &Noop.paint, null);
+    const surface = try Surface.createPixels(client.outputs.items[0], .{ .namespace = "input-guard", .layer = 3, .anchors = 0, .width = 32, .height = 32, .interactive = true }, &Noop.paint, null);
     defer surface.destroy();
     try std.testing.expectError(error.InputNotEnabled, surface.show());
     try std.testing.expect(surface.proxy == null);

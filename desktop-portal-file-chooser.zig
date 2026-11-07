@@ -136,7 +136,7 @@ pub const Dialog = struct {
         ui.show();
         ui.focusItem(self.path_item);
         c.gtk_window_present(cast(c.GtkWindow, self.window));
-        @import("desktop-portal-window.zig").parentTo(self.window, allocator, parent);
+        c.__zig.parentTo(self.window, allocator, parent);
         return self;
     }
     fn freeResources(self: *Dialog) void {

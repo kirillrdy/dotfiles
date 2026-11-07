@@ -1,4 +1,4 @@
-"""Check native idle and suspend locking with headless Labwc and a private fake logind.
+"""Check native idle and suspend locking with the headless compositor and a private fake logind.
 
 No suspend request or authentication attempt is sent to the host system.
 """
@@ -25,17 +25,12 @@ args = parser.parse_args()
 root = Path(tempfile.mkdtemp(prefix="desktop-idle-check-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
 (root / "runtime").mkdir(mode=0o700)
-config = root / "config"
-config.mkdir()
-(config / "rc.xml").write_text("<labwc_config><keyboard><default /></keyboard></labwc_config>")
-(config / "autostart").write_text("")
-(config / "environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
 env = dict(os.environ)
-for key in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID", "DESKTOP_ZIG_INVOKED_AS"):
+for key in ("DISPLAY", "WAYLAND_DISPLAY", "DESKTOP_ZIG_INVOKED_AS"):
     env.pop(key, None)
 env.update(XDG_RUNTIME_DIR=str(root / "runtime"), XDG_CONFIG_HOME=str(root / "config-home"),
            WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="2",
-           LABWC_UPDATE_ACTIVATION_ENV="false", WAYLAND_DEBUG="client", G_DEBUG="fatal-criticals")
+           WAYLAND_DEBUG="client", G_DEBUG="fatal-criticals")
 processes = []
 errors = []
 loop = GLib.MainLoop()

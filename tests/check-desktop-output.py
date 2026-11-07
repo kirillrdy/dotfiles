@@ -1,4 +1,4 @@
-"""Check native display scaling against two isolated headless Labwc outputs.
+"""Check native display scaling against two isolated headless compositor outputs.
 
 wlr-randr is an independent test oracle, not a desktop runtime dependency.
 """
@@ -20,16 +20,11 @@ args = parser.parse_args()
 root = Path(tempfile.mkdtemp(prefix="desktop-output-check-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
 (root / "runtime").mkdir(mode=0o700)
-config = root / "config"
-config.mkdir()
-(config / "rc.xml").write_text("<labwc_config />")
-(config / "autostart").write_text("")
-(config / "environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
 env = dict(os.environ)
-for key in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID", "DESKTOP_ZIG_INVOKED_AS"):
+for key in ("DISPLAY", "WAYLAND_DISPLAY", "DESKTOP_ZIG_INVOKED_AS"):
     env.pop(key, None)
 env.update(XDG_RUNTIME_DIR=str(root / "runtime"), WLR_BACKENDS="headless",
-           WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="2", LABWC_UPDATE_ACTIVATION_ENV="false")
+           WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="2")
 
 
 def run(command, check=True):

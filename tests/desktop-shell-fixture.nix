@@ -1,7 +1,7 @@
 { pkgs }:
 let
   desktop = import ../desktop-zig.nix { inherit pkgs; };
-  config = import ../labwc.nix {
+  config = import ../desktop.nix {
     inherit pkgs;
     lib = pkgs.lib;
     enableLightDesktop = true;

@@ -1,4 +1,4 @@
-"""Exercise session locking on an isolated, two-output headless Labwc compositor."""
+"""Exercise session locking on an isolated, two-output headless compositor."""
 import argparse
 import os
 from pathlib import Path
@@ -17,20 +17,15 @@ args = parser.parse_args()
 root = Path(tempfile.mkdtemp(prefix="desktop-lock-check-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
 (root / "runtime").mkdir(mode=0o700)
-config = root / "config"
-config.mkdir()
-(config / "rc.xml").write_text("<labwc_config><keyboard><default /></keyboard></labwc_config>")
-(config / "autostart").write_text("")
-(config / "environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
 env = dict(os.environ)
-for name in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID", "DESKTOP_ZIG_INVOKED_AS"):
+for name in ("DISPLAY", "WAYLAND_DISPLAY", "DESKTOP_ZIG_INVOKED_AS"):
     env.pop(name, None)
 env.update(
     XDG_RUNTIME_DIR=str(root / "runtime"),
     XDG_CONFIG_HOME=str(root / "config-home"),
     XDG_CACHE_HOME=str(root / "cache"),
     WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="2",
-    LABWC_UPDATE_ACTIVATION_ENV="false", WAYLAND_DEBUG="client",
+    WAYLAND_DEBUG="client",
     DBUS_SYSTEM_BUS_ADDRESS="unix:path=" + str(root / "no-system-bus"),
 )
 processes = []
@@ -97,7 +92,7 @@ try:
     production.kill()
     production.wait(timeout=5)
     assert "unlock_and_destroy" not in text("production.log"), "Crash unlocked the session"
-    # Labwc permits another locker to recover an abandoned lock; authenticate it.
+    # The compositor permits another locker to recover an abandoned lock; authenticate it.
     recovery = start([args.fixture], "recovery.log")
     wait_until(lambda: ".locked()" in text("recovery.log"), "Abandoned lock could not be recovered")
     wait_until(lambda: ".modifiers(" in text("recovery.log"), "Recovery keyboard did not receive focus")

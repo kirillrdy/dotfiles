@@ -286,12 +286,6 @@ pub const chooser = @import("desktop-portal-file-chooser.zig");
 pub const util = @import("desktop-util.zig");
 pub const posix = @import("posix");
 pub const pipewire = @import("pipewire");
-
-test {
-    _ = @import("desktop-tests.zig");
-}
-
 pub const network_editor = @import("desktop-network-editor.zig");
-
 pub const session_actions = @import("desktop-session.zig");
 pub const commands = @import("desktop-command.zig");

@@ -147,27 +147,17 @@ pub const Controls = struct {
         }
         self.redraw();
     }
+    fn paintBuffer(self: *Controls, target: @import("desktop-raster.zig").Buffer) !void {
+        const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(self.canvas)));
+        try self.view.paint(a, target, scale);
+    }
     fn draw(_: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Controls, ptr);
         if (self.dead) return 1;
         const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(self.canvas)));
-        const width = self.view.width * scale;
-        const height = self.view.height * scale;
-        // GTK may retain this source in its drawing cache. Keep the storage
-        // owned by the image for as long as any Cairo reference survives.
-        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height));
-        defer c.cairo_surface_destroy(image);
-        if (c.cairo_surface_status(image) != 0) return 1;
-        const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
-        self.view.paint(a, .{ .pixels = pixels[0 .. width * height], .width = width, .height = height }, scale) catch |err| {
+        c.__zig.paintCairo(cr, self.view.width, self.view.height, scale, self, paintBuffer) catch |err| {
             std.log.err("quick-settings render: {s}", .{@errorName(err)});
-            return 1;
         };
-        // GTK hosts the popup; Cairo only transfers the completed native pixels.
-        c.cairo_surface_mark_dirty(image);
-        c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-        c.cairo_set_source_surface(cr, image, 0, 0);
-        c.cairo_paint(cr);
         return 1;
     }
     fn press(_: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {

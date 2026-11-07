@@ -266,21 +266,20 @@ const Overview = struct {
         c.gtk_widget_queue_draw(self.tooltip);
         return 0;
     }
+    const DashPaint = struct {
+        overview: *Overview,
+        scale: u32,
+        tooltip: bool,
+        fn paint(ctx: @This(), target: raster.Buffer) void {
+            if (ctx.tooltip) ctx.overview.dash_view.paintTooltip(target, ctx.scale) else ctx.overview.dash_view.paint(target, ctx.scale) catch {};
+        }
+    };
     fn drawDash(widget: *c.GtkWidget, cr: *c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
         const width: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)));
         const height: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)));
-        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width * scale), @intCast(height * scale));
-        defer c.cairo_surface_destroy(image);
-        if (c.cairo_surface_status(image) != 0) return 1;
-        const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
-        const target: raster.Buffer = .{ .pixels = pixels[0 .. width * height * scale * scale], .width = width * scale, .height = height * scale };
-        if (widget == self.tooltip) self.dash_view.paintTooltip(target, scale) else self.dash_view.paint(target, scale) catch {};
-        c.cairo_surface_mark_dirty(image);
-        c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-        c.cairo_set_source_surface(cr, image, 0, 0);
-        c.cairo_paint(cr);
+        c.__zig.paintCairo(cr, width, height, scale, DashPaint{ .overview = self, .scale = scale, .tooltip = widget == self.tooltip }, DashPaint.paint) catch {};
         return 1;
     }
     fn dashPress(_: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {

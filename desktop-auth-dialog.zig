@@ -217,6 +217,12 @@ pub const Dialog = struct {
         };
         return 1;
     }
+    fn paintBuffer(self: *Dialog, target: @import("desktop-raster.zig").Buffer) !void {
+        const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(self.canvas)));
+        self.view.paint(target);
+        if (self.entry) |entry| try entry.paint(target, scale);
+        if (self.confirmation) |entry| try entry.paint(target, scale);
+    }
     fn paint(self: *Dialog, cr: *c.cairo_t) !void {
         const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(self.canvas)));
         const allocated_width: u32 = @intCast(@max(460, c.gtk_widget_get_allocated_width(self.canvas)));
@@ -228,20 +234,8 @@ pub const Dialog = struct {
         const old_height = self.view.height;
         try self.view.prepare(a, self.prompt, scale);
         if (width_changed or old_height != self.view.height) self.size();
-        const width = self.view.width * scale;
-        const height = @max(self.view.height, @as(u32, @intCast(c.gtk_widget_get_allocated_height(self.canvas)))) * scale;
-        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height));
-        defer c.cairo_surface_destroy(image);
-        if (c.cairo_surface_status(image) != 0) return error.ImageAllocation;
-        const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
-        const target: @import("desktop-raster.zig").Buffer = .{ .pixels = pixels[0 .. width * height], .width = width, .height = height };
-        self.view.paint(target);
-        if (self.entry) |entry| try entry.paint(target, scale);
-        if (self.confirmation) |entry| try entry.paint(target, scale);
-        c.cairo_surface_mark_dirty(image);
-        c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-        c.cairo_set_source_surface(cr, image, 0, 0);
-        c.cairo_paint(cr);
+        const height = @max(self.view.height, @as(u32, @intCast(c.gtk_widget_get_allocated_height(self.canvas))));
+        try c.__zig.paintCairo(cr, self.view.width, height, scale, self, paintBuffer);
     }
     fn press(_: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
         if (event.button != 1) return 0;

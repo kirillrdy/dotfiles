@@ -122,7 +122,7 @@ test "background layer paints wallpaper pixels on the desktop" {
         }
     };
     Probe.paints = 0;
-    for (app.backgrounds.items) |background| background.surface.paint = .{ .pixels = &Probe.draw };
+    for (app.backgrounds.items) |background| background.surface.paint = &Probe.draw;
     capture.pump();
     try std.testing.expectEqual(@as(usize, 1), app.backgrounds.items.len);
     try std.testing.expect(app.backgrounds.items[0].surface.configured);

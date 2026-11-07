@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check Firefox capture bounds and live overview stability in private Labwc.
+"""Check Firefox capture bounds and live overview stability in private Wayland session.
 
 Requires Pillow, dbus-run-session, grim and wlr-randr on PATH.
 """
@@ -24,7 +24,7 @@ def main():
                    dict(os.environ, FIREFOX_OVERVIEW_TEST_BUS="1"))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin-dir", type=Path, required=True)
-    parser.add_argument("--labwc", required=True)
+    parser.add_argument("--compositor", required=True)
     parser.add_argument("--firefox", required=True)
     parser.add_argument("--wallpaper", required=True)
     parser.add_argument("--video", type=Path, help="Loop a local video instead of CSS animation")
@@ -35,13 +35,6 @@ def main():
     with tempfile.TemporaryDirectory(prefix="firefox-overview-") as directory:
         root = Path(directory)
         (root / "runtime").mkdir(mode=0o700)
-        config = root / "config/labwc"
-        config.mkdir(parents=True)
-        (config / "rc.xml").write_text(
-            "<labwc_config><desktops><number>4</number></desktops></labwc_config>"
-        )
-        (config / "autostart").write_text("")
-        (config / "environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
         profile = root / "profile"
         profile.mkdir()
         (profile / "user.js").write_text(
@@ -66,9 +59,9 @@ def main():
                    XDG_CONFIG_HOME=str(root / "config"),
                    XDG_CACHE_HOME=str(root / "cache"),
                    WLR_BACKENDS="headless", WLR_RENDERER="gles2",
-                   WLR_HEADLESS_OUTPUTS="1", LABWC_UPDATE_ACTIVATION_ENV="false",
+                   WLR_HEADLESS_OUTPUTS="1",
                    MOZ_ENABLE_WAYLAND="1", GDK_BACKEND="wayland", GTK_USE_PORTAL="0")
-        for key in ["DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID"]:
+        for key in ["DISPLAY", "WAYLAND_DISPLAY"]:
             env.pop(key, None)
 
         def start(command, name, **extra):
@@ -91,8 +84,8 @@ def main():
 
         log = args.artifacts / "overview.log"
         try:
-            start([args.labwc, "compositor-only"], "labwc")
-            wait_for(lambda: (root / "runtime/wayland-0").exists(), "Labwc did not start")
+            start([args.compositor, "compositor-only"], "compositor")
+            wait_for(lambda: (root / "runtime/wayland-0").exists(), "Compositor did not start")
             env["WAYLAND_DISPLAY"] = "wayland-0"
             run(["wlr-randr", "--output", "HEADLESS-1", "--custom-mode", "1728x1080",
                  "--scale", "2"])

@@ -24,20 +24,16 @@ parser.add_argument("--fixture", required=True)
 args = parser.parse_args()
 root = Path(tempfile.mkdtemp(prefix="desktop-native-battery-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
-for directory in ("runtime", "config/labwc", "cache", "data", "home", "supplies", "lid/LID0"):
+for directory in ("runtime", "config", "cache", "data", "home", "supplies", "lid/LID0"):
     (root / directory).mkdir(parents=True, exist_ok=True, mode=0o700)
-(root / "config/labwc/rc.xml").write_text("<labwc_config/>")
-(root / "config/labwc/autostart").write_text("")
-(root / "config/labwc/environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
 (root / "lid/LID0/state").write_text("state: open\n")
 supplies = root / "supplies"
 env = dict(os.environ, XDG_RUNTIME_DIR=str(root / "runtime"), XDG_CONFIG_HOME=str(root / "config"),
            XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"), HOME=str(root / "home"),
            DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDRESS"], G_DEBUG="fatal-criticals",
            GSETTINGS_BACKEND="memory", GDK_BACKEND="wayland", NO_AT_BRIDGE="1", GTK_USE_PORTAL="0",
-           GIO_USE_VFS="local", WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1",
-           LABWC_UPDATE_ACTIVATION_ENV="false")
-for key in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID"):
+           GIO_USE_VFS="local", WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1")
+for key in ("DISPLAY", "WAYLAND_DISPLAY"):
     env.pop(key, None)
 context = GLib.MainContext.default()
 processes = []
@@ -208,7 +204,7 @@ try:
 
     reset()
     energy()
-    compositor = start(["desktop-zig", "compositor-only"], "labwc.log")
+    compositor = start(["desktop-zig", "compositor-only"], "compositor.log")
     wait(lambda: list((root / "runtime").glob("wayland-*.lock")), "private Wayland compositor")
     env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem
     disposed = sp.run([args.fixture, "--dispose", str(supplies)], env=env, capture_output=True, text=True, timeout=5)

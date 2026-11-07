@@ -37,7 +37,7 @@ pub fn main(init: std.process.Init) !void {
         defer std.Io.Dir.cwd().deleteTree(init.io, std.mem.span(root)) catch {};
         var env = try init.minimal.environ.createMap(a);
         for ([_][]const u8{ "DESKTOP_APPS_FIXTURE_ROOT", "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_CACHE_HOME" }) |key| try env.put(key, std.mem.span(root));
-        try env.put("XDG_CURRENT_DESKTOP", "labwc:wlroots");
+        try env.put("XDG_CURRENT_DESKTOP", "wlroots");
         try env.put("LANGUAGE", "C");
         var child = try std.process.spawn(init.io, .{ .argv = &.{try std.process.executablePathAlloc(init.io, a)}, .environ_map = &env });
         const term = try child.wait(init.io);
@@ -66,7 +66,7 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "hidden", .text = "Name=Hidden\nHidden=true\n" },
         .{ .name = "nodisplay", .text = "Name=Invisible\nNoDisplay=true\n" },
         .{ .name = "only", .text = "Name=GNOME only\nOnlyShowIn=GNOME;\n" },
-        .{ .name = "not", .text = "Name=Not labwc\nNotShowIn=labwc;\n" },
+        .{ .name = "not", .text = "Name=Not wlroots\nNotShowIn=wlroots;\n" },
         .{ .name = "try", .text = "Name=Missing executable\nTryExec=/nonexistent-desktop-apps-fixture\n" },
     };
     for (fixtures) |fixture| {

@@ -78,3 +78,80 @@ pub fn authenticate(user: [*:0]const u8, password: [*:0]const u8) bool {
     status = pam_acct_mgmt(handle, 0);
     return status == 0;
 }
+
+const Mock = struct {
+    var conversation: Conversation = undefined;
+    var authentication_status: c_int = 0;
+    var account_status: c_int = 0;
+    var end_status: c_int = -1;
+    var account_calls: usize = 0;
+    var prompt_twice = false;
+
+    fn start(service: [*:0]const u8, user: [*:0]const u8, conv: *const Conversation, handle: *?*anyopaque) callconv(.c) c_int {
+        std.debug.assert(std.mem.eql(u8, std.mem.span(service), "desktop-lock"));
+        std.debug.assert(std.mem.eql(u8, std.mem.span(user), "fixture-user"));
+        conversation = conv.*;
+        handle.* = @ptrFromInt(16);
+        return 0;
+    }
+    fn auth(_: ?*anyopaque, flags: c_int) callconv(.c) c_int {
+        std.debug.assert(flags == 1);
+        var info = Message{ .style = 4, .text = "Info" };
+        var user = Message{ .style = 2, .text = "User" };
+        var password = Message{ .style = 1, .text = "Password" };
+        const messages = [_][*c]const Message{ &info, &user, &password };
+        var responses: [*c]Response = null;
+        const result = conversation.callback(3, &messages, &responses, conversation.data);
+        std.debug.assert(result == 0);
+        std.debug.assert(responses[0].text == null);
+        std.debug.assert(std.mem.eql(u8, std.mem.span(responses[1].text), "fixture-user"));
+        std.debug.assert(std.mem.eql(u8, std.mem.span(responses[2].text), "fixture-password"));
+        for (0..3) |i| if (responses[i].text != null) {
+            std.crypto.secureZero(u8, std.mem.span(responses[i].text));
+            free(responses[i].text);
+        };
+        free(responses);
+        if (prompt_twice) {
+            const again = [_][*c]const Message{&password};
+            responses = null;
+            const second = conversation.callback(1, &again, &responses, conversation.data);
+            std.debug.assert(second == 19 and responses == null);
+            return second;
+        }
+        return authentication_status;
+    }
+    fn acct(_: ?*anyopaque, _: c_int) callconv(.c) c_int {
+        account_calls += 1;
+        return account_status;
+    }
+    fn end(_: ?*anyopaque, status: c_int) callconv(.c) c_int {
+        end_status = status;
+        return 0;
+    }
+};
+comptime {
+    if (@import("builtin").is_test) {
+        @export(&Mock.start, .{ .name = "pam_start" });
+        @export(&Mock.auth, .{ .name = "pam_authenticate" });
+        @export(&Mock.acct, .{ .name = "pam_acct_mgmt" });
+        @export(&Mock.end, .{ .name = "pam_end" });
+    }
+}
+
+test "PAM requires authentication and valid account, and closes every transaction" {
+    try std.testing.expect(authenticate("fixture-user", "fixture-password"));
+    try std.testing.expectEqual(@as(c_int, 0), Mock.end_status);
+    try std.testing.expectEqual(@as(usize, 1), Mock.account_calls);
+    Mock.authentication_status = 7;
+    try std.testing.expect(!authenticate("fixture-user", "fixture-password"));
+    try std.testing.expectEqual(@as(c_int, 7), Mock.end_status);
+    try std.testing.expectEqual(@as(usize, 1), Mock.account_calls);
+    Mock.authentication_status = 0;
+    Mock.account_status = 13;
+    try std.testing.expect(!authenticate("fixture-user", "fixture-password"));
+    try std.testing.expectEqual(@as(c_int, 13), Mock.end_status);
+    Mock.account_status = 0;
+    Mock.prompt_twice = true;
+    try std.testing.expect(!authenticate("fixture-user", "fixture-password"));
+    try std.testing.expectEqual(@as(c_int, 19), Mock.end_status);
+}

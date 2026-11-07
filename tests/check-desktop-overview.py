@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise the overview in a private D-Bus/headless Labwc session.
+"""Exercise the overview in a private D-Bus/headless Wayland session.
 
-Requires grim, wlr-randr and wtype on PATH. Pass --bin-dir, --labwc
+Requires grim, wlr-randr and wtype on PATH. Pass --bin-dir, --compositor
 and --wallpaper for the build being checked; the current desktop is untouched.
 """
 
@@ -27,7 +27,7 @@ def main():
         )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin-dir", type=Path, required=True)
-    parser.add_argument("--labwc", required=True)
+    parser.add_argument("--compositor", required=True)
     parser.add_argument("--wallpaper", required=True)
     parser.add_argument("--artifacts", type=Path)
     parser.add_argument("--renderer", choices=["pixman", "gles2"], default="pixman")
@@ -38,16 +38,8 @@ def main():
         artifacts.mkdir(parents=True, exist_ok=True)
         runtime = root / "runtime"
         runtime.mkdir(mode=0o700)
-        config = root / "config/labwc"
-        config.mkdir(parents=True)
-        (config / "rc.xml").write_text(
-            "<labwc_config><desktops><names><name>1</name><name>2</name>"
-            "<name>3</name><name>4</name></names></desktops></labwc_config>"
-        )
-        (config / "environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
-        (config / "autostart").write_text("")
         gtk_config = root / "config/gtk-3.0"
-        gtk_config.mkdir()
+        gtk_config.mkdir(parents=True)
         (gtk_config / "settings.ini").write_text(
             "[Settings]\ngtk-enable-animations=0\n"
         )
@@ -65,7 +57,7 @@ def main():
                 f"[Desktop Entry]\nType=Application\nName={app}\nExec=true\nIcon={icon}\n"
             )
         env = dict(os.environ)
-        for key in ["DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID"]:
+        for key in ["DISPLAY", "WAYLAND_DISPLAY"]:
             env.pop(key, None)
         env.update(
             XDG_RUNTIME_DIR=str(runtime),
@@ -74,7 +66,6 @@ def main():
             WLR_BACKENDS="headless",
             WLR_RENDERER=args.renderer,
             WLR_HEADLESS_OUTPUTS="1",
-            LABWC_UPDATE_ACTIVATION_ENV="false",
             NO_AT_BRIDGE="1",
             GTK_USE_PORTAL="0",
             GIO_USE_VFS="local",
@@ -142,7 +133,7 @@ def main():
             time.sleep(0.6)
 
         try:
-            compositor = start([args.labwc, "compositor-only"], "labwc")
+            compositor = start([args.compositor, "compositor-only"], "compositor")
             wait_for(
                 lambda: (runtime / "wayland-0").exists(), "Compositor did not start"
             )
@@ -186,7 +177,7 @@ def main():
                 fixtures.append(
                     start(
                         [
-                            str(args.bin_dir / "labwc-switcher-fixture"),
+                            str(args.bin_dir / "desktop-switcher-fixture"),
                             f"io.test.{app}",
                             title,
                         ],

@@ -7,7 +7,7 @@
   ...
 }:
 {
-  imports = [ ./labwc.nix ];
+  imports = [ ./desktop.nix ];
   boot.kernelPackages = pkgs.linuxPackages_7_2;
   boot.loader.efi.canTouchEfiVariables = true;
   boot.loader.systemd-boot.enable = true;

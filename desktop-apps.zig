@@ -536,40 +536,40 @@ fn searchPoint(self: *Launcher, x: f64) usize {
     }
     return value.len;
 }
+const DrawContext = struct {
+    launcher: *Launcher,
+    widget: *c.GtkWidget,
+    scale: u32,
+    fn paint(self: @This(), target: raster.Buffer) void {
+        @memset(target.pixels, 0xff222226);
+        const l = self.launcher;
+        if (self.widget == l.search) {
+            view.paintSearch(target, self.scale, &l.renderer, &l.search_view, l.search_input.?, l.search_hover, &l.search_offset) catch {};
+        } else if (self.widget == l.message) {
+            view.centerText(target, self.scale, &l.renderer, l.status, 0xb6b6b9) catch {};
+        } else {
+            const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(self.scale) };
+            if (l.visible.items.len == 0) view.centerText(target, self.scale, &l.renderer, "No applications found", 0xb6b6b9) catch {};
+            const start = l.page * l.geometry.capacity();
+            const end = @min(l.visible.items.len, start + l.geometry.capacity());
+            for (start..@max(start, end)) |i| {
+                const item = l.visible.items[i];
+                const focused = c.gtk_widget_has_focus(l.grid) != 0 and l.selected == i;
+                // GNOME marks the default search result selected while the entry
+                // retains focus; the keyboard focus ring belongs to the grid only.
+                const selected = l.search_focus and l.query[0] != 0 and l.selected == i;
+                item.tile.paint(canvas, self.scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), l.geometry.tile(i - start), l.geometry.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
+            }
+            view.paintPages(canvas, l.geometry, l.page, l.pageCount());
+        }
+    }
+};
 fn draw(widget: *c.GtkWidget, cr: *c.cairo_t, data: ?*anyopaque) callconv(.c) c.gboolean {
     const self = cast(Launcher, data);
     const width: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)));
     const height: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)));
     const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
-    const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width * scale), @intCast(height * scale));
-    defer c.cairo_surface_destroy(image);
-    if (c.cairo_surface_status(image) != 0) return 1;
-    const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
-    const target: raster.Buffer = .{ .pixels = pixels[0 .. width * height * scale * scale], .width = width * scale, .height = height * scale };
-    @memset(target.pixels, 0xff222226);
-    if (widget == self.search) {
-        view.paintSearch(target, scale, &self.renderer, &self.search_view, self.search_input.?, self.search_hover, &self.search_offset) catch {};
-    } else if (widget == self.message) {
-        view.centerText(target, scale, &self.renderer, self.status, 0xb6b6b9) catch {};
-    } else {
-        const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(scale) };
-        if (self.visible.items.len == 0) view.centerText(target, scale, &self.renderer, "No applications found", 0xb6b6b9) catch {};
-        const start = self.page * self.geometry.capacity();
-        const end = @min(self.visible.items.len, start + self.geometry.capacity());
-        for (start..@max(start, end)) |i| {
-            const item = self.visible.items[i];
-            const focused = c.gtk_widget_has_focus(self.grid) != 0 and self.selected == i;
-            // GNOME marks the default search result selected while the entry
-            // retains focus; the keyboard focus ring belongs to the grid only.
-            const selected = self.search_focus and self.query[0] != 0 and self.selected == i;
-            item.tile.paint(canvas, scale, &self.renderer, item.name, c.g_app_info_get_icon(item.info), self.geometry.tile(i - start), self.geometry.icon_size, self.hover == i, focused, selected, self.pressed == i) catch {};
-        }
-        view.paintPages(canvas, self.geometry, self.page, self.pageCount());
-    }
-    c.cairo_surface_mark_dirty(image);
-    c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-    c.cairo_set_source_surface(cr, image, 0, 0);
-    c.cairo_paint(cr);
+    c.__zig.paintCairo(cr, width, height, scale, DrawContext{ .launcher = self, .widget = widget, .scale = scale }, DrawContext.paint) catch {};
     return 1;
 }
 pub fn activate(app: ?*c.GtkApplication, data: ?*anyopaque) callconv(.c) void {

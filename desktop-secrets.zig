@@ -841,7 +841,7 @@ pub fn loginUnlock(password: []const u8) !void {
 }
 test {
     _ = transport;
-    _ = @import("tests/desktop-secrets-store.zig");
+    _ = store;
 }
 
 fn variantString(v: [*:0]const u8) ?*c.GVariant {

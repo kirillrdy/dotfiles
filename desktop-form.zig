@@ -547,20 +547,20 @@ pub const Form = struct {
         const scale: f64 = @floatFromInt(self.scale);
         return self.renderer.renderLayout(a, value, .{ .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans", .size = (if (bold) @as(f64, 15) else 14) * scale, .dpi = 96 * scale, .width = width * self.scale, .lines = 2, .ellipsize = true, .origin = .top });
     }
+    const PaintContext = struct {
+        form: *Form,
+        scale: u32,
+        footer: bool,
+        fn paint(ctx: @This(), target: raster.Buffer) !void {
+            try ctx.form.paintPixels(target, ctx.scale, ctx.footer);
+        }
+    };
     fn paint(self: *Form, cr: *c.cairo_t, footer: bool) !void {
         const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(self.canvas)));
         const width: u32 = @intCast(@max(480, c.gtk_widget_get_allocated_width(self.canvas)));
         self.prepareLayout(width, scale);
         const height: u32 = if (footer) self.footer_height else @intCast(@max(@as(c_int, @intCast(self.height)), c.gtk_widget_get_allocated_height(self.canvas)));
-        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width * scale), @intCast(height * scale));
-        defer c.cairo_surface_destroy(image);
-        if (c.cairo_surface_status(image) != 0) return error.ImageAllocation;
-        const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
-        try self.paintPixels(.{ .pixels = pixels[0 .. width * height * scale * scale], .width = width * scale, .height = height * scale }, scale, footer);
-        c.cairo_surface_mark_dirty(image);
-        c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-        c.cairo_set_source_surface(cr, image, 0, 0);
-        c.cairo_paint(cr);
+        try c.__zig.paintCairo(cr, width, height, scale, PaintContext{ .form = self, .scale = scale, .footer = footer }, PaintContext.paint);
     }
     fn prepareLayout(self: *Form, width: u32, scale: u32) void {
         if (self.scale != scale or self.width != width) {

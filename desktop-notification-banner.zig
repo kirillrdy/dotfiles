@@ -1,10 +1,22 @@
 //! Native notification cards shared by Wayland banners and date-menu history.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
-const data = @import("desktop-notification-view.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const a = std.heap.page_allocator;
+
+pub const Action = struct { key: [:0]const u8, label: [:0]const u8 };
+pub const Data = struct {
+    id: u32,
+    app: [:0]const u8,
+    title: [:0]const u8,
+    body: [:0]const u8,
+    icon: [:0]const u8 = "application-x-executable-symbolic",
+    image: ?*c.GdkPixbuf = null,
+    actions: []const Action = &.{},
+    created: i64,
+};
+const data = @This();
 
 pub const Theme = struct {
     background: raster.Color = .{ .red = 84.0 / 255.0, .green = 84.0 / 255.0, .blue = 90.0 / 255.0 },

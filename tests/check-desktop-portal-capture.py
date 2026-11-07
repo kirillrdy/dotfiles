@@ -28,20 +28,17 @@ parser.add_argument("--pointer", required=True)
 args = parser.parse_args()
 root = Path(tempfile.mkdtemp(prefix="desktop-portal-capture-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
-for directory in ("runtime", "config/labwc", "cache", "data", "home", "config/wireplumber/wireplumber.conf.d"):
+for directory in ("runtime", "cache", "data", "home", "config/wireplumber/wireplumber.conf.d"):
     (root / directory).mkdir(parents=True, mode=0o700, exist_ok=True)
-(root / "config/labwc/rc.xml").write_text("<labwc_config><keyboard><default/></keyboard></labwc_config>")
-(root / "config/labwc/autostart").write_text("")
-(root / "config/labwc/environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
 (root / "config/wireplumber/wireplumber.conf.d/90-fixture.conf").write_text(WP_CONFIG)
 (root / "pipewire.conf").write_text(PW_CONFIG.replace("audio.convert.*", "video.convert.* = videoconvert/libspa-videoconvert audio.convert.*"))
 env = dict(os.environ, HOME=str(root / "home"), XDG_RUNTIME_DIR=str(root / "runtime"),
            XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"),
            XDG_STATE_HOME=str(root / "state"), WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1",
-           LABWC_UPDATE_ACTIVATION_ENV="false", NO_AT_BRIDGE="1", GTK_USE_PORTAL="0", GIO_USE_VFS="local",
+           NO_AT_BRIDGE="1", GTK_USE_PORTAL="0", GIO_USE_VFS="local",
            GSETTINGS_BACKEND="memory", G_DEBUG="fatal-criticals", GDK_BACKEND="wayland", DESKTOP_PORTAL_FIXTURE_CAPTURE="1",
            PIPEWIRE_REMOTE="pipewire-0")
-for key in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_CONFIG_DIR", "WIREPLUMBER_CONFIG_DIR", "WIREPLUMBER_DATA_DIR"):
+for key in ("DISPLAY", "WAYLAND_DISPLAY", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_CONFIG_DIR", "WIREPLUMBER_CONFIG_DIR", "WIREPLUMBER_DATA_DIR"):
     env.pop(key, None)
 P = "/org/freedesktop/portal/desktop"
 PUB = "org.freedesktop.portal."
@@ -152,7 +149,7 @@ def node_exists(node):
 
 
 try:
-    compositor = start(["desktop-zig", "compositor-only"], "labwc.log", stdout=sp.DEVNULL)
+    compositor = start(["desktop-zig", "compositor-only"], "compositor.log", stdout=sp.DEVNULL)
     wait(lambda: list((root / "runtime").glob("wayland-*.lock")), "private compositor")
     env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem
     pipewire = start(["pipewire", "-c", str(root / "pipewire.conf")], "pipewire.log", stdout=sp.DEVNULL)

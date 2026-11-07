@@ -92,7 +92,7 @@ def switcher_checks():
         run([wtype, "-s", "50", *chord])
 
     for app, title in [("Browser", "Browser 1"), ("Browser", "Browser 2"), ("Terminal", "Terminal"), ("Files", "Files")]:
-        windows[title] = start(title, [bin + "labwc-switcher-fixture", "io.test." + app, title])
+        windows[title] = start(title, [bin + "desktop-switcher-fixture", "io.test." + app, title])
         wait(lambda: focused() == title, "focus " + title)
     held = start("switcher-held", [wtype, "-M", "alt", "-k", "Tab", "-k", "Tab", "-s", "1200", "-m", "alt"])
     time.sleep(0.6)
@@ -137,10 +137,10 @@ try:
     print(run([bin + "desktop-decoration-fixture"]), flush=True)
     switcher_checks()
     first = start(
-        "first", [bin + "labwc-switcher-fixture", "com.dotfiles.First", "First"]
+        "first", [bin + "desktop-switcher-fixture", "com.dotfiles.First", "First"]
     )
     second = start(
-        "second", [bin + "labwc-switcher-fixture", "com.dotfiles.Second", "Second"]
+        "second", [bin + "desktop-switcher-fixture", "com.dotfiles.Second", "Second"]
     )
     wait(lambda: "First" in probe("list") and "Second" in probe("list"), "windows")
     print(probe("capture"), flush=True)

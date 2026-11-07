@@ -1,4 +1,4 @@
-"""Headless integration test; run under dbus-run-session with labwc, grim,
+"""Headless integration test; run under dbus-run-session with desktop-zig, grim,
 wlr-randr, wtype, PipeWire, WirePlumber, and dbus-send on PATH. Audio uses private virtual devices.
 For an unwrapped development binary, supply --loader-cache explicitly.
 """
@@ -31,10 +31,7 @@ for tool in ("desktop-zig", "grim", "wlr-randr", "wtype", "dbus-send"):
 root = Path(tempfile.mkdtemp(prefix="desktop-osd-check-"))
 print(f"Artifacts: {root}", flush=True)
 (root / "runtime").mkdir(mode=0o700)
-(root / "config/labwc").mkdir(parents=True)
-(root / "config/labwc/rc.xml").write_text("<labwc_config />")
-(root / "config/labwc/autostart").write_text("")
-(root / "config/labwc/environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
+(root / "config").mkdir(parents=True)
 state_file = root / "state.json"
 state_file.write_text(json.dumps({"brightness": 20}))
 def set_brightness(percent):
@@ -46,7 +43,7 @@ def set_brightness(percent):
 
 backlight = BacklightMock(root, args.dbus_config, on_set=set_brightness)
 env = dict(os.environ)
-for name in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID", "GDK_PIXBUF_MODULE_FILE"):
+for name in ("DISPLAY", "WAYLAND_DISPLAY", "GDK_PIXBUF_MODULE_FILE"):
     env.pop(name, None)
 env.update(
     OSD_TEST_ROOT=str(root),
@@ -59,7 +56,6 @@ env.update(
     WLR_BACKENDS="headless",
     WLR_RENDERER="pixman",
     WLR_HEADLESS_OUTPUTS="2",
-    LABWC_UPDATE_ACTIVATION_ENV="false",
     NO_AT_BRIDGE="1",
     GIO_USE_VFS="local",
     GTK_USE_PORTAL="0",
@@ -128,11 +124,11 @@ try:
     audio.command("set-volume", "@DEFAULT_AUDIO_SINK@", "0.5")
     audio.command("set-mute", "@DEFAULT_AUDIO_SINK@", "1")
     audio.command("set-mute", "@DEFAULT_AUDIO_SOURCE@", "0")
-    compositor = start(["desktop-zig", "compositor-only"], "labwc.log")
+    compositor = start(["desktop-zig", "compositor-only"], "compositor.log")
     for _ in range(100):
         if (root / "runtime/wayland-0").exists():
             break
-        assert compositor.poll() is None, (root / "labwc.log").read_text()
+        assert compositor.poll() is None, (root / "compositor.log").read_text()
         time.sleep(0.05)
     env["WAYLAND_DISPLAY"] = "wayland-0"
     run(
@@ -158,7 +154,7 @@ try:
     start(["wtype", "-s", "55000"], "keyboard.log")
     start(
         [
-            str(args.binary.parent / "labwc-switcher-fixture"),
+            str(args.binary.parent / "desktop-switcher-fixture"),
             "org.dotfiles.OsdFocusFixture",
             "OSD focus fixture",
         ],

@@ -47,17 +47,13 @@ pkgs.runCommand "desktop-portal-check"
 
     export XDG_RUNTIME_DIR=$TMPDIR/runtime
     mkdir -m 700 "$XDG_RUNTIME_DIR"
-    mkdir -p "$TMPDIR/labwc"
-    echo '<labwc_config><keyboard><default /></keyboard></labwc_config>' > "$TMPDIR/labwc/rc.xml"
-    touch "$TMPDIR/labwc/autostart"
     export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=1
-    export LABWC_UPDATE_ACTIVATION_ENV=false
-    ${desktop}/bin/desktop-zig compositor-only > "$TMPDIR/labwc.log" 2>&1 &
+    ${desktop}/bin/desktop-zig compositor-only > "$TMPDIR/compositor.log" 2>&1 &
     compositor_pid=$!
     trap 'kill "$compositor_pid"' EXIT
     for attempt in $(seq 1 100); do
       test -S "$XDG_RUNTIME_DIR/wayland-0" && break
-      kill -0 "$compositor_pid" || { cat "$TMPDIR/labwc.log"; exit 1; }
+      kill -0 "$compositor_pid" || { cat "$TMPDIR/compositor.log"; exit 1; }
       sleep 0.05
     done
     test -S "$XDG_RUNTIME_DIR/wayland-0"

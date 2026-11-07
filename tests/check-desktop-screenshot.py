@@ -20,14 +20,10 @@ command = [str(args.bin_dir / "desktop-zig"), "screenshot"]
 root = Path(tempfile.mkdtemp(prefix="desktop-screenshot-check-"))
 print(f"Artifacts: {root}", flush=True)
 (root / "runtime").mkdir(mode=0o700)
-config = root / "config/labwc"
-config.mkdir(parents=True)
-(config / "rc.xml").write_text("<labwc_config />")
-(config / "autostart").write_text("")
-(config / "environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
+(root / "config").mkdir(parents=True)
 (root / "config/user-dirs.dirs").write_text(f'XDG_PICTURES_DIR="{root}/photos"\n')
 env = dict(os.environ)
-for key in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID"):
+for key in ("DISPLAY", "WAYLAND_DISPLAY"):
     env.pop(key, None)
 env.update(
     HOME=str(root),
@@ -37,7 +33,6 @@ env.update(
     WLR_BACKENDS="headless",
     WLR_RENDERER="pixman",
     WLR_HEADLESS_OUTPUTS="2",
-    LABWC_UPDATE_ACTIVATION_ENV="false",
     NO_AT_BRIDGE="1",
     GTK_USE_PORTAL="0",
     GIO_USE_VFS="local",
@@ -68,10 +63,10 @@ def saved():
 
 
 try:
-    compositor = start(["desktop-zig", "compositor-only"], "labwc.log", stdout=sp.DEVNULL)
+    compositor = start(["desktop-zig", "compositor-only"], "compositor.log", stdout=sp.DEVNULL)
     deadline = time.monotonic() + 10
     while not list((root / "runtime").glob("wayland-*.lock")):
-        assert compositor.poll() is None, (root / "labwc.log").read_text()
+        assert compositor.poll() is None, (root / "compositor.log").read_text()
         assert time.monotonic() < deadline, "Compositor startup timed out"
         time.sleep(0.05)
     env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem

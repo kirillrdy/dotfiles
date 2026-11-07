@@ -18,6 +18,15 @@ pub const __zig = struct {
     pub fn eq(left: []const u8, right: []const u8) bool {
         return std.mem.eql(u8, left, right);
     }
+    pub fn parentTo(widget: *GtkWidget, allocator: std.mem.Allocator, parent: [:0]const u8) void {
+        const display = gdk_display_get_default();
+        const window = gtk_widget_get_window(widget) orelse return;
+        if (std.mem.startsWith(u8, parent, "wayland:") and g_type_check_instance_is_a(cast(GTypeInstance, display), gdk_wayland_display_get_type()) != 0) {
+            const handle = allocator.dupeSentinel(u8, parent[8..], 0) catch return;
+            defer allocator.free(handle);
+            _ = gdk_wayland_window_set_transient_for_exported(window, handle);
+        }
+    }
     pub fn paintCairo(cr: *cairo_t, logical_width: u32, logical_height: u32, scale: u32, context: anytype, comptime drawFn: anytype) !void {
         const width = @max(1, logical_width) * scale;
         const height = @max(1, logical_height) * scale;

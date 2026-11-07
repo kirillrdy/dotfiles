@@ -143,7 +143,7 @@ pkgs.stdenv.mkDerivation {
   installPhase = ''
     # Keep test programs outside the desktop output.
     mkdir -p "$tests/bin"
-    for name in desktop-apps-fixture desktop-audio-fixture desktop-battery-fixture desktop-backlight-fixture desktop-lock-fixture desktop-idle-fixture waybar-power-fixture labwc-switcher-fixture \
+    for name in desktop-apps-fixture desktop-audio-fixture desktop-battery-fixture desktop-backlight-fixture desktop-lock-fixture desktop-idle-fixture desktop-widgets-fixture desktop-switcher-fixture \
       desktop-pointer-fixture desktop-compositor-fixture desktop-decoration-fixture desktop-command-fixture desktop-notifications-fixture desktop-window-fixture; do
       mv "$out/bin/$name" "$tests/bin/$name"
     done

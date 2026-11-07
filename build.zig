@@ -46,7 +46,7 @@ pub fn build(b: *std.Build) void {
 
     // Prove the replacement window host has no GTK/GDK link dependency.
     const native = b.createModule(.{ .root_source_file = b.path("desktop-native.zig"), .target = target, .optimize = optimize, .link_libc = true });
-    for ([_][]const u8{ "gio-unix-2.0", "wayland-client", "cairo", "xkbcommon", "pangoft2" }) |name| native.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "gio-unix-2.0", "wayland-client", "xkbcommon", "pangoft2" }) |name| native.linkSystemLibrary(name, .{});
     const window_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-window-fixture.zig"), .target = target, .optimize = optimize });
     window_module.addImport("native", native);
     const window_fixture = b.addExecutable(.{ .name = "desktop-window-fixture", .root_module = window_module });
@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
 
     // Zig collects tests from files in the root module, not imported modules.
     // Compile the same production files with the same dependencies in one test root.
-    const test_module = b.createModule(.{ .root_source_file = b.path("desktop-test-runner.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    const test_module = b.createModule(.{ .root_source_file = b.path("desktop-tests.zig"), .target = target, .optimize = optimize, .link_libc = true });
     for (desktop.import_table.keys(), desktop.import_table.values()) |name, dependency| test_module.addImport(name, dependency);
     test_module.link_objects.appendSlice(b.graph.arena, desktop.link_objects.items) catch @panic("OOM");
     const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module });
@@ -170,8 +170,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "desktop-lock-fixture", .source = "tests/desktop-lock-fixture.zig", .step = "lock-fixture", .install = true },
         .{ .name = "desktop-apps-fixture", .source = "tests/desktop-apps-fixture.zig", .step = "apps-fixture", .install = true, .run = true },
         .{ .name = "desktop-dash-fixture", .source = "tests/desktop-dash-fixture.zig", .step = "dash-fixture", .run = true },
-        .{ .name = "waybar-power-fixture", .source = "tests/waybar-power-fixture.zig", .step = "widgets-fixture", .install = true, .run = true },
-        .{ .name = "labwc-switcher-fixture", .source = "tests/labwc-switcher-fixture.zig", .step = "switcher-fixture", .install = true },
+        .{ .name = "desktop-widgets-fixture", .source = "tests/desktop-widgets-fixture.zig", .step = "widgets-fixture", .install = true, .run = true },
+        .{ .name = "desktop-switcher-fixture", .source = "tests/desktop-switcher-fixture.zig", .step = "switcher-fixture", .install = true },
         .{ .name = "desktop-settings-fixture", .source = "tests/desktop-settings-fixture.zig", .step = "settings-fixture", .run = true },
         .{ .name = "desktop-askpass-fixture", .source = "tests/desktop-askpass-fixture.zig", .step = "askpass-fixture", .run = true },
         .{ .name = "desktop-polkit-fixture", .source = "tests/desktop-polkit-fixture.zig", .step = "polkit-fixture", .run = true },

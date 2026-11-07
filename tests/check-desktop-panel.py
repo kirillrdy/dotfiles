@@ -1,4 +1,4 @@
-"""Exercise desktop-panel in an isolated headless Labwc session.
+"""Exercise desktop-panel in an isolated headless Wayland session.
 
 Run under dbus-run-session. Requires wlr-randr, wtype, grim, desktop-pointer-fixture,
 and the normal desktop data-provider dependencies on PATH. Screenshots and logs
@@ -38,14 +38,8 @@ root = Path(tempfile.mkdtemp(prefix="desktop-panel-check-"))
 print(f"Artifacts: {root}", flush=True)
 (root / "runtime").mkdir(exist_ok=True)
 (root / "runtime").chmod(0o700)
-(root / "config/labwc").mkdir(parents=True, exist_ok=True)
-(root / "config/labwc/rc.xml").write_text(
-    '<labwc_config><keyboard><default /></keyboard><windowRules><windowRule identifier="*" type="normal"><action name="Maximize" /></windowRule></windowRules></labwc_config>'
-)
-(root / "config/labwc/autostart").write_text("")
-(root / "config/labwc/environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
 env = dict(os.environ)
-for key in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID"):
+for key in ("DISPLAY", "WAYLAND_DISPLAY"):
     env.pop(key, None)
 env.update(
     XDG_RUNTIME_DIR=str(root / "runtime"),
@@ -54,7 +48,6 @@ env.update(
     WLR_BACKENDS="headless",
     WLR_RENDERER="pixman",
     WLR_HEADLESS_OUTPUTS="2",
-    LABWC_UPDATE_ACTIVATION_ENV="false",
     NO_AT_BRIDGE="1",
     GTK_USE_PORTAL="0",
     GIO_USE_VFS="local",
@@ -149,11 +142,11 @@ def check():
 
 wtype = "wtype"
 try:
-    compositor = start(["desktop-zig", "compositor-only"], "labwc.log")
+    compositor = start(["desktop-zig", "compositor-only"], "compositor.log")
     for _ in range(100):
         if (root / "runtime/wayland-0").exists():
             break
-        assert compositor.poll() is None, (root / "labwc.log").read_text()
+        assert compositor.poll() is None, (root / "compositor.log").read_text()
         time.sleep(0.05)
     env["WAYLAND_DISPLAY"] = "wayland-0"
     run(

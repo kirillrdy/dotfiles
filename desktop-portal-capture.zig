@@ -140,7 +140,7 @@ pub const Picker = struct {
         c.gtk_dialog_set_default_response(cast(c.GtkDialog, self.window), c.GTK_RESPONSE_CANCEL);
         _ = c.g_signal_connect_data(self.window, "response", @ptrCast(&responded), self, null, 0);
         c.gtk_widget_show_all(self.window);
-        @import("desktop-portal-window.zig").parentTo(self.window, allocator, parent);
+        c.__zig.parentTo(self.window, allocator, parent);
         return self;
     }
     pub fn destroy(self: *Picker) void {

@@ -28,6 +28,20 @@ extern fn signal(c_int, ?*const fn (c_int) callconv(.c) void) ?*const fn (c_int)
 extern fn setsid() c_int;
 
 const cast = c.__zig.cast;
+
+fn screenLocked(locked: bool) void {
+    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return;
+    defer c.g_object_unref(bus);
+    const reply = c.g_dbus_connection_call_sync(bus, "org.freedesktop.secrets", "/org/freedesktop/secrets", "org.dotfiles.Desktop.Secrets", "SetScreenLocked", c.g_variant_new("(b)", @as(c_int, @intFromBool(locked))), null, c.G_DBUS_CALL_FLAGS_NO_AUTO_START, 3000, null, null) orelse return;
+    c.g_variant_unref(reply);
+}
+fn unlockSecrets(password: []const u8) void {
+    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return;
+    defer c.g_object_unref(bus);
+    const bytes = c.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), password.ptr, password.len, 1);
+    const reply = c.g_dbus_connection_call_sync(bus, "org.freedesktop.secrets", "/org/freedesktop/secrets", "org.dotfiles.Desktop.Secrets", "LoginUnlock", c.g_variant_new("(@ay)", bytes), null, c.G_DBUS_CALL_FLAGS_NO_AUTO_START, 30000, null, null) orelse return;
+    c.g_variant_unref(reply);
+}
 fn request(proxy: *Proxy, opcode: u32) void {
     _ = c.wl_proxy_marshal_flags(proxy, opcode, null, c.wl_proxy_get_version(proxy), 0);
 }
@@ -246,8 +260,8 @@ const State = struct {
         const self = cast(State, data);
         const success = self.authenticator(self.user, &self.password.bytes);
         if (success) {
-            @import("desktop-secrets-client.zig").screenLocked(false);
-            @import("desktop-secrets-client.zig").unlock(self.password.bytes[0..self.password.len]);
+            screenLocked(false);
+            unlockSecrets(self.password.bytes[0..self.password.len]);
         }
         self.password.clear();
         c.g_task_return_boolean(task, @intFromBool(success));
@@ -283,7 +297,7 @@ const State = struct {
     fn lockedEvent(data: ?*anyopaque, _: ?*Proxy) callconv(.c) void {
         const self = cast(State, data);
         self.locked = true;
-        @import("desktop-secrets-client.zig").screenLocked(true);
+        screenLocked(true);
         if (self.ready_fd >= 0) {
             // Keep protecting the session if the requesting shell has exited.
             if (libc.write(self.ready_fd, "1", 1) != 1) std.log.warn("lock readiness receiver disconnected", .{});

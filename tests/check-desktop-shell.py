@@ -1,4 +1,4 @@
-"""Exercise the unified shell on two headless labwc outputs under dbus-run-session."""
+"""Exercise the unified shell on two headless Wayland outputs under dbus-run-session."""
 import argparse
 import json
 import os
@@ -25,13 +25,6 @@ binary = str(args.binary.resolve())
 root = Path(tempfile.mkdtemp(prefix="desktop-shell-check-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
 (root / "runtime").mkdir(mode=0o700)
-(root / "config").mkdir()
-(root / "config/rc.xml").write_text(
-    '<labwc_config><desktops><names><name>1</name><name>2</name></names></desktops>'
-    '<keyboard><default /></keyboard></labwc_config>'
-)
-(root / "config/autostart").write_text("")
-(root / "config/environment").write_text("LABWC_UPDATE_ACTIVATION_ENV=false\n")
 # GdkPixbuf's built-in PPM decoder needs no external image module.
 (root / "wallpaper.ppm").write_bytes(b"P6\n2 2\n255\n" + bytes([20, 40, 80]) * 4)
 (root / "panel.json").write_text(json.dumps({
@@ -45,7 +38,7 @@ print(f"Artifacts: {root}", flush=True)
     ],
 }))
 env = dict(os.environ)
-for name in ("DISPLAY", "WAYLAND_DISPLAY", "LABWC_PID", "DESKTOP_ZIG_INVOKED_AS"):
+for name in ("DISPLAY", "WAYLAND_DISPLAY", "DESKTOP_ZIG_INVOKED_AS"):
     env.pop(name, None)
 env.update(
     XDG_RUNTIME_DIR=str(root / "runtime"),
@@ -53,7 +46,7 @@ env.update(
     XDG_CACHE_HOME=str(root / "cache"),
     GSETTINGS_BACKEND="memory", GDK_BACKEND="wayland",
     WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="2",
-    LABWC_UPDATE_ACTIVATION_ENV="false", NO_AT_BRIDGE="1", GTK_USE_PORTAL="0",
+    NO_AT_BRIDGE="1", GTK_USE_PORTAL="0",
     GIO_USE_VFS="local", WB_PANEL_DEMO="1", G_DEBUG="fatal-criticals",
     WAYLAND_DEBUG="client",
     # Never register an agent or query services on the real system bus.
@@ -110,7 +103,7 @@ def owner_pid(name):
 
 try:
     audio.start()
-    compositor = start([args.compositor, "compositor-only"], "labwc.log")
+    compositor = start([args.compositor, "compositor-only"], "compositor.log")
     wait_for(lambda: (root / "runtime/wayland-0").exists(), "compositor socket")
     env["WAYLAND_DISPLAY"] = "wayland-0"
     assert run([binary, "ping"], ok=False).returncode != 0, "client must not start a desktop"
@@ -155,7 +148,7 @@ try:
     children = Path(f"/proc/{shell.pid}/task/{shell.pid}/children").read_text().split()
     for child in children:
         cmdline = Path(f"/proc/{child}/cmdline").read_bytes().replace(b"\0", b" ")
-        assert b"desktop-zig" not in cmdline and b"waybar-panel" not in cmdline, cmdline
+        assert b"desktop-zig" not in cmdline, cmdline
     shell.send_signal(signal.SIGTERM)
     assert shell.wait(timeout=15) == 0, shell_log()[-8000:]
     assert not re.search(r"CRITICAL|assertion|panic:|Segmentation|backend failed", shell_log()), shell_log()[-8000:]
