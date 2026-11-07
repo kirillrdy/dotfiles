@@ -87,9 +87,9 @@ fn commandLine(app: *c.GApplication, command: *c.GApplicationCommandLine, data: 
     var count: c_int = 0;
     const argv = c.g_application_command_line_get_arguments(command, &count);
     defer c.g_strfreev(argv);
-    if (count == 3 and c.g_strcmp0(argv[1], "serve") == 0) {
+    if ((count == 2 or count == 3) and c.g_strcmp0(argv[1], "serve") == 0) {
         if (self.ready) return 0;
-        self.start(std.mem.span(argv[2])) catch |err| {
+        self.start() catch |err| {
             c.g_application_command_line_printerr(command, "desktop-osd: %s\n", @as([*:0]const u8, @errorName(err)));
             return 1;
         };
@@ -114,9 +114,9 @@ fn runOsd(init: std.process.Init, backend: backlight.Backend) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
-    const serve = args.len == 3 and std.mem.eql(u8, args[1], "serve");
+    const serve = (args.len == 2 or args.len == 3) and std.mem.eql(u8, args[1], "serve");
     if (!serve and osd.parseCommand(args[1..]) == null) {
-        std.debug.print("Usage: desktop-osd serve STYLE.css | volume up|down|mute | microphone mute | brightness up|down\n", .{});
+        std.debug.print("Usage: desktop-osd serve | volume up|down|mute | microphone mute | brightness up|down\n", .{});
         return error.InvalidArguments;
     }
     _ = c.g_setenv("GDK_BACKEND", "wayland", 1);

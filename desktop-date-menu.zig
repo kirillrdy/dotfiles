@@ -118,17 +118,9 @@ pub const Controls = struct {
     fn paint(self: *Controls, cr: *c.cairo_t) !void {
         const factor = self.scale();
         try self.view.prepare(factor);
-        const width = @as(u32, @intCast(@max(@as(c_int, @intCast(self.view.width)), c.gtk_widget_get_allocated_width(self.canvas)))) * factor;
-        const height = @as(u32, @intCast(@max(@as(c_int, @intCast(self.view.height)), c.gtk_widget_get_allocated_height(self.canvas)))) * factor;
-        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height));
-        defer c.cairo_surface_destroy(image);
-        if (c.cairo_surface_status(image) != 0) return error.ImageAllocation;
-        const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
-        try self.view.paint(.{ .pixels = pixels[0 .. width * height], .width = width, .height = height });
-        c.cairo_surface_mark_dirty(image);
-        c.cairo_surface_set_device_scale(image, @floatFromInt(factor), @floatFromInt(factor));
-        c.cairo_set_source_surface(cr, image, 0, 0);
-        c.cairo_paint(cr);
+        const width: u32 = @intCast(@max(@as(c_int, @intCast(self.view.width)), c.gtk_widget_get_allocated_width(self.canvas)));
+        const height: u32 = @intCast(@max(@as(c_int, @intCast(self.view.height)), c.gtk_widget_get_allocated_height(self.canvas)));
+        try c.__zig.paintCairo(cr, width, height, factor, &self.view, native.View.paint);
     }
     fn press(_: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
         if (event.button != 1) return 0;

@@ -15,18 +15,7 @@ pub const Mode = enum {
     }
 };
 pub const Target = enum { none, entry, confirmation, cancel, accept, choice0, choice1, choice2 };
-pub const Rect = struct {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    pub fn contains(self: Rect, x: f64, y: f64) bool {
-        return x >= self.x and y >= self.y and x < self.x + self.width and y < self.y + self.height;
-    }
-    fn shape(self: Rect, radius: f64) raster.Shape {
-        return .{ .rounded_rect = .{ .rect = .{ .x = self.x, .y = self.y, .width = self.width, .height = self.height }, .radius = radius } };
-    }
-};
+pub const Rect = raster.Rect;
 pub const Choice = struct { label: [:0]const u8, enabled: bool = true, selected: bool = false };
 pub const choice_targets = [_]Target{ .choice0, .choice1, .choice2 };
 const Part = struct { mask: text.Mask, y: u32 };
@@ -212,13 +201,13 @@ pub const View = struct {
     }
 };
 fn color(value: u32) raster.Color {
-    return .{ .red = @as(f64, @floatFromInt((value >> 16) & 255)) / 255, .green = @as(f64, @floatFromInt((value >> 8) & 255)) / 255, .blue = @as(f64, @floatFromInt(value & 255)) / 255 };
+    return raster.Color.rgb(value, 1);
 }
 fn paintMask(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64) void {
-    paintMaskTint(canvas, mask, x, y, 0xffffff);
+    mask.paint(canvas, x, y, color(0xffffff));
 }
 fn paintMaskTint(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64, tint: u32) void {
-    raster.mask(canvas.target, .{ .x = @as(i32, @intFromFloat(x * canvas.scale)) + mask.left, .y = @as(i32, @intFromFloat(y * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(tint));
+    mask.paint(canvas, x, y, color(tint));
 }
 
 test "askpass geometry scales, wraps public text and defaults confirmation to denial" {

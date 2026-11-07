@@ -5,7 +5,7 @@ const view = @import("../desktop-osd-view.zig");
 const Theme = view.Theme;
 const Kind = view.Kind;
 
-fn source(cr: *c.cairo_t, color: c.GdkRGBA, opacity: f64) void {
+fn source(cr: *c.cairo_t, color: @import("../desktop-raster.zig").Color, opacity: f64) void {
     c.cairo_set_source_rgba(cr, color.red, color.green, color.blue, color.alpha * opacity);
 }
 fn capsule(cr: *c.cairo_t, x: f64, y: f64, width: f64, height: f64) void {

@@ -105,11 +105,10 @@ fn launch(root: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callco
 pub const Service = struct {
     arena: std.heap.ArenaAllocator,
     app: App,
-    provider: *c.GtkCssProvider,
     added: c.gulong = 0,
     removed: c.gulong = 0,
 
-    pub fn create(config_path: [:0]const u8, style_path: [:0]const u8) !*Service {
+    pub fn create(config_path: [:0]const u8) !*Service {
         const self = try allocator.create(Service);
         errdefer allocator.destroy(self);
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -120,11 +119,8 @@ pub const Service = struct {
         defer c.g_free(contents);
         const parsed = try std.json.parseFromSlice(Config, arena.allocator(), contents[0..length], .{});
         if (parsed.value.height == 0) return error.InvalidConfig;
-        const provider = c.gtk_css_provider_new().?;
-        errdefer c.g_object_unref(provider);
-        if (c.gtk_css_provider_load_from_path(provider, style_path, null) == 0) return error.InvalidStyle;
-        c.gtk_style_context_add_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-        self.* = .{ .arena = arena, .app = .{ .config = parsed.value }, .provider = provider };
+        widgets.ensureStyle();
+        self.* = .{ .arena = arena, .app = .{ .config = parsed.value } };
         const display = c.gdk_display_get_default().?;
         self.added = c.g_signal_connect_data(display, "monitor-added", @ptrCast(&App.add), &self.app, null, 0);
         self.removed = c.g_signal_connect_data(display, "monitor-removed", @ptrCast(&App.remove), &self.app, null, 0);
@@ -149,8 +145,6 @@ pub const Service = struct {
         c.g_signal_handler_disconnect(display, self.removed);
         for (self.app.panels.items) |panel| panel.destroy();
         self.app.panels.deinit(allocator);
-        c.gtk_style_context_remove_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, self.provider));
-        c.g_object_unref(self.provider);
         self.arena.deinit();
         allocator.destroy(self);
     }

@@ -1,12 +1,6 @@
 { pkgs }:
 let
   desktop = import ../desktop-zig.nix { inherit pkgs; };
-  config = import ../labwc.nix {
-    inherit pkgs;
-    lib = pkgs.lib;
-    enableLightDesktop = true;
-  };
-  style = pkgs.writeText "desktop-osd-style.css" config.content.environment.etc."xdg/desktop-osd/style.css".text;
 in
 pkgs.runCommand "desktop-native-osd-check"
   {
@@ -30,7 +24,7 @@ pkgs.runCommand "desktop-native-osd-check"
     export GDK_PIXBUF_MODULE_FILE=${desktop.DESKTOP_RUNTIME_PIXBUF_LOADERS}
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
       python3 ${./check-desktop-osd.py} \
-        --binary ${desktop.tests}/bin/desktop-backlight-fixture --style ${style} \
+        --binary ${desktop.tests}/bin/desktop-backlight-fixture \
         --loader-cache "$GDK_PIXBUF_MODULE_FILE" \
         --dbus-config ${pkgs.dbus}/share/dbus-1/session.conf
     touch "$out"

@@ -94,11 +94,7 @@ pub const Item = struct {
     fn paint(self: *const Item, buffer: raster.Buffer, scale: u32) void {
         var x = self.rect.x;
         if (self.pixbuf) |image| {
-            const data = c.gdk_pixbuf_get_pixels(image);
-            const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(image));
-            const height: u32 = @intCast(c.gdk_pixbuf_get_height(image));
-            const factor: f64 = @floatFromInt(scale);
-            raster.blit(buffer, .{ .pixels = data[0 .. stride * (height - 1) + @as(usize, @intCast(c.gdk_pixbuf_get_width(image) * c.gdk_pixbuf_get_n_channels(image)))], .width = @intCast(c.gdk_pixbuf_get_width(image)), .height = height, .stride = stride, .format = if (c.gdk_pixbuf_get_has_alpha(image) != 0) .rgba else .rgb }, .{ .x = x * factor, .y = (self.rect.height - 16) / 2 * factor, .width = 16 * factor, .height = 16 * factor }, null) catch {};
+            c.__zig.blitPixbuf(.{ .target = buffer, .scale = @floatFromInt(scale) }, image, .{ .x = x, .y = (self.rect.height - 16) / 2, .width = 16, .height = 16 });
         }
         if (self.icon.value.len != 0) x += 16 + (if (self.label.value.len != 0) @as(f64, 6) else 0);
         self.label.paint(buffer, x, (self.rect.height - self.label.height()) / 2, white);
@@ -265,15 +261,9 @@ pub const Codex = struct {
         const foreground: c.GdkRGBA = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 };
         const image = c.gtk_icon_info_load_symbolic(info, &foreground, null, null, null, null, null) orelse return;
         defer c.g_object_unref(image);
-        const width: u32 = @intCast(c.gdk_pixbuf_get_width(image));
-        const height: u32 = @intCast(c.gdk_pixbuf_get_height(image));
-        const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(image));
-        const channels: usize = @intCast(c.gdk_pixbuf_get_n_channels(image));
-        const data = c.gdk_pixbuf_get_pixels(image);
-        const coverage = try a.alloc(u8, width * height);
-        for (0..height) |y| for (0..width) |x| {
-            coverage[y * width + x] = if (channels == 4) data[y * stride + x * channels + 3] else 255;
-        };
+        var width: u32 = 0;
+        var height: u32 = 0;
+        const coverage = try c.__zig.pixbufAlphaMask(a, image, &width, &height);
         if (self.refresh_icon) |old| old.deinit(a);
         self.refresh_icon = .{ .pixels = coverage, .width = width, .height = height, .left = 0, .top = 0 };
         self.refresh_icon_scale = scale;

@@ -50,7 +50,6 @@ pkgs.stdenv.mkDerivation {
       || file.name == "check-desktop-date-menu.py"
       || file.name == "check-desktop-window.py"
       || file.name == "wayland_ui.py"
-      || file.name == "desktop-notifications.css"
     ) ./.;
   };
   nativeBuildInputs = [
@@ -130,9 +129,9 @@ pkgs.stdenv.mkDerivation {
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
       python3 tests/check-desktop-command.py "$out/bin/desktop-command-fixture"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
-      python3 tests/check-desktop-notifications.py "$out/bin" desktop-notifications.css
+      python3 tests/check-desktop-notifications.py "$out/bin"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
-      python3 tests/check-desktop-date-menu.py "$out/bin" desktop-notifications.css
+      python3 tests/check-desktop-date-menu.py "$out/bin"
     kill "$compositor_pid"
     wait "$compositor_pid" || true
     trap - EXIT

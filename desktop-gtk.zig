@@ -10,11 +10,63 @@ pub const __helpers = @import("std").zig.c_translation.helpers;
 
 // Zig helpers shared by toolkit consumers; excluded from C ABI comparisons.
 pub const __zig = struct {
+    const std = @import("std");
+    const raster = @import("desktop-raster.zig");
     pub fn cast(comptime T: type, ptr: anytype) *T {
         return @ptrCast(@alignCast(ptr));
     }
     pub fn eq(left: []const u8, right: []const u8) bool {
-        return @import("std").mem.eql(u8, left, right);
+        return std.mem.eql(u8, left, right);
+    }
+    pub fn paintCairo(cr: *cairo_t, logical_width: u32, logical_height: u32, scale: u32, context: anytype, comptime drawFn: anytype) !void {
+        const width = @max(1, logical_width) * scale;
+        const height = @max(1, logical_height) * scale;
+        const image = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)) orelse return error.ImageAllocation;
+        defer cairo_surface_destroy(image);
+        if (cairo_surface_status(image) != 0) return error.ImageAllocation;
+        const pixels: [*]u32 = @ptrCast(@alignCast(cairo_image_surface_get_data(image)));
+        const buffer = raster.Buffer{ .pixels = pixels[0 .. width * height], .width = width, .height = height };
+        const Return = @typeInfo(@TypeOf(drawFn)).@"fn".return_type.?;
+        if (@typeInfo(Return) == .error_union) try drawFn(context, buffer) else drawFn(context, buffer);
+        cairo_surface_mark_dirty(image);
+        cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
+        cairo_set_source_surface(cr, image, 0, 0);
+        cairo_paint(cr);
+    }
+    pub fn pixbufImage(pixbuf: *GdkPixbuf) raster.Image {
+        const width: u32 = @intCast(gdk_pixbuf_get_width(pixbuf));
+        const height: u32 = @intCast(gdk_pixbuf_get_height(pixbuf));
+        const stride: usize = @intCast(gdk_pixbuf_get_rowstride(pixbuf));
+        const channels: u32 = @intCast(gdk_pixbuf_get_n_channels(pixbuf));
+        return .{
+            .pixels = gdk_pixbuf_get_pixels(pixbuf)[0 .. (height - 1) * stride + width * channels],
+            .width = width,
+            .height = height,
+            .stride = stride,
+            .format = if (channels == 4) .rgba else .rgb,
+        };
+    }
+    pub fn blitPixbuf(canvas: raster.Canvas, pixbuf: *GdkPixbuf, rect: raster.Rect) void {
+        raster.blit(canvas.target, pixbufImage(pixbuf), .{
+            .x = (rect.x + canvas.origin.x) * canvas.scale,
+            .y = (rect.y + canvas.origin.y) * canvas.scale,
+            .width = rect.width * canvas.scale,
+            .height = rect.height * canvas.scale,
+        }, null) catch {};
+    }
+    pub fn pixbufAlphaMask(allocator: std.mem.Allocator, pixbuf: *GdkPixbuf, out_width: *u32, out_height: *u32) ![]u8 {
+        const width: u32 = @intCast(@max(0, gdk_pixbuf_get_width(pixbuf)));
+        const height: u32 = @intCast(@max(0, gdk_pixbuf_get_height(pixbuf)));
+        const stride: usize = @intCast(gdk_pixbuf_get_rowstride(pixbuf));
+        const channels: usize = @intCast(gdk_pixbuf_get_n_channels(pixbuf));
+        const source = gdk_pixbuf_get_pixels(pixbuf);
+        const mask = try allocator.alloc(u8, @as(usize, width) * height);
+        for (0..height) |y| for (0..width) |x| {
+            mask[y * width + x] = if (channels >= 4) source[y * stride + x * channels + 3] else source[y * stride + x * channels];
+        };
+        out_width.* = width;
+        out_height.* = height;
+        return mask;
     }
 };
 
@@ -99,8 +151,6 @@ pub const G_USER_DIRECTORY_PICTURES: c_int = 4;
 pub const GUserDirectory = c_uint;
 
 pub extern fn g_get_user_special_dir(directory: GUserDirectory) [*c]const gchar;
-
-pub const uid_t = __uid_t;
 
 pub extern fn raise(__sig: c_int) c_int;
 
@@ -236,8 +286,6 @@ pub extern fn g_strdup(str: [*c]const gchar) [*c]gchar;
 
 pub extern fn g_strdup_printf(format: [*c]const gchar, ...) [*c]gchar;
 
-pub extern fn g_strndup(str: [*c]const gchar, n: gsize) [*c]gchar;
-
 pub extern fn g_strfreev(str_array: [*c][*c]gchar) void;
 
 pub const struct__GKeyFile = opaque {};
@@ -346,13 +394,9 @@ pub const GTypeFlags = c_uint;
 
 pub extern fn g_type_register_static_simple(parent_type: GType, type_name: [*c]const gchar, class_size: guint, class_init: GClassInitFunc, instance_size: guint, instance_init: GInstanceInitFunc, flags: GTypeFlags) GType;
 
-pub extern fn g_type_check_instance_cast(instance: [*c]GTypeInstance, iface_type: GType) [*c]GTypeInstance;
-
 pub extern fn g_type_check_instance_is_a(instance: [*c]GTypeInstance, iface_type: GType) gboolean;
 
 pub extern fn g_type_name_from_instance(instance: [*c]GTypeInstance) [*c]const gchar;
-
-pub extern fn g_value_unset(value: [*c]GValue) void;
 
 pub const GParamFlags = c_int;
 
@@ -444,8 +488,6 @@ pub extern fn g_object_set_data(object: [*c]GObject, key: [*c]const gchar, data:
 
 pub extern fn g_object_set_data_full(object: [*c]GObject, key: [*c]const gchar, data: gpointer, destroy: GDestroyNotify) void;
 
-pub extern fn g_value_get_int(value: [*c]const GValue) gint;
-
 pub const GAppInfoCreateFlags = c_uint;
 
 pub const G_BUS_TYPE_SESSION: c_int = 2;
@@ -466,25 +508,15 @@ pub const G_DBUS_SIGNAL_FLAGS_NONE: c_int = 0;
 
 pub const GDBusSignalFlags = c_uint;
 
-pub const G_APPLICATION_FLAGS_NONE: c_int = 0;
-
-pub const G_APPLICATION_DEFAULT_FLAGS: c_int = 0;
-
 pub const G_APPLICATION_HANDLES_COMMAND_LINE: c_int = 8;
 
 pub const GApplicationFlags = c_uint;
 
 pub const G_SUBPROCESS_FLAGS_NONE: c_int = 0;
 
-pub const G_SUBPROCESS_FLAGS_STDIN_PIPE: c_int = 1;
-
-pub const G_SUBPROCESS_FLAGS_STDOUT_PIPE: c_int = 4;
-
 pub const G_SUBPROCESS_FLAGS_STDOUT_SILENCE: c_int = 8;
 
 pub const G_SUBPROCESS_FLAGS_STDERR_PIPE: c_int = 16;
-
-pub const G_SUBPROCESS_FLAGS_STDERR_SILENCE: c_int = 32;
 
 pub const GSubprocessFlags = c_uint;
 
@@ -517,24 +549,6 @@ pub const struct__GInputStream = extern struct {
 };
 
 pub const GInputStream = struct__GInputStream;
-
-pub const struct__GFilterInputStream = extern struct {
-    parent_instance: GInputStream = @import("std").mem.zeroes(GInputStream),
-    base_stream: [*c]GInputStream = null,
-};
-
-pub const GFilterInputStream = struct__GFilterInputStream;
-
-pub const struct__GBufferedInputStreamPrivate = opaque {};
-
-pub const GBufferedInputStreamPrivate = struct__GBufferedInputStreamPrivate;
-
-pub const struct__GBufferedInputStream = extern struct {
-    parent_instance: GFilterInputStream = @import("std").mem.zeroes(GFilterInputStream),
-    priv: ?*GBufferedInputStreamPrivate = null,
-};
-
-pub const GBufferedInputStream = struct__GBufferedInputStream;
 
 pub const struct__GCancellablePrivate = opaque {};
 
@@ -776,8 +790,6 @@ pub extern fn g_bus_unown_name(owner_id: guint) void;
 
 pub extern fn g_file_new_for_path(path: [*c]const u8) ?*GFile;
 
-pub extern fn g_file_make_symbolic_link(file: ?*GFile, symlink_value: [*c]const u8, cancellable: [*c]GCancellable, @"error": [*c][*c]GError) gboolean;
-
 pub const struct__GSettingsSchemaSource = opaque {};
 
 pub const GSettingsSchemaSource = struct__GSettingsSchemaSource;
@@ -806,13 +818,7 @@ pub extern fn g_settings_set_boolean(settings: [*c]GSettings, key: [*c]const gch
 
 pub extern fn g_settings_get_strv(settings: [*c]GSettings, key: [*c]const gchar) [*c][*c]gchar;
 
-pub extern fn g_subprocess_new(flags: GSubprocessFlags, @"error": [*c][*c]GError, argv0: [*c]const gchar, ...) ?*GSubprocess;
-
 pub extern fn g_subprocess_newv(argv: [*c]const [*c]const gchar, flags: GSubprocessFlags, @"error": [*c][*c]GError) ?*GSubprocess;
-
-pub extern fn g_subprocess_send_signal(subprocess: ?*GSubprocess, signal_num: gint) void;
-
-pub extern fn g_subprocess_force_exit(subprocess: ?*GSubprocess) void;
 
 pub extern fn g_subprocess_wait_async(subprocess: ?*GSubprocess, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
 
@@ -831,8 +837,6 @@ pub extern fn g_subprocess_launcher_new(flags: GSubprocessFlags) ?*GSubprocessLa
 
 pub extern fn g_subprocess_launcher_spawnv(self: ?*GSubprocessLauncher, argv: [*c]const [*c]const gchar, @"error": [*c][*c]GError) ?*GSubprocess;
 
-pub extern fn g_subprocess_launcher_setenv(self: ?*GSubprocessLauncher, variable: [*c]const gchar, value: [*c]const gchar, overwrite: gboolean) void;
-
 pub extern fn g_task_new(source_object: gpointer, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, callback_data: gpointer) ?*GTask;
 
 pub extern fn g_task_set_task_data(task: ?*GTask, task_data: gpointer, task_data_destroy: GDestroyNotify) void;
@@ -844,8 +848,6 @@ pub extern fn g_task_run_in_thread(task: ?*GTask, task_func: GTaskThreadFunc) vo
 pub extern fn g_task_return_pointer(task: ?*GTask, result: gpointer, result_destroy: GDestroyNotify) void;
 
 pub extern fn g_task_return_boolean(task: ?*GTask, result: gboolean) void;
-
-pub extern fn g_task_return_new_error(task: ?*GTask, domain: GQuark, code: gint, format: [*c]const u8, ...) void;
 
 pub extern fn g_task_propagate_pointer(task: ?*GTask, @"error": [*c][*c]GError) gpointer;
 
@@ -861,11 +863,7 @@ pub const PangoLayout = struct__PangoLayout;
 
 pub const PANGO_WRAP_WORD_CHAR: c_int = 2;
 
-pub const PangoWrapMode = c_uint;
-
 pub const PANGO_ELLIPSIZE_END: c_int = 3;
-
-pub const PangoEllipsizeMode = c_uint;
 
 pub extern fn pango_layout_is_ellipsized(layout: ?*PangoLayout) gboolean;
 
@@ -884,8 +882,6 @@ pub const struct__cairo_pattern = opaque {};
 pub const cairo_pattern_t = struct__cairo_pattern;
 
 pub const CAIRO_STATUS_SUCCESS: c_int = 0;
-
-pub const CAIRO_STATUS_WRITE_ERROR: c_int = 11;
 
 pub const enum__cairo_status = c_uint;
 
@@ -967,8 +963,6 @@ pub const enum__cairo_font_slant = c_uint;
 pub const cairo_font_slant_t = enum__cairo_font_slant;
 
 pub const CAIRO_FONT_WEIGHT_BOLD: c_int = 1;
-pub const CAIRO_FONT_WEIGHT_NORMAL: c_int = 0;
-
 pub const enum__cairo_font_weight = c_uint;
 
 pub const cairo_font_weight_t = enum__cairo_font_weight;
@@ -980,8 +974,6 @@ pub extern fn cairo_set_font_size(cr: ?*cairo_t, size: f64) void;
 pub extern fn cairo_show_text(cr: ?*cairo_t, utf8: [*c]const u8) void;
 
 pub extern fn cairo_get_source(cr: ?*cairo_t) ?*cairo_pattern_t;
-
-pub extern fn cairo_status(cr: ?*cairo_t) cairo_status_t;
 
 pub extern fn cairo_surface_destroy(surface: ?*cairo_surface_t) void;
 
@@ -1016,14 +1008,6 @@ pub const enum__cairo_filter = c_uint;
 pub const cairo_filter_t = enum__cairo_filter;
 
 pub extern fn cairo_pattern_set_filter(pattern: ?*cairo_pattern_t, filter: cairo_filter_t) void;
-
-pub const struct__cairo_region = opaque {};
-
-pub const cairo_region_t = struct__cairo_region;
-
-pub extern fn cairo_region_create() ?*cairo_region_t;
-
-pub extern fn cairo_region_destroy(region: ?*cairo_region_t) void;
 
 pub const GdkRectangle = cairo_rectangle_int_t;
 
@@ -1173,8 +1157,6 @@ pub const GDK_SCROLL_LEFT: c_int = 2;
 pub const GdkScrollDirection = c_uint;
 pub const GdkModifierType = c_uint;
 
-pub const GDK_NOTIFY_INFERIOR: c_int = 2;
-
 pub const GdkNotifyType = c_uint;
 
 pub const GdkCrossingMode = c_uint;
@@ -1190,8 +1172,6 @@ pub extern fn gdk_event_get_scroll_deltas(event: ?*const GdkEvent, delta_x: [*c]
 pub extern fn gdk_event_get_state(event: ?*const GdkEvent, state: [*c]GdkModifierType) gboolean;
 
 pub extern fn gdk_window_get_display(window: ?*GdkWindow) ?*GdkDisplay;
-
-pub extern fn gdk_window_input_shape_combine_region(window: ?*GdkWindow, shape_region: ?*const cairo_region_t, offset_x: gint, offset_y: gint) void;
 
 pub extern fn gdk_window_set_cursor(window: ?*GdkWindow, cursor: ?*GdkCursor) void;
 
@@ -1250,27 +1230,13 @@ pub extern fn gdk_pixbuf_new_from_file(filename: [*c]const u8, @"error": [*c][*c
 
 pub extern fn gdk_pixbuf_new_from_file_at_scale(filename: [*c]const u8, width: c_int, height: c_int, preserve_aspect_ratio: gboolean, @"error": [*c][*c]GError) ?*GdkPixbuf;
 
-pub extern fn gdk_pixbuf_save(pixbuf: ?*GdkPixbuf, filename: [*c]const u8, @"type": [*c]const u8, @"error": [*c][*c]GError, ...) gboolean;
-
 pub extern fn gdk_pixbuf_apply_embedded_orientation(src: ?*GdkPixbuf) ?*GdkPixbuf;
-
-pub const GDK_INTERP_BILINEAR: c_int = 2;
-
-pub const GdkInterpType = c_uint;
-
-pub extern fn gdk_pixbuf_scale_simple(src: ?*const GdkPixbuf, dest_width: c_int, dest_height: c_int, interp_type: GdkInterpType) ?*GdkPixbuf;
-
-pub extern fn gdk_pixbuf_get_from_window(window: ?*GdkWindow, src_x: gint, src_y: gint, width: gint, height: gint) ?*GdkPixbuf;
-
-pub extern fn gdk_cairo_set_source_rgba(cr: ?*cairo_t, rgba: [*c]const GdkRGBA) void;
 
 pub extern fn gdk_cairo_set_source_pixbuf(cr: ?*cairo_t, pixbuf: ?*const GdkPixbuf, pixbuf_x: gdouble, pixbuf_y: gdouble) void;
 
 pub extern fn gdk_cursor_new_from_name(display: ?*GdkDisplay, name: [*c]const gchar) ?*GdkCursor;
 
 pub extern fn gdk_keyval_to_unicode(keyval: guint) guint32;
-
-pub const GTK_ALIGN_FILL: c_int = 0;
 
 pub const GTK_ALIGN_START: c_int = 1;
 
@@ -1280,41 +1246,21 @@ pub const GTK_ALIGN_CENTER: c_int = 3;
 
 pub const GtkAlign = c_uint;
 
-pub const GTK_ICON_SIZE_MENU: c_int = 1;
-
-pub const GTK_ICON_SIZE_LARGE_TOOLBAR: c_int = 3;
-
-pub const GTK_ICON_SIZE_DIALOG: c_int = 6;
-
-pub const GtkIconSize = c_uint;
-
-pub const GTK_MESSAGE_QUESTION: c_int = 2;
-
-pub const GtkMessageType = c_uint;
-
 pub const GTK_ORIENTATION_HORIZONTAL: c_int = 0;
 
 pub const GTK_ORIENTATION_VERTICAL: c_int = 1;
 
 pub const GtkOrientation = c_uint;
 
-pub const GTK_POS_RIGHT: c_int = 1;
-
 pub const GTK_POS_BOTTOM: c_int = 3;
 
 pub const GtkPositionType = c_uint;
-
-pub const GTK_SELECTION_SINGLE: c_int = 1;
-
-pub const GtkSelectionMode = c_uint;
 
 pub const GTK_STATE_FLAG_NORMAL: c_int = 0;
 
 pub const GtkStateFlags = c_uint;
 
 pub const GTK_INPUT_PURPOSE_PASSWORD: c_int = 8;
-
-pub const GtkInputPurpose = c_uint;
 
 pub const GTK_POPOVER_CONSTRAINT_NONE: c_int = 0;
 
@@ -1349,10 +1295,6 @@ pub const struct__GtkContainer = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkContainer = struct__GtkContainer;
 
-pub const struct__GtkBin = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkBin = struct__GtkBin;
-
 pub const struct__GtkWindow = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkWindow = struct__GtkWindow;
@@ -1382,8 +1324,6 @@ pub extern fn gtk_widget_grab_focus(widget: [*c]GtkWidget) void;
 
 pub extern fn gtk_widget_set_name(widget: [*c]GtkWidget, name: [*c]const gchar) void;
 
-pub extern fn gtk_widget_set_sensitive(widget: [*c]GtkWidget, sensitive: gboolean) void;
-
 pub extern fn gtk_widget_get_sensitive(widget: [*c]GtkWidget) gboolean;
 
 pub extern fn gtk_widget_set_visible(widget: [*c]GtkWidget, visible: gboolean) void;
@@ -1391,8 +1331,6 @@ pub extern fn gtk_widget_set_visible(widget: [*c]GtkWidget, visible: gboolean) v
 pub extern fn gtk_widget_get_visible(widget: [*c]GtkWidget) gboolean;
 
 pub extern fn gtk_widget_set_app_paintable(widget: [*c]GtkWidget, app_paintable: gboolean) void;
-
-pub extern fn gtk_widget_get_parent(widget: [*c]GtkWidget) [*c]GtkWidget;
 
 pub extern fn gtk_widget_get_window(widget: [*c]GtkWidget) ?*GdkWindow;
 
@@ -1403,8 +1341,6 @@ pub extern fn gtk_widget_get_allocated_height(widget: [*c]GtkWidget) c_int;
 pub extern fn gtk_widget_set_size_request(widget: [*c]GtkWidget, width: gint, height: gint) void;
 
 pub extern fn gtk_widget_add_events(widget: [*c]GtkWidget, events: gint) void;
-
-pub extern fn gtk_widget_set_opacity(widget: [*c]GtkWidget, opacity: f64) void;
 
 pub extern fn gtk_widget_set_visual(widget: [*c]GtkWidget, visual: ?*GdkVisual) void;
 
@@ -1418,15 +1354,11 @@ pub extern fn gtk_widget_set_valign(widget: [*c]GtkWidget, @"align": GtkAlign) v
 
 pub extern fn gtk_widget_set_margin_start(widget: [*c]GtkWidget, margin: gint) void;
 
-pub extern fn gtk_widget_set_margin_end(widget: [*c]GtkWidget, margin: gint) void;
-
 pub extern fn gtk_widget_set_margin_top(widget: [*c]GtkWidget, margin: gint) void;
 
 pub extern fn gtk_widget_set_margin_bottom(widget: [*c]GtkWidget, margin: gint) void;
 
 pub extern fn gtk_widget_is_ancestor(widget: [*c]GtkWidget, ancestor: [*c]GtkWidget) gboolean;
-
-pub extern fn gtk_widget_input_shape_combine_region(widget: [*c]GtkWidget, region: ?*cairo_region_t) void;
 
 pub extern fn gtk_widget_trigger_tooltip_query(widget: [*c]GtkWidget) void;
 
@@ -1453,8 +1385,6 @@ pub extern fn gtk_container_remove(container: [*c]GtkContainer, widget: [*c]GtkW
 
 pub extern fn gtk_container_get_children(container: [*c]GtkContainer) [*c]GList;
 
-pub extern fn gtk_bin_get_child(bin: [*c]GtkBin) [*c]GtkWidget;
-
 pub const GTK_WINDOW_TOPLEVEL: c_int = 0;
 
 pub const GtkWindowType = c_uint;
@@ -1478,8 +1408,6 @@ pub extern fn gtk_window_set_type_hint(window: [*c]GtkWindow, hint: GdkWindowTyp
 pub extern fn gtk_window_set_skip_taskbar_hint(window: [*c]GtkWindow, setting: gboolean) void;
 
 pub extern fn gtk_window_set_skip_pager_hint(window: [*c]GtkWindow, setting: gboolean) void;
-
-pub extern fn gtk_window_set_accept_focus(window: [*c]GtkWindow, setting: gboolean) void;
 
 pub extern fn gtk_window_set_resizable(window: [*c]GtkWindow, resizable: gboolean) void;
 
@@ -1505,23 +1433,13 @@ pub extern fn gtk_window_set_keep_above(window: [*c]GtkWindow, setting: gboolean
 
 pub extern fn gtk_window_set_default_size(window: [*c]GtkWindow, width: gint, height: gint) void;
 
-pub extern fn gtk_window_resize(window: [*c]GtkWindow, width: gint, height: gint) void;
-
-pub const GTK_DIALOG_MODAL: c_int = 1;
-
-pub const GTK_DIALOG_DESTROY_WITH_PARENT: c_int = 2;
-
 pub const GtkDialogFlags = c_uint;
-
-pub const GTK_RESPONSE_ACCEPT: c_int = -3;
 
 pub const GTK_RESPONSE_DELETE_EVENT: c_int = -4;
 
 pub const GTK_RESPONSE_OK: c_int = -5;
 
 pub const GTK_RESPONSE_CANCEL: c_int = -6;
-
-pub const GTK_RESPONSE_CLOSE: c_int = -7;
 
 pub const struct__GtkDialog = extern struct { _opaque: [0]usize = .{} };
 
@@ -1531,8 +1449,6 @@ pub const GtkDialog = struct__GtkDialog;
 pub extern fn gtk_dialog_new() [*c]GtkWidget;
 
 pub extern fn gtk_dialog_new_with_buttons(title: [*c]const gchar, parent: [*c]GtkWindow, flags: GtkDialogFlags, first_button_text: [*c]const gchar, ...) [*c]GtkWidget;
-
-pub extern fn gtk_dialog_add_button(dialog: [*c]GtkDialog, button_text: [*c]const gchar, response_id: gint) [*c]GtkWidget;
 
 pub extern fn gtk_dialog_set_default_response(dialog: [*c]GtkDialog, response_id: gint) void;
 
@@ -1568,34 +1484,6 @@ pub extern fn gtk_label_new(str: [*c]const gchar) [*c]GtkWidget;
 
 pub extern fn gtk_label_set_text(label: [*c]GtkLabel, str: [*c]const gchar) void;
 
-pub extern fn gtk_label_get_text(label: [*c]GtkLabel) [*c]const gchar;
-
-pub extern fn gtk_label_set_markup(label: [*c]GtkLabel, str: [*c]const gchar) void;
-
-pub extern fn gtk_label_get_use_markup(label: [*c]GtkLabel) gboolean;
-
-pub extern fn gtk_label_set_ellipsize(label: [*c]GtkLabel, mode: PangoEllipsizeMode) void;
-
-pub extern fn gtk_label_set_width_chars(label: [*c]GtkLabel, n_chars: gint) void;
-
-pub extern fn gtk_label_set_max_width_chars(label: [*c]GtkLabel, n_chars: gint) void;
-
-pub extern fn gtk_label_set_lines(label: [*c]GtkLabel, lines: gint) void;
-
-pub extern fn gtk_label_set_line_wrap(label: [*c]GtkLabel, wrap: gboolean) void;
-
-pub extern fn gtk_label_set_line_wrap_mode(label: [*c]GtkLabel, wrap_mode: PangoWrapMode) void;
-
-pub extern fn gtk_label_set_selectable(label: [*c]GtkLabel, setting: gboolean) void;
-
-pub extern fn gtk_label_set_angle(label: [*c]GtkLabel, angle: gdouble) void;
-
-pub extern fn gtk_label_get_layout(label: [*c]GtkLabel) ?*PangoLayout;
-
-pub extern fn gtk_label_set_xalign(label: [*c]GtkLabel, xalign: gfloat) void;
-
-pub extern fn gtk_label_set_yalign(label: [*c]GtkLabel, yalign: gfloat) void;
-
 pub const struct__GtkBox = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkBox = struct__GtkBox;
@@ -1607,74 +1495,15 @@ pub extern fn gtk_box_pack_start(box: [*c]GtkBox, child: [*c]GtkWidget, expand: 
 
 pub extern fn gtk_box_pack_end(box: [*c]GtkBox, child: [*c]GtkWidget, expand: gboolean, fill: gboolean, padding: guint) void;
 
-pub extern fn gtk_box_set_homogeneous(box: [*c]GtkBox, homogeneous: gboolean) void;
-
 pub extern fn gtk_box_set_spacing(box: [*c]GtkBox, spacing: gint) void;
 
 pub extern fn gtk_box_reorder_child(box: [*c]GtkBox, child: [*c]GtkWidget, position: gint) void;
 
 pub extern fn gtk_box_set_center_widget(box: [*c]GtkBox, widget: [*c]GtkWidget) void;
 
-pub const struct__GtkTreeIter = extern struct {
-    stamp: gint = 0,
-    user_data: gpointer = null,
-    user_data2: gpointer = null,
-    user_data3: gpointer = null,
-};
-
-pub const GtkTreeIter = struct__GtkTreeIter;
-
-pub const struct__GtkTreeModel = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkTreeModel = struct__GtkTreeModel;
-
-pub extern fn gtk_tree_model_iter_n_children(tree_model: ?*GtkTreeModel, iter: [*c]GtkTreeIter) gint;
-
-pub const struct__GtkEditable = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkEditable = struct__GtkEditable;
-
 pub const struct__GtkImage = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkImage = struct__GtkImage;
-
-pub extern fn gtk_image_new() [*c]GtkWidget;
-
-pub extern fn gtk_image_new_from_pixbuf(pixbuf: ?*GdkPixbuf) [*c]GtkWidget;
-
-pub extern fn gtk_image_new_from_icon_name(icon_name: [*c]const gchar, size: GtkIconSize) [*c]GtkWidget;
-
-pub extern fn gtk_image_new_from_gicon(icon: ?*GIcon, size: GtkIconSize) [*c]GtkWidget;
-
-pub extern fn gtk_image_set_from_file(image: [*c]GtkImage, filename: [*c]const gchar) void;
-
-pub extern fn gtk_image_set_from_pixbuf(image: [*c]GtkImage, pixbuf: ?*GdkPixbuf) void;
-
-pub extern fn gtk_image_set_from_icon_name(image: [*c]GtkImage, icon_name: [*c]const gchar, size: GtkIconSize) void;
-
-pub extern fn gtk_image_set_pixel_size(image: [*c]GtkImage, pixel_size: gint) void;
-
-pub const struct__GtkEntry = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkEntry = struct__GtkEntry;
-
-pub extern fn gtk_entry_new() [*c]GtkWidget;
-
-pub extern fn gtk_entry_set_visibility(entry: [*c]GtkEntry, visible: gboolean) void;
-
-pub extern fn gtk_entry_get_visibility(entry: [*c]GtkEntry) gboolean;
-
-pub extern fn gtk_entry_set_activates_default(entry: [*c]GtkEntry, setting: gboolean) void;
-
-pub extern fn gtk_entry_set_text(entry: [*c]GtkEntry, text: [*c]const gchar) void;
-
-pub extern fn gtk_entry_get_text(entry: [*c]GtkEntry) [*c]const gchar;
-
-pub extern fn gtk_entry_set_placeholder_text(entry: [*c]GtkEntry, text: [*c]const gchar) void;
-
-pub extern fn gtk_entry_set_input_purpose(entry: [*c]GtkEntry, purpose: GtkInputPurpose) void;
-
-pub extern fn gtk_entry_get_input_purpose(entry: [*c]GtkEntry) GtkInputPurpose;
 
 pub const struct__GtkComboBox = extern struct { _opaque: [0]usize = .{} };
 
@@ -1683,11 +1512,7 @@ pub const GtkComboBox = struct__GtkComboBox;
 
 pub extern fn gtk_combo_box_set_active(combo_box: [*c]GtkComboBox, index_: gint) void;
 
-pub extern fn gtk_combo_box_get_model(combo_box: [*c]GtkComboBox) ?*GtkTreeModel;
-
 pub extern fn gtk_combo_box_get_active_id(combo_box: [*c]GtkComboBox) [*c]const gchar;
-
-pub extern fn gtk_combo_box_set_active_id(combo_box: [*c]GtkComboBox, active_id: [*c]const gchar) gboolean;
 
 pub extern fn gtk_application_window_new(application: [*c]GtkApplication) [*c]GtkWidget;
 
@@ -1696,30 +1521,16 @@ pub const struct__GtkButton = extern struct { _opaque: [0]usize = .{} };
 pub const GtkButton = struct__GtkButton;
 // /nix/store/zc6camr52n5kyqs1a32dg4s4vxb57h4a-gtk+3-3.24.52-dev/include/gtk-3.0/gtk/gtkbutton.h:72:22: warning: struct demoted to opaque type - has opaque field
 
-pub extern fn gtk_button_get_type() GType;
-
 pub extern fn gtk_button_new() [*c]GtkWidget;
 
 pub extern fn gtk_button_new_with_label(label: [*c]const gchar) [*c]GtkWidget;
 
-pub extern fn gtk_button_new_from_icon_name(icon_name: [*c]const gchar, size: GtkIconSize) [*c]GtkWidget;
-
-pub extern fn gtk_button_clicked(button: [*c]GtkButton) void;
-
 pub extern fn gtk_button_set_label(button: [*c]GtkButton, label: [*c]const gchar) void;
-
-pub extern fn gtk_button_get_label(button: [*c]GtkButton) [*c]const gchar;
-
-pub extern fn gtk_button_set_alignment(button: [*c]GtkButton, xalign: gfloat, yalign: gfloat) void;
-
-pub extern fn gtk_button_get_image(button: [*c]GtkButton) [*c]GtkWidget;
 
 pub const struct__GtkToggleButton = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkToggleButton = struct__GtkToggleButton;
 // /nix/store/zc6camr52n5kyqs1a32dg4s4vxb57h4a-gtk+3-3.24.52-dev/include/gtk-3.0/gtk/gtktogglebutton.h:59:18: warning: struct demoted to opaque type - has opaque field
-
-pub extern fn gtk_toggle_button_new() [*c]GtkWidget;
 
 pub extern fn gtk_toggle_button_set_active(toggle_button: [*c]GtkToggleButton, is_active: gboolean) void;
 
@@ -1734,10 +1545,6 @@ pub const GtkComboBoxText = struct__GtkComboBoxText;
 
 pub extern fn gtk_combo_box_text_new() [*c]GtkWidget;
 
-pub extern fn gtk_combo_box_text_new_with_entry() [*c]GtkWidget;
-
-pub extern fn gtk_combo_box_text_remove_all(combo_box: [*c]GtkComboBoxText) void;
-
 pub extern fn gtk_combo_box_text_append(combo_box: [*c]GtkComboBoxText, id: [*c]const gchar, text: [*c]const gchar) void;
 
 pub const struct__GtkCssProvider = extern struct { _opaque: [0]usize = .{} };
@@ -1748,89 +1555,17 @@ pub extern fn gtk_css_provider_new() [*c]GtkCssProvider;
 
 pub extern fn gtk_css_provider_load_from_data(css_provider: [*c]GtkCssProvider, data: [*c]const gchar, length: gssize, @"error": [*c][*c]GError) gboolean;
 
-pub extern fn gtk_css_provider_load_from_path(css_provider: [*c]GtkCssProvider, path: [*c]const gchar, @"error": [*c][*c]GError) gboolean;
-
 pub extern fn gtk_drawing_area_new() [*c]GtkWidget;
 
-pub const struct__GtkEventBoxPrivate = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkEventBoxPrivate = struct__GtkEventBoxPrivate;
-
-pub const struct__GtkEventBox = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkEventBox = struct__GtkEventBox;
 // /nix/store/zc6camr52n5kyqs1a32dg4s4vxb57h4a-gtk+3-3.24.52-dev/include/gtk-3.0/gtk/gtkeventbox.h:63:15: warning: struct demoted to opaque type - has opaque field
 
 pub extern fn gtk_event_box_new() [*c]GtkWidget;
 
-pub extern fn gtk_event_box_set_visible_window(event_box: [*c]GtkEventBox, visible_window: gboolean) void;
-
-pub const struct__GtkFlowBox = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkFlowBox = struct__GtkFlowBox;
 // /nix/store/zc6camr52n5kyqs1a32dg4s4vxb57h4a-gtk+3-3.24.52-dev/include/gtk-3.0/gtk/gtkflowbox.h:57:21: warning: struct demoted to opaque type - has opaque field
 
-pub const struct__GtkFlowBoxChild = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkFlowBoxChild = struct__GtkFlowBoxChild;
 // /nix/store/zc6camr52n5kyqs1a32dg4s4vxb57h4a-gtk+3-3.24.52-dev/include/gtk-3.0/gtk/gtkflowbox.h:93:15: warning: struct demoted to opaque type - has opaque field
 
-pub extern fn gtk_flow_box_child_new() [*c]GtkWidget;
-
-pub extern fn gtk_flow_box_new() [*c]GtkWidget;
-
-pub extern fn gtk_flow_box_set_homogeneous(box: [*c]GtkFlowBox, homogeneous: gboolean) void;
-
-pub extern fn gtk_flow_box_set_row_spacing(box: [*c]GtkFlowBox, spacing: guint) void;
-
-pub extern fn gtk_flow_box_set_column_spacing(box: [*c]GtkFlowBox, spacing: guint) void;
-
-pub extern fn gtk_flow_box_set_min_children_per_line(box: [*c]GtkFlowBox, n_children: guint) void;
-
-pub extern fn gtk_flow_box_set_max_children_per_line(box: [*c]GtkFlowBox, n_children: guint) void;
-
-pub extern fn gtk_flow_box_set_activate_on_single_click(box: [*c]GtkFlowBox, single: gboolean) void;
-
-pub extern fn gtk_flow_box_insert(box: [*c]GtkFlowBox, widget: [*c]GtkWidget, position: gint) void;
-
-pub extern fn gtk_flow_box_get_child_at_index(box: [*c]GtkFlowBox, idx: gint) [*c]GtkFlowBoxChild;
-
-pub extern fn gtk_flow_box_select_child(box: [*c]GtkFlowBox, child: [*c]GtkFlowBoxChild) void;
-
-pub extern fn gtk_flow_box_unselect_all(box: [*c]GtkFlowBox) void;
-
-pub extern fn gtk_flow_box_set_selection_mode(box: [*c]GtkFlowBox, mode: GtkSelectionMode) void;
-
-pub extern fn gtk_flow_box_set_vadjustment(box: [*c]GtkFlowBox, adjustment: [*c]GtkAdjustment) void;
-
-pub const GtkFlowBoxFilterFunc = ?*const fn (child: [*c]GtkFlowBoxChild, user_data: gpointer) callconv(.c) gboolean;
-
-pub extern fn gtk_flow_box_set_filter_func(box: [*c]GtkFlowBox, filter_func: GtkFlowBoxFilterFunc, user_data: gpointer, destroy: GDestroyNotify) void;
-
-pub extern fn gtk_flow_box_invalidate_filter(box: [*c]GtkFlowBox) void;
-
-pub const GtkFlowBoxSortFunc = ?*const fn (child1: [*c]GtkFlowBoxChild, child2: [*c]GtkFlowBoxChild, user_data: gpointer) callconv(.c) gint;
-
-pub extern fn gtk_flow_box_set_sort_func(box: [*c]GtkFlowBox, sort_func: GtkFlowBoxSortFunc, user_data: gpointer, destroy: GDestroyNotify) void;
-
-pub extern fn gtk_flow_box_invalidate_sort(box: [*c]GtkFlowBox) void;
-
-pub const struct__GtkGrid = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkGrid = struct__GtkGrid;
 // /nix/store/zc6camr52n5kyqs1a32dg4s4vxb57h4a-gtk+3-3.24.52-dev/include/gtk-3.0/gtk/gtkgrid.h:58:21: warning: struct demoted to opaque type - has opaque field
-
-pub extern fn gtk_grid_new() [*c]GtkWidget;
-
-pub extern fn gtk_grid_attach(grid: [*c]GtkGrid, child: [*c]GtkWidget, left: gint, top: gint, width: gint, height: gint) void;
-
-pub extern fn gtk_grid_set_row_homogeneous(grid: [*c]GtkGrid, homogeneous: gboolean) void;
-
-pub extern fn gtk_grid_set_row_spacing(grid: [*c]GtkGrid, spacing: guint) void;
-
-pub extern fn gtk_grid_set_column_homogeneous(grid: [*c]GtkGrid, homogeneous: gboolean) void;
-
-pub extern fn gtk_grid_set_column_spacing(grid: [*c]GtkGrid, spacing: guint) void;
 
 pub const struct__GtkStyleProvider = extern struct { _opaque: [0]usize = .{} };
 
@@ -1838,15 +1573,7 @@ pub const GtkStyleProvider = struct__GtkStyleProvider;
 
 pub extern fn gtk_style_context_add_provider_for_screen(screen: ?*GdkScreen, provider: ?*GtkStyleProvider, priority: guint) void;
 
-pub extern fn gtk_style_context_remove_provider_for_screen(screen: ?*GdkScreen, provider: ?*GtkStyleProvider) void;
-
-pub extern fn gtk_style_context_get_property(context: [*c]GtkStyleContext, property: [*c]const gchar, state: GtkStateFlags, value: [*c]GValue) void;
-
 pub extern fn gtk_style_context_add_class(context: [*c]GtkStyleContext, class_name: [*c]const gchar) void;
-
-pub extern fn gtk_style_context_remove_class(context: [*c]GtkStyleContext, class_name: [*c]const gchar) void;
-
-pub extern fn gtk_style_context_has_class(context: [*c]GtkStyleContext, class_name: [*c]const gchar) gboolean;
 
 pub extern fn gtk_style_context_get_border(context: [*c]GtkStyleContext, state: GtkStateFlags, border: [*c]GtkBorder) void;
 
@@ -1894,8 +1621,6 @@ pub extern fn gtk_main_iteration() gboolean;
 
 pub extern fn gtk_get_current_event_time() guint32;
 
-pub extern fn gtk_get_event_widget(event: ?*GdkEvent) [*c]GtkWidget;
-
 pub const struct__GtkPopover = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkPopover = struct__GtkPopover;
@@ -1915,14 +1640,6 @@ pub extern fn gtk_popover_popup(popover: [*c]GtkPopover) void;
 
 pub extern fn gtk_popover_popdown(popover: [*c]GtkPopover) void;
 
-pub const GTK_BUTTONS_CANCEL: c_int = 3;
-
-pub const GTK_BUTTONS_OK_CANCEL: c_int = 5;
-
-pub const GtkButtonsType = c_uint;
-
-pub extern fn gtk_message_dialog_new(parent: [*c]GtkWindow, flags: GtkDialogFlags, @"type": GtkMessageType, buttons: GtkButtonsType, message_format: [*c]const gchar, ...) [*c]GtkWidget;
-
 pub const struct__GtkOverlay = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkOverlay = struct__GtkOverlay;
@@ -1934,54 +1651,7 @@ pub extern fn gtk_overlay_add_overlay(overlay: [*c]GtkOverlay, widget: [*c]GtkWi
 
 pub extern fn gtk_overlay_set_overlay_pass_through(overlay: [*c]GtkOverlay, widget: [*c]GtkWidget, pass_through: gboolean) void;
 
-pub const struct__GtkProgressBar = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkProgressBar = struct__GtkProgressBar;
-
-pub extern fn gtk_progress_bar_get_type() GType;
-
-pub extern fn gtk_progress_bar_new() [*c]GtkWidget;
-
-pub extern fn gtk_progress_bar_set_fraction(pbar: [*c]GtkProgressBar, fraction: gdouble) void;
-
-pub extern fn gtk_progress_bar_get_fraction(pbar: [*c]GtkProgressBar) gdouble;
-
-pub const struct__GtkRange = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkRange = struct__GtkRange;
-
-pub extern fn gtk_range_set_value(range: [*c]GtkRange, value: gdouble) void;
-
-pub extern fn gtk_range_get_value(range: [*c]GtkRange) gdouble;
-
-pub const struct__GtkRevealer = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkRevealer = struct__GtkRevealer;
 // /nix/store/zc6camr52n5kyqs1a32dg4s4vxb57h4a-gtk+3-3.24.52-dev/include/gtk-3.0/gtk/gtkrevealer.h:58:15: warning: struct demoted to opaque type - has opaque field
-
-pub const GTK_REVEALER_TRANSITION_TYPE_NONE: c_int = 0;
-
-pub const GtkRevealerTransitionType = c_uint;
-
-pub extern fn gtk_revealer_new() [*c]GtkWidget;
-
-pub extern fn gtk_revealer_get_reveal_child(revealer: [*c]GtkRevealer) gboolean;
-
-pub extern fn gtk_revealer_set_reveal_child(revealer: [*c]GtkRevealer, reveal_child: gboolean) void;
-
-pub extern fn gtk_revealer_set_transition_type(revealer: [*c]GtkRevealer, transition: GtkRevealerTransitionType) void;
-
-pub const struct__GtkScale = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkScale = struct__GtkScale;
-
-pub extern fn gtk_scale_new_with_range(orientation: GtkOrientation, min: gdouble, max: gdouble, step: gdouble) [*c]GtkWidget;
-
-pub extern fn gtk_scale_set_digits(scale: [*c]GtkScale, digits: gint) void;
-
-pub extern fn gtk_scale_set_draw_value(scale: [*c]GtkScale, draw_value: gboolean) void;
-
-pub extern fn gtk_scale_set_value_pos(scale: [*c]GtkScale, pos: GtkPositionType) void;
 
 pub const struct__GtkScrolledWindow = extern struct { _opaque: [0]usize = .{} };
 
@@ -2006,10 +1676,6 @@ pub extern fn gtk_scrolled_window_set_policy(scrolled_window: [*c]GtkScrolledWin
 pub const struct__GtkSearchEntry = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkSearchEntry = struct__GtkSearchEntry;
-
-pub extern fn gtk_search_entry_new() [*c]GtkWidget;
-
-pub extern fn gtk_separator_new(orientation: GtkOrientation) [*c]GtkWidget;
 
 pub extern fn gtk_settings_get_default() [*c]GtkSettings;
 
@@ -2057,30 +1723,6 @@ pub extern fn gtk_popover_set_modal([*c]GtkPopover, gboolean) void;
 pub extern fn gtk_window_set_transient_for([*c]GtkWindow, [*c]GtkWindow) void;
 pub const GTK_WINDOW_POPUP = 1;
 pub const GDK_WINDOW_TYPE_HINT_POPUP_MENU = 9;
-pub const GtkWidgetPath = opaque {};
-pub extern fn gtk_widget_path_new() *GtkWidgetPath;
-pub extern fn gtk_widget_path_copy(*const GtkWidgetPath) *GtkWidgetPath;
-pub extern fn gtk_widget_path_unref(*GtkWidgetPath) void;
-pub extern fn gtk_widget_path_append_type(*GtkWidgetPath, GType) c_int;
-pub extern fn gtk_widget_path_iter_set_object_name(*GtkWidgetPath, c_int, [*c]const u8) void;
-pub extern fn gtk_widget_path_iter_set_name(*GtkWidgetPath, c_int, [*c]const u8) void;
-pub extern fn gtk_widget_path_iter_add_class(*GtkWidgetPath, c_int, [*c]const u8) void;
-pub const GTK_STATE_FLAG_ACTIVE = @as(c_uint, 1);
-pub const GTK_STATE_FLAG_PRELIGHT = @as(c_uint, 2);
-pub extern fn gtk_style_context_new() *GtkStyleContext;
-pub extern fn gtk_style_context_get_path(*GtkStyleContext) *const GtkWidgetPath;
-pub extern fn gtk_style_context_set_path(*GtkStyleContext, *GtkWidgetPath) void;
-pub extern fn gtk_style_context_set_parent(*GtkStyleContext, ?*GtkStyleContext) void;
-pub extern fn gtk_style_context_add_provider(*GtkStyleContext, *GtkStyleProvider, guint) void;
-pub extern fn gtk_style_context_get_color(*GtkStyleContext, GtkStateFlags, *GdkRGBA) void;
-pub extern fn gtk_style_context_get_background_color(*GtkStyleContext, GtkStateFlags, *GdkRGBA) void;
-pub extern fn gtk_style_context_get_border_color(*GtkStyleContext, GtkStateFlags, *GdkRGBA) void;
-pub extern fn gtk_style_context_get_margin(*GtkStyleContext, GtkStateFlags, *GtkBorder) void;
-pub extern fn gtk_style_context_get_padding(*GtkStyleContext, GtkStateFlags, *GtkBorder) void;
-pub extern fn gtk_window_get_type() GType;
-pub extern fn gtk_box_get_type() GType;
-pub extern fn gtk_image_get_type() GType;
-pub extern fn gtk_widget_get_type() GType;
 pub extern fn cairo_set_line_cap(?*cairo_t, c_uint) void;
 pub const CAIRO_OPERATOR_OVER = 2;
 
@@ -2350,8 +1992,6 @@ pub const GDK_KEY_Super_R = __helpers.promoteIntLiteral(c_int, 0xffec, .hex);
 
 pub const GTK_STYLE_PROVIDER_PRIORITY_APPLICATION = @as(c_int, 600);
 
-pub const GTK_STYLE_PROVIDER_PRIORITY_USER = @as(c_int, 800);
-
 pub const WL_DISPLAY_GET_REGISTRY = @as(c_int, 1);
 
 pub const WL_REGISTRY_BIND = @as(c_int, 0);
@@ -2403,18 +2043,9 @@ pub extern fn g_cancellable_is_cancelled([*c]GCancellable) gboolean;
 
 // GIO proxy properties and variant helpers.
 pub const GDBusProxy = extern struct {};
-pub const GDBusProxyFlags = c_uint;
-pub const G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START: GDBusProxyFlags = 4;
-pub const G_DBUS_PROXY_FLAGS_GET_INVALIDATED_PROPERTIES: GDBusProxyFlags = 8;
-pub extern fn g_dbus_proxy_new(?*GDBusConnection, GDBusProxyFlags, [*c]GDBusInterfaceInfo, [*c]const gchar, [*c]const gchar, [*c]const gchar, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
-pub extern fn g_dbus_proxy_new_finish(?*GAsyncResult, [*c][*c]GError) [*c]GDBusProxy;
 pub extern fn g_dbus_proxy_get_cached_property([*c]GDBusProxy, [*c]const gchar) ?*GVariant;
-pub extern fn g_dbus_proxy_get_name_owner([*c]GDBusProxy) [*c]gchar;
-pub extern fn g_dbus_proxy_get_connection([*c]GDBusProxy) ?*GDBusConnection;
 pub extern fn g_variant_get_type_string(?*GVariant) [*c]const gchar;
 pub extern fn g_variant_get_double(?*GVariant) f64;
-pub extern fn g_variant_get_int64(?*GVariant) gint64;
-
 pub extern fn g_variant_get_uint64(?*GVariant) u64;
 pub extern fn g_variant_print(?*GVariant, gboolean) [*c]gchar;
 pub extern fn g_variant_parse(?*const GVariantType, [*c]const gchar, [*c]const gchar, [*c][*c]const gchar, [*c][*c]GError) ?*GVariant;
@@ -2477,40 +2108,11 @@ pub extern fn gdk_pixbuf_get_n_channels(?*const GdkPixbuf) c_int;
 pub extern fn g_variant_new_fixed_array(?*const GVariantType, gconstpointer, gsize, gsize) ?*GVariant;
 pub extern fn g_markup_escape_text([*c]const gchar, gssize) [*c]gchar;
 // File chooser dialogs run in the native portal process.
-pub const GtkFileChooser = opaque {};
-pub const GtkFileFilter = opaque {};
-pub const GtkFileChooserAction = c_uint;
-pub const GTK_FILE_CHOOSER_ACTION_OPEN: GtkFileChooserAction = 0;
-pub const GTK_FILE_CHOOSER_ACTION_SAVE: GtkFileChooserAction = 1;
-pub const GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER: GtkFileChooserAction = 2;
-pub extern fn gtk_file_chooser_dialog_new([*c]const gchar, [*c]GtkWindow, GtkFileChooserAction, [*c]const gchar, ...) [*c]GtkWidget;
-pub extern fn gtk_file_chooser_set_select_multiple(?*GtkFileChooser, gboolean) void;
-pub extern fn gtk_file_chooser_get_select_multiple(?*GtkFileChooser) gboolean;
-pub extern fn gtk_file_chooser_get_action(?*GtkFileChooser) GtkFileChooserAction;
-pub extern fn gtk_file_chooser_set_do_overwrite_confirmation(?*GtkFileChooser, gboolean) void;
-pub extern fn gtk_file_chooser_set_local_only(?*GtkFileChooser, gboolean) void;
-pub extern fn gtk_file_chooser_set_current_folder(?*GtkFileChooser, [*c]const gchar) gboolean;
-pub extern fn gtk_file_chooser_get_current_folder(?*GtkFileChooser) [*c]gchar;
-pub extern fn gtk_file_chooser_set_current_name(?*GtkFileChooser, [*c]const gchar) void;
-pub extern fn gtk_file_chooser_set_filename(?*GtkFileChooser, [*c]const gchar) gboolean;
-pub extern fn gtk_file_chooser_select_filename(?*GtkFileChooser, [*c]const gchar) gboolean;
-pub extern fn gtk_file_chooser_get_uris(?*GtkFileChooser) [*c]GSList;
-pub extern fn gtk_file_chooser_set_extra_widget(?*GtkFileChooser, [*c]GtkWidget) void;
-pub extern fn gtk_file_chooser_add_filter(?*GtkFileChooser, ?*GtkFileFilter) void;
-pub extern fn gtk_file_chooser_set_filter(?*GtkFileChooser, ?*GtkFileFilter) void;
-pub extern fn gtk_file_chooser_get_filter(?*GtkFileChooser) ?*GtkFileFilter;
-pub extern fn gtk_file_filter_new_from_gvariant(?*GVariant) ?*GtkFileFilter;
-pub extern fn gtk_file_filter_to_gvariant(?*GtkFileFilter) ?*GVariant;
-pub extern fn gtk_file_filter_get_name(?*GtkFileFilter) [*c]const gchar;
-pub extern fn g_slist_free([*c]GSList) void;
 pub extern fn g_variant_equal(gconstpointer, gconstpointer) gboolean;
-pub extern fn g_file_new_for_uri([*c]const gchar) ?*GFile;
 pub extern fn g_file_get_child(?*GFile, [*c]const gchar) ?*GFile;
 pub extern fn g_file_query_exists(?*GFile, [*c]GCancellable) gboolean;
 pub extern fn gdk_wayland_display_get_type() GType;
 pub extern fn gdk_wayland_window_set_transient_for_exported(?*GdkWindow, [*c]gchar) gboolean;
-pub extern fn gdk_window_set_transient_for(?*GdkWindow, ?*GdkWindow) void;
-pub extern fn gtk_file_chooser_select_all(?*GtkFileChooser) void;
 pub const GtkPrintUnixDialog = opaque {};
 pub const GtkPrintSettings = opaque {};
 pub const GtkPageSetup = opaque {};
@@ -2551,7 +2153,6 @@ pub extern fn g_idle_add(GSourceFunc, gpointer) guint;
 pub extern fn g_get_user_name() [*c]const gchar;
 pub extern fn g_get_real_name() [*c]const gchar;
 pub extern fn g_strcompress([*c]const gchar) [*c]gchar;
-pub extern fn g_app_launch_context_new() ?*GAppLaunchContext;
 pub extern fn g_app_launch_context_setenv(?*GAppLaunchContext, [*c]const gchar, [*c]const gchar) void;
 pub extern fn g_app_launch_context_get_type() GType;
 pub extern fn g_unix_fd_list_get_length(?*GUnixFDList) gint;

@@ -21,7 +21,7 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True, type=Path)
-parser.add_argument("--style", required=True, type=Path)
+parser.add_argument("--style", type=Path)
 parser.add_argument("--loader-cache", type=Path)
 parser.add_argument("--dbus-config", type=Path)
 args = parser.parse_args()
@@ -167,7 +167,7 @@ try:
     wait_for(lambda: "OSD focus fixture" in (root / "focus.log").read_text())
     time.sleep(0.2)
     server = start(
-        [str(args.binary), "serve", str(args.style)],
+        [str(args.binary), "serve"],
         "osd.log",
         {"G_DEBUG": "fatal-criticals", "WAYLAND_DEBUG": "1"},
     )

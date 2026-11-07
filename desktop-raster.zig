@@ -8,7 +8,21 @@ pub const Buffer = struct {
 };
 
 pub const Point = struct { x: f64, y: f64 };
-pub const Color = struct { red: f64, green: f64, blue: f64, alpha: f64 = 1 };
+pub const Color = struct {
+    red: f64,
+    green: f64,
+    blue: f64,
+    alpha: f64 = 1,
+
+    pub fn rgb(value: u32, alpha: f64) Color {
+        return .{
+            .red = @as(f64, @floatFromInt((value >> 16) & 255)) / 255,
+            .green = @as(f64, @floatFromInt((value >> 8) & 255)) / 255,
+            .blue = @as(f64, @floatFromInt(value & 255)) / 255,
+            .alpha = alpha,
+        };
+    }
+};
 pub const Region = struct { x: i32, y: i32, width: u32, height: u32 };
 
 /// Composite a premultiplied ARGB source over a premultiplied destination.
@@ -70,7 +84,22 @@ test "rectangle replacement clears holes while masks clip and blend alpha" {
     mask(target, .{ .x = 20, .y = 20, .width = 1, .height = 1 }, &.{255}, .{ .red = 1, .green = 0, .blue = 0 });
     try std.testing.expectEqual(@as(u32, 0x12345678), pixels[7]);
 }
-pub const Rect = struct { x: f64, y: f64, width: f64, height: f64 };
+pub const Rect = struct {
+    x: f64 = 0,
+    y: f64 = 0,
+    width: f64 = 0,
+    height: f64 = 0,
+
+    pub fn contains(self: Rect, x: f64, y: f64) bool {
+        return x >= self.x and y >= self.y and x < self.x + self.width and y < self.y + self.height;
+    }
+    pub fn shape(self: Rect, radius: f64) Shape {
+        return .{ .rounded_rect = .{ .rect = self, .radius = radius } };
+    }
+    pub fn stroke(self: Rect, radius: f64, width: f64) Shape {
+        return .{ .rounded_stroke = .{ .rect = self, .radius = radius, .width = width } };
+    }
+};
 pub const Shape = union(enum) {
     rounded: Rect,
     rounded_rect: struct { rect: Rect, radius: f64 },

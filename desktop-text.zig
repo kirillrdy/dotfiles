@@ -62,7 +62,19 @@ pub const Mask = struct {
     pub fn deinit(self: Mask, allocator: std.mem.Allocator) void {
         allocator.free(self.pixels);
     }
+    pub fn paint(self: Mask, canvas: @import("desktop-raster.zig").Canvas, x: f64, y: f64, color: @import("desktop-raster.zig").Color) void {
+        @import("desktop-raster.zig").mask(canvas.target, .{
+            .x = @as(i32, @intFromFloat((x + canvas.origin.x) * canvas.scale)) + self.left,
+            .y = @as(i32, @intFromFloat((y + canvas.origin.y) * canvas.scale)) + self.top,
+            .width = self.width,
+            .height = self.height,
+        }, self.pixels, color);
+    }
 };
+
+pub fn paintMask(canvas: @import("desktop-raster.zig").Canvas, value: ?Mask, x: f64, y: f64, color: @import("desktop-raster.zig").Color) void {
+    if (value) |mask| mask.paint(canvas, x, y, color);
+}
 
 pub const Renderer = struct {
     context: ?*api.PangoContext = null,

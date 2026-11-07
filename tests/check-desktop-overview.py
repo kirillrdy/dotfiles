@@ -165,10 +165,8 @@ def main():
             panel_config.write_text(
                 '{"left":[],"center":[{"kind":"clock","name":"gnome-clock"}],"right":[]}'
             )
-            panel_style = root / "panel.css"
-            panel_style.write_text("window#desktop-panel { background: black; }")
             overview = start(
-                session_command(binary, root, args.wallpaper, panel_config, panel_style),
+                session_command(binary, root, args.wallpaper, panel_config),
                 "overview", WAYLAND_DEBUG="client",
             )
             wait_ready(binary, env, overview)

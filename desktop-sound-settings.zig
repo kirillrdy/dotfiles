@@ -229,15 +229,7 @@ pub const Sound = struct {
         }
         try self.view.prepare(a, scale);
         const height: u32 = @intCast(@max(@as(c_int, @intCast(self.view.height())), c.gtk_widget_get_allocated_height(self.canvas)));
-        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width * scale), @intCast(height * scale));
-        defer c.cairo_surface_destroy(image);
-        if (c.cairo_surface_status(image) != 0) return error.ImageAllocation;
-        const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
-        self.view.paint(.{ .pixels = pixels[0 .. width * height * scale * scale], .width = width * scale, .height = height * scale });
-        c.cairo_surface_mark_dirty(image);
-        c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-        c.cairo_set_source_surface(cr, image, 0, 0);
-        c.cairo_paint(cr);
+        try c.__zig.paintCairo(cr, width, height, scale, &self.view, native.View.paint);
     }
     fn focus(self: *Sound) void {
         if (self.view.focus) |target| {

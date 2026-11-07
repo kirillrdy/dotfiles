@@ -13,62 +13,10 @@ pub const Theme = struct {
     button: raster.Color = .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.15 },
     hover: raster.Color = .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.25 },
     pressed: raster.Color = .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.3 },
-
-    pub fn load(provider: *c.GtkCssProvider) Theme {
-        // Resolve the existing selectors without constructing any widgets.
-        const root = context(provider, null, c.gtk_window_get_type(), "window", "notification-banner");
-        defer c.g_object_unref(root);
-        const card = context(provider, root, c.gtk_box_get_type(), "box", "desktop-notification");
-        defer c.g_object_unref(card);
-        const header = context(provider, card, c.gtk_box_get_type(), "box", "notification-header");
-        defer c.g_object_unref(header);
-        const button = context(provider, card, c.gtk_button_get_type(), "button", "notification-action");
-        defer c.g_object_unref(button);
-        var result: Theme = .{};
-        var color: c.GdkRGBA = .{};
-        c.gtk_style_context_get_background_color(card, 0, &color);
-        if (color.alpha > 0) result.background = rgba(color);
-        c.gtk_style_context_get_color(card, 0, &color);
-        result.foreground = rgba(color);
-        c.gtk_style_context_get_color(header, 0, &color);
-        result.secondary = rgba(color);
-        inline for (.{ "button", "hover", "pressed" }, .{ @as(c_uint, 0), c.GTK_STATE_FLAG_PRELIGHT, c.GTK_STATE_FLAG_ACTIVE }) |field, state| {
-            c.gtk_style_context_get_background_color(button, state, &color);
-            if (color.alpha > 0) @field(result, field) = rgba(color);
-        }
-        return result;
-    }
 };
-fn rgba(color: c.GdkRGBA) raster.Color {
-    return .{ .red = color.red, .green = color.green, .blue = color.blue, .alpha = color.alpha };
-}
-fn context(provider: *c.GtkCssProvider, parent: ?*c.GtkStyleContext, kind: c.GType, name: [:0]const u8, class: [:0]const u8) *c.GtkStyleContext {
-    const path = if (parent) |p| c.gtk_widget_path_copy(c.gtk_style_context_get_path(p)) else c.gtk_widget_path_new();
-    defer c.gtk_widget_path_unref(path);
-    const index = c.gtk_widget_path_append_type(path, kind);
-    c.gtk_widget_path_iter_set_object_name(path, index, name);
-    c.gtk_widget_path_iter_add_class(path, index, class);
-    const result = c.gtk_style_context_new();
-    c.gtk_style_context_set_path(result, path);
-    c.gtk_style_context_set_parent(result, parent);
-    c.gtk_style_context_add_class(result, class);
-    c.gtk_style_context_add_provider(result, @ptrCast(provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    return result;
-}
 
 pub const Target = enum { none, card, close, expand, action0, action1, action2 };
-pub const Rect = struct {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    fn contains(self: Rect, x: f64, y: f64) bool {
-        return x >= self.x and y >= self.y and x < self.x + self.width and y < self.y + self.height;
-    }
-    fn shape(self: Rect, radius: f64) raster.Shape {
-        return .{ .rounded_rect = .{ .rect = .{ .x = self.x, .y = self.y, .width = self.width, .height = self.height }, .radius = radius } };
-    }
-};
+pub const Rect = raster.Rect;
 
 pub const View = struct {
     notice: data.Data,
@@ -250,19 +198,19 @@ pub const View = struct {
                 .{ .line = .{ .start = .{ .x = rect.x + 14, .y = tip }, .end = .{ .x = rect.x + 18, .y = y }, .radius = 1 } },
             }, self.theme.foreground);
         }
-        if (self.icon) |icon| image(canvas, icon, .{ .x = 21, .y = 24, .width = 16, .height = 16 });
-        paintMask(canvas, self.masks[0], 43, 22, self.theme.secondary);
-        paintMask(canvas, self.masks[6], self.age_x, 25, self.theme.secondary);
+        if (self.icon) |icon| c.__zig.blitPixbuf(canvas, icon, .{ .x = 21, .y = 24, .width = 16, .height = 16 });
+        text.paintMask(canvas, self.masks[0], 43, 22, self.theme.secondary);
+        text.paintMask(canvas, self.masks[6], self.age_x, 25, self.theme.secondary);
         const x: f64 = if (self.notice.image != null) 81 else 21;
-        paintMask(canvas, self.masks[1], x, 55, self.theme.foreground);
-        paintMask(canvas, self.masks[2], x, 78, self.theme.foreground);
-        if (self.notice.image) |pixbuf| image(canvas, pixbuf, .{ .x = 21, .y = 55, .width = 48, .height = 48 });
+        text.paintMask(canvas, self.masks[1], x, 55, self.theme.foreground);
+        text.paintMask(canvas, self.masks[2], x, 78, self.theme.foreground);
+        if (self.notice.image) |pixbuf| c.__zig.blitPixbuf(canvas, pixbuf, .{ .x = 21, .y = 55, .width = 48, .height = 48 });
         if (self.expanded) for (0..self.action_count) |i| {
             const rect = self.actionRect(i);
             self.button(canvas, rect, @fromBackingInt(@intCast(@backingInt(Target.action0) + i)), 8);
             const mask = self.masks[3 + i];
             const width: f64 = if (mask) |m| @as(f64, @floatFromInt(m.width)) / canvas.scale else 0;
-            paintMask(canvas, mask, rect.x + (rect.width - width) / 2, rect.y + 6, self.theme.foreground);
+            text.paintMask(canvas, mask, rect.x + (rect.width - width) / 2, rect.y + 6, self.theme.foreground);
         };
     }
     fn button(self: *const View, canvas: raster.Canvas, rect: Rect, target: Target, radius: f64) void {
@@ -314,38 +262,6 @@ fn shadowMask(width: u32, height: u32, scale: u32) ![]u8 {
     };
     return result;
 }
-fn paintMask(canvas: raster.Canvas, value: ?text.Mask, x: f64, y: f64, color: raster.Color) void {
-    const mask = value orelse return;
-    raster.mask(canvas.target, .{ .x = @as(i32, @intFromFloat(x * canvas.scale)) + mask.left, .y = @as(i32, @intFromFloat(y * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color);
-}
-
-test "native banner colors resolve the existing stylesheet selectors and button states" {
-    c.gtk_init(null, null);
-    const provider = c.gtk_css_provider_new().?;
-    defer c.g_object_unref(provider);
-    try std.testing.expect(c.gtk_css_provider_load_from_data(provider,
-        \\window.notification-banner .desktop-notification { background: #54545a; color: #fff; }
-        \\.desktop-notification .notification-header { color: #b2b2b4; }
-        \\.desktop-notification button { background: rgba(255,255,255,0.15); }
-        \\.desktop-notification button:hover { background: rgba(255,255,255,0.25); }
-        \\.desktop-notification button:active { background: rgba(255,255,255,0.3); }
-    , -1, null) != 0);
-    const theme = Theme.load(provider);
-    try std.testing.expectApproxEqAbs(@as(f64, 84.0 / 255.0), theme.background.red, 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f64, 178.0 / 255.0), theme.secondary.red, 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.15), theme.button.alpha, 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.25), theme.hover.alpha, 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.3), theme.pressed.alpha, 0.0001);
-}
-fn image(canvas: raster.Canvas, pixbuf: *c.GdkPixbuf, rect: Rect) void {
-    const width: u32 = @intCast(c.gdk_pixbuf_get_width(pixbuf));
-    const height: u32 = @intCast(c.gdk_pixbuf_get_height(pixbuf));
-    const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(pixbuf));
-    const channels: u32 = @intCast(c.gdk_pixbuf_get_n_channels(pixbuf));
-    const source: raster.Image = .{ .pixels = c.gdk_pixbuf_get_pixels(pixbuf)[0 .. (height - 1) * stride + width * channels], .width = width, .height = height, .stride = stride, .format = if (channels == 4) .rgba else .rgb };
-    raster.blit(canvas.target, source, .{ .x = rect.x * canvas.scale, .y = rect.y * canvas.scale, .width = rect.width * canvas.scale, .height = rect.height * canvas.scale }, null) catch |err| std.log.warn("notification image: {s}", .{@errorName(err)});
-}
-
 test "native notification expansion wraps markup and keeps action hit regions inside the card at both scales" {
     c.gtk_init(null, null);
     const actions = [_]data.Action{ .{ .key = "default", .label = "Open" }, .{ .key = "reply", .label = "Reply" }, .{ .key = "archive", .label = "Archive" } };

@@ -58,6 +58,28 @@ pub fn unref_module(m: *Module) callconv(.c) void {
     m.codex.deinit();
     module_allocator.destroy(m);
 }
+var style_loaded = false;
+pub fn ensureStyle() void {
+    if (style_loaded) return;
+    const screen = c.gdk_screen_get_default() orelse return;
+    const provider = c.gtk_css_provider_new().?;
+    defer c.g_object_unref(provider);
+    const rules =
+        \\window#desktop-panel { background: #000; color: #fff; }
+        \\.gnome-panel-module, .gnome-panel-module * { border: none; border-radius: 0; min-height: 0; padding: 0; margin: 0; }
+        \\popover.gnome-calendar, popover.gnome-calendar.background, popover.gnome-calendar > contents,
+        \\popover.gnome-codex-menu, popover.gnome-codex-menu.background, popover.gnome-codex-menu > contents,
+        \\popover.gnome-power-menu, popover.gnome-power-menu.background, popover.gnome-power-menu > contents {
+        \\  background: transparent; background-image: none; border: none; border-radius: 0; padding: 0; margin: 0; box-shadow: none;
+        \\}
+        \\tooltip, tooltip.background {
+        \\  background: #36363a; color: #fff; border: 1px solid rgba(255,255,255,0.15); border-radius: 12px;
+        \\}
+    ;
+    _ = c.gtk_css_provider_load_from_data(provider, rules, rules.len, null);
+    c.gtk_style_context_add_provider_for_screen(screen, cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    style_loaded = true;
+}
 pub fn css(widget: [*c]c.GtkWidget, name: [*c]const u8) callconv(.c) void {
     c.gtk_style_context_add_class(c.gtk_widget_get_style_context(widget), name);
 }
@@ -454,6 +476,7 @@ fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) c
     unref_module(m);
 }
 pub fn init(root: *c.GtkWidget, options: Options) *Module {
+    ensureStyle();
     const m = module_allocator.create(Module) catch @panic("out of memory");
     m.* = .{};
     m.cancel = c.g_cancellable_new();
@@ -579,25 +602,15 @@ fn draw_codex(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c
 }
 fn paint(widget: *c.GtkWidget, cr: *c.cairo_t, m: *Module, codex: bool) !void {
     const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
-    const logical_width = @max(1, c.gtk_widget_get_allocated_width(widget));
-    const logical_height = @max(1, c.gtk_widget_get_allocated_height(widget));
+    const logical_width: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)));
+    const logical_height: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)));
     if (codex) {
         try m.codex.prepare(scale);
+        try c.__zig.paintCairo(cr, logical_width, logical_height, scale, &m.codex, native.Codex.paint);
     } else {
         try m.view.prepare(scale, @floatFromInt(logical_height));
+        try c.__zig.paintCairo(cr, logical_width, logical_height, scale, &m.view, native.View.paint);
     }
-    const width = @as(u32, @intCast(logical_width)) * scale;
-    const height = @as(u32, @intCast(logical_height)) * scale;
-    const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height));
-    defer c.cairo_surface_destroy(image);
-    if (c.cairo_surface_status(image) != 0) return error.ImageAllocation;
-    const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
-    const buffer = @import("desktop-raster.zig").Buffer{ .pixels = pixels[0 .. width * height], .width = width, .height = height };
-    if (codex) m.codex.paint(buffer) else m.view.paint(buffer);
-    c.cairo_surface_mark_dirty(image);
-    c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-    c.cairo_set_source_surface(cr, image, 0, 0);
-    c.cairo_paint(cr);
 }
 fn panel_motion(_: *c.GtkWidget, event: *c.GdkEventMotion, ptr: c.gpointer) callconv(.c) c.gboolean {
     const m = cast(Module, ptr);
@@ -728,23 +741,16 @@ fn query_tooltip(_: *c.GtkWidget, x: c_int, y: c_int, keyboard: c.gboolean, tool
     c.gtk_widget_queue_draw(m.tip_canvas);
     return 1;
 }
+fn paintTooltip(m: *Module, buffer: @import("desktop-raster.zig").Buffer) void {
+    @memset(buffer.pixels, 0);
+    m.tip.paint(buffer, 8, 8, .{ .red = 1, .green = 1, .blue = 1 });
+}
 fn draw_tooltip(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
     const m = cast(Module, ptr);
     const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
     const limit = m.tip.limit;
     m.tip.prepare(&m.view.renderer, scale, 13.333, false, limit, false) catch return 1;
-    const width = @as(u32, @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)))) * scale;
-    const height = @as(u32, @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)))) * scale;
-    const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height));
-    defer c.cairo_surface_destroy(image);
-    if (c.cairo_surface_status(image) != 0) return 1;
-    const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
-    @memset(pixels[0 .. width * height], 0);
-    m.tip.paint(.{ .pixels = pixels[0 .. width * height], .width = width, .height = height }, 8, 8, .{ .red = 1, .green = 1, .blue = 1 });
-    c.cairo_surface_mark_dirty(image);
-    c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-    c.cairo_set_source_surface(cr, image, 0, 0);
-    c.cairo_paint(cr);
+    c.__zig.paintCairo(cr, @intCast(@max(1, c.gtk_widget_get_allocated_width(widget))), @intCast(@max(1, c.gtk_widget_get_allocated_height(widget))), scale, m, paintTooltip) catch {};
     return 1;
 }
 

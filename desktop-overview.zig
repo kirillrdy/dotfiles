@@ -174,7 +174,7 @@ const Overview = struct {
         c.gtk_widget_queue_draw(self.dash);
         c.gtk_widget_hide(@ptrCast(self.launcher.message));
         if (self.client == null or !self.client.?.connected) {
-            self.launcher.setMessage("The Activities overview requires the updated Labwc compositor. Log out and back in after switching the configuration.");
+            self.launcher.setMessage("The Activities overview requires the updated desktop compositor. Log out and back in after switching the configuration.");
         }
     }
     fn rebuildDash(self: *Overview) void {

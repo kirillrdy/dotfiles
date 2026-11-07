@@ -473,20 +473,15 @@ fn owned(_: ?*c.GDBusConnection, _: [*c]const u8, data: c.gpointer) callconv(.c)
 pub const Service = struct {
     server: Server,
     node: *c.GDBusNodeInfo,
-    provider: *c.GtkCssProvider,
     owner: c.guint = 0,
 
-    pub fn create(style: [:0]const u8) !*Service {
+    pub fn create() !*Service {
         const self = try allocator.create(Service);
         errdefer allocator.destroy(self);
-        const provider = c.gtk_css_provider_new().?;
-        errdefer c.g_object_unref(provider);
-        if (c.gtk_css_provider_load_from_path(provider, style, null) == 0) return error.InvalidStyle;
         const node = c.g_dbus_node_info_new_for_xml(xml, null) orelse return error.InvalidInterface;
         errdefer c.g_dbus_node_info_unref(node);
-        self.* = .{ .server = .{ .node = node, .theme = banner.Theme.load(provider) }, .node = node, .provider = provider };
+        self.* = .{ .server = .{ .node = node }, .node = node };
         try self.server.start();
-        c.gtk_style_context_add_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
         self.owner = c.g_bus_own_name(c.G_BUS_TYPE_SESSION, name, c.G_BUS_NAME_OWNER_FLAGS_NONE, &acquired, &owned, &serviceLost, &self.server, null);
         return self;
     }
@@ -499,8 +494,6 @@ pub const Service = struct {
         c.g_bus_unown_name(self.owner);
         self.server.deinit();
         c.g_dbus_node_info_unref(self.node);
-        c.gtk_style_context_remove_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, self.provider));
-        c.g_object_unref(self.provider);
         allocator.destroy(self);
     }
 };

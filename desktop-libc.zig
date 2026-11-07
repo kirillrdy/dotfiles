@@ -44,8 +44,6 @@ pub extern fn pipe2(__pipedes: [*c]c_int, __flags: c_int) c_int;
 
 pub extern fn geteuid() __uid_t;
 
-pub extern fn isatty(__fd: c_int) c_int;
-
 pub extern fn unlink(__name: [*c]const u8) c_int;
 
 pub extern fn fsync(__fd: c_int) c_int;
@@ -84,8 +82,6 @@ pub extern fn snprintf(noalias __s: [*c]u8, __maxlen: usize, noalias __format: [
 
 pub extern fn flock(fd: c_int, operation: c_int) c_int;
 
-pub const WNOHANG: c_int = @intCast(std.c.W.NOHANG);
-
 pub const O_RDONLY: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{}))));
 
 pub const O_WRONLY: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{ .ACCMODE = .WRONLY }))));
@@ -110,11 +106,8 @@ pub const __sighandler_t = ?*const fn (c_int) callconv(.c) void;
 
 pub extern fn signal(__sig: c_int, __handler: __sighandler_t) __sighandler_t;
 
-pub const cc_t = u8;
-
 pub const speed_t = c_uint;
 
-pub const tcflag_t = c_uint;
 const union_unnamed_32 = extern union {
     __ispeed: speed_t,
     c_ispeed: speed_t,
@@ -123,23 +116,6 @@ const union_unnamed_33 = extern union {
     __ospeed: speed_t,
     c_ospeed: speed_t,
 };
-
-pub const struct_termios = extern struct {
-    c_iflag: tcflag_t = 0,
-    c_oflag: tcflag_t = 0,
-    c_cflag: tcflag_t = 0,
-    c_lflag: tcflag_t = 0,
-    c_line: cc_t = 0,
-    c_cc: [32]cc_t = @import("std").mem.zeroes([32]cc_t),
-    unnamed_0: union_unnamed_32 = @import("std").mem.zeroes(union_unnamed_32),
-    unnamed_1: union_unnamed_33 = @import("std").mem.zeroes(union_unnamed_33),
-};
-
-pub extern fn tcgetattr(__fd: c_int, __termios_p: [*c]struct_termios) c_int;
-
-pub extern fn tcsetattr(__fd: c_int, __optional_actions: c_int, __termios_p: [*c]const struct_termios) c_int;
-
-pub extern fn cfmakeraw(__termios_p: [*c]struct_termios) void;
 
 pub const nfds_t = c_ulong;
 
@@ -210,12 +186,6 @@ pub const SIGINT: c_int = @intCast(@backingInt(std.posix.SIG.INT));
 pub const SIGTERM: c_int = @intCast(@backingInt(std.posix.SIG.TERM));
 
 pub const SIGHUP: c_int = @intCast(@backingInt(std.posix.SIG.HUP));
-
-pub const ISIG = @as(c_int, 0o000001);
-
-pub const TCSAFLUSH = @as(c_int, 2);
-
-pub const POLLIN: c_int = @intCast(std.c.POLL.IN);
 
 pub const AF_UNIX: c_int = @intCast(std.c.AF.UNIX);
 

@@ -39,7 +39,7 @@ const Session = struct {
     fn start(self: *Session, args: []const []const u8) !void {
         if (self.stopping) return error.SessionStopping;
         if (self.serving) return error.AlreadyRunning;
-        if (args.len != 1 and args.len != 5) return error.InvalidServeArguments;
+        if (args.len != 1 and args.len != 2 and args.len != 5) return error.InvalidServeArguments;
         if (layer.is_supported() == 0) return error.LayerShellUnavailable;
         if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
         self.image = try a.dupeSentinel(u8, args[0], 0);
@@ -47,14 +47,11 @@ const Session = struct {
         var temporary = std.heap.ArenaAllocator.init(a);
         defer temporary.deinit();
         const alloc = temporary.allocator();
-        const config = try alloc.dupeSentinel(u8, if (args.len == 5) args[1] else "/etc/xdg/desktop-panel/config.json", 0);
-        const panel_style = try alloc.dupeSentinel(u8, if (args.len == 5) args[2] else "/etc/xdg/desktop-panel/style.css", 0);
-        const notice_style = try alloc.dupeSentinel(u8, if (args.len == 5) args[3] else "/etc/xdg/desktop-notifications/style.css", 0);
-        const osd_style = try alloc.dupeSentinel(u8, if (args.len == 5) args[4] else "/etc/xdg/desktop-osd/style.css", 0);
+        const config = try alloc.dupeSentinel(u8, if (args.len > 1) args[1] else "/etc/xdg/desktop-panel/config.json", 0);
         self.background = try wallpaper.Service.create(self.image.?);
-        self.panels = try panel.Service.create(config, panel_style);
-        self.notices = try notifications.Service.create(notice_style);
-        try self.media.start(osd_style);
+        self.panels = try panel.Service.create(config);
+        self.notices = try notifications.Service.create();
+        try self.media.start();
         self.media.connection = c.g_application_get_dbus_connection(@ptrCast(self.app));
         self.agent = polkit.Service.init() catch |err| blk: {
             std.log.warn("PolicyKit agent: {s}; will retry", .{@errorName(err)});
@@ -180,7 +177,7 @@ pub fn main(init: std.process.Init) !void {
         return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig serve WALLPAPER [PANEL_CONFIG PANEL_STYLE NOTIFICATIONS_STYLE OSD_STYLE]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | askpass|power|screenshot [ARGS...]\n", .{});
+        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig serve WALLPAPER [PANEL_CONFIG]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;
         return;
     }
@@ -274,7 +271,7 @@ pub const battery_monitor = @import("desktop-battery-monitor.zig");
 pub const backlight = @import("desktop-backlight.zig");
 pub const protocols = @import("desktop-protocols.zig");
 pub const quick = @import("desktop-quick-settings.zig");
-pub const panel_data = @import("waybar-panel.zig");
+pub const panel_data = @import("desktop-panel-data.zig");
 pub const askpass = @import("desktop-askpass.zig");
 pub const screenshot = @import("desktop-screenshot.zig");
 pub const output = @import("desktop-output.zig");

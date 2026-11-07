@@ -89,8 +89,8 @@ pub const Server = struct {
     hide_timer: c.guint = 0,
     feedback_player: audio.Feedback = .{},
 
-    pub fn start(self: *Server, style: [*:0]const u8) !void {
-        self.theme = try view.Theme.load(style);
+    pub fn start(self: *Server) !void {
+        self.theme = .{};
         self.client = try native.Client.create(.{ .added = &added, .removed = &removed, .changed = &changed }, self);
         errdefer {
             for (self.overlays.items) |overlay| overlay.destroy();

@@ -14,7 +14,6 @@ import zlib
 from gi.repository import Gio, GLib
 
 bin_dir = Path(sys.argv[1]).resolve()
-style = Path(sys.argv[2]).resolve()
 root = Path(tempfile.mkdtemp(prefix="desktop-notifications-check-", dir="/tmp"))
 print(f"Notification artifacts: {root}", flush=True)
 bus = Gio.bus_get_sync(Gio.BusType.SESSION)
@@ -116,7 +115,7 @@ def card_bottom(rows):
 
 log = root / "service.log"
 with log.open("w") as output:
-    service = sp.Popen([str(bin_dir / "desktop-notifications-fixture"), str(style)],
+    service = sp.Popen([str(bin_dir / "desktop-notifications-fixture")],
                        stdout=output, stderr=sp.STDOUT, env=dict(os.environ, WAYLAND_DEBUG="client", G_DEBUG="fatal-criticals"))
 pointer = sp.Popen([str(bin_dir / "desktop-pointer-fixture")], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
 scaled = False

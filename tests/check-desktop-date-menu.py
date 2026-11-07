@@ -12,7 +12,6 @@ import zlib
 from gi.repository import Gio, GLib
 
 bin_dir = Path(sys.argv[1]).resolve()
-style = Path(sys.argv[2]).resolve()
 root = Path(tempfile.mkdtemp(prefix="desktop-date-menu-check-", dir="/tmp"))
 print(f"Date menu artifacts: {root}", flush=True)
 bus = Gio.bus_get_sync(Gio.BusType.SESSION)
@@ -130,7 +129,7 @@ log = root / "service.log"
 keyboard = sp.Popen(["wtype", "-s", "120000"])
 time.sleep(.1)
 with log.open("w") as output:
-    service = sp.Popen([str(bin_dir / "desktop-notifications-fixture"), str(style), "date-menu"],
+    service = sp.Popen([str(bin_dir / "desktop-notifications-fixture"), "date-menu"],
         stdout=output, stderr=sp.STDOUT, env=dict(os.environ, G_DEBUG="fatal-criticals"))
 pointer = sp.Popen([str(bin_dir / "desktop-pointer-fixture")], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
 try:

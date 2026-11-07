@@ -179,23 +179,19 @@ pub const View = struct {
             if (hover or pressed or focused or checked) rounded(canvas, rect, 16, if (pressed) (if (focused) @as(u32, 0x505359) else @as(u32, 0x4e4e52)) else if (hover) (if (checked) @as(u32, 0x5c5c61) else if (focused) @as(u32, 0x4c4f55) else @as(u32, 0x49494d)) else if (checked) 0x4b4b4f else 0x3b3e43);
             if (focused) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = rect.x + 1, .y = rect.y + 1, .width = rect.width - 2, .height = rect.height - 2 }, .radius = 15, .width = 2 } }}, color(0x769dcc));
             if (item.pixels) |image| {
-                const width: u32 = @intCast(c.gdk_pixbuf_get_width(image));
-                const height: u32 = @intCast(c.gdk_pixbuf_get_height(image));
-                const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(image));
-                const channels: usize = @intCast(c.gdk_pixbuf_get_n_channels(image));
-                const pixels = c.gdk_pixbuf_get_pixels(image);
+                const source = c.__zig.pixbufImage(image);
                 const size: f64 = @floatFromInt(self.layout.icon_size);
-                const ratio = @as(f64, @floatFromInt(width)) / @as(f64, @floatFromInt(height));
+                const ratio = @as(f64, @floatFromInt(source.width)) / @as(f64, @floatFromInt(source.height));
                 const w = if (ratio > 1) size else size * ratio;
                 const h = if (ratio > 1) size / ratio else size;
-                try raster.blit(target, .{ .pixels = pixels[0 .. stride * (height - 1) + width * channels], .width = width, .height = height, .stride = stride, .format = if (channels == 4) .rgba else .rgb }, .{ .x = (rect.x + (rect.width - w) / 2) * factor, .y = (rect.y + (rect.height - h) / 2) * factor, .width = w * factor, .height = h * factor }, null);
+                try raster.blit(target, source, .{ .x = (rect.x + (rect.width - w) / 2) * factor, .y = (rect.y + (rect.height - h) / 2) * factor, .width = w * factor, .height = h * factor }, null);
             }
             if (item.window_id != null) canvas.draw(&.{.{ .circle = .{ .center = .{ .x = rect.x + rect.width / 2 - 0.5, .y = rect.y + rect.height - 2.5 }, .radius = 2.5 } }}, color(0xfafafb));
         }
     }
 };
 fn rounded(canvas: raster.Canvas, rect: Rect, radius: f64, rgb: u32) void {
-    canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height }, .radius = radius } }}, color(rgb));
+    canvas.draw(&.{rect.shape(radius)}, color(rgb));
 }
 
 test "dash matches measured GNOME 50 allocation and adapts to crowded monitors" {

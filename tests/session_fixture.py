@@ -5,7 +5,7 @@ import subprocess
 import time
 
 
-def command(binary, root, wallpaper=None, panel_config=None, panel_style=None):
+def command(binary, root, wallpaper=None, panel_config=None):
     root = Path(root)
     if wallpaper is None:
         wallpaper = root / "session-wallpaper.ppm"
@@ -13,10 +13,7 @@ def command(binary, root, wallpaper=None, panel_config=None, panel_style=None):
     if panel_config is None:
         panel_config = root / "session-panel.json"
         panel_config.write_text(json.dumps({"left": [], "center": [], "right": []}))
-    style = root / "session-style.css"
-    style.write_text("window { color: white; }\n")
-    return [str(binary), "serve", str(wallpaper), str(panel_config),
-            str(panel_style or style), str(style), str(style)]
+    return [str(binary), "serve", str(wallpaper), str(panel_config)]
 
 
 def wait_ready(binary, env, process):

@@ -6,12 +6,12 @@ const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const input = @import("desktop-password-entry.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.c_allocator;
-pub const Rect = @import("desktop-askpass-view.zig").Rect;
+pub const Rect = raster.Rect;
 pub fn color(rgb: u32) raster.Color {
-    return .{ .red = @as(f64, @floatFromInt((rgb >> 16) & 255)) / 255, .green = @as(f64, @floatFromInt((rgb >> 8) & 255)) / 255, .blue = @as(f64, @floatFromInt(rgb & 255)) / 255 };
+    return raster.Color.rgb(rgb, 1);
 }
 fn rounded(canvas: raster.Canvas, rect: Rect, radius: f64, rgb: u32) void {
-    canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height }, .radius = radius } }}, color(rgb));
+    canvas.draw(&.{rect.shape(radius)}, color(rgb));
 }
 pub const Grid = struct {
     width: f64,
@@ -103,15 +103,11 @@ pub const Tile = struct {
         if (focused) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = rect.x + 1, .y = rect.y + 1, .width = rect.width - 2, .height = rect.height - 2 }, .radius = 23, .width = 2 } }}, color(0x719ed2));
         const icon_size: f64 = @floatFromInt(size);
         if (self.pixbuf) |image| {
-            const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(image));
-            const width: u32 = @intCast(c.gdk_pixbuf_get_width(image));
-            const height: u32 = @intCast(c.gdk_pixbuf_get_height(image));
-            const channels: usize = @intCast(c.gdk_pixbuf_get_n_channels(image));
-            const data = c.gdk_pixbuf_get_pixels(image);
-            const aspect = @as(f64, @floatFromInt(width)) / @as(f64, @floatFromInt(height));
+            const source = c.__zig.pixbufImage(image);
+            const aspect = @as(f64, @floatFromInt(source.width)) / @as(f64, @floatFromInt(source.height));
             const iw = if (aspect > 1) icon_size else icon_size * aspect;
             const ih = if (aspect > 1) icon_size / aspect else icon_size;
-            try raster.blit(canvas.target, .{ .pixels = data[0 .. stride * (height - 1) + width * channels], .width = width, .height = height, .stride = stride, .format = if (channels == 4) .rgba else .rgb }, .{ .x = (rect.x + (rect.width - iw) / 2) * canvas.scale, .y = (rect.y + 12 + (icon_size - ih) / 2) * canvas.scale, .width = iw * canvas.scale, .height = ih * canvas.scale }, null);
+            try raster.blit(canvas.target, source, .{ .x = (rect.x + (rect.width - iw) / 2) * canvas.scale, .y = (rect.y + 12 + (icon_size - ih) / 2) * canvas.scale, .width = iw * canvas.scale, .height = ih * canvas.scale }, null);
         }
         drawMask(canvas, self.mask.?, rect.x + 12, rect.y + 12 + icon_size + 6, 0xfafafb);
     }
@@ -140,12 +136,7 @@ pub const Search = struct {
     }
     fn paintIcon(image: ?*c.GdkPixbuf, canvas: raster.Canvas, x: f64, y: f64) !void {
         const pixbuf = image orelse return;
-        const width: u32 = @intCast(c.gdk_pixbuf_get_width(pixbuf));
-        const height: u32 = @intCast(c.gdk_pixbuf_get_height(pixbuf));
-        const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(pixbuf));
-        const channels: usize = @intCast(c.gdk_pixbuf_get_n_channels(pixbuf));
-        const data = c.gdk_pixbuf_get_pixels(pixbuf);
-        try raster.blit(canvas.target, .{ .pixels = data[0 .. stride * (height - 1) + width * channels], .width = width, .height = height, .stride = stride, .format = if (channels == 4) .rgba else .rgb }, .{ .x = x * canvas.scale, .y = y * canvas.scale, .width = 16 * canvas.scale, .height = 16 * canvas.scale }, null);
+        try raster.blit(canvas.target, c.__zig.pixbufImage(pixbuf), .{ .x = x * canvas.scale, .y = y * canvas.scale, .width = 16 * canvas.scale, .height = 16 * canvas.scale }, null);
     }
 };
 pub fn paintPages(canvas: raster.Canvas, grid: Grid, page: usize, count: usize) void {

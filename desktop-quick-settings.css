@@ -1,8 +1,0 @@
-/* GTK hosts the popup; desktop-quick-settings-view.zig draws its contents. */
-.gnome-power-menu {
-  background: transparent; border: none; padding: 0; margin: 0; box-shadow: none;
-}
-.gnome-power-menu .quick-native-host,
-.gnome-power-menu .quick-native-host viewport {
-  background: transparent; border: none; padding: 0; margin: 0; box-shadow: none;
-}

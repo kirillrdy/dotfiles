@@ -90,14 +90,6 @@ pub fn main(process_init: std.process.Init) !void {
         }
     }
     c.g_object_set(c.gtk_settings_get_default(), "gtk-enable-animations", @as(c_int, 0), @as(?*anyopaque, null));
-    if (args.len > 1) {
-        const provider = c.gtk_css_provider_new();
-        var err: [*c]c.GError = null;
-        _ = c.gtk_css_provider_load_from_path(provider, args[1], &err);
-        assert(err == null);
-        c.gtk_style_context_add_provider_for_screen(c.gdk_screen_get_default(), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_USER);
-        c.g_object_unref(provider);
-    }
     const executable = try process_init.arena.allocator().dupeSentinel(u8, args[0], 0);
     _ = c.g_setenv("DESKTOP_POWER_PKEXEC", executable.ptr, 1);
     _ = c.g_setenv("DESKTOP_POWER_HELPER", "--power-fixture", 1);
@@ -113,15 +105,13 @@ pub fn main(process_init: std.process.Init) !void {
     p.update_line(status, "{\"items\":[{\"icon\":\"network-wired-symbolic\",\"tooltip\":\"Wired network\"}]}");
     // Collector tooltips must not overwrite the quick-settings connection name.
     assert(status.quick.?.view.model.network_title.len == 0);
-    if (args.len > 1) {
-        c.gtk_widget_show_all(status_window);
-        pumpEvents(50);
-        // The panel's CSS reset cannot alter the native tile geometry.
-        var border: c.GtkBorder = undefined;
-        c.gtk_style_context_get_border(c.gtk_widget_get_style_context(status_root), c.GTK_STATE_FLAG_NORMAL, &border);
-        assert(border.top == 0 and border.left == 0);
-        assert(status.quick.?.view.item(.wifi).?.rect.height == 48);
-    }
+    c.gtk_widget_show_all(status_window);
+    pumpEvents(50);
+    // The panel's CSS reset cannot alter the native tile geometry.
+    var border: c.GtkBorder = undefined;
+    c.gtk_style_context_get_border(c.gtk_widget_get_style_context(status_root), c.GTK_STATE_FLAG_NORMAL, &border);
+    assert(border.top == 0 and border.left == 0);
+    assert(status.quick.?.view.item(.wifi).?.rect.height == 48);
     const controls = status.quick.?;
     p.apply_power_state(status, .{});
     assert(std.mem.eql(u8, controls.view.model.message.slice(), "Power profiles unavailable"));

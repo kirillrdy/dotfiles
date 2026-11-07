@@ -28,10 +28,9 @@ parser.add_argument(
 parser.add_argument(
     "--config", required=True, type=Path, help="Generated panel JSON configuration"
 )
-parser.add_argument("--style", required=True, type=Path, help="Panel stylesheet")
+parser.add_argument("--style", type=Path, help="Panel stylesheet")
 args = parser.parse_args()
 args.bin = args.bin.resolve()
-args.style = args.style.resolve()
 for tool in ("desktop-zig", "wlr-randr", "wtype", "grim"):
     if shutil.which(tool) is None:
         parser.error(f"Missing executable: {tool}")
@@ -189,7 +188,7 @@ try:
     config["left"].append(config["right"].pop(0))
     (root / "panel.json").write_text(json.dumps(config))
     panel = start(
-        session_command(args.bin / "desktop-zig", root, panel_config=root / "panel.json", panel_style=args.style),
+        session_command(args.bin / "desktop-zig", root, panel_config=root / "panel.json"),
         "panel.log",
         {"WAYLAND_DEBUG": "1", "G_DEBUG": "fatal-criticals"},
     )

@@ -41,11 +41,11 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
-    if (args.len != 2 and args.len != 3) return error.ExpectedStylesheet;
+    if (args.len > 3) return error.InvalidArguments;
     c.gtk_init(null, null);
-    const service = try desktop.notifications.Service.create(args[1]);
+    const service = try desktop.notifications.Service.create();
     defer service.destroy();
     const signal = c.g_unix_signal_add(15, &quit, null);
     defer _ = c.g_source_remove(signal);
-    if (args.len == 3 and std.mem.eql(u8, args[2], "date-menu")) runDateMenu() else c.gtk_main();
+    if (args.len > 1 and std.mem.eql(u8, args[args.len - 1], "date-menu")) runDateMenu() else c.gtk_main();
 }

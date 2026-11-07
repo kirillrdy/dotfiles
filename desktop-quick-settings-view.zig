@@ -75,18 +75,7 @@ pub const Model = struct {
     dnd_sensitive: bool = false,
     session_busy: bool = false,
 };
-pub const Rect = struct {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    pub fn contains(self: Rect, x: f64, y: f64) bool {
-        return x >= self.x and y >= self.y and x < self.x + self.width and y < self.y + self.height;
-    }
-    fn shape(self: Rect, radius: f64) raster.Shape {
-        return .{ .rounded_rect = .{ .rect = .{ .x = self.x, .y = self.y, .width = self.width, .height = self.height }, .radius = radius } };
-    }
-};
+pub const Rect = raster.Rect;
 const Item = struct {
     target: Target,
     rect: Rect,
@@ -149,15 +138,7 @@ const Icon = struct {
         var white: c.GdkRGBA = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 };
         const pixbuf = c.gtk_icon_info_load_symbolic(info, &white, null, null, null, null, null) orelse return;
         defer c.g_object_unref(pixbuf);
-        self.width = @intCast(c.gdk_pixbuf_get_width(pixbuf));
-        self.height = @intCast(c.gdk_pixbuf_get_height(pixbuf));
-        self.pixels = try allocator.alloc(u8, self.width * self.height);
-        const source = c.gdk_pixbuf_get_pixels(pixbuf);
-        const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(pixbuf));
-        const channels: usize = @intCast(c.gdk_pixbuf_get_n_channels(pixbuf));
-        for (0..self.height) |y| for (0..self.width) |x| {
-            self.pixels.?[y * self.width + x] = if (channels == 4) source[y * stride + x * channels + 3] else 255;
-        };
+        self.pixels = try c.__zig.pixbufAlphaMask(allocator, pixbuf, &self.width, &self.height);
     }
 };
 
@@ -405,11 +386,9 @@ fn paintButton(canvas: raster.Canvas, rect: Rect, radius: f64, cap: Cap, color: 
 }
 pub const profile_names = [_][:0]const u8{ "Performance", "Balanced", "Power Saver" };
 pub const profile_icons = [_][:0]const u8{ "power-profile-performance-symbolic", "power-profile-balanced-symbolic", "power-profile-power-saver-symbolic" };
-fn rgb(value: u32, alpha: f64) raster.Color {
-    return .{ .red = @as(f64, @floatFromInt((value >> 16) & 255)) / 255, .green = @as(f64, @floatFromInt((value >> 8) & 255)) / 255, .blue = @as(f64, @floatFromInt(value & 255)) / 255, .alpha = alpha };
-}
+const rgb = raster.Color.rgb;
 fn paintMask(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64, color: raster.Color) void {
-    raster.mask(canvas.target, .{ .x = @as(i32, @intFromFloat(x * canvas.scale)) + mask.left, .y = @as(i32, @intFromFloat(y * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color);
+    mask.paint(canvas, x, y, color);
 }
 
 test "quick-settings layout keeps hit regions separate and omits unavailable devices" {

@@ -427,7 +427,7 @@ pub const View = struct {
     }
     fn paintLabel(self: *const View, canvas: raster.Canvas, index: usize, x: f64, y: f64, tint: u32) void {
         const value = self.masks[index] orelse return;
-        raster.mask(canvas.target, .{ .x = @as(i32, @intFromFloat(x * canvas.scale)) + value.left, .y = @as(i32, @intFromFloat(y * canvas.scale)) + value.top, .width = value.width, .height = value.height }, value.pixels, color(tint));
+        value.paint(canvas, x, y, color(tint));
     }
 };
 const zero_rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
@@ -438,7 +438,7 @@ fn sameDate(first: ?*c.GDateTime, second: ?*c.GDateTime) bool {
     return first != null and second != null and c.g_date_time_get_year(first) == c.g_date_time_get_year(second) and c.g_date_time_get_day_of_year(first) == c.g_date_time_get_day_of_year(second);
 }
 fn color(value: u32) raster.Color {
-    return .{ .red = @as(f64, @floatFromInt(value >> 16 & 255)) / 255, .green = @as(f64, @floatFromInt(value >> 8 & 255)) / 255, .blue = @as(f64, @floatFromInt(value & 255)) / 255 };
+    return raster.Color.rgb(value, 1);
 }
 fn jsonString(a: std.mem.Allocator, value: ?std.json.Value) ![:0]const u8 {
     if (value) |v| if (v == .string) return a.dupeSentinel(u8, v.string, 0);

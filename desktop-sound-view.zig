@@ -174,10 +174,10 @@ pub const View = struct {
     }
 };
 fn color(rgb: u32) raster.Color {
-    return .{ .red = @as(f64, @floatFromInt((rgb >> 16) & 255)) / 255, .green = @as(f64, @floatFromInt((rgb >> 8) & 255)) / 255, .blue = @as(f64, @floatFromInt(rgb & 255)) / 255 };
+    return raster.Color.rgb(rgb, 1);
 }
 fn drawText(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64, tint: u32) void {
-    raster.mask(canvas.target, .{ .x = @as(i32, @intFromFloat(x * canvas.scale)) + mask.left, .y = @as(i32, @intFromFloat(y * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(tint));
+    mask.paint(canvas, x, y, color(tint));
 }
 
 test "sound controls clamp pointer volume and skip unavailable and default controls" {
