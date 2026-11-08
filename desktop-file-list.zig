@@ -13,9 +13,12 @@ extern fn g_file_info_get_display_name(*Info) [*:0]const u8;
 extern fn g_file_info_get_file_type(*Info) c_uint;
 extern fn g_file_info_get_content_type(*Info) ?[*:0]const u8;
 extern fn g_file_info_get_is_hidden(*Info) c_int;
+extern fn g_file_info_get_size(*Info) i64;
+extern fn g_file_info_get_attribute_uint64(*Info, [*:0]const u8) u64;
 extern fn g_content_type_is_a([*:0]const u8, [*:0]const u8) c_int;
 extern fn g_content_type_from_mime_type([*:0]const u8) ?[*:0]u8;
 extern fn g_pattern_match_simple([*:0]const u8, [*:0]const u8) c_int;
+extern fn g_utf8_collate_key_for_filename([*:0]const u8, isize) [*:0]u8;
 
 pub const Entry = struct {
     name: [:0]const u8,
@@ -24,6 +27,9 @@ pub const Entry = struct {
     directory: bool,
     hidden: bool,
     selected: bool = false,
+    size: u64 = 0,
+    modified: u64 = 0,
+    sort_key: [:0]const u8 = "",
 };
 pub const Rule = struct { mime: bool, pattern: [:0]const u8 };
 pub fn matches(entry: Entry, rules: []const Rule) bool {
@@ -55,7 +61,7 @@ pub const Scan = struct {
         self.* = .{ .allocator = allocator, .arena = .init(allocator), .cancellable = c.g_cancellable_new().?, .context = context, .completed = completed };
         const directory = c.g_file_new_for_path(path).?;
         defer c.g_object_unref(directory);
-        g_file_enumerate_children_async(directory, "standard::name,standard::display-name,standard::type,standard::content-type,standard::is-hidden", 0, 0, self.cancellable, &opened, self);
+        g_file_enumerate_children_async(directory, "standard::name,standard::display-name,standard::type,standard::content-type,standard::is-hidden,standard::size,time::modified", 0, 0, self.cancellable, &opened, self);
         return self;
     }
     pub fn cancel(self: *Scan) void {
@@ -83,6 +89,7 @@ pub const Scan = struct {
     }
     fn less(_: void, left: Entry, right: Entry) bool {
         if (left.directory != right.directory) return left.directory;
+        if (left.sort_key.len > 0 and right.sort_key.len > 0) return std.mem.lessThan(u8, left.sort_key, right.sort_key);
         return std.ascii.lessThanIgnoreCase(left.name, right.name);
     }
     fn received(source: ?*c.GObject, result: ?*c.GAsyncResult, ptr: ?*anyopaque) callconv(.c) void {
@@ -120,7 +127,13 @@ pub const Scan = struct {
                 self.completed(self.context, self, error.OutOfMemory);
                 return;
             } else null;
-            self.entries.append(a, .{ .name = name, .label = label, .content_type = content_type, .directory = g_file_info_get_file_type(info) == 2, .hidden = g_file_info_get_is_hidden(info) != 0 }) catch {
+            const key = g_utf8_collate_key_for_filename(label, -1);
+            defer c.g_free(key);
+            const sort_key = a.dupeSentinel(u8, std.mem.span(key), 0) catch {
+                self.completed(self.context, self, error.OutOfMemory);
+                return;
+            };
+            self.entries.append(a, .{ .name = name, .label = label, .content_type = content_type, .directory = g_file_info_get_file_type(info) == 2, .hidden = g_file_info_get_is_hidden(info) != 0, .size = @intCast(@max(0, g_file_info_get_size(info))), .modified = g_file_info_get_attribute_uint64(info, "time::modified"), .sort_key = sort_key }) catch {
                 self.completed(self.context, self, error.OutOfMemory);
                 return;
             };

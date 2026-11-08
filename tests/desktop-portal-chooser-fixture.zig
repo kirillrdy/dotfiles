@@ -242,7 +242,7 @@ pub fn main(init: std.process.Init) !void {
         const hidden = try std.fmt.allocPrintSentinel(a, "{s}/.hidden.txt", .{root}, 0);
         defer a.free(hidden);
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = hidden, .data = "hidden" });
-        for (0..40) |index| {
+        for (0..600) |index| {
             const path = try std.fmt.allocPrint(a, "{s}/page-{d}.txt", .{ root, index });
             defer a.free(path);
             try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "page" });
@@ -253,16 +253,38 @@ pub fn main(init: std.process.Init) !void {
         defer c.g_variant_unref(options);
         var done: Done = .{};
         defer done.deinit();
-        const dialog = try Dialog.create(a, "OpenFile", "", "Paging fixture", options, &Done.completed, &done);
+        const dialog = try Dialog.create(a, "OpenFile", "", "Scrolling fixture", options, &Done.completed, &done);
         defer dialog.destroy();
         try loaded(dialog);
-        try expect(dialog.ui.get(dialog.next_item).enabled);
-        dialog.ui.activate(dialog.next_item);
-        try expectEqual(@as(usize, 1), dialog.page);
-        try expect(dialog.ui.get(dialog.previous_item).enabled);
+        try expect(dialog.view.count > 600);
+        var second: usize = 0;
+        var tenth: usize = 0;
+        for (dialog.listing.?.entries.items, 0..) |entry, index| {
+            if (std.mem.eql(u8, entry.name, "page-2.txt")) second = index;
+            if (std.mem.eql(u8, entry.name, "page-10.txt")) tenth = index;
+        }
+        try expect(second < tenth);
+        try expect(dialog.rows.items.len <= 512);
+        dialog.scrollBy(100000);
+        try expect(dialog.view.offset > 0);
+        try expect(dialog.rows.items[0].ordinal > 0);
+        try expect(dialog.rows.items.len <= 512);
+        try expect(dialog.ui.shortcut.?(dialog, 0xff57, 0)); // End reveals and selects the last file.
+        try expectEqual(dialog.view.count - 1, dialog.rows.items[dialog.rows.items.len - 1].ordinal);
+        dialog.ui.activate(dialog.view.toggle_view);
+        try expect(!dialog.view.grid and dialog.view.columns == 1);
+        try expectEqual(@as(f64, 52), dialog.ui.get(dialog.rows.items[0].item).bounds.height);
+        dialog.ui.activate(dialog.view.toggle_view);
+        try expect(dialog.view.grid);
+        try expect(dialog.ui.shortcut.?(dialog, 'f', c.GDK_CONTROL_MASK));
+        try dialog.ui.setText(dialog.view.query, "PAGE-599");
+        dialog.ui.changed(dialog, dialog.view.query);
+        try expectEqual(@as(usize, 1), dialog.view.count);
+        try expect(dialog.ui.shortcut.?(dialog, 0xff1b, 0));
+        try expect(dialog.view.count > 600);
         try std.testing.expectError(error.NoSelection, dialog.selectPath(hidden));
-        dialog.ui.activate(dialog.hidden_item);
-        try expectEqual(@as(usize, 0), dialog.page);
+        _ = dialog.ui.shortcut.?(dialog, 'h', c.GDK_CONTROL_MASK);
+        try expectEqual(@as(f64, 0), dialog.view.offset);
         try dialog.selectPath(first);
         try dialog.selectPath(hidden);
         try done.accept(dialog);
@@ -299,5 +321,5 @@ pub fn main(init: std.process.Init) !void {
     }
     // Drain cancelled asynchronous enumeration before the leak assertion.
     for (0..30) |_| pump();
-    std.debug.print("PASS native file dialogs: Unicode, filters, choices, read-only, overwrite consent, multi-save, multiple folders, paging, hidden files, cancelled scans and invalid options\n", .{});
+    std.debug.print("PASS native file dialogs: Unicode, filters, choices, read-only, overwrite consent, multi-save, multiple folders, virtual scrolling, keyboard selection, grid/list, search, hidden files, cancelled scans and invalid options\n", .{});
 }

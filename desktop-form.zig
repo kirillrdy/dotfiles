@@ -19,6 +19,8 @@ pub const Item = struct {
     checked: bool = false,
     entry_hash: u64 = std.hash.Wyhash.hash(0, ""),
     enabled: bool = true,
+    visible: bool = true,
+    clip: ?Rect = null,
     always_enabled: bool = false,
     pinned: bool = false,
     inline_previous: bool = false,
@@ -63,9 +65,14 @@ pub const Form = struct {
     action: *const fn (?*anyopaque, usize) void,
     changed: *const fn (?*anyopaque, usize) void,
     shortcut: ?*const fn (?*anyopaque, u32, u32) bool = null,
+    layout: ?*const fn (*Form) void = null,
+    painter: ?*const fn (*Form, raster.Buffer, u32) anyerror!void = null,
+    scrolled: ?*const fn (?*anyopaque, f64) void = null,
+    double_clicked: ?*const fn (?*anyopaque, usize) void = null,
     focus: ?usize = null,
     hover: ?usize = null,
     pressed: ?usize = null,
+    input_modifiers: u32 = 0,
     expanded: ?usize = null,
     option_cursor: usize = 0,
     width: u32 = 560,
@@ -107,6 +114,7 @@ pub const Form = struct {
         self.connect(canvas, "button-press-event", &press);
         self.connect(canvas, "button-release-event", &release);
         self.connect(canvas, "motion-notify-event", &motion);
+        self.connect(canvas, "scroll-event", &scrollEvent);
         self.connect(canvas, "key-press-event", &key);
         self.connect(canvas, "key-release-event", &keyRelease);
         self.connect(canvas, "focus-in-event", &focusIn);
@@ -288,9 +296,16 @@ pub const Form = struct {
     }
     pub fn active(self: *const Form, id: usize) bool {
         const field = self.items.items[id];
-        return (self.enabled or field.always_enabled) and field.enabled and field.kind != .heading and field.kind != .label and (field.kind != .choice or field.options.items.len != 0);
+        return field.visible and (self.enabled or field.always_enabled) and field.enabled and field.kind != .heading and field.kind != .label and (field.kind != .choice or field.options.items.len != 0);
     }
     pub fn relayout(self: *Form) void {
+        if (self.updating) return;
+        if (self.layout) |layout| {
+            layout(self);
+            self.updateFocus();
+            self.redraw();
+            return;
+        }
         var y: f64 = 76;
         var pinned_buttons: usize = 0;
         for (self.items.items) |field| {
@@ -338,7 +353,7 @@ pub const Form = struct {
         self.focus = id;
         self.updateFocus();
         const bounds = self.get(id).bounds;
-        if (!self.get(id).pinned) c.gtk_adjustment_clamp_page(c.gtk_scrolled_window_get_vadjustment(cast(c.GtkScrolledWindow, self.scroll)), bounds.y, bounds.y + bounds.height);
+        if (self.layout == null and !self.get(id).pinned) c.gtk_adjustment_clamp_page(c.gtk_scrolled_window_get_vadjustment(cast(c.GtkScrolledWindow, self.scroll)), bounds.y, bounds.y + bounds.height);
         self.redraw();
     }
     fn updateFocus(self: *Form) void {
@@ -347,7 +362,7 @@ pub const Form = struct {
     fn optionHit(self: *const Form, x: f64, y: f64) ?usize {
         const id = self.expanded orelse return null;
         const field = self.items.items[id];
-        const top = field.bounds.y + field.bounds.height + 8;
+        const top = self.optionTop(field);
         if (x < 24 or x >= @as(f64, @floatFromInt(self.width - 24)) or y < top) return null;
         const index: usize = @intFromFloat((y - top) / 36);
         return if (index < field.options.items.len) index else null;
@@ -356,8 +371,16 @@ pub const Form = struct {
         return self.hitSurface(x, y, false);
     }
     fn hitSurface(self: *const Form, x: f64, y: f64, footer: bool) ?usize {
-        for (self.items.items) |field| if (field.pinned == footer and self.active(field.id) and field.bounds.contains(x, y)) return field.id;
+        for (self.items.items) |field| if (field.pinned == footer and self.active(field.id) and field.bounds.contains(x, y)) {
+            if (field.clip) |clip| if (!clip.contains(x, y)) continue;
+            return field.id;
+        };
         return null;
+    }
+    pub fn optionTop(self: *const Form, field: *const Item) f64 {
+        const space: f64 = @floatFromInt(field.options.items.len * 36);
+        if (self.layout != null and field.bounds.y + field.bounds.height + 8 + space > @as(f64, @floatFromInt(self.height))) return @max(46, field.bounds.y - space - 8);
+        return field.bounds.y + field.bounds.height + 8;
     }
     pub fn activate(self: *Form, id: usize) void {
         if (self.closed or !self.active(id)) return;
@@ -388,6 +411,7 @@ pub const Form = struct {
         unreachable;
     }
     pub fn handleKey(self: *Form, symbol: u32, modifiers: c.GdkModifierType) bool {
+        self.input_modifiers = modifiers;
         if (self.closed) return false;
         if (symbol == 0xff1b) {
             if (self.expanded != null) {
@@ -432,8 +456,8 @@ pub const Form = struct {
             } else if (self.expanded == id) {
                 const n = field.options.items.len;
                 self.option_cursor = if (symbol == 0xff52) (self.option_cursor + n - 1) % n else (self.option_cursor + 1) % n;
-                const top = field.bounds.y + field.bounds.height + 8 + @as(f64, @floatFromInt(self.option_cursor * 36));
-                c.gtk_adjustment_clamp_page(c.gtk_scrolled_window_get_vadjustment(cast(c.GtkScrolledWindow, self.scroll)), top, top + 36);
+                const top = self.optionTop(field) + @as(f64, @floatFromInt(self.option_cursor * 36));
+                if (self.layout == null) c.gtk_adjustment_clamp_page(c.gtk_scrolled_window_get_vadjustment(cast(c.GtkScrolledWindow, self.scroll)), top, top + 36);
                 self.redraw();
             } else self.activate(id);
             return true;
@@ -487,6 +511,7 @@ pub const Form = struct {
     fn press(widget: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
         if (event.button != 1) return 0;
         const self = cast(Form, ptr);
+        self.input_modifiers = event.state;
         if (widget != self.footer) if (self.optionHit(event.x, event.y)) |index| {
             self.option_cursor = index;
             self.pressed = self.expanded;
@@ -496,6 +521,11 @@ pub const Form = struct {
             self.expanded = null;
             self.relayout();
             return 0;
+        };
+        if (event.type == 5) if (self.double_clicked) |callback| {
+            self.pressed = null;
+            callback(self.context, id);
+            return 1;
         };
         if (self.expanded != null and self.expanded != id) {
             self.expanded = null;
@@ -538,6 +568,19 @@ pub const Form = struct {
         self.redraw();
         return 1;
     }
+    fn scrollEvent(_: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
+        const self = cast(Form, ptr);
+        const callback = self.scrolled orelse return 0;
+        var direction: c.GdkScrollDirection = 0;
+        var dx: f64 = 0;
+        var dy: f64 = 0;
+        if (c.gdk_event_get_scroll_deltas(event, &dx, &dy) == 0) {
+            _ = c.gdk_event_get_scroll_direction(event, &direction);
+            dy = if (direction == c.GDK_SCROLL_UP) -1 else 1;
+        }
+        callback(self.context, dy * 72);
+        return 1;
+    }
     fn draw(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Form, ptr);
         self.paint(cr, widget == self.footer) catch {};
@@ -575,6 +618,10 @@ pub const Form = struct {
     pub fn paintPixels(self: *Form, target: raster.Buffer, scale: u32, footer: bool) !void {
         const width = target.width / scale;
         self.prepareLayout(width, scale);
+        if (self.painter) |painter| {
+            try painter(self, target, scale);
+            return;
+        }
         @memset(target.pixels, 0xff242428);
         const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(scale) };
         if (self.title_mask == null) self.title_mask = try self.renderer.renderLayout(a, self.title, .{ .font = "Adwaita Sans Bold", .size = 22 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = (width - 48) * scale, .ellipsize = true, .origin = .top });
