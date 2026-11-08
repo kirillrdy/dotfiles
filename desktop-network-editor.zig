@@ -3,6 +3,8 @@ const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const native = @import("desktop-form.zig");
 const network = @import("desktop-network.zig");
+const presentation = @import("desktop-network-editor-view.zig");
+const raster = @import("desktop-raster.zig");
 const g = network.api;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
@@ -154,14 +156,31 @@ pub const Editor = struct {
     property_group: *native.Item,
     property_key: *native.Item,
     property_type: *native.Item,
+    view: presentation.View = .{},
+    presented_fields: std.ArrayList(presentation.Field) = .empty,
     pub fn create(parent: *c.GtkWidget, profile: ?network.Profile) *Editor {
+        return createWithBase(parent, profile, null);
+    }
+    pub fn createWireless(parent: *c.GtkWidget, ap: network.AccessPoint) *Editor {
+        const base = template(ap);
+        defer c.g_variant_unref(base);
+        const self = createWithBase(parent, null, base);
+        self.view.strength = ap.strength;
+        if (ap.security == .enterprise) self.view.page = .security;
+        a.free(self.ui.title);
+        self.ui.title = z(ap.title);
+        c.gtk_window_set_title(cast(c.GtkWindow, self.window), ap.title);
+        self.ui.relayout();
+        return self;
+    }
+    fn createWithBase(parent: *c.GtkWidget, profile: ?network.Profile, initial: ?*c.GVariant) *Editor {
         const self = a.create(Editor) catch @panic("out of memory");
-        const ui = native.Form.create(if (profile != null) "Edit Connection" else "New Connection", self, &action, &fieldChanged) catch @panic("out of memory");
+        const ui = native.Form.create(if (profile) |p| p.title else "New Connection", self, &action, &fieldChanged) catch @panic("out of memory");
         const window = ui.window;
         c.gtk_window_set_transient_for(cast(c.GtkWindow, window), cast(c.GtkWindow, parent));
         c.g_object_set(window, "destroy-with-parent", @as(c_int, 1), @as(?*anyopaque, null));
         self.* = .{ .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = c.g_cancellable_new().?, .path = if (profile) |p| z(p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(&changed, self) catch @panic("out of memory"), .property_group = undefined, .property_key = undefined, .property_type = undefined };
-        const base = if (profile) |p| g.g_variant_ref(p.base).? else template();
+        const base = if (initial) |value| g.g_variant_ref(value).? else if (profile) |p| g.g_variant_ref(p.base).? else template(null);
         defer c.g_variant_unref(base);
         // Known fields first; every other property remains editable below them.
         for (fields) |field| {
@@ -195,11 +214,57 @@ pub const Editor = struct {
         self.property_group = ui.get(ui.add(.entry, "Section", "e.g. ipv4, vlan, 802-1x", false) catch @panic("out of memory"));
         self.property_key = ui.get(ui.add(.entry, "Property", "e.g. mtu, parent, identity", false) catch @panic("out of memory"));
         self.property_type = ui.get(ui.add(.entry, "Value type", "s: text, b: boolean, u: unsigned integer, as: text list", false) catch @panic("out of memory"));
-        _ = ui.add(.button, "Add property", "", false) catch @panic("out of memory");
+        const add_property = ui.add(.button, "Add property", "", false) catch @panic("out of memory");
         self.message = ui.get(ui.addPinned(.label, "") catch @panic("out of memory"));
-        self.save_button = ui.get(ui.addPinned(.button, "Save") catch @panic("out of memory"));
+        self.save_button = ui.get(ui.addPinned(.button, "Apply") catch @panic("out of memory"));
         const cancel_button = ui.get(ui.addPinned(.button, "Cancel") catch @panic("out of memory"));
         cancel_button.always_enabled = true;
+        self.view = .{
+            .page = if (profile != null) .details else .identity,
+            .cancel = cancel_button.id,
+            .apply = self.save_button.id,
+            .message = self.message.id,
+            .property_group = self.property_group.id,
+            .property_key = self.property_key.id,
+            .property_type = self.property_type.id,
+            .add_property = add_property,
+            .connected = if (profile) |p| p.active else false,
+            .kind = ui.add(.choice, "Connection Type", "", false) catch @panic("out of memory"),
+            .ipv4 = ui.add(.choice, "IPv4 Method", "", false) catch @panic("out of memory"),
+            .ipv6 = ui.add(.choice, "IPv6 Method", "", false) catch @panic("out of memory"),
+            .security = ui.add(.choice, "Security", "", false) catch @panic("out of memory"),
+            .dot1x = ui.add(.toggle, "802.1X Authentication", "", false) catch @panic("out of memory"),
+        };
+        for (presentation.titles, &self.view.tabs) |title, *id| {
+            id.* = ui.add(.button, title, "", false) catch @panic("out of memory");
+            ui.get(id.*).always_enabled = true;
+        }
+        ui.setOptions(self.view.kind, &.{
+            .{ .id = "802-3-ethernet", .label = "Ethernet" }, .{ .id = "802-11-wireless", .label = "Wi-Fi" }, .{ .id = "bridge", .label = "Bridge" }, .{ .id = "bond", .label = "Bond" }, .{ .id = "vlan", .label = "VLAN" }, .{ .id = "vpn", .label = "VPN" }, .{ .id = "wireguard", .label = "WireGuard" },
+        }, false) catch @panic("out of memory");
+        ui.setOptions(self.view.ipv4, &.{
+            .{ .id = "auto", .label = "Automatic (DHCP)" }, .{ .id = "manual", .label = "Manual" }, .{ .id = "link-local", .label = "Link-Local Only" }, .{ .id = "shared", .label = "Shared to Other Computers" }, .{ .id = "disabled", .label = "Disabled" },
+        }, false) catch @panic("out of memory");
+        ui.setOptions(self.view.ipv6, &.{
+            .{ .id = "auto", .label = "Automatic" }, .{ .id = "dhcp", .label = "Automatic, DHCP Only" }, .{ .id = "manual", .label = "Manual" }, .{ .id = "link-local", .label = "Link-Local Only" }, .{ .id = "ignore", .label = "Ignore" }, .{ .id = "disabled", .label = "Disabled" },
+        }, false) catch @panic("out of memory");
+        ui.setOptions(self.view.security, &.{
+            .{ .id = "", .label = "None" }, .{ .id = "wpa-psk", .label = "WPA & WPA2 Personal" }, .{ .id = "sae", .label = "WPA3 Personal" }, .{ .id = "wpa-eap", .label = "WPA & WPA2 Enterprise" }, .{ .id = "owe", .label = "Enhanced Open" }, .{ .id = "none", .label = "WEP" },
+        }, false) catch @panic("out of memory");
+        if (profile) |snapshot| for (self.client.state().access_points.items) |ap| if (eq(ap.ssid, snapshot.ssid)) {
+            self.view.strength = ap.strength;
+            break;
+        };
+        self.rebuildPresentation();
+        c.gtk_window_set_default_size(cast(c.GtkWindow, window), 720, 640);
+        c.gtk_window_set_decorated(cast(c.GtkWindow, window), 0);
+        c.gtk_window_set_modal(cast(c.GtkWindow, window), 1);
+        c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, ui.scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_NEVER);
+        c.gtk_widget_add_events(ui.canvas, c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
+        ui.layout = &layout;
+        ui.painter = &paint;
+        ui.scrolled = &scroll;
+        ui.reveal = &reveal;
         _ = c.g_signal_connect_data(window, "destroy", @ptrCast(&destroyed), self, null, 0);
         ui.show();
         return self;
@@ -208,11 +273,46 @@ pub const Editor = struct {
         for (self.rows.items) |*r| if (eq(r.group, group) and eq(r.key, key)) return r;
         return null;
     }
+    fn layout(ui: *native.Form) void {
+        cast(Editor, ui.context).view.layout(ui);
+    }
+    fn paint(ui: *native.Form, target: raster.Buffer, scale: u32) !void {
+        try cast(Editor, ui.context).view.paint(ui, target, scale);
+    }
+    fn scroll(ptr: ?*anyopaque, delta: f64) void {
+        const self = cast(Editor, ptr);
+        self.view.offset = std.math.clamp(self.view.offset + delta, 0, self.view.maxOffset());
+        self.ui.relayout();
+    }
+    fn reveal(ptr: ?*anyopaque, id: usize) void {
+        const self = cast(Editor, ptr);
+        const r = self.ui.get(id).bounds;
+        if (r.y == 6 or r.y == 46) return;
+        if (r.y < 100) self.view.offset = @max(0, self.view.offset + r.y - 100);
+        if (r.y + r.height > self.view.frame.height - 16) self.view.offset += r.y + r.height - self.view.frame.height + 16;
+        self.ui.relayout();
+    }
+    fn rebuildPresentation(self: *Editor) void {
+        self.view.fields = &.{};
+        self.presented_fields.clearRetainingCapacity();
+        for (self.rows.items) |r| self.presented_fields.append(a, .{ .id = r.widget.id, .remove = r.remove.id, .group = r.group, .key = r.key, .page = presentation.section(r.group, r.key) }) catch @panic("out of memory");
+        self.view.fields = self.presented_fields.items;
+        self.ui.get(self.view.dot1x).checked = false;
+        for (self.rows.items) |r| if (eq(r.group, "802-1x") and !r.remove.checked and (r.original != null or r.widget.value().len > 0)) {
+            self.ui.get(self.view.dot1x).checked = true;
+            break;
+        };
+        const kind = if (self.row("connection", "type")) |r| r.widget.value() else "";
+        self.ui.get(self.view.tabs[4]).enabled = eq(kind, "802-11-wireless") or eq(kind, "802-3-ethernet");
+        for ([_]struct { id: usize, group: []const u8, key: []const u8 }{
+            .{ .id = self.view.kind, .group = "connection", .key = "type" }, .{ .id = self.view.ipv4, .group = "ipv4", .key = "method" }, .{ .id = self.view.ipv6, .group = "ipv6", .key = "method" }, .{ .id = self.view.security, .group = "802-11-wireless-security", .key = "key-mgmt" },
+        }) |control| {
+            _ = self.ui.select(control.id, if (self.row(control.group, control.key)) |r| r.widget.value() else "");
+        }
+    }
     fn addRow(self: *Editor, field: Field, original: ?*c.GVariant) void {
         const kind = if (original) |v| std.mem.span(c.g_variant_get_type_string(v)) else field.kind;
-        const caption = std.fmt.allocPrintSentinel(a, "{s} · {s}", .{ field.group, field.title }, 0) catch @panic("out of memory");
-        defer a.free(caption);
-        const widget = self.ui.get(self.ui.add(if (eq(kind, "b")) .toggle else .entry, caption, field.hint, network.secretProperty(field.key) and !std.mem.endsWith(u8, field.key, "-flags")) catch @panic("out of memory"));
+        const widget = self.ui.get(self.ui.add(if (eq(kind, "b")) .toggle else .entry, field.title, field.hint, network.secretProperty(field.key) and !std.mem.endsWith(u8, field.key, "-flags")) catch @panic("out of memory"));
         const default_label = std.fmt.allocPrintSentinel(a, "Use default · {s}", .{field.key}, 0) catch @panic("out of memory");
         defer a.free(default_label);
         const remove = self.ui.get(self.ui.add(.toggle, default_label, "", false) catch @panic("out of memory"));
@@ -293,7 +393,49 @@ pub const Editor = struct {
     fn fieldChanged(ptr: ?*anyopaque, id: usize) void {
         const self = cast(Editor, ptr);
         if (self.closed or self.saving) return;
-        for (self.rows.items) |*r| if (r.widget.id == id and eq(r.kind, "b")) {
+        if (id == self.view.dot1x) {
+            const enabled = self.ui.get(id).checked;
+            if (enabled) for (fields) |field| {
+                if (eq(field.group, "802-1x") and self.row(field.group, field.key) == null) self.addRow(field, null);
+            };
+            if (enabled) if (self.row("802-1x", "eap")) |r| if (r.widget.value().len == 0) self.ui.setText(r.widget.id, "tls") catch {};
+            for (self.rows.items) |*r| if (eq(r.group, "802-1x")) {
+                r.remove.checked = !enabled;
+            };
+            self.rebuildPresentation();
+            self.ui.relayout();
+            return;
+        }
+        if (id == self.view.kind or id == self.view.ipv4 or id == self.view.ipv6 or id == self.view.security) {
+            const value = self.ui.get(id).selectedId() orelse return;
+            // A row may be appended below; retain the selection across form updates.
+            const group: []const u8 = if (id == self.view.kind) "connection" else if (id == self.view.ipv4) "ipv4" else if (id == self.view.ipv6) "ipv6" else "802-11-wireless-security";
+            const key: []const u8 = if (id == self.view.kind) "type" else if (id == self.view.security) "key-mgmt" else "method";
+            if (self.row(group, key) == null) self.addRow(.{ .group = "802-11-wireless-security", .key = "key-mgmt", .title = "Security", .kind = "s" }, null);
+            if (id == self.view.security and value.len == 0) for (self.rows.items) |*r| {
+                if (eq(r.group, "802-11-wireless-security") or eq(r.group, "802-1x")) {
+                    if (r.widget.entry) |entry| if (!entry.echo) entry.clear();
+                    r.remove.checked = true;
+                }
+            };
+            if (id == self.view.security and value.len > 0) {
+                for (fields) |field| {
+                    const personal = eq(value, "wpa-psk") or eq(value, "sae");
+                    const enterprise = eq(value, "wpa-eap");
+                    if (((personal and eq(field.group, "802-11-wireless-security") and eq(field.key, "psk")) or (enterprise and eq(field.group, "802-1x"))) and self.row(field.group, field.key) == null) self.addRow(field, null);
+                }
+                if (eq(value, "none") and self.row("802-11-wireless-security", "wep-key0") == null) self.addRow(.{ .group = "802-11-wireless-security", .key = "wep-key0", .title = "WEP Password", .kind = "s" }, null);
+            }
+            self.setValue(group, key, value) catch {};
+            if (id == self.view.security and value.len == 0) for (self.rows.items) |*r| {
+                if (eq(r.group, "802-11-wireless-security") or eq(r.group, "802-1x")) r.remove.checked = true;
+            };
+            self.view.offset = 0;
+            self.rebuildPresentation();
+            self.ui.relayout();
+            return;
+        }
+        for (self.rows.items) |*r| if (r.widget.id == id) {
             r.remove.checked = false;
         };
         const kind_row = self.row("connection", "type") orelse return;
@@ -301,6 +443,18 @@ pub const Editor = struct {
     }
     fn action(ptr: ?*anyopaque, id: usize) void {
         const self = cast(Editor, ptr);
+        for (self.view.tabs, presentation.pages) |tab, page| if (id == tab) {
+            self.view.page = page;
+            self.view.offset = 0;
+            self.ui.expanded = null;
+            self.ui.focus = null;
+            self.ui.relayout();
+            return;
+        };
+        if (id == self.save_button.id) {
+            self.save();
+            return;
+        }
         const title = self.ui.get(id).title;
         if (eq(title, "Save")) self.save() else if (eq(title, "Cancel")) c.gtk_widget_destroy(self.window) else if (eq(title, "Add property")) self.addProperty();
     }
@@ -317,6 +471,7 @@ pub const Editor = struct {
             const wifi = eq(kind, "802-11-wireless") and (eq(field.group, "802-11-wireless-security") or eq(field.group, "802-1x"));
             if ((eq(field.group, kind) or wifi) and self.row(field.group, field.key) == null) self.addRow(field, null);
         }
+        self.rebuildPresentation();
         self.ui.relayout();
     }
     fn addProperty(self: *Editor) void {
@@ -328,6 +483,7 @@ pub const Editor = struct {
             return;
         }
         self.addRow(.{ .group = group, .key = key, .title = key, .kind = kind }, null);
+        self.rebuildPresentation();
         self.ui.relayout();
     }
     pub fn values(self: *Editor) !*c.GVariant {
@@ -416,24 +572,24 @@ pub const Editor = struct {
         if (self.path) |path| a.free(path);
         for (self.rows.items) |*r| r.deinit();
         self.rows.deinit(a);
+        self.presented_fields.deinit(a);
         self.ui.deinit();
         a.destroy(self);
     }
     fn setMessage(self: *Editor, message: [:0]const u8) void {
         self.ui.setText(self.message.id, message) catch {};
-        self.ui.focusItem(self.message.id);
     }
 };
-fn template() *c.GVariant {
+fn template(ap: ?network.AccessPoint) *c.GVariant {
     const uuid = c.g_uuid_string_random();
     defer c.g_free(uuid);
     const out = builder("a{sa{sv}}");
     defer g.g_variant_builder_unref(out);
     const connection = builder("a{sv}");
     defer g.g_variant_builder_unref(connection);
-    add(connection, "id", c.g_variant_new("s", @as([*:0]const u8, "New connection")).?);
+    add(connection, "id", c.g_variant_new("s", if (ap) |point| point.title.ptr else @as([*:0]const u8, "New connection")).?);
     add(connection, "uuid", c.g_variant_new("s", uuid).?);
-    add(connection, "type", c.g_variant_new("s", @as([*:0]const u8, "802-3-ethernet")).?);
+    add(connection, "type", c.g_variant_new("s", @as([*:0]const u8, if (ap != null) "802-11-wireless" else "802-3-ethernet")).?);
     add(connection, "autoconnect", c.g_variant_new("b", @as(c_int, 1)).?);
     g.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "connection"), g.g_variant_builder_end(connection));
     for ([_][:0]const u8{ "ipv4", "ipv6" }) |group| {
@@ -442,8 +598,35 @@ fn template() *c.GVariant {
         add(inner, "method", c.g_variant_new("s", @as([*:0]const u8, "auto")).?);
         g.g_variant_builder_add(out, "{s@a{sv}}", group.ptr, g.g_variant_builder_end(inner));
     }
-    const ethernet = builder("a{sv}");
-    defer g.g_variant_builder_unref(ethernet);
-    g.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "802-3-ethernet"), g.g_variant_builder_end(ethernet));
+    const device = builder("a{sv}");
+    defer g.g_variant_builder_unref(device);
+    if (ap) |point| {
+        add(device, "ssid", g.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), point.ssid.ptr, point.ssid.len, 1).?);
+        add(device, "mode", c.g_variant_new("s", @as([*:0]const u8, "infrastructure")).?);
+        if (point.security != .open) {
+            const auth = builder("a{sv}");
+            defer g.g_variant_builder_unref(auth);
+            const key: [*:0]const u8 = switch (point.security) {
+                .open => "",
+                .wep => "none",
+                .personal => "wpa-psk",
+                .sae => "sae",
+                .enterprise => "wpa-eap",
+                .owe => "owe",
+            };
+            add(auth, "key-mgmt", c.g_variant_new("s", key).?);
+            g.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "802-11-wireless-security"), g.g_variant_builder_end(auth));
+        }
+        if (point.security == .enterprise) {
+            const enterprise = builder("a{sv}");
+            defer g.g_variant_builder_unref(enterprise);
+            const methods = builder("as");
+            defer g.g_variant_builder_unref(methods);
+            g.g_variant_builder_add(methods, "s", @as([*:0]const u8, "peap"));
+            add(enterprise, "eap", g.g_variant_builder_end(methods).?);
+            g.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "802-1x"), g.g_variant_builder_end(enterprise));
+        }
+    }
+    g.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, if (ap != null) "802-11-wireless" else "802-3-ethernet"), g.g_variant_builder_end(device));
     return g.g_variant_ref_sink(g.g_variant_builder_end(out)).?;
 }

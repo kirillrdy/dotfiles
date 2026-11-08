@@ -165,7 +165,7 @@ pub const State = struct {
 pub fn wifiIcon(strength: u8) [:0]const u8 {
     return if (strength >= 80) "network-wireless-signal-excellent-symbolic" else if (strength >= 55) "network-wireless-signal-good-symbolic" else if (strength >= 30) "network-wireless-signal-ok-symbolic" else "network-wireless-signal-weak-symbolic";
 }
-pub fn deviceState(state: u32) []const u8 {
+pub fn deviceState(state: u32) [:0]const u8 {
     return switch (state) {
         10 => "unmanaged",
         20 => "unavailable",

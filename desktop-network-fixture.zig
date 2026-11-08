@@ -57,6 +57,61 @@ pub fn main(init: std.process.Init) !void {
         try std.Io.File.stdout().writeStreamingAll(init.io, output);
         return;
     }
+    if (std.mem.eql(u8, args[1], "ui-parity")) {
+        c.gtk_init(null, null);
+        const window = settings.Settings.create(.network);
+        settle();
+        try std.testing.expect(window.rows.items.len > 0);
+        try std.testing.expect(!window.manual.visible);
+        window.showPage(.hidden);
+        try std.testing.expect(window.manual.visible);
+        try std.testing.expect(window.hidden.checked);
+        try std.testing.expect(window.ssids.selectedId() == null);
+        window.showPage(.saved);
+        try std.testing.expect(!window.manual.visible);
+        window.showPage(.wifi);
+        const properties = editor.Editor.create(window.window, state.profiles.items[0]);
+        settle();
+        properties.ui.activate(properties.view.tabs[2]);
+        try std.testing.expect(properties.view.page == .ipv4);
+        try std.testing.expect(properties.ui.select(properties.view.ipv4, "manual"));
+        properties.ui.changed(properties.ui.context, properties.view.ipv4);
+        try std.testing.expectEqualStrings("manual", properties.row("ipv4", "method").?.widget.value());
+        try std.testing.expect(properties.row("ipv4", "address-data").?.widget.visible);
+        try properties.setValue("ipv4", "address-data", "192.0.2.15/24");
+        properties.ui.activate(properties.view.tabs[3]);
+        try std.testing.expect(properties.ui.select(properties.view.ipv6, "disabled"));
+        properties.ui.changed(properties.ui.context, properties.view.ipv6);
+        try std.testing.expect(!properties.row("ipv6", "address-data").?.widget.visible);
+        properties.ui.activate(properties.view.tabs[4]);
+        try std.testing.expect(properties.ui.select(properties.view.security, ""));
+        properties.ui.changed(properties.ui.context, properties.view.security);
+        try std.testing.expect(properties.row("802-11-wireless-security", "key-mgmt").?.remove.checked);
+        const values = try properties.values();
+        defer c.g_variant_unref(values);
+        try std.testing.expect(c.g_variant_lookup_value(values, "802-11-wireless-security", null) == null);
+        c.gtk_widget_destroy(properties.window);
+        c.gtk_widget_destroy(window.window);
+        while (window.network_operations != 0) pump();
+        window.destroy();
+        settle();
+        return;
+    }
+    if (std.mem.startsWith(u8, args[1], "preview")) {
+        c.gtk_init(null, null);
+        const window = settings.Settings.create(.network);
+        if (std.mem.eql(u8, args[1], "preview-network")) window.showPage(.network);
+        if (std.mem.startsWith(u8, args[1], "preview-editor")) {
+            const properties = editor.Editor.create(window.window, state.profiles.items[0]);
+            if (std.mem.endsWith(u8, args[1], "ipv4")) properties.view.page = .ipv4;
+            if (std.mem.endsWith(u8, args[1], "security")) properties.view.page = .security;
+            properties.ui.relayout();
+        }
+        while (!window.closed) _ = c.g_main_context_iteration(null, 1);
+        while (window.network_operations != 0) pump();
+        window.destroy();
+        return;
+    }
     if (std.mem.eql(u8, args[1], "edit") or std.mem.eql(u8, args[1], "new") or std.mem.eql(u8, args[1], "edit-secret") or std.mem.eql(u8, args[1], "edit-cancel")) {
         c.gtk_init(null, null);
         const parent = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL).?;

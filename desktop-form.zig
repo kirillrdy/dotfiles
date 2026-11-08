@@ -69,6 +69,7 @@ pub const Form = struct {
     painter: ?*const fn (*Form, raster.Buffer, u32) anyerror!void = null,
     scrolled: ?*const fn (?*anyopaque, f64) void = null,
     double_clicked: ?*const fn (?*anyopaque, usize) void = null,
+    reveal: ?*const fn (?*anyopaque, usize) void = null,
     focus: ?usize = null,
     hover: ?usize = null,
     pressed: ?usize = null,
@@ -354,6 +355,7 @@ pub const Form = struct {
         self.updateFocus();
         const bounds = self.get(id).bounds;
         if (self.layout == null and !self.get(id).pinned) c.gtk_adjustment_clamp_page(c.gtk_scrolled_window_get_vadjustment(cast(c.GtkScrolledWindow, self.scroll)), bounds.y, bounds.y + bounds.height);
+        if (self.reveal) |reveal| reveal(self.context, id);
         self.redraw();
     }
     fn updateFocus(self: *Form) void {
@@ -363,7 +365,9 @@ pub const Form = struct {
         const id = self.expanded orelse return null;
         const field = self.items.items[id];
         const top = self.optionTop(field);
-        if (x < 24 or x >= @as(f64, @floatFromInt(self.width - 24)) or y < top) return null;
+        const left = if (self.layout != null) field.bounds.x else 24;
+        const right = if (self.layout != null) field.bounds.x + field.bounds.width else @as(f64, @floatFromInt(self.width - 24));
+        if (x < left or x >= right or y < top) return null;
         const index: usize = @intFromFloat((y - top) / 36);
         return if (index < field.options.items.len) index else null;
     }

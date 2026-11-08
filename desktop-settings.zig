@@ -7,6 +7,8 @@ const network = @import("desktop-network.zig");
 const editor = @import("desktop-network-editor.zig");
 const native = @import("desktop-form.zig");
 const auth = @import("desktop-auth-dialog.zig");
+const network_view = @import("desktop-network-view.zig");
+const raster = @import("desktop-raster.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
@@ -31,6 +33,10 @@ pub const Settings = struct {
     profiles: *native.Item,
     devices: *native.Item,
     status: *native.Item,
+    view: network_view.View = .{},
+    rows: std.ArrayList(network_view.Row) = .empty,
+    dynamic_start: usize = 0,
+    initial_page: bool = true,
     pub fn create(mode: Mode) *Settings {
         std.debug.assert(mode == .network);
         const self = a.create(Settings) catch @panic("out of memory");
@@ -47,7 +53,7 @@ pub const Settings = struct {
         self.manual = self.add(.entry, "Wi-Fi network name", "Select a network above or enter its name", false);
         self.password = self.add(.entry, "Password", "Leave empty for a saved or open network", true);
         self.hidden = self.add(.toggle, "Hidden network", "", false);
-        _ = self.add(.button, "Connect to Wi-Fi", "", false);
+        const connect_wifi = self.add(.button, "Connect", "", false);
         self.profiles = self.add(.choice, "Saved connections", "", false);
         const activate_profile = self.add(.button, "Connect", "", false);
         const deactivate_profile = self.add(.button, "Disconnect", "", false);
@@ -59,6 +65,35 @@ pub const Settings = struct {
         const new_profile = self.add(.button, "New connection…", "", false);
         ui.pair(edit_profile.id, new_profile.id);
         self.message = ui.get(ui.addPinned(.label, "") catch @panic("out of memory"));
+        self.view = .{
+            .wifi_nav = ui.add(.button, "Wi-Fi", "", false) catch @panic("out of memory"),
+            .network_nav = ui.add(.button, "Network", "", false) catch @panic("out of memory"),
+            .wifi = ui.add(.toggle, "Wi-Fi", "", false) catch @panic("out of memory"),
+            .saved = ui.add(.button, "Saved Networks", "", false) catch @panic("out of memory"),
+            .hidden = ui.add(.button, "Connect to Hidden Network…", "", false) catch @panic("out of memory"),
+            .hotspot = ui.add(.label, "Turn On Wi-Fi Hotspot…", "", false) catch @panic("out of memory"),
+            .back = ui.add(.button, "Back", "", false) catch @panic("out of memory"),
+            .close = ui.add(.button, "Close", "", false) catch @panic("out of memory"),
+            .search = ui.add(.button, "Search Networks", "", false) catch @panic("out of memory"),
+            .query = ui.add(.entry, "Search Networks", "", false) catch @panic("out of memory"),
+            .new_connection = new_profile.id,
+            .manual = self.manual.id,
+            .password = self.password.id,
+            .connect = connect_wifi.id,
+            .refresh = self.refresh_button.id,
+            .message = self.message.id,
+        };
+        for ([_]usize{ self.view.wifi_nav, self.view.network_nav, self.view.back, self.view.close, self.view.search }) |id| ui.get(id).always_enabled = true;
+        self.dynamic_start = ui.items.items.len;
+        c.gtk_window_set_default_size(cast(c.GtkWindow, self.window), 980, 700);
+        c.gtk_window_set_decorated(cast(c.GtkWindow, self.window), 0);
+        c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, ui.scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_NEVER);
+        c.gtk_widget_add_events(ui.canvas, c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
+        ui.layout = &layout;
+        ui.painter = &paint;
+        ui.scrolled = &scroll;
+        ui.shortcut = &shortcut;
+        ui.reveal = &reveal;
         self.network_client = network.Client.create(&networkChanged, self) catch null;
         _ = c.g_signal_connect_data(self.window, "destroy", @ptrCast(&destroyed), self, null, 0);
         ui.show();
@@ -70,17 +105,81 @@ pub const Settings = struct {
     }
     pub fn setMessage(self: *Settings, message: [:0]const u8) void {
         self.ui.setText(self.message.id, message) catch {};
-        if (message.len != 0) self.ui.focusItem(self.message.id);
+    }
+    fn layout(ui: *native.Form) void {
+        cast(Settings, ui.context).view.layout(ui);
+    }
+    fn paint(ui: *native.Form, target: raster.Buffer, scale: u32) !void {
+        try cast(Settings, ui.context).view.paint(ui, target, scale);
+    }
+    fn scroll(ptr: ?*anyopaque, delta: f64) void {
+        const self = cast(Settings, ptr);
+        self.view.offset = std.math.clamp(self.view.offset + delta, 0, self.view.maxOffset());
+        self.ui.relayout();
+    }
+    fn reveal(ptr: ?*anyopaque, id: usize) void {
+        const self = cast(Settings, ptr);
+        const r = self.ui.get(id).bounds;
+        if (r.x < self.view.frame.sidebar or r.y == 6 or id == self.view.close) return;
+        if (r.y < 54) self.view.offset = @max(0, self.view.offset + r.y - 54);
+        if (r.y + r.height > self.view.frame.height - 16) self.view.offset += r.y + r.height - self.view.frame.height + 16;
+        self.ui.relayout();
+    }
+    fn shortcut(ptr: ?*anyopaque, symbol: u32, modifiers: u32) bool {
+        const self = cast(Settings, ptr);
+        if (symbol == 0xffc2) {
+            self.refresh();
+            return true;
+        }
+        if ((symbol == 'f' or symbol == 'F') and modifiers & c.GDK_CONTROL_MASK != 0) {
+            self.showSearch();
+            return true;
+        }
+        if (symbol == 0xff1b) {
+            if (self.view.searching) {
+                self.view.searching = false;
+                self.ui.setText(self.view.query, "") catch {};
+                self.ui.focus = null;
+                self.renderCurrent();
+                return true;
+            }
+            if (self.view.page == .hidden or self.view.page == .saved) {
+                self.showPage(.wifi);
+                return true;
+            }
+        }
+        return false;
+    }
+    fn showSearch(self: *Settings) void {
+        self.view.searching = true;
+        self.ui.relayout();
+        self.ui.focusItem(self.view.query);
+    }
+    pub fn showPage(self: *Settings, page: network_view.Page) void {
+        self.initial_page = false;
+        self.view.page = page;
+        self.view.offset = 0;
+        self.password.entry.?.clear();
+        self.ui.setChecked(self.hidden.id, page == .hidden);
+        if (page == .hidden) _ = self.ui.select(self.ssids.id, null);
+        self.ui.focus = null;
+        self.renderCurrent();
+    }
+    fn renderCurrent(self: *Settings) void {
+        if (self.network_client) |client| self.renderNetwork(client.state()) else self.ui.relayout();
     }
     fn sensitivity(self: *Settings) void {
         const idle = self.network_operations == 0;
         self.refresh_button.enabled = idle;
+        self.view.busy = !idle;
         self.ui.setEnabled(idle and self.network_client != null and self.network_client.?.state().available);
     }
     pub fn destroy(self: *Settings) void {
         std.debug.assert(self.closed and self.network_operations == 0);
         c.g_object_unref(self.audio_cancel);
         self.ui.deinit();
+        self.view.deinit();
+        self.rows.deinit(a);
         a.destroy(self);
     }
     fn destroyed(_: *c.GtkWidget, ptr: c.gpointer) callconv(.c) void {
@@ -124,6 +223,45 @@ pub const Settings = struct {
         self.sensitivity();
     }
     pub fn renderNetwork(self: *Settings, state: *const network.State) void {
+        var focused_path: ?[:0]u8 = null;
+        var focused_part: enum { row, details, remove } = .row;
+        if (self.ui.focus) |id| for (self.rows.items) |row| {
+            if (id != row.item and id != row.details and row.remove != id) continue;
+            focused_path = z(row.key);
+            focused_part = if (id == row.details) .details else if (row.remove == id) .remove else .row;
+            break;
+        };
+        defer if (focused_path) |path| a.free(path);
+        self.view.rows = &.{};
+        self.rows.clearRetainingCapacity();
+        self.ui.updating = true;
+        defer {
+            self.ui.updating = false;
+            self.view.rows = self.rows.items;
+            self.ui.relayout();
+            if (focused_path) |path| for (self.rows.items) |row| if (eq(row.key, path)) {
+                self.ui.focusItem(switch (focused_part) {
+                    .row => row.item,
+                    .details => row.details,
+                    .remove => row.remove orelse row.item,
+                });
+                break;
+            };
+        }
+        self.ui.truncate(self.dynamic_start);
+        self.view.available = state.available;
+        self.view.radio = state.wifi_enabled;
+        self.view.hardware = state.hardware_enabled;
+        self.view.has_wifi = false;
+        for (state.devices.items) |device| if (device.kind == 2) {
+            self.view.has_wifi = true;
+        };
+        if (self.initial_page and state.available and state.devices.items.len > 0) {
+            self.view.page = if (self.view.has_wifi) .wifi else .network;
+            self.initial_page = false;
+        }
+        self.ui.get(self.view.wifi).checked = state.wifi_enabled;
+        self.ui.get(self.view.wifi).enabled = state.hardware_enabled;
         var arena = std.heap.ArenaAllocator.init(a);
         defer arena.deinit();
         const alloc = arena.allocator();
@@ -156,7 +294,69 @@ pub const Settings = struct {
         self.ui.setOptions(self.devices.id, options.items, true) catch @panic("out of memory");
         const status = alloc.dupeSentinel(u8, if (!state.available) "NetworkManager unavailable" else if (summary.items.len == 0) "No network devices available" else summary.items, 0) catch @panic("out of memory");
         self.ui.setText(self.status.id, status) catch {};
+        self.rebuildRows(state);
         self.sensitivity();
+    }
+    fn profilePath(self: *Settings, path: []const u8) ?[:0]const u8 {
+        for (self.profiles.options.items) |option| if (eq(option.id, path)) return option.id;
+        return null;
+    }
+    fn addNetworkRow(self: *Settings, title: [:0]const u8, row: network_view.Row) void {
+        var next = row;
+        next.item = self.ui.add(.button, title, "", false) catch @panic("out of memory");
+        next.details = self.ui.add(.button, "Network Options", "", false) catch @panic("out of memory");
+        if (self.view.page == .saved) next.remove = self.ui.add(.button, "Forget", "", false) catch @panic("out of memory");
+        self.rows.append(a, next) catch @panic("out of memory");
+    }
+    fn rebuildRows(self: *Settings, state: *const network.State) void {
+        const query = self.ui.get(self.view.query).value();
+        if (self.view.page == .wifi and state.available and state.wifi_enabled and state.hardware_enabled) {
+            for (self.ssids.options.items) |option| {
+                const ap = state.ap(option.id) orelse continue;
+                if (!matches(ap.title, query)) continue;
+                var profile: ?[:0]const u8 = null;
+                for (state.profiles.items) |saved| if (eq(saved.ssid, ap.ssid) and eq(saved.kind, "802-11-wireless")) {
+                    profile = self.profilePath(saved.path);
+                    break;
+                };
+                self.addNetworkRow(ap.title, .{ .item = 0, .details = 0, .key = option.id, .profile = profile, .kind = .access_point, .icon = network.wifiIcon(ap.strength), .subtitle = if (ap.connected) "Connected" else "", .connected = ap.connected, .secure = ap.passwordRequired(), .strength = ap.strength });
+            }
+        } else if (self.view.page == .saved) {
+            for (self.profiles.options.items) |option| {
+                const profile = state.profile(option.id) orelse continue;
+                if (!eq(profile.kind, "802-11-wireless")) continue;
+                if (!matches(profile.title, query)) continue;
+                self.addNetworkRow(profile.title, .{ .item = 0, .details = 0, .key = option.id, .profile = option.id, .kind = .profile, .icon = "network-wireless-symbolic", .subtitle = if (profile.active) "Connected" else "", .connected = profile.active });
+            }
+        } else if (self.view.page == .network) {
+            for (self.devices.options.items) |option| for (state.devices.items) |device| if (eq(device.path, option.id) and device.kind != 2) {
+                var profile: ?[:0]const u8 = null;
+                for (state.profiles.items) |saved| if (eq(saved.kind, "802-3-ethernet")) {
+                    profile = self.profilePath(saved.path);
+                    break;
+                };
+                self.addNetworkRow(if (device.kind == 1) "Wired" else device.interface, .{ .item = 0, .details = 0, .key = option.id, .profile = profile, .kind = .device, .icon = "network-wired-symbolic", .subtitle = network.deviceState(device.state), .connected = device.state == 100 });
+            };
+            for (self.profiles.options.items) |option| {
+                const profile = state.profile(option.id) orelse continue;
+                if (eq(profile.kind, "802-11-wireless") or eq(profile.kind, "802-3-ethernet")) continue;
+                self.addNetworkRow(profile.title, .{ .item = 0, .details = 0, .key = option.id, .profile = option.id, .kind = .profile, .icon = "network-vpn-symbolic", .subtitle = if (profile.active) "Connected" else "Not connected", .connected = profile.active });
+            }
+        }
+        if (self.view.page == .wifi or self.view.page == .saved) std.mem.sort(network_view.Row, self.rows.items, self, lessRow);
+    }
+    fn matches(title: [:0]const u8, query: [:0]const u8) bool {
+        if (query.len == 0) return true;
+        const folded_title = c.g_utf8_casefold(title, -1);
+        defer c.g_free(folded_title);
+        const folded_query = c.g_utf8_casefold(query, -1);
+        defer c.g_free(folded_query);
+        return std.mem.indexOf(u8, std.mem.span(folded_title), std.mem.span(folded_query)) != null;
+    }
+    fn lessRow(self: *Settings, left: network_view.Row, right: network_view.Row) bool {
+        if (left.connected != right.connected) return left.connected;
+        if (left.strength != right.strength) return left.strength > right.strength;
+        return std.ascii.lessThanIgnoreCase(self.ui.get(left.item).title, self.ui.get(right.item).title);
     }
     pub fn selectAP(self: *Settings, path: []const u8) bool {
         if (!self.ui.select(self.ssids.id, path)) return false;
@@ -166,6 +366,15 @@ pub const Settings = struct {
     fn fieldChanged(ptr: ?*anyopaque, id: usize) void {
         const self = cast(Settings, ptr);
         if (self.closed) return;
+        if (id == self.view.wifi) {
+            self.networkAction(.{ .wifi = self.ui.get(id).checked });
+            return;
+        }
+        if (id == self.view.query) {
+            self.view.offset = 0;
+            self.renderCurrent();
+            return;
+        }
         if (id == self.manual.id) _ = self.ui.select(self.ssids.id, null);
         if (id == self.ssids.id) {
             const client = self.network_client orelse return;
@@ -216,6 +425,66 @@ pub const Settings = struct {
     }
     fn action(ptr: ?*anyopaque, id: usize) void {
         const self = cast(Settings, ptr);
+        if (id == self.view.close) {
+            c.gtk_widget_destroy(self.window);
+            return;
+        }
+        if (id == self.view.wifi_nav or id == self.view.back) {
+            self.showPage(.wifi);
+            return;
+        }
+        if (id == self.view.network_nav) {
+            self.showPage(.network);
+            return;
+        }
+        if (id == self.view.saved) {
+            self.showPage(.saved);
+            return;
+        }
+        if (id == self.view.hidden) {
+            self.showPage(.hidden);
+            return;
+        }
+        if (id == self.view.search) {
+            self.showSearch();
+            return;
+        }
+        if (id == self.view.connect) {
+            wifiConnect(null, self);
+            return;
+        }
+        for (self.rows.items) |row| {
+            if (id == row.details) {
+                const client = self.network_client orelse return;
+                if (row.profile) |path| {
+                    _ = editor.Editor.create(self.window, client.state().profile(path) orelse return);
+                } else if (row.kind == .access_point) {
+                    self.editAccessPoint(row.key);
+                } else {
+                    _ = editor.Editor.create(self.window, null);
+                }
+                return;
+            }
+            if (row.remove == id) {
+                _ = self.ui.select(self.profiles.id, row.key);
+                self.forget();
+                return;
+            }
+            if (id != row.item) continue;
+            switch (row.kind) {
+                .access_point => if (!row.connected) self.connectAccessPoint(row.key),
+                .profile => {
+                    _ = self.ui.select(self.profiles.id, row.key);
+                    self.profileAction(if (row.connected) .deactivate else .activate);
+                },
+                .device => {
+                    if (row.connected) self.networkAction(.{ .disconnect = row.key }) else if (row.profile) |path| self.networkAction(.{ .activate = path }) else {
+                        _ = editor.Editor.create(self.window, null);
+                    }
+                },
+            }
+            return;
+        }
         const title = self.ui.get(id).title;
         if (eq(title, "Refresh")) self.refresh() else if (eq(title, "Enable Wi-Fi")) self.networkAction(.{ .wifi = true }) else if (eq(title, "Disable Wi-Fi")) self.networkAction(.{ .wifi = false }) else if (eq(title, "Connect to Wi-Fi")) wifiConnect(null, self) else if (eq(title, "Connect")) self.profileAction(.activate) else if (eq(title, "Disconnect")) self.profileAction(.deactivate) else if (eq(title, "Forget…")) self.forget() else if (eq(title, "Disconnect device")) {
             if (self.devices.selectedId()) |key| self.networkAction(.{ .disconnect = key });
@@ -229,6 +498,46 @@ pub const Settings = struct {
             };
             _ = editor.Editor.create(self.window, client.state().profile(key) orelse return);
         }
+    }
+    fn editAccessPoint(self: *Settings, path: [:0]const u8) void {
+        const client = self.network_client orelse return;
+        const ap = client.state().ap(path) orelse return;
+        _ = editor.Editor.createWireless(self.window, ap);
+    }
+    fn connectAccessPoint(self: *Settings, path: [:0]const u8) void {
+        const client = self.network_client orelse return;
+        const ap = client.state().ap(path) orelse return;
+        for (client.state().profiles.items) |profile| if (eq(profile.kind, "802-11-wireless") and eq(profile.ssid, ap.ssid)) {
+            self.networkAction(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path } });
+            return;
+        };
+        if (ap.security == .enterprise) {
+            self.editAccessPoint(path);
+            return;
+        }
+        if (!ap.passwordRequired()) {
+            self.networkAction(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path } });
+            return;
+        }
+        const owned_path = z(path);
+        defer a.free(owned_path);
+        const dialog = auth.Dialog.createWithOptions(.password, ap.title, .{ .title = "Authentication Required", .role = "desktop-network-auth", .accept = "Connect", .cancel = "Cancel", .icon = "network-wireless-symbolic" }) catch return;
+        defer dialog.destroy();
+        c.gtk_window_set_transient_for(cast(c.GtkWindow, dialog.window), cast(c.GtkWindow, self.window));
+        const handler = c.g_signal_connect_data(self.window, "destroy", @ptrCast(&cancelForget), dialog, null, 0);
+        self.network_operations += 1;
+        self.sensitivity();
+        while (true) {
+            dialog.run();
+            if (!dialog.accepted or (dialog.validatePassword() catch false)) break;
+        }
+        c.g_signal_handler_disconnect(self.window, handler);
+        self.network_operations -= 1;
+        if (self.closed) return;
+        self.sensitivity();
+        if (dialog.accepted) if (self.network_client) |current| if (current.state().ap(owned_path)) |point| {
+            self.networkAction(.{ .connect = .{ .ssid = point.ssid, .access_point = point.path, .password = dialog.entry.?.buffer.value() } });
+        };
     }
 };
 

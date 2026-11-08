@@ -37,6 +37,7 @@ def main():
             state = run('state')
             assert state['aps'][0]['title'] == 'Cafe: Tokyo\\5G'
             assert state['aps'][0]['strength'] == 83
+            run('ui-parity')
             watcher = subprocess.Popen([opt.binary, 'events'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
             def event(predicate):
                 deadline = time.monotonic() + 5
