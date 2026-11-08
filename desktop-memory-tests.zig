@@ -183,17 +183,17 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         objects.watch(controls.popover);
         if (controls.interface) |prefs| objects.watch(prefs);
         if (controls.notifications) |prefs| objects.watch(prefs);
-        if (controls.network_client) |client| {
+        if (controls.devices.network_client) |client| {
             objects.watch(client.cancel);
             objects.watch(client.service.cancel);
         }
-        if (controls.battery_service) |service| objects.watch(service.cancel);
+        if (controls.devices.battery_service) |service| objects.watch(service.cancel);
     }
     if (module.calendar != null) objects.watch(module.calendar);
     if (module.codex_menu != null) objects.watch(module.codex_menu);
     // Updating owned strings exercises replacement allocations and final cleanup.
-    widgets.update_line(module, "{\"items\":[{\"icon\":\"audio-volume-high-symbolic\",\"text\":\"old\",\"command\":\"true\"}],\"tooltip\":\"old\"}");
-    widgets.update_line(module, "{\"items\":[{\"text\":\"new\"}],\"tooltip\":\"new\",\"windows\":[]}");
+    widgets.update(module, .{ .items = &.{.{ .icon = "audio-volume-high-symbolic", .text = "old", .command = "true" }}, .tooltip = "old" });
+    widgets.update(module, .{ .items = &.{.{ .text = "new" }}, .tooltip = "new", .windows = &.{} });
     widgets.deinit(module);
     c.gtk_widget_destroy(window);
     try objects.wait(15_000_000);

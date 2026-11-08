@@ -3,14 +3,8 @@ const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 
-fn option(options: *c.GVariant, key: [*:0]const u8, signature: [:0]const u8) !?*c.GVariant {
-    const value = c.g_variant_lookup_value(options, key, null) orelse return null;
-    if (!std.mem.eql(u8, std.mem.span(c.g_variant_get_type_string(value)), signature)) {
-        c.g_variant_unref(value);
-        return error.InvalidEmailOption;
-    }
-    return value;
-}
+const Options = @import("desktop-portal-options.zig").Options(error.InvalidEmailOption);
+const option = Options.get;
 fn text(value: ?*c.GVariant) [:0]const u8 {
     return std.mem.span(c.g_variant_get_string(value, null));
 }

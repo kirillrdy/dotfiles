@@ -50,6 +50,7 @@ pkgs.stdenv.mkDerivation {
       || file.name == "check-desktop-date-menu.py"
       || file.name == "check-desktop-window.py"
       || file.name == "wayland_ui.py"
+      || file.name == "protocol-metadata.py"
     ) ./.;
   };
   nativeBuildInputs = [
@@ -86,7 +87,7 @@ pkgs.stdenv.mkDerivation {
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
     # pkg-config supplies the declared libraries. Zig also turns every -L in
     # NIX_LDFLAGS into an RPATH, including unused propagated dependencies.
-    NIX_LDFLAGS= zig build --prefix "$out" --release=safe
+    NIX_LDFLAGS= zig build --prefix "$out" -Dtest-bin=libexec/desktop-tests --release=safe
     # Executable interfaces required by SSH and the screenshot portal.
     for name in desktop-askpass grim slurp; do
       ln -s desktop-zig "$out/bin/$name"
@@ -122,16 +123,17 @@ pkgs.stdenv.mkDerivation {
     export GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
     export DESKTOP_PANEL_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
     export DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
-    NIX_LDFLAGS= G_DEBUG=fatal-criticals zig build test compositor-fixture window-fixture --prefix "$out" --release=safe --summary all
-    python3 tests/check-desktop-window.py --binary "$out/bin/desktop-window-fixture"
-    python3 tests/check-desktop-compositor.py --bin-dir "$out/bin" --wtype "$(command -v wtype)"
+    NIX_LDFLAGS= G_DEBUG=fatal-criticals zig build test compositor-fixture window-fixture --prefix "$out" -Dtest-bin=libexec/desktop-tests --release=safe --summary all
+    ln -s "$out/bin/desktop-zig" "$out/libexec/desktop-tests/desktop-zig"
+    python3 tests/check-desktop-window.py --binary "$out/libexec/desktop-tests/desktop-window-fixture"
+    python3 tests/check-desktop-compositor.py --bin-dir "$out/libexec/desktop-tests" --wtype "$(command -v wtype)"
     python3 tests/check-desktop-askpass.py --binary "$out/bin/desktop-zig" --wtype "$(command -v wtype)"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
-      python3 tests/check-desktop-command.py "$out/bin/desktop-command-fixture"
+      python3 tests/check-desktop-command.py "$out/libexec/desktop-tests/desktop-command-fixture"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
-      python3 tests/check-desktop-notifications.py "$out/bin"
+      python3 tests/check-desktop-notifications.py "$out/libexec/desktop-tests"
     dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
-      python3 tests/check-desktop-date-menu.py "$out/bin"
+      python3 tests/check-desktop-date-menu.py "$out/libexec/desktop-tests"
     kill "$compositor_pid"
     wait "$compositor_pid" || true
     trap - EXIT
@@ -142,12 +144,9 @@ pkgs.stdenv.mkDerivation {
   '';
   installPhase = ''
     # Keep test programs outside the desktop output.
-    mkdir -p "$tests/bin"
-    for name in desktop-apps-fixture desktop-audio-fixture desktop-battery-fixture desktop-backlight-fixture desktop-lock-fixture desktop-idle-fixture desktop-widgets-fixture desktop-switcher-fixture \
-      desktop-pointer-fixture desktop-compositor-fixture desktop-decoration-fixture desktop-command-fixture desktop-notifications-fixture desktop-window-fixture; do
-      mv "$out/bin/$name" "$tests/bin/$name"
-    done
-    ln -s "$out/bin/desktop-zig" "$tests/bin/desktop-zig"
+    mkdir -p "$tests"
+    mv "$out/libexec/desktop-tests" "$tests/bin"
+    rmdir "$out/libexec"
     mkdir -p "$out/share/dbus-1/services"
     cat > "$out/share/dbus-1/services/org.freedesktop.secrets.service" <<EOF_SECRETS_SERVICE
     [D-BUS Service]

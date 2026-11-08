@@ -1,6 +1,7 @@
 //! GNOME quick-settings geometry with asynchronous controls for the desktop services.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
+const devices = @import("desktop-devices.zig");
 const audio = @import("desktop-audio.zig");
 const battery_backend = @import("desktop-battery.zig");
 const backlight = @import("desktop-backlight.zig");
@@ -40,7 +41,9 @@ pub const Controls = struct {
     profile_context: ?*anyopaque = null,
     profile_selected: ?*const fn (?*anyopaque, usize) void = null,
     battery_service: ?*battery_backend.Service = null,
-    audio_service: ?*audio.Service = null,
+    devices: *devices.Service,
+    owns_devices: bool = false,
+    subscription: devices.Subscriber = undefined,
     network_settings: [:0]u8,
     sound_settings: [:0]u8,
     interface: ?*c.GSettings,
@@ -52,7 +55,6 @@ pub const Controls = struct {
     brightness_busy: bool = false,
     brightness_writing: bool = false,
     brightness_wanted: ?f64 = null,
-    network_client: ?*network_backend.Client = null,
     dead: bool = false,
     refs: usize = 1,
     session_busy: bool = false,
@@ -266,6 +268,9 @@ pub const Controls = struct {
     }
 
     pub fn create(popover: *c.GtkWidget, network_command: [*:0]const u8, sound_command: [*:0]const u8) *Controls {
+        return createWithDevices(popover, network_command, sound_command, null);
+    }
+    pub fn createWithDevices(popover: *c.GtkWidget, network_command: [*:0]const u8, sound_command: [*:0]const u8, shared: ?*devices.Service) *Controls {
         const self = a.create(Controls) catch @panic("out of memory");
         const content = c.gtk_scrolled_window_new(null, null).?;
         css(content, "quick-native-host");
@@ -277,7 +282,7 @@ pub const Controls = struct {
         c.gtk_widget_set_can_focus(canvas, 1);
         c.gtk_widget_add_events(canvas, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_KEY_PRESS_MASK | c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
         c.gtk_container_add(cast(c.GtkContainer, content), canvas);
-        self.* = .{ .popover = popover, .content = content, .canvas = canvas, .network_settings = a.dupeSentinel(u8, std.mem.span(network_command), 0) catch @panic("out of memory"), .sound_settings = a.dupeSentinel(u8, std.mem.span(sound_command), 0) catch @panic("out of memory"), .interface = settings("org.gnome.desktop.interface"), .notifications = settings("org.gnome.desktop.notifications"), .cancel = c.g_cancellable_new().? };
+        self.* = .{ .devices = shared orelse (devices.Service.create() catch @panic("out of memory")), .owns_devices = shared == null, .popover = popover, .content = content, .canvas = canvas, .network_settings = a.dupeSentinel(u8, std.mem.span(network_command), 0) catch @panic("out of memory"), .sound_settings = a.dupeSentinel(u8, std.mem.span(sound_command), 0) catch @panic("out of memory"), .interface = settings("org.gnome.desktop.interface"), .notifications = settings("org.gnome.desktop.notifications"), .cancel = c.g_cancellable_new().? };
         connect(popover, "show", &shown, self);
         connect(popover, "closed", &closed, self);
         connect(canvas, "draw", &draw, self);
@@ -290,9 +295,8 @@ pub const Controls = struct {
         if (self.interface) |prefs| connect(prefs, "changed", &preferencesChanged, self);
         if (self.notifications) |prefs| connect(prefs, "changed", &preferencesChanged, self);
         self.syncPreferences();
-        self.battery_service = battery_backend.Service.create(&batteryChanged, self) catch null;
-        self.audio_service = audio.Service.create(&audioChanged, self) catch null;
-        self.network_client = network_backend.Client.create(&networkChanged, self) catch null;
+        self.subscription = .{ .context = self, .changed = &deviceChanged };
+        self.devices.subscribe(&self.subscription);
         self.timer = c.g_timeout_add_seconds(5, &refreshTimer, self);
         self.redraw();
         c.gtk_widget_show_all(content);
@@ -404,7 +408,7 @@ pub const Controls = struct {
         if (self.dead) return;
         self.syncPreferences();
         self.refreshBrightness();
-        if (self.network_client) |client| self.renderNetwork(client.state());
+        if (self.devices.network_client) |client| self.renderNetwork(client.state());
     }
 
     fn writeVolume(ptr: c.gpointer) callconv(.c) c.gboolean {
@@ -473,13 +477,18 @@ pub const Controls = struct {
             .cancelled => {},
         }
     }
-    fn networkChanged(ptr: ?*anyopaque, client: *network_backend.Client) void {
+    fn deviceChanged(ptr: ?*anyopaque, service: *devices.Service, event: devices.Event) void {
         const self = cast(Controls, ptr);
-        if (!self.dead) self.renderNetwork(client.state());
+        if (self.dead) return;
+        switch (event) {
+            .audio => if (service.audio_service) |backend| audioChanged(self, backend),
+            .network => if (service.network_client) |client| self.renderNetwork(client.state()),
+            .battery => if (self.battery_service == null) batteryChanged(self, service.battery_state),
+        }
     }
     fn networkAction(self: *Controls, action: network_backend.Action) void {
         if (self.dead) return;
-        const client = self.network_client orelse return;
+        const client = self.devices.network_client orelse return;
         self.refs += 1;
         client.perform(action, self.cancel, &networkDone, self);
     }
@@ -541,7 +550,7 @@ pub const Controls = struct {
     }
     fn audioAction(self: *Controls, change: audio.Change) void {
         if (self.dead) return;
-        const service = self.audio_service orelse return;
+        const service = self.devices.audio_service orelse return;
         self.refs += 1;
         service.apply(.output, change, self.cancel, &audioDone, self);
     }
@@ -550,7 +559,7 @@ pub const Controls = struct {
         defer self.release();
         if (self.dead) return;
         switch (result) {
-            .value => if (self.audio_service) |service| audioChanged(self, service),
+            .value => if (self.devices.audio_service) |service| audioChanged(self, service),
             .failure => |err| self.setMessage(@errorName(err)),
         }
     }
@@ -574,7 +583,7 @@ pub const Controls = struct {
     fn connectNetwork(self: *Controls, index: usize) void {
         const path = self.network_paths[index] orelse return;
         const ssid = path.ptr;
-        const client = self.network_client orelse return;
+        const client = self.devices.network_client orelse return;
         const ap = client.state().ap(std.mem.span(ssid)) orelse return;
         if (!ap.passwordRequired()) {
             self.networkAction(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path } });
@@ -608,7 +617,7 @@ pub const Controls = struct {
                 self.closeDialog();
                 return;
             })) return;
-            if (self.network_client) |client| if (client.state().ap(std.mem.span(ssid))) |ap| {
+            if (self.devices.network_client) |client| if (client.state().ap(std.mem.span(ssid))) |ap| {
                 self.networkAction(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = dialog.entry.?.buffer.value() } });
             };
         }
@@ -658,8 +667,8 @@ pub const Controls = struct {
     pub fn deinit(self: *Controls) void {
         self.dead = true;
         if (self.battery_service) |service| service.destroy();
-        if (self.audio_service) |service| service.destroy();
-        if (self.network_client) |client| client.destroy();
+        self.devices.unsubscribe(&self.subscription);
+        if (self.owns_devices) self.devices.destroy();
         _ = c.g_signal_handlers_disconnect_matched(self.popover, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         _ = c.g_signal_handlers_disconnect_matched(self.canvas, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         if (self.dialog) |dialog| dialog.respond(false);

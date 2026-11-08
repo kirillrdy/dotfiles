@@ -110,7 +110,7 @@ pub fn main(init: std.process.Init) !void {
         const controls = quick.Controls.create(popover, "true", "true");
         const ui = settings.Settings.create(.network);
         try std.testing.expect(ui.network_client.?.service == client.service);
-        try std.testing.expect(controls.network_client.?.service == client.service);
+        try std.testing.expect(controls.devices.network_client.?.service == client.service);
         settle();
         try std.testing.expect(ui.ssids.options.items.len > 0);
         try std.testing.expect(ui.selectAP(state.access_points.items[0].path));

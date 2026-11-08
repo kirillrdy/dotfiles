@@ -83,7 +83,7 @@ fn ui(service: *audio.Service) !void {
         sound.destroy();
     }
     var deadline = c.g_get_monotonic_time() + 8_000_000;
-    while ((controls.audio_service == null or controls.audio_service.?.state(.output) == null or sound.view.rows.items.len < 5) and c.g_get_monotonic_time() < deadline) pump();
+    while ((controls.devices.audio_service == null or controls.devices.audio_service.?.state(.output) == null or sound.view.rows.items.len < 5) and c.g_get_monotonic_time() < deadline) pump();
     assert(sound.view.rows.items.len >= 5);
     assert(controls.view.model.volume != null);
     controls.setSlider(.volume, 63);

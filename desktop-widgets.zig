@@ -1,5 +1,6 @@
 //! Panel data and actions, with native pixel views in GTK window hosts.
 const std = @import("std");
+const panel_data = @import("desktop-panel-data.zig");
 const power_backend = @import("desktop-power.zig");
 const quick = @import("desktop-quick-settings.zig");
 pub const date_menu = @import("desktop-date-menu.zig");
@@ -248,13 +249,6 @@ fn history_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpoint
     if (m.history_dirty) history_reload(m);
 }
 
-fn jsonStringZ(a: std.mem.Allocator, val: ?std.json.Value) [:0]const u8 {
-    if (val) |v| {
-        if (v == .string) return a.dupeSentinel(u8, v.string, 0) catch "";
-    }
-    return "";
-}
-
 fn populate_notifications(m: *Module, reply: ?*c.GVariant) void {
     if (reply == null) return;
     defer c.g_variant_unref(reply);
@@ -329,74 +323,41 @@ pub fn make_codex_menu(m: *Module) callconv(.c) void {
     c.gtk_widget_set_size_request(m.codex_canvas, @intCast(m.codex.width), @intCast(m.codex.height));
     c.gtk_widget_show_all(m.codex_canvas);
 }
-pub fn update_codex(m: *Module, o: std.json.Value, a: std.mem.Allocator) void {
-    const windows_val = o.object.get("windows");
-    const windows: ?[]const std.json.Value = if (windows_val) |w| if (w == .array) w.array.items else null else null;
+pub fn update_codex(m: *Module, content: panel_data.Update) void {
     for (0..2) |i| {
-        const window: ?std.json.Value = if (windows) |w| if (i < w.len and w[i] == .object) w[i] else null else null;
-        const percent_val = if (window) |win| win.object.get("percent") else null;
-        var valid = false;
-        var value: f64 = 0;
-        if (percent_val) |p| switch (p) {
-            .float => |f| {
-                value = f;
-                valid = std.math.isFinite(f);
-            },
-            .integer => |iv| {
-                value = @floatFromInt(iv);
-                valid = true;
-            },
-            else => {},
-        };
-        value = if (valid) std.math.clamp(value, 0, 100) else 0;
+        const window: panel_data.Window = if (i < content.windows.len) content.windows[i] else .{};
+        const valid = if (window.percent) |p| std.math.isFinite(p) else false;
+        const value = if (valid) std.math.clamp(window.percent.?, 0, 100) else 0;
         const label = if (valid) c.g_strdup_printf("%.1f%% remaining", value) else c.g_strdup("—");
         m.codex.percent[i].set(std.mem.span(label));
         c.g_free(@as(c.gpointer, @ptrCast(label)));
         m.codex.values[i] = value;
-        const reset_str = if (window) |win| jsonStringZ(a, win.object.get("reset")) else "Resets: —";
-        m.codex.reset[i].set(reset_str);
+        m.codex.reset[i].set(window.reset);
     }
-    const checked_str = jsonStringZ(a, o.object.get("checked"));
-    m.codex.checked.set(if (checked_str.len != 0) checked_str else "Checked: —");
-    m.codex.error_label.set(jsonStringZ(a, o.object.get("error")));
+    m.codex.checked.set(if (content.checked.len != 0) content.checked else "Checked: —");
+    m.codex.error_label.set(content.@"error");
     m.codex.enabled = true;
     resize_codex(m);
 }
-fn update_items(m: *Module, items: []const std.json.Value, arena: std.mem.Allocator) void {
-    const count = @min(items.len, 8);
+fn update_items(m: *Module, items: []const panel_data.Item) void {
     for (&m.view.items, 0..) |*item, i| {
-        item.visible = i < count and items[i] == .object;
+        item.visible = i < items.len;
         if (!item.visible) continue;
         const value = items[i];
-        item.setIcon(jsonStringZ(arena, value.object.get("icon")));
-        item.label.set(jsonStringZ(arena, value.object.get("text")));
-        item.tooltip.set(jsonStringZ(arena, value.object.get("tooltip")));
-        item.command.set(jsonStringZ(arena, value.object.get("command")));
+        item.setIcon(value.icon);
+        item.label.set(value.text);
+        item.tooltip.set(value.tooltip);
+        item.command.set(value.command);
     }
 }
 
-fn update_graph(g: *native.Graph, o: std.json.Value, a: std.mem.Allocator) void {
-    const tooltip = jsonStringZ(a, o.object.get("tooltip"));
-    g.tooltip.set(tooltip);
-    const seq_val = o.object.get("sequence") orelse return;
-    const sequence: i64 = switch (seq_val) {
-        .integer => |v| v,
-        else => return,
-    };
-    if (sequence == g.sequence) return;
-    g.sequence = sequence;
-    const values_val = o.object.get("values") orelse return;
-    if (values_val != .array) return;
-    const values = values_val.array.items;
-    const colors_val = o.object.get("colors");
-    const colors = if (colors_val) |cv| if (cv == .array) cv.array.items else &.{} else &.{};
-    g.series = @intCast(@min(values.len, 5));
+fn update_graph(g: *native.Graph, graph: panel_data.Graph) void {
+    g.tooltip.set(graph.tooltip);
+    if (graph.sequence == g.sequence) return;
+    g.sequence = graph.sequence;
+    g.series = @intCast(@min(graph.values.len, 5));
     if (g.series == 0) return;
-    g.maximum = if (o.object.get("maximum")) |mv| switch (mv) {
-        .float => |f| f,
-        .integer => |iv| @floatFromInt(iv),
-        else => 0,
-    } else 0;
+    g.maximum = graph.maximum;
     g.autoscale = @intFromBool(g.maximum <= 0);
     if (g.count == 100) {
         for (0..5) |row| {
@@ -406,51 +367,22 @@ fn update_graph(g: *native.Graph, o: std.json.Value, a: std.mem.Allocator) void 
     }
     var total: f64 = 0;
     for (0..g.series) |i| {
-        const val: f64 = switch (values[i]) {
-            .float => |f| f,
-            .integer => |iv| @floatFromInt(iv),
-            else => 0,
-        };
+        const val = graph.values[i];
         total += if (std.math.isFinite(val)) @max(0, val) else 0;
         g.history[i][g.count] = total;
-        var color_buf: [64:0]u8 = undefined;
-        const color: [:0]const u8 = if (i < colors.len and colors[i] == .string and colors[i].string.len < 64) blk: {
-            @memcpy(color_buf[0..colors[i].string.len], colors[i].string);
-            color_buf[colors[i].string.len] = 0;
-            break :blk color_buf[0..colors[i].string.len :0];
-        } else "white";
-        _ = c.gdk_rgba_parse(&g.colors[i], color);
+        _ = c.gdk_rgba_parse(&g.colors[i], if (i < graph.colors.len) graph.colors[i] else "white");
     }
     g.count += 1;
 }
 
-pub fn update_line(m: *Module, line: [*c]const u8) callconv(.c) void {
-    if (line == null) return;
-    const slice = std.mem.span(line);
-    var arena = std.heap.ArenaAllocator.init(if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator);
-    defer arena.deinit();
-    const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), slice, .{}) catch return;
-    if (parsed.value != .object) return;
-    const o = parsed.value;
-    if (m.monitors != 0 and o.object.get("monitors") != null) {
-        if (o.object.get("monitors").? == .array) {
-            const graphs = o.object.get("monitors").?.array.items;
-            for (graphs[0..@min(3, graphs.len)], 0..) |graph_obj, i| {
-                if (graph_obj == .object) update_graph(&m.view.graphs[i], graph_obj, arena.allocator());
-            }
-        }
-    } else if (m.monitors == 0 and o.object.get("items") != null) {
-        if (o.object.get("items").? == .array) {
-            update_items(m, o.object.get("items").?.array.items, arena.allocator());
-        }
-    }
+pub fn update(m: *Module, value: panel_data.Update) void {
+    if (m.monitors != 0) {
+        if (value.monitors) |graphs| for (graphs[0..@min(3, graphs.len)], 0..) |graph, i| update_graph(&m.view.graphs[i], graph);
+    } else if (value.items) |items| update_items(m, items);
     c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
-    const tooltip_str = jsonStringZ(arena.allocator(), o.object.get("tooltip"));
-    m.tooltip = c.g_strdup(tooltip_str);
+    m.tooltip = c.g_strndup(value.tooltip.ptr, value.tooltip.len);
     update_codex_tooltip(m);
-    if (m.codex_menu != null) {
-        update_codex(m, o, arena.allocator());
-    }
+    if (m.codex_menu != null) update_codex(m, value);
     resize(m);
 }
 fn device_changed(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: c.gpointer) callconv(.c) void {
@@ -477,6 +409,9 @@ fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) c
     unref_module(m);
 }
 pub fn init(root: *c.GtkWidget, options: Options) *Module {
+    return initWithDevices(root, options, null);
+}
+pub fn initWithDevices(root: *c.GtkWidget, options: Options, devices: ?*@import("desktop-devices.zig").Service) *Module {
     ensureStyle();
     const m = module_allocator.create(Module) catch @panic("out of memory");
     m.* = .{};
@@ -514,7 +449,7 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
         c.gtk_popover_set_constrain_to(cast(c.GtkPopover, m.power_menu), c.GTK_POPOVER_CONSTRAINT_NONE);
         c.gtk_popover_set_position(cast(c.GtkPopover, m.power_menu), c.GTK_POS_BOTTOM);
         css(m.power_menu, "gnome-power-menu");
-        m.quick = quick.Controls.create(m.power_menu.?, if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr);
+        m.quick = quick.Controls.createWithDevices(m.power_menu.?, if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
         const controls = m.quick.?;
         controls.profile_context = m;
         controls.profile_selected = &native_profile_selected;

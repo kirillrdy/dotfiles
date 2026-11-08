@@ -100,11 +100,12 @@ pub fn main(process_init: std.process.Init) !void {
     const status = p.init(status_root, .{ .name = "gnome-status" });
     assert(c.gtk_widget_is_ancestor(status.quick.?.canvas, status.power_menu) != 0);
     assert(c.gtk_widget_is_ancestor(status.quick.?.canvas, status.box) == 0);
-    p.update_line(status, "{\"items\":[{\"icon\":\"audio-volume-high-symbolic\"},{\"icon\":\"battery-level-80-symbolic\"}]}");
+    const initial_network_title = status.quick.?.view.model.network_title;
+    p.update(status, .{ .items = &.{ .{ .icon = "audio-volume-high-symbolic" }, .{ .icon = "battery-level-80-symbolic" } } });
     assert(status.view.items[0].visible and status.view.items[1].visible);
-    p.update_line(status, "{\"items\":[{\"icon\":\"network-wired-symbolic\",\"tooltip\":\"Wired network\"}]}");
+    p.update(status, .{ .items = &.{.{ .icon = "network-wired-symbolic", .tooltip = "Wired network" }} });
     // Collector tooltips must not overwrite the quick-settings connection name.
-    assert(status.quick.?.view.model.network_title.len == 0);
+    assert(std.mem.eql(u8, status.quick.?.view.model.network_title.slice(), initial_network_title.slice()));
     c.gtk_widget_show_all(status_window);
     pumpEvents(50);
     // The panel's CSS reset cannot alter the native tile geometry.
@@ -113,6 +114,15 @@ pub fn main(process_init: std.process.Init) !void {
     assert(border.top == 0 and border.left == 0);
     assert(status.quick.?.view.item(.wifi).?.rect.height == 48);
     const controls = status.quick.?;
+    // A second panel borrows the same services and detaches independently.
+    const peer_root = root();
+    const peer = p.initWithDevices(peer_root, .{ .name = "gnome-status" }, controls.devices);
+    assert(peer.quick.?.devices == controls.devices);
+    assert(controls.devices.subscribers.items.len == 2);
+    p.deinit(peer);
+    c.gtk_widget_destroy(peer_root);
+    c.g_object_unref(peer_root);
+    assert(controls.devices.subscribers.items.len == 1);
     p.apply_power_state(status, .{});
     assert(std.mem.eql(u8, controls.view.model.message.slice(), "Power profiles unavailable"));
     clickControl(controls, .profiles);
@@ -224,7 +234,7 @@ pub fn main(process_init: std.process.Init) !void {
     assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
     c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
     assert(c.gtk_widget_get_visible(usage.codex_menu) == 0);
-    p.update_line(usage, "{}");
+    p.update(usage, .{});
     const refresh_rect = usage.codex.refreshRect();
     var refresh_click = std.mem.zeroes(c.GdkEventButton);
     refresh_click.button = 1;
@@ -240,14 +250,14 @@ pub fn main(process_init: std.process.Init) !void {
     assert(refresh_count == 1);
     assert(!usage.codex.enabled);
     eq(usage.codex.checked.value, "Refreshing…");
-    p.update_line(usage, "{\"items\":[{\"text\":\"54%\"}],\"tooltip\":\"5h: 54% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"checked\":\"Checked: 12:00:00\"}");
+    p.update(usage, .{ .items = &.{.{ .text = "54%" }}, .tooltip = "5h: 54% remaining", .windows = &.{ .{ .percent = 54, .reset = "Resets in 2h 15m" }, .{ .percent = 93, .reset = "Resets in 4d 8h" } }, .checked = "Checked: 12:00:00" });
     assert(usage.codex.enabled);
     var refresh_key = std.mem.zeroes(@import("desktop").apps.KeyEvent);
     refresh_key.event_type = 8; // GDK_KEY_PRESS
     refresh_key.keyval = 0xff0d;
     c.g_signal_emit_by_name(usage.codex_canvas, "key-press-event", &refresh_key, &handled);
     assert(handled != 0 and refresh_count == 2 and !usage.codex.enabled);
-    p.update_line(usage, "{\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"tooltip\":\"5h: 54% remaining\"}");
+    p.update(usage, .{ .windows = &.{ .{ .percent = 54, .reset = "Resets in 2h 15m" }, .{ .percent = 93, .reset = "Resets in 4d 8h" } }, .tooltip = "5h: 54% remaining" });
     eq(c.gtk_widget_get_tooltip_text(usage.box), "5h: 54% remaining");
     pumpEvents(50);
     var x: c.gint = 0;
@@ -266,7 +276,7 @@ pub fn main(process_init: std.process.Init) !void {
         assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
     }
     assert(c.gtk_widget_get_tooltip_text(usage.box) == null);
-    p.update_line(usage, "{\"items\":[{\"text\":\"54%\"}],\"tooltip\":\"5h: 54% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}],\"checked\":\"Checked: 12:00:00\"}");
+    p.update(usage, .{ .items = &.{.{ .text = "54%" }}, .tooltip = "5h: 54% remaining", .windows = &.{ .{ .percent = 54, .reset = "Resets in 2h 15m" }, .{ .percent = 93, .reset = "Resets in 4d 8h" } }, .checked = "Checked: 12:00:00" });
     assert(c.gtk_widget_get_tooltip_text(usage.box) == null);
     c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
     assert(c.gtk_widget_get_visible(usage.codex_menu) == 0);
@@ -277,7 +287,7 @@ pub fn main(process_init: std.process.Init) !void {
     assert(p.native.usageColor(54).green > 0.7);
     eq(usage.codex.reset[1].value, "Resets in 4d 8h");
     assert(usage.codex.error_label.value.len == 0);
-    p.update_line(usage, "{\"items\":[{\"text\":\"—\"}],\"windows\":[],\"error\":\"Sign in with codex login\"}");
+    p.update(usage, .{ .items = &.{.{ .text = "—" }}, .windows = &.{}, .@"error" = "Sign in with codex login" });
     eq(usage.codex.percent[0].value, "—");
     assert(usage.codex.values[0] == 0 and usage.codex.error_label.value.len > 0);
     p.deinit(usage);
@@ -304,10 +314,8 @@ pub fn main(process_init: std.process.Init) !void {
     // Exercise graph history rollover and the native draw callback after migration.
     const graph_root = root();
     const monitors = p.init(graph_root, .{ .kind = "monitors" });
-    var sample_buf: [256:0]u8 = undefined;
     for (0..130) |i| {
-        const sample = try std.fmt.bufPrintSentinel(&sample_buf, "{{\"monitors\":[{{\"sequence\":{d},\"values\":[{d}],\"colors\":[\"#0072b3\"],\"maximum\":100}}]}}", .{ i, i }, 0);
-        p.update_line(monitors, sample);
+        p.update(monitors, .{ .monitors = &.{.{ .sequence = @intCast(i), .values = &.{@floatFromInt(i)}, .colors = &.{"#0072b3"}, .maximum = 100 }} });
     }
     assert(monitors.view.graphs[0].count == 100);
     assert(monitors.view.graphs[0].history[0][0] == 30 and monitors.view.graphs[0].history[0][99] == 129);

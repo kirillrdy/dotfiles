@@ -6,15 +6,10 @@ let
       inherit pkgs;
       dbus = import ../desktop-dbus-libs.nix { inherit pkgs; };
     }).gtk;
-  fixture = desktop.overrideAttrs {
-    pname = "desktop-portal-fixture";
-    outputs = [ "out" ];
-    buildPhase = ''
-      export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build portal-fixture portal-chooser-fixture portal-print-fixture --prefix "$out" -Doptimize=ReleaseSafe
-    '';
-    doCheck = false;
-    installPhase = "true";
+  fixture = import ./fixture-build.nix {
+    inherit desktop;
+    name = "desktop-portal-fixture";
+    steps = "portal-fixture portal-chooser-fixture portal-print-fixture";
   };
 in
 pkgs.runCommand "desktop-portal-check"

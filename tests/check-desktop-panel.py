@@ -8,7 +8,7 @@ are retained in a temporary directory printed at startup.
 import argparse
 import sys
 sys.dont_write_bytecode = True
-from session_fixture import command as session_command, wait_ready
+from session_fixture import Processes, command as session_command, wait_ready
 import json
 import os
 import re
@@ -54,14 +54,8 @@ env.update(
     WB_PANEL_DEMO="1",
     DBUS_SYSTEM_BUS_ADDRESS="unix:path=" + str(root / "no-system-bus"),
 )
-procs = []
-
-
-def start(args, log, extra=None):
-    with (root / log).open("w") as output:
-        p = sp.Popen(args, env=env | (extra or {}), stdout=output, stderr=sp.STDOUT)
-    procs.append(p)
-    return p
+processes = Processes(root, env)
+start = processes.start
 
 
 def run(args):
@@ -168,7 +162,7 @@ try:
     )
     pointer_process = sp.Popen([args.bin / "desktop-pointer-fixture"], env=env,
                                 stdin=sp.PIPE, stdout=sp.PIPE, text=True)
-    procs.append(pointer_process)
+    processes.track(pointer_process)
     assert pointer_process.stdout.readline().strip() == "ready"
     pointer_command("size 3008 1080")
     seat = start([wtype, "-s", "55000"], "seat.log")
@@ -258,11 +252,4 @@ try:
     assert panel.wait(timeout=5) == 0, log()[-4000:]
     print("PASS clean SIGTERM shutdown", flush=True)
 finally:
-    for p in reversed(procs):
-        if p.poll() is None:
-            p.terminate()
-            try:
-                p.wait(timeout=3)
-            except sp.TimeoutExpired:
-                p.kill()
-                p.wait()
+    processes.stop()

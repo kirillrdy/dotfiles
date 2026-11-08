@@ -1,591 +1,138 @@
-//! Native Wayland interface metadata. Request/event order and type tables
-//! match the protocol XML; zig build test compares all tables with the reference
-//! wayland-scanner output. Normal builds need no generated C sources.
+//! Native protocol wrappers over metadata generated from the protocol XML.
 const c = @import("desktop-gtk.zig");
 pub const Interface = c.struct_wl_interface;
-const Message = c.struct_wl_message;
+const metadata = @import("protocol-metadata").Metadata(@import("desktop-wayland.zig"));
+comptime {
+    // Emit canonical exported objects; extern declarations below preserve their identity.
+    for (@import("std").meta.declarations(metadata)) |name| _ = &@field(metadata, name);
+}
 
-extern const wl_buffer_interface: Interface;
-extern const wl_output_interface: Interface;
-extern const wl_pointer_interface: Interface;
-extern const wl_seat_interface: Interface;
+pub extern const zwlr_screencopy_manager_v1_interface: Interface;
 
-// wlr-screencopy-unstable-v1.c
-// /*
-//  * Copyright © 2018 Simon Ser
-//  * Copyright © 2019 Andri Yngvason
-//  *
-//  * Permission is hereby granted, free of charge, to any person obtaining a
-//  * copy of this software and associated documentation files (the "Software"),
-//  * to deal in the Software without restriction, including without limitation
-//  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
-//  * and/or sell copies of the Software, and to permit persons to whom the
-//  * Software is furnished to do so, subject to the following conditions:
-//  *
-//  * The above copyright notice and this permission notice (including the next
-//  * paragraph) shall be included in all copies or substantial portions of the
-//  * Software.
-//  *
-//  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-//  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-//  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-//  * DEALINGS IN THE SOFTWARE.
-//  */
-const wlr_screencopy_unstable_v1_types = [_][*c]const Interface{
-    null,
-    null,
-    null,
-    null,
-    &zwlr_screencopy_frame_v1_interface,
-    null,
-    &wl_output_interface,
-    &zwlr_screencopy_frame_v1_interface,
-    null,
-    &wl_output_interface,
-    null,
-    null,
-    null,
-    null,
-    &wl_buffer_interface,
-    &wl_buffer_interface,
-};
-const zwlr_screencopy_manager_v1_requests = [_]Message{
-    .{ .name = "capture_output", .signature = "nio", .types = @constCast(wlr_screencopy_unstable_v1_types[4..].ptr) },
-    .{ .name = "capture_output_region", .signature = "nioiiii", .types = @constCast(wlr_screencopy_unstable_v1_types[7..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(wlr_screencopy_unstable_v1_types[0..].ptr) },
-};
-const zwlr_screencopy_frame_v1_requests = [_]Message{
-    .{ .name = "copy", .signature = "o", .types = @constCast(wlr_screencopy_unstable_v1_types[14..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(wlr_screencopy_unstable_v1_types[0..].ptr) },
-    .{ .name = "copy_with_damage", .signature = "2o", .types = @constCast(wlr_screencopy_unstable_v1_types[15..].ptr) },
-};
-const zwlr_screencopy_frame_v1_events = [_]Message{
-    .{ .name = "buffer", .signature = "uuuu", .types = @constCast(wlr_screencopy_unstable_v1_types[0..].ptr) },
-    .{ .name = "flags", .signature = "u", .types = @constCast(wlr_screencopy_unstable_v1_types[0..].ptr) },
-    .{ .name = "ready", .signature = "uuu", .types = @constCast(wlr_screencopy_unstable_v1_types[0..].ptr) },
-    .{ .name = "failed", .signature = "", .types = @constCast(wlr_screencopy_unstable_v1_types[0..].ptr) },
-    .{ .name = "damage", .signature = "2uuuu", .types = @constCast(wlr_screencopy_unstable_v1_types[0..].ptr) },
-    .{ .name = "linux_dmabuf", .signature = "3uuu", .types = @constCast(wlr_screencopy_unstable_v1_types[0..].ptr) },
-    .{ .name = "buffer_done", .signature = "3", .types = @constCast(wlr_screencopy_unstable_v1_types[0..].ptr) },
-};
-pub export const zwlr_screencopy_manager_v1_interface: Interface = .{
-    .name = "zwlr_screencopy_manager_v1",
-    .version = 3,
-    .method_count = 3,
-    .methods = &zwlr_screencopy_manager_v1_requests,
-    .event_count = 0,
-    .events = null,
-};
-pub export const zwlr_screencopy_frame_v1_interface: Interface = .{
-    .name = "zwlr_screencopy_frame_v1",
-    .version = 3,
-    .method_count = 3,
-    .methods = &zwlr_screencopy_frame_v1_requests,
-    .event_count = 7,
-    .events = &zwlr_screencopy_frame_v1_events,
-};
+pub extern const zwlr_screencopy_frame_v1_interface: Interface;
 
-// wlr-data-control-unstable-v1.c
-// /*
-//  * Copyright © 2018 Simon Ser
-//  * Copyright © 2019 Ivan Molodetskikh
-//  *
-//  * Permission to use, copy, modify, distribute, and sell this
-//  * software and its documentation for any purpose is hereby granted
-//  * without fee, provided that the above copyright notice appear in
-//  * all copies and that both that copyright notice and this permission
-//  * notice appear in supporting documentation, and that the name of
-//  * the copyright holders not be used in advertising or publicity
-//  * pertaining to distribution of the software without specific,
-//  * written prior permission.  The copyright holders make no
-//  * representations about the suitability of this software for any
-//  * purpose.  It is provided "as is" without express or implied
-//  * warranty.
-//  *
-//  * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
-//  * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
-//  * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
-//  * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-//  * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
-//  * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
-//  * ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
-//  * THIS SOFTWARE.
-//  */
-const wlr_data_control_unstable_v1_types = [_][*c]const Interface{
-    null,
-    null,
-    &zwlr_data_control_source_v1_interface,
-    &zwlr_data_control_device_v1_interface,
-    &wl_seat_interface,
-    &zwlr_data_control_source_v1_interface,
-    &zwlr_data_control_source_v1_interface,
-    &zwlr_data_control_offer_v1_interface,
-    &zwlr_data_control_offer_v1_interface,
-    &zwlr_data_control_offer_v1_interface,
-};
-const zwlr_data_control_manager_v1_requests = [_]Message{
-    .{ .name = "create_data_source", .signature = "n", .types = @constCast(wlr_data_control_unstable_v1_types[2..].ptr) },
-    .{ .name = "get_data_device", .signature = "no", .types = @constCast(wlr_data_control_unstable_v1_types[3..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(wlr_data_control_unstable_v1_types[0..].ptr) },
-};
-const zwlr_data_control_device_v1_requests = [_]Message{
-    .{ .name = "set_selection", .signature = "?o", .types = @constCast(wlr_data_control_unstable_v1_types[5..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(wlr_data_control_unstable_v1_types[0..].ptr) },
-    .{ .name = "set_primary_selection", .signature = "2?o", .types = @constCast(wlr_data_control_unstable_v1_types[6..].ptr) },
-};
-const zwlr_data_control_device_v1_events = [_]Message{
-    .{ .name = "data_offer", .signature = "n", .types = @constCast(wlr_data_control_unstable_v1_types[7..].ptr) },
-    .{ .name = "selection", .signature = "?o", .types = @constCast(wlr_data_control_unstable_v1_types[8..].ptr) },
-    .{ .name = "finished", .signature = "", .types = @constCast(wlr_data_control_unstable_v1_types[0..].ptr) },
-    .{ .name = "primary_selection", .signature = "2?o", .types = @constCast(wlr_data_control_unstable_v1_types[9..].ptr) },
-};
-const zwlr_data_control_source_v1_requests = [_]Message{
-    .{ .name = "offer", .signature = "s", .types = @constCast(wlr_data_control_unstable_v1_types[0..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(wlr_data_control_unstable_v1_types[0..].ptr) },
-};
-const zwlr_data_control_source_v1_events = [_]Message{
-    .{ .name = "send", .signature = "sh", .types = @constCast(wlr_data_control_unstable_v1_types[0..].ptr) },
-    .{ .name = "cancelled", .signature = "", .types = @constCast(wlr_data_control_unstable_v1_types[0..].ptr) },
-};
-const zwlr_data_control_offer_v1_requests = [_]Message{
-    .{ .name = "receive", .signature = "sh", .types = @constCast(wlr_data_control_unstable_v1_types[0..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(wlr_data_control_unstable_v1_types[0..].ptr) },
-};
-const zwlr_data_control_offer_v1_events = [_]Message{
-    .{ .name = "offer", .signature = "s", .types = @constCast(wlr_data_control_unstable_v1_types[0..].ptr) },
-};
-pub export const zwlr_data_control_manager_v1_interface: Interface = .{
-    .name = "zwlr_data_control_manager_v1",
-    .version = 2,
-    .method_count = 3,
-    .methods = &zwlr_data_control_manager_v1_requests,
-    .event_count = 0,
-    .events = null,
-};
-pub export const zwlr_data_control_device_v1_interface: Interface = .{
-    .name = "zwlr_data_control_device_v1",
-    .version = 2,
-    .method_count = 3,
-    .methods = &zwlr_data_control_device_v1_requests,
-    .event_count = 4,
-    .events = &zwlr_data_control_device_v1_events,
-};
-pub export const zwlr_data_control_source_v1_interface: Interface = .{
-    .name = "zwlr_data_control_source_v1",
-    .version = 1,
-    .method_count = 2,
-    .methods = &zwlr_data_control_source_v1_requests,
-    .event_count = 2,
-    .events = &zwlr_data_control_source_v1_events,
-};
-pub export const zwlr_data_control_offer_v1_interface: Interface = .{
-    .name = "zwlr_data_control_offer_v1",
-    .version = 1,
-    .method_count = 2,
-    .methods = &zwlr_data_control_offer_v1_requests,
-    .event_count = 1,
-    .events = &zwlr_data_control_offer_v1_events,
-};
+pub extern const zwlr_data_control_manager_v1_interface: Interface;
 
-// ext-foreign-toplevel-list-v1.c
-// /*
-//  * Copyright © 2018 Ilia Bozhinov
-//  * Copyright © 2020 Isaac Freund
-//  * Copyright © 2022 wb9688
-//  * Copyright © 2023 i509VCB
-//  *
-//  * Permission to use, copy, modify, distribute, and sell this
-//  * software and its documentation for any purpose is hereby granted
-//  * without fee, provided that the above copyright notice appear in
-//  * all copies and that both that copyright notice and this permission
-//  * notice appear in supporting documentation, and that the name of
-//  * the copyright holders not be used in advertising or publicity
-//  * pertaining to distribution of the software without specific,
-//  * written prior permission.  The copyright holders make no
-//  * representations about the suitability of this software for any
-//  * purpose.  It is provided "as is" without express or implied
-//  * warranty.
-//  *
-//  * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
-//  * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
-//  * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
-//  * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-//  * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
-//  * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
-//  * ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
-//  * THIS SOFTWARE.
-//  */
-const ext_foreign_toplevel_list_v1_types = [_][*c]const Interface{
-    null,
-    &ext_foreign_toplevel_handle_v1_interface,
-};
-const ext_foreign_toplevel_list_v1_requests = [_]Message{
-    .{ .name = "stop", .signature = "", .types = @constCast(ext_foreign_toplevel_list_v1_types[0..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_foreign_toplevel_list_v1_types[0..].ptr) },
-};
-const ext_foreign_toplevel_list_v1_events = [_]Message{
-    .{ .name = "toplevel", .signature = "n", .types = @constCast(ext_foreign_toplevel_list_v1_types[1..].ptr) },
-    .{ .name = "finished", .signature = "", .types = @constCast(ext_foreign_toplevel_list_v1_types[0..].ptr) },
-};
-const ext_foreign_toplevel_handle_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_foreign_toplevel_list_v1_types[0..].ptr) },
-};
-const ext_foreign_toplevel_handle_v1_events = [_]Message{
-    .{ .name = "closed", .signature = "", .types = @constCast(ext_foreign_toplevel_list_v1_types[0..].ptr) },
-    .{ .name = "done", .signature = "", .types = @constCast(ext_foreign_toplevel_list_v1_types[0..].ptr) },
-    .{ .name = "title", .signature = "s", .types = @constCast(ext_foreign_toplevel_list_v1_types[0..].ptr) },
-    .{ .name = "app_id", .signature = "s", .types = @constCast(ext_foreign_toplevel_list_v1_types[0..].ptr) },
-    .{ .name = "identifier", .signature = "s", .types = @constCast(ext_foreign_toplevel_list_v1_types[0..].ptr) },
-};
-pub export const ext_foreign_toplevel_list_v1_interface: Interface = .{
-    .name = "ext_foreign_toplevel_list_v1",
-    .version = 1,
-    .method_count = 2,
-    .methods = &ext_foreign_toplevel_list_v1_requests,
-    .event_count = 2,
-    .events = &ext_foreign_toplevel_list_v1_events,
-};
-pub export const ext_foreign_toplevel_handle_v1_interface: Interface = .{
-    .name = "ext_foreign_toplevel_handle_v1",
-    .version = 1,
-    .method_count = 1,
-    .methods = &ext_foreign_toplevel_handle_v1_requests,
-    .event_count = 5,
-    .events = &ext_foreign_toplevel_handle_v1_events,
-};
+pub extern const zwlr_data_control_device_v1_interface: Interface;
 
-// ext-image-capture-source-v1.c
-// /*
-//  * Copyright © 2022 Andri Yngvason
-//  * Copyright © 2024 Simon Ser
-//  *
-//  * Permission is hereby granted, free of charge, to any person obtaining a
-//  * copy of this software and associated documentation files (the "Software"),
-//  * to deal in the Software without restriction, including without limitation
-//  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
-//  * and/or sell copies of the Software, and to permit persons to whom the
-//  * Software is furnished to do so, subject to the following conditions:
-//  *
-//  * The above copyright notice and this permission notice (including the next
-//  * paragraph) shall be included in all copies or substantial portions of the
-//  * Software.
-//  *
-//  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-//  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-//  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-//  * DEALINGS IN THE SOFTWARE.
-//  */
-const ext_image_capture_source_v1_types = [_][*c]const Interface{
-    &ext_image_capture_source_v1_interface,
-    &wl_output_interface,
-    &ext_image_capture_source_v1_interface,
-    &ext_foreign_toplevel_handle_v1_interface,
-};
-const ext_image_capture_source_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_image_capture_source_v1_types[0..].ptr) },
-};
-const ext_output_image_capture_source_manager_v1_requests = [_]Message{
-    .{ .name = "create_source", .signature = "no", .types = @constCast(ext_image_capture_source_v1_types[0..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_image_capture_source_v1_types[0..].ptr) },
-};
-const ext_foreign_toplevel_image_capture_source_manager_v1_requests = [_]Message{
-    .{ .name = "create_source", .signature = "no", .types = @constCast(ext_image_capture_source_v1_types[2..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_image_capture_source_v1_types[0..].ptr) },
-};
-pub export const ext_image_capture_source_v1_interface: Interface = .{
-    .name = "ext_image_capture_source_v1",
-    .version = 1,
-    .method_count = 1,
-    .methods = &ext_image_capture_source_v1_requests,
-    .event_count = 0,
-    .events = null,
-};
-pub export const ext_output_image_capture_source_manager_v1_interface: Interface = .{
-    .name = "ext_output_image_capture_source_manager_v1",
-    .version = 1,
-    .method_count = 2,
-    .methods = &ext_output_image_capture_source_manager_v1_requests,
-    .event_count = 0,
-    .events = null,
-};
-pub export const ext_foreign_toplevel_image_capture_source_manager_v1_interface: Interface = .{
-    .name = "ext_foreign_toplevel_image_capture_source_manager_v1",
-    .version = 1,
-    .method_count = 2,
-    .methods = &ext_foreign_toplevel_image_capture_source_manager_v1_requests,
-    .event_count = 0,
-    .events = null,
-};
+pub extern const zwlr_data_control_source_v1_interface: Interface;
 
-// ext-image-copy-capture-v1.c
-// /*
-//  * Copyright © 2021-2023 Andri Yngvason
-//  * Copyright © 2024 Simon Ser
-//  *
-//  * Permission is hereby granted, free of charge, to any person obtaining a
-//  * copy of this software and associated documentation files (the "Software"),
-//  * to deal in the Software without restriction, including without limitation
-//  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
-//  * and/or sell copies of the Software, and to permit persons to whom the
-//  * Software is furnished to do so, subject to the following conditions:
-//  *
-//  * The above copyright notice and this permission notice (including the next
-//  * paragraph) shall be included in all copies or substantial portions of the
-//  * Software.
-//  *
-//  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-//  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-//  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-//  * DEALINGS IN THE SOFTWARE.
-//  */
-const ext_image_copy_capture_v1_types = [_][*c]const Interface{
-    null,
-    null,
-    null,
-    null,
-    &ext_image_copy_capture_session_v1_interface,
-    &ext_image_capture_source_v1_interface,
-    null,
-    &ext_image_copy_capture_cursor_session_v1_interface,
-    &ext_image_capture_source_v1_interface,
-    &wl_pointer_interface,
-    &ext_image_copy_capture_frame_v1_interface,
-    &wl_buffer_interface,
-    &ext_image_copy_capture_session_v1_interface,
-};
-const ext_image_copy_capture_manager_v1_requests = [_]Message{
-    .{ .name = "create_session", .signature = "nou", .types = @constCast(ext_image_copy_capture_v1_types[4..].ptr) },
-    .{ .name = "create_pointer_cursor_session", .signature = "noo", .types = @constCast(ext_image_copy_capture_v1_types[7..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-};
-const ext_image_copy_capture_session_v1_requests = [_]Message{
-    .{ .name = "create_frame", .signature = "n", .types = @constCast(ext_image_copy_capture_v1_types[10..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-};
-const ext_image_copy_capture_session_v1_events = [_]Message{
-    .{ .name = "buffer_size", .signature = "uu", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "shm_format", .signature = "u", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "dmabuf_device", .signature = "a", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "dmabuf_format", .signature = "ua", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "done", .signature = "", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "stopped", .signature = "", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-};
-const ext_image_copy_capture_frame_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "attach_buffer", .signature = "o", .types = @constCast(ext_image_copy_capture_v1_types[11..].ptr) },
-    .{ .name = "damage_buffer", .signature = "iiii", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "capture", .signature = "", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-};
-const ext_image_copy_capture_frame_v1_events = [_]Message{
-    .{ .name = "transform", .signature = "u", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "damage", .signature = "iiii", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "presentation_time", .signature = "uuu", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "ready", .signature = "", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "failed", .signature = "u", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-};
-const ext_image_copy_capture_cursor_session_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "get_capture_session", .signature = "n", .types = @constCast(ext_image_copy_capture_v1_types[12..].ptr) },
-};
-const ext_image_copy_capture_cursor_session_v1_events = [_]Message{
-    .{ .name = "enter", .signature = "", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "leave", .signature = "", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "position", .signature = "ii", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-    .{ .name = "hotspot", .signature = "ii", .types = @constCast(ext_image_copy_capture_v1_types[0..].ptr) },
-};
-pub export const ext_image_copy_capture_manager_v1_interface: Interface = .{
-    .name = "ext_image_copy_capture_manager_v1",
-    .version = 1,
-    .method_count = 3,
-    .methods = &ext_image_copy_capture_manager_v1_requests,
-    .event_count = 0,
-    .events = null,
-};
-pub export const ext_image_copy_capture_session_v1_interface: Interface = .{
-    .name = "ext_image_copy_capture_session_v1",
-    .version = 1,
-    .method_count = 2,
-    .methods = &ext_image_copy_capture_session_v1_requests,
-    .event_count = 6,
-    .events = &ext_image_copy_capture_session_v1_events,
-};
-pub export const ext_image_copy_capture_frame_v1_interface: Interface = .{
-    .name = "ext_image_copy_capture_frame_v1",
-    .version = 1,
-    .method_count = 4,
-    .methods = &ext_image_copy_capture_frame_v1_requests,
-    .event_count = 5,
-    .events = &ext_image_copy_capture_frame_v1_events,
-};
-pub export const ext_image_copy_capture_cursor_session_v1_interface: Interface = .{
-    .name = "ext_image_copy_capture_cursor_session_v1",
-    .version = 1,
-    .method_count = 2,
-    .methods = &ext_image_copy_capture_cursor_session_v1_requests,
-    .event_count = 4,
-    .events = &ext_image_copy_capture_cursor_session_v1_events,
-};
+pub extern const zwlr_data_control_offer_v1_interface: Interface;
 
-// desktop-overview-v1.c
-// /* SPDX-License-Identifier: MIT
-//  */
-const dotfiles_overview_v1_types = [_][*c]const Interface{
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-};
-const dotfiles_overview_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = @constCast(dotfiles_overview_v1_types[0..].ptr) },
-    .{ .name = "refresh", .signature = "", .types = @constCast(dotfiles_overview_v1_types[0..].ptr) },
-    .{ .name = "activate", .signature = "s", .types = @constCast(dotfiles_overview_v1_types[0..].ptr) },
-    .{ .name = "close", .signature = "s", .types = @constCast(dotfiles_overview_v1_types[0..].ptr) },
-    .{ .name = "switch_workspace", .signature = "u", .types = @constCast(dotfiles_overview_v1_types[0..].ptr) },
-    .{ .name = "move", .signature = "su", .types = @constCast(dotfiles_overview_v1_types[0..].ptr) },
-};
-const dotfiles_overview_v1_events = [_]Message{
-    .{ .name = "workspace", .signature = "usu", .types = @constCast(dotfiles_overview_v1_types[0..].ptr) },
-    .{ .name = "window", .signature = "suiiiiu", .types = @constCast(dotfiles_overview_v1_types[0..].ptr) },
-    .{ .name = "done", .signature = "", .types = @constCast(dotfiles_overview_v1_types[0..].ptr) },
-};
-pub export const dotfiles_overview_v1_interface: Interface = .{
-    .name = "dotfiles_overview_v1",
-    .version = 1,
-    .method_count = 6,
-    .methods = &dotfiles_overview_v1_requests,
-    .event_count = 3,
-    .events = &dotfiles_overview_v1_events,
-};
+pub extern const ext_foreign_toplevel_list_v1_interface: Interface;
 
-// virtual-pointer.c
-// /*
-//  * Copyright © 2019 Josef Gajdusek
-//  *
-//  * Permission is hereby granted, free of charge, to any person obtaining a
-//  * copy of this software and associated documentation files (the "Software"),
-//  * to deal in the Software without restriction, including without limitation
-//  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
-//  * and/or sell copies of the Software, and to permit persons to whom the
-//  * Software is furnished to do so, subject to the following conditions:
-//  *
-//  * The above copyright notice and this permission notice (including the next
-//  * paragraph) shall be included in all copies or substantial portions of the
-//  * Software.
-//  *
-//  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-//  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-//  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-//  * DEALINGS IN THE SOFTWARE.
-//  */
-const wlr_virtual_pointer_unstable_v1_types = [_][*c]const Interface{
-    null,
-    null,
-    null,
-    null,
-    null,
-    &wl_seat_interface,
-    &zwlr_virtual_pointer_v1_interface,
-    &wl_seat_interface,
-    &wl_output_interface,
-    &zwlr_virtual_pointer_v1_interface,
-};
-const zwlr_virtual_pointer_v1_requests = [_]Message{
-    .{ .name = "motion", .signature = "uff", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[0..].ptr) },
-    .{ .name = "motion_absolute", .signature = "uuuuu", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[0..].ptr) },
-    .{ .name = "button", .signature = "uuu", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[0..].ptr) },
-    .{ .name = "axis", .signature = "uuf", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[0..].ptr) },
-    .{ .name = "frame", .signature = "", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[0..].ptr) },
-    .{ .name = "axis_source", .signature = "u", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[0..].ptr) },
-    .{ .name = "axis_stop", .signature = "uu", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[0..].ptr) },
-    .{ .name = "axis_discrete", .signature = "uufi", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[0..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[0..].ptr) },
-};
-const zwlr_virtual_pointer_manager_v1_requests = [_]Message{
-    .{ .name = "create_virtual_pointer", .signature = "?on", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[5..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[0..].ptr) },
-    .{ .name = "create_virtual_pointer_with_output", .signature = "2?o?on", .types = @constCast(wlr_virtual_pointer_unstable_v1_types[7..].ptr) },
-};
-pub export const zwlr_virtual_pointer_v1_interface: Interface = .{
-    .name = "zwlr_virtual_pointer_v1",
-    .version = 2,
-    .method_count = 9,
-    .methods = &zwlr_virtual_pointer_v1_requests,
-    .event_count = 0,
-    .events = null,
-};
-pub export const zwlr_virtual_pointer_manager_v1_interface: Interface = .{
-    .name = "zwlr_virtual_pointer_manager_v1",
-    .version = 2,
-    .method_count = 3,
-    .methods = &zwlr_virtual_pointer_manager_v1_requests,
-    .event_count = 0,
-    .events = null,
-};
+pub extern const ext_foreign_toplevel_handle_v1_interface: Interface;
+
+pub extern const ext_image_capture_source_v1_interface: Interface;
+
+pub extern const ext_output_image_capture_source_manager_v1_interface: Interface;
+
+pub extern const ext_foreign_toplevel_image_capture_source_manager_v1_interface: Interface;
+
+pub extern const ext_image_copy_capture_manager_v1_interface: Interface;
+
+pub extern const ext_image_copy_capture_session_v1_interface: Interface;
+
+pub extern const ext_image_copy_capture_frame_v1_interface: Interface;
+
+pub extern const ext_image_copy_capture_cursor_session_v1_interface: Interface;
+
+pub extern const dotfiles_overview_v1_interface: Interface;
+
+pub extern const zwlr_virtual_pointer_v1_interface: Interface;
+
+pub extern const zwlr_virtual_pointer_manager_v1_interface: Interface;
 
 pub const zwlr_screencopy_frame_v1 = opaque {};
+
 pub const zwlr_screencopy_manager_v1 = opaque {};
+
 pub const zwlr_data_control_device_v1 = opaque {};
+
 pub const zwlr_data_control_manager_v1 = opaque {};
+
 pub const zwlr_data_control_source_v1 = opaque {};
+
 pub const zwlr_data_control_offer_v1 = opaque {};
+
 pub const ext_foreign_toplevel_handle_v1 = opaque {};
+
 pub const ext_foreign_toplevel_list_v1 = opaque {};
+
 pub const ext_foreign_toplevel_image_capture_source_manager_v1 = opaque {};
+
 pub const ext_image_capture_source_v1 = opaque {};
+
 pub const ext_image_copy_capture_frame_v1 = opaque {};
+
 pub const ext_image_copy_capture_manager_v1 = opaque {};
+
 pub const ext_image_copy_capture_session_v1 = opaque {};
+
 pub const dotfiles_overview_v1 = opaque {};
 
 pub const ZWLR_SCREENCOPY_MANAGER_V1_CAPTURE_OUTPUT = @as(c_int, 0);
+
 pub const ZWLR_SCREENCOPY_MANAGER_V1_CAPTURE_OUTPUT_REGION = @as(c_int, 1);
+
 pub const ZWLR_SCREENCOPY_MANAGER_V1_DESTROY = @as(c_int, 2);
+
 pub const ZWLR_SCREENCOPY_FRAME_V1_COPY = @as(c_int, 0);
+
 pub const ZWLR_SCREENCOPY_FRAME_V1_DESTROY = @as(c_int, 1);
+
 pub const ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT = @as(c_int, 1);
 
 pub const ZWLR_DATA_CONTROL_MANAGER_V1_CREATE_DATA_SOURCE = @as(c_int, 0);
+
 pub const ZWLR_DATA_CONTROL_MANAGER_V1_GET_DATA_DEVICE = @as(c_int, 1);
+
 pub const ZWLR_DATA_CONTROL_MANAGER_V1_DESTROY = @as(c_int, 2);
+
 pub const ZWLR_DATA_CONTROL_DEVICE_V1_SET_SELECTION = @as(c_int, 0);
+
 pub const ZWLR_DATA_CONTROL_DEVICE_V1_DESTROY = @as(c_int, 1);
+
 pub const ZWLR_DATA_CONTROL_SOURCE_V1_OFFER = @as(c_int, 0);
+
 pub const ZWLR_DATA_CONTROL_SOURCE_V1_DESTROY = @as(c_int, 1);
 
 pub const EXT_FOREIGN_TOPLEVEL_LIST_V1_DESTROY = @as(c_int, 1);
+
 pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_DESTROY = @as(c_int, 0);
+
 pub const EXT_IMAGE_CAPTURE_SOURCE_V1_DESTROY = @as(c_int, 0);
+
 pub const EXT_FOREIGN_TOPLEVEL_IMAGE_CAPTURE_SOURCE_MANAGER_V1_CREATE_SOURCE = @as(c_int, 0);
+
 pub const EXT_FOREIGN_TOPLEVEL_IMAGE_CAPTURE_SOURCE_MANAGER_V1_DESTROY = @as(c_int, 1);
+
 pub const EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_CREATE_SESSION = @as(c_int, 0);
+
 pub const EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_DESTROY = @as(c_int, 2);
+
 pub const EXT_IMAGE_COPY_CAPTURE_SESSION_V1_CREATE_FRAME = @as(c_int, 0);
+
 pub const EXT_IMAGE_COPY_CAPTURE_SESSION_V1_DESTROY = @as(c_int, 1);
+
 pub const EXT_IMAGE_COPY_CAPTURE_FRAME_V1_DESTROY = @as(c_int, 0);
+
 pub const EXT_IMAGE_COPY_CAPTURE_FRAME_V1_ATTACH_BUFFER = @as(c_int, 1);
+
 pub const EXT_IMAGE_COPY_CAPTURE_FRAME_V1_DAMAGE_BUFFER = @as(c_int, 2);
+
 pub const EXT_IMAGE_COPY_CAPTURE_FRAME_V1_CAPTURE = @as(c_int, 3);
 
 pub const DOTFILES_OVERVIEW_V1_DESTROY = @as(c_int, 0);
+
 pub const DOTFILES_OVERVIEW_V1_REFRESH = @as(c_int, 1);
+
 pub const DOTFILES_OVERVIEW_V1_ACTIVATE = @as(c_int, 2);
+
 pub const DOTFILES_OVERVIEW_V1_CLOSE = @as(c_int, 3);
+
 pub const DOTFILES_OVERVIEW_V1_SWITCH_WORKSPACE = @as(c_int, 4);
+
 pub const DOTFILES_OVERVIEW_V1_MOVE = @as(c_int, 5);
 
 pub const zwlr_screencopy_frame_v1_listener = extern struct {
@@ -802,437 +349,44 @@ pub fn dotfiles_overview_v1_move(overview: ?*dotfiles_overview_v1, identifier: [
     _ = c.wl_proxy_marshal_flags(@ptrCast(@alignCast(overview)), DOTFILES_OVERVIEW_V1_MOVE, null, c.wl_proxy_get_version(@ptrCast(@alignCast(overview))), 0, identifier, index);
 }
 
-// ext-session-lock-v1: native metadata, checked against wayland-scanner.
-// /*
-//  * Copyright 2021 Isaac Freund
-//  *
-//  * Permission is hereby granted, free of charge, to any person obtaining a
-//  * copy of this software and associated documentation files (the "Software"),
-//  * to deal in the Software without restriction, including without limitation
-//  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
-//  * and/or sell copies of the Software, and to permit persons to whom the
-//  * Software is furnished to do so, subject to the following conditions:
-//  *
-//  * The above copyright notice and this permission notice shall be included in
-//  * all copies or substantial portions of the Software.
-//  *
-//  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-//  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-//  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-//  * THE SOFTWARE.
-//
-// */
-extern const wl_surface_interface: Interface;
-const ext_session_lock_v1_types = [_][*c]const Interface{
-    null,
-    null,
-    null,
-    &ext_session_lock_v1_interface,
-    &ext_session_lock_surface_v1_interface,
-    &wl_surface_interface,
-    &wl_output_interface,
-};
-const ext_session_lock_manager_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
-    .{ .name = "lock", .signature = "n", .types = @constCast(ext_session_lock_v1_types[3..].ptr) },
-};
-const ext_session_lock_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
-    .{ .name = "get_lock_surface", .signature = "noo", .types = @constCast(ext_session_lock_v1_types[4..].ptr) },
-    .{ .name = "unlock_and_destroy", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
-};
-const ext_session_lock_v1_events = [_]Message{
-    .{ .name = "locked", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
-    .{ .name = "finished", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
-};
-const ext_session_lock_surface_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
-    .{ .name = "ack_configure", .signature = "u", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
-};
-const ext_session_lock_surface_v1_events = [_]Message{
-    .{ .name = "configure", .signature = "uuu", .types = @constCast(ext_session_lock_v1_types[0..].ptr) },
-};
-pub export const ext_session_lock_manager_v1_interface: Interface = .{ .name = "ext_session_lock_manager_v1", .version = 1, .method_count = 2, .methods = &ext_session_lock_manager_v1_requests, .event_count = 0, .events = null };
-pub export const ext_session_lock_v1_interface: Interface = .{ .name = "ext_session_lock_v1", .version = 1, .method_count = 3, .methods = &ext_session_lock_v1_requests, .event_count = 2, .events = &ext_session_lock_v1_events };
-pub export const ext_session_lock_surface_v1_interface: Interface = .{ .name = "ext_session_lock_surface_v1", .version = 1, .method_count = 2, .methods = &ext_session_lock_surface_v1_requests, .event_count = 1, .events = &ext_session_lock_surface_v1_events };
+pub extern const ext_session_lock_manager_v1_interface: Interface;
 
-// ext-idle-notify-v1: native metadata, checked against wayland-scanner.
-// /*
-//  * Copyright © 2015 Martin Gräßlin
-//  * Copyright © 2022 Simon Ser
-//  *
-//  * Permission is hereby granted, free of charge, to any person obtaining a
-//  * copy of this software and associated documentation files (the "Software"),
-//  * to deal in the Software without restriction, including without limitation
-//  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
-//  * and/or sell copies of the Software, and to permit persons to whom the
-//  * Software is furnished to do so, subject to the following conditions:
-//  *
-//  * The above copyright notice and this permission notice (including the next
-//  * paragraph) shall be included in all copies or substantial portions of the
-//  * Software.
-//  *
-//  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-//  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-//  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-//  * DEALINGS IN THE SOFTWARE.
-//  */
-const ext_idle_notify_v1_types = [_][*c]const Interface{
-    &ext_idle_notification_v1_interface,
-    null,
-    &wl_seat_interface,
-    &ext_idle_notification_v1_interface,
-    null,
-    &wl_seat_interface,
-};
-const ext_idle_notifier_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_idle_notify_v1_types[0..].ptr) },
-    .{ .name = "get_idle_notification", .signature = "nuo", .types = @constCast(ext_idle_notify_v1_types[0..].ptr) },
-    .{ .name = "get_input_idle_notification", .signature = "2nuo", .types = @constCast(ext_idle_notify_v1_types[3..].ptr) },
-};
-const ext_idle_notification_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = @constCast(ext_idle_notify_v1_types[0..].ptr) },
-};
-const ext_idle_notification_v1_events = [_]Message{
-    .{ .name = "idled", .signature = "", .types = @constCast(ext_idle_notify_v1_types[0..].ptr) },
-    .{ .name = "resumed", .signature = "", .types = @constCast(ext_idle_notify_v1_types[0..].ptr) },
-};
-pub export const ext_idle_notifier_v1_interface: Interface = .{ .name = "ext_idle_notifier_v1", .version = 2, .method_count = 3, .methods = &ext_idle_notifier_v1_requests, .event_count = 0, .events = null };
-pub export const ext_idle_notification_v1_interface: Interface = .{ .name = "ext_idle_notification_v1", .version = 2, .method_count = 1, .methods = &ext_idle_notification_v1_requests, .event_count = 2, .events = &ext_idle_notification_v1_events };
+pub extern const ext_session_lock_v1_interface: Interface;
 
-// wlr-output-management-unstable-v1.xml
-// /*
-//  * Copyright © 2019 Purism SPC
-//  *
-//  * Permission to use, copy, modify, distribute, and sell this
-//  * software and its documentation for any purpose is hereby granted
-//  * without fee, provided that the above copyright notice appear in
-//  * all copies and that both that copyright notice and this permission
-//  * notice appear in supporting documentation, and that the name of
-//  * the copyright holders not be used in advertising or publicity
-//  * pertaining to distribution of the software without specific,
-//  * written prior permission.  The copyright holders make no
-//  * representations about the suitability of this software for any
-//  * purpose.  It is provided "as is" without express or implied
-//  * warranty.
-//  *
-//  * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
-//  * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
-//  * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
-//  * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-//  * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
-//  * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
-//  * ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
-//  * THIS SOFTWARE.
-//  */
-const wlr_output_management_unstable_v1_types = [_][*c]const Interface{
-    null,
-    null,
-    null,
-    &zwlr_output_configuration_v1_interface,
-    null,
-    &zwlr_output_head_v1_interface,
-    &zwlr_output_mode_v1_interface,
-    &zwlr_output_mode_v1_interface,
-    &zwlr_output_configuration_head_v1_interface,
-    &zwlr_output_head_v1_interface,
-    &zwlr_output_head_v1_interface,
-    &zwlr_output_mode_v1_interface,
-};
-const zwlr_output_manager_v1_requests = [_]Message{
-    .{ .name = "create_configuration", .signature = "nu", .types = @constCast(wlr_output_management_unstable_v1_types[3..].ptr) },
-    .{ .name = "stop", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-};
-const zwlr_output_manager_v1_events = [_]Message{
-    .{ .name = "head", .signature = "n", .types = @constCast(wlr_output_management_unstable_v1_types[5..].ptr) },
-    .{ .name = "done", .signature = "u", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "finished", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-};
-const zwlr_output_head_v1_requests = [_]Message{
-    .{ .name = "release", .signature = "3", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-};
-const zwlr_output_head_v1_events = [_]Message{
-    .{ .name = "name", .signature = "s", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "description", .signature = "s", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "physical_size", .signature = "ii", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "mode", .signature = "n", .types = @constCast(wlr_output_management_unstable_v1_types[6..].ptr) },
-    .{ .name = "enabled", .signature = "i", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "current_mode", .signature = "o", .types = @constCast(wlr_output_management_unstable_v1_types[7..].ptr) },
-    .{ .name = "position", .signature = "ii", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "transform", .signature = "i", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "scale", .signature = "f", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "finished", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "make", .signature = "2s", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "model", .signature = "2s", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "serial_number", .signature = "2s", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "adaptive_sync", .signature = "4u", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-};
-const zwlr_output_mode_v1_requests = [_]Message{
-    .{ .name = "release", .signature = "3", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-};
-const zwlr_output_mode_v1_events = [_]Message{
-    .{ .name = "size", .signature = "ii", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "refresh", .signature = "i", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "preferred", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "finished", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-};
-const zwlr_output_configuration_v1_requests = [_]Message{
-    .{ .name = "enable_head", .signature = "no", .types = @constCast(wlr_output_management_unstable_v1_types[8..].ptr) },
-    .{ .name = "disable_head", .signature = "o", .types = @constCast(wlr_output_management_unstable_v1_types[10..].ptr) },
-    .{ .name = "apply", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "test", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "destroy", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-};
-const zwlr_output_configuration_v1_events = [_]Message{
-    .{ .name = "succeeded", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "failed", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "cancelled", .signature = "", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-};
-const zwlr_output_configuration_head_v1_requests = [_]Message{
-    .{ .name = "set_mode", .signature = "o", .types = @constCast(wlr_output_management_unstable_v1_types[11..].ptr) },
-    .{ .name = "set_custom_mode", .signature = "iii", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "set_position", .signature = "ii", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "set_transform", .signature = "i", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "set_scale", .signature = "f", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-    .{ .name = "set_adaptive_sync", .signature = "4u", .types = @constCast(wlr_output_management_unstable_v1_types[0..].ptr) },
-};
-pub export const zwlr_output_manager_v1_interface: Interface = .{
-    .name = "zwlr_output_manager_v1",
-    .version = 4,
-    .method_count = 2,
-    .methods = &zwlr_output_manager_v1_requests,
-    .event_count = 3,
-    .events = &zwlr_output_manager_v1_events,
-};
-pub export const zwlr_output_head_v1_interface: Interface = .{
-    .name = "zwlr_output_head_v1",
-    .version = 4,
-    .method_count = 1,
-    .methods = &zwlr_output_head_v1_requests,
-    .event_count = 14,
-    .events = &zwlr_output_head_v1_events,
-};
-pub export const zwlr_output_mode_v1_interface: Interface = .{
-    .name = "zwlr_output_mode_v1",
-    .version = 3,
-    .method_count = 1,
-    .methods = &zwlr_output_mode_v1_requests,
-    .event_count = 4,
-    .events = &zwlr_output_mode_v1_events,
-};
-pub export const zwlr_output_configuration_v1_interface: Interface = .{
-    .name = "zwlr_output_configuration_v1",
-    .version = 4,
-    .method_count = 5,
-    .methods = &zwlr_output_configuration_v1_requests,
-    .event_count = 3,
-    .events = &zwlr_output_configuration_v1_events,
-};
-pub export const zwlr_output_configuration_head_v1_interface: Interface = .{
-    .name = "zwlr_output_configuration_head_v1",
-    .version = 4,
-    .method_count = 6,
-    .methods = &zwlr_output_configuration_head_v1_requests,
-    .event_count = 0,
-    .events = null,
-};
+pub extern const ext_session_lock_surface_v1_interface: Interface;
 
-// Native metadata for xdg_shell.
-// Copyright © 2008-2013 Kristian Høgsberg
-//     Copyright © 2013      Rafael Antognolli
-//     Copyright © 2013      Jasper St. Pierre
-//     Copyright © 2010-2013 Intel Corporation
-//     Copyright © 2015-2017 Samsung Electronics Co., Ltd
-//     Copyright © 2015-2017 Red Hat Inc.
-//
-//     Permission is hereby granted, free of charge, to any person obtaining a
-//     copy of this software and associated documentation files (the "Software"),
-//     to deal in the Software without restriction, including without limitation
-//     the rights to use, copy, modify, merge, publish, distribute, sublicense,
-//     and/or sell copies of the Software, and to permit persons to whom the
-//     Software is furnished to do so, subject to the following conditions:
-//
-//     The above copyright notice and this permission notice (including the next
-//     paragraph) shall be included in all copies or substantial portions of the
-//     Software.
-//
-//     THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//     IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//     FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-//     THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-//     FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-//     DEALINGS IN THE SOFTWARE.
-const xdg_wm_base_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = null },
-    .{ .name = "create_positioner", .signature = "n", .types = @constCast(&[_][*c]const Interface{&xdg_positioner_interface}) },
-    .{ .name = "get_xdg_surface", .signature = "no", .types = @constCast(&[_][*c]const Interface{ &xdg_surface_interface, &wl_surface_interface }) },
-    .{ .name = "pong", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
-};
-const xdg_wm_base_events = [_]Message{
-    .{ .name = "ping", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
-};
-pub export const xdg_wm_base_interface: Interface = .{ .name = "xdg_wm_base", .version = 7, .method_count = 4, .methods = &xdg_wm_base_requests, .event_count = 1, .events = &xdg_wm_base_events };
-const xdg_positioner_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = null },
-    .{ .name = "set_size", .signature = "ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
-    .{ .name = "set_anchor_rect", .signature = "iiii", .types = @constCast(&[_][*c]const Interface{ null, null, null, null }) },
-    .{ .name = "set_anchor", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
-    .{ .name = "set_gravity", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
-    .{ .name = "set_constraint_adjustment", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
-    .{ .name = "set_offset", .signature = "ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
-    .{ .name = "set_reactive", .signature = "3", .types = null },
-    .{ .name = "set_parent_size", .signature = "3ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
-    .{ .name = "set_parent_configure", .signature = "3u", .types = @constCast(&[_][*c]const Interface{null}) },
-};
-const xdg_positioner_events = [_]Message{};
-pub export const xdg_positioner_interface: Interface = .{ .name = "xdg_positioner", .version = 7, .method_count = 10, .methods = &xdg_positioner_requests, .event_count = 0, .events = &xdg_positioner_events };
-const xdg_surface_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = null },
-    .{ .name = "get_toplevel", .signature = "n", .types = @constCast(&[_][*c]const Interface{&xdg_toplevel_interface}) },
-    .{ .name = "get_popup", .signature = "n?oo", .types = @constCast(&[_][*c]const Interface{ &xdg_popup_interface, &xdg_surface_interface, &xdg_positioner_interface }) },
-    .{ .name = "set_window_geometry", .signature = "iiii", .types = @constCast(&[_][*c]const Interface{ null, null, null, null }) },
-    .{ .name = "ack_configure", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
-};
-const xdg_surface_events = [_]Message{
-    .{ .name = "configure", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
-};
-pub export const xdg_surface_interface: Interface = .{ .name = "xdg_surface", .version = 7, .method_count = 5, .methods = &xdg_surface_requests, .event_count = 1, .events = &xdg_surface_events };
-const xdg_toplevel_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = null },
-    .{ .name = "set_parent", .signature = "?o", .types = @constCast(&[_][*c]const Interface{&xdg_toplevel_interface}) },
-    .{ .name = "set_title", .signature = "s", .types = @constCast(&[_][*c]const Interface{null}) },
-    .{ .name = "set_app_id", .signature = "s", .types = @constCast(&[_][*c]const Interface{null}) },
-    .{ .name = "show_window_menu", .signature = "ouii", .types = @constCast(&[_][*c]const Interface{ &wl_seat_interface, null, null, null }) },
-    .{ .name = "move", .signature = "ou", .types = @constCast(&[_][*c]const Interface{ &wl_seat_interface, null }) },
-    .{ .name = "resize", .signature = "ouu", .types = @constCast(&[_][*c]const Interface{ &wl_seat_interface, null, null }) },
-    .{ .name = "set_max_size", .signature = "ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
-    .{ .name = "set_min_size", .signature = "ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
-    .{ .name = "set_maximized", .signature = "", .types = null },
-    .{ .name = "unset_maximized", .signature = "", .types = null },
-    .{ .name = "set_fullscreen", .signature = "?o", .types = @constCast(&[_][*c]const Interface{&wl_output_interface}) },
-    .{ .name = "unset_fullscreen", .signature = "", .types = null },
-    .{ .name = "set_minimized", .signature = "", .types = null },
-};
-const xdg_toplevel_events = [_]Message{
-    .{ .name = "configure", .signature = "iia", .types = @constCast(&[_][*c]const Interface{ null, null, null }) },
-    .{ .name = "close", .signature = "", .types = null },
-    .{ .name = "configure_bounds", .signature = "4ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
-    .{ .name = "wm_capabilities", .signature = "5a", .types = @constCast(&[_][*c]const Interface{null}) },
-};
-pub export const xdg_toplevel_interface: Interface = .{ .name = "xdg_toplevel", .version = 7, .method_count = 14, .methods = &xdg_toplevel_requests, .event_count = 4, .events = &xdg_toplevel_events };
-const xdg_popup_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = null },
-    .{ .name = "grab", .signature = "ou", .types = @constCast(&[_][*c]const Interface{ &wl_seat_interface, null }) },
-    .{ .name = "reposition", .signature = "3ou", .types = @constCast(&[_][*c]const Interface{ &xdg_positioner_interface, null }) },
-};
-const xdg_popup_events = [_]Message{
-    .{ .name = "configure", .signature = "iiii", .types = @constCast(&[_][*c]const Interface{ null, null, null, null }) },
-    .{ .name = "popup_done", .signature = "", .types = null },
-    .{ .name = "repositioned", .signature = "3u", .types = @constCast(&[_][*c]const Interface{null}) },
-};
-pub export const xdg_popup_interface: Interface = .{ .name = "xdg_popup", .version = 7, .method_count = 3, .methods = &xdg_popup_requests, .event_count = 3, .events = &xdg_popup_events };
+pub extern const ext_idle_notifier_v1_interface: Interface;
 
-// Native metadata for wlr_layer_shell_unstable_v1.
-// Copyright © 2017 Drew DeVault
-//
-//     Permission to use, copy, modify, distribute, and sell this
-//     software and its documentation for any purpose is hereby granted
-//     without fee, provided that the above copyright notice appear in
-//     all copies and that both that copyright notice and this permission
-//     notice appear in supporting documentation, and that the name of
-//     the copyright holders not be used in advertising or publicity
-//     pertaining to distribution of the software without specific,
-//     written prior permission.  The copyright holders make no
-//     representations about the suitability of this software for any
-//     purpose.  It is provided "as is" without express or implied
-//     warranty.
-//
-//     THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
-//     SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
-//     FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
-//     SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-//     WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
-//     AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
-//     ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
-//     THIS SOFTWARE.
-const zwlr_layer_shell_v1_requests = [_]Message{
-    .{ .name = "get_layer_surface", .signature = "no?ous", .types = @constCast(&[_][*c]const Interface{ &zwlr_layer_surface_v1_interface, &wl_surface_interface, &wl_output_interface, null, null }) },
-    .{ .name = "destroy", .signature = "3", .types = null },
-};
-const zwlr_layer_shell_v1_events = [_]Message{};
-pub export const zwlr_layer_shell_v1_interface: Interface = .{ .name = "zwlr_layer_shell_v1", .version = 4, .method_count = 2, .methods = &zwlr_layer_shell_v1_requests, .event_count = 0, .events = &zwlr_layer_shell_v1_events };
-const zwlr_layer_surface_v1_requests = [_]Message{
-    .{ .name = "set_size", .signature = "uu", .types = @constCast(&[_][*c]const Interface{ null, null }) },
-    .{ .name = "set_anchor", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
-    .{ .name = "set_exclusive_zone", .signature = "i", .types = @constCast(&[_][*c]const Interface{null}) },
-    .{ .name = "set_margin", .signature = "iiii", .types = @constCast(&[_][*c]const Interface{ null, null, null, null }) },
-    .{ .name = "set_keyboard_interactivity", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
-    .{ .name = "get_popup", .signature = "o", .types = @constCast(&[_][*c]const Interface{&xdg_popup_interface}) },
-    .{ .name = "ack_configure", .signature = "u", .types = @constCast(&[_][*c]const Interface{null}) },
-    .{ .name = "destroy", .signature = "", .types = null },
-    .{ .name = "set_layer", .signature = "2u", .types = @constCast(&[_][*c]const Interface{null}) },
-};
-const zwlr_layer_surface_v1_events = [_]Message{
-    .{ .name = "configure", .signature = "uuu", .types = @constCast(&[_][*c]const Interface{ null, null, null }) },
-    .{ .name = "closed", .signature = "", .types = null },
-};
-pub export const zwlr_layer_surface_v1_interface: Interface = .{ .name = "zwlr_layer_surface_v1", .version = 4, .method_count = 9, .methods = &zwlr_layer_surface_v1_requests, .event_count = 2, .events = &zwlr_layer_surface_v1_events };
+pub extern const ext_idle_notification_v1_interface: Interface;
 
-// Native metadata for xdg_output_unstable_v1.
-// Copyright © 2017 Red Hat Inc.
-//
-//     Permission is hereby granted, free of charge, to any person obtaining a
-//     copy of this software and associated documentation files (the "Software"),
-//     to deal in the Software without restriction, including without limitation
-//     the rights to use, copy, modify, merge, publish, distribute, sublicense,
-//     and/or sell copies of the Software, and to permit persons to whom the
-//     Software is furnished to do so, subject to the following conditions:
-//
-//     The above copyright notice and this permission notice (including the next
-//     paragraph) shall be included in all copies or substantial portions of the
-//     Software.
-//
-//     THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//     IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//     FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-//     THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-//     FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-//     DEALINGS IN THE SOFTWARE.
-const zxdg_output_manager_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = null },
-    .{ .name = "get_xdg_output", .signature = "no", .types = @constCast(&[_][*c]const Interface{ &zxdg_output_v1_interface, &wl_output_interface }) },
-};
-const zxdg_output_manager_v1_events = [_]Message{};
-pub export const zxdg_output_manager_v1_interface: Interface = .{ .name = "zxdg_output_manager_v1", .version = 3, .method_count = 2, .methods = &zxdg_output_manager_v1_requests, .event_count = 0, .events = &zxdg_output_manager_v1_events };
-const zxdg_output_v1_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = null },
-};
-const zxdg_output_v1_events = [_]Message{
-    .{ .name = "logical_position", .signature = "ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
-    .{ .name = "logical_size", .signature = "ii", .types = @constCast(&[_][*c]const Interface{ null, null }) },
-    .{ .name = "done", .signature = "", .types = null },
-    .{ .name = "name", .signature = "2s", .types = @constCast(&[_][*c]const Interface{null}) },
-    .{ .name = "description", .signature = "2s", .types = @constCast(&[_][*c]const Interface{null}) },
-};
-pub export const zxdg_output_v1_interface: Interface = .{ .name = "zxdg_output_v1", .version = 3, .method_count = 1, .methods = &zxdg_output_v1_requests, .event_count = 5, .events = &zxdg_output_v1_events };
+pub extern const zwlr_output_manager_v1_interface: Interface;
 
-// xdg-foreign v2 lets native portal windows parent to a caller's exported handle.
-const importer_v2_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = null },
-    .{ .name = "import_toplevel", .signature = "ns", .types = @constCast(&[_][*c]const Interface{ &zxdg_imported_v2_interface, null }) },
-};
-pub export const zxdg_importer_v2_interface: Interface = .{ .name = "zxdg_importer_v2", .version = 1, .method_count = 2, .methods = &importer_v2_requests, .event_count = 0, .events = null };
-const imported_v2_requests = [_]Message{
-    .{ .name = "destroy", .signature = "", .types = null },
-    .{ .name = "set_parent_of", .signature = "o", .types = @constCast(&[_][*c]const Interface{&wl_surface_interface}) },
-};
-const imported_v2_events = [_]Message{.{ .name = "destroyed", .signature = "", .types = null }};
-pub export const zxdg_imported_v2_interface: Interface = .{ .name = "zxdg_imported_v2", .version = 1, .method_count = 2, .methods = &imported_v2_requests, .event_count = 1, .events = &imported_v2_events };
+pub extern const zwlr_output_head_v1_interface: Interface;
+
+pub extern const zwlr_output_mode_v1_interface: Interface;
+
+pub extern const zwlr_output_configuration_v1_interface: Interface;
+
+pub extern const zwlr_output_configuration_head_v1_interface: Interface;
+
+pub extern const xdg_wm_base_interface: Interface;
+
+pub extern const xdg_positioner_interface: Interface;
+
+pub extern const xdg_surface_interface: Interface;
+
+pub extern const xdg_toplevel_interface: Interface;
+
+pub extern const xdg_popup_interface: Interface;
+
+pub extern const zwlr_layer_shell_v1_interface: Interface;
+
+pub extern const zwlr_layer_surface_v1_interface: Interface;
+
+pub extern const zxdg_output_manager_v1_interface: Interface;
+
+pub extern const zxdg_output_v1_interface: Interface;
+
+pub extern const zxdg_importer_v2_interface: Interface;
+
+pub extern const zxdg_imported_v2_interface: Interface;

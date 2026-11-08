@@ -110,8 +110,8 @@ test "session: private logind actions and quick-settings lifecycle" {
         g_object_weak_ref(@ptrCast(controls.cancel), &finalized, &live);
         var battery_live = controls.battery_service != null;
         if (controls.battery_service) |service| g_object_weak_ref(@ptrCast(service.cancel), &finalized, &battery_live);
-        var network_live = controls.network_client != null;
-        if (controls.network_client) |client| g_object_weak_ref(@ptrCast(client.service.cancel), &finalized, &network_live);
+        var network_live = controls.devices.network_client != null;
+        if (controls.devices.network_client) |client| g_object_weak_ref(@ptrCast(client.service.cancel), &finalized, &network_live);
         try checkPowerDialog(controls);
         // Enter defaults to Cancel. Explicit keyboard selection sends one action.
         controls.view.submenu = .power;

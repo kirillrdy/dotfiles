@@ -1,15 +1,10 @@
 { pkgs }:
 let
   desktop = import ../desktop-zig.nix { inherit pkgs; };
-  fixture = desktop.overrideAttrs {
-    pname = "desktop-audio-fixture";
-    outputs = [ "out" ];
-    buildPhase = ''
-      export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build audio-fixture --prefix "$out" -Doptimize=ReleaseSafe
-    '';
-    doCheck = false;
-    installPhase = "true";
+  fixture = import ./fixture-build.nix {
+    inherit desktop;
+    name = "desktop-audio-fixture";
+    steps = "audio-fixture";
   };
 in
 pkgs.runCommand "desktop-audio-check"
@@ -17,7 +12,6 @@ pkgs.runCommand "desktop-audio-check"
     nativeBuildInputs = [
       pkgs.python3
       pkgs.dbus
-      pkgs.xorg-server
       pkgs.pipewire
       pkgs.wireplumber
     ];
@@ -27,14 +21,8 @@ pkgs.runCommand "desktop-audio-check"
     export GSETTINGS_SCHEMA_DIR=${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}/glib-2.0/schemas
     export XDG_DATA_DIRS=${pkgs.adwaita-icon-theme}/share
     export GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
-    Xvfb :94 -nolisten tcp &
-    audio_xvfb=$!
-    trap 'kill "$audio_xvfb"' EXIT
-    for attempt in $(seq 1 100); do
-      test -S /tmp/.X11-unix/X94 && break
-      sleep 0.05
-    done
-    DISPLAY=:94 GDK_BACKEND=x11 dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
+    ${import ./headless-session.nix { inherit desktop; }}
+    dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
       python3 ${./check-desktop-audio.py} --fixture ${fixture}/bin/desktop-audio-fixture
     touch "$out"
   ''

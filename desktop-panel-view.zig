@@ -17,7 +17,7 @@ pub const Label = struct {
     limit: ?u32 = null,
     bold: bool = false,
     markup: bool = false,
-    pub fn set(self: *Label, value: [:0]const u8) void {
+    pub fn set(self: *Label, value: []const u8) void {
         if (std.mem.eql(u8, self.value, value)) return;
         const copy = a.dupeSentinel(u8, value, 0) catch @panic("out of memory");
         self.deinit();
@@ -67,7 +67,7 @@ pub const Item = struct {
         if (self.pixbuf) |image| c.g_object_unref(image);
         self.pixbuf = null;
     }
-    pub fn setIcon(self: *Item, value: [:0]const u8) void {
+    pub fn setIcon(self: *Item, value: []const u8) void {
         if (std.mem.eql(u8, self.icon.value, value)) return;
         self.icon.set(value);
         if (self.pixbuf) |image| c.g_object_unref(image);

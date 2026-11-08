@@ -1,16 +1,11 @@
 { pkgs }:
 let
   desktop = import ../desktop-zig.nix { inherit pkgs; };
-  fixture = desktop.overrideAttrs {
-    pname = "desktop-polkit-agent-fixture";
-    outputs = [ "out" ];
-    buildPhase = ''
-      export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      NIX_LDFLAGS= zig build shell polkit-fixture polkit-agent-fixture --prefix "$out" -Doptimize=ReleaseSafe
-    '';
-    doCheck = false;
-    installPhase = "true";
-    postFixup = ''
+  fixture = import ./fixture-build.nix {
+    inherit desktop;
+    name = "desktop-polkit-agent-fixture";
+    steps = "shell polkit-fixture polkit-agent-fixture";
+    extraAttrs.postFixup = ''
       find "$out" -type f -exec remove-references-to -t ${pkgs.zig_0_17} {} +
     '';
   };

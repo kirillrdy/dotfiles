@@ -12,6 +12,7 @@ import time
 import sys
 sys.dont_write_bytecode = True
 from audio_server import AudioServer
+from session_fixture import Processes
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True, type=Path)
@@ -60,15 +61,9 @@ for name, body in {
     tool.write_text(f"#!{shutil.which("sh")}\n" + body + "\n")
     tool.chmod(0o755)
 env["PATH"] = str(root / "tools") + os.pathsep + env["PATH"]
-processes = []
+processes = Processes(root, env)
+start = processes.start
 audio = AudioServer(root, env)
-
-
-def start(command, log):
-    with (root / log).open("w") as output:
-        process = sp.Popen(command, env=env, stdout=output, stderr=sp.STDOUT)
-    processes.append(process)
-    return process
 
 
 def run(command, ok=True):
@@ -166,11 +161,4 @@ try:
           "notifications, shutdown and restart passed")
 finally:
     audio.stop()
-    for process in reversed(processes):
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except sp.TimeoutExpired:
-                process.kill()
-                process.wait()
+    processes.stop(timeout=10)

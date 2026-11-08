@@ -9,10 +9,10 @@ test "panel uses native microphone mute state" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var out = try u.parse(a, "{\"items\":[]}");
+    var out: panel.Update = .{ .items = &.{} };
     try panel.addAudio(a, &out, .{ .percent = 65 }, .{ .percent = 40, .muted = true });
-    try equal(@as(usize, 2), out.object.get("items").?.array.items.len);
-    try strings("microphone-sensitivity-muted-symbolic", out.object.get("items").?.array.items[1].object.get("icon").?.string);
+    try equal(@as(usize, 2), out.items.?.len);
+    try strings("microphone-sensitivity-muted-symbolic", out.items.?[1].icon);
 }
 
 test "Linux virtual files are read despite reporting size zero" {
@@ -51,14 +51,14 @@ test "panel appends native battery state and omits absent batteries" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var out = try u.parse(a, "{\"items\":[{\"icon\":\"audio-volume-high-symbolic\"}]}");
+    var out: panel.Update = .{ .items = &.{.{ .icon = "audio-volume-high-symbolic" }} };
     try panel.addBattery(a, &out, .{});
-    try equal(@as(usize, 1), out.object.get("items").?.array.items.len);
+    try equal(@as(usize, 1), out.items.?.len);
     try panel.addBattery(a, &out, .{ .present = true, .percent = 80, .state = 2, .time_to_empty = 9000 });
-    const items = out.object.get("items").?.array.items;
+    const items = out.items.?;
     try equal(@as(usize, 2), items.len);
-    try strings("battery-level-80-symbolic", items[1].object.get("icon").?.string);
-    try strings("2∶30", items[1].object.get("text").?.string);
+    try strings("battery-level-80-symbolic", items[1].icon);
+    try strings("2∶30", items[1].text);
 }
 test "Codex keeps used and remaining modes and both popup windows" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -106,11 +106,11 @@ test "disk panel queries the root filesystem without commands" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const result = try panel.sample(arena.allocator(), "disk", "", false);
-    const entry = u.get(result, "items").array.items[0];
-    const label = u.string(u.get(entry, "text"));
+    const entry = result.items.?[0];
+    const label = entry.text;
     try expect(!std.mem.eql(u8, label, "—/—"));
     try expect(std.mem.indexOfScalar(u8, label, '/') != null);
-    try strings("ghostty -e ncdu /", u.string(u.get(entry, "command")));
+    try strings("ghostty -e ncdu /", entry.command);
 }
 
 test {
@@ -142,6 +142,7 @@ test {
     _ = @import("desktop-runtime.zig");
     _ = @import("desktop-secrets.zig");
     _ = @import("desktop-portal-email.zig");
+    _ = @import("desktop-portal-options.zig");
     _ = @import("desktop-audio.zig");
     _ = @import("desktop-audio-pod.zig");
     _ = @import("desktop-battery.zig");
@@ -157,4 +158,16 @@ test {
     _ = @import("desktop-lock-auth.zig");
     _ = @import("desktop-virtual-pointer.zig");
     _ = @import("tests/desktop-power-fixture.zig");
+}
+
+test "monitor updates retain their sampled values across later samples" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var monitor = try panel.Monitor.init(alloc);
+    const first = try monitor.sample(alloc, true);
+    const original = first.monitors.?[0].values[0];
+    const second = try monitor.sample(alloc, true);
+    try equal(original, first.monitors.?[0].values[0]);
+    try expect(second.monitors.?[0].values[0] != original);
 }

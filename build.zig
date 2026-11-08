@@ -13,6 +13,8 @@ fn protocolCode(b: *std.Build, xml: std.Build.LazyPath, output: []const u8) std.
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const test_bin = b.option([]const u8, "test-bin", "Fixture installation directory relative to the prefix") orelse "bin";
+    const fixture_install: std.Build.Step.InstallArtifact.Options = .{ .dest_dir = .{ .override = .{ .custom = test_bin } } };
     const desktop = b.createModule(.{
         .root_source_file = b.path("desktop-zig.zig"),
         .target = target,
@@ -20,72 +22,8 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "wayland-client", "libpipewire-0.3", "pam", "xkbcommon", "pangoft2" }) |name| desktop.linkSystemLibrary(name, .{});
-    const options = b.addOptions();
-    for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "PIXBUF_LOADERS", "SOUND_FILE", "DATA_DIRS" }) |name| {
-        options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
-    }
-    desktop.addOptions("options", options);
-    desktop.addImport("posix", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <fcntl.h>\n#include <errno.h>\n#include <sys/stat.h>\n#include <sys/file.h>\n#include <sys/random.h>\n#include <stdlib.h>\n#include <sys/prctl.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <grp.h>\n#include <sys/wait.h>\n#include <sys/socket.h>\n#include <security/pam_appl.h>\n#include <security/pam_modules.h>\n", &.{"pam"}));
-    desktop.addImport("pipewire", bindings(b, target, optimize, "#include <pipewire/pipewire.h>\n#include <pipewire/extensions/metadata.h>\n#include <spa/param/audio/format.h>\n#include <spa/param/video/format.h>\n#include <spa/param/buffers.h>\n#include <spa/param/props.h>\n#include <spa/param/route.h>\n", &.{"libpipewire-0.3"}));
-    const compositor_headers = b.addWriteFiles();
-    const layer_header = b.addSystemCommand(&.{ "wayland-scanner", "server-header" });
-    const wlr_dir = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
-    layer_header.addFileArg(.{ .cwd_relative = b.fmt("{s}/unstable/wlr-layer-shell-unstable-v1.xml", .{wlr_dir}) });
-    _ = compositor_headers.addCopyFile(layer_header.addOutputFileArg("wlr-layer-shell-unstable-v1-protocol.h"), "wlr-layer-shell-unstable-v1-protocol.h");
-    const compositor = b.addTranslateC(.{ .root_source_file = b.path("desktop-compositor.h"), .target = target, .optimize = optimize });
-    compositor.addIncludePath(compositor_headers.getDirectory());
-    for ([_][]const u8{ "wlroots-0.20", "wayland-server", "xkbcommon", "libinput", "libdrm", "pixman-1" }) |name| {
-        compositor.linkSystemLibrary(name, .{});
-        desktop.linkSystemLibrary(name, .{});
-    }
-    desktop.addImport("compositor-abi", compositor.createModule());
-    const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = desktop });
-    b.installArtifact(session);
-    b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
-    b.step("shell", "Build the desktop shell").dependOn(&b.addInstallArtifact(session, .{}).step);
-
-    // Prove the replacement window host has no GTK/GDK link dependency.
-    const native = b.createModule(.{ .root_source_file = b.path("desktop-native.zig"), .target = target, .optimize = optimize, .link_libc = true });
-    for ([_][]const u8{ "gio-unix-2.0", "wayland-client", "xkbcommon", "pangoft2" }) |name| native.linkSystemLibrary(name, .{});
-    const window_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-window-fixture.zig"), .target = target, .optimize = optimize });
-    window_module.addImport("native", native);
-    const window_fixture = b.addExecutable(.{ .name = "desktop-window-fixture", .root_module = window_module });
-    b.step("window-fixture", "Build the GTK-free native window test client").dependOn(&b.addInstallArtifact(window_fixture, .{}).step);
-
-    // Zig collects tests from files in the root module, not imported modules.
-    // Compile the same production files with the same dependencies in one test root.
-    const test_module = b.createModule(.{ .root_source_file = b.path("desktop-tests.zig"), .target = target, .optimize = optimize, .link_libc = true });
-    for (desktop.import_table.keys(), desktop.import_table.values()) |name, dependency| test_module.addImport(name, dependency);
-    test_module.link_objects.appendSlice(b.graph.arena, desktop.link_objects.items) catch @panic("OOM");
-    const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module });
-    const test_step = b.step("test", "Run unit, ABI, protocol and widget checks (requires Wayland)");
-    const unit_run = b.addRunArtifact(tests);
-    test_step.dependOn(&unit_run.step);
-    test_module.addImport("gtk-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n#include <pango/pangoft2.h>\n", &.{ "gtk+-unix-print-3.0", "gio-unix-2.0", "wayland-client", "pangoft2" }));
-    test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
     const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
-    const decoration_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-decoration-fixture.zig"), .target = target, .optimize = optimize, .link_libc = true });
-    decoration_module.linkSystemLibrary("wayland-client", .{});
-    const decoration_headers = b.addWriteFiles();
-    for ([_][]const u8{ "stable/xdg-shell/xdg-shell.xml", "unstable/xdg-decoration/xdg-decoration-unstable-v1.xml" }, [_][]const u8{ "xdg-shell", "xdg-decoration" }) |xml, name| {
-        const source: std.Build.LazyPath = .{ .cwd_relative = b.fmt("{s}/{s}", .{ protocol_dir, xml }) };
-        const header = b.addSystemCommand(&.{ "wayland-scanner", "client-header" });
-        header.addFileArg(source);
-        const filename = b.fmt("{s}-client-protocol.h", .{name});
-        _ = decoration_headers.addCopyFile(header.addOutputFileArg(filename), filename);
-        decoration_module.addCSourceFile(.{ .file = protocolCode(b, source, b.fmt("{s}-client-protocol.c", .{name})) });
-    }
-    const decoration_bindings = b.addTranslateC(.{
-        .root_source_file = decoration_headers.add("bindings.h", "#include <wayland-client.h>\n#include \"xdg-shell-client-protocol.h\"\n#include \"xdg-decoration-client-protocol.h\"\n"),
-        .target = target,
-        .optimize = optimize,
-    });
-    decoration_bindings.addIncludePath(decoration_headers.getDirectory());
-    decoration_bindings.linkSystemLibrary("wayland-client", .{});
-    decoration_module.addImport("decoration-client", decoration_bindings.createModule());
-    const decoration_fixture = b.addExecutable(.{ .name = "desktop-decoration-fixture", .root_module = decoration_module });
-    b.step("compositor-fixture", "Build compositor protocol test clients").dependOn(&b.addInstallArtifact(decoration_fixture, .{}).step);
     const protocol_names = [_][]const u8{
         "zxdg_output_manager_v1_interface",
         "zxdg_output_v1_interface",
@@ -127,8 +65,6 @@ pub fn build(b: *std.Build) void {
         "zwlr_virtual_pointer_v1_interface",
         "zwlr_virtual_pointer_manager_v1_interface",
     };
-    var reference_flags: [protocol_names.len][]const u8 = undefined;
-    for (protocol_names, &reference_flags) |name, *flag| flag.* = b.fmt("-D{s}=reference_{s}", .{ name, name });
     const protocol_files = [_]std.Build.LazyPath{
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-output/xdg-output-unstable-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/stable/xdg-shell/xdg-shell.xml", .{protocol_dir}) },
@@ -145,6 +81,80 @@ pub fn build(b: *std.Build) void {
         .{ .cwd_relative = b.fmt("{s}/staging/ext-idle-notify/ext-idle-notify-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-output-management-unstable-v1.xml", .{wlr_protocols}) },
     };
+    const metadata_command = b.addSystemCommand(&.{"python3"});
+    metadata_command.addFileArg(b.path("tools/protocol-metadata.py"));
+    const metadata_source = metadata_command.addOutputFileArg("protocol-metadata.zig");
+    metadata_command.addArg(std.mem.join(b.allocator, ",", &protocol_names) catch @panic("OOM"));
+    for (protocol_files) |xml| metadata_command.addFileArg(xml);
+    const metadata = b.createModule(.{ .root_source_file = metadata_source, .target = target, .optimize = optimize });
+    desktop.addImport("protocol-metadata", metadata);
+    const options = b.addOptions();
+    for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "PIXBUF_LOADERS", "SOUND_FILE", "DATA_DIRS" }) |name| {
+        options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
+    }
+    desktop.addOptions("options", options);
+    desktop.addImport("posix", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <fcntl.h>\n#include <errno.h>\n#include <sys/stat.h>\n#include <sys/file.h>\n#include <sys/random.h>\n#include <stdlib.h>\n#include <sys/prctl.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <grp.h>\n#include <sys/wait.h>\n#include <sys/socket.h>\n#include <security/pam_appl.h>\n#include <security/pam_modules.h>\n", &.{"pam"}));
+    desktop.addImport("pipewire", bindings(b, target, optimize, "#include <pipewire/pipewire.h>\n#include <pipewire/extensions/metadata.h>\n#include <spa/param/audio/format.h>\n#include <spa/param/video/format.h>\n#include <spa/param/buffers.h>\n#include <spa/param/props.h>\n#include <spa/param/route.h>\n", &.{"libpipewire-0.3"}));
+    const compositor_headers = b.addWriteFiles();
+    const layer_header = b.addSystemCommand(&.{ "wayland-scanner", "server-header" });
+    const wlr_dir = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
+    layer_header.addFileArg(.{ .cwd_relative = b.fmt("{s}/unstable/wlr-layer-shell-unstable-v1.xml", .{wlr_dir}) });
+    _ = compositor_headers.addCopyFile(layer_header.addOutputFileArg("wlr-layer-shell-unstable-v1-protocol.h"), "wlr-layer-shell-unstable-v1-protocol.h");
+    const compositor = b.addTranslateC(.{ .root_source_file = b.path("desktop-compositor.h"), .target = target, .optimize = optimize });
+    compositor.addIncludePath(compositor_headers.getDirectory());
+    for ([_][]const u8{ "wlroots-0.20", "wayland-server", "xkbcommon", "libinput", "libdrm", "pixman-1" }) |name| {
+        compositor.linkSystemLibrary(name, .{});
+        desktop.linkSystemLibrary(name, .{});
+    }
+    desktop.addImport("compositor-abi", compositor.createModule());
+    const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = desktop });
+    b.installArtifact(session);
+    b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
+    b.step("shell", "Build the desktop shell").dependOn(&b.addInstallArtifact(session, .{}).step);
+
+    // Prove the replacement window host has no GTK/GDK link dependency.
+    const native = b.createModule(.{ .root_source_file = b.path("desktop-native.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    for ([_][]const u8{ "gio-unix-2.0", "wayland-client", "xkbcommon", "pangoft2" }) |name| native.linkSystemLibrary(name, .{});
+    native.addImport("protocol-metadata", metadata);
+    const window_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-window-fixture.zig"), .target = target, .optimize = optimize });
+    window_module.addImport("native", native);
+    const window_fixture = b.addExecutable(.{ .name = "desktop-window-fixture", .root_module = window_module });
+    b.step("window-fixture", "Build the GTK-free native window test client").dependOn(&b.addInstallArtifact(window_fixture, fixture_install).step);
+
+    // Zig collects tests from files in the root module, not imported modules.
+    // Compile the same production files with the same dependencies in one test root.
+    const test_module = b.createModule(.{ .root_source_file = b.path("desktop-tests.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    for (desktop.import_table.keys(), desktop.import_table.values()) |name, dependency| test_module.addImport(name, dependency);
+    test_module.link_objects.appendSlice(b.graph.arena, desktop.link_objects.items) catch @panic("OOM");
+    const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module });
+    const test_step = b.step("test", "Run unit, ABI, protocol and widget checks (requires Wayland)");
+    const unit_run = b.addRunArtifact(tests);
+    test_step.dependOn(&unit_run.step);
+    test_module.addImport("gtk-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n#include <pango/pangoft2.h>\n", &.{ "gtk+-unix-print-3.0", "gio-unix-2.0", "wayland-client", "pangoft2" }));
+    test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
+    const decoration_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-decoration-fixture.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    decoration_module.linkSystemLibrary("wayland-client", .{});
+    const decoration_headers = b.addWriteFiles();
+    for ([_][]const u8{ "stable/xdg-shell/xdg-shell.xml", "unstable/xdg-decoration/xdg-decoration-unstable-v1.xml" }, [_][]const u8{ "xdg-shell", "xdg-decoration" }) |xml, name| {
+        const source: std.Build.LazyPath = .{ .cwd_relative = b.fmt("{s}/{s}", .{ protocol_dir, xml }) };
+        const header = b.addSystemCommand(&.{ "wayland-scanner", "client-header" });
+        header.addFileArg(source);
+        const filename = b.fmt("{s}-client-protocol.h", .{name});
+        _ = decoration_headers.addCopyFile(header.addOutputFileArg(filename), filename);
+        decoration_module.addCSourceFile(.{ .file = protocolCode(b, source, b.fmt("{s}-client-protocol.c", .{name})) });
+    }
+    const decoration_bindings = b.addTranslateC(.{
+        .root_source_file = decoration_headers.add("bindings.h", "#include <wayland-client.h>\n#include \"xdg-shell-client-protocol.h\"\n#include \"xdg-decoration-client-protocol.h\"\n"),
+        .target = target,
+        .optimize = optimize,
+    });
+    decoration_bindings.addIncludePath(decoration_headers.getDirectory());
+    decoration_bindings.linkSystemLibrary("wayland-client", .{});
+    decoration_module.addImport("decoration-client", decoration_bindings.createModule());
+    const decoration_fixture = b.addExecutable(.{ .name = "desktop-decoration-fixture", .root_module = decoration_module });
+    b.step("compositor-fixture", "Build compositor protocol test clients").dependOn(&b.addInstallArtifact(decoration_fixture, fixture_install).step);
+    var reference_flags: [protocol_names.len][]const u8 = undefined;
+    for (protocol_names, &reference_flags) |name, *flag| flag.* = b.fmt("-D{s}=reference_{s}", .{ name, name });
     for (protocol_files, 0..) |xml, i| {
         // Reference symbols are used only by the test binary.
         tests.root_module.addCSourceFile(.{ .file = protocolCode(b, xml, b.fmt("protocol-{d}.c", .{i})), .flags = &reference_flags });
@@ -192,10 +202,11 @@ pub fn build(b: *std.Build) void {
             b.addTest(.{ .name = fixture.name, .root_module = module, .filters = if (std.mem.eql(u8, fixture.step, "memory-tests")) &.{"memory:"} else &.{"session:"} })
         else
             b.addExecutable(.{ .name = fixture.name, .root_module = module });
-        if (fixture.install) b.installArtifact(artifact);
+        const install = b.addInstallArtifact(artifact, if (fixture.library) .{} else fixture_install);
+        if (fixture.install) b.getInstallStep().dependOn(&install.step);
         const step = if (b.top_level_steps.get(fixture.step)) |existing| &existing.step else b.step(fixture.step, "Build isolated test client");
-        step.dependOn(&b.addInstallArtifact(artifact, .{}).step);
-        if (std.mem.eql(u8, fixture.step, "portal-fixture") or std.mem.eql(u8, fixture.step, "portal-video-fixture") or std.mem.eql(u8, fixture.step, "pointer-fixture")) capture.dependOn(&b.addInstallArtifact(artifact, .{}).step);
+        step.dependOn(&install.step);
+        if (std.mem.eql(u8, fixture.step, "portal-fixture") or std.mem.eql(u8, fixture.step, "portal-video-fixture") or std.mem.eql(u8, fixture.step, "pointer-fixture")) capture.dependOn(&install.step);
         if (fixture.run) {
             const run = b.addRunArtifact(artifact);
             // Pixel assertions need an unobstructed compositor output before

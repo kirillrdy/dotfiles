@@ -1,23 +1,23 @@
 { pkgs }:
 let
   desktop = import ../desktop-zig.nix { inherit pkgs; };
-  fixture = desktop.overrideAttrs {
-    pname = "desktop-secrets-fixture";
-    outputs = [ "out" ];
-    buildPhase = ''
-      export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      NIX_LDFLAGS= zig build secrets-fixture secrets-pam secrets-pam-fixture --prefix "$out" -Doptimize=ReleaseSafe
-    '';
-    doCheck = false;
-    installPhase = "true";
-    postFixup = ''
+  fixture = import ./fixture-build.nix {
+    inherit desktop;
+    name = "desktop-secrets-fixture";
+    steps = "secrets-fixture secrets-pam secrets-pam-fixture";
+    extraAttrs.postFixup = ''
       find "$out" -type f -exec remove-references-to -t ${pkgs.zig_0_17} {} +
     '';
   };
 in
 pkgs.runCommand "desktop-secrets-check"
   {
-    FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ pkgs.adwaita-fonts pkgs.dejavu_fonts ]; };
+    FONTCONFIG_FILE = pkgs.makeFontsConf {
+      fontDirectories = [
+        pkgs.adwaita-fonts
+        pkgs.dejavu_fonts
+      ];
+    };
     nativeBuildInputs = [
       (pkgs.python3.withPackages (python: [ python.pygobject3 ]))
       pkgs.dbus

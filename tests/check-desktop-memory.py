@@ -25,7 +25,7 @@ print(f"Memory-check artifacts: {root}", flush=True)
 env = dict(os.environ, XDG_RUNTIME_DIR=str(root / "runtime"),
            XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"),
            XDG_STATE_HOME=str(root / "state"), GSETTINGS_BACKEND="memory",
-           NO_AT_BRIDGE="1", GDK_BACKEND="x11", G_DEBUG="gc-friendly,fatal-criticals",
+           NO_AT_BRIDGE="1", GDK_BACKEND="wayland", G_DEBUG="gc-friendly,fatal-criticals",
            DESKTOP_MEMORY_TEST_RUN="1", DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDRESS"],
            PATH=os.environ["PATH"])
 env.pop("DESKTOP_MEMORY_LEAK_PROBE", None)
@@ -46,8 +46,13 @@ def run(name, probe=None, checked_heap=False):
         command = [args.valgrind, "--leak-check=full", "--show-leak-kinds=definite,indirect",
                    "--errors-for-leak-kinds=definite,indirect", "--error-exitcode=97",
                    "--num-callers=30", "--log-file=" + str(log), *command]
-    result = sp.run(command, env=child_env, capture_output=True, text=True,
-                    timeout=300 if checked_heap else 120)
+    try:
+        result = sp.run(command, env=child_env, capture_output=True, text=True,
+                        timeout=300 if checked_heap else 120)
+    except sp.TimeoutExpired as error:
+        output = (error.stdout or b"") + (error.stderr or b"")
+        (root / (name + ".log")).write_bytes(output)
+        raise AssertionError(f"{name} timed out:\n{output.decode(errors='replace')[-14000:]}") from error
     output = result.stdout + result.stderr
     (root / (name + ".log")).write_text(output)
     return result.returncode, output, log.read_text() if checked_heap else ""

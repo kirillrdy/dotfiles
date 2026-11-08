@@ -6,86 +6,11 @@
 //! Normal builds do not parse the toolkit's C headers. test-gtk-abi checks these
 //! declarations against the installed headers when updating dependencies.
 const __root = @This();
+const wayland = @import("desktop-wayland.zig");
 pub const __helpers = @import("std").zig.c_translation.helpers;
 
 // Zig helpers shared by toolkit consumers; excluded from C ABI comparisons.
-pub const __zig = struct {
-    const std = @import("std");
-    const raster = @import("desktop-raster.zig");
-    pub fn cast(comptime T: type, ptr: anytype) *T {
-        return @ptrCast(@alignCast(ptr));
-    }
-    pub fn eq(left: []const u8, right: []const u8) bool {
-        return std.mem.eql(u8, left, right);
-    }
-    pub fn parentTo(widget: *GtkWidget, allocator: std.mem.Allocator, parent: [:0]const u8) void {
-        const display = gdk_display_get_default();
-        const window = gtk_widget_get_window(widget) orelse return;
-        if (std.mem.startsWith(u8, parent, "wayland:") and g_type_check_instance_is_a(cast(GTypeInstance, display), gdk_wayland_display_get_type()) != 0) {
-            const handle = allocator.dupeSentinel(u8, parent[8..], 0) catch return;
-            defer allocator.free(handle);
-            _ = gdk_wayland_window_set_transient_for_exported(window, handle);
-        }
-    }
-    pub fn paintCairo(cr: *cairo_t, logical_width: u32, logical_height: u32, scale: u32, context: anytype, comptime drawFn: anytype) !void {
-        const width = @max(1, logical_width) * scale;
-        const height = @max(1, logical_height) * scale;
-        const image = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)) orelse return error.ImageAllocation;
-        defer cairo_surface_destroy(image);
-        if (cairo_surface_status(image) != 0) return error.ImageAllocation;
-        const pixels: [*]u32 = @ptrCast(@alignCast(cairo_image_surface_get_data(image)));
-        const buffer = raster.Buffer{ .pixels = pixels[0 .. width * height], .width = width, .height = height };
-        const Return = @typeInfo(@TypeOf(drawFn)).@"fn".return_type.?;
-        if (@typeInfo(Return) == .error_union) try drawFn(context, buffer) else drawFn(context, buffer);
-        cairo_surface_mark_dirty(image);
-        cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-        cairo_set_source_surface(cr, image, 0, 0);
-        cairo_paint(cr);
-    }
-    pub fn pixbufImage(pixbuf: *GdkPixbuf) raster.Image {
-        const width: u32 = @intCast(gdk_pixbuf_get_width(pixbuf));
-        const height: u32 = @intCast(gdk_pixbuf_get_height(pixbuf));
-        const stride: usize = @intCast(gdk_pixbuf_get_rowstride(pixbuf));
-        const channels: u32 = @intCast(gdk_pixbuf_get_n_channels(pixbuf));
-        return .{
-            .pixels = gdk_pixbuf_get_pixels(pixbuf)[0 .. (height - 1) * stride + width * channels],
-            .width = width,
-            .height = height,
-            .stride = stride,
-            .format = if (channels == 4) .rgba else .rgb,
-        };
-    }
-    pub fn blitPixbuf(canvas: raster.Canvas, pixbuf: *GdkPixbuf, rect: raster.Rect) void {
-        raster.blit(canvas.target, pixbufImage(pixbuf), .{
-            .x = (rect.x + canvas.origin.x) * canvas.scale,
-            .y = (rect.y + canvas.origin.y) * canvas.scale,
-            .width = rect.width * canvas.scale,
-            .height = rect.height * canvas.scale,
-        }, null) catch {};
-    }
-    pub fn pixbufAlphaMask(allocator: std.mem.Allocator, pixbuf: *GdkPixbuf, out_width: *u32, out_height: *u32) ![]u8 {
-        const width: u32 = @intCast(@max(0, gdk_pixbuf_get_width(pixbuf)));
-        const height: u32 = @intCast(@max(0, gdk_pixbuf_get_height(pixbuf)));
-        const stride: usize = @intCast(gdk_pixbuf_get_rowstride(pixbuf));
-        const channels: usize = @intCast(gdk_pixbuf_get_n_channels(pixbuf));
-        const source = gdk_pixbuf_get_pixels(pixbuf);
-        const mask = try allocator.alloc(u8, @as(usize, width) * height);
-        for (0..height) |y| for (0..width) |x| {
-            mask[y * width + x] = if (channels >= 4) source[y * stride + x * channels + 3] else source[y * stride + x * channels];
-        };
-        out_width.* = width;
-        out_height.* = height;
-        return mask;
-    }
-    pub fn dispatchWayland(display: ?*wl_display) bool {
-        const libc = @import("desktop-libc.zig");
-        while (wl_display_prepare_read(display) != 0) {
-            if (wl_display_dispatch_pending(display) < 0) return false;
-        }
-        if (wl_display_read_events(display) < 0 and libc.__errno_location().* != @backingInt(std.c.E.AGAIN)) return false;
-        return wl_display_dispatch_pending(display) >= 0;
-    }
-};
+pub const __zig = @import("desktop-ui.zig");
 
 pub const gint8 = i8;
 
@@ -300,6 +225,7 @@ pub extern fn g_strlcpy(dest: [*c]gchar, src: [*c]const gchar, dest_size: gsize)
 pub extern fn g_str_has_prefix(str: [*c]const gchar, prefix: [*c]const gchar) gboolean;
 
 pub extern fn g_strdup(str: [*c]const gchar) [*c]gchar;
+pub extern fn g_strndup(str: [*c]const gchar, n: gsize) [*c]gchar;
 
 pub extern fn g_strdup_printf(format: [*c]const gchar, ...) [*c]gchar;
 
@@ -1713,7 +1639,7 @@ pub extern fn g_desktop_app_info_get_string(info: ?*GDesktopAppInfo, key: [*c]co
 pub extern fn g_desktop_app_info_get_boolean(info: ?*GDesktopAppInfo, key: [*c]const u8) gboolean;
 
 // Public GDK Wayland APIs used by the native layer-shell integration.
-pub const wl_surface = opaque {};
+pub const wl_surface = wayland.wl_surface;
 pub extern fn gdk_wayland_window_get_wl_surface(?*GdkWindow) ?*wl_surface;
 pub extern fn gdk_wayland_window_set_use_custom_surface(?*GdkWindow) void;
 pub extern fn gdk_wayland_display_get_wl_display(?*GdkDisplay) ?*wl_display;
@@ -1749,65 +1675,41 @@ pub const GUnixFDSourceFunc = ?*const fn (fd: gint, condition: GIOCondition, use
 
 pub extern fn g_unix_fd_add(fd: gint, condition: GIOCondition, function: GUnixFDSourceFunc, user_data: gpointer) guint;
 
-pub const struct_wl_interface = extern struct {
-    name: [*c]const u8 = null,
-    version: c_int = 0,
-    method_count: c_int = 0,
-    methods: [*c]const struct_wl_message = null,
-    event_count: c_int = 0,
-    events: [*c]const struct_wl_message = null,
-};
+pub const struct_wl_interface = wayland.struct_wl_interface;
 
-pub const struct_wl_message = extern struct {
-    name: [*c]const u8 = null,
-    signature: [*c]const u8 = null,
-    types: [*c][*c]const struct_wl_interface = null,
-};
+pub const struct_wl_message = wayland.struct_wl_message;
 
-pub const struct_wl_array = extern struct {
-    size: usize = 0,
-    alloc: usize = 0,
-    data: ?*anyopaque = null,
-};
+pub const struct_wl_array = wayland.struct_wl_array;
 
-pub const struct_wl_proxy = opaque {};
-pub const wl_proxy = struct_wl_proxy;
-pub const wl_interface = struct_wl_interface;
+pub const struct_wl_proxy = wayland.struct_wl_proxy;
+pub const wl_proxy = wayland.wl_proxy;
+pub const wl_interface = wayland.wl_interface;
 
-pub const struct_wl_display = opaque {};
+pub const struct_wl_display = wayland.struct_wl_display;
 
-pub extern fn wl_proxy_marshal_flags(proxy: ?*struct_wl_proxy, opcode: u32, interface: [*c]const struct_wl_interface, version: u32, flags: u32, ...) ?*struct_wl_proxy;
+pub const wl_proxy_marshal_flags = wayland.wl_proxy_marshal_flags;
 
-pub extern fn wl_proxy_destroy(proxy: ?*struct_wl_proxy) void;
+pub const wl_proxy_destroy = wayland.wl_proxy_destroy;
 
-pub extern fn wl_proxy_add_listener(proxy: ?*struct_wl_proxy, implementation: [*c]?*const fn () callconv(.c) void, data: ?*anyopaque) c_int;
+pub const wl_proxy_add_listener = wayland.wl_proxy_add_listener;
 
-pub extern fn wl_proxy_get_version(proxy: ?*struct_wl_proxy) u32;
+pub const wl_proxy_get_version = wayland.wl_proxy_get_version;
 
-pub const wl_object = opaque {};
-pub const wl_argument = extern union {
-    i: i32,
-    u: u32,
-    f: i32,
-    s: [*c]const u8,
-    o: ?*wl_object,
-    n: u32,
-    a: [*c]wl_array,
-    h: i32,
-};
-pub extern fn wl_proxy_marshal_array_flags(proxy: ?*struct_wl_proxy, opcode: u32, interface: [*c]const struct_wl_interface, version: u32, flags: u32, args: [*c]wl_argument) ?*struct_wl_proxy;
+pub const wl_object = wayland.wl_object;
+pub const wl_argument = wayland.wl_argument;
+pub const wl_proxy_marshal_array_flags = wayland.wl_proxy_marshal_array_flags;
 
-pub extern fn wl_display_connect(name: [*c]const u8) ?*struct_wl_display;
+pub const wl_display_connect = wayland.wl_display_connect;
 
-pub extern fn wl_display_disconnect(display: ?*struct_wl_display) void;
+pub const wl_display_disconnect = wayland.wl_display_disconnect;
 
-pub extern fn wl_display_get_fd(display: ?*struct_wl_display) c_int;
+pub const wl_display_get_fd = wayland.wl_display_get_fd;
 
-pub extern fn wl_display_dispatch(display: ?*struct_wl_display) c_int;
-pub extern fn wl_display_dispatch_pending(display: ?*struct_wl_display) c_int;
-pub extern fn wl_display_prepare_read(display: ?*struct_wl_display) c_int;
-pub extern fn wl_display_cancel_read(display: ?*struct_wl_display) void;
-pub extern fn wl_display_read_events(display: ?*struct_wl_display) c_int;
+pub const wl_display_dispatch = wayland.wl_display_dispatch;
+pub const wl_display_dispatch_pending = wayland.wl_display_dispatch_pending;
+pub const wl_display_prepare_read = wayland.wl_display_prepare_read;
+pub const wl_display_cancel_read = wayland.wl_display_cancel_read;
+pub const wl_display_read_events = wayland.wl_display_read_events;
 
 pub extern fn g_mkstemp([*c]u8) c_int;
 pub extern fn g_filename_to_uri([*c]const u8, [*c]const u8, [*c][*c]GError) [*c]u8;
@@ -1815,21 +1717,21 @@ pub extern fn g_get_user_runtime_dir() [*:0]const u8;
 pub extern fn cairo_surface_status(?*cairo_surface_t) cairo_status_t;
 pub extern fn cairo_surface_mark_dirty(?*cairo_surface_t) void;
 
-pub extern fn wl_display_flush(display: ?*struct_wl_display) c_int;
+pub const wl_display_flush = wayland.wl_display_flush;
 
-pub extern fn wl_display_roundtrip(display: ?*struct_wl_display) c_int;
+pub const wl_display_roundtrip = wayland.wl_display_roundtrip;
 
-pub const struct_wl_buffer = opaque {};
+pub const struct_wl_buffer = wayland.struct_wl_buffer;
 
-pub const struct_wl_output = opaque {};
+pub const struct_wl_output = wayland.struct_wl_output;
 
-pub const struct_wl_registry = opaque {};
+pub const struct_wl_registry = wayland.struct_wl_registry;
 
-pub const struct_wl_seat = opaque {};
+pub const struct_wl_seat = wayland.struct_wl_seat;
 
-pub const struct_wl_shm = opaque {};
+pub const struct_wl_shm = wayland.struct_wl_shm;
 
-pub const struct_wl_shm_pool = opaque {};
+pub const struct_wl_shm_pool = wayland.struct_wl_shm_pool;
 
 pub extern const wl_registry_interface: struct_wl_interface;
 
@@ -1843,141 +1745,43 @@ pub extern const wl_seat_interface: struct_wl_interface;
 
 pub extern const wl_output_interface: struct_wl_interface;
 
-pub fn wl_display_get_registry(arg_wl_display_1: ?*struct_wl_display) callconv(.c) ?*struct_wl_registry {
-    var wl_display_1 = arg_wl_display_1;
-    _ = &wl_display_1;
-    var registry: ?*struct_wl_proxy = undefined;
-    _ = &registry;
-    registry = wl_proxy_marshal_flags(@ptrCast(@alignCast(wl_display_1)), WL_DISPLAY_GET_REGISTRY, &wl_registry_interface, wl_proxy_get_version(@ptrCast(@alignCast(wl_display_1))), 0, @as(?*anyopaque, null));
-    return @ptrCast(@alignCast(registry));
-}
+pub const wl_display_get_registry = wayland.wl_display_get_registry;
 
-pub const struct_wl_registry_listener = extern struct {
-    global: ?*const fn (data: ?*anyopaque, wl_registry: ?*struct_wl_registry, name: u32, interface: [*c]const u8, version: u32) callconv(.c) void = null,
-    global_remove: ?*const fn (data: ?*anyopaque, wl_registry: ?*struct_wl_registry, name: u32) callconv(.c) void = null,
-};
+pub const struct_wl_registry_listener = wayland.struct_wl_registry_listener;
 
-pub fn wl_registry_add_listener(arg_wl_registry_1: ?*struct_wl_registry, arg_listener: [*c]const struct_wl_registry_listener, arg_data: ?*anyopaque) callconv(.c) c_int {
-    var wl_registry_1 = arg_wl_registry_1;
-    _ = &wl_registry_1;
-    var listener = arg_listener;
-    _ = &listener;
-    var data = arg_data;
-    _ = &data;
-    return wl_proxy_add_listener(@ptrCast(@alignCast(wl_registry_1)), @ptrCast(@alignCast(@constCast(listener))), data);
-}
+pub const wl_registry_add_listener = wayland.wl_registry_add_listener;
 
-pub fn wl_registry_destroy(arg_wl_registry_1: ?*struct_wl_registry) callconv(.c) void {
-    var wl_registry_1 = arg_wl_registry_1;
-    _ = &wl_registry_1;
-    wl_proxy_destroy(@ptrCast(@alignCast(wl_registry_1)));
-}
+pub const wl_registry_destroy = wayland.wl_registry_destroy;
 
-pub fn wl_registry_bind(arg_wl_registry_1: ?*struct_wl_registry, arg_name: u32, arg_interface: [*c]const struct_wl_interface, arg_version: u32) callconv(.c) ?*anyopaque {
-    var wl_registry_1 = arg_wl_registry_1;
-    _ = &wl_registry_1;
-    var name = arg_name;
-    _ = &name;
-    var interface = arg_interface;
-    _ = &interface;
-    var version = arg_version;
-    _ = &version;
-    var id: ?*struct_wl_proxy = undefined;
-    _ = &id;
-    id = wl_proxy_marshal_flags(@ptrCast(@alignCast(wl_registry_1)), WL_REGISTRY_BIND, interface, version, 0, name, interface.*.name, version, @as(?*anyopaque, null));
-    return @ptrCast(@alignCast(id));
-}
+pub const wl_registry_bind = wayland.wl_registry_bind;
 
-pub fn wl_shm_pool_create_buffer(arg_wl_shm_pool_1: ?*struct_wl_shm_pool, arg_offset: i32, arg_width: i32, arg_height: i32, arg_stride: i32, arg_format: u32) callconv(.c) ?*struct_wl_buffer {
-    var wl_shm_pool_1 = arg_wl_shm_pool_1;
-    _ = &wl_shm_pool_1;
-    var offset = arg_offset;
-    _ = &offset;
-    var width = arg_width;
-    _ = &width;
-    var height = arg_height;
-    _ = &height;
-    var stride = arg_stride;
-    _ = &stride;
-    var format = arg_format;
-    _ = &format;
-    var id: ?*struct_wl_proxy = undefined;
-    _ = &id;
-    id = wl_proxy_marshal_flags(@ptrCast(@alignCast(wl_shm_pool_1)), WL_SHM_POOL_CREATE_BUFFER, &wl_buffer_interface, wl_proxy_get_version(@ptrCast(@alignCast(wl_shm_pool_1))), 0, @as(?*anyopaque, null), offset, width, height, stride, format);
-    return @ptrCast(@alignCast(id));
-}
+pub const wl_shm_pool_create_buffer = wayland.wl_shm_pool_create_buffer;
 
-pub fn wl_shm_pool_destroy(arg_wl_shm_pool_1: ?*struct_wl_shm_pool) callconv(.c) void {
-    var wl_shm_pool_1 = arg_wl_shm_pool_1;
-    _ = &wl_shm_pool_1;
-    _ = wl_proxy_marshal_flags(@ptrCast(@alignCast(wl_shm_pool_1)), WL_SHM_POOL_DESTROY, null, wl_proxy_get_version(@ptrCast(@alignCast(wl_shm_pool_1))), @bitCast(@as(c_int, @as(c_int, 1) << @intCast(@as(c_int, 0)))));
-}
+pub const wl_shm_pool_destroy = wayland.wl_shm_pool_destroy;
 
-pub const WL_SHM_FORMAT_ARGB8888: c_int = 0;
+pub const WL_SHM_FORMAT_ARGB8888 = wayland.WL_SHM_FORMAT_ARGB8888;
 
-pub const WL_SHM_FORMAT_XRGB8888: c_int = 1;
+pub const WL_SHM_FORMAT_XRGB8888 = wayland.WL_SHM_FORMAT_XRGB8888;
 
-pub const WL_SHM_FORMAT_XBGR8888: c_int = 875709016;
+pub const WL_SHM_FORMAT_XBGR8888 = wayland.WL_SHM_FORMAT_XBGR8888;
 
-pub const WL_SHM_FORMAT_ABGR8888: c_int = 875708993;
+pub const WL_SHM_FORMAT_ABGR8888 = wayland.WL_SHM_FORMAT_ABGR8888;
 
-pub fn wl_shm_destroy(arg_wl_shm_1: ?*struct_wl_shm) callconv(.c) void {
-    var wl_shm_1 = arg_wl_shm_1;
-    _ = &wl_shm_1;
-    wl_proxy_destroy(@ptrCast(@alignCast(wl_shm_1)));
-}
+pub const wl_shm_destroy = wayland.wl_shm_destroy;
 
-pub fn wl_shm_create_pool(arg_wl_shm_1: ?*struct_wl_shm, arg_fd: i32, arg_size: i32) callconv(.c) ?*struct_wl_shm_pool {
-    var wl_shm_1 = arg_wl_shm_1;
-    _ = &wl_shm_1;
-    var fd = arg_fd;
-    _ = &fd;
-    var size = arg_size;
-    _ = &size;
-    var id: ?*struct_wl_proxy = undefined;
-    _ = &id;
-    id = wl_proxy_marshal_flags(@ptrCast(@alignCast(wl_shm_1)), WL_SHM_CREATE_POOL, &wl_shm_pool_interface, wl_proxy_get_version(@ptrCast(@alignCast(wl_shm_1))), 0, @as(?*anyopaque, null), fd, size);
-    return @ptrCast(@alignCast(id));
-}
+pub const wl_shm_create_pool = wayland.wl_shm_create_pool;
 
-pub fn wl_buffer_destroy(arg_wl_buffer_1: ?*struct_wl_buffer) callconv(.c) void {
-    var wl_buffer_1 = arg_wl_buffer_1;
-    _ = &wl_buffer_1;
-    _ = wl_proxy_marshal_flags(@ptrCast(@alignCast(wl_buffer_1)), WL_BUFFER_DESTROY, null, wl_proxy_get_version(@ptrCast(@alignCast(wl_buffer_1))), @bitCast(@as(c_int, @as(c_int, 1) << @intCast(@as(c_int, 0)))));
-}
+pub const wl_buffer_destroy = wayland.wl_buffer_destroy;
 
-pub fn wl_seat_destroy(arg_wl_seat_1: ?*struct_wl_seat) callconv(.c) void {
-    var wl_seat_1 = arg_wl_seat_1;
-    _ = &wl_seat_1;
-    wl_proxy_destroy(@ptrCast(@alignCast(wl_seat_1)));
-}
+pub const wl_seat_destroy = wayland.wl_seat_destroy;
 
-pub const WL_OUTPUT_MODE_CURRENT: c_int = 1;
+pub const WL_OUTPUT_MODE_CURRENT = wayland.WL_OUTPUT_MODE_CURRENT;
 
-pub const struct_wl_output_listener = extern struct {
-    geometry: ?*const fn (data: ?*anyopaque, wl_output: ?*struct_wl_output, x: i32, y: i32, physical_width: i32, physical_height: i32, subpixel: i32, make: [*c]const u8, model: [*c]const u8, transform: i32) callconv(.c) void = null,
-    mode: ?*const fn (data: ?*anyopaque, wl_output: ?*struct_wl_output, flags: u32, width: i32, height: i32, refresh: i32) callconv(.c) void = null,
-    done: ?*const fn (data: ?*anyopaque, wl_output: ?*struct_wl_output) callconv(.c) void = null,
-    scale: ?*const fn (data: ?*anyopaque, wl_output: ?*struct_wl_output, factor: i32) callconv(.c) void = null,
-    name: ?*const fn (data: ?*anyopaque, wl_output: ?*struct_wl_output, name: [*c]const u8) callconv(.c) void = null,
-    description: ?*const fn (data: ?*anyopaque, wl_output: ?*struct_wl_output, description: [*c]const u8) callconv(.c) void = null,
-};
+pub const struct_wl_output_listener = wayland.struct_wl_output_listener;
 
-pub fn wl_output_add_listener(arg_wl_output_1: ?*struct_wl_output, arg_listener: [*c]const struct_wl_output_listener, arg_data: ?*anyopaque) callconv(.c) c_int {
-    var wl_output_1 = arg_wl_output_1;
-    _ = &wl_output_1;
-    var listener = arg_listener;
-    _ = &listener;
-    var data = arg_data;
-    _ = &data;
-    return wl_proxy_add_listener(@ptrCast(@alignCast(wl_output_1)), @ptrCast(@alignCast(@constCast(listener))), data);
-}
+pub const wl_output_add_listener = wayland.wl_output_add_listener;
 
-pub fn wl_output_destroy(arg_wl_output_1: ?*struct_wl_output) callconv(.c) void {
-    var wl_output_1 = arg_wl_output_1;
-    _ = &wl_output_1;
-    wl_proxy_destroy(@ptrCast(@alignCast(wl_output_1)));
-}
+pub const wl_output_destroy = wayland.wl_output_destroy;
 
 pub extern fn gdk_wayland_window_set_application_id(window: ?*GdkWindow, application_id: [*c]const u8) void;
 
@@ -2013,35 +1817,35 @@ pub const GDK_KEY_Super_R = __helpers.promoteIntLiteral(c_int, 0xffec, .hex);
 
 pub const GTK_STYLE_PROVIDER_PRIORITY_APPLICATION = @as(c_int, 600);
 
-pub const WL_DISPLAY_GET_REGISTRY = @as(c_int, 1);
+pub const WL_DISPLAY_GET_REGISTRY = wayland.WL_DISPLAY_GET_REGISTRY;
 
-pub const WL_REGISTRY_BIND = @as(c_int, 0);
+pub const WL_REGISTRY_BIND = wayland.WL_REGISTRY_BIND;
 
-pub const WL_SHM_POOL_CREATE_BUFFER = @as(c_int, 0);
+pub const WL_SHM_POOL_CREATE_BUFFER = wayland.WL_SHM_POOL_CREATE_BUFFER;
 
-pub const WL_SHM_POOL_DESTROY = @as(c_int, 1);
+pub const WL_SHM_POOL_DESTROY = wayland.WL_SHM_POOL_DESTROY;
 
-pub const WL_SHM_CREATE_POOL = @as(c_int, 0);
+pub const WL_SHM_CREATE_POOL = wayland.WL_SHM_CREATE_POOL;
 
-pub const WL_BUFFER_DESTROY = @as(c_int, 0);
+pub const WL_BUFFER_DESTROY = wayland.WL_BUFFER_DESTROY;
 
-pub const wl_array = struct_wl_array;
+pub const wl_array = wayland.wl_array;
 
-pub const wl_display = struct_wl_display;
+pub const wl_display = wayland.wl_display;
 
-pub const wl_buffer = struct_wl_buffer;
+pub const wl_buffer = wayland.wl_buffer;
 
-pub const wl_output = struct_wl_output;
+pub const wl_output = wayland.wl_output;
 
-pub const wl_registry = struct_wl_registry;
+pub const wl_registry = wayland.wl_registry;
 
-pub const wl_seat = struct_wl_seat;
+pub const wl_seat = wayland.wl_seat;
 
-pub const wl_shm = struct_wl_shm;
+pub const wl_shm = wayland.wl_shm;
 
-pub const wl_registry_listener = struct_wl_registry_listener;
+pub const wl_registry_listener = wayland.wl_registry_listener;
 
-pub const wl_output_listener = struct_wl_output_listener;
+pub const wl_output_listener = wayland.wl_output_listener;
 
 pub const GUnixFDList = extern struct { parent_instance: GObject, priv: ?*anyopaque };
 pub const G_BUS_TYPE_SYSTEM: c_int = 1;

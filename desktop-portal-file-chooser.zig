@@ -10,19 +10,9 @@ fn text(value: ?*c.GVariant) [:0]const u8 {
 fn builder(signature: [*:0]const u8) *c.GVariantBuilder {
     return c.g_variant_builder_new(@ptrCast(signature)).?;
 }
-fn option(options: ?*c.GVariant, name: [*:0]const u8, signature: [*:0]const u8) !?*c.GVariant {
-    const value = c.g_variant_lookup_value(options, name, null) orelse return null;
-    if (!eq(std.mem.span(c.g_variant_get_type_string(value)), std.mem.span(signature))) {
-        c.g_variant_unref(value);
-        return error.InvalidFileChooserOption;
-    }
-    return value;
-}
-fn boolean(options: ?*c.GVariant, name: [*:0]const u8, fallback: bool) !bool {
-    const value = try option(options, name, "b") orelse return fallback;
-    defer c.g_variant_unref(value);
-    return c.g_variant_get_boolean(value) != 0;
-}
+const Options = @import("desktop-portal-options.zig").Options(error.InvalidFileChooserOption);
+const option = Options.get;
+const boolean = Options.boolean;
 const form = @import("desktop-form.zig");
 const files = @import("desktop-file-list.zig");
 pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;

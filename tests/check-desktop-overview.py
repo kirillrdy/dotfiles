@@ -6,7 +6,7 @@ and --wallpaper for the build being checked; the current desktop is untouched.
 """
 
 import argparse
-from session_fixture import command as session_command, wait_ready
+from session_fixture import Processes, command as session_command, wait_ready
 import os
 import re
 import select
@@ -72,18 +72,11 @@ def main():
             GSETTINGS_BACKEND="keyfile",
             G_DEBUG="fatal-criticals",
         )
-        processes = []
+        processes = Processes(artifacts, env)
         pointer = None
 
         def start(command, name, **extra):
-            process = sp.Popen(
-                command,
-                env=dict(env, **extra),
-                stdout=(artifacts / f"{name}.log").open("w"),
-                stderr=sp.STDOUT,
-            )
-            processes.append(process)
-            return process
+            return processes.start(command, f"{name}.log", extra)
 
         def run(command):
             return sp.run(
@@ -147,7 +140,7 @@ def main():
                 stderr=(artifacts / "pointer.log").open("w"),
                 text=True,
             )
-            processes.append(pointer)
+            processes.track(pointer)
             assert select.select([pointer.stdout], [], [], 5)[0], (
                 "Virtual pointer did not start"
             )
@@ -315,14 +308,7 @@ def main():
                 "PASS: live captures, exact activation, idle cleanup, workspaces, drag, keyboard, native dash, tooltips, search, app grid, close and Super"
             )
         finally:
-            for process in reversed(processes):
-                if process.poll() is None:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=3)
-                    except sp.TimeoutExpired:
-                        process.kill()
-                        process.wait()
+            processes.stop()
 
 
 if __name__ == "__main__":

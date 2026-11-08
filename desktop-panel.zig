@@ -15,6 +15,7 @@ pub const Config = struct {
 };
 
 const Panel = struct {
+    devices: *@import("desktop-devices.zig").Service,
     monitor: *c.GdkMonitor,
     window: *c.GtkWidget,
     modules: std.ArrayList(*widgets.Module) = .empty,
@@ -24,7 +25,7 @@ const Panel = struct {
         for (options) |option| {
             const root = c.gtk_event_box_new();
             c.gtk_widget_add_events(root, c.GDK_BUTTON_PRESS_MASK);
-            const module = widgets.init(root, option);
+            const module = widgets.initWithDevices(root, option, self.devices);
             self.modules.append(allocator, module) catch @panic("out of memory");
             if (option.on_click) |command| {
                 _ = c.g_signal_connect_data(root, "button-press-event", @ptrCast(&launch), @constCast(command.ptr), null, 0);
@@ -34,9 +35,9 @@ const Panel = struct {
         return box;
     }
 
-    fn create(monitor: *c.GdkMonitor, config: Config) *Panel {
+    fn create(monitor: *c.GdkMonitor, config: Config, devices: *@import("desktop-devices.zig").Service) *Panel {
         const self = allocator.create(Panel) catch @panic("out of memory");
-        self.* = .{ .monitor = monitor, .window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL) };
+        self.* = .{ .devices = devices, .monitor = monitor, .window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL) };
         _ = c.g_object_ref(monitor);
         const window = cast(c.GtkWindow, self.window);
         c.gtk_widget_set_name(self.window, "desktop-panel");
@@ -72,13 +73,14 @@ const Panel = struct {
 };
 
 const App = struct {
+    devices: *@import("desktop-devices.zig").Service,
     config: Config,
     panels: std.ArrayList(*Panel) = .empty,
     revision: u64 = 0,
 
     fn add(_: *c.GdkDisplay, monitor: *c.GdkMonitor, data: c.gpointer) callconv(.c) void {
         const self: *App = @ptrCast(@alignCast(data));
-        self.panels.append(allocator, Panel.create(monitor, self.config)) catch @panic("out of memory");
+        self.panels.append(allocator, Panel.create(monitor, self.config, self.devices)) catch @panic("out of memory");
         self.revision +%= 1;
     }
 
@@ -108,7 +110,7 @@ pub const Service = struct {
     added: c.gulong = 0,
     removed: c.gulong = 0,
 
-    pub fn create(config_path: [:0]const u8) !*Service {
+    pub fn create(config_path: [:0]const u8, devices: *@import("desktop-devices.zig").Service) !*Service {
         const self = try allocator.create(Service);
         errdefer allocator.destroy(self);
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -120,7 +122,7 @@ pub const Service = struct {
         const parsed = try std.json.parseFromSlice(Config, arena.allocator(), contents[0..length], .{});
         if (parsed.value.height == 0) return error.InvalidConfig;
         widgets.ensureStyle();
-        self.* = .{ .arena = arena, .app = .{ .config = parsed.value } };
+        self.* = .{ .arena = arena, .app = .{ .config = parsed.value, .devices = devices } };
         const display = c.gdk_display_get_default().?;
         self.added = c.g_signal_connect_data(display, "monitor-added", @ptrCast(&App.add), &self.app, null, 0);
         self.removed = c.g_signal_connect_data(display, "monitor-removed", @ptrCast(&App.remove), &self.app, null, 0);
@@ -133,9 +135,9 @@ pub const Service = struct {
         return self.app.revision;
     }
 
-    pub fn update(self: *Service, source: []const u8, line: [:0]const u8) void {
+    pub fn update(self: *Service, source: []const u8, value: @import("desktop-panel-data.zig").Update) void {
         for (self.app.panels.items) |panel| for (panel.modules.items) |module| {
-            if (std.mem.eql(u8, std.mem.span(module.source), source)) widgets.update_line(module, line.ptr);
+            if (std.mem.eql(u8, std.mem.span(module.source), source)) widgets.update(module, value);
         };
     }
 

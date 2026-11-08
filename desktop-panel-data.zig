@@ -1,4 +1,4 @@
-//! JSON streams for the native panel. Each update owns a bounded arena.
+//! Typed panel updates. Each worker result owns a bounded arena.
 const std = @import("std");
 const network = @import("desktop-network.zig");
 const u = @import("desktop-util.zig");
@@ -6,10 +6,32 @@ const audio = @import("desktop-audio.zig");
 const battery = @import("desktop-battery.zig");
 const codex = @import("desktop-codex.zig");
 const A = u.Allocator;
-const V = u.Value;
-const cpu_colors = [_][]const u8{ "#0072b3", "#0092e6", "#00a3ff", "#002f3d", "#001d26" };
-const memory_colors = [_][]const u8{ "#00b35b", "#00ff82", "#aaf5d0" };
-const network_colors = [_][]const u8{ "#fce94f", "#ff6e00", "#fb74fb", "#e0006e", "#ff0000" };
+pub const Item = struct {
+    icon: []const u8 = "",
+    text: []const u8 = "",
+    tooltip: []const u8 = "",
+    command: []const u8 = "",
+};
+pub const Graph = struct {
+    values: []const f64,
+    colors: []const [:0]const u8 = &.{},
+    sequence: i64,
+    markup: []const u8 = "",
+    tooltip: []const u8 = "",
+    maximum: f64 = 0,
+};
+pub const Window = struct { percent: ?f64 = null, reset: []const u8 = "Resets: —" };
+pub const Update = struct {
+    items: ?[]const Item = null,
+    monitors: ?[]const Graph = null,
+    windows: []const Window = &.{},
+    tooltip: []const u8 = "",
+    checked: []const u8 = "Checked: —",
+    @"error": []const u8 = "",
+};
+const cpu_colors = [_][:0]const u8{ "#0072b3", "#0092e6", "#00a3ff", "#002f3d", "#001d26" };
+const memory_colors = [_][:0]const u8{ "#00b35b", "#00ff82", "#aaf5d0" };
+const network_colors = [_][:0]const u8{ "#fce94f", "#ff6e00", "#fb74fb", "#e0006e", "#ff0000" };
 
 pub fn cpuCounters(contents: []const u8) [8]u64 {
     var words = std.mem.tokenizeAny(u8, contents[0 .. std.mem.indexOfScalar(u8, contents, '\n') orelse contents.len], " \t");
@@ -88,20 +110,6 @@ pub fn rateText(a: A, rate: f64) ![]const u8 {
     }
     return u.fmt(a, "{s}<span size=\"62.5%\" alpha=\"65%\"> {s}</span>", .{ try shortNumber(a, value), unit });
 }
-fn graph(a: A, values: []const f64, colors: []const []const u8, sequence: u64, markup: []const u8, tooltip: []const u8, maximum: f64) !V {
-    var out = u.object();
-    var series = u.array(a);
-    var palette = u.array(a);
-    for (values) |v| try series.array.append(u.num(v));
-    for (colors) |color| try palette.array.append(u.str(color));
-    try u.put(a, &out, "values", series);
-    try u.put(a, &out, "colors", palette);
-    try u.put(a, &out, "sequence", .{ .integer = @intCast(sequence) });
-    try u.put(a, &out, "markup", u.str(markup));
-    try u.put(a, &out, "tooltip", u.str(tooltip));
-    try u.put(a, &out, "maximum", u.num(maximum));
-    return out;
-}
 pub const Monitor = struct {
     previous_cpu: [8]u64,
     previous_net: [2]u64,
@@ -118,7 +126,7 @@ pub const Monitor = struct {
         return .{ .previous_cpu = cpuCounters(try u.read(a, "/proc/stat")), .previous_net = try networkCounters(a), .timer = u.Timer.start() };
     }
 
-    pub fn sample(self: *Monitor, a: A, demo: bool) !V {
+    pub fn sample(self: *Monitor, a: A, demo: bool) !Update {
         const now = @as(f64, @floatFromInt(self.timer.read())) / std.time.ns_per_s;
         if (demo or now - self.last[0] >= 1.5) {
             const current = cpuCounters(try u.read(a, "/proc/stat"));
@@ -142,60 +150,44 @@ pub const Monitor = struct {
             self.sequences[2] += 1;
         }
         const percent = @round(self.cpu[0] + self.cpu[1] + self.cpu[2] + self.cpu[3] + self.cpu[4]);
-        var graphs = u.array(a);
-        try graphs.array.append(try graph(a, &self.cpu, &cpu_colors, self.sequences[0], try u.fmt(a, "{d:.0}<span size=\"62.5%\" alpha=\"65%\">%</span>", .{percent}), try u.fmt(a, "CPU: {d:.0}%", .{percent}), 100));
-        try graphs.array.append(try graph(a, &self.memory.values, &memory_colors, self.sequences[1], try u.fmt(a, "{s} / {s}<span size=\"62.5%\" alpha=\"65%\"> GiB</span>", .{ try shortNumber(a, self.memory.used), try shortNumber(a, self.memory.total) }), try u.fmt(a, "Memory: {d:.0}% programs, {d:.0}% buffers, {d:.0}% cache", .{ self.memory.values[0], self.memory.values[1], self.memory.values[2] }), 100));
-        try graphs.array.append(try graph(a, &.{ self.down, 0, self.up, 0, 0 }, &network_colors, self.sequences[2], try u.fmt(a, "{s}\n{s}", .{ try rateText(a, self.down), try rateText(a, self.up) }), try u.fmt(a, "Download: {d:.1} KiB/s\nUpload: {d:.1} KiB/s", .{ self.down / 1024, self.up / 1024 }), 0));
-        var out = u.object();
-        try u.put(a, &out, "monitors", graphs);
+        const graphs = try a.alloc(Graph, 3);
+        graphs[0] = .{ .values = try a.dupe(f64, &self.cpu), .colors = &cpu_colors, .sequence = @intCast(self.sequences[0]), .markup = try u.fmt(a, "{d:.0}<span size=\"62.5%\" alpha=\"65%\">%</span>", .{percent}), .tooltip = try u.fmt(a, "CPU: {d:.0}%", .{percent}), .maximum = 100 };
+        graphs[1] = .{ .values = try a.dupe(f64, &self.memory.values), .colors = &memory_colors, .sequence = @intCast(self.sequences[1]), .markup = try u.fmt(a, "{s} / {s}<span size=\"62.5%\" alpha=\"65%\"> GiB</span>", .{ try shortNumber(a, self.memory.used), try shortNumber(a, self.memory.total) }), .tooltip = try u.fmt(a, "Memory: {d:.0}% programs, {d:.0}% buffers, {d:.0}% cache", .{ self.memory.values[0], self.memory.values[1], self.memory.values[2] }), .maximum = 100 };
+        graphs[2] = .{ .values = try a.dupe(f64, &.{ self.down, 0, self.up, 0, 0 }), .colors = &network_colors, .sequence = @intCast(self.sequences[2]), .markup = try u.fmt(a, "{s}\n{s}", .{ try rateText(a, self.down), try rateText(a, self.up) }), .tooltip = try u.fmt(a, "Download: {d:.1} KiB/s\nUpload: {d:.1} KiB/s", .{ self.down / 1024, self.up / 1024 }) };
         self.tick += 1;
-        return out;
+        return .{ .monitors = graphs };
     }
 };
 pub const Status = struct { icon: []const u8, label: []const u8 = "", tooltip: []const u8 };
-pub fn addNetwork(a: A, out: *V, state: *const network.State) !void {
+fn append(a: A, out: *Update, value: Item) !void {
+    const old = out.items orelse return;
+    const items = try a.alloc(Item, old.len + 1);
+    @memcpy(items[0..old.len], old);
+    items[old.len] = value;
+    out.items = items;
+}
+pub fn addNetwork(a: A, out: *Update, state: *const network.State) !void {
     const info = state.indicator();
-    const items = out.object.getPtr("items") orelse return;
-    try items.array.append(try item(a, info.icon, "", info.title, "desktop-zig settings network"));
+    try append(a, out, .{ .icon = info.icon, .tooltip = info.title, .command = "desktop-zig settings network" });
 }
 pub fn batteryInfo(a: A, state: battery.State) !Status {
     var icon_buffer: [100]u8 = undefined;
     var time_buffer: [80]u8 = undefined;
     return .{ .icon = try a.dupe(u8, try state.icon(&icon_buffer)), .label = try a.dupe(u8, try state.duration(&time_buffer)), .tooltip = try u.fmt(a, "Battery: {d:.0}% · {s}", .{ state.percent, state.description() }) };
 }
-pub fn addBattery(a: A, out: *V, state: battery.State) !void {
+pub fn addBattery(a: A, out: *Update, state: battery.State) !void {
     if (!state.visible()) return;
     const info = try batteryInfo(a, state);
-    const items = out.object.getPtr("items") orelse return;
-    try items.array.append(try item(a, info.icon, info.label, try u.fmt(a, "{s} · Quick Settings", .{info.tooltip}), ""));
+    try append(a, out, .{ .icon = info.icon, .text = info.label, .tooltip = try u.fmt(a, "{s} · Quick Settings", .{info.tooltip}) });
 }
-fn item(a: A, icon: []const u8, label: []const u8, tooltip: []const u8, cmd: []const u8) !V {
-    var out = u.object();
-    try u.put(a, &out, "icon", u.str(icon));
-    try u.put(a, &out, "text", u.str(label));
-    try u.put(a, &out, "tooltip", u.str(tooltip));
-    try u.put(a, &out, "command", u.str(cmd));
-    return out;
-}
-pub fn addAudio(a: A, out: *V, output: ?audio.State, input: ?audio.State) !void {
-    const items = out.object.getPtr("items") orelse return;
+pub fn addAudio(a: A, out: *Update, output: ?audio.State, input: ?audio.State) !void {
     if (output) |state| {
         const level = if (state.muted or state.percent == 0) "muted" else if (state.percent >= 66) "high" else if (state.percent >= 33) "medium" else "low";
-        try items.array.append(try item(a, try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), "", try u.fmt(a, "Volume: {d:.0}%", .{state.percent}), "desktop-zig settings sound"));
+        try append(a, out, .{ .icon = try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), .tooltip = try u.fmt(a, "Volume: {d:.0}%", .{state.percent}), .command = "desktop-zig settings sound" });
     }
     if (input) |state| if (state.muted) {
-        try items.array.append(try item(a, "microphone-sensitivity-muted-symbolic", "", "Microphone muted", ""));
+        try append(a, out, .{ .icon = "microphone-sensitivity-muted-symbolic", .tooltip = "Microphone muted" });
     };
-}
-fn statusItems(a: A, demo: bool) !V {
-    var items = u.array(a);
-    if (demo) {
-        try items.array.append(try item(a, "network-wireless-signal-excellent-symbolic", "", "Wi-Fi", ""));
-        try items.array.append(try item(a, "audio-volume-high-symbolic", "", "Volume", ""));
-        try items.array.append(try item(a, "battery-level-80-symbolic", "5∶42", "Battery", ""));
-        return items;
-    }
-    return items;
 }
 fn diskSize(a: A, bytes: u128) ![]const u8 {
     var size: f64 = @floatFromInt(bytes);
@@ -215,24 +207,32 @@ pub fn diskUsageText(a: A, stats: u.libc.struct_statvfs) ![]const u8 {
 }
 
 /// One bounded update, suitable for a shared session worker.
-pub fn sample(a: A, kind: []const u8, icon: []const u8, demo: bool) !V {
-    var out = u.object();
-    if (u.eq(kind, "status")) try u.put(a, &out, "items", try statusItems(a, demo)) else if (u.eq(kind, "disk")) {
+pub fn sample(a: A, kind: []const u8, icon: []const u8, demo: bool) !Update {
+    if (u.eq(kind, "status")) return .{ .items = if (demo) &.{
+        .{ .icon = "network-wireless-signal-excellent-symbolic", .tooltip = "Wi-Fi" },
+        .{ .icon = "audio-volume-high-symbolic", .tooltip = "Volume" },
+        .{ .icon = "battery-level-80-symbolic", .text = "5∶42", .tooltip = "Battery" },
+    } else &.{} };
+    const items = try a.alloc(Item, 1);
+    if (u.eq(kind, "disk")) {
         var stats: u.libc.struct_statvfs = undefined;
-        const label = if (u.libc.statvfs("/", &stats) == 0) try diskUsageText(a, stats) else "—/—";
-        var items = u.array(a);
-        try items.array.append(try item(a, "", label, "Root filesystem usage", "ghostty -e ncdu /"));
-        try u.put(a, &out, "items", items);
-    } else {
-        const result = if (demo) try u.parse(a, "{\"text\":\"54%\",\"tooltip\":\"5h: 54% remaining\\n7d: 93% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}]}") else try codex.readUsage(a, true, true);
-        var items = u.array(a);
-        try items.array.append(try item(a, icon, u.string(u.get(result, "text")), "", ""));
-        try u.put(a, &out, "items", items);
-        try u.put(a, &out, "tooltip", u.get(result, "tooltip"));
-        const windows = u.get(result, "windows");
-        try u.put(a, &out, "windows", if (windows == .array) windows else u.array(a));
-        try u.put(a, &out, "error", u.str(if (windows == .array and windows.array.items.len > 0) "" else u.string(u.get(result, "tooltip"))));
-        try u.put(a, &out, "checked", if (demo) u.str(try u.localTime(a, u.timestamp(), "Checked: %H:%M:%S")) else if (u.get(result, "checked") == .string) u.get(result, "checked") else u.str("Checked: —"));
+        items[0] = .{ .text = if (u.libc.statvfs("/", &stats) == 0) try diskUsageText(a, stats) else "—/—", .tooltip = "Root filesystem usage", .command = "ghostty -e ncdu /" };
+        return .{ .items = items };
     }
-    return out;
+    // Decode the external API once; the session transports typed data throughout.
+    const result = if (demo) try u.parse(a, "{\"text\":\"54%\",\"tooltip\":\"5h: 54% remaining\\n7d: 93% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}]}") else try codex.readUsage(a, true, true);
+    items[0] = .{ .icon = icon, .text = u.string(u.get(result, "text")) };
+    const raw_windows = u.get(result, "windows");
+    const windows = try a.alloc(Window, if (raw_windows == .array) raw_windows.array.items.len else 0);
+    for (windows, 0..) |*window, i| {
+        const value = raw_windows.array.items[i];
+        window.* = .{ .percent = u.number(u.get(value, "percent")), .reset = u.string(u.get(value, "reset")) };
+    }
+    return .{
+        .items = items,
+        .tooltip = u.string(u.get(result, "tooltip")),
+        .windows = windows,
+        .@"error" = if (windows.len > 0) "" else u.string(u.get(result, "tooltip")),
+        .checked = if (demo) try u.localTime(a, u.timestamp(), "Checked: %H:%M:%S") else if (u.get(result, "checked") == .string) u.string(u.get(result, "checked")) else "Checked: —",
+    };
 }

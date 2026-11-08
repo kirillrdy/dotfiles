@@ -4,19 +4,9 @@ const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
-fn option(options: ?*c.GVariant, key: [*:0]const u8, signature: [:0]const u8) !?*c.GVariant {
-    const value = c.g_variant_lookup_value(options, key, null) orelse return null;
-    if (!eq(std.mem.span(c.g_variant_get_type_string(value)), signature)) {
-        c.g_variant_unref(value);
-        return error.InvalidPrintOption;
-    }
-    return value;
-}
-fn boolean(options: ?*c.GVariant, key: [*:0]const u8, fallback: bool) !bool {
-    const value = try option(options, key, "b") orelse return fallback;
-    defer c.g_variant_unref(value);
-    return c.g_variant_get_boolean(value) != 0;
-}
+const Options = @import("desktop-portal-options.zig").Options(error.InvalidPrintOption);
+const option = Options.get;
+const boolean = Options.boolean;
 fn empty() ?*c.GVariant {
     return c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0);
 }

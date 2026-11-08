@@ -22,6 +22,7 @@ var current: ?*Session = null;
 
 const Session = struct {
     app: *c.GtkApplication,
+    devices: ?*@import("desktop-devices.zig").Service = null,
     panels: ?*panel.Service = null,
     background: ?*wallpaper.Service = null,
     notices: ?*notifications.Service = null,
@@ -31,6 +32,7 @@ const Session = struct {
     activities: overview.State = .{ .wallpaper = "" },
     dialogs: settings.Service = .{},
     data: collectors.Service = undefined,
+    data_started: bool = false,
     image: ?[:0]u8 = null,
     timer: c.guint = 0,
     serving: bool = false,
@@ -49,7 +51,8 @@ const Session = struct {
         const alloc = temporary.allocator();
         const config = try alloc.dupeSentinel(u8, if (args.len > 1) args[1] else "/etc/xdg/desktop-panel/config.json", 0);
         self.background = try wallpaper.Service.create(self.image.?);
-        self.panels = try panel.Service.create(config);
+        self.devices = try @import("desktop-devices.zig").Service.create();
+        self.panels = try panel.Service.create(config, self.devices.?);
         self.notices = try notifications.Service.create();
         try self.media.start();
         self.media.connection = c.g_application_get_dbus_connection(@ptrCast(self.app));
@@ -57,8 +60,9 @@ const Session = struct {
             std.log.warn("PolicyKit agent: {s}; will retry", .{@errorName(err)});
             break :blk null;
         };
-        self.data = .{ .panel = self.panels.?, .icon = if (c.g_getenv("DESKTOP_CODEX_ICON")) |icon| std.mem.span(icon) else "" };
+        self.data = .{ .devices = self.devices.?, .panel = self.panels.?, .icon = if (c.g_getenv("DESKTOP_CODEX_ICON")) |icon| std.mem.span(icon) else "" };
         self.data.start();
+        self.data_started = true;
         self.inactivity = try idle.Service.create(.{});
         self.serving = true;
         current = self;
@@ -80,12 +84,13 @@ const Session = struct {
         widgets.refresh_source = null;
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         if (self.inactivity) |inactivity| inactivity.destroy();
-        if (self.serving) self.data.deinit();
+        if (self.data_started) self.data.deinit();
         self.dialogs.deinit();
         overview.deinit(&self.activities);
         self.media.deinit();
         if (self.agent) |*agent| agent.deinit();
         if (self.panels) |panels| panels.destroy();
+        if (self.devices) |devices| devices.destroy();
         if (self.notices) |notices| notices.destroy();
         if (self.background) |background| background.destroy();
         // Drain cancelled widget reads while their reference-counted states survive.

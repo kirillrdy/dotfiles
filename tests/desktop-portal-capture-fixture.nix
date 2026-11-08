@@ -1,15 +1,10 @@
 { pkgs }:
 let
   desktop = import ../desktop-zig.nix { inherit pkgs; };
-  fixture = desktop.overrideAttrs {
-    pname = "desktop-portal-capture-fixtures";
-    outputs = [ "out" ];
-    buildPhase = ''
-      export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-      zig build portal-capture-fixtures --prefix "$out" -Doptimize=ReleaseSafe
-    '';
-    doCheck = false;
-    installPhase = "true";
+  fixture = import ./fixture-build.nix {
+    inherit desktop;
+    name = "desktop-portal-capture-fixtures";
+    steps = "portal-capture-fixtures";
   };
 in
 pkgs.runCommand "desktop-portal-capture-check"
