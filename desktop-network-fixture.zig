@@ -70,6 +70,13 @@ pub fn main(init: std.process.Init) !void {
         window.showPage(.saved);
         try std.testing.expect(!window.manual.visible);
         window.showPage(.wifi);
+        window.ui.activate(window.view.search);
+        try std.testing.expect(window.ui.get(window.view.query).entry.?.public_text);
+        try window.ui.setText(window.view.query, "no matching network");
+        window.ui.changed(window.ui.context, window.view.query);
+        try std.testing.expectEqual(@as(usize, 0), window.rows.items.len);
+        try std.testing.expect(window.ui.shortcut.?(window.ui.context, 0xff1b, 0));
+        try std.testing.expect(!window.view.searching and window.rows.items.len > 0);
         const properties = editor.Editor.create(window.window, state.profiles.items[0]);
         settle();
         properties.ui.activate(properties.view.tabs[2]);
@@ -101,6 +108,11 @@ pub fn main(init: std.process.Init) !void {
         c.gtk_init(null, null);
         const window = settings.Settings.create(.network);
         if (std.mem.eql(u8, args[1], "preview-network")) window.showPage(.network);
+        if (std.mem.eql(u8, args[1], "preview-search")) {
+            window.ui.activate(window.view.search);
+            try window.ui.setText(window.view.query, "Home Wi-Fi");
+            window.ui.changed(window.ui.context, window.view.query);
+        }
         if (std.mem.startsWith(u8, args[1], "preview-editor")) {
             const properties = editor.Editor.create(window.window, state.profiles.items[0]);
             if (std.mem.endsWith(u8, args[1], "ipv4")) properties.view.page = .ipv4;

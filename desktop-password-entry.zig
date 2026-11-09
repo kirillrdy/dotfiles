@@ -124,6 +124,8 @@ pub const Entry = struct {
     preedit: usize = 0,
     first: usize = 0,
     advance: f64 = 10,
+    text_offset: f64 = 0,
+    text_scale: u32 = 1,
     renderer: text.Renderer = .{},
     bullet: ?text.Mask = null,
     scale: u32 = 0,
@@ -222,6 +224,7 @@ pub const Entry = struct {
         self.buffer.clear();
         self.preedit = 0;
         self.first = 0;
+        self.text_offset = 0;
         self.revision += 1;
         c.gtk_im_context_reset(self.im);
         if (!self.dead) self.notify();
@@ -321,13 +324,30 @@ pub const Entry = struct {
     }
     pub fn point(self: *Entry, x: f64, extend: bool) void {
         self.resetComposition();
-        const character: usize = @intFromFloat(@max(0, @round((x - self.rect.x - 12) / self.advance) + @as(f64, @floatFromInt(self.first))));
-        self.buffer.cursor = self.buffer.byteOffset(@min(character, self.buffer.characters(self.buffer.len)));
+        if (self.public_text) {
+            const position = x - self.rect.x - 12 + self.text_offset;
+            var offset: usize = 0;
+            var previous: f64 = 0;
+            while (offset < self.buffer.len) {
+                const next = self.buffer.next(offset);
+                const width = self.publicAdvance(next, self.text_scale) catch return;
+                if (position < (previous + width) / 2) break;
+                previous = width;
+                offset = next;
+            }
+            self.buffer.cursor = offset;
+        } else {
+            const character: usize = @intFromFloat(@max(0, @round((x - self.rect.x - 12) / self.advance) + @as(f64, @floatFromInt(self.first))));
+            self.buffer.cursor = self.buffer.byteOffset(@min(character, self.buffer.characters(self.buffer.len)));
+        }
         if (!extend) self.buffer.anchor = self.buffer.cursor;
         self.revision += 1;
         self.notify();
     }
     pub fn paint(self: *Entry, target: raster.Buffer, scale: u32) !void {
+        const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(scale) };
+        self.paintFrame(canvas);
+        if (self.public_text) return self.paintPublic(target, scale);
         if (self.scale != scale) {
             if (self.bullet) |mask| mask.deinit(a);
             self.bullet = null;
@@ -336,10 +356,7 @@ pub const Entry = struct {
             self.scale = scale;
             self.advance = @as(f64, @floatFromInt(self.bullet.?.logical_width)) / @as(f64, @floatFromInt(scale)) + 2;
         }
-        const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(scale) };
         const rect = self.rect;
-        canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height }, .radius = 9 } }}, color(0x242427));
-        canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = rect.x + 1, .y = rect.y + 1, .width = rect.width - 2, .height = rect.height - 2 }, .radius = 8, .width = if (self.focused) 2 else 1 } }}, color(if (self.focused) 0x78aeed else 0x606066));
         const cursor = self.buffer.characters(self.buffer.cursor);
         const anchor = self.buffer.characters(self.buffer.anchor);
         const visible: usize = @intFromFloat(@max(1, @floor((rect.width - 28) / self.advance)));
@@ -368,6 +385,46 @@ pub const Entry = struct {
         const caret_x = rect.x + 12 + @as(f64, @floatFromInt(caret_index - self.first)) * self.advance;
         if (self.focused and self.caret) canvas.draw(&.{.{ .line = .{ .start = .{ .x = caret_x, .y = rect.y + 11 }, .end = .{ .x = caret_x, .y = rect.y + rect.height - 11 }, .radius = 0.65 } }}, color(0xffffff));
         const location: c.GdkRectangle = .{ .x = @intFromFloat(caret_x), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
+        c.gtk_im_context_set_cursor_location(self.im, &location);
+    }
+    fn paintFrame(self: *const Entry, canvas: raster.Canvas) void {
+        const rect = self.rect;
+        canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height }, .radius = 9 } }}, color(0x242427));
+        canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = rect.x + 1, .y = rect.y + 1, .width = rect.width - 2, .height = rect.height - 2 }, .radius = 8, .width = if (self.focused) 2 else 1 } }}, color(if (self.focused) 0x78aeed else 0x606066));
+    }
+    fn publicAdvance(self: *Entry, offset: usize, scale: u32) !f64 {
+        const factor: f64 = @floatFromInt(scale);
+        var prefix: [Buffer.capacity:0]u8 = @splat(0);
+        @memcpy(prefix[0..offset], self.buffer.bytes[0..offset]);
+        const mask = try self.renderer.renderLayout(a, prefix[0..offset :0], .{ .font = "Adwaita Sans", .size = 14.6666666667 * factor, .dpi = 96 * factor, .origin = .top });
+        defer mask.deinit(a);
+        return @as(f64, @floatFromInt(mask.logical_width)) / factor;
+    }
+    fn paintPublic(self: *Entry, target: raster.Buffer, scale: u32) !void {
+        const factor: f64 = @floatFromInt(scale);
+        self.text_scale = scale;
+        const rect = self.rect;
+        const cursor = try self.publicAdvance(self.buffer.cursor, scale);
+        const anchor = try self.publicAdvance(self.buffer.anchor, scale);
+        const available = @max(1, rect.width - 24);
+        if (cursor - self.text_offset > available - 1) self.text_offset = @max(0, cursor - available + 1);
+        if (cursor < self.text_offset) self.text_offset = cursor;
+        if (self.buffer.len == 0) self.text_offset = 0;
+        const mask = try self.renderer.renderLayout(a, self.buffer.valueZ(), .{ .font = "Adwaita Sans", .size = 14.6666666667 * factor, .dpi = 96 * factor, .origin = .top });
+        defer mask.deinit(a);
+        const width: u32 = @intFromFloat(available * factor);
+        const height: u32 = @intFromFloat(@max(1, rect.height) * factor);
+        const pixels = try a.alloc(u32, @as(usize, width) * height);
+        defer a.free(pixels);
+        @memset(pixels, 0);
+        const strip: raster.Buffer = .{ .pixels = pixels, .width = width, .height = height };
+        const canvas: raster.Canvas = .{ .target = strip, .scale = factor };
+        const y = (rect.height - @as(f64, @floatFromInt(mask.logical_height)) / factor) / 2;
+        if (self.focused and self.buffer.selected()) canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = @min(cursor, anchor) - self.text_offset, .y = y, .width = @abs(cursor - anchor), .height = @as(f64, @floatFromInt(mask.logical_height)) / factor }, .radius = 0 } }}, color(0x36577d));
+        mask.paint(canvas, -self.text_offset, y, color(0xffffff));
+        if (self.focused and self.caret) canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = cursor - self.text_offset, .y = 7, .width = 1, .height = @max(1, rect.height - 14) }, .radius = 0 } }}, color(0xffffff));
+        try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(pixels), .width = width, .height = height, .stride = width * 4, .format = .argb }, .{ .x = (rect.x + 12) * factor, .y = rect.y * factor, .width = @floatFromInt(width), .height = @floatFromInt(height) }, null);
+        const location: c.GdkRectangle = .{ .x = @intFromFloat(rect.x + 12 + cursor - self.text_offset), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
         c.gtk_im_context_set_cursor_location(self.im, &location);
     }
     pub fn destroy(self: *Entry) void {
@@ -472,4 +529,62 @@ test "native password pixels depend on character count rather than plaintext" {
     try entry.insert("x");
     try std.testing.expectEqualStrings("x", entry.buffer.value());
     for (entry.buffer.bytes[1..]) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
+}
+
+test "public entries shape Adwaita text and place the caret using proportional advances" {
+    c.gtk_init(null, null);
+    const allocator = std.testing.allocator;
+    const widget = c.gtk_drawing_area_new().?;
+    _ = c.g_object_ref_sink(widget);
+    defer c.g_object_unref(widget);
+    defer c.gtk_widget_destroy(widget);
+    const Callback = struct {
+        fn changed(_: ?*anyopaque) void {}
+    };
+    const entry = try Entry.create(widget, &Callback.changed, null);
+    defer entry.destroy();
+    entry.makePublic();
+    entry.rect = .{ .x = 20, .y = 10, .width = 360, .height = 42 };
+    var renderer: text.Renderer = .{};
+    defer renderer.deinit();
+    for ([_]u32{ 1, 2 }) |scale| {
+        const factor: f64 = @floatFromInt(scale);
+        entry.clear();
+        try entry.insert("Wi-Fi WWW iii 東京");
+        const actual = try allocator.alloc(u32, 400 * 64 * scale * scale);
+        defer allocator.free(actual);
+        const expected = try allocator.alloc(u32, actual.len);
+        defer allocator.free(expected);
+        @memset(actual, 0xff737373);
+        @memset(expected, 0xff242427);
+        const target: raster.Buffer = .{ .pixels = actual, .width = 400 * scale, .height = 64 * scale };
+        try entry.paint(target, scale);
+        // Compare the entry's glyphs with a whole-line layout, as used by overview search.
+        const reference = try renderer.renderLayout(allocator, entry.buffer.valueZ(), .{ .font = "Adwaita Sans", .size = 14.6666666667 * factor, .dpi = 96 * factor, .origin = .top });
+        defer reference.deinit(allocator);
+        reference.paint(.{ .target = .{ .pixels = expected, .width = target.width, .height = target.height }, .scale = factor }, 32, 10 + (42 - @as(f64, @floatFromInt(reference.logical_height)) / factor) / 2, color(0xffffff));
+        for (16 * scale..46 * scale) |y| {
+            try std.testing.expectEqualSlices(u32, expected[y * target.width + 32 * scale .. y * target.width + 368 * scale], actual[y * target.width + 32 * scale .. y * target.width + 368 * scale]);
+        }
+        for ([_]usize{ 1, 7, 11, 15 }) |character| {
+            const offset = entry.buffer.byteOffset(character);
+            const prefix = try allocator.dupeSentinel(u8, entry.buffer.value()[0..offset], 0);
+            defer allocator.free(prefix);
+            const mask = try renderer.renderLayout(allocator, prefix, .{ .font = "Adwaita Sans", .size = 14.6666666667 * factor, .dpi = 96 * factor, .origin = .top });
+            defer mask.deinit(allocator);
+            entry.point(32 + @as(f64, @floatFromInt(mask.logical_width)) / factor + 0.1, false);
+            try std.testing.expectEqual(offset, entry.buffer.cursor);
+        }
+        entry.rect.width = 120;
+        entry.buffer.end(true, false);
+        @memset(actual, 0xff737373);
+        try entry.paint(target, scale);
+        try std.testing.expect(entry.text_offset > 0);
+        for (0..target.height) |y| for (0..target.width) |x| {
+            if (x < 20 * scale or x >= 140 * scale or y < 10 * scale or y >= 52 * scale) try std.testing.expectEqual(@as(u32, 0xff737373), actual[y * target.width + x]);
+        };
+        entry.point(32, false);
+        try std.testing.expect(entry.buffer.cursor > 0);
+        entry.rect.width = 360;
+    }
 }
