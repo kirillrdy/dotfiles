@@ -23,6 +23,7 @@ pub const Sound = struct {
     failed: bool = false,
     refreshing: bool = false,
     flushing: bool = false,
+    feedback: audio.Feedback = .{},
     pub fn create() !*Sound {
         const self = try a.create(Sound);
         errdefer a.destroy(self);
@@ -31,15 +32,18 @@ pub const Sound = struct {
         c.gtk_window_set_title(cast(c.GtkWindow, window), "Sound");
         c.gtk_window_set_role(cast(c.GtkWindow, window), "desktop-sound-settings");
         c.gtk_window_set_icon_name(cast(c.GtkWindow, window), "preferences-desktop-sound");
-        c.gtk_window_set_default_size(cast(c.GtkWindow, window), 560, 600);
+        c.gtk_window_set_default_size(cast(c.GtkWindow, window), 980, 700);
+        c.gtk_window_set_decorated(cast(c.GtkWindow, window), 0);
         const scroll = c.gtk_scrolled_window_new(null, null).?;
-        c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_AUTOMATIC);
+        c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_NEVER);
         c.gtk_container_add(cast(c.GtkContainer, window), scroll);
         const canvas = c.gtk_drawing_area_new().?;
         c.gtk_widget_set_can_focus(canvas, 1);
-        c.gtk_widget_add_events(canvas, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_KEY_PRESS_MASK | c.GDK_FOCUS_CHANGE_MASK);
+        c.gtk_widget_add_events(canvas, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_KEY_PRESS_MASK | c.GDK_FOCUS_CHANGE_MASK | c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
         c.gtk_container_add(cast(c.GtkContainer, scroll), canvas);
         self.* = .{ .window = window, .canvas = canvas, .scroll = scroll, .cancel = c.g_cancellable_new().? };
+        self.view.test_enabled = c.g_getenv("DESKTOP_OSD_SOUND_FILE") != null;
+        c.gtk_widget_set_size_request(canvas, 680, 400);
         errdefer {
             c.g_object_unref(self.cancel);
             self.view.deinit(a);
@@ -52,6 +56,7 @@ pub const Sound = struct {
         connect(canvas, "leave-notify-event", &leave, self);
         connect(canvas, "key-press-event", &key, self);
         connect(canvas, "focus-out-event", &focusOut, self);
+        connect(canvas, "scroll-event", &scrolled, self);
         self.service = audio.Service.create(&changed, self) catch null;
         errdefer if (self.service) |service| service.destroy();
         try self.refresh();
@@ -73,6 +78,7 @@ pub const Sound = struct {
         c.g_cancellable_cancel(self.cancel);
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         self.timer = 0;
+        self.feedback.deinit();
         if (self.service) |service| service.destroy();
         self.service = null;
     }
@@ -94,10 +100,10 @@ pub const Sound = struct {
         self.setMessage("Unable to render sound settings") catch {};
         c.gtk_widget_queue_draw(self.canvas);
     }
-    fn append(self: *Sound, target: audio.Target, title: [:0]const u8, heading: ?[:0]const u8, device: bool) !void {
+    fn append(self: *Sound, target: audio.Target, title: [:0]const u8, class: ?audio.Class, device: bool) !void {
         const copy = try a.dupeSentinel(u8, if (std.unicode.utf8ValidateSlice(title)) title else "Unnamed audio device", 0);
         errdefer a.free(copy);
-        try self.view.rows.append(a, .{ .target = target, .title = copy, .heading = heading, .device = device });
+        try self.view.rows.append(a, .{ .target = target, .title = copy, .class = class, .device = device });
     }
     pub fn refresh(self: *Sound) !void {
         if (self.closed or self.refreshing or self.flushing) return;
@@ -105,7 +111,6 @@ pub const Sound = struct {
         defer self.refreshing = false;
         const service = self.service orelse {
             try self.setMessage("Audio service unavailable");
-            c.gtk_widget_set_size_request(self.canvas, 480, 200);
             c.gtk_widget_queue_draw(self.canvas);
             return;
         };
@@ -127,16 +132,14 @@ pub const Sound = struct {
             self.view.focus = null;
             self.view.hover = null;
             self.view.pressed = null;
-            try self.append(.output, "Output volume", null, false);
-            try self.append(.input, "Microphone volume", null, false);
-            for ([_]audio.Class{ .output, .input, .playback, .recording }, [_][:0]const u8{ "Output devices", "Input devices", "Playback applications", "Recording applications" }) |class, heading| {
-                var count: usize = 0;
+            self.view.expanded = null;
+            try self.append(.output, "Output Volume", null, false);
+            try self.append(.input, "Input Volume", null, false);
+            for ([_]audio.Class{ .output, .input, .playback, .recording }) |class| {
                 for (service.nodes.items) |*entry| {
                     if (entry.class != class) continue;
-                    try self.append(.{ .id = entry.id }, std.mem.sliceTo(&entry.title, 0), if (count == 0) heading else null, class == .output or class == .input);
-                    count += 1;
+                    try self.append(.{ .id = entry.id }, std.mem.sliceTo(&entry.title, 0), class, class == .output or class == .input);
                 }
-                if (count == 0) try self.append(.{ .id = std.math.maxInt(u32) }, "None available", heading, false);
             }
             self.layout = layout;
         }
@@ -145,7 +148,7 @@ pub const Sound = struct {
             row.is_default = if (service.node(row.target)) |node| node.is_default else false;
         }
         if (!service.ready) try self.setMessage("Audio service unavailable") else if (!self.failed) try self.setMessage("");
-        c.gtk_widget_set_size_request(self.canvas, 480, @intCast(self.view.height()));
+        self.view.offset = std.math.clamp(self.view.offset, 0, self.view.maxOffset());
         c.gtk_widget_queue_draw(self.canvas);
     }
     pub fn setVolume(self: *Sound, index: usize, value: f64) void {
@@ -180,12 +183,55 @@ pub const Sound = struct {
     }
     pub fn activate(self: *Sound, target: native.Target) void {
         if (self.closed or !self.view.active(target)) return;
+        switch (target.control) {
+            .close => {
+                c.gtk_widget_destroy(self.window);
+                return;
+            },
+            .levels => {
+                self.showPage(.levels);
+                return;
+            },
+            .back => {
+                self.showPage(.sound);
+                return;
+            },
+            .device => {
+                self.view.expanded = if (self.view.expanded == target.row) null else target.row;
+                self.view.option_cursor = 0;
+                while (self.view.optionAt(self.view.option_cursor)) |i| : (self.view.option_cursor += 1) {
+                    if (self.view.rows.items[i].is_default) break;
+                }
+                if (self.view.optionAt(self.view.option_cursor) == null) self.view.option_cursor = 0;
+                c.gtk_widget_queue_draw(self.canvas);
+                return;
+            },
+            .test_sound => {
+                if (c.g_getenv("DESKTOP_OSD_SOUND_FILE")) |path| self.feedback.play(@ptrCast(path));
+                return;
+            },
+            else => {},
+        }
         const row = self.view.rows.items[target.row];
         switch (target.control) {
             .volume => {},
             .mute => self.apply(row.target, .{ .mute = !row.state.?.muted }),
-            .default => self.apply(row.target, .default),
+            .default => {
+                self.view.focus = .{ .row = self.view.expanded.?, .control = .device };
+                self.view.expanded = null;
+                self.apply(row.target, .default);
+            },
+            else => unreachable,
         }
+    }
+    pub fn showPage(self: *Sound, page: native.Page) void {
+        self.view.page = page;
+        self.view.offset = 0;
+        self.view.expanded = null;
+        self.view.focus = null;
+        self.view.pressed = null;
+        self.view.hover = null;
+        c.gtk_widget_queue_draw(self.canvas);
     }
     fn apply(self: *Sound, target: audio.Target, change: audio.Change) void {
         if (self.closed) return;
@@ -222,19 +268,25 @@ pub const Sound = struct {
     }
     fn paint(self: *Sound, cr: *c.cairo_t) !void {
         const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(self.canvas)));
-        const width: u32 = @intCast(@max(480, c.gtk_widget_get_allocated_width(self.canvas)));
+        const width: u32 = @intCast(@max(680, c.gtk_widget_get_allocated_width(self.canvas)));
+        const height: u32 = @intCast(@max(400, c.gtk_widget_get_allocated_height(self.canvas)));
         if (self.view.width != width) {
             self.view.invalidate(a);
             self.view.width = width;
         }
+        self.view.viewport_height = height;
+        self.view.offset = std.math.clamp(self.view.offset, 0, self.view.maxOffset());
         try self.view.prepare(a, scale);
-        const height: u32 = @intCast(@max(@as(c_int, @intCast(self.view.height())), c.gtk_widget_get_allocated_height(self.canvas)));
         try c.__zig.paintCairo(cr, width, height, scale, &self.view, native.View.paint);
     }
     fn focus(self: *Sound) void {
         if (self.view.focus) |target| {
             const rect = self.view.rect(target);
-            c.gtk_adjustment_clamp_page(c.gtk_scrolled_window_get_vadjustment(cast(c.GtkScrolledWindow, self.scroll)), rect.y - 36, rect.y + rect.height + 8);
+            if (target.control != .close and target.control != .back) {
+                if (rect.y < 54) self.view.offset = @max(0, self.view.offset + rect.y - 54);
+                if (rect.y + rect.height > @as(f64, @floatFromInt(self.view.viewport_height)) - 16) self.view.offset += rect.y + rect.height - @as(f64, @floatFromInt(self.view.viewport_height)) + 16;
+                self.view.offset = std.math.clamp(self.view.offset, 0, self.view.maxOffset());
+            }
         }
         c.gtk_widget_queue_draw(self.canvas);
     }
@@ -242,6 +294,12 @@ pub const Sound = struct {
         if (event.button != 1) return 0;
         const self = cast(Sound, ptr);
         const target = self.view.hit(event.x, event.y);
+        if (self.view.expanded != null and target == null) {
+            self.view.expanded = null;
+            self.view.pressed = null;
+            c.gtk_widget_queue_draw(self.canvas);
+            return 1;
+        }
         self.view.pressed = target;
         self.view.focus = target;
         self.view.hover = target;
@@ -268,6 +326,18 @@ pub const Sound = struct {
     fn motion(_: *c.GtkWidget, event: *c.GdkEventMotion, ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Sound, ptr);
         self.view.hover = self.view.hit(event.x, event.y);
+        var value_buffer: [32]u8 = undefined;
+        const tooltip: ?[:0]const u8 = if (self.view.hover) |t| switch (t.control) {
+            .volume => std.fmt.bufPrintSentinel(&value_buffer, "{d:.0}%", .{self.view.rows.items[t.row].pending orelse self.view.rows.items[t.row].state.?.percent}, 0) catch null,
+            .mute => if (self.view.rows.items[t.row].state.?.muted) "Unmute" else "Mute",
+            .test_sound => "Play a sound through the selected output device",
+            .device => "Select a device",
+            .default => self.view.rows.items[t.row].title,
+            .levels => "Adjust volume for individual applications",
+            .back => "Back",
+            .close => "Close",
+        } else null;
+        c.gtk_widget_set_tooltip_text(self.canvas, if (tooltip) |label| label.ptr else null);
         if (self.view.pressed) |target| if (target.control == .volume) self.setVolume(target.row, self.view.percent(target, event.x));
         c.gtk_widget_queue_draw(self.canvas);
         return 1;
@@ -275,6 +345,7 @@ pub const Sound = struct {
     fn leave(_: *c.GtkWidget, _: *c.GdkEventCrossing, ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Sound, ptr);
         self.view.hover = null;
+        c.gtk_widget_set_tooltip_text(self.canvas, null);
         c.gtk_widget_queue_draw(self.canvas);
         return 0;
     }
@@ -295,8 +366,25 @@ pub const Sound = struct {
     }
     pub fn handleKey(self: *Sound, symbol: u32, modifiers: c.GdkModifierType) bool {
         if (self.closed) return false;
+        if (self.view.expanded != null) {
+            switch (symbol) {
+                0xff1b, 0xff09, 0xfe20 => self.view.expanded = null,
+                0xff52 => self.view.option_cursor -|= 1,
+                0xff54 => if (self.view.optionAt(self.view.option_cursor + 1) != null) {
+                    self.view.option_cursor += 1;
+                },
+                0xff50 => self.view.option_cursor = 0,
+                0xff57 => {
+                    while (self.view.optionAt(self.view.option_cursor + 1) != null) self.view.option_cursor += 1;
+                },
+                0x20, 0xff0d, 0xff8d => if (self.view.optionAt(self.view.option_cursor)) |i| self.activate(.{ .row = i, .control = .default }),
+                else => return false,
+            }
+            c.gtk_widget_queue_draw(self.canvas);
+            return true;
+        }
         switch (symbol) {
-            0xff1b => c.gtk_widget_destroy(self.window), // Escape
+            0xff1b => if (self.view.page == .levels) self.showPage(.sound) else c.gtk_widget_destroy(self.window),
             0xff09, 0xfe20 => { // Tab / Shift-Tab
                 self.view.moveFocus(modifiers & c.GDK_SHIFT_MASK != 0 or symbol == 0xfe20);
                 self.focus();
@@ -319,5 +407,22 @@ pub const Sound = struct {
             else => return false,
         }
         return true;
+    }
+    fn scrolled(_: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
+        const self = cast(Sound, ptr);
+        var direction: c.GdkScrollDirection = 0;
+        var dx: f64 = 0;
+        var dy: f64 = 0;
+        if (c.gdk_event_get_scroll_deltas(event, &dx, &dy) == 0) {
+            _ = c.gdk_event_get_scroll_direction(event, &direction);
+            if (direction != c.GDK_SCROLL_UP and direction != c.GDK_SCROLL_DOWN) return 0;
+            dy = if (direction == c.GDK_SCROLL_UP) -1 else 1;
+        }
+        const delta = dy * 48;
+        if (self.view.expanded != null) {
+            if (delta > 0 and self.view.optionAt(self.view.option_cursor + 1) != null) self.view.option_cursor += 1 else if (delta < 0) self.view.option_cursor -|= 1;
+        } else self.view.offset = std.math.clamp(self.view.offset + delta, 0, self.view.maxOffset());
+        c.gtk_widget_queue_draw(self.canvas);
+        return 1;
     }
 };

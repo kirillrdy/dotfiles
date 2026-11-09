@@ -149,7 +149,20 @@ try:
         wav.writeframes(b"\0\0" * 96000)
     native("feedback", str(sound))
     print("PASS native feedback playback without overlap", flush=True)
+    env["DESKTOP_OSD_SOUND_FILE"] = str(sound)
+    stream_sound = root / "stream.wav"
+    with wave.open(str(stream_sound), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(48000)
+        wav.writeframes(b"\0\0" * 48000 * 60)
+    playback = start(["pw-play", "--properties={ application.name = \"Fixture Player\" }", str(stream_sound)], "playback.log")
+    recording = start(["pw-record", "--target=fixture-microphone", "--properties={ application.name = \"Fixture Recorder\" }", str(root / "recording.wav")], "recording.log")
+    expect(lambda s: any(n["class"] == "playback" for n in s["nodes"]) and any(n["class"] == "recording" for n in s["nodes"]), "application streams appear")
     native("ui")
+    for process in (playback, recording):
+        process.terminate()
+        process.wait(timeout=5)
     print("PASS native quick-settings and sound-settings widgets", flush=True)
     # Destroy a node through an independent PipeWire client and observe its removal.
     run(["pw-cli", "destroy", headphones])

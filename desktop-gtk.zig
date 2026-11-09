@@ -1094,6 +1094,7 @@ pub const GDK_KEY_PRESS: c_int = 8;
 pub const GdkEventType = c_int;
 
 pub const GDK_SCROLL_UP: c_int = 0;
+pub const GDK_SCROLL_DOWN: c_int = 1;
 
 pub const GDK_SCROLL_LEFT: c_int = 2;
 

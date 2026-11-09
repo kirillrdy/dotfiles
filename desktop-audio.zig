@@ -138,7 +138,8 @@ pub const Service = struct {
             const class = classOf(std.mem.span(media)) orelse continue;
             var entry = Node{ .id = object.id, .class = class, .state = self.volume(object.id), .is_default = object.id == output or object.id == input };
             copy(&entry.name, object.property("node.name"));
-            for ([_][*:0]const u8{ "node.description", "application.name", "node.nick", "node.name" }) |key| {
+            const title_keys: [4][*:0]const u8 = if (class == .playback or class == .recording) .{ "application.name", "node.description", "node.nick", "node.name" } else .{ "node.description", "application.name", "node.nick", "node.name" };
+            for (title_keys) |key| {
                 const title = object.property(key);
                 if (title != null) {
                     copy(&entry.title, title);

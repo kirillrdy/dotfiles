@@ -105,6 +105,8 @@ fn ui(service: *audio.Service) !void {
     const previous = service.node(.output).?.id;
     var selected: ?u32 = null;
     sound.setVolume(0, 52); // This pending write belongs to the current device.
+    click(sound, 0, .device);
+    assert(sound.view.expanded == 0);
     for (sound.view.rows.items, 0..) |candidate, index| {
         if (!candidate.device or candidate.target != .id) continue;
         const id = candidate.target.id;
@@ -122,6 +124,36 @@ fn ui(service: *audio.Service) !void {
     deadline = c.g_get_monotonic_time() + 5_000_000;
     while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.{ .id = previous }).?.percent - 52) > 0.01) and c.g_get_monotonic_time() < deadline) pump();
     assert(@abs(service.state(.{ .id = previous }).?.percent - 52) < 0.01);
+    assert(sound.view.expanded == null);
+    // The device selector also opens, navigates and dismisses through the keyboard.
+    sound.view.focus = .{ .control = .device };
+    assert(sound.handleKey(0xff0d, 0));
+    assert(sound.view.expanded == 0);
+    assert(sound.handleKey(0xff50, 0));
+    assert(sound.handleKey(0xff54, 0));
+    assert(sound.view.option_cursor == 1);
+    assert(sound.handleKey(0xff1b, 0));
+    assert(sound.view.expanded == null and !sound.closed);
+    click(sound, 0, .levels);
+    assert(sound.view.page == .levels);
+    var application_classes: u8 = 0;
+    for (sound.view.rows.items, 0..) |candidate, index| {
+        if (candidate.state == null or (candidate.class != .playback and candidate.class != .recording)) continue;
+        application_classes |= if (candidate.class == .playback) @as(u8, 1) else 2;
+        const id = candidate.target.id;
+        click(sound, index, .volume);
+        deadline = c.g_get_monotonic_time() + 5_000_000;
+        while ((sound.operations != 0 or @abs((service.state(.{ .id = id }) orelse return error.MissingStream).percent - 50) > 0.01) and c.g_get_monotonic_time() < deadline) pump();
+        assert(@abs(service.state(.{ .id = id }).?.percent - 50) < 0.01);
+        const muted = service.state(.{ .id = id }).?.muted;
+        click(sound, index, .mute);
+        deadline = c.g_get_monotonic_time() + 5_000_000;
+        while ((sound.operations != 0 or service.state(.{ .id = id }).?.muted == muted) and c.g_get_monotonic_time() < deadline) pump();
+        assert(service.state(.{ .id = id }).?.muted != muted);
+    }
+    assert(application_classes == 3);
+    assert(sound.handleKey(0xff1b, 0));
+    assert(sound.view.page == .sound and !sound.closed);
     // Keyboard input uses the same path as real GDK key events.
     sound.view.focus = null;
     assert(sound.handleKey(0xff09, 0)); // Tab to the output slider.
@@ -136,6 +168,8 @@ fn ui(service: *audio.Service) !void {
     deadline = c.g_get_monotonic_time() + 5_000_000;
     while ((sound.operations != 0 or @abs(service.state(.output).?.percent - 50) > 0.01) and c.g_get_monotonic_time() < deadline) pump();
     assert(@abs(service.state(.output).?.percent - 50) < 0.01);
+    click(sound, 0, .test_sound);
+    assert(sound.feedback.playing());
     // Closing with a debounced write must remove its timeout and drain callbacks.
     sound.setVolume(0, 33);
     assert(sound.timer != 0);
@@ -165,6 +199,21 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "dispose")) return;
     try ready(service);
+    if (std.mem.startsWith(u8, args[1], "preview")) {
+        c.gtk_init(null, null);
+        const sound = try settings.Sound.create();
+        defer {
+            if (!sound.closed) c.gtk_widget_destroy(sound.window);
+            while (sound.operations != 0) pump();
+            sound.destroy();
+        }
+        const deadline = c.g_get_monotonic_time() + 5_000_000;
+        while ((sound.service == null or sound.service.?.state(.output) == null) and c.g_get_monotonic_time() < deadline) pump();
+        if (std.mem.eql(u8, args[1], "preview-levels")) sound.showPage(.levels);
+        if (std.mem.eql(u8, args[1], "preview-devices")) sound.activate(.{ .control = .device });
+        while (!sound.closed) _ = c.g_main_context_iteration(null, 1);
+        return;
+    }
     if (std.mem.eql(u8, args[1], "feedback") and args.len == 3) {
         var player = audio.Feedback{};
         defer player.deinit();
