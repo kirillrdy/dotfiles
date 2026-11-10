@@ -82,6 +82,8 @@ pub const Launcher = struct {
     owner: ?*anyopaque = null,
     redraw_fn: ?*const fn (?*anyopaque) void = null,
     hidden_fn: ?*const fn (?*anyopaque) void = null,
+    /// Return true when the owner defers hiding for an exit animation.
+    hide_requested_fn: ?*const fn (?*anyopaque) bool = null,
     search_input: ?*input.Entry = null,
     entries: std.array_list.Managed(*Entry),
     visible: std.array_list.Managed(*Entry),
@@ -119,6 +121,7 @@ pub const Launcher = struct {
         if (self.redraw_fn) |callback| callback(self.owner) else if (self.host) |host| if (host.surface) |surface| surface.redraw();
     }
     pub fn hide(self: *Launcher) void {
+        if (self.visible_window) if (self.hide_requested_fn) |requested| if (requested(self.owner)) return;
         self.visible_window = false;
         self.search_input.?.focus(false);
         self.pressed = null;
@@ -129,6 +132,7 @@ pub const Launcher = struct {
         // Stop callbacks before freeing the native connection and entry state.
         self.redraw_fn = null;
         self.hidden_fn = null;
+        self.hide_requested_fn = null;
         if (self.host) |host| host.destroy();
         self.host = null;
         if (self.search_input) |entry_input| entry_input.destroy();
@@ -657,4 +661,30 @@ test "in-place layout painting preserves the backdrop and adjacent rows" {
     var pixels: [16]u32 = @splat(0xff0000ff);
     paintRegionInPlace(.{ .pixels = &pixels, .width = 4, .height = 4 }, 1, .{ .y = 1, .width = 4, .height = 2 }, {}, Painter.paint);
     for (pixels, 0..) |pixel, index| try std.testing.expectEqual(if (index >= 4 and index < 12) @as(u32, 0xff80007f) else @as(u32, 0xff0000ff), pixel);
+}
+
+test "launcher owners can defer hiding until an exit animation completes" {
+    const State = struct {
+        defer_hide: bool = true,
+        hidden: bool = false,
+        fn requested(data: ?*anyopaque) bool {
+            return cast(@This(), data).defer_hide;
+        }
+        fn complete(data: ?*anyopaque) void {
+            cast(@This(), data).hidden = true;
+        }
+    };
+    var state: State = .{};
+    var launcher = Launcher.init(null);
+    defer launcher.deinit();
+    launcher.bindControls();
+    launcher.owner = &state;
+    launcher.hide_requested_fn = &State.requested;
+    launcher.hidden_fn = &State.complete;
+    launcher.visible_window = true;
+    launcher.hide();
+    try std.testing.expect(launcher.visible_window and !state.hidden);
+    state.defer_hide = false;
+    launcher.hide();
+    try std.testing.expect(!launcher.visible_window and state.hidden);
 }

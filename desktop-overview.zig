@@ -9,6 +9,7 @@ const capture = @import("desktop-capture.zig");
 const native_dash = @import("desktop-dash-view.zig");
 const raster = @import("desktop-raster.zig");
 const view = @import("desktop-overview-view.zig");
+const animation = @import("desktop-overview-animation.zig");
 const c = capture.c;
 const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
@@ -47,7 +48,8 @@ const Overview = struct {
     drag_x: f64 = 0,
     drag_y: f64 = 0,
     dragging: bool = false,
-    started: i64 = 0,
+    transition: animation.Transition = .{},
+    progress: f64 = 0,
     dash_hash: u64 = 0,
     workspace_from: f64 = 0,
     workspace_target: u32 = 0,
@@ -74,6 +76,7 @@ const Overview = struct {
         self.launcher.owner = self;
         self.launcher.redraw_fn = &redraw;
         self.launcher.hidden_fn = &hidden;
+        self.launcher.hide_requested_fn = &hideRequested;
         self.launcher.on_search = &searchChanged;
         self.launcher.search_context = self;
         self.client = capture.Client.create(self, &changed) catch null;
@@ -96,6 +99,15 @@ const Overview = struct {
     }
     fn present(self: *Overview) void {
         if (self.surface == null) return;
+        if (self.launcher.visible_window) {
+            if (!self.transition.shown) {
+                self.transition.setShown(true, c.g_get_monotonic_time());
+                if (self.client) |client| client.visible(true);
+                self.focusPart(.stage);
+                self.redrawSelf();
+            }
+            return;
+        }
         if (self.timer == 0) self.timer = c.g_timeout_add(33, &tick, self);
         if (self.client == null) self.client = capture.Client.create(self, &changed) catch null;
         // GDK still supplies global pointer coordinates for choosing an output.
@@ -116,7 +128,7 @@ const Overview = struct {
         self.hover = null;
         self.launcher.reload() catch |err| std.log.err("loading applications: {s}", .{@errorName(err)});
         self.launcher.setSearch("") catch {};
-        self.started = c.g_get_monotonic_time();
+        self.transition.setShown(true, c.g_get_monotonic_time());
         if (self.client) |client| {
             client.visible(true);
             client.refresh();
@@ -304,7 +316,7 @@ const Overview = struct {
         // Existing previews are sufficient during the short transition. Avoid
         // capture readbacks competing with high-refresh animation frames.
         const now = c.g_get_monotonic_time();
-        if (now - self.started < 250000 or now - self.workspace_started < 250000) return 1;
+        if (self.transition.active(now) or !self.transition.shown or now - self.workspace_started < 250000) return 1;
         self.tick_count +%= 1;
         if (self.client) |client| {
             if (self.tick_count % 8 == 0) client.refresh();
@@ -312,8 +324,27 @@ const Overview = struct {
         }
         return 1;
     }
+    fn hideRequested(data: ?*anyopaque) bool {
+        const self = cast(Overview, data);
+        // App-grid/search transitions are separate from the window picker.
+        if (self.apps_mode or self.launcher.searchText().len != 0 or self.surface == null or self.surface.?.role == null) return false;
+        const now = c.g_get_monotonic_time();
+        if (!self.transition.shown) return self.transition.active(now);
+        if (self.transition.value(now) == 0) return false;
+        self.transition.setShown(false, now);
+        self.hideTooltip();
+        self.hover = null;
+        self.drag = null;
+        self.dragging = false;
+        self.launcher.search_input.?.focus(false);
+        if (self.client) |client| client.visible(false);
+        self.redrawSelf();
+        return true;
+    }
     fn hidden(data: ?*anyopaque) void {
         const self = cast(Overview, data);
+        self.transition.setShown(false, c.g_get_monotonic_time());
+        self.transition.finish();
         self.hideTooltip();
         self.dash_view.hover = null;
         self.dash_view.pressed = null;
@@ -435,7 +466,8 @@ const Overview = struct {
     }
     fn keyRelease(_: ?*anyopaque, event: *apps.KeyEvent, data: c.gpointer) callconv(.c) c.gboolean {
         if (event.keyval == c.GDK_KEY_Super_L or event.keyval == c.GDK_KEY_Super_R) {
-            cast(Overview, data).launcher.hide();
+            const self = cast(Overview, data);
+            if (self.transition.shown) self.launcher.hide() else self.present();
             return 1;
         }
         return 0;
@@ -461,7 +493,7 @@ const Overview = struct {
         const index = @as(i64, client.current) + direction;
         if (index >= 0 and index < client.count) {
             client.switchWorkspace(@intCast(index));
-            self.started = c.g_get_monotonic_time() - 250000;
+            self.transition.finish();
             self.hover = null;
         }
     }
@@ -532,6 +564,10 @@ const Overview = struct {
     }
     fn nextFrame(data: ?*anyopaque, surface: *wire.Surface, _: u32) bool {
         const self = cast(Overview, data);
+        if (self.launcher.visible_window and !self.transition.shown and self.progress == 0) {
+            self.launcher.hide();
+            return false;
+        }
         // The last animated paint requests one more frame, which finishes the
         // transition and restores full-quality filtering before going idle.
         return self.launcher.visible_window and (self.animating or surface.buffer_scale != renderScale(data, surface));
@@ -542,7 +578,7 @@ const Overview = struct {
         // Fractional outputs otherwise render at the next integer scale (for
         // example 2x buffers on a 1.625x display). Keep motion inexpensive, then
         // restore native text/icon detail on the final compositor-paced frame.
-        if (!self.apps_mode and self.launcher.searchText().len == 0 and (now - self.started < 250000 or now - self.workspace_started < 250000)) return 1;
+        if (!self.apps_mode and self.launcher.searchText().len == 0 and (self.transition.active(now) or !self.transition.shown or now - self.workspace_started < 250000)) return 1;
         return surface.output.scale;
     }
     fn outputAdded(data: ?*anyopaque, output: *wire.Output) void {
@@ -553,6 +589,8 @@ const Overview = struct {
         const self = cast(Overview, data);
         const surface = self.surface orelse return;
         if (surface.output != output) return;
+        self.transition.setShown(false, c.g_get_monotonic_time());
+        self.transition.finish();
         self.launcher.hide();
         for (self.native.outputs.items) |candidate| if (candidate != output) {
             surface.output = candidate;
@@ -592,31 +630,40 @@ const Overview = struct {
     }
     fn symbol(data: ?*anyopaque, _: *wire.Surface, value: u32, modifiers: u32, pressed: bool) bool {
         const self = cast(Overview, data);
+        if (!self.transition.shown) {
+            if (!pressed and (value == c.GDK_KEY_Super_L or value == c.GDK_KEY_Super_R)) self.present();
+            return true;
+        }
         self.modifiers = modifiers;
         var event: apps.KeyEvent = .{ .keyval = value, .state = modifiers };
         return if (pressed) key(null, &event, data) != 0 else keyRelease(null, &event, data) != 0;
     }
     fn inputText(data: ?*anyopaque, _: *wire.Surface, value: []const u8) void {
         const self = cast(Overview, data);
+        if (!self.transition.shown) return;
         self.focusPart(.search);
         self.launcher.text(value);
     }
     fn inputFocus(data: ?*anyopaque, _: *wire.Surface, focused: bool) void {
         const self = cast(Overview, data);
-        self.launcher.search_input.?.focus(focused and self.focus_part == .search);
+        self.launcher.search_input.?.focus(focused and self.transition.shown and self.focus_part == .search);
     }
     fn surrounding(data: ?*anyopaque, _: *wire.Surface) ?@import("desktop-input.zig").TextState {
         const self = cast(Overview, data);
+        if (!self.transition.shown) return null;
         return apps.textState(&self.launcher, self.search);
     }
     fn preedit(data: ?*anyopaque, _: *wire.Surface, value: []const u8, cursor: i32) void {
-        cast(Overview, data).launcher.search_input.?.preedit(value, cursor);
+        const self = cast(Overview, data);
+        if (self.transition.shown) self.launcher.search_input.?.preedit(value, cursor);
     }
     fn commit(data: ?*anyopaque, _: *wire.Surface, value: []const u8) void {
-        cast(Overview, data).launcher.search_input.?.insert(value) catch {};
+        const self = cast(Overview, data);
+        if (self.transition.shown) self.launcher.search_input.?.insert(value) catch {};
     }
     fn delete(data: ?*anyopaque, _: *wire.Surface, before: u32, after: u32) void {
-        cast(Overview, data).launcher.search_input.?.deleteSurrounding(before, after);
+        const self = cast(Overview, data);
+        if (self.transition.shown) self.launcher.search_input.?.deleteSurrounding(before, after);
     }
     fn partRegion(self: *Overview, part: Part) apps.Region {
         return switch (part) {
@@ -645,6 +692,7 @@ const Overview = struct {
     }
     fn inputMotion(data: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
         const self = cast(Overview, data);
+        if (!self.transition.shown) return;
         const current = if (self.pressed_part) |part| part else self.partAt(x, y);
         if (self.pointer_part != current) {
             if (self.pointer_part == .dash) _ = dashLeave(null, null, data);
@@ -668,6 +716,7 @@ const Overview = struct {
     }
     fn inputButton(data: ?*anyopaque, _: *wire.Surface, code: u32, down: bool, x: f64, y: f64) void {
         const self = cast(Overview, data);
+        if (!self.transition.shown) return;
         const current = self.pressed_part orelse self.partAt(x, y);
         if (down) self.pressed_part = current else self.pressed_part = null;
         const region = self.partRegion(current);
@@ -709,12 +758,14 @@ const Overview = struct {
     }
     fn inputScroll(data: ?*anyopaque, _: *wire.Surface, _: u32, amount: f64) void {
         const self = cast(Overview, data);
+        if (!self.transition.shown) return;
         if (self.apps_mode or self.launcher.searchText().len != 0) apps.scroll(&self.launcher, amount) else if (@abs(amount) >= 1) self.stepWorkspace(if (amount > 0) 1 else -1);
     }
     fn paint(data: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(Overview, data);
         self.painting = true;
-        self.animating = false;
+        self.progress = self.transition.value(c.g_get_monotonic_time());
+        self.animating = self.progress != (if (self.transition.shown) @as(f64, 1) else 0);
         defer self.painting = false;
         const scale = self.surface.?.buffer_scale;
         const width = target.width / scale;
@@ -731,8 +782,15 @@ const Overview = struct {
         @memset(target.pixels, 0xff222226);
         apps.paintRegion(target, scale, self.search, .{ &self.launcher, apps.Part.search }, apps.paintPart);
         apps.paintRegionInPlace(target, scale, self.strip, .{ self, Part.strip }, paintPart);
-        if (self.apps_mode or self.launcher.searchText().len != 0) apps.paintRegion(target, scale, self.grid, .{ &self.launcher, apps.Part.grid }, apps.paintPart) else apps.paintRegionInPlace(target, scale, self.stage, .{ self, Part.stage }, paintPart);
         apps.paintRegion(target, scale, self.dash, .{ self, Part.dash }, paintPart);
+        if (self.apps_mode or self.launcher.searchText().len != 0) {
+            apps.paintRegion(target, scale, self.grid, .{ &self.launcher, apps.Part.grid }, apps.paintPart);
+        } else if (self.progress < 1 or !self.transition.shown) {
+            // The desktop zooms over the entire viewport, revealing the search,
+            // thumbnails and dash as it shrinks, rather than clipping at the
+            // window-picker allocation from the first frame.
+            self.paintStage(.{ .target = target, .scale = @floatFromInt(scale), .origin = .{ .x = 0, .y = self.stage.y } }, @floatFromInt(width), @floatFromInt(self.stage.height));
+        } else apps.paintRegionInPlace(target, scale, self.stage, .{ self, Part.stage }, paintPart);
         if (self.tooltip_visible) apps.paintRegion(target, scale, self.tooltip, .{ self, Part.tooltip }, paintPart);
         if (status > 0) apps.paintRegion(target, scale, .{ .y = @floatFromInt(height -| (footer + status)), .width = width, .height = status }, .{ &self.launcher, apps.Part.message }, apps.paintPart);
     }
@@ -750,7 +808,7 @@ const Overview = struct {
     fn paintStrip(self: *Overview, canvas: raster.Canvas, width: f64) void {
         const client = self.client orelse return;
         const now = c.g_get_monotonic_time();
-        const animated = now - self.started < 250000 or now - self.workspace_started < 250000;
+        const animated = self.transition.active(now) or !self.transition.shown or now - self.workspace_started < 250000;
         const left = (width - @as(f64, @floatFromInt(client.count)) * 72 + 6) / 2;
         for (0..client.count) |i| {
             const x = left + @as(f64, @floatFromInt(i)) * 72;
@@ -780,23 +838,24 @@ const Overview = struct {
         const scale = @min(width * 0.73 / @as(f64, @floatFromInt(self.monitor.width)), (height - 24) / @as(f64, @floatFromInt(self.monitor.height - 32)));
         const base = Rect{ .x = (width - @as(f64, @floatFromInt(self.monitor.width)) * scale) / 2, .y = 12, .w = @as(f64, @floatFromInt(self.monitor.width)) * scale, .h = @as(f64, @floatFromInt(self.monitor.height - 32)) * scale };
         self.workspace_rect = base;
-        const t = std.math.clamp(@as(f64, @floatFromInt(c.g_get_monotonic_time() - self.started)) / 250000, 0, 1);
-        const ease = 1 - (1 - t) * (1 - t) * (1 - t);
+        const ease = self.progress;
         const position = self.workspacePosition();
-        const animated = t < 1 or position != @as(f64, @floatFromInt(self.workspace_target));
-        self.animating = animated;
+        const moving = self.animating or position != @as(f64, @floatFromInt(self.workspace_target));
+        const animated = moving or !self.transition.shown;
+        self.animating = moving;
         for (0..client.count) |i| {
             const offset = @as(f64, @floatFromInt(i)) - position;
             const ratio = 1 - 0.06 * @min(1, @abs(offset));
-            var background = Rect{ .x = width / 2 + offset * (base.w + 64) - base.w * ratio / 2, .y = 12 + (base.h - base.h * ratio) / 2, .w = base.w * ratio, .h = base.h * ratio };
+            const full_height: f64 = @floatFromInt(self.monitor.height - 32);
+            const start = Rect{ .x = width / 2 + offset * (width + 64) - width * ratio / 2, .y = -128 + (full_height - full_height * ratio) / 2, .w = width * ratio, .h = full_height * ratio };
+            const background = Rect{
+                .x = start.x + (width / 2 + offset * (base.w + 64) - base.w * ratio / 2 - start.x) * ease,
+                .y = start.y + (12 + (base.h - base.h * ratio) / 2 - start.y) * ease,
+                .w = start.w + (base.w * ratio - start.w) * ease,
+                .h = start.h + (base.h * ratio - start.h) * ease,
+            };
             if (background.x > width or background.x + background.w < 0) continue;
-            if (i == client.current and t < 1) {
-                background.x *= ease;
-                background.y = -128 + (background.y + 128) * ease;
-                background.w = width + (background.w - width) * ease;
-                background.h = @as(f64, @floatFromInt(self.monitor.height - 32)) + (background.h - @as(f64, @floatFromInt(self.monitor.height - 32))) * ease;
-            }
-            view.workspace(canvas, pixelRect(background), self.wallpaper, animated);
+            view.workspaceProgress(canvas, pixelRect(background), self.wallpaper, ease, animated);
             self.drawWindows(canvas, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1, animated);
         }
     }
@@ -823,7 +882,17 @@ const Overview = struct {
             const x = background.x + 84 * ratio + (@as(f64, @floatFromInt(columns - in_row)) * (cell_w + 32 * ratio)) / 2 + @as(f64, @floatFromInt(col)) * (cell_w + 32 * ratio) + (cell_w - w) / 2;
             const y = (height - height * ratio) / 2 + @as(f64, @floatFromInt(row)) * (cell_h + 32 * ratio) + (cell_h - h) / 2;
             if (workspace_index == client.current) window.target = .{ .x = x, .y = y, .w = w, .h = h };
-            const start = Rect{ .x = window.geometry.x - @as(f64, @floatFromInt(self.monitor.x)), .y = window.geometry.y - @as(f64, @floatFromInt(self.monitor.y + 160)), .w = window.geometry.w, .h = window.geometry.h };
+            // GNOME first projects the desktop geometry into the moving
+            // workspace, then interpolates that clone into the picker layout.
+            // Composing both transforms keeps windows attached to the zoom.
+            const sx = background.w / @as(f64, @floatFromInt(self.monitor.width));
+            const sy = background.h / @as(f64, @floatFromInt(self.monitor.height - 32));
+            const start = Rect{
+                .x = background.x + (window.geometry.x - @as(f64, @floatFromInt(self.monitor.x))) * sx,
+                .y = background.y + (window.geometry.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy,
+                .w = window.geometry.w * sx,
+                .h = window.geometry.h * sy,
+            };
             const r = Rect{ .x = start.x + (x - start.x) * ease, .y = start.y + (y - start.y) * ease, .w = start.w + (w - start.w) * ease, .h = start.h + (h - start.h) * ease };
             view.window(canvas, pixelRect(r), if (window.image) |image| image.view() else null, window.icon, workspace_index == client.current and self.hover == index, ease, animated);
             position += 1;
@@ -845,7 +914,7 @@ pub fn activate(app: *c.GtkApplication, data: c.gpointer) callconv(.c) void {
     const state = cast(State, data);
     if (state.overview == null) state.overview = Overview.create(app, state.wallpaper);
     const self = state.overview.?;
-    if (self.launcher.visible_window) self.launcher.hide() else self.present();
+    if (self.launcher.visible_window and self.transition.shown) self.launcher.hide() else self.present();
 }
 pub fn deinit(state: *State) void {
     if (state.overview) |self| self.destroy();

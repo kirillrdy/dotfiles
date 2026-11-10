@@ -71,12 +71,16 @@ fn drawImage(cr: *c.cairo_t, image: ?raster.Image, r: Rect, opacity: f64, animat
     }
 }
 pub fn workspace(canvas: Canvas, r: Rect, wallpaper: ?*c.cairo_surface_t, animated: bool) void {
+    workspaceProgress(canvas, r, wallpaper, 1, animated);
+}
+
+pub fn workspaceProgress(canvas: Canvas, r: Rect, wallpaper: ?*c.cairo_surface_t, progress: f64, animated: bool) void {
     const context = Context.init(canvas) orelse return;
     defer context.deinit();
     const cr = context.cr;
     c.cairo_save(cr);
     defer c.cairo_restore(cr);
-    rounded(cr, r, 30);
+    rounded(cr, r, 30 * std.math.clamp(progress, 0, 1));
     c.cairo_clip(cr);
     c.cairo_set_source_rgb(cr, 0.015, 0.235, 0.53);
     c.cairo_paint(cr);

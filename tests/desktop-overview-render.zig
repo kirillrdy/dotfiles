@@ -168,3 +168,22 @@ test "native buffer overview preserves wallpaper crops, previews, hover, fades a
         try compare(expected[0 .. width * height], pixels, scale, ease);
     };
 }
+
+test "workspace corners grow with overview progress from an unrounded desktop" {
+    const a = std.testing.allocator;
+    for ([_]u32{ 1, 2 }) |scale| {
+        const width = 90 * scale;
+        const height = 60 * scale;
+        const pixels = try a.alloc(u32, width * height);
+        defer a.free(pixels);
+        const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) };
+        const bounds: raster.Rect = .{ .width = 90, .height = 60 };
+        for ([_]f64{ 0, 0.5, 1 }) |progress| {
+            @memset(pixels, 0);
+            view.workspaceProgress(canvas, bounds, null, progress, true);
+            try std.testing.expectEqual(@as(u32, 255), pixels[(30 * scale) * width + 45 * scale] >> 24);
+            try std.testing.expectEqual(if (progress == 0) @as(u32, 255) else 0, pixels[0] >> 24);
+            try std.testing.expectEqual(if (progress < 1) @as(u32, 255) else 0, pixels[(5 * scale) * width + 5 * scale] >> 24);
+        }
+    }
+}

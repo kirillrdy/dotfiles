@@ -329,12 +329,27 @@ def main():
             assert overview.poll() is None, log()[-4000:]
             key("Escape")
             reopen()
-            key("Super_L")
+            # A close animates while retaining its surface. Reversing it must
+            # reuse that surface rather than flash through an unmap/remap.
+            before_close = len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log()))
+            maps_before = len(re.findall(r'get_layer_surface\(.*"desktop-overview"', log()))
+            run(["wtype", "-k", "Super_L"])
+            time.sleep(0.06)
+            assert len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log())) == before_close, "Overview closed without its exit animation"
+            run(overview_command)
+            time.sleep(0.4)
+            assert len(re.findall(r'get_layer_surface\(.*"desktop-overview"', log())) == maps_before, "Reversing a close remapped the overview"
+            assert len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log())) == before_close, "Reversing a close still unmapped the overview"
+            close_started = time.monotonic()
+            run(["wtype", "-k", "Super_L"])
+            time.sleep(0.06)
+            assert len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log())) == before_close, "Overview disappeared before its closing transition"
             maps = len(re.findall(r'get_layer_surface\(.*"desktop-overview"', log()))
             wait_for(
                 lambda: len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log())) == maps,
                 "Super did not hide the overview",
             )
+            assert time.monotonic() - close_started >= 0.2, "Closing skipped the 250ms animation profile"
             assert compositor.poll() is None
             overview_surfaces = re.findall(r'get_layer_surface\([^\n]*wl_surface#(\d+),[^\n]*"desktop-overview"', log())
             assert overview_surfaces and any(re.search(rf'wl_surface#{surface}\.frame\(', log()) for surface in overview_surfaces), "Overview did not request compositor frame callbacks"
