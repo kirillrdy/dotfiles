@@ -263,7 +263,7 @@ pub const Image = struct {
     width: u32,
     height: u32,
     stride: usize,
-    format: enum { rgb, rgba, argb, xrgb },
+    format: enum { rgb, rgba, argb, xrgb, abgr, xbgr },
 
     fn bytesPerPixel(self: Image) usize {
         return if (self.format == .rgb) 3 else 4;
@@ -311,9 +311,11 @@ const Sample = struct {
 
 fn pixel(image: Image, x: usize, y: usize) [4]u32 {
     const offset = y * image.stride + x * image.bytesPerPixel();
-    if (image.format == .argb or image.format == .xrgb) {
+    if (image.format == .argb or image.format == .xrgb or image.format == .abgr or image.format == .xbgr) {
         const word = std.mem.readInt(u32, image.pixels[offset..][0..4], @import("builtin").cpu.arch.endian());
-        return .{ (word >> 16) & 255, (word >> 8) & 255, word & 255, if (image.format == .xrgb) 255 else word >> 24 };
+        const swapped = image.format == .abgr or image.format == .xbgr;
+        const is_opaque = image.format == .xrgb or image.format == .xbgr;
+        return .{ if (swapped) word & 255 else (word >> 16) & 255, (word >> 8) & 255, if (swapped) (word >> 16) & 255 else word & 255, if (is_opaque) 255 else word >> 24 };
     }
     const rgb = image.pixels[offset..][0..3];
     const alpha: u32 = if (image.format == .rgba) image.pixels[offset + 3] else 255;

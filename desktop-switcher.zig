@@ -324,14 +324,9 @@ fn drawPreviews(_: ?*anyopaque, buffer: native.Pixels) void {
         for (value.windows.items) |view| {
             if (view.id == null or !std.mem.eql(u8, std.mem.span(view.id), std.mem.sliceTo(&item.id, 0))) continue;
             const image = view.image orelse break;
-            const iw: u32 = @intCast(c.cairo_image_surface_get_width(image));
-            const ih: u32 = @intCast(c.cairo_image_surface_get_height(image));
-            if (iw == 0 or ih == 0) break;
-            // The shared capture service still owns Cairo image containers.
-            // Read their pixels directly; scaling and compositing happen in Zig.
-            c.cairo_surface_flush(image);
-            const stride: usize = @intCast(c.cairo_image_surface_get_stride(image));
-            const source: raster.Image = .{ .pixels = c.cairo_image_surface_get_data(image)[0 .. stride * ih], .width = iw, .height = ih, .stride = stride, .format = .argb };
+            const iw = image.width;
+            const ih = image.height;
+            const source = image.view();
             const ratio = @min(@as(f64, @floatFromInt(preview_width)) / @as(f64, @floatFromInt(iw)), @as(f64, @floatFromInt(preview_height)) / @as(f64, @floatFromInt(ih)));
             const w = @as(f64, @floatFromInt(iw)) * ratio;
             const h = @as(f64, @floatFromInt(ih)) * ratio;
@@ -490,12 +485,9 @@ test "window preview rendering fits the captured image without stretching" {
         preview_width = saved_width;
         preview_height = saved_height;
     }
-    const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, 64, 32).?;
-    defer c.cairo_surface_destroy(image);
-    const image_cr = c.cairo_create(image).?;
-    defer c.cairo_destroy(image_cr);
-    c.cairo_set_source_rgb(image_cr, 0, 1, 0);
-    c.cairo_paint(image_cr);
+    const green: [64 * 32]u32 = @splat(0xff00ff00);
+    const image = try capture.Image.thumbnail(std.testing.allocator, .{ .pixels = std.mem.sliceAsBytes(&green), .width = 64, .height = 32, .stride = 64 * 4, .format = .argb });
+    defer image.deinit(std.testing.allocator);
     var source: capture.Window = .{ .client = undefined, .handle = undefined, .id = @constCast("test-window"), .image = image };
     var sources = [_]*capture.Window{&source};
     var fake: capture.Client = .{ .display = undefined, .registry = undefined, .context = null, .changed = &captureChanged };

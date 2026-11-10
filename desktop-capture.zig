@@ -3,6 +3,7 @@ const std = @import("std");
 pub const c = @import("desktop-gtk.zig");
 const protocols = @import("desktop-protocols.zig");
 const libc = @import("desktop-libc.zig");
+pub const Image = @import("desktop-image.zig").Image;
 const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
 pub const Rect = struct { x: f64 = 0, y: f64 = 0, w: f64 = 1, h: f64 = 1 };
@@ -19,7 +20,7 @@ pub const Window = struct {
     geometry: Rect = .{},
     target: Rect = .{},
     icon: ?*c.GdkPixbuf = null,
-    image: ?*c.cairo_surface_t = null,
+    image: ?Image = null,
     source: ?*protocols.ext_image_capture_source_v1 = null,
     session: ?*protocols.ext_image_copy_capture_session_v1 = null,
     frame: ?*protocols.ext_image_copy_capture_frame_v1 = null,
@@ -55,7 +56,7 @@ pub const Window = struct {
     }
     fn destroy(self: *Window) void {
         self.stop();
-        if (self.image) |image| c.cairo_surface_destroy(image);
+        if (self.image) |image| image.deinit(a);
         if (self.icon) |icon| c.g_object_unref(icon);
         c.g_free(self.id);
         c.g_free(self.title);
@@ -335,34 +336,22 @@ fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) 
     const w = cast(Window, data);
     protocols.ext_image_copy_capture_frame_v1_destroy(frame);
     w.frame = null;
-    const ratio = @min(1.0, 1024.0 / @as(f64, @floatFromInt(@max(w.buffer_width, w.buffer_height))));
-    const width: c_int = @max(1, @as(c_int, @intFromFloat(@as(f64, @floatFromInt(w.buffer_width)) * ratio)));
-    const height: c_int = @max(1, @as(c_int, @intFromFloat(@as(f64, @floatFromInt(w.buffer_height)) * ratio)));
-    if (w.image) |image| if (c.cairo_image_surface_get_width(image) != width or c.cairo_image_surface_get_height(image) != height) {
-        c.cairo_surface_destroy(image);
-        w.image = null;
-    };
-    if (w.image == null) w.image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, width, height);
-    // Cairo uses native ARGB words; GLES renderers may offer ABGR instead.
-    // The compositor has finished writing and will not reuse this buffer until
-    // the next capture, which damages the entire buffer.
-    const swapped = w.buffer_format == c.WL_SHM_FORMAT_ABGR8888 or w.buffer_format == c.WL_SHM_FORMAT_XBGR8888;
-    if (swapped) {
-        const pixels: [*]u32 = @ptrCast(@alignCast(w.mapped.?));
-        for (pixels[0 .. @as(usize, w.buffer_width) * w.buffer_height]) |*pixel| {
-            const value = pixel.*;
-            pixel.* = (value & 0xff00ff00) | ((value & 0xff) << 16) | ((value >> 16) & 0xff);
-        }
-    }
-    const is_opaque = w.buffer_format == c.WL_SHM_FORMAT_XRGB8888 or w.buffer_format == c.WL_SHM_FORMAT_XBGR8888;
-    const source = c.cairo_image_surface_create_for_data(@ptrCast(w.mapped), if (is_opaque) c.CAIRO_FORMAT_RGB24 else c.CAIRO_FORMAT_ARGB32, @intCast(w.buffer_width), @intCast(w.buffer_height), @intCast(w.buffer_width * 4));
-    defer c.cairo_surface_destroy(source);
-    const cr = c.cairo_create(w.image);
-    defer c.cairo_destroy(cr);
-    c.cairo_scale(cr, @as(f64, @floatFromInt(width)) / @as(f64, @floatFromInt(w.buffer_width)), @as(f64, @floatFromInt(height)) / @as(f64, @floatFromInt(w.buffer_height)));
-    c.cairo_set_operator(cr, c.CAIRO_OPERATOR_SOURCE);
-    c.cairo_set_source_surface(cr, source, 0, 0);
-    c.cairo_paint(cr);
+    const memory: [*]const u8 = @ptrCast(w.mapped orelse return);
+    const image = Image.thumbnail(a, .{
+        .pixels = memory[0..w.length],
+        .width = w.buffer_width,
+        .height = w.buffer_height,
+        .stride = @as(usize, w.buffer_width) * 4,
+        .format = switch (w.buffer_format) {
+            c.WL_SHM_FORMAT_ARGB8888 => .argb,
+            c.WL_SHM_FORMAT_XRGB8888 => .xrgb,
+            c.WL_SHM_FORMAT_ABGR8888 => .abgr,
+            c.WL_SHM_FORMAT_XBGR8888 => .xbgr,
+            else => return,
+        },
+    }) catch return;
+    if (w.image) |old| old.deinit(a);
+    w.image = image;
     w.client.changed(w.client.context);
 }
 fn failed(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {

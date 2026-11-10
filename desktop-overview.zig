@@ -764,12 +764,16 @@ fn rounded(cr: *c.cairo_t, r: Rect, radius: f64) void {
     c.cairo_arc(cr, r.x + rad, r.y + rad, rad, std.math.pi, 1.5 * std.math.pi);
     c.cairo_close_path(cr);
 }
-fn drawImage(cr: *c.cairo_t, image: ?*c.cairo_surface_t, r: Rect, opacity: f64) void {
+fn drawImage(cr: *c.cairo_t, image: ?capture.Image, r: Rect, opacity: f64) void {
     c.cairo_save(cr);
     defer c.cairo_restore(cr);
     c.cairo_translate(cr, r.x, r.y);
-    if (image) |surface| {
-        c.cairo_scale(cr, r.w / @as(f64, @floatFromInt(c.cairo_image_surface_get_width(surface))), r.h / @as(f64, @floatFromInt(c.cairo_image_surface_get_height(surface))));
+    if (image) |pixels| {
+        // Borrow capture storage only for this draw; no Cairo object owns it.
+        const surface = c.cairo_image_surface_create_for_data(pixels.pixels.ptr, c.CAIRO_FORMAT_ARGB32, @intCast(pixels.width), @intCast(pixels.height), @intCast(pixels.stride)) orelse return;
+        defer c.cairo_surface_destroy(surface);
+        if (c.cairo_surface_status(surface) != c.CAIRO_STATUS_SUCCESS) return;
+        c.cairo_scale(cr, r.w / @as(f64, @floatFromInt(pixels.width)), r.h / @as(f64, @floatFromInt(pixels.height)));
         c.cairo_set_source_surface(cr, surface, 0, 0);
         c.cairo_paint_with_alpha(cr, opacity);
     } else {
@@ -777,6 +781,30 @@ fn drawImage(cr: *c.cairo_t, image: ?*c.cairo_surface_t, r: Rect, opacity: f64) 
         c.cairo_set_source_rgb(cr, 0.3, 0.3, 0.33);
         c.cairo_fill(cr);
     }
+}
+
+test "overview drawing borrows Zig captures and restores its Cairo context" {
+    const words = [_]u32{ 0x80800000, 0xff00ff00 };
+    const image = try capture.Image.thumbnail(std.testing.allocator, .{ .pixels = std.mem.sliceAsBytes(&words), .width = 2, .height = 1, .stride = 8, .format = .argb });
+    defer image.deinit(std.testing.allocator);
+    const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, 4, 3).?;
+    defer c.cairo_surface_destroy(surface);
+    const cr = c.cairo_create(surface).?;
+    defer c.cairo_destroy(cr);
+    c.cairo_set_source_rgb(cr, 0, 0, 0);
+    c.cairo_paint(cr);
+    c.cairo_set_source_rgb(cr, 0, 0, 1);
+    drawImage(cr, image, .{ .x = 1, .y = 1, .w = 2, .h = 1 }, 1);
+    c.cairo_rectangle(cr, 0, 0, 1, 1);
+    c.cairo_fill(cr);
+    c.cairo_surface_flush(surface);
+    const bytes = c.cairo_image_surface_get_data(surface);
+    const stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
+    const endian = @import("builtin").cpu.arch.endian();
+    try std.testing.expectEqual(@as(u32, 0xff0000ff), std.mem.readInt(u32, bytes[0..4], endian));
+    try std.testing.expectEqual(@as(u32, 0xff800000), std.mem.readInt(u32, bytes[stride + 4 ..][0..4], endian));
+    try std.testing.expectEqual(@as(u32, 0xff00ff00), std.mem.readInt(u32, bytes[stride + 8 ..][0..4], endian));
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&words), image.pixels);
 }
 
 pub const State = struct { overview: ?*Overview = null, wallpaper: [*:0]const u8 };
