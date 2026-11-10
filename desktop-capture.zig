@@ -21,6 +21,7 @@ pub const Window = struct {
     target: Rect = .{},
     icon: ?*c.GdkPixbuf = null,
     image: ?Image = null,
+    thumbnail: ?*Thumbnail = null,
     source: ?*protocols.ext_image_capture_source_v1 = null,
     session: ?*protocols.ext_image_copy_capture_session_v1 = null,
     frame: ?*protocols.ext_image_copy_capture_frame_v1 = null,
@@ -37,6 +38,15 @@ pub const Window = struct {
     constraints: bool = false,
 
     fn stop(self: *Window) void {
+        if (self.thumbnail) |thumbnail| {
+            // A worker may still be reading this completed capture. Detach its
+            // owner and transfer the mapping so hide/close never unmaps it early.
+            thumbnail.owner = null;
+            thumbnail.owns_mapping = true;
+            self.mapped = null;
+            self.length = 0;
+            self.thumbnail = null;
+        }
         if (self.frame) |frame| protocols.ext_image_copy_capture_frame_v1_destroy(frame);
         self.frame = null;
         if (self.session) |session| protocols.ext_image_copy_capture_session_v1_destroy(session);
@@ -72,7 +82,7 @@ pub const Window = struct {
             _ = protocols.ext_image_copy_capture_session_v1_add_listener(self.session, &session_listener, self);
             return;
         }
-        if (!self.constraints or !self.supported or self.frame != null) return;
+        if (!self.constraints or !self.supported or self.frame != null or self.thumbnail != null) return;
         if (self.width == 0 or self.height == 0 or self.width > 8192 or self.height > 8192) return;
         const length: usize = @as(usize, self.width) * self.height * 4;
         if (length > 64 * 1024 * 1024) return;
@@ -165,6 +175,13 @@ pub const Client = struct {
         for (self.windows.items) |window| {
             if (window.workspace == self.current or window.sticky or window.image == null) window.capture();
         }
+        self.flush();
+    }
+    /// Seed previews on first open without recapturing existing thumbnails
+    /// during a transition. Regular live updates resume after the animation.
+    pub fn captureMissing(self: *Client) void {
+        if (!self.connected or !self.active) return;
+        for (self.windows.items) |window| if (window.image == null) window.capture();
         self.flush();
     }
     pub fn flush(self: *Client) void {
@@ -332,12 +349,60 @@ const frame_listener = protocols.ext_image_copy_capture_frame_v1_listener{ .tran
 fn transform(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {}
 fn damage(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: i32, _: i32, _: i32, _: i32) callconv(.c) void {}
 fn presentation(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {}
+// Filtering a large capture can exceed a high-refresh display's frame budget.
+// Workers only read pixels and create owned thumbnails. Wayland objects and
+// window state stay on the main context. Until completion, capture() cannot
+// submit another frame into the borrowed mapping.
+const Thumbnail = struct {
+    owner: ?*Window,
+    source: @import("desktop-raster.zig").Image,
+    result: ?Image = null,
+    owns_mapping: bool = false,
+
+    fn start(window: *Window, source: @import("desktop-raster.zig").Image) void {
+        const self = a.create(Thumbnail) catch return;
+        self.* = .{ .owner = window, .source = source };
+        const task = c.g_task_new(null, null, &completed, self) orelse {
+            a.destroy(self);
+            return;
+        };
+        defer c.g_object_unref(task);
+        window.thumbnail = self;
+        c.g_task_set_task_data(task, self, &destroy);
+        c.g_task_run_in_thread(task, &work);
+    }
+
+    fn work(task: ?*c.GTask, _: ?*anyopaque, data: ?*anyopaque, _: [*c]c.GCancellable) callconv(.c) void {
+        const self = cast(Thumbnail, data);
+        self.result = Image.thumbnail(a, self.source) catch null;
+        c.g_task_return_boolean(task, @intFromBool(self.result != null));
+    }
+    fn completed(_: ?*c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+        const self = cast(Thumbnail, data);
+        _ = c.g_task_propagate_boolean(@ptrCast(result), null);
+        const window = self.owner orelse return;
+        self.owner = null;
+        window.thumbnail = null;
+        const image = self.result orelse return;
+        self.result = null;
+        if (window.image) |old| old.deinit(a);
+        window.image = image;
+        window.client.changed(window.client.context);
+    }
+    fn destroy(data: ?*anyopaque) callconv(.c) void {
+        const self = cast(Thumbnail, data);
+        if (self.result) |image| image.deinit(a);
+        if (self.owns_mapping) _ = libc.munmap(@constCast(self.source.pixels.ptr), self.source.pixels.len);
+        a.destroy(self);
+    }
+};
+
 fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) callconv(.c) void {
     const w = cast(Window, data);
     protocols.ext_image_copy_capture_frame_v1_destroy(frame);
     w.frame = null;
     const memory: [*]const u8 = @ptrCast(w.mapped orelse return);
-    const image = Image.thumbnail(a, .{
+    Thumbnail.start(w, .{
         .pixels = memory[0..w.length],
         .width = w.buffer_width,
         .height = w.buffer_height,
@@ -349,14 +414,56 @@ fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) 
             c.WL_SHM_FORMAT_XBGR8888 => .xbgr,
             else => return,
         },
-    }) catch return;
-    if (w.image) |old| old.deinit(a);
-    w.image = image;
-    w.client.changed(w.client.context);
+    });
 }
 fn failed(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {
     const w = cast(Window, data);
     protocols.ext_image_copy_capture_frame_v1_destroy(frame);
     w.frame = null;
     w.freeBuffer();
+}
+
+test "thumbnail workers publish owned pixels and discard captures detached on hide" {
+    const State = struct {
+        changed: bool = false,
+        fn change(data: ?*anyopaque) void {
+            cast(@This(), data).changed = true;
+        }
+    };
+    var state: State = .{};
+    var client: Client = .{ .display = undefined, .registry = undefined, .context = &state, .changed = &State.change };
+    var window: Window = .{ .client = &client, .handle = undefined };
+    defer {
+        window.stop();
+        if (window.image) |image| image.deinit(a);
+    }
+    const fd = libc.memfd_create("thumbnail-test", libc.MFD_CLOEXEC);
+    try std.testing.expect(fd >= 0);
+    defer _ = libc.close(fd);
+    try std.testing.expect(libc.ftruncate(fd, 16) == 0);
+    const mapping = libc.mmap(null, 16, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
+    try std.testing.expect(mapping != null and mapping != libc.MAP_FAILED);
+    const words: [*]u32 = @ptrCast(@alignCast(mapping));
+    @memset(words[0..4], 0x00604020);
+    window.mapped = mapping;
+    window.length = 16;
+    const source: @import("desktop-raster.zig").Image = .{ .pixels = @as([*]const u8, @ptrCast(mapping))[0..16], .width = 2, .height = 2, .stride = 8, .format = .xrgb };
+    Thumbnail.start(&window, source);
+    const deadline = c.g_get_monotonic_time() + 2_000_000;
+    while (window.thumbnail != null and c.g_get_monotonic_time() < deadline) {
+        while (c.g_main_context_iteration(null, 0) != 0) {}
+        c.g_usleep(1000);
+    }
+    try std.testing.expect(window.thumbnail == null and state.changed);
+    try std.testing.expectEqual(@as(u32, 0xff604020), std.mem.bytesAsSlice(u32, window.image.?.pixels)[0]);
+    // The next capture may reuse the mapping only after filtering completes.
+    @memset(words[0..4], 0x0000ff00);
+    state.changed = false;
+    Thumbnail.start(&window, source);
+    try std.testing.expect(window.thumbnail != null);
+    window.stop();
+    try std.testing.expect(window.mapped == null and window.thumbnail == null);
+    @import("tests/desktop-surface-capture.zig").pump();
+    try std.testing.expect(!state.changed);
+    try std.testing.expectEqual(@as(u32, 0xff604020), std.mem.bytesAsSlice(u32, window.image.?.pixels)[0]);
 }

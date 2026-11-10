@@ -460,18 +460,34 @@ pub const Region = struct {
     }
 };
 
+/// Paint over existing pixels when the region occupies complete destination
+/// rows. The painter must preserve the backdrop in transparent areas.
+pub fn paintRegionInPlace(target: raster.Buffer, scale: u32, region: Region, context: anytype, comptime painter: anytype) void {
+    if (region.width == 0 or region.height == 0) return;
+    const width = region.width * scale;
+    const height = region.height * scale;
+    const factor: f64 = @floatFromInt(scale);
+    const py = region.y * factor;
+    if (region.x == 0 and width == target.width and @floor(py) == py and py >= 0 and py + @as(f64, @floatFromInt(height)) <= @as(f64, @floatFromInt(target.height))) {
+        const first: usize = @intFromFloat(py);
+        painter(context, .{ .pixels = target.pixels[first * target.width .. (first + height) * target.width], .width = width, .height = height }, scale);
+        return;
+    }
+    paintRegion(target, scale, region, context, painter);
+}
+
 pub fn paintRegion(target: raster.Buffer, scale: u32, region: Region, context: anytype, comptime painter: anytype) void {
     if (region.width == 0 or region.height == 0) return;
     const width = region.width * scale;
     const height = region.height * scale;
+    const factor: f64 = @floatFromInt(scale);
+    const px = region.x * factor;
+    const py = region.y * factor;
     const pixels = allocator.alloc(u32, @as(usize, width) * height) catch return;
     defer allocator.free(pixels);
     @memset(pixels, 0);
     const buffer: raster.Buffer = .{ .pixels = pixels, .width = width, .height = height };
     painter(context, buffer, scale);
-    const factor: f64 = @floatFromInt(scale);
-    const px = region.x * factor;
-    const py = region.y * factor;
     if (@floor(px) == px and @floor(py) == py) {
         const x0: usize = @intFromFloat(std.math.clamp(-px, 0, @as(f64, @floatFromInt(width))));
         const y0: usize = @intFromFloat(std.math.clamp(-py, 0, @as(f64, @floatFromInt(height))));
@@ -630,4 +646,15 @@ test "native layout compositing clips regions and preserves transparent pixels" 
     const before = pixels;
     paintRegion(target, 1, .{ .x = 10, .y = 10, .width = 3, .height = 3 }, {}, Painter.paint);
     try std.testing.expectEqualSlices(u32, &before, &pixels);
+}
+
+test "in-place layout painting preserves the backdrop and adjacent rows" {
+    const Painter = struct {
+        fn paint(_: void, target: raster.Buffer, _: u32) void {
+            for (target.pixels) |*pixel| pixel.* = raster.over(pixel.*, 0x80800000);
+        }
+    };
+    var pixels: [16]u32 = @splat(0xff0000ff);
+    paintRegionInPlace(.{ .pixels = &pixels, .width = 4, .height = 4 }, 1, .{ .y = 1, .width = 4, .height = 2 }, {}, Painter.paint);
+    for (pixels, 0..) |pixel, index| try std.testing.expectEqual(if (index >= 4 and index < 12) @as(u32, 0xff80007f) else @as(u32, 0xff0000ff), pixel);
 }

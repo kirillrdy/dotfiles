@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--wallpaper", required=True)
     parser.add_argument("--artifacts", type=Path)
     parser.add_argument("--renderer", choices=["pixman", "gles2"], default="pixman")
+    parser.add_argument("--refresh-rate", type=int, default=60)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="desktop-overview-") as directory:
         root = Path(directory)
@@ -132,7 +133,7 @@ def main():
                 lambda: (runtime / "wayland-0").exists(), "Compositor did not start"
             )
             env["WAYLAND_DISPLAY"] = "wayland-0"
-            run(["wlr-randr", "--output", "HEADLESS-1", "--custom-mode", "1728x1080"])
+            run(["wlr-randr", "--output", "HEADLESS-1", "--custom-mode", f"1728x1080@{args.refresh_rate}"])
             pointer = sp.Popen(
                 [str(args.bin_dir / "desktop-pointer-fixture")],
                 env=env,
@@ -335,6 +336,8 @@ def main():
                 "Super did not hide the overview",
             )
             assert compositor.poll() is None
+            overview_surfaces = re.findall(r'get_layer_surface\([^\n]*wl_surface#(\d+),[^\n]*"desktop-overview"', log())
+            assert overview_surfaces and any(re.search(rf'wl_surface#{surface}\.frame\(', log()) for surface in overview_surfaces), "Overview did not request compositor frame callbacks"
             assert not re.search(r"CRITICAL|panic:|protocol error", log()), log()[
                 -4000:
             ]

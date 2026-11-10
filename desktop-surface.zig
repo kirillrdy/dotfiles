@@ -12,6 +12,7 @@ const cast = c.__zig.cast;
 extern const wl_compositor_interface: c.wl_interface;
 extern const wl_surface_interface: c.wl_interface;
 extern const wl_region_interface: c.wl_interface;
+extern const wl_callback_interface: c.wl_interface;
 
 pub const top = 1;
 pub const bottom = 2;
@@ -395,9 +396,11 @@ pub const Options = struct {
     cursor: enum { crosshair, arrow } = .crosshair,
     exclusive_zone: i32 = -1,
     maximized: bool = false,
+    /// Disable only when the painter replaces every destination pixel.
+    clear_buffer: bool = true,
 };
 pub const Pixels = raster.Buffer;
-/// Cleared physical pixels, writable only for the duration of the callback.
+/// Physical pixels, cleared by default, writable only during the callback.
 pub const PixelPaint = *const fn (?*anyopaque, Pixels) void;
 
 /// A small SHM cursor keeps interactive clients independent of GTK cursor APIs.
@@ -438,6 +441,13 @@ pub const Surface = struct {
     xdg_surface: ?*Proxy = null,
     imported_parent: ?*Proxy = null,
     close: ?*const fn (?*anyopaque) void = null,
+    /// Opt into compositor-paced commits. Return true to animate another frame;
+    /// queued redraws are coalesced until the compositor is ready for them.
+    next_frame: ?*const fn (?*anyopaque, *Surface, u32) bool = null,
+    frame_callback: ?*Proxy = null,
+    /// Optional quality policy for the next buffer; logical geometry is stable.
+    render_scale: ?*const fn (?*anyopaque, *Surface) u32 = null,
+    buffer_scale: u32 = 1,
     pending_width: u32 = 0,
     pending_height: u32 = 0,
     width: u32 = 0,
@@ -504,6 +514,8 @@ pub const Surface = struct {
         self.client.flush();
     }
     pub fn hide(self: *Surface) void {
+        if (self.frame_callback) |callback| c.wl_proxy_destroy(callback);
+        self.frame_callback = null;
         for (self.client.seats.items) |seat| seat.forget(self);
         if (self.role) |role| destroyProxy(role, if (self.options.role == .toplevel) 0 else 7);
         if (self.imported_parent) |proxy| destroyProxy(proxy, 0);
@@ -558,9 +570,11 @@ pub const Surface = struct {
         self.render() catch |err| std.log.err("native surface render: {s}", .{@errorName(err)});
     }
     fn render(self: *Surface) !void {
-        if (!self.pending or !self.configured or self.client.failed) return;
-        const width = std.math.mul(u32, self.width, self.output.scale) catch return error.SurfaceTooLarge;
-        const height = std.math.mul(u32, self.height, self.output.scale) catch return error.SurfaceTooLarge;
+        if (!self.pending or !self.configured or self.client.failed or self.frame_callback != null) return;
+        const scale = if (self.render_scale) |choose| choose(self.data, self) else self.output.scale;
+        if (scale < 1 or scale > 8) return error.InvalidBufferScale;
+        const width = std.math.mul(u32, self.width, scale) catch return error.SurfaceTooLarge;
+        const height = std.math.mul(u32, self.height, scale) catch return error.SurfaceTooLarge;
         _ = try bufferSize(width, height);
         var available: ?*Buffer = null;
         for (&self.buffers) |*slot| {
@@ -577,9 +591,15 @@ pub const Surface = struct {
         }
         const buffer = available orelse return; // release retries the newest state.
         const pixels: [*]u32 = @ptrCast(@alignCast(buffer.memory));
-        @memset(pixels[0 .. buffer.size / 4], 0);
+        self.buffer_scale = scale;
+        if (self.options.clear_buffer) @memset(pixels[0 .. buffer.size / 4], 0);
         self.paint(self.data, .{ .pixels = pixels[0 .. buffer.size / 4], .width = width, .height = height });
-        send(self.proxy.?, 8, .{@as(i32, @intCast(self.output.scale))});
+        if (self.next_frame != null) {
+            const callback = c.wl_proxy_marshal_flags(self.proxy.?, 3, &wl_callback_interface, 1, 0, @as(?*anyopaque, null)) orelse return error.WaylandFrameCallback;
+            self.frame_callback = callback;
+            listen(callback, &frame_listener, self);
+        }
+        send(self.proxy.?, 8, .{@as(i32, @intCast(scale))});
         send(self.proxy.?, 1, .{ buffer.proxy, @as(i32, 0), @as(i32, 0) });
         send(self.proxy.?, 2, .{ @as(i32, 0), @as(i32, 0), @as(i32, @intCast(self.width)), @as(i32, @intCast(self.height)) });
         buffer.busy = true;
@@ -587,6 +607,16 @@ pub const Surface = struct {
         send(self.proxy.?, 6, .{});
         self.client.flush();
     }
+    fn frameDone(data: ?*anyopaque, callback: *Proxy, time: u32) callconv(.c) void {
+        const self = cast(Surface, data);
+        c.wl_proxy_destroy(callback);
+        self.frame_callback = null;
+        if (self.next_frame) |next| if (next(self.data, self, time)) {
+            self.pending = true;
+        };
+        self.render() catch |err| std.log.err("native surface frame: {s}", .{@errorName(err)});
+    }
+    const frame_listener = extern struct { done: *const @TypeOf(frameDone) = &frameDone }{};
     fn configure(data: ?*anyopaque, role: *Proxy, serial: u32, width: u32, height: u32) callconv(.c) void {
         const self = cast(Surface, data);
         send(role, 6, .{serial});
@@ -663,6 +693,67 @@ test "passive clients do not bind input seats or accept interactive surfaces" {
     defer surface.destroy();
     try std.testing.expectError(error.InputNotEnabled, surface.show());
     try std.testing.expect(surface.proxy == null);
+}
+
+test "frame callbacks coalesce redraws, finish animation and cancel on hide" {
+    const State = struct {
+        paints: usize = 0,
+        frames: usize = 0,
+        sizes: u8 = 0,
+        fn output(_: ?*anyopaque, _: *Output) void {}
+        fn paint(data: ?*anyopaque, pixels: Pixels) void {
+            const self = cast(@This(), data);
+            self.paints += 1;
+            self.sizes |= if (pixels.width == 32) @as(u8, 1) else if (pixels.width == 64) @as(u8, 2) else 0;
+            @memset(pixels.pixels, 0xff245b98);
+        }
+        fn next(data: ?*anyopaque, _: *Surface, _: u32) bool {
+            const self = cast(@This(), data);
+            self.frames += 1;
+            return self.frames < 4;
+        }
+        fn scale(data: ?*anyopaque, _: *Surface) u32 {
+            return if (cast(@This(), data).frames < 2) 1 else 2;
+        }
+    };
+    var state: State = .{};
+    const client = try Client.create(.{ .added = &State.output, .removed = &State.output }, &state);
+    defer client.destroy();
+    const surface = try Surface.createPixels(client.outputs.items[0], .{ .namespace = "frame-pacing-test", .layer = 3, .width = 32, .height = 32 }, &State.paint, &state);
+    surface.next_frame = &State.next;
+    surface.render_scale = &State.scale;
+    try client.start();
+    try surface.show();
+    const deadline = c.g_get_monotonic_time() + 2_000_000;
+    while (state.paints == 0 and c.g_get_monotonic_time() < deadline) {
+        while (c.g_main_context_iteration(null, 0) != 0) {}
+        c.g_usleep(1000);
+    }
+    try std.testing.expect(surface.frame_callback != null);
+    const paints = state.paints;
+    for (0..20) |_| surface.redraw();
+    try std.testing.expectEqual(paints, state.paints);
+    try std.testing.expect(surface.pending);
+    while ((state.frames < 4 or surface.frame_callback != null or surface.pending) and c.g_get_monotonic_time() < deadline) {
+        while (c.g_main_context_iteration(null, 0) != 0) {}
+        c.g_usleep(1000);
+    }
+    try std.testing.expectEqual(@as(usize, 4), state.frames);
+    try std.testing.expectEqual(@as(usize, 4), state.paints);
+    try std.testing.expectEqual(@as(u8, 3), state.sizes);
+    try std.testing.expectEqual(@as(u32, 2), surface.buffer_scale);
+    try std.testing.expect(surface.frame_callback == null and !surface.pending);
+    surface.redraw();
+    try std.testing.expect(surface.frame_callback != null);
+    surface.hide();
+    try std.testing.expect(surface.frame_callback == null and !surface.pending);
+    const hidden_paints = state.paints;
+    @import("tests/desktop-surface-capture.zig").pump();
+    try std.testing.expectEqual(hidden_paints, state.paints);
+    // Remapping must start a fresh callback rather than await the cancelled one.
+    try surface.show();
+    @import("tests/desktop-surface-capture.zig").pump();
+    try std.testing.expect(state.paints > hidden_paints);
 }
 
 test "native cursor matches Cairo strokes and transparency at every output scale" {

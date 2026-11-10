@@ -45,6 +45,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     defer std.heap.page_allocator.free(args);
     if (args.len == 2 and std.mem.eql(u8, args[1], "consent")) return consent(init);
+    if (args.len == 2 and std.mem.eql(u8, args[1], "frames")) return frames(init);
     var state: State = .{};
     const client = try wire.Client.createInteractive(.{ .added = &State.output, .removed = &State.output }, &state);
     defer client.destroy();
@@ -65,6 +66,39 @@ pub fn main(init: std.process.Init) !void {
     }
     try std.testing.expectEqualStrings("Cafe 日本語", state.typed[0..state.len]);
     std.debug.print("PASS GTK-free native window: configure, SHM pixels, focus, Unicode keyboard input and close\n", .{});
+}
+
+fn frames(init: std.process.Init) !void {
+    const Animation = struct {
+        frames: u32 = 0,
+        first: u32 = 0,
+        last: u32 = 0,
+        fn output(_: ?*anyopaque, _: *wire.Output) void {}
+        fn paint(_: ?*anyopaque, pixels: wire.Pixels) void {
+            @memset(pixels.pixels, 0xff245b98);
+        }
+        fn next(ptr: ?*anyopaque, _: *wire.Surface, time: u32) bool {
+            const self = cast(@This(), ptr);
+            if (self.frames == 0) self.first = time;
+            self.last = time;
+            self.frames += 1;
+            return self.frames < 60;
+        }
+    };
+    var animation: Animation = .{};
+    const client = try wire.Client.create(.{ .added = &Animation.output, .removed = &Animation.output }, &animation);
+    defer client.destroy();
+    const surface = try wire.Surface.createPixels(client.outputs.items[0], .{ .namespace = "desktop-frame-fixture", .layer = 3, .width = 32, .height = 32 }, &Animation.paint, &animation);
+    surface.next_frame = &Animation.next;
+    try client.start();
+    try surface.show();
+    const deadline = c.g_get_monotonic_time() + 5_000_000;
+    while (animation.frames < 60 and c.g_get_monotonic_time() < deadline) {
+        while (c.g_main_context_iteration(null, 0) != 0) {}
+        try init.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try std.testing.expectEqual(@as(u32, 60), animation.frames);
+    std.debug.print("PASS native frame pacing: {d} callbacks, {d:.2} ms/frame\n", .{ animation.frames, @as(f64, @floatFromInt(animation.last -% animation.first)) / 59 });
 }
 
 fn consent(init: std.process.Init) !void {

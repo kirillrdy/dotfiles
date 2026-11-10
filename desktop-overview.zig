@@ -33,6 +33,7 @@ const Overview = struct {
     pressed_part: ?Part = null,
     modifiers: u32 = 0,
     painting: bool = false,
+    animating: bool = false,
     repaint_source: c.guint = 0,
     dash_view: native_dash.View = .{},
     tooltip_timer: c.guint = 0,
@@ -119,7 +120,7 @@ const Overview = struct {
         if (self.client) |client| {
             client.visible(true);
             client.refresh();
-            client.tick();
+            client.captureMissing();
         }
         self.rebuildDash();
         self.launcher.visible_window = true;
@@ -300,13 +301,15 @@ const Overview = struct {
     fn tick(data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         if (!self.launcher.visible_window) return 1;
+        // Existing previews are sufficient during the short transition. Avoid
+        // capture readbacks competing with high-refresh animation frames.
+        const now = c.g_get_monotonic_time();
+        if (now - self.started < 250000 or now - self.workspace_started < 250000) return 1;
         self.tick_count +%= 1;
         if (self.client) |client| {
             if (self.tick_count % 8 == 0) client.refresh();
             client.tick();
         }
-        const now = c.g_get_monotonic_time();
-        if (now - self.started < 250000 or now - self.workspace_started < 250000) self.redrawSelf();
         return 1;
     }
     fn hidden(data: ?*anyopaque) void {
@@ -520,10 +523,27 @@ const Overview = struct {
         return 1;
     }
     fn createSurface(self: *Overview, output: *wire.Output) !*wire.Surface {
-        const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-overview", .layer = 3, .anchors = wire.top | wire.bottom | wire.left | wire.right, .keyboard = .exclusive, .exclusive_zone = 0, .interactive = true, .cursor = .arrow }, &paint, self);
+        const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-overview", .layer = 3, .anchors = wire.top | wire.bottom | wire.left | wire.right, .keyboard = .exclusive, .exclusive_zone = 0, .interactive = true, .cursor = .arrow, .clear_buffer = false }, &paint, self);
         surface.close = &closed;
+        surface.next_frame = &nextFrame;
+        surface.render_scale = &renderScale;
         surface.input = .{ .symbol = &symbol, .text = &inputText, .motion = &inputMotion, .button = &inputButton, .scroll = &inputScroll, .leave = &inputLeave, .focus = &inputFocus, .surrounding = &surrounding, .preedit = &preedit, .commit = &commit, .delete = &delete };
         return surface;
+    }
+    fn nextFrame(data: ?*anyopaque, surface: *wire.Surface, _: u32) bool {
+        const self = cast(Overview, data);
+        // The last animated paint requests one more frame, which finishes the
+        // transition and restores full-quality filtering before going idle.
+        return self.launcher.visible_window and (self.animating or surface.buffer_scale != renderScale(data, surface));
+    }
+    fn renderScale(data: ?*anyopaque, surface: *wire.Surface) u32 {
+        const self = cast(Overview, data);
+        const now = c.g_get_monotonic_time();
+        // Fractional outputs otherwise render at the next integer scale (for
+        // example 2x buffers on a 1.625x display). Keep motion inexpensive, then
+        // restore native text/icon detail on the final compositor-paced frame.
+        if (!self.apps_mode and self.launcher.searchText().len == 0 and (now - self.started < 250000 or now - self.workspace_started < 250000)) return 1;
+        return surface.output.scale;
     }
     fn outputAdded(data: ?*anyopaque, output: *wire.Output) void {
         const self = cast(Overview, data);
@@ -694,8 +714,9 @@ const Overview = struct {
     fn paint(data: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(Overview, data);
         self.painting = true;
+        self.animating = false;
         defer self.painting = false;
-        const scale = self.surface.?.output.scale;
+        const scale = self.surface.?.buffer_scale;
         const width = target.width / scale;
         const height = target.height / scale;
         self.search.x = (@as(f64, @floatFromInt(width)) - 370) / 2;
@@ -709,8 +730,8 @@ const Overview = struct {
         self.launcher.page = self.launcher.selected / self.launcher.geometry.capacity();
         @memset(target.pixels, 0xff222226);
         apps.paintRegion(target, scale, self.search, .{ &self.launcher, apps.Part.search }, apps.paintPart);
-        apps.paintRegion(target, scale, self.strip, .{ self, Part.strip }, paintPart);
-        if (self.apps_mode or self.launcher.searchText().len != 0) apps.paintRegion(target, scale, self.grid, .{ &self.launcher, apps.Part.grid }, apps.paintPart) else apps.paintRegion(target, scale, self.stage, .{ self, Part.stage }, paintPart);
+        apps.paintRegionInPlace(target, scale, self.strip, .{ self, Part.strip }, paintPart);
+        if (self.apps_mode or self.launcher.searchText().len != 0) apps.paintRegion(target, scale, self.grid, .{ &self.launcher, apps.Part.grid }, apps.paintPart) else apps.paintRegionInPlace(target, scale, self.stage, .{ self, Part.stage }, paintPart);
         apps.paintRegion(target, scale, self.dash, .{ self, Part.dash }, paintPart);
         if (self.tooltip_visible) apps.paintRegion(target, scale, self.tooltip, .{ self, Part.tooltip }, paintPart);
         if (status > 0) apps.paintRegion(target, scale, .{ .y = @floatFromInt(height -| (footer + status)), .width = width, .height = status }, .{ &self.launcher, apps.Part.message }, apps.paintPart);
@@ -763,6 +784,7 @@ const Overview = struct {
         const ease = 1 - (1 - t) * (1 - t) * (1 - t);
         const position = self.workspacePosition();
         const animated = t < 1 or position != @as(f64, @floatFromInt(self.workspace_target));
+        self.animating = animated;
         for (0..client.count) |i| {
             const offset = @as(f64, @floatFromInt(i)) - position;
             const ratio = 1 - 0.06 * @min(1, @abs(offset));
@@ -776,12 +798,6 @@ const Overview = struct {
             }
             view.workspace(canvas, pixelRect(background), self.wallpaper, animated);
             self.drawWindows(canvas, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1, animated);
-        }
-        // Also render the final settled frame, even if the last timer tick
-        // landed just before the transition ended. That frame restores GOOD
-        // filtering after the cheaper bilinear animation frames.
-        if (animated and self.launcher.visible_window and self.repaint_source == 0) {
-            self.repaint_source = c.g_timeout_add(16, &repaint, self);
         }
     }
     fn drawWindows(self: *Overview, canvas: raster.Canvas, client: *capture.Client, workspace_index: u32, background: Rect, height: f64, ratio: f64, ease: f64, animated: bool) void {

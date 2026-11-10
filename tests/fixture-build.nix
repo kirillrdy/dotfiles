@@ -12,7 +12,7 @@ desktop.overrideAttrs (
     buildPhase = ''
       export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
       NIX_LDFLAGS= zig build ${steps} --prefix "$out" ${
-        if debug then "-Doptimize=Debug -Dcpu=baseline -j2" else "-Doptimize=ReleaseSafe"
+        if debug then "-Doptimize=Debug -Dcpu=baseline" else "-Doptimize=ReleaseSafe"
       }
     '';
     doCheck = false;
