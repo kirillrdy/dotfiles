@@ -5,6 +5,7 @@ const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const sc = @import("desktop-screenshot.zig");
 const protocols = sc.protocols;
+pub const Image = @import("desktop-image.zig").Image;
 const cast = c.__zig.cast;
 pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;
 
@@ -15,11 +16,11 @@ pub const Capture = struct {
     frame: ?sc.FrameCapture = null,
     source: c.guint = 0,
     timeout: c.guint = 0,
-    surface: ?*c.cairo_surface_t = null,
-    callback: *const fn (?*anyopaque, ?*c.cairo_surface_t) void,
+    // A successful callback owns the image and frees it with this allocator.
+    callback: *const fn (?*anyopaque, ?Image) void,
     data: ?*anyopaque,
 
-    pub fn create(allocator: std.mem.Allocator, name: []const u8, cursor: bool, callback: *const fn (?*anyopaque, ?*c.cairo_surface_t) void, data: ?*anyopaque) !*Capture {
+    pub fn create(allocator: std.mem.Allocator, name: []const u8, cursor: bool, callback: *const fn (?*anyopaque, ?Image) void, data: ?*anyopaque) !*Capture {
         const self = try allocator.create(Capture);
         errdefer allocator.destroy(self);
         self.* = .{ .allocator = allocator, .client = undefined, .callback = callback, .data = data };
@@ -47,8 +48,6 @@ pub const Capture = struct {
         self.timeout = c.g_timeout_add_seconds(10, &expired, self);
     }
     fn clearFrame(self: *Capture) void {
-        if (self.surface) |surface| c.cairo_surface_destroy(surface);
-        self.surface = null;
         if (self.frame) |frame| {
             protocols.zwlr_screencopy_frame_v1_destroy(frame.frame);
             if (frame.buffer) |buffer| c.wl_buffer_destroy(buffer);
@@ -80,27 +79,24 @@ pub const Capture = struct {
         self.source = 0;
         if (self.timeout != 0) _ = c.g_source_remove(self.timeout);
         self.timeout = 0;
-        if (ok and frame.done and !frame.failed) self.surface = image(frame) catch null;
-        self.callback(self.data, self.surface);
+        const result = if (ok and frame.done and !frame.failed) image(self.allocator, frame) catch null else null;
+        // Ownership passes to the callback, which may destroy this capture.
+        self.callback(self.data, result);
         return 0;
     }
 };
 
-/// Normalize XRGB/ARGB and bottom-up buffers to an opaque Cairo RGB image.
-pub fn image(frame: *const sc.FrameCapture) !*c.cairo_surface_t {
-    if (frame.memory == null or frame.width == 0 or frame.height == 0 or frame.stride < frame.width * 4 or frame.length < @as(usize, frame.stride) * frame.height) return error.InvalidFrame;
+/// Copy XRGB/ARGB capture pixels into an owned, top-down Zig image.
+pub fn image(allocator: std.mem.Allocator, frame: *const sc.FrameCapture) !Image {
+    if (frame.memory == null) return error.InvalidFrame;
     if (frame.format != c.WL_SHM_FORMAT_XRGB8888 and frame.format != c.WL_SHM_FORMAT_ARGB8888) return error.UnsupportedFormat;
-    const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_RGB24, @intCast(frame.width), @intCast(frame.height)) orelse return error.SurfaceFailed;
-    errdefer c.cairo_surface_destroy(surface);
-    if (c.cairo_surface_status(surface) != c.CAIRO_STATUS_SUCCESS) return error.SurfaceFailed;
-    const pixels = c.cairo_image_surface_get_data(surface);
-    const stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
-    for (0..frame.height) |y| {
-        const source_y = if (frame.y_invert) frame.height - 1 - y else y;
-        @memcpy(pixels[y * stride ..][0 .. frame.width * 4], frame.memory.?[source_y * frame.stride ..][0 .. frame.width * 4]);
-    }
-    c.cairo_surface_mark_dirty(surface);
-    return surface;
+    return Image.copy(allocator, .{
+        .pixels = frame.memory.?[0..frame.length],
+        .width = frame.width,
+        .height = frame.height,
+        .stride = frame.stride,
+        .y_invert = frame.y_invert,
+    });
 }
 
 pub const Picked = struct { name: [:0]const u8, monitor: ?*c.GdkMonitor, width: i32, height: i32 };
@@ -347,11 +343,13 @@ pub const Operation = struct {
         };
         return 0;
     }
-    fn captured(data: ?*anyopaque, source: ?*c.cairo_surface_t) void {
+    fn captured(data: ?*anyopaque, source: ?Image) void {
         const self = cast(Operation, data);
         const surface = source orelse return self.finish(2, null);
-        const width = c.cairo_image_surface_get_width(surface);
-        const height = c.cairo_image_surface_get_height(surface);
+        const allocator = self.allocator;
+        defer surface.deinit(allocator);
+        const width: i32 = @intCast(surface.width);
+        const height: i32 = @intCast(surface.height);
         var x: i32 = 0;
         var y: i32 = 0;
         var w = width;
@@ -370,25 +368,24 @@ pub const Operation = struct {
         const results = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
         defer c.g_variant_builder_unref(results);
         if (self.point) {
-            const pixels: [*]const u8 = c.cairo_image_surface_get_data(surface);
-            const stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
+            const pixels = surface.pixels;
+            const stride = surface.stride;
             const pixel = std.mem.readInt(u32, pixels[@as(usize, @intCast(y)) * stride + @as(usize, @intCast(x)) * 4 ..][0..4], @import("builtin").cpu.arch.endian());
             c.g_variant_builder_add(results, "{sv}", @as([*:0]const u8, "color"), c.g_variant_new("(ddd)", @as(f64, @floatFromInt((pixel >> 16) & 255)) / 255, @as(f64, @floatFromInt((pixel >> 8) & 255)) / 255, @as(f64, @floatFromInt(pixel & 255)) / 255));
         } else {
-            c.cairo_surface_flush(surface);
-            const stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
-            const pixels: [*]const u8 = c.cairo_image_surface_get_data(surface);
+            const stride = surface.stride;
+            const pixels = surface.pixels;
             const offset = @as(usize, @intCast(y)) * stride + @as(usize, @intCast(x)) * 4;
             const length = @as(usize, @intCast(h - 1)) * stride + @as(usize, @intCast(w)) * 4;
-            const encoded = sc.png.encode(self.allocator, .{
+            const encoded = sc.png.encode(allocator, .{
                 .pixels = pixels[offset..][0..length],
                 .width = @intCast(w),
                 .height = @intCast(h),
                 .stride = stride,
             }) catch return self.finish(2, null);
-            defer self.allocator.free(encoded);
-            const filename = std.fmt.allocPrintSentinel(self.allocator, "{s}/desktop-screenshot-XXXXXX", .{c.g_get_user_runtime_dir()}, 0) catch return self.finish(2, null);
-            defer self.allocator.free(filename);
+            defer allocator.free(encoded);
+            const filename = std.fmt.allocPrintSentinel(allocator, "{s}/desktop-screenshot-XXXXXX", .{c.g_get_user_runtime_dir()}, 0) catch return self.finish(2, null);
+            defer allocator.free(filename);
             const fd = c.g_mkstemp(filename);
             if (fd < 0) return self.finish(2, null);
             defer _ = libc.close(fd);
@@ -424,21 +421,21 @@ test "capture images normalize inverted rows and preserve padding and RGB channe
         .length = @sizeOf(@TypeOf(pixels)),
         .y_invert = true,
     };
-    const surface = try image(&frame);
-    defer c.cairo_surface_destroy(surface);
-    const bytes = c.cairo_image_surface_get_data(surface);
-    const stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
+    const surface = try image(std.testing.allocator, &frame);
+    defer surface.deinit(std.testing.allocator);
+    const bytes = surface.pixels;
+    const stride = surface.stride;
     const endian = @import("builtin").cpu.arch.endian();
     try std.testing.expectEqual(@as(u32, 0xff), std.mem.readInt(u32, bytes[0..4], endian) & 0xffffff);
     try std.testing.expectEqual(@as(u32, 0xffffff), std.mem.readInt(u32, bytes[4..8], endian) & 0xffffff);
     try std.testing.expectEqual(@as(u32, 0xff0000), std.mem.readInt(u32, bytes[stride..][0..4], endian) & 0xffffff);
     var invalid = frame;
     invalid.length -= 1;
-    try std.testing.expectError(error.InvalidFrame, image(&invalid));
+    try std.testing.expectError(error.InvalidFrame, image(std.testing.allocator, &invalid));
     invalid = frame;
     invalid.stride = 4;
-    try std.testing.expectError(error.InvalidFrame, image(&invalid));
+    try std.testing.expectError(error.InvalidFrame, image(std.testing.allocator, &invalid));
     invalid = frame;
     invalid.format = 0xdeadbeef;
-    try std.testing.expectError(error.UnsupportedFormat, image(&invalid));
+    try std.testing.expectError(error.UnsupportedFormat, image(std.testing.allocator, &invalid));
 }
