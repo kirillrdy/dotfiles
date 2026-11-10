@@ -138,7 +138,10 @@ test {
     _ = @import("desktop-form.zig");
     _ = @import("desktop-file-list.zig");
     _ = @import("desktop-keyboard.zig");
+    _ = @import("desktop-input.zig");
+    _ = @import("desktop-search-entry.zig");
     _ = @import("desktop-apps-view.zig");
+    _ = @import("desktop-apps.zig");
     _ = @import("desktop-dash-view.zig");
     _ = @import("desktop-password-entry.zig");
     _ = @import("desktop-runtime.zig");

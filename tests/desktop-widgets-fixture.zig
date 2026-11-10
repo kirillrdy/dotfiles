@@ -252,7 +252,7 @@ pub fn main(process_init: std.process.Init) !void {
     eq(usage.codex.checked.value, "Refreshing…");
     p.update(usage, .{ .items = &.{.{ .text = "54%" }}, .tooltip = "5h: 54% remaining", .windows = &.{ .{ .percent = 54, .reset = "Resets in 2h 15m" }, .{ .percent = 93, .reset = "Resets in 4d 8h" } }, .checked = "Checked: 12:00:00" });
     assert(usage.codex.enabled);
-    var refresh_key = std.mem.zeroes(@import("desktop").apps.KeyEvent);
+    var refresh_key = std.mem.zeroes(extern struct { event_type: c_int, window: ?*anyopaque, send_event: i8, time: u32, state: c_uint, keyval: c_uint });
     refresh_key.event_type = 8; // GDK_KEY_PRESS
     refresh_key.keyval = 0xff0d;
     c.g_signal_emit_by_name(usage.codex_canvas, "key-press-event", &refresh_key, &handled);

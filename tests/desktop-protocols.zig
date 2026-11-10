@@ -39,5 +39,5 @@ test "native Wayland metadata matches every reference interface and message" {
         try sameMessages(actual.events, expected.events, @intCast(actual.event_count));
         checked += 1;
     }
-    try std.testing.expectEqual(@as(usize, 39), checked);
+    try std.testing.expectEqual(@as(usize, 41), checked);
 }

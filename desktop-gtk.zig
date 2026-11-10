@@ -1405,6 +1405,7 @@ pub extern fn gtk_dialog_get_action_area(dialog: [*c]GtkDialog) [*c]GtkWidget;
 
 pub const GtkIMContext = opaque {};
 pub extern fn gtk_im_multicontext_new() ?*GtkIMContext;
+pub extern fn gtk_im_context_simple_new() ?*GtkIMContext;
 pub extern fn gtk_im_context_set_client_window(context: *GtkIMContext, window: ?*GdkWindow) void;
 pub extern fn gtk_im_context_filter_keypress(context: *GtkIMContext, event: *GdkEventKey) gboolean;
 pub extern fn gtk_im_context_focus_in(context: *GtkIMContext) void;

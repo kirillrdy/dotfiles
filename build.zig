@@ -64,6 +64,8 @@ pub fn build(b: *std.Build) void {
         "dotfiles_overview_v1_interface",
         "zwlr_virtual_pointer_v1_interface",
         "zwlr_virtual_pointer_manager_v1_interface",
+        "zwp_text_input_manager_v3_interface",
+        "zwp_text_input_v3_interface",
     };
     const protocol_files = [_]std.Build.LazyPath{
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-output/xdg-output-unstable-v1.xml", .{protocol_dir}) },
@@ -76,6 +78,7 @@ pub fn build(b: *std.Build) void {
         .{ .cwd_relative = b.fmt("{s}/staging/ext-image-capture-source/ext-image-capture-source-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml", .{protocol_dir}) },
         b.path("desktop-overview-v1.xml"),
+        .{ .cwd_relative = b.fmt("{s}/unstable/text-input/text-input-unstable-v3.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-virtual-pointer-unstable-v1.xml", .{wlr_protocols}) },
         .{ .cwd_relative = b.fmt("{s}/staging/ext-session-lock/ext-session-lock-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/staging/ext-idle-notify/ext-idle-notify-v1.xml", .{protocol_dir}) },

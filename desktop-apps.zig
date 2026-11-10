@@ -1,28 +1,14 @@
-//! GNOME application grid with native pixels, GIO discovery and GTK hosting.
+//! Application discovery, search, selection and native Wayland hosting.
 const std = @import("std");
 pub const c = @import("desktop-gtk.zig");
-// GTK event unions contain C bitfields that Zig 0.14 cannot translate.
-pub const KeyEvent = extern struct {
-    event_type: c_int,
-    window: ?*anyopaque,
-    send_event: i8,
-    time: u32,
-    state: c_uint,
-    keyval: c_uint,
-};
+pub const KeyEvent = struct { state: u32 = 0, keyval: u32 };
 const cast = c.__zig.cast;
-fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
-    _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
-}
+const wire = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const shaping = @import("desktop-text.zig");
-const input = @import("desktop-password-entry.zig");
+const input = @import("desktop-search-entry.zig");
 const view = @import("desktop-apps-view.zig");
 const allocator = std.heap.c_allocator;
-pub const style =
-    \\window#desktop-apps { background: #222226; color: #fafafb; }
-;
-
 // Normalize before matching so composed/decomposed names and Unicode casing agree.
 pub fn fold(text: [*c]const u8) [*c]u8 {
     const lower = c.g_utf8_casefold(text, -1);
@@ -91,12 +77,11 @@ pub const Entry = struct {
 };
 
 pub const Launcher = struct {
-    window: *c.GtkWidget,
-    layout: *c.GtkWidget,
-    results: *c.GtkWidget,
-    search: *c.GtkWidget,
-    grid: *c.GtkWidget,
-    message: *c.GtkWidget,
+    host: ?*Host = null,
+    visible_window: bool = false,
+    owner: ?*anyopaque = null,
+    redraw_fn: ?*const fn (?*anyopaque) void = null,
+    hidden_fn: ?*const fn (?*anyopaque) void = null,
     search_input: ?*input.Entry = null,
     entries: std.array_list.Managed(*Entry),
     visible: std.array_list.Managed(*Entry),
@@ -118,68 +103,35 @@ pub const Launcher = struct {
     wheel: f64 = 0,
     wheel_time: u32 = 0,
 
-    pub fn init(application: ?*c.GtkApplication) Launcher {
-        const window = (if (application) |app| c.gtk_application_window_new(app) else c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL)).?;
-        c.gtk_widget_set_name(window, "desktop-apps");
-        c.gtk_window_set_title(cast(c.GtkWindow, window), "Applications");
-        c.gtk_window_set_decorated(cast(c.GtkWindow, window), 0);
-        c.gtk_window_set_skip_taskbar_hint(cast(c.GtkWindow, window), 1);
-        c.gtk_window_set_skip_pager_hint(cast(c.GtkWindow, window), 1);
-        c.gtk_window_set_default_size(cast(c.GtkWindow, window), 1040, 720);
-        c.gtk_window_maximize(cast(c.GtkWindow, window));
-        const provider = c.gtk_css_provider_new();
-        defer c.g_object_unref(provider);
-        _ = c.gtk_css_provider_load_from_data(provider, style, style.len, null);
-        c.gtk_style_context_add_provider_for_screen(c.gtk_widget_get_screen(window), @ptrCast(provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-        const layout = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0).?;
-        c.gtk_container_add(cast(c.GtkContainer, window), layout);
-        const search = c.gtk_drawing_area_new().?;
-        c.gtk_widget_set_can_focus(search, 1);
-        c.gtk_widget_set_size_request(search, 370, 37);
-        c.gtk_widget_set_halign(search, c.GTK_ALIGN_CENTER);
-        c.gtk_widget_set_margin_top(search, 12);
-        c.gtk_widget_set_margin_bottom(search, 6);
-        c.gtk_box_pack_start(cast(c.GtkBox, layout), search, 0, 0, 0);
-        const grid = c.gtk_drawing_area_new().?;
-        c.gtk_widget_set_can_focus(grid, 1);
-        c.gtk_box_pack_start(cast(c.GtkBox, layout), grid, 1, 1, 0);
-        const message = c.gtk_drawing_area_new().?;
-        c.gtk_widget_set_size_request(message, -1, 64);
-        c.gtk_widget_set_no_show_all(message, 1);
-        c.gtk_box_pack_end(cast(c.GtkBox, layout), message, 0, 0, 0);
-        return .{ .window = window, .layout = layout, .results = grid, .search = search, .grid = grid, .message = message, .entries = .init(allocator), .visible = .init(allocator), .query = fold(""), .status = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory") };
+    pub fn init(_: ?*c.GtkApplication) Launcher {
+        return .{ .entries = .init(allocator), .visible = .init(allocator), .query = fold(""), .status = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory") };
     }
-    // Bind after init: input-method callbacks retain this stable address.
     pub fn bind(self: *Launcher) void {
         self.bindControls();
-        connect(self.window, "key-press-event", &keyPress, self);
-        connect(self.window, "key-release-event", &keyRelease, self);
     }
     pub fn bindControls(self: *Launcher) void {
-        self.search_input = input.Entry.create(self.search, &inputChanged, self) catch @panic("out of memory");
-        self.search_input.?.makePublic();
-        for ([_]*c.GtkWidget{ self.search, self.grid }) |widget| {
-            c.gtk_widget_add_events(widget, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_FOCUS_CHANGE_MASK | c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
-            connect(widget, "draw", &draw, self);
-            connect(widget, "button-press-event", &press, self);
-            connect(widget, "button-release-event", &release, self);
-            connect(widget, "motion-notify-event", &motion, self);
-            connect(widget, "leave-notify-event", &leave, self);
-            connect(widget, "focus-in-event", &focusChanged, self);
-            connect(widget, "focus-out-event", &focusChanged, self);
-        }
-        connect(self.grid, "scroll-event", &scroll, self);
-        connect(self.grid, "size-allocate", &allocated, self);
-        connect(self.search, "key-press-event", &searchKey, self);
-        connect(self.search, "key-release-event", &searchKeyRelease, self);
-        connect(self.window, "hide", &hidden, self);
-        connect(self.message, "draw", &draw, self);
+        if (self.search_input == null) self.search_input = input.Entry.create(&inputChanged, self) catch @panic("out of memory");
+    }
+    pub fn redraw(self: *Launcher) void {
+        if (self.host) |host| for (host.client.seats.items) |seat| {
+            if (seat.text_input) |value| value.update();
+        };
+        if (self.redraw_fn) |callback| callback(self.owner) else if (self.host) |host| if (host.surface) |surface| surface.redraw();
+    }
+    pub fn hide(self: *Launcher) void {
+        self.visible_window = false;
+        self.search_input.?.focus(false);
+        self.pressed = null;
+        self.hover = null;
+        if (self.hidden_fn) |callback| callback(self.owner) else if (self.host) |host| if (host.surface) |surface| surface.hide();
     }
     pub fn deinit(self: *Launcher) void {
-        for ([_]*c.GtkWidget{ self.window, self.search, self.grid, self.message }) |widget|
-            _ = c.g_signal_handlers_disconnect_matched(widget, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
+        // Stop callbacks before freeing the native connection and entry state.
+        self.redraw_fn = null;
+        self.hidden_fn = null;
+        if (self.host) |host| host.destroy();
+        self.host = null;
         if (self.search_input) |entry_input| entry_input.destroy();
-        c.gtk_widget_destroy(self.window);
         self.freeEntries();
         self.entries.deinit();
         self.visible.deinit();
@@ -238,8 +190,7 @@ pub const Launcher = struct {
         const owned = allocator.dupeSentinel(u8, value, 0) catch return;
         allocator.free(self.status);
         self.status = owned;
-        c.gtk_widget_set_visible(self.message, @intFromBool(value.len != 0));
-        c.gtk_widget_queue_draw(self.message);
+        self.redraw();
     }
     pub fn refresh(self: *Launcher) void {
         c.g_free(self.query);
@@ -260,21 +211,37 @@ pub const Launcher = struct {
         self.hover = null;
         self.pressed = null;
         self.setMessage("");
-        c.gtk_widget_queue_draw(self.grid);
+        self.redraw();
     }
     pub fn focusGrid(self: *Launcher) void {
         self.search_focus = false;
         self.search_input.?.focus(false);
-        c.gtk_widget_grab_focus(self.grid);
-        c.gtk_widget_queue_draw(self.grid);
+
+        self.redraw();
     }
     pub fn present(self: *Launcher) void {
+        if (self.host == null) self.host = Host.create(self) catch |err| {
+            std.log.err("applications window: {s}", .{@errorName(err)});
+            return;
+        };
         self.setSearch("") catch {};
-        c.gtk_widget_show_all(self.window);
         self.refresh();
+        self.visible_window = true;
+        self.focusSearch();
+        const surface = self.host.?.surface orelse {
+            self.visible_window = false;
+            return;
+        };
+        surface.show() catch |err| std.log.err("applications window: {s}", .{@errorName(err)});
+    }
+    pub fn focusSearch(self: *Launcher) void {
         self.search_focus = true;
-        c.gtk_widget_grab_focus(self.search);
-        c.gtk_window_present(cast(c.GtkWindow, self.window));
+        self.search_input.?.focus(true);
+        self.redraw();
+    }
+    pub fn text(self: *Launcher, value: []const u8) void {
+        self.focusSearch();
+        self.search_input.?.insert(value) catch {};
     }
     fn pageCount(self: *const Launcher) usize {
         return @max(1, std.math.divCeil(usize, self.visible.items.len, self.geometry.capacity()) catch unreachable);
@@ -286,12 +253,9 @@ pub const Launcher = struct {
         self.selected = self.page * self.geometry.capacity();
         self.hover = null;
         self.pressed = null;
-        c.gtk_widget_queue_draw(self.grid);
+        self.redraw();
     }
     pub fn launch(self: *Launcher, info: *c.GAppInfo) bool {
-        const context = c.gdk_display_get_app_launch_context(c.gtk_widget_get_display(self.window));
-        defer c.g_object_unref(context);
-        c.gdk_app_launch_context_set_timestamp(context, c.gtk_get_current_event_time());
         var err: [*c]c.GError = null;
         var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
         defer arena.deinit();
@@ -306,10 +270,10 @@ pub const Launcher = struct {
                 ok = c.g_spawn_async(if (directory != null and directory[0] != 0) directory else null, @ptrCast(args.items.ptr), null, c.G_SPAWN_SEARCH_PATH, null, null, null, &err) != 0;
             } else |_| {}
         } else {
-            ok = c.g_app_info_launch(info, null, cast(c.GAppLaunchContext, context), &err) != 0;
+            ok = c.g_app_info_launch(info, null, null, &err) != 0;
         }
         if (ok) {
-            c.gtk_widget_hide(self.window);
+            self.hide();
         } else {
             self.setMessage(if (err != null) std.mem.span(err.*.message) else "Could not launch application");
         }
@@ -325,65 +289,13 @@ fn inputChanged(data: ?*anyopaque) void {
         self.refresh();
         if (self.on_search) |callback| callback(self.search_context);
     }
-    c.gtk_widget_queue_draw(self.search);
+    self.redraw();
 }
-fn focusChanged(widget: *c.GtkWidget, _: *c.GdkEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
-    const self = cast(Launcher, data);
-    self.search_focus = c.gtk_widget_has_focus(self.search) != 0;
-    self.search_input.?.focus(self.search_focus);
-    self.pressed = null;
-    c.gtk_widget_queue_draw(widget);
-    c.gtk_widget_queue_draw(self.grid);
-    c.gtk_widget_queue_draw(self.search);
-    return 0;
-}
-fn hidden(_: *c.GtkWidget, data: ?*anyopaque) callconv(.c) void {
-    const self = cast(Launcher, data);
-    self.search_input.?.focus(false);
-    self.pressed = null;
-    self.hover = null;
-}
-fn allocated(_: *c.GtkWidget, allocation: *c.GtkAllocation, data: ?*anyopaque) callconv(.c) void {
-    const self = cast(Launcher, data);
-    self.geometry = view.Grid.init(@intCast(@max(1, allocation.width)), @intCast(@max(1, allocation.height)));
-    self.page = self.selected / self.geometry.capacity();
-    self.hover = null;
-    self.pressed = null;
-}
-fn searchKey(_: *c.GtkWidget, event: *c.GdkEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
-    const self = cast(Launcher, data);
-    if (self.search_input.?.filter(event)) return 1;
-    var symbol: c.guint = 0;
-    var modifiers: c.GdkModifierType = 0;
-    _ = c.gdk_event_get_keyval(event, &symbol);
-    _ = c.gdk_event_get_state(event, &modifiers);
-    // Navigation and Escape bubble to the containing overview.
-    if (symbol == c.GDK_KEY_Escape or symbol == c.GDK_KEY_Down or symbol == c.GDK_KEY_Return or symbol == c.GDK_KEY_KP_Enter or symbol == 0xff09) return 0;
-    return @intFromBool(enterKey(self, symbol, modifiers));
-}
-fn enterKey(self: *Launcher, symbol: u32, modifiers: c.GdkModifierType) bool {
-    const entry_input = self.search_input.?;
-    if (entry_input.key(symbol, modifiers)) return true;
-    const unicode = c.gdk_keyval_to_unicode(symbol);
-    if (modifiers & (c.GDK_CONTROL_MASK | c.GDK_MOD1_MASK | c.GDK_SUPER_MASK) != 0 or unicode < 32 or unicode == 127) return false;
-    var bytes: [4]u8 = undefined;
-    const len = std.unicode.utf8Encode(@intCast(unicode), &bytes) catch return false;
-    entry_input.insert(bytes[0..len]) catch {};
-    return true;
-}
-fn searchKeyRelease(_: *c.GtkWidget, event: *c.GdkEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
-    return @intFromBool(cast(Launcher, data).search_input.?.filter(event));
-}
-pub fn keyRelease(_: ?*c.GtkWidget, event: *KeyEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
-    const self = cast(Launcher, data);
-    if (self.search_focus) return @intFromBool(self.search_input.?.filter(@ptrCast(event)));
-    return 0;
-}
-pub fn keyPress(_: ?*c.GtkWidget, event: *KeyEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
+pub fn keyPress(_: ?*anyopaque, event: *KeyEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
     const self = cast(Launcher, data);
     const symbol = event.keyval;
     if (symbol == c.GDK_KEY_Escape) {
-        c.gtk_widget_hide(self.window);
+        self.hide();
         return 1;
     }
     if (symbol == c.GDK_KEY_Return or symbol == c.GDK_KEY_KP_Enter) {
@@ -396,9 +308,7 @@ pub fn keyPress(_: ?*c.GtkWidget, event: *KeyEvent, data: ?*anyopaque) callconv(
     }
     if (symbol == 0xff09 or symbol == 0xfe20) {
         if (self.search_focus and symbol == 0xff09 and event.state & c.GDK_SHIFT_MASK == 0) self.focusGrid() else {
-            c.gtk_widget_grab_focus(self.search);
-            self.search_focus = true;
-            self.search_input.?.focus(true);
+            self.focusSearch();
         }
         return 1;
     }
@@ -412,50 +322,40 @@ pub fn keyPress(_: ?*c.GtkWidget, event: *KeyEvent, data: ?*anyopaque) callconv(
         if (delta != 0 or symbol == 0xff50 or symbol == 0xff57) {
             const next: i64 = if (symbol == 0xff50) 0 else if (symbol == 0xff57) @intCast(self.visible.items.len - 1) else @as(i64, @intCast(self.selected)) + delta;
             if (next < 0 and symbol == c.GDK_KEY_Up) {
-                c.gtk_widget_grab_focus(self.search);
-                self.search_focus = true;
-                self.search_input.?.focus(true);
+                self.focusSearch();
             } else self.selected = @intCast(std.math.clamp(next, 0, @as(i64, @intCast(self.visible.items.len - 1))));
             self.page = self.selected / self.geometry.capacity();
             self.hover = null;
-            c.gtk_widget_queue_draw(self.grid);
+            self.redraw();
             return 1;
         }
     }
-    if (event.state & (c.GDK_CONTROL_MASK | c.GDK_MOD1_MASK | c.GDK_SUPER_MASK) == 0 and (symbol == c.GDK_KEY_BackSpace or c.gdk_keyval_to_unicode(symbol) >= 32)) {
-        self.search_focus = true;
-        c.gtk_widget_grab_focus(self.search);
-        self.search_input.?.focus(true);
-        if (self.search_input.?.filter(@ptrCast(event))) return 1;
-        return @intFromBool(enterKey(self, symbol, event.state));
+    if (self.search_focus or symbol == c.GDK_KEY_BackSpace) {
+        self.focusSearch();
+        return @intFromBool(self.search_input.?.key(symbol, event.state));
     }
     return 0;
 }
-fn press(widget: *c.GtkWidget, event: *c.GdkEventButton, data: ?*anyopaque) callconv(.c) c.gboolean {
-    if (event.button != 1) return 0;
-    const self = cast(Launcher, data);
-    if (widget == self.search) {
-        c.gtk_widget_grab_focus(self.search);
-        self.search_focus = true;
-        self.search_input.?.focus(true);
-        if (event.x > @as(f64, @floatFromInt(c.gtk_widget_get_allocated_width(self.search))) - 32 and self.searchText().len > 0) {
-            self.setSearch("") catch {};
-        } else {
-            self.search_input.?.buffer.cursor = searchPoint(self, event.x);
-            if (event.state & c.GDK_SHIFT_MASK == 0) self.search_input.?.buffer.anchor = self.search_input.?.buffer.cursor;
+pub const Part = enum { search, grid, message };
+pub fn press(self: *Launcher, part: Part, x: f64, y: f64, modifiers: u32) void {
+    if (part == .search) {
+        self.focusSearch();
+        if (x > 338 and self.searchText().len > 0) self.setSearch("") catch {} else {
+            self.search_input.?.buffer.cursor = searchPoint(self, x);
+            if (modifiers & 1 == 0) self.search_input.?.buffer.anchor = self.search_input.?.buffer.cursor;
             self.search_input.?.revision += 1;
             self.search_input.?.dragging = true;
             inputChanged(self);
         }
-    } else {
+    } else if (part == .grid) {
         self.focusGrid();
         const g = self.geometry;
-        if (event.y > g.height - 40) {
+        if (y > g.height - 40) {
             const count = self.pageCount();
-            const x = (g.width - @as(f64, @floatFromInt(count * 34))) / 2;
-            const index: i64 = @intFromFloat(@floor((event.x - x) / 34));
+            const left = (g.width - @as(f64, @floatFromInt(count * 34))) / 2;
+            const index: i64 = @intFromFloat(@floor((x - left) / 34));
             if (index >= 0 and index < count) self.changePage(@intCast(index - @as(i64, @intCast(self.page))));
-        } else if (event.x < g.width * 0.1) self.changePage(-1) else if (event.x >= g.width * 0.9) self.changePage(1) else if (g.hit(event.x, event.y)) |slot| {
+        } else if (x < g.width * 0.1) self.changePage(-1) else if (x >= g.width * 0.9) self.changePage(1) else if (g.hit(x, y)) |slot| {
             const index = self.page * g.capacity() + slot;
             if (index < self.visible.items.len) {
                 self.selected = index;
@@ -463,65 +363,42 @@ fn press(widget: *c.GtkWidget, event: *c.GdkEventButton, data: ?*anyopaque) call
             }
         }
     }
-    c.gtk_widget_queue_draw(widget);
-    return 1;
+    self.redraw();
 }
-fn release(widget: *c.GtkWidget, event: *c.GdkEventButton, data: ?*anyopaque) callconv(.c) c.gboolean {
-    if (event.button != 1) return 0;
-    const self = cast(Launcher, data);
+pub fn release(self: *Launcher, part: Part, x: f64, y: f64) void {
     self.search_input.?.dragging = false;
     const pressed = self.pressed;
     self.pressed = null;
-    if (widget == self.grid) if (self.geometry.hit(event.x, event.y)) |slot| {
+    if (part == .grid) if (self.geometry.hit(x, y)) |slot| {
         const index = self.page * self.geometry.capacity() + slot;
         if (pressed == index and index < self.visible.items.len) _ = self.launch(self.visible.items[index].info);
     };
-    c.gtk_widget_queue_draw(widget);
-    return 1;
+    self.redraw();
 }
-fn motion(widget: *c.GtkWidget, event: *c.GdkEventMotion, data: ?*anyopaque) callconv(.c) c.gboolean {
-    const self = cast(Launcher, data);
-    if (widget == self.search) {
-        self.search_hover = true;
-        if (self.search_input.?.dragging) {
-            self.search_input.?.buffer.cursor = searchPoint(self, event.x);
-            self.search_input.?.revision += 1;
-            inputChanged(self);
-        }
-    } else {
-        const slot = self.geometry.hit(event.x, event.y);
+pub fn motion(self: *Launcher, part: Part, x: f64, y: f64) void {
+    self.search_hover = part == .search;
+    if (self.search_input.?.dragging) {
+        self.search_input.?.buffer.cursor = searchPoint(self, x);
+        self.search_input.?.revision += 1;
+        inputChanged(self);
+    } else if (part == .grid) {
+        const slot = self.geometry.hit(x, y);
         const index = if (slot) |i| self.page * self.geometry.capacity() + i else self.visible.items.len;
         self.hover = if (index < self.visible.items.len) index else null;
-        c.gtk_widget_set_tooltip_text(self.grid, if (self.hover) |i| self.visible.items[i].name else null);
+    } else self.hover = null;
+    self.redraw();
+}
+pub fn scroll(self: *Launcher, amount: f64) void {
+    const time: u32 = @truncate(@as(u64, @intCast(@divTrunc(c.g_get_monotonic_time(), 1000))));
+    if (time -% self.wheel_time > 200) self.wheel = 0;
+    self.wheel_time = time;
+    self.wheel += amount;
+    if (@abs(self.wheel) >= 10) {
+        self.changePage(if (self.wheel > 0) 1 else -1);
+        self.wheel = 0;
     }
-    c.gtk_widget_queue_draw(widget);
-    return 1;
 }
-fn leave(widget: *c.GtkWidget, _: *c.GdkEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
-    const self = cast(Launcher, data);
-    if (widget == self.search) self.search_hover = false else self.hover = null;
-    c.gtk_widget_queue_draw(widget);
-    return 0;
-}
-fn scroll(_: *c.GtkWidget, event: *c.GdkEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
-    const self = cast(Launcher, data);
-    var direction: c.GdkScrollDirection = 0;
-    if (c.gdk_event_get_scroll_direction(event, &direction) == 0) return 0;
-    if (direction == 4) {
-        var x: f64 = 0;
-        var y: f64 = 0;
-        _ = c.gdk_event_get_scroll_deltas(event, &x, &y);
-        const time: u32 = @truncate(@as(u64, @intCast(@divTrunc(c.g_get_monotonic_time(), 1000))));
-        if (time -% self.wheel_time > 200) self.wheel = 0;
-        self.wheel_time = time;
-        self.wheel += if (@abs(x) > @abs(y)) x else y;
-        if (@abs(self.wheel) >= 1) {
-            self.changePage(if (self.wheel > 0) 1 else -1);
-            self.wheel = 0;
-        }
-    } else self.changePage(if (direction == 1 or direction == 3) 1 else -1);
-    return 1;
-}
+
 fn searchPoint(self: *Launcher, x: f64) usize {
     // Use shaped prefix advances, so proportional fonts and CJK hit correctly.
     const value = self.searchText();
@@ -536,59 +413,221 @@ fn searchPoint(self: *Launcher, x: f64) usize {
     }
     return value.len;
 }
-const DrawContext = struct {
-    launcher: *Launcher,
-    widget: *c.GtkWidget,
-    scale: u32,
-    fn paint(self: @This(), target: raster.Buffer) void {
-        @memset(target.pixels, 0xff222226);
-        const l = self.launcher;
-        if (self.widget == l.search) {
-            view.paintSearch(target, self.scale, &l.renderer, &l.search_view, l.search_input.?, l.search_hover, &l.search_offset) catch {};
-        } else if (self.widget == l.message) {
-            view.centerText(target, self.scale, &l.renderer, l.status, 0xb6b6b9) catch {};
-        } else {
-            const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(self.scale) };
-            if (l.visible.items.len == 0) view.centerText(target, self.scale, &l.renderer, "No applications found", 0xb6b6b9) catch {};
-            const start = l.page * l.geometry.capacity();
-            const end = @min(l.visible.items.len, start + l.geometry.capacity());
-            for (start..@max(start, end)) |i| {
-                const item = l.visible.items[i];
-                const focused = c.gtk_widget_has_focus(l.grid) != 0 and l.selected == i;
-                // GNOME marks the default search result selected while the entry
-                // retains focus; the keyboard focus ring belongs to the grid only.
-                const selected = l.search_focus and l.query[0] != 0 and l.selected == i;
-                item.tile.paint(canvas, self.scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), l.geometry.tile(i - start), l.geometry.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
-            }
-            view.paintPages(canvas, l.geometry, l.page, l.pageCount());
+pub fn paint(l: *Launcher, part: Part, target: raster.Buffer, scale: u32) void {
+    @memset(target.pixels, 0xff222226);
+    if (part == .search) {
+        var buffer = l.search_input.?.presentation();
+        const state = .{ .buffer = &buffer, .focused = l.search_input.?.focused, .caret = l.search_input.?.caret and (l.search_input.?.composition.len == 0 or l.search_input.?.composition_caret) };
+        view.paintSearch(target, scale, &l.renderer, &l.search_view, &state, l.search_hover, &l.search_offset) catch {};
+    } else if (part == .message) {
+        view.centerText(target, scale, &l.renderer, l.status, 0xb6b6b9) catch {};
+    } else {
+        const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(scale) };
+        if (l.visible.items.len == 0) view.centerText(target, scale, &l.renderer, "No applications found", 0xb6b6b9) catch {};
+        const start = l.page * l.geometry.capacity();
+        const end = @min(l.visible.items.len, start + l.geometry.capacity());
+        for (start..@max(start, end)) |i| {
+            const item = l.visible.items[i];
+            const focused = !l.search_focus and l.selected == i;
+            // GNOME marks the default search result selected while the entry
+            // retains focus; the keyboard focus ring belongs to the grid only.
+            const selected = l.search_focus and l.query[0] != 0 and l.selected == i;
+            item.tile.paint(canvas, scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), l.geometry.tile(i - start), l.geometry.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
         }
+        view.paintPages(canvas, l.geometry, l.page, l.pageCount());
     }
-};
-fn draw(widget: *c.GtkWidget, cr: *c.cairo_t, data: ?*anyopaque) callconv(.c) c.gboolean {
-    const self = cast(Launcher, data);
-    const width: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)));
-    const height: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)));
-    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
-    c.__zig.paintCairo(cr, width, height, scale, DrawContext{ .launcher = self, .widget = widget, .scale = scale }, DrawContext.paint) catch {};
-    return 1;
 }
-pub fn activate(app: ?*c.GtkApplication, data: ?*anyopaque) callconv(.c) void {
+pub fn activate(_: ?*c.GtkApplication, data: ?*anyopaque) callconv(.c) void {
     const state = cast(?Launcher, data);
     if (state.* == null) {
-        state.* = Launcher.init(app);
+        state.* = Launcher.init(null);
         state.*.?.bind();
-        // Closing the window hides it; repeated activation toggles one instance.
-        connect(state.*.?.window, "delete-event", &close, null);
     }
     const self = &state.*.?;
-    if (c.gtk_widget_get_visible(self.window) != 0) {
-        c.gtk_widget_hide(self.window);
-    } else {
+    if (self.visible_window) self.hide() else {
         self.reload() catch |err| std.log.err("loading applications: {s}", .{@errorName(err)});
         self.present();
     }
 }
-fn close(widget: ?*c.GtkWidget, _: ?*anyopaque, _: ?*anyopaque) callconv(.c) c.gboolean {
-    c.gtk_widget_hide(widget);
-    return 1;
+
+pub const Region = struct {
+    x: f64 = 0,
+    y: f64 = 0,
+    width: u32,
+    height: u32,
+    pub fn contains(self: Region, x: f64, y: f64) bool {
+        return x >= self.x and y >= self.y and x < self.x + @as(f64, @floatFromInt(self.width)) and y < self.y + @as(f64, @floatFromInt(self.height));
+    }
+};
+
+pub fn paintRegion(target: raster.Buffer, scale: u32, region: Region, context: anytype, comptime painter: anytype) void {
+    if (region.width == 0 or region.height == 0) return;
+    const width = region.width * scale;
+    const height = region.height * scale;
+    const pixels = allocator.alloc(u32, @as(usize, width) * height) catch return;
+    defer allocator.free(pixels);
+    @memset(pixels, 0);
+    const buffer: raster.Buffer = .{ .pixels = pixels, .width = width, .height = height };
+    painter(context, buffer, scale);
+    const factor: f64 = @floatFromInt(scale);
+    const px = region.x * factor;
+    const py = region.y * factor;
+    if (@floor(px) == px and @floor(py) == py) {
+        const x0: usize = @intFromFloat(std.math.clamp(-px, 0, @as(f64, @floatFromInt(width))));
+        const y0: usize = @intFromFloat(std.math.clamp(-py, 0, @as(f64, @floatFromInt(height))));
+        const x1: usize = @intFromFloat(std.math.clamp(@as(f64, @floatFromInt(target.width)) - px, 0, @as(f64, @floatFromInt(width))));
+        const y1: usize = @intFromFloat(std.math.clamp(@as(f64, @floatFromInt(target.height)) - py, 0, @as(f64, @floatFromInt(height))));
+        if (x1 <= x0 or y1 <= y0) return;
+        for (y0..y1) |y| for (x0..x1) |x| {
+            const source = pixels[y * width + x];
+            if (source == 0) continue;
+            const dx: usize = @intFromFloat(px + @as(f64, @floatFromInt(x)));
+            const dy: usize = @intFromFloat(py + @as(f64, @floatFromInt(y)));
+            const destination = &target.pixels[dy * target.width + dx];
+            destination.* = if (source >> 24 == 255) source else raster.over(destination.*, source);
+        };
+        return;
+    }
+    raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(pixels), .width = width, .height = height, .stride = @as(usize, width) * 4, .format = .argb }, .{ .x = region.x * @as(f64, @floatFromInt(scale)), .y = region.y * @as(f64, @floatFromInt(scale)), .width = @floatFromInt(width), .height = @floatFromInt(height) }, null) catch {};
+}
+
+pub const Host = struct {
+    launcher: *Launcher,
+    client: *wire.Client,
+    surface: ?*wire.Surface,
+    search: Region = .{ .width = 370, .height = 37 },
+    grid: Region = .{ .width = 1040, .height = 600 },
+    message: Region = .{ .width = 1040, .height = 64 },
+    fn create(launcher: *Launcher) !*Host {
+        const self = try allocator.create(Host);
+        errdefer allocator.destroy(self);
+        const client = try wire.Client.createInteractive(.{ .added = &added, .removed = &removed }, self);
+        errdefer client.destroy();
+        if (client.outputs.items.len == 0) return error.DisplayUnavailable;
+        self.* = .{ .launcher = launcher, .client = client, .surface = null };
+        self.surface = try self.createSurface(client.outputs.items[0]);
+        try client.start();
+        return self;
+    }
+    fn destroy(self: *Host) void {
+        self.client.destroy();
+        allocator.destroy(self);
+    }
+    fn added(data: ?*anyopaque, output: *wire.Output) void {
+        const self = cast(Host, data);
+        if (self.surface == null) self.surface = self.createSurface(output) catch null;
+    }
+    fn createSurface(self: *Host, output: *wire.Output) !*wire.Surface {
+        const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-apps", .title = "Applications", .role = .toplevel, .width = 1040, .height = 720, .interactive = true, .cursor = .arrow, .maximized = true }, &draw, self);
+        surface.close = &closed;
+        surface.input = .{ .symbol = &symbol, .text = &text, .button = &button, .motion = &Host.motion, .leave = &leave, .focus = &focus, .scroll = &Host.scroll, .surrounding = &surrounding, .preedit = &preedit, .commit = &commit, .delete = &delete };
+        return surface;
+    }
+    fn removed(data: ?*anyopaque, output: *wire.Output) void {
+        const self = cast(Host, data);
+        if (self.surface) |surface| if (surface.output == output) {
+            self.launcher.hide();
+            self.surface = null;
+        };
+    }
+    fn closed(data: ?*anyopaque) void {
+        cast(Host, data).launcher.hide();
+    }
+    pub fn draw(data: ?*anyopaque, target: wire.Pixels) void {
+        const self = cast(Host, data);
+        const scale = self.surface.?.output.scale;
+        const width = target.width / scale;
+        const height = target.height / scale;
+        self.search.x = (@as(f64, @floatFromInt(width)) - 370) / 2;
+        self.search.y = 12;
+        self.grid = .{ .y = 55, .width = width, .height = height -| (55 + @as(u32, if (self.launcher.status.len > 0) 64 else 0)) };
+        self.message = .{ .y = @floatFromInt(height -| 64), .width = width, .height = 64 };
+        const previous = self.launcher.geometry;
+        self.launcher.geometry = view.Grid.init(@max(1, self.grid.width), @max(1, self.grid.height));
+        if (previous.width != self.launcher.geometry.width or previous.height != self.launcher.geometry.height) self.launcher.page = self.launcher.selected / self.launcher.geometry.capacity();
+        @memset(target.pixels, 0xff222226);
+        paintRegion(target, scale, self.search, .{ self.launcher, Part.search }, paintPart);
+        paintRegion(target, scale, self.grid, .{ self.launcher, Part.grid }, paintPart);
+        if (self.launcher.status.len > 0) paintRegion(target, scale, self.message, .{ self.launcher, Part.message }, paintPart);
+    }
+    fn symbol(data: ?*anyopaque, _: *wire.Surface, key: u32, modifiers: u32, pressed: bool) bool {
+        if (!pressed) return false;
+        var event: KeyEvent = .{ .state = modifiers, .keyval = key };
+        return keyPress(null, &event, cast(Host, data).launcher) != 0;
+    }
+    fn text(data: ?*anyopaque, _: *wire.Surface, value: []const u8) void {
+        cast(Host, data).launcher.text(value);
+    }
+    fn part(self: *Host, x: f64, y: f64) Part {
+        return if (self.search.contains(x, y)) .search else .grid;
+    }
+    fn button(data: ?*anyopaque, _: *wire.Surface, code: u32, down: bool, x: f64, y: f64) void {
+        if (code != 272) return;
+        const self = cast(Host, data);
+        const current = self.part(x, y);
+        const rect = if (current == .search) self.search else self.grid;
+        if (down) press(self.launcher, current, x - rect.x, y - rect.y, 0) else release(self.launcher, current, x - rect.x, y - rect.y);
+    }
+    fn motion(data: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
+        const self = cast(Host, data);
+        const current = if (self.launcher.search_input.?.dragging) Part.search else self.part(x, y);
+        const rect = if (current == .search) self.search else self.grid;
+        @import("desktop-apps.zig").motion(self.launcher, current, x - rect.x, y - rect.y);
+    }
+    fn leave(data: ?*anyopaque, _: *wire.Surface) void {
+        const self = cast(Host, data);
+        self.launcher.hover = null;
+        self.launcher.search_hover = false;
+        self.launcher.redraw();
+    }
+    fn focus(data: ?*anyopaque, _: *wire.Surface, value: bool) void {
+        const self = cast(Host, data);
+        self.launcher.search_input.?.focus(value and self.launcher.search_focus);
+    }
+    fn scroll(data: ?*anyopaque, _: *wire.Surface, _: u32, amount: f64) void {
+        @import("desktop-apps.zig").scroll(cast(Host, data).launcher, amount);
+    }
+    fn surrounding(data: ?*anyopaque, _: *wire.Surface) ?@import("desktop-input.zig").TextState {
+        const self = cast(Host, data);
+        return textState(self.launcher, self.search);
+    }
+    fn preedit(data: ?*anyopaque, _: *wire.Surface, value: []const u8, cursor: i32) void {
+        cast(Host, data).launcher.search_input.?.preedit(value, cursor);
+    }
+    fn commit(data: ?*anyopaque, _: *wire.Surface, value: []const u8) void {
+        cast(Host, data).launcher.search_input.?.insert(value) catch {};
+    }
+    fn delete(data: ?*anyopaque, _: *wire.Surface, before: u32, after: u32) void {
+        cast(Host, data).launcher.search_input.?.deleteSurrounding(before, after);
+    }
+};
+pub fn paintPart(context: struct { *Launcher, Part }, target: raster.Buffer, scale: u32) void {
+    paint(context[0], context[1], target, scale);
+}
+pub fn textState(launcher: *Launcher, region: Region) ?@import("desktop-input.zig").TextState {
+    const entry = launcher.search_input orelse return null;
+    if (!entry.focused) return null;
+    const display = entry.presentation();
+    const advance = view.measure(&launcher.renderer, display.value()[0..display.cursor], 1) catch 0;
+    const caret = std.math.clamp(advance - launcher.search_offset, 0, @as(f64, @floatFromInt(region.width -| 82)));
+    return .{ .text = entry.buffer.valueZ(), .cursor = @intCast(entry.buffer.cursor), .anchor = @intCast(entry.buffer.anchor), .rect = .{ .x = @intFromFloat(region.x + 41 + caret), .y = @intFromFloat(region.y), .width = 1, .height = @intCast(region.height) } };
+}
+
+test "native layout compositing clips regions and preserves transparent pixels" {
+    const Painter = struct {
+        fn paint(_: void, target: raster.Buffer, _: u32) void {
+            @memset(target.pixels, 0x80800000);
+        }
+    };
+    var pixels: [18]u32 = @splat(0xff0000ff);
+    const target: raster.Buffer = .{ .pixels = pixels[1..17], .width = 4, .height = 4 };
+    paintRegion(target, 1, .{ .x = -1, .y = -1, .width = 3, .height = 3 }, {}, Painter.paint);
+    try std.testing.expectEqual(@as(u32, 0xff0000ff), pixels[0]);
+    try std.testing.expectEqual(@as(u32, 0xff80007f), pixels[1]);
+    try std.testing.expectEqual(@as(u32, 0xff80007f), pixels[6]);
+    try std.testing.expectEqual(@as(u32, 0xff0000ff), pixels[3]);
+    try std.testing.expectEqual(@as(u32, 0xff0000ff), pixels[17]);
+    const before = pixels;
+    paintRegion(target, 1, .{ .x = 10, .y = 10, .width = 3, .height = 3 }, {}, Painter.paint);
+    try std.testing.expectEqualSlices(u32, &before, &pixels);
 }

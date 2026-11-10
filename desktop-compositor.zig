@@ -90,14 +90,14 @@ const Hook = struct {
 const Hooks = struct {
     entries: [32]Hook = undefined,
     len: usize = 0,
-    fn add(self: *Hooks, signal: *c.wl_signal, owner: anytype, callback: *const fn (*anyopaque, ?*anyopaque) void) void {
+    pub fn add(self: *Hooks, signal: *c.wl_signal, owner: anytype, callback: *const fn (*anyopaque, ?*anyopaque) void) void {
         const h = &self.entries[self.len];
         self.len += 1;
         h.* = .{ .owner = owner, .callback = callback };
         h.listener.notify = &Hook.notify;
         c.wl_signal_add(signal, &h.listener);
     }
-    fn clear(self: *Hooks) void {
+    pub fn clear(self: *Hooks) void {
         for (self.entries[0..self.len]) |*h| c.wl_list_remove(&h.listener.link);
         self.len = 0;
     }
@@ -115,6 +115,7 @@ const Server = struct {
     layout: *c.wlr_output_layout = undefined,
     scene_layout: *c.wlr_scene_output_layout = undefined,
     seat: *c.wlr_seat = undefined,
+    ime: @import("desktop-ime.zig").Relay(Hooks) = undefined,
     cursor: *c.wlr_cursor = undefined,
     cursors: *c.wlr_xcursor_manager = undefined,
     idle: *c.wlr_idle_notifier_v1 = undefined,
@@ -193,6 +194,7 @@ const Server = struct {
         self.foreign_list = c.wlr_ext_foreign_toplevel_list_v1_create(self.display, 1).?;
         self.idle = c.wlr_idle_notifier_v1_create(self.display).?;
         self.seat = c.wlr_seat_create(self.display, "seat0").?;
+        self.ime.init(self.display, self.seat, self.roots[3], self, &textPosition);
         self.cursor = c.wlr_cursor_create().?;
         c.wlr_cursor_attach_output_layout(self.cursor, self.layout);
         self.cursors = c.wlr_xcursor_manager_create("Adwaita", 24).?;
@@ -242,6 +244,7 @@ const Server = struct {
     fn deinit(self: *Server) void {
         self.shutting_down = true;
         c.wl_display_destroy_clients(self.display);
+        self.ime.deinit();
         self.hooks.clear();
         c.wlr_backend_destroy(self.backend);
         c.wlr_scene_node_destroy(&self.scene.tree.node);
@@ -262,6 +265,19 @@ const Server = struct {
     }
     fn activity(self: *Server) void {
         c.wlr_idle_notifier_v1_notify_activity(self.idle, self.seat);
+    }
+    fn textPosition(ptr: *anyopaque, surface: *c.wlr_surface) c.wlr_box {
+        const self = cast(Server, ptr);
+        var box: c.wlr_box = .{ .x = 0, .y = 0, .width = surface.current.width, .height = surface.current.height };
+        for (self.layers.items) |layer| if (layer.wlr.surface == surface) {
+            _ = c.wlr_scene_node_coords(&layer.scene.tree.*.node, &box.x, &box.y);
+            return box;
+        };
+        for (self.views.items) |view| if (view.xdg.base.*.surface == surface) {
+            _ = c.wlr_scene_node_coords(&view.tree.node, &box.x, &box.y);
+            return box;
+        };
+        return box;
     }
     fn outputAt(self: *Server, x: f64, y: f64) ?*Output {
         const output = c.wlr_output_layout_output_at(self.layout, x, y);
@@ -1078,7 +1094,7 @@ const Keyboard = struct {
     fn modifiers(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Keyboard, ptr);
         c.wlr_seat_set_keyboard(self.s.seat, self.wlr);
-        c.wlr_seat_keyboard_notify_modifiers(self.s.seat, &self.wlr.modifiers);
+        if (self.s.ime.keyboardGrab(self.wlr)) |grab| c.wlr_input_method_keyboard_grab_v2_send_modifiers(grab, &self.wlr.modifiers) else c.wlr_seat_keyboard_notify_modifiers(self.s.seat, &self.wlr.modifiers);
         const mods = c.wlr_keyboard_get_modifiers(self.wlr);
         if (self.s.cycling and mods & (c.WLR_MODIFIER_ALT | c.WLR_MODIFIER_LOGO) == 0) self.s.finishCycle(false);
     }
@@ -1110,7 +1126,7 @@ const Keyboard = struct {
         }
         if (!handled) {
             c.wlr_seat_set_keyboard(self.s.seat, self.wlr);
-            c.wlr_seat_keyboard_notify_key(self.s.seat, event.time_msec, event.keycode, event.state);
+            if (self.s.ime.keyboardGrab(self.wlr)) |grab| c.wlr_input_method_keyboard_grab_v2_send_key(grab, event.time_msec, event.keycode, event.state) else c.wlr_seat_keyboard_notify_key(self.s.seat, event.time_msec, event.keycode, event.state);
         }
     }
     fn binding(self: *Keyboard, sym: u32, mods: u32) bool {

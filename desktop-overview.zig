@@ -1,5 +1,5 @@
 //! Activities: live window previews, workspace navigation, search and app grid.
-const layer = @import("desktop-layer-shell.zig");
+const wire = @import("desktop-surface.zig");
 const std = @import("std");
 comptime {
     _ = @import("desktop-protocols.zig");
@@ -12,21 +12,28 @@ const view = @import("desktop-overview-view.zig");
 const c = capture.c;
 const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
-fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
-    _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
-}
 const Rect = capture.Rect;
-const style =
-    \\window#desktop-apps { background: #222226; color: white; }
-;
+const Part = enum { search, grid, stage, strip, dash, tooltip };
+const Pointer = struct { x: f64, y: f64, button: u32 = 1 };
 
 const Overview = struct {
     launcher: apps.Launcher,
     client: ?*capture.Client = null,
-    strip: *c.GtkWidget,
-    stage: *c.GtkWidget,
-    dash: *c.GtkWidget,
-    tooltip: *c.GtkWidget,
+    native: *wire.Client,
+    surface: ?*wire.Surface,
+    strip: apps.Region = .{ .y = 55, .width = 1728, .height = 64 },
+    stage: apps.Region = .{ .y = 128, .width = 1728, .height = 787 },
+    search: apps.Region = .{ .y = 12, .width = 370, .height = 37 },
+    grid: apps.Region = .{ .y = 119, .width = 1728, .height = 817 },
+    dash: apps.Region = .{ .width = 0, .height = 0 },
+    tooltip: apps.Region = .{ .width = 0, .height = 0 },
+    tooltip_visible: bool = false,
+    focus_part: Part = .stage,
+    pointer_part: ?Part = null,
+    pressed_part: ?Part = null,
+    modifiers: u32 = 0,
+    painting: bool = false,
+    repaint_source: c.guint = 0,
     dash_view: native_dash.View = .{},
     tooltip_timer: c.guint = 0,
     wallpaper: ?*c.GdkPixbuf,
@@ -47,101 +54,53 @@ const Overview = struct {
     workspace_rect: Rect = .{},
     monitor: c.GdkRectangle = .{ .x = 0, .y = 0, .width = 1728, .height = 1080 },
 
-    fn create(application: *c.GtkApplication, path: [*:0]const u8) *Overview {
+    fn create(_: *c.GtkApplication, path: [*:0]const u8) *Overview {
         const self = a.create(Overview) catch @panic("out of memory");
-        const wallpaper = c.gdk_pixbuf_new_from_file(path, null);
-        self.* = .{ .launcher = apps.Launcher.init(application), .strip = c.gtk_drawing_area_new().?, .stage = c.gtk_drawing_area_new().?, .dash = c.gtk_drawing_area_new().?, .tooltip = c.gtk_drawing_area_new().?, .wallpaper = wallpaper };
-        const l = &self.launcher;
-        l.bindControls();
-        const window = cast(c.GtkWindow, l.window);
-        c.gtk_window_unmaximize(window);
-        c.gtk_window_set_title(window, "Activities");
-        layer.init_for_window(window);
-        layer.set_namespace(window, "desktop-overview");
-        layer.set_layer(window, .overlay);
-        layer.set_exclusive_zone(window, 0);
-        layer.set_keyboard_mode(window, .exclusive);
-        for ([_]layer.Edge{ .top, .bottom, .left, .right }) |edge| layer.set_anchor(window, edge, 1);
-        const provider = c.gtk_css_provider_new();
-        _ = c.gtk_css_provider_load_from_data(provider, style, style.len, null);
-        c.gtk_style_context_add_provider_for_screen(c.gtk_widget_get_screen(l.window), cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
-        c.g_object_unref(provider);
-        c.gtk_widget_set_margin_top(@ptrCast(l.search), 12);
-        c.gtk_widget_set_margin_bottom(@ptrCast(l.search), 6);
-        c.gtk_widget_set_size_request(self.strip, -1, 64);
-        c.gtk_box_pack_start(cast(c.GtkBox, l.layout), self.strip, 0, 0, 0);
-        c.gtk_box_reorder_child(cast(c.GtkBox, l.layout), self.strip, 1);
-        c.gtk_widget_set_margin_top(self.stage, 9);
-        c.gtk_widget_set_can_focus(self.stage, 1);
-        c.gtk_widget_set_margin_bottom(self.stage, 21);
-        c.gtk_box_pack_start(cast(c.GtkBox, l.layout), self.stage, 1, 1, 0);
-        c.gtk_box_reorder_child(cast(c.GtkBox, l.layout), self.stage, 2);
-        c.gtk_widget_set_halign(self.dash, c.GTK_ALIGN_CENTER);
-        c.gtk_widget_set_can_focus(self.dash, 1);
-        const overlay = c.gtk_overlay_new().?;
-        _ = c.g_object_ref(l.layout);
-        c.gtk_container_remove(cast(c.GtkContainer, l.window), l.layout);
-        c.gtk_container_add(cast(c.GtkContainer, overlay), l.layout);
-        c.gtk_container_add(cast(c.GtkContainer, l.window), overlay);
-        c.g_object_unref(l.layout);
-        c.gtk_widget_set_halign(self.tooltip, c.GTK_ALIGN_START);
-        c.gtk_widget_set_valign(self.tooltip, c.GTK_ALIGN_END);
-        c.gtk_widget_set_no_show_all(self.tooltip, 1);
-        c.gtk_overlay_add_overlay(cast(c.GtkOverlay, overlay), self.tooltip);
-        c.gtk_overlay_set_overlay_pass_through(cast(c.GtkOverlay, overlay), self.tooltip, 1);
-        c.gtk_widget_add_events(self.dash, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_ENTER_NOTIFY_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_FOCUS_CHANGE_MASK);
-        connect(self.dash, "draw", &drawDash, self);
-        connect(self.dash, "button-press-event", &dashPress, self);
-        connect(self.dash, "button-release-event", &dashRelease, self);
-        connect(self.dash, "motion-notify-event", &dashMotion, self);
-        connect(self.dash, "enter-notify-event", &dashEnter, self);
-        connect(self.dash, "leave-notify-event", &dashLeave, self);
-        connect(self.dash, "focus-in-event", &dashFocus, self);
-        connect(self.dash, "focus-out-event", &dashFocus, self);
-        connect(self.tooltip, "draw", &drawDash, self);
-        c.gtk_box_pack_end(cast(c.GtkBox, l.layout), self.dash, 0, 0, 0);
-        c.gtk_widget_add_events(self.stage, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
-        c.gtk_widget_add_events(self.strip, c.GDK_BUTTON_PRESS_MASK | c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
-        connect(self.stage, "draw", &drawStage, self);
-        connect(self.strip, "draw", &drawStrip, self);
-        connect(self.stage, "motion-notify-event", &motion, self);
-        connect(self.stage, "leave-notify-event", &leave, self);
-        connect(self.stage, "button-press-event", &press, self);
-        connect(self.stage, "button-release-event", &release, self);
-        connect(self.strip, "button-press-event", &workspaceClick, self);
-        connect(self.stage, "scroll-event", &scroll, self);
-        connect(self.strip, "scroll-event", &scroll, self);
-        l.on_search = &searchChanged;
-        l.search_context = self;
-        connect(l.window, "key-press-event", &key, self);
-        connect(l.window, "key-release-event", &keyRelease, self);
-        connect(l.window, "hide", &hidden, self);
-        connect(l.window, "delete-event", &closeWindow, self);
+        const native = wire.Client.createInteractive(.{ .added = &outputAdded, .removed = &outputRemoved }, self) catch @panic("native overview connection");
+        if (native.outputs.items.len == 0) @panic("overview needs an output");
+        self.* = .{ .launcher = apps.Launcher.init(null), .native = native, .surface = null, .wallpaper = c.gdk_pixbuf_new_from_file(path, null) };
+        self.surface = self.createSurface(native.outputs.items[0]) catch @panic("native overview surface");
+        self.launcher.bindControls();
+        self.launcher.owner = self;
+        self.launcher.redraw_fn = &redraw;
+        self.launcher.hidden_fn = &hidden;
+        self.launcher.on_search = &searchChanged;
+        self.launcher.search_context = self;
         self.client = capture.Client.create(self, &changed) catch null;
+        native.start() catch @panic("native overview input");
         return self;
     }
     fn destroy(self: *Overview) void {
+        if (self.repaint_source != 0) _ = c.g_source_remove(self.repaint_source);
+        self.repaint_source = 0;
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         self.timer = 0;
         if (self.client) |client| client.destroy();
         self.client = null;
         self.hideTooltip();
+        self.native.destroy();
         self.launcher.deinit();
         self.dash_view.deinit();
         if (self.wallpaper) |image| c.g_object_unref(image);
         a.destroy(self);
     }
     fn present(self: *Overview) void {
+        if (self.surface == null) return;
         if (self.timer == 0) self.timer = c.g_timeout_add(33, &tick, self);
         if (self.client == null) self.client = capture.Client.create(self, &changed) catch null;
+        // GDK still supplies global pointer coordinates for choosing an output.
+        // All overview surfaces and their input live on our native connection.
         const display = c.gdk_display_get_default();
         const seat = c.gdk_display_get_default_seat(display);
         var x: c_int = 0;
         var y: c_int = 0;
         c.gdk_device_get_position(c.gdk_seat_get_pointer(seat), null, &x, &y);
-        const monitor = c.gdk_display_get_monitor_at_point(display, x, y);
-        c.gdk_monitor_get_geometry(monitor, &self.monitor);
-        layer.set_monitor(cast(c.GtkWindow, self.launcher.window), monitor);
+        for (self.native.outputs.items) |output| if (x >= output.x and y >= output.y and x < output.x + output.width() and y < output.y + output.height()) {
+            self.surface.?.output = output;
+            break;
+        };
+        const output = self.surface.?.output;
+        self.monitor = .{ .x = output.x, .y = output.y, .width = output.width(), .height = output.height() };
         self.apps_mode = false;
         self.selected = 0;
         self.hover = null;
@@ -154,18 +113,14 @@ const Overview = struct {
             client.tick();
         }
         self.rebuildDash();
-        c.gtk_widget_show_all(self.launcher.window);
+        self.launcher.visible_window = true;
         self.updateMode();
-        c.gtk_widget_grab_focus(self.stage);
-        c.gtk_window_present(cast(c.GtkWindow, self.launcher.window));
+        self.focusPart(.stage);
+        self.surface.?.show() catch |err| std.log.err("overview: {s}", .{@errorName(err)});
     }
     fn updateMode(self: *Overview) void {
-        const searching = self.launcher.searchText().len != 0;
-        c.gtk_widget_set_visible(self.launcher.results, @intFromBool(self.apps_mode or searching));
-        c.gtk_widget_set_visible(self.stage, @intFromBool(!self.apps_mode and !searching));
         self.dash_view.apps_mode = self.apps_mode;
-        c.gtk_widget_queue_draw(self.dash);
-        c.gtk_widget_hide(@ptrCast(self.launcher.message));
+        self.redrawSelf();
         if (self.client == null or !self.client.?.connected) {
             self.launcher.setMessage("The Activities overview requires the updated desktop compositor. Log out and back in after switching the configuration.");
         }
@@ -220,8 +175,7 @@ const Overview = struct {
         self.dash_view.add("Show Applications", null, null, null) catch @panic("out of memory");
         self.dash_view.items.items[self.dash_view.items.items.len - 1].show_apps = true;
         self.dash_view.relayout(@intCast(@max(1, self.monitor.width)), @intCast(@max(1, self.monitor.height)));
-        c.gtk_widget_set_size_request(self.dash, @intCast(self.dash_view.layout.width), @intCast(self.dash_view.layout.height));
-        c.gtk_widget_queue_draw(self.dash);
+        self.redrawSelf();
     }
     fn appendDash(self: *Overview, info: ?*c.GAppInfo, window: ?*capture.Window) void {
         var app = info;
@@ -237,103 +191,67 @@ const Overview = struct {
     fn hideTooltip(self: *Overview) void {
         if (self.tooltip_timer != 0) _ = c.g_source_remove(self.tooltip_timer);
         self.tooltip_timer = 0;
-        c.gtk_widget_hide(self.tooltip);
+        self.tooltip_visible = false;
     }
     fn showTooltip(data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         self.tooltip_timer = 0;
         const index = self.dash_view.hover orelse if (self.dash_view.keyboard_focus) self.dash_view.focus else return 0;
         if (index >= self.dash_view.items.items.len) return 0;
-        const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(self.dash)));
+        const scale = self.surface.?.output.scale;
         self.dash_view.prepareTooltip(index, scale) catch return 0;
         const mask = self.dash_view.tooltip_mask.?;
         const width = @divTrunc(mask.logical_width, scale) + 26;
         const height = @divTrunc(mask.logical_height, scale) + 14;
         const rect = self.dash_view.layout.item(index);
-        const stage_width = c.gtk_widget_get_allocated_width(self.launcher.window);
-        const left = (@as(f64, @floatFromInt(stage_width)) - @as(f64, @floatFromInt(self.dash_view.layout.width))) / 2 + rect.x + rect.width / 2 - @as(f64, @floatFromInt(width)) / 2;
-        c.gtk_widget_set_margin_start(self.tooltip, @intFromFloat(std.math.clamp(left, 8, @as(f64, @floatFromInt(@max(8, stage_width - @as(c_int, @intCast(width)) - 8))))));
-        c.gtk_widget_set_margin_bottom(self.tooltip, @intCast(self.dash_view.layout.height + 8));
-        c.gtk_widget_set_size_request(self.tooltip, @intCast(width), @intCast(height));
-        c.gtk_widget_show(self.tooltip);
-        c.gtk_widget_queue_draw(self.tooltip);
+        const stage_width: f64 = @floatFromInt(self.surface.?.width);
+        const left = (stage_width - @as(f64, @floatFromInt(self.dash_view.layout.width))) / 2 + rect.x + rect.width / 2 - @as(f64, @floatFromInt(width)) / 2;
+        self.tooltip = .{ .x = std.math.clamp(left, 8, @max(8, stage_width - @as(f64, @floatFromInt(width)) - 8)), .y = @as(f64, @floatFromInt(self.surface.?.height)) - @as(f64, @floatFromInt(self.dash_view.layout.height + 8 + height)), .width = width, .height = height };
+        self.tooltip_visible = true;
+        self.redrawSelf();
         return 0;
     }
-    const DashPaint = struct {
-        overview: *Overview,
-        scale: u32,
-        tooltip: bool,
-        fn paint(ctx: @This(), target: raster.Buffer) void {
-            if (ctx.tooltip) ctx.overview.dash_view.paintTooltip(target, ctx.scale) else ctx.overview.dash_view.paint(target, ctx.scale) catch {};
-        }
-    };
-    fn drawDash(widget: *c.GtkWidget, cr: *c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
-        const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
-        const width: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)));
-        const height: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)));
-        c.__zig.paintCairo(cr, width, height, scale, DashPaint{ .overview = self, .scale = scale, .tooltip = widget == self.tooltip }, DashPaint.paint) catch {};
-        return 1;
-    }
-    fn dashPress(_: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
+    fn dashPress(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
         if (event.button != 1) return 0;
         const self = cast(Overview, data);
         self.hideTooltip();
-        c.gtk_widget_grab_focus(self.dash);
+        self.focusPart(.dash);
         self.dash_view.keyboard_focus = false;
         self.dash_view.pressed = self.dash_view.layout.hit(event.x, event.y);
-        c.gtk_widget_queue_draw(self.dash);
+        self.redrawSelf();
         return 1;
     }
-    fn dashRelease(_: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
+    fn dashRelease(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
         if (event.button != 1) return 0;
         const self = cast(Overview, data);
         const pressed = self.dash_view.pressed;
         self.dash_view.pressed = null;
         if (pressed) |index| if (self.dash_view.layout.hit(event.x, event.y) == index) self.activateDash(index);
-        c.gtk_widget_queue_draw(self.dash);
+        self.redrawSelf();
         return 1;
     }
-    fn dashMotion(_: *c.GtkWidget, event: *c.GdkEventMotion, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
-        self.hoverDash(event.x, event.y);
-        return 1;
-    }
-    fn dashEnter(_: *c.GtkWidget, event: *c.GdkEventCrossing, data: c.gpointer) callconv(.c) c.gboolean {
-        cast(Overview, data).hoverDash(event.x, event.y);
-        return 0;
-    }
+
     fn hoverDash(self: *Overview, x: f64, y: f64) void {
         const index = self.dash_view.layout.hit(x, y);
         if (index != self.dash_view.hover) {
             self.hideTooltip();
             self.dash_view.hover = index;
             if (index != null) self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
-            c.gtk_widget_queue_draw(self.dash);
+            self.redrawSelf();
         }
     }
-    fn dashLeave(_: *c.GtkWidget, _: *c.GdkEvent, data: c.gpointer) callconv(.c) c.gboolean {
+    fn dashLeave(_: ?*anyopaque, _: ?*Pointer, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         self.hideTooltip();
         self.dash_view.hover = null;
         if (self.dash_view.keyboard_focus) self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
-        c.gtk_widget_queue_draw(self.dash);
+        self.redrawSelf();
         return 0;
     }
-    fn dashFocus(_: *c.GtkWidget, _: *c.GdkEvent, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
-        if (c.gtk_widget_has_focus(self.dash) == 0) {
-            self.hideTooltip();
-            self.dash_view.keyboard_focus = false;
-        }
-        self.dash_view.pressed = null;
-        c.gtk_widget_queue_draw(self.dash);
-        return 0;
-    }
+
     fn changed(data: ?*anyopaque) void {
         const self = cast(Overview, data);
-        c.gtk_widget_queue_draw(self.stage);
-        c.gtk_widget_queue_draw(self.strip);
+        defer self.redrawSelf();
         if (self.client) |client| {
             if (client.current != self.workspace_target) {
                 self.workspace_from = self.workspacePosition();
@@ -372,15 +290,17 @@ const Overview = struct {
     }
     fn tick(data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
-        if (c.gtk_widget_get_visible(self.launcher.window) == 0) return 1;
+        if (!self.launcher.visible_window) return 1;
         self.tick_count +%= 1;
         if (self.client) |client| {
             if (self.tick_count % 8 == 0) client.refresh();
             client.tick();
         }
+        const now = c.g_get_monotonic_time();
+        if (now - self.started < 250000 or now - self.workspace_started < 250000) self.redrawSelf();
         return 1;
     }
-    fn hidden(_: *c.GtkWidget, data: c.gpointer) callconv(.c) void {
+    fn hidden(data: ?*anyopaque) void {
         const self = cast(Overview, data);
         self.hideTooltip();
         self.dash_view.hover = null;
@@ -388,30 +308,29 @@ const Overview = struct {
         self.dash_view.keyboard_focus = false;
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         self.timer = 0;
+        if (self.repaint_source != 0) _ = c.g_source_remove(self.repaint_source);
+        self.repaint_source = 0;
         if (self.client) |client| client.visible(false);
-    }
-    fn closeWindow(widget: *c.GtkWidget, _: ?*anyopaque, _: c.gpointer) callconv(.c) c.gboolean {
-        c.gtk_widget_hide(widget);
-        return 1;
+        if (self.surface) |surface| surface.hide();
     }
     fn searchChanged(data: ?*anyopaque) void {
         cast(Overview, data).updateMode();
     }
-    fn escape(_: ?*c.GtkSearchEntry, data: c.gpointer) callconv(.c) void {
+    fn escape(_: ?*anyopaque, data: c.gpointer) callconv(.c) void {
         const self = cast(Overview, data);
         if (self.launcher.searchText().len != 0) self.launcher.setSearch("") catch {} else if (self.apps_mode) {
             self.apps_mode = false;
             self.updateMode();
-        } else c.gtk_widget_hide(self.launcher.window);
-        if (!self.apps_mode and c.gtk_widget_get_visible(self.launcher.window) != 0) c.gtk_widget_grab_focus(self.stage);
+        } else self.launcher.hide();
+        if (!self.apps_mode and self.launcher.visible_window) self.focusPart(.stage);
     }
     fn toggleApps(self: *Overview) void {
         self.apps_mode = !self.apps_mode;
         self.launcher.setSearch("") catch {};
         self.updateMode();
         if (self.apps_mode) {
-            self.launcher.focusGrid();
-        } else c.gtk_widget_grab_focus(self.stage);
+            self.focusPart(.grid);
+        } else self.focusPart(.stage);
     }
     fn activateDash(self: *Overview, index: usize) void {
         if (index >= self.dash_view.items.items.len) return;
@@ -423,34 +342,34 @@ const Overview = struct {
         }
         if (item.window_id) |id| if (self.client) |client| for (client.windows.items) |window| if (c.g_strcmp0(window.id, id) == 0) {
             client.activate(window);
-            c.gtk_widget_hide(self.launcher.window);
+            self.launcher.hide();
             return;
         };
         if (item.app) |app| _ = self.launcher.launch(app);
     }
-    fn key(_: ?*c.GtkWidget, event: *apps.KeyEvent, data: c.gpointer) callconv(.c) c.gboolean {
+    fn key(_: ?*anyopaque, event: *apps.KeyEvent, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         if (event.keyval == c.GDK_KEY_Escape) {
             escape(null, data);
             return 1;
         }
-        const dash_focused = c.gtk_widget_has_focus(self.dash) != 0;
+        const dash_focused = self.focus_part == .dash;
         const window_mode = !self.apps_mode and self.launcher.searchText().len == 0;
         if (event.keyval == 0xff09 or event.keyval == 0xfe20) {
             const backwards = event.keyval == 0xfe20 or event.state & c.GDK_SHIFT_MASK != 0;
-            const search_focused = c.gtk_widget_has_focus(self.launcher.search) != 0;
+            const search_focused = self.focus_part == .search;
             if ((search_focused and backwards) or (!search_focused and !dash_focused and !backwards)) {
                 self.hideTooltip();
-                c.gtk_widget_grab_focus(self.dash);
+                self.focusPart(.dash);
                 self.dash_view.keyboard_focus = true;
             } else if ((dash_focused and backwards) or (search_focused and !backwards)) {
-                if (window_mode) c.gtk_widget_grab_focus(self.stage) else self.launcher.focusGrid();
-            } else c.gtk_widget_grab_focus(self.launcher.search);
-            if (c.gtk_widget_has_focus(self.dash) != 0) {
+                if (window_mode) self.focusPart(.stage) else self.focusPart(.grid);
+            } else self.focusPart(.search);
+            if (self.focus_part == .dash) {
                 self.hideTooltip();
                 self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
             }
-            c.gtk_widget_queue_draw(self.dash);
+            self.redrawSelf();
             return 1;
         }
         if (dash_focused) {
@@ -466,14 +385,14 @@ const Overview = struct {
                 },
                 c.GDK_KEY_Return, c.GDK_KEY_KP_Enter, 0x20 => self.activateDash(self.dash_view.focus),
                 c.GDK_KEY_Up => {
-                    if (window_mode) c.gtk_widget_grab_focus(self.stage) else self.launcher.focusGrid();
+                    if (window_mode) self.focusPart(.stage) else self.focusPart(.grid);
                 },
                 else => return apps.keyPress(null, event, &self.launcher),
             }
             self.hideTooltip();
-            if (self.dash_view.keyboard_focus and c.gtk_widget_has_focus(self.dash) != 0)
+            if (self.dash_view.keyboard_focus and self.focus_part == .dash)
                 self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
-            c.gtk_widget_queue_draw(self.dash);
+            self.redrawSelf();
             return 1;
         }
         if ((window_mode and (event.keyval == c.GDK_KEY_Page_Up or event.keyval == c.GDK_KEY_Page_Down)) or (event.state & c.GDK_CONTROL_MASK != 0 and (event.keyval == c.GDK_KEY_Left or event.keyval == c.GDK_KEY_Right))) {
@@ -490,7 +409,7 @@ const Overview = struct {
             if (event.keyval == c.GDK_KEY_Return or event.keyval == c.GDK_KEY_KP_Enter) {
                 if (self.client) |client| if (self.selected < client.windows.items.len and (client.windows.items[self.selected].workspace == client.current or client.windows.items[self.selected].sticky)) {
                     client.activate(client.windows.items[self.selected]);
-                    c.gtk_widget_hide(self.launcher.window);
+                    self.launcher.hide();
                 };
                 return 1;
             }
@@ -500,14 +419,14 @@ const Overview = struct {
                 return 1;
             }
         }
-        return apps.keyPress(null, event, &self.launcher);
+        return self.launcherKey(event);
     }
-    fn keyRelease(_: ?*c.GtkWidget, event: *apps.KeyEvent, data: c.gpointer) callconv(.c) c.gboolean {
+    fn keyRelease(_: ?*anyopaque, event: *apps.KeyEvent, data: c.gpointer) callconv(.c) c.gboolean {
         if (event.keyval == c.GDK_KEY_Super_L or event.keyval == c.GDK_KEY_Super_R) {
-            c.gtk_widget_hide(cast(Overview, data).launcher.window);
+            cast(Overview, data).launcher.hide();
             return 1;
         }
-        return apps.keyRelease(null, event, &cast(Overview, data).launcher);
+        return 0;
     }
     fn selectNext(self: *Overview, direction: i32) void {
         const client = self.client orelse return;
@@ -523,7 +442,7 @@ const Overview = struct {
                 break;
             }
         }
-        c.gtk_widget_queue_draw(self.stage);
+        self.redrawSelf();
     }
     fn stepWorkspace(self: *Overview, direction: i32) void {
         const client = self.client orelse return;
@@ -534,19 +453,14 @@ const Overview = struct {
             self.hover = null;
         }
     }
-    fn scroll(_: *c.GtkWidget, event: *c.GdkEvent, data: c.gpointer) callconv(.c) c.gboolean {
-        var direction: c.GdkScrollDirection = 0;
-        if (c.gdk_event_get_scroll_direction(event, &direction) != 0) cast(Overview, data).stepWorkspace(if (direction == c.GDK_SCROLL_UP or direction == c.GDK_SCROLL_LEFT) -1 else 1);
-        return 1;
-    }
     fn workspaceAt(self: *Overview, x: f64) ?u32 {
         const client = self.client orelse return null;
-        const left = (@as(f64, @floatFromInt(c.gtk_widget_get_allocated_width(self.strip))) - @as(f64, @floatFromInt(client.count)) * 72 + 6) / 2;
+        const left = (@as(f64, @floatFromInt(self.strip.width)) - @as(f64, @floatFromInt(client.count)) * 72 + 6) / 2;
         const index = @floor((x - left + 3) / 72);
         if (index < 0 or index >= @as(f64, @floatFromInt(client.count))) return null;
         return @intFromFloat(index);
     }
-    fn workspaceClick(_: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
+    fn workspaceClick(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         if (self.workspaceAt(event.x)) |index| if (self.client) |client| client.switchWorkspace(index);
         return 1;
@@ -560,20 +474,15 @@ const Overview = struct {
         }
         return null;
     }
-    fn motion(_: *c.GtkWidget, event: *c.GdkEventMotion, data: c.gpointer) callconv(.c) c.gboolean {
+    fn motion(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         self.hover = self.hit(event.x, event.y);
         if (self.drag != null and (@abs(event.x - self.drag_x) > 8 or @abs(event.y - self.drag_y) > 8)) self.dragging = true;
-        c.gtk_widget_queue_draw(self.stage);
+        self.redrawSelf();
         return 1;
     }
-    fn leave(_: *c.GtkWidget, _: *c.GdkEventCrossing, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
-        if (!self.dragging) self.hover = null;
-        c.gtk_widget_queue_draw(self.stage);
-        return 0;
-    }
-    fn press(_: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
+
+    fn press(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         self.drag = if (self.hit(event.x, event.y)) |i| self.client.?.windows.items[i] else null;
         self.drag_x = event.x;
@@ -581,7 +490,7 @@ const Overview = struct {
         self.dragging = false;
         return 1;
     }
-    fn release(_: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
+    fn release(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         const client = self.client orelse return 1;
         defer {
@@ -594,16 +503,219 @@ const Overview = struct {
                 if (event.y < 0) if (self.workspaceAt(event.x)) |index| client.move(window, index);
             } else if (event.button == 2 or (event.x > r.x + r.w - 16 and event.y < r.y + 16)) client.close(window) else if (event.button == 1) {
                 client.activate(window);
-                c.gtk_widget_hide(self.launcher.window);
+                self.launcher.hide();
             }
         } else if (event.button == 1) {
-            if (event.x > self.workspace_rect.x + self.workspace_rect.w + 50) self.stepWorkspace(1) else if (event.x < self.workspace_rect.x - 50) self.stepWorkspace(-1) else c.gtk_widget_hide(self.launcher.window);
+            if (event.x > self.workspace_rect.x + self.workspace_rect.w + 50) self.stepWorkspace(1) else if (event.x < self.workspace_rect.x - 50) self.stepWorkspace(-1) else self.launcher.hide();
         }
         return 1;
     }
-    fn drawStrip(widget: *c.GtkWidget, cr: *c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
-        drawPixels(widget, cr, cast(Overview, data), true);
-        return 1;
+    fn createSurface(self: *Overview, output: *wire.Output) !*wire.Surface {
+        const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-overview", .layer = 3, .anchors = wire.top | wire.bottom | wire.left | wire.right, .keyboard = .exclusive, .exclusive_zone = 0, .interactive = true, .cursor = .arrow }, &paint, self);
+        surface.close = &closed;
+        surface.input = .{ .symbol = &symbol, .text = &inputText, .motion = &inputMotion, .button = &inputButton, .scroll = &inputScroll, .leave = &inputLeave, .focus = &inputFocus, .surrounding = &surrounding, .preedit = &preedit, .commit = &commit, .delete = &delete };
+        return surface;
+    }
+    fn outputAdded(data: ?*anyopaque, output: *wire.Output) void {
+        const self = cast(Overview, data);
+        if (self.surface == null) self.surface = self.createSurface(output) catch null;
+    }
+    fn outputRemoved(data: ?*anyopaque, output: *wire.Output) void {
+        const self = cast(Overview, data);
+        const surface = self.surface orelse return;
+        if (surface.output != output) return;
+        self.launcher.hide();
+        for (self.native.outputs.items) |candidate| if (candidate != output) {
+            surface.output = candidate;
+            return;
+        };
+        self.surface = null;
+    }
+    fn closed(data: ?*anyopaque) void {
+        cast(Overview, data).launcher.hide();
+    }
+    fn redraw(data: ?*anyopaque) void {
+        cast(Overview, data).redrawSelf();
+    }
+    fn redrawSelf(self: *Overview) void {
+        for (self.native.seats.items) |seat| if (seat.text_input) |value| value.update();
+        if (!self.painting and self.launcher.visible_window and self.repaint_source == 0) self.repaint_source = c.g_idle_add(&repaint, self);
+    }
+    fn repaint(data: ?*anyopaque) callconv(.c) c.gboolean {
+        const self = cast(Overview, data);
+        self.repaint_source = 0;
+        if (self.launcher.visible_window) if (self.surface) |surface| surface.redraw();
+        return 0;
+    }
+    fn focusPart(self: *Overview, part: Part) void {
+        self.focus_part = part;
+        self.dash_view.keyboard_focus = part == .dash;
+        self.launcher.search_focus = part == .search;
+        self.launcher.search_input.?.focus(part == .search);
+        self.redrawSelf();
+    }
+    fn launcherKey(self: *Overview, event: *apps.KeyEvent) c.gboolean {
+        const handled = apps.keyPress(null, event, &self.launcher);
+        if (handled != 0) {
+            if (self.launcher.search_focus) self.focusPart(.search) else if (self.apps_mode or self.launcher.searchText().len != 0) self.focusPart(.grid);
+        }
+        return handled;
+    }
+    fn symbol(data: ?*anyopaque, _: *wire.Surface, value: u32, modifiers: u32, pressed: bool) bool {
+        const self = cast(Overview, data);
+        self.modifiers = modifiers;
+        var event: apps.KeyEvent = .{ .keyval = value, .state = modifiers };
+        return if (pressed) key(null, &event, data) != 0 else keyRelease(null, &event, data) != 0;
+    }
+    fn inputText(data: ?*anyopaque, _: *wire.Surface, value: []const u8) void {
+        const self = cast(Overview, data);
+        self.focusPart(.search);
+        self.launcher.text(value);
+    }
+    fn inputFocus(data: ?*anyopaque, _: *wire.Surface, focused: bool) void {
+        const self = cast(Overview, data);
+        self.launcher.search_input.?.focus(focused and self.focus_part == .search);
+    }
+    fn surrounding(data: ?*anyopaque, _: *wire.Surface) ?@import("desktop-input.zig").TextState {
+        const self = cast(Overview, data);
+        return apps.textState(&self.launcher, self.search);
+    }
+    fn preedit(data: ?*anyopaque, _: *wire.Surface, value: []const u8, cursor: i32) void {
+        cast(Overview, data).launcher.search_input.?.preedit(value, cursor);
+    }
+    fn commit(data: ?*anyopaque, _: *wire.Surface, value: []const u8) void {
+        cast(Overview, data).launcher.search_input.?.insert(value) catch {};
+    }
+    fn delete(data: ?*anyopaque, _: *wire.Surface, before: u32, after: u32) void {
+        cast(Overview, data).launcher.search_input.?.deleteSurrounding(before, after);
+    }
+    fn partRegion(self: *Overview, part: Part) apps.Region {
+        return switch (part) {
+            .search => self.search,
+            .grid => self.grid,
+            .strip => self.strip,
+            .stage => self.stage,
+            .dash => self.dash,
+            .tooltip => self.tooltip,
+        };
+    }
+    fn partAt(self: *Overview, x: f64, y: f64) Part {
+        if (self.search.contains(x, y)) return .search;
+        if (self.strip.contains(x, y)) return .strip;
+        if (self.dash.contains(x, y)) return .dash;
+        return if (self.apps_mode or self.launcher.searchText().len != 0) .grid else .stage;
+    }
+    fn inputLeave(data: ?*anyopaque, _: *wire.Surface) void {
+        const self = cast(Overview, data);
+        self.pointer_part = null;
+        self.hover = null;
+        self.launcher.hover = null;
+        self.launcher.search_hover = false;
+        _ = dashLeave(null, null, data);
+        self.redrawSelf();
+    }
+    fn inputMotion(data: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
+        const self = cast(Overview, data);
+        const current = if (self.pressed_part) |part| part else self.partAt(x, y);
+        if (self.pointer_part != current) {
+            if (self.pointer_part == .dash) _ = dashLeave(null, null, data);
+            self.launcher.hover = null;
+            self.launcher.search_hover = false;
+            self.hover = null;
+        }
+        self.pointer_part = current;
+        const region = self.partRegion(current);
+        var event: Pointer = .{ .x = x - region.x, .y = y - region.y };
+        switch (current) {
+            .stage => {
+                _ = motion(null, &event, data);
+            },
+            .dash => self.hoverDash(event.x, event.y),
+            .search => apps.motion(&self.launcher, .search, event.x, event.y),
+            .grid => apps.motion(&self.launcher, .grid, event.x, event.y),
+            else => {},
+        }
+        self.redrawSelf();
+    }
+    fn inputButton(data: ?*anyopaque, _: *wire.Surface, code: u32, down: bool, x: f64, y: f64) void {
+        const self = cast(Overview, data);
+        const current = self.pressed_part orelse self.partAt(x, y);
+        if (down) self.pressed_part = current else self.pressed_part = null;
+        const region = self.partRegion(current);
+        var event: Pointer = .{ .x = x - region.x, .y = y - region.y, .button = switch (code) {
+            272 => 1,
+            273 => 3,
+            274 => 2,
+            else => return,
+        } };
+        switch (current) {
+            .stage => {
+                self.focusPart(.stage);
+                if (down) {
+                    _ = press(null, &event, data);
+                } else {
+                    _ = release(null, &event, data);
+                }
+            },
+            .dash => {
+                if (down) {
+                    _ = dashPress(null, &event, data);
+                } else {
+                    _ = dashRelease(null, &event, data);
+                }
+            },
+            .strip => {
+                if (down) {
+                    _ = workspaceClick(null, &event, data);
+                }
+            },
+            .search, .grid => if (event.button == 1) {
+                self.focusPart(current);
+                const part: apps.Part = if (current == .search) .search else .grid;
+                if (down) apps.press(&self.launcher, part, event.x, event.y, self.modifiers) else apps.release(&self.launcher, part, event.x, event.y);
+            },
+            else => {},
+        }
+        self.redrawSelf();
+    }
+    fn inputScroll(data: ?*anyopaque, _: *wire.Surface, _: u32, amount: f64) void {
+        const self = cast(Overview, data);
+        if (self.apps_mode or self.launcher.searchText().len != 0) apps.scroll(&self.launcher, amount) else if (@abs(amount) >= 1) self.stepWorkspace(if (amount > 0) 1 else -1);
+    }
+    fn paint(data: ?*anyopaque, target: wire.Pixels) void {
+        const self = cast(Overview, data);
+        self.painting = true;
+        defer self.painting = false;
+        const scale = self.surface.?.output.scale;
+        const width = target.width / scale;
+        const height = target.height / scale;
+        self.search.x = (@as(f64, @floatFromInt(width)) - 370) / 2;
+        const footer = self.dash_view.layout.height;
+        self.dash = .{ .x = (@as(f64, @floatFromInt(width)) - @as(f64, @floatFromInt(self.dash_view.layout.width))) / 2, .y = @floatFromInt(height -| footer), .width = self.dash_view.layout.width, .height = footer };
+        const status: u32 = if (self.launcher.status.len > 0) 64 else 0;
+        self.stage = .{ .y = 128, .width = width, .height = height -| (128 + 21 + footer + status) };
+        self.strip.width = width;
+        self.grid = .{ .y = 119, .width = width, .height = height -| (119 + footer + status) };
+        self.launcher.geometry = @import("desktop-apps-view.zig").Grid.init(width, @max(1, self.grid.height));
+        self.launcher.page = self.launcher.selected / self.launcher.geometry.capacity();
+        @memset(target.pixels, 0xff222226);
+        apps.paintRegion(target, scale, self.search, .{ &self.launcher, apps.Part.search }, apps.paintPart);
+        apps.paintRegion(target, scale, self.strip, .{ self, Part.strip }, paintPart);
+        if (self.apps_mode or self.launcher.searchText().len != 0) apps.paintRegion(target, scale, self.grid, .{ &self.launcher, apps.Part.grid }, apps.paintPart) else apps.paintRegion(target, scale, self.stage, .{ self, Part.stage }, paintPart);
+        apps.paintRegion(target, scale, self.dash, .{ self, Part.dash }, paintPart);
+        if (self.tooltip_visible) apps.paintRegion(target, scale, self.tooltip, .{ self, Part.tooltip }, paintPart);
+        if (status > 0) apps.paintRegion(target, scale, .{ .y = @floatFromInt(height -| (footer + status)), .width = width, .height = status }, .{ &self.launcher, apps.Part.message }, apps.paintPart);
+    }
+    fn paintPart(context: struct { *Overview, Part }, target: raster.Buffer, scale: u32) void {
+        const self = context[0];
+        const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(scale) };
+        switch (context[1]) {
+            .strip => self.paintStrip(canvas, @as(f64, @floatFromInt(target.width)) / canvas.scale),
+            .stage => self.paintStage(canvas, @as(f64, @floatFromInt(target.width)) / canvas.scale, @as(f64, @floatFromInt(target.height)) / canvas.scale),
+            .dash => self.dash_view.paint(target, scale) catch {},
+            .tooltip => self.dash_view.paintTooltip(target, scale),
+            else => {},
+        }
     }
     fn paintStrip(self: *Overview, canvas: raster.Canvas, width: f64) void {
         const client = self.client orelse return;
@@ -629,13 +741,6 @@ const Overview = struct {
         const t = std.math.clamp(@as(f64, @floatFromInt(c.g_get_monotonic_time() - self.workspace_started)) / 250000, 0, 1);
         const ease = 1 - (1 - t) * (1 - t) * (1 - t);
         return self.workspace_from + (@as(f64, @floatFromInt(self.workspace_target)) - self.workspace_from) * ease;
-    }
-    fn drawStage(widget: *c.GtkWidget, cr: *c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
-        drawPixels(widget, cr, self, false);
-        const now = c.g_get_monotonic_time();
-        if (now - self.started < 250000 or now - self.workspace_started < 250000) c.gtk_widget_queue_draw(widget);
-        return 1;
     }
     fn paintStage(self: *Overview, canvas: raster.Canvas, width: f64, height: f64) void {
         const client = self.client orelse return;
@@ -701,31 +806,12 @@ fn pixelRect(rect: Rect) raster.Rect {
     return .{ .x = rect.x, .y = rect.y, .width = rect.w, .height = rect.h };
 }
 
-fn drawPixels(widget: *c.GtkWidget, cr: *c.cairo_t, overview: *Overview, strip: bool) void {
-    const width: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)));
-    const height: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)));
-    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
-    const Context = struct {
-        overview: *Overview,
-        width: u32,
-        height: u32,
-        scale: u32,
-        strip: bool,
-        fn paint(self: @This(), target: raster.Buffer) void {
-            @memset(target.pixels, 0);
-            const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(self.scale) };
-            if (self.strip) self.overview.paintStrip(canvas, @floatFromInt(self.width)) else self.overview.paintStage(canvas, @floatFromInt(self.width), @floatFromInt(self.height));
-        }
-    };
-    c.__zig.paintCairo(cr, width, height, scale, Context{ .overview = overview, .width = width, .height = height, .scale = scale, .strip = strip }, Context.paint) catch {};
-}
-
 pub const State = struct { overview: ?*Overview = null, wallpaper: [*:0]const u8 };
 pub fn activate(app: *c.GtkApplication, data: c.gpointer) callconv(.c) void {
     const state = cast(State, data);
     if (state.overview == null) state.overview = Overview.create(app, state.wallpaper);
     const self = state.overview.?;
-    if (c.gtk_widget_get_visible(self.launcher.window) != 0) c.gtk_widget_hide(self.launcher.window) else self.present();
+    if (self.launcher.visible_window) self.launcher.hide() else self.present();
 }
 pub fn deinit(state: *State) void {
     if (state.overview) |self| self.destroy();

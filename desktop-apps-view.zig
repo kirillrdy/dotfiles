@@ -4,7 +4,6 @@ const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
-const input = @import("desktop-password-entry.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.c_allocator;
 pub const Rect = raster.Rect;
 pub fn color(rgb: u32) raster.Color {
@@ -165,7 +164,7 @@ pub fn centerText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, v
     defer mask.deinit(a);
     drawMask(.{ .target = target, .scale = factor }, mask, 24, (@as(f64, @floatFromInt(target.height)) - @as(f64, @floatFromInt(mask.logical_height))) / (2 * factor), rgb);
 }
-pub fn paintSearch(target: raster.Buffer, scale: u32, renderer: *text.Renderer, icons: *Search, entry: *input.Entry, hover: bool, offset: *f64) !void {
+pub fn paintSearch(target: raster.Buffer, scale: u32, renderer: *text.Renderer, icons: *Search, entry: anytype, hover: bool, offset: *f64) !void {
     const factor: f64 = @floatFromInt(scale);
     const canvas: raster.Canvas = .{ .target = target, .scale = factor };
     const w = @as(f64, @floatFromInt(target.width)) / factor;

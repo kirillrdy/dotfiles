@@ -49,6 +49,7 @@ pub const Client = struct {
     wm_base: ?*Proxy = null,
     importer: ?*Proxy = null,
     output_manager: ?*Proxy = null,
+    text_manager: ?*Proxy = null,
     outputs: std.ArrayList(*Output) = .empty,
     surfaces: std.ArrayList(*Surface) = .empty,
     buffers: std.ArrayList(*Buffer) = .empty,
@@ -115,6 +116,7 @@ pub const Client = struct {
         self.surfaces.deinit(a);
         self.buffers.deinit(a);
         if (self.output_manager) |proxy| destroyProxy(proxy, 0);
+        if (self.text_manager) |proxy| destroyProxy(proxy, 0);
         if (self.shell) |proxy| c.wl_proxy_destroy(proxy);
         if (self.wm_base) |proxy| destroyProxy(proxy, 0);
         if (self.importer) |proxy| destroyProxy(proxy, 0);
@@ -172,9 +174,13 @@ pub const Client = struct {
         } else if (std.mem.eql(u8, kind, "zxdg_output_manager_v1")) {
             // Version 2 has an explicit done event, independent of wl_output.
             self.output_manager = @ptrCast(c.wl_registry_bind(registry, name, &p.zxdg_output_manager_v1_interface, @min(version, 2)));
+        } else if (self.input_enabled and std.mem.eql(u8, kind, "zwp_text_input_manager_v3")) {
+            self.text_manager = @ptrCast(c.wl_registry_bind(registry, name, &p.zwp_text_input_manager_v3_interface, 1));
+            for (self.seats.items) |seat| seat.bindTextInput();
         } else if (self.input_enabled and std.mem.eql(u8, kind, "wl_seat")) {
             const seat = input.Seat.create(self, registry.?, name, version) catch @panic("Wayland seat allocation");
             self.seats.append(a, seat) catch @panic("out of memory");
+            seat.bindTextInput();
         } else if (std.mem.eql(u8, kind, "wl_output")) {
             if (version < 2) return; // Buffer scale requires wl_output version 2.
             const output = a.create(Output) catch @panic("out of memory");
@@ -382,6 +388,7 @@ pub const Options = struct {
     keyboard: enum(u32) { none, exclusive, on_demand } = .none,
     cursor: enum { crosshair, arrow } = .crosshair,
     exclusive_zone: i32 = -1,
+    maximized: bool = false,
 };
 pub const Pixels = raster.Buffer;
 /// Cleared physical pixels, writable only for the duration of the callback.
@@ -464,6 +471,7 @@ pub const Surface = struct {
             listen(self.role.?, &toplevel_listener, self);
             send(self.role.?, 2, .{self.options.title.ptr});
             send(self.role.?, 3, .{self.options.namespace.ptr});
+            if (self.options.maximized) send(self.role.?, 9, .{});
             if (std.mem.startsWith(u8, self.options.parent, "wayland:")) if (self.client.importer) |importer| {
                 const handle: [*:0]const u8 = self.options.parent.ptr + 8;
                 self.imported_parent = c.wl_proxy_marshal_flags(importer, 1, &p.zxdg_imported_v2_interface, 1, 0, @as(?*anyopaque, null), handle) orelse return error.WaylandSurface;

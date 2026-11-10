@@ -478,10 +478,14 @@ test "password buffer edits Unicode selections, rejects invalid input atomically
 
 test "native password pixels depend on character count rather than plaintext" {
     c.gtk_init(null, null);
+    const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL).?;
+    defer c.gtk_widget_destroy(window);
     const canvas = c.gtk_drawing_area_new().?;
     _ = c.g_object_ref_sink(canvas);
     defer c.g_object_unref(canvas);
     defer c.gtk_widget_destroy(canvas);
+    c.gtk_container_add(cast(c.GtkContainer, window), canvas);
+    c.gtk_widget_show_all(window);
     const Callback = struct {
         fn changed(_: ?*anyopaque) void {}
     };
@@ -521,7 +525,12 @@ test "native password pixels depend on character count rather than plaintext" {
     try std.testing.expectEqualStrings("東京🔑", entry.buffer.value());
     var surrounding_text: [*c]u8 = null;
     var cursor: c.gint = -1;
-    try std.testing.expect(c.gtk_im_context_get_surrounding(entry.im, &surrounding_text, &cursor) != 0);
+    // Wayland's IM context need not implement get_surrounding. Exercise our
+    // actual retrieval handler using GTK's simple context as a readable oracle.
+    const surrounding_context = c.gtk_im_context_simple_new().?;
+    defer c.g_object_unref(surrounding_context);
+    _ = c.g_signal_connect_data(surrounding_context, "retrieve-surrounding", @ptrCast(&Entry.surrounding), entry, null, 0);
+    try std.testing.expect(c.gtk_im_context_get_surrounding(surrounding_context, &surrounding_text, &cursor) != 0);
     defer c.g_free(surrounding_text);
     try std.testing.expectEqualStrings("", std.mem.span(surrounding_text));
     try std.testing.expectEqual(@as(c.gint, 0), cursor);

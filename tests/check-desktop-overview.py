@@ -6,6 +6,7 @@ and --wallpaper for the build being checked; the current desktop is untouched.
 """
 
 import argparse
+from ime_fixture import InputMethod
 from session_fixture import Processes, command as session_command, wait_ready
 import os
 import re
@@ -276,6 +277,39 @@ def main():
                 lambda: f'.window("{files_id}", 1,' in log(),
                 "Dragging a window to another workspace failed",
             )
+            # Exercise an actual input-method peer, rather than injecting a UI signal.
+            ime = InputMethod(env)
+            try:
+                click(864, 62)
+                ime.wait(lambda: ime.active, "Search did not enable native text input")
+                ime.popup()
+                ime.grab()
+                key("a")
+                ime.wait(lambda: len(ime.keys) >= 2, "IME keyboard grab did not receive press/release")
+                assert ime.text == "", "Grabbed key leaked directly into the search query"
+                ime.release()
+                ime.preedit("とうきょう")
+                time.sleep(.1)
+                ime.roundtrip()
+                assert ime.text == "", "Preedit changed the committed query"
+                ime.commit("東京")
+                ime.wait(lambda: ime.text == "東京", "Japanese IME commit did not reach search")
+                ime.stale("ignored")
+                assert ime.text == "東京", "Stale IME commit changed the query"
+                ime.commit("Files", before=6)
+                ime.wait(lambda: ime.text == "Files", "IME deletion/replacement failed")
+                key("Escape")
+                ime.wait(lambda: not ime.active, "Search focus loss did not deactivate IME")
+            finally:
+                ime.close()
+            transient_ime = InputMethod(env)
+            click(864, 62)
+            transient_ime.wait(lambda: transient_ime.active, "Replacement IME did not activate")
+            transient_ime.popup()
+            transient_ime.socket.close()  # Disconnect with a live candidate surface.
+            time.sleep(.1)
+            key("Tab")  # Return to content without hiding the empty overview.
+            assert compositor.poll() is None, "IME disconnect crashed the compositor"
             run(["wtype", "Files"])
             time.sleep(0.5)
             shot("search")
@@ -305,7 +339,7 @@ def main():
                 -4000:
             ]
             print(
-                "PASS: live captures, exact activation, idle cleanup, workspaces, drag, keyboard, native dash, tooltips, search, app grid, close and Super"
+                "PASS: live captures, exact activation, idle cleanup, workspaces, drag, keyboard, native dash, tooltips, native IME, search, app grid, close and Super"
             )
         finally:
             processes.stop()
