@@ -36,7 +36,7 @@ const Overview = struct {
     repaint_source: c.guint = 0,
     dash_view: native_dash.View = .{},
     tooltip_timer: c.guint = 0,
-    wallpaper: ?*c.GdkPixbuf,
+    wallpaper: ?*c.cairo_surface_t,
     timer: c.guint = 0,
     tick_count: u32 = 0,
     apps_mode: bool = false,
@@ -58,7 +58,16 @@ const Overview = struct {
         const self = a.create(Overview) catch @panic("out of memory");
         const native = wire.Client.createInteractive(.{ .added = &outputAdded, .removed = &outputRemoved }, self) catch @panic("native overview connection");
         if (native.outputs.items.len == 0) @panic("overview needs an output");
-        self.* = .{ .launcher = apps.Launcher.init(null), .native = native, .surface = null, .wallpaper = c.gdk_pixbuf_new_from_file(path, null) };
+        var wallpaper: ?*c.cairo_surface_t = null;
+        if (c.gdk_pixbuf_new_from_file(path, null)) |pixbuf| {
+            defer c.g_object_unref(pixbuf);
+            wallpaper = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, c.gdk_pixbuf_get_width(pixbuf), c.gdk_pixbuf_get_height(pixbuf));
+            const cr = c.cairo_create(wallpaper);
+            defer c.cairo_destroy(cr);
+            c.gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
+            c.cairo_paint(cr);
+        }
+        self.* = .{ .launcher = apps.Launcher.init(null), .native = native, .surface = null, .wallpaper = wallpaper };
         self.surface = self.createSurface(native.outputs.items[0]) catch @panic("native overview surface");
         self.launcher.bindControls();
         self.launcher.owner = self;
@@ -81,7 +90,7 @@ const Overview = struct {
         self.native.destroy();
         self.launcher.deinit();
         self.dash_view.deinit();
-        if (self.wallpaper) |image| c.g_object_unref(image);
+        if (self.wallpaper) |image| c.cairo_surface_destroy(image);
         a.destroy(self);
     }
     fn present(self: *Overview) void {
@@ -719,6 +728,8 @@ const Overview = struct {
     }
     fn paintStrip(self: *Overview, canvas: raster.Canvas, width: f64) void {
         const client = self.client orelse return;
+        const now = c.g_get_monotonic_time();
+        const animated = now - self.started < 250000 or now - self.workspace_started < 250000;
         const left = (width - @as(f64, @floatFromInt(client.count)) * 72 + 6) / 2;
         for (0..client.count) |i| {
             const x = left + @as(f64, @floatFromInt(i)) * 72;
@@ -733,7 +744,7 @@ const Overview = struct {
                 const sx = 66 / @as(f64, @floatFromInt(self.monitor.width));
                 const sy = 40 / @as(f64, @floatFromInt(self.monitor.height - 32));
                 const r = Rect{ .x = x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = 19 + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
-                view.miniature(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect));
+                view.miniature(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect), animated);
             }
         }
     }
@@ -751,6 +762,7 @@ const Overview = struct {
         const t = std.math.clamp(@as(f64, @floatFromInt(c.g_get_monotonic_time() - self.started)) / 250000, 0, 1);
         const ease = 1 - (1 - t) * (1 - t) * (1 - t);
         const position = self.workspacePosition();
+        const animated = t < 1 or position != @as(f64, @floatFromInt(self.workspace_target));
         for (0..client.count) |i| {
             const offset = @as(f64, @floatFromInt(i)) - position;
             const ratio = 1 - 0.06 * @min(1, @abs(offset));
@@ -762,11 +774,17 @@ const Overview = struct {
                 background.w = width + (background.w - width) * ease;
                 background.h = @as(f64, @floatFromInt(self.monitor.height - 32)) + (background.h - @as(f64, @floatFromInt(self.monitor.height - 32))) * ease;
             }
-            view.workspace(canvas, pixelRect(background), if (self.wallpaper) |image| c.__zig.pixbufImage(image) else null);
-            self.drawWindows(canvas, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1);
+            view.workspace(canvas, pixelRect(background), self.wallpaper, animated);
+            self.drawWindows(canvas, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1, animated);
+        }
+        // Also render the final settled frame, even if the last timer tick
+        // landed just before the transition ended. That frame restores GOOD
+        // filtering after the cheaper bilinear animation frames.
+        if (animated and self.launcher.visible_window and self.repaint_source == 0) {
+            self.repaint_source = c.g_timeout_add(16, &repaint, self);
         }
     }
-    fn drawWindows(self: *Overview, canvas: raster.Canvas, client: *capture.Client, workspace_index: u32, background: Rect, height: f64, ratio: f64, ease: f64) void {
+    fn drawWindows(self: *Overview, canvas: raster.Canvas, client: *capture.Client, workspace_index: u32, background: Rect, height: f64, ratio: f64, ease: f64, animated: bool) void {
         if (background.w <= 168 * ratio or height <= 0) return;
         var count: usize = 0;
         for (client.windows.items) |window| if (window.workspace == workspace_index or window.sticky) {
@@ -791,7 +809,7 @@ const Overview = struct {
             if (workspace_index == client.current) window.target = .{ .x = x, .y = y, .w = w, .h = h };
             const start = Rect{ .x = window.geometry.x - @as(f64, @floatFromInt(self.monitor.x)), .y = window.geometry.y - @as(f64, @floatFromInt(self.monitor.y + 160)), .w = window.geometry.w, .h = window.geometry.h };
             const r = Rect{ .x = start.x + (x - start.x) * ease, .y = start.y + (y - start.y) * ease, .w = start.w + (w - start.w) * ease, .h = start.h + (h - start.h) * ease };
-            view.window(canvas, pixelRect(r), if (window.image) |image| image.view() else null, if (window.icon) |icon| c.__zig.pixbufImage(icon) else null, workspace_index == client.current and self.hover == index, ease);
+            view.window(canvas, pixelRect(r), if (window.image) |image| image.view() else null, window.icon, workspace_index == client.current and self.hover == index, ease, animated);
             position += 1;
         }
     }

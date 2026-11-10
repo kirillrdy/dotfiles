@@ -50,6 +50,7 @@ pub const Client = struct {
     importer: ?*Proxy = null,
     output_manager: ?*Proxy = null,
     text_manager: ?*Proxy = null,
+    cursor_manager: ?*Proxy = null,
     outputs: std.ArrayList(*Output) = .empty,
     surfaces: std.ArrayList(*Surface) = .empty,
     buffers: std.ArrayList(*Buffer) = .empty,
@@ -117,6 +118,7 @@ pub const Client = struct {
         self.buffers.deinit(a);
         if (self.output_manager) |proxy| destroyProxy(proxy, 0);
         if (self.text_manager) |proxy| destroyProxy(proxy, 0);
+        if (self.cursor_manager) |proxy| destroyProxy(proxy, 0);
         if (self.shell) |proxy| c.wl_proxy_destroy(proxy);
         if (self.wm_base) |proxy| destroyProxy(proxy, 0);
         if (self.importer) |proxy| destroyProxy(proxy, 0);
@@ -177,10 +179,14 @@ pub const Client = struct {
         } else if (self.input_enabled and std.mem.eql(u8, kind, "zwp_text_input_manager_v3")) {
             self.text_manager = @ptrCast(c.wl_registry_bind(registry, name, &p.zwp_text_input_manager_v3_interface, 1));
             for (self.seats.items) |seat| seat.bindTextInput();
+        } else if (self.input_enabled and std.mem.eql(u8, kind, "wp_cursor_shape_manager_v1")) {
+            self.cursor_manager = @ptrCast(c.wl_registry_bind(registry, name, &p.wp_cursor_shape_manager_v1_interface, 1));
+            for (self.seats.items) |seat| seat.bindCursorShape();
         } else if (self.input_enabled and std.mem.eql(u8, kind, "wl_seat")) {
             const seat = input.Seat.create(self, registry.?, name, version) catch @panic("Wayland seat allocation");
             self.seats.append(a, seat) catch @panic("out of memory");
             seat.bindTextInput();
+            seat.bindCursorShape();
         } else if (std.mem.eql(u8, kind, "wl_output")) {
             if (version < 2) return; // Buffer scale requires wl_output version 2.
             const output = a.create(Output) catch @panic("out of memory");

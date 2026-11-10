@@ -113,7 +113,7 @@ fn compare(expected: []const u32, actual: []const u32, scale: u32, ease: f64) !v
     }
 }
 
-test "Zig overview agrees with Cairo for wallpaper crops, previews, hover, fades and workspace clipping" {
+test "native buffer overview preserves wallpaper crops, previews, hover, fades and workspace clipping" {
     const a = std.testing.allocator;
     const icon = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 1, 8, 7, 5).?;
     defer c.g_object_unref(icon);
@@ -146,9 +146,9 @@ test "Zig overview agrees with Cairo for wallpaper crops, previews, hover, fades
         defer a.free(pixels);
         @memset(pixels, 0xff222226);
         const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) };
-        view.workspace(canvas, rect(workspace), if (available) image.view() else null);
-        view.window(canvas, rect(window), if (available) image.view() else null, c.__zig.pixbufImage(icon), ease != 0, ease);
-        view.miniature(canvas, if (available) image.view() else null, rect(miniature), rect(clip));
+        view.workspace(canvas, rect(workspace), if (available) wallpaper else null, false);
+        view.window(canvas, rect(window), if (available) image.view() else null, icon, ease != 0, ease, false);
+        view.miniature(canvas, if (available) image.view() else null, rect(miniature), rect(clip), false);
         const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
         defer c.cairo_surface_destroy(surface);
         const cr = c.cairo_create(surface).?;

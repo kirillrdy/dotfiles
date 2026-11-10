@@ -48,6 +48,7 @@ pub const Seat = struct {
     pointer_focus: ?*native.Surface = null,
     keyboard_focus: ?*native.Surface = null,
     cursor: ?*Proxy = null,
+    cursor_shape: ?*Proxy = null,
     x: f64 = 0,
     y: f64 = 0,
     xkb: keyboard.Keyboard = .{},
@@ -62,6 +63,12 @@ pub const Seat = struct {
         const manager = self.client.text_manager orelse return;
         self.text_input = TextInput.create(self, manager) catch @panic("text input allocation");
     }
+    pub fn bindCursorShape(self: *Seat) void {
+        if (self.cursor_shape != null) return;
+        const manager = self.client.cursor_manager orelse return;
+        const pointer = self.pointer orelse return;
+        self.cursor_shape = c.wl_proxy_marshal_flags(manager, 1, &protocols.wp_cursor_shape_device_v1_interface, 1, 0, @as(?*anyopaque, null), pointer);
+    }
 
     pub fn create(client: *native.Client, registry: *c.wl_registry, name: u32, version: u32) !*Seat {
         const self = try a.create(Seat);
@@ -75,6 +82,7 @@ pub const Seat = struct {
         self.leaveFocus();
         self.stopRepeat();
         self.xkb.deinit();
+        if (self.cursor_shape) |proxy| releaseProxy(proxy, 0, 1);
         if (self.cursor) |proxy| releaseProxy(proxy, 0, 1);
         if (self.pointer) |proxy| releaseProxy(proxy, 1, 3);
         if (self.keyboard) |proxy| releaseProxy(proxy, 0, 3);
@@ -105,8 +113,11 @@ pub const Seat = struct {
         if (flags & 1 != 0 and self.pointer == null) {
             self.pointer = self.device(0, &wl_pointer_interface);
             listen(self.pointer.?, &pointer_listener, self);
+            self.bindCursorShape();
         } else if (flags & 1 == 0 and self.pointer != null) {
             self.leaveFocus();
+            if (self.cursor_shape) |proxy| releaseProxy(proxy, 0, 1);
+            self.cursor_shape = null;
             releaseProxy(self.pointer.?, 1, 3);
             self.pointer = null;
             self.pointer_focus = null;
@@ -134,11 +145,16 @@ pub const Seat = struct {
         self.x = @as(f64, @floatFromInt(x)) / 256;
         self.y = @as(f64, @floatFromInt(y)) / 256;
         if (self.pointer_focus) |surface| {
-            if (self.cursor == null) {
-                const compositor = self.client.compositor.?;
-                self.cursor = c.wl_proxy_marshal_flags(compositor, 0, &wl_surface_interface, c.wl_proxy_get_version(compositor), 0, @as(?*anyopaque, null));
+            if (surface.options.cursor == .arrow and self.cursor_shape != null) {
+                _ = c.wl_proxy_marshal_flags(self.cursor_shape.?, 1, null, 1, 0, serial, @as(u32, 1));
+                self.client.flush();
+            } else {
+                if (self.cursor == null) {
+                    const compositor = self.client.compositor.?;
+                    self.cursor = c.wl_proxy_marshal_flags(compositor, 0, &wl_surface_interface, c.wl_proxy_get_version(compositor), 0, @as(?*anyopaque, null));
+                }
+                if (self.cursor) |cursor| native.setCursor(surface, cursor, pointer, serial) catch |err| std.log.warn("native cursor: {s}", .{@errorName(err)});
             }
-            if (self.cursor) |cursor| native.setCursor(surface, cursor, pointer, serial) catch |err| std.log.warn("native cursor: {s}", .{@errorName(err)});
             if (surface.input.motion) |callback| callback(surface.data, surface, self.x, self.y);
         }
     }

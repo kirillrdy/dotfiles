@@ -3,6 +3,10 @@ const c = @import("desktop-gtk.zig");
 pub const Interface = c.struct_wl_interface;
 pub extern const zwp_text_input_manager_v3_interface: Interface;
 pub extern const zwp_text_input_v3_interface: Interface;
+pub extern const wp_cursor_shape_manager_v1_interface: Interface;
+pub extern const wp_cursor_shape_device_v1_interface: Interface;
+pub extern const zwp_tablet_tool_v2_interface: Interface;
+pub extern const zwp_tablet_v2_interface: Interface;
 const metadata = @import("protocol-metadata").Metadata(@import("desktop-wayland.zig"));
 comptime {
     // Emit canonical exported objects; extern declarations below preserve their identity.
