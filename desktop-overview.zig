@@ -8,6 +8,7 @@ const apps = @import("desktop-apps.zig");
 const capture = @import("desktop-capture.zig");
 const native_dash = @import("desktop-dash-view.zig");
 const raster = @import("desktop-raster.zig");
+const view = @import("desktop-overview-view.zig");
 const c = capture.c;
 const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
@@ -28,7 +29,7 @@ const Overview = struct {
     tooltip: *c.GtkWidget,
     dash_view: native_dash.View = .{},
     tooltip_timer: c.guint = 0,
-    wallpaper: ?*c.cairo_surface_t,
+    wallpaper: ?*c.GdkPixbuf,
     timer: c.guint = 0,
     tick_count: u32 = 0,
     apps_mode: bool = false,
@@ -48,15 +49,7 @@ const Overview = struct {
 
     fn create(application: *c.GtkApplication, path: [*:0]const u8) *Overview {
         const self = a.create(Overview) catch @panic("out of memory");
-        var wallpaper: ?*c.cairo_surface_t = null;
-        if (c.gdk_pixbuf_new_from_file(path, null)) |pixbuf| {
-            defer c.g_object_unref(pixbuf);
-            wallpaper = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, c.gdk_pixbuf_get_width(pixbuf), c.gdk_pixbuf_get_height(pixbuf));
-            const cr = c.cairo_create(wallpaper);
-            defer c.cairo_destroy(cr);
-            c.gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
-            c.cairo_paint(cr);
-        }
+        const wallpaper = c.gdk_pixbuf_new_from_file(path, null);
         self.* = .{ .launcher = apps.Launcher.init(application), .strip = c.gtk_drawing_area_new().?, .stage = c.gtk_drawing_area_new().?, .dash = c.gtk_drawing_area_new().?, .tooltip = c.gtk_drawing_area_new().?, .wallpaper = wallpaper };
         const l = &self.launcher;
         l.bindControls();
@@ -135,7 +128,7 @@ const Overview = struct {
         self.hideTooltip();
         self.launcher.deinit();
         self.dash_view.deinit();
-        if (self.wallpaper) |image| c.cairo_surface_destroy(image);
+        if (self.wallpaper) |image| c.g_object_unref(image);
         a.destroy(self);
     }
     fn present(self: *Overview) void {
@@ -609,35 +602,28 @@ const Overview = struct {
         return 1;
     }
     fn drawStrip(widget: *c.GtkWidget, cr: *c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
-        const client = self.client orelse return 1;
-        const width: f64 = @floatFromInt(c.gtk_widget_get_allocated_width(widget));
+        drawPixels(widget, cr, cast(Overview, data), true);
+        return 1;
+    }
+    fn paintStrip(self: *Overview, canvas: raster.Canvas, width: f64) void {
+        const client = self.client orelse return;
         const left = (width - @as(f64, @floatFromInt(client.count)) * 72 + 6) / 2;
         for (0..client.count) |i| {
             const x = left + @as(f64, @floatFromInt(i)) * 72;
             const rect = Rect{ .x = x, .y = 19, .w = 66, .h = 40 };
             if (i == client.current) {
-                rounded(cr, .{ .x = x - 3, .y = 16, .w = 72, .h = 46 }, 8);
-                c.cairo_set_source_rgb(cr, 0.208, 0.518, 0.894);
-                c.cairo_fill(cr);
+                canvas.draw(&.{(raster.Rect{ .x = x - 3, .y = 16, .width = 72, .height = 46 }).shape(8)}, .{ .red = 0.208, .green = 0.518, .blue = 0.894 });
             }
-            rounded(cr, rect, 3);
-            c.cairo_set_source_rgb(cr, 70.0 / 255.0, 70.0 / 255.0, 78.0 / 255.0);
-            c.cairo_fill(cr);
+            canvas.draw(&.{pixelRect(rect).shape(3)}, raster.Color.rgb(0x46464e, 1));
             for (client.windows.items) |window| {
                 if (window.workspace != i and !window.sticky) continue;
                 const g = window.geometry;
                 const sx = 66 / @as(f64, @floatFromInt(self.monitor.width));
                 const sy = 40 / @as(f64, @floatFromInt(self.monitor.height - 32));
                 const r = Rect{ .x = x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = 19 + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
-                c.cairo_save(cr);
-                c.cairo_rectangle(cr, x, 19, 66, 40);
-                c.cairo_clip(cr);
-                drawImage(cr, window.image, r, 1);
-                c.cairo_restore(cr);
+                view.miniature(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect));
             }
         }
-        return 1;
     }
     fn workspacePosition(self: *Overview) f64 {
         const t = std.math.clamp(@as(f64, @floatFromInt(c.g_get_monotonic_time() - self.workspace_started)) / 250000, 0, 1);
@@ -646,9 +632,14 @@ const Overview = struct {
     }
     fn drawStage(widget: *c.GtkWidget, cr: *c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
-        const client = self.client orelse return 1;
-        const width: f64 = @floatFromInt(c.gtk_widget_get_allocated_width(widget));
-        const height: f64 = @floatFromInt(c.gtk_widget_get_allocated_height(widget));
+        drawPixels(widget, cr, self, false);
+        const now = c.g_get_monotonic_time();
+        if (now - self.started < 250000 or now - self.workspace_started < 250000) c.gtk_widget_queue_draw(widget);
+        return 1;
+    }
+    fn paintStage(self: *Overview, canvas: raster.Canvas, width: f64, height: f64) void {
+        const client = self.client orelse return;
+        if (width <= 0 or height <= 24) return;
         const scale = @min(width * 0.73 / @as(f64, @floatFromInt(self.monitor.width)), (height - 24) / @as(f64, @floatFromInt(self.monitor.height - 32)));
         const base = Rect{ .x = (width - @as(f64, @floatFromInt(self.monitor.width)) * scale) / 2, .y = 12, .w = @as(f64, @floatFromInt(self.monitor.width)) * scale, .h = @as(f64, @floatFromInt(self.monitor.height - 32)) * scale };
         self.workspace_rect = base;
@@ -666,13 +657,12 @@ const Overview = struct {
                 background.w = width + (background.w - width) * ease;
                 background.h = @as(f64, @floatFromInt(self.monitor.height - 32)) + (background.h - @as(f64, @floatFromInt(self.monitor.height - 32))) * ease;
             }
-            self.drawWorkspace(cr, background);
-            self.drawWindows(cr, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1);
+            view.workspace(canvas, pixelRect(background), if (self.wallpaper) |image| c.__zig.pixbufImage(image) else null);
+            self.drawWindows(canvas, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1);
         }
-        if (t < 1 or c.g_get_monotonic_time() - self.workspace_started < 250000) c.gtk_widget_queue_draw(widget);
-        return 1;
     }
-    fn drawWindows(self: *Overview, cr: *c.cairo_t, client: *capture.Client, workspace_index: u32, background: Rect, height: f64, ratio: f64, ease: f64) void {
+    fn drawWindows(self: *Overview, canvas: raster.Canvas, client: *capture.Client, workspace_index: u32, background: Rect, height: f64, ratio: f64, ease: f64) void {
+        if (background.w <= 168 * ratio or height <= 0) return;
         var count: usize = 0;
         for (client.windows.items) |window| if (window.workspace == workspace_index or window.sticky) {
             count += 1;
@@ -696,56 +686,8 @@ const Overview = struct {
             if (workspace_index == client.current) window.target = .{ .x = x, .y = y, .w = w, .h = h };
             const start = Rect{ .x = window.geometry.x - @as(f64, @floatFromInt(self.monitor.x)), .y = window.geometry.y - @as(f64, @floatFromInt(self.monitor.y + 160)), .w = window.geometry.w, .h = window.geometry.h };
             const r = Rect{ .x = start.x + (x - start.x) * ease, .y = start.y + (y - start.y) * ease, .w = start.w + (w - start.w) * ease, .h = start.h + (h - start.h) * ease };
-            rounded(cr, .{ .x = r.x - 3, .y = r.y - 2, .w = r.w + 6, .h = r.h + 8 }, 9);
-            c.cairo_set_source_rgba(cr, 0, 0, 0, 0.3);
-            c.cairo_fill(cr);
-            c.cairo_save(cr);
-            rounded(cr, r, 8);
-            c.cairo_clip(cr);
-            drawImage(cr, window.image, r, 1);
-            c.cairo_restore(cr);
-            if (workspace_index == client.current and self.hover == index) {
-                rounded(cr, r, 8);
-                c.cairo_set_source_rgb(cr, 1, 1, 1);
-                c.cairo_set_line_width(cr, 2);
-                c.cairo_stroke(cr);
-                c.cairo_arc(cr, r.x + r.w, r.y, 16, 0, 2 * std.math.pi);
-                c.cairo_set_source_rgb(cr, 0.3, 0.3, 0.33);
-                c.cairo_fill(cr);
-                c.cairo_set_source_rgb(cr, 1, 1, 1);
-                c.cairo_set_line_width(cr, 2);
-                c.cairo_move_to(cr, r.x + r.w - 4, r.y - 4);
-                c.cairo_line_to(cr, r.x + r.w + 4, r.y + 4);
-                c.cairo_move_to(cr, r.x + r.w + 4, r.y - 4);
-                c.cairo_line_to(cr, r.x + r.w - 4, r.y + 4);
-                c.cairo_stroke(cr);
-            }
-            if (window.icon) |icon| {
-                c.cairo_save(cr);
-                c.cairo_translate(cr, r.x + r.w / 2 - 32, r.y + r.h - 44);
-                c.cairo_scale(cr, 64 / @as(f64, @floatFromInt(c.gdk_pixbuf_get_width(icon))), 64 / @as(f64, @floatFromInt(c.gdk_pixbuf_get_height(icon))));
-                c.gdk_cairo_set_source_pixbuf(cr, icon, 0, 0);
-                c.cairo_paint_with_alpha(cr, ease);
-                c.cairo_restore(cr);
-            }
+            view.window(canvas, pixelRect(r), if (window.image) |image| image.view() else null, if (window.icon) |icon| c.__zig.pixbufImage(icon) else null, workspace_index == client.current and self.hover == index, ease);
             position += 1;
-        }
-    }
-    fn drawWorkspace(self: *Overview, cr: *c.cairo_t, r: Rect) void {
-        c.cairo_save(cr);
-        defer c.cairo_restore(cr);
-        rounded(cr, r, 30);
-        c.cairo_clip(cr);
-        c.cairo_set_source_rgb(cr, 0.015, 0.235, 0.53);
-        c.cairo_paint(cr);
-        if (self.wallpaper) |image| {
-            const iw: f64 = @floatFromInt(c.cairo_image_surface_get_width(image));
-            const ih: f64 = @floatFromInt(c.cairo_image_surface_get_height(image));
-            const scale = @max(r.w / iw, r.h / ih);
-            c.cairo_translate(cr, r.x + (r.w - iw * scale) / 2, r.y + (r.h - ih * scale) / 2);
-            c.cairo_scale(cr, scale, scale);
-            c.cairo_set_source_surface(cr, image, 0, 0);
-            c.cairo_paint(cr);
         }
     }
 };
@@ -755,56 +697,27 @@ fn matchesApp(app_id: [*c]const u8, desktop_id: [*c]const u8) bool {
     const app = std.mem.span(app_id);
     return std.mem.eql(u8, app, id) or (std.mem.endsWith(u8, id, ".desktop") and std.mem.eql(u8, app, id[0 .. id.len - 8]));
 }
-fn rounded(cr: *c.cairo_t, r: Rect, radius: f64) void {
-    const rad = @max(0, @min(radius, @min(r.w, r.h) / 2));
-    c.cairo_new_sub_path(cr);
-    c.cairo_arc(cr, r.x + r.w - rad, r.y + rad, rad, -std.math.pi / 2.0, 0);
-    c.cairo_arc(cr, r.x + r.w - rad, r.y + r.h - rad, rad, 0, std.math.pi / 2.0);
-    c.cairo_arc(cr, r.x + rad, r.y + r.h - rad, rad, std.math.pi / 2.0, std.math.pi);
-    c.cairo_arc(cr, r.x + rad, r.y + rad, rad, std.math.pi, 1.5 * std.math.pi);
-    c.cairo_close_path(cr);
-}
-fn drawImage(cr: *c.cairo_t, image: ?capture.Image, r: Rect, opacity: f64) void {
-    c.cairo_save(cr);
-    defer c.cairo_restore(cr);
-    c.cairo_translate(cr, r.x, r.y);
-    if (image) |pixels| {
-        // Borrow capture storage only for this draw; no Cairo object owns it.
-        const surface = c.cairo_image_surface_create_for_data(pixels.pixels.ptr, c.CAIRO_FORMAT_ARGB32, @intCast(pixels.width), @intCast(pixels.height), @intCast(pixels.stride)) orelse return;
-        defer c.cairo_surface_destroy(surface);
-        if (c.cairo_surface_status(surface) != c.CAIRO_STATUS_SUCCESS) return;
-        c.cairo_scale(cr, r.w / @as(f64, @floatFromInt(pixels.width)), r.h / @as(f64, @floatFromInt(pixels.height)));
-        c.cairo_set_source_surface(cr, surface, 0, 0);
-        c.cairo_paint_with_alpha(cr, opacity);
-    } else {
-        c.cairo_rectangle(cr, 0, 0, r.w, r.h);
-        c.cairo_set_source_rgb(cr, 0.3, 0.3, 0.33);
-        c.cairo_fill(cr);
-    }
+fn pixelRect(rect: Rect) raster.Rect {
+    return .{ .x = rect.x, .y = rect.y, .width = rect.w, .height = rect.h };
 }
 
-test "overview drawing borrows Zig captures and restores its Cairo context" {
-    const words = [_]u32{ 0x80800000, 0xff00ff00 };
-    const image = try capture.Image.thumbnail(std.testing.allocator, .{ .pixels = std.mem.sliceAsBytes(&words), .width = 2, .height = 1, .stride = 8, .format = .argb });
-    defer image.deinit(std.testing.allocator);
-    const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, 4, 3).?;
-    defer c.cairo_surface_destroy(surface);
-    const cr = c.cairo_create(surface).?;
-    defer c.cairo_destroy(cr);
-    c.cairo_set_source_rgb(cr, 0, 0, 0);
-    c.cairo_paint(cr);
-    c.cairo_set_source_rgb(cr, 0, 0, 1);
-    drawImage(cr, image, .{ .x = 1, .y = 1, .w = 2, .h = 1 }, 1);
-    c.cairo_rectangle(cr, 0, 0, 1, 1);
-    c.cairo_fill(cr);
-    c.cairo_surface_flush(surface);
-    const bytes = c.cairo_image_surface_get_data(surface);
-    const stride: usize = @intCast(c.cairo_image_surface_get_stride(surface));
-    const endian = @import("builtin").cpu.arch.endian();
-    try std.testing.expectEqual(@as(u32, 0xff0000ff), std.mem.readInt(u32, bytes[0..4], endian));
-    try std.testing.expectEqual(@as(u32, 0xff800000), std.mem.readInt(u32, bytes[stride + 4 ..][0..4], endian));
-    try std.testing.expectEqual(@as(u32, 0xff00ff00), std.mem.readInt(u32, bytes[stride + 8 ..][0..4], endian));
-    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&words), image.pixels);
+fn drawPixels(widget: *c.GtkWidget, cr: *c.cairo_t, overview: *Overview, strip: bool) void {
+    const width: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)));
+    const height: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)));
+    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
+    const Context = struct {
+        overview: *Overview,
+        width: u32,
+        height: u32,
+        scale: u32,
+        strip: bool,
+        fn paint(self: @This(), target: raster.Buffer) void {
+            @memset(target.pixels, 0);
+            const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(self.scale) };
+            if (self.strip) self.overview.paintStrip(canvas, @floatFromInt(self.width)) else self.overview.paintStage(canvas, @floatFromInt(self.width), @floatFromInt(self.height));
+        }
+    };
+    c.__zig.paintCairo(cr, width, height, scale, Context{ .overview = overview, .width = width, .height = height, .scale = scale, .strip = strip }, Context.paint) catch {};
 }
 
 pub const State = struct { overview: ?*Overview = null, wallpaper: [*:0]const u8 };

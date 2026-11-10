@@ -402,7 +402,33 @@ fn filteredImage(image: Image, x: f64, y: f64, step_x: f64, step_y: f64) u32 {
 /// Source edges are transparent, including under partially covered filters.
 /// Destination coordinates and the optional clip are in physical pixels.
 pub fn blit(target: Buffer, image: Image, destination: Rect, clip: ?Region) !void {
+    return blitWithOptions(target, image, destination, .{ .clip = clip });
+}
+
+pub const BlitOptions = struct {
+    clip: ?Region = null,
+    /// Antialiased clipping shape in physical pixel coordinates.
+    shape: ?Shape = null,
+    opacity: f64 = 1,
+};
+
+test "image opacity and rounded clipping preserve premultiplication and adjacent pixels" {
+    const word: [16]u32 = @splat(0xffff0000);
+    var pixels: [16]u32 = @splat(0xff000000);
+    const target: Buffer = .{ .pixels = &pixels, .width = 4, .height = 4 };
+    const image: Image = .{ .pixels = std.mem.sliceAsBytes(&word), .width = 4, .height = 4, .stride = 16, .format = .argb };
+    const destination: Rect = .{ .width = 4, .height = 4 };
+    try blitWithOptions(target, image, destination, .{ .opacity = 0 });
+    for (pixels) |value| try std.testing.expectEqual(@as(u32, 0xff000000), value);
+    try blitWithOptions(target, image, destination, .{ .opacity = 0.5, .shape = destination.shape(2), .clip = .{ .x = 1, .y = 1, .width = 2, .height = 2 } });
+    try std.testing.expectEqual(@as(u32, 0xff800000), pixels[5]);
+    try std.testing.expectEqual(@as(u32, 0xff000000), pixels[0]);
+    try std.testing.expectError(error.InvalidImage, blitWithOptions(target, image, destination, .{ .opacity = std.math.nan(f64) }));
+}
+
+pub fn blitWithOptions(target: Buffer, image: Image, destination: Rect, options: BlitOptions) !void {
     try image.validate();
+    if (!std.math.isFinite(options.opacity) or options.opacity < 0 or options.opacity > 1) return error.InvalidImage;
     if (!std.math.isFinite(destination.x) or !std.math.isFinite(destination.y) or !std.math.isFinite(destination.width) or !std.math.isFinite(destination.height) or destination.width < 0.001 or destination.height < 0.001) return error.InvalidImage;
     if (target.pixels.len < try std.math.mul(usize, target.width, target.height)) return error.InvalidImage;
     const width: f64 = @floatFromInt(target.width);
@@ -411,7 +437,7 @@ pub fn blit(target: Buffer, image: Image, destination: Rect, clip: ?Region) !voi
     var y0: usize = @intFromFloat(std.math.clamp(@floor(destination.y), 0, height));
     var x1: usize = @intFromFloat(std.math.clamp(@ceil(destination.x + destination.width), 0, width));
     var y1: usize = @intFromFloat(std.math.clamp(@ceil(destination.y + destination.height), 0, height));
-    if (clip) |rect| {
+    if (options.clip) |rect| {
         x0 = @max(x0, @as(usize, @intCast(std.math.clamp(@as(i64, rect.x), 0, target.width))));
         y0 = @max(y0, @as(usize, @intCast(std.math.clamp(@as(i64, rect.y), 0, target.height))));
         x1 = @min(x1, @as(usize, @intCast(std.math.clamp(@as(i64, rect.x) + rect.width, 0, target.width))));
@@ -423,8 +449,20 @@ pub fn blit(target: Buffer, image: Image, destination: Rect, clip: ?Region) !voi
     for (y0..y1) |y| for (x0..x1) |x| {
         const sx = (@as(f64, @floatFromInt(x)) + 0.5 - destination.x) * step_x - 0.5;
         const sy = (@as(f64, @floatFromInt(y)) + 0.5 - destination.y) * step_y - 0.5;
+        const coverage = options.opacity * if (options.shape) |shape| std.math.clamp(0.5 - shape.distance(.{ .x = @as(f64, @floatFromInt(x)) + 0.5, .y = @as(f64, @floatFromInt(y)) + 0.5 }), 0, 1) else @as(f64, 1);
+        if (coverage == 0) continue;
         const dest = &target.pixels[y * target.width + x];
-        dest.* = over(dest.*, filteredImage(image, sx, sy, step_x, step_y));
+        const sample = filteredImage(image, sx, sy, step_x, step_y);
+        if (coverage >= 1) {
+            dest.* = over(dest.*, sample);
+            continue;
+        }
+        var source: u32 = 0;
+        inline for (.{ 0, 8, 16, 24 }) |shift| {
+            const channel: u32 = @intFromFloat(@round(@as(f64, @floatFromInt((sample >> shift) & 255)) * coverage));
+            source |= channel << shift;
+        }
+        dest.* = over(dest.*, source);
     };
 }
 
