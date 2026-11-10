@@ -17,6 +17,7 @@ pub const Window = struct {
     app_id: [*c]u8 = null,
     workspace: u32 = 0,
     sticky: bool = false,
+    stacking: usize = 0,
     geometry: Rect = .{},
     target: Rect = .{},
     icon: ?*c.GdkPixbuf = null,
@@ -125,6 +126,7 @@ pub const Client = struct {
     current: u32 = 0,
     pending_count: u32 = 0,
     pending_current: u32 = 0,
+    pending_stacking: usize = 0,
     snapshot_dirty: bool = false,
     active: bool = false,
     connected: bool = true,
@@ -177,6 +179,11 @@ pub const Client = struct {
         }
         self.flush();
     }
+    /// Resolve desktop geometry and stacking before mapping the opening frame.
+    pub fn refreshBeforeShow(self: *Client) void {
+        self.refresh();
+        if (self.connected and c.wl_display_roundtrip(self.display) < 0) self.connected = false;
+    }
     /// Seed previews on first open without recapturing existing thumbnails
     /// during a transition. Regular live updates resume after the animation.
     pub fn captureMissing(self: *Client) void {
@@ -189,7 +196,9 @@ pub const Client = struct {
     }
     pub fn activate(self: *Client, window: *Window) void {
         protocols.dotfiles_overview_v1_activate(self.control, window.id);
-        self.flush();
+        // The closing transition must already have the newly raised window
+        // above its neighbours, even before the next periodic refresh.
+        self.refreshBeforeShow();
     }
     pub fn close(self: *Client, window: *Window) void {
         protocols.dotfiles_overview_v1_close(self.control, window.id);
@@ -285,7 +294,10 @@ const control_listener = protocols.dotfiles_overview_v1_listener{ .workspace = &
 fn workspace(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, index: u32, name: [*c]const u8, active: u32) callconv(.c) void {
     const self = cast(Client, data);
     if (index >= self.workspaces.len) return;
-    if (index == 0) self.pending_count = 0;
+    if (index == 0) {
+        self.pending_count = 0;
+        self.pending_stacking = 0;
+    }
     if (c.g_strcmp0(&self.workspaces[index].name, name) != 0) {
         _ = c.g_strlcpy(&self.workspaces[index].name, name, self.workspaces[index].name.len);
         self.snapshot_dirty = true;
@@ -295,7 +307,13 @@ fn workspace(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, index: u32,
 }
 fn placement(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, id: [*c]const u8, index: u32, x: i32, y: i32, width: i32, height: i32, sticky: u32) callconv(.c) void {
     const self = cast(Client, data);
+    const stacking = self.pending_stacking;
+    self.pending_stacking += 1;
     for (self.windows.items) |w| if (c.g_strcmp0(w.id, id) == 0) {
+        if (w.stacking != stacking) {
+            w.stacking = stacking;
+            self.snapshot_dirty = true;
+        }
         const is_sticky = sticky != 0;
         const geom = Rect{ .x = @floatFromInt(x), .y = @floatFromInt(y), .w = @floatFromInt(@max(1, width)), .h = @floatFromInt(@max(1, height)) };
         if (w.workspace != index or w.sticky != is_sticky or w.geometry.x != geom.x or w.geometry.y != geom.y or w.geometry.w != geom.w or w.geometry.h != geom.h) {
@@ -421,6 +439,40 @@ fn failed(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1,
     protocols.ext_image_copy_capture_frame_v1_destroy(frame);
     w.frame = null;
     w.freeBuffer();
+}
+
+test "overview snapshots track focus stacking changes without changing picker order" {
+    const State = struct {
+        changes: usize = 0,
+        fn change(data: ?*anyopaque) void {
+            cast(@This(), data).changes += 1;
+        }
+    };
+    var state: State = .{};
+    var client: Client = .{ .display = undefined, .registry = undefined, .context = &state, .changed = &State.change };
+    var older: Window = .{ .client = &client, .handle = undefined, .id = c.g_strdup("older") };
+    defer c.g_free(older.id);
+    var newer: Window = .{ .client = &client, .handle = undefined, .id = c.g_strdup("newer") };
+    defer c.g_free(newer.id);
+    defer client.windows.deinit(a);
+    try client.windows.appendSlice(a, &.{ &older, &newer });
+
+    workspace(&client, null, 0, "1", 1);
+    placement(&client, null, "older", 0, 0, 32, 800, 600, 0);
+    placement(&client, null, "newer", 0, 0, 32, 800, 600, 0);
+    snapshotDone(&client, null);
+    try std.testing.expect(older.stacking < newer.stacking);
+    state.changes = 0;
+
+    // Reactivate the older window with identical geometry.
+    workspace(&client, null, 0, "1", 1);
+    placement(&client, null, "newer", 0, 0, 32, 800, 600, 0);
+    placement(&client, null, "older", 0, 0, 32, 800, 600, 0);
+    snapshotDone(&client, null);
+    try std.testing.expect(older.stacking > newer.stacking);
+    try std.testing.expectEqual(@as(usize, 1), state.changes);
+    try std.testing.expectEqual(&older, client.windows.items[0]);
+    try std.testing.expectEqual(&newer, client.windows.items[1]);
 }
 
 test "thumbnail workers publish owned pixels and discard captures detached on hide" {

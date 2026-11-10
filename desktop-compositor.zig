@@ -1372,10 +1372,16 @@ const Overview = struct {
                 2 => "3",
                 else => "4",
             }), @as(u32, @intFromBool(index == s.workspace)));
-            for (s.views.items) |v| if (v.listed) |listed| {
-                const geo = v.xdg.base.*.geometry;
-                c.wl_resource_post_event(resource, 1, listed.identifier, v.workspace, v.tree.node.x, v.tree.node.y, geo.width, geo.height, @as(u32, 0));
-            };
+            var link = s.windows.children.next;
+            while (link != &s.windows.children) : (link = link.*.next) {
+                const node: *c.wlr_scene_node = @fieldParentPtr("link", @as(*c.wl_list, link));
+                const target = cast(Target, node.data orelse continue);
+                const v = target.view orelse continue;
+                if (v.listed) |listed| {
+                    const geo = v.xdg.base.*.geometry;
+                    c.wl_resource_post_event(resource, 1, listed.identifier, v.workspace, node.x, node.y, geo.width, geo.height, @as(u32, 0));
+                }
+            }
         }
         c.wl_resource_post_event(resource, 2);
     }

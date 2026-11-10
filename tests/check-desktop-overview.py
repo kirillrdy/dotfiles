@@ -202,6 +202,13 @@ def main():
             run(
                 ["grim", "-s", "1", "-o", "HEADLESS-1", str(artifacts / "overview.png")]
             )
+            def stacking():
+                return re.findall(r'dotfiles_overview_v1#\d+\.window\("([^"]+)"', log())[-4:]
+
+            initial_stacking = stacking()
+            assert len(initial_stacking) == 4 and initial_stacking[-1] == files_id, (
+                "Overview snapshot did not put the active window on top"
+            )
             before = (artifacts / "window-0.log").read_text().splitlines()
             other_before = (artifacts / "window-1.log").read_text().splitlines()
             click(584, 350)
@@ -224,6 +231,9 @@ def main():
                 "Capture continued after hiding the overview"
             )
             reopen()
+            assert stacking()[-1] == initial_stacking[0], (
+                "Reopening the overview kept the previous window on top"
+            )
             # Stage -> dash; End targets Show Applications regardless of the
             # number of running apps. Activating it returns focus to the grid.
             key("Tab")

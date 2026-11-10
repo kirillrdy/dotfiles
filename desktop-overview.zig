@@ -16,6 +16,15 @@ const cast = c.__zig.cast;
 const Rect = capture.Rect;
 const Part = enum { search, grid, stage, strip, dash, tooltip };
 const Pointer = struct { x: f64, y: f64, button: u32 = 1 };
+const WindowPaint = struct {
+    window: *capture.Window,
+    rect: Rect,
+    hovered: bool,
+
+    fn below(_: void, left: WindowPaint, right: WindowPaint) bool {
+        return left.window.stacking < right.window.stacking;
+    }
+};
 
 const Overview = struct {
     launcher: apps.Launcher,
@@ -43,6 +52,7 @@ const Overview = struct {
     tick_count: u32 = 0,
     apps_mode: bool = false,
     selected: usize = 0,
+    window_paints: std.ArrayList(WindowPaint) = .empty,
     hover: ?usize = null,
     drag: ?*capture.Window = null,
     drag_x: f64 = 0,
@@ -94,6 +104,7 @@ const Overview = struct {
         self.native.destroy();
         self.launcher.deinit();
         self.dash_view.deinit();
+        self.window_paints.deinit(a);
         if (self.wallpaper) |image| c.cairo_surface_destroy(image);
         a.destroy(self);
     }
@@ -128,12 +139,18 @@ const Overview = struct {
         self.hover = null;
         self.launcher.reload() catch |err| std.log.err("loading applications: {s}", .{@errorName(err)});
         self.launcher.setSearch("") catch {};
-        self.transition.setShown(true, c.g_get_monotonic_time());
         if (self.client) |client| {
             client.visible(true);
-            client.refresh();
+            client.refreshBeforeShow();
+            var top: ?usize = null;
+            for (client.windows.items, 0..) |window, index| {
+                if (window.workspace != client.current and !window.sticky) continue;
+                if (top == null or window.stacking > client.windows.items[top.?].stacking) top = index;
+            }
+            self.selected = top orelse 0;
             client.captureMissing();
         }
+        self.transition.setShown(true, c.g_get_monotonic_time());
         self.rebuildDash();
         self.launcher.visible_window = true;
         self.updateMode();
@@ -871,6 +888,7 @@ const Overview = struct {
         const cell_w = (background.w - 168 * ratio - @as(f64, @floatFromInt(columns - 1)) * 32 * ratio) / @as(f64, @floatFromInt(columns));
         const cell_h = (height * ratio - @as(f64, @floatFromInt(rows - 1)) * 32 * ratio) / @as(f64, @floatFromInt(rows));
         var position: usize = 0;
+        self.window_paints.clearRetainingCapacity();
         for (client.windows.items, 0..) |window, index| {
             if (window.workspace != workspace_index and !window.sticky) continue;
             const row = position / columns;
@@ -894,8 +912,15 @@ const Overview = struct {
                 .h = window.geometry.h * sy,
             };
             const r = Rect{ .x = start.x + (x - start.x) * ease, .y = start.y + (y - start.y) * ease, .w = start.w + (w - start.w) * ease, .h = start.h + (h - start.h) * ease };
-            view.window(canvas, pixelRect(r), if (window.image) |image| image.view() else null, window.icon, workspace_index == client.current and self.hover == index, ease, animated);
+            self.window_paints.append(a, .{ .window = window, .rect = r, .hovered = workspace_index == client.current and self.hover == index }) catch @panic("out of memory");
             position += 1;
+        }
+        // Keep picker positions stable while painting overlapping clones in the
+        // same order as the desktop, including a newly activated older window.
+        std.mem.sort(WindowPaint, self.window_paints.items, {}, WindowPaint.below);
+        for (self.window_paints.items) |item| {
+            const window = item.window;
+            view.window(canvas, pixelRect(item.rect), if (window.image) |image| image.view() else null, window.icon, item.hovered, ease, animated);
         }
     }
 };

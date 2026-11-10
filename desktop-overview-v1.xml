@@ -6,7 +6,8 @@
       Companion to ext-foreign-toplevel-list and ext-image-copy-capture.
       Identifiers are those from ext_foreign_toplevel_handle_v1.identifier.
       Each refresh produces a complete workspace/window snapshot followed by
-      done. Indices are zero-based and valid until the next snapshot.
+      done. Window events follow desktop stacking order, bottom to top.
+      Indices are zero-based and valid until the next snapshot.
     </description>
     <request name="destroy" type="destructor"/>
     <request name="refresh"/>
