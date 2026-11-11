@@ -1,19 +1,21 @@
-//! Native authentication dialog controls hosted in a GTK drawing area.
+//! Native Wayland authentication dialogs with locked password buffers.
 const std = @import("std");
 pub const c = @import("desktop-gtk.zig");
 pub const native = @import("desktop-askpass-view.zig");
 pub const password = @import("desktop-password-entry.zig");
 pub const Mode = native.Mode;
+pub const host = @import("desktop-window.zig");
+const wire = host.wire;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
-fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
-    _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
-}
-
 pub const Dialog = struct {
-    window: *c.GtkWidget,
-    canvas: *c.GtkWidget,
-    scroll: *c.GtkWidget,
+    window: *host.Window,
+    image: []u32 = &.{},
+    offset: f64 = 0,
+    response: ?bool = null,
+    response_idle: c.guint = 0,
+    response_context: ?*anyopaque = null,
+    responded: ?*const fn (?*anyopaque, bool) void = null,
     prompt: [:0]u8,
     entry: ?*password.Entry = null,
     confirmation: ?*password.Entry = null,
@@ -54,50 +56,21 @@ pub const Dialog = struct {
         view.title = options.title;
         view.accept_label = options.accept;
         try view.prepare(a, prompt, 1);
-        const window = c.gtk_dialog_new().?;
-        errdefer c.gtk_widget_destroy(window);
-        c.gtk_window_set_title(cast(c.GtkWindow, window), options.title.ptr);
-        c.gtk_window_set_role(cast(c.GtkWindow, window), options.role.ptr);
-        c.gtk_window_set_type_hint(cast(c.GtkWindow, window), c.GDK_WINDOW_TYPE_HINT_DIALOG);
-        c.gtk_window_set_icon_name(cast(c.GtkWindow, window), options.icon.ptr);
-        c.gtk_window_set_modal(cast(c.GtkWindow, window), 1);
-        c.gtk_window_set_keep_above(cast(c.GtkWindow, window), 1);
-        c.gtk_window_set_resizable(cast(c.GtkWindow, window), 0);
-        c.gtk_window_set_position(cast(c.GtkWindow, window), c.GTK_WIN_POS_CENTER);
-        c.gtk_window_set_default_size(cast(c.GtkWindow, window), 460, -1);
-        c.gtk_dialog_set_default_response(cast(c.GtkDialog, window), if (mode == .confirm) c.GTK_RESPONSE_CANCEL else c.GTK_RESPONSE_OK);
-        const actions = c.gtk_dialog_get_action_area(cast(c.GtkDialog, window));
-        c.gtk_widget_set_no_show_all(actions, 1);
-        c.gtk_widget_hide(actions);
-        const content = c.gtk_dialog_get_content_area(cast(c.GtkDialog, window));
-        c.gtk_container_set_border_width(cast(c.GtkContainer, content), 0);
-        c.gtk_box_set_spacing(cast(c.GtkBox, content), 0);
-        const scroll = c.gtk_scrolled_window_new(null, null).?;
-        c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_AUTOMATIC);
-        c.gtk_scrolled_window_set_propagate_natural_height(cast(c.GtkScrolledWindow, scroll), 1);
-        c.gtk_scrolled_window_set_max_content_height(cast(c.GtkScrolledWindow, scroll), 640);
-        c.gtk_box_pack_start(cast(c.GtkBox, content), scroll, 1, 1, 0);
-        const canvas = c.gtk_drawing_area_new().?;
-        c.gtk_widget_set_can_focus(canvas, 1);
-        c.gtk_widget_add_events(canvas, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_KEY_PRESS_MASK | c.GDK_KEY_RELEASE_MASK | c.GDK_FOCUS_CHANGE_MASK);
-        c.gtk_container_add(cast(c.GtkContainer, scroll), canvas);
-        self.* = .{ .window = window, .canvas = canvas, .scroll = scroll, .prompt = prompt, .mode = mode, .view = view };
-        if (mode == .password) self.entry = try password.Entry.create(canvas, &changed, self);
+        const window = try host.Window.create(options.title, options.role, view.width, view.height, &draw, self);
+        errdefer window.destroy();
+        self.* = .{ .window = window, .prompt = prompt, .mode = mode, .view = view };
+        window.closed = &closed;
+        window.surface.?.close = &closeRequested;
+        window.surface.?.input = .{ .button = &button, .motion = &motion, .leave = &leave, .scroll = &scroll, .symbol = &key, .text = &commit, .commit = &commit, .preedit = &preedit, .surrounding = &surrounding, .focus = &focusChanged };
+        if (mode == .password) self.entry = try password.Entry.create(&changed, self);
         errdefer if (self.entry) |entry| entry.destroy();
-        if (options.confirmation) self.confirmation = try password.Entry.create(canvas, &changed, self);
-        connect(canvas, "draw", &draw, self);
-        connect(canvas, "button-press-event", &press, self);
-        connect(canvas, "button-release-event", &released, self);
-        connect(canvas, "motion-notify-event", &motion, self);
-        connect(canvas, "leave-notify-event", &leave, self);
-        connect(canvas, "key-press-event", &key, self);
-        connect(canvas, "key-release-event", &keyRelease, self);
-        connect(canvas, "focus-in-event", &focusIn, self);
-        connect(canvas, "focus-out-event", &focusOut, self);
-        connect(canvas, "map", &mapped, self);
+        if (options.confirmation) self.confirmation = try password.Entry.create(&changed, self);
+        errdefer if (self.confirmation) |entry| entry.destroy();
+        if (self.entry) |entry| entry.client = window.surface.?.client;
+        if (self.confirmation) |entry| entry.client = window.surface.?.client;
         self.size();
-        c.gtk_widget_show_all(window);
-        c.gtk_widget_grab_focus(canvas);
+        try window.show();
+        self.focus(self.view.focus);
         return self;
     }
     pub fn setPrompt(self: *Dialog, value: [:0]const u8) !void {
@@ -158,15 +131,19 @@ pub const Dialog = struct {
     pub fn destroy(self: *Dialog) void {
         if (self.confirmation) |entry| entry.destroy();
         if (self.entry) |entry| entry.destroy();
-        _ = c.g_signal_handlers_disconnect_matched(self.canvas, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-        c.gtk_widget_destroy(self.window);
+        if (self.response_idle != 0) _ = c.g_source_remove(self.response_idle);
+        self.window.destroy();
+        a.free(self.image);
         self.view.deinit(a);
         a.free(self.prompt);
         if (self.status) |status| a.free(status);
         a.destroy(self);
     }
     fn size(self: *Dialog) void {
-        c.gtk_widget_set_size_request(self.canvas, @intCast(self.view.width), @intCast(self.view.height));
+        if (self.window.surface) |surface| {
+            const height = @min(self.view.height, @as(u32, @intCast(@max(120, surface.output.height() - 60))));
+            if (surface.options.height != height) self.window.setSize(self.view.width, height);
+        }
         if (self.entry) |entry| {
             const rect = self.view.entryRect();
             entry.rect = .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height };
@@ -176,122 +153,144 @@ pub const Dialog = struct {
             entry.rect = .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height };
         }
     }
-    fn changed(data: ?*anyopaque) void {
-        c.gtk_widget_queue_draw(cast(Dialog, data).canvas);
+    fn changed(ptr: ?*anyopaque) void {
+        const self = cast(Dialog, ptr);
+        self.window.redraw();
+        self.syncInput();
     }
-    fn mapped(_: *c.GtkWidget, data: c.gpointer) callconv(.c) void {
-        const self = cast(Dialog, data);
-        const monitor = c.gdk_display_get_monitor_at_window(c.gtk_widget_get_display(self.window), c.gtk_widget_get_window(self.window));
-        if (monitor != null) {
-            var geometry: c.GdkRectangle = undefined;
-            c.gdk_monitor_get_geometry(monitor, &geometry);
-            c.gtk_scrolled_window_set_max_content_height(cast(c.GtkScrolledWindow, self.scroll), @max(120, geometry.height - 80));
-        }
-        self.focus(self.view.focus);
+    fn syncInput(self: *Dialog) void {
+        const surface = self.window.surface orelse return;
+        for (surface.client.seats.items) |seat| if (seat.text_input) |im| if (im.surface == surface) im.update();
     }
     pub fn focus(self: *Dialog, target: native.Target) void {
         self.view.focus = target;
         if (self.entry) |entry| entry.focus(self.enabled and target == .entry);
         if (self.confirmation) |entry| entry.focus(self.enabled and target == .confirmation);
-        const rect = self.view.targetRect(target);
-        c.gtk_adjustment_clamp_page(c.gtk_scrolled_window_get_vadjustment(cast(c.GtkScrolledWindow, self.scroll)), rect.y, rect.y + rect.height);
+        if (self.window.surface) |surface| {
+            const rect = self.view.targetRect(target);
+            if (rect.y < self.offset) self.offset = rect.y;
+            if (rect.y + rect.height > self.offset + @as(f64, @floatFromInt(surface.height))) self.offset = rect.y + rect.height - @as(f64, @floatFromInt(surface.height));
+        }
+        self.clamp();
         changed(self);
     }
-    fn focusIn(_: *c.GtkWidget, _: *c.GdkEvent, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Dialog, data);
-        if (self.entry) |entry| entry.focus(self.enabled and self.view.focus == .entry);
-        if (self.confirmation) |entry| entry.focus(self.enabled and self.view.focus == .confirmation);
-        return 0;
+    fn focusChanged(ptr: ?*anyopaque, _: *wire.Surface, focused: bool) void {
+        const self = cast(Dialog, ptr);
+        if (self.entry) |entry| entry.focus(focused and self.enabled and self.view.focus == .entry);
+        if (self.confirmation) |entry| entry.focus(focused and self.enabled and self.view.focus == .confirmation);
+        if (!focused) self.view.pressed = .none;
     }
-    fn focusOut(_: *c.GtkWidget, _: *c.GdkEvent, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Dialog, data);
-        if (self.entry) |entry| entry.focus(false);
-        if (self.confirmation) |entry| entry.focus(false);
-        return 0;
+    fn clamp(self: *Dialog) void {
+        const surface = self.window.surface orelse return;
+        self.offset = std.math.clamp(self.offset, 0, @as(f64, @floatFromInt(self.view.height -| surface.height)));
     }
-    fn draw(_: *c.GtkWidget, cr: *c.cairo_t, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Dialog, data);
-        self.paint(cr) catch {
+    fn draw(ptr: ?*anyopaque, target: wire.Pixels) void {
+        const self = cast(Dialog, ptr);
+        self.paint(target) catch {
             self.failed = true;
             self.respond(false);
         };
-        return 1;
     }
-    fn paintBuffer(self: *Dialog, target: @import("desktop-raster.zig").Buffer) !void {
-        const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(self.canvas)));
-        self.view.paint(target);
-        if (self.entry) |entry| try entry.paint(target, scale);
-        if (self.confirmation) |entry| try entry.paint(target, scale);
-    }
-    fn paint(self: *Dialog, cr: *c.cairo_t) !void {
-        const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(self.canvas)));
-        const allocated_width: u32 = @intCast(@max(460, c.gtk_widget_get_allocated_width(self.canvas)));
-        const width_changed = self.view.width != allocated_width;
-        if (width_changed) {
-            self.view.width = allocated_width;
+    fn paint(self: *Dialog, target: wire.Pixels) !void {
+        const surface = self.window.surface orelse return;
+        const scale = surface.output.scale;
+        const width = target.width / scale;
+        if (self.view.width != width) {
+            self.view.width = width;
             self.view.invalidate(a);
         }
         const old_height = self.view.height;
         try self.view.prepare(a, self.prompt, scale);
-        if (width_changed or old_height != self.view.height) self.size();
-        const height = @max(self.view.height, @as(u32, @intCast(c.gtk_widget_get_allocated_height(self.canvas))));
-        try c.__zig.paintCairo(cr, self.view.width, height, scale, self, paintBuffer);
+        if (old_height != self.view.height) self.size();
+        self.clamp();
+        const height = @max(self.view.height * scale, target.height);
+        const bytes = try wire.bufferSize(target.width, height);
+        if (self.image.len != bytes / 4) {
+            const image = try a.alloc(u32, bytes / 4);
+            a.free(self.image);
+            self.image = image;
+        }
+        const image: wire.Pixels = .{ .pixels = self.image, .width = target.width, .height = height };
+        self.view.paint(image);
+        if (self.entry) |entry| try entry.paint(image, scale);
+        if (self.confirmation) |entry| try entry.paint(image, scale);
+        const start: usize = @intFromFloat(self.offset * @as(f64, @floatFromInt(scale)));
+        for (0..target.height) |row| @memcpy(target.pixels[row * target.width ..][0..target.width], self.image[(start + row) * target.width ..][0..target.width]);
     }
-    fn press(_: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
-        if (event.button != 1) return 0;
-        const self = cast(Dialog, data);
-        const target = self.view.hit(event.x, event.y);
-        self.view.keyboard_focus = false;
-        self.view.pressed = target;
-        self.view.hover = target;
-        if (target != .none) self.focus(target);
-        c.gtk_widget_grab_focus(self.canvas);
-        if ((target == .entry or target == .confirmation) and self.enabled) {
-            const entry = self.focusedEntry().?;
-            entry.dragging = true;
-            entry.point(event.x, event.state & c.GDK_SHIFT_MASK != 0);
+    pub fn pointerButton(self: *Dialog, pressed: bool, x: f64, screen_y: f64) void {
+        const y = screen_y + self.offset;
+        const target = self.view.hit(x, y);
+        if (pressed) {
+            self.view.keyboard_focus = false;
+            self.view.pressed = target;
+            self.view.hover = target;
+            if (target != .none) self.focus(target);
+            if ((target == .entry or target == .confirmation) and self.enabled) {
+                const entry = self.focusedEntry().?;
+                entry.dragging = true;
+                entry.point(x, false);
+            }
+        } else {
+            const previous = self.view.pressed;
+            self.view.pressed = .none;
+            if (self.entry) |entry| entry.dragging = false;
+            if (self.confirmation) |entry| entry.dragging = false;
+            changed(self);
+            if (previous != .none and previous == target) self.activate(target);
+            return;
         }
         changed(self);
-        return 1;
     }
-    fn released(_: *c.GtkWidget, event: *c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
-        if (event.button != 1) return 0;
-        const self = cast(Dialog, data);
-        const target = self.view.pressed;
-        self.view.pressed = .none;
-        if (self.entry) |entry| entry.dragging = false;
-        if (self.confirmation) |entry| entry.dragging = false;
-        const clicked = target != .none and self.view.hit(event.x, event.y) == target;
+    fn button(ptr: ?*anyopaque, _: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
+        if (code == 0x110) cast(Dialog, ptr).pointerButton(pressed, x, y);
+    }
+    fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
+        const self = cast(Dialog, ptr);
+        self.view.hover = self.view.hit(x, y + self.offset);
+        if (self.entry) |entry| if (entry.dragging) entry.point(x, true);
+        if (self.confirmation) |entry| if (entry.dragging) entry.point(x, true);
         changed(self);
-        if (clicked) self.activate(target);
-        return 1;
     }
-    fn motion(_: *c.GtkWidget, event: *c.GdkEventMotion, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Dialog, data);
-        self.view.hover = self.view.hit(event.x, event.y);
-        if (self.entry) |entry| if (entry.dragging) entry.point(event.x, true);
-        if (self.confirmation) |entry| if (entry.dragging) entry.point(event.x, true);
-        changed(self);
-        return 1;
-    }
-    fn leave(_: *c.GtkWidget, _: *c.GdkEventCrossing, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Dialog, data);
+    fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
+        const self = cast(Dialog, ptr);
         self.view.hover = .none;
         changed(self);
-        return 0;
     }
-    fn key(_: *c.GtkWidget, event: *c.GdkEvent, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Dialog, data);
-        if (self.enabled) if (self.focusedEntry()) |entry| if (entry.filter(event)) return 1;
-        var symbol: c.guint = 0;
-        var modifiers: c.GdkModifierType = 0;
-        _ = c.gdk_event_get_keyval(event, &symbol);
-        _ = c.gdk_event_get_state(event, &modifiers);
-        return @intFromBool(self.handleKey(symbol, modifiers));
+    fn scroll(ptr: ?*anyopaque, _: *wire.Surface, axis: u32, delta: f64) void {
+        const self = cast(Dialog, ptr);
+        if (axis != 0) return;
+        self.offset += delta * 3;
+        self.clamp();
+        changed(self);
     }
-    fn keyRelease(_: *c.GtkWidget, event: *c.GdkEvent, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Dialog, data);
-        return @intFromBool(self.enabled and if (self.focusedEntry()) |entry| entry.filter(event) else false);
+    fn key(ptr: ?*anyopaque, _: *wire.Surface, symbol: u32, modifiers: u32, pressed: bool) bool {
+        const self = cast(Dialog, ptr);
+        if (!pressed or self.response != null) return true;
+        if (self.focusedEntry()) |entry| {
+            if (symbol != 0xff09 and symbol != 0xfe20 and symbol != 0xff1b and symbol != 0xff0d and symbol != 0xff8d) return if (self.enabled) entry.key(symbol, modifiers) else true;
+        }
+        return self.handleKey(symbol, modifiers);
+    }
+    fn commit(ptr: ?*anyopaque, _: *wire.Surface, value: []const u8) void {
+        const self = cast(Dialog, ptr);
+        if (self.enabled and self.response == null) if (self.focusedEntry()) |entry| entry.insert(value) catch {};
+    }
+    fn preedit(ptr: ?*anyopaque, _: *wire.Surface, value: []const u8, _: i32) void {
+        const self = cast(Dialog, ptr);
+        if (self.enabled and self.response == null) if (self.focusedEntry()) |entry| entry.setPreedit(value);
+    }
+    fn surrounding(ptr: ?*anyopaque, _: *wire.Surface) ?@import("desktop-input.zig").TextState {
+        const self = cast(Dialog, ptr);
+        if (!self.enabled) return null;
+        const entry = self.focusedEntry() orelse return null;
+        const rect = entry.location;
+        return .{ .text = "", .cursor = 0, .anchor = 0, .private = true, .rect = .{ .x = rect.x, .y = rect.y - @as(i32, @intFromFloat(self.offset)), .width = rect.width, .height = rect.height } };
+    }
+    fn closed(ptr: ?*anyopaque) void {
+        cast(Dialog, ptr).respond(false);
+    }
+    fn closeRequested(ptr: ?*anyopaque) void {
+        cast(Dialog, ptr).respond(false);
     }
     pub fn handleKey(self: *Dialog, symbol: u32, modifiers: c.GdkModifierType) bool {
         self.view.keyboard_focus = true;
@@ -312,7 +311,7 @@ pub const Dialog = struct {
                 if (self.focusedEntry()) |entry| {
                     if (!self.enabled) return true;
                     if (!entry.key(symbol, modifiers)) {
-                        const codepoint = c.gdk_keyval_to_unicode(symbol);
+                        const codepoint = @import("desktop-keyboard.zig").unicode(symbol);
                         if (modifiers & (c.GDK_CONTROL_MASK | c.GDK_MOD1_MASK) != 0 or codepoint < 32 or codepoint == 127) return false;
                         var bytes: [4]u8 = @splat(0);
                         defer std.crypto.secureZero(u8, &bytes);
@@ -341,7 +340,18 @@ pub const Dialog = struct {
     pub fn respond(self: *Dialog, accepted: bool) void {
         if (accepted and !self.enabled) return;
         if (!accepted) self.clear();
-        c.gtk_dialog_response(cast(c.GtkDialog, self.window), if (accepted) c.GTK_RESPONSE_OK else c.GTK_RESPONSE_CANCEL);
+        if (self.response != null and accepted) return;
+        self.response = accepted;
+        if (self.response_idle != 0) return;
+        self.response_idle = c.g_idle_add(&deliverResponse, self);
+    }
+    fn deliverResponse(ptr: ?*anyopaque) callconv(.c) c.gboolean {
+        const self = cast(Dialog, ptr);
+        self.response_idle = 0;
+        self.accepted = self.response.? and !self.failed;
+        self.response = null;
+        if (self.responded) |callback| callback(self.response_context, self.accepted);
+        return 0;
     }
     pub fn clear(self: *Dialog) void {
         if (self.entry) |entry| entry.clear();
@@ -360,8 +370,25 @@ pub const Dialog = struct {
         defer _ = c.g_source_remove(term);
         const interrupt = c.g_unix_signal_add(c.SIGINT, &cancel, self);
         defer _ = c.g_source_remove(interrupt);
-        c.gtk_window_present(cast(c.GtkWindow, self.window));
-        self.accepted = c.gtk_dialog_run(cast(c.GtkDialog, self.window)) == c.GTK_RESPONSE_OK and !self.failed;
+        self.accepted = false;
+        self.window.show() catch {
+            self.failed = true;
+            return;
+        };
+        // Preserve asynchronous response hooks; synchronous callers use a local loop.
+        const previous_callback = self.responded;
+        const previous_context = self.response_context;
+        var done = false;
+        self.responded = &runCompleted;
+        self.response_context = &done;
+        defer {
+            self.responded = previous_callback;
+            self.response_context = previous_context;
+        }
+        while (!done) _ = c.g_main_context_iteration(null, 1);
+    }
+    fn runCompleted(ptr: ?*anyopaque, _: bool) void {
+        cast(bool, ptr).* = true;
     }
     pub fn writeAnswer(self: *Dialog, io: std.Io, output: std.Io.File) !u8 {
         defer self.clear();

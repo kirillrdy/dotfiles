@@ -17,25 +17,36 @@ fn checkPrompt(dialog: *secrets.Dialog) !void {
     try dialog.entry.?.insert("wrong-password");
     if (dialog.confirmation) |entry| try entry.insert("different-password");
     dialog.respond(true);
+    while (dialog.response_idle != 0) _ = c.g_main_context_iteration(null, 1);
     try cleared(dialog);
     try std.testing.expect(dialog.view.status_error);
     try std.testing.expectEqual(@import("desktop").askpass.native.Target.entry, dialog.view.focus);
     try dialog.entry.?.insert("integration-vault-password");
     if (dialog.confirmation) |entry| try entry.insert("integration-vault-password");
-    // A successful response destroys the dialog synchronously.
+    // The successful response is delivered after this callback returns.
     _ = dialog.handleKey(0xff0d, 0);
 }
 fn checkDialogs() !void {
     c.gtk_init(null, null);
     const dialog = try secrets.createImportDialog();
     defer dialog.destroy();
-    // Host decorations or themes may allocate more than the nominal width.
-    c.gtk_widget_set_size_request(dialog.canvas, 560, -1);
+    try dialog.entry.?.insert("private-surrounding-text");
+    dialog.focus(.entry);
+    const surface = dialog.window.surface.?;
+    const surrounding = surface.input.surrounding.?(surface.data, surface).?;
+    try std.testing.expect(surrounding.private);
+    try std.testing.expectEqualStrings("", surrounding.text);
+    try std.testing.expectEqual(@as(u32, 0), surrounding.cursor);
+    dialog.entry.?.echo = true;
+    try std.testing.expect(surface.input.surrounding.?(surface.data, surface).?.private);
+    dialog.entry.?.echo = false;
+    dialog.clear();
+    dialog.window.setSize(560, dialog.view.height);
     for (0..100) |_| {
         while (c.g_main_context_iteration(null, 0) != 0) {}
         c.g_usleep(1000);
     }
-    try std.testing.expectEqual(@as(u32, @intCast(c.gtk_widget_get_allocated_width(dialog.canvas))), dialog.view.width);
+    try std.testing.expectEqual(dialog.window.surface.?.width, dialog.view.width);
     try std.testing.expect(dialog.view.entryRect().width >= 512);
     try std.testing.expectEqualStrings("Import Saved Passwords", dialog.view.title);
     try std.testing.expectEqualStrings("Continue", dialog.view.accept_label.?);

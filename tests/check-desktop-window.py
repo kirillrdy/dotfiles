@@ -9,6 +9,10 @@ from wayland_ui import WaylandUI
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True)
 args = parser.parse_args()
+forms = subprocess.run([args.binary, "forms"], capture_output=True, text=True, timeout=10)
+assert forms.returncode == 0, forms.stdout + forms.stderr
+assert "PASS GTK-free production forms" in forms.stderr, forms.stderr
+print(forms.stderr.strip(), flush=True)
 ui = WaylandUI(dict(os.environ))
 title = "Native Wayland fixture"
 for close_with_escape in (True, False):

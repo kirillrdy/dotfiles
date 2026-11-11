@@ -1403,18 +1403,6 @@ pub extern fn gtk_dialog_run(dialog: [*c]GtkDialog) gint;
 pub extern fn gtk_dialog_get_content_area(dialog: [*c]GtkDialog) [*c]GtkWidget;
 pub extern fn gtk_dialog_get_action_area(dialog: [*c]GtkDialog) [*c]GtkWidget;
 
-pub const GtkIMContext = opaque {};
-pub extern fn gtk_im_multicontext_new() ?*GtkIMContext;
-pub extern fn gtk_im_context_simple_new() ?*GtkIMContext;
-pub extern fn gtk_im_context_set_client_window(context: *GtkIMContext, window: ?*GdkWindow) void;
-pub extern fn gtk_im_context_filter_keypress(context: *GtkIMContext, event: *GdkEventKey) gboolean;
-pub extern fn gtk_im_context_focus_in(context: *GtkIMContext) void;
-pub extern fn gtk_im_context_focus_out(context: *GtkIMContext) void;
-pub extern fn gtk_im_context_reset(context: *GtkIMContext) void;
-pub extern fn gtk_im_context_set_cursor_location(context: *GtkIMContext, area: *const GdkRectangle) void;
-pub extern fn gtk_im_context_get_preedit_string(context: *GtkIMContext, str: [*c][*c]u8, attrs: [*c]?*PangoAttrList, cursor: [*c]gint) void;
-pub extern fn gtk_im_context_set_surrounding(context: *GtkIMContext, text: [*c]const u8, len: gint, cursor: gint) void;
-pub extern fn gtk_im_context_get_surrounding(context: *GtkIMContext, text: [*c][*c]u8, cursor: [*c]gint) gboolean;
 pub const GtkClipboard = opaque {};
 pub const GtkClipboardTextReceivedFunc = ?*const fn (?*GtkClipboard, [*c]const u8, gpointer) callconv(.c) void;
 pub extern fn gtk_clipboard_get_default(display: ?*GdkDisplay) ?*GtkClipboard;

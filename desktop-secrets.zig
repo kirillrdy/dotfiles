@@ -133,7 +133,6 @@ const Server = struct {
     }
     fn remove(self: *Server, o: *Object) void {
         if (o.dialog) |dialog| {
-            _ = c.g_signal_handlers_disconnect_matched(dialog.window, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, o);
             dialog.destroy();
         }
         _ = c.g_dbus_connection_unregister_object(self.bus, o.registration);
@@ -362,8 +361,7 @@ const Server = struct {
         if (o.started) return error.InvalidArgs;
         if (self.screen_locked or self.sleeping) return error.IsLocked;
         o.started = true;
-        // The service can start during PAM login before Wayland exists. GTK is initialized only here.
-        if (c.gtk_init_check(null, null) == 0) return error.DisplayUnavailable;
+        // The service can start before Wayland; only prompts open a connection.
         const creating = self.vault.envelope == null;
         const dialog = try Dialog.createWithOptions(.password, if (creating) "Choose a password for your new password vault." else "Enter your password to unlock saved passwords.", .{
             .title = if (creating) "Create Password Vault" else "Unlock Passwords",
@@ -372,7 +370,8 @@ const Server = struct {
             .confirmation = creating,
         });
         o.dialog = dialog;
-        _ = c.g_signal_connect_data(dialog.window, "response", @ptrCast(&promptResponse), o, null, 0);
+        dialog.responded = &promptResponse;
+        dialog.response_context = o;
         if (self.options.prompt_ready) |ready| ready(dialog);
     }
     fn method(self: *Server, o: *Object, owner: [:0]const u8, verb: []const u8, args: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, a: std.mem.Allocator) !void {
@@ -690,10 +689,10 @@ fn setPropertyValue(o: *Object, prop: []const u8, value: ?*c.GVariant) !void {
     try self.vault.save();
 }
 const vtable = c.GDBusInterfaceVTable{ .method_call = &methodCall, .get_property = &getProperty, .set_property = &setProperty };
-fn promptResponse(_: *c.GtkDialog, response: c_int, data: ?*anyopaque) callconv(.c) void {
+fn promptResponse(data: ?*anyopaque, accepted: bool) void {
     const o = cast(Object, data);
     const self = o.server;
-    if (response != c.GTK_RESPONSE_OK or self.screen_locked or self.sleeping) {
+    if (!accepted or self.screen_locked or self.sleeping) {
         self.complete(o, true, stringVariant(""));
         return;
     }
@@ -946,7 +945,6 @@ pub fn importAt(directory: [:0]const u8, password: []const u8) !void {
 }
 pub fn runImport() !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
-    if (c.gtk_init_check(null, null) == 0) return error.DisplayUnavailable;
     const a = std.heap.page_allocator;
     const dialog = try createImportDialog();
     defer dialog.destroy();

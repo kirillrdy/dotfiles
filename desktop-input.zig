@@ -13,7 +13,7 @@ extern const wl_keyboard_interface: c.wl_interface;
 extern const wl_surface_interface: c.wl_interface;
 const protocols = @import("desktop-protocols.zig");
 
-pub const TextState = struct { text: [:0]const u8, cursor: u32, anchor: u32, rect: c.GdkRectangle };
+pub const TextState = struct { text: [:0]const u8, cursor: u32, anchor: u32, rect: c.GdkRectangle, private: bool = false };
 
 pub const Events = struct {
     leave: ?*const fn (?*anyopaque, *native.Surface) void = null,
@@ -42,6 +42,7 @@ fn listen(proxy: *Proxy, listener: anytype, data: *Seat) void {
 pub const Seat = struct {
     client: *native.Client,
     name: u32,
+    serial: u32 = 0,
     proxy: *Proxy,
     pointer: ?*Proxy = null,
     keyboard: ?*Proxy = null,
@@ -57,7 +58,13 @@ pub const Seat = struct {
     repeat_code: ?u32 = null,
     repeat_source: c.guint = 0,
     text_input: ?*TextInput = null,
+    clipboard: ?*@import("desktop-clipboard.zig").Device = null,
 
+    pub fn bindClipboard(self: *Seat) void {
+        if (self.clipboard != null) return;
+        const manager = self.client.clipboard_manager orelse return;
+        self.clipboard = @import("desktop-clipboard.zig").Device.create(self, manager) catch null;
+    }
     pub fn bindTextInput(self: *Seat) void {
         if (self.text_input != null) return;
         const manager = self.client.text_manager orelse return;
@@ -78,6 +85,7 @@ pub const Seat = struct {
         return self;
     }
     pub fn destroy(self: *Seat) void {
+        if (self.clipboard) |value| value.destroy();
         if (self.text_input) |value| value.destroy();
         self.leaveFocus();
         self.stopRepeat();
@@ -172,8 +180,9 @@ pub const Seat = struct {
         self.y = @as(f64, @floatFromInt(y)) / 256;
         if (self.pointer_focus) |surface| if (surface.input.motion) |callback| callback(surface.data, surface, self.x, self.y);
     }
-    fn button(data: ?*anyopaque, _: *Proxy, _: u32, _: u32, code: u32, state: u32) callconv(.c) void {
+    fn button(data: ?*anyopaque, _: *Proxy, serial: u32, _: u32, code: u32, state: u32) callconv(.c) void {
         const self = cast(Seat, data);
+        self.serial = serial;
         if (self.pointer_focus) |surface| if (surface.input.button) |callback| callback(surface.data, surface, code, state == 1, self.x, self.y);
     }
     fn axis(data: ?*anyopaque, _: *Proxy, _: u32, direction: u32, value: i32) callconv(.c) void {
@@ -217,8 +226,9 @@ pub const Seat = struct {
         self.keyboard_focus = null;
         if (surface.input.focus) |callback| callback(surface.data, surface, false);
     }
-    fn key(data: ?*anyopaque, _: *Proxy, _: u32, _: u32, code: u32, state: u32) callconv(.c) void {
+    fn key(data: ?*anyopaque, _: *Proxy, serial: u32, _: u32, code: u32, state: u32) callconv(.c) void {
         const self = cast(Seat, data);
+        self.serial = serial;
         if (state == 1) {
             self.stopRepeat();
             if (self.repeat_rate > 0 and self.xkb.repeats(code)) {
@@ -340,6 +350,7 @@ pub const TextInput = struct {
             if (self.state_blocked) return;
             var hash = std.hash.Wyhash.init(0);
             hash.update(value.text);
+            hash.update(std.mem.asBytes(&value.private));
             hash.update(std.mem.asBytes(&value.cursor));
             hash.update(std.mem.asBytes(&value.anchor));
             hash.update(std.mem.asBytes(&value.rect));
@@ -349,7 +360,7 @@ pub const TextInput = struct {
             if (enabling) self.request(1, .{});
             self.request(3, .{ value.text.ptr, value.cursor, value.anchor });
             self.request(4, .{@as(u32, 0)});
-            self.request(5, .{ @as(u32, 0), @as(u32, 0) });
+            self.request(5, .{ @as(u32, if (value.private) 0xc0 else 0), @as(u32, if (value.private) 8 else 0) });
             self.request(6, .{ value.rect.x, value.rect.y, value.rect.width, value.rect.height });
             self.request(7, .{});
             self.serial +%= 1;

@@ -122,22 +122,20 @@ fn networkLifetime(settle: bool) !void {
         while (!connected.finished and c.g_get_monotonic_time() < deadline) pump();
         try std.testing.expect(connected.finished and connected.succeeded);
         const ui = settings.Settings.create(.network);
-        objects.watch(ui.window);
         objects.watch(ui.audio_cancel);
         const connection_editor = editor.Editor.create(ui.window, client.state().profiles.items[0]);
-        objects.watch(connection_editor.window);
         objects.watch(connection_editor.cancel);
         // A close during profile saving must release the editor after the reply.
         connection_editor.save();
-        c.gtk_widget_destroy(connection_editor.window);
+        connection_editor.ui.close();
         const new_connection = editor.Editor.create(ui.window, null);
-        objects.watch(new_connection.window);
         const new_settings = try new_connection.values();
         c.g_variant_unref(new_settings);
-        c.gtk_widget_destroy(new_connection.window);
+        new_connection.ui.close();
         // Start a real asynchronous action, then cancel it during window teardown.
         ui.refresh();
-        c.gtk_widget_destroy(ui.window);
+        ui.ui.close();
+        while (!ui.closed) _ = c.g_main_context_iteration(null, 1);
         while (ui.network_operations != 0) pump();
         ui.destroy();
         client.perform(.{ .activate = client.state().profiles.items[0].path }, cancel, &NetworkCompletion.done, &activation);

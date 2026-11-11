@@ -11,6 +11,7 @@ pub const osd = @import("desktop-osd.zig");
 pub const polkit = @import("desktop-polkit.zig");
 const overview = @import("desktop-overview.zig");
 pub const settings = @import("desktop-settings.zig");
+pub const window = @import("desktop-window.zig");
 const collectors = @import("desktop-collectors.zig");
 pub const widgets = @import("desktop-widgets.zig");
 pub const idle = @import("desktop-idle.zig");

@@ -48,6 +48,8 @@ pub const Client = struct {
     shm: ?*c.wl_shm = null,
     shell: ?*Proxy = null,
     wm_base: ?*Proxy = null,
+    activation: ?*Proxy = null,
+    clipboard_manager: ?*Proxy = null,
     importer: ?*Proxy = null,
     output_manager: ?*Proxy = null,
     text_manager: ?*Proxy = null,
@@ -122,6 +124,8 @@ pub const Client = struct {
         if (self.cursor_manager) |proxy| destroyProxy(proxy, 0);
         if (self.shell) |proxy| c.wl_proxy_destroy(proxy);
         if (self.wm_base) |proxy| destroyProxy(proxy, 0);
+        if (self.activation) |proxy| destroyProxy(proxy, 0);
+        if (self.clipboard_manager) |proxy| destroyProxy(proxy, 2);
         if (self.importer) |proxy| destroyProxy(proxy, 0);
         if (self.shm) |shm| c.wl_shm_destroy(shm);
         if (self.compositor) |proxy| c.wl_proxy_destroy(proxy);
@@ -172,6 +176,11 @@ pub const Client = struct {
         } else if (std.mem.eql(u8, kind, "xdg_wm_base")) {
             self.wm_base = @ptrCast(c.wl_registry_bind(registry, name, &p.xdg_wm_base_interface, @min(version, 3)));
             listen(self.wm_base.?, &wm_listener, self);
+        } else if (self.input_enabled and std.mem.eql(u8, kind, "zwlr_data_control_manager_v1")) {
+            self.clipboard_manager = @ptrCast(c.wl_registry_bind(registry, name, &p.zwlr_data_control_manager_v1_interface, 1));
+            for (self.seats.items) |seat| seat.bindClipboard();
+        } else if (self.input_enabled and std.mem.eql(u8, kind, "xdg_activation_v1")) {
+            self.activation = @ptrCast(c.wl_registry_bind(registry, name, &p.xdg_activation_v1_interface, 1));
         } else if (std.mem.eql(u8, kind, "zxdg_importer_v2")) {
             self.importer = @ptrCast(c.wl_registry_bind(registry, name, &p.zxdg_importer_v2_interface, 1));
         } else if (std.mem.eql(u8, kind, "zxdg_output_manager_v1")) {
@@ -188,6 +197,7 @@ pub const Client = struct {
             self.seats.append(a, seat) catch @panic("out of memory");
             seat.bindTextInput();
             seat.bindCursorShape();
+            seat.bindClipboard();
         } else if (std.mem.eql(u8, kind, "wl_output")) {
             if (version < 2) return; // Buffer scale requires wl_output version 2.
             const output = a.create(Output) catch @panic("out of memory");
@@ -396,6 +406,8 @@ pub const Options = struct {
     cursor: enum { crosshair, arrow } = .crosshair,
     exclusive_zone: i32 = -1,
     maximized: bool = false,
+    min_width: i32 = 240,
+    min_height: i32 = 120,
     /// Disable only when the painter replaces every destination pixel.
     clear_buffer: bool = true,
 };
@@ -440,6 +452,7 @@ pub const Surface = struct {
     role: ?*Proxy = null,
     xdg_surface: ?*Proxy = null,
     imported_parent: ?*Proxy = null,
+    activation_token: ?*Proxy = null,
     close: ?*const fn (?*anyopaque) void = null,
     /// Opt into compositor-paced commits. Return true to animate another frame;
     /// queued redraws are coalesced until the compositor is ready for them.
@@ -454,6 +467,7 @@ pub const Surface = struct {
     height: u32 = 0,
     configured: bool = false,
     pending: bool = false,
+    rendering: bool = false,
     buffers: [2]?*Buffer = .{ null, null },
 
     pub fn createPixels(output: *Output, options: Options, paint: PixelPaint, data: ?*anyopaque) !*Surface {
@@ -494,7 +508,7 @@ pub const Surface = struct {
                 listen(self.imported_parent.?, &parent_listener, self);
                 send(self.imported_parent.?, 1, .{self.proxy.?});
             };
-            send(self.role.?, 8, .{ @as(i32, 240), @as(i32, 120) });
+            send(self.role.?, 8, .{ self.options.min_width, self.options.min_height });
             self.pending_width = @max(1, self.options.width);
             self.pending_height = @max(1, self.options.height);
             send(self.proxy.?, 6, .{});
@@ -513,7 +527,34 @@ pub const Surface = struct {
         send(self.proxy.?, 6, .{});
         self.client.flush();
     }
+    pub fn present(self: *Surface) void {
+        if (self.proxy == null or self.activation_token != null) return;
+        const manager = self.client.activation orelse return;
+        const token = c.wl_proxy_marshal_flags(manager, 1, &p.xdg_activation_token_v1_interface, 1, 0, @as(?*anyopaque, null)) orelse return;
+        self.activation_token = token;
+        listen(token, &activation_listener, self);
+        send(token, 1, .{self.options.namespace.ptr});
+        for (self.client.seats.items) |seat| {
+            const origin = seat.keyboard_focus orelse seat.pointer_focus orelse continue;
+            if (seat.serial == 0 or origin.proxy == null) continue;
+            send(token, 0, .{ seat.serial, seat.proxy });
+            send(token, 2, .{origin.proxy.?});
+            break;
+        }
+        send(token, 3, .{});
+        self.client.flush();
+    }
+    fn activated(ptr: ?*anyopaque, token: *Proxy, value: [*c]const u8) callconv(.c) void {
+        const self = cast(Surface, ptr);
+        if (self.proxy) |proxy| if (self.client.activation) |manager| send(manager, 2, .{ value, proxy });
+        destroyProxy(token, 4);
+        self.activation_token = null;
+        self.client.flush();
+    }
+    const activation_listener = extern struct { done: *const @TypeOf(activated) = &activated }{};
     pub fn hide(self: *Surface) void {
+        if (self.activation_token) |token| destroyProxy(token, 4);
+        self.activation_token = null;
         if (self.frame_callback) |callback| c.wl_proxy_destroy(callback);
         self.frame_callback = null;
         for (self.client.seats.items) |seat| seat.forget(self);
@@ -570,7 +611,9 @@ pub const Surface = struct {
         self.render() catch |err| std.log.err("native surface render: {s}", .{@errorName(err)});
     }
     fn render(self: *Surface) !void {
-        if (!self.pending or !self.configured or self.client.failed or self.frame_callback != null) return;
+        if (!self.pending or !self.configured or self.client.failed or self.frame_callback != null or self.rendering) return;
+        self.rendering = true;
+        defer self.rendering = false;
         const scale = if (self.render_scale) |choose| choose(self.data, self) else self.output.scale;
         if (scale < 1 or scale > 8) return error.InvalidBufferScale;
         const width = std.math.mul(u32, self.width, scale) catch return error.SurfaceTooLarge;

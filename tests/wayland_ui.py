@@ -1,4 +1,4 @@
-"""Drive real GTK dialogs through a private wlroots compositor."""
+"""Drive desktop dialogs through a private wlroots compositor."""
 import array
 import os
 import socket

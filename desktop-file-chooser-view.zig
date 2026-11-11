@@ -93,7 +93,7 @@ pub const View = struct {
     }
     pub fn layout(self: *View, ui: *form.Form) void {
         self.width = @floatFromInt(ui.width);
-        self.height = @floatFromInt(@max(348, c.gtk_widget_get_allocated_height(ui.canvas)));
+        self.height = @floatFromInt(@max(348, ui.viewport_height));
         self.sidebar = std.math.clamp(@floor(self.width * 0.2), 180, 240);
         self.columns = if (self.grid) @max(1, @as(usize, @intFromFloat(@floor((self.width - self.sidebar - 32) / cell_width)))) else 1;
         self.offset = std.math.clamp(self.offset, 0, self.maxOffset());
@@ -135,9 +135,6 @@ pub const View = struct {
             const top = bottom - @as(f64, @floatFromInt(self.extras.len * 44)) - 16;
             for (self.extras, 0..) |id, i| place(ui, id, .{ .x = self.width - 344, .y = top + @as(f64, @floatFromInt(i * 44)), .width = 320, .height = 40 });
         }
-        c.gtk_widget_set_no_show_all(ui.footer, 1);
-        c.gtk_widget_hide(ui.footer);
-        c.gtk_widget_set_size_request(ui.canvas, 580, 348);
     }
 
     fn fill(canvas: raster.Canvas, rect: Rect, rgb: u32, radius: f64) void {

@@ -7,18 +7,18 @@ const cast = c.__zig.cast;
 const Reply = struct {
     count: usize = 0,
     id: c_int = 0,
-    fn response(_: ?*c.GtkDialog, id: c_int, data: c.gpointer) callconv(.c) void {
+    fn response(data: ?*anyopaque, accepted: bool) void {
         const self = cast(Reply, data);
         self.count += 1;
-        self.id = id;
+        self.id = if (accepted) c.GTK_RESPONSE_OK else c.GTK_RESPONSE_CANCEL;
     }
 };
 fn checkDialog() !void {
     var dialog = try polkit.Dialog.create("org.dotfiles.test<&>", "Authentication is required: 東京", "test<&>", null);
     defer dialog.destroy();
     var reply: Reply = .{};
-    _ = c.g_signal_connect_data(dialog.window, "response", @ptrCast(&Reply.response), &reply, null, 0);
-    defer _ = c.g_signal_handlers_disconnect_matched(dialog.window, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, &reply);
+    dialog.native.responded = &Reply.response;
+    dialog.native.response_context = &reply;
     try std.testing.expect(std.mem.indexOf(u8, dialog.native.prompt, "Action: org.dotfiles.test<&>") != null);
     try std.testing.expect(std.mem.indexOf(u8, dialog.native.prompt, "Password: (test<&>)") != null);
     try std.testing.expectEqualStrings("Authentication Required", dialog.native.view.title);
@@ -45,12 +45,14 @@ fn checkDialog() !void {
     for (dialog.native.entry.?.buffer.bytes) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
     try dialog.native.entry.?.insert("123456");
     try std.testing.expect(dialog.native.handleKey(0xff0d, 0));
+    while (reply.count < 1) _ = c.g_main_context_iteration(null, 1);
     try std.testing.expectEqual(c.GTK_RESPONSE_OK, reply.id);
     dialog.clear();
     dialog.setEnabled(false);
     try std.testing.expect(dialog.native.handleKey('x', 0));
     try std.testing.expectEqualStrings("", dialog.answer());
     try std.testing.expect(dialog.native.handleKey(0xff1b, 0));
+    while (reply.count < 2) _ = c.g_main_context_iteration(null, 1);
     try std.testing.expectEqual(c.GTK_RESPONSE_CANCEL, reply.id);
     try std.testing.expectEqual(@as(usize, 2), reply.count);
 }

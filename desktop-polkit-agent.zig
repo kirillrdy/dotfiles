@@ -272,7 +272,8 @@ const Auth = struct {
             self.complete(false, false, "Could not create authentication dialog");
             return;
         };
-        _ = c.g_signal_connect_data(self.dialog.?.window, "response", @ptrCast(&response), self, null, 0);
+        self.dialog.?.native.responded = &response;
+        self.dialog.?.native.response_context = self;
         self.restart();
     }
     fn closeTransport(self: *Auth) void {
@@ -428,9 +429,9 @@ const Auth = struct {
         }
         return true;
     }
-    fn response(_: ?*c.GtkDialog, id: c_int, data: ?*anyopaque) callconv(.c) void {
+    fn response(data: ?*anyopaque, accepted: bool) void {
         const self = cast(Auth, data);
-        if (id != c.GTK_RESPONSE_OK) {
+        if (!accepted) {
             self.complete(false, true, "Authentication cancelled");
             return;
         }
@@ -465,7 +466,6 @@ const Auth = struct {
     fn destroy(self: *Auth) void {
         self.closeTransport();
         if (self.dialog) |*dialog| {
-            _ = c.g_signal_handlers_disconnect_matched(dialog.window, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
             dialog.destroy();
         }
         c.g_object_unref(self.invocation);

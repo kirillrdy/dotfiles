@@ -141,7 +141,7 @@ pub fn parseAddresses(input: []const u8, ipv6: bool) !*c.GVariant {
     return g.g_variant_ref_sink(g.g_variant_builder_end(out)).?;
 }
 pub const Editor = struct {
-    window: *c.GtkWidget,
+    window: *native.host.Window,
     ui: *native.Form,
     message: *native.Item,
     save_button: *native.Item,
@@ -158,10 +158,10 @@ pub const Editor = struct {
     property_type: *native.Item,
     view: presentation.View = .{},
     presented_fields: std.ArrayList(presentation.Field) = .empty,
-    pub fn create(parent: *c.GtkWidget, profile: ?network.Profile) *Editor {
+    pub fn create(parent: *native.host.Window, profile: ?network.Profile) *Editor {
         return createWithBase(parent, profile, null);
     }
-    pub fn createWireless(parent: *c.GtkWidget, ap: network.AccessPoint) *Editor {
+    pub fn createWireless(parent: *native.host.Window, ap: network.AccessPoint) *Editor {
         const base = template(ap);
         defer c.g_variant_unref(base);
         const self = createWithBase(parent, null, base);
@@ -169,16 +169,15 @@ pub const Editor = struct {
         if (ap.security == .enterprise) self.view.page = .security;
         a.free(self.ui.title);
         self.ui.title = z(ap.title);
-        c.gtk_window_set_title(cast(c.GtkWindow, self.window), ap.title);
+        self.window.setTitle(self.ui.title);
         self.ui.relayout();
         return self;
     }
-    fn createWithBase(parent: *c.GtkWidget, profile: ?network.Profile, initial: ?*c.GVariant) *Editor {
+    fn createWithBase(parent: *native.host.Window, profile: ?network.Profile, initial: ?*c.GVariant) *Editor {
         const self = a.create(Editor) catch @panic("out of memory");
         const ui = native.Form.create(if (profile) |p| p.title else "New Connection", self, &action, &fieldChanged) catch @panic("out of memory");
         const window = ui.window;
-        c.gtk_window_set_transient_for(cast(c.GtkWindow, window), cast(c.GtkWindow, parent));
-        c.g_object_set(window, "destroy-with-parent", @as(c_int, 1), @as(?*anyopaque, null));
+        window.parent = parent;
         self.* = .{ .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = c.g_cancellable_new().?, .path = if (profile) |p| z(p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(&changed, self) catch @panic("out of memory"), .property_group = undefined, .property_key = undefined, .property_type = undefined };
         const base = if (initial) |value| g.g_variant_ref(value).? else if (profile) |p| g.g_variant_ref(p.base).? else template(null);
         defer c.g_variant_unref(base);
@@ -256,16 +255,14 @@ pub const Editor = struct {
             break;
         };
         self.rebuildPresentation();
-        c.gtk_window_set_default_size(cast(c.GtkWindow, window), 720, 640);
-        c.gtk_window_set_decorated(cast(c.GtkWindow, window), 0);
-        c.gtk_window_set_modal(cast(c.GtkWindow, window), 1);
-        c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, ui.scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_NEVER);
-        c.gtk_widget_add_events(ui.canvas, c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
+        window.setSize(720, 640);
+        ui.window.surface.?.options.min_width = 680;
+        ui.window.surface.?.options.min_height = 400;
         ui.layout = &layout;
         ui.painter = &paint;
         ui.scrolled = &scroll;
         ui.reveal = &reveal;
-        _ = c.g_signal_connect_data(window, "destroy", @ptrCast(&destroyed), self, null, 0);
+        ui.close_callback = &destroyed;
         ui.show();
         return self;
     }
@@ -456,7 +453,7 @@ pub const Editor = struct {
             return;
         }
         const title = self.ui.get(id).title;
-        if (eq(title, "Save")) self.save() else if (eq(title, "Cancel")) c.gtk_widget_destroy(self.window) else if (eq(title, "Add property")) self.addProperty();
+        if (eq(title, "Save")) self.save() else if (eq(title, "Cancel")) self.ui.close() else if (eq(title, "Add property")) self.addProperty();
     }
     pub fn setValue(self: *Editor, group: []const u8, key: []const u8, value: [:0]const u8) !void {
         const field = self.row(group, key) orelse return error.UnknownProperty;
@@ -551,14 +548,14 @@ pub const Editor = struct {
         self.saving = false;
         if (self.closed) return;
         if (result == .success) {
-            c.gtk_widget_destroy(self.window);
+            self.ui.close();
             return;
         }
         self.setMessage(result.failure);
         self.ui.setEnabled(true);
     }
     fn changed(_: ?*anyopaque, _: *network.Client) void {}
-    fn destroyed(_: *c.GtkWidget, ptr: c.gpointer) callconv(.c) void {
+    fn destroyed(ptr: ?*anyopaque) void {
         const self = cast(Editor, ptr);
         self.closed = true;
         c.g_cancellable_cancel(self.cancel);

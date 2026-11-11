@@ -1,9 +1,11 @@
-//! Raster form controls with GTK hosting and the shared native input method entry.
+//! Raster form controls hosted directly in native Wayland windows.
 const std = @import("std");
 pub const c = @import("desktop-gtk.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const input = @import("desktop-password-entry.zig");
+pub const host = @import("desktop-window.zig");
+const wire = host.wire;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 pub const Rect = @import("desktop-askpass-view.zig").Rect;
@@ -54,11 +56,22 @@ pub const Item = struct {
         return if (self.selected) |index| self.options.items[index].id else null;
     }
 };
+
 pub const Form = struct {
-    window: *c.GtkWidget,
-    canvas: *c.GtkWidget,
-    scroll: *c.GtkWidget,
-    footer: *c.GtkWidget,
+    window: *host.Window,
+    viewport_height: u32 = 700,
+    offset: f64 = 0,
+    image: []u32 = &.{},
+    footer_image: []u32 = &.{},
+    close_callback: ?*const fn (?*anyopaque) void = null,
+    actions: std.ArrayList(usize) = .empty,
+    dispatching: bool = false,
+    action_idle: c.guint = 0,
+    last_click: i64 = 0,
+    last_item: ?usize = null,
+    last_x: f64 = 0,
+    last_y: f64 = 0,
+    keyboard_focused: bool = true,
     title: [:0]u8,
     items: std.ArrayList(*Item) = .empty,
     context: ?*anyopaque,
@@ -90,50 +103,20 @@ pub const Form = struct {
         errdefer a.destroy(self);
         const owned_title = try a.dupeSentinel(u8, title, 0);
         errdefer a.free(owned_title);
-        const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL).?;
-        errdefer c.gtk_widget_destroy(window);
-        c.gtk_window_set_title(cast(c.GtkWindow, window), title);
-        c.gtk_window_set_default_size(cast(c.GtkWindow, window), 620, 700);
-        const scroll = c.gtk_scrolled_window_new(null, null).?;
-        c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_AUTOMATIC);
-        const canvas = c.gtk_drawing_area_new().?;
-        c.gtk_widget_set_can_focus(canvas, 1);
-        c.gtk_widget_add_events(canvas, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_KEY_PRESS_MASK | c.GDK_KEY_RELEASE_MASK | c.GDK_FOCUS_CHANGE_MASK);
-        c.gtk_container_add(cast(c.GtkContainer, scroll), canvas);
-        const footer = c.gtk_drawing_area_new().?;
-        c.gtk_widget_add_events(footer, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK);
-        c.gtk_widget_set_no_show_all(footer, 1);
-        const host = c.gtk_box_new(c.GTK_ORIENTATION_VERTICAL, 0).?;
-        c.gtk_box_pack_start(cast(c.GtkBox, host), scroll, 1, 1, 0);
-        c.gtk_box_pack_start(cast(c.GtkBox, host), footer, 0, 0, 0);
-        c.gtk_container_add(cast(c.GtkContainer, window), host);
-        _ = c.g_object_ref(window);
-        _ = c.g_object_ref(canvas);
-        _ = c.g_object_ref(footer);
-        self.* = .{ .window = window, .canvas = canvas, .scroll = scroll, .footer = footer, .title = owned_title, .context = context, .action = action, .changed = changed };
-        self.connect(canvas, "draw", &draw);
-        self.connect(canvas, "button-press-event", &press);
-        self.connect(canvas, "button-release-event", &release);
-        self.connect(canvas, "motion-notify-event", &motion);
-        self.connect(canvas, "scroll-event", &scrollEvent);
-        self.connect(canvas, "key-press-event", &key);
-        self.connect(canvas, "key-release-event", &keyRelease);
-        self.connect(canvas, "focus-in-event", &focusIn);
-        self.connect(canvas, "focus-out-event", &focusOut);
-        self.connect(footer, "draw", &draw);
-        self.connect(footer, "button-press-event", &press);
-        self.connect(footer, "button-release-event", &release);
-        self.connect(footer, "motion-notify-event", &motion);
-        self.connect(window, "destroy", &destroyed);
+        const window = try host.Window.create(owned_title, "desktop-form", 620, 700, &draw, self);
+        self.* = .{ .window = window, .title = owned_title, .context = context, .action = action, .changed = changed };
+        window.context = self;
+        window.closed = &destroyed;
+        window.surface.?.options.min_width = 480;
+        window.surface.?.options.min_height = 200;
+        window.surface.?.close = &closeRequested;
+        window.surface.?.input = .{ .button = &button, .motion = &motion, .leave = &leave, .scroll = &scrollEvent, .symbol = &key, .text = &commit, .commit = &commit, .preedit = &preedit, .surrounding = &surrounding, .delete = &deleteSurrounding, .focus = &focusChanged };
         return self;
     }
-    fn connect(self: *Form, widget: anytype, signal: [*:0]const u8, callback: anytype) void {
-        _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), self, null, 0);
-    }
     pub fn deinit(self: *Form) void {
-        _ = c.g_signal_handlers_disconnect_matched(self.footer, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-        _ = c.g_signal_handlers_disconnect_matched(self.canvas, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-        _ = c.g_signal_handlers_disconnect_matched(self.window, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
+        self.closed = true;
+        if (self.action_idle != 0) _ = c.g_source_remove(self.action_idle);
+        self.actions.deinit(a);
         for (self.items.items) |item| {
             if (item.entry) |entry| entry.destroy();
             item.clearOptions();
@@ -146,10 +129,9 @@ pub const Form = struct {
         self.items.deinit(a);
         if (self.title_mask) |mask| mask.deinit(a);
         self.renderer.deinit();
-        c.gtk_widget_destroy(self.window);
-        c.g_object_unref(self.canvas);
-        c.g_object_unref(self.footer);
-        c.g_object_unref(self.window);
+        self.window.destroy();
+        a.free(self.image);
+        a.free(self.footer_image);
         a.free(self.title);
         a.destroy(self);
     }
@@ -163,7 +145,8 @@ pub const Form = struct {
         errdefer a.free(owned_hint);
         item.* = .{ .owner = self, .id = self.items.items.len, .kind = kind, .title = owned_title, .hint = owned_hint };
         if (kind == .entry) {
-            item.entry = try input.Entry.create(self.canvas, &entryChanged, item);
+            item.entry = try input.Entry.create(&entryChanged, item);
+            item.entry.?.client = self.window.surface.?.client;
             if (!secret) item.entry.?.makePublic();
         }
         self.items.appendAssumeCapacity(item);
@@ -174,8 +157,6 @@ pub const Form = struct {
         std.debug.assert(kind == .button or kind == .label);
         const id = try self.add(kind, title, "", false);
         self.get(id).pinned = true;
-        c.gtk_widget_set_no_show_all(self.footer, 0);
-        c.gtk_widget_show(self.footer);
         self.relayout();
         return id;
     }
@@ -190,6 +171,10 @@ pub const Form = struct {
     /// Remove a dynamic suffix without replacing the window or fixed controls.
     pub fn truncate(self: *Form, count: usize) void {
         std.debug.assert(count <= self.items.items.len);
+        // IDs in the dynamic suffix may be reused by the next listing.
+        self.actions.clearRetainingCapacity();
+        if (self.action_idle != 0) _ = c.g_source_remove(self.action_idle);
+        self.action_idle = 0;
         if (self.focus) |id| if (id >= count) {
             self.focus = null;
         };
@@ -335,31 +320,46 @@ pub const Form = struct {
         }
         self.height = @intFromFloat(y + 24);
         self.footer_height = if (pinned_buttons == 0) 56 else 112;
-        if (!self.closed) c.gtk_widget_set_size_request(self.footer, 480, @intCast(self.footer_height));
-        if (!self.closed) c.gtk_widget_set_size_request(self.canvas, 480, @intCast(self.height));
         self.redraw();
     }
     pub fn redraw(self: *Form) void {
-        if (!self.closed) {
-            c.gtk_widget_queue_draw(self.canvas);
-            c.gtk_widget_queue_draw(self.footer);
-        }
+        if (!self.closed) self.window.redraw();
+        self.syncInput();
     }
     pub fn show(self: *Form) void {
         self.relayout();
-        c.gtk_widget_show_all(self.window);
-        c.gtk_widget_grab_focus(self.canvas);
+        self.window.show() catch self.window.close();
+    }
+    pub fn close(self: *Form) void {
+        self.window.close();
+    }
+    fn bodyHeight(self: *const Form) u32 {
+        var pinned = false;
+        for (self.items.items) |item| if (item.pinned and item.visible) {
+            pinned = true;
+            break;
+        };
+        return self.viewport_height -| (if (pinned) @min(self.footer_height, self.viewport_height) else @as(u32, 0));
+    }
+    fn clampOffset(self: *Form) void {
+        self.offset = if (self.layout != null) 0 else std.math.clamp(self.offset, 0, @as(f64, @floatFromInt(self.height -| self.bodyHeight())));
+    }
+    fn revealBounds(self: *Form, top: f64, bottom: f64) void {
+        if (self.layout != null) return;
+        if (top < self.offset) self.offset = top;
+        if (bottom > self.offset + @as(f64, @floatFromInt(self.bodyHeight()))) self.offset = bottom - @as(f64, @floatFromInt(self.bodyHeight()));
+        self.clampOffset();
     }
     pub fn focusItem(self: *Form, id: usize) void {
         self.focus = id;
         self.updateFocus();
         const bounds = self.get(id).bounds;
-        if (self.layout == null and !self.get(id).pinned) c.gtk_adjustment_clamp_page(c.gtk_scrolled_window_get_vadjustment(cast(c.GtkScrolledWindow, self.scroll)), bounds.y, bounds.y + bounds.height);
+        if (!self.get(id).pinned) self.revealBounds(bounds.y, bounds.y + bounds.height);
         if (self.reveal) |reveal| reveal(self.context, id);
         self.redraw();
     }
     fn updateFocus(self: *Form) void {
-        for (self.items.items) |field| if (field.entry) |entry| entry.focus(!self.closed and self.active(field.id) and self.focus == field.id);
+        for (self.items.items) |field| if (field.entry) |entry| entry.focus(!self.closed and self.keyboard_focused and self.active(field.id) and self.focus == field.id);
     }
     fn optionHit(self: *const Form, x: f64, y: f64) ?usize {
         const id = self.expanded orelse return null;
@@ -387,10 +387,18 @@ pub const Form = struct {
         return field.bounds.y + field.bounds.height + 8;
     }
     pub fn activate(self: *Form, id: usize) void {
-        if (self.closed or !self.active(id)) return;
+        if (self.closed or self.window.closing or !self.active(id)) return;
         const field = self.get(id);
         switch (field.kind) {
-            .button => self.action(self.context, id),
+            .button => {
+                if (self.dispatching) {
+                    self.actions.append(a, id) catch {
+                        self.close();
+                        return;
+                    };
+                    if (self.action_idle == 0) self.action_idle = c.g_idle_add(&deliverAction, self);
+                } else self.action(self.context, id);
+            },
             .toggle => {
                 field.checked = !field.checked;
                 self.changed(self.context, id);
@@ -416,12 +424,12 @@ pub const Form = struct {
     }
     pub fn handleKey(self: *Form, symbol: u32, modifiers: c.GdkModifierType) bool {
         self.input_modifiers = modifiers;
-        if (self.closed) return false;
+        if (self.closed or self.window.closing) return false;
         if (symbol == 0xff1b) {
             if (self.expanded != null) {
                 self.expanded = null;
                 self.relayout();
-            } else c.gtk_widget_destroy(self.window);
+            } else self.close();
             return true;
         }
         if (symbol == 0xff09 or symbol == 0xfe20) {
@@ -461,14 +469,14 @@ pub const Form = struct {
                 const n = field.options.items.len;
                 self.option_cursor = if (symbol == 0xff52) (self.option_cursor + n - 1) % n else (self.option_cursor + 1) % n;
                 const top = self.optionTop(field) + @as(f64, @floatFromInt(self.option_cursor * 36));
-                if (self.layout == null) c.gtk_adjustment_clamp_page(c.gtk_scrolled_window_get_vadjustment(cast(c.GtkScrolledWindow, self.scroll)), top, top + 36);
+                self.revealBounds(top, top + 36);
                 self.redraw();
             } else self.activate(id);
             return true;
         }
         if (field.entry) |entry| {
             if (entry.key(symbol, modifiers)) return true;
-            const codepoint = c.gdk_keyval_to_unicode(symbol);
+            const codepoint = @import("desktop-keyboard.zig").unicode(symbol);
             if (modifiers & (c.GDK_CONTROL_MASK | c.GDK_MOD1_MASK) != 0 or codepoint < 32 or codepoint == 127) return false;
             var bytes: [4]u8 = @splat(0);
             defer std.crypto.secureZero(u8, &bytes);
@@ -482,132 +490,201 @@ pub const Form = struct {
         }
         return false;
     }
-    fn destroyed(_: *c.GtkWidget, ptr: c.gpointer) callconv(.c) void {
+    fn destroyed(ptr: ?*anyopaque) void {
         const self = cast(Form, ptr);
         self.closed = true;
         self.updateFocus();
+        if (self.close_callback) |callback| callback(self.context);
     }
-    fn key(_: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Form, ptr);
-        var symbol: c.guint = 0;
-        var modifiers: c.GdkModifierType = 0;
-        _ = c.gdk_event_get_keyval(event, &symbol);
-        _ = c.gdk_event_get_state(event, &modifiers);
-        if (self.shortcut) |callback| if (callback(self.context, symbol, modifiers)) return 1;
-        if (self.focus) |id| if (self.active(id)) if (self.get(id).entry) |entry| if (entry.filter(event)) return 1;
-        return @intFromBool(self.handleKey(symbol, modifiers));
+    fn closeRequested(ptr: ?*anyopaque) void {
+        cast(Form, ptr).close();
     }
-    fn keyRelease(_: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
+    fn focusedEntry(self: *Form) ?*input.Entry {
+        const id = self.focus orelse return null;
+        return if (!self.closed and !self.window.closing and self.active(id)) self.get(id).entry else null;
+    }
+    fn syncInput(self: *Form) void {
+        const surface = self.window.surface orelse return;
+        for (surface.client.seats.items) |seat| if (seat.text_input) |im| if (im.surface == surface) im.update();
+    }
+    fn key(ptr: ?*anyopaque, _: *wire.Surface, symbol: u32, modifiers: u32, pressed: bool) bool {
         const self = cast(Form, ptr);
-        if (self.focus) |id| if (self.active(id)) if (self.get(id).entry) |entry| return @intFromBool(entry.filter(event));
+        self.input_modifiers = modifiers;
+        if (!pressed or self.closed or self.window.blocked()) return true;
+        self.dispatching = true;
+        defer self.dispatching = false;
+        if (self.shortcut) |callback| if (callback(self.context, symbol, modifiers)) return true;
+        if (self.focusedEntry()) |entry| {
+            if (symbol != 0xff09 and symbol != 0xfe20 and symbol != 0xff1b) return entry.key(symbol, modifiers);
+        }
+        return self.handleKey(symbol, modifiers);
+    }
+    fn deliverAction(ptr: ?*anyopaque) callconv(.c) c.gboolean {
+        const self = cast(Form, ptr);
+        self.action_idle = 0;
+        const id = self.actions.orderedRemove(0);
+        if (self.actions.items.len != 0) self.action_idle = c.g_idle_add(&deliverAction, self);
+        if (!self.closed and id < self.items.items.len) self.activate(id);
         return 0;
     }
-    fn focusIn(_: *c.GtkWidget, _: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
-        cast(Form, ptr).updateFocus();
-        return 0;
-    }
-    fn focusOut(_: *c.GtkWidget, _: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
+    fn commit(ptr: ?*anyopaque, _: *wire.Surface, value: []const u8) void {
         const self = cast(Form, ptr);
+        if (!self.window.blocked()) if (self.focusedEntry()) |entry| entry.insert(value) catch {};
+    }
+    fn preedit(ptr: ?*anyopaque, _: *wire.Surface, value: []const u8, _: i32) void {
+        const self = cast(Form, ptr);
+        if (self.focusedEntry()) |entry| entry.setPreedit(value);
+    }
+    fn surrounding(ptr: ?*anyopaque, _: *wire.Surface) ?@import("desktop-input.zig").TextState {
+        const self = cast(Form, ptr);
+        if (self.window.blocked()) return null;
+        const entry = self.focusedEntry() orelse return null;
+        const rect = entry.location;
+        return .{ .text = if (entry.public_text) entry.buffer.valueZ() else "", .cursor = if (entry.public_text) @intCast(entry.buffer.cursor) else 0, .anchor = if (entry.public_text) @intCast(entry.buffer.anchor) else 0, .rect = .{ .x = rect.x, .y = rect.y - @as(i32, @intFromFloat(self.offset)), .width = rect.width, .height = rect.height }, .private = !entry.public_text };
+    }
+    fn deleteSurrounding(ptr: ?*anyopaque, _: *wire.Surface, before: u32, after: u32) void {
+        const self = cast(Form, ptr);
+        if (self.focusedEntry()) |entry| entry.deleteSurrounding(before, after);
+    }
+    fn focusChanged(ptr: ?*anyopaque, _: *wire.Surface, focused: bool) void {
+        const self = cast(Form, ptr);
+        self.keyboard_focused = focused;
         self.pressed = null;
-        for (self.items.items) |field| if (field.entry) |entry| entry.focus(false);
-        return 0;
+        self.updateFocus();
     }
-    fn press(widget: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
-        if (event.button != 1) return 0;
-        const self = cast(Form, ptr);
-        self.input_modifiers = event.state;
-        if (widget != self.footer) if (self.optionHit(event.x, event.y)) |index| {
-            self.option_cursor = index;
-            self.pressed = self.expanded;
-            return 1;
-        };
-        const id = self.hitSurface(event.x, event.y, widget == self.footer) orelse {
-            self.expanded = null;
-            self.relayout();
-            return 0;
-        };
-        if (event.type == 5) if (self.double_clicked) |callback| {
-            self.pressed = null;
-            callback(self.context, id);
-            return 1;
-        };
-        if (self.expanded != null and self.expanded != id) {
-            self.expanded = null;
-            self.relayout();
-        }
-        self.pressed = id;
-        self.focusItem(id);
-        c.gtk_widget_grab_focus(self.canvas);
-        if (self.get(id).entry) |entry| {
-            entry.dragging = true;
-            entry.point(event.x, event.state & c.GDK_SHIFT_MASK != 0);
-        }
-        return 1;
+    fn coordinates(self: *Form, y: f64) struct { y: f64, footer: bool } {
+        const body: f64 = @floatFromInt(self.bodyHeight());
+        return if (y >= body) .{ .y = y - body, .footer = true } else .{ .y = y + self.offset, .footer = false };
     }
-    fn release(widget: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
-        if (event.button != 1) return 0;
-        const self = cast(Form, ptr);
-        const id = self.pressed orelse return 0;
-        self.pressed = null;
-        if (self.get(id).entry) |entry| {
-            entry.dragging = false;
-            return 1;
-        }
-        if (self.expanded == id) if (self.optionHit(event.x, event.y)) |index| {
-            if (index == self.option_cursor) {
-                _ = self.select(id, self.get(id).options.items[index].id);
+    pub fn pointerButton(self: *Form, pressed: bool, x: f64, screen_y: f64) void {
+        if (self.closed or self.window.closing or self.window.blocked()) return;
+        const pos = self.coordinates(screen_y);
+        const y = pos.y;
+        if (pressed) {
+            if (!pos.footer) if (self.optionHit(x, y)) |index| {
+                self.option_cursor = index;
+                self.pressed = self.expanded;
+                return;
+            };
+            const id = self.hitSurface(x, y, pos.footer) orelse {
                 self.expanded = null;
                 self.relayout();
-                self.changed(self.context, id);
+                return;
+            };
+            const now = c.g_get_monotonic_time();
+            const double = self.last_item == id and now - self.last_click < 400_000 and @abs(x - self.last_x) < 5 and @abs(screen_y - self.last_y) < 5;
+            self.last_item = id;
+            self.last_click = now;
+            self.last_x = x;
+            self.last_y = screen_y;
+            if (double) if (self.double_clicked) |callback| {
+                self.last_item = null;
+                self.pressed = null;
+                callback(self.context, id);
+                return;
+            };
+            if (self.expanded != null and self.expanded != id) {
+                self.expanded = null;
+                self.relayout();
             }
-            return 1;
-        };
-        if (self.hitSurface(event.x, event.y, widget == self.footer) == id) self.activate(id);
-        return 1;
-    }
-    fn motion(widget: *c.GtkWidget, event: *c.GdkEventMotion, ptr: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Form, ptr);
-        self.hover = self.hitSurface(event.x, event.y, widget == self.footer);
-        if (self.focus) |id| if (self.get(id).entry) |entry| if (entry.dragging) entry.point(event.x, true);
-        self.redraw();
-        return 1;
-    }
-    fn scrollEvent(_: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Form, ptr);
-        const callback = self.scrolled orelse return 0;
-        var direction: c.GdkScrollDirection = 0;
-        var dx: f64 = 0;
-        var dy: f64 = 0;
-        if (c.gdk_event_get_scroll_deltas(event, &dx, &dy) == 0) {
-            _ = c.gdk_event_get_scroll_direction(event, &direction);
-            dy = if (direction == c.GDK_SCROLL_UP) -1 else 1;
+            self.pressed = id;
+            self.focusItem(id);
+            if (self.get(id).entry) |entry| {
+                entry.dragging = true;
+                entry.point(x, self.input_modifiers & 1 != 0);
+            }
+        } else {
+            const id = self.pressed orelse return;
+            self.pressed = null;
+            if (self.get(id).entry) |entry| {
+                entry.dragging = false;
+                return;
+            }
+            if (self.expanded == id) if (self.optionHit(x, y)) |index| {
+                if (index == self.option_cursor) {
+                    _ = self.select(id, self.get(id).options.items[index].id);
+                    self.expanded = null;
+                    self.relayout();
+                    self.changed(self.context, id);
+                }
+                return;
+            };
+            if (self.hitSurface(x, y, pos.footer) == id) self.activate(id);
         }
-        callback(self.context, dy * 72);
-        return 1;
     }
-    fn draw(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
+    // A button action may destroy its form or enter a nested dialog loop.
+    fn button(ptr: ?*anyopaque, surface: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
+        if (code != 0x110) return;
         const self = cast(Form, ptr);
-        self.paint(cr, widget == self.footer) catch {};
-        return 1;
+        self.dispatching = true;
+        defer self.dispatching = false;
+        for (surface.client.seats.items) |seat| if (seat.pointer_focus == surface) {
+            self.input_modifiers = seat.xkb.modifiers();
+            break;
+        };
+        self.pointerButton(pressed, x, y);
+    }
+    fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
+        const self = cast(Form, ptr);
+        const pos = self.coordinates(y);
+        self.hover = self.hitSurface(x, pos.y, pos.footer);
+        if (self.focusedEntry()) |entry| if (entry.dragging) entry.point(x, true);
+        self.redraw();
+    }
+    fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
+        const self = cast(Form, ptr);
+        self.hover = null;
+        if (self.focusedEntry()) |entry| entry.dragging = false;
+        self.redraw();
+    }
+    fn scrollEvent(ptr: ?*anyopaque, _: *wire.Surface, axis: u32, delta: f64) void {
+        const self = cast(Form, ptr);
+        if (axis != 0) return;
+        if (self.scrolled) |callback| callback(self.context, delta * 3) else {
+            self.offset += delta * 3;
+            self.clampOffset();
+            self.redraw();
+        }
+    }
+    fn draw(ptr: ?*anyopaque, target: wire.Pixels) void {
+        const self = cast(Form, ptr);
+        self.paintWindow(target) catch self.close();
+    }
+    fn resizeImage(storage: *[]u32, width: u32, height: u32) !raster.Buffer {
+        const bytes = try wire.bufferSize(width, height);
+        if (storage.len != bytes / 4) {
+            const pixels = try a.alloc(u32, bytes / 4);
+            a.free(storage.*);
+            storage.* = pixels;
+        }
+        return .{ .pixels = storage.*, .width = width, .height = height };
+    }
+    fn paintWindow(self: *Form, target: wire.Pixels) !void {
+        const surface = self.window.surface orelse return;
+        const scale = surface.output.scale;
+        self.viewport_height = target.height / scale;
+        if (self.layout != null) self.height = self.viewport_height;
+        self.prepareLayout(target.width / scale, scale);
+        if (self.layout != null) {
+            self.relayout();
+            try self.paintPixels(target, scale, false);
+            return;
+        }
+        self.clampOffset();
+        const body = self.bodyHeight() * scale;
+        const image = try resizeImage(&self.image, target.width, @max(self.height * scale, body));
+        try self.paintPixels(image, scale, false);
+        const start: usize = @intFromFloat(self.offset * @as(f64, @floatFromInt(scale)));
+        for (0..body) |row| @memcpy(target.pixels[row * target.width ..][0..target.width], image.pixels[(start + row) * target.width ..][0..target.width]);
+        if (body < target.height) {
+            const footer = try resizeImage(&self.footer_image, target.width, self.footer_height * scale);
+            try self.paintPixels(footer, scale, true);
+            @memcpy(target.pixels[@as(usize, body) * target.width ..], footer.pixels[0 .. @as(usize, target.height - body) * target.width]);
+        }
     }
     fn makeMask(self: *Form, value: [:0]const u8, width: u32, bold: bool) !text.Mask {
         const scale: f64 = @floatFromInt(self.scale);
         return self.renderer.renderLayout(a, value, .{ .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans", .size = (if (bold) @as(f64, 15) else 14) * scale, .dpi = 96 * scale, .width = width * self.scale, .lines = 2, .ellipsize = true, .origin = .top });
-    }
-    const PaintContext = struct {
-        form: *Form,
-        scale: u32,
-        footer: bool,
-        fn paint(ctx: @This(), target: raster.Buffer) !void {
-            try ctx.form.paintPixels(target, ctx.scale, ctx.footer);
-        }
-    };
-    fn paint(self: *Form, cr: *c.cairo_t, footer: bool) !void {
-        const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(self.canvas)));
-        const width: u32 = @intCast(@max(480, c.gtk_widget_get_allocated_width(self.canvas)));
-        self.prepareLayout(width, scale);
-        const height: u32 = if (footer) self.footer_height else @intCast(@max(@as(c_int, @intCast(self.height)), c.gtk_widget_get_allocated_height(self.canvas)));
-        try c.__zig.paintCairo(cr, width, height, scale, PaintContext{ .form = self, .scale = scale, .footer = footer }, PaintContext.paint);
     }
     fn prepareLayout(self: *Form, width: u32, scale: u32) void {
         if (self.scale != scale or self.width != width) {
@@ -690,7 +767,6 @@ fn drawText(canvas: raster.Canvas, mask_value: text.Mask, x: f64, y: f64, tint: 
 }
 
 test "native forms preserve selections, isolate passwords and navigate controls" {
-    c.gtk_init(null, null);
     const Callbacks = struct {
         edits: usize = 0,
         actions: usize = 0,
@@ -747,15 +823,8 @@ test "native forms preserve selections, isolate passwords and navigate controls"
     try std.testing.expectEqual(toggle, form.focus.?);
     try std.testing.expect(form.handleKey(0x20, 0));
     try std.testing.expect(form.get(toggle).checked);
-    var event = std.mem.zeroes(c.GdkEventButton);
-    event.type = c.GDK_BUTTON_PRESS;
-    event.button = 1;
-    event.x = form.get(toggle).bounds.x + 10;
-    event.y = form.get(toggle).bounds.y + 10;
-    var handled: c.gboolean = 0;
-    c.g_signal_emit_by_name(form.canvas, "button-press-event", &event, &handled);
-    event.type = 7;
-    c.g_signal_emit_by_name(form.canvas, "button-release-event", &event, &handled);
+    form.pointerButton(true, form.get(toggle).bounds.x + 10, form.get(toggle).bounds.y + 10 - form.offset);
+    form.pointerButton(false, form.get(toggle).bounds.x + 10, form.get(toggle).bounds.y + 10 - form.offset);
     try std.testing.expect(!form.get(toggle).checked);
     form.get(toggle).enabled = false;
     form.focusItem(button);
@@ -776,18 +845,50 @@ test "native forms preserve selections, isolate passwords and navigate controls"
     form.setEnabled(false);
     form.activate(button);
     try std.testing.expectEqual(@as(usize, 1), callbacks.actions);
-    event.type = c.GDK_BUTTON_PRESS;
-    event.x = form.get(pinned).bounds.x + 10;
-    event.y = form.get(pinned).bounds.y + 10;
-    c.g_signal_emit_by_name(form.footer, "button-press-event", &event, &handled);
-    event.type = 7;
-    c.g_signal_emit_by_name(form.footer, "button-release-event", &event, &handled);
+    const footer_y = @as(f64, @floatFromInt(form.bodyHeight())) + form.get(pinned).bounds.y + 10;
+    form.pointerButton(true, form.get(pinned).bounds.x + 10, footer_y);
+    form.pointerButton(false, form.get(pinned).bounds.x + 10, footer_y);
     try std.testing.expectEqual(@as(usize, 2), callbacks.actions);
     const late_field = try form.add(.entry, "Additional property", "", false);
     form.setEnabled(true);
     form.focusItem(late_field);
     try std.testing.expect(form.handleKey(0xff09, 0));
     try std.testing.expectEqual(pinned, form.focus.?);
-    c.gtk_widget_destroy(form.window);
+    form.close();
+    const previous_actions = callbacks.actions;
+    form.activate(button);
+    try std.testing.expectEqual(previous_actions, callbacks.actions);
+    while (!form.closed) _ = c.g_main_context_iteration(null, 1);
     try std.testing.expect(form.closed);
+}
+
+test "native form children share their parent connection and close before parent teardown" {
+    const Owner = struct {
+        closes: usize = 0,
+        fn action(_: ?*anyopaque, _: usize) void {}
+        fn changed(_: ?*anyopaque, _: usize) void {}
+        fn closed(ptr: ?*anyopaque) void {
+            cast(@This(), ptr).closes += 1;
+        }
+    };
+    var owner: Owner = .{};
+    const parent = try Form.create("Parent form", &owner, &Owner.action, &Owner.changed);
+    defer parent.deinit();
+    const child = try Form.create("Child form", &owner, &Owner.action, &Owner.changed);
+    defer child.deinit();
+    parent.close_callback = &Owner.closed;
+    child.close_callback = &Owner.closed;
+    child.window.parent = parent.window;
+    parent.show();
+    child.show();
+    try std.testing.expectEqual(parent.window.surface.?.client, child.window.surface.?.client);
+    try std.testing.expect(parent.window.blocked());
+    parent.close();
+    const deadline = c.g_get_monotonic_time() + 2_000_000;
+    while (owner.closes != 2 and c.g_get_monotonic_time() < deadline) {
+        _ = c.g_main_context_iteration(null, 0);
+        c.g_usleep(1000);
+    }
+    try std.testing.expectEqual(@as(usize, 2), owner.closes);
+    try std.testing.expect(parent.closed and child.closed);
 }

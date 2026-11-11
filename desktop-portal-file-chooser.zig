@@ -24,7 +24,7 @@ const Row = browser.Row;
 pub const Dialog = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
-    window: *c.GtkWidget,
+    window: *form.host.Window,
     ui: *form.Form,
     options: *c.GVariant,
     method: enum { open, save, save_files },
@@ -62,6 +62,9 @@ pub const Dialog = struct {
     accept_after_scan: bool = false,
     overwrite: ?[:0]const u8 = null,
     finished: bool = false,
+    finish_idle: c.guint = 0,
+    finish_code: u32 = 1,
+    finish_result: ?*c.GVariant = null,
     dead: bool = false,
     // Only visible rows and a small look-ahead window own form controls.
     const window_items = 512;
@@ -79,7 +82,8 @@ pub const Dialog = struct {
         }
         self.directory = kind == .save_files or (kind == .open and try boolean(options, "directory", false));
         self.multiple = kind == .open and try boolean(options, "multiple", false);
-        c.gtk_window_set_modal(cast(c.GtkWindow, self.window), @intFromBool(try boolean(options, "modal", true)));
+        _ = try boolean(options, "modal", true);
+        ui.window.surface.?.options.parent = try self.arena.allocator().dupeSentinel(u8, parent, 0);
         self.path_item = try ui.add(.entry, "Location", "", false);
         self.up_item = try ui.add(.button, "Parent folder", "", false);
         self.go_item = try ui.add(.button, "Go", "", false);
@@ -135,10 +139,9 @@ pub const Dialog = struct {
         try self.addPlace("File System", "/", "drive-harddisk-symbolic");
         self.view.places = self.places.items;
         self.dynamic_start = ui.items.items.len;
-        c.gtk_window_set_default_size(cast(c.GtkWindow, self.window), 900, 600);
-        c.gtk_window_set_decorated(cast(c.GtkWindow, self.window), 0);
-        c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, ui.scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_NEVER);
-        c.gtk_widget_add_events(ui.canvas, c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
+        self.window.setSize(900, 600);
+        ui.window.surface.?.options.min_width = 580;
+        ui.window.surface.?.options.min_height = 348;
         ui.layout = &layout;
         ui.painter = &paint;
         ui.scrolled = &scrolled;
@@ -169,12 +172,10 @@ pub const Dialog = struct {
         }
         // Start asynchronous work only after all fallible option validation.
         try self.navigate(initial);
-        _ = c.g_signal_connect_data(self.window, "destroy", @ptrCast(&closed), self, null, 0);
+        ui.close_callback = &closed;
         ui.shortcut = &key;
         ui.show();
         ui.focus = null;
-        c.gtk_window_present(cast(c.GtkWindow, self.window));
-        c.__zig.parentTo(self.window, allocator, parent);
         return self;
     }
     fn freeResources(self: *Dialog) void {
@@ -246,8 +247,9 @@ pub const Dialog = struct {
     pub fn destroy(self: *Dialog) void {
         if (self.dead) return;
         self.dead = true;
+        if (self.finish_idle != 0) _ = c.g_source_remove(self.finish_idle);
+        if (self.finish_result) |value| c.g_variant_unref(value);
         if (self.pending) |pending| pending.cancel();
-        _ = c.g_signal_handlers_disconnect_matched(self.window, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
         self.ui.deinit();
         if (self.pending_count == 0) self.release();
     }
@@ -674,7 +676,12 @@ pub const Dialog = struct {
         return selected;
     }
     pub fn accept(self: *Dialog) void {
-        if (self.finished or self.pending != null or self.listing == null) return;
+        if (self.finished) return;
+        if (self.pending != null) {
+            self.accept_after_scan = true;
+            return;
+        }
+        if (self.listing == null) return;
         if (self.method == .open and !self.directory) {
             var folder: ?usize = null;
             var files_selected = false;
@@ -836,14 +843,27 @@ pub const Dialog = struct {
         }
         return true;
     }
-    fn closed(_: *c.GtkWidget, ptr: ?*anyopaque) callconv(.c) void {
+    fn closed(ptr: ?*anyopaque) void {
         cast(Dialog, ptr).cancel();
     }
     fn finish(self: *Dialog, code: u32, result: ?*c.GVariant) void {
         if (self.finished) return;
         self.finished = true;
-        c.gtk_widget_hide(self.window);
-        self.callback(self.data, code, result orelse c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0));
+        self.window.hide();
+        if (self.ui.dispatching) {
+            self.finish_code = code;
+            // Own the floating reply until it is transferred to the callback.
+            self.finish_result = result orelse c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0);
+            self.finish_idle = c.g_idle_add(&deliverFinish, self);
+        } else self.callback(self.data, code, result orelse c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0));
+    }
+    fn deliverFinish(ptr: ?*anyopaque) callconv(.c) c.gboolean {
+        const self = cast(Dialog, ptr);
+        self.finish_idle = 0;
+        const result = self.finish_result;
+        self.finish_result = null;
+        self.callback(self.data, self.finish_code, result);
+        return 0;
     }
     fn results(self: *Dialog) !?*c.GVariant {
         const out = builder("a{sv}");

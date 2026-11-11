@@ -17,10 +17,9 @@ pub const Frame = struct {
     content_width: f64,
     pub fn init(ui: *form.Form, sidebar: f64) Frame {
         const w: f64 = @floatFromInt(ui.width);
-        const h: f64 = @floatFromInt(@max(400, c.gtk_widget_get_allocated_height(ui.canvas)));
+        const h: f64 = @floatFromInt(@max(400, ui.viewport_height));
         const content = @min(576, w - sidebar - 48);
         ui.height = @intFromFloat(h);
-        c.gtk_widget_set_size_request(ui.canvas, 680, 400);
         return .{ .width = w, .height = h, .sidebar = sidebar, .x = sidebar + (w - sidebar - content) / 2, .content_width = content };
     }
 };
@@ -30,8 +29,6 @@ pub fn reset(ui: *form.Form) void {
         item.pinned = false;
         item.clip = null;
     }
-    c.gtk_widget_set_no_show_all(ui.footer, 1);
-    c.gtk_widget_hide(ui.footer);
 }
 pub fn place(ui: *form.Form, id: usize, rect: Rect) void {
     const item = ui.get(id);

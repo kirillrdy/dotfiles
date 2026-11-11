@@ -108,11 +108,11 @@ pub const Buffer = struct {
 pub const Rect = struct { x: f64, y: f64, width: f64, height: f64 };
 pub const Entry = struct {
     buffer: *Buffer,
-    widget: *c.GtkWidget,
-    im: *c.GtkIMContext,
+    client: ?*@import("desktop-surface.zig").Client = null,
     changed: *const fn (?*anyopaque) void,
     data: ?*anyopaque,
     rect: Rect = .{ .x = 0, .y = 0, .width = 400, .height = 42 },
+    location: c.GdkRectangle = .{ .x = 0, .y = 0, .width = 1, .height = 42 },
     focused: bool = false,
     // Echoed PAM challenges and public form fields use visible glyphs.
     // Only explicitly public fields may copy their text to the clipboard.
@@ -133,76 +133,30 @@ pub const Entry = struct {
     revision: u64 = 0,
     dead: bool = false,
 
-    pub fn create(widget: *c.GtkWidget, changed: *const fn (?*anyopaque) void, data: ?*anyopaque) !*Entry {
+    pub fn create(changed: *const fn (?*anyopaque) void, data: ?*anyopaque) !*Entry {
         const self = try a.create(Entry);
         errdefer a.destroy(self);
-        const buffer = try Buffer.create();
-        errdefer buffer.destroy();
-        const im = c.gtk_im_multicontext_new() orelse return error.InputMethod;
-        self.* = .{ .buffer = buffer, .widget = widget, .im = im, .changed = changed, .data = data };
-        c.g_object_set(im, "input-purpose", @as(c_int, c.GTK_INPUT_PURPOSE_PASSWORD), "input-hints", @as(c_int, c.GTK_INPUT_HINT_NO_SPELLCHECK), @as(?*anyopaque, null));
-        self.connect(im, "commit", &commit);
-        self.connect(im, "preedit-changed", &preeditChanged);
-        self.connect(im, "retrieve-surrounding", &surrounding);
-        self.connect(widget, "realize", &realized);
-        self.connect(widget, "unrealize", &unrealized);
-        if (c.gtk_widget_get_window(widget)) |window| c.gtk_im_context_set_client_window(im, window);
+        self.* = .{ .buffer = try Buffer.create(), .changed = changed, .data = data };
         return self;
     }
     pub fn makePublic(self: *Entry) void {
         self.echo = true;
         self.public_text = true;
-        c.g_object_set(self.im, "input-purpose", @as(c_int, 0), @as(?*anyopaque, null));
     }
-    fn connect(self: *Entry, object: anytype, signal: [*:0]const u8, callback: anytype) void {
-        _ = c.g_signal_connect_data(object, signal, @ptrCast(callback), self, null, 0);
-    }
-    fn realized(_: *c.GtkWidget, data: c.gpointer) callconv(.c) void {
-        const self = cast(Entry, data);
-        c.gtk_im_context_set_client_window(self.im, c.gtk_widget_get_window(self.widget));
-        if (self.focused) c.gtk_im_context_focus_in(self.im);
-    }
-    fn unrealized(_: *c.GtkWidget, data: c.gpointer) callconv(.c) void {
-        c.gtk_im_context_set_client_window(cast(Entry, data).im, null);
-    }
-    fn commit(_: *c.GtkIMContext, value_to_insert: [*c]const u8, data: c.gpointer) callconv(.c) void {
-        const self = cast(Entry, data);
-        if (self.dead or !self.focused) return;
-        self.insert(std.mem.span(value_to_insert)) catch {};
-    }
-    fn preeditChanged(_: *c.GtkIMContext, data: c.gpointer) callconv(.c) void {
-        const self = cast(Entry, data);
-        if (self.dead) return;
-        var value_to_count: [*c]u8 = null;
-        var attrs: ?*c.PangoAttrList = null;
-        var cursor: c.gint = 0;
-        c.gtk_im_context_get_preedit_string(self.im, &value_to_count, &attrs, &cursor);
-        defer if (attrs) |value| text.api.pango_attr_list_unref(@ptrCast(value));
+    pub fn setPreedit(self: *Entry, value: []const u8) void {
+        if (!std.unicode.utf8ValidateSlice(value)) return;
         self.preedit = 0;
-        if (value_to_count != null) {
-            const bytes = std.mem.span(value_to_count);
-            for (bytes) |byte| if (byte & 0xc0 != 0x80) {
-                self.preedit += 1;
-            };
-            std.crypto.secureZero(u8, bytes);
-            c.g_free(value_to_count);
-        }
+        for (value) |byte| if (byte & 0xc0 != 0x80) {
+            self.preedit += 1;
+        };
         self.notify();
-    }
-    fn surrounding(context: *c.GtkIMContext, _: c.gpointer) callconv(.c) c.gboolean {
-        // Input methods must not receive the password as surrounding text.
-        c.gtk_im_context_set_surrounding(context, "", 0, 0);
-        return 1;
     }
     pub fn focus(self: *Entry, focused: bool) void {
         if (self.focused == focused or self.dead) return;
         self.focused = focused;
         if (focused) {
-            c.gtk_im_context_focus_in(self.im);
             self.blink = c.g_timeout_add(500, &tick, self);
         } else {
-            c.gtk_im_context_reset(self.im);
-            c.gtk_im_context_focus_out(self.im);
             self.preedit = 0;
             self.dragging = false;
             if (self.blink != 0) _ = c.g_source_remove(self.blink);
@@ -226,7 +180,6 @@ pub const Entry = struct {
         self.first = 0;
         self.text_offset = 0;
         self.revision += 1;
-        c.gtk_im_context_reset(self.im);
         if (!self.dead) self.notify();
     }
     pub fn insert(self: *Entry, value_to_insert: []const u8) !void {
@@ -235,8 +188,17 @@ pub const Entry = struct {
         self.preedit = 0;
         self.notify();
     }
-    pub fn filter(self: *Entry, event: *c.GdkEvent) bool {
-        return self.focused and c.gtk_im_context_filter_keypress(self.im, @ptrCast(event)) != 0;
+    pub fn deleteSurrounding(self: *Entry, before: u32, after: u32) void {
+        if (!self.public_text or before > self.buffer.cursor or after > self.buffer.len - self.buffer.cursor) return;
+        const start = self.buffer.cursor - before;
+        const end = self.buffer.cursor + after;
+        const bytes = self.buffer.value();
+        if ((start < bytes.len and bytes[start] & 0xc0 == 0x80) or (end < bytes.len and bytes[end] & 0xc0 == 0x80)) return;
+        self.buffer.cursor = start;
+        self.buffer.anchor = end;
+        self.buffer.insert("") catch return;
+        self.revision += 1;
+        self.notify();
     }
     pub fn key(self: *Entry, symbol: u32, modifiers: c.GdkModifierType) bool {
         const control = modifiers & c.GDK_CONTROL_MASK != 0;
@@ -280,10 +242,10 @@ pub const Entry = struct {
                 if (!control) return false;
                 // Echoed authentication responses still remain private.
                 if (!self.public_text or !self.buffer.selected()) return true;
-                const clipboard = c.gtk_clipboard_get_default(c.gtk_widget_get_display(self.widget)) orelse return true;
+                const device = self.clipboard() orelse return true;
                 const start = @min(self.buffer.cursor, self.buffer.anchor);
                 const end_offset = @max(self.buffer.cursor, self.buffer.anchor);
-                c.gtk_clipboard_set_text(clipboard, self.buffer.bytes[start..end_offset].ptr, @intCast(end_offset - start));
+                device.copy(self.buffer.bytes[start..end_offset]);
                 if (symbol == 'x' or symbol == 'X') self.buffer.erase(false, false);
             },
             'v', 'V' => {
@@ -304,23 +266,27 @@ pub const Entry = struct {
     }
     const Paste = struct { entry: *Entry, revision: u64 };
     fn resetComposition(self: *Entry) void {
-        if (self.preedit > 0) c.gtk_im_context_reset(self.im);
         self.preedit = 0;
+    }
+    pub fn clipboard(self: *Entry) ?*@import("desktop-clipboard.zig").Device {
+        const client = self.client orelse return null;
+        for (client.seats.items) |seat| if (seat.clipboard) |device| return device;
+        return null;
     }
     pub fn paste(self: *Entry) void {
         self.resetComposition();
-        const clipboard = c.gtk_clipboard_get_default(c.gtk_widget_get_display(self.widget)) orelse return;
+        const device = self.clipboard() orelse return;
         const request = a.create(Paste) catch return;
         request.* = .{ .entry = self, .revision = self.revision };
         self.refs += 1;
-        c.gtk_clipboard_request_text(clipboard, &pasted, request);
+        device.paste(&pasted, request);
     }
-    fn pasted(_: ?*c.GtkClipboard, value_to_insert: [*c]const u8, data: c.gpointer) callconv(.c) void {
+    fn pasted(data: ?*anyopaque, value_to_insert: ?[]const u8) void {
         const request = cast(Paste, data);
         const self = request.entry;
         defer self.release();
         defer a.destroy(request);
-        if (!self.dead and self.focused and self.revision == request.revision and value_to_insert != null) self.insert(std.mem.span(value_to_insert)) catch {};
+        if (!self.dead and self.focused and self.revision == request.revision and value_to_insert != null) self.insert(value_to_insert.?) catch {};
     }
     pub fn point(self: *Entry, x: f64, extend: bool) void {
         self.resetComposition();
@@ -385,7 +351,7 @@ pub const Entry = struct {
         const caret_x = rect.x + 12 + @as(f64, @floatFromInt(caret_index - self.first)) * self.advance;
         if (self.focused and self.caret) canvas.draw(&.{.{ .line = .{ .start = .{ .x = caret_x, .y = rect.y + 11 }, .end = .{ .x = caret_x, .y = rect.y + rect.height - 11 }, .radius = 0.65 } }}, color(0xffffff));
         const location: c.GdkRectangle = .{ .x = @intFromFloat(caret_x), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
-        c.gtk_im_context_set_cursor_location(self.im, &location);
+        self.location = location;
     }
     fn paintFrame(self: *const Entry, canvas: raster.Canvas) void {
         const rect = self.rect;
@@ -425,16 +391,12 @@ pub const Entry = struct {
         if (self.focused and self.caret) canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = cursor - self.text_offset, .y = 7, .width = 1, .height = @max(1, rect.height - 14) }, .radius = 0 } }}, color(0xffffff));
         try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(pixels), .width = width, .height = height, .stride = width * 4, .format = .argb }, .{ .x = (rect.x + 12) * factor, .y = rect.y * factor, .width = @floatFromInt(width), .height = @floatFromInt(height) }, null);
         const location: c.GdkRectangle = .{ .x = @intFromFloat(rect.x + 12 + cursor - self.text_offset), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
-        c.gtk_im_context_set_cursor_location(self.im, &location);
+        self.location = location;
     }
     pub fn destroy(self: *Entry) void {
         self.dead = true;
         self.clear();
         if (self.blink != 0) _ = c.g_source_remove(self.blink);
-        _ = c.g_signal_handlers_disconnect_matched(self.widget, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-        _ = c.g_signal_handlers_disconnect_matched(self.im, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-        c.gtk_im_context_focus_out(self.im);
-        c.gtk_im_context_set_client_window(self.im, null);
         self.release();
     }
     fn release(self: *Entry) void {
@@ -443,7 +405,6 @@ pub const Entry = struct {
         self.buffer.destroy();
         if (self.bullet) |mask| mask.deinit(a);
         self.renderer.deinit();
-        c.g_object_unref(self.im);
         a.destroy(self);
     }
 };
@@ -477,19 +438,10 @@ test "password buffer edits Unicode selections, rejects invalid input atomically
 }
 
 test "native password pixels depend on character count rather than plaintext" {
-    c.gtk_init(null, null);
-    const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL).?;
-    defer c.gtk_widget_destroy(window);
-    const canvas = c.gtk_drawing_area_new().?;
-    _ = c.g_object_ref_sink(canvas);
-    defer c.g_object_unref(canvas);
-    defer c.gtk_widget_destroy(canvas);
-    c.gtk_container_add(cast(c.GtkContainer, window), canvas);
-    c.gtk_widget_show_all(window);
     const Callback = struct {
         fn changed(_: ?*anyopaque) void {}
     };
-    const entry = try Entry.create(canvas, &Callback.changed, null);
+    const entry = try Entry.create(&Callback.changed, null);
     defer entry.destroy();
     entry.focus(true);
     for ([_]u32{ 1, 2 }) |scale| {
@@ -520,20 +472,11 @@ test "native password pixels depend on character count rather than plaintext" {
         try std.testing.expectEqualSlices(u32, first, second);
     }
     entry.clear();
-    // Exercise the same commit signal that input-method composition uses.
-    c.g_signal_emit_by_name(entry.im, "commit", @as([*:0]const u8, "東京🔑"));
+    try entry.insert("東京🔑");
     try std.testing.expectEqualStrings("東京🔑", entry.buffer.value());
-    var surrounding_text: [*c]u8 = null;
-    var cursor: c.gint = -1;
-    // Wayland's IM context need not implement get_surrounding. Exercise our
-    // actual retrieval handler using GTK's simple context as a readable oracle.
-    const surrounding_context = c.gtk_im_context_simple_new().?;
-    defer c.g_object_unref(surrounding_context);
-    _ = c.g_signal_connect_data(surrounding_context, "retrieve-surrounding", @ptrCast(&Entry.surrounding), entry, null, 0);
-    try std.testing.expect(c.gtk_im_context_get_surrounding(surrounding_context, &surrounding_text, &cursor) != 0);
-    defer c.g_free(surrounding_text);
-    try std.testing.expectEqualStrings("", std.mem.span(surrounding_text));
-    try std.testing.expectEqual(@as(c.gint, 0), cursor);
+    entry.setPreedit("とうきょう");
+    try std.testing.expectEqual(@as(usize, 5), entry.preedit);
+    try std.testing.expectEqualStrings("東京🔑", entry.buffer.value());
     try std.testing.expect(entry.key('a', c.GDK_CONTROL_MASK));
     try entry.insert("x");
     try std.testing.expectEqualStrings("x", entry.buffer.value());
@@ -541,16 +484,11 @@ test "native password pixels depend on character count rather than plaintext" {
 }
 
 test "public entries shape Adwaita text and place the caret using proportional advances" {
-    c.gtk_init(null, null);
     const allocator = std.testing.allocator;
-    const widget = c.gtk_drawing_area_new().?;
-    _ = c.g_object_ref_sink(widget);
-    defer c.g_object_unref(widget);
-    defer c.gtk_widget_destroy(widget);
     const Callback = struct {
         fn changed(_: ?*anyopaque) void {}
     };
-    const entry = try Entry.create(widget, &Callback.changed, null);
+    const entry = try Entry.create(&Callback.changed, null);
     defer entry.destroy();
     entry.makePublic();
     entry.rect = .{ .x = 20, .y = 10, .width = 360, .height = 42 };

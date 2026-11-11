@@ -147,3 +147,8 @@ test "native XKB input follows modifiers, composes accents and suppresses contro
     try std.testing.expect(keyboard.repeats(30));
     try std.testing.expect(!keyboard.repeats(42));
 }
+
+extern fn xkb_keysym_to_utf32(u32) u32;
+pub fn unicode(symbol: u32) u32 {
+    return xkb_keysym_to_utf32(symbol);
+}

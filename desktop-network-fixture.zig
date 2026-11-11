@@ -97,8 +97,9 @@ pub fn main(init: std.process.Init) !void {
         const values = try properties.values();
         defer c.g_variant_unref(values);
         try std.testing.expect(c.g_variant_lookup_value(values, "802-11-wireless-security", null) == null);
-        c.gtk_widget_destroy(properties.window);
-        c.gtk_widget_destroy(window.window);
+        properties.ui.close();
+        window.ui.close();
+        while (!window.closed) pump();
         while (window.network_operations != 0) pump();
         window.destroy();
         settle();
@@ -126,14 +127,17 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "edit") or std.mem.eql(u8, args[1], "new") or std.mem.eql(u8, args[1], "edit-secret") or std.mem.eql(u8, args[1], "edit-cancel")) {
         c.gtk_init(null, null);
-        const parent = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL).?;
-        defer c.gtk_widget_destroy(parent);
+        const Noop = struct {
+            fn paint(_: ?*anyopaque, _: @import("desktop").window.wire.Pixels) void {}
+        };
+        const parent = try @import("desktop").window.Window.create("Fixture parent", "fixture-parent", 620, 700, &Noop.paint, null);
+        defer parent.destroy();
         const is_new = std.mem.eql(u8, args[1], "new");
         const ui = editor.Editor.create(parent, if (is_new) null else state.profiles.items[0]);
         if (std.mem.eql(u8, args[1], "edit-cancel")) {
             try ui.setValue("802-11-wireless-security", "psk", "cancel-secret");
             ui.save();
-            c.gtk_widget_destroy(ui.window);
+            ui.ui.close();
             settle();
             return;
         }
@@ -163,7 +167,8 @@ pub fn main(init: std.process.Init) !void {
         client.perform(.{ .save = .{ .path = ui.path, .settings = values, .version = ui.version } }, cancel, &done, null);
         const deadline = c.g_get_monotonic_time() + 8_000_000;
         while (!complete and c.g_get_monotonic_time() < deadline) pump();
-        c.gtk_widget_destroy(ui.window);
+        ui.ui.close();
+        settle();
         try std.testing.expect(complete);
         try std.testing.expect(success);
         return;
@@ -184,7 +189,8 @@ pub fn main(init: std.process.Init) !void {
         try ui.ui.setText(ui.password.id, "ui-secret");
         settings.Settings.wifiConnect(null, ui);
         try std.testing.expectEqualStrings("", ui.password.value());
-        c.gtk_widget_destroy(ui.window);
+        ui.ui.close();
+        while (!ui.closed) _ = c.g_main_context_iteration(null, 1);
         while (ui.network_operations != 0) pump();
         ui.destroy();
         controls.view.submenu = .network;
@@ -194,13 +200,16 @@ pub fn main(init: std.process.Init) !void {
         try std.testing.expectEqualStrings(state.access_points.items[0].title, controls.dialog.?.prompt);
         // Empty submissions stay open and display an inline error.
         try std.testing.expect(controls.dialog.?.handleKey(0xff0d, 0));
+        pump();
         try std.testing.expect(controls.dialog.?.view.status_error);
         try controls.dialog.?.entry.?.insert("cancelled-quick-secret");
         try std.testing.expect(controls.dialog.?.handleKey(0xff1b, 0));
+        pump();
         try std.testing.expect(controls.dialog == null);
         controls.activate(.network0);
         try controls.dialog.?.entry.?.insert("quick-native-secret");
         try std.testing.expect(controls.dialog.?.handleKey(0xff0d, 0));
+        pump();
         try std.testing.expect(controls.dialog == null);
         settle();
         controls.activate(.network0);

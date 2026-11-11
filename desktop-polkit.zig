@@ -6,7 +6,7 @@ const a = std.heap.page_allocator;
 
 pub const Dialog = struct {
     native: *auth.Dialog,
-    window: *c.GtkWidget,
+    window: *auth.host.Window,
     action: ?[:0]const u8,
     message: [:0]const u8,
     user: ?[:0]const u8,
@@ -45,7 +45,7 @@ pub const Dialog = struct {
         self.setEnabled(true);
         self.native.view.focus = .entry;
         self.native.entry.?.focus(true);
-        c.gtk_widget_grab_focus(self.native.canvas);
+        self.native.focus(.entry);
     }
     pub fn setStatus(self: *Dialog, message: []const u8) !void {
         const value = try a.dupeSentinel(u8, message, 0);

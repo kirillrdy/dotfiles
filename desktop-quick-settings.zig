@@ -61,6 +61,7 @@ pub const Controls = struct {
     cancel: *c.GCancellable,
     dialog: ?*auth.Dialog = null,
     dialog_power: bool = false,
+    dialog_value: ?[:0]u8 = null,
     power_choices: [3]auth.native.Choice = .{
         .{ .label = "Performance" }, .{ .label = "Balanced" }, .{ .label = "Power Saver" },
     },
@@ -329,13 +330,13 @@ pub const Controls = struct {
         }
         if (self.dialog_power) if (self.dialog) |dialog| {
             if (dialog.view.focus != .accept and !dialog.view.choiceEnabled(dialog.view.focus)) dialog.focus(.accept);
-            c.gtk_widget_queue_draw(dialog.canvas);
+            dialog.window.redraw();
         };
     }
     fn powerSettings(_: ?*c.GtkButton, ptr: c.gpointer) callconv(.c) void {
         const self = cast(Controls, ptr);
         if (self.dialog) |dialog| {
-            c.gtk_window_present(cast(c.GtkWindow, dialog.window));
+            dialog.window.show() catch {};
             return;
         }
         self.syncPowerDialog();
@@ -354,7 +355,8 @@ pub const Controls = struct {
         dialog.choice_context = self;
         dialog.choice_selected = &dialogProfile;
         self.refs += 1;
-        connect(dialog.window, "response", &powerSettingsClosed, self);
+        dialog.responded = &powerSettingsClosed;
+        dialog.response_context = self;
     }
     fn dialogProfile(ptr: ?*anyopaque, index: usize) void {
         const self = cast(Controls, ptr);
@@ -365,9 +367,11 @@ pub const Controls = struct {
         self.dialog = null;
         self.dialog_power = false;
         dialog.destroy();
+        if (self.dialog_value) |value| a.free(value);
+        self.dialog_value = null;
         self.release();
     }
-    fn powerSettingsClosed(_: *c.GtkDialog, _: c_int, ptr: c.gpointer) callconv(.c) void {
+    fn powerSettingsClosed(ptr: ?*anyopaque, _: bool) void {
         cast(Controls, ptr).closeDialog();
     }
 
@@ -577,9 +581,6 @@ pub const Controls = struct {
         } else self.view.model.battery.set("");
         self.redraw();
     }
-    fn freeData(ptr: c.gpointer) callconv(.c) void {
-        c.g_free(ptr);
-    }
     fn connectNetwork(self: *Controls, index: usize) void {
         const path = self.network_paths[index] orelse return;
         const ssid = path.ptr;
@@ -590,7 +591,7 @@ pub const Controls = struct {
             return;
         }
         if (self.dialog) |dialog| {
-            c.gtk_window_present(cast(c.GtkWindow, dialog.window));
+            dialog.window.show() catch {};
             return;
         }
         c.gtk_popover_popdown(cast(c.GtkPopover, self.popover));
@@ -604,20 +605,21 @@ pub const Controls = struct {
             return;
         };
         self.dialog = dialog;
-        c.g_object_set_data_full(cast(c.GObject, dialog.window), "ssid", c.g_strdup(ssid), &freeData);
+        self.dialog_value = a.dupeSentinel(u8, std.mem.span(ssid), 0) catch @panic("out of memory");
         self.refs += 1;
-        connect(dialog.window, "response", &networkConfirmed, self);
+        dialog.responded = &networkConfirmed;
+        dialog.response_context = self;
     }
-    fn networkConfirmed(window: *c.GtkDialog, response: c_int, ptr: c.gpointer) callconv(.c) void {
+    fn networkConfirmed(ptr: ?*anyopaque, accepted: bool) void {
         const self = cast(Controls, ptr);
         const dialog = self.dialog.?;
-        const ssid: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, window), "ssid"));
-        if (!self.dead and response == c.GTK_RESPONSE_OK) {
+        const ssid = self.dialog_value.?;
+        if (!self.dead and accepted) {
             if (!(dialog.validatePassword() catch {
                 self.closeDialog();
                 return;
             })) return;
-            if (self.devices.network_client) |client| if (client.state().ap(std.mem.span(ssid))) |ap| {
+            if (self.devices.network_client) |client| if (client.state().ap(ssid)) |ap| {
                 self.networkAction(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = dialog.entry.?.buffer.value() } });
             };
         }
@@ -637,7 +639,7 @@ pub const Controls = struct {
     fn confirmAction(self: *Controls, action: [:0]const u8, title: [:0]const u8) void {
         if (self.session_busy) return;
         if (self.dialog) |dialog| {
-            c.gtk_window_present(cast(c.GtkWindow, dialog.window));
+            dialog.window.show() catch {};
             return;
         }
         c.gtk_popover_popdown(cast(c.GtkPopover, self.popover));
@@ -652,15 +654,16 @@ pub const Controls = struct {
             return;
         };
         self.dialog = dialog;
-        c.g_object_set_data(cast(c.GObject, dialog.window), "action", @constCast(action.ptr));
+        self.dialog_value = a.dupeSentinel(u8, action, 0) catch @panic("out of memory");
         self.refs += 1;
-        connect(dialog.window, "response", &confirmed, self);
+        dialog.responded = &confirmed;
+        dialog.response_context = self;
     }
-    fn confirmed(window: *c.GtkDialog, response: c_int, ptr: c.gpointer) callconv(.c) void {
+    fn confirmed(ptr: ?*anyopaque, accepted: bool) void {
         const self = cast(Controls, ptr);
-        const action: [*:0]const u8 = @ptrCast(c.g_object_get_data(cast(c.GObject, window), "action"));
-        if (response == c.GTK_RESPONSE_OK and !self.dead) {
-            if (std.meta.stringToEnum(session.Action, std.mem.span(action))) |selected| self.sessionAction(selected);
+        const action = self.dialog_value.?;
+        if (accepted and !self.dead) {
+            if (std.meta.stringToEnum(session.Action, action)) |selected| self.sessionAction(selected);
         }
         self.closeDialog();
     }

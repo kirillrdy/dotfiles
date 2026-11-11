@@ -9,16 +9,12 @@ fn pump() void {
     while (c.g_main_context_iteration(null, 0) != 0) {}
     c.g_usleep(1000);
 }
-extern fn g_object_weak_ref(*c.GObject, *const fn (?*anyopaque, ?*c.GObject) callconv(.c) void, ?*anyopaque) void;
-fn finalized(data: ?*anyopaque, _: ?*c.GObject) callconv(.c) void {
-    cast(bool, data).* = false;
-}
 fn checkEditing() !void {
     const dialog = try askpass.Dialog.create(.password, "Synthetic clipboard and editing checks");
     const entry = dialog.entry.?;
     entry.focus(true);
-    const clipboard = c.gtk_clipboard_get_default(c.gtk_widget_get_display(dialog.canvas)).?;
-    c.gtk_clipboard_set_text(clipboard, "paste-東京", -1);
+    const clipboard = entry.clipboard().?;
+    clipboard.copy("paste-東京");
     entry.paste();
     var deadline = c.g_get_monotonic_time() + 3_000_000;
     while (entry.refs > 1 and c.g_get_monotonic_time() < deadline) pump();
@@ -26,20 +22,20 @@ fn checkEditing() !void {
     try std.testing.expect(dialog.handleKey('a', c.GDK_CONTROL_MASK));
     try entry.insert("replacement");
     try std.testing.expectEqualStrings("replacement", entry.buffer.value());
-    c.gtk_clipboard_set_text(clipboard, "clipboard-guard", -1);
+    clipboard.copy("clipboard-guard");
     try std.testing.expect(dialog.handleKey('c', c.GDK_CONTROL_MASK));
     try std.testing.expect(dialog.handleKey('x', c.GDK_CONTROL_MASK));
     const Receipt = struct {
         done: bool = false,
         matches: bool = false,
-        fn received(_: ?*c.GtkClipboard, value: [*c]const u8, data: c.gpointer) callconv(.c) void {
+        fn received(data: ?*anyopaque, value: ?[]const u8) void {
             const self = cast(@This(), data);
             self.done = true;
-            self.matches = value != null and std.mem.eql(u8, std.mem.span(value), "clipboard-guard");
+            self.matches = value != null and std.mem.eql(u8, value.?, "clipboard-guard");
         }
     };
     var receipt: Receipt = .{};
-    c.gtk_clipboard_request_text(clipboard, &Receipt.received, &receipt);
+    clipboard.paste(&Receipt.received, &receipt);
     while (!receipt.done and c.g_get_monotonic_time() < deadline) pump();
     try std.testing.expect(receipt.matches);
     try std.testing.expectEqualStrings("replacement", entry.buffer.value());
@@ -49,13 +45,11 @@ fn checkEditing() !void {
     dialog.clear();
     while (entry.refs > 1 and c.g_get_monotonic_time() < deadline) pump();
     try std.testing.expectEqualStrings("", entry.buffer.value());
-    var live = true;
-    g_object_weak_ref(cast(c.GObject, entry.im), &finalized, &live);
     entry.paste();
     dialog.destroy();
-    deadline = c.g_get_monotonic_time() + 3_000_000;
-    while (live and c.g_get_monotonic_time() < deadline) pump();
-    try std.testing.expect(!live);
+    // Drain the outstanding clipboard request after the owner has been freed.
+    deadline = c.g_get_monotonic_time() + 100_000;
+    while (c.g_get_monotonic_time() < deadline) pump();
 }
 const Trigger = enum { response, enter, escape, allow_key, accept_click, cancel_click, term, interrupt };
 const Response = struct {
@@ -65,7 +59,7 @@ const Response = struct {
     fn send(data: c.gpointer) callconv(.c) c.gboolean {
         const self: *Response = @ptrCast(@alignCast(data));
         switch (self.trigger) {
-            .response => c.gtk_dialog_response(cast(c.GtkDialog, self.dialog.window), self.response),
+            .response => self.dialog.respond(self.response == c.GTK_RESPONSE_OK),
             .enter => _ = self.dialog.handleKey(0xff0d, 0),
             .escape => _ = self.dialog.handleKey(0xff1b, 0),
             .allow_key => {
@@ -74,15 +68,8 @@ const Response = struct {
             },
             .accept_click, .cancel_click => {
                 const rect = self.dialog.view.buttonRect(if (self.trigger == .accept_click) .accept else .cancel);
-                var event = std.mem.zeroes(c.GdkEventButton);
-                event.type = c.GDK_BUTTON_PRESS;
-                event.button = 1;
-                event.x = rect.x + rect.width / 2;
-                event.y = rect.y + rect.height / 2;
-                var handled: c.gboolean = 0;
-                c.g_signal_emit_by_name(self.dialog.canvas, "button-press-event", &event, &handled);
-                event.type = 7;
-                c.g_signal_emit_by_name(self.dialog.canvas, "button-release-event", &event, &handled);
+                self.dialog.pointerButton(true, rect.x + rect.width / 2, rect.y + rect.height / 2 - self.dialog.offset);
+                self.dialog.pointerButton(false, rect.x + rect.width / 2, rect.y + rect.height / 2 - self.dialog.offset);
             },
             .term => _ = libc.raise(libc.SIGTERM),
             .interrupt => _ = libc.raise(libc.SIGINT),

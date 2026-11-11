@@ -44,6 +44,7 @@ const State = struct {
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     defer std.heap.page_allocator.free(args);
+    if (args.len == 2 and std.mem.eql(u8, args[1], "forms")) return forms();
     if (args.len == 2 and std.mem.eql(u8, args[1], "consent")) return consent(init);
     if (args.len == 2 and std.mem.eql(u8, args[1], "frames")) return frames(init);
     var state: State = .{};
@@ -120,4 +121,70 @@ fn consent(init: std.process.Init) !void {
     }
     if (done.accepted == null) return error.ConsentNotExercised;
     std.debug.print("PASS GTK-free consent accepted={}\n", .{done.accepted.?});
+}
+
+fn forms() !void {
+    const Owner = struct {
+        fn action(_: ?*anyopaque, _: usize) void {}
+        fn changed(_: ?*anyopaque, _: usize) void {}
+    };
+    const previous = try native.form.Form.create("Clipboard owner", null, &Owner.action, &Owner.changed);
+    const previous_field = try previous.add(.entry, "Name", "", false);
+    try previous.setText(previous_field, "Clipboard after window close");
+    previous.focusItem(previous_field);
+    try std.testing.expect(previous.handleKey('a', 4));
+    try std.testing.expect(previous.handleKey('c', 4));
+    previous.deinit();
+    const form = try native.form.Form.create("Native form fixture", null, &Owner.action, &Owner.changed);
+    defer form.deinit();
+    const field = try form.add(.entry, "Name", "", false);
+    form.focusItem(field);
+    try std.testing.expect(form.handleKey('v', 4));
+    try std.testing.expectEqualStrings("Clipboard after window close", form.get(field).value());
+    try form.setText(field, "日本語 clipboard");
+    form.focusItem(field);
+    try std.testing.expect(form.handleKey('a', 4));
+    try std.testing.expect(form.handleKey('c', 4));
+    try form.setText(field, "");
+    try std.testing.expect(form.handleKey('v', 4));
+    try std.testing.expectEqualStrings("日本語 clipboard", form.get(field).value());
+    const external = try wire.Client.createInteractive(.{ .added = &State.output, .removed = &State.output }, null);
+    defer external.destroy();
+    try external.start();
+    const device = form.get(field).entry.?.clipboard().?;
+    external.seats.items[0].clipboard.?.copy("Text from another client");
+    const clipboard_deadline = c.g_get_monotonic_time() + 2_000_000;
+    while ((device.source != null or device.selection == null) and c.g_get_monotonic_time() < clipboard_deadline) {
+        _ = c.g_main_context_iteration(null, 0);
+        c.g_usleep(1000);
+    }
+    try form.setText(field, "");
+    form.get(field).entry.?.paste();
+    while (device.requests.items.len != 0 and c.g_get_monotonic_time() < clipboard_deadline) {
+        _ = c.g_main_context_iteration(null, 0);
+        c.g_usleep(1000);
+    }
+    try std.testing.expectEqualStrings("Text from another client", form.get(field).value());
+    const dialog = try native.auth.Dialog.create(.password, "Native authentication fixture");
+    defer dialog.destroy();
+    try dialog.entry.?.insert("synthetic-password");
+    try std.testing.expect(dialog.handleKey(0xff1b, 0));
+    try std.testing.expectEqualStrings("", dialog.entry.?.buffer.value());
+    dialog.entry.?.paste();
+    dialog.clear();
+    while (device.requests.items.len != 0 and c.g_get_monotonic_time() < clipboard_deadline) {
+        _ = c.g_main_context_iteration(null, 0);
+        c.g_usleep(1000);
+    }
+    try std.testing.expectEqualStrings("", dialog.entry.?.buffer.value());
+    form.show();
+    const deadline = c.g_get_monotonic_time() + 2_000_000;
+    while (!form.window.surface.?.configured and c.g_get_monotonic_time() < deadline) {
+        _ = c.g_main_context_iteration(null, 0);
+        c.g_usleep(1000);
+    }
+    try std.testing.expect(form.window.surface.?.configured);
+    form.close();
+    while (!form.closed) _ = c.g_main_context_iteration(null, 1);
+    std.debug.print("PASS GTK-free production forms, clipboard and authentication\n", .{});
 }

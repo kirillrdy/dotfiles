@@ -18,7 +18,7 @@ fn z(value: []const u8) [:0]u8 {
 pub const Mode = enum { sound, network };
 pub const Settings = struct {
     mode: Mode = .network,
-    window: *c.GtkWidget,
+    window: *native.host.Window,
     ui: *native.Form,
     message: *native.Item,
     refresh_button: *native.Item,
@@ -42,7 +42,6 @@ pub const Settings = struct {
         const self = a.create(Settings) catch @panic("out of memory");
         const ui = native.Form.create("Network", self, &action, &fieldChanged) catch @panic("out of memory");
         self.* = .{ .window = ui.window, .ui = ui, .audio_cancel = c.g_cancellable_new().?, .message = undefined, .refresh_button = undefined, .ssids = undefined, .manual = undefined, .password = undefined, .hidden = undefined, .profiles = undefined, .devices = undefined, .status = undefined };
-        c.gtk_window_set_icon_name(cast(c.GtkWindow, self.window), "preferences-system-network");
         self.status = self.add(.label, "Loading network devices…", "", false);
         self.refresh_button = self.add(.button, "Refresh", "", false);
         self.refresh_button.always_enabled = true;
@@ -85,17 +84,16 @@ pub const Settings = struct {
         };
         for ([_]usize{ self.view.wifi_nav, self.view.network_nav, self.view.back, self.view.close, self.view.search }) |id| ui.get(id).always_enabled = true;
         self.dynamic_start = ui.items.items.len;
-        c.gtk_window_set_default_size(cast(c.GtkWindow, self.window), 980, 700);
-        c.gtk_window_set_decorated(cast(c.GtkWindow, self.window), 0);
-        c.gtk_scrolled_window_set_policy(cast(c.GtkScrolledWindow, ui.scroll), c.GTK_POLICY_NEVER, c.GTK_POLICY_NEVER);
-        c.gtk_widget_add_events(ui.canvas, c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
+        self.window.setSize(980, 700);
+        ui.window.surface.?.options.min_width = 680;
+        ui.window.surface.?.options.min_height = 400;
         ui.layout = &layout;
         ui.painter = &paint;
         ui.scrolled = &scroll;
         ui.shortcut = &shortcut;
         ui.reveal = &reveal;
         self.network_client = network.Client.create(&networkChanged, self) catch null;
-        _ = c.g_signal_connect_data(self.window, "destroy", @ptrCast(&destroyed), self, null, 0);
+        ui.close_callback = &destroyed;
         ui.show();
         self.refresh();
         return self;
@@ -182,7 +180,7 @@ pub const Settings = struct {
         self.rows.deinit(a);
         a.destroy(self);
     }
-    fn destroyed(_: *c.GtkWidget, ptr: c.gpointer) callconv(.c) void {
+    fn destroyed(ptr: ?*anyopaque) void {
         const self = cast(Settings, ptr);
         self.closed = true;
         c.g_cancellable_cancel(self.audio_cancel);
@@ -401,23 +399,18 @@ pub const Settings = struct {
             .forget => .{ .forget = key },
         });
     }
-    fn cancelForget(_: *c.GtkWidget, ptr: c.gpointer) callconv(.c) void {
-        cast(auth.Dialog, ptr).respond(false);
-    }
     fn forget(self: *Settings) void {
         const key = self.profiles.selectedId() orelse return;
         const owned_key = z(key);
         defer a.free(owned_key);
         const dialog = auth.Dialog.createWithOptions(.confirm, "Forget the selected connection and its saved credentials?", .{ .title = "Forget Connection", .role = "desktop-network-forget", .accept = "Forget", .cancel = "Cancel", .icon = "network-wireless" }) catch return;
         defer dialog.destroy();
-        c.gtk_window_set_transient_for(cast(c.GtkWindow, dialog.window), cast(c.GtkWindow, self.window));
-        const handler = c.g_signal_connect_data(self.window, "destroy", @ptrCast(&cancelForget), dialog, null, 0);
+        dialog.window.parent = self.window;
         // Hold the controller across the nested dialog loop, even if its parent closes.
         self.network_operations += 1;
         self.sensitivity();
         dialog.run();
         const accepted = dialog.accepted;
-        c.g_signal_handler_disconnect(self.window, handler);
         self.network_operations -= 1;
         if (self.closed) return;
         self.sensitivity();
@@ -426,7 +419,7 @@ pub const Settings = struct {
     fn action(ptr: ?*anyopaque, id: usize) void {
         const self = cast(Settings, ptr);
         if (id == self.view.close) {
-            c.gtk_widget_destroy(self.window);
+            self.ui.close();
             return;
         }
         if (id == self.view.wifi_nav or id == self.view.back) {
@@ -523,15 +516,13 @@ pub const Settings = struct {
         defer a.free(owned_path);
         const dialog = auth.Dialog.createWithOptions(.password, ap.title, .{ .title = "Authentication Required", .role = "desktop-network-auth", .accept = "Connect", .cancel = "Cancel", .icon = "network-wireless-symbolic" }) catch return;
         defer dialog.destroy();
-        c.gtk_window_set_transient_for(cast(c.GtkWindow, dialog.window), cast(c.GtkWindow, self.window));
-        const handler = c.g_signal_connect_data(self.window, "destroy", @ptrCast(&cancelForget), dialog, null, 0);
+        dialog.window.parent = self.window;
         self.network_operations += 1;
         self.sensitivity();
         while (true) {
             dialog.run();
             if (!dialog.accepted or (dialog.validatePassword() catch false)) break;
         }
-        c.g_signal_handler_disconnect(self.window, handler);
         self.network_operations -= 1;
         if (self.closed) return;
         self.sensitivity();
@@ -562,14 +553,14 @@ pub const Service = struct {
         }
         for (self.windows.items) |settings| {
             if (!settings.closed and settings.mode == mode) {
-                c.gtk_window_present(cast(c.GtkWindow, settings.window));
+                settings.ui.show();
                 return;
             }
         }
         try self.windows.ensureUnusedCapacity(a, 1);
         const settings = Settings.create(mode);
         self.windows.appendAssumeCapacity(settings);
-        c.gtk_application_add_window(app, cast(c.GtkWindow, settings.window));
+        settings.window.hold(@ptrCast(app));
     }
 
     pub fn reap(self: *Service) void {
@@ -593,7 +584,7 @@ pub const Service = struct {
 
     pub fn deinit(self: *Service) void {
         for (self.sounds.items) |sound| if (!sound.closed) c.gtk_widget_destroy(sound.window);
-        for (self.windows.items) |settings| if (!settings.closed) c.gtk_widget_destroy(settings.window);
+        for (self.windows.items) |settings| if (!settings.closed) settings.ui.close();
         while (self.windows.items.len > 0 or self.sounds.items.len > 0) {
             self.reap();
             if (self.windows.items.len > 0 or self.sounds.items.len > 0) _ = c.g_main_context_iteration(null, 1);

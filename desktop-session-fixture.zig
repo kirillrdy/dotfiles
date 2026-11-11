@@ -48,15 +48,8 @@ const Profiles = struct {
 };
 fn click(dialog: anytype, target: @import("desktop").askpass.native.Target) void {
     const rect = dialog.view.targetRect(target);
-    var event = std.mem.zeroes(c.GdkEventButton);
-    event.type = c.GDK_BUTTON_PRESS;
-    event.button = 1;
-    event.x = rect.x + rect.width / 2;
-    event.y = rect.y + rect.height / 2;
-    var handled: c.gboolean = 0;
-    c.g_signal_emit_by_name(dialog.canvas, "button-press-event", &event, &handled);
-    event.type = 7;
-    c.g_signal_emit_by_name(dialog.canvas, "button-release-event", &event, &handled);
+    dialog.pointerButton(true, rect.x + rect.width / 2, rect.y + rect.height / 2 - dialog.offset);
+    dialog.pointerButton(false, rect.x + rect.width / 2, rect.y + rect.height / 2 - dialog.offset);
 }
 fn checkPowerDialog(controls: *quick.Controls) !void {
     var profiles: Profiles = .{};
@@ -91,6 +84,7 @@ fn checkPowerDialog(controls: *quick.Controls) !void {
     try std.testing.expectEqual(@as(usize, 2), profiles.calls);
     try std.testing.expectEqual(@as(usize, 1), profiles.index);
     try std.testing.expect(dialog.handleKey(0xff1b, 0));
+    pump();
     try std.testing.expect(controls.dialog == null);
 }
 
@@ -120,12 +114,14 @@ test "session: private logind actions and quick-settings lifecycle" {
         try std.testing.expect(controls.dialog != null);
         try std.testing.expectEqualStrings("Cancel", controls.dialog.?.view.cancel_label.?);
         try std.testing.expect(controls.dialog.?.handleKey(0xff0d, 0));
+        pump();
         try std.testing.expect(controls.dialog == null and !controls.session_busy);
         controls.view.submenu = .power;
         controls.redraw();
         controls.activate(.suspend_action);
         try std.testing.expect(controls.dialog.?.handleKey(0xff09, 0));
         try std.testing.expect(controls.dialog.?.handleKey(0xff0d, 0));
+        pump();
         controls.sessionAction(.reboot); // A pending action must prevent duplicate requests.
         if (std.mem.eql(u8, scenario, "ui-denied")) {
             while (controls.session_busy and c.g_get_monotonic_time() < deadline) pump();

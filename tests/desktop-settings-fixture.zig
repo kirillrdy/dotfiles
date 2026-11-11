@@ -11,7 +11,8 @@ pub fn main() !void {
         ui.renderNetwork(state);
         try std.testing.expectEqualStrings("Cafe: Tokyo\\5G", ui.manual.value());
         try std.testing.expect(!ui.password.entry.?.echo);
-        c.gtk_widget_destroy(ui.window);
+        ui.ui.close();
+        while (!ui.closed) _ = c.g_main_context_iteration(null, 1);
         while (ui.network_operations != 0) _ = c.g_main_context_iteration(null, 1);
         ui.destroy();
         const deadline = c.g_get_monotonic_time() + 100000;
