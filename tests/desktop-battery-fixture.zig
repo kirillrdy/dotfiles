@@ -36,6 +36,8 @@ fn report(_: ?*anyopaque) callconv(.c) c_int {
         .time_to_full = latest.time_to_full,
         .energy = latest.energy,
         .energy_full = latest.energy_full,
+        .energy_full_design = latest.energy_full_design,
+        .capacity = latest.capacity,
         .energy_rate = latest.energy_rate,
         .charge_threshold = latest.charge_threshold,
         .warning = @backingInt(latest.warning()),

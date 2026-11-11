@@ -161,6 +161,36 @@ def critical(percent=1, online=0):
 
 try:
     assert not read()["present"]
+    reset()
+    device("BAT0", type="Battery", status="Discharging", energy_now=50000000,
+           energy_full=100000000, energy_full_design=125000000)
+    value = read()
+    assert value["energy_full_design"] == 125 and value["capacity"] == 80, value
+    device("BAT0", energy_full=130000000)
+    assert read()["capacity"] == 100, "health above design must be bounded"
+    (supplies / "BAT0/energy_full").unlink()
+    assert read()["capacity"] == 0, "missing learned full capacity must not imply perfect health"
+    for invalid in ("0", "-1", "nan", "inf", "broken"):
+        device("BAT0", energy_full_design=invalid)
+        assert read()["energy_full_design"] == 0, invalid
+    reset()
+    device("BAT0", type="Battery", status="Discharging", charge_now=2000000,
+           charge_full=4000000, charge_full_design=5000000, voltage_min_design=12000000)
+    value = read()
+    assert value["energy_full_design"] == 60 and value["capacity"] == 80, value
+    device("BAT1", type="Battery", status="Discharging", energy_now=15000000,
+           energy_full=30000000, energy_full_design=40000000)
+    value = read()
+    assert value["energy_full_design"] == 100 and value["capacity"] == 78, value
+    (supplies / "BAT1/energy_full_design").unlink()
+    value = read()
+    assert value["energy_full_design"] == 0 and value["capacity"] == 0, value
+    shutil.rmtree(supplies / "BAT1")
+    (supplies / "BAT0/voltage_min_design").unlink()
+    value = read()
+    assert value["energy_full_design"] == 0 and value["capacity"] == 80, value
+    print("PASS design capacity, charge conversion, battery health, aggregation and missing/invalid data", flush=True)
+    reset()
     device("mouse", type="Battery", scope="Device", present=1, capacity=1, status="Discharging")
     assert not read()["present"], "peripheral counted as system battery"
     energy()
@@ -267,6 +297,16 @@ try:
     wait(lambda: properties()["WarningLevel"] == 3, "compatibility warning")
     wait(lambda: changed, "power status change signal")
     assert not actions, "critical action above action threshold"
+    device("BAT0", energy_full_design=125000000)
+    wait(lambda: properties()["EnergyFullDesign"] == 125, "design capacity property")
+    assert properties()["Capacity"] == 80
+    physical = properties("/org/freedesktop/UPower/devices/battery_system")
+    assert physical["EnergyFullDesign"] == 125 and physical["Capacity"] == 80, physical
+    changed.clear()
+    device("BAT0", energy_full_design=200000000)
+    wait(lambda: properties()["EnergyFullDesign"] == 200, "design-only update")
+    assert properties()["Capacity"] == 50
+    wait(lambda: any(event[1].get("EnergyFullDesign") == 200 for event in changed), "design change signal")
     print("PASS core UPower status queries, enumeration, lid state, warning levels and change signals", flush=True)
 
     # Charging/full readings must not trigger protection even if AC is stale/offline.

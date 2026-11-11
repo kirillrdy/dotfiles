@@ -100,9 +100,11 @@ const Server = struct {
         if (eq(key, "TimeToFull")) return c.g_variant_new("x", value.time_to_full);
         if (eq(key, "Energy")) return c.g_variant_new("d", value.energy);
         if (eq(key, "EnergyFull")) return c.g_variant_new("d", value.energy_full);
+        if (eq(key, "EnergyFullDesign")) return c.g_variant_new("d", value.energy_full_design);
+        if (eq(key, "Capacity")) return c.g_variant_new("d", value.capacity);
         if (eq(key, "EnergyRate")) return c.g_variant_new("d", value.energy_rate);
         if (eq(key, "Percentage")) return c.g_variant_new("d", if (value.visible()) value.percent else @as(f64, 0));
-        if (eq(key, "EnergyEmpty") or eq(key, "EnergyFullDesign") or eq(key, "Capacity") or eq(key, "Voltage") or eq(key, "Temperature") or eq(key, "Luminosity")) return c.g_variant_new("d", @as(f64, 0));
+        if (eq(key, "EnergyEmpty") or eq(key, "Voltage") or eq(key, "Temperature") or eq(key, "Luminosity")) return c.g_variant_new("d", @as(f64, 0));
         if (eq(key, "ChargeCycles")) return c.g_variant_new("i", @as(c_int, -1));
         if (eq(key, "IconName")) {
             var buffer: [100]u8 = undefined;

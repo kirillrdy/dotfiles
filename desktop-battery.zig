@@ -10,6 +10,8 @@ pub const State = struct {
     on_battery: bool = false,
     energy: f64 = 0,
     energy_full: f64 = 0,
+    energy_full_design: f64 = 0,
+    capacity: f64 = 0,
     energy_rate: f64 = 0,
     percent: f64 = 0,
     state: u32 = 0,
@@ -87,6 +89,8 @@ pub const Device = struct {
     state: u32 = 0,
     energy: ?f64 = null,
     full: ?f64 = null,
+    full_design: ?f64 = null,
+    capacity: ?f64 = null,
     rate: ?f64 = null,
     time_empty: i64 = 0,
     time_full: i64 = 0,
@@ -154,9 +158,20 @@ pub const Backend = struct {
         const voltage_now = self.positive(name, "voltage_now") orelse voltage;
         const current = self.number(name, "current_now") orelse self.number(name, "current_avg");
         const charge = self.nonnegative(name, "charge_now");
-        const charge_full = self.positive(name, "charge_full") orelse self.positive(name, "charge_full_design");
+        const charge_full_actual = self.positive(name, "charge_full");
+        const charge_full_design = self.positive(name, "charge_full_design");
+        const charge_full = charge_full_actual orelse charge_full_design;
+        const energy_full_actual = self.positive(name, "energy_full");
+        const energy_full_design = self.positive(name, "energy_full_design");
         result.energy = self.nonnegative(name, "energy_now");
-        result.full = self.positive(name, "energy_full") orelse self.positive(name, "energy_full_design");
+        result.full = energy_full_actual orelse energy_full_design;
+        result.full_design = energy_full_design;
+        if (result.full_design == null and charge_full_design != null and voltage != null) result.full_design = charge_full_design.? * voltage.? / 1e6;
+        if (energy_full_actual != null and energy_full_design != null) {
+            result.capacity = std.math.clamp(energy_full_actual.? / energy_full_design.? * 100, 0, 100);
+        } else if (charge_full_actual != null and charge_full_design != null) {
+            result.capacity = std.math.clamp(charge_full_actual.? / charge_full_design.? * 100, 0, 100);
+        }
         if ((result.energy == null or result.full == null) and charge != null and charge_full != null and voltage != null) {
             result.energy = charge.? * voltage.? / 1e6;
             result.full = charge_full.? * voltage.? / 1e6;
@@ -212,9 +227,12 @@ pub const Aggregate = struct {
     count: usize = 0,
     valid: bool = true,
     energy_known: bool = true,
+    design_known: bool = true,
+    capacity_known: bool = true,
     rate_known: bool = true,
     energy: f64 = 0,
     full: f64 = 0,
+    full_design: f64 = 0,
     rate: f64 = 0,
     percent: f64 = 0,
     charging: bool = false,
@@ -231,6 +249,8 @@ pub const Aggregate = struct {
         self.charging = self.charging or value.state == 1;
         self.discharging = self.discharging or value.state == 2;
         self.all_full = self.all_full and value.state == 4;
+        if (value.full_design) |design| self.full_design += design else self.design_known = false;
+        self.capacity_known = self.capacity_known and value.capacity != null;
         if (value.energy != null and value.full != null) {
             self.energy += value.energy.?;
             self.full += value.full.?;
@@ -249,6 +269,8 @@ pub const Aggregate = struct {
             .charge_threshold = self.threshold,
             .energy = if (weighted) self.energy / 1e6 else 0,
             .energy_full = if (weighted) self.full / 1e6 else 0,
+            .energy_full_design = if (self.design_known) self.full_design / 1e6 else 0,
+            .capacity = if (self.count == 1) self.single.capacity orelse 0 else if (self.capacity_known and self.energy_known and self.design_known and self.full_design > 0) std.math.clamp(self.full / self.full_design * 100, 0, 100) else 0,
             .energy_rate = if (self.rate_known) @abs(self.rate) / 1e6 else 0,
         };
         if (self.charging and self.discharging and self.rate_known and self.rate != 0) {
