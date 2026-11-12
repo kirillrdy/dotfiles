@@ -1756,6 +1756,7 @@ pub const WL_SHM_FORMAT_XRGB8888 = wayland.WL_SHM_FORMAT_XRGB8888;
 pub const WL_SHM_FORMAT_XBGR8888 = wayland.WL_SHM_FORMAT_XBGR8888;
 
 pub const WL_SHM_FORMAT_ABGR8888 = wayland.WL_SHM_FORMAT_ABGR8888;
+pub const WL_SHM_FORMAT_BGR888 = wayland.WL_SHM_FORMAT_BGR888;
 
 pub const wl_shm_destroy = wayland.wl_shm_destroy;
 

@@ -136,6 +136,7 @@ pub const WL_SHM_FORMAT_XRGB8888: c_int = 1;
 pub const WL_SHM_FORMAT_XBGR8888: c_int = 875709016;
 
 pub const WL_SHM_FORMAT_ABGR8888: c_int = 875708993;
+pub const WL_SHM_FORMAT_BGR888: c_int = 0x34324742;
 
 pub fn wl_shm_destroy(wl_shm_1: ?*struct_wl_shm) callconv(.c) void {
     wl_proxy_destroy(@ptrCast(@alignCast(wl_shm_1)));

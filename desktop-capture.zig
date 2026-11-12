@@ -85,7 +85,8 @@ pub const Window = struct {
         }
         if (!self.constraints or !self.supported or self.frame != null or self.thumbnail != null) return;
         if (self.width == 0 or self.height == 0 or self.width > 8192 or self.height > 8192) return;
-        const length: usize = @as(usize, self.width) * self.height * 4;
+        const stride = captureStride(self.width, self.format);
+        const length: usize = @as(usize, stride) * self.height;
         if (length > 64 * 1024 * 1024) return;
         if (self.buffer != null and (self.buffer_width != self.width or self.buffer_height != self.height or self.buffer_format != self.format)) self.freeBuffer();
         if (self.buffer == null) {
@@ -101,7 +102,7 @@ pub const Window = struct {
             self.buffer_height = self.height;
             self.buffer_format = self.format;
             const pool = c.wl_shm_create_pool(client.shm, fd, @intCast(length));
-            self.buffer = c.wl_shm_pool_create_buffer(pool, 0, @intCast(self.width), @intCast(self.height), @intCast(self.width * 4), self.format);
+            self.buffer = c.wl_shm_pool_create_buffer(pool, 0, @intCast(self.width), @intCast(self.height), @intCast(stride), self.format);
             c.wl_shm_pool_destroy(pool);
         }
         self.frame = protocols.ext_image_copy_capture_session_v1_create_frame(self.session);
@@ -345,10 +346,15 @@ fn bufferSize(data: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v
 }
 fn shmFormat(data: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, value: u32) callconv(.c) void {
     const w = cast(Window, data);
-    if (value == c.WL_SHM_FORMAT_ARGB8888 or value == c.WL_SHM_FORMAT_XRGB8888 or value == c.WL_SHM_FORMAT_ABGR8888 or value == c.WL_SHM_FORMAT_XBGR8888) {
+    if (value == c.WL_SHM_FORMAT_ARGB8888 or value == c.WL_SHM_FORMAT_XRGB8888 or value == c.WL_SHM_FORMAT_ABGR8888 or value == c.WL_SHM_FORMAT_XBGR8888 or value == c.WL_SHM_FORMAT_BGR888) {
         w.format = value;
         w.supported = true;
     }
+}
+fn captureStride(width: u32, format_value: u32) u32 {
+    // NVIDIA can prefer packed RGB readback. Keep every SHM row aligned.
+    const bytes: u32 = if (format_value == c.WL_SHM_FORMAT_BGR888) 3 else 4;
+    return std.mem.alignForward(u32, width * bytes, 4);
 }
 fn device(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, _: [*c]c.wl_array) callconv(.c) void {}
 fn format(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, _: u32, _: [*c]c.wl_array) callconv(.c) void {}
@@ -424,12 +430,14 @@ fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) 
         .pixels = memory[0..w.length],
         .width = w.buffer_width,
         .height = w.buffer_height,
-        .stride = @as(usize, w.buffer_width) * 4,
+        .stride = captureStride(w.buffer_width, w.buffer_format),
         .format = switch (w.buffer_format) {
             c.WL_SHM_FORMAT_ARGB8888 => .argb,
             c.WL_SHM_FORMAT_XRGB8888 => .xrgb,
             c.WL_SHM_FORMAT_ABGR8888 => .abgr,
             c.WL_SHM_FORMAT_XBGR8888 => .xbgr,
+            // DRM BGR888 is stored as R, G, B bytes on our little-endian hosts.
+            c.WL_SHM_FORMAT_BGR888 => .rgb,
             else => return,
         },
     });
@@ -439,6 +447,26 @@ fn failed(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1,
     protocols.ext_image_copy_capture_frame_v1_destroy(frame);
     w.frame = null;
     w.freeBuffer();
+}
+
+test "NVIDIA packed RGB capture negotiates and preserves colors across padded rows" {
+    var window: Window = .{ .client = undefined, .handle = undefined };
+    shmFormat(&window, null, c.WL_SHM_FORMAT_BGR888);
+    try std.testing.expect(window.supported);
+    try std.testing.expectEqual(@as(u32, c.WL_SHM_FORMAT_BGR888), window.format);
+    const stride = captureStride(1, window.format);
+    try std.testing.expectEqual(@as(u32, 4), stride);
+    try std.testing.expectEqual(@as(u32, 12), captureStride(3, window.format));
+    const pixels = [_]u8{ 255, 0, 0, 0xde, 0, 0, 255, 0xad };
+    const image = try Image.thumbnail(std.testing.allocator, .{
+        .pixels = &pixels,
+        .width = 1,
+        .height = 2,
+        .stride = stride,
+        .format = .rgb,
+    });
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(u32, &.{ 0xffff0000, 0xff0000ff }, std.mem.bytesAsSlice(u32, image.pixels));
 }
 
 test "overview snapshots track focus stacking changes without changing picker order" {
