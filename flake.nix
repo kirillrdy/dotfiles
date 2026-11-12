@@ -126,6 +126,7 @@
         tsutenkaku = {
           enableNvidia = true;
           enableOpencl = true;
+          enableLightDesktop = true;
         };
       };
     };

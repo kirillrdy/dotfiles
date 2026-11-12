@@ -106,7 +106,7 @@
   swapDevices = [ { device = "/dev/nvme0n1p2"; } ];
   zramSwap.enable = true;
   system.stateVersion = "29.11"; # I come from the future
-  time.timeZone = "Asia/Tokyo";
+  time.timeZone = "Australia/Melbourne";
   users.users.kirillvr = {
     isNormalUser = true;
     initialPassword = "password";
