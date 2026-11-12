@@ -360,6 +360,48 @@ def main():
                 "Super did not hide the overview",
             )
             assert time.monotonic() - close_started >= 0.2, "Closing skipped the 250ms animation profile"
+            # Exercise actual compositor pressure with relative motion. Merely
+            # visiting the corner, or sliding along it, must not toggle.
+            def overview_maps():
+                return len(re.findall(r'get_layer_surface\(.*"desktop-overview"', log()))
+
+            def layer_destroys():
+                return len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log()))
+
+            maps_before = overview_maps()
+            pointer_command("move 0 0")
+            time.sleep(0.15)
+            assert overview_maps() == maps_before, "Corner toggled without pressure"
+            pointer_command("move 0 10")
+            pointer_command("relative -5 10")
+            for _ in range(6):
+                pointer_command("relative -40 0")
+            time.sleep(0.15)
+            assert overview_maps() == maps_before, "Corner ignored GNOME's per-event pressure cap"
+            pointer_command("relative -10 0")
+            wait_for(lambda: overview_maps() == maps_before + 1, "Corner pressure did not open overview")
+            time.sleep(0.65)
+            destroys = layer_destroys()
+            pointer_command("relative -150 0")
+            time.sleep(0.15)
+            assert layer_destroys() == destroys, "Corner retriggered before pointer left"
+            pointer_command("move 100 100")
+            pointer_command("relative -200 -200")
+            wait_for(lambda: layer_destroys() == destroys + 1, "Rearmed corner did not close overview")
+            # Pressure older than one second no longer contributes.
+            pointer_command("move 100 100")
+            pointer_command("move 10 0")
+            for _ in range(6):
+                pointer_command("relative 0 -15")
+            time.sleep(1.1)
+            pointer_command("relative 0 -15")
+            time.sleep(0.15)
+            assert overview_maps() == maps_before + 1, "Expired corner pressure triggered overview"
+            for _ in range(6):
+                pointer_command("relative 0 -15")
+            wait_for(lambda: overview_maps() == maps_before + 2, "Top barrier did not open overview")
+            time.sleep(0.6)
+            key("Escape")
             assert compositor.poll() is None
             overview_surfaces = re.findall(r'get_layer_surface\([^\n]*wl_surface#(\d+),[^\n]*"desktop-overview"', log())
             assert overview_surfaces and any(re.search(rf'wl_surface#{surface}\.frame\(', log()) for surface in overview_surfaces), "Overview did not request compositor frame callbacks"
@@ -367,7 +409,7 @@ def main():
                 -4000:
             ]
             print(
-                "PASS: live captures, exact activation, idle cleanup, workspaces, drag, keyboard, native dash, tooltips, native IME, search, app grid, close and Super"
+                "PASS: live captures, exact activation, idle cleanup, workspaces, drag, keyboard, native dash, tooltips, native IME, search, app grid, close, Super and GNOME corner pressure"
             )
         finally:
             processes.stop()

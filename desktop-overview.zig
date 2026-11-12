@@ -59,6 +59,7 @@ const Overview = struct {
     drag_y: f64 = 0,
     dragging: bool = false,
     transition: animation.Transition = .{},
+    activation_time: i64 = 0,
     progress: f64 = 0,
     dash_hash: u64 = 0,
     workspace_from: f64 = 0,
@@ -151,6 +152,7 @@ const Overview = struct {
             client.captureMissing();
         }
         self.transition.setShown(true, c.g_get_monotonic_time());
+        self.activation_time = c.g_get_monotonic_time();
         self.rebuildDash();
         self.launcher.visible_window = true;
         self.updateMode();
@@ -944,4 +946,15 @@ pub fn activate(app: *c.GtkApplication, data: c.gpointer) callconv(.c) void {
 pub fn deinit(state: *State) void {
     if (state.overview) |self| self.destroy();
     state.overview = null;
+}
+
+pub fn activateCorner(app: *c.GtkApplication, state: *State) void {
+    if (state.overview) |self| {
+        const now = c.g_get_monotonic_time();
+        // overview.js shouldToggleByCornerOrButton(): don't interrupt an
+        // animation or drag, and debounce for 500 ms after opening.
+        if (self.transition.active(now) or self.dragging or self.drag != null) return;
+        if (self.activation_time != 0 and now - self.activation_time <= 500_000) return;
+    }
+    activate(app, state);
 }

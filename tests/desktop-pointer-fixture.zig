@@ -33,6 +33,16 @@ pub fn main(init: std.process.Init) !void {
     while (try reader.interface.takeDelimiter('\n')) |line| {
         var tokens = std.mem.tokenizeAny(u8, line, " \r\n");
         const command = tokens.next() orelse continue;
+        if (std.mem.eql(u8, command, "relative")) {
+            const dx = try std.fmt.parseInt(i32, tokens.next() orelse return error.MissingValue, 10);
+            const dy = try std.fmt.parseInt(i32, tokens.next() orelse return error.MissingValue, 10);
+            pointer_api.relative(pointer, dx, dy, @truncate(@as(u64, @intCast(@divTrunc(c.g_get_monotonic_time(), 1000)))));
+            pointer_api.frame(pointer);
+            if (c.wl_display_roundtrip(display) < 0) return error.Disconnected;
+            try writer.interface.writeAll("ok\n");
+            try writer.interface.flush();
+            continue;
+        }
         const x = try std.fmt.parseInt(u32, tokens.next() orelse return error.MissingValue, 10);
         if (std.mem.eql(u8, command, "move")) {
             const y = try std.fmt.parseInt(u32, tokens.next() orelse return error.MissingValue, 10);

@@ -129,6 +129,8 @@ fn dispatch(self: *Session, args: []const []const u8) !void {
     if (!self.serving) return error.SessionNotRunning;
     if (std.mem.eql(u8, verb, "overview") and args.len == 1) {
         overview.activate(self.app, &self.activities);
+    } else if (std.mem.eql(u8, verb, "overview-corner") and args.len == 1) {
+        overview.activateCorner(self.app, &self.activities);
     } else if (std.mem.eql(u8, verb, "settings") and args.len == 2) {
         const mode: settings.Mode = if (std.mem.eql(u8, args[1], "sound"))
             .sound

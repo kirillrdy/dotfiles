@@ -53,6 +53,11 @@ pub fn move(pointer: *Pointer, x: u32, y: u32, width: u32, height: u32) void {
     var args = [_]c.wl_argument{ .{ .u = 0 }, .{ .u = x }, .{ .u = y }, .{ .u = width }, .{ .u = height } };
     _ = request(proxy, 1, null, 0, &args);
 }
+pub fn relative(pointer: *Pointer, dx: i32, dy: i32, time: u32) void {
+    const proxy: *c.wl_proxy = @ptrCast(pointer);
+    var args = [_]c.wl_argument{ .{ .u = time }, .{ .f = dx * 256 }, .{ .f = dy * 256 } };
+    _ = request(proxy, 0, null, 0, &args);
+}
 pub fn button(pointer: *Pointer, code: u32, state: u32) void {
     const proxy: *c.wl_proxy = @ptrCast(pointer);
     var args = [_]c.wl_argument{ .{ .u = 0 }, .{ .u = code }, .{ .u = state } };
@@ -77,6 +82,12 @@ test "virtual pointer requests preserve protocol argument order, version and des
     for ([_]u32{ 0, 123, 456, 1728, 1080 }, transport.arguments) |expected, actual| try std.testing.expectEqual(expected, actual.u);
     try std.testing.expectEqual(@as(u32, 2), transport.version);
     try std.testing.expectEqual(@as(u32, 0), transport.flags);
+
+    relative(created, -40, 15, 1234);
+    try std.testing.expectEqual(@as(u32, 0), transport.opcode);
+    try std.testing.expectEqual(@as(u32, 1234), transport.arguments[0].u);
+    try std.testing.expectEqual(@as(i32, -40 * 256), transport.arguments[1].f);
+    try std.testing.expectEqual(@as(i32, 15 * 256), transport.arguments[2].f);
 
     button(created, 272, 1);
     try std.testing.expectEqual(@as(u32, 2), transport.opcode);

@@ -4,6 +4,8 @@
 const std = @import("std");
 const c = @import("compositor-abi");
 const p = @import("desktop-protocols.zig");
+const hot_corner = @import("desktop-hot-corner.zig");
+const g = @import("desktop-gtk.zig");
 const heap = std.heap.page_allocator;
 
 pub const Handle = struct {
@@ -148,6 +150,7 @@ const Server = struct {
     resize_edges: u32 = 0,
     drag_icon: ?*c.wlr_scene_tree = null,
     inhibitors: std.ArrayList(*Inhibitor) = .empty,
+    corner_settings: ?*g.GSettings = null,
 
     fn init(self: *Server, handle: *Handle) !void {
         c.wlr_log_init(c.WLR_INFO, null);
@@ -239,9 +242,17 @@ const Server = struct {
         const name = std.mem.span(socket);
         @memcpy(handle.socket[0..name.len], name);
         if (!c.wlr_backend_start(self.backend)) return error.StartBackend;
+        if (g.g_settings_schema_source_get_default()) |source| {
+            if (g.g_settings_schema_source_lookup(source, "org.gnome.desktop.interface", 1)) |schema| {
+                defer g.g_settings_schema_unref(schema);
+                if (g.g_settings_schema_has_key(schema, "enable-hot-corners") != 0)
+                    self.corner_settings = g.g_settings_new_full(schema, null, null);
+            }
+        }
         std.log.info("desktop compositor ready on {s}", .{name});
     }
     fn deinit(self: *Server) void {
+        if (self.corner_settings) |settings| g.g_object_unref(settings);
         self.shutting_down = true;
         c.wl_display_destroy_clients(self.display);
         self.ime.deinit();
@@ -492,7 +503,11 @@ const Server = struct {
         const self = cast(Server, ptr);
         const e = cast(c.wlr_pointer_motion_event, data);
         self.activity();
+        const x = self.cursor.x;
+        const y = self.cursor.y;
+        const point = self.cornerMotion(x, y, e.delta_x, e.delta_y, e.time_msec);
         c.wlr_cursor_move(self.cursor, &e.pointer.*.base, e.delta_x, e.delta_y);
+        if (point.blocked) _ = c.wlr_cursor_warp_closest(self.cursor, &e.pointer.*.base, point.x, point.y);
         self.pointer(e.time_msec);
     }
     fn absolute(ptr: *anyopaque, data: ?*anyopaque) void {
@@ -500,7 +515,85 @@ const Server = struct {
         const e = cast(c.wlr_pointer_motion_absolute_event, data);
         self.activity();
         c.wlr_cursor_warp_absolute(self.cursor, &e.pointer.*.base, e.x, e.y);
+        for (self.outputs.items) |output| {
+            const left: f64 = @floatFromInt(output.box.x);
+            const top: f64 = @floatFromInt(output.box.y);
+            const size = output.barrierSize();
+            // Absolute motion must release a previous relative barrier hit,
+            // including an excursion away and back between relative events.
+            output.pressure.leave(self.cursor.x <= left and self.cursor.y >= top and self.cursor.y <= top + size, self.cursor.y <= top and self.cursor.x >= left and self.cursor.x <= left + size);
+        }
         self.pointer(e.time_msec);
+    }
+    // Absolute devices have no pressure beyond an output edge. Only relative
+    // pointer events hit barriers, as in Mutter's native pointer barriers.
+    fn cornerMotion(self: *Server, x: f64, y: f64, dx: f64, dy: f64, time: u32) struct { x: f64, y: f64, blocked: bool } {
+        var next_x = x + dx;
+        var next_y = y + dy;
+        var blocked = false;
+        const enabled = if (self.corner_settings) |settings| g.g_settings_get_boolean(settings, "enable-hot-corners") != 0 else true;
+        var allowed = enabled and !self.locked and !self.cycling and self.grabbed == null;
+        var in_overview = false;
+        for (self.layers.items) |layer| {
+            if (!layer.wlr.surface.*.mapped) continue;
+            if (same(layer.wlr.namespace, "desktop-overview")) {
+                in_overview = true;
+            } else if (layer.wlr.current.keyboard_interactive == c.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) allowed = false;
+        }
+        var toggle = false;
+        for (self.outputs.items, 0..) |output, index| {
+            const left: f64 = @floatFromInt(output.box.x);
+            const top: f64 = @floatFromInt(output.box.y);
+            var exposed = true;
+            // GNOME always enables the primary corner. Secondary corners must
+            // have neither a monitor immediately above nor one to their left.
+            if (index != 0) for (self.outputs.items) |other| {
+                if (other == output) continue;
+                if (c.wlr_box_contains_point(&other.box, left - 1, top) or c.wlr_box_contains_point(&other.box, left, top - 1)) exposed = false;
+            };
+            if (!allowed or !exposed or !output.wlr.enabled) {
+                output.pressure.reset();
+                continue;
+            }
+            const size = output.barrierSize();
+            output.pressure.leave(x <= left and y >= top and y <= top + size, y <= top and x >= left and x <= left + size);
+            var triggered = false;
+            var vertical = false;
+            var horizontal = false;
+            // Intercept motion before wlroots clips it to the output layout;
+            // otherwise the attempted motion (and therefore pressure) is lost.
+            if (dx < 0 and x >= left and next_x <= left) {
+                const cross_y = y + dy * ((left - x) / dx);
+                vertical = cross_y >= top and cross_y <= top + size;
+            }
+            if (dy < 0 and y >= top and next_y <= top) {
+                const cross_x = x + dx * ((top - y) / dy);
+                horizontal = cross_x >= left and cross_x <= left + size;
+            }
+            // After hitting one arm, the remaining motion can hit the other.
+            if (vertical and dy < 0 and next_y <= top) horizontal = true;
+            if (horizontal and dx < 0 and next_x <= left) vertical = true;
+            if (vertical) {
+                next_x = left;
+                blocked = true;
+                triggered = output.pressure.hit(true, dx, dy, time) or triggered;
+            }
+            if (horizontal) {
+                next_y = top;
+                blocked = true;
+                triggered = output.pressure.hit(false, dx, dy, time) or triggered;
+            }
+            // Preserve the barrier latch when gliding around the corner, but
+            // release it as soon as the pointer has left both barrier hitboxes.
+            output.pressure.leave(next_x <= left and next_y >= top and next_y <= top + size, next_y <= top and next_x >= left and next_x <= left + size);
+            var fullscreen = false;
+            for (self.views.items) |v| if (v.mapped and v.workspace == self.workspace and v.output == output and v.fullscreen) {
+                fullscreen = true;
+            };
+            if (triggered and (!fullscreen or in_overview)) toggle = true;
+        }
+        if (toggle) launch("overview-corner");
+        return .{ .x = next_x, .y = next_y, .blocked = blocked };
     }
     fn button(ptr: *anyopaque, data: ?*anyopaque) void {
         const self = cast(Server, ptr);
@@ -662,6 +755,14 @@ const Output = struct {
     box: c.wlr_box = std.mem.zeroes(c.wlr_box),
     usable: c.wlr_box = std.mem.zeroes(c.wlr_box),
     hooks: Hooks = .{},
+    pressure: hot_corner.Pressure = .{},
+    fn barrierSize(self: *Output) f64 {
+        for (self.s.layers.items) |layer| {
+            if (layer.wlr.output == self.wlr and same(layer.wlr.namespace, "desktop-panel") and layer.wlr.current.exclusive_zone > 0)
+                return @floatFromInt(layer.wlr.current.exclusive_zone);
+        }
+        return 32;
+    }
     fn create(s: *Server, wlr: *c.wlr_output) void {
         if (!c.wlr_output_init_render(wlr, s.allocator, s.renderer)) return;
         var state: c.wlr_output_state = undefined;
@@ -723,6 +824,7 @@ const Output = struct {
     fn destroy(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Output, ptr);
         defer self.s.a.destroy(self);
+        self.pressure.deinit();
         self.hooks.clear();
         remove(*Output, &self.s.outputs, self);
         for (self.s.views.items) |v| if (v.output == self) {
