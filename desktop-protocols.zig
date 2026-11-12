@@ -61,8 +61,6 @@ pub const zwlr_data_control_manager_v1 = opaque {};
 
 pub const zwlr_data_control_source_v1 = opaque {};
 
-pub const zwlr_data_control_offer_v1 = opaque {};
-
 pub const ext_foreign_toplevel_handle_v1 = opaque {};
 
 pub const ext_foreign_toplevel_list_v1 = opaque {};

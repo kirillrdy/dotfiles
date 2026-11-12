@@ -5,9 +5,7 @@ const raster = @import("desktop-raster.zig");
 pub fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
 }
-pub fn eq(left: []const u8, right: []const u8) bool {
-    return std.mem.eql(u8, left, right);
-}
+pub const eq = @import("desktop-util.zig").eq;
 pub fn parentTo(widget: *c.GtkWidget, allocator: std.mem.Allocator, parent: [:0]const u8) void {
     const display = c.gdk_display_get_default();
     const window = c.gtk_widget_get_window(widget) orelse return;

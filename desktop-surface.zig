@@ -1,6 +1,7 @@
 //! Native Wayland layer surfaces and application windows with SHM rendering.
 //! Each client has a private connection, driven by GLib rather than GDK.
 const std = @import("std");
+const wayland = @import("desktop-wayland.zig");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const p = @import("desktop-protocols.zig");
@@ -170,7 +171,7 @@ pub const Client = struct {
         if (std.mem.eql(u8, kind, "wl_compositor")) {
             self.compositor = @ptrCast(c.wl_registry_bind(registry, name, &wl_compositor_interface, @min(version, 4)));
         } else if (std.mem.eql(u8, kind, "wl_shm")) {
-            self.shm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1));
+            self.shm = @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_shm_interface, 1));
         } else if (std.mem.eql(u8, kind, "zwlr_layer_shell_v1")) {
             self.shell = @ptrCast(c.wl_registry_bind(registry, name, &p.zwlr_layer_shell_v1_interface, @min(version, 4)));
         } else if (std.mem.eql(u8, kind, "xdg_wm_base")) {
@@ -201,7 +202,7 @@ pub const Client = struct {
         } else if (std.mem.eql(u8, kind, "wl_output")) {
             if (version < 2) return; // Buffer scale requires wl_output version 2.
             const output = a.create(Output) catch @panic("out of memory");
-            output.* = .{ .client = self, .name = name, .proxy = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_output_interface, @min(version, 4))) };
+            output.* = .{ .client = self, .name = name, .proxy = @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_output_interface, @min(version, 4))) };
             self.outputs.append(a, output) catch @panic("out of memory");
             _ = c.wl_output_add_listener(output.proxy, &Output.listener, output);
             output.bindLogical();

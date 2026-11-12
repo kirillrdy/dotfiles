@@ -1,5 +1,6 @@
 //! Native idle locking and logind suspend coordination. All callbacks run on the GLib context.
 const std = @import("std");
+const wayland = @import("desktop-wayland.zig");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const p = @import("desktop-protocols.zig");
@@ -186,7 +187,7 @@ pub const Service = struct {
             while (seat) |s| : (seat = s.next) s.watch();
         } else if (std.mem.eql(u8, kind, "wl_seat")) {
             const seat = a.create(Seat) catch @panic("out of memory");
-            seat.* = .{ .service = self, .name = name, .proxy = cast(c.wl_seat, c.wl_registry_bind(registry, name, &c.wl_seat_interface, 1)), .next = self.seats };
+            seat.* = .{ .service = self, .name = name, .proxy = cast(c.wl_seat, c.wl_registry_bind(registry, name, &wayland.wl_seat_interface, 1)), .next = self.seats };
             self.seats = seat;
             seat.watch();
         }

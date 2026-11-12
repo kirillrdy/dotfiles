@@ -1,5 +1,6 @@
 //! Independent ext-session-lock client. Only successful PAM authentication sends unlock.
 const std = @import("std");
+const wayland = @import("desktop-wayland.zig");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const p = @import("desktop-protocols.zig");
@@ -318,17 +319,17 @@ const State = struct {
         if (std.mem.eql(u8, kind, "wl_compositor")) {
             self.compositor = cast(Proxy, c.wl_registry_bind(registry, name, &wl_compositor_interface, 1));
         } else if (std.mem.eql(u8, kind, "wl_shm")) {
-            self.shm = cast(c.wl_shm, c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1));
+            self.shm = cast(c.wl_shm, c.wl_registry_bind(registry, name, &wayland.wl_shm_interface, 1));
         } else if (std.mem.eql(u8, kind, "ext_session_lock_manager_v1")) {
             self.manager = cast(Proxy, c.wl_registry_bind(registry, name, &p.ext_session_lock_manager_v1_interface, 1));
         } else if (std.mem.eql(u8, kind, "wl_output")) {
             const output = a.create(Output) catch std.process.exit(1);
-            output.* = .{ .state = self, .name = name, .proxy = cast(c.wl_output, c.wl_registry_bind(registry, name, &c.wl_output_interface, 1)), .next = self.outputs };
+            output.* = .{ .state = self, .name = name, .proxy = cast(c.wl_output, c.wl_registry_bind(registry, name, &wayland.wl_output_interface, 1)), .next = self.outputs };
             self.outputs = output;
             if (self.lock != null) output.lock();
         } else if (std.mem.eql(u8, kind, "wl_seat")) {
             const seat = a.create(Seat) catch std.process.exit(1);
-            seat.* = .{ .state = self, .name = name, .proxy = cast(Proxy, c.wl_registry_bind(registry, name, &c.wl_seat_interface, 1)), .next = self.seats };
+            seat.* = .{ .state = self, .name = name, .proxy = cast(Proxy, c.wl_registry_bind(registry, name, &wayland.wl_seat_interface, 1)), .next = self.seats };
             self.seats = seat;
             listen(seat.proxy, &seat_listener, seat);
         }

@@ -271,7 +271,6 @@ pub const power = @import("desktop-power.zig");
 pub const secrets = @import("desktop-secrets.zig");
 pub const portal = @import("desktop-portal.zig");
 pub const network = @import("desktop-network.zig");
-pub const network_api = @import("desktop-network-api.zig");
 pub const audio = @import("desktop-audio.zig");
 pub const audio_pod = @import("desktop-audio-pod.zig");
 pub const battery = @import("desktop-battery.zig");

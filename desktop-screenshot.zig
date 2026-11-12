@@ -1,6 +1,7 @@
 //! Wayland screenshot tool with region selection and clipboard support.
 const native = @import("desktop-surface.zig");
 const std = @import("std");
+const wayland = @import("desktop-wayland.zig");
 pub const protocols = @import("desktop-protocols.zig");
 const libc = @import("desktop-libc.zig");
 pub const c = @import("desktop-gtk.zig");
@@ -180,16 +181,16 @@ pub const WaylandClient = struct {
         const self: *WaylandClient = @ptrCast(@alignCast(data));
         const iface = std.mem.span(interface);
         if (std.mem.eql(u8, iface, "wl_shm")) {
-            self.shm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1));
+            self.shm = @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_shm_interface, 1));
         } else if (std.mem.eql(u8, iface, "zwlr_screencopy_manager_v1")) {
             self.screencopy_mgr = @ptrCast(c.wl_registry_bind(registry, name, &protocols.zwlr_screencopy_manager_v1_interface, @min(version, 3)));
         } else if (std.mem.eql(u8, iface, "zwlr_data_control_manager_v1")) {
             self.data_control_mgr = @ptrCast(c.wl_registry_bind(registry, name, &protocols.zwlr_data_control_manager_v1_interface, @min(version, 2)));
         } else if (std.mem.eql(u8, iface, "wl_seat")) {
-            self.seat = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_seat_interface, 1));
+            self.seat = @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_seat_interface, 1));
         } else if (std.mem.eql(u8, iface, "wl_output")) {
             if (self.outputs.items.len == self.outputs.capacity) return;
-            const out = @as(?*c.wl_output, @ptrCast(c.wl_registry_bind(registry, name, &c.wl_output_interface, @min(version, 4)))) orelse return;
+            const out = @as(?*c.wl_output, @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_output_interface, @min(version, 4)))) orelse return;
             self.outputs.append(self.allocator, .{ .wl_out = out, .global_name = name }) catch return;
             const item = &self.outputs.items[self.outputs.items.len - 1];
             _ = c.wl_output_add_listener(out, &output_listener, item);

@@ -1,5 +1,6 @@
 //! Live, per-window captures; no screenshots of the composed desktop.
 const std = @import("std");
+const wayland = @import("desktop-wayland.zig");
 pub const c = @import("desktop-gtk.zig");
 const protocols = @import("desktop-protocols.zig");
 const libc = @import("desktop-libc.zig");
@@ -232,7 +233,7 @@ const registry_listener = c.wl_registry_listener{ .global = &global, .global_rem
 fn global(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*c]const u8, _: u32) callconv(.c) void {
     const self = cast(Client, data);
     const s = std.mem.span(interface);
-    if (std.mem.eql(u8, s, "wl_shm")) self.shm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1)) else if (std.mem.eql(u8, s, "ext_foreign_toplevel_list_v1")) {
+    if (std.mem.eql(u8, s, "wl_shm")) self.shm = @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_shm_interface, 1)) else if (std.mem.eql(u8, s, "ext_foreign_toplevel_list_v1")) {
         self.list = @ptrCast(c.wl_registry_bind(registry, name, &protocols.ext_foreign_toplevel_list_v1_interface, 1));
         _ = protocols.ext_foreign_toplevel_list_v1_add_listener(self.list, &list_listener, self);
     } else if (std.mem.eql(u8, s, "ext_foreign_toplevel_image_capture_source_manager_v1")) self.sources = @ptrCast(c.wl_registry_bind(registry, name, &protocols.ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1)) else if (std.mem.eql(u8, s, "ext_image_copy_capture_manager_v1")) self.captures = @ptrCast(c.wl_registry_bind(registry, name, &protocols.ext_image_copy_capture_manager_v1_interface, 1)) else if (std.mem.eql(u8, s, "dotfiles_overview_v1")) {
