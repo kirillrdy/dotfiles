@@ -261,9 +261,10 @@ pub const FrameCapture = struct {
 
     fn onBuffer(data: ?*anyopaque, frame: ?*protocols.zwlr_screencopy_frame_v1, format: u32, width: u32, height: u32, stride: u32) callconv(.c) void {
         const self: *FrameCapture = @ptrCast(@alignCast(data));
-        if (self.buffer != null or width == 0 or height == 0 or width > 16384 or height > 16384 or stride < width * 4 or @as(u64, stride) * height > 256 * 1024 * 1024 or
+        const packed_bgr = format == c.WL_SHM_FORMAT_BGR888;
+        if (self.buffer != null or width == 0 or height == 0 or width > 16384 or height > 16384 or stride < width * @as(u32, if (packed_bgr) 3 else 4) or @as(u64, @max(stride, width * 4)) * height > 256 * 1024 * 1024 or
             (format != c.WL_SHM_FORMAT_ARGB8888 and format != c.WL_SHM_FORMAT_XRGB8888 and
-                format != c.WL_SHM_FORMAT_ABGR8888 and format != c.WL_SHM_FORMAT_XBGR8888))
+                format != c.WL_SHM_FORMAT_ABGR8888 and format != c.WL_SHM_FORMAT_XBGR8888 and !packed_bgr))
         {
             self.failed = true;
             return;
@@ -272,7 +273,9 @@ pub const FrameCapture = struct {
         self.width = width;
         self.height = height;
         self.stride = stride;
-        self.length = @as(usize, stride) * height;
+        // Reserve room to expand packed GPU readback pixels after ready. The
+        // compositor still receives its advertised format and source stride.
+        self.length = @as(usize, @max(stride, width * 4)) * height;
 
         const fd = libc.memfd_create("desktop-screenshot", libc.MFD_CLOEXEC);
         if (fd < 0) {
@@ -324,7 +327,25 @@ pub const FrameCapture = struct {
         // GPU renderers can offer XBGR/ABGR instead of XRGB/ARGB. Normalize
         // once here so PNG, clipboard, portal images and color picking agree.
         if (self.memory) |memory| {
-            if (self.format == c.WL_SHM_FORMAT_XBGR8888 or self.format == c.WL_SHM_FORMAT_ABGR8888) {
+            if (self.format == c.WL_SHM_FORMAT_BGR888) {
+                const stride = @max(self.stride, self.width * 4);
+                // Expand backwards so neither later rows nor unread pixels
+                // are overwritten, including when source rows have padding.
+                var y: usize = self.height;
+                while (y > 0) {
+                    y -= 1;
+                    var x: usize = self.width;
+                    while (x > 0) {
+                        x -= 1;
+                        const source = memory[y * self.stride + x * 3 ..][0..3];
+                        // BGR888 stores R, G, B bytes in increasing addresses.
+                        const value = @as(u32, source[0]) << 16 | @as(u32, source[1]) << 8 | source[2] | 0xff000000;
+                        std.mem.writeInt(u32, memory[y * stride + x * 4 ..][0..4], value, @import("builtin").cpu.arch.endian());
+                    }
+                }
+                self.stride = stride;
+                self.format = c.WL_SHM_FORMAT_XRGB8888;
+            } else if (self.format == c.WL_SHM_FORMAT_XBGR8888 or self.format == c.WL_SHM_FORMAT_ABGR8888) {
                 for (0..self.height) |y| for (0..self.width) |x| {
                     const pixel = memory[y * self.stride + x * 4 ..][0..4];
                     const value = std.mem.readInt(u32, pixel, @import("builtin").cpu.arch.endian());

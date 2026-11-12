@@ -121,6 +121,36 @@ fn testPngEncoding(allocator: std.mem.Allocator) !void {
 
 fn testCaptureFormats(allocator: std.mem.Allocator) !void {
     const endian = @import("builtin").cpu.arch.endian();
+    // NVIDIA readback can advertise packed BGR888 rather than a 32-bit format.
+    // Cover tight rows, source padding, and strides wider than the output row.
+    for ([_]u32{ 6, 8, 12 }) |stride| {
+        var pixels: [24]u8 = @splat(0xa5);
+        const colors = [_]u32{ 0xff112233, 0xff445566, 0xff778899, 0xffaabbcc };
+        for (colors, 0..) |color, i| {
+            const offset = (i / 2) * stride + (i % 2) * 3;
+            pixels[offset..][0..3].* = .{ @truncate(color >> 16), @truncate(color >> 8), @truncate(color) };
+        }
+        var frame: screenshot.FrameCapture = .{
+            .shm = undefined,
+            .frame = undefined,
+            .format = c.WL_SHM_FORMAT_BGR888,
+            .width = 2,
+            .height = 2,
+            .stride = stride,
+            .memory = &pixels,
+            .length = pixels.len,
+            .y_invert = true,
+        };
+        screenshot.FrameCapture.listener.ready.?(&frame, null, 0, 0, 0);
+        try std.testing.expect(frame.done and !frame.failed and frame.y_invert);
+        try std.testing.expectEqual(@as(u32, c.WL_SHM_FORMAT_XRGB8888), frame.format);
+        try std.testing.expectEqual(@max(stride, 8), frame.stride);
+        for (colors, 0..) |color, i| {
+            const offset = (i / 2) * frame.stride + (i % 2) * 4;
+            try std.testing.expectEqual(color, std.mem.readInt(u32, pixels[offset..][0..4], endian));
+        }
+        try roundTrip(allocator, .{ .pixels = &pixels, .width = 2, .height = 2, .stride = frame.stride, .y_invert = true });
+    }
     for ([_]u32{ c.WL_SHM_FORMAT_XRGB8888, c.WL_SHM_FORMAT_ARGB8888, c.WL_SHM_FORMAT_XBGR8888, c.WL_SHM_FORMAT_ABGR8888 }) |format| {
         var pixels: [24]u8 = @splat(0xa5); // Two rows, including stride padding.
         const swapped = format == c.WL_SHM_FORMAT_XBGR8888 or format == c.WL_SHM_FORMAT_ABGR8888;
