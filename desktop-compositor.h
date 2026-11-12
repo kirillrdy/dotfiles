@@ -55,5 +55,6 @@
 #include <pthread.h>
 #include <fcntl.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <wlr/types/wlr_drm.h>
 #include <wlr/types/wlr_presentation_time.h>

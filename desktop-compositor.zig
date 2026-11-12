@@ -178,6 +178,13 @@ const Server = struct {
             if (c.wlr_renderer_get_drm_fd(self.renderer) >= 0) _ = c.wlr_drm_create(self.display, self.renderer);
             if (c.wlr_linux_dmabuf_v1_create_with_renderer(self.display, 4, self.renderer)) |dmabuf| c.wlr_scene_set_linux_dmabuf_v1(self.scene, dmabuf);
         }
+        // Let GPU clients supply acquire/release fences instead of relying on
+        // implicit synchronization (which can flicker on NVIDIA). The scene
+        // handles the fences, but both rendering and presentation must support them.
+        const drm_fd = c.wlr_renderer_get_drm_fd(self.renderer);
+        if (drm_fd >= 0 and self.renderer.features.timeline and self.backend.features.timeline) {
+            _ = c.wlr_linux_drm_syncobj_manager_v1_create(self.display, 1, drm_fd) orelse return error.ExplicitSync;
+        }
         _ = c.wlr_compositor_create(self.display, 6, self.renderer) orelse return error.Compositor;
         _ = c.wlr_subcompositor_create(self.display);
         _ = c.wlr_data_device_manager_create(self.display);
