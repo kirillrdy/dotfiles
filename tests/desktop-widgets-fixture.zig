@@ -322,6 +322,23 @@ pub fn main(process_init: std.process.Init) !void {
     var pixels: [100 * 32]u32 = @splat(0);
     monitors.view.graphs[0].paint(.{ .target = .{ .pixels = &pixels, .width = 100, .height = 32 }, .scale = 1 }, 0, 100, 32);
     assert(pixels[pixels.len - 1] != 0);
+    // Verify #ffffff16 background and clipped polygon bounds on a step graph.
+    const empty_root = root();
+    const empty_graph = p.init(empty_root, .{ .kind = "monitors" });
+    var step_pixels: [110 * 32]u32 = @splat(0);
+    empty_graph.view.graphs[0].paint(.{ .target = .{ .pixels = &step_pixels, .width = 110, .height = 32 }, .scale = 1 }, 5, 100, 32);
+    assert(step_pixels[4] == 0 and step_pixels[5] == 0x16161616 and step_pixels[104] == 0x16161616 and step_pixels[105] == 0);
+    p.update(empty_graph, .{ .monitors = &.{.{ .sequence = 1, .values = &.{50}, .colors = &.{"#0072b3"}, .maximum = 100 }} });
+    p.update(empty_graph, .{ .monitors = &.{.{ .sequence = 2, .values = &.{50}, .colors = &.{"#0072b3"}, .maximum = 100 }} });
+    @memset(&step_pixels, 0);
+    empty_graph.view.graphs[0].paint(.{ .target = .{ .pixels = &step_pixels, .width = 110, .height = 32 }, .scale = 1 }, 5, 100, 32);
+    assert(step_pixels[104] == 0x16161616);
+    assert(step_pixels[31 * 110 + 104] != 0x16161616);
+    assert(step_pixels[31 * 110 + 103] == 0xff0072b3);
+    assert(step_pixels[31 * 110 + 101] == 0x16161616);
+    p.deinit(empty_graph);
+    c.gtk_widget_destroy(empty_root);
+    c.g_object_unref(empty_root);
     p.deinit(monitors);
     c.gtk_widget_destroy(graph_root);
     c.g_object_unref(graph_root);

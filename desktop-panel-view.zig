@@ -115,6 +115,9 @@ pub const Graph = struct {
         self.name.deinit();
     }
     pub fn paint(self: *const Graph, canvas: raster.Canvas, x: f64, width: f64, height: f64) void {
+        if (width <= 0 or height <= 0) return;
+        // Match system-monitor-next's #ffffff16 chart background and stepped area polygon.
+        canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = x, .y = 0, .width = width, .height = height }, .radius = 0 } }}, .{ .red = 1, .green = 1, .blue = 1, .alpha = @as(f64, 0x16) / 255.0 });
         if (self.series == 0 or self.count < 2) return;
         var maximum = self.maximum;
         if (self.autoscale != 0) {
@@ -123,18 +126,44 @@ pub const Graph = struct {
             maximum = std.math.pow(f64, 2, @ceil(std.math.log2(maximum)));
         }
         if (!std.math.isFinite(maximum) or maximum <= 0) return;
-        // Draw stacked samples as clipped columns; newest samples stay at the right.
+        var points: [204]raster.Point = undefined;
         var series = self.series;
         while (series > 0) {
             series -= 1;
-            const color = self.colors[series];
-            for (0..self.count) |i| {
-                const value = self.history[series][i];
-                if (value <= 0) continue;
-                const right = x + width - @as(f64, @floatFromInt(self.count - 1 - i));
-                const top = height * (1 - std.math.clamp(value / maximum, 0, 1));
-                canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = right - 1, .y = top, .width = 1, .height = height - top }, .radius = 0 } }}, .{ .red = color.red, .green = color.green, .blue = color.blue, .alpha = color.alpha });
+            var has_nonzero = false;
+            for (self.history[series][0..self.count]) |v| {
+                if (v > 0) {
+                    has_nonzero = true;
+                    break;
+                }
             }
+            if (!has_nonzero) continue;
+            var len: usize = 0;
+            const last = self.count - 1;
+            points[len] = .{ .x = x + width, .y = height };
+            len += 1;
+            var cx = x + width - 0.25;
+            points[len] = .{ .x = @max(x, cx), .y = height * (1 - std.math.clamp(self.history[series][last] / maximum, 0, 1)) };
+            len += 1;
+            cx -= 0.5;
+            var j = self.count;
+            while (j > 0) {
+                j -= 1;
+                const y = height * (1 - std.math.clamp(self.history[series][j] / maximum, 0, 1));
+                points[len] = .{ .x = @max(x, cx), .y = y };
+                len += 1;
+                cx -= 0.5;
+                points[len] = .{ .x = @max(x, cx), .y = y };
+                len += 1;
+                cx -= 0.5;
+            }
+            cx += 0.25;
+            points[len] = .{ .x = @max(x, cx), .y = height * (1 - std.math.clamp(self.history[series][0] / maximum, 0, 1)) };
+            len += 1;
+            points[len] = .{ .x = @max(x, cx), .y = height };
+            len += 1;
+            const color = self.colors[series];
+            canvas.draw(&.{.{ .polygon = points[0..len] }}, .{ .red = color.red, .green = color.green, .blue = color.blue, .alpha = color.alpha });
         }
     }
 };
