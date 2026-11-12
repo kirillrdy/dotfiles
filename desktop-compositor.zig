@@ -1240,7 +1240,7 @@ const Keyboard = struct {
             s.cycle(shift, false);
             return true;
         }
-        if (alt and (sym == c.XKB_KEY_grave or sym == c.XKB_KEY_asciitilde)) {
+        if ((logo or alt) and (sym == c.XKB_KEY_grave or sym == c.XKB_KEY_asciitilde)) {
             s.cycle(shift, true);
             return true;
         }
