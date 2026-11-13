@@ -69,8 +69,48 @@ pub const Grid = struct {
         return null;
     }
 };
+pub const SearchGrid = struct {
+    width: f64,
+    height: f64,
+    columns: usize,
+    icon_size: u32 = 96,
+    tile_size: f64 = 145,
+    x: f64,
+    y: f64,
+    dx: f64 = 175,
+    shown: usize,
+    pub fn init(width: u32, height: u32, count: usize) SearchGrid {
+        const w: f64 = @floatFromInt(width);
+        const h: f64 = @floatFromInt(height);
+        const tile_size: f64 = 145;
+        const spacing: f64 = 30;
+        // GNOME SearchResultsView caps #searchResultsContent at max-width: 1044px.
+        const max_w = if (w > 96) @min(w - 96, 1044) else w;
+        const max_cols: usize = @max(1, @as(usize, @intFromFloat(@floor((max_w + spacing) / (tile_size + spacing)))));
+        const shown = @min(count, max_cols);
+        const row_w = if (shown > 0) @as(f64, @floatFromInt(shown)) * tile_size + @as(f64, @floatFromInt(shown - 1)) * spacing else 0;
+        return .{
+            .width = w,
+            .height = h,
+            .columns = @max(1, shown),
+            .x = @floor((w - row_w) / 2),
+            .y = if (h >= tile_size + 48) 24 else @floor(@max(0, (h - tile_size) / 2)),
+            .shown = shown,
+        };
+    }
+    pub fn tile(self: SearchGrid, slot: usize) Rect {
+        return .{ .x = self.x + @as(f64, @floatFromInt(slot)) * self.dx, .y = self.y, .width = self.tile_size, .height = self.tile_size };
+    }
+    pub fn hit(self: SearchGrid, x: f64, y: f64) ?usize {
+        for (0..self.shown) |i| if (self.tile(i).contains(x, y)) return i;
+        return null;
+    }
+};
+fn drawMaskColor(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64, tint: raster.Color) void {
+    raster.mask(canvas.target, .{ .x = @as(i32, @intFromFloat(@round(x * canvas.scale))) + mask.left, .y = @as(i32, @intFromFloat(@round(y * canvas.scale))) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, tint);
+}
 fn drawMask(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64, rgb: u32) void {
-    raster.mask(canvas.target, .{ .x = @as(i32, @intFromFloat(@round(x * canvas.scale))) + mask.left, .y = @as(i32, @intFromFloat(@round(y * canvas.scale))) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(rgb));
+    drawMaskColor(canvas, mask, x, y, color(rgb));
 }
 pub const Tile = struct {
     mask: ?text.Mask = null,
@@ -86,12 +126,7 @@ pub const Tile = struct {
         if (self.scale != scale or self.size != size) {
             self.deinit();
             self.mask = try renderer.renderLayout(a, std.mem.span(name), .{ .size = 14.6666666667 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat((rect.width - 24) * canvas.scale), .alignment = .center, .ellipsize = true, .origin = .top });
-            const theme = c.gtk_icon_theme_get_default();
-            if (icon) |gicon| if (c.gtk_icon_theme_lookup_by_gicon(theme, gicon, @intCast(size * scale), c.GTK_ICON_LOOKUP_FORCE_SIZE)) |info| {
-                defer c.g_object_unref(info);
-                self.pixbuf = c.gtk_icon_info_load_icon(info, null);
-            };
-            if (self.pixbuf == null) self.pixbuf = c.gtk_icon_theme_load_icon(theme, "application-x-executable", @intCast(size * scale), c.GTK_ICON_LOOKUP_FORCE_SIZE, null);
+            self.pixbuf = c.__icons.loadThemed(icon, @intCast(size * scale), null, "application-x-executable");
             self.scale = scale;
             self.size = size;
         }
@@ -138,15 +173,37 @@ pub const Search = struct {
         try raster.blit(canvas.target, c.__zig.pixbufImage(pixbuf), .{ .x = x * canvas.scale, .y = y * canvas.scale, .width = 16 * canvas.scale, .height = 16 * canvas.scale }, null);
     }
 };
-pub fn paintPages(canvas: raster.Canvas, grid: Grid, page: usize, count: usize) void {
+pub const PageArrow = enum(i32) { prev = -1, next = 1 };
+pub fn pageArrowRect(grid: Grid, arrow: PageArrow) Rect {
+    const cx = if (arrow == .next) grid.width * 0.95 else grid.width * 0.05;
+    const cy = (grid.height - 40) / 2;
+    return .{ .x = cx - 30, .y = cy - 30, .width = 60, .height = 60 };
+}
+pub fn hitPageArrow(grid: Grid, page: usize, count: usize, x: f64, y: f64) ?PageArrow {
+    if (count <= 1) return null;
+    inline for ([_]PageArrow{ .prev, .next }) |arrow| {
+        const enabled = if (arrow == .next) page + 1 < count else page > 0;
+        if (enabled) {
+            const r = pageArrowRect(grid, arrow);
+            const dx = x - (r.x + 30);
+            const dy = y - (r.y + 30);
+            if (dx * dx + dy * dy <= 30 * 30) return arrow;
+        }
+    }
+    return null;
+}
+pub fn paintPages(canvas: raster.Canvas, grid: Grid, page: usize, count: usize, arrow_hover: ?PageArrow, arrow_pressed: ?PageArrow) void {
     if (count <= 1) return;
     const start = (grid.width - @as(f64, @floatFromInt(count * 34))) / 2;
-    for (0..count) |i| canvas.draw(&.{.{ .circle = .{ .center = .{ .x = start + @as(f64, @floatFromInt(i * 34)) + 17, .y = grid.height - 20 }, .radius = if (i == page) 5 else 3 } }}, color(if (i == page) 0xfafafb else 0x78787b));
-    for ([_]bool{ false, true }) |next| {
-        if ((next and page + 1 >= count) or (!next and page == 0)) continue;
-        const x = if (next) grid.width * 0.95 else grid.width * 0.05;
-        const y = (grid.height - 40) / 2;
-        const sign: f64 = if (next) 1 else -1;
+    for (0..count) |i| canvas.draw(&.{.{ .circle = .{ .center = .{ .x = start + @as(f64, @floatFromInt(i * 34)) + 17, .y = grid.height - 20 }, .radius = if (i == page) 5 else 10.0 / 3.0 } }}, if (i == page) color(0xfafafb) else raster.Color.rgb(0xfafafb, 128.0 / 255.0));
+    for ([_]PageArrow{ .prev, .next }) |arrow| {
+        if ((arrow == .next and page + 1 >= count) or (arrow == .prev and page == 0)) continue;
+        const r = pageArrowRect(grid, arrow);
+        const x = r.x + 30;
+        const y = r.y + 30;
+        const sign: f64 = if (arrow == .next) 1 else -1;
+        const bg: u32 = if (arrow_pressed == arrow) 0x39393f else if (arrow_hover == arrow) 0x333339 else 0x222226;
+        canvas.draw(&.{.{ .circle = .{ .center = .{ .x = x, .y = y }, .radius = 30 } }}, color(bg));
         canvas.draw(&.{ .{ .line = .{ .start = .{ .x = x - 4 * sign, .y = y - 7 }, .end = .{ .x = x + 3 * sign, .y = y }, .radius = 1.5 } }, .{ .line = .{ .start = .{ .x = x + 3 * sign, .y = y }, .end = .{ .x = x - 4 * sign, .y = y + 7 }, .radius = 1.5 } } }, color(0xfafafb));
     }
 }
@@ -158,11 +215,17 @@ pub fn measure(renderer: *text.Renderer, value: []const u8, scale: u32) !f64 {
     defer mask.deinit(a);
     return @as(f64, @floatFromInt(mask.logical_width)) / factor;
 }
-pub fn centerText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8, rgb: u32) !void {
+fn drawCenteredText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8, font: [:0]const u8, size: f64, tint: raster.Color) !void {
     const factor: f64 = @floatFromInt(scale);
-    const mask = try renderer.renderLayout(a, value, .{ .size = 14.6666666667 * factor, .dpi = 96 * factor, .width = @max(1, target.width - @min(target.width - 1, 48 * scale)), .alignment = .center, .lines = 2, .ellipsize = true, .origin = .top });
+    const mask = try renderer.renderLayout(a, value, .{ .font = font, .size = size * factor, .dpi = 96 * factor, .width = @max(1, target.width - @min(target.width - 1, 48 * scale)), .alignment = .center, .lines = 2, .ellipsize = true, .origin = .top });
     defer mask.deinit(a);
-    drawMask(.{ .target = target, .scale = factor }, mask, 24, (@as(f64, @floatFromInt(target.height)) - @as(f64, @floatFromInt(mask.logical_height))) / (2 * factor), rgb);
+    drawMaskColor(.{ .target = target, .scale = factor }, mask, 24, (@as(f64, @floatFromInt(target.height)) - @as(f64, @floatFromInt(mask.logical_height))) / (2 * factor), tint);
+}
+pub fn centerText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8, rgb: u32) !void {
+    try drawCenteredText(target, scale, renderer, value, "Adwaita Sans", 14.6666666667, color(rgb));
+}
+pub fn statusText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8) !void {
+    try drawCenteredText(target, scale, renderer, value, "Adwaita Sans Extra-Bold", 26.6666666667, raster.Color.rgb(0xfafafb, 0.8));
 }
 pub fn paintSearch(target: raster.Buffer, scale: u32, renderer: *text.Renderer, icons: *Search, entry: anytype, hover: bool, offset: *f64) !void {
     const factor: f64 = @floatFromInt(scale);
@@ -229,4 +292,19 @@ test "grid matches measured GNOME 50.4 allocation at 1280 by 720" {
     try std.testing.expectEqual(@as(f64, 24), grid.tile(0).y);
     try std.testing.expectEqual(@as(f64, 273), grid.tile(1).x);
     try std.testing.expectEqual(@as(f64, 147), grid.tile(8).y);
+}
+
+test "search grid caps width at 1044px with single centered row of 96px tiles" {
+    const full = SearchGrid.init(1920, 839, 10);
+    try std.testing.expectEqual(@as(usize, 6), full.shown);
+    try std.testing.expectEqual(@as(u32, 96), full.icon_size);
+    try std.testing.expectEqual(@as(f64, 145), full.tile_size);
+    try std.testing.expectEqual(@as(f64, 450), full.tile(0).x);
+    try std.testing.expectEqual(@as(f64, 625), full.tile(1).x);
+    try std.testing.expectEqual(@as(f64, 24), full.tile(0).y);
+    const two = SearchGrid.init(1920, 839, 2);
+    try std.testing.expectEqual(@as(usize, 2), two.shown);
+    try std.testing.expectEqual(@as(f64, 800), two.tile(0).x);
+    try std.testing.expectEqual(@as(?usize, 1), two.hit(975 + 72, 24 + 72));
+    try std.testing.expectEqual(@as(?usize, null), two.hit(975 - 10, 24 + 72));
 }

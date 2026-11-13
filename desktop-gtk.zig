@@ -1435,6 +1435,8 @@ pub extern fn gtk_style_context_add_provider_for_screen(screen: ?*GdkScreen, pro
 
 pub extern fn gtk_style_context_add_class(context: [*c]GtkStyleContext, class_name: [*c]const gchar) void;
 
+pub extern fn gtk_style_context_remove_class(context: [*c]GtkStyleContext, class_name: [*c]const gchar) void;
+
 pub extern fn gtk_style_context_get_border(context: [*c]GtkStyleContext, state: GtkStateFlags, border: [*c]GtkBorder) void;
 
 pub const struct__GtkIconInfo = extern struct { _opaque: [0]usize = .{} };
@@ -1897,3 +1899,21 @@ pub const G_DBUS_CALL_FLAGS_NO_AUTO_START = 1;
 
 pub const GtkTooltip = opaque {};
 pub extern fn gtk_tooltip_set_custom(tooltip: ?*GtkTooltip, custom_widget: [*c]GtkWidget) void;
+
+pub const __icons = struct {
+    pub fn loadSymbolic(info: *GtkIconInfo, rgba: GdkRGBA) ?*GdkPixbuf {
+        return gtk_icon_info_load_symbolic(info, &rgba, null, null, null, null, null);
+    }
+
+    pub fn loadThemed(icon: ?*GIcon, size: c_int, fallback: ?*GdkPixbuf, fallback_name: ?[*c]const u8) ?*GdkPixbuf {
+        const theme = gtk_icon_theme_get_default();
+        const tint: GdkRGBA = .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0, .alpha = 1 };
+        if (icon) |gicon| if (gtk_icon_theme_lookup_by_gicon(theme, gicon, size, GTK_ICON_LOOKUP_FORCE_SIZE)) |info| {
+            defer g_object_unref(info);
+            if (loadSymbolic(info, tint)) |pixbuf| return pixbuf;
+        };
+        if (fallback) |image| return @ptrCast(@alignCast(g_object_ref(image)));
+        if (fallback_name) |name| return gtk_icon_theme_load_icon(theme, name, size, GTK_ICON_LOOKUP_FORCE_SIZE, null);
+        return null;
+    }
+};

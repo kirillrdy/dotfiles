@@ -62,19 +62,13 @@ pub const Item = struct {
         if (self.pixels) |image| c.g_object_unref(image);
         self.pixels = null;
         const theme = c.gtk_icon_theme_get_default();
-        const info = if (self.show_apps)
-            c.gtk_icon_theme_lookup_icon(theme, "view-app-grid-symbolic", @intCast(size * scale), c.GTK_ICON_LOOKUP_FORCE_SIZE)
-        else if (self.icon) |icon|
-            c.gtk_icon_theme_lookup_by_gicon(theme, icon, @intCast(size * scale), c.GTK_ICON_LOOKUP_FORCE_SIZE)
-        else
-            null;
-        if (info) |found| {
-            defer c.g_object_unref(found);
-            const tint: c.GdkRGBA = .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0, .alpha = 1 };
-            self.pixels = c.gtk_icon_info_load_symbolic(found, &tint, null, null, null, null, null);
-        }
-        if (self.pixels == null) {
-            if (self.fallback) |image| self.pixels = @ptrCast(@alignCast(c.g_object_ref(image))) else self.pixels = c.gtk_icon_theme_load_icon(theme, "application-x-executable", @intCast(size * scale), c.GTK_ICON_LOOKUP_FORCE_SIZE, null);
+        if (self.show_apps) {
+            if (c.gtk_icon_theme_lookup_icon(theme, "view-app-grid-symbolic", @intCast(size * scale), c.GTK_ICON_LOOKUP_FORCE_SIZE)) |found| {
+                defer c.g_object_unref(found);
+                self.pixels = c.__icons.loadSymbolic(found, .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0, .alpha = 1 });
+            }
+        } else {
+            self.pixels = c.__icons.loadThemed(self.icon, @intCast(size * scale), self.fallback, "application-x-executable");
         }
         self.scale = scale;
         self.size = size;
@@ -156,9 +150,7 @@ pub const View = struct {
         const canvas: raster.Canvas = .{ .target = target, .scale = factor };
         const width = @as(f64, @floatFromInt(target.width)) / factor;
         const height = @as(f64, @floatFromInt(target.height)) / factor;
-        canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = 0, .y = 0, .width = width, .height = height }, .radius = height / 2 } }}, .{ .red = 0, .green = 0, .blue = 0, .alpha = 0.9 });
-        canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = 0.5, .y = 0.5, .width = width - 1, .height = height - 1 }, .radius = height / 2 - 0.5, .width = 1 } }}, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.1 });
-        raster.mask(target, .{ .x = @as(i32, @intCast(13 * scale)) + mask.left, .y = @as(i32, @intCast(7 * scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(0xffffff));
+        @import("desktop-overview-view.zig").paintPillMask(canvas, .{ .x = 0, .y = 0, .width = width, .height = height }, mask, color(0xffffff));
     }
     pub fn paint(self: *View, target: raster.Buffer, scale: u32) !void {
         @memset(target.pixels, 0);
@@ -186,7 +178,7 @@ pub const View = struct {
                 const h = if (ratio > 1) size / ratio else size;
                 try raster.blit(target, source, .{ .x = (rect.x + (rect.width - w) / 2) * factor, .y = (rect.y + (rect.height - h) / 2) * factor, .width = w * factor, .height = h * factor }, null);
             }
-            if (item.window_id != null) canvas.draw(&.{.{ .circle = .{ .center = .{ .x = rect.x + rect.width / 2 - 0.5, .y = rect.y + rect.height - 2.5 }, .radius = 2.5 } }}, color(0xfafafb));
+            if (item.window_id != null) canvas.draw(&.{.{ .circle = .{ .center = .{ .x = rect.x + rect.width / 2, .y = rect.y + rect.height - 2.5 }, .radius = 2.5 } }}, color(0xfafafb));
         }
     }
 };

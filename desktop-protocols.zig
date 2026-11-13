@@ -190,6 +190,7 @@ pub const dotfiles_overview_v1_listener = extern struct {
     workspace: ?*const fn (data: ?*anyopaque, dotfiles_overview_v1: ?*dotfiles_overview_v1, index: u32, name: [*c]const u8, active: u32) callconv(.c) void = null,
     window: ?*const fn (data: ?*anyopaque, dotfiles_overview_v1: ?*dotfiles_overview_v1, identifier: [*c]const u8, workspace: u32, x: i32, y: i32, width: i32, height: i32, sticky: u32) callconv(.c) void = null,
     done: ?*const fn (data: ?*anyopaque, dotfiles_overview_v1: ?*dotfiles_overview_v1) callconv(.c) void = null,
+    overview: ?*const fn (data: ?*anyopaque, dotfiles_overview_v1: ?*dotfiles_overview_v1, active: u32) callconv(.c) void = null,
 };
 
 pub fn zwlr_screencopy_manager_v1_capture_output(mgr: ?*zwlr_screencopy_manager_v1, overlay_cursor: i32, output: ?*c.struct_wl_output) callconv(.c) ?*zwlr_screencopy_frame_v1 {

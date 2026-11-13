@@ -131,6 +131,7 @@ const Server = struct {
     views: std.ArrayList(*View) = .empty,
     layers: std.ArrayList(*Layer) = .empty,
     keyboards: std.ArrayList(*Keyboard) = .empty,
+    overview_resources: std.ArrayList(*c.wl_resource) = .empty,
     hooks: Hooks = .{},
     workspace: u32 = 0,
     focused: ?*View = null,
@@ -244,7 +245,7 @@ const Server = struct {
         self.output_manager = c.wlr_output_manager_v1_create(self.display).?;
         self.hooks.add(&self.output_manager.events.apply, self, &applyOutputs);
         self.hooks.add(&self.output_manager.events.@"test", self, &testOutputs);
-        _ = c.wl_global_create(self.display, @ptrCast(&p.dotfiles_overview_v1_interface), 1, self, &Overview.bind) orelse return error.Overview;
+        _ = c.wl_global_create(self.display, @ptrCast(&p.dotfiles_overview_v1_interface), 2, self, &Overview.bind) orelse return error.Overview;
         _ = c.wl_event_loop_add_fd(self.loop, handle.stop_pipe[0], c.WL_EVENT_READABLE, &stopEvent, self) orelse return error.StopEvent;
         self.lock_blank_timer = c.wl_event_loop_add_timer(self.loop, &lockBlankTimeout, self) orelse return error.LockTimer;
         const socket = c.wl_display_add_socket_auto(self.display) orelse return error.Socket;
@@ -279,6 +280,7 @@ const Server = struct {
         self.views.deinit(self.a);
         self.layers.deinit(self.a);
         self.keyboards.deinit(self.a);
+        self.overview_resources.deinit(self.a);
         self.inhibitors.deinit(self.a);
     }
     fn stopEvent(_: c_int, _: u32, ptr: ?*anyopaque) callconv(.c) c_int {
@@ -417,11 +419,25 @@ const Server = struct {
             }
         }
     }
+    fn overviewActive(self: *Server) bool {
+        for (self.layers.items) |layer| {
+            if (layer.mapped and same(layer.wlr.namespace, "desktop-overview")) return true;
+        }
+        return false;
+    }
+    fn raisePanel(self: *Server) void {
+        for (self.layers.items) |layer| {
+            if (same(layer.wlr.namespace, "desktop-panel") and @min(3, layer.wlr.current.layer) == 2) {
+                c.wlr_scene_node_raise_to_top(&layer.scene.tree.*.node);
+            }
+        }
+    }
     fn switchWorkspace(self: *Server, index: u32) void {
         if (self.locked or index >= 4) return;
         self.workspace = index;
         self.updateInhibition();
         for (self.views.items) |v| c.wlr_scene_node_set_enabled(&v.tree.node, v.mapped and v.workspace == index);
+        Overview.broadcastWorkspaces(self);
     }
     fn representative(self: *Server, view: *View) *View {
         for (self.views.items) |v| if (v.mapped and v.workspace == self.workspace and sameApp(view, v)) return v;
@@ -1106,6 +1122,7 @@ const Layer = struct {
     s: *Server,
     wlr: *c.wlr_layer_surface_v1,
     scene: *c.wlr_scene_layer_surface_v1,
+    mapped: bool = false,
     target: Target = .{},
     hooks: Hooks = .{},
     fn create(s: *Server, wlr: *c.wlr_layer_surface_v1) void {
@@ -1133,21 +1150,31 @@ const Layer = struct {
     fn commit(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Layer, ptr);
         c.wlr_scene_node_reparent(&self.scene.tree.*.node, self.s.roots[@min(3, self.wlr.current.layer)]);
+        self.s.raisePanel();
         for (self.s.outputs.items) |o| if (o.wlr == self.wlr.output) o.arrange();
     }
     fn map(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Layer, ptr);
+        self.mapped = true;
+        self.s.raisePanel();
+        if (same(self.wlr.namespace, "desktop-overview")) Overview.broadcastOverview(self.s);
         if (!self.s.locked and self.wlr.current.keyboard_interactive != c.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) self.s.keyboardFocus(self.wlr.surface);
     }
     fn unmap(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Layer, ptr);
+        const was_mapped = self.mapped;
+        self.mapped = false;
+        if (was_mapped and same(self.wlr.namespace, "desktop-overview")) Overview.broadcastOverview(self.s);
         if (self.s.seat.keyboard_state.focused_surface == self.wlr.surface) self.s.refocus();
     }
     fn destroy(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Layer, ptr);
         defer self.s.a.destroy(self);
+        const was_mapped = self.mapped;
+        self.mapped = false;
         self.hooks.clear();
         remove(*Layer, &self.s.layers, self);
+        if (was_mapped and same(self.wlr.namespace, "desktop-overview")) Overview.broadcastOverview(self.s);
         for (self.s.outputs.items) |o| if (o.wlr == self.wlr.output) o.arrange();
     }
 };
@@ -1530,12 +1557,51 @@ const Overview = struct {
         move: *const fn (?*c.wl_client, ?*c.wl_resource, [*c]const u8, u32) callconv(.c) void = &move,
     };
     const implementation: Interface = .{};
-    fn bind(client: ?*c.wl_client, ptr: ?*anyopaque, _: u32, id: u32) callconv(.c) void {
-        const resource = c.wl_resource_create(client, @ptrCast(&p.dotfiles_overview_v1_interface), 1, id) orelse {
+    fn bind(client: ?*c.wl_client, ptr: ?*anyopaque, version: u32, id: u32) callconv(.c) void {
+        const s = cast(Server, ptr);
+        const bound_version: c_int = @intCast(@min(version, 2));
+        const resource = c.wl_resource_create(client, @ptrCast(&p.dotfiles_overview_v1_interface), bound_version, id) orelse {
             c.wl_client_post_no_memory(client);
             return;
         };
-        c.wl_resource_set_implementation(resource, &implementation, ptr, null);
+        s.overview_resources.append(s.a, resource) catch {
+            c.wl_resource_destroy(resource);
+            c.wl_client_post_no_memory(client);
+            return;
+        };
+        c.wl_resource_set_implementation(resource, &implementation, ptr, &resourceDestroy);
+        if (bound_version >= 2) {
+            sendWorkspaces(s, resource);
+            c.wl_resource_post_event(resource, 2);
+            c.wl_resource_post_event(resource, 3, @as(u32, @intFromBool(s.overviewActive())));
+        }
+    }
+    fn resourceDestroy(resource: ?*c.wl_resource) callconv(.c) void {
+        const res = resource orelse return;
+        const s = state(res);
+        remove(*c.wl_resource, &s.overview_resources, res);
+    }
+    fn sendWorkspaces(s: *Server, resource: ?*c.wl_resource) void {
+        for (0..4) |index| c.wl_resource_post_event(resource, 0, @as(u32, @intCast(index)), @as([*:0]const u8, switch (index) {
+            0 => "1",
+            1 => "2",
+            2 => "3",
+            else => "4",
+        }), @as(u32, @intFromBool(index == s.workspace)));
+    }
+    fn broadcastWorkspaces(s: *Server) void {
+        for (s.overview_resources.items) |resource| {
+            if (c.wl_resource_get_version(resource) < 2) continue;
+            sendWorkspaces(s, resource);
+            c.wl_resource_post_event(resource, 2);
+        }
+    }
+    fn broadcastOverview(s: *Server) void {
+        const active: u32 = @intFromBool(s.overviewActive());
+        for (s.overview_resources.items) |resource| {
+            if (c.wl_resource_get_version(resource) < 2) continue;
+            c.wl_resource_post_event(resource, 3, active);
+        }
     }
     fn state(resource: ?*c.wl_resource) *Server {
         return cast(Server, c.wl_resource_get_user_data(resource));
@@ -1551,12 +1617,7 @@ const Overview = struct {
     fn refresh(_: ?*c.wl_client, resource: ?*c.wl_resource) callconv(.c) void {
         const s = state(resource);
         if (!s.locked) {
-            for (0..4) |index| c.wl_resource_post_event(resource, 0, @as(u32, @intCast(index)), @as([*:0]const u8, switch (index) {
-                0 => "1",
-                1 => "2",
-                2 => "3",
-                else => "4",
-            }), @as(u32, @intFromBool(index == s.workspace)));
+            sendWorkspaces(s, resource);
             var link = s.windows.children.next;
             while (link != &s.windows.children) : (link = link.*.next) {
                 const node: *c.wlr_scene_node = @fieldParentPtr("link", @as(*c.wl_list, link));

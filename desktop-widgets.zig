@@ -67,6 +67,7 @@ pub fn ensureStyle() void {
     defer c.g_object_unref(provider);
     const rules =
         \\window#desktop-panel { background: #000; color: #fff; }
+        \\window#desktop-panel.overview { background: transparent; background-image: none; color: #fafafb; }
         \\.gnome-panel-module, .gnome-panel-module * { border: none; border-radius: 0; min-height: 0; padding: 0; margin: 0; }
         \\popover.gnome-calendar, popover.gnome-calendar.background, popover.gnome-calendar > contents,
         \\popover.gnome-codex-menu, popover.gnome-codex-menu.background, popover.gnome-codex-menu > contents,
@@ -526,6 +527,14 @@ fn resize(m: *Module) void {
     };
     c.gtk_widget_set_size_request(m.box, @intCast(m.view.width), 1);
     c.gtk_widget_queue_draw(m.box);
+}
+pub fn setOverviewState(m: *Module, active: bool, workspace_count: u8, workspace_active: u8) void {
+    const resized = m.view.activities and m.view.workspace_count != workspace_count;
+    const changed = m.view.overview != active or m.view.workspace_count != workspace_count or m.view.workspace_active != workspace_active;
+    m.view.overview = active;
+    m.view.workspace_count = workspace_count;
+    m.view.workspace_active = workspace_active;
+    if (resized) resize(m) else if (changed) c.gtk_widget_queue_draw(m.box);
 }
 fn draw_panel(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
     const m = cast(Module, ptr);

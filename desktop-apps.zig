@@ -99,6 +99,9 @@ pub const Launcher = struct {
     search_hover: bool = false,
     search_hash: u64 = 0,
     search_offset: f64 = 0,
+    overview_search: bool = false,
+    arrow_hover: ?view.PageArrow = null,
+    arrow_pressed: ?view.PageArrow = null,
     status: [:0]u8,
     on_search: ?*const fn (?*anyopaque) void = null,
     search_context: ?*anyopaque = null,
@@ -126,6 +129,8 @@ pub const Launcher = struct {
         self.search_input.?.focus(false);
         self.pressed = null;
         self.hover = null;
+        self.arrow_hover = null;
+        self.arrow_pressed = null;
         if (self.hidden_fn) |callback| callback(self.owner) else if (self.host) |host| if (host.surface) |surface| surface.hide();
     }
     pub fn deinit(self: *Launcher) void {
@@ -214,6 +219,8 @@ pub const Launcher = struct {
         self.selected = 0;
         self.hover = null;
         self.pressed = null;
+        self.arrow_hover = null;
+        self.arrow_pressed = null;
         self.setMessage("");
         self.redraw();
     }
@@ -247,16 +254,26 @@ pub const Launcher = struct {
         self.focusSearch();
         self.search_input.?.insert(value) catch {};
     }
+    pub fn searchMode(self: *const Launcher) bool {
+        return self.overview_search and self.searchText().len != 0;
+    }
+    fn searchGrid(self: *const Launcher) view.SearchGrid {
+        return view.SearchGrid.init(@intFromFloat(@max(1, self.geometry.width)), @intFromFloat(@max(1, self.geometry.height)), self.visible.items.len);
+    }
     fn pageCount(self: *const Launcher) usize {
+        if (self.searchMode()) return 1;
         return @max(1, std.math.divCeil(usize, self.visible.items.len, self.geometry.capacity()) catch unreachable);
     }
     pub fn changePage(self: *Launcher, direction: i32) void {
+        if (self.searchMode()) return;
         const target = @as(i64, @intCast(self.page)) + direction;
         if (target < 0 or target >= self.pageCount()) return;
         self.page = @intCast(target);
         self.selected = self.page * self.geometry.capacity();
         self.hover = null;
         self.pressed = null;
+        self.arrow_hover = null;
+        self.arrow_pressed = null;
         self.redraw();
     }
     pub fn launch(self: *Launcher, info: *c.GAppInfo) bool {
@@ -321,17 +338,37 @@ pub fn keyPress(_: ?*anyopaque, event: *KeyEvent, data: ?*anyopaque) callconv(.c
         return 1;
     }
     if (!self.search_focus and self.visible.items.len > 0) {
-        const cols: i64 = @intCast(self.geometry.columns);
-        const delta: i64 = if (symbol == c.GDK_KEY_Left) -1 else if (symbol == c.GDK_KEY_Right) 1 else if (symbol == c.GDK_KEY_Up) -cols else if (symbol == c.GDK_KEY_Down) cols else 0;
-        if (delta != 0 or symbol == 0xff50 or symbol == 0xff57) {
-            const next: i64 = if (symbol == 0xff50) 0 else if (symbol == 0xff57) @intCast(self.visible.items.len - 1) else @as(i64, @intCast(self.selected)) + delta;
-            if (next < 0 and symbol == c.GDK_KEY_Up) {
-                self.focusSearch();
-            } else self.selected = @intCast(std.math.clamp(next, 0, @as(i64, @intCast(self.visible.items.len - 1))));
-            self.page = self.selected / self.geometry.capacity();
-            self.hover = null;
-            self.redraw();
-            return 1;
+        if (self.searchMode()) {
+            const shown = self.searchGrid().shown;
+            if (shown > 0) {
+                if (symbol == c.GDK_KEY_Up) {
+                    self.focusSearch();
+                    return 1;
+                }
+                const delta: i64 = if (symbol == c.GDK_KEY_Left) -1 else if (symbol == c.GDK_KEY_Right) 1 else 0;
+                if (delta != 0 or symbol == 0xff50 or symbol == 0xff57) {
+                    const last: i64 = @intCast(shown - 1);
+                    const next: i64 = if (symbol == 0xff50) 0 else if (symbol == 0xff57) last else @as(i64, @intCast(self.selected)) + delta;
+                    self.selected = @intCast(std.math.clamp(next, 0, last));
+                    self.page = 0;
+                    self.hover = null;
+                    self.redraw();
+                    return 1;
+                }
+            }
+        } else {
+            const cols: i64 = @intCast(self.geometry.columns);
+            const delta: i64 = if (symbol == c.GDK_KEY_Left) -1 else if (symbol == c.GDK_KEY_Right) 1 else if (symbol == c.GDK_KEY_Up) -cols else if (symbol == c.GDK_KEY_Down) cols else 0;
+            if (delta != 0 or symbol == 0xff50 or symbol == 0xff57) {
+                const next: i64 = if (symbol == 0xff50) 0 else if (symbol == 0xff57) @intCast(self.visible.items.len - 1) else @as(i64, @intCast(self.selected)) + delta;
+                if (next < 0 and symbol == c.GDK_KEY_Up) {
+                    self.focusSearch();
+                } else self.selected = @intCast(std.math.clamp(next, 0, @as(i64, @intCast(self.visible.items.len - 1))));
+                self.page = self.selected / self.geometry.capacity();
+                self.hover = null;
+                self.redraw();
+                return 1;
+            }
         }
     }
     if (self.search_focus or symbol == c.GDK_KEY_BackSpace) {
@@ -353,17 +390,27 @@ pub fn press(self: *Launcher, part: Part, x: f64, y: f64, modifiers: u32) void {
         }
     } else if (part == .grid) {
         self.focusGrid();
-        const g = self.geometry;
-        if (y > g.height - 40) {
-            const count = self.pageCount();
-            const left = (g.width - @as(f64, @floatFromInt(count * 34))) / 2;
-            const index: i64 = @intFromFloat(@floor((x - left) / 34));
-            if (index >= 0 and index < count) self.changePage(@intCast(index - @as(i64, @intCast(self.page))));
-        } else if (x < g.width * 0.1) self.changePage(-1) else if (x >= g.width * 0.9) self.changePage(1) else if (g.hit(x, y)) |slot| {
-            const index = self.page * g.capacity() + slot;
-            if (index < self.visible.items.len) {
+        if (self.searchMode()) {
+            const sg = self.searchGrid();
+            if (sg.hit(x, y)) |index| {
                 self.selected = index;
                 self.pressed = index;
+            }
+        } else {
+            const g = self.geometry;
+            const count = self.pageCount();
+            if (y > g.height - 40) {
+                const left = (g.width - @as(f64, @floatFromInt(count * 34))) / 2;
+                const index: i64 = @intFromFloat(@floor((x - left) / 34));
+                if (index >= 0 and index < count) self.changePage(@intCast(index - @as(i64, @intCast(self.page))));
+            } else if (view.hitPageArrow(g, self.page, count, x, y)) |arrow| {
+                self.arrow_pressed = arrow;
+            } else if (g.hit(x, y)) |slot| {
+                const index = self.page * g.capacity() + slot;
+                if (index < self.visible.items.len) {
+                    self.selected = index;
+                    self.pressed = index;
+                }
             }
         }
     }
@@ -372,27 +419,43 @@ pub fn press(self: *Launcher, part: Part, x: f64, y: f64, modifiers: u32) void {
 pub fn release(self: *Launcher, part: Part, x: f64, y: f64) void {
     self.search_input.?.dragging = false;
     const pressed = self.pressed;
+    const arrow_pressed = self.arrow_pressed;
     self.pressed = null;
-    if (part == .grid) if (self.geometry.hit(x, y)) |slot| {
-        const index = self.page * self.geometry.capacity() + slot;
-        if (pressed == index and index < self.visible.items.len) _ = self.launch(self.visible.items[index].info);
-    };
+    self.arrow_pressed = null;
+    if (part == .grid) {
+        if (self.searchMode()) {
+            if (self.searchGrid().hit(x, y)) |index| {
+                if (pressed == index and index < self.visible.items.len) _ = self.launch(self.visible.items[index].info);
+            }
+        } else if (arrow_pressed) |arrow| {
+            if (view.hitPageArrow(self.geometry, self.page, self.pageCount(), x, y) == arrow) self.changePage(@intFromEnum(arrow));
+        } else if (self.geometry.hit(x, y)) |slot| {
+            const index = self.page * self.geometry.capacity() + slot;
+            if (pressed == index and index < self.visible.items.len) _ = self.launch(self.visible.items[index].info);
+        }
+    }
     self.redraw();
 }
 pub fn motion(self: *Launcher, part: Part, x: f64, y: f64) void {
     self.search_hover = part == .search;
+    self.arrow_hover = if (part == .grid and !self.searchMode()) view.hitPageArrow(self.geometry, self.page, self.pageCount(), x, y) else null;
     if (self.search_input.?.dragging) {
         self.search_input.?.buffer.cursor = searchPoint(self, x);
         self.search_input.?.revision += 1;
         inputChanged(self);
     } else if (part == .grid) {
-        const slot = self.geometry.hit(x, y);
-        const index = if (slot) |i| self.page * self.geometry.capacity() + i else self.visible.items.len;
-        self.hover = if (index < self.visible.items.len) index else null;
+        if (self.searchMode()) {
+            self.hover = self.searchGrid().hit(x, y);
+        } else {
+            const slot = self.geometry.hit(x, y);
+            const index = if (slot) |i| self.page * self.geometry.capacity() + i else self.visible.items.len;
+            self.hover = if (index < self.visible.items.len) index else null;
+        }
     } else self.hover = null;
     self.redraw();
 }
 pub fn scroll(self: *Launcher, amount: f64) void {
+    if (self.searchMode()) return;
     const time: u32 = @truncate(@as(u64, @intCast(@divTrunc(c.g_get_monotonic_time(), 1000))));
     if (time -% self.wheel_time > 200) self.wheel = 0;
     self.wheel_time = time;
@@ -427,18 +490,32 @@ pub fn paint(l: *Launcher, part: Part, target: raster.Buffer, scale: u32) void {
         view.centerText(target, scale, &l.renderer, l.status, 0xb6b6b9) catch {};
     } else {
         const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(scale) };
-        if (l.visible.items.len == 0) view.centerText(target, scale, &l.renderer, "No applications found", 0xb6b6b9) catch {};
-        const start = l.page * l.geometry.capacity();
-        const end = @min(l.visible.items.len, start + l.geometry.capacity());
-        for (start..@max(start, end)) |i| {
-            const item = l.visible.items[i];
-            const focused = !l.search_focus and l.selected == i;
-            // GNOME marks the default search result selected while the entry
-            // retains focus; the keyboard focus ring belongs to the grid only.
-            const selected = l.search_focus and l.query[0] != 0 and l.selected == i;
-            item.tile.paint(canvas, scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), l.geometry.tile(i - start), l.geometry.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
+        if (l.searchMode()) {
+            if (l.visible.items.len == 0) {
+                view.statusText(target, scale, &l.renderer, "No results") catch {};
+            } else {
+                const sg = l.searchGrid();
+                for (0..sg.shown) |i| {
+                    const item = l.visible.items[i];
+                    const focused = !l.search_focus and l.selected == i;
+                    const selected = l.search_focus and l.selected == i;
+                    item.tile.paint(canvas, scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), sg.tile(i), sg.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
+                }
+            }
+        } else {
+            if (l.visible.items.len == 0) view.centerText(target, scale, &l.renderer, "No applications found", 0xb6b6b9) catch {};
+            const start = l.page * l.geometry.capacity();
+            const end = @min(l.visible.items.len, start + l.geometry.capacity());
+            for (start..@max(start, end)) |i| {
+                const item = l.visible.items[i];
+                const focused = !l.search_focus and l.selected == i;
+                // GNOME marks the default search result selected while the entry
+                // retains focus; the keyboard focus ring belongs to the grid only.
+                const selected = l.search_focus and l.query[0] != 0 and l.selected == i;
+                item.tile.paint(canvas, scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), l.geometry.tile(i - start), l.geometry.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
+            }
+            view.paintPages(canvas, l.geometry, l.page, l.pageCount(), l.arrow_hover, l.arrow_pressed);
         }
-        view.paintPages(canvas, l.geometry, l.page, l.pageCount());
     }
 }
 pub fn activate(_: ?*c.GtkApplication, data: ?*anyopaque) callconv(.c) void {

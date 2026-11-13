@@ -286,11 +286,8 @@ fn appId(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1, value
     var info = c.g_desktop_app_info_new(path);
     if (info == null) info = c.g_desktop_app_info_new(value);
     defer if (info != null) c.g_object_unref(info);
-    const theme = c.gtk_icon_theme_get_default();
     const icon = if (info != null) c.g_app_info_get_icon(@ptrCast(info)) else null;
-    const icon_info = if (icon != null) c.gtk_icon_theme_lookup_by_gicon(theme, icon, 64, 0) else null;
-    defer if (icon_info != null) c.g_object_unref(icon_info);
-    w.icon = if (icon_info != null) c.gtk_icon_info_load_icon(icon_info, null) else c.gtk_icon_theme_load_icon(theme, "application-x-executable", 64, 0, null);
+    w.icon = c.__icons.loadThemed(icon, 64, null, "application-x-executable");
 }
 const control_listener = protocols.dotfiles_overview_v1_listener{ .workspace = &workspace, .window = &placement, .done = &snapshotDone };
 fn workspace(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, index: u32, name: [*c]const u8, active: u32) callconv(.c) void {

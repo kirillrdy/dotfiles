@@ -11,11 +11,56 @@ from session_fixture import Processes, command as session_command, wait_ready
 import os
 import re
 import select
+import struct
 import subprocess as sp
 import sys
 import tempfile
 import time
+import zlib
 from pathlib import Path
+
+
+def read_png(path):
+    data = path.read_bytes()[8:]
+    pos = w = h = 0
+    idat = bytearray()
+    while pos < len(data):
+        ln = int.from_bytes(data[pos : pos + 4], "big")
+        tag = data[pos + 4 : pos + 8]
+        body = data[pos + 8 : pos + 8 + ln]
+        pos += 12 + ln
+        if tag == b"IHDR":
+            w, h = struct.unpack(">II", body[:8])
+        elif tag == b"IDAT":
+            idat.extend(body)
+    raw = zlib.decompress(bytes(idat))
+    stride = len(raw) // h
+    bpp = (stride - 1) // w
+    rows = []
+    prev = bytes(w * bpp)
+    for y in range(h):
+        ft = raw[y * stride]
+        row = bytearray(raw[y * stride + 1 : (y + 1) * stride])
+        if ft == 1:
+            for i in range(bpp, len(row)):
+                row[i] = (row[i] + row[i - bpp]) & 255
+        elif ft == 2:
+            for i in range(len(row)):
+                row[i] = (row[i] + prev[i]) & 255
+        elif ft == 3:
+            for i in range(len(row)):
+                row[i] = (row[i] + ((row[i - bpp] if i >= bpp else 0) + prev[i]) // 2) & 255
+        elif ft == 4:
+            for i in range(len(row)):
+                a = row[i - bpp] if i >= bpp else 0
+                b = prev[i]
+                c = prev[i - bpp] if i >= bpp else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                row[i] = (row[i] + (a if pa <= pb and pa <= pc else (b if pb <= pc else c))) & 255
+        rows.append(row)
+        prev = row
+    return w, h, lambda x, y: tuple(rows[y][x * bpp : x * bpp + 3])
 
 
 def main():
@@ -113,7 +158,7 @@ def main():
 
         def shot(name):
             path = artifacts / f"{name}.png"
-            run(["grim", "-s", "1", "-g", "300,180 1120x740", str(path)])
+            run(["grim", "-s", "1", "-o", "HEADLESS-1", str(path)])
             return path.read_bytes()
 
         binary = args.bin_dir / "desktop-zig"
@@ -149,7 +194,7 @@ def main():
             assert pointer.stdout.readline().strip() == "ready"
             panel_config = root / "panel.json"
             panel_config.write_text(
-                '{"left":[],"center":[{"kind":"clock","name":"gnome-clock"}],"right":[]}'
+                '{"left":[{"kind":"activities","name":"gnome-activities"}],"center":[{"kind":"clock","name":"gnome-clock"}],"right":[]}'
             )
             overview = start(
                 session_command(binary, root, args.wallpaper, panel_config),
@@ -202,6 +247,10 @@ def main():
             run(
                 ["grim", "-s", "1", "-o", "HEADLESS-1", str(artifacts / "overview.png")]
             )
+            _, _, op = read_png(artifacts / "overview.png")
+            assert op(400, 10) == (34, 34, 38), f"Panel not transparent in overview: {op(400, 10)}"
+            assert op(30, 16)[0] > 200, f"Activities indicator dot missing in panel: {op(30, 16)}"
+            assert op(717, 104) == (53, 132, 228), f"Active workspace indicator missing: {op(717, 104)}"
             def stacking():
                 return re.findall(r'dotfiles_overview_v1#\d+\.window\("([^"]+)"', log())[-4:]
 
@@ -211,6 +260,13 @@ def main():
             )
             before = (artifacts / "window-0.log").read_text().splitlines()
             other_before = (artifacts / "window-1.log").read_text().splitlines()
+            pointer_command("move 584 350")
+            time.sleep(0.3)
+            shot("window-hover")
+            _, _, hp = read_png(artifacts / "window-hover.png")
+            assert any(max(hp(588, y)) < 25 for y in range(540, 585)) and max(
+                hp(x, y)[0] for x in range(560, 610) for y in range(540, 585)
+            ) > 150, "Window hover caption pill missing"
             click(584, 350)
             wait_for(
                 lambda: (
@@ -253,7 +309,7 @@ def main():
                 "Native dash did not activate the Terminal window",
             )
             reopen()
-            click(828, 126)
+            click(815, 130)
             wait_for(
                 lambda: '.workspace(1, "2", 1)' in log(),
                 "Workspace thumbnail did not switch",
@@ -261,7 +317,7 @@ def main():
             key("Return")
             assert overview.poll() is None
             first_workspace = log().count('.workspace(0, "1", 1)')
-            click(756, 126)
+            click(717, 130)
             wait_for(
                 lambda: log().count('.workspace(0, "1", 1)') > first_workspace,
                 "Workspace click did not finish before keyboard navigation",
@@ -280,7 +336,7 @@ def main():
             )
             pointer_command("move 1120 760")
             pointer_command("button 1")
-            for x, y in [(1050, 600), (950, 400), (850, 200), (828, 126)]:
+            for x, y in [(1050, 600), (950, 400), (850, 200), (815, 130)]:
                 pointer_command(f"move {x} {y}")
                 time.sleep(0.05)
             pointer_command("button 0")
@@ -325,10 +381,26 @@ def main():
             time.sleep(0.5)
             shot("search")
             key("Escape")
+            click(864, 62)
+            run(["wtype", "zzzznomatch"])
+            time.sleep(0.3)
+            shot("search-empty")
+            _, _, ep = read_png(artifacts / "search-empty.png")
+            assert max(ep(x, y)[0] for y in range(510, 555) for x in range(800, 930)) >= 180, (
+                "Empty search 'No results' status text missing"
+            )
+            key("Escape")
             click(984, 1018)
             shot("applications")
+            _, _, ap = read_png(artifacts / "applications.png")
+            assert ap(450, 180) != (34, 34, 38), "App-grid top workspace strip missing"
             key("Escape")
-            click(848, 176)
+            pointer_command("move 700 300")
+            time.sleep(0.15)
+            pointer_command("move 850 205")
+            time.sleep(0.15)
+            shot("before-close")
+            click(850, 205)
             wait_for(
                 lambda: fixtures[0].poll() == 0,
                 "Window close button did not close the selected window",

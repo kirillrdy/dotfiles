@@ -8,6 +8,7 @@ const apps = @import("desktop-apps.zig");
 const capture = @import("desktop-capture.zig");
 const native_dash = @import("desktop-dash-view.zig");
 const raster = @import("desktop-raster.zig");
+const text = @import("desktop-text.zig");
 const view = @import("desktop-overview-view.zig");
 const animation = @import("desktop-overview-animation.zig");
 const c = capture.c;
@@ -22,8 +23,31 @@ const WindowPaint = struct {
     hovered: bool,
 
     fn below(_: void, left: WindowPaint, right: WindowPaint) bool {
+        if (left.hovered != right.hovered) return !left.hovered;
         return left.window.stacking < right.window.stacking;
     }
+};
+const LayoutEntry = struct {
+    window: *capture.Window,
+    index: usize,
+    cx: f64,
+    cy: f64,
+    w: f64,
+    h: f64,
+
+    fn verticalBefore(_: void, left: LayoutEntry, right: LayoutEntry) bool {
+        if (left.cy != right.cy) return left.cy < right.cy;
+        return left.cx < right.cx;
+    }
+
+    fn horizontalBefore(_: void, left: LayoutEntry, right: LayoutEntry) bool {
+        return left.cx < right.cx;
+    }
+};
+const LayoutRow = struct {
+    start: usize,
+    end: usize,
+    max_h: f64,
 };
 
 const Overview = struct {
@@ -31,10 +55,10 @@ const Overview = struct {
     client: ?*capture.Client = null,
     native: *wire.Client,
     surface: ?*wire.Surface,
-    strip: apps.Region = .{ .y = 55, .width = 1728, .height = 64 },
-    stage: apps.Region = .{ .y = 128, .width = 1728, .height = 787 },
-    search: apps.Region = .{ .y = 12, .width = 370, .height = 37 },
-    grid: apps.Region = .{ .y = 119, .width = 1728, .height = 817 },
+    strip: apps.Region = .{ .y = 100, .width = 1728, .height = 64 },
+    stage: apps.Region = .{ .y = 172, .width = 1728, .height = 775 },
+    search: apps.Region = .{ .y = 44, .width = 370, .height = 37 },
+    grid: apps.Region = .{ .y = 286, .width = 1728, .height = 661 },
     dash: apps.Region = .{ .width = 0, .height = 0 },
     tooltip: apps.Region = .{ .width = 0, .height = 0 },
     tooltip_visible: bool = false,
@@ -53,7 +77,17 @@ const Overview = struct {
     apps_mode: bool = false,
     selected: usize = 0,
     window_paints: std.ArrayList(WindowPaint) = .empty,
+    layout_entries: std.ArrayList(LayoutEntry) = .empty,
+    layout_rows: std.ArrayList(LayoutRow) = .empty,
+    best_rows: std.ArrayList(LayoutRow) = .empty,
+    best_entries: std.ArrayList(LayoutEntry) = .empty,
+    caption_mask: ?text.Mask = null,
+    caption_title: []u8 = &.{},
+    caption_width: u32 = 0,
+    caption_scale: u32 = 0,
     hover: ?usize = null,
+    close_hover: bool = false,
+    close_pressed: bool = false,
     drag: ?*capture.Window = null,
     drag_x: f64 = 0,
     drag_y: f64 = 0,
@@ -90,6 +124,7 @@ const Overview = struct {
         self.launcher.hide_requested_fn = &hideRequested;
         self.launcher.on_search = &searchChanged;
         self.launcher.search_context = self;
+        self.launcher.overview_search = true;
         self.client = capture.Client.create(self, &changed) catch null;
         native.start() catch @panic("native overview input");
         return self;
@@ -106,8 +141,61 @@ const Overview = struct {
         self.launcher.deinit();
         self.dash_view.deinit();
         self.window_paints.deinit(a);
+        self.layout_entries.deinit(a);
+        self.layout_rows.deinit(a);
+        self.best_rows.deinit(a);
+        self.best_entries.deinit(a);
+        self.clearCaption();
         if (self.wallpaper) |image| c.cairo_surface_destroy(image);
         a.destroy(self);
+    }
+    fn clearCaption(self: *Overview) void {
+        if (self.caption_mask) |mask| mask.deinit(a);
+        self.caption_mask = null;
+        if (self.caption_title.len != 0) a.free(self.caption_title);
+        self.caption_title = &.{};
+        self.caption_width = 0;
+        self.caption_scale = 0;
+    }
+    fn prepareCaption(self: *Overview, value: []const u8, max_width: u32, scale: u32) ?view.Caption {
+        if (value.len == 0) return null;
+        if (self.caption_mask != null and self.caption_width == max_width and self.caption_scale == scale and std.mem.eql(u8, self.caption_title, value)) {
+            return .{ .mask = self.caption_mask.?, .scale = scale };
+        }
+        self.clearCaption();
+        const copy = a.dupeSentinel(u8, value, 0) catch return null;
+        const factor: f64 = @floatFromInt(@max(1, scale));
+        var mask = self.launcher.renderer.renderLayout(a, copy, .{
+            .font = "Adwaita Sans Bold",
+            .size = 14.6666666667 * factor,
+            .dpi = 96 * factor,
+            .line_height = 19 * scale,
+            .origin = .top,
+        }) catch {
+            a.free(copy);
+            return null;
+        };
+        if (mask.logical_width > max_width * scale) {
+            mask.deinit(a);
+            mask = self.launcher.renderer.renderLayout(a, copy, .{
+                .font = "Adwaita Sans Bold",
+                .size = 14.6666666667 * factor,
+                .dpi = 96 * factor,
+                .line_height = 19 * scale,
+                .width = max_width * scale,
+                .lines = 1,
+                .ellipsize = true,
+                .origin = .top,
+            }) catch {
+                a.free(copy);
+                return null;
+            };
+        }
+        self.caption_title = copy;
+        self.caption_mask = mask;
+        self.caption_width = max_width;
+        self.caption_scale = scale;
+        return .{ .mask = mask, .scale = scale };
     }
     fn present(self: *Overview) void {
         if (self.surface == null) return;
@@ -138,6 +226,8 @@ const Overview = struct {
         self.apps_mode = false;
         self.selected = 0;
         self.hover = null;
+        self.close_hover = false;
+        self.close_pressed = false;
         self.launcher.reload() catch |err| std.log.err("loading applications: {s}", .{@errorName(err)});
         self.launcher.setSearch("") catch {};
         if (self.client) |client| {
@@ -161,6 +251,7 @@ const Overview = struct {
     }
     fn updateMode(self: *Overview) void {
         self.dash_view.apps_mode = self.apps_mode;
+        if (self.surface) |surface| self.layoutRegions(surface.width, surface.height);
         self.redrawSelf();
         if (self.client == null or !self.client.?.connected) {
             self.launcher.setMessage("The Activities overview requires the updated desktop compositor. Log out and back in after switching the configuration.");
@@ -353,6 +444,8 @@ const Overview = struct {
         self.transition.setShown(false, now);
         self.hideTooltip();
         self.hover = null;
+        self.close_hover = false;
+        self.close_pressed = false;
         self.drag = null;
         self.dragging = false;
         self.launcher.search_input.?.focus(false);
@@ -502,6 +595,8 @@ const Overview = struct {
             if (window.workspace == client.current or window.sticky) {
                 self.selected = index;
                 self.hover = index;
+                self.close_hover = false;
+                self.close_pressed = false;
                 break;
             }
         }
@@ -514,40 +609,98 @@ const Overview = struct {
             client.switchWorkspace(@intCast(index));
             self.transition.finish();
             self.hover = null;
+            self.close_hover = false;
+            self.close_pressed = false;
         }
+    }
+    fn stripGeometry(self: *const Overview, width: f64, count: usize) struct { thumb_w: f64, thumb_h: f64, spacing: f64, step: f64, left: f64 } {
+        const work_w: f64 = @floatFromInt(self.monitor.width);
+        const work_h: f64 = @floatFromInt(@max(1, self.monitor.height - 32));
+        var thumb_h: f64 = @round(work_h * 0.05);
+        var thumb_w: f64 = @round(thumb_h * work_w / work_h);
+        const spacing: f64 = 6;
+        if (count > 0 and width > 0) {
+            const max_total = width * 0.8;
+            const nat_total = @as(f64, @floatFromInt(count)) * thumb_w + @as(f64, @floatFromInt(count - 1)) * spacing;
+            if (nat_total > max_total) {
+                const avail_thumb = @max(1, (max_total - @as(f64, @floatFromInt(count - 1)) * spacing) / @as(f64, @floatFromInt(count)));
+                thumb_w = @round(avail_thumb);
+                thumb_h = @max(1, @round(thumb_w * work_h / work_w));
+            }
+        }
+        const step = thumb_w + spacing;
+        const total = if (count > 0) @as(f64, @floatFromInt(count)) * thumb_w + @as(f64, @floatFromInt(count - 1)) * spacing else 0;
+        return .{ .thumb_w = thumb_w, .thumb_h = thumb_h, .spacing = spacing, .step = step, .left = (width - total) / 2 };
     }
     fn workspaceAt(self: *Overview, x: f64) ?u32 {
         const client = self.client orelse return null;
-        const left = (@as(f64, @floatFromInt(self.strip.width)) - @as(f64, @floatFromInt(client.count)) * 72 + 6) / 2;
-        const index = @floor((x - left + 3) / 72);
+        if (client.count == 0) return null;
+        const geom = self.stripGeometry(@floatFromInt(self.strip.width), client.count);
+        const total_w = @as(f64, @floatFromInt(client.count)) * geom.thumb_w + @as(f64, @floatFromInt(client.count - 1)) * geom.spacing;
+        if (x < geom.left - 3 or x >= geom.left + total_w + 3) return null;
+        const index = @floor((x - geom.left + geom.spacing / 2) / geom.step);
         if (index < 0 or index >= @as(f64, @floatFromInt(client.count))) return null;
         return @intFromFloat(index);
+    }
+    fn smallWorkspaceAt(self: *const Overview, x: f64, y: f64) ?u32 {
+        const client = self.client orelse return null;
+        if (client.count == 0 or !self.apps_mode) return null;
+        const layout = self.fitAllLayout(client.count, @floatFromInt(self.stage.width), @floatFromInt(self.stage.height));
+        for (0..client.count) |i| {
+            const bg = layout.cardRect(i, self.workspacePosition());
+            if (x >= bg.x and x <= bg.x + bg.w and y >= bg.y and y <= bg.y + bg.h) return @intCast(i);
+        }
+        return null;
     }
     fn workspaceClick(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         if (self.workspaceAt(event.x)) |index| if (self.client) |client| client.switchWorkspace(index);
         return 1;
     }
+    fn closeHit(target: Rect, expanded: bool, x: f64, y: f64) bool {
+        const preview = view.previewRect(.{ .x = target.x, .y = target.y, .width = target.w, .height = target.h }, expanded, 1);
+        const close_r = view.closeButtonRect(preview);
+        const cx = close_r.x + view.close_button_radius;
+        const cy = close_r.y + view.close_button_radius;
+        const dx = x - cx;
+        const dy = y - cy;
+        return dx * dx + dy * dy <= view.close_button_radius * view.close_button_radius;
+    }
     fn hit(self: *Overview, x: f64, y: f64) ?usize {
+        if (self.apps_mode) return null;
         const client = self.client orelse return null;
+        if (self.hover) |current| if (current < client.windows.items.len) {
+            const w = client.windows.items[current];
+            if (w.workspace == client.current or w.sticky) {
+                const preview = view.previewRect(.{ .x = w.target.x, .y = w.target.y, .width = w.target.w, .height = w.target.h }, true, 1);
+                if (closeHit(w.target, true, x, y) or preview.contains(x, y)) return current;
+            }
+        };
+        var best: ?usize = null;
         for (client.windows.items, 0..) |w, i| {
             if (w.workspace != client.current and !w.sticky) continue;
             const r = w.target;
-            if (x >= r.x - 16 and x <= r.x + r.w + 16 and y >= r.y - 16 and y <= r.y + r.h + 16) return i;
+            if (x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h) {
+                if (best == null or w.stacking >= client.windows.items[best.?].stacking) best = i;
+            }
         }
-        return null;
+        return best;
     }
     fn motion(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         self.hover = self.hit(event.x, event.y);
-        if (self.drag != null and (@abs(event.x - self.drag_x) > 8 or @abs(event.y - self.drag_y) > 8)) self.dragging = true;
+        self.close_hover = if (self.hover) |i| closeHit(self.client.?.windows.items[i].target, true, event.x, event.y) else false;
+        if (self.drag != null and !self.close_pressed and (@abs(event.x - self.drag_x) > 8 or @abs(event.y - self.drag_y) > 8)) self.dragging = true;
         self.redrawSelf();
         return 1;
     }
 
     fn press(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
-        self.drag = if (self.hit(event.x, event.y)) |i| self.client.?.windows.items[i] else null;
+        self.hover = self.hit(event.x, event.y);
+        self.close_hover = if (self.hover) |i| closeHit(self.client.?.windows.items[i].target, true, event.x, event.y) else false;
+        self.drag = if (self.hover) |i| self.client.?.windows.items[i] else null;
+        self.close_pressed = event.button == 1 and self.close_hover;
         self.drag_x = event.x;
         self.drag_y = event.y;
         self.dragging = false;
@@ -556,25 +709,51 @@ const Overview = struct {
     fn release(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Overview, data);
         const client = self.client orelse return 1;
+        const was_close_pressed = self.close_pressed;
         defer {
             self.drag = null;
             self.dragging = false;
+            self.close_pressed = false;
+        }
+        if (self.apps_mode) {
+            if (event.button == 1 and !self.dragging) {
+                if (self.smallWorkspaceAt(event.x, event.y)) |index| {
+                    client.switchWorkspace(index);
+                    self.transition.finish();
+                    self.apps_mode = false;
+                    self.hover = null;
+                    self.close_hover = false;
+                    self.updateMode();
+                    self.focusPart(.stage);
+                }
+            }
+            return 1;
         }
         if (self.drag) |window| {
             const r = window.target;
-            if (self.dragging) {
-                if (event.y < 0) if (self.workspaceAt(event.x)) |index| client.move(window, index);
-            } else if (event.button == 2 or (event.x > r.x + r.w - 16 and event.y < r.y + 16)) client.close(window) else if (event.button == 1) {
+            if (was_close_pressed) {
+                if (closeHit(r, true, event.x, event.y)) {
+                    self.hover = null;
+                    self.close_hover = false;
+                    client.close(window);
+                }
+            } else if (self.dragging) {
+                if (event.y < 0 and self.strip.height > 0) if (self.workspaceAt(self.stage.x + event.x)) |index| client.move(window, index);
+            } else if (event.button == 2 or closeHit(r, true, event.x, event.y)) {
+                self.hover = null;
+                self.close_hover = false;
+                client.close(window);
+            } else if (event.button == 1) {
                 client.activate(window);
                 self.launcher.hide();
             }
         } else if (event.button == 1) {
-            if (event.x > self.workspace_rect.x + self.workspace_rect.w + 50) self.stepWorkspace(1) else if (event.x < self.workspace_rect.x - 50) self.stepWorkspace(-1) else self.launcher.hide();
+            if (event.x > self.workspace_rect.x + self.workspace_rect.w + 12) self.stepWorkspace(1) else if (event.x < self.workspace_rect.x - 12) self.stepWorkspace(-1) else self.launcher.hide();
         }
         return 1;
     }
     fn createSurface(self: *Overview, output: *wire.Output) !*wire.Surface {
-        const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-overview", .layer = 3, .anchors = wire.top | wire.bottom | wire.left | wire.right, .keyboard = .exclusive, .exclusive_zone = 0, .interactive = true, .cursor = .arrow, .clear_buffer = false }, &paint, self);
+        const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-overview", .layer = 2, .anchors = wire.top | wire.bottom | wire.left | wire.right, .keyboard = .exclusive, .exclusive_zone = -1, .interactive = true, .cursor = .arrow, .clear_buffer = false }, &paint, self);
         surface.close = &closed;
         surface.next_frame = &nextFrame;
         surface.render_scale = &renderScale;
@@ -698,12 +877,15 @@ const Overview = struct {
         if (self.search.contains(x, y)) return .search;
         if (self.strip.contains(x, y)) return .strip;
         if (self.dash.contains(x, y)) return .dash;
+        if (self.stage.contains(x, y)) return .stage;
         return if (self.apps_mode or self.launcher.searchText().len != 0) .grid else .stage;
     }
     fn inputLeave(data: ?*anyopaque, _: *wire.Surface) void {
         const self = cast(Overview, data);
         self.pointer_part = null;
         self.hover = null;
+        self.close_hover = false;
+        self.close_pressed = false;
         self.launcher.hover = null;
         self.launcher.search_hover = false;
         _ = dashLeave(null, null, data);
@@ -718,6 +900,7 @@ const Overview = struct {
             self.launcher.hover = null;
             self.launcher.search_hover = false;
             self.hover = null;
+            self.close_hover = false;
         }
         self.pointer_part = current;
         const region = self.partRegion(current);
@@ -780,6 +963,42 @@ const Overview = struct {
         if (!self.transition.shown) return;
         if (self.apps_mode or self.launcher.searchText().len != 0) apps.scroll(&self.launcher, amount) else if (@abs(amount) >= 1) self.stepWorkspace(if (amount > 0) 1 else -1);
     }
+    fn layoutRegions(self: *Overview, width: u32, height: u32) void {
+        const start_y: u32 = 32;
+        const work_h: f64 = @floatFromInt(@max(1, height -| start_y));
+        const spacing: u32 = @intFromFloat(@round(work_h * 0.02));
+        const search_h: u32 = 55;
+        self.search = .{ .x = (@as(f64, @floatFromInt(width)) - 370) / 2, .y = @floatFromInt(start_y + 12), .width = 370, .height = 37 };
+        const footer = self.dash_view.layout.height;
+        self.dash = .{ .x = (@as(f64, @floatFromInt(width)) - @as(f64, @floatFromInt(self.dash_view.layout.width))) / 2, .y = @floatFromInt(height -| footer), .width = self.dash_view.layout.width, .height = footer };
+        const status: u32 = if (self.launcher.status.len > 0) 64 else 0;
+        const bottom_y: u32 = height -| (footer + spacing + status);
+        const search_active = self.launcher.searchText().len != 0;
+        const count: usize = if (self.client) |client| client.count else 0;
+        const strip_geom = self.stripGeometry(@floatFromInt(width), count);
+        const strip_y: u32 = start_y + search_h + @as(u32, @intFromFloat(@round(@as(f64, @floatFromInt(spacing)) * 0.6)));
+        const strip_h: u32 = @as(u32, @intFromFloat(strip_geom.thumb_h)) + 12;
+        if (search_active) {
+            self.strip = .{ .width = 0, .height = 0 };
+            self.stage = .{ .width = 0, .height = 0 };
+            const grid_y = start_y + search_h + spacing;
+            self.grid = .{ .y = @floatFromInt(grid_y), .width = width, .height = bottom_y -| grid_y };
+        } else if (self.apps_mode) {
+            self.strip = .{ .width = 0, .height = 0 };
+            const stage_y = start_y + search_h + spacing;
+            const small_h: u32 = @intFromFloat(@round(work_h * 0.15));
+            self.stage = .{ .y = @floatFromInt(stage_y), .width = width, .height = small_h };
+            const grid_y = stage_y + small_h + spacing;
+            self.grid = .{ .y = @floatFromInt(grid_y), .width = width, .height = bottom_y -| grid_y };
+        } else {
+            self.strip = .{ .y = @floatFromInt(strip_y), .width = width, .height = strip_h };
+            const stage_y = strip_y + strip_h + @as(u32, @intFromFloat(@round(@as(f64, @floatFromInt(spacing)) * 0.4)));
+            self.stage = .{ .y = @floatFromInt(stage_y), .width = width, .height = bottom_y -| stage_y };
+            self.grid = .{ .y = @floatFromInt(start_y + search_h + spacing), .width = width, .height = bottom_y -| (start_y + search_h + spacing) };
+        }
+        self.launcher.geometry = @import("desktop-apps-view.zig").Grid.init(width, @max(1, self.grid.height));
+        self.launcher.page = self.launcher.selected / self.launcher.geometry.capacity();
+    }
     fn paint(data: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(Overview, data);
         self.painting = true;
@@ -789,27 +1008,21 @@ const Overview = struct {
         const scale = self.surface.?.buffer_scale;
         const width = target.width / scale;
         const height = target.height / scale;
-        self.search.x = (@as(f64, @floatFromInt(width)) - 370) / 2;
         const footer = self.dash_view.layout.height;
-        self.dash = .{ .x = (@as(f64, @floatFromInt(width)) - @as(f64, @floatFromInt(self.dash_view.layout.width))) / 2, .y = @floatFromInt(height -| footer), .width = self.dash_view.layout.width, .height = footer };
         const status: u32 = if (self.launcher.status.len > 0) 64 else 0;
-        self.stage = .{ .y = 128, .width = width, .height = height -| (128 + 21 + footer + status) };
-        self.strip.width = width;
-        self.grid = .{ .y = 119, .width = width, .height = height -| (119 + footer + status) };
-        self.launcher.geometry = @import("desktop-apps-view.zig").Grid.init(width, @max(1, self.grid.height));
-        self.launcher.page = self.launcher.selected / self.launcher.geometry.capacity();
+        self.layoutRegions(width, height);
         @memset(target.pixels, 0xff222226);
+        if (self.launcher.searchText().len == 0) {
+            self.paintStage(.{ .target = target, .scale = @floatFromInt(scale), .origin = .{ .x = 0, .y = self.stage.y } }, @floatFromInt(width), @floatFromInt(self.stage.height));
+        }
         apps.paintRegion(target, scale, self.search, .{ &self.launcher, apps.Part.search }, apps.paintPart);
-        apps.paintRegionInPlace(target, scale, self.strip, .{ self, Part.strip }, paintPart);
+        if (self.strip.width > 0 and self.strip.height > 0) {
+            apps.paintRegionInPlace(target, scale, self.strip, .{ self, Part.strip }, paintPart);
+        }
         apps.paintRegion(target, scale, self.dash, .{ self, Part.dash }, paintPart);
         if (self.apps_mode or self.launcher.searchText().len != 0) {
             apps.paintRegion(target, scale, self.grid, .{ &self.launcher, apps.Part.grid }, apps.paintPart);
-        } else if (self.progress < 1 or !self.transition.shown) {
-            // The desktop zooms over the entire viewport, revealing the search,
-            // thumbnails and dash as it shrinks, rather than clipping at the
-            // window-picker allocation from the first frame.
-            self.paintStage(.{ .target = target, .scale = @floatFromInt(scale), .origin = .{ .x = 0, .y = self.stage.y } }, @floatFromInt(width), @floatFromInt(self.stage.height));
-        } else apps.paintRegionInPlace(target, scale, self.stage, .{ self, Part.stage }, paintPart);
+        }
         if (self.tooltip_visible) apps.paintRegion(target, scale, self.tooltip, .{ self, Part.tooltip }, paintPart);
         if (status > 0) apps.paintRegion(target, scale, .{ .y = @floatFromInt(height -| (footer + status)), .width = width, .height = status }, .{ &self.launcher, apps.Part.message }, apps.paintPart);
     }
@@ -828,101 +1041,272 @@ const Overview = struct {
         const client = self.client orelse return;
         const now = c.g_get_monotonic_time();
         const animated = self.transition.active(now) or !self.transition.shown or now - self.workspace_started < 250000;
-        const left = (width - @as(f64, @floatFromInt(client.count)) * 72 + 6) / 2;
+        const geom = self.stripGeometry(width, client.count);
+        const work_w: f64 = @floatFromInt(self.monitor.width);
+        const work_h: f64 = @floatFromInt(@max(1, self.monitor.height - 32));
         for (0..client.count) |i| {
-            const x = left + @as(f64, @floatFromInt(i)) * 72;
-            const rect = Rect{ .x = x, .y = 19, .w = 66, .h = 40 };
-            if (i == client.current) {
-                canvas.draw(&.{(raster.Rect{ .x = x - 3, .y = 16, .width = 72, .height = 46 }).shape(8)}, .{ .red = 0.208, .green = 0.518, .blue = 0.894 });
-            }
-            canvas.draw(&.{pixelRect(rect).shape(3)}, raster.Color.rgb(0x46464e, 1));
+            const x = geom.left + @as(f64, @floatFromInt(i)) * geom.step;
+            const rect = Rect{ .x = x, .y = 6, .w = geom.thumb_w, .h = geom.thumb_h };
+            canvas.draw(&.{pixelRect(rect).shape(4)}, raster.Color.rgb(0x46464e, 1));
+            self.window_paints.clearRetainingCapacity();
             for (client.windows.items) |window| {
                 if (window.workspace != i and !window.sticky) continue;
+                self.window_paints.append(a, .{ .window = window, .rect = .{}, .hovered = false }) catch @panic("out of memory");
+            }
+            std.mem.sort(WindowPaint, self.window_paints.items, {}, WindowPaint.below);
+            for (self.window_paints.items) |item| {
+                const window = item.window;
                 const g = window.geometry;
-                const sx = 66 / @as(f64, @floatFromInt(self.monitor.width));
-                const sy = 40 / @as(f64, @floatFromInt(self.monitor.height - 32));
-                const r = Rect{ .x = x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = 19 + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
-                view.miniature(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect), animated);
+                const sx = geom.thumb_w / work_w;
+                const sy = geom.thumb_h / work_h;
+                const r = Rect{ .x = x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = 6 + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
+                view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect), 4, animated);
             }
         }
+        if (client.count > 0) {
+            const ind_x = geom.left + self.workspacePosition() * geom.step;
+            view.thumbnailIndicator(canvas, pixelRect(.{ .x = ind_x, .y = 6, .w = geom.thumb_w, .h = geom.thumb_h }));
+        }
     }
-    fn workspacePosition(self: *Overview) f64 {
+    const FitAllLayout = struct {
+        card_w: f64,
+        card_h: f64,
+        start_x: f64,
+        base_y: f64,
+        spacing: f64,
+
+        fn cardRect(self: FitAllLayout, index: usize, position: f64) Rect {
+            const ratio = 1 - 0.06 * @min(1, @abs(@as(f64, @floatFromInt(index)) - position));
+            const w = self.card_w * ratio;
+            const h = self.card_h * ratio;
+            const cx = self.start_x + @as(f64, @floatFromInt(index)) * (self.card_w + self.spacing) + self.card_w / 2;
+            const cy = self.base_y + self.card_h / 2;
+            return .{ .x = cx - w / 2, .y = cy - h / 2, .w = w, .h = h };
+        }
+    };
+    fn fitAllLayout(self: *const Overview, count: usize, width: f64, height: f64) FitAllLayout {
+        const ws_spacing: f64 = 24;
+        const work_w: f64 = @floatFromInt(self.monitor.width);
+        const work_h: f64 = @floatFromInt(@max(1, self.monitor.height - 32));
+        const n = @max(1, count);
+        const avail_w = @max(1, width - 2 * ws_spacing);
+        const max_w = (avail_w - @as(f64, @floatFromInt(n - 1)) * ws_spacing) / @as(f64, @floatFromInt(n));
+        const scale = @min(max_w / work_w, height / work_h);
+        const card_w = work_w * scale;
+        const card_h = work_h * scale;
+        const total_w = @as(f64, @floatFromInt(n)) * card_w + @as(f64, @floatFromInt(n - 1)) * ws_spacing;
+        return .{
+            .card_w = card_w,
+            .card_h = card_h,
+            .start_x = (width - total_w) / 2,
+            .base_y = (height - card_h) / 2,
+            .spacing = ws_spacing,
+        };
+    }
+    fn workspacePosition(self: *const Overview) f64 {
         const t = std.math.clamp(@as(f64, @floatFromInt(c.g_get_monotonic_time() - self.workspace_started)) / 250000, 0, 1);
         const ease = 1 - (1 - t) * (1 - t) * (1 - t);
         return self.workspace_from + (@as(f64, @floatFromInt(self.workspace_target)) - self.workspace_from) * ease;
     }
     fn paintStage(self: *Overview, canvas: raster.Canvas, width: f64, height: f64) void {
         const client = self.client orelse return;
-        if (width <= 0 or height <= 24) return;
-        const scale = @min(width * 0.73 / @as(f64, @floatFromInt(self.monitor.width)), (height - 24) / @as(f64, @floatFromInt(self.monitor.height - 32)));
-        const base = Rect{ .x = (width - @as(f64, @floatFromInt(self.monitor.width)) * scale) / 2, .y = 12, .w = @as(f64, @floatFromInt(self.monitor.width)) * scale, .h = @as(f64, @floatFromInt(self.monitor.height - 32)) * scale };
-        self.workspace_rect = base;
+        if (width <= 0 or height <= 0) return;
         const ease = self.progress;
         const position = self.workspacePosition();
         const moving = self.animating or position != @as(f64, @floatFromInt(self.workspace_target));
         const animated = moving or !self.transition.shown;
         self.animating = moving;
+        const work_w: f64 = @floatFromInt(self.monitor.width);
+        const work_h: f64 = @floatFromInt(@max(1, self.monitor.height - 32));
+        if (self.apps_mode) {
+            const layout = self.fitAllLayout(client.count, width, height);
+            for (0..client.count) |i| {
+                const bg = layout.cardRect(i, position);
+                if (bg.x > width or bg.x + bg.w < 0) continue;
+                const radius = @max(10.0, 30.0 * (bg.h / @max(1.0, work_h * 0.74)));
+                view.workspaceCard(canvas, pixelRect(bg), self.wallpaper, radius, true, animated);
+                self.window_paints.clearRetainingCapacity();
+                for (client.windows.items) |window| {
+                    if (window.workspace != i and !window.sticky) continue;
+                    self.window_paints.append(a, .{ .window = window, .rect = .{}, .hovered = false }) catch @panic("out of memory");
+                }
+                std.mem.sort(WindowPaint, self.window_paints.items, {}, WindowPaint.below);
+                const sx = bg.w / work_w;
+                const sy = bg.h / work_h;
+                for (self.window_paints.items) |item| {
+                    const window = item.window;
+                    const g = window.geometry;
+                    const r = Rect{ .x = bg.x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = bg.y + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
+                    view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(bg), radius, animated);
+                }
+            }
+            return;
+        }
+        const scale = @min(width / work_w, height / work_h);
+        const base = Rect{ .x = (width - work_w * scale) / 2, .y = (height - work_h * scale) / 2, .w = work_w * scale, .h = work_h * scale };
+        self.workspace_rect = base;
+        const ws_spacing = std.math.clamp((width - base.w) / 2 - base.w * 0.4, 24, 80);
+        const start_y = @as(f64, 32) - self.stage.y;
         for (0..client.count) |i| {
             const offset = @as(f64, @floatFromInt(i)) - position;
             const ratio = 1 - 0.06 * @min(1, @abs(offset));
-            const full_height: f64 = @floatFromInt(self.monitor.height - 32);
-            const start = Rect{ .x = width / 2 + offset * (width + 64) - width * ratio / 2, .y = -128 + (full_height - full_height * ratio) / 2, .w = width * ratio, .h = full_height * ratio };
+            const start = Rect{ .x = width / 2 + offset * (width + ws_spacing) - width * ratio / 2, .y = start_y + (work_h - work_h * ratio) / 2, .w = width * ratio, .h = work_h * ratio };
             const background = Rect{
-                .x = start.x + (width / 2 + offset * (base.w + 64) - base.w * ratio / 2 - start.x) * ease,
-                .y = start.y + (12 + (base.h - base.h * ratio) / 2 - start.y) * ease,
+                .x = start.x + (width / 2 + offset * (base.w + ws_spacing) - base.w * ratio / 2 - start.x) * ease,
+                .y = start.y + (base.y + (base.h - base.h * ratio) / 2 - start.y) * ease,
                 .w = start.w + (base.w * ratio - start.w) * ease,
                 .h = start.h + (base.h * ratio - start.h) * ease,
             };
             if (background.x > width or background.x + background.w < 0) continue;
             view.workspaceProgress(canvas, pixelRect(background), self.wallpaper, ease, animated);
-            self.drawWindows(canvas, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1, animated);
+            self.drawWindows(canvas, client, @intCast(i), background, ratio, if (i == client.current) ease else 1, animated, width);
         }
     }
-    fn drawWindows(self: *Overview, canvas: raster.Canvas, client: *capture.Client, workspace_index: u32, background: Rect, height: f64, ratio: f64, ease: f64, animated: bool) void {
-        if (background.w <= 168 * ratio or height <= 0) return;
-        var count: usize = 0;
-        for (client.windows.items) |window| if (window.workspace == workspace_index or window.sticky) {
-            count += 1;
-        };
-        if (count == 0) return;
-        const columns: usize = @intFromFloat(@ceil(@sqrt(@as(f64, @floatFromInt(count)))));
-        const rows = (count + columns - 1) / columns;
-        const cell_w = (background.w - 168 * ratio - @as(f64, @floatFromInt(columns - 1)) * 32 * ratio) / @as(f64, @floatFromInt(columns));
-        const cell_h = (height * ratio - @as(f64, @floatFromInt(rows - 1)) * 32 * ratio) / @as(f64, @floatFromInt(rows));
-        var position: usize = 0;
-        self.window_paints.clearRetainingCapacity();
+    fn drawWindows(self: *Overview, canvas: raster.Canvas, client: *capture.Client, workspace_index: u32, background: Rect, ratio: f64, ease: f64, animated: bool, stage_width: f64) void {
+        if (background.w <= 168 * ratio or background.h <= 0) return;
+        self.layout_entries.clearRetainingCapacity();
         for (client.windows.items, 0..) |window, index| {
             if (window.workspace != workspace_index and !window.sticky) continue;
-            const row = position / columns;
-            const col = position % columns;
-            const in_row = @min(columns, count - row * columns);
-            const factor = @min(cell_w / window.geometry.w, cell_h / window.geometry.h);
-            const w = window.geometry.w * factor;
-            const h = window.geometry.h * factor;
-            const x = background.x + 84 * ratio + (@as(f64, @floatFromInt(columns - in_row)) * (cell_w + 32 * ratio)) / 2 + @as(f64, @floatFromInt(col)) * (cell_w + 32 * ratio) + (cell_w - w) / 2;
-            const y = (height - height * ratio) / 2 + @as(f64, @floatFromInt(row)) * (cell_h + 32 * ratio) + (cell_h - h) / 2;
-            if (workspace_index == client.current) window.target = .{ .x = x, .y = y, .w = w, .h = h };
-            // GNOME first projects the desktop geometry into the moving
-            // workspace, then interpolates that clone into the picker layout.
-            // Composing both transforms keeps windows attached to the zoom.
-            const sx = background.w / @as(f64, @floatFromInt(self.monitor.width));
-            const sy = background.h / @as(f64, @floatFromInt(self.monitor.height - 32));
-            const start = Rect{
-                .x = background.x + (window.geometry.x - @as(f64, @floatFromInt(self.monitor.x))) * sx,
-                .y = background.y + (window.geometry.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy,
-                .w = window.geometry.w * sx,
-                .h = window.geometry.h * sy,
-            };
-            const r = Rect{ .x = start.x + (x - start.x) * ease, .y = start.y + (y - start.y) * ease, .w = start.w + (w - start.w) * ease, .h = start.h + (h - start.h) * ease };
-            self.window_paints.append(a, .{ .window = window, .rect = r, .hovered = workspace_index == client.current and self.hover == index }) catch @panic("out of memory");
-            position += 1;
+            const gw = @max(1, window.geometry.w);
+            const gh = @max(1, window.geometry.h);
+            self.layout_entries.append(a, .{
+                .window = window,
+                .index = index,
+                .cx = window.geometry.x + gw / 2,
+                .cy = window.geometry.y + gh / 2,
+                .w = gw,
+                .h = gh,
+            }) catch @panic("out of memory");
+        }
+        const n = self.layout_entries.items.len;
+        if (n == 0) return;
+
+        // GNOME UnalignedLayoutStrategy: row-packing + _adjustSpacingAndPadding(20 + oversize) + max scale 0.95.
+        std.mem.sort(LayoutEntry, self.layout_entries.items, {}, LayoutEntry.verticalBefore);
+        const pad_x = @min(36 * ratio, background.w * 0.1);
+        const pad_top = @min(36 * ratio, background.h * 0.1);
+        const pad_bottom = @min(64 * ratio, background.h * 0.16);
+        const col_spacing = @min(36 * ratio, background.w * 0.08);
+        const row_spacing = @min(64 * ratio, background.h * 0.16);
+        const area: Rect = .{
+            .x = background.x + pad_x,
+            .y = background.y + pad_top,
+            .w = @max(1, background.w - 2 * pad_x),
+            .h = @max(1, background.h - pad_top - pad_bottom),
+        };
+        const work_w: f64 = @floatFromInt(@max(1, self.monitor.width));
+        const work_h: f64 = @floatFromInt(@max(1, self.monitor.height - 32));
+        const max_scale = 0.95 * (background.w / work_w);
+        var total_nat_w: f64 = 0;
+        for (self.layout_entries.items) |e| total_nat_w += e.w;
+
+        var best_scale: f64 = -1;
+        self.best_rows.clearRetainingCapacity();
+        self.best_entries.clearRetainingCapacity();
+        self.best_entries.appendSlice(a, self.layout_entries.items) catch @panic("out of memory");
+
+        for (1..n + 1) |num_rows| {
+            self.layout_rows.clearRetainingCapacity();
+            const entries = a.dupe(LayoutEntry, self.layout_entries.items) catch @panic("out of memory");
+            defer a.free(entries);
+            const ideal_row_w = total_nat_w / @as(f64, @floatFromInt(num_rows));
+            var row_start: usize = 0;
+            var row_w: f64 = 0;
+            for (entries, 0..) |e, k| {
+                const rows_left = num_rows - self.layout_rows.items.len;
+                const items_left = n - k;
+                if (k > row_start and rows_left > 1 and (items_left == rows_left - 1 or row_w + e.w / 2 > ideal_row_w)) {
+                    std.mem.sort(LayoutEntry, entries[row_start..k], {}, LayoutEntry.horizontalBefore);
+                    var max_h: f64 = 0;
+                    for (entries[row_start..k]) |re| max_h = @max(max_h, re.h);
+                    self.layout_rows.append(a, .{ .start = row_start, .end = k, .max_h = max_h }) catch @panic("out of memory");
+                    row_start = k;
+                    row_w = 0;
+                }
+                row_w += e.w;
+            }
+            std.mem.sort(LayoutEntry, entries[row_start..n], {}, LayoutEntry.horizontalBefore);
+            var last_max_h: f64 = 0;
+            for (entries[row_start..n]) |re| last_max_h = @max(last_max_h, re.h);
+            self.layout_rows.append(a, .{ .start = row_start, .end = n, .max_h = last_max_h }) catch @panic("out of memory");
+
+            var min_row_scale_x = max_scale;
+            var sum_row_max_h: f64 = 0;
+            for (self.layout_rows.items) |row| {
+                var sum_w: f64 = 0;
+                for (entries[row.start..row.end]) |re| sum_w += re.w;
+                const gaps = @as(f64, @floatFromInt((row.end - row.start) -| 1)) * col_spacing;
+                const rx = @max(0.01, (area.w - gaps) / @max(1, sum_w));
+                min_row_scale_x = @min(min_row_scale_x, rx);
+                sum_row_max_h += row.max_h;
+            }
+            const vgaps = @as(f64, @floatFromInt(self.layout_rows.items.len -| 1)) * row_spacing;
+            const sy = @max(0.01, (area.h - vgaps) / @max(1, sum_row_max_h));
+            const cand_scale = @min(max_scale, @min(sy, min_row_scale_x));
+            if (cand_scale > best_scale + 1e-6) {
+                best_scale = cand_scale;
+                self.best_rows.clearRetainingCapacity();
+                self.best_rows.appendSlice(a, self.layout_rows.items) catch @panic("out of memory");
+                self.best_entries.clearRetainingCapacity();
+                self.best_entries.appendSlice(a, entries) catch @panic("out of memory");
+            }
+        }
+
+        var used_h = @as(f64, @floatFromInt(self.best_rows.items.len -| 1)) * row_spacing;
+        for (self.best_rows.items) |row| used_h += row.max_h * best_scale;
+        var cur_y = area.y + (area.h - used_h) / 2;
+        self.window_paints.clearRetainingCapacity();
+        for (self.best_rows.items) |row| {
+            const row_h = row.max_h * best_scale;
+            var row_w = @as(f64, @floatFromInt((row.end - row.start) -| 1)) * col_spacing;
+            for (self.best_entries.items[row.start..row.end]) |re| row_w += re.w * best_scale;
+            var cur_x = area.x + (area.w - row_w) / 2;
+            for (self.best_entries.items[row.start..row.end]) |re| {
+                const w = re.w * best_scale;
+                const h = re.h * best_scale;
+                const x = cur_x;
+                const y = cur_y + (row_h - h) / 2;
+                cur_x += w + col_spacing;
+                const window = re.window;
+                if (workspace_index == client.current) window.target = .{ .x = x, .y = y, .w = w, .h = h };
+                const sx = background.w / work_w;
+                const sy = background.h / work_h;
+                const start = Rect{
+                    .x = background.x + (window.geometry.x - @as(f64, @floatFromInt(self.monitor.x))) * sx,
+                    .y = background.y + (window.geometry.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy,
+                    .w = window.geometry.w * sx,
+                    .h = window.geometry.h * sy,
+                };
+                const r = Rect{ .x = start.x + (x - start.x) * ease, .y = start.y + (y - start.y) * ease, .w = start.w + (w - start.w) * ease, .h = start.h + (h - start.h) * ease };
+                self.window_paints.append(a, .{ .window = window, .rect = r, .hovered = workspace_index == client.current and self.hover == re.index }) catch @panic("out of memory");
+            }
+            cur_y += row_h + row_spacing;
         }
         // Keep picker positions stable while painting overlapping clones in the
         // same order as the desktop, including a newly activated older window.
         std.mem.sort(WindowPaint, self.window_paints.items, {}, WindowPaint.below);
         for (self.window_paints.items) |item| {
             const window = item.window;
-            view.window(canvas, pixelRect(item.rect), if (window.image) |image| image.view() else null, window.icon, item.hovered, ease, animated);
+            var caption: ?view.Caption = null;
+            if (item.hovered and ease > 0.01) {
+                const title_str: []const u8 = if (window.title != null and window.title[0] != 0)
+                    std.mem.span(window.title)
+                else if (window.app_id != null and window.app_id[0] != 0)
+                    std.mem.span(window.app_id)
+                else
+                    "";
+                const max_w: u32 = @intFromFloat(@round(@max(140, item.rect.w + 40)));
+                caption = self.prepareCaption(title_str, max_w, @intFromFloat(@round(canvas.scale)));
+            }
+            view.window(canvas, pixelRect(item.rect), if (window.image) |image| image.view() else null, window.icon, .{
+                .hovered = item.hovered,
+                .close_hovered = item.hovered and self.close_hover,
+                .close_pressed = item.hovered and self.close_pressed,
+                .ease = ease,
+                .animated = animated,
+                .caption = caption,
+                .bounds_width = stage_width,
+            });
         }
     }
 };

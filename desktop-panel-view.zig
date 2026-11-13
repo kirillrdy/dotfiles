@@ -6,6 +6,7 @@ const c = @import("desktop-gtk.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 pub const Rect = @import("desktop-askpass-view.zig").Rect;
 const white: raster.Color = .{ .red = 1, .green = 1, .blue = 1 };
+const overview_foreground: raster.Color = .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0 };
 const secondary: raster.Color = .{ .red = 0.63, .green = 0.63, .blue = 0.63 };
 
 pub const Label = struct {
@@ -91,13 +92,13 @@ pub const Item = struct {
         }
         self.icon_scale = scale;
     }
-    fn paint(self: *const Item, buffer: raster.Buffer, scale: u32) void {
+    fn paint(self: *const Item, buffer: raster.Buffer, scale: u32, foreground: raster.Color) void {
         var x = self.rect.x;
         if (self.pixbuf) |image| {
             c.__zig.blitPixbuf(.{ .target = buffer, .scale = @floatFromInt(scale) }, image, .{ .x = x, .y = (self.rect.height - 16) / 2, .width = 16, .height = 16 });
         }
         if (self.icon.value.len != 0) x += 16 + (if (self.label.value.len != 0) @as(f64, 6) else 0);
-        self.label.paint(buffer, x, (self.rect.height - self.label.height()) / 2, white);
+        self.label.paint(buffer, x, (self.rect.height - self.label.height()) / 2, foreground);
     }
 };
 pub const Graph = struct {
@@ -180,6 +181,9 @@ pub const View = struct {
     disk: bool = false,
     hovered: bool = false,
     focus: bool = false,
+    overview: bool = false,
+    workspace_count: u8 = 2,
+    workspace_active: u8 = 0,
     scale: u32 = 1,
     width: u32 = 1,
     pub fn deinit(self: *View) void {
@@ -192,7 +196,10 @@ pub const View = struct {
         self.scale = scale;
         const padding: f64 = if (self.disk) 0 else if (self.codex) 15 else 18;
         var x = padding;
-        if (self.activities) x += 42 else if (self.monitors) {
+        if (self.activities) {
+            const count: usize = @max(1, self.workspace_count);
+            x += 26 + @as(f64, @floatFromInt(count - 1)) * 13;
+        } else if (self.monitors) {
             for (&self.graphs, [_][:0]const u8{ "cpu", "mem", "net" }) |*graph, name| {
                 graph.name.set(name);
                 try graph.name.prepare(&self.renderer, scale, 9.166, true, null, false);
@@ -222,10 +229,30 @@ pub const View = struct {
         const width = @as(f64, @floatFromInt(buffer.width)) / scale;
         const height = @as(f64, @floatFromInt(buffer.height)) / scale;
         const canvas: raster.Canvas = .{ .target = buffer, .scale = scale };
-        if ((self.hovered or self.focus) and !self.disk) canvas.draw(&.{.{ .rounded = .{ .x = 3, .y = 3, .width = @max(0, width - 6), .height = @max(0, height - 6) } }}, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.17 });
+        const fg = if (self.overview) overview_foreground else white;
+        const pill_color: ?raster.Color = if (self.activities and self.overview)
+            .{ .red = fg.red, .green = fg.green, .blue = fg.blue, .alpha = if (self.hovered or self.focus) 0.32 else 0.28 }
+        else if ((self.hovered or self.focus) and !self.disk)
+            .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.17 }
+        else
+            null;
+        if (pill_color) |color| canvas.draw(&.{.{ .rounded = .{ .x = 3, .y = 3, .width = @max(0, width - 6), .height = @max(0, height - 6) } }}, color);
         const padding: f64 = if (self.disk) 0 else if (self.codex) 15 else 18;
         if (self.activities) {
-            canvas.draw(&.{ .{ .rounded = .{ .x = padding + 2, .y = height / 2 - 4, .width = 26, .height = 8 } }, .{ .circle = .{ .center = .{ .x = padding + 37, .y = height / 2 }, .radius = 4 } } }, white);
+            const count: usize = @max(1, self.workspace_count);
+            const active = @min(self.workspace_active, count - 1);
+            const base_radius: f64 = if (count <= 2) 3.625 else if (count <= 5) 3.25 else 2.75;
+            const inactive_fg: raster.Color = .{ .red = fg.red, .green = fg.green, .blue = fg.blue, .alpha = 0.50 };
+            var dot_x = padding;
+            for (0..count) |i| {
+                if (i == active) {
+                    canvas.draw(&.{.{ .rounded = .{ .x = dot_x, .y = height / 2 - base_radius, .width = 26, .height = base_radius * 2 } }}, fg);
+                    dot_x += 26 + 5;
+                } else {
+                    canvas.draw(&.{.{ .circle = .{ .center = .{ .x = dot_x + 4, .y = height / 2 }, .radius = base_radius * 0.75 } }}, inactive_fg);
+                    dot_x += 8 + 5;
+                }
+            }
         } else if (self.monitors) {
             for (self.graphs, 0..) |graph, i| {
                 const x = padding + @as(f64, @floatFromInt(i)) * 118;
@@ -240,8 +267,8 @@ pub const View = struct {
                 }
                 graph.paint(canvas, x + 14, 100, height);
             }
-        } else if (self.clock.value.len != 0) self.clock.paint(buffer, padding, (height - self.clock.height()) / 2, white) else for (self.items) |item| {
-            if (item.visible) item.paint(buffer, self.scale);
+        } else if (self.clock.value.len != 0) self.clock.paint(buffer, padding, (height - self.clock.height()) / 2, fg) else for (self.items) |item| {
+            if (item.visible) item.paint(buffer, self.scale, fg);
         }
     }
 };

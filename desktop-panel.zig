@@ -1,5 +1,6 @@
 //! Layer-shell windows hosting the panel's native pixel views.
 const layer = @import("desktop-layer-shell.zig");
+const p = @import("desktop-protocols.zig");
 const std = @import("std");
 const widgets = @import("desktop-widgets.zig");
 const c = widgets.c;
@@ -58,8 +59,16 @@ const Panel = struct {
         c.gtk_box_set_center_widget(cast(c.GtkBox, layout), self.group(config.center));
         c.gtk_box_pack_end(cast(c.GtkBox, layout), self.group(config.right), 0, 0, 0);
         c.gtk_container_add(cast(c.GtkContainer, self.window), layout);
+        if (c.gdk_screen_get_rgba_visual(c.gtk_widget_get_screen(self.window))) |visual| c.gtk_widget_set_visual(self.window, visual);
         c.gtk_widget_show_all(self.window);
         return self;
+    }
+
+    fn applyOverview(self: *Panel, active: bool, workspace_count: u8, workspace_active: u8) void {
+        const ctx = c.gtk_widget_get_style_context(self.window);
+        if (active) c.gtk_style_context_add_class(ctx, "overview") else c.gtk_style_context_remove_class(ctx, "overview");
+        c.gtk_widget_queue_draw(self.window);
+        for (self.modules.items) |module| widgets.setOverviewState(module, active, workspace_count, workspace_active);
     }
 
     fn destroy(self: *Panel) void {
@@ -77,10 +86,83 @@ const App = struct {
     config: Config,
     panels: std.ArrayList(*Panel) = .empty,
     revision: u64 = 0,
+    overview_active: bool = false,
+    workspace_count: u8 = 2,
+    workspace_active: u8 = 0,
+    pending_count: u8 = 0,
+    pending_active: u8 = 0,
+    registry: ?*c.wl_registry = null,
+    overview: ?*p.dotfiles_overview_v1 = null,
+
+    fn syncPanels(self: *App) void {
+        for (self.panels.items) |panel| panel.applyOverview(self.overview_active, self.workspace_count, self.workspace_active);
+    }
+
+    fn connectOverview(self: *App, display: *c.GdkDisplay) void {
+        const wire = c.gdk_wayland_display_get_wl_display(display) orelse return;
+        const registry = c.wl_display_get_registry(wire) orelse return;
+        self.registry = registry;
+        _ = c.wl_registry_add_listener(registry, &registry_listener, self);
+        _ = c.wl_display_roundtrip(wire);
+    }
+
+    fn deinitOverview(self: *App) void {
+        if (self.overview) |overview| p.dotfiles_overview_v1_destroy(overview);
+        if (self.registry) |registry| c.wl_registry_destroy(registry);
+        self.overview = null;
+        self.registry = null;
+    }
+
+    fn onGlobal(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*c]const u8, version: u32) callconv(.c) void {
+        const self: *App = @ptrCast(@alignCast(data));
+        if (self.overview == null and version >= 2 and std.mem.eql(u8, std.mem.span(interface), "dotfiles_overview_v1")) {
+            self.overview = @ptrCast(c.wl_registry_bind(registry, name, &p.dotfiles_overview_v1_interface, 2));
+            if (self.overview) |overview| _ = p.dotfiles_overview_v1_add_listener(overview, &overview_listener, self);
+        }
+    }
+
+    fn onGlobalRemove(_: ?*anyopaque, _: ?*c.wl_registry, _: u32) callconv(.c) void {}
+
+    fn onWorkspace(data: ?*anyopaque, _: ?*p.dotfiles_overview_v1, index: u32, _: [*c]const u8, active: u32) callconv(.c) void {
+        const self: *App = @ptrCast(@alignCast(data));
+        self.pending_count = @max(self.pending_count, @as(u8, @intCast(@min(index + 1, 16))));
+        if (active != 0) self.pending_active = @intCast(@min(index, 15));
+    }
+
+    fn onWindow(_: ?*anyopaque, _: ?*p.dotfiles_overview_v1, _: [*c]const u8, _: u32, _: i32, _: i32, _: i32, _: i32, _: u32) callconv(.c) void {}
+
+    fn onDone(data: ?*anyopaque, _: ?*p.dotfiles_overview_v1) callconv(.c) void {
+        const self: *App = @ptrCast(@alignCast(data));
+        if (self.pending_count > 0) {
+            self.workspace_count = self.pending_count;
+            self.workspace_active = @min(self.pending_active, self.workspace_count - 1);
+            self.pending_count = 0;
+            self.pending_active = 0;
+            self.syncPanels();
+        }
+    }
+
+    fn onOverview(data: ?*anyopaque, _: ?*p.dotfiles_overview_v1, active: u32) callconv(.c) void {
+        const self: *App = @ptrCast(@alignCast(data));
+        const next = active != 0;
+        if (self.overview_active == next) return;
+        self.overview_active = next;
+        self.syncPanels();
+    }
+
+    const registry_listener: c.wl_registry_listener = .{ .global = &onGlobal, .global_remove = &onGlobalRemove };
+    const overview_listener: p.dotfiles_overview_v1_listener = .{
+        .workspace = &onWorkspace,
+        .window = &onWindow,
+        .done = &onDone,
+        .overview = &onOverview,
+    };
 
     fn add(_: *c.GdkDisplay, monitor: *c.GdkMonitor, data: c.gpointer) callconv(.c) void {
         const self: *App = @ptrCast(@alignCast(data));
-        self.panels.append(allocator, Panel.create(monitor, self.config, self.devices)) catch @panic("out of memory");
+        const panel = Panel.create(monitor, self.config, self.devices);
+        panel.applyOverview(self.overview_active, self.workspace_count, self.workspace_active);
+        self.panels.append(allocator, panel) catch @panic("out of memory");
         self.revision +%= 1;
     }
 
@@ -124,6 +206,7 @@ pub const Service = struct {
         widgets.ensureStyle();
         self.* = .{ .arena = arena, .app = .{ .config = parsed.value, .devices = devices } };
         const display = c.gdk_display_get_default().?;
+        self.app.connectOverview(display);
         self.added = c.g_signal_connect_data(display, "monitor-added", @ptrCast(&App.add), &self.app, null, 0);
         self.removed = c.g_signal_connect_data(display, "monitor-removed", @ptrCast(&App.remove), &self.app, null, 0);
         var i: c_int = 0;
@@ -145,6 +228,7 @@ pub const Service = struct {
         const display = c.gdk_display_get_default().?;
         c.g_signal_handler_disconnect(display, self.added);
         c.g_signal_handler_disconnect(display, self.removed);
+        self.app.deinitOverview();
         for (self.app.panels.items) |panel| panel.destroy();
         self.app.panels.deinit(allocator);
         self.arena.deinit();

@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("../desktop-gtk.zig");
 const raster = @import("../desktop-raster.zig");
+const text = @import("../desktop-text.zig");
 const view = @import("../desktop-overview-view.zig");
 const Image = @import("../desktop-image.zig").Image;
 const capture = @import("../desktop-capture.zig");
@@ -146,8 +147,8 @@ test "native buffer overview preserves wallpaper crops, previews, hover, fades a
         defer a.free(pixels);
         @memset(pixels, 0xff222226);
         const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) };
-        view.workspace(canvas, rect(workspace), if (available) wallpaper else null, false);
-        view.window(canvas, rect(window), if (available) image.view() else null, icon, ease != 0, ease, false);
+        view.workspaceCard(canvas, rect(workspace), if (available) wallpaper else null, 30, false, false);
+        view.window(canvas, rect(window), if (available) image.view() else null, icon, .{ .hovered = false, .ease = ease, .animated = false });
         view.miniature(canvas, if (available) image.view() else null, rect(miniature), rect(clip), false);
         const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
         defer c.cairo_surface_destroy(surface);
@@ -157,7 +158,7 @@ test "native buffer overview preserves wallpaper crops, previews, hover, fades a
         c.cairo_set_source_rgb(cr, 34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
         c.cairo_paint(cr);
         reference.workspace(cr, workspace, if (available) wallpaper else null);
-        reference.window(cr, window, if (available) image else null, icon, ease != 0, ease);
+        reference.window(cr, window, if (available) image else null, icon, false, ease);
         c.cairo_save(cr);
         c.cairo_rectangle(cr, clip.x, clip.y, clip.w, clip.h);
         c.cairo_clip(cr);
@@ -182,8 +183,93 @@ test "workspace corners grow with overview progress from an unrounded desktop" {
             @memset(pixels, 0);
             view.workspaceProgress(canvas, bounds, null, progress, true);
             try std.testing.expectEqual(@as(u32, 255), pixels[(30 * scale) * width + 45 * scale] >> 24);
-            try std.testing.expectEqual(if (progress == 0) @as(u32, 255) else 0, pixels[0] >> 24);
-            try std.testing.expectEqual(if (progress < 1) @as(u32, 255) else 0, pixels[(5 * scale) * width + 5 * scale] >> 24);
+            // Outside rounded corners, only translucent black drop shadow may remain; never the blue card fill.
+            if (progress == 0) {
+                try std.testing.expectEqual(@as(u32, 255), pixels[0] >> 24);
+            } else {
+                try std.testing.expect((pixels[0] & 0x00ffffff) == 0);
+                try std.testing.expect((pixels[0] >> 24) < 64);
+            }
+            // Outside the fully rounded corner, only the outer drop shadow may appear (never the blue card fill).
+            if (progress < 1) {
+                try std.testing.expectEqual(@as(u32, 255), pixels[(5 * scale) * width + 5 * scale] >> 24);
+            } else {
+                const corner = pixels[(5 * scale) * width + 5 * scale];
+                try std.testing.expect((corner & 0x00ffffff) == 0);
+                try std.testing.expect((corner >> 24) < 64);
+            }
         }
     }
+}
+
+test "hovered window expands without white border and paints close states, caption pill, icon shadow and indicator" {
+    const a = std.testing.allocator;
+    const width: u32 = 300;
+    const height: u32 = 240;
+    const pixels = try a.alloc(u32, width * height);
+    defer a.free(pixels);
+    const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = 1 };
+
+    const icon = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 1, 8, 64, 64).?;
+    defer c.g_object_unref(icon);
+    const icon_stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(icon));
+    const icon_bytes = c.gdk_pixbuf_get_pixels(icon);
+    for (0..64) |y| for (0..64) |x| {
+        const offset = y * icon_stride + x * 4;
+        icon_bytes[offset] = 80;
+        icon_bytes[offset + 1] = 150;
+        icon_bytes[offset + 2] = 240;
+        icon_bytes[offset + 3] = 255;
+    };
+
+    var renderer: text.Renderer = .{};
+    defer renderer.deinit();
+    const mask = try renderer.renderLayout(a, "Test Caption", .{ .font = "Adwaita Sans Bold", .size = 14.6666666667, .dpi = 96, .line_height = 19, .origin = .top });
+    defer mask.deinit(a);
+
+    const win: raster.Rect = .{ .x = 60, .y = 40, .width = 160, .height = 100 };
+    const expanded = view.previewRect(win, true, 1);
+    try std.testing.expectEqual(@as(f64, 55), expanded.x);
+    try std.testing.expectEqual(@as(f64, 36.875), expanded.y);
+    try std.testing.expectEqual(@as(f64, 170), expanded.width);
+    try std.testing.expectEqual(@as(f64, 106.25), expanded.height);
+
+    // Normal vs hover vs pressed close button fill.
+    const states = [_]struct { state: view.WindowState, expected_r: u8 }{
+        .{ .state = .{ .hovered = true, .ease = 1, .caption = .{ .mask = mask, .scale = 1 }, .bounds_width = 180 }, .expected_r = 63 },
+        .{ .state = .{ .hovered = true, .close_hovered = true, .ease = 1, .caption = .{ .mask = mask, .scale = 1 }, .bounds_width = 180 }, .expected_r = 80 },
+        .{ .state = .{ .hovered = true, .close_pressed = true, .ease = 1, .caption = .{ .mask = mask, .scale = 1 }, .bounds_width = 180 }, .expected_r = 94 },
+    };
+    const close_r = view.closeButtonRect(expanded);
+    const close_sample_x: usize = @intFromFloat(close_r.x + 8);
+    const close_sample_y: usize = @intFromFloat(close_r.y + view.close_button_radius);
+    for (states) |entry| {
+        @memset(pixels, 0xff222226);
+        view.window(canvas, win, null, icon, entry.state);
+        // No white hover border stroke along bottom/left edges of preview.
+        try std.testing.expect(pixels[@as(usize, @intFromFloat(expanded.y + expanded.height - 2)) * width + @as(usize, @intFromFloat(expanded.x + 20))] != 0xffffffff);
+        try std.testing.expect(pixels[@as(usize, @intFromFloat(expanded.y + 40)) * width + @as(usize, @intFromFloat(expanded.x))] != 0xffffffff);
+        // Icon drop shadow darkens area just beneath 64px icon (icon bottom is at expanded.y + expanded.height + 19.2).
+        const shadow_px = pixels[@as(usize, @intFromFloat(expanded.y + expanded.height + 22)) * width + @as(usize, @intFromFloat(expanded.x + expanded.width / 2))];
+        try std.testing.expect(((shadow_px >> 16) & 255) < 34);
+        // Caption pill sits 6px below icon bottom and is darker than background #222226.
+        const pill_px = pixels[@as(usize, @intFromFloat(expanded.y + expanded.height + 34)) * width + @as(usize, @intFromFloat(expanded.x + 48))];
+        try std.testing.expect(((pill_px >> 16) & 255) < 20);
+        // Close button matches expected GNOME RGB state.
+        const close_px = pixels[close_sample_y * width + close_sample_x];
+        const r_chan: u8 = @intCast((close_px >> 16) & 255);
+        try std.testing.expect(@abs(@as(i32, r_chan) - @as(i32, entry.expected_r)) <= 3);
+    }
+
+    // Active workspace thumbnail indicator draws border only (center remains transparent).
+    @memset(pixels, 0);
+    view.thumbnailIndicator(canvas, .{ .x = 20, .y = 20, .width = 86, .height = 52 });
+    try std.testing.expectEqual(@as(u32, 0), pixels[46 * width + 63]);
+    try std.testing.expectEqual(@as(u32, 0xff3584e4), pixels[19 * width + 63]);
+
+    // Workspace card paints soft outer drop shadow beyond card rect.
+    @memset(pixels, 0xff222226);
+    view.workspaceCard(canvas, .{ .x = 40, .y = 30, .width = 160, .height = 100 }, null, 12, true, false);
+    const card_shadow = pixels[134 * width + 120];
+    try std.testing.expect(((card_shadow >> 16) & 255) < 34);
 }

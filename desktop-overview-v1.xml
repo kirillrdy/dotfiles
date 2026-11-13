@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="dotfiles_overview_v1">
   <copyright>SPDX-License-Identifier: MIT</copyright>
-  <interface name="dotfiles_overview_v1" version="1">
+  <interface name="dotfiles_overview_v1" version="2">
     <description summary="desktop overview placement and window actions">
       Companion to ext-foreign-toplevel-list and ext-image-copy-capture.
       Identifiers are those from ext_foreign_toplevel_handle_v1.identifier.
@@ -18,5 +18,6 @@
     <event name="workspace"><arg name="index" type="uint"/><arg name="name" type="string"/><arg name="active" type="uint"/></event>
     <event name="window"><arg name="identifier" type="string"/><arg name="workspace" type="uint"/><arg name="x" type="int"/><arg name="y" type="int"/><arg name="width" type="int"/><arg name="height" type="int"/><arg name="sticky" type="uint"/></event>
     <event name="done"/>
+    <event name="overview" since="2"><arg name="active" type="uint"/></event>
   </interface>
 </protocol>
