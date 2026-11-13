@@ -3,6 +3,7 @@
   pkgs,
   config ? null,
   enableLightDesktop ? false,
+  enableNvidia ? false,
   ...
 }:
 let
@@ -30,6 +31,7 @@ let
     export XCURSOR_SIZE=${toString cursorSize}
     export DESKTOP_CODEX_ICON=${codexIcon}
     export DESKTOP_SESSION_MANAGED=1
+    ${lib.optionalString enableNvidia "export WLR_RENDERER=vulkan"}
     exec ${shell} compositor ${gnomeWallpaper}
   '';
 
