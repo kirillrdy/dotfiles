@@ -248,9 +248,14 @@ def main():
                 ["grim", "-s", "1", "-o", "HEADLESS-1", str(artifacts / "overview.png")]
             )
             _, _, op = read_png(artifacts / "overview.png")
+            # Frozen GNOME Shell 51.0 allocation: 622x378 previews at x225/y160,
+            # with 66x40 workspace thumbnails after padding the strip.
+            assert min(op(225, 350)) > 200 and min(op(846, 350)) > 200
+            assert min(op(224, 350)) < 200 and min(op(848, 350)) < 200
+            assert op(800, 130) == (70, 70, 78) and op(862, 130) != (70, 70, 78)
             assert op(400, 10) == (34, 34, 38), f"Panel not transparent in overview: {op(400, 10)}"
             assert op(30, 16)[0] > 200, f"Activities indicator dot missing in panel: {op(30, 16)}"
-            assert op(717, 104) == (53, 132, 228), f"Active workspace indicator missing: {op(717, 104)}"
+            assert op(721, 126) == (53, 132, 228), f"Active workspace indicator missing: {op(721, 126)}"
             def stacking():
                 return re.findall(r'dotfiles_overview_v1#\d+\.window\("([^"]+)"', log())[-4:]
 
@@ -264,8 +269,8 @@ def main():
             time.sleep(0.3)
             shot("window-hover")
             _, _, hp = read_png(artifacts / "window-hover.png")
-            assert any(max(hp(588, y)) < 25 for y in range(540, 585)) and max(
-                hp(x, y)[0] for x in range(560, 610) for y in range(540, 585)
+            assert any(max(hp(536, y)) < 25 for y in range(540, 585)) and max(
+                hp(x, y)[0] for x in range(500, 570) for y in range(540, 585)
             ) > 150, "Window hover caption pill missing"
             click(584, 350)
             wait_for(
@@ -309,7 +314,7 @@ def main():
                 "Native dash did not activate the Terminal window",
             )
             reopen()
-            click(815, 130)
+            click(828, 126)
             wait_for(
                 lambda: '.workspace(1, "2", 1)' in log(),
                 "Workspace thumbnail did not switch",
@@ -317,7 +322,7 @@ def main():
             key("Return")
             assert overview.poll() is None
             first_workspace = log().count('.workspace(0, "1", 1)')
-            click(717, 130)
+            click(756, 126)
             wait_for(
                 lambda: log().count('.workspace(0, "1", 1)') > first_workspace,
                 "Workspace click did not finish before keyboard navigation",
@@ -336,7 +341,7 @@ def main():
             )
             pointer_command("move 1120 760")
             pointer_command("button 1")
-            for x, y in [(1050, 600), (950, 400), (850, 200), (815, 130)]:
+            for x, y in [(1050, 600), (950, 400), (850, 200), (828, 126)]:
                 pointer_command(f"move {x} {y}")
                 time.sleep(0.05)
             pointer_command("button 0")
@@ -386,7 +391,7 @@ def main():
             time.sleep(0.3)
             shot("search-empty")
             _, _, ep = read_png(artifacts / "search-empty.png")
-            assert max(ep(x, y)[0] for y in range(510, 555) for x in range(800, 930)) >= 180, (
+            assert max(ep(x, y)[0] for y in range(555, 600) for x in range(800, 930)) >= 180, (
                 "Empty search 'No results' status text missing"
             )
             key("Escape")
@@ -395,12 +400,10 @@ def main():
             _, _, ap = read_png(artifacts / "applications.png")
             assert ap(450, 180) != (34, 34, 38), "App-grid top workspace strip missing"
             key("Escape")
-            pointer_command("move 700 300")
-            time.sleep(0.15)
-            pointer_command("move 850 205")
-            time.sleep(0.15)
+            pointer_command("move 864 350")
+            time.sleep(0.3)
             shot("before-close")
-            click(850, 205)
+            click(1181, 157)
             wait_for(
                 lambda: fixtures[0].poll() == 0,
                 "Window close button did not close the selected window",

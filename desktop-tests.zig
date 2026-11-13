@@ -121,6 +121,7 @@ test {
     _ = @import("desktop-switcher.zig");
     _ = @import("desktop-overview.zig");
     _ = @import("desktop-overview-animation.zig");
+    _ = @import("desktop-overview-layout.zig");
     _ = @import("desktop-hot-corner.zig");
     _ = @import("tests/desktop-overview-render.zig");
     _ = @import("desktop-layer-shell.zig");

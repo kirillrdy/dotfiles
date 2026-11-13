@@ -79,6 +79,8 @@ fn drawImage(cr: *c.cairo_t, image: ?raster.Image, r: Rect, opacity: f64, animat
     c.cairo_save(cr);
     defer c.cairo_restore(cr);
     c.cairo_translate(cr, r.x, r.y);
+    c.cairo_rectangle(cr, 0, 0, r.width, r.height);
+    c.cairo_clip(cr);
     if (image) |pixels| {
         std.debug.assert(pixels.format == .argb);
         // Borrow capture storage only for this draw; no Cairo object owns it.
@@ -87,6 +89,7 @@ fn drawImage(cr: *c.cairo_t, image: ?raster.Image, r: Rect, opacity: f64, animat
         if (c.cairo_surface_status(surface) != c.CAIRO_STATUS_SUCCESS) return;
         c.cairo_scale(cr, r.width / @as(f64, @floatFromInt(pixels.width)), r.height / @as(f64, @floatFromInt(pixels.height)));
         c.cairo_set_source_surface(cr, surface, 0, 0);
+        c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
         if (animated) c.cairo_pattern_set_filter(c.cairo_get_source(cr), c.CAIRO_FILTER_BILINEAR);
         c.cairo_paint_with_alpha(cr, opacity);
     } else {
@@ -294,6 +297,7 @@ pub fn workspaceCard(canvas: Canvas, r: Rect, wallpaper: ?*c.cairo_surface_t, co
         c.cairo_translate(cr, r.x + (r.width - iw * scale) / 2, r.y + (r.height - ih * scale) / 2);
         c.cairo_scale(cr, scale, scale);
         c.cairo_set_source_surface(cr, image, 0, 0);
+        c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
         if (animated) c.cairo_pattern_set_filter(c.cairo_get_source(cr), c.CAIRO_FILTER_BILINEAR);
         c.cairo_paint(cr);
     }
@@ -305,12 +309,8 @@ pub fn window(canvas: Canvas, r: Rect, captured: ?raster.Image, icon_image: ?*c.
         const context = Context.init(canvas) orelse return;
         defer context.deinit();
         const cr = context.cr;
-        drawShadowRect(cr, preview, 8, 2, 0, 6, 0.3);
-        c.cairo_save(cr);
-        rounded(cr, preview, 8);
-        c.cairo_clip(cr);
+        // Captures already contain client decoration and corner transparency.
         drawImage(cr, captured, preview, 1, state.animated);
-        c.cairo_restore(cr);
         if (icon_image) |icon| {
             const icon_x = preview.x + preview.width / 2 - icon_size / 2;
             const icon_y = preview.y + preview.height - icon_size * icon_overlap;

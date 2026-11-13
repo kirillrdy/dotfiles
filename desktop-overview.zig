@@ -10,6 +10,7 @@ const native_dash = @import("desktop-dash-view.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const view = @import("desktop-overview-view.zig");
+const picker = @import("desktop-overview-layout.zig");
 const animation = @import("desktop-overview-animation.zig");
 const c = capture.c;
 const a = std.heap.page_allocator;
@@ -27,29 +28,6 @@ const WindowPaint = struct {
         return left.window.stacking < right.window.stacking;
     }
 };
-const LayoutEntry = struct {
-    window: *capture.Window,
-    index: usize,
-    cx: f64,
-    cy: f64,
-    w: f64,
-    h: f64,
-
-    fn verticalBefore(_: void, left: LayoutEntry, right: LayoutEntry) bool {
-        if (left.cy != right.cy) return left.cy < right.cy;
-        return left.cx < right.cx;
-    }
-
-    fn horizontalBefore(_: void, left: LayoutEntry, right: LayoutEntry) bool {
-        return left.cx < right.cx;
-    }
-};
-const LayoutRow = struct {
-    start: usize,
-    end: usize,
-    max_h: f64,
-};
-
 const Overview = struct {
     launcher: apps.Launcher,
     client: ?*capture.Client = null,
@@ -77,10 +55,7 @@ const Overview = struct {
     apps_mode: bool = false,
     selected: usize = 0,
     window_paints: std.ArrayList(WindowPaint) = .empty,
-    layout_entries: std.ArrayList(LayoutEntry) = .empty,
-    layout_rows: std.ArrayList(LayoutRow) = .empty,
-    best_rows: std.ArrayList(LayoutRow) = .empty,
-    best_entries: std.ArrayList(LayoutEntry) = .empty,
+    picker_layout: picker.Layout = .{},
     caption_mask: ?text.Mask = null,
     caption_title: []u8 = &.{},
     caption_width: u32 = 0,
@@ -141,10 +116,7 @@ const Overview = struct {
         self.launcher.deinit();
         self.dash_view.deinit();
         self.window_paints.deinit(a);
-        self.layout_entries.deinit(a);
-        self.layout_rows.deinit(a);
-        self.best_rows.deinit(a);
-        self.best_entries.deinit(a);
+        self.picker_layout.deinit(a);
         self.clearCaption();
         if (self.wallpaper) |image| c.cairo_surface_destroy(image);
         a.destroy(self);
@@ -614,20 +586,12 @@ const Overview = struct {
         }
     }
     fn stripGeometry(self: *const Overview, width: f64, count: usize) struct { thumb_w: f64, thumb_h: f64, spacing: f64, step: f64, left: f64 } {
-        const work_w: f64 = @floatFromInt(self.monitor.width);
         const work_h: f64 = @floatFromInt(@max(1, self.monitor.height - 32));
-        var thumb_h: f64 = @round(work_h * 0.05);
-        var thumb_w: f64 = @round(thumb_h * work_w / work_h);
+        // ControlsManager caps the entire padded strip at 5% of the workarea.
+        const geometry = picker.Geometry.init(width, work_h, 0, count);
+        const thumb_h = geometry.thumbnail_height;
+        const thumb_w = geometry.thumbnail_width;
         const spacing: f64 = 6;
-        if (count > 0 and width > 0) {
-            const max_total = width * 0.8;
-            const nat_total = @as(f64, @floatFromInt(count)) * thumb_w + @as(f64, @floatFromInt(count - 1)) * spacing;
-            if (nat_total > max_total) {
-                const avail_thumb = @max(1, (max_total - @as(f64, @floatFromInt(count - 1)) * spacing) / @as(f64, @floatFromInt(count)));
-                thumb_w = @round(avail_thumb);
-                thumb_h = @max(1, @round(thumb_w * work_h / work_w));
-            }
-        }
         const step = thumb_w + spacing;
         const total = if (count > 0) @as(f64, @floatFromInt(count)) * thumb_w + @as(f64, @floatFromInt(count - 1)) * spacing else 0;
         return .{ .thumb_w = thumb_w, .thumb_h = thumb_h, .spacing = spacing, .step = step, .left = (width - total) / 2 };
@@ -964,6 +928,8 @@ const Overview = struct {
         if (self.apps_mode or self.launcher.searchText().len != 0) apps.scroll(&self.launcher, amount) else if (@abs(amount) >= 1) self.stepWorkspace(if (amount > 0) 1 else -1);
     }
     fn layoutRegions(self: *Overview, width: u32, height: u32) void {
+        // Search callbacks can arrive before the first layer-surface configure.
+        if (width == 0 or height <= 32) return;
         const start_y: u32 = 32;
         const work_h: f64 = @floatFromInt(@max(1, height -| start_y));
         const spacing: u32 = @intFromFloat(@round(work_h * 0.02));
@@ -975,9 +941,9 @@ const Overview = struct {
         const bottom_y: u32 = height -| (footer + spacing + status);
         const search_active = self.launcher.searchText().len != 0;
         const count: usize = if (self.client) |client| client.count else 0;
-        const strip_geom = self.stripGeometry(@floatFromInt(width), count);
         const strip_y: u32 = start_y + search_h + @as(u32, @intFromFloat(@round(@as(f64, @floatFromInt(spacing)) * 0.6)));
-        const strip_h: u32 = @as(u32, @intFromFloat(strip_geom.thumb_h)) + 12;
+        const geometry = picker.Geometry.init(@floatFromInt(width), work_h, @floatFromInt(footer + status), count);
+        const strip_h: u32 = @intFromFloat(@ceil(geometry.strip_height));
         if (search_active) {
             self.strip = .{ .width = 0, .height = 0 };
             self.stage = .{ .width = 0, .height = 0 };
@@ -992,11 +958,11 @@ const Overview = struct {
             self.grid = .{ .y = @floatFromInt(grid_y), .width = width, .height = bottom_y -| grid_y };
         } else {
             self.strip = .{ .y = @floatFromInt(strip_y), .width = width, .height = strip_h };
-            const stage_y = strip_y + strip_h + @as(u32, @intFromFloat(@round(@as(f64, @floatFromInt(spacing)) * 0.4)));
-            self.stage = .{ .y = @floatFromInt(stage_y), .width = width, .height = bottom_y -| stage_y };
+            self.stage = .{ .y = @as(f64, @floatFromInt(start_y)) + geometry.stage_y, .width = width, .height = @intFromFloat(geometry.stage_height) };
             self.grid = .{ .y = @floatFromInt(start_y + search_h + spacing), .width = width, .height = bottom_y -| (start_y + search_h + spacing) };
         }
         self.launcher.geometry = @import("desktop-apps-view.zig").Grid.init(width, @max(1, self.grid.height));
+        if (self.launcher.visible.items.len <= self.launcher.geometry.capacity()) self.launcher.geometry = @import("desktop-apps-view.zig").Grid.initWithIndicators(width, @max(1, self.grid.height), false);
         self.launcher.page = self.launcher.selected / self.launcher.geometry.capacity();
     }
     fn paint(data: ?*anyopaque, target: wire.Pixels) void {
@@ -1110,7 +1076,7 @@ const Overview = struct {
     }
     fn paintStage(self: *Overview, canvas: raster.Canvas, width: f64, height: f64) void {
         const client = self.client orelse return;
-        if (width <= 0 or height <= 0) return;
+        if (width <= 0 or height <= 24) return;
         const ease = self.progress;
         const position = self.workspacePosition();
         const moving = self.animating or position != @as(f64, @floatFromInt(self.workspace_target));
@@ -1142,145 +1108,65 @@ const Overview = struct {
             }
             return;
         }
-        const scale = @min(width / work_w, height / work_h);
-        const base = Rect{ .x = (width - work_w * scale) / 2, .y = (height - work_h * scale) / 2, .w = work_w * scale, .h = work_h * scale };
+        const workspace_width = @ceil(height * work_w / work_h);
+        const background_width = workspace_width * (height - 24) / height;
+        const base = Rect{ .x = (width - background_width) / 2, .y = 12, .w = background_width, .h = height - 24 };
         self.workspace_rect = base;
-        const ws_spacing = std.math.clamp((width - base.w) / 2 - base.w * 0.4, 24, 80);
+        const ws_spacing: f64 = 24;
         const start_y = @as(f64, 32) - self.stage.y;
         for (0..client.count) |i| {
             const offset = @as(f64, @floatFromInt(i)) - position;
             const ratio = 1 - 0.06 * @min(1, @abs(offset));
             const start = Rect{ .x = width / 2 + offset * (width + ws_spacing) - width * ratio / 2, .y = start_y + (work_h - work_h * ratio) / 2, .w = width * ratio, .h = work_h * ratio };
             const background = Rect{
-                .x = start.x + (width / 2 + offset * (base.w + ws_spacing) - base.w * ratio / 2 - start.x) * ease,
+                .x = start.x + (width / 2 + offset * (workspace_width + ws_spacing) - base.w * ratio / 2 - start.x) * ease,
                 .y = start.y + (base.y + (base.h - base.h * ratio) / 2 - start.y) * ease,
                 .w = start.w + (base.w * ratio - start.w) * ease,
                 .h = start.h + (base.h * ratio - start.h) * ease,
             };
             if (background.x > width or background.x + background.w < 0) continue;
             view.workspaceProgress(canvas, pixelRect(background), self.wallpaper, ease, animated);
-            self.drawWindows(canvas, client, @intCast(i), background, ratio, if (i == client.current) ease else 1, animated, width);
+            self.drawWindows(canvas, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1, animated, width);
         }
     }
-    fn drawWindows(self: *Overview, canvas: raster.Canvas, client: *capture.Client, workspace_index: u32, background: Rect, ratio: f64, ease: f64, animated: bool, stage_width: f64) void {
-        if (background.w <= 168 * ratio or background.h <= 0) return;
-        self.layout_entries.clearRetainingCapacity();
+    fn drawWindows(self: *Overview, canvas: raster.Canvas, client: *capture.Client, workspace_index: u32, background: Rect, height: f64, ratio: f64, ease: f64, animated: bool, stage_width: f64) void {
+        if (background.w <= 168 * ratio or height <= 0) return;
+        var count: usize = 0;
+        for (client.windows.items) |window| if (window.workspace == workspace_index or window.sticky) {
+            count += 1;
+        };
+        if (count == 0) return;
+        const aspect = @as(f64, @floatFromInt(self.monitor.width)) / @as(f64, @floatFromInt(self.monitor.height - 32));
+        const container_width = @ceil(height * aspect);
+        const container_x = background.x + background.w / 2 - container_width * ratio / 2;
+        self.picker_layout.items.clearRetainingCapacity();
         for (client.windows.items, 0..) |window, index| {
             if (window.workspace != workspace_index and !window.sticky) continue;
-            const gw = @max(1, window.geometry.w);
-            const gh = @max(1, window.geometry.h);
-            self.layout_entries.append(a, .{
-                .window = window,
-                .index = index,
-                .cx = window.geometry.x + gw / 2,
-                .cy = window.geometry.y + gh / 2,
-                .w = gw,
-                .h = gh,
-            }) catch @panic("out of memory");
+            self.picker_layout.items.append(a, .{ .geometry = window.geometry, .index = index }) catch @panic("out of memory");
         }
-        const n = self.layout_entries.items.len;
-        if (n == 0) return;
-
-        // GNOME UnalignedLayoutStrategy: row-packing + _adjustSpacingAndPadding(20 + oversize) + max scale 0.95.
-        std.mem.sort(LayoutEntry, self.layout_entries.items, {}, LayoutEntry.verticalBefore);
-        const pad_x = @min(36 * ratio, background.w * 0.1);
-        const pad_top = @min(36 * ratio, background.h * 0.1);
-        const pad_bottom = @min(64 * ratio, background.h * 0.16);
-        const col_spacing = @min(36 * ratio, background.w * 0.08);
-        const row_spacing = @min(64 * ratio, background.h * 0.16);
-        const area: Rect = .{
-            .x = background.x + pad_x,
-            .y = background.y + pad_top,
-            .w = @max(1, background.w - 2 * pad_x),
-            .h = @max(1, background.h - pad_top - pad_bottom),
-        };
-        const work_w: f64 = @floatFromInt(@max(1, self.monitor.width));
-        const work_h: f64 = @floatFromInt(@max(1, self.monitor.height - 32));
-        const max_scale = 0.95 * (background.w / work_w);
-        var total_nat_w: f64 = 0;
-        for (self.layout_entries.items) |e| total_nat_w += e.w;
-
-        var best_scale: f64 = -1;
-        self.best_rows.clearRetainingCapacity();
-        self.best_entries.clearRetainingCapacity();
-        self.best_entries.appendSlice(a, self.layout_entries.items) catch @panic("out of memory");
-
-        for (1..n + 1) |num_rows| {
-            self.layout_rows.clearRetainingCapacity();
-            const entries = a.dupe(LayoutEntry, self.layout_entries.items) catch @panic("out of memory");
-            defer a.free(entries);
-            const ideal_row_w = total_nat_w / @as(f64, @floatFromInt(num_rows));
-            var row_start: usize = 0;
-            var row_w: f64 = 0;
-            for (entries, 0..) |e, k| {
-                const rows_left = num_rows - self.layout_rows.items.len;
-                const items_left = n - k;
-                if (k > row_start and rows_left > 1 and (items_left == rows_left - 1 or row_w + e.w / 2 > ideal_row_w)) {
-                    std.mem.sort(LayoutEntry, entries[row_start..k], {}, LayoutEntry.horizontalBefore);
-                    var max_h: f64 = 0;
-                    for (entries[row_start..k]) |re| max_h = @max(max_h, re.h);
-                    self.layout_rows.append(a, .{ .start = row_start, .end = k, .max_h = max_h }) catch @panic("out of memory");
-                    row_start = k;
-                    row_w = 0;
-                }
-                row_w += e.w;
-            }
-            std.mem.sort(LayoutEntry, entries[row_start..n], {}, LayoutEntry.horizontalBefore);
-            var last_max_h: f64 = 0;
-            for (entries[row_start..n]) |re| last_max_h = @max(last_max_h, re.h);
-            self.layout_rows.append(a, .{ .start = row_start, .end = n, .max_h = last_max_h }) catch @panic("out of memory");
-
-            var min_row_scale_x = max_scale;
-            var sum_row_max_h: f64 = 0;
-            for (self.layout_rows.items) |row| {
-                var sum_w: f64 = 0;
-                for (entries[row.start..row.end]) |re| sum_w += re.w;
-                const gaps = @as(f64, @floatFromInt((row.end - row.start) -| 1)) * col_spacing;
-                const rx = @max(0.01, (area.w - gaps) / @max(1, sum_w));
-                min_row_scale_x = @min(min_row_scale_x, rx);
-                sum_row_max_h += row.max_h;
-            }
-            const vgaps = @as(f64, @floatFromInt(self.layout_rows.items.len -| 1)) * row_spacing;
-            const sy = @max(0.01, (area.h - vgaps) / @max(1, sum_row_max_h));
-            const cand_scale = @min(max_scale, @min(sy, min_row_scale_x));
-            if (cand_scale > best_scale + 1e-6) {
-                best_scale = cand_scale;
-                self.best_rows.clearRetainingCapacity();
-                self.best_rows.appendSlice(a, self.layout_rows.items) catch @panic("out of memory");
-                self.best_entries.clearRetainingCapacity();
-                self.best_entries.appendSlice(a, entries) catch @panic("out of memory");
-            }
-        }
-
-        var used_h = @as(f64, @floatFromInt(self.best_rows.items.len -| 1)) * row_spacing;
-        for (self.best_rows.items) |row| used_h += row.max_h * best_scale;
-        var cur_y = area.y + (area.h - used_h) / 2;
+        self.picker_layout.compute(a, @floatFromInt(self.monitor.height), .{ .w = @floatFromInt(self.monitor.width), .h = @floatFromInt(self.monitor.height - 32) }, .{ .w = container_width, .h = height }) catch @panic("out of memory");
         self.window_paints.clearRetainingCapacity();
-        for (self.best_rows.items) |row| {
-            const row_h = row.max_h * best_scale;
-            var row_w = @as(f64, @floatFromInt((row.end - row.start) -| 1)) * col_spacing;
-            for (self.best_entries.items[row.start..row.end]) |re| row_w += re.w * best_scale;
-            var cur_x = area.x + (area.w - row_w) / 2;
-            for (self.best_entries.items[row.start..row.end]) |re| {
-                const w = re.w * best_scale;
-                const h = re.h * best_scale;
-                const x = cur_x;
-                const y = cur_y + (row_h - h) / 2;
-                cur_x += w + col_spacing;
-                const window = re.window;
-                if (workspace_index == client.current) window.target = .{ .x = x, .y = y, .w = w, .h = h };
-                const sx = background.w / work_w;
-                const sy = background.h / work_h;
-                const start = Rect{
-                    .x = background.x + (window.geometry.x - @as(f64, @floatFromInt(self.monitor.x))) * sx,
-                    .y = background.y + (window.geometry.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy,
-                    .w = window.geometry.w * sx,
-                    .h = window.geometry.h * sy,
-                };
-                const r = Rect{ .x = start.x + (x - start.x) * ease, .y = start.y + (y - start.y) * ease, .w = start.w + (w - start.w) * ease, .h = start.h + (h - start.h) * ease };
-                self.window_paints.append(a, .{ .window = window, .rect = r, .hovered = workspace_index == client.current and self.hover == re.index }) catch @panic("out of memory");
-            }
-            cur_y += row_h + row_spacing;
+        for (self.picker_layout.items.items) |item| {
+            const index = item.index;
+            const window = client.windows.items[index];
+            const w = item.slot.w * ratio;
+            const h = item.slot.h * ratio;
+            const x = container_x + item.slot.x * ratio;
+            const y = (height - height * ratio) / 2 + item.slot.y * ratio;
+            if (workspace_index == client.current) window.target = .{ .x = x, .y = y, .w = w, .h = h };
+            // GNOME first projects the desktop geometry into the moving
+            // workspace, then interpolates that clone into the picker layout.
+            // Composing both transforms keeps windows attached to the zoom.
+            const sx = background.w / @as(f64, @floatFromInt(self.monitor.width));
+            const sy = background.h / @as(f64, @floatFromInt(self.monitor.height - 32));
+            const start = Rect{
+                .x = background.x + (window.geometry.x - @as(f64, @floatFromInt(self.monitor.x))) * sx,
+                .y = background.y + (window.geometry.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy,
+                .w = window.geometry.w * sx,
+                .h = window.geometry.h * sy,
+            };
+            const r = Rect{ .x = start.x + (x - start.x) * ease, .y = start.y + (y - start.y) * ease, .w = start.w + (w - start.w) * ease, .h = start.h + (h - start.h) * ease };
+            self.window_paints.append(a, .{ .window = window, .rect = r, .hovered = workspace_index == client.current and self.hover == index }) catch @panic("out of memory");
         }
         // Keep picker positions stable while painting overlapping clones in the
         // same order as the desktop, including a newly activated older window.

@@ -22,6 +22,8 @@ const reference = struct {
         c.cairo_save(cr);
         defer c.cairo_restore(cr);
         c.cairo_translate(cr, r.x, r.y);
+        c.cairo_rectangle(cr, 0, 0, r.w, r.h);
+        c.cairo_clip(cr);
         if (image) |pixels| {
             // Borrow capture storage only for this draw; no Cairo object owns it.
             const surface = c.cairo_image_surface_create_for_data(pixels.pixels.ptr, c.CAIRO_FORMAT_ARGB32, @intCast(pixels.width), @intCast(pixels.height), @intCast(pixels.stride)) orelse return;
@@ -29,6 +31,7 @@ const reference = struct {
             if (c.cairo_surface_status(surface) != c.CAIRO_STATUS_SUCCESS) return;
             c.cairo_scale(cr, r.w / @as(f64, @floatFromInt(pixels.width)), r.h / @as(f64, @floatFromInt(pixels.height)));
             c.cairo_set_source_surface(cr, surface, 0, 0);
+            c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
             c.cairo_paint_with_alpha(cr, opacity);
         } else {
             c.cairo_rectangle(cr, 0, 0, r.w, r.h);
@@ -50,41 +53,8 @@ const reference = struct {
             c.cairo_translate(cr, r.x + (r.w - iw * scale) / 2, r.y + (r.h - ih * scale) / 2);
             c.cairo_scale(cr, scale, scale);
             c.cairo_set_source_surface(cr, image, 0, 0);
+            c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
             c.cairo_paint(cr);
-        }
-    }
-    fn window(cr: *c.cairo_t, r: Rect, captured: ?Image, icon_image: ?*c.GdkPixbuf, hovered: bool, ease: f64) void {
-        rounded(cr, .{ .x = r.x - 3, .y = r.y - 2, .w = r.w + 6, .h = r.h + 8 }, 9);
-        c.cairo_set_source_rgba(cr, 0, 0, 0, 0.3);
-        c.cairo_fill(cr);
-        c.cairo_save(cr);
-        rounded(cr, r, 8);
-        c.cairo_clip(cr);
-        drawImage(cr, captured, r, 1);
-        c.cairo_restore(cr);
-        if (hovered) {
-            rounded(cr, r, 8);
-            c.cairo_set_source_rgb(cr, 1, 1, 1);
-            c.cairo_set_line_width(cr, 2);
-            c.cairo_stroke(cr);
-            c.cairo_arc(cr, r.x + r.w, r.y, 16, 0, 2 * std.math.pi);
-            c.cairo_set_source_rgb(cr, 0.3, 0.3, 0.33);
-            c.cairo_fill(cr);
-            c.cairo_set_source_rgb(cr, 1, 1, 1);
-            c.cairo_set_line_width(cr, 2);
-            c.cairo_move_to(cr, r.x + r.w - 4, r.y - 4);
-            c.cairo_line_to(cr, r.x + r.w + 4, r.y + 4);
-            c.cairo_move_to(cr, r.x + r.w + 4, r.y - 4);
-            c.cairo_line_to(cr, r.x + r.w - 4, r.y + 4);
-            c.cairo_stroke(cr);
-        }
-        if (icon_image) |icon| {
-            c.cairo_save(cr);
-            c.cairo_translate(cr, r.x + r.w / 2 - 32, r.y + r.h - 44);
-            c.cairo_scale(cr, 64 / @as(f64, @floatFromInt(c.gdk_pixbuf_get_width(icon))), 64 / @as(f64, @floatFromInt(c.gdk_pixbuf_get_height(icon))));
-            c.gdk_cairo_set_source_pixbuf(cr, icon, 0, 0);
-            c.cairo_paint_with_alpha(cr, ease);
-            c.cairo_restore(cr);
         }
     }
 };
@@ -114,19 +84,8 @@ fn compare(expected: []const u32, actual: []const u32, scale: u32, ease: f64) !v
     }
 }
 
-test "native buffer overview preserves wallpaper crops, previews, hover, fades and workspace clipping" {
+test "native buffer overview preserves wallpaper crops and workspace clipping" {
     const a = std.testing.allocator;
-    const icon = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 1, 8, 7, 5).?;
-    defer c.g_object_unref(icon);
-    const icon_stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(icon));
-    const icon_bytes = c.gdk_pixbuf_get_pixels(icon);
-    for (0..5) |y| for (0..7) |x| {
-        const offset = y * icon_stride + x * 4;
-        icon_bytes[offset] = @intCast(x * 35);
-        icon_bytes[offset + 1] = @intCast(y * 55);
-        icon_bytes[offset + 2] = 180;
-        icon_bytes[offset + 3] = @intCast(80 + x * 20);
-    };
     var words: [11 * 9]u32 = undefined;
     for (&words, 0..) |*word, i| {
         const alpha: u32 = @intCast(128 + i % 128);
@@ -137,7 +96,6 @@ test "native buffer overview preserves wallpaper crops, previews, hover, fades a
     const wallpaper = c.cairo_image_surface_create_for_data(image.pixels.ptr, c.CAIRO_FORMAT_ARGB32, 11, 9, 44).?;
     defer c.cairo_surface_destroy(wallpaper);
     const workspace: Rect = .{ .x = 10.25, .y = 8.75, .w = 240, .h = 138 };
-    const window: Rect = .{ .x = 50.25, .y = 40.5, .w = 150, .h = 78 };
     const miniature: Rect = .{ .x = -4, .y = 156, .w = 80, .h = 40 };
     const clip: Rect = .{ .x = 12, .y = 160, .w = 55, .h = 30 };
     for ([_]u32{ 1, 2 }) |scale| for ([_]f64{ 0, 0.45, 1 }) |ease| for ([_]bool{ false, true }) |available| {
@@ -148,7 +106,6 @@ test "native buffer overview preserves wallpaper crops, previews, hover, fades a
         @memset(pixels, 0xff222226);
         const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) };
         view.workspaceCard(canvas, rect(workspace), if (available) wallpaper else null, 30, false, false);
-        view.window(canvas, rect(window), if (available) image.view() else null, icon, .{ .hovered = false, .ease = ease, .animated = false });
         view.miniature(canvas, if (available) image.view() else null, rect(miniature), rect(clip), false);
         const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
         defer c.cairo_surface_destroy(surface);
@@ -158,7 +115,6 @@ test "native buffer overview preserves wallpaper crops, previews, hover, fades a
         c.cairo_set_source_rgb(cr, 34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
         c.cairo_paint(cr);
         reference.workspace(cr, workspace, if (available) wallpaper else null);
-        reference.window(cr, window, if (available) image else null, icon, false, ease);
         c.cairo_save(cr);
         c.cairo_rectangle(cr, clip.x, clip.y, clip.w, clip.h);
         c.cairo_clip(cr);
@@ -272,4 +228,33 @@ test "hovered window expands without white border and paints close states, capti
     view.workspaceCard(canvas, .{ .x = 40, .y = 30, .width = 160, .height = 100 }, null, 12, true, false);
     const card_shadow = pixels[134 * width + 120];
     try std.testing.expect(((card_shadow >> 16) & 255) < 34);
+}
+
+test "tiny wallpaper stays opaque and uniformly colored when enlarged" {
+    const a = std.testing.allocator;
+    var source: [4]u32 = @splat(0xff142850);
+    const wallpaper = c.cairo_image_surface_create_for_data(@ptrCast(&source), c.CAIRO_FORMAT_ARGB32, 2, 2, 8).?;
+    defer c.cairo_surface_destroy(wallpaper);
+    const pixels = try a.alloc(u32, 200 * 120);
+    defer a.free(pixels);
+    @memset(pixels, 0);
+    const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = 200, .height = 120 }, .scale = 1 };
+    view.workspaceCard(canvas, .{ .width = 200, .height = 120 }, wallpaper, 30, false, false);
+    for ([_]usize{ 2 * 200 + 100, 60 * 200 + 2, 60 * 200 + 100, 60 * 200 + 197, 117 * 200 + 100 }) |i| try std.testing.expectEqual(@as(u32, 0xff142850), pixels[i]);
+}
+
+test "window previews retain client corners and do not add a second frame" {
+    for ([_]u32{ 1, 2 }) |scale| {
+        const width = 240 * scale;
+        const height = 180 * scale;
+        const pixels = try std.testing.allocator.alloc(u32, width * height);
+        defer std.testing.allocator.free(pixels);
+        @memset(pixels, 0);
+        var source: [4]u32 = @splat(0xffaabbcc);
+        const captured: raster.Image = .{ .pixels = std.mem.sliceAsBytes(&source), .width = 2, .height = 2, .stride = 8, .format = .argb };
+        view.window(.{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) }, .{ .x = 40, .y = 40, .width = 120, .height = 80 }, captured, null, .{});
+        try std.testing.expectEqual(@as(u32, 0), pixels[39 * scale * width + 40 * scale]);
+        try std.testing.expectEqual(@as(u32, 255), pixels[40 * scale * width + 40 * scale] >> 24);
+        try std.testing.expectEqual(@as(u32, 0), pixels[80 * scale * width + 170 * scale]);
+    }
 }

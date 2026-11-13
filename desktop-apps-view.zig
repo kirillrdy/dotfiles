@@ -24,11 +24,15 @@ pub const Grid = struct {
     dx: f64,
     dy: f64,
     pub fn init(width: u32, height: u32) Grid {
+        return initWithIndicators(width, height, true);
+    }
+    pub fn initWithIndicators(width: u32, height: u32, indicators: bool) Grid {
+        const indicator_height: f64 = if (indicators) 40 else 0;
         const w: f64 = @floatFromInt(width);
         const h: f64 = @floatFromInt(height);
         // GNOME chooses the closest aspect ratio, always keeping 24 slots.
         const available_w = @max(1, w * 0.8 - 36);
-        const available_h = @max(1, h - 40 - 48);
+        const available_h = @max(1, h - indicator_height - 48);
         const modes = [_][2]usize{ .{ 3, 8 }, .{ 4, 6 }, .{ 6, 4 }, .{ 8, 3 } };
         var columns: usize = 3;
         var rows: usize = 8;
@@ -56,7 +60,7 @@ pub const Grid = struct {
         const tile_extent: f64 = @floatFromInt(icon_size + 49);
         const gap_x = std.math.clamp((available_w - cols * tile_extent) / @max(1, cols - 1), 12, 36);
         const gap_y = std.math.clamp((available_h - rs * tile_extent) / @max(1, rs - 1), 12, 36);
-        return .{ .width = w, .height = h, .columns = columns, .rows = rows, .icon_size = icon_size, .tile_size = tile_extent, .dx = tile_extent + gap_x, .dy = tile_extent + gap_y, .x = @floor((w - cols * tile_extent - (cols - 1) * gap_x) / 2), .y = @floor((h - 40 - rs * tile_extent - (rs - 1) * gap_y) / 2) };
+        return .{ .width = w, .height = h, .columns = columns, .rows = rows, .icon_size = icon_size, .tile_size = tile_extent, .dx = tile_extent + gap_x, .dy = tile_extent + gap_y, .x = @floor((w - cols * tile_extent - (cols - 1) * gap_x) / 2), .y = @floor((h - indicator_height - rs * tile_extent - (rs - 1) * gap_y) / 2) };
     }
     pub fn capacity(self: Grid) usize {
         return self.columns * self.rows;
@@ -215,17 +219,19 @@ pub fn measure(renderer: *text.Renderer, value: []const u8, scale: u32) !f64 {
     defer mask.deinit(a);
     return @as(f64, @floatFromInt(mask.logical_width)) / factor;
 }
-fn drawCenteredText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8, font: [:0]const u8, size: f64, tint: raster.Color) !void {
+fn drawCenteredText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8, font: [:0]const u8, size: f64, tint: raster.Color, offset_y: f64) !void {
     const factor: f64 = @floatFromInt(scale);
     const mask = try renderer.renderLayout(a, value, .{ .font = font, .size = size * factor, .dpi = 96 * factor, .width = @max(1, target.width - @min(target.width - 1, 48 * scale)), .alignment = .center, .lines = 2, .ellipsize = true, .origin = .top });
     defer mask.deinit(a);
-    drawMaskColor(.{ .target = target, .scale = factor }, mask, 24, (@as(f64, @floatFromInt(target.height)) - @as(f64, @floatFromInt(mask.logical_height))) / (2 * factor), tint);
+    drawMaskColor(.{ .target = target, .scale = factor }, mask, 24, (@as(f64, @floatFromInt(target.height)) - @as(f64, @floatFromInt(mask.logical_height))) / (2 * factor) + offset_y, tint);
 }
 pub fn centerText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8, rgb: u32) !void {
-    try drawCenteredText(target, scale, renderer, value, "Adwaita Sans", 14.6666666667, color(rgb));
+    try drawCenteredText(target, scale, renderer, value, "Adwaita Sans", 14.6666666667, color(rgb), 0);
 }
 pub fn statusText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8) !void {
-    try drawCenteredText(target, scale, renderer, value, "Adwaita Sans Extra-Bold", 26.6666666667, raster.Color.rgb(0xfafafb, 0.8));
+    // GNOME centers a 64px spinner, 24px spacing and label as one box.
+    // The stopped spinner keeps its allocation, placing the label 44px below center.
+    try drawCenteredText(target, scale, renderer, value, "Adwaita Sans Extra-Bold", 26.6666666667, raster.Color.rgb(0xfafafb, 0.8), 44);
 }
 pub fn paintSearch(target: raster.Buffer, scale: u32, renderer: *text.Renderer, icons: *Search, entry: anytype, hover: bool, offset: *f64) !void {
     const factor: f64 = @floatFromInt(scale);
@@ -307,4 +313,10 @@ test "search grid caps width at 1044px with single centered row of 96px tiles" {
     try std.testing.expectEqual(@as(f64, 800), two.tile(0).x);
     try std.testing.expectEqual(@as(?usize, 1), two.hit(975 + 72, 24 + 72));
     try std.testing.expectEqual(@as(?usize, null), two.hit(975 - 10, 24 + 72));
+}
+
+test "single page GNOME 51 grid centers without hidden indicators" {
+    const grid = Grid.initWithIndicators(1728, 661, false);
+    try std.testing.expectEqual(@as(f64, 77), grid.tile(0).y);
+    try std.testing.expectEqual(@as(f64, 258), grid.tile(8).y);
 }
