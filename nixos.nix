@@ -123,6 +123,7 @@
       (if enableNvidia then btop-cuda else btop)
       (if enableNvidia then nvtopPackages.nvidia else nvtopPackages.intel)
       file
+      firefox-bin
       slack
     ])
     ++ lib.optionals (!enableLightDesktop) (
