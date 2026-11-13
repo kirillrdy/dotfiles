@@ -137,6 +137,7 @@ const Server = struct {
     locked: bool = false,
     lock_serial: u64 = 0,
     lock: ?*Lock = null,
+    lock_blank_timer: ?*c.wl_event_source = null,
     cycling: bool = false,
     cycle_app: bool = false,
     cycle_origin: ?*View = null,
@@ -245,6 +246,7 @@ const Server = struct {
         self.hooks.add(&self.output_manager.events.@"test", self, &testOutputs);
         _ = c.wl_global_create(self.display, @ptrCast(&p.dotfiles_overview_v1_interface), 1, self, &Overview.bind) orelse return error.Overview;
         _ = c.wl_event_loop_add_fd(self.loop, handle.stop_pipe[0], c.WL_EVENT_READABLE, &stopEvent, self) orelse return error.StopEvent;
+        self.lock_blank_timer = c.wl_event_loop_add_timer(self.loop, &lockBlankTimeout, self) orelse return error.LockTimer;
         const socket = c.wl_display_add_socket_auto(self.display) orelse return error.Socket;
         const name = std.mem.span(socket);
         @memcpy(handle.socket[0..name.len], name);
@@ -259,6 +261,8 @@ const Server = struct {
         std.log.info("desktop compositor ready on {s}", .{name});
     }
     fn deinit(self: *Server) void {
+        if (self.lock_blank_timer) |timer| _ = c.wl_event_source_remove(timer);
+        self.lock_blank_timer = null;
         if (self.corner_settings) |settings| g.g_object_unref(settings);
         self.shutting_down = true;
         c.wl_display_destroy_clients(self.display);
@@ -281,8 +285,72 @@ const Server = struct {
         c.wl_display_terminate(cast(Server, ptr).display);
         return 0;
     }
+    const default_lock_blank_ms: c_int = 10_000;
+    fn lockBlankDelayMs() c_int {
+        if (std.c.getenv("DESKTOP_LOCK_BLANK_MS")) |raw| {
+            const parsed = std.fmt.parseInt(c_int, std.mem.span(raw), 10) catch return default_lock_blank_ms;
+            if (parsed > 0) return parsed;
+        }
+        return default_lock_blank_ms;
+    }
+    fn armLockBlankTimer(self: *Server) void {
+        if (self.lock_blank_timer) |timer| {
+            _ = c.wl_event_source_timer_update(timer, lockBlankDelayMs());
+        }
+    }
+    fn disarmLockBlankTimer(self: *Server) void {
+        if (self.lock_blank_timer) |timer| {
+            _ = c.wl_event_source_timer_update(timer, 0);
+        }
+    }
+    fn lockBlankTimeout(ptr: ?*anyopaque) callconv(.c) c_int {
+        const self = cast(Server, ptr);
+        if (!self.locked or self.shutting_down) return 0;
+        if (self.lock) |lock| if (!lock.acknowledged) {
+            self.armLockBlankTimer();
+            return 0;
+        };
+        self.blankOutputs();
+        return 0;
+    }
+    fn blankOutputs(self: *Server) void {
+        var changed = false;
+        for (self.outputs.items) |output| {
+            if (!output.wlr.enabled) continue;
+            var state: c.wlr_output_state = undefined;
+            c.wlr_output_state_init(&state);
+            defer c.wlr_output_state_finish(&state);
+            c.wlr_output_state_set_enabled(&state, false);
+            if (c.wlr_output_commit_state(output.wlr, &state)) {
+                output.dpms_off = true;
+                changed = true;
+            }
+        }
+        if (changed) self.publishOutputs();
+    }
+    fn wakeOutputs(self: *Server) void {
+        var changed = false;
+        for (self.outputs.items) |output| {
+            if (!output.dpms_off) continue;
+            output.dpms_off = false;
+            if (output.wlr.enabled) continue;
+            var state: c.wlr_output_state = undefined;
+            c.wlr_output_state_init(&state);
+            defer c.wlr_output_state_finish(&state);
+            c.wlr_output_state_set_enabled(&state, true);
+            if (c.wlr_output_commit_state(output.wlr, &state)) {
+                c.wlr_output_schedule_frame(output.wlr);
+                changed = true;
+            }
+        }
+        if (changed) self.publishOutputs();
+    }
     fn activity(self: *Server) void {
         c.wlr_idle_notifier_v1_notify_activity(self.idle, self.seat);
+        if (self.locked) {
+            self.wakeOutputs();
+            self.armLockBlankTimer();
+        }
     }
     fn textPosition(ptr: *anyopaque, surface: *c.wlr_surface) c.wlr_box {
         const self = cast(Server, ptr);
@@ -732,6 +800,9 @@ const Server = struct {
                 var link = config.heads.next;
                 while (link != &config.heads) : (link = link.*.next) {
                     const head: *c.wlr_output_configuration_head_v1 = @fieldParentPtr("link", @as(*c.wl_list, link));
+                    for (self.outputs.items) |output| if (output.wlr == head.state.output) {
+                        output.dpms_off = false;
+                    };
                     if (head.state.enabled) _ = c.wlr_output_layout_add(self.layout, head.state.output, head.state.x, head.state.y) else c.wlr_output_layout_remove(self.layout, head.state.output);
                 }
                 for (self.outputs.items) |output| output.arrange();
@@ -759,6 +830,7 @@ const Output = struct {
     wlr: *c.wlr_output,
     scene: *c.wlr_scene_output,
     lock_serial: u64 = 0,
+    dpms_off: bool = false,
     box: c.wlr_box = std.mem.zeroes(c.wlr_box),
     usable: c.wlr_box = std.mem.zeroes(c.wlr_box),
     hooks: Hooks = .{},
@@ -824,6 +896,7 @@ const Output = struct {
         const self = cast(Output, ptr);
         const e = cast(c.wlr_output_event_request_state, data);
         if (c.wlr_output_commit_state(self.wlr, e.state)) {
+            if (self.wlr.enabled) self.dpms_off = false;
             self.arrange();
             self.s.publishOutputs();
         }
@@ -1359,6 +1432,7 @@ const Lock = struct {
         self.hooks.add(&wlr.events.destroy, self, &destroy);
         // Acknowledge only after every enabled output commits an opaque lock frame.
         self.acknowledge();
+        s.armLockBlankTimer();
     }
     fn blankOutput(self: *Lock, output: *Output) void {
         const black = [4]f32{ 0, 0, 0, 1 };
@@ -1398,6 +1472,8 @@ const Lock = struct {
         const self = cast(Lock, ptr);
         self.unlocked = true;
         self.s.locked = false;
+        self.s.disarmLockBlankTimer();
+        self.s.wakeOutputs();
         self.s.updateInhibition();
         c.wlr_scene_node_set_enabled(&self.s.lock_tree.node, false);
         self.s.refocus();
