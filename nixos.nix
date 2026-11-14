@@ -43,6 +43,7 @@
     trusted-users = [ "kirillvr" ];
   };
   nixpkgs.config.allowUnfree = true;
+  nixpkgs.overlays = [ (import ./overlays.nix) ];
   programs.git.config = {
     user.name = "Kirill Radzikhovskyy";
     user.email = "kirillrdy@gmail.com";

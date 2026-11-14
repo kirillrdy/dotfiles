@@ -1,5 +1,6 @@
 pkgs: with pkgs; [
   (import ./neovim.nix pkgs)
+  antigravity-cli
   ncdu
   gh
   jq

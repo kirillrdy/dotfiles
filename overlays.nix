@@ -1,0 +1,31 @@
+final: prev:
+let
+  version = "1.5.8";
+  buildId = "4602374149505024";
+  wholeVersion = "${version}-${buildId}";
+  sources = {
+    x86_64-linux = {
+      url = "https://storage.googleapis.com/antigravity-public/antigravity-cli/${wholeVersion}/linux-x64/cli_linux_x64.tar.gz";
+      hash = "sha256-kF1KzPvWG8AL7oS/ryTFm4XTNMq9eGz5kje2bP4Gq5g=";
+    };
+    aarch64-linux = {
+      url = "https://storage.googleapis.com/antigravity-public/antigravity-cli/${wholeVersion}/linux-arm/cli_linux_arm64.tar.gz";
+      hash = "sha256-DKQHNXZhqiRPvDsOeaHR0mI7LKFRXS4vd6gBw2dr1WI=";
+    };
+    aarch64-darwin = {
+      url = "https://storage.googleapis.com/antigravity-public/antigravity-cli/${wholeVersion}/darwin-arm/cli_mac_arm64.tar.gz";
+      hash = "sha256-/JqJq83ARaancAhec+N30j0GeUD7V3c6FX8TfgvDgp8=";
+    };
+  };
+  system = prev.stdenv.hostPlatform.system;
+  source = sources.${system} or (throw "Unsupported system: ${system}");
+in
+{
+  antigravity-cli = prev.antigravity-cli.overrideAttrs (old: {
+    inherit version;
+    src = prev.fetchurl source;
+    passthru = (old.passthru or { }) // {
+      inherit wholeVersion;
+    };
+  });
+}
