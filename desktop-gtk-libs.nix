@@ -6,6 +6,7 @@
 }:
 let
   textLibraries = import ./desktop-text-libs.nix { inherit pkgs; };
+  glLibraries = import ./desktop-gl-libs.nix { inherit pkgs; };
   # GTK still requires ATK's widget types. Build those without the AT-SPI
   # bridge, registry, bus launcher, or their D-Bus/X11 dependencies for now.
   accessibility =
@@ -43,17 +44,19 @@ let
   # Libepoxy provides EGL function pointers for Wayland OpenGL without GLX/X11.
   epoxy =
     let
-      base =
-        (pkgs.libepoxy.override { x11Support = false; }).overrideAttrs (old: {
-          pname = "desktop-libepoxy";
-          propagatedBuildInputs = [ pkgs.libGL ];
-          mesonFlags = [
-            "-Degl=yes"
-            "-Dglx=no"
-            "-Dx11=false"
-            "-Dtests=false"
-          ];
-        });
+      base = (pkgs.libepoxy.override { x11Support = false; }).overrideAttrs (old: {
+        pname = "desktop-libepoxy";
+        propagatedBuildInputs = [ glLibraries ];
+        # Nixpkgs only sets this dlopen fallback when X11 support is enabled.
+        # EGL needs the same explicit path in this Wayland-only build.
+        env.NIX_CFLAGS_COMPILE = ''-DLIBGL_PATH="${glLibraries}/lib"'';
+        mesonFlags = [
+          "-Degl=yes"
+          "-Dglx=no"
+          "-Dx11=false"
+          "-Dtests=false"
+        ];
+      });
     in
     base // { override = _: epoxy; };
 
