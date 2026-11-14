@@ -13,4 +13,6 @@ pkgs: with pkgs; [
   nvd
   ripgrep
   tig
+  zig
+  zls
 ]
