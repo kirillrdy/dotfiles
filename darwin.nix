@@ -4,6 +4,7 @@
     (import ./common.nix pkgs)
     ++ (with pkgs; [
       stats
+      codexbar
       btop
     ]);
 
