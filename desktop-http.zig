@@ -103,7 +103,8 @@ const Fixture = struct {
     }
 };
 
-test "HTTP sends auth headers and reads bounded chunked responses" {
+test "integration: HTTP sends auth headers and reads bounded chunked responses" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     const io = std.testing.io;
     const a = std.testing.allocator;
     var fixture = try Fixture.init("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\ntest\r\n0\r\n\r\n");
@@ -123,7 +124,8 @@ test "HTTP sends auth headers and reads bounded chunked responses" {
     try worker.await(io);
 }
 
-test "HTTP returns login failures and does not follow redirects" {
+test "integration: HTTP returns login failures and does not follow redirects" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     const io = std.testing.io;
     const a = std.testing.allocator;
     for ([_][]const u8{
@@ -143,7 +145,8 @@ test "HTTP returns login failures and does not follow redirects" {
     }
 }
 
-test "HTTP rejects oversized responses" {
+test "integration: HTTP rejects oversized responses" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     const io = std.testing.io;
     const a = std.testing.allocator;
     var fixture = try Fixture.init("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n12345");
@@ -156,7 +159,8 @@ test "HTTP rejects oversized responses" {
     try worker.await(io);
 }
 
-test "HTTP deadline cancels a server that never responds" {
+test "integration: HTTP deadline cancels a server that never responds" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     const io = std.testing.io;
     const a = std.testing.allocator;
     var fixture = try Fixture.init("");

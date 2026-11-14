@@ -274,7 +274,8 @@ fn shadowMask(width: u32, height: u32, scale: u32) ![]u8 {
     };
     return result;
 }
-test "native notification expansion wraps markup and keeps action hit regions inside the card at both scales" {
+test "integration: native notification expansion wraps markup and keeps action hit regions inside the card at both scales" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     c.gtk_init(null, null);
     const actions = [_]data.Action{ .{ .key = "default", .label = "Open" }, .{ .key = "reply", .label = "Reply" }, .{ .key = "archive", .label = "Archive" } };
     for ([_]u32{ 1, 2 }) |scale| {
@@ -313,7 +314,8 @@ test "native notification expansion wraps markup and keeps action hit regions in
     }
 }
 
-test "GNOME header keeps the age beside the source and reserves button space" {
+test "integration: GNOME header keeps the age beside the source and reserves button space" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     c.gtk_init(null, null);
     for ([_]u32{ 1, 2 }) |scale| {
         var card = View.init(.{ .id = 1, .app = "Terminal", .title = "Build complete", .body = "All checks passed. Your desktop is ready.", .created = @divTrunc(c.g_get_real_time(), 1000000) }, .{}, 529);
@@ -332,7 +334,8 @@ test "GNOME header keeps the age beside the source and reserves button space" {
     }
 }
 
-test "expanded banner matches GNOME's measured line and action geometry" {
+test "integration: expanded banner matches GNOME's measured line and action geometry" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     c.gtk_init(null, null);
     const actions = [_]data.Action{ .{ .key = "open", .label = "Open Settings" }, .{ .key = "later", .label = "Later" } };
     for ([_]u32{ 1, 2 }) |scale| {

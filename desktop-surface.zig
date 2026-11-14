@@ -712,7 +712,8 @@ test "native buffer bounds reject empty images and oversized allocations" {
     try std.testing.expectEqual(@as(usize, 3840 * 2160 * 4), try bufferSize(3840, 2160));
 }
 
-test "passive clients do not bind input seats or accept interactive surfaces" {
+test "integration: passive clients do not bind input seats or accept interactive surfaces" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     const Noop = struct {
         fn output(_: ?*anyopaque, _: *Output) void {}
         fn paint(_: ?*anyopaque, _: Pixels) void {}
@@ -727,7 +728,8 @@ test "passive clients do not bind input seats or accept interactive surfaces" {
     try std.testing.expect(surface.proxy == null);
 }
 
-test "frame callbacks coalesce redraws, finish animation and cancel on hide" {
+test "integration: frame callbacks coalesce redraws, finish animation and cancel on hide" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     const State = struct {
         paints: usize = 0,
         frames: usize = 0,

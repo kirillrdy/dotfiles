@@ -391,7 +391,9 @@ test "panel labels retain masks across hover, refresh at output scale, and drop 
     try std.testing.expectEqual(@as(u32, 0x12345678), pixels[pixels.len - 1]);
 }
 
-test "Codex wraps errors, scales pixels, and retains remaining-budget colors" {
+test "integration: Codex wraps errors, scales pixels, and retains remaining-budget colors" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
+    try std.testing.expect(c.gtk_init_check(null, null) != 0);
     var view: Codex = .{};
     defer view.deinit();
     try view.prepare(1);

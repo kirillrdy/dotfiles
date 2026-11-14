@@ -43,25 +43,14 @@ pkgs.stdenv.mkDerivation {
       || file.hasExt "h"
       || file.hasExt "svg"
       || file.hasExt "xml"
-      || file.name == "check-desktop-compositor.py"
-      || file.name == "check-desktop-askpass.py"
-      || file.name == "check-desktop-command.py"
-      || file.name == "check-desktop-notifications.py"
-      || file.name == "check-desktop-date-menu.py"
-      || file.name == "check-desktop-window.py"
-      || file.name == "session_fixture.py"
-      || file.name == "wayland_ui.py"
       || file.name == "protocol-metadata.py"
     ) ./.;
   };
   nativeBuildInputs = [
     pkgs.zig_0_17
     pkgs.pkg-config
-    pkgs.wtype
-    pkgs.wlrctl
     pkgs.wayland-scanner
-    (pkgs.python3.withPackages (p: [ p.pygobject3 ]))
-    pkgs.dbus
+    pkgs.python3
     pkgs.removeReferencesTo
   ];
   dontStrip = true;
@@ -88,7 +77,7 @@ pkgs.stdenv.mkDerivation {
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
     # pkg-config supplies the declared libraries. Zig also turns every -L in
     # NIX_LDFLAGS into an RPATH, including unused propagated dependencies.
-    NIX_LDFLAGS= zig build --prefix "$out" -Dtest-bin=libexec/desktop-tests --release=safe
+    NIX_LDFLAGS= zig build install compositor-fixture window-fixture --prefix "$out" -Dtest-bin=libexec/desktop-tests --release=safe
     # Executable interfaces required by SSH and the screenshot portal.
     for name in desktop-askpass grim slurp; do
       ln -s desktop-zig "$out/bin/$name"
@@ -108,36 +97,8 @@ pkgs.stdenv.mkDerivation {
     }
     export XDG_CACHE_HOME="$TMPDIR/cache"
     mkdir -p "$XDG_CACHE_HOME"
-    export XDG_RUNTIME_DIR="$TMPDIR/runtime"
-    mkdir -p "$XDG_RUNTIME_DIR"
-    chmod 700 "$XDG_RUNTIME_DIR"
-    export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=1
-    "$out/bin/desktop-zig" compositor-only > "$TMPDIR/compositor.log" 2>&1 &
-    compositor_pid=$!
-    trap 'kill "$compositor_pid"' EXIT
-    for attempt in $(seq 1 100); do
-      test -S "$XDG_RUNTIME_DIR/wayland-0" && break
-      sleep 0.05
-    done
-    export WAYLAND_DISPLAY=wayland-0
-    export GDK_BACKEND=wayland
-    export GDK_PIXBUF_MODULE_FILE=${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
-    export DESKTOP_PANEL_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
-    export DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
-    NIX_LDFLAGS= G_DEBUG=fatal-criticals zig build test compositor-fixture window-fixture --prefix "$out" -Dtest-bin=libexec/desktop-tests --release=safe --summary all
-    ln -s "$out/bin/desktop-zig" "$out/libexec/desktop-tests/desktop-zig"
-    python3 tests/check-desktop-window.py --binary "$out/libexec/desktop-tests/desktop-window-fixture"
-    python3 tests/check-desktop-compositor.py --bin-dir "$out/libexec/desktop-tests" --wtype "$(command -v wtype)"
-    python3 tests/check-desktop-askpass.py --binary "$out/bin/desktop-zig" --wtype "$(command -v wtype)"
-    dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
-      python3 tests/check-desktop-command.py "$out/libexec/desktop-tests/desktop-command-fixture"
-    dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
-      python3 tests/check-desktop-notifications.py "$out/libexec/desktop-tests"
-    dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
-      python3 tests/check-desktop-date-menu.py "$out/libexec/desktop-tests"
-    kill "$compositor_pid"
-    wait "$compositor_pid" || true
-    trap - EXIT
+    # Unit and ABI checks run without a display or a D-Bus session.
+    NIX_LDFLAGS= zig build test --release=safe --summary all
   '';
   # Keep debug information without retaining the compiler through source paths.
   postFixup = ''

@@ -380,7 +380,8 @@ test "application grouping counts windows without merging missing app IDs" {
     try std.testing.expect(!windows.items[0].selected and windows.items[1].selected);
 }
 
-test "native switcher preserves its role and icons across selection changes" {
+test "integration: native switcher preserves its role and icons across selection changes" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     // The shared capture client still resolves window icons through GDK.
     try std.testing.expect(c.gtk_init_check(null, null) != 0);
     const probe = @import("tests/desktop-surface-capture.zig");

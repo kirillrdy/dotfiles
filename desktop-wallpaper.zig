@@ -96,7 +96,8 @@ test "fill crops the center of wide and tall images at both buffer scales" {
     }
 }
 
-test "background layer paints wallpaper pixels on the desktop" {
+test "integration: background layer paints wallpaper pixels on the desktop" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     const capture = @import("tests/desktop-surface-capture.zig");
     try std.testing.expect(c.gtk_init_check(null, null) != 0);
     const image = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 0, 8, 2, 2).?;

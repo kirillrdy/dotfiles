@@ -2,6 +2,7 @@
 pkgs.testers.runNixOSTest {
   name = "desktop";
   node.specialArgs.enableLightDesktop = true;
+  node.specialArgs.enableNvidia = false;
   node.pkgsReadOnly = false;
 
   nodes.machine =

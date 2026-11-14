@@ -764,7 +764,8 @@ fn drawText(canvas: raster.Canvas, mask_value: text.Mask, x: f64, y: f64, tint: 
     mask_value.paint(canvas, x, y, color(tint));
 }
 
-test "native forms preserve selections, isolate passwords and navigate controls" {
+test "integration: native forms preserve selections, isolate passwords and navigate controls" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     const Callbacks = struct {
         edits: usize = 0,
         actions: usize = 0,
@@ -860,7 +861,8 @@ test "native forms preserve selections, isolate passwords and navigate controls"
     try std.testing.expect(form.closed);
 }
 
-test "native form children share their parent connection and close before parent teardown" {
+test "integration: native form children share their parent connection and close before parent teardown" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     const Owner = struct {
         closes: usize = 0,
         fn action(_: ?*anyopaque, _: usize) void {}

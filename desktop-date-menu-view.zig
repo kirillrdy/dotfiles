@@ -498,7 +498,8 @@ test "native calendar navigates leap days and years with keyboard focus at both 
         try std.testing.expectEqual(scale, view.scale);
     }
 }
-test "native history preserves expansion and focus across snapshots and clips scrolling" {
+test "integration: native history preserves expansion and focus across snapshots and clips scrolling" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     const test_history =
         \\[{"id":1,"created":1,"app":"First","title":"Older","body":"One"},
         \\ {"id":2,"created":2,"app":"Second","title":"Middle","body":"Two"},

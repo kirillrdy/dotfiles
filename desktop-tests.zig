@@ -15,7 +15,8 @@ test "panel uses native microphone mute state" {
     try strings("microphone-sensitivity-muted-symbolic", out.items.?[1].icon);
 }
 
-test "Linux virtual files are read despite reporting size zero" {
+test "integration: Linux virtual files are read despite reporting size zero" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const a = std.testing.allocator;
     const stat = try u.read(a, "/proc/stat");
@@ -102,7 +103,8 @@ test "disk usage uses fragment sizes and excludes free reserved blocks" {
     try strings("0B/0B", try panel.diskUsageText(arena.allocator(), .{}));
 }
 
-test "disk panel queries the root filesystem without commands" {
+test "integration: disk panel queries the root filesystem without commands" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const result = try panel.sample(arena.allocator(), "disk", "", false);
@@ -166,7 +168,8 @@ test {
     _ = @import("tests/desktop-power-fixture.zig");
 }
 
-test "monitor updates retain their sampled values across later samples" {
+test "integration: monitor updates retain their sampled values across later samples" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();

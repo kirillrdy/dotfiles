@@ -100,7 +100,9 @@ pub fn build(b: *std.Build) void {
     for (protocol_files) |xml| metadata_command.addFileArg(xml);
     const metadata = b.createModule(.{ .root_source_file = metadata_source, .target = target, .optimize = optimize });
     desktop.addImport("protocol-metadata", metadata);
+    const integration_tests = b.option(bool, "integration-tests", "Include system and Wayland integration tests") orelse false;
     const options = b.addOptions();
+    options.addOption(bool, "integration_tests", integration_tests);
     for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "PIXBUF_LOADERS", "SOUND_FILE", "DATA_DIRS" }) |name| {
         options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
     }
@@ -138,8 +140,9 @@ pub fn build(b: *std.Build) void {
     const test_module = b.createModule(.{ .root_source_file = b.path("desktop-tests.zig"), .target = target, .optimize = optimize, .link_libc = true });
     for (desktop.import_table.keys(), desktop.import_table.values()) |name, dependency| test_module.addImport(name, dependency);
     test_module.link_objects.appendSlice(b.graph.arena, desktop.link_objects.items) catch @panic("OOM");
-    const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module });
-    const test_step = b.step("test", "Run unit, ABI, protocol and widget checks (requires Wayland)");
+    const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module, .filters = if (integration_tests) &.{"integration:"} else &.{} });
+    b.step("test-binary", "Build tests for execution in a NixOS VM").dependOn(&b.addInstallArtifact(tests, fixture_install).step);
+    const test_step = b.step("test", "Run unit, ABI and protocol checks");
     const unit_run = b.addRunArtifact(tests);
     test_step.dependOn(&unit_run.step);
     test_module.addImport("gtk-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n#include <pango/pangoft2.h>\n", &.{ "gtk+-unix-print-3.0", "gio-unix-2.0", "wayland-client", "pangoft2" }));
@@ -172,7 +175,7 @@ pub fn build(b: *std.Build) void {
         tests.root_module.addCSourceFile(.{ .file = protocolCode(b, xml, b.fmt("protocol-{d}.c", .{i})), .flags = &reference_flags });
     }
 
-    const Fixture = struct { name: []const u8, source: []const u8, step: []const u8, install: bool = false, run: bool = false, library: bool = false, test_runner: bool = false };
+    const Fixture = struct { name: []const u8, source: []const u8, step: []const u8, install: bool = false, library: bool = false, test_runner: bool = false };
     const fixtures = [_]Fixture{
         .{ .name = "desktop-compositor-fixture", .source = "tests/desktop-compositor-fixture.zig", .step = "compositor-fixture" },
         .{ .name = "pam_desktop_secrets", .source = "desktop-secrets-pam.zig", .step = "secrets-pam", .install = true, .library = true },
@@ -190,15 +193,15 @@ pub fn build(b: *std.Build) void {
         .{ .name = "desktop-network-fixture", .source = "desktop-network-fixture.zig", .step = "network-fixture" },
         .{ .name = "desktop-idle-fixture", .source = "tests/desktop-idle-fixture.zig", .step = "idle-fixture", .install = true },
         .{ .name = "desktop-lock-fixture", .source = "tests/desktop-lock-fixture.zig", .step = "lock-fixture", .install = true },
-        .{ .name = "desktop-apps-fixture", .source = "tests/desktop-apps-fixture.zig", .step = "apps-fixture", .install = true, .run = true },
-        .{ .name = "desktop-dash-fixture", .source = "tests/desktop-dash-fixture.zig", .step = "dash-fixture", .run = true },
-        .{ .name = "desktop-widgets-fixture", .source = "tests/desktop-widgets-fixture.zig", .step = "widgets-fixture", .install = true, .run = true },
+        .{ .name = "desktop-apps-fixture", .source = "tests/desktop-apps-fixture.zig", .step = "apps-fixture", .install = true },
+        .{ .name = "desktop-dash-fixture", .source = "tests/desktop-dash-fixture.zig", .step = "dash-fixture", .install = true },
+        .{ .name = "desktop-widgets-fixture", .source = "tests/desktop-widgets-fixture.zig", .step = "widgets-fixture", .install = true },
         .{ .name = "desktop-switcher-fixture", .source = "tests/desktop-switcher-fixture.zig", .step = "switcher-fixture", .install = true },
-        .{ .name = "desktop-settings-fixture", .source = "tests/desktop-settings-fixture.zig", .step = "settings-fixture", .run = true },
-        .{ .name = "desktop-askpass-fixture", .source = "tests/desktop-askpass-fixture.zig", .step = "askpass-fixture", .run = true },
-        .{ .name = "desktop-polkit-fixture", .source = "tests/desktop-polkit-fixture.zig", .step = "polkit-fixture", .run = true },
+        .{ .name = "desktop-settings-fixture", .source = "tests/desktop-settings-fixture.zig", .step = "settings-fixture", .install = true },
+        .{ .name = "desktop-askpass-fixture", .source = "tests/desktop-askpass-fixture.zig", .step = "askpass-fixture", .install = true },
+        .{ .name = "desktop-polkit-fixture", .source = "tests/desktop-polkit-fixture.zig", .step = "polkit-fixture", .install = true },
         .{ .name = "desktop-polkit-agent-fixture", .source = "tests/desktop-polkit-agent-fixture.zig", .step = "polkit-agent-fixture" },
-        .{ .name = "desktop-screenshot-fixture", .source = "tests/desktop-screenshot-fixture.zig", .step = "screenshot-fixture", .run = true },
+        .{ .name = "desktop-screenshot-fixture", .source = "tests/desktop-screenshot-fixture.zig", .step = "screenshot-fixture", .install = true },
         .{ .name = "desktop-command-fixture", .source = "tests/desktop-command-fixture.zig", .step = "command-fixture", .install = true },
         .{ .name = "desktop-notifications-fixture", .source = "tests/desktop-notifications-fixture.zig", .step = "notifications-fixture", .install = true },
         .{ .name = "desktop-session-fixture", .source = "desktop-session-fixture.zig", .step = "session-fixture", .test_runner = true },
@@ -219,13 +222,5 @@ pub fn build(b: *std.Build) void {
         const step = if (b.top_level_steps.get(fixture.step)) |existing| &existing.step else b.step(fixture.step, "Build isolated test client");
         step.dependOn(&install.step);
         if (std.mem.eql(u8, fixture.step, "portal-fixture") or std.mem.eql(u8, fixture.step, "portal-video-fixture") or std.mem.eql(u8, fixture.step, "pointer-fixture")) capture.dependOn(&install.step);
-        if (fixture.run) {
-            const run = b.addRunArtifact(artifact);
-            // Pixel assertions need an unobstructed compositor output before
-            // the separate GTK fixtures map their windows on that display.
-            run.step.dependOn(&unit_run.step);
-            if (std.mem.eql(u8, fixture.step, "askpass-fixture")) run.addArtifactArg(session);
-            test_step.dependOn(&run.step);
-        }
     }
 }

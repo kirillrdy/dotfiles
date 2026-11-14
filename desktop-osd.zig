@@ -239,7 +239,8 @@ test "media key limits preserve zero volume and the five percent brightness floo
     try std.testing.expect(parseCommand(&.{ "volume", "up", "extra" }) == null);
 }
 
-test "native OSD paints on the output, coalesces buffers, and restores the desktop when hidden" {
+test "integration: native OSD paints on the output, coalesces buffers, and restores the desktop when hidden" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     const capture = @import("tests/desktop-surface-capture.zig");
     const Callbacks = struct {
         fn nothing(_: ?*anyopaque, _: *native.Output) void {}

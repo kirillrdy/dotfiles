@@ -14,6 +14,7 @@
     let
       inherit (nixpkgs) lib;
       pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      desktopTests = import ./tests { inherit pkgs; };
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -108,7 +109,8 @@
         ];
       };
 
-      checks.x86_64-linux.desktop = import ./tests/desktop-vm.nix { inherit pkgs; };
+      nixosTests.x86_64-linux = desktopTests;
+      checks.x86_64-linux = desktopTests;
 
       nixosConfigurations = builtins.mapAttrs mkSystem {
         # Lenovo X1 gen9, alderlake

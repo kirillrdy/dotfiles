@@ -1,7 +1,8 @@
 { pkgs }:
-# Shared builder for integration check derivations in tests/.
+# Compile fixtures in derivations and execute integration checks inside NixOS.
 {
   name,
+  vm ? true,
   nativeBuildInputs ? [ ],
   buildInputs ? [ ],
   python ? pkgs.python3,
@@ -69,11 +70,7 @@ let
   '';
   dbusConfig = "${pkgs.dbus}/share/dbus-1/session.conf";
   dbusRun = "dbus-run-session --config-file=${dbusConfig} --";
-  pythonPkg =
-    if pygobject then
-      pkgs.python3.withPackages (p: [ p.pygobject3 ])
-    else
-      python;
+  pythonPkg = if pygobject then pkgs.python3.withPackages (p: [ p.pygobject3 ]) else python;
   dataDirs = extraDataDirs ++ lib.optional iconTheme "${pkgs.adwaita-icon-theme}/share";
   body =
     if builtins.isFunction script then
@@ -88,22 +85,16 @@ let
       }
     else
       script;
-in
-pkgs.runCommand name
-  (
-    {
-      nativeBuildInputs =
-        lib.optional (pythonPkg != null) pythonPkg
-        ++ lib.optional withDesktop desktop
-        ++ nativeBuildInputs;
-      inherit buildInputs;
-    }
-    // lib.optionalAttrs (fontDirs != [ ]) {
-      FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = fontDirs; };
-    }
-    // env
-  )
-  (
+  runtimeScript = pkgs.writeShellScript "${name}-run" (
+    ''
+      set -euo pipefail
+      export TMPDIR=$(mktemp -d)
+      cd "$TMPDIR"
+    ''
+    + setup
+    + body
+  );
+  setup =
     lib.optionalString (pythonPkg != null) ''
       export PYTHONPATH=${./.}
       export PYTHONDONTWRITEBYTECODE=1
@@ -131,10 +122,63 @@ pkgs.runCommand name
       export XDG_CACHE_HOME="$TMPDIR/cache"
       mkdir -p "$XDG_CACHE_HOME"
     ''
-    + lib.optionalString headless headlessScript
-    + body
-    + ''
-
-      touch "$out"
-    ''
-  )
+    + lib.optionalString headless headlessScript;
+  runner =
+    pkgs.runCommand "${name}-runner"
+      (
+        {
+          nativeBuildInputs =
+            lib.optional (pythonPkg != null) pythonPkg
+            ++ lib.optional withDesktop desktop
+            ++ nativeBuildInputs
+            ++ [ pkgs.makeWrapper ];
+          inherit buildInputs;
+        }
+        // lib.optionalAttrs (fontDirs != [ ]) {
+          FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = fontDirs; };
+        }
+        // env
+      )
+      ''
+        mkdir -p "$out/bin"
+        # Preserve setup-hook paths, but run every assertion after the VM boots.
+        args=(--prefix PATH : "$PATH")
+        for key in FONTCONFIG_FILE GI_TYPELIB_PATH XDG_DATA_DIRS ${lib.concatStringsSep " " (builtins.attrNames env)}; do
+          if [[ -v $key ]]; then
+            args+=(--set "$key" "''${!key}")
+          fi
+        done
+        makeWrapper ${runtimeScript} "$out/bin/check" "''${args[@]}"
+      '';
+in
+if !vm then
+  pkgs.runCommand name
+    {
+      nativeBuildInputs = nativeBuildInputs;
+      inherit buildInputs;
+    }
+    (
+      setup
+      + body
+      + ''
+        touch "$out"
+      ''
+    )
+else
+  pkgs.testers.runNixOSTest {
+    inherit name;
+    nodes.machine = {
+      virtualisation.memorySize = 2048;
+      virtualisation.cores = 2;
+      users.users.tester.isNormalUser = true;
+      # These contract tests manage private compositors and mock services.
+      # Production service wiring is covered separately by desktop-vm.nix.
+      environment.systemPackages = [ runner ];
+    };
+    testScript = ''
+      machine.start()
+      machine.wait_for_unit("multi-user.target")
+      with subtest(${builtins.toJSON name}):
+          machine.succeed("su - tester -c ${runner}/bin/check", timeout=900)
+    '';
+  }

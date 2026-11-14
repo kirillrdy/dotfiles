@@ -431,7 +431,8 @@ test "quick-settings layout keeps hit regions separate and omits unavailable dev
     try std.testing.expectEqual(Target.none, view.focus);
 }
 
-test "quick-settings pixels support Unicode, menu states, scaling and clipped buffers" {
+test "integration: quick-settings pixels support Unicode, menu states, scaling and clipped buffers" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     c.gtk_init(null, null);
     const allocator = std.testing.allocator;
     var view: View = .{};

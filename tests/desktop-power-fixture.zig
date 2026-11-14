@@ -23,7 +23,8 @@ const Fixture = struct {
         try self.write(try std.fmt.allocPrint(self.a, "devices/system/cpu/cpufreq/{s}/{s}", .{ name, attribute }), value);
     }
 };
-test "power profiles apply, persist, restore and roll back in private sysfs trees" {
+test "integration: power profiles apply, persist, restore and roll back in private sysfs trees" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();

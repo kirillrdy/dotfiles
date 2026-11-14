@@ -4,6 +4,8 @@ let
 in
 import ./fixture.nix { inherit pkgs; } {
   name = "desktop-pam-check";
+  # Header/ABI conformance against a private PAM tree needs no running system.
+  vm = false;
   python = null;
   nativeBuildInputs = [
     pkgs.zig_0_17

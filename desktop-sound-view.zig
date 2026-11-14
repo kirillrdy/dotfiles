@@ -432,7 +432,9 @@ test "sound cards clamp sliders and device menu hit testing blocks controls behi
     try std.testing.expect(view.hit(bounds.x + 20, bounds.y + 5) == null);
 }
 
-test "sound view renders long labels and empty stream page at both scales" {
+test "integration: sound view renders long labels and empty stream page at both scales" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
+    try std.testing.expect(@import("desktop-gtk.zig").gtk_init_check(null, null) != 0);
     const allocator = std.testing.allocator;
     var view: View = .{};
     defer view.deinit(allocator);

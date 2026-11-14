@@ -324,7 +324,8 @@ pub fn set_keyboard_mode(window: [*c]c.GtkWindow, mode: KeyboardMode) void {
     self.invalidate();
 }
 
-test "native layer roles configure, reserve space, attach GTK popups, and remap" {
+test "integration: native layer roles configure, reserve space, attach GTK popups, and remap" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
     try std.testing.expect(c.gtk_init_check(null, null) != 0);
     try std.testing.expect(is_supported() != 0);
     const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL).?;
