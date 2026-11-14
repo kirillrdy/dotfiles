@@ -29,6 +29,7 @@
 
   programs.bash.completion.enable = true;
   programs.bash.interactiveShellInit = ''PS1='\[\e[32m\]\u@\h:\w> \[\e[0m\]' '';
+  environment.shells = [ pkgs.bash ];
 
   # Set system-wide settings
   system.primaryUser = "kirillvr";
@@ -41,6 +42,11 @@
 
   system.activationScripts.postActivation.text = ''
     /usr/bin/pmset -c sleep 0
+    /usr/bin/dscl . -create /Users/kirillvr UserShell /run/current-system/sw/bin/bash
+    install -d -o kirillvr -g staff "/Users/kirillvr/Library/Application Support/com.mitchellh.ghostty"
+    install -m 644 -o kirillvr -g staff ${pkgs.writeText "config.ghostty" ''
+      font-size = 17.33
+    ''} "/Users/kirillvr/Library/Application Support/com.mitchellh.ghostty/config.ghostty"
   '';
 
   system.keyboard.enableKeyMapping = true;
