@@ -13,6 +13,7 @@ import ./fixture.nix { inherit pkgs; } {
   fonts = true;
   nativeBuildInputs = [
     pkgs.dbus
+    pkgs.wlrctl
     pkgs.pipewire
     pkgs.wireplumber
   ];

@@ -1,5 +1,8 @@
 //! Native capture requests on the broker's GLib context.
-const layer = @import("desktop-layer-shell.zig");
+const native = @import("desktop-surface.zig");
+const form = @import("desktop-form.zig");
+const fonts = @import("desktop-text.zig");
+const raster = @import("desktop-raster.zig");
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
@@ -99,83 +102,98 @@ pub fn image(allocator: std.mem.Allocator, frame: *const sc.FrameCapture) !Image
     });
 }
 
-pub const Picked = struct { name: [:0]const u8, monitor: ?*c.GdkMonitor, width: i32, height: i32 };
+pub const Picked = struct { name: [:0]const u8, width: i32, height: i32 };
 /// Consent and output selection are shared by screenshots and screencasts.
 pub const Picker = struct {
     allocator: std.mem.Allocator,
-    client: sc.WaylandClient,
-    window: *c.GtkWidget,
-    combo: *c.GtkWidget,
-    area: ?*c.GtkWidget = null,
+    ui: *form.Form,
+    parent: [:0]u8,
+    output: usize,
+    area: ?usize = null,
+    cancel: usize,
+    share: usize,
+    responded: bool = false,
     callback: *const fn (?*anyopaque, ?Picked, bool) void,
     data: ?*anyopaque,
 
     pub fn create(allocator: std.mem.Allocator, app: [:0]const u8, parent: [:0]const u8, title: [:0]const u8, interactive: bool, callback: *const fn (?*anyopaque, ?Picked, bool) void, data: ?*anyopaque) !*Picker {
-        if (c.gtk_init_check(null, null) == 0) return error.DisplayUnavailable;
+        // Check capture support before displaying a consent window. This probe
+        // is synchronous; the form's native connection tracks live outputs.
+        var probe: sc.WaylandClient = undefined;
+        try probe.init(allocator);
+        defer probe.deinit();
+        if (probe.screencopy_mgr == null) return error.CaptureUnavailable;
         const self = try allocator.create(Picker);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .client = undefined, .window = undefined, .combo = undefined, .callback = callback, .data = data };
-        try self.client.init(allocator);
-        errdefer self.client.deinit();
-        if (self.client.screencopy_mgr == null or self.client.outputs.items.len == 0) return error.CaptureUnavailable;
-        self.window = c.gtk_dialog_new_with_buttons(title, null, 0, @as([*:0]const u8, "_Cancel"), c.GTK_RESPONSE_CANCEL, @as([*:0]const u8, "_Share"), c.GTK_RESPONSE_OK, @as(?*anyopaque, null));
-        const content = c.gtk_dialog_get_content_area(cast(c.GtkDialog, self.window));
-        c.gtk_container_set_border_width(cast(c.GtkContainer, content), 18);
-        c.gtk_box_set_spacing(cast(c.GtkBox, content), 12);
-        c.gtk_box_pack_start(cast(c.GtkBox, content), c.gtk_label_new(app), 0, 0, 0);
-        self.combo = c.gtk_combo_box_text_new();
-        for (self.client.outputs.items) |*output| c.gtk_combo_box_text_append(cast(c.GtkComboBoxText, self.combo), &output.name, &output.name);
-        c.gtk_combo_box_set_active(cast(c.GtkComboBox, self.combo), 0);
-        c.gtk_box_pack_start(cast(c.GtkBox, content), self.combo, 0, 0, 0);
-        if (interactive) {
-            self.area = c.gtk_check_button_new_with_label("Select an area");
-            c.gtk_box_pack_start(cast(c.GtkBox, content), self.area.?, 0, 0, 0);
+        const owned_parent = try allocator.dupeSentinel(u8, parent, 0);
+        errdefer allocator.free(owned_parent);
+        const ui = try form.Form.create(title, self, &action, &changed);
+        errdefer ui.deinit();
+        _ = try ui.add(.label, app, "", false);
+        const output = try ui.add(.choice, "Screen", "", false);
+        var choices: std.ArrayList(form.Option) = .empty;
+        defer choices.deinit(allocator);
+        const surface = ui.window.surface orelse return error.DisplayUnavailable;
+        for (surface.client.outputs.items) |item| {
+            if (item.width() <= 0 or item.height() <= 0) continue;
+            const name = std.mem.sliceTo(&item.label, 0);
+            if (name.len != 0) try choices.append(allocator, .{ .id = name, .label = name });
         }
-        c.gtk_window_set_title(cast(c.GtkWindow, self.window), title);
-        c.gtk_window_set_modal(cast(c.GtkWindow, self.window), 1);
-        c.gtk_dialog_set_default_response(cast(c.GtkDialog, self.window), c.GTK_RESPONSE_CANCEL);
-        _ = c.g_signal_connect_data(self.window, "response", @ptrCast(&responded), self, null, 0);
-        c.gtk_widget_show_all(self.window);
-        c.__zig.parentTo(self.window, allocator, parent);
+        if (choices.items.len == 0) return error.CaptureUnavailable;
+        try ui.setOptions(output, choices.items, true);
+        const area = if (interactive) try ui.add(.toggle, "Select an area", "", false) else null;
+        const cancel = try ui.add(.button, "Cancel", "", false);
+        const share = try ui.add(.button, "Share", "", false);
+        ui.pair(cancel, share);
+        self.* = .{ .allocator = allocator, .ui = ui, .parent = owned_parent, .output = output, .area = area, .cancel = cancel, .share = share, .callback = callback, .data = data };
+        surface.options.parent = owned_parent;
+        ui.close_callback = &closed;
+        ui.shortcut = &shortcut;
+        ui.focus = cancel; // Enter never grants consent by default.
+        ui.window.setSize(560, ui.height);
+        try ui.window.show();
         return self;
     }
     pub fn destroy(self: *Picker) void {
-        _ = c.g_signal_handlers_disconnect_matched(self.window, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-        c.gtk_widget_destroy(self.window);
-        self.client.deinit();
+        self.ui.close_callback = null;
+        self.ui.deinit();
+        self.allocator.free(self.parent);
         self.allocator.destroy(self);
     }
-    fn responded(_: *c.GtkDialog, response: c_int, data: ?*anyopaque) callconv(.c) void {
+    fn changed(_: ?*anyopaque, _: usize) void {}
+    fn closed(data: ?*anyopaque) void {
+        cast(Picker, data).respond(false);
+    }
+    fn action(data: ?*anyopaque, id: usize) void {
         const self = cast(Picker, data);
-        c.gtk_widget_hide(self.window);
-        if (response != c.GTK_RESPONSE_OK) {
-            self.callback(self.data, null, false);
-            return;
+        self.respond(id == self.share);
+    }
+    fn shortcut(data: ?*anyopaque, symbol: u32, modifiers: u32) bool {
+        if (modifiers & c.GDK_MOD1_MASK == 0) return false;
+        const self = cast(Picker, data);
+        switch (symbol) {
+            's', 'S' => self.ui.activate(self.share),
+            'a', 'A' => if (self.area) |id| self.ui.activate(id),
+            'o', 'O' => {
+                self.ui.focus = self.output;
+                self.ui.redraw();
+            },
+            else => return false,
         }
-        const id = c.gtk_combo_box_get_active_id(cast(c.GtkComboBox, self.combo));
-        if (id == null) {
-            self.callback(self.data, null, false);
-            return;
-        }
-        for (self.client.outputs.items) |*output| if (std.mem.eql(u8, std.mem.sliceTo(&output.name, 0), std.mem.span(id))) {
-            const display = c.gdk_display_get_default();
-            var monitor: ?*c.GdkMonitor = null;
-            var rect: c.GdkRectangle = undefined;
-            var index: c_int = 0;
-            while (index < c.gdk_display_get_n_monitors(display)) : (index += 1) {
-                const candidate = c.gdk_display_get_monitor(display, index);
-                c.gdk_monitor_get_geometry(candidate, &rect);
-                if (rect.x == output.x and rect.y == output.y) {
-                    monitor = candidate;
-                    break;
-                }
-            }
-            if (monitor == null) {
-                self.callback(self.data, null, false);
-                return;
-            }
-            self.callback(self.data, .{ .name = std.mem.span(id), .monitor = monitor, .width = rect.width, .height = rect.height }, self.area != null and c.gtk_toggle_button_get_active(cast(c.GtkToggleButton, self.area.?)) != 0);
-            return;
+        return true;
+    }
+    fn respond(self: *Picker, accepted: bool) void {
+        if (self.responded) return;
+        self.responded = true;
+        self.ui.window.hide();
+        if (accepted) if (self.ui.get(self.output).selectedId()) |name| {
+            if (self.ui.window.surface) |surface| for (surface.client.outputs.items) |output| {
+                if (!std.mem.eql(u8, std.mem.sliceTo(&output.label, 0), name)) continue;
+                if (output.width() <= 0 or output.height() <= 0) break;
+                const area = if (self.area) |id| self.ui.get(id).checked else false;
+                self.callback(self.data, .{ .name = name, .width = output.width(), .height = output.height() }, area);
+                return; // The callback may destroy both the picker and form.
+            };
         };
         self.callback(self.data, null, false);
     }
@@ -185,7 +203,12 @@ pub const Operation = struct {
     allocator: std.mem.Allocator,
     picker: ?*Picker = null,
     capture: ?*Capture = null,
-    overlay: ?*c.GtkWidget = null,
+    overlay_client: ?*native.Client = null,
+    overlay: ?*native.Surface = null,
+    renderer: fonts.Renderer = .{},
+    hint: ?fonts.Mask = null,
+    hint_scale: u32 = 0,
+    selection_done: bool = false,
     timer: c.guint = 0,
     name: ?[:0]u8 = null,
     point: bool,
@@ -216,18 +239,15 @@ pub const Operation = struct {
         errdefer allocator.destroy(self);
         self.* = .{ .allocator = allocator, .point = std.mem.eql(u8, method, "PickColor"), .callback = callback, .data = data };
         self.picker = try Picker.create(allocator, app, parent, if (self.point) "Pick a color" else "Share a screenshot", interactive and !self.point, &picked, self);
-        const modal = c.g_variant_lookup_value(options, "modal", null);
-        if (modal != null) {
-            c.gtk_window_set_modal(cast(c.GtkWindow, self.picker.?.window), c.g_variant_get_boolean(modal));
-            c.g_variant_unref(modal);
-        }
         return self;
     }
     pub fn destroy(self: *Operation) void {
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         if (self.capture) |capture| capture.destroy();
         if (self.picker) |picker| picker.destroy();
-        if (self.overlay) |window| c.gtk_widget_destroy(window);
+        if (self.overlay_client) |client| client.destroy();
+        if (self.hint) |mask| mask.deinit(self.allocator);
+        self.renderer.deinit();
         if (self.name) |name| self.allocator.free(name);
         self.allocator.destroy(self);
     }
@@ -238,98 +258,120 @@ pub const Operation = struct {
         self.width = chosen.width;
         self.height = chosen.height;
         if (area or self.point) {
-            const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
-            self.overlay = window;
-            layer.init_for_window(cast(c.GtkWindow, window));
-            layer.set_monitor(cast(c.GtkWindow, window), chosen.monitor);
-            layer.set_layer(cast(c.GtkWindow, window), .overlay);
-            layer.set_keyboard_mode(cast(c.GtkWindow, window), .exclusive);
-            for ([_]layer.Edge{ .top, .bottom, .left, .right }) |edge| layer.set_anchor(cast(c.GtkWindow, window), edge, 1);
-            c.gtk_widget_set_app_paintable(window, 1);
-            if (c.gdk_screen_get_rgba_visual(c.gtk_widget_get_screen(window))) |visual| c.gtk_widget_set_visual(window, visual);
-            c.gtk_widget_add_events(window, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_KEY_PRESS_MASK | c.GDK_POINTER_MOTION_MASK);
-            _ = c.g_signal_connect_data(window, "draw", @ptrCast(&draw), self, null, 0);
-            _ = c.g_signal_connect_data(window, "button-press-event", @ptrCast(&press), self, null, 0);
-            _ = c.g_signal_connect_data(window, "button-release-event", @ptrCast(&release), self, null, 0);
-            _ = c.g_signal_connect_data(window, "key-press-event", @ptrCast(&key), self, null, 0);
-            _ = c.g_signal_connect_data(window, "motion-notify-event", @ptrCast(&motion), self, null, 0);
-            c.gtk_widget_show_all(window);
-            if (c.gtk_widget_get_window(window)) |gdk_window| {
-                if (c.gdk_cursor_new_from_name(c.gdk_window_get_display(gdk_window), "crosshair")) |cursor| {
-                    c.gdk_window_set_cursor(gdk_window, cursor);
-                    c.g_object_unref(cursor);
-                }
-            }
+            self.overlay_client = native.Client.createInteractive(.{ .added = &outputAdded, .removed = &outputRemoved }, self) catch return self.finish(2, null);
+            self.overlay_client.?.start() catch return self.finish(2, null);
+            if (self.overlay == null) return self.finish(2, null);
+            // Completion runs outside Wayland dispatch: callbacks can destroy
+            // the operation, its input seats, and the private connection.
+            self.timer = c.g_timeout_add(16, &selectionFinished, self);
         } else self.schedule();
     }
-    fn draw(_: *c.GtkWidget, cr: *c.cairo_t, data: ?*anyopaque) callconv(.c) c.gboolean {
+    fn outputAdded(data: ?*anyopaque, output: *native.Output) void {
         const self = cast(Operation, data);
-        c.cairo_set_source_rgba(cr, 0, 0, 0, 0.35);
-        c.cairo_paint(cr);
-        if (self.dragging and !self.point) {
-            const x = @min(self.start_x, self.current_x);
-            const y = @min(self.start_y, self.current_y);
-            const w = @abs(self.current_x - self.start_x);
-            const h = @abs(self.current_y - self.start_y);
-            c.cairo_save(cr);
-            c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
-            c.cairo_rectangle(cr, x, y, w, h);
-            c.cairo_fill(cr);
-            c.cairo_restore(cr);
-            c.cairo_set_source_rgb(cr, 0.208, 0.518, 0.894);
-            c.cairo_set_line_width(cr, 2);
-            c.cairo_rectangle(cr, x, y, w, h);
-            c.cairo_stroke(cr);
-        }
-        c.cairo_set_source_rgb(cr, 1, 1, 1);
-        c.cairo_select_font_face(cr, "Adwaita Sans", c.CAIRO_FONT_SLANT_NORMAL, c.CAIRO_FONT_WEIGHT_BOLD);
-        c.cairo_set_font_size(cr, 16);
-        c.cairo_move_to(cr, 32, 40);
-        c.cairo_show_text(cr, if (self.point) "Click to pick a color. Esc to cancel." else "Drag to select an area. Esc to cancel.");
-        return 1;
+        if (self.selection_done or self.overlay != null or !std.mem.eql(u8, std.mem.sliceTo(&output.label, 0), self.name.?)) return;
+        const surface = native.Surface.createPixels(output, .{
+            .namespace = "desktop-portal-selection",
+            .layer = 3,
+            .anchors = native.top | native.bottom | native.left | native.right,
+            .interactive = true,
+            .keyboard = .exclusive,
+        }, &draw, self) catch return;
+        self.overlay = surface;
+        surface.input = .{ .motion = &motion, .button = &button, .key = &key };
+        surface.close = &overlayClosed;
+        surface.show() catch {
+            self.overlay = null;
+            surface.destroy();
+        };
     }
-    fn motion(_: *c.GtkWidget, event: ?*c.GdkEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
+    fn outputRemoved(data: ?*anyopaque, output: *native.Output) void {
         const self = cast(Operation, data);
-        if (self.dragging) {
-            _ = c.gdk_event_get_coords(event, &self.current_x, &self.current_y);
-            c.gtk_widget_queue_draw(self.overlay.?);
-        }
-        return 1;
+        if (self.overlay) |surface| if (surface.output == output) {
+            self.overlay = null; // Client destroys the surface after this callback.
+            self.region = null;
+            self.selection_done = true;
+        };
     }
-    fn press(_: *c.GtkWidget, event: ?*c.GdkEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
+    fn overlayClosed(data: ?*anyopaque) void {
         const self = cast(Operation, data);
-        var button: c.guint = 0;
-        _ = c.gdk_event_get_button(event, &button);
-        if (button == 1) {
-            _ = c.gdk_event_get_coords(event, &self.start_x, &self.start_y);
-            self.current_x = self.start_x;
-            self.current_y = self.start_y;
+        self.region = null;
+        self.selection_done = true;
+    }
+    fn draw(data: ?*anyopaque, target: native.Pixels) void {
+        const self = cast(Operation, data);
+        const surface = self.overlay orelse return;
+        const scale = surface.buffer_scale;
+        sc.paintSelectionRegion(target, scale, if (self.dragging and !self.point) self.rectangle(surface.width, surface.height) else null);
+        if (self.hint == null or self.hint_scale != scale) {
+            const mask = self.renderer.render(self.allocator, "Adwaita Sans Bold", 16 * scale, if (self.point) "Click to pick a color. Esc to cancel." else "Drag to select an area. Esc to cancel.") catch return;
+            if (self.hint) |old| old.deinit(self.allocator);
+            self.hint = mask;
+            self.hint_scale = scale;
+        }
+        self.hint.?.paint(.{ .target = target, .scale = 1 }, @floatFromInt(32 * scale), @floatFromInt(40 * scale), raster.hex(0xffffff));
+    }
+    fn rectangle(self: *const Operation, width: u32, height: u32) sc.Rect {
+        const max_x: f64 = @floatFromInt(width);
+        const max_y: f64 = @floatFromInt(height);
+        const x1 = std.math.clamp(self.start_x, 0, max_x);
+        const x2 = std.math.clamp(self.current_x, 0, max_x);
+        const y1 = std.math.clamp(self.start_y, 0, max_y);
+        const y2 = std.math.clamp(self.current_y, 0, max_y);
+        return .{ .x = @intFromFloat(@min(x1, x2)), .y = @intFromFloat(@min(y1, y2)), .w = @intFromFloat(@abs(x2 - x1)), .h = @intFromFloat(@abs(y2 - y1)) };
+    }
+    fn motion(data: ?*anyopaque, surface: *native.Surface, x: f64, y: f64) void {
+        const self = cast(Operation, data);
+        if (self.selection_done or !self.dragging) return;
+        self.current_x = x;
+        self.current_y = y;
+        surface.redraw();
+    }
+    fn button(data: ?*anyopaque, surface: *native.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
+        const self = cast(Operation, data);
+        if (self.selection_done) return;
+        if (code != 272) {
+            if (pressed) overlayClosed(self);
+            return;
+        }
+        if (pressed) {
+            self.start_x = x;
+            self.start_y = y;
+            self.current_x = x;
+            self.current_y = y;
             self.dragging = true;
-        } else self.finish(1, null);
-        return 1;
-    }
-    fn release(_: *c.GtkWidget, event: ?*c.GdkEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Operation, data);
-        if (!self.dragging) return 1;
-        var x: f64 = 0;
-        var y: f64 = 0;
-        _ = c.gdk_event_get_coords(event, &x, &y);
-        self.dragging = false;
-        const rect = sc.Rect{ .x = @intFromFloat(if (self.point) x else @min(x, self.start_x)), .y = @intFromFloat(if (self.point) y else @min(y, self.start_y)), .w = if (self.point) 1 else @intFromFloat(@abs(x - self.start_x)), .h = if (self.point) 1 else @intFromFloat(@abs(y - self.start_y)) };
-        if (rect.w <= 0 or rect.h <= 0) {
-            self.finish(1, null);
-            return 1;
+            surface.redraw();
+        } else if (self.dragging) {
+            self.current_x = x;
+            self.current_y = y;
+            self.dragging = false;
+            self.width = @intCast(surface.width);
+            self.height = @intCast(surface.height);
+            const rect = if (self.point) sc.Rect{
+                .x = @intFromFloat(std.math.clamp(x, 0, @as(f64, @floatFromInt(surface.width -| 1)))),
+                .y = @intFromFloat(std.math.clamp(y, 0, @as(f64, @floatFromInt(surface.height -| 1)))),
+                .w = 1,
+                .h = 1,
+            } else self.rectangle(surface.width, surface.height);
+            self.region = if (rect.w > 0 and rect.h > 0) rect else null;
+            self.selection_done = true;
         }
-        self.region = rect;
-        c.gtk_widget_hide(self.overlay.?);
-        self.schedule();
-        return 1;
     }
-    fn key(_: *c.GtkWidget, event: ?*c.GdkEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
-        var value: c.guint = 0;
-        _ = c.gdk_event_get_keyval(event, &value);
-        if (value == c.GDK_KEY_Escape) cast(Operation, data).finish(1, null);
-        return 1;
+    fn key(data: ?*anyopaque, _: *native.Surface, code: u32, pressed: bool) void {
+        if (code == 1 and pressed) overlayClosed(data);
+    }
+    fn selectionFinished(data: ?*anyopaque) callconv(.c) c_int {
+        const self = cast(Operation, data);
+        const client = self.overlay_client.?;
+        const mapped = if (self.overlay) |surface| surface.role != null else false;
+        if (client.failed or !client.hasInput() or !mapped) {
+            self.region = null;
+            self.selection_done = true;
+        }
+        if (!self.selection_done) return 1;
+        self.timer = 0;
+        if (self.overlay) |surface| surface.hide();
+        if (self.region == null) self.finish(1, null) else self.schedule();
+        return 0;
     }
     fn schedule(self: *Operation) void {
         self.timer = c.g_timeout_add(150, &startCapture, self);
@@ -355,7 +397,7 @@ pub const Operation = struct {
         var w = width;
         var h = height;
         if (self.region) |region| {
-            // GTK selection coordinates are logical; screencopy pixels are physical.
+            // Native surface coordinates are logical; screencopy pixels are physical.
             x = @intCast(@divFloor(@as(i64, region.x) * width, self.width));
             y = @intCast(@divFloor(@as(i64, region.y) * height, self.height));
             w = @intCast(@divFloor(@as(i64, region.w) * width, self.width));
@@ -438,4 +480,33 @@ test "capture images normalize inverted rows and preserve padding and RGB channe
     invalid = frame;
     invalid.format = 0xdeadbeef;
     try std.testing.expectError(error.UnsupportedFormat, image(std.testing.allocator, &invalid));
+}
+
+test "portal selection clips reverse drags and ignores input queued after cancellation" {
+    const Callback = struct {
+        fn complete(_: ?*anyopaque, _: u32, _: ?*c.GVariant) void {}
+    };
+    var operation: Operation = .{
+        .allocator = std.testing.allocator,
+        .point = false,
+        .callback = &Callback.complete,
+        .data = null,
+        .start_x = 400,
+        .start_y = 300,
+        .current_x = 100,
+        .current_y = 100,
+        .dragging = true,
+    };
+    try std.testing.expectEqual(sc.Rect{ .x = 100, .y = 100, .w = 300, .h = 200 }, operation.rectangle(864, 540));
+    operation.start_x = -20;
+    operation.start_y = -10;
+    operation.current_x = 1000;
+    operation.current_y = 700;
+    try std.testing.expectEqual(sc.Rect{ .x = 0, .y = 0, .w = 864, .h = 540 }, operation.rectangle(864, 540));
+    var surface: native.Surface = undefined;
+    Operation.key(&operation, &surface, 1, true);
+    Operation.motion(&operation, &surface, 200, 150);
+    Operation.button(&operation, &surface, 272, false, 200, 150);
+    try std.testing.expect(operation.selection_done);
+    try std.testing.expect(operation.region == null);
 }

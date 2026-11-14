@@ -20,6 +20,7 @@ gi.require_version("Gio", "2.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gio, GLib, GdkPixbuf
 from audio_server import PW_CONFIG, WP_CONFIG
+from wayland_ui import WaylandUI, VirtualKeyboard
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True)
@@ -107,11 +108,14 @@ def response(handle):
     return responses.pop(handle)
 
 
-def reply(title, accepted=True, area=False):
-    def respond():
-        result, _ = call(client, "org.dotfiles.CaptureFixture", "Reply", GLib.Variant("(sbb)", (title, accepted, area)), path="/org/dotfiles/CaptureFixture")
-        return result.unpack()[0]
-    wait(respond, "dialog " + title)
+def reply(title, accepted=True, area=False, key=None):
+    wait(lambda: ui.window(title), "dialog " + title)
+    ui.focus(title)
+    if area:
+        with VirtualKeyboard(env) as keyboard:
+            keyboard.key(30, 8)  # Alt+A: select an area.
+    ui.key(key or ("alt+s" if accepted else "Escape"))
+    wait(lambda: not ui.window(title), "dialog dismissed " + title)
 
 
 def color(red, green, blue):
@@ -154,6 +158,7 @@ try:
     compositor = start(["desktop-zig", "compositor-only"], "compositor.log", stdout=sp.DEVNULL)
     wait(lambda: list((root / "runtime").glob("wayland-*.lock")), "private compositor")
     env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem
+    ui = WaylandUI(env)
     pipewire = start(["pipewire", "-c", str(root / "pipewire.conf")], "pipewire.log", stdout=sp.DEVNULL)
     wait(lambda: (root / "runtime/pipewire-0").exists(), "private PipeWire")
     wireplumber = start(["wireplumber"], "wireplumber.log", stdout=sp.DEVNULL)
@@ -181,6 +186,9 @@ try:
     reply("Share a screenshot", False)
     assert response(handle) == (1, {})
     handle = request("Screenshot", "Screenshot", "(sa{sv})", ("", {}))
+    reply("Share a screenshot", key="Return")
+    assert response(handle) == (1, {}), "Enter granted consent by default"
+    handle = request("Screenshot", "Screenshot", "(sa{sv})", ("", {}))
     call(client, PUB + "Request", "Close", path=handle)
     time.sleep(.1)
     assert handle not in responses
@@ -207,6 +215,30 @@ try:
     assert abs(region.get_width() - width * 300 / 1728) <= 2
     assert abs(region.get_height() - height * 200 / 1080) <= 2
     print("PASS native color picking and area capture", flush=True)
+
+    handle = request("Screenshot", "Screenshot", "(sa{sv})", ("", {"interactive": GLib.Variant("b", True)}))
+    reply("Share a screenshot", area=True)
+    time.sleep(.3)
+    move("move 100 100", "button 1", "move 400 300")
+    ui.key("Escape")
+    move("button 0")
+    assert response(handle) == (1, {}), "cancelled drag still captured pixels"
+
+    # Native output geometry must stay logical while screencopy is physical.
+    ui.run("desktop-zig", "output", "--output", "HEADLESS-1", "--scale", "2")
+    move("size 864 540")
+    time.sleep(.2)
+    handle = request("Screenshot", "Screenshot", "(sa{sv})", ("", {"interactive": GLib.Variant("b", True)}))
+    reply("Share a screenshot", area=True)
+    time.sleep(.3)
+    move("move 400 300", "button 1", "move 100 100", "button 0")
+    _, scaled = image(response(handle))
+    assert abs(scaled.get_width() - width * 300 / 864) <= 2
+    assert abs(scaled.get_height() - height * 200 / 540) <= 2
+    ui.run("desktop-zig", "output", "--output", "HEADLESS-1", "--scale", "1")
+    move("size 1728 1080")
+    time.sleep(.2)
+    print("PASS native default denial, Escape cancellation, reverse drags and scaled output coordinates", flush=True)
 
     handle = request("ScreenCast", "CreateSession", "(a{sv})", ({},))
     session = response(handle)[1]["session_handle"]

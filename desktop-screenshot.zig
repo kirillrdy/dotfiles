@@ -542,7 +542,7 @@ pub const SelectionOverlay = struct {
     }
 };
 
-fn paintSelection(buffer: raster.Buffer, scale: u32, selected: ?Rect, label: ?fonts.Mask) void {
+pub fn paintSelectionRegion(buffer: raster.Buffer, scale: u32, selected: ?Rect) void {
     @memset(buffer.pixels, 0x59000000); // 35% black, including inactive outputs.
     const rect = selected orelse return;
     if (rect.w <= 1 or rect.h <= 1) return;
@@ -558,6 +558,13 @@ fn paintSelection(buffer: raster.Buffer, scale: u32, selected: ?Rect, label: ?fo
     raster.fill(buffer, .{ .x = x - factor, .y = y + @as(i32, @intCast(h)) - factor, .width = horizontal, .height = 2 * scale }, blue, .source);
     raster.fill(buffer, .{ .x = x - factor, .y = y + factor, .width = 2 * scale, .height = h - 2 * scale }, blue, .source);
     raster.fill(buffer, .{ .x = x + @as(i32, @intCast(w)) - factor, .y = y + factor, .width = 2 * scale, .height = h - 2 * scale }, blue, .source);
+}
+
+fn paintSelection(buffer: raster.Buffer, scale: u32, selected: ?Rect, label: ?fonts.Mask) void {
+    paintSelectionRegion(buffer, scale, selected);
+    const rect = selected orelse return;
+    if (rect.w <= 1 or rect.h <= 1) return;
+    const factor: i32 = @intCast(scale);
     const width: i32 = @intCast(buffer.width / scale);
     const height: i32 = @intCast(buffer.height / scale);
     const label_x = @max(0, @min(rect.x, width - 90)) * factor;
