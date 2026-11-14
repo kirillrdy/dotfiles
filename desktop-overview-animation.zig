@@ -3,6 +3,12 @@ const std = @import("std");
 
 pub const duration_us: i64 = 250_000;
 
+/// Clear overview controls before the desktop completes its return to full size.
+/// Deriving opacity from position also keeps interrupted transitions continuous.
+pub fn controlsOpacity(progress: f64) f64 {
+    return std.math.clamp((progress - 0.25) / 0.75, 0, 1);
+}
+
 pub const Transition = struct {
     from: f64 = 0,
     shown: bool = false,
@@ -43,6 +49,16 @@ test "overview uses GNOME's distinct opening and closing profiles" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.25), transition.value(2_125_000), 0.000001);
     try std.testing.expectEqual(@as(f64, 0), transition.value(2_250_000));
     try std.testing.expect(!transition.active(2_250_000));
+}
+
+test "overview controls disappear halfway through the return to desktop" {
+    var transition: Transition = .{ .from = 1, .shown = true };
+    transition.setShown(false, 1_000_000);
+    try std.testing.expectEqual(@as(f64, 1), controlsOpacity(transition.value(1_000_000)));
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0 / 12.0), controlsOpacity(transition.value(1_062_500)), 0.000001);
+    try std.testing.expectEqual(@as(f64, 0), controlsOpacity(transition.value(1_125_000)));
+    try std.testing.expect(transition.active(1_125_000));
+    try std.testing.expectEqual(@as(f64, 0), controlsOpacity(transition.value(1_200_000)));
 }
 
 test "overview transition reversals preserve position and repeated requests do not restart" {

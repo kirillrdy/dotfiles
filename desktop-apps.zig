@@ -561,6 +561,11 @@ pub fn paintRegionInPlace(target: raster.Buffer, scale: u32, region: Region, con
 }
 
 pub fn paintRegion(target: raster.Buffer, scale: u32, region: Region, context: anytype, comptime painter: anytype) void {
+    paintRegionOpacity(target, scale, region, context, painter, 1);
+}
+
+pub fn paintRegionOpacity(target: raster.Buffer, scale: u32, region: Region, context: anytype, comptime painter: anytype, opacity: f64) void {
+    if (opacity <= 0) return;
     if (region.width == 0 or region.height == 0) return;
     const width = region.width * scale;
     const height = region.height * scale;
@@ -572,6 +577,16 @@ pub fn paintRegion(target: raster.Buffer, scale: u32, region: Region, context: a
     @memset(pixels, 0);
     const buffer: raster.Buffer = .{ .pixels = pixels, .width = width, .height = height };
     painter(context, buffer, scale);
+    if (opacity < 1) {
+        const alpha: u32 = @intFromFloat(@round(std.math.clamp(opacity, 0, 1) * 255));
+        for (pixels) |*pixel| {
+            var faded: u32 = 0;
+            inline for (.{ 0, 8, 16, 24 }) |shift| {
+                faded |= (((pixel.* >> shift) & 255) * alpha + 127) / 255 << shift;
+            }
+            pixel.* = faded;
+        }
+    }
     if (@floor(px) == px and @floor(py) == py) {
         const x0: usize = @intFromFloat(std.math.clamp(-px, 0, @as(f64, @floatFromInt(width))));
         const y0: usize = @intFromFloat(std.math.clamp(-py, 0, @as(f64, @floatFromInt(height))));
@@ -731,6 +746,22 @@ test "native layout compositing clips regions and preserves transparent pixels" 
     const before = pixels;
     paintRegion(target, 1, .{ .x = 10, .y = 10, .width = 3, .height = 3 }, {}, Painter.paint);
     try std.testing.expectEqualSlices(u32, &before, &pixels);
+}
+
+test "region opacity fades premultiplied controls over the desktop" {
+    const Painter = struct {
+        fn paint(_: void, target: raster.Buffer, _: u32) void {
+            @memset(target.pixels, 0x80800000);
+        }
+    };
+    var pixels: [4]u32 = @splat(0xff0000ff);
+    const target: raster.Buffer = .{ .pixels = &pixels, .width = 2, .height = 2 };
+    const region: Region = .{ .width = 1, .height = 1 };
+    paintRegionOpacity(target, 1, region, {}, Painter.paint, 0);
+    try std.testing.expectEqual(@as(u32, 0xff0000ff), pixels[0]);
+    paintRegionOpacity(target, 1, region, {}, Painter.paint, 0.5);
+    try std.testing.expectEqual(@as(u32, 0xff4000bf), pixels[0]);
+    try std.testing.expectEqual(@as(u32, 0xff0000ff), pixels[1]);
 }
 
 test "in-place layout painting preserves the backdrop and adjacent rows" {

@@ -982,16 +982,21 @@ const Overview = struct {
         if (self.launcher.searchText().len == 0) {
             self.paintStage(.{ .target = target, .scale = @floatFromInt(scale), .origin = .{ .x = 0, .y = self.stage.y } }, @floatFromInt(width), @floatFromInt(self.stage.height));
         }
-        apps.paintRegion(target, scale, self.search, .{ &self.launcher, apps.Part.search }, apps.paintPart);
+        const opacity = animation.controlsOpacity(self.progress);
+        apps.paintRegionOpacity(target, scale, self.search, .{ &self.launcher, apps.Part.search }, apps.paintPart, opacity);
         if (self.strip.width > 0 and self.strip.height > 0) {
-            apps.paintRegionInPlace(target, scale, self.strip, .{ self, Part.strip }, paintPart);
+            if (opacity == 1) {
+                apps.paintRegionInPlace(target, scale, self.strip, .{ self, Part.strip }, paintPart);
+            } else {
+                apps.paintRegionOpacity(target, scale, self.strip, .{ self, Part.strip }, paintPart, opacity);
+            }
         }
-        apps.paintRegion(target, scale, self.dash, .{ self, Part.dash }, paintPart);
+        apps.paintRegionOpacity(target, scale, self.dash, .{ self, Part.dash }, paintPart, opacity);
         if (self.apps_mode or self.launcher.searchText().len != 0) {
-            apps.paintRegion(target, scale, self.grid, .{ &self.launcher, apps.Part.grid }, apps.paintPart);
+            apps.paintRegionOpacity(target, scale, self.grid, .{ &self.launcher, apps.Part.grid }, apps.paintPart, opacity);
         }
-        if (self.tooltip_visible) apps.paintRegion(target, scale, self.tooltip, .{ self, Part.tooltip }, paintPart);
-        if (status > 0) apps.paintRegion(target, scale, .{ .y = @floatFromInt(height -| (footer + status)), .width = width, .height = status }, .{ &self.launcher, apps.Part.message }, apps.paintPart);
+        if (self.tooltip_visible) apps.paintRegionOpacity(target, scale, self.tooltip, .{ self, Part.tooltip }, paintPart, opacity);
+        if (status > 0) apps.paintRegionOpacity(target, scale, .{ .y = @floatFromInt(height -| (footer + status)), .width = width, .height = status }, .{ &self.launcher, apps.Part.message }, apps.paintPart, opacity);
     }
     fn paintPart(context: struct { *Overview, Part }, target: raster.Buffer, scale: u32) void {
         const self = context[0];
