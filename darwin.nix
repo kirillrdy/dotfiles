@@ -45,7 +45,7 @@
     /usr/bin/dscl . -create /Users/kirillvr UserShell /run/current-system/sw/bin/bash
     install -d -o kirillvr -g staff "/Users/kirillvr/Library/Application Support/com.mitchellh.ghostty"
     install -m 644 -o kirillvr -g staff ${pkgs.writeText "config.ghostty" ''
-      font-size = 17.33
+      font-size = 16
     ''} "/Users/kirillvr/Library/Application Support/com.mitchellh.ghostty/config.ghostty"
   '';
 
