@@ -1,46 +1,25 @@
 """Real pointer/keyboard tests for the native date popup on a private display/bus."""
-import json
 import os
 from pathlib import Path
-import select
-import struct
 import subprocess as sp
 import sys
 import tempfile
 import time
-import zlib
-from gi.repository import Gio, GLib
+from gi.repository import GLib
+from session_fixture import NotificationsClient, VirtualPointer, read_png, terminate_processes, wait_until
 
 bin_dir = Path(sys.argv[1]).resolve()
 root = Path(tempfile.mkdtemp(prefix="desktop-date-menu-check-", dir="/tmp"))
 print(f"Date menu artifacts: {root}", flush=True)
-bus = Gio.bus_get_sync(Gio.BusType.SESSION)
-name = "org.freedesktop.Notifications"
-path = "/org/freedesktop/Notifications"
-control = "org.dotfiles.Notifications"
-signals = []
-subscription = bus.signal_subscribe(None, name, None, path, None, 0,
-    lambda connection, sender, object_path, iface, member, params: signals.append((member, params.unpack())))
-
-
-def pump():
-    while GLib.MainContext.default().iteration(False):
-        pass
+client = NotificationsClient()
+bus, name, control, signals = client.bus, client.name, client.control, client.signals
+call, history = client.call, client.history
 
 
 def wait_for(predicate, description):
-    deadline = time.monotonic() + 10
-    while True:
-        pump()
-        if predicate():
-            return
+    def check_service():
         assert service.poll() is None, log.read_text()[-8000:]
-        assert time.monotonic() < deadline, description
-        time.sleep(.05)
-
-
-def call(member, parameters=None, iface=control):
-    return bus.call_sync(name, path, iface, member, parameters, None, 0, 5000, None).unpack()
+    wait_until(predicate, description, timeout=10, interval=0.05, step=client.pump, on_error=check_service)
 
 
 def notify(body="Body", actions=(), resident=False, replace=0):
@@ -49,52 +28,22 @@ def notify(body="Body", actions=(), resident=False, replace=0):
         "Messages 東京", replace, "application-x-executable-symbolic", "مرحبا <&>", body, list(actions), hints, 0)), name)[0]
 
 
-def history():
-    return json.loads(call("List")[0])
-
-
 def pointer_command(command):
-    pointer.stdin.write(command + "\n")
-    pointer.stdin.flush()
-    assert select.select([pointer.stdout], [], [], 5)[0], "Virtual pointer hung"
-    assert pointer.stdout.readline().strip() == "ok"
-    time.sleep(.07)
+    pointer.command(command)
 
 
 def move(x, y):
-    pointer_command(f"move {int(x)} {int(y)}")
+    pointer.move(x, y)
 
 
 def click(x, y):
-    move(left + x, top + y)
-    pointer_command("button 1")
-    pointer_command("button 0")
+    pointer.click(left + x, top + y)
 
 
 def capture(label):
     filename = root / (label + ".png")
     sp.run([str(bin_dir / "desktop-zig"), "screenshot", "-o", "HEADLESS-1", str(filename)], check=True, timeout=10)
-    png = filename.read_bytes()
-    width, height = struct.unpack_from(">II", png, 16)
-    compressed = []
-    offset = 8
-    while offset < len(png):
-        length = struct.unpack_from(">I", png, offset)[0]
-        if png[offset + 4:offset + 8] == b"IDAT":
-            compressed.append(png[offset + 8:offset + 8 + length])
-        offset += length + 12
-    raw = zlib.decompress(b"".join(compressed))
-    rows = []
-    stride = width * 3
-    for y in range(height):
-        filter_type = raw[y * (stride + 1)]
-        row = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
-        assert filter_type in (0, 1), filter_type
-        if filter_type == 1:
-            for x in range(3, stride):
-                row[x] = (row[x] + row[x - 3]) & 255
-        rows.append(bytes(row))
-    return width, height, rows
+    return read_png(filename)
 
 
 def popup_origin(rows):
@@ -131,12 +80,9 @@ time.sleep(.1)
 with log.open("w") as output:
     service = sp.Popen([str(bin_dir / "desktop-notifications-fixture"), "date-menu"],
         stdout=output, stderr=sp.STDOUT, env=dict(os.environ, G_DEBUG="fatal-criticals"))
-pointer = sp.Popen([str(bin_dir / "desktop-pointer-fixture")], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
+pointer = VirtualPointer(bin_dir / "desktop-pointer-fixture", delay=0.07)
 try:
-    assert select.select([pointer.stdout], [], [], 5)[0]
-    assert pointer.stdout.readline().strip() == "ready"
-    wait_for(lambda: bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
-        "NameHasOwner", GLib.Variant("(s)", (name,)), None, 0, 5000, None).unpack()[0], "Notification owner")
+    wait_for(client.owned, "Notification owner")
     wait_for(lambda: popup_origin(capture("opening")[2]) is not None, "Native popup mapping")
     width, height, rows = capture("empty")
     left, top = popup_origin(rows)
@@ -214,14 +160,6 @@ try:
     wait_for(lambda: any(row.count(card_color) > 100 for row in capture("after-close")[2][:118]), "Closing calendar must restore banners")
     print("PASS: native date popup navigation, keyboard, history expansion/actions/replacement, dismissal, scrolling, Clear and calendar suppression")
 finally:
-    bus.signal_unsubscribe(subscription)
-    pointer.stdin.close()
-    pointer.wait(timeout=5)
-    keyboard.terminate()
-    keyboard.wait(timeout=5)
-    service.terminate()
-    try:
-        service.wait(timeout=5)
-    except sp.TimeoutExpired:
-        service.kill()
-        service.wait()
+    client.close()
+    pointer.close()
+    terminate_processes([keyboard, service])

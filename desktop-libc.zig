@@ -21,39 +21,22 @@ pub const struct_statvfs = extern struct {
 };
 
 pub extern fn statvfs(path: [*c]const u8, buf: [*c]struct_statvfs) c_int;
-
 pub const __uid_t = c_uint;
-
 pub const __ino_t = c_ulong;
-
 pub const __off_t = c_long;
-
 pub const __pid_t = c_int;
-
 pub const __socklen_t = c_uint;
-
 pub const socklen_t = __socklen_t;
-
 pub extern fn close(__fd: c_int) c_int;
-
 pub extern fn read(__fd: c_int, __buf: ?*anyopaque, __nbytes: usize) isize;
-
 pub extern fn write(__fd: c_int, __buf: ?*const anyopaque, __n: usize) isize;
-
 pub extern fn pipe2(__pipedes: [*c]c_int, __flags: c_int) c_int;
-
 pub extern fn geteuid() __uid_t;
-
 pub extern fn unlink(__name: [*c]const u8) c_int;
-
 pub extern fn fsync(__fd: c_int) c_int;
-
 pub const time_t = std.c.time_t;
-
 pub extern fn getenv(__name: [*c]const u8) [*c]u8;
-
 pub extern fn mkdtemp(__template: [*c]u8) [*c]u8;
-
 pub extern fn open(__file: [*c]const u8, __oflag: c_int, ...) c_int;
 
 pub const struct_dirent = extern struct {
@@ -67,45 +50,25 @@ pub const struct_dirent = extern struct {
 pub const struct___dirstream = opaque {};
 
 pub const DIR = struct___dirstream;
-
 pub extern fn closedir(__dirp: ?*DIR) c_int;
-
 pub extern fn opendir(__name: [*c]const u8) ?*DIR;
-
 pub extern fn readdir(__dirp: ?*DIR) [*c]struct_dirent;
-
 pub extern fn __errno_location() [*c]c_int;
-
 pub extern fn rename(__old: [*c]const u8, __new: [*c]const u8) c_int;
-
 pub extern fn snprintf(noalias __s: [*c]u8, __maxlen: usize, noalias __format: [*c]const u8, ...) c_int;
-
 pub extern fn flock(fd: c_int, operation: c_int) c_int;
-
 pub const O_RDONLY: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{}))));
-
 pub const O_WRONLY: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{ .ACCMODE = .WRONLY }))));
-
 pub const O_CREAT: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{ .CREAT = true }))));
-
 pub const O_TRUNC: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{ .TRUNC = true }))));
-
 pub const O_NONBLOCK: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{ .NONBLOCK = true }))));
-
 pub const O_NOFOLLOW: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{ .NOFOLLOW = true }))));
-
 pub const O_CLOEXEC: c_int = @bitCast(@as(u32, @bitCast(@as(std.c.O, .{ .CLOEXEC = true }))));
-
 pub const LOCK_EX: c_int = @intCast(std.c.LOCK.EX);
-
 pub const ENOENT: c_int = @intCast(@backingInt(std.c.E.NOENT));
-
 pub const EINTR: c_int = @intCast(@backingInt(std.c.E.INTR));
-
 pub const __sighandler_t = ?*const fn (c_int) callconv(.c) void;
-
 pub extern fn signal(__sig: c_int, __handler: __sighandler_t) __sighandler_t;
-
 pub const speed_t = c_uint;
 
 const union_unnamed_32 = extern union {
@@ -118,9 +81,7 @@ const union_unnamed_33 = extern union {
 };
 
 pub const nfds_t = c_ulong;
-
 pub const struct_pollfd = std.c.pollfd;
-
 pub extern fn poll(__fds: [*c]struct_pollfd, __nfds: nfds_t, __timeout: c_int) c_int;
 
 pub const struct_tm = extern struct {
@@ -138,15 +99,10 @@ pub const struct_tm = extern struct {
 };
 
 pub extern fn time(__timer: [*c]time_t) time_t;
-
 pub extern fn strftime(noalias __s: [*c]u8, __maxsize: usize, noalias __format: [*c]const u8, noalias __tp: [*c]const struct_tm) usize;
-
 pub extern fn localtime_r(noalias __timer: [*c]const time_t, noalias __tp: [*c]struct_tm) [*c]struct_tm;
-
 pub const SOCK_STREAM: c_int = @intCast(std.c.SOCK.STREAM);
-
 pub const SOCK_CLOEXEC: c_int = @intCast(std.c.SOCK.CLOEXEC);
-
 pub const sa_family_t = c_ushort;
 
 pub const struct_sockaddr = extern struct {
@@ -174,29 +130,17 @@ pub const struct_sockaddr_nl = extern struct {
 };
 pub extern fn bind(c_int, *const std.c.sockaddr, socklen_t) c_int;
 pub extern fn recvfrom(c_int, ?*anyopaque, usize, c_int, [*c]std.c.sockaddr, [*c]socklen_t) isize;
-
 pub extern fn connect(fd: c_int, address: *const std.c.sockaddr, length: std.c.socklen_t) c_int;
-
 pub extern fn send(__fd: c_int, __buf: ?*const anyopaque, __n: usize, __flags: c_int) isize;
-
 pub extern fn prctl(__option: c_int, ...) c_int;
-
 pub const SIGINT: c_int = @intCast(@backingInt(std.posix.SIG.INT));
-
 pub const SIGTERM: c_int = @intCast(@backingInt(std.posix.SIG.TERM));
-
 pub const SIGHUP: c_int = @intCast(@backingInt(std.posix.SIG.HUP));
-
 pub const AF_UNIX: c_int = @intCast(std.c.AF.UNIX);
-
 pub const PR_SET_DUMPABLE = @as(c_int, 4);
-
 pub const pollfd = struct_pollfd;
-
 pub const sockaddr = struct_sockaddr;
-
 pub extern fn waitpid(__pid: __pid_t, __stat_loc: [*c]c_int, __options: c_int) __pid_t;
-
 pub const __gid_t = c_uint;
 
 pub const struct_passwd = extern struct {
@@ -210,39 +154,24 @@ pub const struct_passwd = extern struct {
 };
 
 pub extern fn getpwuid(__uid: __uid_t) [*c]struct_passwd;
-
 pub extern fn getuid() __uid_t;
 pub const struct_ucred = extern struct { pid: c_int, uid: c_uint, gid: c_uint };
 pub const SOL_SOCKET = std.c.SOL.SOCKET;
 pub const SO_PEERCRED = std.c.SO.PEERCRED;
 pub extern fn getsockopt(c_int, c_int, c_int, ?*anyopaque, *socklen_t) c_int;
-
 pub extern fn getpid() __pid_t;
-
 pub extern fn fork() __pid_t;
-
 pub extern fn ftruncate(__fd: c_int, __length: __off_t) c_int;
-
 pub extern fn raise(__sig: c_int) c_int;
-
 pub extern fn memfd_create(__name: [*c]const u8, __flags: c_uint) c_int;
-
 pub extern fn mmap(__addr: ?*anyopaque, __len: usize, __prot: c_int, __flags: c_int, __fd: c_int, __offset: __off_t) ?*anyopaque;
-
 pub extern fn munmap(__addr: ?*anyopaque, __len: usize) c_int;
 pub extern fn mlock(addr: ?*const anyopaque, len: usize) c_int;
 pub extern fn munlock(addr: ?*const anyopaque, len: usize) c_int;
-
+pub extern fn setsid() __pid_t;
 pub const PROT_READ = @as(c_int, 0x1);
-
 pub const PROT_WRITE = @as(c_int, 0x2);
-
 pub const MAP_SHARED = @as(c_int, 0x01);
-
 pub const MFD_CLOEXEC = @as(c_uint, 1);
-
 pub const MAP_FAILED = @as(?*anyopaque, @ptrFromInt(std.math.maxInt(usize)));
-
-pub const SIGUSR1: c_int = @intCast(@backingInt(std.posix.SIG.USR1));
-
 pub const STDOUT_FILENO = @as(c_int, 1);

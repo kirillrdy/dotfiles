@@ -6,11 +6,10 @@ Run under dbus-run-session; requires wtype, wlr-randr and wl-paste on PATH.
 import argparse
 import os
 from pathlib import Path
-import select
-import struct
 import subprocess as sp
 import tempfile
 import time
+from session_fixture import VirtualPointer, png_size as dimensions, terminate_processes, wait_wayland
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--bin-dir", required=True, type=Path)
@@ -52,24 +51,13 @@ def run(command):
     return sp.run(command, env=env, capture_output=True, check=True, timeout=10)
 
 
-def dimensions(path):
-    data = path.read_bytes()
-    assert data[:8] == b"\x89PNG\r\n\x1a\n"
-    return struct.unpack(">II", data[16:24])
-
-
 def saved():
     return list((root / "photos/Screenshots").glob("*.png"))
 
 
 try:
     compositor = start(["desktop-zig", "compositor-only"], "compositor.log", stdout=sp.DEVNULL)
-    deadline = time.monotonic() + 10
-    while not list((root / "runtime").glob("wayland-*.lock")):
-        assert compositor.poll() is None, (root / "compositor.log").read_text()
-        assert time.monotonic() < deadline, "Compositor startup timed out"
-        time.sleep(0.05)
-    env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem
+    env["WAYLAND_DISPLAY"] = wait_wayland(root / "runtime", compositor, root / "compositor.log")
     run(["wlr-randr", "--output", "HEADLESS-1", "--pos", "0,0"])
     run(["wlr-randr", "--output", "HEADLESS-2", "--pos", "1280,0"])
     explicit = root / "explicit.png"
@@ -82,18 +70,14 @@ try:
     run([*command, "-g", "10,20 64x48"])
     assert len(saved()) == 2, "Successive captures overwrote a file"
 
-    pointer = start(
-        [str(args.pointer_fixture or args.bin_dir / "desktop-pointer-fixture")],
-        "pointer.log", stdin=sp.PIPE, stdout=sp.PIPE, text=True,
+    pointer = VirtualPointer(
+        args.pointer_fixture or args.bin_dir / "desktop-pointer-fixture",
+        env=env,
+        stderr=(root / "pointer.log").open("w"),
+        delay=0.06,
     )
-    assert select.select([pointer.stdout], [], [], 5)[0]
-    assert pointer.stdout.readline().strip() == "ready"
-    def point(instruction):
-        pointer.stdin.write(instruction + "\n")
-        pointer.stdin.flush()
-        assert select.select([pointer.stdout], [], [], 5)[0]
-        assert pointer.stdout.readline().strip() == "ok"
-        time.sleep(0.06)
+    processes.append(pointer.process)
+    point = pointer.command
 
     point("size 2560 720")
     start(["wtype", "-s", "55000"], "keyboard.log", stdout=sp.DEVNULL)
@@ -153,11 +137,4 @@ try:
     print("PASS: scaled selection uses logical input coordinates and physical capture pixels", flush=True)
 
 finally:
-    for process in reversed(processes):
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except sp.TimeoutExpired:
-                process.kill()
-                process.wait()
+    terminate_processes(processes)

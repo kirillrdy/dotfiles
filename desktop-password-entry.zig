@@ -121,7 +121,10 @@ pub const Entry = struct {
     dragging: bool = false,
     caret: bool = true,
     blink: c.guint = 0,
-    preedit: usize = 0,
+    preedit_count: usize = 0,
+    composition: Buffer = .{},
+    composition_cursor: usize = 0,
+    composition_caret: bool = true,
     first: usize = 0,
     advance: f64 = 10,
     text_offset: f64 = 0,
@@ -144,12 +147,28 @@ pub const Entry = struct {
         self.public_text = true;
     }
     pub fn setPreedit(self: *Entry, value: []const u8) void {
-        if (!std.unicode.utf8ValidateSlice(value)) return;
-        self.preedit = 0;
-        for (value) |byte| if (byte & 0xc0 != 0x80) {
-            self.preedit += 1;
-        };
+        self.preedit(value, -1);
+    }
+    pub fn preedit(self: *Entry, value: []const u8, cursor: i32) void {
+        var replacement: Buffer = .{};
+        replacement.insert(value) catch return;
+        if (cursor < -1 or cursor > value.len) return;
+        if (cursor >= 0 and cursor < value.len and value[@intCast(cursor)] & 0xc0 == 0x80) return;
+        self.composition = replacement;
+        self.composition_cursor = if (cursor < 0) value.len else @intCast(cursor);
+        self.composition_caret = cursor >= 0;
+        self.preedit_count = replacement.characters(replacement.len);
         self.notify();
+    }
+    pub fn presentation(self: *Entry) Buffer {
+        var buffer = self.buffer.*;
+        if (self.composition.len > 0) {
+            const start = @min(buffer.cursor, buffer.anchor);
+            buffer.insert(self.composition.value()) catch return self.buffer.*;
+            buffer.cursor = start + self.composition_cursor;
+            buffer.anchor = buffer.cursor;
+        }
+        return buffer;
     }
     pub fn focus(self: *Entry, focused: bool) void {
         if (self.focused == focused or self.dead) return;
@@ -157,7 +176,7 @@ pub const Entry = struct {
         if (focused) {
             self.blink = c.g_timeout_add(500, &tick, self);
         } else {
-            self.preedit = 0;
+            self.resetComposition();
             self.dragging = false;
             if (self.blink != 0) _ = c.g_source_remove(self.blink);
             self.blink = 0;
@@ -176,7 +195,7 @@ pub const Entry = struct {
     }
     pub fn clear(self: *Entry) void {
         self.buffer.clear();
-        self.preedit = 0;
+        self.resetComposition();
         self.first = 0;
         self.text_offset = 0;
         self.revision += 1;
@@ -185,7 +204,7 @@ pub const Entry = struct {
     pub fn insert(self: *Entry, value_to_insert: []const u8) !void {
         try self.buffer.insert(value_to_insert);
         self.revision += 1;
-        self.preedit = 0;
+        self.resetComposition();
         self.notify();
     }
     pub fn deleteSurrounding(self: *Entry, before: u32, after: u32) void {
@@ -266,7 +285,8 @@ pub const Entry = struct {
     }
     const Paste = struct { entry: *Entry, revision: u64 };
     fn resetComposition(self: *Entry) void {
-        self.preedit = 0;
+        self.preedit_count = 0;
+        self.composition.clear();
     }
     pub fn clipboard(self: *Entry) ?*@import("desktop-clipboard.zig").Device {
         const client = self.client orelse return null;
@@ -326,10 +346,10 @@ pub const Entry = struct {
         const cursor = self.buffer.characters(self.buffer.cursor);
         const anchor = self.buffer.characters(self.buffer.anchor);
         const visible: usize = @intFromFloat(@max(1, @floor((rect.width - 28) / self.advance)));
-        const caret_index = cursor + self.preedit;
+        const caret_index = cursor + self.preedit_count;
         if (caret_index < self.first) self.first = caret_index;
         if (caret_index >= self.first + visible) self.first = caret_index - visible + 1;
-        const total = self.buffer.characters(self.buffer.len) + self.preedit;
+        const total = self.buffer.characters(self.buffer.len) + self.preedit_count;
         const last = @min(total, self.first + visible);
         for (self.first..@max(self.first, last)) |index| {
             const x = rect.x + 12 + @as(f64, @floatFromInt(index - self.first)) * self.advance;
@@ -408,9 +428,7 @@ pub const Entry = struct {
         a.destroy(self);
     }
 };
-fn color(value: u32) raster.Color {
-    return .{ .red = @as(f64, @floatFromInt((value >> 16) & 255)) / 255, .green = @as(f64, @floatFromInt((value >> 8) & 255)) / 255, .blue = @as(f64, @floatFromInt(value & 255)) / 255 };
-}
+const color = raster.hex;
 
 test "password buffer edits Unicode selections, rejects invalid input atomically, and erases removed bytes" {
     var buffer: Buffer = .{};
@@ -475,7 +493,7 @@ test "native password pixels depend on character count rather than plaintext" {
     try entry.insert("東京🔑");
     try std.testing.expectEqualStrings("東京🔑", entry.buffer.value());
     entry.setPreedit("とうきょう");
-    try std.testing.expectEqual(@as(usize, 5), entry.preedit);
+    try std.testing.expectEqual(@as(usize, 5), entry.preedit_count);
     try std.testing.expectEqualStrings("東京🔑", entry.buffer.value());
     try std.testing.expect(entry.key('a', c.GDK_CONTROL_MASK));
     try entry.insert("x");
@@ -534,4 +552,33 @@ test "public entries shape Adwaita text and place the caret using proportional a
         try std.testing.expect(entry.buffer.cursor > 0);
         entry.rect.width = 360;
     }
+}
+
+test "native search composes without changing the committed query and validates UTF-8 deletions" {
+    const Observer = struct {
+        fn changed(_: ?*anyopaque) void {}
+    };
+    const entry = try Entry.create(&Observer.changed, null);
+    defer entry.destroy();
+    entry.makePublic();
+    try entry.insert("日本語");
+    entry.preedit("とうきょう", 15);
+    try std.testing.expectEqualStrings("日本語", entry.buffer.value());
+    const pending = entry.presentation();
+    try std.testing.expectEqualStrings("日本語とうきょう", pending.value());
+    entry.preedit("", -1);
+    try std.testing.expectEqual(@as(usize, 0), entry.composition.len);
+    entry.preedit("とうきょう", -1);
+    try std.testing.expect(!entry.composition_caret);
+    try entry.insert("東京");
+    try std.testing.expectEqualStrings("日本語東京", entry.buffer.value());
+    try std.testing.expectEqual(@as(usize, 0), entry.composition.len);
+    entry.deleteSurrounding(1, 0); // Reject a split UTF-8 codepoint.
+    try std.testing.expectEqualStrings("日本語東京", entry.buffer.value());
+    entry.deleteSurrounding(6, 0);
+    try std.testing.expectEqualStrings("日本語", entry.buffer.value());
+    try std.testing.expect(entry.key('a', 4));
+    try entry.insert("café");
+    try std.testing.expect(entry.key(0xff08, 0));
+    try std.testing.expectEqualStrings("caf", entry.buffer.value());
 }

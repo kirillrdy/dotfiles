@@ -5,16 +5,12 @@ const fdo = "org.freedesktop.Notifications";
 const object_path = "/org/freedesktop/Notifications";
 const eq = c.__zig.eq;
 const cast = c.__zig.cast;
-fn lookup(dict: ?*c.GVariant, key: [*:0]const u8, signature: [*:0]const u8) ?*c.GVariant {
-    return c.g_variant_lookup_value(dict, key, @ptrCast(signature));
-}
+const lookup = c.__zig.variant.lookup;
 const child = c.g_variant_get_child_value;
 fn text(value: ?*c.GVariant) [*:0]const u8 {
     return if (value == null) "" else c.g_variant_get_string(value, null);
 }
-fn builder(signature: [*:0]const u8) *c.GVariantBuilder {
-    return c.g_variant_builder_new(@ptrCast(signature)).?;
-}
+const builder = c.__zig.variant.builder;
 const Notice = struct {
     service: *Service,
     owner: [:0]u8,

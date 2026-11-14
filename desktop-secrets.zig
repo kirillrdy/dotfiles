@@ -25,28 +25,16 @@ fn iface(kind: Kind) [:0]const u8 {
 }
 const eq = c.__zig.eq;
 const cast = c.__zig.cast;
-fn child(v: ?*c.GVariant, i: usize) *c.GVariant {
-    return c.g_variant_get_child_value(v, i).?;
-}
-fn str(v: ?*c.GVariant) [:0]const u8 {
-    return std.mem.span(c.g_variant_get_string(v, null));
-}
+const child = c.__zig.variant.child;
+const str = c.__zig.variant.text;
 fn text(v: ?*c.GVariant, i: usize) [:0]const u8 {
     const value = child(v, i);
     defer c.g_variant_unref(value);
     return str(value);
 }
-fn build(comptime signature: [:0]const u8) *c.GVariantBuilder {
-    return c.g_variant_builder_new(@ptrCast(signature.ptr)).?;
-}
-fn bytes(v: ?*c.GVariant) []const u8 {
-    var n: usize = 0;
-    const data = c.g_variant_get_fixed_array(v, &n, 1);
-    return if (n == 0) &.{} else @as([*]const u8, @ptrCast(data))[0..n];
-}
-fn byteVariant(value: []const u8) *c.GVariant {
-    return c.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), value.ptr, value.len, 1).?;
-}
+const build = c.__zig.variant.builder;
+const bytes = c.__zig.variant.bytes;
+const byteVariant = c.__zig.variant.byteArray;
 fn stringVariant(value: [:0]const u8) *c.GVariant {
     return variantString(value.ptr).?;
 }

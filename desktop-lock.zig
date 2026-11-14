@@ -7,26 +7,8 @@ const p = @import("desktop-protocols.zig");
 const auth = @import("desktop-lock-auth.zig");
 const view = @import("desktop-lock-view.zig");
 const a = std.heap.page_allocator;
+const kb = @import("desktop-keyboard.zig");
 const Proxy = c.wl_proxy;
-extern const wl_compositor_interface: c.wl_interface;
-extern const wl_surface_interface: c.wl_interface;
-extern const wl_keyboard_interface: c.wl_interface;
-const XkbContext = opaque {};
-const XkbKeymap = opaque {};
-const XkbState = opaque {};
-extern fn xkb_context_new(c_int) ?*XkbContext;
-extern fn xkb_context_unref(?*XkbContext) void;
-extern fn xkb_keymap_new_from_string(*XkbContext, [*:0]const u8, c_int, c_int) ?*XkbKeymap;
-extern fn xkb_keymap_unref(?*XkbKeymap) void;
-extern fn xkb_state_new(*XkbKeymap) ?*XkbState;
-extern fn xkb_state_unref(?*XkbState) void;
-extern fn xkb_state_update_mask(*XkbState, u32, u32, u32, u32, u32, u32) c_int;
-extern fn xkb_state_key_get_one_sym(*XkbState, u32) u32;
-extern fn xkb_state_key_get_utf8(*XkbState, u32, [*]u8, usize) c_int;
-extern fn mlock(*const anyopaque, usize) c_int;
-extern fn munlock(*const anyopaque, usize) c_int;
-extern fn signal(c_int, ?*const fn (c_int) callconv(.c) void) ?*const fn (c_int) callconv(.c) void;
-extern fn setsid() c_int;
 
 const cast = c.__zig.cast;
 
@@ -99,7 +81,7 @@ const Output = struct {
     fn lock(self: *Output) void {
         if (self.lock_surface != null) return;
         const s = self.state;
-        self.surface = create(s.compositor.?, 0, &wl_surface_interface);
+        self.surface = create(s.compositor.?, 0, &wayland.wl_surface_interface);
         self.lock_surface = c.wl_proxy_marshal_flags(s.lock.?, 1, &p.ext_session_lock_surface_v1_interface, 1, 0, @as(?*anyopaque, null), self.surface.?, self.proxy) orelse std.process.exit(1);
         listen(self.lock_surface.?, &surface_listener, self);
     }
@@ -109,20 +91,13 @@ const Output = struct {
         const height = self.height;
         if (width > 16384 or height > 16384 or @as(u64, width) * height > 32 * 1024 * 1024) std.process.exit(1);
         const size: usize = @as(usize, width) * height * 4;
-        const fd = libc.memfd_create("desktop-lock", libc.MFD_CLOEXEC);
-        if (fd < 0) std.process.exit(1);
-        defer _ = libc.close(fd);
-        if (libc.ftruncate(fd, @intCast(size)) != 0) std.process.exit(1);
-        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
-        if (memory == libc.MAP_FAILED or memory == null) std.process.exit(1);
         const s = self.state;
-        const pixels: [*]u32 = @ptrCast(@alignCast(memory.?));
+        const shm = c.__zig.createShmBuffer(s.shm, "desktop-lock", size, width, height, width * 4, c.WL_SHM_FORMAT_XRGB8888) catch std.process.exit(1);
+        const pixels: [*]u32 = @ptrCast(@alignCast(shm.memory));
         s.view.paint(.{ .pixels = pixels[0 .. size / 4], .width = width, .height = height }, if (s.failed) .failed else if (s.busy) .authenticating else .ready);
-        const pool = c.wl_shm_create_pool(s.shm, fd, @intCast(size));
-        const buffer = c.wl_shm_pool_create_buffer(pool, 0, @intCast(width), @intCast(height), @intCast(width * 4), c.WL_SHM_FORMAT_XRGB8888) orelse std.process.exit(1);
-        c.wl_shm_pool_destroy(pool);
+        const buffer = shm.proxy;
         const storage = a.create(Buffer) catch std.process.exit(1);
-        storage.* = .{ .proxy = buffer, .memory = memory.?, .size = size };
+        storage.* = .{ .proxy = buffer, .memory = shm.memory, .size = size };
         listen(cast(Proxy, buffer), &buffer_listener, storage);
         _ = c.wl_proxy_marshal_flags(self.surface.?, 1, null, 1, 0, buffer, @as(i32, 0), @as(i32, 0));
         _ = c.wl_proxy_marshal_flags(self.surface.?, 2, null, 1, 0, @as(i32, 0), @as(i32, 0), @as(i32, @intCast(width)), @as(i32, @intCast(height)));
@@ -148,17 +123,17 @@ const Seat = struct {
     name: u32,
     proxy: *Proxy,
     keyboard: ?*Proxy = null,
-    xkb: ?*XkbState = null,
+    xkb: ?*kb.State = null,
     next: ?*Seat = null,
     fn capabilities(data: ?*anyopaque, _: ?*Proxy, flags: u32) callconv(.c) void {
         const self = cast(Seat, data);
         if (flags & 2 != 0 and self.keyboard == null) {
-            self.keyboard = create(self.proxy, 1, &wl_keyboard_interface);
+            self.keyboard = create(self.proxy, 1, &wayland.wl_keyboard_interface);
             listen(self.keyboard.?, &keyboard_listener, self);
         } else if (flags & 2 == 0 and self.keyboard != null) {
             c.wl_proxy_destroy(self.keyboard);
             self.keyboard = null;
-            xkb_state_unref(self.xkb);
+            kb.xkb_state_unref(self.xkb);
             self.xkb = null;
         }
     }
@@ -166,7 +141,7 @@ const Seat = struct {
     fn keymap(data: ?*anyopaque, _: ?*Proxy, format: u32, fd: c_int, size: u32) callconv(.c) void {
         defer _ = libc.close(fd);
         const self = cast(Seat, data);
-        xkb_state_unref(self.xkb);
+        kb.xkb_state_unref(self.xkb);
         self.xkb = null;
         if (format != 1 or size == 0 or size > 16 * 1024 * 1024) return;
         const memory = libc.mmap(null, size, libc.PROT_READ, libc.MAP_SHARED, fd, 0);
@@ -174,11 +149,11 @@ const Seat = struct {
         defer _ = libc.munmap(memory, size);
         const bytes: [*]const u8 = @ptrCast(memory);
         if (bytes[size - 1] != 0) return;
-        const context = xkb_context_new(0) orelse return;
-        defer xkb_context_unref(context);
-        const map = xkb_keymap_new_from_string(context, @ptrCast(bytes), 1, 0) orelse return;
-        defer xkb_keymap_unref(map);
-        self.xkb = xkb_state_new(map);
+        const context = kb.xkb_context_new(0) orelse return;
+        defer kb.xkb_context_unref(context);
+        const map = kb.xkb_keymap_new_from_string(context, @ptrCast(bytes), 1, 0) orelse return;
+        defer kb.xkb_keymap_unref(map);
+        self.xkb = kb.xkb_state_new(map);
     }
     fn enter(_: ?*anyopaque, _: ?*Proxy, _: u32, _: ?*Proxy, _: ?*c.wl_array) callconv(.c) void {}
     fn leave(data: ?*anyopaque, _: ?*Proxy, _: u32, _: ?*Proxy) callconv(.c) void {
@@ -189,7 +164,7 @@ const Seat = struct {
         const self = cast(Seat, data);
         const s = self.state;
         if (pressed != 1 or self.xkb == null or s.busy or !s.locked or s.done) return;
-        const symbol = xkb_state_key_get_one_sym(self.xkb.?, code + 8);
+        const symbol = kb.xkb_state_key_get_one_sym(self.xkb.?, code + 8);
         switch (symbol) {
             0xff0d, 0xff8d => s.authenticate(),
             0xff1b => {
@@ -201,17 +176,17 @@ const Seat = struct {
             else => {
                 var bytes: [64]u8 = @splat(0);
                 defer std.crypto.secureZero(u8, &bytes);
-                const len = xkb_state_key_get_utf8(self.xkb.?, code + 8, &bytes, bytes.len);
+                const len = kb.xkb_state_key_get_utf8(self.xkb.?, code + 8, &bytes, bytes.len);
                 if (len > 0 and len < bytes.len and bytes[0] >= 32 and bytes[0] != 127) s.password.append(bytes[0..@intCast(len)]);
             },
         }
     }
     fn modifiers(data: ?*anyopaque, _: ?*Proxy, _: u32, depressed: u32, latched: u32, locked: u32, group: u32) callconv(.c) void {
-        if (cast(Seat, data).xkb) |state| _ = xkb_state_update_mask(state, depressed, latched, locked, 0, 0, group);
+        if (cast(Seat, data).xkb) |state| _ = kb.xkb_state_update_mask(state, depressed, latched, locked, 0, 0, group);
     }
     fn deinit(self: *Seat) void {
         if (self.keyboard) |keyboard| c.wl_proxy_destroy(keyboard);
-        xkb_state_unref(self.xkb);
+        kb.xkb_state_unref(self.xkb);
         c.wl_proxy_destroy(self.proxy);
         a.destroy(self);
     }
@@ -317,7 +292,7 @@ const State = struct {
         const self = cast(State, data);
         const kind = std.mem.span(interface);
         if (std.mem.eql(u8, kind, "wl_compositor")) {
-            self.compositor = cast(Proxy, c.wl_registry_bind(registry, name, &wl_compositor_interface, 1));
+            self.compositor = cast(Proxy, c.wl_registry_bind(registry, name, &wayland.wl_compositor_interface, 1));
         } else if (std.mem.eql(u8, kind, "wl_shm")) {
             self.shm = cast(c.wl_shm, c.wl_registry_bind(registry, name, &wayland.wl_shm_interface, 1));
         } else if (std.mem.eql(u8, kind, "ext_session_lock_manager_v1")) {
@@ -410,24 +385,24 @@ pub fn runWithAuthenticator(args: []const []const u8, authenticator: *const fn (
         }
         _ = libc.close(fds[0]);
         ready_fd = fds[1];
-        _ = setsid();
+        _ = libc.setsid();
     }
     defer {
         if (ready_fd >= 0) _ = libc.close(ready_fd);
     }
     if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
     // Terminating the client leaves the compositor locked; ignore ordinary logout signals.
-    _ = signal(libc.SIGTERM, @ptrFromInt(1));
-    _ = signal(libc.SIGHUP, @ptrFromInt(1));
-    _ = signal(@intCast(@backingInt(std.posix.SIG.PIPE)), @ptrFromInt(1));
-    _ = signal(@intCast(@backingInt(std.posix.SIG.INT)), @ptrFromInt(1));
+    _ = libc.signal(libc.SIGTERM, @ptrFromInt(1));
+    _ = libc.signal(libc.SIGHUP, @ptrFromInt(1));
+    _ = libc.signal(@intCast(@backingInt(std.posix.SIG.PIPE)), @ptrFromInt(1));
+    _ = libc.signal(@intCast(@backingInt(std.posix.SIG.INT)), @ptrFromInt(1));
     const password = try a.create(Password);
     password.* = .{};
     defer a.destroy(password);
-    if (mlock(password, @sizeOf(Password)) != 0) return error.SecretMemoryLockFailed;
+    if (libc.mlock(password, @sizeOf(Password)) != 0) return error.SecretMemoryLockFailed;
     defer {
         password.clear();
-        _ = munlock(password, @sizeOf(Password));
+        _ = libc.munlock(password, @sizeOf(Password));
     }
     const user = libc.getpwuid(libc.getuid());
     if (user == null) return error.UnknownUser;

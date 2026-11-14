@@ -277,28 +277,12 @@ pub const FrameCapture = struct {
         // Reserve room to expand packed GPU readback pixels after ready. The
         // compositor still receives its advertised format and source stride.
         self.length = @as(usize, @max(stride, width * 4)) * height;
-
-        const fd = libc.memfd_create("desktop-screenshot", libc.MFD_CLOEXEC);
-        if (fd < 0) {
+        const shm = c.__zig.createShmBuffer(self.shm, "desktop-screenshot", self.length, width, height, stride, format) catch {
             self.failed = true;
             return;
-        }
-        defer _ = libc.close(fd);
-
-        if (libc.ftruncate(fd, @intCast(self.length)) != 0) {
-            self.failed = true;
-            return;
-        }
-        const mem = libc.mmap(null, self.length, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
-        if (mem == libc.MAP_FAILED or mem == null) {
-            self.failed = true;
-            return;
-        }
-        self.memory = @ptrCast(mem);
-
-        const pool = c.wl_shm_create_pool(self.shm, fd, @intCast(self.length));
-        self.buffer = c.wl_shm_pool_create_buffer(pool, 0, @intCast(width), @intCast(height), @intCast(stride), format);
-        c.wl_shm_pool_destroy(pool);
+        };
+        self.memory = @ptrCast(shm.memory);
+        self.buffer = shm.proxy;
 
         if (protocols.zwlr_screencopy_frame_v1_get_version(frame) < 3) {
             protocols.zwlr_screencopy_frame_v1_copy(frame, self.buffer);

@@ -230,13 +230,7 @@ fn arrow(canvas: raster.Canvas, x: f64, y: f64, item: Item) void {
     const shade: f64 = if (item.selected) 1 else 0.8;
     canvas.draw(&.{.{ .polygon = &.{ .{ .x = x, .y = y }, .{ .x = x + 8, .y = y }, .{ .x = x + 4, .y = y + 4 } } }}, .{ .red = shade, .green = shade, .blue = shade });
 }
-fn pixbufImage(image: *c.GdkPixbuf) raster.Image {
-    const width: u32 = @intCast(c.gdk_pixbuf_get_width(image));
-    const height: u32 = @intCast(c.gdk_pixbuf_get_height(image));
-    const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(image));
-    const channels: u32 = @intCast(c.gdk_pixbuf_get_n_channels(image));
-    return .{ .pixels = c.gdk_pixbuf_get_pixels(image)[0 .. (height - 1) * stride + width * channels], .width = width, .height = height, .stride = stride, .format = if (channels == 4) .rgba else .rgb };
-}
+const pixbufImage = c.__zig.pixbufImage;
 fn draw(_: ?*anyopaque, buffer: native.Pixels) void {
     const scale = if (window) |value| value.output.scale else 1;
     const canvas: raster.Canvas = .{ .target = buffer, .scale = @floatFromInt(scale) };

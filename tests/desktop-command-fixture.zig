@@ -3,6 +3,7 @@ const std = @import("std");
 const desktop = @import("desktop");
 const commands = desktop.commands;
 const c = desktop.screenshot.c;
+const libc = desktop.libc;
 
 fn work(binary: [:0]const u8) void {
     const success = [_:null]?[*:0]const u8{ binary, "success" };
@@ -28,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len > 1) {
         if (std.mem.eql(u8, args[1], "failure")) std.process.exit(7);
         if (std.mem.eql(u8, args[1], "signal")) {
-            _ = c.raise(c.SIGTERM);
+            _ = libc.raise(libc.SIGTERM);
             unreachable;
         }
         return;

@@ -6,7 +6,8 @@ const text = @import("desktop-text.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 pub const Rect = @import("desktop-askpass-view.zig").Rect;
 pub const Buffer = raster.Buffer;
-const color = @import("desktop-apps-view.zig").color;
+const color = raster.hex;
+const rounded = raster.rounded;
 
 pub const Layout = struct {
     icon_size: u32,
@@ -182,9 +183,6 @@ pub const View = struct {
         }
     }
 };
-fn rounded(canvas: raster.Canvas, rect: Rect, radius: f64, rgb: u32) void {
-    canvas.draw(&.{rect.shape(radius)}, color(rgb));
-}
 
 test "dash matches measured GNOME 50 allocation and adapts to crowded monitors" {
     const layout = Layout.init(1280, 720, 4, null);

@@ -2,15 +2,15 @@
 let
   pam = import ../desktop-pam-libs.nix { inherit pkgs; };
 in
-pkgs.runCommand "desktop-pam-check"
-  {
-    nativeBuildInputs = [
-      pkgs.zig_0_17
-      pkgs.pkg-config
-    ];
-    buildInputs = [ pam ];
-  }
-  ''
+import ./fixture.nix { inherit pkgs; } {
+  name = "desktop-pam-check";
+  python = null;
+  nativeBuildInputs = [
+    pkgs.zig_0_17
+    pkgs.pkg-config
+  ];
+  buildInputs = [ pam ];
+  script = ''
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
     printf '#include <stdlib.h>\n#include <security/pam_appl.h>\n' > pam-abi.h
     zig translate-c -lc $(pkg-config --cflags pam) pam-abi.h > pam-abi.zig
@@ -41,5 +41,5 @@ pkgs.runCommand "desktop-pam-check"
     account required ${pkgs.pam}/lib/security/pam_unix.so
     EOF
     ./pam-fixture "$TMPDIR/pam.d"
-    touch "$out"
-  ''
+  '';
+}

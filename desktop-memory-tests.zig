@@ -12,8 +12,6 @@ extern fn pango_cairo_font_map_get_default() *anyopaque;
 extern fn pango_cairo_font_map_set_default(?*anyopaque) void;
 extern fn pango_fc_font_map_cache_clear(*anyopaque) void;
 
-extern fn g_object_weak_ref(*c.GObject, *const fn (?*anyopaque, ?*c.GObject) callconv(.c) void, ?*anyopaque) void;
-
 fn env(name: [:0]const u8) ?[]const u8 {
     return if (c.g_getenv(name)) |value| std.mem.span(value) else null;
 }
@@ -28,7 +26,7 @@ const Objects = struct {
     live: usize = 0,
     fn watch(self: *Objects, object: anytype) void {
         self.live += 1;
-        g_object_weak_ref(@ptrCast(@alignCast(object)), &finalized, self);
+        c.g_object_weak_ref(@ptrCast(@alignCast(object)), &finalized, self);
     }
     fn finalized(data: ?*anyopaque, _: ?*c.GObject) callconv(.c) void {
         const self: *Objects = @ptrCast(@alignCast(data));

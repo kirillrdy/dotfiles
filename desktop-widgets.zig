@@ -7,9 +7,7 @@ pub const date_menu = @import("desktop-date-menu.zig");
 pub const c = @import("desktop-gtk.zig");
 pub const native = @import("desktop-panel-view.zig");
 const module_allocator = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
-fn cast(comptime T: type, p: anytype) *T {
-    return @ptrCast(@alignCast(p));
-}
+const cast = c.__zig.cast;
 pub const Options = struct {
     name: [:0]const u8 = "",
     kind: [:0]const u8 = "indicator",
@@ -516,9 +514,7 @@ pub fn deinit(m: *Module) void {
 /// Session callback for built-in collectors; invoked only on the GTK thread.
 pub var refresh_source: ?*const fn ([]const u8) void = null;
 
-fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
-    _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
-}
+const connect = c.__zig.connect;
 fn resize(m: *Module) void {
     const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(m.box)));
     m.view.prepare(scale, @floatFromInt(@max(1, c.gtk_widget_get_allocated_height(m.box)))) catch |err| {

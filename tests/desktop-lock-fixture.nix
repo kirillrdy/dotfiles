@@ -1,21 +1,17 @@
 { pkgs }:
-let
-  desktop = import ../desktop-zig.nix { inherit pkgs; };
-in
-pkgs.runCommand "desktop-lock-check"
-  {
-    nativeBuildInputs = [
-      pkgs.python3
-      pkgs.dbus
-      pkgs.wtype
-      pkgs.wlr-randr
-    ];
-  }
-  ''
-    dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- \
-      python3 ${./check-desktop-lock.py} \
+import ./fixture.nix { inherit pkgs; } {
+  name = "desktop-lock-check";
+  nativeBuildInputs = [
+    pkgs.dbus
+    pkgs.wtype
+    pkgs.wlr-randr
+  ];
+  script =
+    { desktop, dbusRun, ... }:
+    ''
+      ${dbusRun} python3 ${./check-desktop-lock.py} \
         --binary ${desktop}/bin/desktop-zig \
         --fixture ${desktop.tests}/bin/desktop-lock-fixture \
         --compositor ${desktop}/bin/desktop-zig
-    touch "$out"
-  ''
+    '';
+}

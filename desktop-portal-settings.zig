@@ -12,9 +12,7 @@ const appearance = "org.freedesktop.appearance";
 const fontconfig = "org.gnome.fontconfig";
 const eq = c.__zig.eq;
 const cast = c.__zig.cast;
-fn builder(signature: [*:0]const u8) *c.GVariantBuilder {
-    return c.g_variant_builder_new(@ptrCast(signature)).?;
-}
+const builder = c.__zig.variant.builder;
 const Bundle = struct {
     service: *Service,
     name: [:0]const u8,

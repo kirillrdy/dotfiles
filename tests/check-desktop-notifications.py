@@ -1,50 +1,31 @@
 """Exercise native notification pixels and input on a private bus/headless compositor."""
-import json
 import os
 from pathlib import Path
 import re
-import select
-import struct
 import subprocess as sp
 import sys
 import tempfile
 import time
-import zlib
 
-from gi.repository import Gio, GLib
+from gi.repository import GLib
+from session_fixture import NotificationsClient, VirtualPointer, read_png, terminate_processes, wait_until
 
 bin_dir = Path(sys.argv[1]).resolve()
 root = Path(tempfile.mkdtemp(prefix="desktop-notifications-check-", dir="/tmp"))
 print(f"Notification artifacts: {root}", flush=True)
-bus = Gio.bus_get_sync(Gio.BusType.SESSION)
-name = "org.freedesktop.Notifications"
-path = "/org/freedesktop/Notifications"
-control = "org.dotfiles.Notifications"
-signals = []
-subscription = bus.signal_subscribe(
-    None, name, None, path, None, Gio.DBusSignalFlags.NONE,
-    lambda connection, sender, object_path, iface, member, params: signals.append((member, params.unpack())),
-)
-
-
-def pump():
-    while GLib.MainContext.default().iteration(False):
-        pass
-
-
-def wait_for(predicate, description, seconds=8):
-    deadline = time.monotonic() + seconds
-    while True:
-        pump()
-        if predicate():
-            return
-        assert service.poll() is None, log.read_text()[-8000:]
-        assert time.monotonic() < deadline, description
-        time.sleep(0.02)
+client = NotificationsClient()
+name, control, signals = client.name, client.control, client.signals
+history, clear = client.history, client.clear
 
 
 def call(member, parameters=None, iface=name):
-    return bus.call_sync(name, path, iface, member, parameters, None, Gio.DBusCallFlags.NONE, 5000, None).unpack()
+    return client.call(member, parameters, iface=iface)
+
+
+def wait_for(predicate, description, seconds=8):
+    def check_service():
+        assert service.poll() is None, log.read_text()[-8000:]
+    wait_until(predicate, description, timeout=seconds, interval=0.02, step=client.pump, on_error=check_service)
 
 
 def notify(body="Notification body", actions=(), critical=True, resident=False, transient=False, replace=0, image=False):
@@ -56,57 +37,22 @@ def notify(body="Notification body", actions=(), critical=True, resident=False, 
         "Messages", replace, "application-x-executable-symbolic", "東京 — مرحبا", body, list(actions), hints, -1)))[0]
 
 
-def history():
-    return json.loads(call("List", iface=control)[0])
-
-
-def clear():
-    call("Clear", iface=control)
-    time.sleep(0.1)
-
-
 def pointer_command(command):
-    pointer.stdin.write(command + "\n")
-    pointer.stdin.flush()
-    assert select.select([pointer.stdout], [], [], 5)[0], "Virtual pointer hung"
-    assert pointer.stdout.readline().strip() == "ok"
-    time.sleep(0.07)
+    pointer.command(command)
 
 
 def move(x, y):
-    pointer_command(f"move {int(x)} {int(y)}")
+    pointer.move(x, y)
 
 
 def click(x, y):
-    move(x, y)
-    pointer_command("button 1")
-    pointer_command("button 0")
+    pointer.click(x, y)
 
 
 def capture(label):
     filename = root / (label + ".png")
     sp.run([str(bin_dir / "desktop-zig"), "screenshot", "-o", "HEADLESS-1", str(filename)], check=True, timeout=10)
-    png = filename.read_bytes()
-    width, height = struct.unpack_from(">II", png, 16)
-    compressed = []
-    offset = 8
-    while offset < len(png):
-        length = struct.unpack_from(">I", png, offset)[0]
-        if png[offset + 4:offset + 8] == b"IDAT":
-            compressed.append(png[offset + 8:offset + 8 + length])
-        offset += length + 12
-    raw = zlib.decompress(b"".join(compressed))
-    rows = []
-    stride = width * 3
-    for y in range(height):
-        filter_type = raw[y * (stride + 1)]
-        row = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
-        assert filter_type in (0, 1), filter_type
-        if filter_type == 1:
-            for x in range(3, stride):
-                row[x] = (row[x] + row[x - 3]) & 255
-        rows.append(bytes(row))
-    return width, height, rows
+    return read_png(filename)
 
 
 def card_bottom(rows):
@@ -117,16 +63,10 @@ log = root / "service.log"
 with log.open("w") as output:
     service = sp.Popen([str(bin_dir / "desktop-notifications-fixture")],
                        stdout=output, stderr=sp.STDOUT, env=dict(os.environ, WAYLAND_DEBUG="client", G_DEBUG="fatal-criticals"))
-pointer = sp.Popen([str(bin_dir / "desktop-pointer-fixture")], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
+pointer = VirtualPointer(bin_dir / "desktop-pointer-fixture", delay=0.07)
 scaled = False
 try:
-    assert select.select([pointer.stdout], [], [], 5)[0]
-    assert pointer.stdout.readline().strip() == "ready"
-
-    def owned():
-        return bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
-                             "NameHasOwner", GLib.Variant("(s)", (name,)), None, Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
-    wait_for(owned, "Notification name ownership")
+    wait_for(client.owned, "Notification name ownership")
     width, height, baseline = capture("baseline")
     pointer_command(f"size {width} {height}")
     move(0, height - 1)
@@ -216,11 +156,8 @@ try:
     assert not re.search(r"CRITICAL|assertion|panic:|Segmentation|notification .*failed", log.read_text()), log.read_text()[-8000:]
     print("PASS: native banner pixels, Unicode/markup/images, expansion, actions, replacement, resident/critical/history, hover expiry, calendar suppression and live scaling")
 finally:
-    bus.signal_unsubscribe(subscription)
+    client.close()
     if scaled:
         sp.run([str(bin_dir / "desktop-zig"), "output", "--output", "HEADLESS-1", "--scale", "1"], timeout=10)
-    pointer.stdin.close()
-    pointer.wait(timeout=5)
-    if service.poll() is None:
-        service.terminate()
-        service.wait(timeout=8)
+    pointer.close()
+    terminate_processes([service], timeout=8)

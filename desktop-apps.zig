@@ -6,7 +6,7 @@ const cast = c.__zig.cast;
 const wire = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const shaping = @import("desktop-text.zig");
-const input = @import("desktop-search-entry.zig");
+const input = @import("desktop-password-entry.zig");
 const view = @import("desktop-apps-view.zig");
 const allocator = std.heap.c_allocator;
 // Normalize before matching so composed/decomposed names and Unicode casing agree.
@@ -115,7 +115,10 @@ pub const Launcher = struct {
         self.bindControls();
     }
     pub fn bindControls(self: *Launcher) void {
-        if (self.search_input == null) self.search_input = input.Entry.create(&inputChanged, self) catch @panic("out of memory");
+        if (self.search_input == null) {
+            self.search_input = input.Entry.create(&inputChanged, self) catch @panic("out of memory");
+            self.search_input.?.makePublic();
+        }
     }
     pub fn redraw(self: *Launcher) void {
         if (self.host) |host| for (host.client.seats.items) |seat| {
@@ -428,7 +431,7 @@ pub fn release(self: *Launcher, part: Part, x: f64, y: f64) void {
                 if (pressed == index and index < self.visible.items.len) _ = self.launch(self.visible.items[index].info);
             }
         } else if (arrow_pressed) |arrow| {
-            if (view.hitPageArrow(self.geometry, self.page, self.pageCount(), x, y) == arrow) self.changePage(@intFromEnum(arrow));
+            if (view.hitPageArrow(self.geometry, self.page, self.pageCount(), x, y) == arrow) self.changePage(@backingInt(arrow));
         } else if (self.geometry.hit(x, y)) |slot| {
             const index = self.page * self.geometry.capacity() + slot;
             if (pressed == index and index < self.visible.items.len) _ = self.launch(self.visible.items[index].info);
@@ -603,6 +606,7 @@ pub const Host = struct {
         if (client.outputs.items.len == 0) return error.DisplayUnavailable;
         self.* = .{ .launcher = launcher, .client = client, .surface = null };
         self.surface = try self.createSurface(client.outputs.items[0]);
+        if (launcher.search_input) |entry| entry.client = client;
         try client.start();
         return self;
     }

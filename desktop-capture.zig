@@ -91,20 +91,13 @@ pub const Window = struct {
         if (length > 64 * 1024 * 1024) return;
         if (self.buffer != null and (self.buffer_width != self.width or self.buffer_height != self.height or self.buffer_format != self.format)) self.freeBuffer();
         if (self.buffer == null) {
-            const fd = libc.memfd_create("desktop-overview", libc.MFD_CLOEXEC);
-            if (fd < 0) return;
-            defer _ = libc.close(fd);
-            if (libc.ftruncate(fd, @intCast(length)) != 0) return;
-            const memory = libc.mmap(null, length, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
-            if (memory == libc.MAP_FAILED or memory == null) return;
-            self.mapped = memory;
+            const shm = c.__zig.createShmBuffer(client.shm, "desktop-overview", length, self.width, self.height, stride, self.format) catch return;
+            self.mapped = shm.memory;
             self.length = length;
             self.buffer_width = self.width;
             self.buffer_height = self.height;
             self.buffer_format = self.format;
-            const pool = c.wl_shm_create_pool(client.shm, fd, @intCast(length));
-            self.buffer = c.wl_shm_pool_create_buffer(pool, 0, @intCast(self.width), @intCast(self.height), @intCast(stride), self.format);
-            c.wl_shm_pool_destroy(pool);
+            self.buffer = shm.proxy;
         }
         self.frame = protocols.ext_image_copy_capture_session_v1_create_frame(self.session);
         _ = protocols.ext_image_copy_capture_frame_v1_add_listener(self.frame, &frame_listener, self);

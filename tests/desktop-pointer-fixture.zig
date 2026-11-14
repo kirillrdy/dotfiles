@@ -1,13 +1,11 @@
 //! Persistent virtual pointer for isolated headless tests. Commands on stdin.
 const std = @import("std");
-comptime {
-    _ = @import("desktop").protocols;
-}
 const c = @import("desktop").gtk;
-const pointer_api = @import("desktop").virtual_pointer;
+const protocols = @import("desktop").protocols;
+const pointer_api = @import("desktop-virtual-pointer.zig").Client(c, protocols);
 var manager: ?*pointer_api.Manager = null;
 fn global(_: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*c]const u8, version: u32) callconv(.c) void {
-    if (std.mem.eql(u8, std.mem.span(interface), "zwlr_virtual_pointer_manager_v1")) manager = @ptrCast(c.wl_registry_bind(registry, name, &pointer_api.zwlr_virtual_pointer_manager_v1_interface, @min(version, 2)));
+    if (std.mem.eql(u8, std.mem.span(interface), "zwlr_virtual_pointer_manager_v1")) manager = @ptrCast(c.wl_registry_bind(registry, name, &protocols.zwlr_virtual_pointer_manager_v1_interface, @min(version, 2)));
 }
 fn removed(_: ?*anyopaque, _: ?*c.wl_registry, _: u32) callconv(.c) void {}
 const listener = c.wl_registry_listener{ .global = &global, .global_remove = &removed };

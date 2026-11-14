@@ -6,12 +6,8 @@ const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.c_allocator;
 pub const Rect = raster.Rect;
-pub fn color(rgb: u32) raster.Color {
-    return raster.Color.rgb(rgb, 1);
-}
-fn rounded(canvas: raster.Canvas, rect: Rect, radius: f64, rgb: u32) void {
-    canvas.draw(&.{rect.shape(radius)}, color(rgb));
-}
+pub const color = raster.hex;
+const rounded = raster.rounded;
 pub const Grid = struct {
     width: f64,
     height: f64,

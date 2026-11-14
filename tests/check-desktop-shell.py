@@ -12,7 +12,7 @@ import time
 import sys
 sys.dont_write_bytecode = True
 from audio_server import AudioServer
-from session_fixture import Processes
+from session_fixture import Processes, wait_until, wait_wayland
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True, type=Path)
@@ -74,10 +74,7 @@ def run(command, ok=True):
 
 
 def wait_for(check, description):
-    deadline = time.monotonic() + 15
-    while not check():
-        assert time.monotonic() < deadline, description
-        time.sleep(0.05)
+    wait_until(check, description, timeout=15, interval=0.05)
 
 
 def shell_log():
@@ -99,8 +96,7 @@ def owner_pid(name):
 try:
     audio.start()
     compositor = start([args.compositor, "compositor-only"], "compositor.log")
-    wait_for(lambda: (root / "runtime/wayland-0").exists(), "compositor socket")
-    env["WAYLAND_DISPLAY"] = "wayland-0"
+    env["WAYLAND_DISPLAY"] = wait_wayland(root / "runtime", compositor, root / "compositor.log")
     assert run([binary, "ping"], ok=False).returncode != 0, "client must not start a desktop"
     command = [binary, "serve", str(root / "wallpaper.ppm"),
                str(args.panel_config or root / "panel.json")]

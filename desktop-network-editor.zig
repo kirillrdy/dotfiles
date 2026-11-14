@@ -9,23 +9,17 @@ const g = network.api;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 fn z(s: []const u8) [:0]u8 {
-    return a.dupeSentinel(u8, s, 0) catch @panic("out of memory");
+    return c.__zig.dupeZ(a, s);
 }
 const eq = c.__zig.eq;
 fn text(w: *native.Item) [:0]const u8 {
     return w.value();
 }
-fn builder(kind: [:0]const u8) *g.GVariantBuilder {
-    return g.g_variant_builder_new(@ptrCast(kind));
+const builder = c.__zig.variant.builder;
+fn add(b: *c.GVariantBuilder, key: [:0]const u8, value: *c.GVariant) void {
+    c.g_variant_builder_add(b, "{sv}", key.ptr, value);
 }
-fn add(b: *g.GVariantBuilder, key: [:0]const u8, value: *c.GVariant) void {
-    g.g_variant_builder_add(b, "{sv}", key.ptr, value);
-}
-fn lookup(base: *c.GVariant, group: [:0]const u8, key: [:0]const u8) ?*c.GVariant {
-    const section = c.g_variant_lookup_value(base, group, null) orelse return null;
-    defer c.g_variant_unref(section);
-    return c.g_variant_lookup_value(section, key, null);
-}
+const lookup = c.__zig.variant.nested;
 const Field = struct { group: [:0]const u8, key: [:0]const u8, title: [:0]const u8, kind: [:0]const u8, hint: [:0]const u8 = "" };
 const fields = [_]Field{
     .{ .group = "connection", .key = "id", .title = "Connection name", .kind = "s" },
@@ -88,31 +82,31 @@ pub const Row = struct {
     }
     fn value(self: *Row) !?*c.GVariant {
         if (self.remove.checked) return null;
-        if (self.preserve_original) return g.g_variant_ref(self.original.?);
+        if (self.preserve_original) return c.g_variant_ref(self.original.?);
         if (eq(self.kind, "b")) {
             const enabled: c_int = @intFromBool(self.widget.checked);
-            return g.g_variant_ref_sink(c.g_variant_new("b", enabled));
+            return c.g_variant_ref_sink(c.g_variant_new("b", enabled));
         }
         const entered = text(self.widget);
         // Preserve the original representation, including unrecognised address attributes.
-        if (self.original) |v| if (eq(entered, self.initial)) return g.g_variant_ref(v);
+        if (self.original) |v| if (eq(entered, self.initial)) return c.g_variant_ref(v);
         if (entered.len == 0) return null;
-        if (eq(self.kind, "s")) return g.g_variant_ref_sink(c.g_variant_new("s", entered.ptr));
+        if (eq(self.kind, "s")) return c.g_variant_ref_sink(c.g_variant_new("s", entered.ptr));
         if (self.bytes_as_text) {
             if (entered.len > 32) return error.InvalidSSIDLength;
-            return g.g_variant_ref_sink(g.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), entered.ptr, entered.len, 1));
+            return c.g_variant_ref_sink(c.__zig.variant.byteArray(entered));
         }
         if (self.addresses_as_text) return parseAddresses(entered, eq(self.group, "ipv6"));
         if (eq(self.kind, "as")) {
             const out = builder("as");
-            defer g.g_variant_builder_unref(out);
+            defer c.g_variant_builder_unref(out);
             var parts = std.mem.tokenizeAny(u8, entered, ", \t\n");
             while (parts.next()) |part| {
                 const part_z = z(part);
                 defer a.free(part_z);
-                g.g_variant_builder_add(out, "s", part_z.ptr);
+                c.g_variant_builder_add(out, "s", part_z.ptr);
             }
-            return g.g_variant_ref_sink(g.g_variant_builder_end(out));
+            return c.g_variant_ref_sink(c.g_variant_builder_end(out));
         }
         var err: [*c]c.GError = null;
         defer c.g_clear_error(&err);
@@ -121,7 +115,7 @@ pub const Row = struct {
 };
 pub fn parseAddresses(input: []const u8, ipv6: bool) !*c.GVariant {
     const out = builder("aa{sv}");
-    defer g.g_variant_builder_unref(out);
+    defer c.g_variant_builder_unref(out);
     var addresses = std.mem.tokenizeAny(u8, input, ", \t\n");
     while (addresses.next()) |cidr| {
         const slash = std.mem.lastIndexOfScalar(u8, cidr, '/') orelse return error.AddressNeedsPrefix;
@@ -131,14 +125,14 @@ pub fn parseAddresses(input: []const u8, ipv6: bool) !*c.GVariant {
         const prefix = std.fmt.parseInt(u32, cidr[slash + 1 ..], 10) catch return error.InvalidPrefix;
         if (prefix > @as(u32, if (ipv6) 128 else 32)) return error.InvalidPrefix;
         const inner = builder("a{sv}");
-        defer g.g_variant_builder_unref(inner);
+        defer c.g_variant_builder_unref(inner);
         const address_z = z(address);
         defer a.free(address_z);
         add(inner, "address", c.g_variant_new("s", address_z.ptr).?);
         add(inner, "prefix", c.g_variant_new("u", prefix).?);
-        g.g_variant_builder_add(out, "@a{sv}", g.g_variant_builder_end(inner));
+        c.g_variant_builder_add(out, "@a{sv}", c.g_variant_builder_end(inner));
     }
-    return g.g_variant_ref_sink(g.g_variant_builder_end(out)).?;
+    return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
 }
 pub const Editor = struct {
     window: *native.host.Window,
@@ -179,7 +173,7 @@ pub const Editor = struct {
         const window = ui.window;
         window.parent = parent;
         self.* = .{ .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = c.g_cancellable_new().?, .path = if (profile) |p| z(p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(&changed, self) catch @panic("out of memory"), .property_group = undefined, .property_key = undefined, .property_type = undefined };
-        const base = if (initial) |value| g.g_variant_ref(value).? else if (profile) |p| g.g_variant_ref(p.base).? else template(null);
+        const base = if (initial) |value| c.g_variant_ref(value).? else if (profile) |p| c.g_variant_ref(p.base).? else template(null);
         defer c.g_variant_unref(base);
         // Known fields first; every other property remains editable below them.
         for (fields) |field| {
@@ -484,10 +478,10 @@ pub const Editor = struct {
         self.ui.relayout();
     }
     pub fn values(self: *Editor) !*c.GVariant {
-        const Group = struct { name: [:0]const u8, value: *g.GVariantBuilder };
+        const Group = struct { name: [:0]const u8, value: *c.GVariantBuilder };
         var groups: std.ArrayList(Group) = .empty;
         defer {
-            for (groups.items) |group| g.g_variant_builder_unref(group.value);
+            for (groups.items) |group| c.g_variant_builder_unref(group.value);
             groups.deinit(a);
         }
         for (self.rows.items) |*r| {
@@ -502,7 +496,7 @@ pub const Editor = struct {
                 return err;
             } orelse continue;
             defer c.g_variant_unref(value);
-            var group_builder: ?*g.GVariantBuilder = null;
+            var group_builder: ?*c.GVariantBuilder = null;
             for (groups.items) |group| if (eq(group.name, r.group)) {
                 group_builder = group.value;
                 break;
@@ -522,9 +516,9 @@ pub const Editor = struct {
             if (!found and kind.len > 0) try groups.append(a, .{ .name = kind, .value = builder("a{sv}") });
         }
         const out = builder("a{sa{sv}}");
-        defer g.g_variant_builder_unref(out);
-        for (groups.items) |group| g.g_variant_builder_add(out, "{s@a{sv}}", group.name.ptr, g.g_variant_builder_end(group.value));
-        return g.g_variant_ref_sink(g.g_variant_builder_end(out)).?;
+        defer c.g_variant_builder_unref(out);
+        for (groups.items) |group| c.g_variant_builder_add(out, "{s@a{sv}}", group.name.ptr, c.g_variant_builder_end(group.value));
+        return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
     }
     pub fn save(self: *Editor) void {
         if (self.saving or self.closed) return;
@@ -581,28 +575,28 @@ fn template(ap: ?network.AccessPoint) *c.GVariant {
     const uuid = c.g_uuid_string_random();
     defer c.g_free(uuid);
     const out = builder("a{sa{sv}}");
-    defer g.g_variant_builder_unref(out);
+    defer c.g_variant_builder_unref(out);
     const connection = builder("a{sv}");
-    defer g.g_variant_builder_unref(connection);
+    defer c.g_variant_builder_unref(connection);
     add(connection, "id", c.g_variant_new("s", if (ap) |point| point.title.ptr else @as([*:0]const u8, "New connection")).?);
     add(connection, "uuid", c.g_variant_new("s", uuid).?);
     add(connection, "type", c.g_variant_new("s", @as([*:0]const u8, if (ap != null) "802-11-wireless" else "802-3-ethernet")).?);
     add(connection, "autoconnect", c.g_variant_new("b", @as(c_int, 1)).?);
-    g.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "connection"), g.g_variant_builder_end(connection));
+    c.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "connection"), c.g_variant_builder_end(connection));
     for ([_][:0]const u8{ "ipv4", "ipv6" }) |group| {
         const inner = builder("a{sv}");
-        defer g.g_variant_builder_unref(inner);
+        defer c.g_variant_builder_unref(inner);
         add(inner, "method", c.g_variant_new("s", @as([*:0]const u8, "auto")).?);
-        g.g_variant_builder_add(out, "{s@a{sv}}", group.ptr, g.g_variant_builder_end(inner));
+        c.g_variant_builder_add(out, "{s@a{sv}}", group.ptr, c.g_variant_builder_end(inner));
     }
     const device = builder("a{sv}");
-    defer g.g_variant_builder_unref(device);
+    defer c.g_variant_builder_unref(device);
     if (ap) |point| {
-        add(device, "ssid", g.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), point.ssid.ptr, point.ssid.len, 1).?);
+        add(device, "ssid", c.__zig.variant.byteArray(point.ssid));
         add(device, "mode", c.g_variant_new("s", @as([*:0]const u8, "infrastructure")).?);
         if (point.security != .open) {
             const auth = builder("a{sv}");
-            defer g.g_variant_builder_unref(auth);
+            defer c.g_variant_builder_unref(auth);
             const key: [*:0]const u8 = switch (point.security) {
                 .open => "",
                 .wep => "none",
@@ -612,18 +606,18 @@ fn template(ap: ?network.AccessPoint) *c.GVariant {
                 .owe => "owe",
             };
             add(auth, "key-mgmt", c.g_variant_new("s", key).?);
-            g.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "802-11-wireless-security"), g.g_variant_builder_end(auth));
+            c.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "802-11-wireless-security"), c.g_variant_builder_end(auth));
         }
         if (point.security == .enterprise) {
             const enterprise = builder("a{sv}");
-            defer g.g_variant_builder_unref(enterprise);
+            defer c.g_variant_builder_unref(enterprise);
             const methods = builder("as");
-            defer g.g_variant_builder_unref(methods);
-            g.g_variant_builder_add(methods, "s", @as([*:0]const u8, "peap"));
-            add(enterprise, "eap", g.g_variant_builder_end(methods).?);
-            g.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "802-1x"), g.g_variant_builder_end(enterprise));
+            defer c.g_variant_builder_unref(methods);
+            c.g_variant_builder_add(methods, "s", @as([*:0]const u8, "peap"));
+            add(enterprise, "eap", c.g_variant_builder_end(methods).?);
+            c.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "802-1x"), c.g_variant_builder_end(enterprise));
         }
     }
-    g.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, if (ap != null) "802-11-wireless" else "802-3-ethernet"), g.g_variant_builder_end(device));
-    return g.g_variant_ref_sink(g.g_variant_builder_end(out)).?;
+    c.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, if (ap != null) "802-11-wireless" else "802-3-ethernet"), c.g_variant_builder_end(device));
+    return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
 }

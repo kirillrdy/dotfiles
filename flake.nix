@@ -24,8 +24,6 @@
         hostName:
         {
           enableNvidia ? false,
-          enableOpencl ? false,
-          enableOpenvino ? false,
           enableLightDesktop ? false,
         }:
         lib.nixosSystem {
@@ -34,8 +32,6 @@
             inherit
               hostName
               enableNvidia
-              enableOpencl
-              enableOpenvino
               enableLightDesktop
               ;
           };
@@ -119,13 +115,11 @@
         osaka = { };
         # Lenovo X1 gen13, lunarlake
         hagi = {
-          enableOpenvino = true;
           enableLightDesktop = true;
         };
         # i7-13700K, raptorlake
         tsutenkaku = {
           enableNvidia = true;
-          enableOpencl = true;
           enableLightDesktop = true;
         };
       };

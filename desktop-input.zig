@@ -1,16 +1,13 @@
 //! Opt-in Wayland input for native surfaces. Passive clients never bind seats.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
+const wayland = @import("desktop-wayland.zig");
 const libc = @import("desktop-libc.zig");
 const native = @import("desktop-surface.zig");
 const keyboard = @import("desktop-keyboard.zig");
 const a = std.heap.page_allocator;
 const Proxy = c.wl_proxy;
 const cast = c.__zig.cast;
-extern const wl_seat_interface: c.wl_interface;
-extern const wl_pointer_interface: c.wl_interface;
-extern const wl_keyboard_interface: c.wl_interface;
-extern const wl_surface_interface: c.wl_interface;
 const protocols = @import("desktop-protocols.zig");
 
 pub const TextState = struct { text: [:0]const u8, cursor: u32, anchor: u32, rect: c.GdkRectangle, private: bool = false };
@@ -80,7 +77,7 @@ pub const Seat = struct {
     pub fn create(client: *native.Client, registry: *c.wl_registry, name: u32, version: u32) !*Seat {
         const self = try a.create(Seat);
         errdefer a.destroy(self);
-        self.* = .{ .client = client, .name = name, .proxy = @ptrCast(c.wl_registry_bind(registry, name, &wl_seat_interface, @min(version, 5))) };
+        self.* = .{ .client = client, .name = name, .proxy = @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_seat_interface, @min(version, 5))) };
         listen(self.proxy, &seat_listener, self);
         return self;
     }
@@ -119,7 +116,7 @@ pub const Seat = struct {
     fn capabilities(data: ?*anyopaque, _: *Proxy, flags: u32) callconv(.c) void {
         const self = cast(Seat, data);
         if (flags & 1 != 0 and self.pointer == null) {
-            self.pointer = self.device(0, &wl_pointer_interface);
+            self.pointer = self.device(0, &wayland.wl_pointer_interface);
             listen(self.pointer.?, &pointer_listener, self);
             self.bindCursorShape();
         } else if (flags & 1 == 0 and self.pointer != null) {
@@ -131,7 +128,7 @@ pub const Seat = struct {
             self.pointer_focus = null;
         }
         if (flags & 2 != 0 and self.keyboard == null) {
-            self.keyboard = self.device(1, &wl_keyboard_interface);
+            self.keyboard = self.device(1, &wayland.wl_keyboard_interface);
             listen(self.keyboard.?, &keyboard_listener, self);
         } else if (flags & 2 == 0 and self.keyboard != null) {
             self.leaveKeyboard();
@@ -159,7 +156,7 @@ pub const Seat = struct {
             } else {
                 if (self.cursor == null) {
                     const compositor = self.client.compositor.?;
-                    self.cursor = c.wl_proxy_marshal_flags(compositor, 0, &wl_surface_interface, c.wl_proxy_get_version(compositor), 0, @as(?*anyopaque, null));
+                    self.cursor = c.wl_proxy_marshal_flags(compositor, 0, &wayland.wl_surface_interface, c.wl_proxy_get_version(compositor), 0, @as(?*anyopaque, null));
                 }
                 if (self.cursor) |cursor| native.setCursor(surface, cursor, pointer, serial) catch |err| std.log.warn("native cursor: {s}", .{@errorName(err)});
             }

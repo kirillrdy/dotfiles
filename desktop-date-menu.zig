@@ -204,6 +204,4 @@ pub const Controls = struct {
         self.view.hover = .none;
     }
 };
-fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, ptr: anytype) void {
-    _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), ptr, null, 0);
-}
+const connect = c.__zig.connect;

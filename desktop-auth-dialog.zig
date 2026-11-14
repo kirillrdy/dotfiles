@@ -9,6 +9,7 @@ const wire = host.wire;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 pub const Dialog = struct {
+    allocator: std.mem.Allocator,
     window: *host.Window,
     image: []u32 = &.{},
     offset: f64 = 0,
@@ -17,6 +18,7 @@ pub const Dialog = struct {
     response_context: ?*anyopaque = null,
     responded: ?*const fn (?*anyopaque, bool) void = null,
     prompt: [:0]u8,
+    parent: ?[:0]u8 = null,
     entry: ?*password.Entry = null,
     confirmation: ?*password.Entry = null,
     status: ?[:0]u8 = null,
@@ -32,33 +34,43 @@ pub const Dialog = struct {
         return createWithOptions(mode, prompt_text, .{});
     }
     pub const Options = struct {
+        allocator: std.mem.Allocator = a,
         title: [:0]const u8 = "SSH Authentication",
         role: [:0]const u8 = "desktop-askpass",
+        parent: [:0]const u8 = "",
         accept: ?[:0]const u8 = null,
         icon: [:0]const u8 = "dialog-password",
         confirmation: bool = false,
         cancel: ?[:0]const u8 = null,
         // Choices and their labels must outlive the dialog; flags may update in place.
         choices: []const native.Choice = &.{},
+        response_context: ?*anyopaque = null,
+        responded: ?*const fn (?*anyopaque, bool) void = null,
     };
     pub fn createWithOptions(mode: Mode, prompt_text: [:0]const u8, options: Options) !*Dialog {
         if (options.choices.len > 3 or (options.choices.len != 0 and mode != .information)) return error.InvalidChoices;
         if (options.confirmation and mode != .password) return error.InvalidConfirmationMode;
-        const self = try a.create(Dialog);
-        errdefer a.destroy(self);
-        const prompt = try a.dupeSentinel(u8, prompt_text, 0);
-        errdefer a.free(prompt);
+        const alloc = options.allocator;
+        const self = try alloc.create(Dialog);
+        errdefer alloc.destroy(self);
+        const prompt = try alloc.dupeSentinel(u8, prompt_text, 0);
+        errdefer alloc.free(prompt);
+        const parent = if (options.parent.len > 0) try alloc.dupeSentinel(u8, options.parent, 0) else null;
+        errdefer if (parent) |value| alloc.free(value);
         var view = native.View.init(mode);
-        errdefer view.deinit(a);
+        errdefer view.deinit(alloc);
         view.confirmation = options.confirmation;
         view.cancel_label = options.cancel;
         view.choices = options.choices;
         view.title = options.title;
         view.accept_label = options.accept;
-        try view.prepare(a, prompt, 1);
+        try view.prepare(alloc, prompt, 1);
         const window = try host.Window.create(options.title, options.role, view.width, view.height, &draw, self);
         errdefer window.destroy();
-        self.* = .{ .window = window, .prompt = prompt, .mode = mode, .view = view };
+        if (parent) |value| if (window.surface) |surface| {
+            surface.options.parent = value;
+        };
+        self.* = .{ .allocator = alloc, .window = window, .prompt = prompt, .parent = parent, .response_context = options.response_context, .responded = options.responded, .mode = mode, .view = view };
         window.closed = &closed;
         window.surface.?.close = &closeRequested;
         window.surface.?.input = .{ .button = &button, .motion = &motion, .leave = &leave, .scroll = &scroll, .symbol = &key, .text = &commit, .commit = &commit, .preedit = &preedit, .surrounding = &surrounding, .focus = &focusChanged };
@@ -74,25 +86,25 @@ pub const Dialog = struct {
         return self;
     }
     pub fn setPrompt(self: *Dialog, value: [:0]const u8) !void {
-        const prompt = try a.dupeSentinel(u8, value, 0);
-        errdefer a.free(prompt);
+        const prompt = try self.allocator.dupeSentinel(u8, value, 0);
+        errdefer self.allocator.free(prompt);
         const scale = @max(1, self.view.scale);
-        self.view.invalidate(a);
-        try self.view.prepare(a, prompt, scale);
-        a.free(self.prompt);
+        self.view.invalidate(self.allocator);
+        try self.view.prepare(self.allocator, prompt, scale);
+        self.allocator.free(self.prompt);
         self.prompt = prompt;
         self.size();
         changed(self);
     }
     pub fn setStatus(self: *Dialog, value: [:0]const u8, is_error: bool) !void {
-        const status = try a.dupeSentinel(u8, value, 0);
-        if (self.status) |old| a.free(old);
+        const status = try self.allocator.dupeSentinel(u8, value, 0);
+        if (self.status) |old| self.allocator.free(old);
         self.status = status;
         self.view.status = status;
         self.view.status_error = is_error;
         const scale = @max(1, self.view.scale);
-        self.view.invalidate(a);
-        try self.view.prepare(a, self.prompt, scale);
+        self.view.invalidate(self.allocator);
+        try self.view.prepare(self.allocator, self.prompt, scale);
         self.size();
         self.focus(self.view.focus);
     }
@@ -133,11 +145,12 @@ pub const Dialog = struct {
         if (self.entry) |entry| entry.destroy();
         if (self.response_idle != 0) _ = c.g_source_remove(self.response_idle);
         self.window.destroy();
-        a.free(self.image);
-        self.view.deinit(a);
-        a.free(self.prompt);
-        if (self.status) |status| a.free(status);
-        a.destroy(self);
+        self.allocator.free(self.image);
+        self.view.deinit(self.allocator);
+        self.allocator.free(self.prompt);
+        if (self.parent) |parent| self.allocator.free(parent);
+        if (self.status) |status| self.allocator.free(status);
+        self.allocator.destroy(self);
     }
     fn size(self: *Dialog) void {
         if (self.window.surface) |surface| {
@@ -197,17 +210,17 @@ pub const Dialog = struct {
         const width = target.width / scale;
         if (self.view.width != width) {
             self.view.width = width;
-            self.view.invalidate(a);
+            self.view.invalidate(self.allocator);
         }
         const old_height = self.view.height;
-        try self.view.prepare(a, self.prompt, scale);
+        try self.view.prepare(self.allocator, self.prompt, scale);
         if (old_height != self.view.height) self.size();
         self.clamp();
         const height = @max(self.view.height * scale, target.height);
         const bytes = try wire.bufferSize(target.width, height);
         if (self.image.len != bytes / 4) {
-            const image = try a.alloc(u32, bytes / 4);
-            a.free(self.image);
+            const image = try self.allocator.alloc(u32, bytes / 4);
+            self.allocator.free(self.image);
             self.image = image;
         }
         const image: wire.Pixels = .{ .pixels = self.image, .width = target.width, .height = height };
@@ -308,6 +321,10 @@ pub const Dialog = struct {
                 return true;
             },
             else => {
+                if (self.mode == .confirm and (symbol == 's' or symbol == 'S') and modifiers & 8 != 0) {
+                    self.respond(true);
+                    return true;
+                }
                 if (self.focusedEntry()) |entry| {
                     if (!self.enabled) return true;
                     if (!entry.key(symbol, modifiers)) {
@@ -350,7 +367,10 @@ pub const Dialog = struct {
         self.response_idle = 0;
         self.accepted = self.response.? and !self.failed;
         self.response = null;
-        if (self.responded) |callback| callback(self.response_context, self.accepted);
+        if (self.responded) |callback| {
+            if (self.mode == .confirm) self.window.hide();
+            callback(self.response_context, self.accepted);
+        }
         return 0;
     }
     pub fn clear(self: *Dialog) void {

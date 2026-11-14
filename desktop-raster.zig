@@ -23,6 +23,9 @@ pub const Color = struct {
         };
     }
 };
+pub fn hex(value: u32) Color {
+    return Color.rgb(value, 1);
+}
 pub const Region = struct { x: i32, y: i32, width: u32, height: u32 };
 
 /// Composite a premultiplied ARGB source over a premultiplied destination.
@@ -216,6 +219,9 @@ pub const Canvas = struct {
         };
     }
 };
+pub fn rounded(canvas: Canvas, rect: Rect, radius: f64, value: u32) void {
+    canvas.draw(&.{rect.shape(radius)}, hex(value));
+}
 
 test "shape strokes blend once at intersections and preserve premultiplied alpha" {
     var pixels: [16]u32 = @splat(0);

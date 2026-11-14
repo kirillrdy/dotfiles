@@ -6,6 +6,7 @@ import signal
 import subprocess as sp
 import tempfile
 import time
+from session_fixture import wait_until, wait_wayland
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--fixture", required=True)
@@ -36,12 +37,6 @@ def start(command, name):
     processes.append(process)
     return process
 
-def wait_until(predicate, message, timeout=10):
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        assert time.monotonic() < deadline, message
-        time.sleep(0.03)
-
 def text(name):
     return (root / name).read_text(errors="replace")
 
@@ -54,8 +49,7 @@ def type_password(password):
 
 try:
     compositor = start([args.compositor, "compositor-only"], "compositor.log")
-    wait_until(lambda: list((root / "runtime").glob("wayland-*.lock")), "No Wayland socket")
-    env["WAYLAND_DISPLAY"] = next((root / "runtime").glob("wayland-*.lock")).stem
+    env["WAYLAND_DISPLAY"] = wait_wayland(root / "runtime", compositor, root / "compositor.log")
     locker = start([args.fixture], "lock.log")
     wait_until(lambda: "ext_session_lock_v1" in text("lock.log") and ".locked()" in text("lock.log"), "Lock not acquired")
     wait_until(lambda: text("lock.log").count(".ack_configure(") >= 2, "Both outputs were not configured")

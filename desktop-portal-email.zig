@@ -5,9 +5,7 @@ const libc = @import("desktop-libc.zig");
 
 const Options = @import("desktop-portal-options.zig").Options(error.InvalidEmailOption);
 const option = Options.get;
-fn text(value: ?*c.GVariant) [:0]const u8 {
-    return std.mem.span(c.g_variant_get_string(value, null));
-}
+const text = c.__zig.variant.text;
 // The HTML email input syntax used by the public portal, including single-label
 // domains. Quoted mailboxes and display-name forms are not part of this syntax.
 fn validAddress(address: []const u8) bool {

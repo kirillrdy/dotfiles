@@ -106,7 +106,7 @@ test "native buffer overview preserves wallpaper crops and workspace clipping" {
         @memset(pixels, 0xff222226);
         const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) };
         view.workspaceCard(canvas, rect(workspace), if (available) wallpaper else null, 30, false, false);
-        view.miniature(canvas, if (available) image.view() else null, rect(miniature), rect(clip), false);
+        view.miniatureRounded(canvas, if (available) image.view() else null, rect(miniature), rect(clip), 0, false);
         const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
         defer c.cairo_surface_destroy(surface);
         const cr = c.cairo_create(surface).?;

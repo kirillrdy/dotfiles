@@ -6,6 +6,43 @@ pub fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
 }
 pub const eq = @import("desktop-util.zig").eq;
+pub fn dupeZ(allocator: std.mem.Allocator, value: []const u8) [:0]u8 {
+    return allocator.dupeSentinel(u8, value, 0) catch @panic("out of memory");
+}
+pub fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
+    _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
+}
+pub const variant = struct {
+    pub fn builder(signature: [*:0]const u8) *c.GVariantBuilder {
+        return c.g_variant_builder_new(@ptrCast(signature)).?;
+    }
+    pub fn child(value: ?*c.GVariant, index: usize) *c.GVariant {
+        return c.g_variant_get_child_value(value, index).?;
+    }
+    pub fn text(value: ?*c.GVariant) [:0]const u8 {
+        return std.mem.span(c.g_variant_get_string(value, null));
+    }
+    pub fn slice(value: ?*c.GVariant) []const u8 {
+        return if (value) |v| std.mem.span(c.g_variant_get_string(v, null)) else "";
+    }
+    pub fn bytes(value: ?*c.GVariant) []const u8 {
+        const v = value orelse return "";
+        var len: usize = 0;
+        const data = c.g_variant_get_fixed_array(v, &len, 1) orelse return "";
+        return @as([*]const u8, @ptrCast(data))[0..len];
+    }
+    pub fn byteArray(value: []const u8) *c.GVariant {
+        return c.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), value.ptr, value.len, 1).?;
+    }
+    pub fn lookup(dict: ?*c.GVariant, key: [*:0]const u8, signature: ?[*:0]const u8) ?*c.GVariant {
+        return c.g_variant_lookup_value(dict, key, if (signature) |s| @ptrCast(s) else null);
+    }
+    pub fn nested(base: *c.GVariant, group: [*:0]const u8, key: [*:0]const u8) ?*c.GVariant {
+        const section = c.g_variant_lookup_value(base, group, null) orelse return null;
+        defer c.g_variant_unref(section);
+        return c.g_variant_lookup_value(section, key, null);
+    }
+};
 pub fn parentTo(widget: *c.GtkWidget, allocator: std.mem.Allocator, parent: [:0]const u8) void {
     const display = c.gdk_display_get_default();
     const window = c.gtk_widget_get_window(widget) orelse return;
@@ -64,6 +101,24 @@ pub fn pixbufAlphaMask(allocator: std.mem.Allocator, pixbuf: *c.GdkPixbuf, out_w
     out_width.* = width;
     out_height.* = height;
     return mask;
+}
+pub const ShmBuffer = struct {
+    proxy: *c.wl_buffer,
+    memory: *anyopaque,
+};
+pub fn createShmBuffer(shm: ?*c.wl_shm, name: [*:0]const u8, length: usize, width: u32, height: u32, stride: u32, format: u32) !ShmBuffer {
+    const libc = @import("desktop-libc.zig");
+    const fd = libc.memfd_create(name, libc.MFD_CLOEXEC);
+    if (fd < 0) return error.SharedMemory;
+    defer _ = libc.close(fd);
+    if (libc.ftruncate(fd, @intCast(length)) != 0) return error.SharedMemory;
+    const memory = libc.mmap(null, length, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
+    if (memory == libc.MAP_FAILED or memory == null) return error.SharedMemory;
+    errdefer _ = libc.munmap(memory, length);
+    const pool = c.wl_shm_create_pool(shm, fd, @intCast(length)) orelse return error.SharedMemory;
+    defer c.wl_shm_pool_destroy(pool);
+    const proxy = c.wl_shm_pool_create_buffer(pool, 0, @intCast(width), @intCast(height), @intCast(stride), format) orelse return error.SharedMemory;
+    return .{ .proxy = proxy, .memory = memory.? };
 }
 pub fn dispatchWayland(display: ?*c.wl_display) bool {
     const libc = @import("desktop-libc.zig");

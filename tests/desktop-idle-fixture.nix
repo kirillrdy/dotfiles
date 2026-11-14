@@ -1,20 +1,18 @@
 { pkgs }:
-let
-  desktop = import ../desktop-zig.nix { inherit pkgs; };
-in
-pkgs.runCommand "desktop-idle-check"
-  {
-    nativeBuildInputs = [
-      (pkgs.python3.withPackages (python: [ python.pygobject3 ]))
-      pkgs.dbus
-      pkgs.wtype
-    ];
-  }
-  ''
-    python3 ${./check-desktop-idle.py} \
-      --dbus-config ${pkgs.dbus}/share/dbus-1/session.conf \
-      --fixture ${desktop.tests}/bin/desktop-idle-fixture \
-      --locker ${desktop.tests}/bin/desktop-lock-fixture \
-      --compositor ${desktop}/bin/desktop-zig
-    touch "$out"
-  ''
+import ./fixture.nix { inherit pkgs; } {
+  name = "desktop-idle-check";
+  pygobject = true;
+  nativeBuildInputs = [
+    pkgs.dbus
+    pkgs.wtype
+  ];
+  script =
+    { desktop, dbusConfig, ... }:
+    ''
+      python3 ${./check-desktop-idle.py} \
+        --dbus-config ${dbusConfig} \
+        --fixture ${desktop.tests}/bin/desktop-idle-fixture \
+        --locker ${desktop.tests}/bin/desktop-lock-fixture \
+        --compositor ${desktop}/bin/desktop-zig
+    '';
+}

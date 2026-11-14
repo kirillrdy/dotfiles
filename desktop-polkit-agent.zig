@@ -10,12 +10,8 @@ const agent = name ++ ".AuthenticationAgent";
 const path = "/org/dotfiles/PolicyKit1/AuthenticationAgent";
 const xml = "<node><interface name='" ++ agent ++ "'><method name='BeginAuthentication'><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='a{ss}' direction='in'/><arg type='s' direction='in'/><arg type='a(sa{sv})' direction='in'/></method><method name='CancelAuthentication'><arg type='s' direction='in'/></method></interface></node>";
 const cast = c.__zig.cast;
-fn text(value: ?*c.GVariant) [:0]const u8 {
-    return std.mem.span(c.g_variant_get_string(value, null));
-}
-fn child(value: ?*c.GVariant, index: usize) *c.GVariant {
-    return c.g_variant_get_child_value(value, index).?;
-}
+const text = c.__zig.variant.text;
+const child = c.__zig.variant.child;
 fn replyError(invocation: ?*c.GDBusMethodInvocation, cancelled: bool, message: [*:0]const u8) void {
     c.g_dbus_method_invocation_return_dbus_error(invocation, if (cancelled) name ++ ".Error.Cancelled" else name ++ ".Error.Failed", message);
 }

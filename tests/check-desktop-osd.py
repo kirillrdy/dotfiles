@@ -8,16 +8,15 @@ import json
 import os
 import re
 import shutil
-import struct
 import subprocess as sp
 import sys
 import tempfile
 import time
-import zlib
 sys.dont_write_bytecode = True
 from backlight_mock import BacklightMock
 from audio_server import AudioServer
 from pathlib import Path
+from session_fixture import read_png, terminate_processes, wait_until, wait_wayland
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True, type=Path)
@@ -87,14 +86,7 @@ def send(*command):
 
 
 def wait_for(predicate, seconds=6):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.03)
-    raise AssertionError(
-        "Timed out waiting for state; " + (root / "osd.log").read_text()[-3000:]
-    )
+    wait_until(predicate, lambda: "Timed out waiting for state; " + log()[-3000:], timeout=seconds)
 
 
 def state():
@@ -104,15 +96,7 @@ def state():
 def pixels(name, output="HEADLESS-1"):
     path = root / (name + ".png")
     run(["grim", "-o", output, str(path)])
-    data = path.read_bytes()
-    chunks = []
-    position = 8
-    while position < len(data):
-        length = struct.unpack_from(">I", data, position)[0]
-        if data[position + 4 : position + 8] == b"IDAT":
-            chunks.append(data[position + 8 : position + 8 + length])
-        position += length + 12
-    return zlib.decompress(b"".join(chunks))
+    return read_png(path)[2]
 
 
 def log():
@@ -125,12 +109,7 @@ try:
     audio.command("set-mute", "@DEFAULT_AUDIO_SINK@", "1")
     audio.command("set-mute", "@DEFAULT_AUDIO_SOURCE@", "0")
     compositor = start(["desktop-zig", "compositor-only"], "compositor.log")
-    for _ in range(100):
-        if (root / "runtime/wayland-0").exists():
-            break
-        assert compositor.poll() is None, (root / "compositor.log").read_text()
-        time.sleep(0.05)
-    env["WAYLAND_DISPLAY"] = "wayland-0"
+    env["WAYLAND_DISPLAY"] = wait_wayland(root / "runtime", compositor, root / "compositor.log")
     run(
         [
             "wlr-randr",
@@ -295,11 +274,4 @@ try:
 finally:
     audio.stop()
     backlight.stop()
-    for process in reversed(processes):
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except sp.TimeoutExpired:
-                process.kill()
-                process.wait()
+    terminate_processes(processes, timeout=3)

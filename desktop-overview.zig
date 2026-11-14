@@ -93,6 +93,7 @@ const Overview = struct {
         self.* = .{ .launcher = apps.Launcher.init(null), .native = native, .surface = null, .wallpaper = wallpaper };
         self.surface = self.createSurface(native.outputs.items[0]) catch @panic("native overview surface");
         self.launcher.bindControls();
+        self.launcher.search_input.?.client = native;
         self.launcher.owner = self;
         self.launcher.redraw_fn = &redraw;
         self.launcher.hidden_fn = &hidden;

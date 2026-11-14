@@ -5,7 +5,6 @@ const devices = @import("desktop-devices.zig");
 const audio = @import("desktop-audio.zig");
 const battery_backend = @import("desktop-battery.zig");
 const backlight = @import("desktop-backlight.zig");
-pub const settings_client = @import("desktop-settings.zig");
 const network_backend = @import("desktop-network.zig");
 const session = @import("desktop-session.zig");
 const auth = @import("desktop-auth-dialog.zig");
@@ -18,9 +17,7 @@ const cast = c.__zig.cast;
 fn css(widget: anytype, name: [*:0]const u8) void {
     c.gtk_style_context_add_class(c.gtk_widget_get_style_context(widget), name);
 }
-fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
-    _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
-}
+const connect = c.__zig.connect;
 pub fn settings(schema: [*:0]const u8) ?*c.GSettings {
     const source = c.g_settings_schema_source_get_default() orelse return null;
     const found = c.g_settings_schema_source_lookup(source, schema, 1) orelse return null;

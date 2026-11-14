@@ -8,15 +8,13 @@ are retained in a temporary directory printed at startup.
 import argparse
 import sys
 sys.dont_write_bytecode = True
-from session_fixture import Processes, command as session_command, wait_ready
+from session_fixture import Processes, VirtualPointer, command as session_command, read_png, wait_ready, wait_wayland
 import json
 import os
 import re
 import shlex
 import shutil
 import subprocess as sp
-import struct
-import zlib
 import tempfile
 import time
 from pathlib import Path
@@ -65,19 +63,15 @@ def run(args):
 
 
 def pointer_command(command):
-    pointer_process.stdin.write(command + "\n")
-    pointer_process.stdin.flush()
-    assert pointer_process.stdout.readline().strip() == "ok"
+    pointer_device.command(command)
 
 
 def pointer(x, y):
-    pointer_command(f"move {x} {y}")
+    pointer_device.move(x, y)
 
 
 def click(x, y):
-    pointer(x, y)
-    pointer_command("button 1")
-    pointer_command("button 0")
+    pointer_device.click(x, y)
     time.sleep(0.4)
 
 
@@ -89,26 +83,7 @@ def check_clock():
     # A live popup can still work when the initial label was clipped away.
     path = root / "panel-clock.png"
     run([str(args.bin / "desktop-zig"), "screenshot", "-o", "HEADLESS-1", str(path)])
-    png = path.read_bytes()
-    width, height = struct.unpack_from(">II", png, 16)
-    compressed = []
-    offset = 8
-    while offset < len(png):
-        length = struct.unpack_from(">I", png, offset)[0]
-        if png[offset + 4:offset + 8] == b"IDAT":
-            compressed.append(png[offset + 8:offset + 8 + length])
-        offset += length + 12
-    raw = zlib.decompress(b"".join(compressed))
-    rows = []
-    stride = width * 3
-    for y in range(32):
-        filter_type = raw[y * (stride + 1)]
-        row = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
-        assert filter_type in (0, 1), filter_type
-        if filter_type == 1:
-            for x in range(3, stride):
-                row[x] = (row[x] + row[x - 3]) & 255
-        rows.append(row)
+    width, height, rows = read_png(path, max_rows=32)
     for low, high in ((width // 2 - 128, width // 2),
                       (width // 2, width // 2 + 128)):
         bright = sum(min(rows[y][x * 3:x * 3 + 3]) > 180
@@ -137,12 +112,7 @@ def check():
 wtype = "wtype"
 try:
     compositor = start(["desktop-zig", "compositor-only"], "compositor.log")
-    for _ in range(100):
-        if (root / "runtime/wayland-0").exists():
-            break
-        assert compositor.poll() is None, (root / "compositor.log").read_text()
-        time.sleep(0.05)
-    env["WAYLAND_DISPLAY"] = "wayland-0"
+    env["WAYLAND_DISPLAY"] = wait_wayland(root / "runtime", compositor, root / "compositor.log")
     run(
         [
             "wlr-randr",
@@ -160,10 +130,8 @@ try:
             "1728,0",
         ]
     )
-    pointer_process = sp.Popen([args.bin / "desktop-pointer-fixture"], env=env,
-                                stdin=sp.PIPE, stdout=sp.PIPE, text=True)
-    processes.track(pointer_process)
-    assert pointer_process.stdout.readline().strip() == "ready"
+    pointer_device = VirtualPointer(args.bin / "desktop-pointer-fixture", env=env)
+    processes.track(pointer_device.process)
     pointer_command("size 3008 1080")
     seat = start([wtype, "-s", "55000"], "seat.log")
     config = json.loads(args.config.read_text())

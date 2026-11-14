@@ -17,9 +17,7 @@ const bus = "org.freedesktop.DBus";
 const bus_path = "/org/freedesktop/DBus";
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
-fn text(value: ?*c.GVariant) []const u8 {
-    return std.mem.span(c.g_variant_get_string(value, null));
-}
+const text = c.__zig.variant.text;
 fn string(value: [*:0]const u8) ?*c.GVariant {
     return c.g_variant_new("s", value);
 }

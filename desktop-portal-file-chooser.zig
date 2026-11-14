@@ -4,12 +4,8 @@ const c = @import("desktop-gtk.zig");
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
 const child = c.g_variant_get_child_value;
-fn text(value: ?*c.GVariant) [:0]const u8 {
-    return std.mem.span(c.g_variant_get_string(value, null));
-}
-fn builder(signature: [*:0]const u8) *c.GVariantBuilder {
-    return c.g_variant_builder_new(@ptrCast(signature)).?;
-}
+const text = c.__zig.variant.text;
+const builder = c.__zig.variant.builder;
 const Options = @import("desktop-portal-options.zig").Options(error.InvalidFileChooserOption);
 const option = Options.get;
 const boolean = Options.boolean;

@@ -7,60 +7,14 @@ and --wallpaper for the build being checked; the current desktop is untouched.
 
 import argparse
 from ime_fixture import InputMethod
-from session_fixture import Processes, command as session_command, wait_ready
+from session_fixture import Processes, VirtualPointer, command as session_command, read_png_pixels as read_png, wait_ready, wait_until as wait_for, wait_wayland
 import os
 import re
-import select
-import struct
 import subprocess as sp
 import sys
 import tempfile
 import time
-import zlib
 from pathlib import Path
-
-
-def read_png(path):
-    data = path.read_bytes()[8:]
-    pos = w = h = 0
-    idat = bytearray()
-    while pos < len(data):
-        ln = int.from_bytes(data[pos : pos + 4], "big")
-        tag = data[pos + 4 : pos + 8]
-        body = data[pos + 8 : pos + 8 + ln]
-        pos += 12 + ln
-        if tag == b"IHDR":
-            w, h = struct.unpack(">II", body[:8])
-        elif tag == b"IDAT":
-            idat.extend(body)
-    raw = zlib.decompress(bytes(idat))
-    stride = len(raw) // h
-    bpp = (stride - 1) // w
-    rows = []
-    prev = bytes(w * bpp)
-    for y in range(h):
-        ft = raw[y * stride]
-        row = bytearray(raw[y * stride + 1 : (y + 1) * stride])
-        if ft == 1:
-            for i in range(bpp, len(row)):
-                row[i] = (row[i] + row[i - bpp]) & 255
-        elif ft == 2:
-            for i in range(len(row)):
-                row[i] = (row[i] + prev[i]) & 255
-        elif ft == 3:
-            for i in range(len(row)):
-                row[i] = (row[i] + ((row[i - bpp] if i >= bpp else 0) + prev[i]) // 2) & 255
-        elif ft == 4:
-            for i in range(len(row)):
-                a = row[i - bpp] if i >= bpp else 0
-                b = prev[i]
-                c = prev[i - bpp] if i >= bpp else 0
-                p = a + b - c
-                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
-                row[i] = (row[i] + (a if pa <= pb and pa <= pc else (b if pb <= pc else c))) & 255
-        rows.append(row)
-        prev = row
-    return w, h, lambda x, y: tuple(rows[y][x * bpp : x * bpp + 3])
 
 
 def main():
@@ -130,27 +84,11 @@ def main():
                 command, env=env, capture_output=True, text=True, check=True, timeout=15
             ).stdout
 
-        def wait_for(condition, message):
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                if condition():
-                    return
-                time.sleep(0.05)
-            raise AssertionError(message)
-
         def pointer_command(command):
-            pointer.stdin.write(command + "\n")
-            pointer.stdin.flush()
-            assert select.select([pointer.stdout], [], [], 5)[0], (
-                "Virtual pointer timed out"
-            )
-            assert pointer.stdout.readline().strip() == "ok"
+            pointer.command(command)
 
         def click(x, y):
-            pointer_command(f"move {x} {y}")
-            pointer_command("button 1")
-            pointer_command("button 0")
-            time.sleep(0.3)
+            pointer.click(x, y, post_delay=0.3)
 
         def key(name):
             run(["wtype", "-k", name])
@@ -174,24 +112,14 @@ def main():
 
         try:
             compositor = start([args.compositor, "compositor-only"], "compositor")
-            wait_for(
-                lambda: (runtime / "wayland-0").exists(), "Compositor did not start"
-            )
-            env["WAYLAND_DISPLAY"] = "wayland-0"
+            env["WAYLAND_DISPLAY"] = wait_wayland(runtime, compositor, artifacts / "compositor.log")
             run(["wlr-randr", "--output", "HEADLESS-1", "--custom-mode", f"1728x1080@{args.refresh_rate}"])
-            pointer = sp.Popen(
-                [str(args.bin_dir / "desktop-pointer-fixture")],
+            pointer = VirtualPointer(
+                args.bin_dir / "desktop-pointer-fixture",
                 env=env,
-                stdin=sp.PIPE,
-                stdout=sp.PIPE,
                 stderr=(artifacts / "pointer.log").open("w"),
-                text=True,
             )
-            processes.track(pointer)
-            assert select.select([pointer.stdout], [], [], 5)[0], (
-                "Virtual pointer did not start"
-            )
-            assert pointer.stdout.readline().strip() == "ready"
+            processes.track(pointer.process)
             panel_config = root / "panel.json"
             panel_config.write_text(
                 '{"left":[{"kind":"activities","name":"gnome-activities"}],"center":[{"kind":"clock","name":"gnome-clock"}],"right":[]}'

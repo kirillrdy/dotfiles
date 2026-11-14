@@ -142,7 +142,6 @@ test {
     _ = @import("desktop-file-list.zig");
     _ = @import("desktop-keyboard.zig");
     _ = @import("desktop-input.zig");
-    _ = @import("desktop-search-entry.zig");
     _ = @import("desktop-apps-view.zig");
     _ = @import("desktop-apps.zig");
     _ = @import("desktop-dash-view.zig");
@@ -164,7 +163,6 @@ test {
     _ = @import("desktop-settings.zig");
     _ = @import("desktop-http.zig");
     _ = @import("desktop-lock-auth.zig");
-    _ = @import("desktop-virtual-pointer.zig");
     _ = @import("tests/desktop-power-fixture.zig");
 }
 

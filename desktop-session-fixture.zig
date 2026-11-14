@@ -31,7 +31,6 @@ fn cancelLater(ptr: c.gpointer) callconv(.c) c.gboolean {
     c.g_cancellable_cancel(@ptrCast(@alignCast(ptr)));
     return 0;
 }
-extern fn g_object_weak_ref(*c.GObject, *const fn (?*anyopaque, ?*c.GObject) callconv(.c) void, ?*anyopaque) void;
 fn finalized(ptr: ?*anyopaque, _: ?*c.GObject) callconv(.c) void {
     const live: *bool = @ptrCast(@alignCast(ptr));
     live.* = false;
@@ -101,11 +100,11 @@ test "session: private logind actions and quick-settings lifecycle" {
         const popover = c.gtk_popover_new(button).?;
         const controls = quick.Controls.create(popover, "true", "true");
         var live = true;
-        g_object_weak_ref(@ptrCast(controls.cancel), &finalized, &live);
+        c.g_object_weak_ref(@ptrCast(controls.cancel), &finalized, &live);
         var battery_live = controls.battery_service != null;
-        if (controls.battery_service) |service| g_object_weak_ref(@ptrCast(service.cancel), &finalized, &battery_live);
+        if (controls.battery_service) |service| c.g_object_weak_ref(@ptrCast(service.cancel), &finalized, &battery_live);
         var network_live = controls.devices.network_client != null;
-        if (controls.devices.network_client) |client| g_object_weak_ref(@ptrCast(client.service.cancel), &finalized, &network_live);
+        if (controls.devices.network_client) |client| c.g_object_weak_ref(@ptrCast(client.service.cancel), &finalized, &network_live);
         try checkPowerDialog(controls);
         // Enter defaults to Cancel. Explicit keyboard selection sends one action.
         controls.view.submenu = .power;

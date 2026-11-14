@@ -54,10 +54,6 @@ const Context = struct {
     }
 };
 
-pub fn miniature(canvas: Canvas, source: ?raster.Image, rect: Rect, clip: Rect, animated: bool) void {
-    miniatureRounded(canvas, source, rect, clip, 0, animated);
-}
-
 pub fn miniatureRounded(canvas: Canvas, source: ?raster.Image, rect: Rect, clip: Rect, radius: f64, animated: bool) void {
     const context = Context.init(canvas) orelse return;
     defer context.deinit();

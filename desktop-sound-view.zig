@@ -399,9 +399,7 @@ pub const View = struct {
         }
     }
 };
-fn color(rgb: u32) raster.Color {
-    return raster.Color.rgb(rgb, 1);
-}
+const color = raster.hex;
 
 test "sound cards clamp sliders and device menu hit testing blocks controls behind it" {
     const allocator = std.testing.allocator;

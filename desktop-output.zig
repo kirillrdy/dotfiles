@@ -1,10 +1,10 @@
 //! One-shot display scaling through wlr-output-management, independent of the shell daemon.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
+const wayland = @import("desktop-wayland.zig");
 const p = @import("desktop-protocols.zig");
 const a = std.heap.page_allocator;
 const Proxy = c.wl_proxy;
-extern const wl_callback_interface: c.wl_interface;
 
 pub const Options = struct { name: []const u8, scale: i32 };
 pub fn parse(args: []const []const u8) !Options {
@@ -15,9 +15,7 @@ pub fn parse(args: []const []const u8) !Options {
     if (!std.math.isFinite(fixed) or fixed < 1 or fixed > std.math.maxInt(i32)) return error.InvalidOutputScale;
     return .{ .name = args[1], .scale = @intFromFloat(fixed) };
 }
-fn cast(comptime T: type, ptr: ?*anyopaque) *T {
-    return @ptrCast(@alignCast(ptr));
-}
+const cast = c.__zig.cast;
 fn request(proxy: *Proxy, opcode: u32, interface: ?*const c.wl_interface, flags: u32, args: []c.wl_argument) ?*Proxy {
     return c.wl_proxy_marshal_array_flags(proxy, opcode, interface, c.wl_proxy_get_version(proxy), flags, if (args.len == 0) null else args.ptr);
 }
@@ -166,7 +164,7 @@ pub fn run(args: []const []const u8) !void {
     if (c.wl_registry_add_listener(registry, &registry_listener, &client) != 0) return error.WaylandListenerFailed;
     // This sync follows registry enumeration, so a missing protocol fails promptly.
     var sync_args = [_]c.wl_argument{.{ .o = null }};
-    const sync = request(@ptrCast(display), 0, &wl_callback_interface, 0, &sync_args) orelse return error.WaylandListenerFailed;
+    const sync = request(@ptrCast(display), 0, &wayland.wl_callback_interface, 0, &sync_args) orelse return error.WaylandListenerFailed;
     defer c.wl_proxy_destroy(sync);
     if (c.wl_proxy_add_listener(sync, @ptrCast(@constCast(&sync_listener)), &client) != 0) return error.WaylandListenerFailed;
     const source = c.g_unix_fd_add(c.wl_display_get_fd(display), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &Client.dispatch, &client);

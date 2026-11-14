@@ -112,7 +112,7 @@ fn consent(init: std.process.Init) !void {
     var done: Done = .{};
     var allocator: std.heap.DebugAllocator(.{}) = .init;
     defer if (allocator.deinit() == .leak) @panic("native consent allocation leak");
-    const dialog = try native.consent.Dialog.create(allocator.allocator(), "Native consent fixture", "An application requests your account information.\nName: 日本語", "Share", "", &done, &Done.completed);
+    const dialog = try native.auth.Dialog.createWithOptions(.confirm, "An application requests your account information.\nName: 日本語", .{ .allocator = allocator.allocator(), .title = "Native consent fixture", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .response_context = &done, .responded = &Done.completed });
     defer dialog.destroy();
     const deadline = c.g_get_monotonic_time() + 8_000_000;
     while (done.accepted == null and c.g_get_monotonic_time() < deadline) {

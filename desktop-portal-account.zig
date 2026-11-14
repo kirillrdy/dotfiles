@@ -2,12 +2,12 @@
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const cast = c.__zig.cast;
-const consent = @import("desktop-consent.zig");
+const auth = @import("desktop-auth-dialog.zig");
 pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;
 pub const Dialog = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
-    host: ?*consent.Dialog = null,
+    host: ?*auth.Dialog = null,
     id: [:0]const u8,
     name: [:0]const u8,
     image: [:0]const u8,
@@ -43,7 +43,7 @@ pub const Dialog = struct {
             self.image = try a.dupeSentinel(u8, std.mem.span(uri), 0);
         }
         const prompt = try std.fmt.allocPrintSentinel(a, "{s} wants to access your account information.\n{s}\nName: {s}\nUser name: {s}\n{s}", .{ app, if (reason != null) c.g_variant_get_string(reason, null) else @as([*:0]const u8, ""), self.name, self.id, if (self.image.len > 0) "Your account picture will also be shared." else "" }, 0);
-        self.host = try consent.Dialog.create(allocator, "Share account information", prompt, "Share", parent, self, &responded);
+        self.host = try auth.Dialog.createWithOptions(.confirm, prompt, .{ .allocator = allocator, .title = "Share account information", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .parent = parent, .response_context = self, .responded = &responded });
         return self;
     }
     pub fn destroy(self: *Dialog) void {

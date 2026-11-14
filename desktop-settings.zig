@@ -13,7 +13,7 @@ const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.pa
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
 fn z(value: []const u8) [:0]u8 {
-    return a.dupeSentinel(u8, value, 0) catch @panic("out of memory");
+    return c.__zig.dupeZ(a, value);
 }
 pub const Mode = enum { sound, network };
 pub const Settings = struct {

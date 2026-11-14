@@ -10,10 +10,6 @@ const raster = @import("desktop-raster.zig");
 const a = std.heap.page_allocator;
 const Proxy = c.wl_proxy;
 const cast = c.__zig.cast;
-extern const wl_compositor_interface: c.wl_interface;
-extern const wl_surface_interface: c.wl_interface;
-extern const wl_region_interface: c.wl_interface;
-extern const wl_callback_interface: c.wl_interface;
 
 pub const top = 1;
 pub const bottom = 2;
@@ -169,7 +165,7 @@ pub const Client = struct {
         const self = cast(Client, data);
         const kind = std.mem.span(interface);
         if (std.mem.eql(u8, kind, "wl_compositor")) {
-            self.compositor = @ptrCast(c.wl_registry_bind(registry, name, &wl_compositor_interface, @min(version, 4)));
+            self.compositor = @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_compositor_interface, @min(version, 4)));
         } else if (std.mem.eql(u8, kind, "wl_shm")) {
             self.shm = @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_shm_interface, 1));
         } else if (std.mem.eql(u8, kind, "zwlr_layer_shell_v1")) {
@@ -351,22 +347,14 @@ const Buffer = struct {
 
     fn create(owner: *Surface, width: u32, height: u32) !*Buffer {
         const size = try bufferSize(width, height);
-        const fd = libc.memfd_create("desktop-surface", libc.MFD_CLOEXEC);
-        if (fd < 0) return error.SharedMemory;
-        defer _ = libc.close(fd);
-        if (libc.ftruncate(fd, @intCast(size)) != 0) return error.SharedMemory;
-        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
-        if (memory == libc.MAP_FAILED or memory == null) return error.SharedMemory;
-        errdefer _ = libc.munmap(memory, size);
-        const pool = c.wl_shm_create_pool(owner.client.shm, fd, @intCast(size)) orelse return error.SharedMemory;
-        defer c.wl_shm_pool_destroy(pool);
-        const proxy = c.wl_shm_pool_create_buffer(pool, 0, @intCast(width), @intCast(height), @intCast(width * 4), c.WL_SHM_FORMAT_ARGB8888) orelse return error.SharedMemory;
-        errdefer c.wl_buffer_destroy(proxy);
+        const shm = try c.__zig.createShmBuffer(owner.client.shm, "desktop-surface", size, width, height, width * 4, c.WL_SHM_FORMAT_ARGB8888);
+        errdefer _ = libc.munmap(shm.memory, size);
+        errdefer c.wl_buffer_destroy(shm.proxy);
         const self = try a.create(Buffer);
         errdefer a.destroy(self);
-        self.* = .{ .client = owner.client, .owner = owner, .proxy = proxy, .memory = @ptrCast(memory), .size = size, .width = width, .height = height };
+        self.* = .{ .client = owner.client, .owner = owner, .proxy = shm.proxy, .memory = @ptrCast(shm.memory), .size = size, .width = width, .height = height };
         try owner.client.buffers.append(a, self);
-        listen(proxy, &listener, self);
+        listen(shm.proxy, &listener, self);
         return self;
     }
     fn release(data: ?*anyopaque, _: ?*c.wl_buffer) callconv(.c) void {
@@ -486,11 +474,11 @@ pub const Surface = struct {
             return;
         }
         const compositor = self.client.compositor.?;
-        self.proxy = c.wl_proxy_marshal_flags(compositor, 0, &wl_surface_interface, c.wl_proxy_get_version(compositor), 0, @as(?*anyopaque, null)) orelse return error.WaylandSurface;
+        self.proxy = c.wl_proxy_marshal_flags(compositor, 0, &wayland.wl_surface_interface, c.wl_proxy_get_version(compositor), 0, @as(?*anyopaque, null)) orelse return error.WaylandSurface;
         errdefer self.hide();
         listen(self.proxy.?, &surface_listener, self);
         if (!self.options.interactive) {
-            const region = c.wl_proxy_marshal_flags(compositor, 1, &wl_region_interface, 1, 0, @as(?*anyopaque, null)) orelse return error.WaylandSurface;
+            const region = c.wl_proxy_marshal_flags(compositor, 1, &wayland.wl_region_interface, 1, 0, @as(?*anyopaque, null)) orelse return error.WaylandSurface;
             send(self.proxy.?, 5, .{region}); // Passive feedback never intercepts input.
             destroyProxy(region, 0);
         }
@@ -639,7 +627,7 @@ pub const Surface = struct {
         if (self.options.clear_buffer) @memset(pixels[0 .. buffer.size / 4], 0);
         self.paint(self.data, .{ .pixels = pixels[0 .. buffer.size / 4], .width = width, .height = height });
         if (self.next_frame != null) {
-            const callback = c.wl_proxy_marshal_flags(self.proxy.?, 3, &wl_callback_interface, 1, 0, @as(?*anyopaque, null)) orelse return error.WaylandFrameCallback;
+            const callback = c.wl_proxy_marshal_flags(self.proxy.?, 3, &wayland.wl_callback_interface, 1, 0, @as(?*anyopaque, null)) orelse return error.WaylandFrameCallback;
             self.frame_callback = callback;
             listen(callback, &frame_listener, self);
         }

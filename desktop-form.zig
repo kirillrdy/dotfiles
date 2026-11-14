@@ -759,9 +759,7 @@ pub const Form = struct {
         }
     }
 };
-fn color(rgb: u32) raster.Color {
-    return raster.Color.rgb(rgb, 1);
-}
+const color = raster.hex;
 fn drawText(canvas: raster.Canvas, mask_value: text.Mask, x: f64, y: f64, tint: u32) void {
     mask_value.paint(canvas, x, y, color(tint));
 }

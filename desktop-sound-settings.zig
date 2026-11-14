@@ -5,9 +5,7 @@ const audio = @import("desktop-audio.zig");
 pub const native = @import("desktop-sound-view.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
-fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
-    _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
-}
+const connect = c.__zig.connect;
 pub const Sound = struct {
     window: *c.GtkWidget,
     canvas: *c.GtkWidget,

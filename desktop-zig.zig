@@ -266,7 +266,6 @@ fn requireSession() !void {
 // Shared production namespace for isolated protocol and lifecycle clients.
 pub const gtk = @import("desktop-gtk.zig");
 pub const capture = @import("desktop-capture.zig");
-pub const runtime = @import("desktop-runtime.zig");
 pub const power = @import("desktop-power.zig");
 pub const secrets = @import("desktop-secrets.zig");
 pub const portal = @import("desktop-portal.zig");
@@ -286,8 +285,6 @@ pub const lock = @import("desktop-lock.zig");
 pub const auth = @import("desktop-lock-auth.zig");
 pub const apps = @import("desktop-apps.zig");
 pub const dash_view = @import("desktop-dash-view.zig");
-pub const http = @import("desktop-http.zig");
-pub const virtual_pointer = @import("desktop-virtual-pointer.zig");
 pub const printing = @import("desktop-portal-print.zig");
 pub const chooser = @import("desktop-portal-file-chooser.zig");
 pub const util = @import("desktop-util.zig");

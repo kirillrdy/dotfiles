@@ -200,9 +200,7 @@ pub const View = struct {
         }
     }
 };
-fn color(value: u32) raster.Color {
-    return raster.Color.rgb(value, 1);
-}
+const color = raster.hex;
 fn paintMask(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64) void {
     mask.paint(canvas, x, y, color(0xffffff));
 }

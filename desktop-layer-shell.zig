@@ -311,20 +311,6 @@ pub fn set_anchor(window: [*c]c.GtkWindow, edge: Edge, enabled: c.gboolean) void
     self.updateZone();
     self.invalidate();
 }
-pub fn set_margin(window: [*c]c.GtkWindow, edge: Edge, margin: i32) void {
-    const self = State.get(window);
-    self.margins[@backingInt(edge)] = margin;
-    self.sendMargins();
-    self.updateZone();
-    self.invalidate();
-}
-pub fn set_exclusive_zone(window: [*c]c.GtkWindow, zone: i32) void {
-    const self = State.get(window);
-    self.auto_zone = false;
-    self.zone = zone;
-    if (self.role) |role| request(role, 2, .{zone});
-    self.invalidate();
-}
 pub fn auto_exclusive_zone_enable(window: [*c]c.GtkWindow) void {
     const self = State.get(window);
     self.auto_zone = true;
@@ -364,7 +350,10 @@ test "native layer roles configure, reserve space, attach GTK popups, and remap"
     try std.testing.expect(self.configured_size[0] >= 160);
     try std.testing.expect(self.zone >= 32);
     const zone = self.zone;
-    set_margin(gtk_window, .bottom, 7);
+    self.margins[@backingInt(Edge.bottom)] = 7;
+    self.sendMargins();
+    self.updateZone();
+    self.invalidate();
     try std.testing.expectEqual(zone + 7, self.zone);
 
     const Probe = struct {

@@ -1,17 +1,12 @@
 { pkgs }:
-let
-  desktop = import ../desktop-zig.nix { inherit pkgs; };
-in
-pkgs.runCommand "desktop-output-check"
-  {
-    nativeBuildInputs = [
-      pkgs.python3
-      pkgs.wlr-randr
-    ];
-  }
-  ''
-    python3 ${./check-desktop-output.py} \
-      --binary ${desktop}/bin/desktop-zig \
-      --compositor ${desktop}/bin/desktop-zig
-    touch "$out"
-  ''
+import ./fixture.nix { inherit pkgs; } {
+  name = "desktop-output-check";
+  nativeBuildInputs = [ pkgs.wlr-randr ];
+  script =
+    { desktop, ... }:
+    ''
+      python3 ${./check-desktop-output.py} \
+        --binary ${desktop}/bin/desktop-zig \
+        --compositor ${desktop}/bin/desktop-zig
+    '';
+}

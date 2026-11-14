@@ -49,6 +49,7 @@ pkgs.stdenv.mkDerivation {
       || file.name == "check-desktop-notifications.py"
       || file.name == "check-desktop-date-menu.py"
       || file.name == "check-desktop-window.py"
+      || file.name == "session_fixture.py"
       || file.name == "wayland_ui.py"
       || file.name == "protocol-metadata.py"
     ) ./.;

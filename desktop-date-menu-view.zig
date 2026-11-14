@@ -450,9 +450,7 @@ fn focusRing(canvas: raster.Canvas, r: Rect, radius: f64) void {
 fn sameDate(first: ?*c.GDateTime, second: ?*c.GDateTime) bool {
     return first != null and second != null and c.g_date_time_get_year(first) == c.g_date_time_get_year(second) and c.g_date_time_get_day_of_year(first) == c.g_date_time_get_day_of_year(second);
 }
-fn color(value: u32) raster.Color {
-    return raster.Color.rgb(value, 1);
-}
+const color = raster.hex;
 fn jsonString(a: std.mem.Allocator, value: ?std.json.Value) ![:0]const u8 {
     if (value) |v| if (v == .string) return a.dupeSentinel(u8, v.string, 0);
     return "";
@@ -500,12 +498,12 @@ test "native calendar navigates leap days and years with keyboard focus at both 
         try std.testing.expectEqual(scale, view.scale);
     }
 }
-const test_history =
-    \\[{"id":1,"created":1,"app":"First","title":"Older","body":"One"},
-    \\ {"id":2,"created":2,"app":"Second","title":"Middle","body":"Two"},
-    \\ {"id":3,"created":3,"app":"Messages 東京","title":"مرحبا <&>","body":"<b>Long body</b> &amp; 東京 long long long long long long long long long long long long long long long long long long long long long long long long long long", "actions":[{"key":"default","label":"Open"},{"key":"reply","label":"Reply"},{"key":"archive","label":"Archive"}]}]
-;
 test "native history preserves expansion and focus across snapshots and clips scrolling" {
+    const test_history =
+        \\[{"id":1,"created":1,"app":"First","title":"Older","body":"One"},
+        \\ {"id":2,"created":2,"app":"Second","title":"Middle","body":"Two"},
+        \\ {"id":3,"created":3,"app":"Messages 東京","title":"مرحبا <&>","body":"<b>Long body</b> &amp; 東京 long long long long long long long long long long long long long long long long long long long long long long long long long long", "actions":[{"key":"default","label":"Open"},{"key":"reply","label":"Reply"},{"key":"archive","label":"Archive"}]}]
+    ;
     c.gtk_init(null, null);
     var view = try View.init(std.testing.allocator);
     defer view.deinit();

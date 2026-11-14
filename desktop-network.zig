@@ -13,12 +13,10 @@ const profile_iface = name ++ ".Settings.Connection";
 const active_iface = name ++ ".Connection.Active";
 const cast = c.__zig.cast;
 fn z(value: []const u8) [:0]u8 {
-    return a.dupeSentinel(u8, value, 0) catch @panic("out of memory");
+    return c.__zig.dupeZ(a, value);
 }
 const eq = c.__zig.eq;
-fn string(value: ?*c.GVariant) []const u8 {
-    return if (value) |v| std.mem.span(c.g_variant_get_string(v, null)) else "";
-}
+const string = c.__zig.variant.slice;
 fn prop(proxy: *c.GDBusProxy, key: [*:0]const u8) ?*c.GVariant {
     return c.g_dbus_proxy_get_cached_property(proxy, key);
 }
@@ -37,20 +35,11 @@ fn boolean(proxy: *c.GDBusProxy, key: [*:0]const u8) bool {
     defer c.g_variant_unref(v);
     return c.g_variant_get_boolean(v) != 0;
 }
-fn bytes(value: ?*c.GVariant) []const u8 {
-    const v = value orelse return "";
-    var len: usize = 0;
-    const data = c.g_variant_get_fixed_array(v, &len, 1) orelse return "";
-    return @as([*]const u8, @ptrCast(data))[0..len];
-}
+const bytes = c.__zig.variant.bytes;
 fn section(value: *c.GVariant, key: [*:0]const u8) ?*c.GVariant {
     return c.g_variant_lookup_value(value, key, null);
 }
-fn setting(value: *c.GVariant, group_key: [*:0]const u8, key: [*:0]const u8) ?*c.GVariant {
-    const s = section(value, group_key) orelse return null;
-    defer c.g_variant_unref(s);
-    return section(s, key);
-}
+const setting = c.__zig.variant.nested;
 fn settingText(value: *c.GVariant, group_key: [*:0]const u8, key: [*:0]const u8) [:0]u8 {
     const v = setting(value, group_key, key);
     defer if (v) |p| c.g_variant_unref(p);
@@ -236,7 +225,7 @@ pub const Service = struct {
         }
         self.manager = manager;
         if (manager) |m| {
-            g.g_dbus_connection_set_exit_on_close(g.g_dbus_object_manager_client_get_connection(@ptrCast(m)), 0);
+            c.g_dbus_connection_set_exit_on_close(g.g_dbus_object_manager_client_get_connection(@ptrCast(m)), 0);
             _ = c.g_signal_connect_data(m, "object-added", @ptrCast(&objectsChanged), self, null, 0);
             _ = c.g_signal_connect_data(m, "object-removed", @ptrCast(&objectsChanged), self, null, 0);
             _ = c.g_signal_connect_data(m, "interface-added", @ptrCast(&interfacesChanged), self, null, 0);
@@ -426,7 +415,7 @@ pub const Service = struct {
                 for (self.state.active.items) |v| {
                     if (eq(v.profile, r.path)) active = true;
                 }
-                self.state.profiles.append(a, .{ .path = z(r.path), .uuid = settingText(base, "connection", "uuid"), .title = settingText(base, "connection", "id"), .kind = settingText(base, "connection", "type"), .ssid = a.dupe(u8, bytes(ssid)) catch @panic("out of memory"), .active = active, .base = g.g_variant_ref(base).?, .version = r.version }) catch @panic("out of memory");
+                self.state.profiles.append(a, .{ .path = z(r.path), .uuid = settingText(base, "connection", "uuid"), .title = settingText(base, "connection", "id"), .kind = settingText(base, "connection", "type"), .ssid = a.dupe(u8, bytes(ssid)) catch @panic("out of memory"), .active = active, .base = c.g_variant_ref(base).?, .version = r.version }) catch @panic("out of memory");
             }
             index += 1;
         }
@@ -537,15 +526,13 @@ pub const Client = struct {
         if (call.pending == 0) call.finish(.success);
     }
 };
-fn builder(kind: [*:0]const u8) *g.GVariantBuilder {
-    return g.g_variant_builder_new(@ptrCast(kind));
+const builder = c.__zig.variant.builder;
+fn add(b: *c.GVariantBuilder, key: [*:0]const u8, value: ?*c.GVariant) void {
+    c.g_variant_builder_add(b, "{sv}", key, value);
 }
-fn add(b: *g.GVariantBuilder, key: [*:0]const u8, value: ?*c.GVariant) void {
-    g.g_variant_builder_add(b, "{sv}", key, value);
-}
-fn group(b: *g.GVariantBuilder, key: [*:0]const u8, inner: *g.GVariantBuilder) void {
-    g.g_variant_builder_add(b, "{s@a{sv}}", key, g.g_variant_builder_end(inner));
-    g.g_variant_builder_unref(inner);
+fn group(b: *c.GVariantBuilder, key: [*:0]const u8, inner: *c.GVariantBuilder) void {
+    c.g_variant_builder_add(b, "{s@a{sv}}", key, c.g_variant_builder_end(inner));
+    c.g_variant_builder_unref(inner);
 }
 pub const secret_groups = [_][:0]const u8{ "802-11-wireless-security", "802-1x", "vpn", "gsm", "cdma", "pppoe", "wireguard", "macsec" };
 pub fn secretProperty(key: []const u8) bool {
@@ -568,7 +555,7 @@ fn hasSecrets(settings: *c.GVariant) bool {
 }
 fn overlayDictionary(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
     const out = builder(c.g_variant_get_type_string(patch));
-    defer g.g_variant_builder_unref(out);
+    defer c.g_variant_builder_unref(out);
     for ([_]*c.GVariant{ base, patch }, 0..) |source, pass| for (0..c.g_variant_n_children(source)) |i| {
         const pair = c.g_variant_get_child_value(source, i).?;
         defer c.g_variant_unref(pair);
@@ -580,17 +567,17 @@ fn overlayDictionary(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
                 continue;
             }
         }
-        g.g_variant_builder_add_value(out, pair);
+        c.g_variant_builder_add_value(out, pair);
     };
-    return g.g_variant_ref_sink(g.g_variant_builder_end(out)).?;
+    return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
 }
 fn mergePeers(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
     const out = builder("aa{sv}");
-    defer g.g_variant_builder_unref(out);
+    defer c.g_variant_builder_unref(out);
     for (0..c.g_variant_n_children(patch)) |i| {
         const peer = c.g_variant_get_child_value(patch, i).?;
         defer c.g_variant_unref(peer);
-        var combined = g.g_variant_ref(peer).?;
+        var combined = c.g_variant_ref(peer).?;
         defer c.g_variant_unref(combined);
         const key = section(peer, "public-key");
         defer if (key) |v| c.g_variant_unref(v);
@@ -607,14 +594,14 @@ fn mergePeers(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
                 }
             }
         }
-        g.g_variant_builder_add_value(out, combined);
+        c.g_variant_builder_add_value(out, combined);
     }
-    return g.g_variant_ref_sink(g.g_variant_builder_end(out)).?;
+    return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
 }
 /// Overlay complete setting groups without losing unedited or unknown keys.
 pub fn mergeSettings(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
     const out = builder("a{sa{sv}}");
-    defer g.g_variant_builder_unref(out);
+    defer c.g_variant_builder_unref(out);
     for ([_]*c.GVariant{ base, patch }, 0..) |source, pass| {
         for (0..c.g_variant_n_children(source)) |i| {
             const pair = c.g_variant_get_child_value(source, i).?;
@@ -638,7 +625,7 @@ pub fn mergeSettings(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
                     c.g_variant_unref(v);
                     continue;
                 }
-                g.g_variant_builder_add(inner, "@{sv}", property);
+                c.g_variant_builder_add(inner, "@{sv}", property);
             };
             if (fresh) |dict| for (0..c.g_variant_n_children(dict)) |j| {
                 const property = c.g_variant_get_child_value(dict, j).?;
@@ -667,12 +654,12 @@ pub fn mergeSettings(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
                         }
                     }
                 }
-                g.g_variant_builder_add(inner, "@{sv}", property);
+                c.g_variant_builder_add(inner, "@{sv}", property);
             };
             group(out, key_text, inner);
         }
     }
-    return g.g_variant_ref_sink(g.g_variant_builder_end(out)).?;
+    return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
 }
 const Call = struct {
     client: *Client,
@@ -842,9 +829,9 @@ const Call = struct {
     fn writeSettings(self: *Call) void {
         if (self.save_path) |path| {
             const options = builder("a{sv}");
-            defer g.g_variant_builder_unref(options);
+            defer c.g_variant_builder_unref(options);
             add(options, "version-id", c.g_variant_new("t", self.save_version));
-            self.send(path, profile_iface, "Update2", c.g_variant_new("(@a{sa{sv}}u@a{sv})", self.save_settings.?, @as(c_uint, 1), g.g_variant_builder_end(options)));
+            self.send(path, profile_iface, "Update2", c.g_variant_new("(@a{sa{sv}}u@a{sv})", self.save_settings.?, @as(c_uint, 1), c.g_variant_builder_end(options)));
         } else self.send(root ++ "/Settings", name ++ ".Settings", "AddConnection", c.g_variant_new("(@a{sa{sv}})", self.save_settings.?));
     }
     fn device(self: *Call, kind: u32, wanted: ?[]const u8) !Device {
@@ -862,7 +849,7 @@ const Call = struct {
                 }
                 self.save_path = if (request.path) |path| z(path) else null;
                 self.save_version = request.version;
-                self.save_settings = g.g_variant_ref(request.settings);
+                self.save_settings = c.g_variant_ref(request.settings);
                 if (request.path != null and hasSecrets(request.settings)) self.nextSecret() else self.writeSettings();
             },
             .wifi => |enabled| self.send(root, "org.freedesktop.DBus.Properties", "Set", c.g_variant_new("(ssv)", @as([*:0]const u8, name), @as([*:0]const u8, "WirelessEnabled"), c.g_variant_new("b", @as(c_int, @intFromBool(enabled))))),
@@ -871,8 +858,8 @@ const Call = struct {
                 var count: usize = 0;
                 for (state.devices.items) |d| if (d.kind == 2 and d.managed) {
                     const options = builder("a{sv}");
-                    self.send(d.path, wireless_iface, "RequestScan", c.g_variant_new("(@a{sv})", g.g_variant_builder_end(options)));
-                    g.g_variant_builder_unref(options);
+                    self.send(d.path, wireless_iface, "RequestScan", c.g_variant_new("(@a{sv})", c.g_variant_builder_end(options)));
+                    c.g_variant_builder_unref(options);
                     count += 1;
                 };
                 if (count == 0) return error.NoCompatibleNetworkDevice;
@@ -934,7 +921,7 @@ const Call = struct {
 };
 fn connectionSettings(request: Connect, mode: Security, profile: ?Profile) !*c.GVariant {
     const out = builder("a{sa{sv}}");
-    defer g.g_variant_builder_unref(out);
+    defer c.g_variant_builder_unref(out);
     const pass = z(request.password);
     defer {
         @memset(pass, 0);
@@ -955,7 +942,7 @@ fn connectionSettings(request: Connect, mode: Security, profile: ?Profile) !*c.G
             defer c.g_variant_unref(dict);
             const group_name = c.g_variant_get_string(key, null);
             if (!eq(std.mem.span(group_name), target)) {
-                g.g_variant_builder_add(out, "{s@a{sv}}", group_name, dict);
+                c.g_variant_builder_add(out, "{s@a{sv}}", group_name, dict);
                 continue;
             }
             found = true;
@@ -968,7 +955,7 @@ fn connectionSettings(request: Connect, mode: Security, profile: ?Profile) !*c.G
                 defer c.g_variant_unref(k);
                 const k_text = c.g_variant_get_string(k, null);
                 if (eq(std.mem.span(k_text), std.mem.span(secret))) continue;
-                g.g_variant_builder_add(inner, "@{sv}", pair);
+                c.g_variant_builder_add(inner, "@{sv}", pair);
             }
             add(inner, secret, c.g_variant_new("s", pass.ptr));
             group(out, group_name, inner);
@@ -982,7 +969,7 @@ fn connectionSettings(request: Connect, mode: Security, profile: ?Profile) !*c.G
         add(conn, "type", c.g_variant_new("s", @as([*:0]const u8, "802-11-wireless")));
         group(out, "connection", conn);
         const wifi = builder("a{sv}");
-        add(wifi, "ssid", g.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), request.ssid.ptr, request.ssid.len, 1));
+        add(wifi, "ssid", c.__zig.variant.byteArray(request.ssid));
         add(wifi, "mode", c.g_variant_new("s", @as([*:0]const u8, "infrastructure")));
         add(wifi, "hidden", c.g_variant_new("b", @as(c_int, @intFromBool(request.hidden))));
         if (mode != .open) add(wifi, "security", c.g_variant_new("s", @as([*:0]const u8, "802-11-wireless-security")));
@@ -1006,7 +993,7 @@ fn connectionSettings(request: Connect, mode: Security, profile: ?Profile) !*c.G
             group(out, key, ip);
         }
     }
-    return g.g_variant_builder_end(out).?;
+    return c.g_variant_builder_end(out).?;
 }
 
 test "network security and byte-exact SSID display" {
