@@ -121,6 +121,15 @@ pub const Builder = struct {
         put(&bytes, @bitCast(value));
         try self.add(key, p.SPA_TYPE_Int, &bytes);
     }
+    pub fn flags(self: *Builder, key: u32, value: i32) Error!void {
+        var bytes: [20]u8 = undefined;
+        put(&bytes, p.SPA_CHOICE_Flags);
+        put(bytes[4..], 0);
+        put(bytes[8..], 4);
+        put(bytes[12..], p.SPA_TYPE_Int);
+        put(bytes[16..], @bitCast(value));
+        try self.add(key, p.SPA_TYPE_Choice, &bytes);
+    }
     pub fn float(self: *Builder, key: u32, value: f32) Error!void {
         var bytes: [4]u8 = undefined;
         put(&bytes, @bitCast(value));
@@ -163,4 +172,17 @@ test "SPA builders fail cleanly when fields or their alignment do not fit" {
     try std.testing.expectError(error.BufferTooSmall, builder.boolean(p.SPA_PROP_mute, true));
     try std.testing.expectEqual(@as(usize, 16), builder.used);
     _ = try builder.view().object(p.SPA_TYPE_OBJECT_Props);
+}
+test "SPA flags choice encodes choice header, Int child, and mask value" {
+    var bytes: [128]u8 align(8) = undefined;
+    var builder = try Builder.init(&bytes, p.SPA_TYPE_OBJECT_ParamBuffers, p.SPA_PARAM_Buffers);
+    try builder.flags(p.SPA_PARAM_BUFFERS_dataType, 1 << p.SPA_DATA_MemFd);
+    const object = try builder.view().object(p.SPA_TYPE_OBJECT_ParamBuffers);
+    const prop = object.property(p.SPA_PARAM_BUFFERS_dataType).?;
+    try std.testing.expectEqual(@as(u32, p.SPA_TYPE_Choice), prop.kind());
+    const choice: *const p.spa_pod_choice = @ptrCast(@alignCast(prop.bytes.ptr));
+    try std.testing.expectEqual(@as(u32, p.SPA_CHOICE_Flags), choice.body.type);
+    try std.testing.expectEqual(@as(u32, p.SPA_TYPE_Int), choice.body.child.type);
+    try std.testing.expectEqual(@as(u32, 4), choice.body.child.size);
+    try std.testing.expectEqual(@as(i32, 1 << p.SPA_DATA_MemFd), @as(i32, @bitCast(word(prop.bytes[24..]))));
 }

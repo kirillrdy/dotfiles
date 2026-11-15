@@ -136,7 +136,7 @@ pub const Stream = struct {
         buffers.integer(p.SPA_PARAM_BUFFERS_blocks, 1) catch unreachable;
         buffers.integer(p.SPA_PARAM_BUFFERS_size, @intCast(self.width * self.height * 4)) catch unreachable;
         buffers.integer(p.SPA_PARAM_BUFFERS_stride, @intCast(self.width * 4)) catch unreachable;
-        buffers.integer(p.SPA_PARAM_BUFFERS_dataType, 1 << p.SPA_DATA_MemFd) catch unreachable;
+        buffers.flags(p.SPA_PARAM_BUFFERS_dataType, 1 << p.SPA_DATA_MemFd) catch unreachable;
         var params = [_][*c]const p.spa_pod{@ptrCast(&bytes)};
         if (p.pw_stream_update_params(self.stream, &params, params.len) < 0) self.failed = true;
     }
