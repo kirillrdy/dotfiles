@@ -24,6 +24,45 @@ let
       ''
         sox ${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/audio-volume-change.oga -t wav -e signed-integer -b 16 "$out"
       '';
+  # Pre-build Zig's compiler_rt, build_runner, maker, and translate-c once per toolchain.
+  zigGlobalCache =
+    pkgs.runCommand "zig-0.17-global-cache"
+      {
+        nativeBuildInputs = [ pkgs.zig_0_17 ];
+      }
+      ''
+        mkdir -p src "$out"
+        cat > src/main.zig <<'EOF'
+        const std = @import("std");
+        pub fn main() void {
+            std.debug.print("{d}\n", .{@as(u64, 1)});
+        }
+        EOF
+        cat > build.zig <<'EOF'
+        const std = @import("std");
+        pub fn build(b: *std.Build) void {
+            const target = b.standardTargetOptions(.{});
+            const optimize = b.standardOptimizeOption(.{});
+            const header = b.addWriteFiles().add("c.h", "#include <stddef.h>\n");
+            const tc = b.addTranslateC(.{ .root_source_file = header, .target = target, .optimize = optimize });
+            const exe = b.addExecutable(.{
+                .name = "warmup",
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("src/main.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .link_libc = true,
+                }),
+            });
+            exe.root_module.addImport("c", tc.createModule());
+            b.installArtifact(exe);
+        }
+        EOF
+        export ZIG_GLOBAL_CACHE_DIR="$out"
+        zig build --prefix "$TMPDIR/out-safe" -Doptimize=ReleaseSafe
+        zig build --prefix "$TMPDIR/out-debug" -Doptimize=Debug
+        rm -rf "$out/tmp"
+      '';
 in
 pkgs.stdenv.mkDerivation {
   pname = "desktop-zig";
@@ -53,6 +92,9 @@ pkgs.stdenv.mkDerivation {
     pkgs.python3
     pkgs.removeReferencesTo
   ];
+  passthru = {
+    inherit zigGlobalCache;
+  };
   dontStrip = true;
   WAYLAND_PROTOCOLS_DIR = "${pkgs.wayland-protocols}/share/wayland-protocols";
   WLR_PROTOCOLS_DIR = "${pkgs.wlr-protocols}/share/wlr-protocols";
@@ -74,6 +116,8 @@ pkgs.stdenv.mkDerivation {
   DESKTOP_RUNTIME_SOUND_FILE = "${feedbackSound}";
   DESKTOP_RUNTIME_DATA_DIRS = "${placeholder "out"}/share:${gtkLibraries.gtk}/share/gsettings-schemas/${gtkLibraries.gtk.name}:${pkgs.adwaita-icon-theme}/share:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${portalSettingsSchemas}/share/gsettings-schemas/gnome-settings-daemon-${pkgs.gnome-settings-daemon.version}";
   buildPhase = ''
+    cp -r ${zigGlobalCache} "$TMPDIR/zig-cache"
+    chmod -R u+w "$TMPDIR/zig-cache"
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
     # pkg-config supplies the declared libraries. Zig also turns every -L in
     # NIX_LDFLAGS into an RPATH, including unused propagated dependencies.

@@ -12,8 +12,12 @@ import ./fixture.nix { inherit pkgs; } {
     pkgs.pkg-config
   ];
   buildInputs = [ pam ];
-  script = ''
-    export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+  script =
+    { desktop, ... }:
+    ''
+      cp -r ${desktop.zigGlobalCache} "$TMPDIR/zig-cache"
+      chmod -R u+w "$TMPDIR/zig-cache"
+      export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
     printf '#include <stdlib.h>\n#include <security/pam_appl.h>\n' > pam-abi.h
     zig translate-c -lc $(pkg-config --cflags pam) pam-abi.h > pam-abi.zig
     zig build-exe -OReleaseSafe -lc -lpam -rpath ${pam}/lib $(pkg-config --libs-only-L pam) \

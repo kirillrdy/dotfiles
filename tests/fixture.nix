@@ -35,6 +35,8 @@ let
           pname = fixture.name;
           outputs = [ "out" ];
           buildPhase = ''
+            cp -r ${desktop.zigGlobalCache} "$TMPDIR/zig-cache"
+            chmod -R u+w "$TMPDIR/zig-cache"
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
             NIX_LDFLAGS= zig build ${fixture.steps} --prefix "$out" ${
               if (fixture.debug or false) then "-Doptimize=Debug -Dcpu=baseline" else "-Doptimize=ReleaseSafe"
