@@ -541,14 +541,14 @@ pub const Service = struct {
         if (mode == .sound) {
             for (self.sounds.items) |sound| {
                 if (!sound.closed) {
-                    c.gtk_window_present(cast(c.GtkWindow, sound.window));
+                    try sound.window.show();
                     return;
                 }
             }
             try self.sounds.ensureUnusedCapacity(a, 1);
             const sound = try Sound.create();
             self.sounds.appendAssumeCapacity(sound);
-            c.gtk_application_add_window(app, cast(c.GtkWindow, sound.window));
+            sound.window.hold(@ptrCast(app));
             return;
         }
         for (self.windows.items) |settings| {
@@ -583,7 +583,7 @@ pub const Service = struct {
     }
 
     pub fn deinit(self: *Service) void {
-        for (self.sounds.items) |sound| if (!sound.closed) c.gtk_widget_destroy(sound.window);
+        for (self.sounds.items) |sound| if (!sound.closed) sound.close();
         for (self.windows.items) |settings| if (!settings.closed) settings.ui.close();
         while (self.windows.items.len > 0 or self.sounds.items.len > 0) {
             self.reap();

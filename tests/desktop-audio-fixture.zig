@@ -56,17 +56,8 @@ fn ready(service: *audio.Service) !void {
 }
 fn click(sound: *settings.Sound, row: usize, control: @import("desktop").settings.SoundControl) void {
     const rect = sound.view.rect(.{ .row = row, .control = control });
-    var event = std.mem.zeroes(c.GdkEventButton);
-    event.type = c.GDK_BUTTON_PRESS;
-    event.button = 1;
-    event.x = rect.x + rect.width / 2;
-    event.y = rect.y + rect.height / 2;
-    var handled: c.gboolean = 0;
-    c.g_signal_emit_by_name(sound.canvas, "button-press-event", &event, &handled);
-    assert(handled != 0);
-    event.type = 7;
-    c.g_signal_emit_by_name(sound.canvas, "button-release-event", &event, &handled);
-    assert(handled != 0);
+    sound.pointerButton(true, rect.x + rect.width / 2, rect.y + rect.height / 2);
+    sound.pointerButton(false, rect.x + rect.width / 2, rect.y + rect.height / 2);
 }
 fn ui(service: *audio.Service) !void {
     if (c.gtk_init_check(null, null) == 0) return error.NoDisplay;
@@ -77,7 +68,8 @@ fn ui(service: *audio.Service) !void {
     const controls = quick.Controls.create(c.gtk_popover_new(button).?, "true", "true");
     const sound = try settings.Sound.create();
     defer {
-        if (!sound.closed) c.gtk_widget_destroy(sound.window);
+        sound.close();
+        while (!sound.closed) pump();
         controls.deinit();
         while (sound.operations != 0) pump();
         sound.destroy();
@@ -154,7 +146,7 @@ fn ui(service: *audio.Service) !void {
     assert(application_classes == 3);
     assert(sound.handleKey(0xff1b, 0));
     assert(sound.view.page == .sound and !sound.closed);
-    // Keyboard input uses the same path as real GDK key events.
+    // Keyboard input uses the same path as native Wayland key events.
     sound.view.focus = null;
     assert(sound.handleKey(0xff09, 0)); // Tab to the output slider.
     assert(sound.view.focus.?.row == 0 and sound.view.focus.?.control == .volume);
@@ -175,7 +167,8 @@ fn ui(service: *audio.Service) !void {
     assert(sound.timer != 0);
     sound.activate(.{ .control = .mute });
     assert(sound.operations != 0);
-    c.gtk_widget_destroy(sound.window);
+    sound.close();
+    while (!sound.closed) pump();
     assert(sound.closed and sound.timer == 0);
     c.g_print("PASS native sound pointer, keyboard, volume, mute, defaults and pending-close controls\n");
 }
@@ -203,7 +196,8 @@ pub fn main(init: std.process.Init) !void {
         c.gtk_init(null, null);
         const sound = try settings.Sound.create();
         defer {
-            if (!sound.closed) c.gtk_widget_destroy(sound.window);
+            sound.close();
+            while (!sound.closed) pump();
             while (sound.operations != 0) pump();
             sound.destroy();
         }

@@ -15,6 +15,8 @@ import wave
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--fixture", required=True)
+parser.add_argument("--desktop", required=True)
+parser.add_argument("--pointer", required=True)
 args = parser.parse_args()
 root = Path(tempfile.mkdtemp(prefix="desktop-audio-check-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
@@ -160,6 +162,54 @@ try:
     recording = start(["pw-record", "--target=fixture-microphone", "--properties={ application.name = \"Fixture Recorder\" }", str(root / "recording.wav")], "recording.log")
     expect(lambda s: any(n["class"] == "playback" for n in s["nodes"]) and any(n["class"] == "recording" for n in s["nodes"]), "application streams appear")
     native("ui")
+    # Exercise the actual Wayland input connection, SHM frames and close event,
+    # in addition to the in-process backend/control assertions above.
+    from session_fixture import VirtualPointer, read_png
+    from wayland_ui import WaylandUI
+    ui = WaylandUI(env)
+    pointer = VirtualPointer(args.pointer, env=env, delay=0.08)
+    try:
+        for scale in (1, 2):
+            run([args.desktop, "output", "--output", "HEADLESS-1", "--scale", str(scale)])
+            preview = start([args.fixture, "preview"], f"sound-scale-{scale}.log")
+            wait(lambda: ui.window("Sound"), "native Sound window maps")
+            ui.focus("Sound")
+            time.sleep(.2)
+            filename = root / f"sound-scale-{scale}.png"
+            run([args.desktop, "screenshot", "-o", "HEADLESS-1", str(filename)])
+            width, height, rows = read_png(filename)
+            assert any(row.count(bytes([50, 50, 54])) > 100 for row in rows), "Sound cards did not render"
+            logical_width = width / scale
+            sidebar = min(280, logical_width * .3)
+            content_width = min(576, logical_width - sidebar - 48)
+            content_x = sidebar + (logical_width - sidebar - content_width) / 2
+            pointer.command(f"size {width} {height}")
+            # Drag the output slider to its right endpoint; verify independently.
+            pointer.move((content_x + 182) * scale, 197 * scale)
+            pointer.command("button 1")
+            pointer.move((content_x + content_width - 24) * scale, 197 * scale)
+            pointer.command("button 0")
+            wait(lambda: "1.00" in run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"]).stdout,
+                "native pointer slider drag at scale " + str(scale))
+            run(["wtype", "-k", "Home", "-k", "Right"])
+            wait(lambda: "0.05" in run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"]).stdout,
+                "native keyboard slider adjustment")
+            # Hover a button until its native tooltip is painted.
+            pointer.move((content_x + 146) * scale, 197 * scale)
+            time.sleep(.7)
+            run([args.desktop, "screenshot", "-o", "HEADLESS-1", str(filename)])
+            assert any(row.count(bytes([22, 22, 25])) > 30 for row in read_png(filename)[2]), "Native tooltip missing"
+            # Both keyboard dismissal and compositor close must drain the window.
+            if scale == 1:
+                run(["wtype", "-k", "Escape"])
+            else:
+                ui.run("wlrctl", "toplevel", "close", "title:Sound")
+            assert preview.wait(timeout=10) == 0, (root / f"sound-scale-{scale}.log").read_text()
+        print("PASS native Sound Wayland pixels, pointer drag, keyboard, tooltips, HiDPI and close requests", flush=True)
+    finally:
+        pointer.close()
+        ui.keyboard.socket.close()
+        run([args.desktop, "output", "--output", "HEADLESS-1", "--scale", "1"], check=False)
     for process in (playback, recording):
         process.terminate()
         process.wait(timeout=5)

@@ -148,7 +148,6 @@ fn networkLifetime(settle: bool) !void {
 fn soundLifetime(settle: bool) !void {
     var objects = Objects{};
     const sound = try settings.Sound.create();
-    objects.watch(sound.window);
     objects.watch(sound.cancel);
     if (sound.service) |service| {
         if (settle) {
@@ -158,7 +157,8 @@ fn soundLifetime(settle: bool) !void {
             try std.testing.expect(sound.view.rows.items.len != 0);
         }
     }
-    c.gtk_widget_destroy(sound.window);
+    sound.close();
+    while (!sound.closed) pump();
     const deadline = c.g_get_monotonic_time() + 15_000_000;
     while (sound.operations != 0 and c.g_get_monotonic_time() < deadline) pump();
     try std.testing.expect(sound.operations == 0);
