@@ -1,6 +1,8 @@
-//! GTK popup host for the native calendar and notification history canvas.
+//! Native Wayland calendar and notification-history popup.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
+const wire = @import("desktop-surface.zig");
+const raster = @import("desktop-raster.zig");
 pub const native = @import("desktop-date-menu-view.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
@@ -9,73 +11,166 @@ pub const Callbacks = struct {
     clear: *const fn (?*anyopaque) void,
     dismiss: *const fn (?*anyopaque, u32) void,
     activate: *const fn (?*anyopaque, u32, [:0]const u8) void,
+    closed: ?*const fn (?*anyopaque) void = null,
 };
+
+// Coordinates are output-local logical pixels, independent of buffer scale.
+fn placement(width: i32, height: i32, x: i32, y: i32) raster.Rect {
+    const available_width: f64 = @floatFromInt(@max(1, width - 16));
+    const available_height: f64 = @floatFromInt(@max(1, height - 16));
+    const zoom = @min(1, @min(available_width / 752, available_height / 420));
+    const w = 752 * zoom;
+    const h = 420 * zoom;
+    return .{
+        .x = @floor(std.math.clamp(@as(f64, @floatFromInt(x)) - w / 2, 8, @max(8, @as(f64, @floatFromInt(width)) - w - 8))),
+        .y = @floor(std.math.clamp(@as(f64, @floatFromInt(y)), 8, @max(8, @as(f64, @floatFromInt(height)) - h - 8))),
+        .width = w,
+        .height = h,
+    };
+}
+
 pub const Controls = struct {
-    popover: *c.GtkWidget,
-    canvas: *c.GtkWidget,
+    client: ?*wire.Client = null,
+    surface: ?*wire.Surface = null,
     view: native.View,
     callbacks: Callbacks,
+    pixels: std.ArrayList(u32) = .empty,
+    visible: bool = false,
+    close_idle: c.guint = 0,
+    anchor_x: i32 = 0,
+    anchor_y: i32 = 0,
+    bounds: raster.Rect = .{},
+    pointer_x: f64 = 0,
+    pointer_y: f64 = 0,
     scroll_grab: ?f64 = null,
 
-    pub fn create(popover: *c.GtkWidget, callbacks: Callbacks) !*Controls {
+    pub fn create(callbacks: Callbacks) !*Controls {
         const self = try a.create(Controls);
         errdefer a.destroy(self);
         var view = try native.View.init(a);
         errdefer view.deinit();
         try view.prepare(1);
-        const canvas = c.gtk_drawing_area_new().?;
-        self.* = .{ .popover = popover, .canvas = canvas, .view = view, .callbacks = callbacks };
-        c.gtk_widget_set_size_request(canvas, @intCast(view.width), @intCast(view.height));
-        c.gtk_widget_set_can_focus(canvas, 1);
-        c.gtk_widget_add_events(canvas, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_KEY_PRESS_MASK | c.GDK_SCROLL_MASK | c.GDK_SMOOTH_SCROLL_MASK);
-        c.gtk_container_add(cast(c.GtkContainer, popover), canvas);
-        connect(canvas, "draw", &draw, self);
-        connect(canvas, "button-press-event", &press, self);
-        connect(canvas, "button-release-event", &release, self);
-        connect(canvas, "motion-notify-event", &motion, self);
-        connect(canvas, "leave-notify-event", &leave, self);
-        connect(canvas, "key-press-event", &key, self);
-        connect(canvas, "scroll-event", &scroll, self);
-        connect(popover, "map", &mapped, self);
-        connect(popover, "closed", &closed, self);
-        c.gtk_widget_show_all(canvas);
+        self.* = .{ .view = view, .callbacks = callbacks };
         return self;
     }
     pub fn destroy(self: *Controls) void {
-        _ = c.g_signal_handlers_disconnect_matched(self.popover, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-        _ = c.g_signal_handlers_disconnect_matched(self.canvas, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
+        self.visible = false;
+        if (self.close_idle != 0) _ = c.g_source_remove(self.close_idle);
+        if (self.client) |client| client.destroy();
+        self.pixels.deinit(a);
         self.view.deinit();
         a.destroy(self);
     }
+    pub fn show(self: *Controls, global_x: i32, global_y: i32) !void {
+        if (self.client == null) {
+            self.client = try wire.Client.createInteractive(.{ .added = &added, .removed = &removed, .changed = &outputChanged }, self);
+            errdefer {
+                self.client.?.destroy();
+                self.client = null;
+            }
+            try self.client.?.start();
+        }
+        const client = self.client.?;
+        if (client.failed or client.outputs.items.len == 0) return error.DisplayUnavailable;
+        var output = client.outputs.items[0];
+        for (client.outputs.items) |candidate| {
+            if (global_x >= candidate.x and global_y >= candidate.y and global_x < candidate.x + candidate.width() and global_y < candidate.y + candidate.height()) {
+                output = candidate;
+                break;
+            }
+        }
+        if (self.surface) |surface| if (surface.output != output) {
+            self.surface = null;
+            surface.destroy();
+        };
+        if (self.surface == null) {
+            self.surface = try wire.Surface.createPixels(output, .{
+                .namespace = "desktop-date-menu",
+                .layer = 3,
+                .anchors = wire.top | wire.bottom | wire.left | wire.right,
+                .interactive = true,
+                .keyboard = .exclusive,
+                .cursor = .arrow,
+            }, &draw, self);
+            self.surface.?.input = .{ .motion = &motion, .button = &button, .leave = &leave, .symbol = &key, .scroll = &scroll };
+        }
+        if (self.close_idle != 0) _ = c.g_source_remove(self.close_idle);
+        self.close_idle = 0;
+        self.anchor_x = global_x;
+        self.anchor_y = global_y;
+        self.updateBounds();
+        self.visible = true;
+        errdefer self.visible = false;
+        try self.surface.?.show();
+    }
+    pub fn hide(self: *Controls) void {
+        if (self.close_idle != 0) _ = c.g_source_remove(self.close_idle);
+        self.close_idle = 0;
+        const was_visible = self.visible;
+        self.visible = false;
+        self.scroll_grab = null;
+        self.view.pressed = .none;
+        self.view.hover = .none;
+        if (self.surface) |surface| surface.hide();
+        if (was_visible) if (self.callbacks.closed) |callback| callback(self.callbacks.context);
+    }
+    fn requestHide(self: *Controls) void {
+        // Owner callbacks may destroy the controller and its Wayland client.
+        if (self.close_idle == 0) self.close_idle = c.g_idle_add(&hideIdle, self);
+    }
+    fn hideIdle(ptr: ?*anyopaque) callconv(.c) c.gboolean {
+        const self = cast(Controls, ptr);
+        self.close_idle = 0;
+        self.hide();
+        return 0;
+    }
+    fn added(_: ?*anyopaque, _: *wire.Output) void {}
+    fn removed(ptr: ?*anyopaque, output: *wire.Output) void {
+        const self = cast(Controls, ptr);
+        if (self.surface) |surface| if (surface.output == output) {
+            self.surface = null; // Client revokes the removed output's surfaces.
+            if (self.visible) self.requestHide();
+        };
+    }
+    fn outputChanged(ptr: ?*anyopaque, output: *wire.Output) void {
+        const self = cast(Controls, ptr);
+        if (self.surface) |surface| if (surface.output == output) {
+            self.updateBounds();
+            self.redraw();
+        };
+    }
+    fn updateBounds(self: *Controls) void {
+        const output = (self.surface orelse return).output;
+        self.bounds = placement(output.width(), output.height(), self.anchor_x - output.x, self.anchor_y - output.y);
+    }
     pub fn reset(self: *Controls) void {
         self.view.navigate(0);
-        self.view.prepare(self.scale()) catch |err| {
-            self.failed(err);
-            return;
-        };
+        self.view.prepare(self.scale()) catch |err| return self.failed(err);
         self.view.focus = .{ .day = self.view.selectedIndex() };
         self.view.keyboard_focus = true;
         self.redraw();
     }
     pub fn load(self: *Controls, raw: []const u8) void {
-        self.view.load(raw) catch |err| {
-            self.failed(err);
-            return;
-        };
+        self.view.load(raw) catch |err| return self.failed(err);
         self.redraw();
     }
     pub fn tick(self: *Controls) void {
-        if (c.gtk_widget_get_visible(self.popover) != 0 and self.view.minute != @divTrunc(c.g_get_real_time(), 60_000_000)) self.redraw();
+        if (!self.visible) return;
+        if (self.client.?.failed or self.surface == null or self.surface.?.role == null) {
+            self.requestHide();
+            return;
+        }
+        if (self.view.minute != @divTrunc(c.g_get_real_time(), 60_000_000)) self.redraw();
     }
     fn redraw(self: *Controls) void {
-        c.gtk_widget_queue_draw(self.canvas);
+        if (self.visible and self.close_idle == 0) if (self.surface) |surface| surface.redraw();
     }
     fn scale(self: *const Controls) u32 {
-        return @intCast(@max(1, c.gtk_widget_get_scale_factor(self.canvas)));
+        return if (self.surface) |surface| surface.output.scale else 1;
     }
     fn failed(self: *Controls, err: anyerror) void {
         std.log.err("date menu: {s}", .{@errorName(err)});
-        c.gtk_popover_popdown(cast(c.GtkPopover, self.popover));
+        if (self.visible) self.requestHide();
     }
     fn deliver(self: *Controls, value: native.Effect) void {
         switch (value) {
@@ -86,16 +181,14 @@ pub const Controls = struct {
         }
     }
     pub fn activate(self: *Controls, target: native.Target) void {
-        const effect = self.view.activate(target) catch |err| {
-            self.failed(err);
-            return;
-        };
+        const effect = self.view.activate(target) catch |err| return self.failed(err);
         self.redraw();
         self.deliver(effect);
     }
-    pub fn handleKey(self: *Controls, symbol: u32, modifiers: c.GdkModifierType) bool {
+    pub fn handleKey(self: *Controls, symbol: u32, modifiers: u32) bool {
+        if (self.close_idle != 0) return true;
         if (symbol == 0xff1b) {
-            c.gtk_popover_popdown(cast(c.GtkPopover, self.popover));
+            self.requestHide();
             return true;
         }
         switch (symbol) {
@@ -110,98 +203,99 @@ pub const Controls = struct {
         self.deliver(effect);
         return true;
     }
-    fn draw(_: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
+    fn draw(ptr: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(Controls, ptr);
-        self.paint(cr) catch |err| self.failed(err);
-        return 1;
+        @memset(target.pixels, 0);
+        self.paint(target) catch |err| self.failed(err);
     }
-    fn paint(self: *Controls, cr: *c.cairo_t) !void {
-        const factor = self.scale();
+    fn paint(self: *Controls, target: wire.Pixels) !void {
+        const factor = self.surface.?.buffer_scale;
+        self.updateBounds();
         try self.view.prepare(factor);
-        const width: u32 = @intCast(@max(@as(c_int, @intCast(self.view.width)), c.gtk_widget_get_allocated_width(self.canvas)));
-        const height: u32 = @intCast(@max(@as(c_int, @intCast(self.view.height)), c.gtk_widget_get_allocated_height(self.canvas)));
-        try c.__zig.paintCairo(cr, width, height, factor, &self.view, native.View.paint);
+        const width = self.view.width * factor;
+        const height = self.view.height * factor;
+        try self.pixels.resize(a, @as(usize, width) * height);
+        try self.view.paint(.{ .pixels = self.pixels.items, .width = width, .height = height });
+        try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(self.pixels.items), .width = width, .height = height, .stride = width * 4, .format = .argb }, .{
+            .x = self.bounds.x * @as(f64, @floatFromInt(factor)),
+            .y = self.bounds.y * @as(f64, @floatFromInt(factor)),
+            .width = self.bounds.width * @as(f64, @floatFromInt(factor)),
+            .height = self.bounds.height * @as(f64, @floatFromInt(factor)),
+        }, null);
     }
-    fn press(_: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
-        if (event.button != 1) return 0;
+    fn point(self: *Controls, x: f64, y: f64) void {
+        const zoom = self.bounds.width / @as(f64, @floatFromInt(self.view.width));
+        self.pointer_x = (x - self.bounds.x) / zoom;
+        self.pointer_y = (y - self.bounds.y) / zoom;
+    }
+    fn button(ptr: ?*anyopaque, _: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
+        if (code != 272) return;
         const self = cast(Controls, ptr);
-        c.gtk_widget_grab_focus(self.canvas);
-        self.view.keyboard_focus = false;
-        self.view.hover = self.view.hit(event.x, event.y);
-        self.view.pressed = self.view.hover;
-        if (self.view.pressed != .none) self.view.focus = self.view.pressed;
-        if (self.view.pressed == .scrollbar) {
-            const thumb = self.view.scrollbarRect();
-            self.scroll_grab = if (event.y >= thumb.y and event.y < thumb.y + thumb.height) event.y - thumb.y else thumb.height / 2;
-            self.view.dragScroll(event.y, self.scroll_grab.?);
+        if (!self.visible or self.close_idle != 0) return;
+        if (pressed and !self.bounds.contains(x, y)) {
+            self.requestHide();
+            return;
         }
-        self.redraw();
-        return 1;
-    }
-    fn release(_: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
-        if (event.button != 1) return 0;
-        const self = cast(Controls, ptr);
-        if (self.scroll_grab != null) {
-            self.scroll_grab = null;
+        self.point(x, y);
+        if (pressed) {
+            self.view.keyboard_focus = false;
+            self.view.hover = self.view.hit(self.pointer_x, self.pointer_y);
+            self.view.pressed = self.view.hover;
+            if (self.view.pressed != .none) self.view.focus = self.view.pressed;
+            if (self.view.pressed == .scrollbar) {
+                const thumb = self.view.scrollbarRect();
+                self.scroll_grab = if (self.pointer_y >= thumb.y and self.pointer_y < thumb.y + thumb.height) self.pointer_y - thumb.y else thumb.height / 2;
+                self.view.dragScroll(self.pointer_y, self.scroll_grab.?);
+            }
+        } else {
+            if (self.scroll_grab != null) {
+                self.scroll_grab = null;
+                self.view.pressed = .none;
+                self.redraw();
+                return;
+            }
+            const target = self.view.pressed;
             self.view.pressed = .none;
             self.redraw();
-            return 1;
+            if (target != .none and std.meta.eql(target, self.view.hit(self.pointer_x, self.pointer_y))) self.activate(target);
+            return;
         }
-        const target = self.view.pressed;
-        self.view.pressed = .none;
         self.redraw();
-        if (target != .none and std.meta.eql(target, self.view.hit(event.x, event.y))) self.activate(target);
-        return 1;
     }
-    fn motion(_: *c.GtkWidget, event: *c.GdkEventMotion, ptr: c.gpointer) callconv(.c) c.gboolean {
+    fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
         const self = cast(Controls, ptr);
+        if (!self.visible or self.close_idle != 0) return;
+        self.point(x, y);
         const previous = self.view.hover;
         const previous_scroll = self.view.scroll;
-        if (self.scroll_grab) |grab| self.view.dragScroll(event.y, grab);
-        self.view.hover = self.view.hit(event.x, event.y);
+        if (self.scroll_grab) |grab| self.view.dragScroll(self.pointer_y, grab);
+        self.view.hover = self.view.hit(self.pointer_x, self.pointer_y);
         if (!std.meta.eql(previous, self.view.hover) or self.view.scroll != previous_scroll) self.redraw();
-        return 1;
     }
-    fn leave(_: *c.GtkWidget, _: *c.GdkEventCrossing, ptr: c.gpointer) callconv(.c) c.gboolean {
+    fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
         const self = cast(Controls, ptr);
         self.view.hover = .none;
         self.redraw();
-        return 0;
     }
-    fn key(_: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
-        var symbol: c.guint = 0;
-        var modifiers: c.GdkModifierType = 0;
-        _ = c.gdk_event_get_keyval(event, &symbol);
-        _ = c.gdk_event_get_state(event, &modifiers);
-        return @intFromBool(cast(Controls, ptr).handleKey(symbol, modifiers));
+    fn key(ptr: ?*anyopaque, _: *wire.Surface, symbol: u32, modifiers: u32, pressed: bool) bool {
+        return !pressed or cast(Controls, ptr).handleKey(symbol, modifiers);
     }
-    fn scroll(_: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
+    fn scroll(ptr: ?*anyopaque, _: *wire.Surface, axis: u32, amount: f64) void {
         const self = cast(Controls, ptr);
-        var x: f64 = 0;
-        var y: f64 = 0;
-        var dx: f64 = 0;
-        var dy: f64 = 0;
-        _ = c.gdk_event_get_coords(event, &x, &y);
-        if (!self.view.historyRect().contains(x, y)) return 0;
-        if (c.gdk_event_get_scroll_deltas(event, &dx, &dy) == 0) {
-            var direction: c.GdkScrollDirection = 0;
-            _ = c.gdk_event_get_scroll_direction(event, &direction);
-            if (direction != c.GDK_SCROLL_UP and direction != 1) return 0;
-            dy = if (direction == c.GDK_SCROLL_UP) -1 else 1;
-        }
-        self.view.scrollBy(dy * 40);
+        if (!self.visible or self.close_idle != 0 or axis != 0 or !self.view.historyRect().contains(self.pointer_x, self.pointer_y)) return;
+        self.view.scrollBy(amount * 4);
         self.redraw();
-        return 1;
-    }
-    fn mapped(_: *c.GtkWidget, ptr: c.gpointer) callconv(.c) void {
-        const self = cast(Controls, ptr);
-        c.gtk_widget_grab_focus(self.canvas);
-    }
-    fn closed(_: *c.GtkPopover, ptr: c.gpointer) callconv(.c) void {
-        const self = cast(Controls, ptr);
-        self.scroll_grab = null;
-        self.view.pressed = .none;
-        self.view.hover = .none;
     }
 };
-const connect = c.__zig.connect;
+
+test "date popup placement fits output edges and small screens in logical coordinates" {
+    const center = placement(1728, 1080, 864, 32);
+    try std.testing.expectEqual(raster.Rect{ .x = 488, .y = 32, .width = 752, .height = 420 }, center);
+    const corner = placement(1728, 1080, 1728, 1079);
+    try std.testing.expectEqual(@as(f64, 968), corner.x);
+    try std.testing.expectEqual(@as(f64, 652), corner.y);
+    const small = placement(640, 360, 320, 32);
+    try std.testing.expect(small.x >= 8 and small.y >= 8);
+    try std.testing.expect(small.x + small.width <= 632 and small.y + small.height <= 352);
+    try std.testing.expectApproxEqAbs(@as(f64, 752.0 / 420.0), small.width / small.height, 0.000001);
+}

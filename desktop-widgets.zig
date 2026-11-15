@@ -23,7 +23,6 @@ pub const Module = struct {
     status: c.gboolean = 0,
     box: [*c]c.GtkWidget = null,
     root: [*c]c.GtkWidget = null,
-    calendar: [*c]c.GtkWidget = null,
     date_controls: ?*date_menu.Controls = null,
     history_subscription: c.guint = 0,
     history_busy: bool = false,
@@ -67,7 +66,6 @@ pub fn ensureStyle() void {
         \\window#desktop-panel { background: #000; color: #fff; }
         \\window#desktop-panel.overview { background: transparent; background-image: none; color: #fafafb; }
         \\.gnome-panel-module, .gnome-panel-module * { border: none; border-radius: 0; min-height: 0; padding: 0; margin: 0; }
-        \\popover.gnome-calendar, popover.gnome-calendar.background, popover.gnome-calendar > contents,
         \\popover.gnome-codex-menu, popover.gnome-codex-menu.background, popover.gnome-codex-menu > contents,
         \\popover.gnome-power-menu, popover.gnome-power-menu.background, popover.gnome-power-menu > contents,
         \\.gnome-power-menu .quick-native-host, .gnome-power-menu .quick-native-host viewport {
@@ -183,30 +181,38 @@ pub fn update_clock(data: c.gpointer) callconv(.c) c.gboolean {
     return 1;
 }
 pub fn make_calendar(m: *Module) callconv(.c) void {
-    m.date_controls = date_menu.Controls.create(m.calendar.?, .{
+    m.date_controls = date_menu.Controls.create(.{
         .context = m,
         .clear = &history_clear,
         .dismiss = &history_dismiss,
         .activate = &history_activate,
+        .closed = &calendar_closed,
     }) catch @panic("cannot create date menu");
 }
 pub fn clock_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
     _ = widget;
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
+    const m: *Module = @ptrCast(@alignCast(data));
     if (event.*.button != 1) return 0;
-    if (c.gtk_widget_get_visible(m.calendar) != 0) {
-        c.gtk_popover_popdown(cast(c.GtkPopover, m.calendar));
+    const controls = m.date_controls orelse return 0;
+    if (controls.visible) {
+        controls.hide();
     } else {
+        var x: i32 = 0;
+        var y: i32 = 0;
+        if (c.gtk_widget_get_window(m.root)) |window| _ = c.gdk_window_get_origin(window, &x, &y);
+        x += @divTrunc(c.gtk_widget_get_allocated_width(m.root), 2);
+        y += c.gtk_widget_get_allocated_height(m.root);
         history_reload(m);
+        controls.reset();
+        controls.show(x, y) catch |err| {
+            std.log.err("date popup: {s}", .{@errorName(err)});
+            return 1;
+        };
         history_call(m, "CalendarOpen", c.g_variant_new("(b)", @as(c_int, 1)));
-        const pointing = c.GdkRectangle{ .x = 0, .y = 0, .width = c.gtk_widget_get_allocated_width(m.root), .height = 26 };
-        c.gtk_popover_set_pointing_to(cast(c.GtkPopover, m.calendar), &pointing);
-        if (m.date_controls) |controls| controls.reset();
-        c.gtk_popover_popup(cast(c.GtkPopover, m.calendar));
     }
     return 1;
 }
-fn calendar_closed(_: *c.GtkPopover, data: c.gpointer) callconv(.c) void {
+fn calendar_closed(data: ?*anyopaque) void {
     const m: *Module = @ptrCast(@alignCast(data));
     history_call(m, "CalendarOpen", c.g_variant_new("(b)", @as(c_int, 0)));
 }
@@ -400,7 +406,7 @@ fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) c
         m.session = connection;
         if (connection != null and m.status != 0) m.device_subscription = c.g_dbus_connection_signal_subscribe(connection, null, "org.dotfiles.DesktopOsd", "DeviceChanged", "/org/dotfiles/DesktopOsd", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &device_changed, m, null);
         if (connection != null and m.status != 0) m.settings_subscription = c.g_dbus_connection_signal_subscribe(connection, null, "org.dotfiles.DesktopSettings", "DeviceChanged", "/org/dotfiles/DesktopSettings", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &device_changed, m, null);
-        if (connection != null and m.calendar != null) {
+        if (connection != null and m.date_controls != null) {
             m.history_subscription = c.g_dbus_connection_signal_subscribe(connection, "org.freedesktop.Notifications", "org.dotfiles.Notifications", "Changed", "/org/freedesktop/Notifications", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &history_changed, m, null);
             history_reload(m);
         }
@@ -458,12 +464,7 @@ pub fn initWithDevices(root: *c.GtkWidget, options: Options, devices: ?*@import(
         m.refs += 1;
         c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
     } else if (c.g_strcmp0(kind, "clock") == 0) {
-        m.calendar = c.gtk_popover_new(m.root);
-        c.gtk_popover_set_constrain_to(cast(c.GtkPopover, m.calendar), c.GTK_POPOVER_CONSTRAINT_NONE);
-        c.gtk_popover_set_position(cast(c.GtkPopover, m.calendar), c.GTK_POS_BOTTOM);
-        css(m.calendar, "gnome-calendar");
         make_calendar(m);
-        _ = c.g_signal_connect_data(m.calendar, "closed", @ptrCast(&calendar_closed), m, null, 0);
         m.refs += 1;
         c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
         _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&clock_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
@@ -478,7 +479,7 @@ pub fn initWithDevices(root: *c.GtkWidget, options: Options, devices: ?*@import(
 pub fn deinit(m: *Module) void {
     // Closing a clock during panel/output teardown must restore banners even
     // though its outstanding history requests are about to be cancelled.
-    if (m.calendar != null and m.session != null and c.gtk_widget_get_visible(m.calendar) != 0) {
+    if (m.date_controls != null and m.session != null and m.date_controls.?.visible) {
         c.g_dbus_connection_call(m.session, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.dotfiles.Notifications", "CalendarOpen", c.g_variant_new("(b)", @as(c_int, 0)), null, c.G_DBUS_CALL_FLAGS_NONE, 2000, null, null, null);
     }
     m.dead = 1;
@@ -488,12 +489,8 @@ pub fn deinit(m: *Module) void {
     if (m.clock_timer != 0) {
         _ = c.g_source_remove(m.clock_timer);
     }
-    if (m.calendar != null) {
-        _ = c.g_signal_handlers_disconnect_matched(m.calendar, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, m);
-        if (m.date_controls) |controls| controls.destroy();
-        m.date_controls = null;
-        c.gtk_widget_destroy(m.calendar);
-    }
+    if (m.date_controls) |controls| controls.destroy();
+    m.date_controls = null;
     if (m.codex_menu != null) {
         c.gtk_widget_destroy(m.codex_menu);
     }
@@ -588,7 +585,7 @@ fn panel_focus_out(_: *c.GtkWidget, _: *c.GdkEvent, ptr: c.gpointer) callconv(.c
 }
 fn panel_press(_: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
     const m = cast(Module, ptr);
-    if (event.button != 1 or m.status != 0 or m.codex_menu != null or m.calendar != null) return 0;
+    if (event.button != 1 or m.status != 0 or m.codex_menu != null or m.date_controls != null) return 0;
     const index = m.view.hit(event.x, event.y) orelse return 0;
     const command = m.view.items[index].command.value;
     if (command.len == 0) return 0;
