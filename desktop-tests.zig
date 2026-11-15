@@ -116,6 +116,9 @@ test "integration: disk panel queries the root filesystem without commands" {
 }
 
 test {
+    // Initialize SVG loaders before any test creates an icon theme or decoder.
+    // Nix builds do not inherit the graphical session's loader environment.
+    try @import("desktop-runtime.zig").setup(std.testing.allocator);
     _ = @import("desktop-zig.zig");
     _ = @import("tests/desktop-gtk-abi.zig");
     _ = @import("tests/desktop-libc-abi.zig");
@@ -143,6 +146,7 @@ test {
     _ = @import("desktop-sound-view.zig");
     _ = @import("desktop-panel-view.zig");
     _ = @import("desktop-widgets.zig");
+    _ = @import("desktop-icons.zig");
     _ = @import("desktop-form.zig");
     _ = @import("desktop-file-list.zig");
     _ = @import("desktop-keyboard.zig");

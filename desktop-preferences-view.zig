@@ -130,10 +130,7 @@ pub const Icons = struct {
             break;
         };
         if (image == null) {
-            const info = c.gtk_icon_theme_lookup_icon(c.gtk_icon_theme_get_default(), name, @intCast(physical), c.GTK_ICON_LOOKUP_FORCE_SIZE) orelse return;
-            defer c.g_object_unref(info);
-            const fg: c.GdkRGBA = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 };
-            image = c.gtk_icon_info_load_symbolic(info, &fg, null, null, null, null, null);
+            image = @import("desktop-icons.zig").load(name, physical, 1, @import("desktop-icons.zig").white);
             if (image) |pixbuf| self.entries.append(a, .{ .name = name, .size = physical, .image = pixbuf }) catch |err| {
                 c.g_object_unref(pixbuf);
                 return err;

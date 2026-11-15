@@ -156,10 +156,6 @@ fn present(snapshot: *const Snapshot) !void {
 }
 fn loadAssets(snapshot: *const Snapshot, scale: u32) void {
     clearAssets();
-    const theme = c.gtk_icon_theme_new();
-    defer c.g_object_unref(theme);
-    if (c.g_getenv("DESKTOP_APPS_ICON_PATH")) |path| c.gtk_icon_theme_append_search_path(theme, path);
-    c.gtk_icon_theme_set_custom_theme(theme, "Adwaita");
     for (snapshot.items[0..snapshot.len], 0..) |*item, i| {
         const id = std.fmt.allocPrintSentinel(a, "{s}.desktop", .{std.mem.sliceTo(&item.app_id, 0)}, 0) catch @panic("switcher desktop id");
         defer a.free(id);
@@ -170,9 +166,7 @@ fn loadAssets(snapshot: *const Snapshot, scale: u32) void {
         label_masks[i] = makeLabel(labels[i].?, icon_size + 19, scale) catch null;
         const gicon = if (info) |value| c.g_app_info_get_icon(@ptrCast(value)) else null;
         const size = icon_size * @as(i32, @intCast(scale));
-        const icon_info = if (gicon) |value| c.gtk_icon_theme_lookup_by_gicon(theme, value, size, 0) else null;
-        defer if (icon_info) |value| c.g_object_unref(value);
-        icons[i] = if (icon_info) |value| c.gtk_icon_info_load_icon(value, null) else c.gtk_icon_theme_load_icon(theme, "application-x-executable", size, 0, null);
+        icons[i] = @import("desktop-icons.zig").loadThemed(gicon, size, null, "application-x-executable");
     }
     asset_scale = scale;
 }

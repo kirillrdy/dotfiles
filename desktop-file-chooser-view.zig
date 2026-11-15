@@ -159,11 +159,8 @@ pub const View = struct {
                 defer c.g_object_unref(stream);
                 pixbuf = c.gdk_pixbuf_new_from_stream_at_scale(stream, @intCast(physical), @intCast(physical), 1, null, null);
             } else {
-                const info = c.gtk_icon_theme_lookup_icon(c.gtk_icon_theme_get_default(), name, @intCast(physical), c.GTK_ICON_LOOKUP_FORCE_SIZE) orelse return;
-                defer c.g_object_unref(info);
                 const symbolic = std.mem.endsWith(u8, name, "-symbolic");
-                const foreground: c.GdkRGBA = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 };
-                pixbuf = if (symbolic) c.gtk_icon_info_load_symbolic(info, &foreground, null, null, null, null, null) else c.gtk_icon_info_load_icon(info, null);
+                pixbuf = @import("desktop-icons.zig").load(name, physical, 1, if (symbolic) @import("desktop-icons.zig").white else null);
             }
             if (pixbuf) |image| self.icons.append(a, .{ .name = name, .size = physical, .image = image }) catch |err| {
                 c.g_object_unref(image);

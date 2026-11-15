@@ -163,10 +163,8 @@ pub const Search = struct {
         self.scale = scale;
     }
     fn symbol(name: [:0]const u8, scale: u32) ?*c.GdkPixbuf {
-        const info = c.gtk_icon_theme_lookup_icon(c.gtk_icon_theme_get_default(), name, @intCast(16 * scale), c.GTK_ICON_LOOKUP_FORCE_SIZE) orelse return null;
-        defer c.g_object_unref(info);
         const tint: c.GdkRGBA = .{ .red = 0.98, .green = 0.98, .blue = 0.984, .alpha = 0.7 };
-        return c.gtk_icon_info_load_symbolic(info, &tint, null, null, null, null, null);
+        return @import("desktop-icons.zig").load(name, 16, scale, tint);
     }
     fn paintIcon(image: ?*c.GdkPixbuf, canvas: raster.Canvas, x: f64, y: f64) !void {
         const pixbuf = image orelse return;

@@ -62,12 +62,8 @@ pub const Item = struct {
         if (self.scale == scale and self.size == size) return;
         if (self.pixels) |image| c.g_object_unref(image);
         self.pixels = null;
-        const theme = c.gtk_icon_theme_get_default();
         if (self.show_apps) {
-            if (c.gtk_icon_theme_lookup_icon(theme, "view-app-grid-symbolic", @intCast(size * scale), c.GTK_ICON_LOOKUP_FORCE_SIZE)) |found| {
-                defer c.g_object_unref(found);
-                self.pixels = c.__icons.loadSymbolic(found, .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0, .alpha = 1 });
-            }
+            self.pixels = @import("desktop-icons.zig").load("view-app-grid-symbolic", size, scale, @import("desktop-icons.zig").foreground);
         } else {
             self.pixels = c.__icons.loadThemed(self.icon, @intCast(size * scale), self.fallback, "application-x-executable");
         }

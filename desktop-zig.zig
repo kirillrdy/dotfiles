@@ -227,6 +227,7 @@ pub fn main(init: std.process.Init) !void {
     _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
     const app = c.gtk_application_new("org.dotfiles.Desktop", c.G_APPLICATION_HANDLES_COMMAND_LINE).?;
     defer c.g_object_unref(app);
+    defer @import("desktop-icons.zig").deinit();
     var session = Session{ .app = app };
     defer session.deinit();
     defer @import("desktop-switcher.zig").deinit();

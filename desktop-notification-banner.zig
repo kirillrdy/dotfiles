@@ -176,14 +176,8 @@ pub const View = struct {
                 self.masks[3 + index] = try self.label(self.action_labels[index].?, limit, true, false, scale);
             }
         }
-        const size: c_int = @intCast(16 * scale);
-        if (c.g_path_is_absolute(self.notice.icon) != 0) {
-            self.icon = c.gdk_pixbuf_new_from_file_at_scale(self.notice.icon, size, size, 1, null);
-        } else if (c.gtk_icon_theme_lookup_icon(c.gtk_icon_theme_get_default(), self.notice.icon, size, c.GTK_ICON_LOOKUP_FORCE_SIZE)) |info| {
-            defer c.g_object_unref(info);
-            const foreground: c.GdkRGBA = .{ .red = self.theme.secondary.red, .green = self.theme.secondary.green, .blue = self.theme.secondary.blue, .alpha = self.theme.secondary.alpha };
-            self.icon = c.gtk_icon_info_load_symbolic(info, &foreground, null, null, null, null, null);
-        }
+        const foreground: c.GdkRGBA = .{ .red = self.theme.secondary.red, .green = self.theme.secondary.green, .blue = self.theme.secondary.blue, .alpha = self.theme.secondary.alpha };
+        self.icon = @import("desktop-icons.zig").load(self.notice.icon, 16, scale, foreground);
         self.scale = scale;
         if (!self.history) self.shadow = try shadowMask(self.width, self.height, scale);
     }

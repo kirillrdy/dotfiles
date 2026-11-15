@@ -80,15 +80,8 @@ pub const Item = struct {
         if (self.icon_scale == scale) return;
         if (self.pixbuf) |image| c.g_object_unref(image);
         self.pixbuf = null;
-        const size: c_int = @intCast(16 * scale);
         if (self.icon.value.len != 0) {
-            if (std.fs.path.isAbsolute(self.icon.value)) {
-                self.pixbuf = c.gdk_pixbuf_new_from_file_at_scale(self.icon.value, size, size, 1, null);
-            } else if (c.gtk_icon_theme_lookup_icon(c.gtk_icon_theme_get_default(), self.icon.value, size, c.GTK_ICON_LOOKUP_FORCE_SIZE)) |info| {
-                defer c.g_object_unref(info);
-                const foreground = c.GdkRGBA{ .red = 1, .green = 1, .blue = 1, .alpha = 1 };
-                self.pixbuf = c.gtk_icon_info_load_symbolic(info, &foreground, null, null, null, null, null);
-            }
+            self.pixbuf = @import("desktop-icons.zig").load(self.icon.value, 16, scale, @import("desktop-icons.zig").white);
         }
         self.icon_scale = scale;
     }
@@ -313,11 +306,8 @@ pub const Codex = struct {
         self.height = @intFromFloat(280 + (if (self.error_label.value.len == 0) @as(f64, 0) else self.error_label.height() + 12));
     }
     fn prepareRefreshIcon(self: *Codex, scale: u32) !void {
-        if (self.refresh_icon_scale == scale or c.gdk_display_get_default() == null) return;
-        const info = c.gtk_icon_theme_lookup_icon(c.gtk_icon_theme_get_default(), "view-refresh-symbolic", @intCast(14 * scale), c.GTK_ICON_LOOKUP_FORCE_SIZE) orelse return;
-        defer c.g_object_unref(info);
-        const foreground: c.GdkRGBA = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 };
-        const image = c.gtk_icon_info_load_symbolic(info, &foreground, null, null, null, null, null) orelse return;
+        if (self.refresh_icon_scale == scale) return;
+        const image = @import("desktop-icons.zig").load("view-refresh-symbolic", 14, scale, @import("desktop-icons.zig").white) orelse return;
         defer c.g_object_unref(image);
         var width: u32 = 0;
         var height: u32 = 0;

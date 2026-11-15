@@ -133,10 +133,7 @@ const Icon = struct {
         self.name = try allocator.dupeSentinel(u8, name, 0);
         self.scale = scale;
         if (name.len == 0) return;
-        const info = c.gtk_icon_theme_lookup_icon(c.gtk_icon_theme_get_default(), name, @intCast(16 * scale), c.GTK_ICON_LOOKUP_FORCE_SIZE) orelse return;
-        defer c.g_object_unref(info);
-        var white: c.GdkRGBA = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 };
-        const pixbuf = c.gtk_icon_info_load_symbolic(info, &white, null, null, null, null, null) orelse return;
+        const pixbuf = @import("desktop-icons.zig").load(name, 16, scale, @import("desktop-icons.zig").white) orelse return;
         defer c.g_object_unref(pixbuf);
         self.pixels = try c.__zig.pixbufAlphaMask(allocator, pixbuf, &self.width, &self.height);
     }
