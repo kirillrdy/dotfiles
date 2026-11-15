@@ -180,8 +180,10 @@ pub fn update_clock(data: c.gpointer) callconv(.c) c.gboolean {
     const month: [*c]u8 = c.g_date_time_format(now, "%b");
     const time_1: [*c]u8 = c.g_date_time_format(now, "%H:%M");
     const label: [*c]u8 = c.g_strdup_printf("%s %d %s", month, c.g_date_time_get_day_of_month(now), time_1);
-    m.view.clock.set(std.mem.span(label));
-    resize(m);
+    if (!std.mem.eql(u8, m.view.clock.value, std.mem.span(label))) {
+        m.view.clock.set(std.mem.span(label));
+        resize(m);
+    }
     c.g_free(@as(c.gpointer, @ptrCast(label)));
     c.g_free(@as(c.gpointer, @ptrCast(month)));
     c.g_free(@as(c.gpointer, @ptrCast(time_1)));
@@ -373,12 +375,12 @@ fn update_items(m: *Module, items: []const panel_data.Item) void {
     }
 }
 
-fn update_graph(g: *native.Graph, graph: panel_data.Graph) void {
+fn update_graph(g: *native.Graph, graph: panel_data.Graph) bool {
     g.tooltip.set(graph.tooltip);
-    if (graph.sequence == g.sequence) return;
+    if (graph.sequence == g.sequence) return false;
     g.sequence = graph.sequence;
     g.series = @intCast(@min(graph.values.len, 5));
-    if (g.series == 0) return;
+    if (g.series == 0) return true;
     g.maximum = graph.maximum;
     g.autoscale = @intFromBool(g.maximum <= 0);
     if (g.count == 100) {
@@ -395,17 +397,45 @@ fn update_graph(g: *native.Graph, graph: panel_data.Graph) void {
         _ = c.gdk_rgba_parse(&g.colors[i], if (i < graph.colors.len) graph.colors[i] else "white");
     }
     g.count += 1;
+    return true;
 }
 
 pub fn update(m: *Module, value: panel_data.Update) void {
+    var changed = m.monitors == 0;
     if (m.monitors != 0) {
-        if (value.monitors) |graphs| for (graphs[0..@min(3, graphs.len)], 0..) |graph, i| update_graph(&m.view.graphs[i], graph);
+        if (value.monitors) |graphs| for (graphs[0..@min(3, graphs.len)], 0..) |graph, i| {
+            if (update_graph(&m.view.graphs[i], graph)) changed = true;
+        };
     } else if (value.items) |items| update_items(m, items);
     c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
     m.tooltip = c.g_strndup(value.tooltip.ptr, value.tooltip.len);
     update_codex_tooltip(m);
     if (m.view.codex) update_codex(m, value);
-    resize(m);
+    if (changed) resize(m);
+}
+
+test "monitor polling updates tooltips without repainting unchanged graph samples" {
+    const Counter = struct {
+        fn redraw(ptr: ?*anyopaque) void {
+            const count: *usize = @ptrCast(@alignCast(ptr.?));
+            count.* += 1;
+        }
+    };
+    var redraws: usize = 0;
+    var module: Module = .{ .monitors = 1, .view = .{ .monitors = true }, .on_redraw = &Counter.redraw, .redraw_context = &redraws };
+    defer module.view.deinit();
+    defer c.g_free(module.tooltip);
+    var graph: panel_data.Graph = .{ .values = &.{10}, .sequence = 1, .maximum = 100, .tooltip = "first" };
+    update(&module, .{ .monitors = &.{graph} });
+    try std.testing.expectEqual(@as(usize, 1), redraws);
+    graph.tooltip = "new tooltip";
+    update(&module, .{ .monitors = &.{graph} });
+    try std.testing.expectEqual(@as(usize, 1), redraws);
+    try std.testing.expectEqualStrings("new tooltip", module.view.graphs[0].tooltip.value);
+    graph.sequence += 1;
+    update(&module, .{ .monitors = &.{graph} });
+    try std.testing.expectEqual(@as(usize, 2), redraws);
+    try std.testing.expectEqual(@as(u32, 2), module.view.graphs[0].count);
 }
 fn device_changed(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: c.gpointer) callconv(.c) void {
     const m: *Module = @ptrCast(@alignCast(data));

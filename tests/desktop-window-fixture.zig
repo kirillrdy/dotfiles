@@ -47,6 +47,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len == 2 and std.mem.eql(u8, args[1], "forms")) return forms();
     if (args.len == 2 and std.mem.eql(u8, args[1], "consent")) return consent(init);
     if (args.len == 2 and std.mem.eql(u8, args[1], "frames")) return frames(init);
+    if (args.len == 2 and std.mem.eql(u8, args[1], "idle")) return idle(init);
     var state: State = .{};
     const client = try wire.Client.createInteractive(.{ .added = &State.output, .removed = &State.output }, &state);
     defer client.destroy();
@@ -67,6 +68,49 @@ pub fn main(init: std.process.Init) !void {
     }
     try std.testing.expectEqualStrings("Cafe 日本語", state.typed[0..state.len]);
     std.debug.print("PASS GTK-free native window: configure, SHM pixels, focus, Unicode keyboard input and close\n", .{});
+}
+
+fn idle(init: std.process.Init) !void {
+    const Probe = struct {
+        paints: usize = 0,
+        fn output(_: ?*anyopaque, _: *wire.Output) void {}
+        fn paint(ptr: ?*anyopaque, pixels: wire.Pixels) void {
+            if (ptr) |value| cast(@This(), value).paints += 1;
+            @memset(pixels.pixels, 0xff245b98);
+        }
+        fn pump(io: std.Io, milliseconds: i64) !void {
+            const until = c.g_get_monotonic_time() + milliseconds * 1000;
+            while (c.g_get_monotonic_time() < until) {
+                while (c.g_main_context_iteration(null, 0) != 0) {}
+                try io.sleep(.fromMilliseconds(1), .awake);
+            }
+        }
+    };
+    var probe: Probe = .{};
+    const client = try wire.Client.create(.{ .added = &Probe.output, .removed = &Probe.output }, null);
+    defer client.destroy();
+    try client.start();
+    const output = client.outputs.items[0];
+    const window = try wire.Surface.createPixels(output, .{ .namespace = "idle-window", .role = .toplevel, .width = 320, .height = 240 }, &Probe.paint, &probe);
+    try window.show();
+    const panel = try wire.Surface.createPixels(output, .{ .namespace = "idle-panel", .layer = 2, .anchors = wire.top | wire.left | wire.right, .height = 32, .exclusive_zone = 32 }, &Probe.paint, null);
+    try panel.show();
+    try Probe.pump(init.io, 500);
+    try std.testing.expect(probe.paints > 0);
+    try std.testing.expectEqual(@as(u32, @intCast(output.height() - 32)), window.height);
+    const paints = probe.paints;
+    for (0..5) |_| {
+        panel.redraw();
+        try Probe.pump(init.io, 80);
+    }
+    try std.testing.expectEqual(paints, probe.paints);
+    panel.hide();
+    try Probe.pump(init.io, 200);
+    try std.testing.expectEqual(@as(u32, @intCast(output.height())), window.height);
+    try panel.show();
+    try Probe.pump(init.io, 200);
+    try std.testing.expectEqual(@as(u32, @intCast(output.height() - 32)), window.height);
+    std.debug.print("PASS idle window: panel repaints preserve sleep; panel map/unmap updates exclusive space\n", .{});
 }
 
 fn frames(init: std.process.Init) !void {

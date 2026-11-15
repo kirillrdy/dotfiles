@@ -208,6 +208,10 @@ pub const Canvas = struct {
         const y0: usize = @intFromFloat(std.math.clamp(@floor((bounds.y + self.origin.y) * self.scale - 1), 0, height));
         const x1: usize = @intFromFloat(std.math.clamp(@ceil((bounds.x + bounds.width + self.origin.x) * self.scale + 1), 0, width));
         const y1: usize = @intFromFloat(std.math.clamp(@ceil((bounds.y + bounds.height + self.origin.y) * self.scale + 1), 0, height));
+        if (shapes.len == 1 and shapes[0] == .polygon and shapes[0].polygon.len <= 256) {
+            self.drawPolygon(shapes[0].polygon, color, solid, x0, y0, x1, y1);
+            return;
+        }
         for (y0..y1) |y| for (x0..x1) |x| {
             const p: Point = .{ .x = (@as(f64, @floatFromInt(x)) + 0.5) / self.scale - self.origin.x, .y = (@as(f64, @floatFromInt(y)) + 0.5) / self.scale - self.origin.y };
             var distance = std.math.inf(f64);
@@ -217,6 +221,57 @@ pub const Canvas = struct {
             const dest = &self.target.pixels[y * self.target.width + x];
             dest.* = if (coverage >= 1) (if (solid >> 24 == 255) solid else over(dest.*, solid)) else over(dest.*, colorPixel(color, coverage));
         };
+    }
+
+    /// Resolve polygon interiors once per scanline and evaluate antialiasing
+    /// only within half a device pixel of an edge. Bounded scratch storage also
+    /// keeps long stepped panel charts independent of allocation and image size.
+    fn drawPolygon(self: Canvas, points: []const Point, color: Color, solid: u32, x0: usize, y0: usize, x1: usize, y1: usize) void {
+        const limit = 0.5 / self.scale;
+        var crossings: [256]f64 = undefined;
+        var distances: [256]f64 = undefined;
+        for (y0..y1) |y| {
+            const py = (@as(f64, @floatFromInt(y)) + 0.5) / self.scale - self.origin.y;
+            var count: usize = 0;
+            var last = points[points.len - 1];
+            for (points) |next| {
+                if ((next.y > py) != (last.y > py)) {
+                    crossings[count] = (last.x - next.x) * (py - next.y) / (last.y - next.y) + next.x;
+                    count += 1;
+                }
+                last = next;
+            }
+            std.mem.sort(f64, crossings[0..count], {}, std.sort.asc(f64));
+            var crossing: usize = 0;
+            var start = x0;
+            while (start < x1) {
+                const end = @min(start + distances.len, x1);
+                @memset(distances[0 .. end - start], limit);
+                last = points[points.len - 1];
+                for (points) |next| {
+                    if (py >= @min(last.y, next.y) - limit and py <= @max(last.y, next.y) + limit) {
+                        const left_edge: usize = @intFromFloat(std.math.clamp(@floor((@min(last.x, next.x) - limit + self.origin.x) * self.scale), @as(f64, @floatFromInt(start)), @as(f64, @floatFromInt(end))));
+                        const right_edge: usize = @intFromFloat(std.math.clamp(@ceil((@max(last.x, next.x) + limit + self.origin.x) * self.scale), @as(f64, @floatFromInt(start)), @as(f64, @floatFromInt(end))));
+                        for (left_edge..right_edge) |x| {
+                            const p: Point = .{ .x = (@as(f64, @floatFromInt(x)) + 0.5) / self.scale - self.origin.x, .y = py };
+                            distances[x - start] = @min(distances[x - start], segmentDistance(p, last, next));
+                        }
+                    }
+                    last = next;
+                }
+                for (start..end) |x| {
+                    const px = (@as(f64, @floatFromInt(x)) + 0.5) / self.scale - self.origin.x;
+                    while (crossing < count and crossings[crossing] <= px) crossing += 1;
+                    const inside = (count - crossing) % 2 != 0;
+                    const distance = distances[x - start] * self.scale;
+                    const coverage = std.math.clamp(0.5 + (if (inside) distance else -distance), 0, 1);
+                    if (coverage == 0) continue;
+                    const dest = &self.target.pixels[y * self.target.width + x];
+                    dest.* = if (coverage >= 1) (if (solid >> 24 == 255) solid else over(dest.*, solid)) else over(dest.*, colorPixel(color, coverage));
+                }
+                start = end;
+            }
+        }
     }
 };
 pub fn rounded(canvas: Canvas, rect: Rect, radius: f64, value: u32) void {
@@ -261,6 +316,36 @@ test "combined shape bounds retain every direction regardless of draw order" {
         try std.testing.expectEqual(@as(u32, 0xffffffff), pixels[88]);
         std.mem.swap(Shape, &shapes[0], &shapes[1]);
     }
+}
+
+test "polygon edge culling preserves coverage for concave, crossing and stepped outlines" {
+    const outlines = [_][]const Point{
+        &.{ .{ .x = 0.25, .y = 0.5 }, .{ .x = 7.5, .y = 1.25 }, .{ .x = 2.5, .y = 3 }, .{ .x = 7.75, .y = 7.5 }, .{ .x = 0.5, .y = 6.5 } },
+        &.{ .{ .x = 0, .y = 0 }, .{ .x = 8, .y = 8 }, .{ .x = 8, .y = 0 }, .{ .x = 0, .y = 8 } },
+        &.{ .{ .x = 0, .y = 8 }, .{ .x = 0, .y = 2 }, .{ .x = 1, .y = 2 }, .{ .x = 1, .y = 6 }, .{ .x = 3, .y = 6 }, .{ .x = 3, .y = 1 }, .{ .x = 6, .y = 1 }, .{ .x = 6, .y = 8 } },
+        &.{ .{ .x = -10, .y = -1 }, .{ .x = 660, .y = 6 }, .{ .x = 300, .y = 20 }, .{ .x = 520, .y = 28 }, .{ .x = -10, .y = 28 } },
+    };
+    for (outlines) |points| for ([_]f64{ 0.75, 1, 1.625, 2, 3 }) |scale| {
+        const shape: Shape = .{ .polygon = points };
+        var pixels: [768 * 32]u32 = @splat(0x80402010);
+        const color: Color = .{ .red = 0.25, .green = 0.75, .blue = 1, .alpha = 0.7 };
+        const canvas: Canvas = .{ .target = .{ .pixels = &pixels, .width = 768, .height = 32 }, .scale = scale, .origin = .{ .x = 1, .y = 1 } };
+        canvas.draw(&.{shape}, color);
+        for (0..32) |y| for (0..768) |x| {
+            const p: Point = .{ .x = (@as(f64, @floatFromInt(x)) + 0.5) / scale - 1, .y = (@as(f64, @floatFromInt(y)) + 0.5) / scale - 1 };
+            // Unculled signed-distance reference, including all polygon edges.
+            var nearest = std.math.inf(f64);
+            var inside = false;
+            var last = points[points.len - 1];
+            for (points) |next| {
+                nearest = @min(nearest, segmentDistance(p, last, next));
+                if ((next.y > p.y) != (last.y > p.y) and p.x < (last.x - next.x) * (p.y - next.y) / (last.y - next.y) + next.x) inside = !inside;
+                last = next;
+            }
+            const expected = std.math.clamp(0.5 - (if (inside) -nearest else nearest) * scale, 0, 1);
+            try std.testing.expectEqual(over(0x80402010, colorPixel(color, expected)), pixels[y * 768 + x]);
+        };
+    };
 }
 
 /// Byte RGB/RGBA or native-endian premultiplied ARGB/XRGB, with row padding.

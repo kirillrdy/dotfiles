@@ -13,7 +13,6 @@ fn protocolCode(b: *std.Build, xml: std.Build.LazyPath, output: []const u8) std.
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const use_llvm = b.option(bool, "llvm", "Use the LLVM backend") orelse false;
     const test_bin = b.option([]const u8, "test-bin", "Fixture installation directory relative to the prefix") orelse "bin";
     const fixture_install: std.Build.Step.InstallArtifact.Options = .{ .dest_dir = .{ .override = .{ .custom = test_bin } } };
     const desktop = b.createModule(.{
@@ -122,7 +121,7 @@ pub fn build(b: *std.Build) void {
         desktop.linkSystemLibrary(name, .{});
     }
     desktop.addImport("compositor-abi", compositor.createModule());
-    const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = desktop, .use_llvm = use_llvm });
+    const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = desktop });
     b.installArtifact(session);
     b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });
     b.step("shell", "Build the desktop shell").dependOn(&b.addInstallArtifact(session, .{}).step);
@@ -133,7 +132,7 @@ pub fn build(b: *std.Build) void {
     native.addImport("protocol-metadata", metadata);
     const window_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-window-fixture.zig"), .target = target, .optimize = optimize });
     window_module.addImport("native", native);
-    const window_fixture = b.addExecutable(.{ .name = "desktop-window-fixture", .root_module = window_module, .use_llvm = use_llvm });
+    const window_fixture = b.addExecutable(.{ .name = "desktop-window-fixture", .root_module = window_module });
     b.step("window-fixture", "Build the GTK-free native window test client").dependOn(&b.addInstallArtifact(window_fixture, fixture_install).step);
 
     // Zig collects tests from files in the root module, not imported modules.
@@ -141,7 +140,7 @@ pub fn build(b: *std.Build) void {
     const test_module = b.createModule(.{ .root_source_file = b.path("desktop-tests.zig"), .target = target, .optimize = optimize, .link_libc = true });
     for (desktop.import_table.keys(), desktop.import_table.values()) |name, dependency| test_module.addImport(name, dependency);
     test_module.link_objects.appendSlice(b.graph.arena, desktop.link_objects.items) catch @panic("OOM");
-    const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module, .use_llvm = use_llvm, .filters = if (integration_tests) &.{"integration:"} else &.{} });
+    const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module, .filters = if (integration_tests) &.{"integration:"} else &.{} });
     b.step("test-binary", "Build tests for execution in a NixOS VM").dependOn(&b.addInstallArtifact(tests, fixture_install).step);
     const test_step = b.step("test", "Run unit, ABI and protocol checks");
     const unit_run = b.addRunArtifact(tests);
@@ -167,7 +166,7 @@ pub fn build(b: *std.Build) void {
     decoration_bindings.addIncludePath(decoration_headers.getDirectory());
     decoration_bindings.linkSystemLibrary("wayland-client", .{});
     decoration_module.addImport("decoration-client", decoration_bindings.createModule());
-    const decoration_fixture = b.addExecutable(.{ .name = "desktop-decoration-fixture", .root_module = decoration_module, .use_llvm = use_llvm });
+    const decoration_fixture = b.addExecutable(.{ .name = "desktop-decoration-fixture", .root_module = decoration_module });
     b.step("compositor-fixture", "Build compositor protocol test clients").dependOn(&b.addInstallArtifact(decoration_fixture, fixture_install).step);
     var reference_flags: [protocol_names.len][]const u8 = undefined;
     for (protocol_names, &reference_flags) |name, *flag| flag.* = b.fmt("-D{s}=reference_{s}", .{ name, name });
@@ -213,11 +212,11 @@ pub fn build(b: *std.Build) void {
         const module = b.createModule(.{ .root_source_file = b.path(fixture.source), .target = target, .optimize = optimize });
         module.addImport("desktop", desktop);
         const artifact = if (fixture.library)
-            b.addLibrary(.{ .name = fixture.name, .root_module = module, .linkage = .dynamic, .use_llvm = use_llvm })
+            b.addLibrary(.{ .name = fixture.name, .root_module = module, .linkage = .dynamic })
         else if (fixture.test_runner)
-            b.addTest(.{ .name = fixture.name, .root_module = module, .use_llvm = use_llvm, .filters = if (std.mem.eql(u8, fixture.step, "memory-tests")) &.{"memory:"} else &.{"session:"} })
+            b.addTest(.{ .name = fixture.name, .root_module = module, .filters = if (std.mem.eql(u8, fixture.step, "memory-tests")) &.{"memory:"} else &.{"session:"} })
         else
-            b.addExecutable(.{ .name = fixture.name, .root_module = module, .use_llvm = use_llvm });
+            b.addExecutable(.{ .name = fixture.name, .root_module = module });
         const install = b.addInstallArtifact(artifact, if (fixture.library) .{} else fixture_install);
         if (fixture.install) b.getInstallStep().dependOn(&install.step);
         const step = if (b.top_level_steps.get(fixture.step)) |existing| &existing.step else b.step(fixture.step, "Build isolated test client");

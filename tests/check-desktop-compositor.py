@@ -75,6 +75,7 @@ def wait(test, label):
 
 
 def switcher_checks():
+    run([bin + "desktop-window-fixture", "idle"])
     # Keep a keyboard on the seat while each short-lived wtype sends a chord.
     start("keyboard-seat", [wtype, "-s", "60000"])
     windows = {}

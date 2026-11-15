@@ -1326,14 +1326,20 @@ const Layer = struct {
     }
     fn commit(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Layer, ptr);
-        c.wlr_scene_node_reparent(&self.scene.tree.*.node, self.s.roots[@min(3, self.wlr.current.layer)]);
-        self.s.raisePanel();
-        for (self.s.outputs.items) |o| if (o.wlr == self.wlr.output) o.arrange();
+        // Buffer damage (for example a monitor graph tick) doesn't change
+        // layout. Reconfiguring every window here wakes otherwise idle clients.
+        if (self.wlr.initial_commit or !self.wlr.initialized or self.wlr.current.committed != 0) {
+            c.wlr_scene_node_reparent(&self.scene.tree.*.node, self.s.roots[@min(3, self.wlr.current.layer)]);
+            self.s.raisePanel();
+            for (self.s.outputs.items) |o| if (o.wlr == self.wlr.output) o.arrange();
+        }
         self.applyPreviews();
     }
     fn map(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Layer, ptr);
         self.mapped = true;
+        // Exclusive space starts applying when the first buffer is mapped.
+        for (self.s.outputs.items) |o| if (o.wlr == self.wlr.output) o.arrange();
         self.applyPreviews();
         self.s.raisePanel();
         if (same(self.wlr.namespace, "desktop-overview")) Overview.broadcastOverview(self.s);
