@@ -61,11 +61,7 @@ fn click(sound: *settings.Sound, row: usize, control: @import("desktop").setting
 }
 fn ui(service: *audio.Service) !void {
     if (c.gtk_init_check(null, null) == 0) return error.NoDisplay;
-    const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
-    defer c.gtk_widget_destroy(window);
-    const button = c.gtk_button_new();
-    c.gtk_container_add(cast(c.GtkContainer, window), button);
-    const controls = quick.Controls.create(c.gtk_popover_new(button).?, "true", "true");
+    const controls = quick.Controls.create("true", "true");
     const sound = try settings.Sound.create();
     defer {
         sound.close();

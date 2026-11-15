@@ -17,12 +17,7 @@ fn waitControls(controls: *quick.Controls) void {
 }
 fn controlsTest(backend: backlight.Backend, empty: bool, denied: bool) !void {
     if (c.gtk_init_check(null, null) == 0) return error.NoDisplay;
-    const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
-    defer c.gtk_widget_destroy(window);
-    const button = c.gtk_button_new();
-    c.gtk_container_add(cast(c.GtkContainer, window), button);
-    const popover = c.gtk_popover_new(button).?;
-    const controls = quick.Controls.create(popover, "true", "true");
+    const controls = quick.Controls.create("true", "true");
     controls.backlight_backend = backend;
     controls.refresh();
     waitControls(controls);

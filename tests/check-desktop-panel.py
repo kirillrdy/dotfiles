@@ -176,10 +176,10 @@ try:
     capture("codex-keyboard-refresh")
     assert log().count("get_subsurface") > before, "Codex popover did not open"
     dismiss()
-    before = log().count("get_subsurface")
+    before = log().count("get_layer_surface")
     click(1700, 16)
     capture("quick-settings")
-    assert log().count("get_subsurface") > before, "Quick settings did not open"
+    assert log().count("get_layer_surface") > before, "Quick settings did not open"
     dismiss()
     check()
     print(

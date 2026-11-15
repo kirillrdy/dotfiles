@@ -176,7 +176,6 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
     objects.watch(module.cancel);
     if (module.quick) |controls| {
         objects.watch(controls.cancel);
-        objects.watch(controls.popover);
         if (controls.interface) |prefs| objects.watch(prefs);
         if (controls.notifications) |prefs| objects.watch(prefs);
         if (controls.devices.network_client) |client| {
@@ -184,6 +183,13 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
             objects.watch(client.service.cancel);
         }
         if (controls.devices.battery_service) |service| objects.watch(service.cancel);
+        for (0..2) |cycle| {
+            try controls.show(320, 32);
+            const deadline = c.g_get_monotonic_time() + 5_000_000;
+            while (!controls.surface.?.configured and c.g_get_monotonic_time() < deadline) pump();
+            try std.testing.expect(controls.surface.?.configured);
+            if (cycle == 0) controls.hide() else _ = controls.handleKey(0xff1b, 0);
+        }
     }
     if (module.codex_menu != null) objects.watch(module.codex_menu);
     if (module.date_controls) |controls| {

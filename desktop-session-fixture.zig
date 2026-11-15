@@ -94,11 +94,7 @@ test "session: private logind actions and quick-settings lifecycle" {
     const deadline = c.g_get_monotonic_time() + 8_000_000;
     if (std.mem.startsWith(u8, scenario, "ui-")) {
         c.gtk_init(null, null);
-        const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL).?;
-        const button = c.gtk_button_new().?;
-        c.gtk_container_add(@ptrCast(window), button);
-        const popover = c.gtk_popover_new(button).?;
-        const controls = quick.Controls.create(popover, "true", "true");
+        const controls = quick.Controls.create("true", "true");
         var live = true;
         c.g_object_weak_ref(@ptrCast(controls.cancel), &finalized, &live);
         var battery_live = controls.battery_service != null;

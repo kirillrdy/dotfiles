@@ -71,12 +71,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (c.gtk_init_check(null, null) == 0) return error.NoDisplay;
-    const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
-    defer c.gtk_widget_destroy(window);
-    const button = c.gtk_button_new();
-    c.gtk_container_add(@ptrCast(window), button);
-    const popover = c.gtk_popover_new(button).?;
-    controls = quick.Controls.create(popover, "true", "true");
+    controls = quick.Controls.create("true", "true");
     controls.?.monitorBattery(options);
     const service = try battery.Service.createWithOptions(options, &changed, null);
     if (std.mem.eql(u8, args[1], "--dispose")) {

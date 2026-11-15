@@ -175,11 +175,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "ui")) {
         c.gtk_init(null, null);
-        const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL).?;
-        const button = c.gtk_button_new().?;
-        c.gtk_container_add(@ptrCast(window), button);
-        const popover = c.gtk_popover_new(button).?;
-        const controls = quick.Controls.create(popover, "true", "true");
+        const controls = quick.Controls.create("true", "true");
         const ui = settings.Settings.create(.network);
         try std.testing.expect(ui.network_client.?.service == client.service);
         try std.testing.expect(controls.devices.network_client.?.service == client.service);

@@ -36,17 +36,8 @@ fn root() *c.GtkWidget {
 }
 fn clickControl(controls: *@import("desktop").quick.Controls, target: @import("desktop").quick.Target) void {
     const rect = controls.view.item(target).?.rect;
-    var event = std.mem.zeroes(c.GdkEventButton);
-    event.button = 1;
-    event.x = rect.x + rect.width / 2;
-    event.y = rect.y + rect.height / 2;
-    event.type = c.GDK_BUTTON_PRESS;
-    var handled: c.gboolean = 0;
-    c.g_signal_emit_by_name(controls.canvas, "button-press-event", &event, &handled);
-    assert(handled != 0);
-    event.type = 7; // GDK_BUTTON_RELEASE
-    c.g_signal_emit_by_name(controls.canvas, "button-release-event", &event, &handled);
-    assert(handled != 0);
+    controls.pointerButton(true, rect.x + rect.width / 2, rect.y + rect.height / 2);
+    controls.pointerButton(false, rect.x + rect.width / 2, rect.y + rect.height / 2);
 }
 pub fn main(process_init: std.process.Init) !void {
     const args = try process_init.minimal.args.toSlice(process_init.arena.allocator());
@@ -98,8 +89,7 @@ pub fn main(process_init: std.process.Init) !void {
     const status_root = root();
     c.gtk_container_add(cast(c.GtkContainer, status_window), status_root);
     const status = p.init(status_root, .{ .name = "gnome-status" });
-    assert(c.gtk_widget_is_ancestor(status.quick.?.canvas, status.power_menu) != 0);
-    assert(c.gtk_widget_is_ancestor(status.quick.?.canvas, status.box) == 0);
+    assert(status.quick != null);
     const initial_network_title = status.quick.?.view.model.network_title;
     p.update(status, .{ .items = &.{ .{ .icon = "audio-volume-high-symbolic" }, .{ .icon = "battery-level-80-symbolic" } } });
     assert(status.view.items[0].visible and status.view.items[1].visible);
@@ -180,32 +170,19 @@ pub fn main(process_init: std.process.Init) !void {
     controls.view.model.volume = 50;
     controls.redraw();
     const slider = controls.view.item(.volume).?.rect;
-    var drag = std.mem.zeroes(c.GdkEventButton);
-    drag.type = c.GDK_BUTTON_PRESS;
-    drag.button = 1;
-    drag.x = slider.x + 8;
-    drag.y = slider.y + slider.height / 2;
-    var drag_handled: c.gboolean = 0;
-    c.g_signal_emit_by_name(controls.canvas, "button-press-event", &drag, &drag_handled);
-    assert(drag_handled != 0 and controls.view.model.volume.? == 0);
-    var motion = std.mem.zeroes(c.GdkEventMotion);
-    motion.type = 3; // GDK_MOTION_NOTIFY
-    motion.x = slider.x + slider.width + 100;
-    motion.y = slider.y + 100;
-    c.g_signal_emit_by_name(controls.canvas, "motion-notify-event", &motion, &drag_handled);
+    controls.pointerButton(true, slider.x + 8, slider.y + slider.height / 2);
+    assert(controls.view.model.volume.? == 0);
+    controls.pointerMotion(slider.x + slider.width + 100, slider.y + 100);
     assert(controls.view.model.volume.? == 100);
-    drag.type = 7;
-    drag.x = motion.x;
-    drag.y = motion.y;
-    c.g_signal_emit_by_name(controls.canvas, "button-release-event", &drag, &drag_handled);
+    controls.pointerButton(false, slider.x + slider.width + 100, slider.y + 100);
     assert(controls.view.pressed == .none and controls.view.model.volume.? == 100);
     controls.view.focus = .volume;
-    assert(controls.handleKey(0xff50, 0) != 0 and controls.view.model.volume.? == 0); // Home
-    assert(controls.handleKey(0xff53, 0) != 0 and controls.view.model.volume.? == 5); // Right
-    assert(controls.handleKey(0xff57, 0) != 0 and controls.view.model.volume.? == 100); // End
+    assert(controls.handleKey(0xff50, 0) and controls.view.model.volume.? == 0); // Home
+    assert(controls.handleKey(0xff53, 0) and controls.view.model.volume.? == 5); // Right
+    assert(controls.handleKey(0xff57, 0) and controls.view.model.volume.? == 100); // End
     controls.view.focus = .network;
-    assert(controls.handleKey(0xff0d, 0) != 0 and controls.view.submenu == .network);
-    assert(controls.handleKey(0xff1b, 0) != 0 and controls.view.submenu == .none and controls.view.focus == .network);
+    assert(controls.handleKey(0xff0d, 0) and controls.view.submenu == .network);
+    assert(controls.handleKey(0xff1b, 0) and controls.view.submenu == .none and controls.view.focus == .network);
     _ = c.g_source_remove(controls.volume_timer);
     controls.volume_timer = 0;
     controls.view.model.volume = previous_volume;

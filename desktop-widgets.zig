@@ -34,7 +34,6 @@ pub const Module = struct {
     session: ?*c.GDBusConnection = null,
     device_subscription: c.guint = 0,
     settings_subscription: c.guint = 0,
-    power_menu: [*c]c.GtkWidget = null,
     quick: ?*quick.Controls = null,
     power_pending: c.gboolean = 0,
     codex_menu: [*c]c.GtkWidget = null,
@@ -66,9 +65,7 @@ pub fn ensureStyle() void {
         \\window#desktop-panel { background: #000; color: #fff; }
         \\window#desktop-panel.overview { background: transparent; background-image: none; color: #fafafb; }
         \\.gnome-panel-module, .gnome-panel-module * { border: none; border-radius: 0; min-height: 0; padding: 0; margin: 0; }
-        \\popover.gnome-codex-menu, popover.gnome-codex-menu.background, popover.gnome-codex-menu > contents,
-        \\popover.gnome-power-menu, popover.gnome-power-menu.background, popover.gnome-power-menu > contents,
-        \\.gnome-power-menu .quick-native-host, .gnome-power-menu .quick-native-host viewport {
+        \\popover.gnome-codex-menu, popover.gnome-codex-menu.background, popover.gnome-codex-menu > contents {
         \\  background: transparent; background-image: none; border: none; border-radius: 0; padding: 0; margin: 0; box-shadow: none;
         \\}
         \\tooltip, tooltip.background {
@@ -158,10 +155,20 @@ pub fn power_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
     _ = widget;
     const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
     if (event.*.button != 1) return 0;
-    if (c.gtk_widget_get_visible(m.power_menu) != 0) {
-        c.gtk_popover_popdown(cast(c.GtkPopover, m.power_menu));
+    if (event.*.type != c.GDK_BUTTON_PRESS) return 1;
+    const controls = m.quick orelse return 0;
+    if (controls.visible) {
+        controls.hide();
     } else {
-        c.gtk_popover_popup(cast(c.GtkPopover, m.power_menu));
+        var x: i32 = 0;
+        var y: i32 = 0;
+        if (c.gtk_widget_get_window(m.root)) |window| _ = c.gdk_window_get_origin(window, &x, &y);
+        x += @divTrunc(c.gtk_widget_get_allocated_width(m.root), 2);
+        y += c.gtk_widget_get_allocated_height(m.root);
+        controls.show(x, y) catch |err| {
+            std.log.err("quick settings popup: {s}", .{@errorName(err)});
+            return 1;
+        };
     }
     return 1;
 }
@@ -453,11 +460,7 @@ pub fn initWithDevices(root: *c.GtkWidget, options: Options, devices: ?*@import(
     } else if (c.g_strcmp0(name, "gnome-codex") == 0) {
         make_codex_menu(m);
     } else if (m.status != 0) {
-        m.power_menu = c.gtk_popover_new(m.root);
-        c.gtk_popover_set_constrain_to(cast(c.GtkPopover, m.power_menu), c.GTK_POPOVER_CONSTRAINT_NONE);
-        c.gtk_popover_set_position(cast(c.GtkPopover, m.power_menu), c.GTK_POS_BOTTOM);
-        css(m.power_menu, "gnome-power-menu");
-        m.quick = quick.Controls.createWithDevices(m.power_menu.?, if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
+        m.quick = quick.Controls.createWithDevices(if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
         const controls = m.quick.?;
         controls.profile_context = m;
         controls.profile_selected = &native_profile_selected;
@@ -498,9 +501,6 @@ pub fn deinit(m: *Module) void {
         c.gtk_widget_destroy(m.codex_menu);
     }
     if (m.quick) |controls| controls.deinit();
-    if (m.power_menu != null) {
-        c.gtk_widget_destroy(m.power_menu);
-    }
     if (m.power_timer != 0) _ = c.g_source_remove(m.power_timer);
     _ = c.g_signal_handlers_disconnect_matched(@as(c.gpointer, @ptrCast(m.root)), c.G_SIGNAL_MATCH_DATA, 0, @as(c.GQuark, 0), null, @as(?*anyopaque, @ptrFromInt(0)), @as(c.gpointer, @ptrCast(m)));
     c.g_cancellable_cancel(m.cancel);
