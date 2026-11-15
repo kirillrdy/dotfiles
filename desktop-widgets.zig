@@ -193,6 +193,9 @@ pub fn clock_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
     _ = widget;
     const m: *Module = @ptrCast(@alignCast(data));
     if (event.*.button != 1) return 0;
+    // GTK emits an additional press event for double/triple clicks. The
+    // ordinary press already toggled the popup for this physical click.
+    if (event.*.type != c.GDK_BUTTON_PRESS) return 1;
     const controls = m.date_controls orelse return 0;
     if (controls.visible) {
         controls.hide();

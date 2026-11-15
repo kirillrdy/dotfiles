@@ -11,6 +11,7 @@ fn openDateMenu(ptr: c.gpointer) callconv(.c) c.gboolean {
     const module: *desktop.widgets.Module = @ptrCast(@alignCast(ptr));
     if (module.session == null) return 1;
     var event = std.mem.zeroes(c.GdkEventButton);
+    event.type = c.GDK_BUTTON_PRESS;
     event.button = 1;
     _ = desktop.widgets.clock_click(null, &event, module);
     open_timer = 0;

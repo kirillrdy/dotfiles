@@ -694,6 +694,10 @@ const Server = struct {
         var sx: f64 = 0;
         var sy: f64 = 0;
         if (e.state == c.WL_POINTER_BUTTON_STATE_PRESSED) {
+            // A popup may have mapped or disappeared under a stationary
+            // cursor since the last motion. Refresh focus before delivery;
+            // wlroots still preserves any active implicit pointer grab.
+            self.pointer(e.time_msec);
             const point = self.hit(&sx, &sy);
             if (point.target) |target| {
                 if (target.view) |v| self.focus(v);

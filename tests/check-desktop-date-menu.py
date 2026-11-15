@@ -156,13 +156,35 @@ try:
     capture("cleared")
     sp.run(["wtype", "-k", "Escape"], check=True, timeout=5)
     wait_for(lambda: popup_origin(capture("hidden")[2]) is None, "Calendar dismissal")
-    pointer.click(width // 2, height // 2)
+    # The fixture clock fills a tiled window. Its top edge stays outside the
+    # popup, matching the clock's position above the popup in the real panel.
+    clock_x, clock_y = width // 2, 8
+    pointer.click(clock_x, clock_y)
     wait_for(lambda: popup_origin(capture("reopened")[2]) is not None, "Calendar reopening")
+    # Keep the pointer over the clock while its covering layer disappears.
+    # A subsequent click must reach the clock without any intervening motion.
+    for attempt in range(3):
+        move(clock_x, clock_y)
+        sp.run(["wtype", "-k", "Escape"], check=True, timeout=5)
+        wait_for(lambda: popup_origin(capture("stationary-hidden")[2]) is None, "Stationary calendar dismissal")
+        pointer_command("button 1")
+        pointer_command("button 0")
+        wait_for(lambda: popup_origin(capture("stationary-reopened")[2]) is not None,
+            f"Calendar reopening without pointer motion ({attempt})")
+    # Also toggle by clicking the clock itself, without moving between clicks.
+    for attempt in range(3):
+        pointer_command("button 1")
+        pointer_command("button 0")
+        wait_for(lambda: popup_origin(capture("clock-hidden")[2]) is None, "Clock-click dismissal")
+        pointer_command("button 1")
+        pointer_command("button 0")
+        wait_for(lambda: popup_origin(capture("clock-reopened")[2]) is not None,
+            f"Stationary clock toggle ({attempt})")
     pointer.click(0, height - 1)
     wait_for(lambda: popup_origin(capture("outside-dismissed")[2]) is None, "Outside-click dismissal")
     notify("Banner after calendar closed")
     wait_for(lambda: any(row.count(card_color) > 100 for row in capture("after-close")[2][:118]), "Closing calendar must restore banners")
-    print("PASS: native date popup navigation, keyboard, history expansion/actions/replacement, dismissal, scrolling, Clear, reopening, outside dismissal and calendar suppression")
+    print("PASS: native date popup navigation, keyboard, history expansion/actions/replacement, dismissal, scrolling, Clear, stationary reopening/toggling, outside dismissal and calendar suppression")
 finally:
     client.close()
     pointer.close()
