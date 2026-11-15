@@ -18,6 +18,7 @@ pub const WindowState = struct {
     close_pressed: bool = false,
     ease: f64 = 1,
     animated: bool = false,
+    external_content: bool = false,
     caption: ?Caption = null,
     bounds_width: f64 = 0,
 };
@@ -60,6 +61,17 @@ pub fn miniatureRounded(canvas: Canvas, source: ?raster.Image, rect: Rect, clip:
     if (radius > 0) rounded(context.cr, clip, radius) else c.cairo_rectangle(context.cr, clip.x, clip.y, clip.width, clip.height);
     c.cairo_clip(context.cr);
     drawImage(context.cr, source, rect, 1, animated);
+}
+
+/// Cover the corners of GPU previews without repainting their content.
+pub fn roundedMask(canvas: Canvas, rect: Rect, radius: f64) void {
+    const context = Context.init(canvas) orelse return;
+    defer context.deinit();
+    c.cairo_rectangle(context.cr, rect.x, rect.y, rect.width, rect.height);
+    rounded(context.cr, rect, radius);
+    c.cairo_set_fill_rule(context.cr, 1); // CAIRO_FILL_RULE_EVEN_ODD
+    c.cairo_set_source_rgb(context.cr, 34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
+    c.cairo_fill(context.cr);
 }
 
 fn rounded(cr: *c.cairo_t, r: Rect, radius: f64) void {
@@ -306,7 +318,7 @@ pub fn window(canvas: Canvas, r: Rect, captured: ?raster.Image, icon_image: ?*c.
         defer context.deinit();
         const cr = context.cr;
         // Captures already contain client decoration and corner transparency.
-        drawImage(cr, captured, preview, 1, state.animated);
+        if (!state.external_content) drawImage(cr, captured, preview, 1, state.animated);
         if (icon_image) |icon| {
             const icon_x = preview.x + preview.width / 2 - icon_size / 2;
             const icon_y = preview.y + preview.height - icon_size * icon_overlap;

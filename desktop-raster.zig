@@ -274,7 +274,7 @@ pub const Image = struct {
     fn bytesPerPixel(self: Image) usize {
         return if (self.format == .rgb) 3 else 4;
     }
-    fn validate(self: Image) !void {
+    pub fn validate(self: Image) !void {
         if (self.width == 0 or self.height == 0) return error.InvalidImage;
         const row_size = try std.math.mul(usize, self.width, self.bytesPerPixel());
         const required = try std.math.add(usize, try std.math.mul(usize, self.height - 1, self.stride), row_size);

@@ -33,6 +33,9 @@ const Overview = struct {
     client: ?*capture.Client = null,
     native: *wire.Client,
     surface: ?*wire.Surface,
+    background: ?*wire.Surface = null,
+    painting_background: bool = false,
+    gpu_previews: bool = false,
     strip: apps.Region = .{ .y = 100, .width = 1728, .height = 64 },
     stage: apps.Region = .{ .y = 172, .width = 1728, .height = 775 },
     search: apps.Region = .{ .y = 44, .width = 370, .height = 37 },
@@ -91,7 +94,9 @@ const Overview = struct {
             c.cairo_paint(cr);
         }
         self.* = .{ .launcher = apps.Launcher.init(null), .native = native, .surface = null, .wallpaper = wallpaper };
+        self.gpu_previews = native.enablePreviews();
         self.surface = self.createSurface(native.outputs.items[0]) catch @panic("native overview surface");
+        if (self.gpu_previews) self.background = self.createBackground(native.outputs.items[0]) catch @panic("overview background");
         self.launcher.bindControls();
         self.launcher.search_input.?.client = native;
         self.launcher.owner = self;
@@ -175,7 +180,7 @@ const Overview = struct {
         if (self.launcher.visible_window) {
             if (!self.transition.shown) {
                 self.transition.setShown(true, c.g_get_monotonic_time());
-                if (self.client) |client| client.visible(true);
+                if (self.client) |client| client.visible(!self.gpu_previews);
                 self.focusPart(.stage);
                 self.redrawSelf();
             }
@@ -204,7 +209,7 @@ const Overview = struct {
         self.launcher.reload() catch |err| std.log.err("loading applications: {s}", .{@errorName(err)});
         self.launcher.setSearch("") catch {};
         if (self.client) |client| {
-            client.visible(true);
+            client.visible(!self.gpu_previews);
             client.refreshBeforeShow();
             var top: ?usize = null;
             for (client.windows.items, 0..) |window, index| {
@@ -212,7 +217,7 @@ const Overview = struct {
                 if (top == null or window.stacking > client.windows.items[top.?].stacking) top = index;
             }
             self.selected = top orelse 0;
-            client.captureMissing();
+            if (!self.gpu_previews) client.captureMissing();
         }
         self.transition.setShown(true, c.g_get_monotonic_time());
         self.activation_time = c.g_get_monotonic_time();
@@ -220,6 +225,10 @@ const Overview = struct {
         self.launcher.visible_window = true;
         self.updateMode();
         self.focusPart(.stage);
+        if (self.background) |background| {
+            background.output = self.surface.?.output;
+            background.show() catch |err| std.log.err("overview background: {s}", .{@errorName(err)});
+        }
         self.surface.?.show() catch |err| std.log.err("overview: {s}", .{@errorName(err)});
     }
     fn updateMode(self: *Overview) void {
@@ -399,13 +408,19 @@ const Overview = struct {
         // Existing previews are sufficient during the short transition. Avoid
         // capture readbacks competing with high-refresh animation frames.
         const now = c.g_get_monotonic_time();
-        if (self.transition.active(now) or !self.transition.shown or now - self.workspace_started < 250000) return 1;
+        if (self.previewsPaused(now)) {
+            if (self.client) |client| client.streaming = false;
+            return 1;
+        }
         self.tick_count +%= 1;
         if (self.client) |client| {
             if (self.tick_count % 8 == 0) client.refresh();
-            client.tick();
+            if (!self.gpu_previews) client.tick();
         }
         return 1;
+    }
+    fn previewsPaused(self: *Overview, now: i64) bool {
+        return self.transition.active(now) or !self.transition.shown or now - self.workspace_started < 250000;
     }
     fn hideRequested(data: ?*anyopaque) bool {
         const self = cast(Overview, data);
@@ -439,7 +454,11 @@ const Overview = struct {
         if (self.repaint_source != 0) _ = c.g_source_remove(self.repaint_source);
         self.repaint_source = 0;
         if (self.client) |client| client.visible(false);
+        if (self.native.preview_control) |control| {
+            @import("desktop-protocols.zig").dotfiles_overview_v1_begin_previews(control, null);
+        }
         if (self.surface) |surface| surface.hide();
+        if (self.background) |background| background.hide();
     }
     fn searchChanged(data: ?*anyopaque) void {
         cast(Overview, data).updateMode();
@@ -725,6 +744,12 @@ const Overview = struct {
         surface.input = .{ .symbol = &symbol, .text = &inputText, .motion = &inputMotion, .button = &inputButton, .scroll = &inputScroll, .leave = &inputLeave, .focus = &inputFocus, .surrounding = &surrounding, .preedit = &preedit, .commit = &commit, .delete = &delete };
         return surface;
     }
+    fn createBackground(self: *Overview, output: *wire.Output) !*wire.Surface {
+        const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-overview-background", .layer = 2, .anchors = wire.top | wire.bottom | wire.left | wire.right, .exclusive_zone = -1, .clear_buffer = false, .fully_opaque = true }, &paintBackground, self);
+        surface.render_scale = &renderScale;
+        surface.next_frame = &backgroundFrame;
+        return surface;
+    }
     fn nextFrame(data: ?*anyopaque, surface: *wire.Surface, _: u32) bool {
         const self = cast(Overview, data);
         if (self.launcher.visible_window and !self.transition.shown and self.progress == 0) {
@@ -747,6 +772,7 @@ const Overview = struct {
     fn outputAdded(data: ?*anyopaque, output: *wire.Output) void {
         const self = cast(Overview, data);
         if (self.surface == null) self.surface = self.createSurface(output) catch null;
+        if (self.gpu_previews and self.background == null) self.background = self.createBackground(output) catch null;
     }
     fn outputRemoved(data: ?*anyopaque, output: *wire.Output) void {
         const self = cast(Overview, data);
@@ -757,9 +783,11 @@ const Overview = struct {
         self.launcher.hide();
         for (self.native.outputs.items) |candidate| if (candidate != output) {
             surface.output = candidate;
+            if (self.background) |background| background.output = candidate;
             return;
         };
         self.surface = null;
+        self.background = null;
     }
     fn closed(data: ?*anyopaque) void {
         cast(Overview, data).launcher.hide();
@@ -768,6 +796,9 @@ const Overview = struct {
         cast(Overview, data).redrawSelf();
     }
     fn redrawSelf(self: *Overview) void {
+        if (self.previewsPaused(c.g_get_monotonic_time())) if (self.client) |client| {
+            client.streaming = false;
+        };
         for (self.native.seats.items) |seat| if (seat.text_input) |value| value.update();
         if (!self.painting and self.launcher.visible_window and self.repaint_source == 0) self.repaint_source = c.g_idle_add(&repaint, self);
     }
@@ -978,7 +1009,11 @@ const Overview = struct {
         const footer = self.dash_view.layout.height;
         const status: u32 = if (self.launcher.status.len > 0) 64 else 0;
         self.layoutRegions(width, height);
-        @memset(target.pixels, 0xff222226);
+        if (self.gpu_previews) {
+            @import("desktop-protocols.zig").dotfiles_overview_v1_begin_previews(self.native.preview_control, self.surface.?.proxy);
+            if (self.background) |background| background.redraw();
+        }
+        @memset(target.pixels, if (self.gpu_previews) 0 else 0xff222226);
         if (self.launcher.searchText().len == 0) {
             self.paintStage(.{ .target = target, .scale = @floatFromInt(scale), .origin = .{ .x = 0, .y = self.stage.y } }, @floatFromInt(width), @floatFromInt(self.stage.height));
         }
@@ -997,6 +1032,32 @@ const Overview = struct {
         }
         if (self.tooltip_visible) apps.paintRegionOpacity(target, scale, self.tooltip, .{ self, Part.tooltip }, paintPart, opacity);
         if (status > 0) apps.paintRegionOpacity(target, scale, .{ .y = @floatFromInt(height -| (footer + status)), .width = width, .height = status }, .{ &self.launcher, apps.Part.message }, apps.paintPart, opacity);
+    }
+    fn backgroundFrame(_: ?*anyopaque, _: *wire.Surface, _: u32) bool {
+        return false;
+    }
+    fn paintBackground(data: ?*anyopaque, target: wire.Pixels) void {
+        const self = cast(Overview, data);
+        self.painting_background = true;
+        defer self.painting_background = false;
+        const scale = self.background.?.buffer_scale;
+        const width = target.width / scale;
+        const height = target.height / scale;
+        self.layoutRegions(width, height);
+        @memset(target.pixels, 0xff222226);
+        if (self.launcher.searchText().len == 0) self.paintStage(.{ .target = target, .scale = @floatFromInt(scale), .origin = .{ .x = 0, .y = self.stage.y } }, @floatFromInt(width), @floatFromInt(self.stage.height));
+        apps.paintRegionOpacity(target, scale, self.strip, .{ self, Part.strip }, paintPart, animation.controlsOpacity(self.progress));
+    }
+    fn emitPreview(self: *Overview, window: *capture.Window, rect: Rect, clip: Rect, origin_x: f64, origin_y: f64, opacity: f64) void {
+        if (window.id == null) return;
+        const values = [_]f64{ rect.x + origin_x, rect.y + origin_y, rect.w, rect.h, clip.x + origin_x, clip.y + origin_y, clip.w, clip.h, opacity };
+        var fixed: [9]i32 = undefined;
+        for (&fixed, values) |*out, value| {
+            if (!std.math.isFinite(value)) return;
+            out.* = @intFromFloat(@round(std.math.clamp(value * 256, -2147483648, 2147483647)));
+        }
+        const array: c.wl_array = .{ .size = @sizeOf(@TypeOf(fixed)), .alloc = 0, .data = &fixed };
+        @import("desktop-protocols.zig").dotfiles_overview_v1_preview(self.native.preview_control, window.id, &array);
     }
     fn paintPart(context: struct { *Overview, Part }, target: raster.Buffer, scale: u32) void {
         const self = context[0];
@@ -1019,7 +1080,8 @@ const Overview = struct {
         for (0..client.count) |i| {
             const x = geom.left + @as(f64, @floatFromInt(i)) * geom.step;
             const rect = Rect{ .x = x, .y = 6, .w = geom.thumb_w, .h = geom.thumb_h };
-            canvas.draw(&.{pixelRect(rect).shape(4)}, raster.Color.rgb(0x46464e, 1));
+            if (!self.gpu_previews or self.painting_background) canvas.draw(&.{pixelRect(rect).shape(4)}, raster.Color.rgb(0x46464e, 1));
+            if (self.painting_background) continue;
             self.window_paints.clearRetainingCapacity();
             for (client.windows.items) |window| {
                 if (window.workspace != i and !window.sticky) continue;
@@ -1032,8 +1094,9 @@ const Overview = struct {
                 const sx = geom.thumb_w / work_w;
                 const sy = geom.thumb_h / work_h;
                 const r = Rect{ .x = x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = 6 + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
-                view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect), 4, animated);
+                if (self.gpu_previews) self.emitPreview(window, r, rect, self.strip.x, self.strip.y, animation.controlsOpacity(self.progress)) else view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect), 4, animated);
             }
+            if (self.gpu_previews) view.roundedMask(canvas, pixelRect(rect), 4);
         }
         if (client.count > 0) {
             const ind_x = geom.left + self.workspacePosition() * geom.step;
@@ -1096,7 +1159,8 @@ const Overview = struct {
                 const bg = layout.cardRect(i, position);
                 if (bg.x > width or bg.x + bg.w < 0) continue;
                 const radius = @max(10.0, 30.0 * (bg.h / @max(1.0, work_h * 0.74)));
-                view.workspaceCard(canvas, pixelRect(bg), self.wallpaper, radius, true, animated);
+                if (!self.gpu_previews or self.painting_background) view.workspaceCard(canvas, pixelRect(bg), self.wallpaper, radius, true, animated);
+                if (self.painting_background) continue;
                 self.window_paints.clearRetainingCapacity();
                 for (client.windows.items) |window| {
                     if (window.workspace != i and !window.sticky) continue;
@@ -1109,8 +1173,9 @@ const Overview = struct {
                     const window = item.window;
                     const g = window.geometry;
                     const r = Rect{ .x = bg.x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = bg.y + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
-                    view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(bg), radius, animated);
+                    if (self.gpu_previews) self.emitPreview(window, r, bg, 0, self.stage.y, 1) else view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(bg), radius, animated);
                 }
+                if (self.gpu_previews) view.roundedMask(canvas, pixelRect(bg), radius);
             }
             return;
         }
@@ -1131,7 +1196,8 @@ const Overview = struct {
                 .h = start.h + (base.h * ratio - start.h) * ease,
             };
             if (background.x > width or background.x + background.w < 0) continue;
-            view.workspaceProgress(canvas, pixelRect(background), self.wallpaper, ease, animated);
+            if (!self.gpu_previews or self.painting_background) view.workspaceProgress(canvas, pixelRect(background), self.wallpaper, ease, animated);
+            if (self.painting_background) continue;
             self.drawWindows(canvas, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1, animated, width);
         }
     }
@@ -1179,6 +1245,10 @@ const Overview = struct {
         std.mem.sort(WindowPaint, self.window_paints.items, {}, WindowPaint.below);
         for (self.window_paints.items) |item| {
             const window = item.window;
+            if (self.gpu_previews) {
+                const r = view.previewRect(pixelRect(item.rect), item.hovered, ease);
+                self.emitPreview(window, .{ .x = r.x, .y = r.y, .w = r.width, .h = r.height }, .{ .x = 0, .y = -self.stage.y, .w = @floatFromInt(self.monitor.width), .h = @floatFromInt(self.monitor.height) }, 0, self.stage.y, 1);
+            }
             var caption: ?view.Caption = null;
             if (item.hovered and ease > 0.01) {
                 const title_str: []const u8 = if (window.title != null and window.title[0] != 0)
@@ -1196,6 +1266,7 @@ const Overview = struct {
                 .close_pressed = item.hovered and self.close_pressed,
                 .ease = ease,
                 .animated = animated,
+                .external_content = self.gpu_previews,
                 .caption = caption,
                 .bounds_width = stage_width,
             });

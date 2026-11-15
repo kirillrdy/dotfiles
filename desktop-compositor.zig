@@ -245,7 +245,7 @@ const Server = struct {
         self.output_manager = c.wlr_output_manager_v1_create(self.display).?;
         self.hooks.add(&self.output_manager.events.apply, self, &applyOutputs);
         self.hooks.add(&self.output_manager.events.@"test", self, &testOutputs);
-        _ = c.wl_global_create(self.display, @ptrCast(&p.dotfiles_overview_v1_interface), 2, self, &Overview.bind) orelse return error.Overview;
+        _ = c.wl_global_create(self.display, @ptrCast(&p.dotfiles_overview_v1_interface), 3, self, &Overview.bind) orelse return error.Overview;
         _ = c.wl_event_loop_add_fd(self.loop, handle.stop_pipe[0], c.WL_EVENT_READABLE, &stopEvent, self) orelse return error.StopEvent;
         self.lock_blank_timer = c.wl_event_loop_add_timer(self.loop, &lockBlankTimeout, self) orelse return error.LockTimer;
         const socket = c.wl_display_add_socket_auto(self.display) orelse return error.Socket;
@@ -1029,6 +1029,7 @@ const View = struct {
     fn unmap(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(View, ptr);
         self.mapped = false;
+        self.removePreviews();
         if (self.s.grabbed == self) self.s.grabbed = null;
         self.s.updateInhibition();
         // Remove listeners on foreign handles before their signals disappear.
@@ -1055,12 +1056,21 @@ const View = struct {
     fn destroy(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(View, ptr);
         defer self.s.a.destroy(self);
+        self.removePreviews();
         self.alive = false;
         if (self.s.cycle_origin == self) self.s.cycle_origin = null;
         if (self.capture_scene) |scene| c.wlr_scene_node_destroy(&scene.tree.node);
         self.hooks.clear();
         self.capture_hook.clear();
         remove(*View, &self.s.views, self);
+    }
+    fn removePreviews(self: *View) void {
+        for (self.s.layers.items) |layer| {
+            var i: usize = 0;
+            while (i < layer.previews.items.len) {
+                if (layer.previews.items[i].view == self) layer.previews.orderedRemove(i).destroy() else i += 1;
+            }
+        }
     }
     fn title(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(View, ptr);
@@ -1122,6 +1132,127 @@ const View = struct {
         self.capture = null;
     }
 };
+const PreviewSpec = struct {
+    id: [128:0]u8 = @splat(0),
+    rectangles: [9]f64 = @splat(0),
+};
+
+// Like a ClutterClone, these scene surfaces reference the window's existing
+// client buffers. wlroots keeps damage, presentation feedback, frame callbacks,
+// color management and explicit synchronization attached to each surface.
+const Preview = struct {
+    layer: *Layer,
+    view: *View,
+    tree: *c.wlr_scene_tree,
+    spec: PreviewSpec,
+    sources: std.ArrayList(*Source) = .empty,
+
+    fn create(layer: *Layer, view: *View, spec: PreviewSpec) *Preview {
+        return alloc(Preview, layer.s, .{ .layer = layer, .view = view, .tree = c.wlr_scene_tree_create(layer.preview_tree).?, .spec = spec });
+    }
+    fn destroy(self: *Preview) void {
+        for (self.sources.items) |source| source.destroy();
+        self.sources.deinit(self.layer.s.a);
+        c.wlr_scene_node_destroy(&self.tree.node);
+        self.layer.s.a.destroy(self);
+    }
+    fn sync(self: *Preview) void {
+        for (self.sources.items) |source| source.seen = false;
+        c.wlr_surface_for_each_surface(self.view.xdg.base.*.surface, &visit, self);
+        var index: usize = 0;
+        while (index < self.sources.items.len) {
+            if (!self.sources.items[index].seen) self.sources.orderedRemove(index).destroy() else index += 1;
+        }
+    }
+    fn visit(surface: [*c]c.wlr_surface, sx: c_int, sy: c_int, data: ?*anyopaque) callconv(.c) void {
+        const self = cast(Preview, data);
+        var found: ?*Source = null;
+        for (self.sources.items) |source| if (source.surface == surface) {
+            found = source;
+            break;
+        };
+        const source = found orelse blk: {
+            const source = alloc(Source, self.layer.s, .{ .preview = self, .surface = surface, .scene = c.wlr_scene_surface_create(self.tree, surface).? });
+            // Add our listener after wlroots, then apply the clone transform
+            // after its normal surface state has been updated on each commit.
+            source.hooks.add(&surface.*.events.commit, source, &Source.changed);
+            source.hooks.add(&source.scene.?.buffer.*.node.events.destroy, source, &Source.sceneDestroyed);
+            self.sources.append(self.layer.s.a, source) catch @panic("preview surfaces");
+            break :blk source;
+        };
+        source.seen = true;
+        source.update(sx, sy);
+    }
+    const Source = struct {
+        preview: *Preview,
+        surface: ?*c.wlr_surface,
+        scene: ?*c.wlr_scene_surface,
+        hooks: Hooks = .{},
+        seen: bool = false,
+
+        fn destroy(self: *Source) void {
+            self.hooks.clear();
+            if (self.scene) |scene| c.wlr_scene_node_destroy(&scene.buffer.*.node);
+            self.preview.layer.s.a.destroy(self);
+        }
+        fn sceneDestroyed(ptr: *anyopaque, _: ?*anyopaque) void {
+            const self = cast(Source, ptr);
+            self.hooks.clear();
+            self.scene = null;
+            self.surface = null;
+        }
+        fn changed(ptr: *anyopaque, _: ?*anyopaque) void {
+            cast(Source, ptr).preview.sync();
+        }
+        fn update(self: *Source, sx: i32, sy: i32) void {
+            const surface = self.surface orelse return;
+            const scene = self.scene orelse return;
+            const node = &scene.buffer.*.node;
+            const geometry = self.preview.view.xdg.base.*.geometry;
+            const r = self.preview.spec.rectangles;
+            if (geometry.width <= 0 or geometry.height <= 0 or surface.current.width <= 0 or surface.current.height <= 0) {
+                c.wlr_scene_node_set_enabled(node, false);
+                return;
+            }
+            const scale_x = r[2] / @as(f64, @floatFromInt(geometry.width));
+            const scale_y = r[3] / @as(f64, @floatFromInt(geometry.height));
+            const x = r[0] + @as(f64, @floatFromInt(sx - geometry.x)) * scale_x;
+            const y = r[1] + @as(f64, @floatFromInt(sy - geometry.y)) * scale_y;
+            const w = @as(f64, @floatFromInt(surface.current.width)) * scale_x;
+            const h = @as(f64, @floatFromInt(surface.current.height)) * scale_y;
+            const x0 = @max(x, @max(r[0], r[4]));
+            const y0 = @max(y, @max(r[1], r[5]));
+            const x1 = @min(x + w, @min(r[0] + r[2], r[4] + r[6]));
+            const y1 = @min(y + h, @min(r[1] + r[3], r[5] + r[7]));
+            const left: i32 = @intFromFloat(@round(x0));
+            const top: i32 = @intFromFloat(@round(y0));
+            const width: i32 = @intFromFloat(@round(x1) - @round(x0));
+            const height: i32 = @intFromFloat(@round(y1) - @round(y0));
+            if (width <= 0 or height <= 0 or surface.buffer == null) {
+                c.wlr_scene_node_set_enabled(node, false);
+                return;
+            }
+            var crop = c.wlr_fbox{ .x = (x0 - x) / w, .y = (y0 - y) / h, .width = (x1 - x0) / w, .height = (y1 - y0) / h };
+            var transformed: c.wlr_fbox = undefined;
+            c.wlr_fbox_transform(&transformed, &crop, c.wlr_output_transform_invert(surface.current.transform), 1, 1);
+            var box: c.wlr_fbox = undefined;
+            c.wlr_surface_get_buffer_source_box(surface, &box);
+            crop = .{ .x = box.x + transformed.x * box.width, .y = box.y + transformed.y * box.height, .width = transformed.width * box.width, .height = transformed.height * box.height };
+            c.wlr_scene_buffer_set_source_box(scene.buffer, &crop);
+            c.wlr_scene_buffer_set_dest_size(scene.buffer, width, height);
+            c.wlr_scene_buffer_set_opacity(scene.buffer, @floatCast(r[8]));
+            // The original opaque region is in unscaled surface coordinates.
+            var empty: c.pixman_region32_t = undefined;
+            c.pixman_region32_init(&empty);
+            defer c.pixman_region32_fini(&empty);
+            c.wlr_scene_buffer_set_opaque_region(scene.buffer, &empty);
+            c.wlr_scene_node_set_position(node, left, top);
+            c.wlr_scene_node_set_enabled(node, true);
+            c.wlr_scene_node_raise_to_top(node);
+        }
+    };
+};
+
 const Layer = struct {
     s: *Server,
     wlr: *c.wlr_layer_surface_v1,
@@ -1129,6 +1260,48 @@ const Layer = struct {
     mapped: bool = false,
     target: Target = .{},
     hooks: Hooks = .{},
+    preview_owner: ?*c.wl_resource = null,
+    preview_pending: bool = false,
+    preview_layout: std.ArrayList(PreviewSpec) = .empty,
+    previews: std.ArrayList(*Preview) = .empty,
+    preview_tree: ?*c.wlr_scene_tree = null,
+
+    fn clearPreviews(self: *Layer) void {
+        for (self.previews.items) |preview| preview.destroy();
+        self.previews.clearRetainingCapacity();
+        if (self.preview_tree) |tree| c.wlr_scene_node_destroy(&tree.node);
+        self.preview_tree = null;
+        self.preview_layout.clearRetainingCapacity();
+        self.preview_pending = false;
+        self.preview_owner = null;
+    }
+    fn applyPreviews(self: *Layer) void {
+        if (self.preview_pending) {
+            self.preview_pending = false;
+            var index: usize = 0;
+            for (self.preview_layout.items) |spec| {
+                const view = Overview.find(self.s, &spec.id) orelse continue;
+                if (!view.mapped) continue;
+                if (self.preview_tree == null) self.preview_tree = c.wlr_scene_tree_create(self.scene.tree.*.node.parent).?;
+                if (index < self.previews.items.len and self.previews.items[index].view != view) {
+                    self.previews.items[index].destroy();
+                    self.previews.items[index] = Preview.create(self, view, spec);
+                }
+                if (index == self.previews.items.len) self.previews.append(self.s.a, Preview.create(self, view, spec)) catch @panic("previews");
+                const preview = self.previews.items[index];
+                preview.spec = spec;
+                preview.sync();
+                c.wlr_scene_node_raise_to_top(&preview.tree.node);
+                index += 1;
+            }
+            while (self.previews.items.len > index) self.previews.pop().?.destroy();
+        }
+        if (self.preview_tree) |tree| {
+            c.wlr_scene_node_set_position(&tree.node, self.scene.tree.*.node.x, self.scene.tree.*.node.y);
+            c.wlr_scene_node_place_below(&tree.node, &self.scene.tree.*.node);
+            c.wlr_scene_node_set_enabled(&tree.node, self.mapped and !self.s.locked);
+        }
+    }
     fn create(s: *Server, wlr: *c.wlr_layer_surface_v1) void {
         if (wlr.output == null) {
             const output = s.outputAt(s.cursor.x, s.cursor.y) orelse {
@@ -1156,10 +1329,12 @@ const Layer = struct {
         c.wlr_scene_node_reparent(&self.scene.tree.*.node, self.s.roots[@min(3, self.wlr.current.layer)]);
         self.s.raisePanel();
         for (self.s.outputs.items) |o| if (o.wlr == self.wlr.output) o.arrange();
+        self.applyPreviews();
     }
     fn map(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Layer, ptr);
         self.mapped = true;
+        self.applyPreviews();
         self.s.raisePanel();
         if (same(self.wlr.namespace, "desktop-overview")) Overview.broadcastOverview(self.s);
         if (!self.s.locked and self.wlr.current.keyboard_interactive != c.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) self.s.keyboardFocus(self.wlr.surface);
@@ -1168,6 +1343,7 @@ const Layer = struct {
         const self = cast(Layer, ptr);
         const was_mapped = self.mapped;
         self.mapped = false;
+        self.clearPreviews();
         if (was_mapped and same(self.wlr.namespace, "desktop-overview")) Overview.broadcastOverview(self.s);
         if (self.s.seat.keyboard_state.focused_surface == self.wlr.surface) self.s.refocus();
     }
@@ -1176,6 +1352,9 @@ const Layer = struct {
         defer self.s.a.destroy(self);
         const was_mapped = self.mapped;
         self.mapped = false;
+        self.clearPreviews();
+        self.preview_layout.deinit(self.s.a);
+        self.previews.deinit(self.s.a);
         self.hooks.clear();
         remove(*Layer, &self.s.layers, self);
         if (was_mapped and same(self.wlr.namespace, "desktop-overview")) Overview.broadcastOverview(self.s);
@@ -1552,6 +1731,7 @@ const LockSurface = struct {
 };
 
 const Overview = struct {
+    const Context = struct { s: *Server, surface: ?*c.wlr_surface = null };
     const Interface = extern struct {
         destroy: *const fn (?*c.wl_client, ?*c.wl_resource) callconv(.c) void = &destroy,
         refresh: *const fn (?*c.wl_client, ?*c.wl_resource) callconv(.c) void = &refresh,
@@ -1559,11 +1739,13 @@ const Overview = struct {
         close: *const fn (?*c.wl_client, ?*c.wl_resource, [*c]const u8) callconv(.c) void = &close,
         switch_workspace: *const fn (?*c.wl_client, ?*c.wl_resource, u32) callconv(.c) void = &switchWorkspace,
         move: *const fn (?*c.wl_client, ?*c.wl_resource, [*c]const u8, u32) callconv(.c) void = &move,
+        begin_previews: *const fn (?*c.wl_client, ?*c.wl_resource, ?*c.wl_resource) callconv(.c) void = &beginPreviews,
+        preview: *const fn (?*c.wl_client, ?*c.wl_resource, [*c]const u8, *c.wl_array) callconv(.c) void = &preview,
     };
     const implementation: Interface = .{};
     fn bind(client: ?*c.wl_client, ptr: ?*anyopaque, version: u32, id: u32) callconv(.c) void {
         const s = cast(Server, ptr);
-        const bound_version: c_int = @intCast(@min(version, 2));
+        const bound_version: c_int = @intCast(@min(version, 3));
         const resource = c.wl_resource_create(client, @ptrCast(&p.dotfiles_overview_v1_interface), bound_version, id) orelse {
             c.wl_client_post_no_memory(client);
             return;
@@ -1573,7 +1755,8 @@ const Overview = struct {
             c.wl_client_post_no_memory(client);
             return;
         };
-        c.wl_resource_set_implementation(resource, &implementation, ptr, &resourceDestroy);
+        const context = alloc(Context, s, .{ .s = s });
+        c.wl_resource_set_implementation(resource, &implementation, context, &resourceDestroy);
         if (bound_version >= 2) {
             sendWorkspaces(s, resource);
             c.wl_resource_post_event(resource, 2);
@@ -1583,7 +1766,9 @@ const Overview = struct {
     fn resourceDestroy(resource: ?*c.wl_resource) callconv(.c) void {
         const res = resource orelse return;
         const s = state(res);
+        for (s.layers.items) |layer| if (layer.preview_owner == res) layer.clearPreviews();
         remove(*c.wl_resource, &s.overview_resources, res);
+        s.a.destroy(cast(Context, c.wl_resource_get_user_data(res)));
     }
     fn sendWorkspaces(s: *Server, resource: ?*c.wl_resource) void {
         for (0..4) |index| c.wl_resource_post_event(resource, 0, @as(u32, @intCast(index)), @as([*:0]const u8, switch (index) {
@@ -1608,7 +1793,43 @@ const Overview = struct {
         }
     }
     fn state(resource: ?*c.wl_resource) *Server {
-        return cast(Server, c.wl_resource_get_user_data(resource));
+        return cast(Context, c.wl_resource_get_user_data(resource)).s;
+    }
+    fn beginPreviews(_: ?*c.wl_client, resource: ?*c.wl_resource, surface_resource: ?*c.wl_resource) callconv(.c) void {
+        const ctx = cast(Context, c.wl_resource_get_user_data(resource));
+        ctx.surface = null;
+        if (surface_resource == null) {
+            for (ctx.s.layers.items) |layer| if (layer.preview_owner == resource) layer.clearPreviews();
+            return;
+        }
+        if (ctx.s.locked) return;
+        const surface = c.wlr_surface_from_resource(surface_resource);
+        for (ctx.s.layers.items) |layer| {
+            if (layer.wlr.surface != surface or !same(layer.wlr.namespace, "desktop-overview")) continue;
+            if (c.wl_resource_get_client(surface_resource) != c.wl_resource_get_client(resource)) return;
+            layer.preview_owner = resource;
+            layer.preview_layout.clearRetainingCapacity();
+            layer.preview_pending = true;
+            ctx.surface = surface;
+            break;
+        }
+    }
+    fn preview(_: ?*c.wl_client, resource: ?*c.wl_resource, id: [*c]const u8, rectangles: *c.wl_array) callconv(.c) void {
+        const ctx = cast(Context, c.wl_resource_get_user_data(resource));
+        if (ctx.s.locked or ctx.surface == null or rectangles.size != 9 * @sizeOf(i32) or rectangles.data == null) return;
+        const identifier = std.mem.span(id);
+        if (identifier.len >= 128) return;
+        const values: *const [9]i32 = @ptrCast(@alignCast(rectangles.data));
+        var spec: PreviewSpec = .{};
+        @memcpy(spec.id[0..identifier.len], identifier);
+        for (&spec.rectangles, values) |*value, fixed| value.* = @as(f64, @floatFromInt(fixed)) / 256;
+        if (spec.rectangles[2] <= 0 or spec.rectangles[3] <= 0 or spec.rectangles[6] <= 0 or spec.rectangles[7] <= 0) return;
+        spec.rectangles[8] = std.math.clamp(spec.rectangles[8], 0, 1);
+        for (ctx.s.layers.items) |layer| {
+            if (layer.wlr.surface != ctx.surface or layer.preview_owner != resource or !layer.preview_pending) continue;
+            if (layer.preview_layout.items.len < 512) layer.preview_layout.append(ctx.s.a, spec) catch @panic("preview layout");
+            break;
+        }
     }
     fn find(s: *Server, identifier: [*c]const u8) ?*View {
         if (s.locked) return null;

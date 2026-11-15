@@ -124,6 +124,7 @@ pub const Client = struct {
     pending_stacking: usize = 0,
     snapshot_dirty: bool = false,
     active: bool = false,
+    streaming: bool = false,
     connected: bool = true,
     fd_source: c.guint = 0,
     context: ?*anyopaque,
@@ -156,6 +157,7 @@ pub const Client = struct {
     }
     pub fn visible(self: *Client, active: bool) void {
         self.active = active;
+        self.streaming = false;
         if (!active) for (self.windows.items) |window| window.stop();
         self.flush();
     }
@@ -169,6 +171,7 @@ pub const Client = struct {
     }
     pub fn tick(self: *Client) void {
         if (!self.connected or !self.active) return;
+        self.streaming = true;
         for (self.windows.items) |window| {
             if (window.workspace == self.current or window.sticky or window.image == null) window.capture();
         }
@@ -389,8 +392,35 @@ const Thumbnail = struct {
 
     fn work(task: ?*c.GTask, _: ?*anyopaque, data: ?*anyopaque, _: [*c]c.GCancellable) callconv(.c) void {
         const self = cast(Thumbnail, data);
-        self.result = Image.thumbnail(a, self.source) catch null;
+        self.result = makeImage(a, self.source) catch null;
         c.g_task_return_boolean(task, @intFromBool(self.result != null));
+    }
+    fn makeImage(allocator: std.mem.Allocator, source: @import("desktop-raster.zig").Image) !Image {
+        const normalized = try Image.normalize(allocator, source);
+        if (@max(source.width, source.height) <= 1024) return normalized;
+        defer normalized.deinit(allocator);
+        const ratio = 1024.0 / @as(f64, @floatFromInt(@max(source.width, source.height)));
+        const width: u32 = @max(1, @as(u32, @intFromFloat(@as(f64, @floatFromInt(source.width)) * ratio)));
+        const height: u32 = @max(1, @as(u32, @intFromFloat(@as(f64, @floatFromInt(source.height)) * ratio)));
+        const stride = @as(usize, width) * 4;
+        const pixels = try allocator.alignedAlloc(u8, .of(u32), stride * height);
+        errdefer allocator.free(pixels);
+        // Independent Cairo image surfaces are safe on the worker. GOOD uses
+        // area filtering for minification without the scalar raster loop.
+        const input = c.cairo_image_surface_create_for_data(normalized.pixels.ptr, c.CAIRO_FORMAT_ARGB32, @intCast(normalized.width), @intCast(normalized.height), @intCast(normalized.stride));
+        defer c.cairo_surface_destroy(input);
+        const output = c.cairo_image_surface_create_for_data(pixels.ptr, c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height), @intCast(stride));
+        defer c.cairo_surface_destroy(output);
+        const cr = c.cairo_create(output);
+        defer c.cairo_destroy(cr);
+        c.cairo_set_operator(cr, c.CAIRO_OPERATOR_SOURCE);
+        c.cairo_scale(cr, @as(f64, @floatFromInt(width)) / @as(f64, @floatFromInt(source.width)), @as(f64, @floatFromInt(height)) / @as(f64, @floatFromInt(source.height)));
+        c.cairo_set_source_surface(cr, input, 0, 0);
+        c.cairo_pattern_set_filter(c.cairo_get_source(cr), c.CAIRO_FILTER_GOOD);
+        c.cairo_paint(cr);
+        if (c.cairo_surface_status(input) != c.CAIRO_STATUS_SUCCESS or c.cairo_status(cr) != c.CAIRO_STATUS_SUCCESS) return error.ThumbnailRenderFailed;
+        c.cairo_surface_flush(output);
+        return .{ .pixels = pixels, .width = width, .height = height, .stride = stride };
     }
     fn completed(_: ?*c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
         const self = cast(Thumbnail, data);
@@ -402,6 +432,15 @@ const Thumbnail = struct {
         self.result = null;
         if (window.image) |old| old.deinit(a);
         window.image = image;
+        // Re-arm as soon as filtering releases the shared buffer. Waiting for
+        // the overview's housekeeping timer caps video at 30 Hz and adds an
+        // extra timer interval whenever filtering misses a tick. The capture
+        // protocol waits for source damage; static windows stay idle.
+        const client = window.client;
+        if (client.streaming and client.active and client.connected and (window.workspace == client.current or window.sticky)) {
+            window.capture();
+            client.flush();
+        }
         window.client.changed(window.client.context);
     }
     fn destroy(data: ?*anyopaque) callconv(.c) void {
@@ -449,7 +488,7 @@ test "NVIDIA packed RGB capture negotiates and preserves colors across padded ro
     try std.testing.expectEqual(@as(u32, 4), stride);
     try std.testing.expectEqual(@as(u32, 12), captureStride(3, window.format));
     const pixels = [_]u8{ 255, 0, 0, 0xde, 0, 0, 255, 0xad };
-    const image = try Image.thumbnail(std.testing.allocator, .{
+    const image = try Thumbnail.makeImage(std.testing.allocator, .{
         .pixels = &pixels,
         .width = 1,
         .height = 2,
@@ -458,6 +497,25 @@ test "NVIDIA packed RGB capture negotiates and preserves colors across padded ro
     });
     defer image.deinit(std.testing.allocator);
     try std.testing.expectEqualSlices(u32, &.{ 0xffff0000, 0xff0000ff }, std.mem.bytesAsSlice(u32, image.pixels));
+}
+
+test "worker thumbnails downsample premultiplied capture pixels into independent storage" {
+    const allocator = std.testing.allocator;
+    const words = try allocator.alloc(u32, 2048 * 2);
+    defer allocator.free(words);
+    for (words, 0..) |*word, index| word.* = if (index % 2 == 0) 0x80800000 else 0x80000080;
+    const image = try Thumbnail.makeImage(allocator, .{
+        .pixels = std.mem.sliceAsBytes(words),
+        .width = 2048,
+        .height = 2,
+        .stride = 2048 * 4,
+        .format = .argb,
+    });
+    defer image.deinit(allocator);
+    @memset(words, 0xff00ff00);
+    try std.testing.expectEqual(@as(u32, 1024), image.width);
+    try std.testing.expectEqual(@as(u32, 1), image.height);
+    for (std.mem.bytesAsSlice(u32, image.pixels)) |word| try std.testing.expectEqual(@as(u32, 0x80400040), word);
 }
 
 test "overview snapshots track focus stacking changes without changing picker order" {

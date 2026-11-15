@@ -240,6 +240,12 @@ pub fn dotfiles_overview_v1_switch_workspace(overview: ?*dotfiles_overview_v1, i
 pub fn dotfiles_overview_v1_move(overview: ?*dotfiles_overview_v1, identifier: [*c]const u8, index: u32) callconv(.c) void {
     send(overview, 5, 0, .{ identifier, index });
 }
+pub fn dotfiles_overview_v1_begin_previews(overview: ?*dotfiles_overview_v1, surface: ?*anyopaque) void {
+    send(overview, 6, 0, .{surface});
+}
+pub fn dotfiles_overview_v1_preview(overview: ?*dotfiles_overview_v1, identifier: [*c]const u8, rectangles: *const c.wl_array) void {
+    send(overview, 7, 0, .{ identifier, rectangles });
+}
 
 pub extern const ext_session_lock_manager_v1_interface: Interface;
 pub extern const ext_session_lock_v1_interface: Interface;

@@ -8,6 +8,40 @@ const Image = @import("../desktop-image.zig").Image;
 const capture = @import("../desktop-capture.zig");
 const Rect = capture.Rect;
 
+test "GPU preview corner masks match rounded content over the cached background" {
+    const allocator = std.testing.allocator;
+    const color = [_]u32{0xffee3311};
+    for ([_]u32{ 1, 2 }) |scale| {
+        const width = 100 * scale;
+        const height = 80 * scale;
+        const foreground = try allocator.alloc(u32, width * height);
+        defer allocator.free(foreground);
+        const expected = try allocator.alloc(u32, width * height);
+        defer allocator.free(expected);
+        @memset(foreground, 0);
+        @memset(expected, 0xff222226);
+        const bounds: raster.Rect = .{ .x = 10, .y = 12, .width = 80, .height = 55 };
+        view.roundedMask(.{ .target = .{ .pixels = foreground, .width = width, .height = height }, .scale = @floatFromInt(scale) }, bounds, 12);
+        view.miniatureRounded(.{ .target = .{ .pixels = expected, .width = width, .height = height }, .scale = @floatFromInt(scale) }, .{
+            .pixels = std.mem.sliceAsBytes(&color),
+            .width = 1,
+            .height = 1,
+            .stride = 4,
+            .format = .argb,
+        }, bounds, bounds, 12, false);
+        for (expected, foreground, 0..) |reference_pixel, mask_pixel, i| {
+            const x = i % width;
+            const y = i / width;
+            const inside = x >= 10 * scale and x < 90 * scale and y >= 12 * scale and y < 67 * scale;
+            const actual = raster.over(if (inside) color[0] else 0xff222226, mask_pixel);
+            inline for (.{ 0, 8, 16, 24 }) |shift| {
+                const difference = @abs(@as(i32, @intCast((actual >> shift) & 255)) - @as(i32, @intCast((reference_pixel >> shift) & 255)));
+                try std.testing.expect(difference <= 2);
+            }
+        }
+    }
+}
+
 const reference = struct {
     fn rounded(cr: *c.cairo_t, r: Rect, radius: f64) void {
         const rad = @max(0, @min(radius, @min(r.w, r.h) / 2));

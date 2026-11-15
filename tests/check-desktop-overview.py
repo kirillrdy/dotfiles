@@ -106,6 +106,18 @@ def main():
         def log():
             return log_path.read_text()
 
+        def layer_destroys():
+            roles = {}
+            count = 0
+            for line in log().splitlines():
+                created = re.search(r'get_layer_surface\(new id (zwlr_layer_surface_v1#\d+),.*"([^"]+)"\)', line)
+                if created:
+                    roles[created[1]] = created[2]
+                destroyed = re.search(r'-> (zwlr_layer_surface_v1#\d+)\.destroy\(', line)
+                if destroyed and roles.pop(destroyed[1], None) == "desktop-overview":
+                    count += 1
+            return count
+
         def reopen():
             run(overview_command)
             time.sleep(0.6)
@@ -156,8 +168,8 @@ def main():
                 time.sleep(0.2)
             run(overview_command)
             wait_for(
-                lambda: log().count(".ready()") >= 8,
-                "Window captures did not update live",
+                lambda: log().count(".preview(") >= 8 or log().count(".ready()") >= 8,
+                "Window previews did not appear",
             )
             first = shot("live-before")
             time.sleep(0.5)
@@ -344,22 +356,22 @@ def main():
             reopen()
             # A close animates while retaining its surface. Reversing it must
             # reuse that surface rather than flash through an unmap/remap.
-            before_close = len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log()))
+            before_close = layer_destroys()
             maps_before = len(re.findall(r'get_layer_surface\(.*"desktop-overview"', log()))
             run(["wtype", "-k", "Super_L"])
             time.sleep(0.06)
-            assert len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log())) == before_close, "Overview closed without its exit animation"
+            assert layer_destroys() == before_close, "Overview closed without its exit animation"
             run(overview_command)
             time.sleep(0.4)
             assert len(re.findall(r'get_layer_surface\(.*"desktop-overview"', log())) == maps_before, "Reversing a close remapped the overview"
-            assert len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log())) == before_close, "Reversing a close still unmapped the overview"
+            assert layer_destroys() == before_close, "Reversing a close still unmapped the overview"
             close_started = time.monotonic()
             run(["wtype", "-k", "Super_L"])
             time.sleep(0.06)
-            assert len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log())) == before_close, "Overview disappeared before its closing transition"
+            assert layer_destroys() == before_close, "Overview disappeared before its closing transition"
             maps = len(re.findall(r'get_layer_surface\(.*"desktop-overview"', log()))
             wait_for(
-                lambda: len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log())) == maps,
+                lambda: layer_destroys() == maps,
                 "Super did not hide the overview",
             )
             assert time.monotonic() - close_started >= 0.2, "Closing skipped the 250ms animation profile"
@@ -367,9 +379,6 @@ def main():
             # visiting the corner, or sliding along it, must not toggle.
             def overview_maps():
                 return len(re.findall(r'get_layer_surface\(.*"desktop-overview"', log()))
-
-            def layer_destroys():
-                return len(re.findall(r"-> zwlr_layer_surface_v1#\d+\.destroy\(", log()))
 
             maps_before = overview_maps()
             pointer_command("move 0 0")
@@ -412,7 +421,7 @@ def main():
                 -4000:
             ]
             print(
-                "PASS: live captures, exact activation, idle cleanup, workspaces, drag, keyboard, native dash, tooltips, native IME, search, app grid, close, Super and GNOME corner pressure"
+                "PASS: live previews, exact activation, idle cleanup, workspaces, drag, keyboard, native dash, tooltips, native IME, search, app grid, close, Super and GNOME corner pressure"
             )
         finally:
             processes.stop()

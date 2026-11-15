@@ -51,6 +51,8 @@ pub const Client = struct {
     output_manager: ?*Proxy = null,
     text_manager: ?*Proxy = null,
     cursor_manager: ?*Proxy = null,
+    overview_global: u32 = 0,
+    preview_control: ?*p.dotfiles_overview_v1 = null,
     outputs: std.ArrayList(*Output) = .empty,
     surfaces: std.ArrayList(*Surface) = .empty,
     buffers: std.ArrayList(*Buffer) = .empty,
@@ -119,6 +121,7 @@ pub const Client = struct {
         if (self.output_manager) |proxy| destroyProxy(proxy, 0);
         if (self.text_manager) |proxy| destroyProxy(proxy, 0);
         if (self.cursor_manager) |proxy| destroyProxy(proxy, 0);
+        if (self.preview_control) |proxy| p.dotfiles_overview_v1_destroy(proxy);
         if (self.shell) |proxy| c.wl_proxy_destroy(proxy);
         if (self.wm_base) |proxy| destroyProxy(proxy, 0);
         if (self.activation) |proxy| destroyProxy(proxy, 0);
@@ -142,6 +145,18 @@ pub const Client = struct {
         }
         if (self.write_source == 0) self.write_source = c.g_unix_fd_add(c.wl_display_get_fd(self.display), c.G_IO_OUT | c.G_IO_ERR | c.G_IO_HUP, &writable, self);
     }
+    pub fn enablePreviews(self: *Client) bool {
+        if (self.preview_control != null) return true;
+        if (self.overview_global == 0) return false;
+        self.preview_control = @ptrCast(c.wl_registry_bind(self.registry, self.overview_global, &p.dotfiles_overview_v1_interface, 3));
+        _ = p.dotfiles_overview_v1_add_listener(self.preview_control, &preview_listener, null);
+        return self.preview_control != null;
+    }
+    fn previewWorkspace(_: ?*anyopaque, _: ?*p.dotfiles_overview_v1, _: u32, _: [*c]const u8, _: u32) callconv(.c) void {}
+    fn previewWindow(_: ?*anyopaque, _: ?*p.dotfiles_overview_v1, _: [*c]const u8, _: u32, _: i32, _: i32, _: i32, _: i32, _: u32) callconv(.c) void {}
+    fn previewDone(_: ?*anyopaque, _: ?*p.dotfiles_overview_v1) callconv(.c) void {}
+    fn previewOverview(_: ?*anyopaque, _: ?*p.dotfiles_overview_v1, _: u32) callconv(.c) void {}
+    const preview_listener: p.dotfiles_overview_v1_listener = .{ .workspace = &previewWorkspace, .window = &previewWindow, .done = &previewDone, .overview = &previewOverview };
     fn writable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c.gboolean {
         const self = cast(Client, data);
         if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) self.fail() else if (c.wl_display_flush(self.display) < 0) {
@@ -195,6 +210,8 @@ pub const Client = struct {
             seat.bindTextInput();
             seat.bindCursorShape();
             seat.bindClipboard();
+        } else if (std.mem.eql(u8, kind, "dotfiles_overview_v1")) {
+            if (version >= 3) self.overview_global = name;
         } else if (std.mem.eql(u8, kind, "wl_output")) {
             if (version < 2) return; // Buffer scale requires wl_output version 2.
             const output = a.create(Output) catch @panic("out of memory");
@@ -399,6 +416,7 @@ pub const Options = struct {
     min_height: i32 = 120,
     /// Disable only when the painter replaces every destination pixel.
     clear_buffer: bool = true,
+    fully_opaque: bool = false,
 };
 pub const Pixels = raster.Buffer;
 /// Physical pixels, cleared by default, writable only during the callback.
@@ -632,6 +650,12 @@ pub const Surface = struct {
             listen(callback, &frame_listener, self);
         }
         send(self.proxy.?, 8, .{@as(i32, @intCast(scale))});
+        if (self.options.fully_opaque) {
+            const region = c.wl_proxy_marshal_flags(self.client.compositor.?, 1, &wayland.wl_region_interface, 1, 0, @as(?*anyopaque, null)) orelse return error.WaylandSurface;
+            send(region, 1, .{ @as(i32, 0), @as(i32, 0), @as(i32, @intCast(self.width)), @as(i32, @intCast(self.height)) });
+            send(self.proxy.?, 4, .{region});
+            destroyProxy(region, 0);
+        }
         send(self.proxy.?, 1, .{ buffer.proxy, @as(i32, 0), @as(i32, 0) });
         send(self.proxy.?, 2, .{ @as(i32, 0), @as(i32, 0), @as(i32, @intCast(self.width)), @as(i32, @intCast(self.height)) });
         buffer.busy = true;

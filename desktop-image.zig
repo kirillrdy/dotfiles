@@ -30,9 +30,47 @@ pub const Image = struct {
         return .{ .pixels = pixels, .width = source.width, .height = source.height, .stride = stride };
     }
 
+    /// Normalize capture rows without filtering pixels that already line up.
+    pub fn normalize(allocator: std.mem.Allocator, source: raster.Image) !Image {
+        if (source.width > 8192 or source.height > 8192) return error.InvalidImage;
+        try source.validate();
+        const stride = @as(usize, source.width) * 4;
+        const pixels = try allocator.alignedAlloc(u8, .of(u32), stride * source.height);
+        const endian = @import("builtin").cpu.arch.endian();
+        for (0..source.height) |y| {
+            const row = pixels[y * stride ..][0..stride];
+            const input = source.pixels[y * source.stride ..];
+            if (source.format == .argb) {
+                @memcpy(row, input[0..stride]);
+                continue;
+            }
+            const words = std.mem.bytesAsSlice(u32, row);
+            for (words, 0..) |*word, x| {
+                word.* = switch (source.format) {
+                    .argb => unreachable,
+                    .xrgb => std.mem.readInt(u32, input[x * 4 ..][0..4], endian) | 0xff000000,
+                    .abgr, .xbgr => blk: {
+                        const value = std.mem.readInt(u32, input[x * 4 ..][0..4], endian);
+                        const alpha = if (source.format == .xbgr) 0xff000000 else value & 0xff000000;
+                        break :blk alpha | ((value & 255) << 16) | (value & 0xff00) | ((value >> 16) & 255);
+                    },
+                    .rgb, .rgba => blk: {
+                        const bytes: usize = if (source.format == .rgb) 3 else 4;
+                        const rgb = input[x * bytes ..][0..bytes];
+                        const alpha: u32 = if (source.format == .rgba) rgb[3] else 255;
+                        break :blk (alpha << 24) | (((@as(u32, rgb[0]) * alpha + 127) / 255) << 16) |
+                            (((@as(u32, rgb[1]) * alpha + 127) / 255) << 8) | ((@as(u32, rgb[2]) * alpha + 127) / 255);
+                    },
+                };
+            }
+        }
+        return .{ .pixels = pixels, .width = source.width, .height = source.height, .stride = stride };
+    }
+
     /// Scale a capture into independent storage, retaining its premultiplied alpha.
     pub fn thumbnail(allocator: std.mem.Allocator, source: raster.Image) !Image {
         if (source.width == 0 or source.height == 0 or source.width > 8192 or source.height > 8192) return error.InvalidImage;
+        if (@max(source.width, source.height) <= 1024) return normalize(allocator, source);
         const ratio = @min(1.0, 1024.0 / @as(f64, @floatFromInt(@max(source.width, source.height))));
         const width: u32 = @max(1, @as(u32, @intFromFloat(@as(f64, @floatFromInt(source.width)) * ratio)));
         const height: u32 = @max(1, @as(u32, @intFromFloat(@as(f64, @floatFromInt(source.height)) * ratio)));
@@ -115,4 +153,33 @@ test "window thumbnails bound dimensions and retain independent pixels after sou
     var invalid = source;
     invalid.pixels = &.{};
     try std.testing.expectError(error.InvalidImage, Image.thumbnail(a, invalid));
+}
+
+test "capture normalization handles padded byte formats and rejects incomplete rows" {
+    const allocator = std.testing.allocator;
+    const rgb = try Image.normalize(allocator, .{
+        .pixels = &.{ 255, 0, 0, 0xde, 0, 0, 255 },
+        .width = 1,
+        .height = 2,
+        .stride = 4,
+        .format = .rgb,
+    });
+    defer rgb.deinit(allocator);
+    try std.testing.expectEqualSlices(u32, &.{ 0xffff0000, 0xff0000ff }, std.mem.bytesAsSlice(u32, rgb.pixels));
+    const rgba = try Image.normalize(allocator, .{
+        .pixels = &.{ 255, 128, 0, 128, 255, 128, 0, 0 },
+        .width = 2,
+        .height = 1,
+        .stride = 8,
+        .format = .rgba,
+    });
+    defer rgba.deinit(allocator);
+    try std.testing.expectEqualSlices(u32, &.{ 0x80804000, 0 }, std.mem.bytesAsSlice(u32, rgba.pixels));
+    try std.testing.expectError(error.InvalidImage, Image.normalize(allocator, .{
+        .pixels = &.{ 255, 0, 0, 0xde, 0, 0 },
+        .width = 1,
+        .height = 2,
+        .stride = 4,
+        .format = .rgb,
+    }));
 }

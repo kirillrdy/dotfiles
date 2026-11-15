@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="dotfiles_overview_v1">
   <copyright>SPDX-License-Identifier: MIT</copyright>
-  <interface name="dotfiles_overview_v1" version="2">
+  <interface name="dotfiles_overview_v1" version="3">
     <description summary="desktop overview placement and window actions">
       Companion to ext-foreign-toplevel-list and ext-image-copy-capture.
       Identifiers are those from ext_foreign_toplevel_handle_v1.identifier.
@@ -19,5 +19,25 @@
     <event name="window"><arg name="identifier" type="string"/><arg name="workspace" type="uint"/><arg name="x" type="int"/><arg name="y" type="int"/><arg name="width" type="int"/><arg name="height" type="int"/><arg name="sticky" type="uint"/></event>
     <event name="done"/>
     <event name="overview" since="2"><arg name="active" type="uint"/></event>
+    <request name="begin_previews" since="3">
+      <description summary="replace compositor previews on the next surface commit">
+        The surface must belong to this client and have the desktop-overview
+        layer role. Subsequent preview requests build a replacement layout,
+        applied atomically with its next wl_surface commit. Passing null removes
+        this resource's previews. Destroying the resource also removes them.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface" allow-null="true"/>
+    </request>
+    <request name="preview" since="3">
+      <description summary="append a live window to the pending layout">
+        Rectangles contains nine native-endian signed 24.8 values: destination
+        x, y, width, height, then clip x, y, width, height, then opacity (0 to 1). Coordinates are local
+        to the overview surface. Entries are ordered bottom to top. Window
+        content is clipped to its XDG geometry and the supplied clip rectangle.
+        At most 512 entries are accepted per layout.
+      </description>
+      <arg name="identifier" type="string"/>
+      <arg name="rectangles" type="array"/>
+    </request>
   </interface>
 </protocol>
