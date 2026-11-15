@@ -96,10 +96,10 @@ def log():
 
 
 def dismiss():
-    before = len(re.findall(r"wl_subsurface#\d+\.destroy\(\)", log()))
+    before = len(re.findall(r"zwlr_layer_surface_v1#\d+\.destroy\(\)", log()))
     run([wtype, "-k", "Escape"])
     time.sleep(0.3)
-    assert len(re.findall(r"wl_subsurface#\d+\.destroy\(\)", log())) > before, (
+    assert len(re.findall(r"zwlr_layer_surface_v1#\d+\.destroy\(\)", log())) > before, (
         "Escape did not dismiss the popup"
     )
 
@@ -160,21 +160,22 @@ try:
     click(35, 16)
     assert (root / "activities-clicked").exists(), "Activities command did not execute"
     print("PASS two monitors, reserved space, activities command", flush=True)
+    before = log().count("get_layer_surface")
     click(864, 16)
     capture("calendar")
-    assert "get_subsurface" in log(), "Calendar surface was not created"
+    assert log().count("get_layer_surface") > before, "Calendar surface was not created"
     dismiss()
     capture("calendar-dismissed")
     pointer(112, 16)
     time.sleep(1.0)
     capture("codex-tooltip")
-    before = log().count("get_subsurface")
+    before = log().count("get_layer_surface")
     click(112, 16)
     capture("codex")
     run([wtype, "-k", "Return"])
     time.sleep(0.3)
     capture("codex-keyboard-refresh")
-    assert log().count("get_subsurface") > before, "Codex popover did not open"
+    assert log().count("get_layer_surface") > before, "Codex popover did not open"
     dismiss()
     before = log().count("get_layer_surface")
     click(1700, 16)

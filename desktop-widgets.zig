@@ -43,6 +43,8 @@ pub const Module = struct {
     tip_canvas: [*c]c.GtkWidget = null,
     codex: native.Codex = .{},
     tooltip: [*c]u8 = null,
+    on_redraw: ?*const fn (?*anyopaque) void = null,
+    redraw_context: ?*anyopaque = null,
 };
 pub fn unref_module(m: *Module) callconv(.c) void {
     m.refs -= 1;
@@ -222,6 +224,10 @@ pub fn clock_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
     }
     return 1;
 }
+pub fn historyOpen(m: *Module, open: bool) void {
+    if (open) history_reload(m);
+    history_call(m, "CalendarOpen", c.g_variant_new("(b)", @as(c_int, @intFromBool(open))));
+}
 fn calendar_closed(data: ?*anyopaque) void {
     const m: *Module = @ptrCast(@alignCast(data));
     history_call(m, "CalendarOpen", c.g_variant_new("(b)", @as(c_int, 0)));
@@ -275,7 +281,7 @@ fn populate_notifications(m: *Module, reply: ?*c.GVariant) void {
     if (m.date_controls) |controls| controls.load(std.mem.span(raw));
 }
 pub fn update_codex_tooltip(m: *Module) callconv(.c) void {
-    if (m.dead != 0) return;
+    if (m.dead != 0 or m.box == null) return;
     const hide = m.codex_menu != null and c.gtk_widget_get_visible(m.codex_menu) != 0;
     c.gtk_widget_set_tooltip_text(m.box, if (hide or m.tooltip == null or m.tooltip.* == 0) null else m.tooltip);
     if (hide) c.gtk_widget_trigger_tooltip_query(m.box);
@@ -312,7 +318,8 @@ pub fn codex_refresh(m: *Module) void {
     if (!m.codex.enabled or !std.mem.eql(u8, std.mem.span(m.source), "codex")) return;
     m.codex.enabled = false;
     m.codex.checked.set("Refreshing…");
-    c.gtk_widget_queue_draw(m.codex_canvas);
+    if (m.codex_canvas != null) c.gtk_widget_queue_draw(m.codex_canvas);
+    if (m.on_redraw) |cb| cb(m.redraw_context);
     if (refresh_source) |refresh| refresh("codex");
 }
 pub fn make_codex_menu(m: *Module) callconv(.c) void {
@@ -397,7 +404,7 @@ pub fn update(m: *Module, value: panel_data.Update) void {
     c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
     m.tooltip = c.g_strndup(value.tooltip.ptr, value.tooltip.len);
     update_codex_tooltip(m);
-    if (m.codex_menu != null) update_codex(m, value);
+    if (m.view.codex) update_codex(m, value);
     resize(m);
 }
 fn device_changed(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: c.gpointer) callconv(.c) void {
@@ -425,6 +432,45 @@ fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) c
 }
 pub fn init(root: *c.GtkWidget, options: Options) *Module {
     return initWithDevices(root, options, null);
+}
+fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.zig").Service) void {
+    if (m.monitors != 0) {
+        resize(m);
+    } else if (m.view.codex and m.root != null) {
+        make_codex_menu(m);
+    } else if (m.status != 0) {
+        m.quick = quick.Controls.createWithDevices(if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
+        const controls = m.quick.?;
+        controls.profile_context = m;
+        controls.profile_selected = &native_profile_selected;
+        update_power(m);
+        if (m.root != null) _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&power_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
+        m.power_timer = c.g_timeout_add_seconds(2, &refresh_power, m);
+        m.refs += 1;
+        c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
+    } else if (c.g_strcmp0(options.kind.ptr, "clock") == 0) {
+        make_calendar(m);
+        m.refs += 1;
+        c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
+        if (m.root != null) _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&clock_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
+        _ = update_clock(@as(c.gpointer, @ptrCast(m)));
+        m.clock_timer = c.g_timeout_add_seconds(1, &update_clock, @as(c.gpointer, @ptrCast(m)));
+    }
+    resize(m);
+    m.source = options.source.ptr;
+}
+pub fn initNative(options: Options, devices: ?*@import("desktop-devices.zig").Service, on_redraw: ?*const fn (?*anyopaque) void, redraw_context: ?*anyopaque) *Module {
+    const m = module_allocator.create(Module) catch @panic("out of memory");
+    m.* = .{
+        .cancel = c.g_cancellable_new(),
+        .monitors = @intFromBool(std.mem.eql(u8, options.kind, "monitors")),
+        .status = @intFromBool(std.mem.eql(u8, options.name, "gnome-status")),
+        .view = .{ .monitors = std.mem.eql(u8, options.kind, "monitors"), .status = std.mem.eql(u8, options.name, "gnome-status"), .activities = std.mem.eql(u8, options.kind, "activities"), .codex = std.mem.eql(u8, options.name, "gnome-codex"), .disk = std.mem.eql(u8, options.name, "gnome-disk") },
+        .on_redraw = on_redraw,
+        .redraw_context = redraw_context,
+    };
+    initCommon(m, options, devices);
+    return m;
 }
 pub fn initWithDevices(root: *c.GtkWidget, options: Options, devices: ?*@import("desktop-devices.zig").Service) *Module {
     ensureStyle();
@@ -455,30 +501,7 @@ pub fn initWithDevices(root: *c.GtkWidget, options: Options, devices: ?*@import(
     connect(root, "key-press-event", &panel_key, m);
     connect(root, "focus-in-event", &panel_focus_in, m);
     connect(root, "focus-out-event", &panel_focus_out, m);
-    if (m.monitors != 0) {
-        resize(m);
-    } else if (c.g_strcmp0(name, "gnome-codex") == 0) {
-        make_codex_menu(m);
-    } else if (m.status != 0) {
-        m.quick = quick.Controls.createWithDevices(if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
-        const controls = m.quick.?;
-        controls.profile_context = m;
-        controls.profile_selected = &native_profile_selected;
-        update_power(m);
-        _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&power_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
-        m.power_timer = c.g_timeout_add_seconds(2, &refresh_power, m);
-        m.refs += 1;
-        c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
-    } else if (c.g_strcmp0(kind, "clock") == 0) {
-        make_calendar(m);
-        m.refs += 1;
-        c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
-        _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&clock_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
-        _ = update_clock(@as(c.gpointer, @ptrCast(m)));
-        m.clock_timer = c.g_timeout_add_seconds(1, &update_clock, @as(c.gpointer, @ptrCast(m)));
-    }
-    resize(m);
-    m.source = options.source.ptr;
+    initCommon(m, options, devices);
     c.gtk_widget_show_all(m.box);
     return m;
 }
@@ -502,12 +525,14 @@ pub fn deinit(m: *Module) void {
     }
     if (m.quick) |controls| controls.deinit();
     if (m.power_timer != 0) _ = c.g_source_remove(m.power_timer);
-    _ = c.g_signal_handlers_disconnect_matched(@as(c.gpointer, @ptrCast(m.root)), c.G_SIGNAL_MATCH_DATA, 0, @as(c.GQuark, 0), null, @as(?*anyopaque, @ptrFromInt(0)), @as(c.gpointer, @ptrCast(m)));
+    if (m.root != null) _ = c.g_signal_handlers_disconnect_matched(@as(c.gpointer, @ptrCast(m.root)), c.G_SIGNAL_MATCH_DATA, 0, @as(c.GQuark, 0), null, @as(?*anyopaque, @ptrFromInt(0)), @as(c.gpointer, @ptrCast(m)));
     c.g_cancellable_cancel(m.cancel);
-    _ = c.g_signal_handlers_disconnect_matched(m.tip_canvas, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, m);
-    c.gtk_widget_destroy(m.tip_canvas);
-    c.g_object_unref(m.tip_canvas);
-    _ = c.g_signal_handlers_disconnect_matched(m.box, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, m);
+    if (m.tip_canvas != null) {
+        _ = c.g_signal_handlers_disconnect_matched(m.tip_canvas, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, m);
+        c.gtk_widget_destroy(m.tip_canvas);
+        c.g_object_unref(m.tip_canvas);
+    }
+    if (m.box != null) _ = c.g_signal_handlers_disconnect_matched(m.box, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, m);
     unref_module(m);
 }
 
@@ -516,6 +541,14 @@ pub var refresh_source: ?*const fn ([]const u8) void = null;
 
 const connect = c.__zig.connect;
 fn resize(m: *Module) void {
+    if (m.box == null) {
+        m.view.prepare(@max(1, m.view.scale), 32) catch |err| {
+            std.log.err("panel layout: {s}", .{@errorName(err)});
+            return;
+        };
+        if (m.on_redraw) |cb| cb(m.redraw_context);
+        return;
+    }
     const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(m.box)));
     m.view.prepare(scale, @floatFromInt(@max(1, c.gtk_widget_get_allocated_height(m.box)))) catch |err| {
         std.log.err("panel layout: {s}", .{@errorName(err)});
@@ -530,6 +563,10 @@ pub fn setOverviewState(m: *Module, active: bool, workspace_count: u8, workspace
     m.view.overview = active;
     m.view.workspace_count = workspace_count;
     m.view.workspace_active = workspace_active;
+    if (m.box == null) {
+        if ((resized or changed)) if (m.on_redraw) |cb| cb(m.redraw_context);
+        return;
+    }
     if (resized) resize(m) else if (changed) c.gtk_widget_queue_draw(m.box);
 }
 fn draw_panel(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
@@ -702,6 +739,14 @@ fn codex_scale(_: *c.GObject, _: *c.GParamSpec, ptr: c.gpointer) callconv(.c) vo
     resize_codex(cast(Module, ptr));
 }
 fn resize_codex(m: *Module) void {
+    if (m.codex_canvas == null) {
+        m.codex.prepare(@max(1, m.view.scale)) catch |err| {
+            std.log.err("Codex layout: {s}", .{@errorName(err)});
+            return;
+        };
+        if (m.on_redraw) |cb| cb(m.redraw_context);
+        return;
+    }
     const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(m.codex_canvas)));
     m.codex.prepare(scale) catch |err| {
         std.log.err("Codex layout: {s}", .{@errorName(err)});
