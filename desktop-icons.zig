@@ -39,6 +39,20 @@ const Directory = struct {
         } * self.scale;
         return @max(0, @max(low - requested, requested - high));
     }
+
+    /// Prefer smaller distance; on ties, prefer downscaling over upscaling and matching scale.
+    fn betterThan(self: Directory, candidate_d: i64, current: ?Directory, current_d: i64, size: u32, scale: u32) bool {
+        const best = current orelse return true;
+        if (candidate_d != current_d) return candidate_d < current_d;
+        const requested = @as(i64, size) * scale;
+        const cand_size = self.size * self.scale;
+        const best_size = best.size * best.scale;
+        const cand_downscale = cand_size >= requested;
+        const best_downscale = best_size >= requested;
+        if (cand_downscale != best_downscale) return cand_downscale;
+        if (cand_size != best_size) return if (cand_downscale) cand_size < best_size else cand_size > best_size;
+        return self.scale == scale and best.scale != scale;
+    }
 };
 const Theme = struct { name: []const u8, dirs: std.ArrayList(Directory) = .empty, inherits: std.ArrayList([]const u8) = .empty };
 const Cached = struct { name: []const u8, size: u32, scale: u32, path: ?[:0]const u8 };
@@ -139,17 +153,19 @@ pub const Resolver = struct {
         const theme = self.themes.items[index];
         try visited.append(alloc, theme.name);
         var best: ?[:0]const u8 = null;
+        var best_dir: ?Directory = null;
         var distance: i64 = std.math.maxInt(i64);
         for ([_]bool{ true, false }) |exact| {
             for (theme.dirs.items) |dir| {
                 if (dir.size <= 0 or !validRelative(dir.path)) continue;
                 const d = dir.distance(size, scale);
                 if (exact and (d != 0 or dir.scale != scale)) continue;
-                if (!exact and d >= distance) continue;
+                if (!exact and !dir.betterThan(d, best_dir, distance, size, scale)) continue;
                 for (self.roots) |root| {
                     if (try self.file(root, theme.name, dir.path, name)) |path| {
                         if (exact) return path;
                         best = path;
+                        best_dir = dir;
                         distance = d;
                         break;
                     }
@@ -425,6 +441,21 @@ test "theme lookup respects root overrides, size, scale and inheritance cycles" 
     }
     try std.testing.expectEqual(@as(usize, 512), theme.cache.items.len);
     try std.testing.expect(std.mem.endsWith(u8, (try theme.lookup("app", 16, 1)).?, "user/Child/16/apps/app.svg"));
+}
+
+test "tied icon distance prefers downscaling larger icons over upscaling smaller ones" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const index =
+        "[Icon Theme]\nName=hicolor\nDirectories=64x64/apps,128x128/apps\n" ++
+        "[64x64/apps]\nSize=64\nType=Threshold\n" ++
+        "[128x128/apps]\nSize=128\nType=Threshold\n";
+    try fixture.put("hicolor/index.theme", index);
+    try fixture.put("hicolor/64x64/apps/firefox.png", "");
+    try fixture.put("hicolor/128x128/apps/firefox.png", "");
+    var theme = try Resolver.init(std.testing.allocator, &.{fixture.root}, "hicolor");
+    defer theme.deinit();
+    try std.testing.expect(std.mem.endsWith(u8, (try theme.lookup("firefox", 96, 1)).?, "128x128/apps/firefox.png"));
 }
 
 test "Zig symbolic icon rendering matches GTK palette, opacity and scale without a display" {
