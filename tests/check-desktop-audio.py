@@ -172,8 +172,8 @@ try:
         for scale in (1, 2):
             run([args.desktop, "output", "--output", "HEADLESS-1", "--scale", str(scale)])
             preview = start([args.fixture, "preview"], f"sound-scale-{scale}.log")
-            wait(lambda: ui.window("Sound"), "native Sound window maps")
-            ui.focus("Sound")
+            wait(lambda: ui.window("Settings"), "native Sound window maps")
+            ui.focus("Settings")
             time.sleep(.2)
             filename = root / f"sound-scale-{scale}.png"
             run([args.desktop, "screenshot", "-o", "HEADLESS-1", str(filename)])
@@ -184,6 +184,15 @@ try:
             content_width = min(576, logical_width - sidebar - 48)
             content_x = sidebar + (logical_width - sidebar - content_width) / 2
             pointer.command(f"size {width} {height}")
+            # The shared sidebar switches pages in this same native toplevel.
+            for nav_y in (73, 118, 163):
+                pointer.move(90 * scale, nav_y * scale)
+                pointer.command("button 1")
+                pointer.command("button 0")
+                time.sleep(.15)
+                assert ui.window("Settings"), "page switch closed the settings shell"
+            # Tab from Sound's sidebar entry wraps back to the first slider.
+            run(["wtype", "-k", "Tab"])
             # Drag the output slider to its right endpoint; verify independently.
             pointer.move((content_x + 182) * scale, 197 * scale)
             pointer.command("button 1")
@@ -203,7 +212,7 @@ try:
             if scale == 1:
                 run(["wtype", "-k", "Escape"])
             else:
-                ui.run("wlrctl", "toplevel", "close", "title:Sound")
+                ui.run("wlrctl", "toplevel", "close", "title:Settings")
             assert preview.wait(timeout=10) == 0, (root / f"sound-scale-{scale}.log").read_text()
         print("PASS native Sound Wayland pixels, pointer drag, keyboard, tooltips, HiDPI and close requests", flush=True)
     finally:

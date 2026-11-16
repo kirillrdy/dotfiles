@@ -77,6 +77,17 @@ pub fn main(init: std.process.Init) !void {
         try std.testing.expectEqual(@as(usize, 0), window.rows.items.len);
         try std.testing.expect(window.ui.shortcut.?(window.ui.context, 0xff1b, 0));
         try std.testing.expect(!window.view.searching and window.rows.items.len > 0);
+        const native_window = window.window;
+        window.ui.activate(window.view.sound_nav);
+        try std.testing.expect(window.mode == .sound);
+        try std.testing.expect(window.sound.?.window == native_window);
+        try std.testing.expect(!window.manual.visible);
+        // Navigation still works with no PipeWire daemon in this fixture.
+        window.sound.?.activate(.{ .control = .network_nav });
+        try std.testing.expect(window.mode == .network and window.view.page == .network);
+        window.showPage(.wifi);
+        try std.testing.expect(window.ui.get(window.view.sound_nav).visible);
+        try std.testing.expect(window.rows.items.len > 0);
         const properties = editor.Editor.create(window.window, state.profiles.items[0]);
         settle();
         properties.ui.activate(properties.view.tabs[2]);
@@ -100,7 +111,7 @@ pub fn main(init: std.process.Init) !void {
         properties.ui.close();
         window.ui.close();
         while (!window.closed) pump();
-        while (window.network_operations != 0) pump();
+        while (window.network_operations != 0 or (window.sound != null and window.sound.?.operations != 0)) pump();
         window.destroy();
         settle();
         return;
@@ -121,7 +132,7 @@ pub fn main(init: std.process.Init) !void {
             properties.ui.relayout();
         }
         while (!window.closed) _ = c.g_main_context_iteration(null, 1);
-        while (window.network_operations != 0) pump();
+        while (window.network_operations != 0 or (window.sound != null and window.sound.?.operations != 0)) pump();
         window.destroy();
         return;
     }
@@ -202,16 +213,19 @@ pub fn main(init: std.process.Init) !void {
         try std.testing.expect(controls.dialog.?.handleKey(0xff1b, 0));
         pump();
         try std.testing.expect(controls.dialog == null);
+        controls.view.submenu = .network;
+        controls.redraw();
         controls.activate(.network0);
         try controls.dialog.?.entry.?.insert("quick-native-secret");
         try std.testing.expect(controls.dialog.?.handleKey(0xff0d, 0));
         pump();
         try std.testing.expect(controls.dialog == null);
         settle();
+        controls.view.submenu = .network;
+        controls.redraw();
         controls.activate(.network0);
         try controls.dialog.?.entry.?.insert("teardown-quick-secret");
         controls.deinit();
-        c.gtk_widget_destroy(window);
         settle();
         return;
     }

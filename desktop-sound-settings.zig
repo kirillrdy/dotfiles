@@ -10,6 +10,9 @@ const wire = host.wire;
 const Label = @import("desktop-panel-view.zig").Label;
 pub const Sound = struct {
     window: *host.Window,
+    owns_window: bool = true,
+    navigation_context: ?*anyopaque = null,
+    navigate: ?*const fn (?*anyopaque, native.Control) void = null,
     tooltip: Label = .{},
     tooltip_timer: c.guint = 0,
     tooltip_visible: bool = false,
@@ -51,9 +54,30 @@ pub const Sound = struct {
         try window.show();
         return self;
     }
+    // The settings shell owns window lifetime, drawing, and input dispatch.
+    pub fn createEmbedded(window: *host.Window, context: ?*anyopaque, navigate: *const fn (?*anyopaque, native.Control) void) !*Sound {
+        const self = try a.create(Sound);
+        self.* = .{ .window = window, .owns_window = false, .navigation_context = context, .navigate = navigate, .cancel = c.g_cancellable_new().? };
+        self.view.unified = true;
+        self.view.test_enabled = c.g_getenv("DESKTOP_OSD_SOUND_FILE") != null;
+        self.service = audio.Service.create(&changed, self) catch null;
+        self.refresh() catch self.renderFailure();
+        return self;
+    }
+    pub fn shutdown(self: *Sound) void {
+        if (!self.closed) destroyed(self);
+    }
+    pub fn deactivate(self: *Sound) void {
+        self.hideTooltip();
+        self.flushVolumes();
+        self.view.focus = null;
+        self.view.hover = null;
+        self.view.pressed = null;
+        self.view.expanded = null;
+    }
     pub fn destroy(self: *Sound) void {
         std.debug.assert(self.closed and self.operations == 0);
-        self.window.destroy();
+        if (self.owns_window) self.window.destroy();
         self.tooltip.deinit();
         c.g_object_unref(self.cancel);
         self.view.deinit(a);
@@ -179,6 +203,10 @@ pub const Sound = struct {
     pub fn activate(self: *Sound, target: native.Target) void {
         if (self.closed or !self.view.active(target)) return;
         switch (target.control) {
+            .wifi_nav, .network_nav, .sound_nav => {
+                if (self.navigate) |navigate| navigate(self.navigation_context, target.control);
+                return;
+            },
             .close => {
                 self.close();
                 return;
@@ -260,7 +288,7 @@ pub const Sound = struct {
             @memset(target.pixels, 0xff222226);
         };
     }
-    fn paint(self: *Sound, target: wire.Pixels) !void {
+    pub fn paint(self: *Sound, target: wire.Pixels) !void {
         const scale = self.window.surface.?.buffer_scale;
         const width = target.width / scale;
         const height = target.height / scale;
@@ -285,7 +313,7 @@ pub const Sound = struct {
     fn focus(self: *Sound) void {
         if (self.view.focus) |target| {
             const rect = self.view.rect(target);
-            if (target.control != .close and target.control != .back) {
+            if (target.control != .close and target.control != .back and target.control != .wifi_nav and target.control != .network_nav and target.control != .sound_nav) {
                 if (rect.y < 54) self.view.offset = @max(0, self.view.offset + rect.y - 54);
                 if (rect.y + rect.height > @as(f64, @floatFromInt(self.view.viewport_height)) - 16) self.view.offset += rect.y + rect.height - @as(f64, @floatFromInt(self.view.viewport_height)) + 16;
                 self.view.offset = std.math.clamp(self.view.offset, 0, self.view.maxOffset());
@@ -322,7 +350,7 @@ pub const Sound = struct {
         if (target) |t| if (t.control == .volume) self.setVolume(t.row, self.view.percent(t, x));
         self.window.redraw();
     }
-    fn button(ptr: ?*anyopaque, _: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
+    pub fn button(ptr: ?*anyopaque, _: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
         if (code == 272) cast(Sound, ptr).pointerButton(pressed, x, y);
     }
     fn hideTooltip(self: *Sound) void {
@@ -337,7 +365,7 @@ pub const Sound = struct {
         self.window.redraw();
         return 0;
     }
-    fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
+    pub fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
         const self = cast(Sound, ptr);
         if (self.closed or self.window.closing) return;
         self.pointer_x = x;
@@ -354,6 +382,9 @@ pub const Sound = struct {
             .levels => "Adjust volume for individual applications",
             .back => "Back",
             .close => "Close",
+            .wifi_nav => "Wi-Fi",
+            .network_nav => "Network",
+            .sound_nav => "Sound",
         } else null;
         self.tooltip.set(tooltip orelse "");
         if (self.view.pressed) |target| {
@@ -361,13 +392,13 @@ pub const Sound = struct {
         } else if (tooltip != null) self.tooltip_timer = c.g_timeout_add(500, &showTooltip, self);
         self.window.redraw();
     }
-    fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
+    pub fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
         const self = cast(Sound, ptr);
         self.view.hover = null;
         self.hideTooltip();
         self.window.redraw();
     }
-    fn focusChanged(ptr: ?*anyopaque, _: *wire.Surface, focused: bool) void {
+    pub fn focusChanged(ptr: ?*anyopaque, _: *wire.Surface, focused: bool) void {
         const self = cast(Sound, ptr);
         if (!focused) {
             self.view.pressed = null;
@@ -376,7 +407,7 @@ pub const Sound = struct {
             self.window.redraw();
         }
     }
-    fn key(ptr: ?*anyopaque, _: *wire.Surface, symbol: u32, modifiers: u32, pressed: bool) bool {
+    pub fn key(ptr: ?*anyopaque, _: *wire.Surface, symbol: u32, modifiers: u32, pressed: bool) bool {
         return !pressed or cast(Sound, ptr).handleKey(symbol, modifiers);
     }
     pub fn handleKey(self: *Sound, symbol: u32, modifiers: c.GdkModifierType) bool {
@@ -424,7 +455,7 @@ pub const Sound = struct {
         }
         return true;
     }
-    fn scrolled(ptr: ?*anyopaque, _: *wire.Surface, axis: u32, amount: f64) void {
+    pub fn scrolled(ptr: ?*anyopaque, _: *wire.Surface, axis: u32, amount: f64) void {
         const self = cast(Sound, ptr);
         if (self.closed or self.window.closing or axis != 0) return;
         self.hideTooltip();

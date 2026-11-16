@@ -5,7 +5,7 @@ const text = @import("desktop-text.zig");
 const audio = @import("desktop-audio.zig");
 const p = @import("desktop-preferences-view.zig");
 pub const Rect = raster.Rect;
-pub const Control = enum { volume, mute, default, device, levels, back, close, test_sound };
+pub const Control = enum { volume, mute, default, device, levels, back, close, test_sound, wifi_nav, network_nav, sound_nav };
 pub const Page = enum { sound, levels };
 pub const Target = struct {
     row: usize = 0,
@@ -31,9 +31,10 @@ pub const Row = struct {
         self.summary_mask = null;
     }
 };
-const Label = enum { settings, sound, output, input, output_device, input_device, output_volume, input_volume, sounds, levels, outputs, inputs, no_streams, no_output, no_input, test_sound, sound_nav, levels_title };
-const captions = [_][:0]const u8{ "Settings", "Sound", "Output", "Input", "Output Device", "Input Device", "Output Volume", "Input Volume", "Sounds", "Volume Levels", "Outputs", "Inputs", "No Sound Playing", "No Output Devices", "No Input Devices", "Test", "Sound", "Volume Levels" };
+const Label = enum { settings, sound, output, input, output_device, input_device, output_volume, input_volume, sounds, levels, outputs, inputs, no_streams, no_output, no_input, test_sound, sound_nav, levels_title, wifi_nav, network_nav };
+const captions = [_][:0]const u8{ "Settings", "Sound", "Output", "Input", "Output Device", "Input Device", "Output Volume", "Input Volume", "Sounds", "Volume Levels", "Outputs", "Inputs", "No Sound Playing", "No Output Devices", "No Input Devices", "Test", "Sound", "Volume Levels", "Wi-Fi", "Network" };
 pub const View = struct {
+    unified: bool = false,
     rows: std.ArrayList(Row) = .empty,
     width: u32 = 980,
     viewport_height: u32 = 700,
@@ -168,6 +169,11 @@ pub const View = struct {
                 r.height = 55;
                 break :blk r;
             },
+            .wifi_nav, .network_nav, .sound_nav => .{ .x = 6, .y = switch (target.control) {
+                .wifi_nav => @as(f64, 52),
+                .network_nav => 97,
+                else => 142,
+            }, .width = self.sidebar() - 12, .height = 43 },
             .levels => .{ .x = x, .y = 474 - self.offset, .width = w, .height = 55 },
             .back => .{ .x = self.sidebar() + 6, .y = 6, .width = 34, .height = 34 },
             .close => .{ .x = @as(f64, @floatFromInt(self.width)) - 35, .y = 11, .width = 24, .height = 24 },
@@ -176,6 +182,7 @@ pub const View = struct {
     }
     pub fn active(self: *const View, target: Target) bool {
         switch (target.control) {
+            .wifi_nav, .network_nav, .sound_nav => return self.unified,
             .close => return true,
             .back => return self.page == .levels,
             .levels => return self.page == .sound,
@@ -193,6 +200,10 @@ pub const View = struct {
     }
     pub fn hit(self: *const View, x: f64, y: f64) ?Target {
         if (self.rect(.{ .control = .close }).contains(x, y)) return .{ .control = .close };
+        if (self.unified) for ([_]Control{ .wifi_nav, .network_nav, .sound_nav }) |control| {
+            const target: Target = .{ .control = control };
+            if (self.rect(target).contains(x, y)) return target;
+        };
         if (self.expanded != null) {
             var n = self.optionStart();
             while (n < self.optionStart() + self.menuCapacity()) : (n += 1) {
@@ -219,17 +230,21 @@ pub const View = struct {
         return @round(std.math.clamp((x - r.x - 8) / (r.width - 16), 0, 1) * 100);
     }
     pub fn moveFocus(self: *View, backwards: bool) void {
-        const count = self.rows.items.len * 4 + 4;
+        const extra: usize = if (self.unified) 7 else 4;
+        const count = self.rows.items.len * 4 + extra;
         const start = if (self.focus) |f| switch (f.control) {
             .volume, .mute, .default, .device => f.row * 4 + @as(usize, @backingInt(f.control)),
-            .levels => count - 4,
-            .back => count - 3,
-            .test_sound => count - 2,
-            .close => count - 1,
+            .levels => count - extra,
+            .back => count - extra + 1,
+            .test_sound => count - extra + 2,
+            .close => count - extra + 3,
+            .wifi_nav => count - 3,
+            .network_nav => count - 2,
+            .sound_nav => count - 1,
         } else if (backwards) @as(usize, 0) else count - 1;
         for (1..count + 1) |step| {
             const index = if (backwards) (start + count - step) % count else (start + step) % count;
-            const t: Target = if (index < count - 4) .{ .row = index / 4, .control = @fromBackingInt(@intCast(index % 4)) } else .{ .control = ([_]Control{ .levels, .back, .test_sound, .close })[index - (count - 4)] };
+            const t: Target = if (index < count - extra) .{ .row = index / 4, .control = @fromBackingInt(@intCast(index % 4)) } else .{ .control = ([_]Control{ .levels, .back, .test_sound, .close, .wifi_nav, .network_nav, .sound_nav })[index - (count - extra)] };
             if (self.active(t)) {
                 self.focus = t;
                 self.keyboard_focus = true;
@@ -366,9 +381,21 @@ pub const View = struct {
         p.fill(canvas, .{ .x = self.sidebar(), .y = 0, .width = @as(f64, @floatFromInt(self.width)) - self.sidebar(), .height = 46 }, p.background, 0);
         self.caption(canvas, .settings, .{ .x = 0, .y = 0, .width = self.sidebar(), .height = 46 }, true, 0xffffff);
         self.caption(canvas, if (self.page == .sound) .sound else .levels_title, .{ .x = self.sidebar(), .y = 0, .width = @as(f64, @floatFromInt(self.width)) - self.sidebar(), .height = 46 }, true, 0xffffff);
-        p.fill(canvas, .{ .x = 6, .y = 52, .width = self.sidebar() - 12, .height = 43 }, 0x414145, 8);
-        self.icon(canvas, "audio-volume-high-symbolic", .{ .x = 16, .y = 52, .width = 24, .height = 43 }, 16);
-        self.caption(canvas, .sound_nav, .{ .x = 48, .y = 52, .width = self.sidebar() - 60, .height = 43 }, false, 0xffffff);
+        if (self.unified) {
+            for ([_]Control{ .wifi_nav, .network_nav, .sound_nav }, [_]Label{ .wifi_nav, .network_nav, .sound_nav }, [_][:0]const u8{ "network-wireless-symbolic", "network-workgroup-symbolic", "audio-volume-high-symbolic" }) |control, label, icon_name| {
+                const t: Target = .{ .control = control };
+                const r = self.rect(t);
+                const selected = control == .sound_nav;
+                if (selected or (self.hover != null and self.hover.?.eql(t))) p.fill(canvas, r, if (selected) 0x414145 else 0x38383c, 9);
+                self.icon(canvas, icon_name, .{ .x = r.x + 14, .y = r.y, .width = 16, .height = r.height }, 16);
+                self.caption(canvas, label, .{ .x = r.x + 42, .y = r.y, .width = r.width - 56, .height = r.height }, false, 0xffffff);
+                self.controlFocus(canvas, t);
+            }
+        } else {
+            p.fill(canvas, .{ .x = 6, .y = 52, .width = self.sidebar() - 12, .height = 43 }, 0x414145, 8);
+            self.icon(canvas, "audio-volume-high-symbolic", .{ .x = 16, .y = 52, .width = 24, .height = 43 }, 16);
+            self.caption(canvas, .sound_nav, .{ .x = 48, .y = 52, .width = self.sidebar() - 60, .height = 43 }, false, 0xffffff);
+        }
         const close_target: Target = .{ .control = .close };
         p.fill(canvas, self.rect(close_target), 0x38383c, 12);
         self.icon(canvas, "window-close-symbolic", self.rect(close_target), 12);

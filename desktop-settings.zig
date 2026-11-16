@@ -1,4 +1,4 @@
-//! Settings windows using native form controls and the existing system services.
+//! One settings window with Wi-Fi, Network, and Sound pages.
 const std = @import("std");
 pub const c = @import("desktop-gtk.zig");
 pub const SoundControl = @import("desktop-sound-view.zig").Control;
@@ -8,6 +8,8 @@ const editor = @import("desktop-network-editor.zig");
 const native = @import("desktop-form.zig");
 const auth = @import("desktop-auth-dialog.zig");
 const network_view = @import("desktop-network-view.zig");
+const wire = native.host.wire;
+const input = @import("desktop-input.zig");
 const raster = @import("desktop-raster.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
@@ -18,6 +20,8 @@ fn z(value: []const u8) [:0]u8 {
 pub const Mode = enum { sound, network };
 pub const Settings = struct {
     mode: Mode = .network,
+    sound: ?*Sound = null,
+    form_input: input.Events = .{},
     window: *native.host.Window,
     ui: *native.Form,
     message: *native.Item,
@@ -38,9 +42,8 @@ pub const Settings = struct {
     dynamic_start: usize = 0,
     initial_page: bool = true,
     pub fn create(mode: Mode) *Settings {
-        std.debug.assert(mode == .network);
         const self = a.create(Settings) catch @panic("out of memory");
-        const ui = native.Form.create("Network", self, &action, &fieldChanged) catch @panic("out of memory");
+        const ui = native.Form.create("Settings", self, &action, &fieldChanged) catch @panic("out of memory");
         self.* = .{ .window = ui.window, .ui = ui, .audio_cancel = c.g_cancellable_new().?, .message = undefined, .refresh_button = undefined, .ssids = undefined, .manual = undefined, .password = undefined, .hidden = undefined, .profiles = undefined, .devices = undefined, .status = undefined };
         self.status = self.add(.label, "Loading network devices…", "", false);
         self.refresh_button = self.add(.button, "Refresh", "", false);
@@ -67,6 +70,7 @@ pub const Settings = struct {
         self.view = .{
             .wifi_nav = ui.add(.button, "Wi-Fi", "", false) catch @panic("out of memory"),
             .network_nav = ui.add(.button, "Network", "", false) catch @panic("out of memory"),
+            .sound_nav = ui.add(.button, "Sound", "", false) catch @panic("out of memory"),
             .wifi = ui.add(.toggle, "Wi-Fi", "", false) catch @panic("out of memory"),
             .saved = ui.add(.button, "Saved Networks", "", false) catch @panic("out of memory"),
             .hidden = ui.add(.button, "Connect to Hidden Network…", "", false) catch @panic("out of memory"),
@@ -82,8 +86,9 @@ pub const Settings = struct {
             .refresh = self.refresh_button.id,
             .message = self.message.id,
         };
-        for ([_]usize{ self.view.wifi_nav, self.view.network_nav, self.view.back, self.view.close, self.view.search }) |id| ui.get(id).always_enabled = true;
+        for ([_]usize{ self.view.wifi_nav, self.view.network_nav, self.view.sound_nav, self.view.back, self.view.close, self.view.search }) |id| ui.get(id).always_enabled = true;
         self.dynamic_start = ui.items.items.len;
+        self.window.surface.?.options.namespace = "org.dotfiles.Settings";
         self.window.setSize(980, 700);
         ui.window.surface.?.options.min_width = 680;
         ui.window.surface.?.options.min_height = 400;
@@ -94,6 +99,15 @@ pub const Settings = struct {
         ui.reveal = &reveal;
         self.network_client = network.Client.create(&networkChanged, self) catch null;
         ui.close_callback = &destroyed;
+        self.form_input = ui.window.surface.?.input;
+        const events = &ui.window.surface.?.input;
+        events.button = &button;
+        events.motion = &motion;
+        events.leave = &leave;
+        events.symbol = &symbolEvent;
+        events.focus = &focusChanged;
+        events.scroll = &scrolled;
+        self.selectMode(mode);
         ui.show();
         self.refresh();
         return self;
@@ -105,10 +119,93 @@ pub const Settings = struct {
         self.ui.setText(self.message.id, message) catch {};
     }
     fn layout(ui: *native.Form) void {
-        cast(Settings, ui.context).view.layout(ui);
+        const self = cast(Settings, ui.context);
+        if (self.mode == .sound) @import("desktop-preferences-view.zig").reset(ui) else self.view.layout(ui);
     }
     fn paint(ui: *native.Form, target: raster.Buffer, scale: u32) !void {
-        try cast(Settings, ui.context).view.paint(ui, target, scale);
+        const self = cast(Settings, ui.context);
+        if (self.mode == .sound) {
+            if (self.sound) |sound| try sound.paint(target);
+        } else try self.view.paint(ui, target, scale);
+    }
+    pub fn selectMode(self: *Settings, mode: Mode) void {
+        if (self.closed) return;
+        if (self.mode == .sound) if (self.sound) |sound| sound.deactivate();
+        self.ui.focus = null;
+        self.ui.hover = null;
+        self.ui.pressed = null;
+        self.ui.expanded = null;
+        self.mode = mode;
+        if (mode == .sound) {
+            if (self.sound == null) self.sound = Sound.createEmbedded(self.window, self, &navigateSound) catch @panic("out of memory");
+        }
+        self.ui.relayout();
+    }
+    fn navigateSound(ptr: ?*anyopaque, control: SoundControl) void {
+        const self = cast(Settings, ptr);
+        switch (control) {
+            .wifi_nav => self.showPage(.wifi),
+            .network_nav => self.showPage(.network),
+            .sound_nav => self.sound.?.showPage(.sound),
+            else => unreachable,
+        }
+    }
+    fn button(ptr: ?*anyopaque, surface: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
+        const self = owner(ptr);
+        if (self.closed or self.window.blocked()) return;
+        if (self.mode == .sound) {
+            Sound.button(self.sound.?, surface, code, pressed, x, y);
+        } else {
+            self.form_input.button.?(ptr, surface, code, pressed, x, y);
+        }
+    }
+    fn motion(ptr: ?*anyopaque, surface: *wire.Surface, x: f64, y: f64) void {
+        const self = owner(ptr);
+        if (self.closed or self.window.blocked()) return;
+        if (self.mode == .sound) {
+            Sound.motion(self.sound.?, surface, x, y);
+        } else {
+            self.form_input.motion.?(ptr, surface, x, y);
+        }
+    }
+    fn leave(ptr: ?*anyopaque, surface: *wire.Surface) void {
+        const self = owner(ptr);
+        if (self.closed or self.window.blocked()) return;
+        if (self.mode == .sound) {
+            Sound.leave(self.sound.?, surface);
+        } else {
+            self.form_input.leave.?(ptr, surface);
+        }
+    }
+    fn focusChanged(ptr: ?*anyopaque, surface: *wire.Surface, focused: bool) void {
+        const self = owner(ptr);
+        if (self.closed or self.window.blocked()) return;
+        if (self.mode == .sound) {
+            Sound.focusChanged(self.sound.?, surface, focused);
+        } else {
+            self.form_input.focus.?(ptr, surface, focused);
+        }
+    }
+    fn scrolled(ptr: ?*anyopaque, surface: *wire.Surface, axis: u32, delta: f64) void {
+        const self = owner(ptr);
+        if (self.closed or self.window.blocked()) return;
+        if (self.mode == .sound) {
+            Sound.scrolled(self.sound.?, surface, axis, delta);
+        } else {
+            self.form_input.scroll.?(ptr, surface, axis, delta);
+        }
+    }
+    fn symbolEvent(ptr: ?*anyopaque, surface: *wire.Surface, symbol: u32, modifiers: u32, pressed: bool) bool {
+        const self = owner(ptr);
+        if (self.closed or self.window.blocked()) return true;
+        if (self.mode == .sound) {
+            return Sound.key(self.sound.?, surface, symbol, modifiers, pressed);
+        } else {
+            return self.form_input.symbol.?(ptr, surface, symbol, modifiers, pressed);
+        }
+    }
+    fn owner(ptr: ?*anyopaque) *Settings {
+        return cast(Settings, cast(native.Form, ptr).context);
     }
     fn scroll(ptr: ?*anyopaque, delta: f64) void {
         const self = cast(Settings, ptr);
@@ -154,7 +251,10 @@ pub const Settings = struct {
         self.ui.focusItem(self.view.query);
     }
     pub fn showPage(self: *Settings, page: network_view.Page) void {
+        self.selectMode(.network);
         self.initial_page = false;
+        self.view.searching = false;
+        self.ui.setText(self.view.query, "") catch {};
         self.view.page = page;
         self.view.offset = 0;
         self.password.entry.?.clear();
@@ -173,8 +273,9 @@ pub const Settings = struct {
         self.ui.setEnabled(idle and self.network_client != null and self.network_client.?.state().available);
     }
     pub fn destroy(self: *Settings) void {
-        std.debug.assert(self.closed and self.network_operations == 0);
+        std.debug.assert(self.closed and self.network_operations == 0 and (self.sound == null or self.sound.?.operations == 0));
         c.g_object_unref(self.audio_cancel);
+        if (self.sound) |sound| sound.destroy();
         self.ui.deinit();
         self.view.deinit();
         self.rows.deinit(a);
@@ -183,6 +284,7 @@ pub const Settings = struct {
     fn destroyed(ptr: ?*anyopaque) void {
         const self = cast(Settings, ptr);
         self.closed = true;
+        if (self.sound) |sound| sound.shutdown();
         c.g_cancellable_cancel(self.audio_cancel);
         if (self.network_client) |client| client.destroy();
         self.network_client = null;
@@ -418,6 +520,10 @@ pub const Settings = struct {
     }
     fn action(ptr: ?*anyopaque, id: usize) void {
         const self = cast(Settings, ptr);
+        if (id == self.view.sound_nav) {
+            self.selectMode(.sound);
+            return;
+        }
         if (id == self.view.close) {
             self.ui.close();
             return;
@@ -534,25 +640,11 @@ pub const Settings = struct {
 
 pub const Service = struct {
     windows: std.ArrayList(*Settings) = .empty,
-    sounds: std.ArrayList(*Sound) = .empty,
-
     pub fn show(self: *Service, app: *c.GtkApplication, mode: Mode) !void {
         self.reap();
-        if (mode == .sound) {
-            for (self.sounds.items) |sound| {
-                if (!sound.closed) {
-                    try sound.window.show();
-                    return;
-                }
-            }
-            try self.sounds.ensureUnusedCapacity(a, 1);
-            const sound = try Sound.create();
-            self.sounds.appendAssumeCapacity(sound);
-            sound.window.hold(@ptrCast(app));
-            return;
-        }
         for (self.windows.items) |settings| {
-            if (!settings.closed and settings.mode == mode) {
+            if (!settings.closed) {
+                settings.selectMode(mode);
                 settings.ui.show();
                 return;
             }
@@ -564,18 +656,10 @@ pub const Service = struct {
     }
 
     pub fn reap(self: *Service) void {
-        var sound_index: usize = 0;
-        while (sound_index < self.sounds.items.len) {
-            const sound = self.sounds.items[sound_index];
-            if (sound.closed and sound.operations == 0) {
-                _ = self.sounds.orderedRemove(sound_index);
-                sound.destroy();
-            } else sound_index += 1;
-        }
         var i: usize = 0;
         while (i < self.windows.items.len) {
             const settings = self.windows.items[i];
-            if (settings.closed and settings.network_operations == 0) {
+            if (settings.closed and settings.network_operations == 0 and (settings.sound == null or settings.sound.?.operations == 0)) {
                 _ = self.windows.orderedRemove(i);
                 settings.destroy();
             } else i += 1;
@@ -583,13 +667,11 @@ pub const Service = struct {
     }
 
     pub fn deinit(self: *Service) void {
-        for (self.sounds.items) |sound| if (!sound.closed) sound.close();
         for (self.windows.items) |settings| if (!settings.closed) settings.ui.close();
-        while (self.windows.items.len > 0 or self.sounds.items.len > 0) {
+        while (self.windows.items.len > 0) {
             self.reap();
-            if (self.windows.items.len > 0 or self.sounds.items.len > 0) _ = c.g_main_context_iteration(null, 1);
+            if (self.windows.items.len > 0) _ = c.g_main_context_iteration(null, 1);
         }
         self.windows.deinit(a);
-        self.sounds.deinit(a);
     }
 };

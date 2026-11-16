@@ -21,6 +21,7 @@ pub const View = struct {
     page: Page = .wifi,
     wifi_nav: usize = 0,
     network_nav: usize = 0,
+    sound_nav: usize = 0,
     wifi: usize = 0,
     saved: usize = 0,
     hidden: usize = 0,
@@ -59,6 +60,7 @@ pub const View = struct {
         p.reset(ui);
         p.place(ui, self.wifi_nav, .{ .x = 6, .y = 52, .width = f.sidebar - 12, .height = 43 });
         p.place(ui, self.network_nav, .{ .x = 6, .y = 97, .width = f.sidebar - 12, .height = 43 });
+        p.place(ui, self.sound_nav, .{ .x = 6, .y = 142, .width = f.sidebar - 12, .height = 43 });
         p.place(ui, self.search, .{ .x = 6, .y = 6, .width = 34, .height = 34 });
         p.place(ui, self.refresh, .{ .x = f.sidebar - 40, .y = 6, .width = 34, .height = 34 });
         p.place(ui, self.close, .{ .x = f.width - 35, .y = 11, .width = 24, .height = 24 });
@@ -92,7 +94,7 @@ pub const View = struct {
         };
         self.extent = y + self.offset;
         const clip: p.Rect = .{ .x = f.sidebar, .y = 46, .width = f.width - f.sidebar, .height = f.height - 46 };
-        for (ui.items.items) |item| if (item.visible and item.bounds.y != 6 and item.id != self.close and item.id != self.wifi_nav and item.id != self.network_nav) {
+        for (ui.items.items) |item| if (item.visible and item.bounds.y != 6 and item.id != self.close and item.id != self.wifi_nav and item.id != self.network_nav and item.id != self.sound_nav) {
             item.clip = clip;
         };
     }
@@ -162,9 +164,9 @@ pub const View = struct {
         try p.text(ui, canvas, "Settings", .{ .x = 40, .y = 6, .width = f.sidebar - 80, .height = 34 }, 14.666, true, true, 0xffffff);
         try self.iconButton(ui, canvas, self.search, "edit-find-symbolic");
         try self.iconButton(ui, canvas, self.refresh, "view-refresh-symbolic");
-        for ([_]usize{ self.wifi_nav, self.network_nav }, [_][:0]const u8{ "network-wireless-symbolic", "network-workgroup-symbolic" }, 0..) |id, icon, i| {
+        for ([_]usize{ self.wifi_nav, self.network_nav, self.sound_nav }, [_][:0]const u8{ "network-wireless-symbolic", "network-workgroup-symbolic", "audio-volume-high-symbolic" }, 0..) |id, icon, i| {
             const r = ui.get(id).bounds;
-            const selected = (i == 0) == (self.page != .network);
+            const selected = if (self.page == .network) i == 1 else i == 0;
             if (selected or ui.hover == id) p.fill(canvas, r, if (selected) 0x414145 else 0x38383c, 9);
             try self.icons.paint(canvas, icon, r.x + 14, r.y + 14, 16);
             try p.title(ui, canvas, id, .{ .x = r.x + 42, .y = r.y, .width = r.width - 56, .height = r.height }, false, 0xffffff);

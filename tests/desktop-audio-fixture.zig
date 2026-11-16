@@ -9,6 +9,7 @@ const a = std.heap.page_allocator;
 var stopping = false;
 var watch = false;
 const cast = c.__zig.cast;
+extern fn g_application_register(app: *c.GApplication, cancel: ?*c.GCancellable, err: ?*?*c.GError) c.gboolean;
 fn pump() void {
     audio.dispatch();
     c.g_usleep(1000);
@@ -62,14 +63,27 @@ fn click(sound: *settings.Sound, row: usize, control: @import("desktop").setting
 fn ui(service: *audio.Service) !void {
     if (c.gtk_init_check(null, null) == 0) return error.NoDisplay;
     const controls = quick.Controls.create("true", "true");
-    const sound = try settings.Sound.create();
+    const app = c.gtk_application_new("org.dotfiles.SettingsFixture", 0).?;
+    defer c.g_object_unref(app);
+    if (g_application_register(@ptrCast(app), null, null) == 0) return error.ApplicationRegistrationFailed;
+    var dialogs: settings.Service = .{};
     defer {
-        sound.close();
-        while (!sound.closed) pump();
         controls.deinit();
-        while (sound.operations != 0) pump();
-        sound.destroy();
+        dialogs.deinit();
     }
+    try dialogs.show(app, .sound);
+    const shell = dialogs.windows.items[0];
+    const sound = shell.sound.?;
+    // Both shortcuts must reuse one native window and its audio controller.
+    try dialogs.show(app, .network);
+    assert(dialogs.windows.items.len == 1 and shell.mode == .network);
+    shell.showPage(.wifi);
+    shell.ui.activate(shell.view.sound_nav);
+    assert(shell.mode == .sound and shell.sound.? == sound);
+    try dialogs.show(app, .network);
+    try dialogs.show(app, .sound);
+    assert(dialogs.windows.items.len == 1 and shell.window == sound.window);
+    assert(!sound.owns_window);
     var deadline = c.g_get_monotonic_time() + 8_000_000;
     while ((controls.devices.audio_service == null or controls.devices.audio_service.?.state(.output) == null or sound.view.rows.items.len < 5) and c.g_get_monotonic_time() < deadline) pump();
     assert(sound.view.rows.items.len >= 5);
@@ -190,12 +204,13 @@ pub fn main(init: std.process.Init) !void {
     try ready(service);
     if (std.mem.startsWith(u8, args[1], "preview")) {
         c.gtk_init(null, null);
-        const sound = try settings.Sound.create();
+        const shell = settings.Settings.create(.sound);
+        const sound = shell.sound.?;
         defer {
-            sound.close();
-            while (!sound.closed) pump();
-            while (sound.operations != 0) pump();
-            sound.destroy();
+            shell.ui.close();
+            while (!shell.closed) pump();
+            while (sound.operations != 0 or shell.network_operations != 0) pump();
+            shell.destroy();
         }
         const deadline = c.g_get_monotonic_time() + 5_000_000;
         while ((sound.service == null or sound.service.?.state(.output) == null) and c.g_get_monotonic_time() < deadline) pump();

@@ -143,10 +143,12 @@ pkgs.testers.runNixOSTest {
         )
 
     with subtest("settings opens through the production session"):
+        machine.succeed(user("desktop-zig settings"))
+        machine.wait_until_succeeds(user("wlrctl toplevel find title:Settings"))
         machine.succeed(user("desktop-zig settings sound"))
-        machine.wait_until_succeeds(user("wlrctl toplevel find title:Sound"))
+        machine.wait_until_succeeds(user("wlrctl toplevel find title:Settings"))
         machine.screenshot("desktop-sound-settings")
-        machine.succeed(user("wlrctl toplevel close title:Sound"))
+        machine.succeed(user("wlrctl toplevel close title:Settings"))
 
     with subtest("production lock authenticates using the VM's real PAM policy"):
         machine.succeed(user("systemd-run --user --unit=test-lock --setenv=WAYLAND_DEBUG=client desktop-zig lock"))

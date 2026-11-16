@@ -149,6 +149,18 @@ pkgs.stdenv.mkDerivation {
     find "$out" ''${tests:+"$tests"} -type f -exec remove-references-to -t ${pkgs.zig_0_17} {} +
   '';
   installPhase = ''
+    mkdir -p "$out/share/applications"
+    cat > "$out/share/applications/org.dotfiles.Settings.desktop" <<EOF_SETTINGS
+    [Desktop Entry]
+    Type=Application
+    Name=Settings
+    Comment=Manage networks and sound
+    Exec=$out/bin/desktop-zig settings
+    Icon=preferences-system
+    Categories=Settings;System;
+    StartupWMClass=org.dotfiles.Settings
+    Terminal=false
+    EOF_SETTINGS
     # Keep test programs outside the desktop output.
     mkdir -p "$tests"
     mv "$out/libexec/desktop-tests" "$tests/bin"
