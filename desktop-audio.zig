@@ -14,6 +14,8 @@ pub const Node = struct {
     name: [256:0]u8 = @splat(0),
     state: ?State = null,
     is_default: bool = false,
+    running: bool = false,
+    capture_sink: bool = false,
 };
 pub const Target = union(enum) { output, input, id: u32 };
 pub fn target(text: []const u8) !Target {
@@ -36,6 +38,12 @@ fn classOf(text: []const u8) ?Class {
         if (std.mem.eql(u8, text, name)) return class;
     }
     return null;
+}
+fn isTrue(value: [*c]const u8) bool {
+    return value != null and std.mem.eql(u8, std.mem.span(value), "true");
+}
+fn isActiveRecording(item: Node) bool {
+    return item.class == .recording and item.running and !item.capture_sink;
 }
 const Mixer = @import("desktop-audio-mixer.zig");
 pub const Service = struct {
@@ -136,7 +144,7 @@ pub const Service = struct {
             const media = object.property("media.class");
             if (media == null) continue;
             const class = classOf(std.mem.span(media)) orelse continue;
-            var entry = Node{ .id = object.id, .class = class, .state = self.volume(object.id), .is_default = object.id == output or object.id == input };
+            var entry = Node{ .id = object.id, .class = class, .state = self.volume(object.id), .is_default = object.id == output or object.id == input, .running = object.running, .capture_sink = isTrue(object.property("stream.capture.sink")) };
             copy(&entry.name, object.property("node.name"));
             const title_keys: [4][*:0]const u8 = if (class == .playback or class == .recording) .{ "application.name", "node.description", "node.nick", "node.name" } else .{ "node.description", "application.name", "node.nick", "node.name" };
             for (title_keys) |key| {
@@ -148,6 +156,11 @@ pub const Service = struct {
             }
             self.nodes.append(a, entry) catch @panic("out of memory");
         }
+    }
+    pub fn activeRecording(self: *const Service) bool {
+        if (!self.ready) return false;
+        for (self.nodes.items) |item| if (isActiveRecording(item)) return true;
+        return false;
     }
     pub fn node(self: *Service, wanted: Target) ?Node {
         if (!self.ready) return null;
@@ -316,4 +329,8 @@ test "audio target names and media classes are explicit" {
     try std.testing.expectError(error.InvalidAudioTarget, target("4294967295"));
     try std.testing.expectEqual(Class.recording, classOf("Stream/Input/Audio").?);
     try std.testing.expectEqual(@as(?Class, null), classOf("Video/Source"));
+    try std.testing.expect(isActiveRecording(.{ .id = 1, .class = .recording, .running = true }));
+    try std.testing.expect(!isActiveRecording(.{ .id = 2, .class = .recording, .running = false }));
+    try std.testing.expect(!isActiveRecording(.{ .id = 3, .class = .recording, .running = true, .capture_sink = true }));
+    try std.testing.expect(!isActiveRecording(.{ .id = 4, .class = .playback, .running = true }));
 }

@@ -4,11 +4,23 @@ const wayland = @import("desktop-wayland.zig");
 const c = @import("desktop-gtk.zig");
 const libc = @import("desktop-libc.zig");
 const p = @import("desktop-protocols.zig");
-const a = std.heap.page_allocator;
+const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const Proxy = c.wl_proxy;
 const login_name = "org.freedesktop.login1";
 const login_path = "/org/freedesktop/login1";
 const login_interface = "org.freedesktop.login1.Manager";
+const screensaver_name = "org.freedesktop.ScreenSaver";
+const screensaver_interface = "org.freedesktop.ScreenSaver";
+const screensaver_paths = [_][*:0]const u8{ "/org/freedesktop/ScreenSaver", "/ScreenSaver" };
+const screensaver_xml =
+    "<node><interface name=\"org.freedesktop.ScreenSaver\">" ++
+    "<method name=\"Inhibit\"><arg type=\"s\" name=\"application_name\" direction=\"in\"/><arg type=\"s\" name=\"reason_for_inhibit\" direction=\"in\"/><arg type=\"u\" name=\"cookie\" direction=\"out\"/></method>" ++
+    "<method name=\"UnInhibit\"><arg type=\"u\" name=\"cookie\" direction=\"in\"/></method>" ++
+    "<method name=\"SimulateUserActivity\"/>" ++
+    "</interface></node>";
+const portal_name = "org.freedesktop.portal.Desktop";
+const portal_path = "/org/dotfiles/Portal";
+const portal_interface = "org.dotfiles.Portal";
 const cast = c.__zig.cast;
 fn destroyProxy(proxy: *Proxy) void {
     _ = c.wl_proxy_marshal_flags(proxy, 0, null, c.wl_proxy_get_version(proxy), 1);
@@ -18,6 +30,11 @@ pub const Options = struct {
     timeout_ms: u32 = 10 * 60 * 1000,
     // Explicit dependency injection for the standalone compositor fixture.
     lock_executable: ?[:0]const u8 = null,
+    session_inhibit: bool = false,
+};
+const ScreenSaverInhibitor = struct {
+    cookie: u32,
+    sender: [:0]u8,
 };
 const Seat = struct {
     service: *Service,
@@ -27,7 +44,7 @@ const Seat = struct {
     idle: bool = false,
     next: ?*Seat = null,
     fn watch(self: *Seat) void {
-        if (self.notification != null or self.service.notifier == null) return;
+        if (self.service.idleInhibited() or self.notification != null or self.service.notifier == null) return;
         self.notification = c.wl_proxy_marshal_flags(self.service.notifier, 1, &p.ext_idle_notification_v1_interface, 1, 0, @as(?*anyopaque, null), self.service.timeout_ms, self.proxy) orelse return;
         if (c.wl_proxy_add_listener(self.notification, @ptrCast(@constCast(&idle_listener)), self) != 0) {
             destroyProxy(self.notification.?);
@@ -55,14 +72,18 @@ const Call = struct {
     service: *Service,
     epoch: u64,
     sleep_serial: u64,
+    portal_epoch: u64,
     fn create(self: *Service) *Call {
         const call = a.create(Call) catch @panic("out of memory");
         self.refs += 1;
-        call.* = .{ .service = self, .epoch = self.epoch, .sleep_serial = self.sleep_serial };
+        call.* = .{ .service = self, .epoch = self.epoch, .sleep_serial = self.sleep_serial, .portal_epoch = self.portal_epoch };
         return call;
     }
     fn current(self: *Call) bool {
         return !self.service.stopped and self.epoch == self.service.epoch;
+    }
+    fn currentPortal(self: *Call) bool {
+        return !self.service.stopped and self.portal_epoch == self.service.portal_epoch;
     }
     fn deinit(self: *Call) void {
         self.service.unref();
@@ -73,6 +94,7 @@ const Call = struct {
 pub const Service = struct {
     timeout_ms: u32,
     executable: [:0]u8,
+    session_inhibit: bool = false,
     refs: usize = 1,
     stopped: bool = false,
     timer: c.guint = 0,
@@ -92,6 +114,21 @@ pub const Service = struct {
     sleeping: bool = false,
     inhibitor: c_int = -1,
     inhibit_pending: bool = false,
+    session_bus: ?*c.GDBusConnection = null,
+    session_pending: bool = false,
+    screensaver_owner: c.guint = 0,
+    screensaver_node: ?*c.GDBusNodeInfo = null,
+    screensaver_regs: [screensaver_paths.len]c.guint = @splat(0),
+    name_signal: c.guint = 0,
+    portal_watch: c.guint = 0,
+    portal_signal: c.guint = 0,
+    portal_owner: ?[:0]u8 = null,
+    portal_epoch: u64 = 0,
+    screensaver_inhibitors: std.ArrayList(ScreenSaverInhibitor) = .empty,
+    screensaver_serial: u32 = 0,
+    portal_inhibited: bool = false,
+    audio_inhibited: bool = false,
+    last_inhibited: bool = false,
     cancel: [*c]c.GCancellable,
     process: ?*c.GSubprocess = null,
     ready_fd: c_int = -1,
@@ -107,9 +144,10 @@ pub const Service = struct {
         };
         errdefer a.free(path);
         const self = try a.create(Service);
-        self.* = .{ .timeout_ms = options.timeout_ms, .executable = path, .cancel = c.g_cancellable_new() };
+        self.* = .{ .timeout_ms = options.timeout_ms, .executable = path, .session_inhibit = options.session_inhibit, .cancel = c.g_cancellable_new() };
         self.connectWayland();
         self.connectBus();
+        self.connectSessionBus();
         self.timer = c.g_timeout_add_seconds(5, &maintain, self);
         return self;
     }
@@ -118,6 +156,7 @@ pub const Service = struct {
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         self.disconnectWayland();
         self.disconnectBus();
+        self.disconnectSessionBus();
         self.closeReady();
         // A running locker continues independently when the shell exits.
         c.g_cancellable_cancel(self.cancel);
@@ -127,6 +166,7 @@ pub const Service = struct {
         self.refs -= 1;
         if (self.refs == 0) {
             c.g_object_unref(self.cancel);
+            self.screensaver_inhibitors.deinit(a);
             a.free(self.executable);
             a.destroy(self);
         }
@@ -136,11 +176,56 @@ pub const Service = struct {
         if (self.display == null) self.connectWayland();
         if (self.bus) |bus| if (c.g_dbus_connection_is_closed(bus) != 0) self.disconnectBus();
         if (self.bus == null) self.connectBus();
+        if (self.session_inhibit) {
+            if (self.session_bus) |bus| if (c.g_dbus_connection_is_closed(bus) != 0) self.disconnectSessionBus();
+            if (self.session_bus == null) self.connectSessionBus();
+        }
         self.acquire();
         if (self.sleeping or self.allIdle()) self.ensureLocked();
         return 1;
     }
+    pub fn setAudioInhibited(self: *Service, active: bool) void {
+        if (self.stopped or self.audio_inhibited == active) return;
+        self.audio_inhibited = active;
+        self.syncInhibition();
+    }
+    pub fn idleInhibited(self: *const Service) bool {
+        return self.portal_inhibited or self.audio_inhibited or self.screensaver_inhibitors.items.len > 0;
+    }
+    fn syncInhibition(self: *Service) void {
+        if (self.stopped) return;
+        const active = self.idleInhibited();
+        if (active == self.last_inhibited) return;
+        self.last_inhibited = active;
+        var seat = self.seats;
+        if (active) {
+            while (seat) |s| : (seat = s.next) {
+                s.idle = false;
+                if (s.notification) |notification| {
+                    destroyProxy(notification);
+                    s.notification = null;
+                }
+            }
+        } else {
+            while (seat) |s| : (seat = s.next) s.watch();
+        }
+        if (self.display) |display| _ = c.wl_display_flush(display);
+    }
+    fn resetIdleTimer(self: *Service) void {
+        if (self.stopped or self.idleInhibited()) return;
+        var seat = self.seats;
+        while (seat) |s| : (seat = s.next) {
+            s.idle = false;
+            if (s.notification) |notification| {
+                destroyProxy(notification);
+                s.notification = null;
+            }
+            s.watch();
+        }
+        if (self.display) |display| _ = c.wl_display_flush(display);
+    }
     fn allIdle(self: *Service) bool {
+        if (self.idleInhibited()) return false;
         var seat = self.seats orelse return false;
         while (true) {
             if (!seat.idle or seat.notification == null) return false;
@@ -325,6 +410,180 @@ pub const Service = struct {
         defer c.g_variant_unref(value);
         call.service.setPreparing(c.g_variant_get_boolean(value) != 0);
     }
+    fn connectSessionBus(self: *Service) void {
+        if (!self.session_inhibit or self.session_pending) return;
+        self.session_pending = true;
+        self.refs += 1;
+        c.g_bus_get(c.G_BUS_TYPE_SESSION, self.cancel, &sessionBusConnected, self);
+    }
+    fn sessionBusConnected(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+        const self = cast(Service, data);
+        defer self.unref();
+        self.session_pending = false;
+        const bus = c.g_bus_get_finish(result, null) orelse {
+            if (!self.stopped) std.log.warn("idle: session bus unavailable; will retry", .{});
+            return;
+        };
+        if (self.stopped) {
+            c.g_object_unref(bus);
+            return;
+        }
+        self.session_bus = bus;
+        c.g_dbus_connection_set_exit_on_close(bus, 0);
+        const node = c.g_dbus_node_info_new_for_xml(screensaver_xml, null) orelse @panic("invalid ScreenSaver XML");
+        self.screensaver_node = node;
+        for (screensaver_paths, 0..) |object_path, i| {
+            self.screensaver_regs[i] = c.g_dbus_connection_register_object(bus, object_path, node.*.interfaces[0], &screensaver_vtable, self, null, null);
+            if (self.screensaver_regs[i] == 0) std.log.warn("idle: failed to register ScreenSaver at {s}", .{object_path});
+        }
+        self.screensaver_owner = c.g_bus_own_name_on_connection(bus, screensaver_name, c.G_BUS_NAME_OWNER_FLAGS_NONE, null, null, null, null);
+        self.name_signal = c.g_dbus_connection_signal_subscribe(bus, "org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", null, 0, &sessionOwnerChanged, self, null);
+        self.portal_watch = c.g_bus_watch_name_on_connection(bus, portal_name, 0, &portalAppeared, &portalVanished, self, null);
+    }
+    fn disconnectSessionBus(self: *Service) void {
+        if (self.portal_watch != 0) c.g_bus_unwatch_name(self.portal_watch);
+        self.portal_watch = 0;
+        self.resetPortal();
+        if (self.name_signal != 0 and self.session_bus != null) c.g_dbus_connection_signal_unsubscribe(self.session_bus, self.name_signal);
+        self.name_signal = 0;
+        if (self.screensaver_owner != 0) c.g_bus_unown_name(self.screensaver_owner);
+        self.screensaver_owner = 0;
+        for (&self.screensaver_regs) |*reg| {
+            if (reg.* != 0 and self.session_bus != null) _ = c.g_dbus_connection_unregister_object(self.session_bus, reg.*);
+            reg.* = 0;
+        }
+        if (self.screensaver_node) |node| c.g_dbus_node_info_unref(node);
+        self.screensaver_node = null;
+        self.clearScreenSaverInhibitors();
+        if (self.session_bus) |bus| c.g_object_unref(bus);
+        self.session_bus = null;
+    }
+    fn resetPortal(self: *Service) void {
+        self.portal_epoch +%= 1;
+        if (self.portal_signal != 0 and self.session_bus != null) c.g_dbus_connection_signal_unsubscribe(self.session_bus, self.portal_signal);
+        self.portal_signal = 0;
+        if (self.portal_owner) |owner| a.free(owner);
+        self.portal_owner = null;
+        self.portal_inhibited = false;
+        self.syncInhibition();
+    }
+    fn portalAppeared(_: ?*c.GDBusConnection, _: [*c]const u8, owner: [*c]const u8, data: ?*anyopaque) callconv(.c) void {
+        const self = cast(Service, data);
+        self.resetPortal();
+        self.portal_owner = a.dupeSentinel(u8, std.mem.span(owner), 0) catch @panic("out of memory");
+        self.portal_signal = c.g_dbus_connection_signal_subscribe(self.session_bus, self.portal_owner.?.ptr, portal_interface, "IdleInhibitedChanged", portal_path, null, 0, &portalChanged, self, null);
+        c.g_dbus_connection_call(self.session_bus, self.portal_owner.?.ptr, portal_path, portal_interface, "IdleInhibited", null, @ptrCast(@as([*:0]const u8, "(b)")), c.G_DBUS_CALL_FLAGS_NONE, 3000, self.cancel, &portalRead, Call.create(self));
+    }
+    fn portalVanished(_: ?*c.GDBusConnection, _: [*c]const u8, data: ?*anyopaque) callconv(.c) void {
+        cast(Service, data).resetPortal();
+    }
+    fn portalRead(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+        const call = cast(Call, data);
+        defer call.deinit();
+        const reply = c.g_dbus_connection_call_finish(@ptrCast(source), result, null) orelse return;
+        defer c.g_variant_unref(reply);
+        if (!call.currentPortal()) return;
+        const value = c.g_variant_get_child_value(reply, 0);
+        defer c.g_variant_unref(value);
+        call.service.portal_inhibited = c.g_variant_get_boolean(value) != 0;
+        call.service.syncInhibition();
+    }
+    fn portalChanged(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, parameters: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
+        const self = cast(Service, data);
+        if (self.portal_owner == null or !std.mem.eql(u8, std.mem.span(sender), self.portal_owner.?)) return;
+        const value = c.g_variant_get_child_value(parameters, 0);
+        defer c.g_variant_unref(value);
+        self.portal_inhibited = c.g_variant_get_boolean(value) != 0;
+        self.syncInhibition();
+    }
+    fn clearScreenSaverInhibitors(self: *Service) void {
+        for (self.screensaver_inhibitors.items) |item| a.free(item.sender);
+        self.screensaver_inhibitors.clearRetainingCapacity();
+        self.syncInhibition();
+    }
+    fn hasScreenSaverCookie(self: *const Service, cookie: u32) bool {
+        for (self.screensaver_inhibitors.items) |item| if (item.cookie == cookie) return true;
+        return false;
+    }
+    fn senderScreenSaverCount(self: *const Service, sender: []const u8) usize {
+        var count: usize = 0;
+        for (self.screensaver_inhibitors.items) |item| if (std.mem.eql(u8, item.sender, sender)) {
+            count += 1;
+        };
+        return count;
+    }
+    fn addScreenSaverInhibitor(self: *Service, sender: []const u8) !u32 {
+        if (self.screensaver_inhibitors.items.len >= 256 or self.senderScreenSaverCount(sender) >= 64) return error.TooManyInhibitors;
+        var cookie: u32 = 0;
+        while (cookie == 0 or self.hasScreenSaverCookie(cookie)) {
+            self.screensaver_serial +%= 1;
+            if (self.screensaver_serial == 0) self.screensaver_serial = 1;
+            cookie = self.screensaver_serial;
+        }
+        const owned_sender = try a.dupeSentinel(u8, sender, 0);
+        errdefer a.free(owned_sender);
+        try self.screensaver_inhibitors.append(a, .{ .cookie = cookie, .sender = owned_sender });
+        self.syncInhibition();
+        return cookie;
+    }
+    fn removeScreenSaverInhibitor(self: *Service, sender: []const u8, cookie: u32) !void {
+        for (self.screensaver_inhibitors.items, 0..) |item, i| if (item.cookie == cookie) {
+            if (!std.mem.eql(u8, item.sender, sender)) return error.AccessDenied;
+            a.free(item.sender);
+            _ = self.screensaver_inhibitors.swapRemove(i);
+            self.syncInhibition();
+            return;
+        };
+        return error.InvalidCookie;
+    }
+    fn removeScreenSaverSender(self: *Service, sender: []const u8) void {
+        var changed = false;
+        var i: usize = 0;
+        while (i < self.screensaver_inhibitors.items.len) {
+            if (std.mem.eql(u8, self.screensaver_inhibitors.items[i].sender, sender)) {
+                a.free(self.screensaver_inhibitors.items[i].sender);
+                _ = self.screensaver_inhibitors.swapRemove(i);
+                changed = true;
+            } else i += 1;
+        }
+        if (changed) self.syncInhibition();
+    }
+    fn sessionOwnerChanged(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, parameters: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
+        const self = cast(Service, data);
+        const name_val = c.g_variant_get_child_value(parameters, 0);
+        defer c.g_variant_unref(name_val);
+        const owner_val = c.g_variant_get_child_value(parameters, 2);
+        defer c.g_variant_unref(owner_val);
+        const name = std.mem.span(c.g_variant_get_string(name_val, null));
+        const new_owner = std.mem.span(c.g_variant_get_string(owner_val, null));
+        if (new_owner.len == 0 and std.mem.startsWith(u8, name, ":")) self.removeScreenSaverSender(name);
+    }
+    fn screensaverCall(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, _: [*c]const u8, method_name: [*c]const u8, parameters: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: ?*anyopaque) callconv(.c) void {
+        const self = cast(Service, data);
+        const caller = std.mem.span(sender);
+        const method = std.mem.span(method_name);
+        if (std.mem.eql(u8, method, "Inhibit")) {
+            const cookie = self.addScreenSaverInhibitor(caller) catch {
+                c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.DBus.Error.LimitsExceeded", "Too many idle inhibitors");
+                return;
+            };
+            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(u)", cookie));
+        } else if (std.mem.eql(u8, method, "UnInhibit")) {
+            const cookie_val = c.g_variant_get_child_value(parameters, 0);
+            defer c.g_variant_unref(cookie_val);
+            self.removeScreenSaverInhibitor(caller, c.g_variant_get_uint32(cookie_val)) catch |err| {
+                const err_name: [*:0]const u8 = if (err == error.AccessDenied) "org.freedesktop.DBus.Error.AccessDenied" else "org.freedesktop.DBus.Error.InvalidArgs";
+                c.g_dbus_method_invocation_return_dbus_error(invocation, err_name, @errorName(err));
+                return;
+            };
+            c.g_dbus_method_invocation_return_value(invocation, null);
+        } else if (std.mem.eql(u8, method, "SimulateUserActivity")) {
+            self.resetIdleTimer();
+            c.g_dbus_method_invocation_return_value(invocation, null);
+        } else {
+            c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.DBus.Error.UnknownMethod", "Unknown method");
+        }
+    }
     fn prepare(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, parameters: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
         const self = cast(Service, data);
         self.sleep_serial +%= 1;
@@ -401,3 +660,33 @@ pub const Service = struct {
     }
 };
 const registry_listener = c.wl_registry_listener{ .global = Service.global, .global_remove = Service.globalRemove };
+const screensaver_vtable = c.GDBusInterfaceVTable{ .method_call = &Service.screensaverCall };
+
+test "ScreenSaver inhibitors track senders and enforce ownership" {
+    var service = Service{ .timeout_ms = 600_000, .executable = try a.dupeSentinel(u8, "/bin/false", 0), .session_inhibit = true, .cancel = c.g_cancellable_new() };
+    defer {
+        service.stopped = true;
+        service.clearScreenSaverInhibitors();
+        service.screensaver_inhibitors.deinit(a);
+        c.g_object_unref(service.cancel);
+        a.free(service.executable);
+    }
+    try std.testing.expect(!service.idleInhibited());
+    const first = try service.addScreenSaverInhibitor(":1.10");
+    const second = try service.addScreenSaverInhibitor(":1.11");
+    try std.testing.expect(first != 0 and second != 0 and first != second);
+    try std.testing.expect(service.idleInhibited());
+    try std.testing.expectError(error.AccessDenied, service.removeScreenSaverInhibitor(":1.11", first));
+    try std.testing.expectError(error.InvalidCookie, service.removeScreenSaverInhibitor(":1.10", 9999));
+    try service.removeScreenSaverInhibitor(":1.10", first);
+    try std.testing.expect(service.idleInhibited());
+    service.removeScreenSaverSender(":1.11");
+    try std.testing.expect(!service.idleInhibited());
+    service.portal_inhibited = true;
+    try std.testing.expect(service.idleInhibited());
+    service.portal_inhibited = false;
+    service.audio_inhibited = true;
+    try std.testing.expect(service.idleInhibited());
+    service.audio_inhibited = false;
+    try std.testing.expect(!service.idleInhibited());
+}

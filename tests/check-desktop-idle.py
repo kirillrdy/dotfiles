@@ -273,8 +273,125 @@ try:
     assert service.wait(timeout=5) == 0, text("sleep.log")
     wait_until(lambda: text("sleep.log").count(".locked()") > before, "Locker died with shell")
     unlock("sleep.log", 5)
+    mock4.prepare(False)
+
+    import signal
+    session_address = "unix:path=" + str(root / "session-bus")
+    session_bus = sp.Popen([args.dbus_daemon, "--nofork", "--print-address=1", "--address=" + session_address, "--session"],
+                           stdout=sp.PIPE, stderr=(root / "session-bus.log").open("w"), text=True)
+    processes.append(session_bus)
+    assert session_bus.stdout.readline().startswith("unix:"), text("session-bus.log")
+    env["DBUS_SESSION_BUS_ADDRESS"] = session_address
+
+    (root / "delay").write_text("0.05")
+    portal_inhibited = [True]
+    portal_conn = connection(session_address)
+    portal_info = Gio.DBusNodeInfo.new_for_xml(
+        "<node><interface name='org.dotfiles.Portal'>"
+        "<method name='IdleInhibited'><arg type='b' direction='out'/></method>"
+        "<signal name='IdleInhibitedChanged'><arg type='b'/></signal>"
+        "</interface></node>"
+    )
+    def portal_method(conn, sender, obj, iface, method, parameters, invocation):
+        if method == "IdleInhibited":
+            invocation.return_value(GLib.Variant("(b)", (portal_inhibited[0],)))
+        else:
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
+    portal_reg = portal_conn.register_object("/org/dotfiles/Portal", portal_info.interfaces[0], portal_method, None, None)
+    assert portal_reg != 0
+    portal_conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                          "RequestName", GLib.Variant("(su)", ("org.freedesktop.portal.Desktop", 4)), None, 0, 3000, None)
+    def set_portal_inhibited(value):
+        portal_inhibited[0] = value
+        portal_conn.emit_signal(None, "/org/dotfiles/Portal", "org.dotfiles.Portal", "IdleInhibitedChanged", GLib.Variant("(b)", (value,)))
+        portal_conn.flush_sync(None)
+
+    session_client = connection(session_address)
+    session_other = connection(session_address)
+    sp.run([args.wtype, "-k", "Shift_L"], env=env, check=True, capture_output=True, timeout=10)
+    before_session_attempts = attempt_count()
+    session_idle = start([args.fixture, "800", str(helper), "--session"], "session-inhibit.log")
+    wait_until(lambda: len(mock4.inhibitors) == 3, "Session idle sleep inhibitor")
+    wait_until(
+        lambda: session_client.call_sync(
+            "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+            "NameHasOwner", GLib.Variant("(s)", ("org.freedesktop.ScreenSaver",)), None, 0, 3000, None
+        ).unpack()[0],
+        "ScreenSaver bus name",
+    )
+    cookie1 = session_client.call_sync(
+        "org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver",
+        "Inhibit", GLib.Variant("(ss)", ("firefox", "Playing video")), None, 0, 3000, None
+    ).unpack()[0]
+    set_portal_inhibited(False)
+    time.sleep(1.05)
+    assert attempt_count() == before_session_attempts, f"ScreenSaver.Inhibit failed to prevent idle lock attempt ({before_session_attempts} -> {attempt_count()})"
+    assert ".locked()" not in text("session-inhibit.log"), "ScreenSaver.Inhibit failed to prevent idle lock"
+    session_client.call_sync(
+        "org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver",
+        "SimulateUserActivity", None, None, 0, 3000, None
+    )
+    for bad_conn, bad_cookie, expected_err in ((session_other, cookie1, "AccessDenied"), (session_client, 999999, "InvalidArgs")):
+        try:
+            bad_conn.call_sync(
+                "org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver",
+                "UnInhibit", GLib.Variant("(u)", (bad_cookie,)), None, 0, 3000, None
+            )
+            raise AssertionError(f"Expected {expected_err}")
+        except GLib.Error as err:
+            assert expected_err in str(err), err
+    time.sleep(0.15)
+    assert attempt_count() == before_session_attempts
+    assert ".locked()" not in text("session-inhibit.log")
+    session_client.call_sync(
+        "org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver",
+        "UnInhibit", GLib.Variant("(u)", (cookie1,)), None, 0, 3000, None
+    )
+    wait_until(lambda: ".locked()" in text("session-inhibit.log"), "ScreenSaver.UnInhibit did not resume idle locking")
+
+    transient = connection(session_address)
+    transient.call_sync(
+        "org.freedesktop.ScreenSaver", "/ScreenSaver", "org.freedesktop.ScreenSaver",
+        "Inhibit", GLib.Variant("(ss)", ("chrome", "Blink Wake Lock")), None, 0, 3000, None
+    )
+    unlock("session-inhibit.log", 1)
+    time.sleep(1.05)
+    assert text("session-inhibit.log").count(".locked()") == 1, "/ScreenSaver inhibitor failed to prevent idle lock"
+    transient.close_sync(None)
+    wait_until(lambda: text("session-inhibit.log").count(".locked()") >= 2, "Sender disconnect did not release ScreenSaver inhibitor")
+
+    set_portal_inhibited(True)
+    time.sleep(0.05)
+    unlock("session-inhibit.log", 2)
+    time.sleep(1.05)
+    assert text("session-inhibit.log").count(".locked()") == 2, "Portal idle inhibition failed to prevent idle lock"
+    mock4.prepare(True)
+    wait_until(lambda: text("session-inhibit.log").count(".locked()") >= 3, "Suspend failed to lock while idle-inhibited")
+    wait_until(lambda: stopped(mock4.inhibitors[-1]), "Suspend inhibitor not released while idle-inhibited")
+    mock4.prepare(False)
+    wait_until(lambda: len(mock4.inhibitors) == 4, "Resume after idle-inhibited sleep")
+    unlock("session-inhibit.log", 3)
+    time.sleep(1.05)
+    assert text("session-inhibit.log").count(".locked()") == 3, "Portal idle inhibition lost across suspend"
+    set_portal_inhibited(False)
+    wait_until(lambda: text("session-inhibit.log").count(".locked()") >= 4, "Portal uninhibition did not resume idle locking")
+
+    session_idle.send_signal(signal.SIGUSR1)
+    time.sleep(0.05)
+    unlock("session-inhibit.log", 4)
+    time.sleep(1.05)
+    assert text("session-inhibit.log").count(".locked()") == 4, "Audio recording inhibition failed to prevent idle lock"
+    session_idle.send_signal(signal.SIGUSR1)
+    wait_until(lambda: text("session-inhibit.log").count(".locked()") >= 5, "Audio recording uninhibition did not resume idle locking")
+    unlock("session-inhibit.log", 5)
+
+    session_idle.terminate()
+    assert session_idle.wait(timeout=5) == 0, text("session-inhibit.log")
+    wait_until(lambda: stopped(mock4.inhibitors[-1]), "Session idle shutdown did not release inhibitor")
+    for conn in (session_client, session_other, portal_conn):
+        conn.close_sync(None)
     assert not errors, errors
-    print("PASS: idle timeout, suspend readiness, inhibitor fd ownership, repeated cycles, failed locks, sender validation, logind/bus restart, pending sleep, stale replies and shell shutdown")
+    print("PASS: idle timeout, suspend readiness, inhibitor fd ownership, repeated cycles, failed locks, sender validation, logind/bus restart, pending sleep, stale replies, session inhibition and shell shutdown")
 finally:
     if "compositor" in locals() and compositor.poll() is None:
         compositor.terminate()

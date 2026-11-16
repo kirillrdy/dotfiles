@@ -84,6 +84,7 @@ held_notifications = []
 application_actions = []
 next_notice = 10
 inhibitor_reads = []
+inhibitor_whats = []
 
 
 def signature_types(signature):
@@ -148,7 +149,8 @@ def backend_call(conn, sender, object_path, interface, method, params, invocatio
             invocation.return_value(None)
         return
     if interface == "org.freedesktop.login1.Manager":
-        assert values[0] == "sleep:idle", values
+        assert values[0] in ("sleep", "sleep:idle"), values
+        inhibitor_whats.append(values[0])
         read_fd, write_fd = os.pipe()
         inhibitor_reads.append(read_fd)
         descriptors = Gio.UnixFDList.new()
@@ -333,8 +335,33 @@ try:
     assert set(reply.unpack()[0]) == {"available", "metered", "connectivity"}
     reply, _ = call(client, PUB + "NetworkMonitor", "CanReach", GLib.Variant("(su)", ("localhost", 80)))
     assert isinstance(reply.unpack()[0], bool)
+    portal_idle_changes = []
+    client.signal_subscribe(
+        None,
+        "org.dotfiles.Portal",
+        "IdleInhibitedChanged",
+        "/org/dotfiles/Portal",
+        None,
+        0,
+        lambda _c, _s, _p, _i, _sig, params: portal_idle_changes.append(params.unpack()[0]),
+    )
+    assert call(client, "org.dotfiles.Portal", "IdleInhibited", path="/org/dotfiles/Portal")[0].unpack() == (False,)
+    sleep_only = request("Inhibit", "Inhibit", "(sua{sv})", ("", 4, {"reason": GLib.Variant("s", "fixture audio")}), expect_response=False)
+    wait(lambda: inhibitor_reads, "sleep-only logind inhibitor acquired")
+    assert inhibitor_whats == ["sleep"], inhibitor_whats
+    sleep_fd = inhibitor_reads[-1]
+    assert call(client, "org.dotfiles.Portal", "IdleInhibited", path="/org/dotfiles/Portal")[0].unpack() == (False,)
+    assert not portal_idle_changes, portal_idle_changes
+    call(client, PUB + "Request", "Close", path=sleep_only)
+    wait(lambda: select.select([sleep_fd], [], [], 0)[0], "Close releases sleep-only logind inhibitor")
+    assert os.read(sleep_fd, 1) == b""
+    os.close(sleep_fd)
+    before_reads = len(inhibitor_reads)
     handle = request("Inhibit", "Inhibit", "(sua{sv})", ("", 12, {"reason": GLib.Variant("s", "fixture playback")}), expect_response=False)
-    wait(lambda: inhibitor_reads, "logind inhibitor acquired")
+    wait(lambda: len(inhibitor_reads) > before_reads, "logind inhibitor acquired")
+    assert inhibitor_whats == ["sleep", "sleep:idle"], inhibitor_whats
+    wait(lambda: portal_idle_changes == [True], "portal idle inhibition signal emitted")
+    assert call(client, "org.dotfiles.Portal", "IdleInhibited", path="/org/dotfiles/Portal")[0].unpack() == (True,)
     # Process the reply so the broker owns its duplicate before Close.
     for _ in range(20):
         while context.pending(): context.iteration(False)
@@ -343,9 +370,11 @@ try:
     assert not select.select([read_fd], [], [], 0)[0], "inhibitor released too early"
     call(client, PUB + "Request", "Close", path=handle)
     wait(lambda: select.select([read_fd], [], [], 0)[0], "Close releases logind inhibitor")
+    wait(lambda: portal_idle_changes == [True, False], "portal idle uninhibition signal emitted")
+    assert call(client, "org.dotfiles.Portal", "IdleInhibited", path="/org/dotfiles/Portal")[0].unpack() == (False,)
     assert os.read(read_fd, 1) == b""
     os.close(read_fd)
-    print("PASS native logind inhibition and release on Close", flush=True)
+    print("PASS native logind and session idle inhibition and release on Close", flush=True)
     transient = connection()
     reply, _ = call(transient, PUB + "ScreenCast", "CreateSession", GLib.Variant("(a{sv})", ({},)))
     transient.close_sync(None)

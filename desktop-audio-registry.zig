@@ -35,6 +35,7 @@ pub const Object = struct {
     params: std.ArrayList(Param) = .empty,
     param_flags: ?u32 = null,
     names: defaults.Defaults = .{},
+    running: bool = false,
 
     pub fn property(self: *const Object, key: [*:0]const u8) [*c]const u8 {
         return p.pw_properties_get(self.properties, key);
@@ -62,6 +63,7 @@ pub const Object = struct {
     }
     fn nodeInfo(data: ?*anyopaque, info: [*c]const p.pw_node_info) callconv(.c) void {
         const self = cast(Object, data);
+        if (info.*.change_mask & p.PW_NODE_CHANGE_MASK_STATE != 0) self.running = info.*.state == p.PW_NODE_STATE_RUNNING;
         if (info.*.props != null) _ = p.pw_properties_update(self.properties, info.*.props);
         if (info.*.change_mask & p.PW_NODE_CHANGE_MASK_PARAMS != 0) self.changedParams(info.*.params, info.*.n_params);
         self.registry.changed();

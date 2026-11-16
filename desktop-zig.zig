@@ -15,6 +15,7 @@ pub const window = @import("desktop-window.zig");
 const collectors = @import("desktop-collectors.zig");
 pub const widgets = @import("desktop-widgets.zig");
 pub const idle = @import("desktop-idle.zig");
+const device_service = @import("desktop-devices.zig");
 const a = std.heap.page_allocator;
 comptime {
     _ = @import("desktop-protocols.zig");
@@ -23,7 +24,9 @@ var current: ?*Session = null;
 
 const Session = struct {
     app: *c.GtkApplication,
-    devices: ?*@import("desktop-devices.zig").Service = null,
+    devices: ?*device_service.Service = null,
+    device_subscription: device_service.Subscriber = undefined,
+    device_subscribed: bool = false,
     panels: ?*panel.Service = null,
     background: ?*wallpaper.Service = null,
     notices: ?*notifications.Service = null,
@@ -52,7 +55,7 @@ const Session = struct {
         const alloc = temporary.allocator();
         const config = try alloc.dupeSentinel(u8, if (args.len > 1) args[1] else "/etc/xdg/desktop-panel/config.json", 0);
         self.background = try wallpaper.Service.create(self.image.?);
-        self.devices = try @import("desktop-devices.zig").Service.create();
+        self.devices = try device_service.Service.create();
         self.panels = try panel.Service.create(config, self.devices.?);
         self.notices = try notifications.Service.create();
         try self.media.start();
@@ -64,12 +67,27 @@ const Session = struct {
         self.data = .{ .devices = self.devices.?, .panel = self.panels.?, .icon = if (c.g_getenv("DESKTOP_CODEX_ICON")) |icon| std.mem.span(icon) else "" };
         self.data.start();
         self.data_started = true;
-        self.inactivity = try idle.Service.create(.{});
+        self.inactivity = try idle.Service.create(.{ .session_inhibit = true });
+        self.device_subscription = .{ .context = self, .changed = &devicesChanged };
+        self.devices.?.subscribe(&self.device_subscription);
+        self.device_subscribed = true;
+        devicesChanged(self, self.devices.?, .audio);
         self.serving = true;
         current = self;
         widgets.refresh_source = &refresh;
         self.timer = c.g_timeout_add_seconds(5, &maintain, self);
         c.g_application_hold(@ptrCast(self.app));
+    }
+
+    fn devicesChanged(ptr: ?*anyopaque, source: *device_service.Service, event: device_service.Event) void {
+        if (event != .audio) return;
+        const self: *Session = @ptrCast(@alignCast(ptr));
+        const inactivity = self.inactivity orelse return;
+        const audio_service = source.audio_service orelse {
+            inactivity.setAudioInhibited(false);
+            return;
+        };
+        inactivity.setAudioInhibited(audio_service.activeRecording());
     }
 
     fn maintain(ptr: c.gpointer) callconv(.c) c.gboolean {
@@ -84,6 +102,8 @@ const Session = struct {
         current = null;
         widgets.refresh_source = null;
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.device_subscribed) self.devices.?.unsubscribe(&self.device_subscription);
+        self.device_subscribed = false;
         if (self.inactivity) |inactivity| inactivity.destroy();
         if (self.data_started) self.data.deinit();
         self.dialogs.deinit();

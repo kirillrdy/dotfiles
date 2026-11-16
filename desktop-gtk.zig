@@ -504,6 +504,7 @@ pub const GBusAcquiredCallback = ?*const fn (connection: ?*GDBusConnection, name
 pub const GBusNameAcquiredCallback = ?*const fn (connection: ?*GDBusConnection, name: [*c]const gchar, user_data: gpointer) callconv(.c) void;
 pub const GBusNameLostCallback = ?*const fn (connection: ?*GDBusConnection, name: [*c]const gchar, user_data: gpointer) callconv(.c) void;
 pub extern fn g_bus_own_name(bus_type: GBusType, name: [*c]const gchar, flags: GBusNameOwnerFlags, bus_acquired_handler: GBusAcquiredCallback, name_acquired_handler: GBusNameAcquiredCallback, name_lost_handler: GBusNameLostCallback, user_data: gpointer, user_data_free_func: GDestroyNotify) guint;
+pub extern fn g_bus_own_name_on_connection(connection: ?*GDBusConnection, name: [*c]const gchar, flags: GBusNameOwnerFlags, name_acquired_handler: GBusNameAcquiredCallback, name_lost_handler: GBusNameLostCallback, user_data: gpointer, user_data_free_func: GDestroyNotify) guint;
 pub extern fn g_bus_unown_name(owner_id: guint) void;
 pub extern fn g_file_new_for_path(path: [*c]const u8) ?*GFile;
 pub const struct__GSettingsSchemaSource = opaque {};

@@ -15,6 +15,13 @@ const Capture = @import("desktop-portal-capture.zig");
 const Video = @import("desktop-portal-screencast.zig");
 const bus = "org.freedesktop.DBus";
 const bus_path = "/org/freedesktop/DBus";
+const idle_portal_path = "/org/dotfiles/Portal";
+const idle_portal_interface = "org.dotfiles.Portal";
+const idle_portal_xml =
+    "<node><interface name=\"org.dotfiles.Portal\">" ++
+    "<method name=\"IdleInhibited\"><arg type=\"b\" name=\"inhibited\" direction=\"out\"/></method>" ++
+    "<signal name=\"IdleInhibitedChanged\"><arg type=\"b\" name=\"inhibited\"/></signal>" ++
+    "</interface></node>";
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
 const text = c.__zig.variant.text;
@@ -77,6 +84,7 @@ const Session = struct {
 const Server = struct {
     connection: *c.GDBusConnection,
     node: *c.GDBusNodeInfo,
+    idle_node: ?*c.GDBusNodeInfo = null,
     registrations: std.ArrayList(c.guint) = .empty,
     subscriptions: std.ArrayList(c.guint) = .empty,
     clients: std.ArrayList(*Client) = .empty,
@@ -85,6 +93,7 @@ const Server = struct {
     settings: ?*Settings = null,
     notifications: ?*Notifications = null,
     printing: ?*Printing.Service = null,
+    idle_inhibited: bool = false,
     serial: u64 = 0,
     quitting: bool = false,
 
@@ -106,6 +115,10 @@ const Server = struct {
             if (id == 0) return error.PortalRegistrationFailed;
             try self.registrations.append(a, id);
         }
+        self.idle_node = c.g_dbus_node_info_new_for_xml(idle_portal_xml, null) orelse return error.InvalidPortalXml;
+        const idle_id = c.g_dbus_connection_register_object(self.connection, idle_portal_path, self.idle_node.?.interfaces[0], &idle_portal_vtable, self, null, null);
+        if (idle_id == 0) return error.PortalRegistrationFailed;
+        try self.registrations.append(a, idle_id);
         try self.subscriptions.append(a, c.g_dbus_connection_signal_subscribe(self.connection, bus, bus, "NameOwnerChanged", bus_path, null, 0, &ownerChanged, self, null));
         self.settings = try Settings.create(a, self.connection);
         self.notifications = try Notifications.create(a, self.connection);
@@ -123,6 +136,7 @@ const Server = struct {
         if (self.printing) |printing| printing.destroy();
         while (self.sessions.items.len > 0) self.closeSession(self.sessions.items[0]);
         for (self.registrations.items) |id| _ = c.g_dbus_connection_unregister_object(self.connection, id);
+        if (self.idle_node) |idle_node| c.g_dbus_node_info_unref(idle_node);
         for (self.clients.items) |client| client.destroy();
         self.registrations.deinit(a);
         self.subscriptions.deinit(a);
@@ -192,6 +206,19 @@ const Server = struct {
             break;
         };
         item.destroy();
+        self.updateIdleInhibition();
+    }
+    fn hasIdleInhibitor(self: *const Server) bool {
+        for (self.requests.items) |item| if (!item.closed and item.kind == .inhibit and item.inhibit_idle) return true;
+        for (self.sessions.items) |item| if (item.state == .started) return true;
+        return false;
+    }
+    fn updateIdleInhibition(self: *Server) void {
+        if (self.quitting) return;
+        const next = self.hasIdleInhibitor();
+        if (next == self.idle_inhibited) return;
+        self.idle_inhibited = next;
+        _ = c.g_dbus_connection_emit_signal(self.connection, null, idle_portal_path, idle_portal_interface, "IdleInhibitedChanged", c.g_variant_new("(b)", @as(c.gboolean, @intFromBool(next))), null);
     }
     fn createSession(self: *Server, client_info: *Client, options: ?*c.GVariant) !*Session {
         if (self.sessions.items.len >= 64) return error.TooManySessions;
@@ -258,6 +285,7 @@ const Request = struct {
     kind: Kind,
     invocation: ?*c.GDBusMethodInvocation = null,
     closed: bool = false,
+    inhibit_idle: bool = false,
     inhibitor_fd: c_int = -1,
     dialog: ?*FileChooser = null,
     account: ?*Account = null,
@@ -320,13 +348,20 @@ const Request = struct {
             self.destroy();
             return;
         }
-        if (self.kind == .inhibit and self.inhibitor_fd >= 0) {
-            _ = libc.close(self.inhibitor_fd);
-            self.destroy();
+        if (self.kind == .inhibit) {
+            self.inhibit_idle = false;
+            self.server.updateIdleInhibition();
+            if (self.inhibitor_fd >= 0) {
+                _ = libc.close(self.inhibitor_fd);
+                self.destroy();
+            }
             return;
         }
     }
     fn destroy(self: *Request) void {
+        const server = self.server;
+        const had_idle = self.inhibit_idle;
+        self.inhibit_idle = false;
         if (self.idle != 0) _ = c.g_source_remove(self.idle);
         if (self.picker) |picker| picker.destroy();
         if (self.session_handle) |handle| if (self.server.session(handle, self.owner)) |session_info| {
@@ -345,6 +380,7 @@ const Request = struct {
         };
         self.arena.deinit();
         a.destroy(self);
+        if (had_idle) server.updateIdleInhibition();
     }
     fn respond(self: *Request, code: u32, results: ?*c.GVariant) void {
         if (!self.closed and !self.server.quitting) _ = c.g_dbus_connection_emit_signal(self.server.connection, self.owner, self.handle, public ++ "Request", "Response", tuple(&.{ c.g_variant_new("u", code), results }), null) else {
@@ -387,6 +423,7 @@ const Request = struct {
         if (node) |id| {
             const request = session_info.pending orelse return;
             session_info.state = .started;
+            server.updateIdleInhibition();
             const properties = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
             defer c.g_variant_builder_unref(properties);
             c.g_variant_builder_add(properties, "{sv}", @as([*:0]const u8, "source_type"), c.g_variant_new("u", @as(c_uint, 1)));
@@ -644,7 +681,9 @@ fn inhibit(server: *Server, client_info: *Client, params: ?*c.GVariant, invocati
     const reason = c.g_variant_lookup_value(options, "reason", @ptrCast(@as([*:0]const u8, "s")));
     defer if (reason != null) c.g_variant_unref(reason);
     const why: [*c]const u8 = if (reason != null) c.g_variant_get_string(reason, null) else "Application requested inhibition";
+    request.inhibit_idle = flags & 8 != 0;
     c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
+    server.updateIdleInhibition();
     c.g_dbus_connection_call_with_unix_fd_list(connection, "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", "Inhibit", c.g_variant_new("(ssss)", @as([*:0]const u8, @ptrCast(&buffer)), request.app.ptr, why, @as([*:0]const u8, "block")), @ptrCast(@as([*:0]const u8, "(h)")), 0, 10000, null, request.cancel, &Request.inhibitorFinished, request);
 }
 fn network(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
@@ -755,6 +794,15 @@ fn closeSession(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, _
     server.closeSession(session_info);
     c.g_dbus_method_invocation_return_value(invocation, null);
 }
+fn idlePortalCall(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, method_name: [*c]const u8, _: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: ?*anyopaque) callconv(.c) void {
+    const server = cast(Server, data);
+    if (eq(std.mem.span(method_name), "IdleInhibited")) {
+        c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(b)", @as(c.gboolean, @intFromBool(server.idle_inhibited))));
+        return;
+    }
+    c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.DBus.Error.UnknownMethod", "Unknown method");
+}
+const idle_portal_vtable = c.GDBusInterfaceVTable{ .method_call = &idlePortalCall };
 const main_vtable = c.GDBusInterfaceVTable{ .method_call = &methodCall, .get_property = &getProperty };
 const request_vtable = c.GDBusInterfaceVTable{ .method_call = &closeRequest };
 const session_vtable = c.GDBusInterfaceVTable{ .method_call = &closeSession };
