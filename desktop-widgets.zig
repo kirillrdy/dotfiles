@@ -81,12 +81,6 @@ pub fn ensureStyle() void {
 pub fn css(widget: [*c]c.GtkWidget, name: [*c]const u8) callconv(.c) void {
     c.gtk_style_context_add_class(c.gtk_widget_get_style_context(widget), name);
 }
-pub fn settings_launch(button: [*c]c.GtkButton, data: c.gpointer) callconv(.c) void {
-    var @"error": [*c]c.GError = null;
-    _ = c.g_spawn_command_line_async(@as([*c]const c.gchar, @ptrCast(@alignCast(data))), &@"error");
-    c.gtk_widget_set_tooltip_text(cast(c.GtkWidget, button), if (@"error" != null) @"error".*.message else null);
-    c.g_clear_error(&@"error");
-}
 pub var power_ids: [3][*c]const u8 = [3][*c]const u8{
     "performance",
     "balanced",

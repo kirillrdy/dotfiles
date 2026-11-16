@@ -1,6 +1,5 @@
 //! Audio control through cached PipeWire Props and device Route parameters.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
 const p = @import("pipewire");
 const Pod = @import("desktop-audio-pod.zig");
 const Registry = @import("desktop-audio-registry.zig").Registry;

@@ -317,12 +317,6 @@ pub fn auto_exclusive_zone_enable(window: [*c]c.GtkWindow) void {
     self.updateZone();
     self.invalidate();
 }
-pub fn set_keyboard_mode(window: [*c]c.GtkWindow, mode: KeyboardMode) void {
-    const self = State.get(window);
-    self.keyboard = mode;
-    if (self.role) |role| request(role, 4, .{self.keyboardValue()});
-    self.invalidate();
-}
 
 test "integration: native layer roles configure, reserve space, attach GTK popups, and remap" {
     if (!@import("options").integration_tests) return error.SkipZigTest;

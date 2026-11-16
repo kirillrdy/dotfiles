@@ -10,7 +10,6 @@ const login_name = "org.freedesktop.login1";
 const login_path = "/org/freedesktop/login1";
 const login_interface = "org.freedesktop.login1.Manager";
 const screensaver_name = "org.freedesktop.ScreenSaver";
-const screensaver_interface = "org.freedesktop.ScreenSaver";
 const screensaver_paths = [_][*:0]const u8{ "/org/freedesktop/ScreenSaver", "/ScreenSaver" };
 const screensaver_xml =
     "<node><interface name=\"org.freedesktop.ScreenSaver\">" ++

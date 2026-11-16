@@ -1,6 +1,5 @@
 //! Connection-editor presentation; typed NetworkManager values stay in the controller.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
 const form = @import("desktop-form.zig");
 const raster = @import("desktop-raster.zig");
 const p = @import("desktop-preferences-view.zig");
