@@ -62,11 +62,27 @@ pub fn main(init: std.process.Init) !void {
         const window = settings.Settings.create(.network);
         settle();
         try std.testing.expect(window.rows.items.len > 0);
+        for (window.ui.items.items) |item| try std.testing.expect(item.kind != .choice);
+        // Duplicate and hidden APs must not produce extra rows. Row paths must
+        // survive replacement of the snapshot while keyboard focus is restored.
+        const allocator = std.heap.page_allocator;
+        const temporary_path = try allocator.dupeSentinel(u8, state.access_points.items[0].path, 0);
+        var points: [3]network.AccessPoint = @splat(state.access_points.items[0]);
+        points[0].path = temporary_path;
+        points[2].ssid = &.{};
+        var snapshot = state.*;
+        snapshot.access_points.items = &points;
+        window.renderNetwork(&snapshot);
+        try std.testing.expectEqual(@as(usize, 1), window.rows.items.len);
+        window.ui.focusItem(window.rows.items[0].item);
+        allocator.free(temporary_path);
+        try std.testing.expectEqualStrings(state.access_points.items[0].path, window.rows.items[0].key);
+        window.renderNetwork(state);
+        try std.testing.expectEqual(window.rows.items[0].item, window.ui.focus.?);
         try std.testing.expect(!window.manual.visible);
         window.showPage(.hidden);
         try std.testing.expect(window.manual.visible);
-        try std.testing.expect(window.hidden.checked);
-        try std.testing.expect(window.ssids.selectedId() == null);
+        try std.testing.expect(window.ui.get(window.view.connect).visible);
         window.showPage(.saved);
         try std.testing.expect(!window.manual.visible);
         window.showPage(.wifi);
@@ -88,6 +104,10 @@ pub fn main(init: std.process.Init) !void {
         window.showPage(.wifi);
         try std.testing.expect(window.ui.get(window.view.sound_nav).visible);
         try std.testing.expect(window.rows.items.len > 0);
+        try window.ui.setText(window.view.refresh, "Reload networks");
+        window.ui.activate(window.view.refresh);
+        try std.testing.expect(window.network_operations > 0);
+        while (window.network_operations != 0) pump();
         const properties = editor.Editor.create(window.window, state.profiles.items[0]);
         settle();
         properties.ui.activate(properties.view.tabs[2]);
@@ -191,10 +211,13 @@ pub fn main(init: std.process.Init) !void {
         try std.testing.expect(ui.network_client.?.service == client.service);
         try std.testing.expect(controls.devices.network_client.?.service == client.service);
         settle();
-        try std.testing.expect(ui.ssids.options.items.len > 0);
-        try std.testing.expect(ui.selectAP(state.access_points.items[0].path));
+        try std.testing.expect(ui.rows.items.len > 0);
+        ui.showPage(.hidden);
+        try ui.ui.setText(ui.manual.id, "Cafe: Tokyo\\5G");
         try ui.ui.setText(ui.password.id, "ui-secret");
-        settings.Settings.wifiConnect(null, ui);
+        // Actions use IDs even when the displayed wording changes.
+        try ui.ui.setText(ui.view.connect, "Join network");
+        ui.ui.activate(ui.view.connect);
         try std.testing.expectEqualStrings("", ui.password.value());
         ui.ui.close();
         while (!ui.closed) _ = c.g_main_context_iteration(null, 1);

@@ -25,47 +25,23 @@ pub const Settings = struct {
     window: *native.host.Window,
     ui: *native.Form,
     message: *native.Item,
-    refresh_button: *native.Item,
     network_client: ?*network.Client = null,
     network_operations: usize = 0,
     closed: bool = false,
     audio_cancel: *c.GCancellable,
-    ssids: *native.Item,
     manual: *native.Item,
     password: *native.Item,
-    hidden: *native.Item,
-    profiles: *native.Item,
-    devices: *native.Item,
-    status: *native.Item,
     view: network_view.View = .{},
     rows: std.ArrayList(network_view.Row) = .empty,
+    row_arena: std.heap.ArenaAllocator = .init(a),
     dynamic_start: usize = 0,
     initial_page: bool = true,
     pub fn create(mode: Mode) *Settings {
         const self = a.create(Settings) catch @panic("out of memory");
         const ui = native.Form.create("Settings", self, &action, &fieldChanged) catch @panic("out of memory");
-        self.* = .{ .window = ui.window, .ui = ui, .audio_cancel = c.g_cancellable_new().?, .message = undefined, .refresh_button = undefined, .ssids = undefined, .manual = undefined, .password = undefined, .hidden = undefined, .profiles = undefined, .devices = undefined, .status = undefined };
-        self.status = self.add(.label, "Loading network devices…", "", false);
-        self.refresh_button = self.add(.button, "Refresh", "", false);
-        self.refresh_button.always_enabled = true;
-        const wifi_on = self.add(.button, "Enable Wi-Fi", "", false);
-        const wifi_off = self.add(.button, "Disable Wi-Fi", "", false);
-        ui.pair(wifi_on.id, wifi_off.id);
-        self.ssids = self.add(.choice, "Available Wi-Fi networks", "", false);
-        self.manual = self.add(.entry, "Wi-Fi network name", "Select a network above or enter its name", false);
+        self.* = .{ .window = ui.window, .ui = ui, .audio_cancel = c.g_cancellable_new().?, .message = undefined, .manual = undefined, .password = undefined };
+        self.manual = self.add(.entry, "Wi-Fi network name", "Enter the hidden network’s name", false);
         self.password = self.add(.entry, "Password", "Leave empty for a saved or open network", true);
-        self.hidden = self.add(.toggle, "Hidden network", "", false);
-        const connect_wifi = self.add(.button, "Connect", "", false);
-        self.profiles = self.add(.choice, "Saved connections", "", false);
-        const activate_profile = self.add(.button, "Connect", "", false);
-        const deactivate_profile = self.add(.button, "Disconnect", "", false);
-        ui.pair(activate_profile.id, deactivate_profile.id);
-        _ = self.add(.button, "Forget…", "", false);
-        self.devices = self.add(.choice, "Network devices", "", false);
-        _ = self.add(.button, "Disconnect device", "", false);
-        const edit_profile = self.add(.button, "Edit connection…", "", false);
-        const new_profile = self.add(.button, "New connection…", "", false);
-        ui.pair(edit_profile.id, new_profile.id);
         self.message = ui.get(ui.addPinned(.label, "") catch @panic("out of memory"));
         self.view = .{
             .wifi_nav = ui.add(.button, "Wi-Fi", "", false) catch @panic("out of memory"),
@@ -79,14 +55,15 @@ pub const Settings = struct {
             .close = ui.add(.button, "Close", "", false) catch @panic("out of memory"),
             .search = ui.add(.button, "Search Networks", "", false) catch @panic("out of memory"),
             .query = ui.add(.entry, "Search Networks", "", false) catch @panic("out of memory"),
-            .new_connection = new_profile.id,
+            .new_connection = ui.add(.button, "New connection…", "", false) catch @panic("out of memory"),
             .manual = self.manual.id,
             .password = self.password.id,
-            .connect = connect_wifi.id,
-            .refresh = self.refresh_button.id,
+            .connect = ui.add(.button, "Connect", "", false) catch @panic("out of memory"),
+            .refresh = ui.add(.button, "Refresh", "", false) catch @panic("out of memory"),
             .message = self.message.id,
         };
         for ([_]usize{ self.view.wifi_nav, self.view.network_nav, self.view.sound_nav, self.view.back, self.view.close, self.view.search }) |id| ui.get(id).always_enabled = true;
+        ui.get(self.view.refresh).always_enabled = true;
         self.dynamic_start = ui.items.items.len;
         self.window.surface.?.options.namespace = "org.dotfiles.Settings";
         self.window.setSize(980, 700);
@@ -258,8 +235,6 @@ pub const Settings = struct {
         self.view.page = page;
         self.view.offset = 0;
         self.password.entry.?.clear();
-        self.ui.setChecked(self.hidden.id, page == .hidden);
-        if (page == .hidden) _ = self.ui.select(self.ssids.id, null);
         self.ui.focus = null;
         self.renderCurrent();
     }
@@ -268,7 +243,7 @@ pub const Settings = struct {
     }
     fn sensitivity(self: *Settings) void {
         const idle = self.network_operations == 0;
-        self.refresh_button.enabled = idle;
+        self.ui.get(self.view.refresh).enabled = idle;
         self.view.busy = !idle;
         self.ui.setEnabled(idle and self.network_client != null and self.network_client.?.state().available);
     }
@@ -279,6 +254,7 @@ pub const Settings = struct {
         self.ui.deinit();
         self.view.deinit();
         self.rows.deinit(a);
+        self.row_arena.deinit();
         a.destroy(self);
     }
     fn destroyed(ptr: ?*anyopaque) void {
@@ -334,6 +310,7 @@ pub const Settings = struct {
         defer if (focused_path) |path| a.free(path);
         self.view.rows = &.{};
         self.rows.clearRetainingCapacity();
+        _ = self.row_arena.reset(.retain_capacity);
         self.ui.updating = true;
         defer {
             self.ui.updating = false;
@@ -362,47 +339,15 @@ pub const Settings = struct {
         }
         self.ui.get(self.view.wifi).checked = state.wifi_enabled;
         self.ui.get(self.view.wifi).enabled = state.hardware_enabled;
-        var arena = std.heap.ArenaAllocator.init(a);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-        var options: std.ArrayList(native.Option) = .empty;
-        var seen: std.StringHashMap(void) = .init(alloc);
-        for (state.access_points.items) |ap| {
-            if (ap.ssid.len == 0 or seen.contains(ap.ssid)) continue;
-            seen.put(ap.ssid, {}) catch @panic("out of memory");
-            options.append(alloc, .{ .id = ap.path, .label = ap.title }) catch @panic("out of memory");
-        }
-        self.ui.setOptions(self.ssids.id, options.items, false) catch @panic("out of memory");
-        if (self.ssids.selectedId()) |key| if (state.ap(key)) |ap| {
-            self.ui.setText(self.manual.id, ap.title) catch {};
-        };
-        options.clearRetainingCapacity();
-        for (state.profiles.items) |profile| {
-            const title = std.fmt.allocPrintSentinel(alloc, "{s} ({s}){s}", .{ profile.title, profile.kind, if (profile.active) " — connected" else "" }, 0) catch @panic("out of memory");
-            options.append(alloc, .{ .id = profile.path, .label = title }) catch @panic("out of memory");
-        }
-        self.ui.setOptions(self.profiles.id, options.items, true) catch @panic("out of memory");
-        options.clearRetainingCapacity();
-        var summary: std.ArrayList(u8) = .empty;
-        for (state.devices.items) |device| {
-            if (device.kind == 32 or eq(device.interface, "lo")) continue;
-            const title = std.fmt.allocPrintSentinel(alloc, "{s}: {s} — {s}", .{ device.interface, network.deviceState(device.state), state.connectionName(device.active) }, 0) catch @panic("out of memory");
-            options.append(alloc, .{ .id = device.path, .label = title }) catch @panic("out of memory");
-            if (summary.items.len != 0) summary.append(alloc, '\n') catch @panic("out of memory");
-            summary.appendSlice(alloc, title) catch @panic("out of memory");
-        }
-        self.ui.setOptions(self.devices.id, options.items, true) catch @panic("out of memory");
-        const status = alloc.dupeSentinel(u8, if (!state.available) "NetworkManager unavailable" else if (summary.items.len == 0) "No network devices available" else summary.items, 0) catch @panic("out of memory");
-        self.ui.setText(self.status.id, status) catch {};
         self.rebuildRows(state);
         self.sensitivity();
     }
-    fn profilePath(self: *Settings, path: []const u8) ?[:0]const u8 {
-        for (self.profiles.options.items) |option| if (eq(option.id, path)) return option.id;
-        return null;
-    }
     fn addNetworkRow(self: *Settings, title: [:0]const u8, row: network_view.Row) void {
         var next = row;
+        // Rows outlive the backend snapshot, including while a dialog runs.
+        const allocator = self.row_arena.allocator();
+        next.key = allocator.dupeSentinel(u8, row.key, 0) catch @panic("out of memory");
+        if (row.profile) |path| next.profile = allocator.dupeSentinel(u8, path, 0) catch @panic("out of memory");
         next.item = self.ui.add(.button, title, "", false) catch @panic("out of memory");
         next.details = self.ui.add(.button, "Network Options", "", false) catch @panic("out of memory");
         if (self.view.page == .saved) next.remove = self.ui.add(.button, "Forget", "", false) catch @panic("out of memory");
@@ -411,36 +356,37 @@ pub const Settings = struct {
     fn rebuildRows(self: *Settings, state: *const network.State) void {
         const query = self.ui.get(self.view.query).value();
         if (self.view.page == .wifi and state.available and state.wifi_enabled and state.hardware_enabled) {
-            for (self.ssids.options.items) |option| {
-                const ap = state.ap(option.id) orelse continue;
+            var seen: std.StringHashMap(void) = .init(self.row_arena.allocator());
+            for (state.access_points.items) |ap| {
+                if (ap.ssid.len == 0 or seen.contains(ap.ssid)) continue;
+                seen.put(ap.ssid, {}) catch @panic("out of memory");
                 if (!matches(ap.title, query)) continue;
                 var profile: ?[:0]const u8 = null;
                 for (state.profiles.items) |saved| if (eq(saved.ssid, ap.ssid) and eq(saved.kind, "802-11-wireless")) {
-                    profile = self.profilePath(saved.path);
+                    profile = saved.path;
                     break;
                 };
-                self.addNetworkRow(ap.title, .{ .item = 0, .details = 0, .key = option.id, .profile = profile, .kind = .access_point, .icon = network.wifiIcon(ap.strength), .subtitle = if (ap.connected) "Connected" else "", .connected = ap.connected, .secure = ap.passwordRequired(), .strength = ap.strength });
+                self.addNetworkRow(ap.title, .{ .item = 0, .details = 0, .key = ap.path, .profile = profile, .kind = .access_point, .icon = network.wifiIcon(ap.strength), .subtitle = if (ap.connected) "Connected" else "", .connected = ap.connected, .secure = ap.passwordRequired(), .strength = ap.strength });
             }
         } else if (self.view.page == .saved) {
-            for (self.profiles.options.items) |option| {
-                const profile = state.profile(option.id) orelse continue;
+            for (state.profiles.items) |profile| {
                 if (!eq(profile.kind, "802-11-wireless")) continue;
                 if (!matches(profile.title, query)) continue;
-                self.addNetworkRow(profile.title, .{ .item = 0, .details = 0, .key = option.id, .profile = option.id, .kind = .profile, .icon = "network-wireless-symbolic", .subtitle = if (profile.active) "Connected" else "", .connected = profile.active });
+                self.addNetworkRow(profile.title, .{ .item = 0, .details = 0, .key = profile.path, .profile = profile.path, .kind = .profile, .icon = "network-wireless-symbolic", .subtitle = if (profile.active) "Connected" else "", .connected = profile.active });
             }
         } else if (self.view.page == .network) {
-            for (self.devices.options.items) |option| for (state.devices.items) |device| if (eq(device.path, option.id) and device.kind != 2) {
+            for (state.devices.items) |device| {
+                if (device.kind == 2 or device.kind == 32 or eq(device.interface, "lo")) continue;
                 var profile: ?[:0]const u8 = null;
                 for (state.profiles.items) |saved| if (eq(saved.kind, "802-3-ethernet")) {
-                    profile = self.profilePath(saved.path);
+                    profile = saved.path;
                     break;
                 };
-                self.addNetworkRow(if (device.kind == 1) "Wired" else device.interface, .{ .item = 0, .details = 0, .key = option.id, .profile = profile, .kind = .device, .icon = "network-wired-symbolic", .subtitle = network.deviceState(device.state), .connected = device.state == 100 });
-            };
-            for (self.profiles.options.items) |option| {
-                const profile = state.profile(option.id) orelse continue;
+                self.addNetworkRow(if (device.kind == 1) "Wired" else device.interface, .{ .item = 0, .details = 0, .key = device.path, .profile = profile, .kind = .device, .icon = "network-wired-symbolic", .subtitle = network.deviceState(device.state), .connected = device.state == 100 });
+            }
+            for (state.profiles.items) |profile| {
                 if (eq(profile.kind, "802-11-wireless") or eq(profile.kind, "802-3-ethernet")) continue;
-                self.addNetworkRow(profile.title, .{ .item = 0, .details = 0, .key = option.id, .profile = option.id, .kind = .profile, .icon = "network-vpn-symbolic", .subtitle = if (profile.active) "Connected" else "Not connected", .connected = profile.active });
+                self.addNetworkRow(profile.title, .{ .item = 0, .details = 0, .key = profile.path, .profile = profile.path, .kind = .profile, .icon = "network-vpn-symbolic", .subtitle = if (profile.active) "Connected" else "Not connected", .connected = profile.active });
             }
         }
         if (self.view.page == .wifi or self.view.page == .saved) std.mem.sort(network_view.Row, self.rows.items, self, lessRow);
@@ -458,11 +404,6 @@ pub const Settings = struct {
         if (left.strength != right.strength) return left.strength > right.strength;
         return std.ascii.lessThanIgnoreCase(self.ui.get(left.item).title, self.ui.get(right.item).title);
     }
-    pub fn selectAP(self: *Settings, path: []const u8) bool {
-        if (!self.ui.select(self.ssids.id, path)) return false;
-        fieldChanged(self, self.ssids.id);
-        return true;
-    }
     fn fieldChanged(ptr: ?*anyopaque, id: usize) void {
         const self = cast(Settings, ptr);
         if (self.closed) return;
@@ -475,34 +416,12 @@ pub const Settings = struct {
             self.renderCurrent();
             return;
         }
-        if (id == self.manual.id) _ = self.ui.select(self.ssids.id, null);
-        if (id == self.ssids.id) {
-            const client = self.network_client orelse return;
-            const key = self.ssids.selectedId() orelse return;
-            const ap = client.state().ap(key) orelse return;
-            self.ui.setText(self.manual.id, ap.title) catch {};
-        }
     }
-    pub fn wifiConnect(_: ?*c.GtkButton, ptr: c.gpointer) callconv(.c) void {
-        const self = cast(Settings, ptr);
-        const client = self.network_client orelse return;
-        const ap = if (self.ssids.selectedId()) |key| client.state().ap(key) else null;
-        self.networkAction(.{ .connect = .{ .ssid = if (ap) |value| value.ssid else self.manual.value(), .password = self.password.value(), .hidden = self.hidden.checked, .access_point = if (ap) |value| value.path else null } });
+    fn connectHidden(self: *Settings) void {
+        self.networkAction(.{ .connect = .{ .ssid = self.manual.value(), .password = self.password.value(), .hidden = true } });
         self.password.entry.?.clear();
     }
-    fn profileAction(self: *Settings, command: enum { activate, deactivate, forget }) void {
-        const key = self.profiles.selectedId() orelse {
-            self.setMessage("Select a saved connection first.");
-            return;
-        };
-        self.networkAction(switch (command) {
-            .activate => .{ .activate = key },
-            .deactivate => .{ .deactivate = key },
-            .forget => .{ .forget = key },
-        });
-    }
-    fn forget(self: *Settings) void {
-        const key = self.profiles.selectedId() orelse return;
+    fn forget(self: *Settings, key: [:0]const u8) void {
         const owned_key = z(key);
         defer a.free(owned_key);
         const dialog = auth.Dialog.createWithOptions(.confirm, "Forget the selected connection and its saved credentials?", .{ .title = "Forget Connection", .role = "desktop-network-forget", .accept = "Forget", .cancel = "Cancel", .icon = "network-wireless" }) catch return;
@@ -549,7 +468,7 @@ pub const Settings = struct {
             return;
         }
         if (id == self.view.connect) {
-            wifiConnect(null, self);
+            self.connectHidden();
             return;
         }
         for (self.rows.items) |row| {
@@ -565,17 +484,13 @@ pub const Settings = struct {
                 return;
             }
             if (row.remove == id) {
-                _ = self.ui.select(self.profiles.id, row.key);
-                self.forget();
+                self.forget(row.key);
                 return;
             }
             if (id != row.item) continue;
             switch (row.kind) {
                 .access_point => if (!row.connected) self.connectAccessPoint(row.key),
-                .profile => {
-                    _ = self.ui.select(self.profiles.id, row.key);
-                    self.profileAction(if (row.connected) .deactivate else .activate);
-                },
+                .profile => self.networkAction(if (row.connected) .{ .deactivate = row.key } else .{ .activate = row.key }),
                 .device => {
                     if (row.connected) self.networkAction(.{ .disconnect = row.key }) else if (row.profile) |path| self.networkAction(.{ .activate = path }) else {
                         _ = editor.Editor.create(self.window, null);
@@ -584,18 +499,8 @@ pub const Settings = struct {
             }
             return;
         }
-        const title = self.ui.get(id).title;
-        if (eq(title, "Refresh")) self.refresh() else if (eq(title, "Enable Wi-Fi")) self.networkAction(.{ .wifi = true }) else if (eq(title, "Disable Wi-Fi")) self.networkAction(.{ .wifi = false }) else if (eq(title, "Connect to Wi-Fi")) wifiConnect(null, self) else if (eq(title, "Connect")) self.profileAction(.activate) else if (eq(title, "Disconnect")) self.profileAction(.deactivate) else if (eq(title, "Forget…")) self.forget() else if (eq(title, "Disconnect device")) {
-            if (self.devices.selectedId()) |key| self.networkAction(.{ .disconnect = key });
-        } else if (eq(title, "New connection…")) {
+        if (id == self.view.refresh) self.refresh() else if (id == self.view.new_connection) {
             _ = editor.Editor.create(self.window, null);
-        } else if (eq(title, "Edit connection…")) {
-            const client = self.network_client orelse return;
-            const key = self.profiles.selectedId() orelse {
-                self.setMessage("Select a saved connection first.");
-                return;
-            };
-            _ = editor.Editor.create(self.window, client.state().profile(key) orelse return);
         }
     }
     fn editAccessPoint(self: *Settings, path: [:0]const u8) void {
