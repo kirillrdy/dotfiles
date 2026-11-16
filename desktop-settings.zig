@@ -137,7 +137,7 @@ pub const Settings = struct {
         self.ui.expanded = null;
         self.mode = mode;
         if (mode == .sound) {
-            if (self.sound == null) self.sound = Sound.createEmbedded(self.window, self, &navigateSound) catch @panic("out of memory");
+            if (self.sound == null) self.sound = Sound.create(self.window, self, &navigateSound) catch @panic("out of memory");
         }
         self.ui.relayout();
     }

@@ -10,9 +10,8 @@ const wire = host.wire;
 const Label = @import("desktop-panel-view.zig").Label;
 pub const Sound = struct {
     window: *host.Window,
-    owns_window: bool = true,
-    navigation_context: ?*anyopaque = null,
-    navigate: ?*const fn (?*anyopaque, native.Control) void = null,
+    navigation_context: ?*anyopaque,
+    navigate: *const fn (?*anyopaque, native.Control) void,
     tooltip: Label = .{},
     tooltip_timer: c.guint = 0,
     tooltip_visible: bool = false,
@@ -30,42 +29,14 @@ pub const Sound = struct {
     refreshing: bool = false,
     flushing: bool = false,
     feedback: audio.Feedback = .{},
-    pub fn create() !*Sound {
-        const self = try a.create(Sound);
-        errdefer a.destroy(self);
-        const window = try host.Window.create("Sound", "desktop-sound-settings", 980, 700, &draw, self);
-        errdefer window.destroy();
-        self.* = .{ .window = window, .cancel = c.g_cancellable_new().? };
-        self.view.test_enabled = c.g_getenv("DESKTOP_OSD_SOUND_FILE") != null;
-        errdefer {
-            c.g_object_unref(self.cancel);
-            self.view.deinit(a);
-            if (self.message) |message| a.free(message);
-        }
-        window.closed = &destroyed;
-        const surface = window.surface.?;
-        surface.options.min_width = 680;
-        surface.options.min_height = 400;
-        surface.close = &closeRequested;
-        surface.input = .{ .button = &button, .motion = &motion, .leave = &leave, .symbol = &key, .focus = &focusChanged, .scroll = &scrolled };
-        self.service = audio.Service.create(&changed, self) catch null;
-        errdefer if (self.service) |service| service.destroy();
-        try self.refresh();
-        try window.show();
-        return self;
-    }
     // The settings shell owns window lifetime, drawing, and input dispatch.
-    pub fn createEmbedded(window: *host.Window, context: ?*anyopaque, navigate: *const fn (?*anyopaque, native.Control) void) !*Sound {
+    pub fn create(window: *host.Window, context: ?*anyopaque, navigate: *const fn (?*anyopaque, native.Control) void) !*Sound {
         const self = try a.create(Sound);
-        self.* = .{ .window = window, .owns_window = false, .navigation_context = context, .navigate = navigate, .cancel = c.g_cancellable_new().? };
-        self.view.unified = true;
+        self.* = .{ .window = window, .navigation_context = context, .navigate = navigate, .cancel = c.g_cancellable_new().? };
         self.view.test_enabled = c.g_getenv("DESKTOP_OSD_SOUND_FILE") != null;
         self.service = audio.Service.create(&changed, self) catch null;
         self.refresh() catch self.renderFailure();
         return self;
-    }
-    pub fn shutdown(self: *Sound) void {
-        if (!self.closed) destroyed(self);
     }
     pub fn deactivate(self: *Sound) void {
         self.hideTooltip();
@@ -77,7 +48,6 @@ pub const Sound = struct {
     }
     pub fn destroy(self: *Sound) void {
         std.debug.assert(self.closed and self.operations == 0);
-        if (self.owns_window) self.window.destroy();
         self.tooltip.deinit();
         c.g_object_unref(self.cancel);
         self.view.deinit(a);
@@ -87,11 +57,8 @@ pub const Sound = struct {
     pub fn close(self: *Sound) void {
         self.window.close();
     }
-    fn closeRequested(ptr: ?*anyopaque) void {
-        cast(Sound, ptr).close();
-    }
-    fn destroyed(ptr: ?*anyopaque) void {
-        const self = cast(Sound, ptr);
+    pub fn shutdown(self: *Sound) void {
+        if (self.closed) return;
         self.closed = true;
         self.hideTooltip();
         c.g_cancellable_cancel(self.cancel);
@@ -204,7 +171,7 @@ pub const Sound = struct {
         if (self.closed or !self.view.active(target)) return;
         switch (target.control) {
             .wifi_nav, .network_nav, .sound_nav => {
-                if (self.navigate) |navigate| navigate(self.navigation_context, target.control);
+                self.navigate(self.navigation_context, target.control);
                 return;
             },
             .close => {
@@ -280,13 +247,6 @@ pub const Sound = struct {
         }
         self.refresh() catch self.renderFailure();
         self.window.redraw();
-    }
-    fn draw(ptr: ?*anyopaque, target: wire.Pixels) void {
-        const self = cast(Sound, ptr);
-        self.paint(target) catch {
-            self.failed = true;
-            @memset(target.pixels, 0xff222226);
-        };
     }
     pub fn paint(self: *Sound, target: wire.Pixels) !void {
         const scale = self.window.surface.?.buffer_scale;

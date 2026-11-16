@@ -34,7 +34,6 @@ pub const Row = struct {
 const Label = enum { settings, sound, output, input, output_device, input_device, output_volume, input_volume, sounds, levels, outputs, inputs, no_streams, no_output, no_input, test_sound, sound_nav, levels_title, wifi_nav, network_nav };
 const captions = [_][:0]const u8{ "Settings", "Sound", "Output", "Input", "Output Device", "Input Device", "Output Volume", "Input Volume", "Sounds", "Volume Levels", "Outputs", "Inputs", "No Sound Playing", "No Output Devices", "No Input Devices", "Test", "Sound", "Volume Levels", "Wi-Fi", "Network" };
 pub const View = struct {
-    unified: bool = false,
     rows: std.ArrayList(Row) = .empty,
     width: u32 = 980,
     viewport_height: u32 = 700,
@@ -182,8 +181,7 @@ pub const View = struct {
     }
     pub fn active(self: *const View, target: Target) bool {
         switch (target.control) {
-            .wifi_nav, .network_nav, .sound_nav => return self.unified,
-            .close => return true,
+            .wifi_nav, .network_nav, .sound_nav, .close => return true,
             .back => return self.page == .levels,
             .levels => return self.page == .sound,
             .test_sound => return self.enabled and self.page == .sound and self.test_enabled and self.rows.items.len > 0 and self.rows.items[0].state != null,
@@ -200,10 +198,10 @@ pub const View = struct {
     }
     pub fn hit(self: *const View, x: f64, y: f64) ?Target {
         if (self.rect(.{ .control = .close }).contains(x, y)) return .{ .control = .close };
-        if (self.unified) for ([_]Control{ .wifi_nav, .network_nav, .sound_nav }) |control| {
+        for ([_]Control{ .wifi_nav, .network_nav, .sound_nav }) |control| {
             const target: Target = .{ .control = control };
             if (self.rect(target).contains(x, y)) return target;
-        };
+        }
         if (self.expanded != null) {
             var n = self.optionStart();
             while (n < self.optionStart() + self.menuCapacity()) : (n += 1) {
@@ -230,7 +228,7 @@ pub const View = struct {
         return @round(std.math.clamp((x - r.x - 8) / (r.width - 16), 0, 1) * 100);
     }
     pub fn moveFocus(self: *View, backwards: bool) void {
-        const extra: usize = if (self.unified) 7 else 4;
+        const extra = 7;
         const count = self.rows.items.len * 4 + extra;
         const start = if (self.focus) |f| switch (f.control) {
             .volume, .mute, .default, .device => f.row * 4 + @as(usize, @backingInt(f.control)),
@@ -381,20 +379,14 @@ pub const View = struct {
         p.fill(canvas, .{ .x = self.sidebar(), .y = 0, .width = @as(f64, @floatFromInt(self.width)) - self.sidebar(), .height = 46 }, p.background, 0);
         self.caption(canvas, .settings, .{ .x = 0, .y = 0, .width = self.sidebar(), .height = 46 }, true, 0xffffff);
         self.caption(canvas, if (self.page == .sound) .sound else .levels_title, .{ .x = self.sidebar(), .y = 0, .width = @as(f64, @floatFromInt(self.width)) - self.sidebar(), .height = 46 }, true, 0xffffff);
-        if (self.unified) {
-            for ([_]Control{ .wifi_nav, .network_nav, .sound_nav }, [_]Label{ .wifi_nav, .network_nav, .sound_nav }, [_][:0]const u8{ "network-wireless-symbolic", "network-workgroup-symbolic", "audio-volume-high-symbolic" }) |control, label, icon_name| {
-                const t: Target = .{ .control = control };
-                const r = self.rect(t);
-                const selected = control == .sound_nav;
-                if (selected or (self.hover != null and self.hover.?.eql(t))) p.fill(canvas, r, if (selected) 0x414145 else 0x38383c, 9);
-                self.icon(canvas, icon_name, .{ .x = r.x + 14, .y = r.y, .width = 16, .height = r.height }, 16);
-                self.caption(canvas, label, .{ .x = r.x + 42, .y = r.y, .width = r.width - 56, .height = r.height }, false, 0xffffff);
-                self.controlFocus(canvas, t);
-            }
-        } else {
-            p.fill(canvas, .{ .x = 6, .y = 52, .width = self.sidebar() - 12, .height = 43 }, 0x414145, 8);
-            self.icon(canvas, "audio-volume-high-symbolic", .{ .x = 16, .y = 52, .width = 24, .height = 43 }, 16);
-            self.caption(canvas, .sound_nav, .{ .x = 48, .y = 52, .width = self.sidebar() - 60, .height = 43 }, false, 0xffffff);
+        for ([_]Control{ .wifi_nav, .network_nav, .sound_nav }, [_]Label{ .wifi_nav, .network_nav, .sound_nav }, [_][:0]const u8{ "network-wireless-symbolic", "network-workgroup-symbolic", "audio-volume-high-symbolic" }) |control, label, icon_name| {
+            const t: Target = .{ .control = control };
+            const r = self.rect(t);
+            const selected = control == .sound_nav;
+            if (selected or (self.hover != null and self.hover.?.eql(t))) p.fill(canvas, r, if (selected) 0x414145 else 0x38383c, 9);
+            self.icon(canvas, icon_name, .{ .x = r.x + 14, .y = r.y, .width = 16, .height = r.height }, 16);
+            self.caption(canvas, label, .{ .x = r.x + 42, .y = r.y, .width = r.width - 56, .height = r.height }, false, 0xffffff);
+            self.controlFocus(canvas, t);
         }
         const close_target: Target = .{ .control = .close };
         p.fill(canvas, self.rect(close_target), 0x38383c, 12);
@@ -447,12 +439,18 @@ test "sound cards clamp sliders and device menu hit testing blocks controls behi
     try std.testing.expect(view.focus.?.eql(.{ .control = .levels }));
     view.moveFocus(false);
     try std.testing.expect(view.focus.?.eql(.{ .control = .close }));
+    for ([_]Control{ .wifi_nav, .network_nav, .sound_nav }) |control| {
+        view.moveFocus(false);
+        try std.testing.expect(view.focus.?.eql(.{ .control = control }));
+        const nav = view.rect(.{ .control = control });
+        try std.testing.expect(view.hit(nav.x + 20, nav.y + 20).?.eql(.{ .control = control }));
+    }
     view.moveFocus(false);
     try std.testing.expect(view.focus.?.eql(.{}));
     view.expanded = 0;
     const option = view.rect(.{ .row = 3, .control = .default });
     try std.testing.expect(view.hit(option.x + 20, option.y + 20).?.eql(.{ .row = 3, .control = .default }));
-    try std.testing.expect(view.hit(10, 150) == null);
+    try std.testing.expect(view.hit(10, 250) == null);
     view.expanded = null;
     view.enabled = false;
     const bounds = view.rect(.{});

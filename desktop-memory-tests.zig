@@ -147,7 +147,9 @@ fn networkLifetime(settle: bool) !void {
 }
 fn soundLifetime(settle: bool) !void {
     var objects = Objects{};
-    const sound = try settings.Sound.create();
+    const shell = settings.Settings.create(.sound);
+    const sound = shell.sound.?;
+    objects.watch(shell.audio_cancel);
     objects.watch(sound.cancel);
     if (sound.service) |service| {
         if (settle) {
@@ -160,9 +162,10 @@ fn soundLifetime(settle: bool) !void {
     sound.close();
     while (!sound.closed) pump();
     const deadline = c.g_get_monotonic_time() + 15_000_000;
-    while (sound.operations != 0 and c.g_get_monotonic_time() < deadline) pump();
-    try std.testing.expect(sound.operations == 0);
-    sound.destroy();
+    while ((sound.operations != 0 or shell.network_operations != 0) and c.g_get_monotonic_time() < deadline) pump();
+    try std.testing.expect(sound.operations == 0 and shell.network_operations == 0);
+    try std.testing.expect(shell.closed);
+    shell.destroy();
     try objects.wait(15_000_000);
 }
 fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) !void {
