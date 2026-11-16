@@ -1,8 +1,5 @@
 vim.opt.relativenumber = true
 vim.opt.clipboard = "unnamedplus"
-if vim.env.TMPDIR and vim.fn.isdirectory(vim.env.TMPDIR) == 0 then
-  vim.env.TMPDIR = nil
-end
 if vim.fn.has("mac") == 1 then
   vim.opt.guifont = "JetBrainsMono Nerd Font:h16"
 else
