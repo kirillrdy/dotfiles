@@ -5,7 +5,6 @@
 //! Value types and layouts accessed by Zig are defined in full.
 //! Normal builds do not parse the toolkit's C headers. test-gtk-abi checks these
 //! declarations against the installed headers when updating dependencies.
-const __root = @This();
 const wayland = @import("desktop-wayland.zig");
 pub const __helpers = @import("std").zig.c_translation.helpers;
 
@@ -630,12 +629,6 @@ pub const struct__GdkRGBA = extern struct {
 };
 
 pub const GdkRGBA = struct__GdkRGBA;
-pub const struct__GdkCursor = extern struct { _opaque: [0]usize = .{} };
-
-pub const GdkCursor = struct__GdkCursor;
-pub const struct__GdkVisual = extern struct { _opaque: [0]usize = .{} };
-
-pub const GdkVisual = struct__GdkVisual;
 pub const struct__GdkDevice = extern struct { _opaque: [0]usize = .{} };
 
 pub const GdkDevice = struct__GdkDevice;
@@ -766,9 +759,6 @@ pub const struct__GtkBorder = extern struct {
 };
 
 pub const GtkBorder = struct__GtkBorder;
-pub const struct__GtkAdjustment = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkAdjustment = struct__GtkAdjustment;
 pub const struct__GtkSettings = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkSettings = struct__GtkSettings;
@@ -825,7 +815,6 @@ pub extern fn gtk_window_set_modal(window: [*c]GtkWindow, modal: gboolean) void;
 pub extern fn gtk_window_list_toplevels() [*c]GList;
 pub extern fn gtk_window_present(window: [*c]GtkWindow) void;
 pub extern fn gtk_window_set_default_size(window: [*c]GtkWindow, width: gint, height: gint) void;
-pub const GtkDialogFlags = c_uint;
 pub const GTK_RESPONSE_DELETE_EVENT: c_int = -4;
 pub const GTK_RESPONSE_OK: c_int = -5;
 pub const GTK_RESPONSE_CANCEL: c_int = -6;

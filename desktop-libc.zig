@@ -69,17 +69,6 @@ pub const ENOENT: c_int = @intCast(@backingInt(std.c.E.NOENT));
 pub const EINTR: c_int = @intCast(@backingInt(std.c.E.INTR));
 pub const __sighandler_t = ?*const fn (c_int) callconv(.c) void;
 pub extern fn signal(__sig: c_int, __handler: __sighandler_t) __sighandler_t;
-pub const speed_t = c_uint;
-
-const union_unnamed_32 = extern union {
-    __ispeed: speed_t,
-    c_ispeed: speed_t,
-};
-const union_unnamed_33 = extern union {
-    __ospeed: speed_t,
-    c_ospeed: speed_t,
-};
-
 pub const nfds_t = c_ulong;
 pub const struct_pollfd = std.c.pollfd;
 pub extern fn poll(__fds: [*c]struct_pollfd, __nfds: nfds_t, __timeout: c_int) c_int;
