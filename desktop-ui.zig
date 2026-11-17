@@ -52,21 +52,6 @@ pub fn parentTo(widget: *c.GtkWidget, allocator: std.mem.Allocator, parent: [:0]
         _ = c.gdk_wayland_window_set_transient_for_exported(window, handle);
     }
 }
-pub fn paintCairo(cr: *c.cairo_t, logical_width: u32, logical_height: u32, scale: u32, context: anytype, comptime drawFn: anytype) !void {
-    const width = @max(1, logical_width) * scale;
-    const height = @max(1, logical_height) * scale;
-    const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)) orelse return error.ImageAllocation;
-    defer c.cairo_surface_destroy(image);
-    if (c.cairo_surface_status(image) != 0) return error.ImageAllocation;
-    const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
-    const buffer = raster.Buffer{ .pixels = pixels[0 .. width * height], .width = width, .height = height };
-    const Return = @typeInfo(@TypeOf(drawFn)).@"fn".return_type.?;
-    if (@typeInfo(Return) == .error_union) try drawFn(context, buffer) else drawFn(context, buffer);
-    c.cairo_surface_mark_dirty(image);
-    c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-    c.cairo_set_source_surface(cr, image, 0, 0);
-    c.cairo_paint(cr);
-}
 pub fn pixbufImage(pixbuf: *c.GdkPixbuf) raster.Image {
     const width: u32 = @intCast(c.gdk_pixbuf_get_width(pixbuf));
     const height: u32 = @intCast(c.gdk_pixbuf_get_height(pixbuf));

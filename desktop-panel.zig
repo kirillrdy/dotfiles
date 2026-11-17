@@ -48,7 +48,7 @@ const Panel = struct {
 
     fn appendGroup(self: *Panel, options: []const widgets.Options) usize {
         for (options) |option| {
-            const module = widgets.initNative(option, self.app.devices, &onModuleRedraw, self);
+            const module = widgets.init(option, self.app.devices, &onModuleRedraw, self);
             self.slots.append(allocator, .{ .module = module, .on_click = option.on_click }) catch @panic("out of memory");
         }
         return options.len;
@@ -319,7 +319,7 @@ const Panel = struct {
             return;
         }
         self.hideTooltip();
-        try widgets.showCodex(m, global_x, global_y);
+        try m.codex_menu.?.show(global_x, global_y);
     }
 
     fn applyOverview(self: *Panel, active: bool, workspace_count: u8, workspace_active: u8) void {

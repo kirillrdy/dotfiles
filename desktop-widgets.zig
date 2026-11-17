@@ -24,8 +24,6 @@ pub const Module = struct {
     dead: c.gboolean = 0,
     monitors: c.gboolean = 0,
     status: c.gboolean = 0,
-    box: [*c]c.GtkWidget = null,
-    root: [*c]c.GtkWidget = null,
     date_controls: ?*date_menu.Controls = null,
     history_subscription: c.guint = 0,
     history_busy: bool = false,
@@ -41,15 +39,13 @@ pub const Module = struct {
     power_pending: c.gboolean = 0,
     codex_menu: ?*CodexPopup = null,
     view: native.View = .{},
-    tip: native.Label = .{},
-    tip_canvas: [*c]c.GtkWidget = null,
     codex: native.Codex = .{},
     tooltip: [*c]u8 = null,
     on_redraw: ?*const fn (?*anyopaque) void = null,
     redraw_context: ?*anyopaque = null,
 };
 
-/// Both panel hosts share this controller and the module's existing Codex view.
+/// Native popup controller using the module's existing Codex view.
 pub const CodexPopup = struct {
     module: *Module,
     popup: popup.Host = undefined,
@@ -88,7 +84,6 @@ pub const CodexPopup = struct {
         self.popup.hide();
         self.module.codex.pressed = false;
         self.module.codex.hovered = false;
-        update_codex_tooltip(self.module);
     }
     fn redraw(self: *CodexPopup) void {
         self.popup.redraw();
@@ -183,28 +178,9 @@ pub fn unref_module(m: *Module) callconv(.c) void {
     if (m.cancel != null) c.g_object_unref(m.cancel);
     if (m.session != null) c.g_object_unref(m.session);
     c.g_free(m.tooltip);
-    m.tip.deinit();
     m.view.deinit();
     m.codex.deinit();
     module_allocator.destroy(m);
-}
-var style_loaded = false;
-pub fn ensureStyle() void {
-    if (style_loaded) return;
-    const screen = c.gdk_screen_get_default() orelse return;
-    const provider = c.gtk_css_provider_new().?;
-    defer c.g_object_unref(provider);
-    const rules =
-        \\window#desktop-panel { background: #000; color: #fff; }
-        \\window#desktop-panel.overview { background: transparent; background-image: none; color: #fafafb; }
-        \\.gnome-panel-module, .gnome-panel-module * { border: none; border-radius: 0; min-height: 0; padding: 0; margin: 0; }
-        \\tooltip, tooltip.background {
-        \\  background: #36363a; color: #fff; border: 1px solid rgba(255,255,255,0.15); border-radius: 12px;
-        \\}
-    ;
-    _ = c.gtk_css_provider_load_from_data(provider, rules, rules.len, null);
-    c.gtk_style_context_add_provider_for_screen(screen, cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    style_loaded = true;
 }
 pub var power_ids: [3][*c]const u8 = [3][*c]const u8{
     "performance",
@@ -272,27 +248,6 @@ fn select_power(m: *Module, id: [*c]const u8) void {
     m.refs += 1;
     c.g_subprocess_communicate_utf8_async(process, null, m.cancel, &power_set_ready, m);
 }
-pub fn power_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
-    _ = widget;
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    if (event.*.button != 1) return 0;
-    if (event.*.type != c.GDK_BUTTON_PRESS) return 1;
-    const controls = m.quick orelse return 0;
-    if (controls.popup.visible) {
-        controls.hide();
-    } else {
-        var x: i32 = 0;
-        var y: i32 = 0;
-        if (c.gtk_widget_get_window(m.root)) |window| _ = c.gdk_window_get_origin(window, &x, &y);
-        x += @divTrunc(c.gtk_widget_get_allocated_width(m.root), 2);
-        y += c.gtk_widget_get_allocated_height(m.root);
-        controls.show(x, y) catch |err| {
-            std.log.err("quick settings popup: {s}", .{@errorName(err)});
-            return 1;
-        };
-    }
-    return 1;
-}
 pub fn update_clock(data: c.gpointer) callconv(.c) c.gboolean {
     const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
     const now: ?*c.GDateTime = c.g_date_time_new_now_local();
@@ -318,32 +273,6 @@ pub fn make_calendar(m: *Module) callconv(.c) void {
         .activate = &history_activate,
         .closed = &calendar_closed,
     }) catch @panic("cannot create date menu");
-}
-pub fn clock_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
-    _ = widget;
-    const m: *Module = @ptrCast(@alignCast(data));
-    if (event.*.button != 1) return 0;
-    // GTK emits an additional press event for double/triple clicks. The
-    // ordinary press already toggled the popup for this physical click.
-    if (event.*.type != c.GDK_BUTTON_PRESS) return 1;
-    const controls = m.date_controls orelse return 0;
-    if (controls.popup.visible) {
-        controls.hide();
-    } else {
-        var x: i32 = 0;
-        var y: i32 = 0;
-        if (c.gtk_widget_get_window(m.root)) |window| _ = c.gdk_window_get_origin(window, &x, &y);
-        x += @divTrunc(c.gtk_widget_get_allocated_width(m.root), 2);
-        y += c.gtk_widget_get_allocated_height(m.root);
-        history_reload(m);
-        controls.reset();
-        controls.show(x, y) catch |err| {
-            std.log.err("date popup: {s}", .{@errorName(err)});
-            return 1;
-        };
-        history_call(m, "CalendarOpen", c.g_variant_new("(b)", @as(c_int, 1)));
-    }
-    return 1;
 }
 pub fn historyOpen(m: *Module, open: bool) void {
     if (open) history_reload(m);
@@ -401,39 +330,6 @@ fn populate_notifications(m: *Module, reply: ?*c.GVariant) void {
     if (raw == null) return;
     if (m.date_controls) |controls| controls.load(std.mem.span(raw));
 }
-pub fn update_codex_tooltip(m: *Module) callconv(.c) void {
-    if (m.dead != 0 or m.box == null) return;
-    const hide = m.codex_menu != null and m.codex_menu.?.popup.visible;
-    c.gtk_widget_set_tooltip_text(m.box, if (hide or m.tooltip == null or m.tooltip.* == 0) null else m.tooltip);
-    if (hide) c.gtk_widget_trigger_tooltip_query(m.box);
-}
-pub fn showCodex(m: *Module, global_x: i32, global_y: i32) !void {
-    if (m.box != null) {
-        c.gtk_widget_set_tooltip_text(m.box, null);
-        c.gtk_widget_trigger_tooltip_query(m.box);
-    }
-    try m.codex_menu.?.show(global_x, global_y);
-    update_codex_tooltip(m);
-}
-pub fn codex_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
-    _ = widget;
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    if (event.*.button != 1) return 0;
-    if (event.*.type != c.GDK_BUTTON_PRESS) return 1;
-    const menu = m.codex_menu orelse return 0;
-    if (menu.popup.visible) {
-        menu.hide();
-    } else {
-        var x: i32 = 0;
-        var y: i32 = 0;
-        if (c.gtk_widget_get_window(m.root)) |window| _ = c.gdk_window_get_origin(window, &x, &y);
-        x += @divTrunc(c.gtk_widget_get_allocated_width(m.root), 2);
-        y += c.gtk_widget_get_allocated_height(m.root);
-        showCodex(m, x, y) catch |err| std.log.err("Codex popup: {s}", .{@errorName(err)});
-    }
-    update_codex_tooltip(m);
-    return 1;
-}
 pub fn codex_refresh(m: *Module) void {
     if (m.dead != 0 or !m.codex.enabled or !std.mem.eql(u8, std.mem.span(m.source), "codex")) return;
     m.codex.enabled = false;
@@ -444,7 +340,6 @@ pub fn codex_refresh(m: *Module) void {
 }
 pub fn make_codex_menu(m: *Module) callconv(.c) void {
     m.codex_menu = CodexPopup.create(m) catch @panic("cannot create Codex popup");
-    if (m.root != null) connect(m.root, "button-press-event", &codex_click, m);
 }
 pub fn update_codex(m: *Module, content: panel_data.Update) void {
     for (0..2) |i| {
@@ -508,7 +403,6 @@ pub fn update(m: *Module, value: panel_data.Update) void {
     } else if (value.items) |items| update_items(m, items);
     c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
     m.tooltip = c.g_strndup(value.tooltip.ptr, value.tooltip.len);
-    update_codex_tooltip(m);
     if (m.view.codex) update_codex(m, value);
     if (changed) resize(m);
 }
@@ -559,9 +453,6 @@ fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) c
     } else if (connection != null) c.g_object_unref(connection);
     unref_module(m);
 }
-pub fn init(root: *c.GtkWidget, options: Options) *Module {
-    return initWithDevices(root, options, null);
-}
 fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.zig").Service) void {
     if (m.monitors != 0) {
         resize(m);
@@ -573,7 +464,6 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
         controls.profile_context = m;
         controls.profile_selected = &native_profile_selected;
         update_power(m);
-        if (m.root != null) _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&power_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
         m.power_timer = c.g_timeout_add_seconds(2, &refresh_power, m);
         m.refs += 1;
         c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
@@ -581,14 +471,13 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
         make_calendar(m);
         m.refs += 1;
         c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
-        if (m.root != null) _ = c.g_signal_connect_data(@as(c.gpointer, @ptrCast(m.root)), "button-press-event", @as(c.GCallback, @ptrCast(@alignCast(&clock_click))), @as(c.gpointer, @ptrCast(m)), null, 0);
         _ = update_clock(@as(c.gpointer, @ptrCast(m)));
         m.clock_timer = c.g_timeout_add_seconds(1, &update_clock, @as(c.gpointer, @ptrCast(m)));
     }
     resize(m);
     m.source = options.source.ptr;
 }
-pub fn initNative(options: Options, devices: ?*@import("desktop-devices.zig").Service, on_redraw: ?*const fn (?*anyopaque) void, redraw_context: ?*anyopaque) *Module {
+pub fn init(options: Options, devices: ?*@import("desktop-devices.zig").Service, on_redraw: ?*const fn (?*anyopaque) void, redraw_context: ?*anyopaque) *Module {
     const m = module_allocator.create(Module) catch @panic("out of memory");
     m.* = .{
         .cancel = c.g_cancellable_new(),
@@ -599,39 +488,6 @@ pub fn initNative(options: Options, devices: ?*@import("desktop-devices.zig").Se
         .redraw_context = redraw_context,
     };
     initCommon(m, options, devices);
-    return m;
-}
-pub fn initWithDevices(root: *c.GtkWidget, options: Options, devices: ?*@import("desktop-devices.zig").Service) *Module {
-    ensureStyle();
-    const m = module_allocator.create(Module) catch @panic("out of memory");
-    m.* = .{};
-    m.cancel = c.g_cancellable_new();
-    const kind = options.kind.ptr;
-    const name = options.name.ptr;
-    m.monitors = @intFromBool(c.g_strcmp0(kind, "monitors") == 0);
-    m.status = @intFromBool(c.g_strcmp0(name, "gnome-status") == 0);
-    m.view = .{ .monitors = m.monitors != 0, .status = m.status != 0, .activities = std.mem.eql(u8, options.kind, "activities"), .codex = std.mem.eql(u8, options.name, "gnome-codex"), .disk = std.mem.eql(u8, options.name, "gnome-disk") };
-    m.box = c.gtk_drawing_area_new();
-    m.root = root;
-    m.tip_canvas = c.gtk_drawing_area_new();
-    _ = c.g_object_ref_sink(m.tip_canvas);
-    connect(m.tip_canvas, "draw", &draw_tooltip, m);
-    connect(m.box, "query-tooltip", &query_tooltip, m);
-    if (options.name.len != 0) c.gtk_widget_set_name(root, name);
-    // The drawing area owns padding and hover rendering, independent of CSS borders.
-    c.gtk_container_add(cast(c.GtkContainer, root), m.box);
-    c.gtk_widget_set_can_focus(root, 1);
-    c.gtk_widget_add_events(root, c.GDK_BUTTON_PRESS_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_KEY_PRESS_MASK | c.GDK_FOCUS_CHANGE_MASK);
-    connect(m.box, "draw", &draw_panel, m);
-    connect(m.box, "notify::scale-factor", &panel_scale, m);
-    connect(root, "motion-notify-event", &panel_motion, m);
-    connect(root, "leave-notify-event", &panel_leave, m);
-    connect(root, "button-press-event", &panel_press, m);
-    connect(root, "key-press-event", &panel_key, m);
-    connect(root, "focus-in-event", &panel_focus_in, m);
-    connect(root, "focus-out-event", &panel_focus_out, m);
-    initCommon(m, options, devices);
-    c.gtk_widget_show_all(m.box);
     return m;
 }
 pub fn deinit(m: *Module) void {
@@ -653,154 +509,24 @@ pub fn deinit(m: *Module) void {
     m.codex_menu = null;
     if (m.quick) |controls| controls.deinit();
     if (m.power_timer != 0) _ = c.g_source_remove(m.power_timer);
-    if (m.root != null) _ = c.g_signal_handlers_disconnect_matched(@as(c.gpointer, @ptrCast(m.root)), c.G_SIGNAL_MATCH_DATA, 0, @as(c.GQuark, 0), null, @as(?*anyopaque, @ptrFromInt(0)), @as(c.gpointer, @ptrCast(m)));
     c.g_cancellable_cancel(m.cancel);
-    if (m.tip_canvas != null) {
-        _ = c.g_signal_handlers_disconnect_matched(m.tip_canvas, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, m);
-        c.gtk_widget_destroy(m.tip_canvas);
-        c.g_object_unref(m.tip_canvas);
-    }
-    if (m.box != null) _ = c.g_signal_handlers_disconnect_matched(m.box, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, m);
     unref_module(m);
 }
 
-/// Session callback for built-in collectors; invoked only on the GTK thread.
+/// Session callback for built-in collectors; invoked on the GLib thread.
 pub var refresh_source: ?*const fn ([]const u8) void = null;
 
-const connect = c.__zig.connect;
 fn resize(m: *Module) void {
-    if (m.box == null) {
-        m.view.prepare(@max(1, m.view.scale), 32) catch |err| {
-            std.log.err("panel layout: {s}", .{@errorName(err)});
-            return;
-        };
-        if (m.on_redraw) |cb| cb(m.redraw_context);
-        return;
-    }
-    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(m.box)));
-    m.view.prepare(scale, @floatFromInt(@max(1, c.gtk_widget_get_allocated_height(m.box)))) catch |err| {
+    m.view.prepare(@max(1, m.view.scale), 32) catch |err| {
         std.log.err("panel layout: {s}", .{@errorName(err)});
         return;
     };
-    c.gtk_widget_set_size_request(m.box, @intCast(m.view.width), 1);
-    c.gtk_widget_queue_draw(m.box);
+    if (m.on_redraw) |cb| cb(m.redraw_context);
 }
 pub fn setOverviewState(m: *Module, active: bool, workspace_count: u8, workspace_active: u8) void {
-    const resized = m.view.activities and m.view.workspace_count != workspace_count;
     const changed = m.view.overview != active or m.view.workspace_count != workspace_count or m.view.workspace_active != workspace_active;
     m.view.overview = active;
     m.view.workspace_count = workspace_count;
     m.view.workspace_active = workspace_active;
-    if (m.box == null) {
-        if ((resized or changed)) if (m.on_redraw) |cb| cb(m.redraw_context);
-        return;
-    }
-    if (resized) resize(m) else if (changed) c.gtk_widget_queue_draw(m.box);
-}
-fn draw_panel(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
-    const m = cast(Module, ptr);
-    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
-    const width: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)));
-    const height: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)));
-    m.view.prepare(scale, @floatFromInt(height)) catch |err| {
-        std.log.err("panel paint: {s}", .{@errorName(err)});
-        return 1;
-    };
-    c.__zig.paintCairo(cr, width, height, scale, &m.view, native.View.paint) catch |err| std.log.err("panel paint: {s}", .{@errorName(err)});
-    return 1;
-}
-fn panel_motion(_: *c.GtkWidget, event: *c.GdkEventMotion, ptr: c.gpointer) callconv(.c) c.gboolean {
-    const m = cast(Module, ptr);
-    m.view.hovered = true;
-    c.gtk_widget_queue_draw(m.box);
-    var tooltip = m.tooltip;
-    if (m.view.monitors) {
-        const index: usize = @intFromFloat(@max(0, event.x - 18) / 118);
-        if (index < 3) tooltip = @constCast(m.view.graphs[index].tooltip.value.ptr);
-    } else if (m.codex_menu == null) {
-        if (m.view.hit(event.x, event.y)) |index| tooltip = @constCast(m.view.items[index].tooltip.value.ptr);
-    }
-    if (m.codex_menu != null and m.codex_menu.?.popup.visible) tooltip = null;
-    c.gtk_widget_set_tooltip_text(m.box, tooltip);
-    return 0;
-}
-fn panel_leave(_: *c.GtkWidget, _: *c.GdkEventCrossing, ptr: c.gpointer) callconv(.c) c.gboolean {
-    const m = cast(Module, ptr);
-    m.view.hovered = false;
-    c.gtk_widget_queue_draw(m.box);
-    return 0;
-}
-fn panel_focus_in(_: *c.GtkWidget, _: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
-    const m = cast(Module, ptr);
-    m.view.focus = true;
-    c.gtk_widget_queue_draw(m.box);
-    return 0;
-}
-fn panel_focus_out(_: *c.GtkWidget, _: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
-    const m = cast(Module, ptr);
-    m.view.focus = false;
-    c.gtk_widget_queue_draw(m.box);
-    return 0;
-}
-fn panel_press(_: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
-    const m = cast(Module, ptr);
-    if (event.button != 1 or m.status != 0 or m.codex_menu != null or m.date_controls != null) return 0;
-    const index = m.view.hit(event.x, event.y) orelse return 0;
-    const command = m.view.items[index].command.value;
-    if (command.len == 0) return 0;
-    var err: ?*c.GError = null;
-    _ = c.g_spawn_command_line_async(command, &err);
-    c.g_clear_error(&err);
-    return 1;
-}
-fn panel_key(widget: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
-    var symbol: c.guint = 0;
-    _ = c.gdk_event_get_keyval(event, &symbol);
-    if (symbol != 0xff0d and symbol != 0xff8d and symbol != 0x20) return 0;
-    var click = std.mem.zeroes(c.GdkEventButton);
-    click.type = c.GDK_BUTTON_PRESS;
-    click.button = 1;
-    var handled: c.gboolean = 0;
-    c.g_signal_emit_by_name(widget, "button-press-event", &click, &handled);
-    _ = ptr;
-    return handled;
-}
-fn query_tooltip(_: *c.GtkWidget, x: c_int, y: c_int, keyboard: c.gboolean, tooltip: ?*c.GtkTooltip, ptr: c.gpointer) callconv(.c) c.gboolean {
-    const m = cast(Module, ptr);
-    if (m.codex_menu != null and m.codex_menu.?.popup.visible) return 0;
-    var value: [:0]const u8 = if (m.tooltip != null) std.mem.span(m.tooltip) else "";
-    if (keyboard == 0) {
-        if (m.monitors != 0) {
-            const index: usize = @intCast(@max(0, x - 18));
-            if (index / 118 < 3) value = m.view.graphs[index / 118].tooltip.value;
-        } else if (!m.view.codex) {
-            if (m.view.hit(@floatFromInt(x), @floatFromInt(y))) |index| value = m.view.items[index].tooltip.value;
-        }
-    }
-    if (value.len == 0) return 0;
-    m.tip.set(value);
-    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(m.box)));
-    m.tip.prepare(&m.view.renderer, scale, 13.333, false, null, false) catch return 0;
-    if (m.tip.width() > 480) m.tip.prepare(&m.view.renderer, scale, 13.333, false, 480, false) catch return 0;
-    c.gtk_widget_set_size_request(m.tip_canvas, @intFromFloat(m.tip.width() + 16), @intFromFloat(m.tip.height() + 16));
-    c.gtk_widget_show(m.tip_canvas);
-    c.gtk_tooltip_set_custom(tooltip, m.tip_canvas);
-    c.gtk_widget_queue_draw(m.tip_canvas);
-    return 1;
-}
-fn paintTooltip(m: *Module, buffer: @import("desktop-raster.zig").Buffer) void {
-    @memset(buffer.pixels, 0);
-    m.tip.paint(buffer, 8, 8, .{ .red = 1, .green = 1, .blue = 1 });
-}
-fn draw_tooltip(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
-    const m = cast(Module, ptr);
-    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
-    const limit = m.tip.limit;
-    m.tip.prepare(&m.view.renderer, scale, 13.333, false, limit, false) catch return 1;
-    c.__zig.paintCairo(cr, @intCast(@max(1, c.gtk_widget_get_allocated_width(widget))), @intCast(@max(1, c.gtk_widget_get_allocated_height(widget))), scale, m, paintTooltip) catch {};
-    return 1;
-}
-
-fn panel_scale(_: *c.GObject, _: *c.GParamSpec, ptr: c.gpointer) callconv(.c) void {
-    resize(cast(Module, ptr));
+    if (changed) if (m.on_redraw) |cb| cb(m.redraw_context);
 }

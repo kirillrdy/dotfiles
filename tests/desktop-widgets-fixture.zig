@@ -1,9 +1,8 @@
-//! GTK panel and native popup checks on a private Wayland display.
+//! Native panel modules and popup checks on a private Wayland display.
 const std = @import("std");
 const p = @import("desktop").widgets;
 const c = p.c;
 const assert = std.debug.assert;
-const cast = c.__zig.cast;
 fn eq(a: [*c]const u8, b: [:0]const u8) void {
     assert(std.mem.eql(u8, std.mem.span(a), b));
 }
@@ -14,25 +13,10 @@ fn pumpEvents(milliseconds: i64) void {
         c.g_usleep(1000);
     }
 }
-fn tooltipVisible() bool {
-    const windows = c.gtk_window_list_toplevels();
-    defer c.g_list_free(windows);
-    var node = windows;
-    while (node != null) : (node = node.*.next) {
-        if (c.g_strcmp0(c.g_type_name_from_instance(cast(c.GTypeInstance, node.*.data)), "GtkTooltipWindow") == 0 and
-            c.gtk_widget_get_visible(cast(c.GtkWidget, node.*.data)) != 0) return true;
-    }
-    return false;
-}
 var refresh_count: usize = 0;
 fn refresh(kind: []const u8) void {
     assert(std.mem.eql(u8, kind, "codex"));
     refresh_count += 1;
-}
-fn root() *c.GtkWidget {
-    const widget = c.gtk_event_box_new();
-    _ = c.g_object_ref_sink(widget);
-    return widget;
 }
 fn clickControl(controls: *@import("desktop").quick.Controls, target: @import("desktop").quick.Target) void {
     const rect = controls.view.item(target).?.rect;
@@ -80,15 +64,10 @@ pub fn main(process_init: std.process.Init) !void {
             }
         }
     }
-    c.g_object_set(c.gtk_settings_get_default(), "gtk-enable-animations", @as(c_int, 0), @as(?*anyopaque, null));
     const executable = try process_init.arena.allocator().dupeSentinel(u8, args[0], 0);
     _ = c.g_setenv("DESKTOP_POWER_PKEXEC", executable.ptr, 1);
     _ = c.g_setenv("DESKTOP_POWER_HELPER", "--power-fixture", 1);
-    const status_window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
-    c.gtk_widget_set_name(status_window, "desktop-panel");
-    const status_root = root();
-    c.gtk_container_add(cast(c.GtkContainer, status_window), status_root);
-    const status = p.init(status_root, .{ .name = "gnome-status" });
+    const status = p.init(.{ .name = "gnome-status" }, null, null, null);
     assert(status.quick != null);
     const initial_network_title = status.quick.?.view.model.network_title;
     p.update(status, .{ .items = &.{ .{ .icon = "audio-volume-high-symbolic" }, .{ .icon = "battery-level-80-symbolic" } } });
@@ -96,22 +75,13 @@ pub fn main(process_init: std.process.Init) !void {
     p.update(status, .{ .items = &.{.{ .icon = "network-wired-symbolic", .tooltip = "Wired network" }} });
     // Collector tooltips must not overwrite the quick-settings connection name.
     assert(std.mem.eql(u8, status.quick.?.view.model.network_title.slice(), initial_network_title.slice()));
-    c.gtk_widget_show_all(status_window);
-    pumpEvents(50);
-    // The panel's CSS reset cannot alter the native tile geometry.
-    var border: c.GtkBorder = undefined;
-    c.gtk_style_context_get_border(c.gtk_widget_get_style_context(status_root), c.GTK_STATE_FLAG_NORMAL, &border);
-    assert(border.top == 0 and border.left == 0);
     assert(status.quick.?.view.item(.wifi).?.rect.height == 48);
     const controls = status.quick.?;
     // A second panel borrows the same services and detaches independently.
-    const peer_root = root();
-    const peer = p.initWithDevices(peer_root, .{ .name = "gnome-status" }, controls.devices);
+    const peer = p.init(.{ .name = "gnome-status" }, controls.devices, null, null);
     assert(peer.quick.?.devices == controls.devices);
     assert(controls.devices.subscribers.items.len == 2);
     p.deinit(peer);
-    c.gtk_widget_destroy(peer_root);
-    c.g_object_unref(peer_root);
     assert(controls.devices.subscribers.items.len == 1);
     p.apply_power_state(status, .{});
     assert(std.mem.eql(u8, controls.view.model.message.slice(), "Power profiles unavailable"));
@@ -192,34 +162,14 @@ pub fn main(process_init: std.process.Init) !void {
     clickControl(controls, .profile0);
     p.deinit(status);
     pumpEvents(500);
-    c.gtk_widget_destroy(status_window);
-    c.g_object_unref(status_root);
 
-    const codex_root = root();
-    const usage = p.init(codex_root, .{ .name = "gnome-codex", .source = "codex" });
+    const usage = p.init(.{ .name = "gnome-codex", .source = "codex" }, null, null, null);
     p.refresh_source = &refresh;
     defer p.refresh_source = null;
     const codex_menu = usage.codex_menu.?;
     assert(codex_menu.module == usage);
-    const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
-    c.gtk_container_add(cast(c.GtkContainer, window), codex_root);
-    c.gtk_widget_show_all(window);
-    var click = std.mem.zeroes(c.GdkEventButton);
-    click.type = c.GDK_BUTTON_PRESS;
-    click.button = 1;
-    var handled: c.gboolean = 0;
-    c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
-    assert(handled != 0 and codex_menu.popup.visible);
-    c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
-    assert(!codex_menu.popup.visible);
-    var open_key = std.mem.zeroes(extern struct { event_type: c_int, window: ?*anyopaque, send_event: i8, time: u32, state: c_uint, keyval: c_uint });
-    open_key.event_type = 8; // GDK_KEY_PRESS
-    open_key.keyval = 0xff0d;
-    c.g_signal_emit_by_name(codex_root, "key-press-event", &open_key, &handled);
-    assert(handled != 0 and codex_menu.popup.visible);
-    codex_menu.hide();
     p.update(usage, .{});
-    try p.showCodex(usage, 320, 32);
+    try codex_menu.show(320, 32);
     pumpEvents(50);
     const refresh_rect = usage.codex.refreshRect();
     const codex_surface = codex_menu.popup.surface.?;
@@ -241,29 +191,11 @@ pub fn main(process_init: std.process.Init) !void {
     assert(refresh_count == 2 and !usage.codex.enabled);
     p.update(usage, .{ .windows = &.{ .{ .percent = 54, .reset = "Resets in 2h 15m" }, .{ .percent = 93, .reset = "Resets in 4d 8h" } }, .tooltip = "5h: 54% remaining" });
     codex_menu.hide();
-    eq(c.gtk_widget_get_tooltip_text(usage.box), "5h: 54% remaining");
-    pumpEvents(50);
-    var x: c.gint = 0;
-    var y: c.gint = 0;
-    _ = c.gdk_window_get_origin(c.gtk_widget_get_window(codex_root), &x, &y);
-    const pointer = c.gdk_seat_get_pointer(c.gdk_display_get_default_seat(c.gdk_display_get_default()));
-    c.gdk_device_warp(pointer, c.gdk_screen_get_default(), x + @divTrunc(c.gtk_widget_get_allocated_width(codex_root), 2), y + @divTrunc(c.gtk_widget_get_allocated_height(codex_root), 2));
-    c.gtk_widget_trigger_tooltip_query(usage.box);
-    pumpEvents(750);
-    if (tooltipVisible()) {
-        c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
-        assert(handled != 0 and codex_menu.popup.visible);
-        assert(!tooltipVisible());
-    } else {
-        c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
-        assert(handled != 0 and codex_menu.popup.visible);
-    }
-    assert(c.gtk_widget_get_tooltip_text(usage.box) == null);
+    eq(usage.tooltip, "5h: 54% remaining");
+    try codex_menu.show(320, 32);
     p.update(usage, .{ .items = &.{.{ .text = "54%" }}, .tooltip = "5h: 54% remaining", .windows = &.{ .{ .percent = 54, .reset = "Resets in 2h 15m" }, .{ .percent = 93, .reset = "Resets in 4d 8h" } }, .checked = "Checked: 12:00:00" });
-    assert(c.gtk_widget_get_tooltip_text(usage.box) == null);
-    c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
-    assert(!codex_menu.popup.visible);
-    eq(c.gtk_widget_get_tooltip_text(usage.box), "5h: 54% remaining");
+    assert(codex_menu.popup.visible);
+    codex_menu.hide();
     eq(usage.codex.percent[0].value, "54.0% remaining");
     eq(usage.codex.percent[1].value, "93.0% remaining");
     assert(usage.codex.values[0] == 54);
@@ -273,21 +205,14 @@ pub fn main(process_init: std.process.Init) !void {
     p.update(usage, .{ .items = &.{.{ .text = "—" }}, .windows = &.{}, .@"error" = "Sign in with codex login" });
     eq(usage.codex.percent[0].value, "—");
     assert(usage.codex.values[0] == 0 and usage.codex.error_label.value.len > 0);
-    // Native modules use the same controller and cancel deferred dismissal.
-    const native_usage = p.initNative(.{ .name = "gnome-codex", .source = "codex" }, null, null, null);
-    const native_menu = native_usage.codex_menu.?;
-    try native_menu.show(320, 32);
-    assert(native_menu.popup.visible and native_usage.box == null);
-    assert(native_menu.handleKey(0xff1b));
-    assert(native_menu.popup.close_idle != 0);
-    p.deinit(native_usage);
-    pumpEvents(50);
+    // Disposal must cancel a dismissal queued from native keyboard input.
+    try codex_menu.show(320, 32);
+    assert(codex_menu.handleKey(0xff1b));
+    assert(codex_menu.popup.close_idle != 0);
     p.deinit(usage);
-    c.gtk_widget_destroy(window);
-    c.g_object_unref(codex_root);
+    pumpEvents(50);
 
-    const clock_root = root();
-    const clock = p.init(clock_root, .{ .kind = "clock" });
+    const clock = p.init(.{ .kind = "clock" }, null, null, null);
     const date = &clock.date_controls.?.view;
     date.setDate(c.g_date_time_new_local(2024, 2, 29, 12, 0, 0).?);
     try date.prepare(1);
@@ -301,11 +226,8 @@ pub fn main(process_init: std.process.Init) !void {
     assert(c.g_date_time_get_year(date.selected) == c.g_date_time_get_year(now) and c.g_date_time_get_day_of_year(date.selected) == c.g_date_time_get_day_of_year(now));
     c.g_date_time_unref(now);
     p.deinit(clock);
-    c.gtk_widget_destroy(clock_root);
-    c.g_object_unref(clock_root);
     // Exercise graph history rollover and the native draw callback after migration.
-    const graph_root = root();
-    const monitors = p.init(graph_root, .{ .kind = "monitors" });
+    const monitors = p.init(.{ .kind = "monitors" }, null, null, null);
     for (0..130) |i| {
         p.update(monitors, .{ .monitors = &.{.{ .sequence = @intCast(i), .values = &.{@floatFromInt(i)}, .colors = &.{"#0072b3"}, .maximum = 100 }} });
     }
@@ -315,8 +237,7 @@ pub fn main(process_init: std.process.Init) !void {
     monitors.view.graphs[0].paint(.{ .target = .{ .pixels = &pixels, .width = 100, .height = 32 }, .scale = 1 }, 0, 100, 32);
     assert(pixels[pixels.len - 1] != 0);
     // Verify #ffffff16 background and clipped polygon bounds on a step graph.
-    const empty_root = root();
-    const empty_graph = p.init(empty_root, .{ .kind = "monitors" });
+    const empty_graph = p.init(.{ .kind = "monitors" }, null, null, null);
     var step_pixels: [110 * 32]u32 = @splat(0);
     empty_graph.view.graphs[0].paint(.{ .target = .{ .pixels = &step_pixels, .width = 110, .height = 32 }, .scale = 1 }, 5, 100, 32);
     assert(step_pixels[4] == 0 and step_pixels[5] == 0x16161616 and step_pixels[104] == 0x16161616 and step_pixels[105] == 0);
@@ -329,10 +250,6 @@ pub fn main(process_init: std.process.Init) !void {
     assert(step_pixels[31 * 110 + 103] == 0xff0072b3);
     assert(step_pixels[31 * 110 + 101] == 0x16161616);
     p.deinit(empty_graph);
-    c.gtk_widget_destroy(empty_root);
-    c.g_object_unref(empty_root);
     p.deinit(monitors);
-    c.gtk_widget_destroy(graph_root);
-    c.g_object_unref(graph_root);
     std.debug.print("desktop-widgets: power controls, quick settings, calendar, codex and monitors graph passed\n", .{});
 }

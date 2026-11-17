@@ -24,6 +24,7 @@ env = dict(os.environ, WB_PANEL_DEMO="1", GSETTINGS_BACKEND="memory",
            XDG_STATE_HOME=str(root / "state"), G_DEBUG="fatal-criticals",
            DBUS_SYSTEM_BUS_ADDRESS="unix:path=" + str(root / "no-system-bus"))
 log = root / "shell.log"
+current_scale = 1
 
 
 def run(*args):
@@ -37,12 +38,11 @@ def capture():
 
 
 def visible():
-    # Only the Codex card uses this background in the minimal panel session.
-    return any(row.count(bytes([54, 54, 58])) > 60 for row in capture()[2])
+    return at_scale(current_scale)
 
 
-def at_scale(scale):
-    width, height, rows = capture()
+def at_scale(scale, frame=None):
+    width, height, rows = frame if frame is not None else capture()
     zoom = min(1, (width / scale - 16) / 340, (height / scale - 16) / 280)
     left = math.floor(width / scale - 340 * zoom - 8) * scale
     top = math.floor(min(32, max(8, height / scale - 280 * zoom - 8))) * scale
@@ -51,6 +51,12 @@ def at_scale(scale):
     outside = int(left - 20 * scale)
     return (rows[y][x * 3:x * 3 + 3] == bytes([54, 54, 58]) and
             rows[y][outside * 3:outside * 3 + 3] == bytes([20, 40, 80]))
+
+
+def tooltip_visible():
+    frame = capture()
+    return (not at_scale(current_scale, frame) and
+            any(row.count(bytes([54, 54, 58])) > 60 for row in frame[2][33:120]))
 
 
 def wait_for(predicate, description):
@@ -73,6 +79,8 @@ try:
              "Codex panel label")
     width, height, _ = capture()
     pointer.command(f"size {width} {height}")
+    pointer.move(width - 30, 16)
+    wait_for(tooltip_visible, "native panel tooltip on hover")
     pointer.click(width - 30, 16)
     wait_for(visible, "native Codex popup")
     # The right-edge anchor clamps the 340-pixel card inside the output.
@@ -87,10 +95,13 @@ try:
     assert visible(), "keyboard refresh closed the popup"
     pointer.click(width - 30, 16)
     wait_for(lambda: not visible(), "outside dismissal over the panel")
+    pointer.move(width - 29, 16)
+    wait_for(tooltip_visible, "panel tooltip after hovering again")
     pointer.click(width - 30, 16)
     wait_for(visible, "reopening after outside dismissal")
     # Resize an open popup, including a tiny logical output requiring zoom.
     for scale in (2, 4, 1):
+        current_scale = scale
         run(str(bin_dir / "desktop-zig"), "output", "--output", "HEADLESS-1", "--scale", str(scale))
         wait_for(lambda: at_scale(scale), f"popup geometry at scale {scale}")
     pointer.click(1, height - 1)
@@ -109,7 +120,7 @@ try:
     shell.terminate()
     assert shell.wait(timeout=10) == 0, log.read_text()[-8000:]
     assert not any(text in log.read_text() for text in ("CRITICAL", "panic:", "Segmentation")), log.read_text()[-8000:]
-    print("PASS native Codex refresh, keyboard, reopening, outside dismissal, scaling, output removal and teardown")
+    print("PASS native panel tooltips, Codex refresh, keyboard, reopening, dismissal, scaling, output removal and teardown")
 finally:
     if shell.poll() is None:
         shell.terminate()

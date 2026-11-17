@@ -170,12 +170,7 @@ fn soundLifetime(settle: bool) !void {
 }
 fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) !void {
     var objects = Objects{};
-    const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL).?;
-    objects.watch(window);
-    const root = c.gtk_event_box_new().?;
-    objects.watch(root);
-    c.gtk_container_add(@ptrCast(window), root);
-    const module = widgets.init(root, .{ .name = name, .kind = kind, .source = source });
+    const module = widgets.init(.{ .name = name, .kind = kind, .source = source }, null, null, null);
     objects.watch(module.cancel);
     if (module.quick) |controls| {
         objects.watch(controls.cancel);
@@ -218,7 +213,6 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
     widgets.update(module, .{ .items = &.{.{ .icon = "audio-volume-high-symbolic", .text = "old", .command = "true" }}, .tooltip = "old" });
     widgets.update(module, .{ .items = &.{.{ .text = "new" }}, .tooltip = "new", .windows = &.{} });
     widgets.deinit(module);
-    c.gtk_widget_destroy(window);
     try objects.wait(15_000_000);
 }
 

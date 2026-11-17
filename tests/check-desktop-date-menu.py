@@ -1,10 +1,12 @@
 """Real pointer/keyboard tests for the native date popup on a private display/bus."""
+import json
 import os
 from pathlib import Path
 import subprocess as sp
 import sys
 import tempfile
 import time
+sys.dont_write_bytecode = True
 from gi.repository import GLib
 from session_fixture import NotificationsClient, VirtualPointer, read_png, terminate_processes, wait_until
 
@@ -74,15 +76,26 @@ def card_ready():
     return rows[top + 108][(left + 100) * 3:(left + 100) * 3 + 3] == bytes([84, 84, 90])
 
 
+(root / "wallpaper.ppm").write_bytes(b"P6\n2 2\n255\n" + bytes([20, 40, 80]) * 4)
+(root / "panel.json").write_text(json.dumps({
+    "left": [], "center": [{"kind": "clock"}], "right": [],
+}))
+env = dict(os.environ, G_DEBUG="fatal-criticals", WB_PANEL_DEMO="1",
+           GSETTINGS_BACKEND="memory", XDG_CONFIG_HOME=str(root / "config"),
+           XDG_CACHE_HOME=str(root / "cache"), XDG_STATE_HOME=str(root / "state"),
+           DBUS_SYSTEM_BUS_ADDRESS="unix:path=" + str(root / "no-system-bus"))
 log = root / "service.log"
 keyboard = sp.Popen(["wtype", "-s", "120000"])
 time.sleep(.1)
 with log.open("w") as output:
-    service = sp.Popen([str(bin_dir / "desktop-notifications-fixture"), "date-menu"],
-        stdout=output, stderr=sp.STDOUT, env=dict(os.environ, G_DEBUG="fatal-criticals"))
+    service = sp.Popen([str(bin_dir / "desktop-zig"), "serve", str(root / "wallpaper.ppm"),
+                        str(root / "panel.json")], stdout=output, stderr=sp.STDOUT, env=env)
 pointer = VirtualPointer(bin_dir / "desktop-pointer-fixture", delay=0.07)
 try:
     wait_for(client.owned, "Notification owner")
+    width, height, _ = capture("panel")
+    pointer_command(f"size {width} {height}")
+    pointer.click(width // 2, 8)
     wait_for(lambda: popup_origin(capture("opening")[2]) is not None, "Native popup mapping")
     width, height, rows = capture("empty")
     left, top = popup_origin(rows)
@@ -105,11 +118,13 @@ try:
     wait_for(card_ready, "History notification rendering")
     click(366, 40)
     move(0, height - 1)
-    expanded = capture("expanded")[2]
     card_color = bytes([84, 84, 90])
-    bottom = max(y - top for y, row in enumerate(expanded[top:top + 360], top)
-        if row[(left + 20) * 3:(left + 420) * 3].count(card_color) > 100)
-    assert bottom > 200, bottom
+    def card_bottom():
+        rows = capture("expanded")[2]
+        return max(y - top for y, row in enumerate(rows[top:top + 360], top)
+            if row[(left + 20) * 3:(left + 420) * 3].count(card_color) > 100)
+    wait_for(lambda: card_bottom() > 200, "Expanded history card frame")
+    bottom = card_bottom()
     click(60, bottom - 26)
     wait_for(lambda: ("ActionInvoked", (identifier, "reply")) in signals, "Named history action")
     assert len(history()) == 1, "Resident action must retain the notification"
@@ -156,8 +171,7 @@ try:
     capture("cleared")
     sp.run(["wtype", "-k", "Escape"], check=True, timeout=5)
     wait_for(lambda: popup_origin(capture("hidden")[2]) is None, "Calendar dismissal")
-    # The fixture clock fills a tiled window. Its top edge stays outside the
-    # popup, matching the clock's position above the popup in the real panel.
+    # Reopen through the production clock above the popup.
     clock_x, clock_y = width // 2, 8
     pointer.click(clock_x, clock_y)
     wait_for(lambda: popup_origin(capture("reopened")[2]) is not None, "Calendar reopening")
