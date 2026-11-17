@@ -189,8 +189,8 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         for (0..2) |cycle| {
             try controls.show(320, 32);
             const deadline = c.g_get_monotonic_time() + 5_000_000;
-            while (!controls.surface.?.configured and c.g_get_monotonic_time() < deadline) pump();
-            try std.testing.expect(controls.surface.?.configured);
+            while (!controls.popup.surface.?.configured and c.g_get_monotonic_time() < deadline) pump();
+            try std.testing.expect(controls.popup.surface.?.configured);
             if (cycle == 0) controls.hide() else _ = controls.handleKey(0xff1b, 0);
         }
     }
@@ -201,8 +201,8 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         for (0..2) |cycle| {
             try controls.show(320, 32);
             const deadline = c.g_get_monotonic_time() + 5_000_000;
-            while (!controls.surface.?.configured and c.g_get_monotonic_time() < deadline) pump();
-            try std.testing.expect(controls.surface.?.configured);
+            while (!controls.popup.surface.?.configured and c.g_get_monotonic_time() < deadline) pump();
+            try std.testing.expect(controls.popup.surface.?.configured);
             if (cycle == 0) controls.hide() else _ = controls.handleKey(0xff1b, 0);
         }
     }

@@ -153,7 +153,7 @@ pub fn power_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
     if (event.*.button != 1) return 0;
     if (event.*.type != c.GDK_BUTTON_PRESS) return 1;
     const controls = m.quick orelse return 0;
-    if (controls.visible) {
+    if (controls.popup.visible) {
         controls.hide();
     } else {
         var x: i32 = 0;
@@ -202,7 +202,7 @@ pub fn clock_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c
     // ordinary press already toggled the popup for this physical click.
     if (event.*.type != c.GDK_BUTTON_PRESS) return 1;
     const controls = m.date_controls orelse return 0;
-    if (controls.visible) {
+    if (controls.popup.visible) {
         controls.hide();
     } else {
         var x: i32 = 0;
@@ -532,7 +532,7 @@ pub fn initWithDevices(root: *c.GtkWidget, options: Options, devices: ?*@import(
 pub fn deinit(m: *Module) void {
     // Closing a clock during panel/output teardown must restore banners even
     // though its outstanding history requests are about to be cancelled.
-    if (m.date_controls != null and m.session != null and m.date_controls.?.visible) {
+    if (m.date_controls != null and m.session != null and m.date_controls.?.popup.visible) {
         c.g_dbus_connection_call(m.session, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.dotfiles.Notifications", "CalendarOpen", c.g_variant_new("(b)", @as(c_int, 0)), null, c.G_DBUS_CALL_FLAGS_NONE, 2000, null, null, null);
     }
     m.dead = 1;

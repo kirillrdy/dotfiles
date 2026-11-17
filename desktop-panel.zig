@@ -288,7 +288,7 @@ const Panel = struct {
         }
         if (m.status != 0) {
             const controls = m.quick orelse return;
-            if (controls.visible) {
+            if (controls.popup.visible) {
                 controls.hide();
             } else {
                 controls.show(global_x, global_y) catch |err| std.log.err("quick settings popup: {s}", .{@errorName(err)});
@@ -296,7 +296,7 @@ const Panel = struct {
             return;
         }
         if (m.date_controls) |controls| {
-            if (controls.visible) {
+            if (controls.popup.visible) {
                 controls.hide();
             } else {
                 widgets.historyOpen(m, true);

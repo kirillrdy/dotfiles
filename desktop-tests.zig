@@ -142,6 +142,7 @@ test {
     _ = @import("desktop-quick-settings.zig");
     _ = @import("desktop-date-menu-view.zig");
     _ = @import("desktop-date-menu.zig");
+    _ = @import("desktop-popup.zig");
     _ = @import("desktop-askpass-view.zig");
     _ = @import("desktop-sound-view.zig");
     _ = @import("desktop-panel-view.zig");

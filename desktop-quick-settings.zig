@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const wire = @import("desktop-surface.zig");
+const popup = @import("desktop-popup.zig");
 const raster = @import("desktop-raster.zig");
 const Label = @import("desktop-panel-view.zig").Label;
 const devices = @import("desktop-devices.zig");
@@ -18,21 +19,6 @@ const power_backend = @import("desktop-power.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 const connect = c.__zig.connect;
-fn placement(output_width: i32, output_height: i32, x: i32, y: i32, view_width: u32, view_height: u32) raster.Rect {
-    const available_width: f64 = @floatFromInt(@max(1, output_width - 16));
-    const available_height: f64 = @floatFromInt(@max(1, output_height - 16));
-    const vw: f64 = @floatFromInt(@max(1, view_width));
-    const vh: f64 = @floatFromInt(@max(1, view_height));
-    const zoom = @min(1, @min(available_width / vw, available_height / vh));
-    const w = vw * zoom;
-    const h = vh * zoom;
-    return .{
-        .x = @floor(std.math.clamp(@as(f64, @floatFromInt(x)) - w / 2, 8, @max(8, @as(f64, @floatFromInt(output_width)) - w - 8))),
-        .y = @floor(std.math.clamp(@as(f64, @floatFromInt(y)), 8, @max(8, @as(f64, @floatFromInt(output_height)) - h - 8))),
-        .width = w,
-        .height = h,
-    };
-}
 pub fn settings(schema: [*:0]const u8) ?*c.GSettings {
     const source = c.g_settings_schema_source_get_default() orelse return null;
     const found = c.g_settings_schema_source_lookup(source, schema, 1) orelse return null;
@@ -45,13 +31,8 @@ pub fn bannersEnabled() bool {
     return c.g_settings_get_boolean(prefs, "show-banners") != 0;
 }
 pub const Controls = struct {
-    client: ?*wire.Client = null,
-    surface: ?*wire.Surface = null,
+    popup: popup.Host = undefined,
     pixels: std.ArrayList(u32) = .empty,
-    visible: bool = false,
-    close_idle: c.guint = 0,
-    anchor_x: i32 = 0,
-    anchor_y: i32 = 0,
     bounds: raster.Rect = .{},
     tooltip: Label = .{},
     tooltip_timer: c.guint = 0,
@@ -91,7 +72,7 @@ pub const Controls = struct {
     pub fn redraw(self: *Controls) void {
         if (self.dead) return;
         self.view.layout();
-        if (self.visible and self.close_idle == 0) if (self.surface) |surface| surface.redraw();
+        self.popup.redraw();
     }
     pub fn setMessage(self: *Controls, message: []const u8) void {
         self.view.model.message.set(message);
@@ -172,8 +153,7 @@ pub const Controls = struct {
         self.redraw();
     }
     fn updateBounds(self: *Controls) void {
-        const output = (self.surface orelse return).output;
-        self.bounds = placement(output.width(), output.height(), self.anchor_x - output.x, self.anchor_y - output.y, self.view.width, self.view.height);
+        self.bounds = self.popup.bounds(self.view.width, self.view.height);
     }
     fn point(self: *const Controls, x: f64, y: f64) struct { x: f64, y: f64 } {
         const zoom = self.bounds.width / @as(f64, @floatFromInt(@max(1, self.view.width)));
@@ -198,7 +178,7 @@ pub const Controls = struct {
         self.paint(target) catch |err| std.log.err("quick-settings render: {s}", .{@errorName(err)});
     }
     fn paint(self: *Controls, target: wire.Pixels) !void {
-        const factor = self.surface.?.buffer_scale;
+        const factor = self.popup.surface.?.buffer_scale;
         self.view.layout();
         self.updateBounds();
         const width = self.view.width * factor;
@@ -242,7 +222,7 @@ pub const Controls = struct {
     fn button(ptr: ?*anyopaque, _: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
         if (code != 272) return;
         const self = cast(Controls, ptr);
-        if (!self.visible or self.close_idle != 0) return;
+        if (!self.popup.visible or self.popup.close_idle != 0) return;
         if (pressed and !self.bounds.contains(x, y)) {
             self.requestHide();
             return;
@@ -262,7 +242,7 @@ pub const Controls = struct {
     }
     fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
         const self = cast(Controls, ptr);
-        if (!self.visible or self.close_idle != 0) return;
+        if (!self.popup.visible or self.popup.close_idle != 0) return;
         self.pointer_x = x;
         self.pointer_y = y;
         self.hideTooltip();
@@ -304,7 +284,7 @@ pub const Controls = struct {
         return !pressed or cast(Controls, ptr).handleKey(symbol, modifiers);
     }
     pub fn handleKey(self: *Controls, symbol: u32, modifiers: u32) bool {
-        if (self.dead or self.close_idle != 0) return false;
+        if (self.dead or self.popup.close_idle != 0) return false;
         self.hideTooltip();
         self.view.pressed = .none;
         if (symbol == 0xff1b) {
@@ -332,7 +312,7 @@ pub const Controls = struct {
     }
     fn scroll(ptr: ?*anyopaque, _: *wire.Surface, axis: u32, amount: f64) void {
         const self = cast(Controls, ptr);
-        if (!self.visible or self.close_idle != 0 or axis != 0 or !self.bounds.contains(self.pointer_x, self.pointer_y)) return;
+        if (!self.popup.visible or self.popup.close_idle != 0 or axis != 0 or !self.bounds.contains(self.pointer_x, self.pointer_y)) return;
         const local = self.point(self.pointer_x, self.pointer_y);
         const target = self.view.hit(local.x, local.y);
         if (!native.View.slider(target)) return;
@@ -346,6 +326,14 @@ pub const Controls = struct {
     pub fn createWithDevices(network_command: [*:0]const u8, sound_command: [*:0]const u8, shared: ?*devices.Service) *Controls {
         const self = a.create(Controls) catch @panic("out of memory");
         self.* = .{ .devices = shared orelse (devices.Service.create() catch @panic("out of memory")), .owns_devices = shared == null, .network_settings = a.dupeSentinel(u8, std.mem.span(network_command), 0) catch @panic("out of memory"), .sound_settings = a.dupeSentinel(u8, std.mem.span(sound_command), 0) catch @panic("out of memory"), .interface = settings("org.gnome.desktop.interface"), .notifications = settings("org.gnome.desktop.notifications"), .cancel = c.g_cancellable_new().? };
+        self.popup = .{
+            .context = self,
+            .namespace = "desktop-quick-settings",
+            .paint = &draw,
+            .input = .{ .motion = &motion, .button = &button, .leave = &leave, .symbol = &key, .scroll = &scroll },
+            .resized = &resized,
+            .dismiss = &dismiss,
+        };
         if (self.interface) |prefs| connect(prefs, "changed", &preferencesChanged, self);
         if (self.notifications) |prefs| connect(prefs, "changed", &preferencesChanged, self);
         self.syncPreferences();
@@ -435,90 +423,37 @@ pub const Controls = struct {
     }
     pub fn show(self: *Controls, global_x: i32, global_y: i32) !void {
         if (self.dead) return;
-        if (self.client == null) {
-            self.client = try wire.Client.createInteractive(.{ .added = &added, .removed = &removed, .changed = &outputChanged }, self);
-            errdefer {
-                self.client.?.destroy();
-                self.client = null;
-            }
-            try self.client.?.start();
-        }
-        const client = self.client.?;
-        if (client.failed or client.outputs.items.len == 0) return error.DisplayUnavailable;
-        var output = client.outputs.items[0];
-        for (client.outputs.items) |candidate| {
-            if (global_x >= candidate.x and global_y >= candidate.y and global_x < candidate.x + candidate.width() and global_y < candidate.y + candidate.height()) {
-                output = candidate;
-                break;
-            }
-        }
-        if (self.surface) |surface| if (surface.output != output) {
-            self.surface = null;
-            surface.destroy();
-        };
-        if (self.surface == null) {
-            self.surface = try wire.Surface.createPixels(output, .{
-                .namespace = "desktop-quick-settings",
-                .layer = 3,
-                .anchors = wire.top | wire.bottom | wire.left | wire.right,
-                .interactive = true,
-                .keyboard = .exclusive,
-                .cursor = .arrow,
-            }, &draw, self);
-            self.surface.?.input = .{ .motion = &motion, .button = &button, .leave = &leave, .symbol = &key, .scroll = &scroll };
-        }
-        if (self.close_idle != 0) _ = c.g_source_remove(self.close_idle);
-        self.close_idle = 0;
+        try self.popup.prepare(global_x, global_y);
         self.refresh();
         self.view.layout();
         self.view.focus = .none;
         self.view.stepFocus(false);
-        self.anchor_x = global_x;
-        self.anchor_y = global_y;
         self.updateBounds();
-        self.visible = true;
-        errdefer self.visible = false;
-        try self.surface.?.show();
+        try self.popup.show();
     }
     pub fn hide(self: *Controls) void {
-        if (self.close_idle != 0) _ = c.g_source_remove(self.close_idle);
-        self.close_idle = 0;
         self.hideTooltip();
-        self.visible = false;
         self.view.submenu = .none;
         self.view.pressed = .none;
         self.view.hover = .none;
         self.view.focus = .none;
-        if (self.surface) |surface| surface.hide();
+        self.popup.hide();
         self.redraw();
     }
     fn requestHide(self: *Controls) void {
-        if (self.close_idle == 0) self.close_idle = c.g_idle_add(&hideIdle, self);
+        self.popup.requestHide();
     }
-    fn hideIdle(ptr: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Controls, ptr);
-        self.close_idle = 0;
-        self.hide();
-        return 0;
+    fn dismiss(ptr: ?*anyopaque) void {
+        cast(Controls, ptr).hide();
     }
-    fn added(_: ?*anyopaque, _: *wire.Output) void {}
-    fn removed(ptr: ?*anyopaque, output: *wire.Output) void {
+    fn resized(ptr: ?*anyopaque) void {
         const self = cast(Controls, ptr);
-        if (self.surface) |surface| if (surface.output == output) {
-            self.surface = null;
-            if (self.visible) self.requestHide();
-        };
-    }
-    fn outputChanged(ptr: ?*anyopaque, output: *wire.Output) void {
-        const self = cast(Controls, ptr);
-        if (self.surface) |surface| if (surface.output == output) {
-            self.updateBounds();
-            self.redraw();
-        };
+        self.updateBounds();
+        self.redraw();
     }
     fn refreshTimer(ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Controls, ptr);
-        if (self.visible) self.refresh();
+        if (self.popup.visible) self.refresh();
         return 1;
     }
     pub fn refresh(self: *Controls) void {
@@ -782,13 +717,8 @@ pub const Controls = struct {
     }
     pub fn deinit(self: *Controls) void {
         self.dead = true;
-        self.visible = false;
+        self.popup.deinit();
         self.hideTooltip();
-        if (self.close_idle != 0) _ = c.g_source_remove(self.close_idle);
-        self.close_idle = 0;
-        if (self.client) |client| client.destroy();
-        self.client = null;
-        self.surface = null;
         if (self.battery_service) |service| service.destroy();
         self.devices.unsubscribe(&self.subscription);
         if (self.owns_devices) self.devices.destroy();
@@ -823,9 +753,9 @@ pub const Controls = struct {
 };
 
 test "quick settings popup placement fits output edges and small screens" {
-    const right = placement(1728, 1080, 1700, 32, 376, 480);
+    const right = popup.placement(1728, 1080, 1700, 32, 376, 480);
     try std.testing.expectEqual(raster.Rect{ .x = 1344, .y = 32, .width = 376, .height = 480 }, right);
-    const small = placement(640, 360, 320, 32, 376, 480);
+    const small = popup.placement(640, 360, 320, 32, 376, 480);
     try std.testing.expect(small.x >= 8 and small.y >= 8);
     try std.testing.expect(small.x + small.width <= 632 and small.y + small.height <= 352);
     try std.testing.expectApproxEqAbs(@as(f64, 376.0 / 480.0), small.width / small.height, 0.000001);
