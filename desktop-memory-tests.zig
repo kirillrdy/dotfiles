@@ -194,7 +194,15 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
             if (cycle == 0) controls.hide() else _ = controls.handleKey(0xff1b, 0);
         }
     }
-    if (module.codex_menu != null) objects.watch(module.codex_menu);
+    if (module.codex_menu) |menu| {
+        for (0..2) |cycle| {
+            try menu.show(320, 32);
+            const deadline = c.g_get_monotonic_time() + 5_000_000;
+            while (!menu.popup.surface.?.configured and c.g_get_monotonic_time() < deadline) pump();
+            try std.testing.expect(menu.popup.surface.?.configured);
+            if (cycle == 0) menu.hide() else _ = menu.handleKey(0xff1b);
+        }
+    }
     if (module.date_controls) |controls| {
         // Exercise native buffers and event sources, then destroy the module
         // with a dismissal still queued rather than merely freeing its model.

@@ -744,12 +744,8 @@ pub extern fn gdk_pixbuf_new_from_file(filename: [*c]const u8, @"error": [*c][*c
 pub extern fn gdk_pixbuf_new_from_file_at_scale(filename: [*c]const u8, width: c_int, height: c_int, preserve_aspect_ratio: gboolean, @"error": [*c][*c]GError) ?*GdkPixbuf;
 pub extern fn gdk_pixbuf_apply_embedded_orientation(src: ?*GdkPixbuf) ?*GdkPixbuf;
 pub extern fn gdk_cairo_set_source_pixbuf(cr: ?*cairo_t, pixbuf: ?*const GdkPixbuf, pixbuf_x: gdouble, pixbuf_y: gdouble) void;
-pub const GTK_POS_BOTTOM: c_int = 3;
-pub const GtkPositionType = c_uint;
 pub const GTK_STATE_FLAG_NORMAL: c_int = 0;
 pub const GtkStateFlags = c_uint;
-pub const GTK_POPOVER_CONSTRAINT_NONE: c_int = 0;
-pub const GtkPopoverConstraint = c_uint;
 
 pub const struct__GtkBorder = extern struct {
     left: gint16 = 0,
@@ -852,7 +848,6 @@ pub const struct__GtkStyleProvider = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkStyleProvider = struct__GtkStyleProvider;
 pub extern fn gtk_style_context_add_provider_for_screen(screen: ?*GdkScreen, provider: ?*GtkStyleProvider, priority: guint) void;
-pub extern fn gtk_style_context_add_class(context: [*c]GtkStyleContext, class_name: [*c]const gchar) void;
 pub extern fn gtk_style_context_get_border(context: [*c]GtkStyleContext, state: GtkStateFlags, border: [*c]GtkBorder) void;
 pub const struct__GtkIconInfo = extern struct { _opaque: [0]usize = .{} };
 
@@ -881,12 +876,7 @@ pub const struct__GtkPopover = extern struct { _opaque: [0]usize = .{} };
 pub const GtkPopover = struct__GtkPopover;
 // /nix/store/zc6camr52n5kyqs1a32dg4s4vxb57h4a-gtk+3-3.24.52-dev/include/gtk-3.0/gtk/gtkpopover.h:51:15: warning: struct demoted to opaque type - has opaque field
 pub extern fn gtk_popover_new(relative_to: [*c]GtkWidget) [*c]GtkWidget;
-pub extern fn gtk_popover_get_relative_to(popover: [*c]GtkPopover) [*c]GtkWidget;
-pub extern fn gtk_popover_set_pointing_to(popover: [*c]GtkPopover, rect: [*c]const GdkRectangle) void;
-pub extern fn gtk_popover_set_position(popover: [*c]GtkPopover, position: GtkPositionType) void;
-pub extern fn gtk_popover_set_constrain_to(popover: [*c]GtkPopover, constraint: GtkPopoverConstraint) void;
 pub extern fn gtk_popover_popup(popover: [*c]GtkPopover) void;
-pub extern fn gtk_popover_popdown(popover: [*c]GtkPopover) void;
 pub extern fn gtk_settings_get_default() [*c]GtkSettings;
 pub const struct__GDesktopAppInfo = opaque {};
 

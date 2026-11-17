@@ -45,13 +45,6 @@ const Panel = struct {
     tooltip_x: i32 = 0,
     tooltip_width: u32 = 0,
     tooltip_height: u32 = 0,
-    codex_module: ?*widgets.Module = null,
-    codex_surface: ?*wire.Surface = null,
-    codex_anchor_x: i32 = 0,
-    codex_anchor_y: i32 = 0,
-    codex_bounds: raster.Rect = .{},
-    codex_pointer_x: f64 = 0,
-    codex_pointer_y: f64 = 0,
 
     fn appendGroup(self: *Panel, options: []const widgets.Options) usize {
         for (options) |option| {
@@ -91,7 +84,6 @@ const Panel = struct {
     fn onModuleRedraw(data: ?*anyopaque) void {
         const self: *Panel = @ptrCast(@alignCast(data));
         self.surface.redraw();
-        if (self.codex_surface) |surface| surface.redraw();
     }
 
     fn layout(self: *Panel, scale: u32) void {
@@ -172,7 +164,7 @@ const Panel = struct {
     }
 
     fn tooltipFor(self: *const Panel, index: usize, x: f64, y: f64) [:0]const u8 {
-        if (self.codex_surface != null) return "";
+        if (self.codexVisible()) return "";
         const slot = self.slots.items[index];
         const m = slot.module;
         const local_x = x - slot.x;
@@ -195,7 +187,7 @@ const Panel = struct {
     }
 
     fn showTooltip(self: *Panel) !void {
-        if (self.tooltip_text.len == 0 or self.codex_surface != null) return;
+        if (self.tooltip_text.len == 0 or self.codexVisible()) return;
         const scale = self.output.scale;
         self.tooltip_label.set(self.tooltip_text);
         try self.tooltip_label.prepare(&self.slots.items[0].module.view.renderer, scale, 13.333, false, null, false);
@@ -312,136 +304,22 @@ const Panel = struct {
         if (m.view.hit(x - slot.x, y)) |item_idx| spawnAsync(m.view.items[item_idx].command.value);
     }
 
+    fn codexVisible(self: *const Panel) bool {
+        for (self.slots.items) |slot| if (slot.module.codex_menu) |menu| {
+            if (menu.popup.visible) return true;
+        };
+        return false;
+    }
     fn hideCodex(self: *Panel) void {
-        if (self.codex_surface) |surface| {
-            self.codex_surface = null;
-            surface.destroy();
-        }
-        if (self.codex_module) |m| {
-            m.codex.pressed = false;
-            m.codex.hovered = false;
-        }
-        self.codex_module = null;
+        for (self.slots.items) |slot| if (slot.module.codex_menu) |menu| menu.hide();
     }
-
     fn toggleCodex(self: *Panel, m: *widgets.Module, global_x: i32, global_y: i32) !void {
-        if (self.codex_surface != null) {
+        if (self.codexVisible()) {
             self.hideCodex();
             return;
         }
-        m.codex.pressed = false;
-        m.codex.hovered = false;
-        m.codex.keyboard_focus = true;
-        self.codex_module = m;
-        self.codex_anchor_x = global_x;
-        self.codex_anchor_y = global_y;
-        const surface = try wire.Surface.createPixels(self.output, .{
-            .namespace = "desktop-codex",
-            .layer = 3,
-            .anchors = wire.top | wire.bottom | wire.left | wire.right,
-            .interactive = true,
-            .keyboard = .exclusive,
-            .cursor = .arrow,
-        }, &drawCodex, self);
-        surface.input = .{ .motion = &codexMotion, .leave = &codexLeave, .button = &codexButton, .symbol = &codexKey };
-        self.codex_surface = surface;
-        try surface.show();
-    }
-
-    fn drawCodex(data: ?*anyopaque, target: wire.Pixels) void {
-        const self: *Panel = @ptrCast(@alignCast(data));
-        const m = self.codex_module orelse return;
-        const surface = self.codex_surface orelse return;
-        const factor = surface.buffer_scale;
-        m.codex.prepare(factor) catch return;
-        const w: f64 = @floatFromInt(m.codex.width);
-        const h: f64 = @floatFromInt(m.codex.height);
-        const out_w: f64 = @floatFromInt(@max(1, self.output.width()));
-        const out_h: f64 = @floatFromInt(@max(1, self.output.height()));
-        const bx = @floor(std.math.clamp(@as(f64, @floatFromInt(self.codex_anchor_x - self.output.x)) - w / 2, 8, @max(8, out_w - w - 8)));
-        const by = @floor(std.math.clamp(@as(f64, @floatFromInt(self.codex_anchor_y - self.output.y)), 8, @max(8, out_h - h - 8)));
-        self.codex_bounds = .{ .x = bx, .y = by, .width = w, .height = h };
-        const pw = m.codex.width * factor;
-        const ph = m.codex.height * factor;
-        const needed = pw * ph;
-        if (self.pixels.items.len < needed) self.pixels.resize(allocator, needed) catch return;
-        const buf = self.pixels.items[0..needed];
-        m.codex.paint(.{ .pixels = buf, .width = pw, .height = ph });
-        const dest_x: i32 = @intFromFloat(@round(bx * @as(f64, @floatFromInt(factor))));
-        const dest_y: i32 = @intFromFloat(@round(by * @as(f64, @floatFromInt(factor))));
-        for (0..ph) |py| {
-            const dy = dest_y + @as(i32, @intCast(py));
-            if (dy < 0 or dy >= @as(i32, @intCast(target.height))) continue;
-            const row_off = @as(usize, @intCast(dy)) * target.width;
-            const src_off = py * pw;
-            for (0..pw) |px| {
-                const dx = dest_x + @as(i32, @intCast(px));
-                if (dx < 0 or dx >= @as(i32, @intCast(target.width))) continue;
-                target.pixels[row_off + @as(usize, @intCast(dx))] = buf[src_off + px];
-            }
-        }
-    }
-
-    fn codexMotion(data: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
-        const self: *Panel = @ptrCast(@alignCast(data));
-        const m = self.codex_module orelse return;
-        self.codex_pointer_x = x;
-        self.codex_pointer_y = y;
-        const hovered = m.codex.refreshRect().contains(x - self.codex_bounds.x, y - self.codex_bounds.y);
-        if (m.codex.hovered != hovered) {
-            m.codex.hovered = hovered;
-            if (self.codex_surface) |surface| surface.redraw();
-        }
-    }
-
-    fn codexLeave(data: ?*anyopaque, _: *wire.Surface) void {
-        const self: *Panel = @ptrCast(@alignCast(data));
-        const m = self.codex_module orelse return;
-        if (m.codex.hovered) {
-            m.codex.hovered = false;
-            if (self.codex_surface) |surface| surface.redraw();
-        }
-    }
-
-    fn codexButton(data: ?*anyopaque, _: *wire.Surface, button_id: u32, pressed: bool, x: f64, y: f64) void {
-        const self: *Panel = @ptrCast(@alignCast(data));
-        const m = self.codex_module orelse return;
-        if (button_id != 272) return;
-        if (pressed and !self.codex_bounds.contains(x, y)) {
-            self.hideCodex();
-            return;
-        }
-        const lx = x - self.codex_bounds.x;
-        const ly = y - self.codex_bounds.y;
-        const in_refresh = m.codex.refreshRect().contains(lx, ly);
-        if (pressed) {
-            m.codex.keyboard_focus = false;
-            m.codex.pressed = m.codex.enabled and in_refresh;
-        } else {
-            const activate = m.codex.pressed and in_refresh;
-            m.codex.pressed = false;
-            if (activate) widgets.codex_refresh(m);
-        }
-        if (self.codex_surface) |surface| surface.redraw();
-    }
-
-    fn codexKey(data: ?*anyopaque, _: *wire.Surface, symbol: u32, _: u32, pressed: bool) bool {
-        if (!pressed) return false;
-        const self: *Panel = @ptrCast(@alignCast(data));
-        const m = self.codex_module orelse return false;
-        switch (symbol) {
-            0xff1b => self.hideCodex(),
-            0xff09, 0xfe20 => {
-                m.codex.keyboard_focus = true;
-                if (self.codex_surface) |surface| surface.redraw();
-            },
-            0xff0d, 0xff8d, 0x20 => {
-                widgets.codex_refresh(m);
-                if (self.codex_surface) |surface| surface.redraw();
-            },
-            else => return false,
-        }
-        return true;
+        self.hideTooltip();
+        try widgets.showCodex(m, global_x, global_y);
     }
 
     fn applyOverview(self: *Panel, active: bool, workspace_count: u8, workspace_active: u8) void {

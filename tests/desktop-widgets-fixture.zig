@@ -1,4 +1,4 @@
-//! GTK integration tests. Run under Xvfb; never uses the user's desktop.
+//! GTK panel and native popup checks on a private Wayland display.
 const std = @import("std");
 const p = @import("desktop").widgets;
 const c = p.c;
@@ -199,7 +199,8 @@ pub fn main(process_init: std.process.Init) !void {
     const usage = p.init(codex_root, .{ .name = "gnome-codex", .source = "codex" });
     p.refresh_source = &refresh;
     defer p.refresh_source = null;
-    assert(c.gtk_popover_get_relative_to(cast(c.GtkPopover, usage.codex_menu)) == codex_root);
+    const codex_menu = usage.codex_menu.?;
+    assert(codex_menu.module == usage);
     const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
     c.gtk_container_add(cast(c.GtkContainer, window), codex_root);
     c.gtk_widget_show_all(window);
@@ -208,19 +209,26 @@ pub fn main(process_init: std.process.Init) !void {
     click.button = 1;
     var handled: c.gboolean = 0;
     c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
-    assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
+    assert(handled != 0 and codex_menu.popup.visible);
     c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
-    assert(c.gtk_widget_get_visible(usage.codex_menu) == 0);
+    assert(!codex_menu.popup.visible);
+    var open_key = std.mem.zeroes(extern struct { event_type: c_int, window: ?*anyopaque, send_event: i8, time: u32, state: c_uint, keyval: c_uint });
+    open_key.event_type = 8; // GDK_KEY_PRESS
+    open_key.keyval = 0xff0d;
+    c.g_signal_emit_by_name(codex_root, "key-press-event", &open_key, &handled);
+    assert(handled != 0 and codex_menu.popup.visible);
+    codex_menu.hide();
     p.update(usage, .{});
+    try p.showCodex(usage, 320, 32);
+    pumpEvents(50);
     const refresh_rect = usage.codex.refreshRect();
-    var refresh_click = std.mem.zeroes(c.GdkEventButton);
-    refresh_click.button = 1;
-    refresh_click.x = refresh_rect.x + refresh_rect.width / 2;
-    refresh_click.y = refresh_rect.y + refresh_rect.height / 2;
-    refresh_click.type = c.GDK_BUTTON_PRESS;
-    c.g_signal_emit_by_name(usage.codex_canvas, "button-press-event", &refresh_click, &handled);
-    refresh_click.type = 7;
-    c.g_signal_emit_by_name(usage.codex_canvas, "button-release-event", &refresh_click, &handled);
+    const codex_surface = codex_menu.popup.surface.?;
+    const zoom = codex_menu.bounds.width / @as(f64, @floatFromInt(usage.codex.width));
+    const rx = codex_menu.bounds.x + (refresh_rect.x + refresh_rect.width / 2) * zoom;
+    const ry = codex_menu.bounds.y + (refresh_rect.y + refresh_rect.height / 2) * zoom;
+    codex_surface.input.button.?(codex_menu, codex_surface, 272, true, rx, ry);
+    assert(usage.codex.pressed);
+    codex_surface.input.button.?(codex_menu, codex_surface, 272, false, rx, ry);
     assert(refresh_count == 1);
     // Ignore another activation until the collector delivers completion.
     p.codex_refresh(usage);
@@ -229,12 +237,10 @@ pub fn main(process_init: std.process.Init) !void {
     eq(usage.codex.checked.value, "Refreshing…");
     p.update(usage, .{ .items = &.{.{ .text = "54%" }}, .tooltip = "5h: 54% remaining", .windows = &.{ .{ .percent = 54, .reset = "Resets in 2h 15m" }, .{ .percent = 93, .reset = "Resets in 4d 8h" } }, .checked = "Checked: 12:00:00" });
     assert(usage.codex.enabled);
-    var refresh_key = std.mem.zeroes(extern struct { event_type: c_int, window: ?*anyopaque, send_event: i8, time: u32, state: c_uint, keyval: c_uint });
-    refresh_key.event_type = 8; // GDK_KEY_PRESS
-    refresh_key.keyval = 0xff0d;
-    c.g_signal_emit_by_name(usage.codex_canvas, "key-press-event", &refresh_key, &handled);
-    assert(handled != 0 and refresh_count == 2 and !usage.codex.enabled);
+    assert(codex_surface.input.symbol.?(codex_menu, codex_surface, 0xff0d, 0, true));
+    assert(refresh_count == 2 and !usage.codex.enabled);
     p.update(usage, .{ .windows = &.{ .{ .percent = 54, .reset = "Resets in 2h 15m" }, .{ .percent = 93, .reset = "Resets in 4d 8h" } }, .tooltip = "5h: 54% remaining" });
+    codex_menu.hide();
     eq(c.gtk_widget_get_tooltip_text(usage.box), "5h: 54% remaining");
     pumpEvents(50);
     var x: c.gint = 0;
@@ -246,17 +252,17 @@ pub fn main(process_init: std.process.Init) !void {
     pumpEvents(750);
     if (tooltipVisible()) {
         c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
-        assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
+        assert(handled != 0 and codex_menu.popup.visible);
         assert(!tooltipVisible());
     } else {
         c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
-        assert(handled != 0 and c.gtk_widget_get_visible(usage.codex_menu) != 0);
+        assert(handled != 0 and codex_menu.popup.visible);
     }
     assert(c.gtk_widget_get_tooltip_text(usage.box) == null);
     p.update(usage, .{ .items = &.{.{ .text = "54%" }}, .tooltip = "5h: 54% remaining", .windows = &.{ .{ .percent = 54, .reset = "Resets in 2h 15m" }, .{ .percent = 93, .reset = "Resets in 4d 8h" } }, .checked = "Checked: 12:00:00" });
     assert(c.gtk_widget_get_tooltip_text(usage.box) == null);
     c.g_signal_emit_by_name(codex_root, "button-press-event", &click, &handled);
-    assert(c.gtk_widget_get_visible(usage.codex_menu) == 0);
+    assert(!codex_menu.popup.visible);
     eq(c.gtk_widget_get_tooltip_text(usage.box), "5h: 54% remaining");
     eq(usage.codex.percent[0].value, "54.0% remaining");
     eq(usage.codex.percent[1].value, "93.0% remaining");
@@ -267,6 +273,15 @@ pub fn main(process_init: std.process.Init) !void {
     p.update(usage, .{ .items = &.{.{ .text = "—" }}, .windows = &.{}, .@"error" = "Sign in with codex login" });
     eq(usage.codex.percent[0].value, "—");
     assert(usage.codex.values[0] == 0 and usage.codex.error_label.value.len > 0);
+    // Native modules use the same controller and cancel deferred dismissal.
+    const native_usage = p.initNative(.{ .name = "gnome-codex", .source = "codex" }, null, null, null);
+    const native_menu = native_usage.codex_menu.?;
+    try native_menu.show(320, 32);
+    assert(native_menu.popup.visible and native_usage.box == null);
+    assert(native_menu.handleKey(0xff1b));
+    assert(native_menu.popup.close_idle != 0);
+    p.deinit(native_usage);
+    pumpEvents(50);
     p.deinit(usage);
     c.gtk_widget_destroy(window);
     c.g_object_unref(codex_root);

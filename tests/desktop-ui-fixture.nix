@@ -18,6 +18,7 @@ import ./fixture.nix { inherit pkgs; } {
     pkgs.dbus
     pkgs.wtype
     pkgs.wlrctl
+    pkgs.wlr-randr
   ];
   script =
     {
@@ -46,5 +47,6 @@ import ./fixture.nix { inherit pkgs; } {
       ${dbusRun} python3 ${./check-desktop-command.py} clients/desktop-command-fixture
       ${dbusRun} python3 ${./check-desktop-notifications.py} clients
       ${dbusRun} python3 ${./check-desktop-date-menu.py} clients
+      ${dbusRun} python3 ${./check-desktop-codex.py} clients
     '';
 }

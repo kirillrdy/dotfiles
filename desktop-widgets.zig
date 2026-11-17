@@ -1,7 +1,10 @@
-//! Panel data and actions, with native pixel views in GTK window hosts.
+//! Panel data and actions, with shared native popup controllers.
 const std = @import("std");
 const panel_data = @import("desktop-panel-data.zig");
 const power_backend = @import("desktop-power.zig");
+const popup = @import("desktop-popup.zig");
+const wire = @import("desktop-surface.zig");
+const raster = @import("desktop-raster.zig");
 const quick = @import("desktop-quick-settings.zig");
 pub const date_menu = @import("desktop-date-menu.zig");
 pub const c = @import("desktop-gtk.zig");
@@ -36,8 +39,7 @@ pub const Module = struct {
     settings_subscription: c.guint = 0,
     quick: ?*quick.Controls = null,
     power_pending: c.gboolean = 0,
-    codex_menu: [*c]c.GtkWidget = null,
-    codex_canvas: [*c]c.GtkWidget = null,
+    codex_menu: ?*CodexPopup = null,
     view: native.View = .{},
     tip: native.Label = .{},
     tip_canvas: [*c]c.GtkWidget = null,
@@ -46,6 +48,135 @@ pub const Module = struct {
     on_redraw: ?*const fn (?*anyopaque) void = null,
     redraw_context: ?*anyopaque = null,
 };
+
+/// Both panel hosts share this controller and the module's existing Codex view.
+pub const CodexPopup = struct {
+    module: *Module,
+    popup: popup.Host = undefined,
+    pixels: std.ArrayList(u32) = .empty,
+    bounds: raster.Rect = .{},
+
+    fn create(module: *Module) !*CodexPopup {
+        const self = try module_allocator.create(CodexPopup);
+        self.* = .{ .module = module };
+        self.popup = .{
+            .context = self,
+            .namespace = "desktop-codex",
+            .paint = &draw,
+            .input = .{ .button = &button, .motion = &motion, .leave = &leave, .symbol = &key },
+            .resized = &resized,
+            .dismiss = &dismiss,
+        };
+        return self;
+    }
+    fn destroy(self: *CodexPopup) void {
+        self.popup.deinit();
+        self.pixels.deinit(module_allocator);
+        module_allocator.destroy(self);
+    }
+    pub fn show(self: *CodexPopup, global_x: i32, global_y: i32) !void {
+        try self.popup.prepare(global_x, global_y);
+        const view = &self.module.codex;
+        try view.prepare(self.popup.surface.?.output.scale);
+        view.pressed = false;
+        view.hovered = false;
+        view.keyboard_focus = true;
+        self.bounds = self.popup.bounds(view.width, view.height);
+        try self.popup.show();
+    }
+    pub fn hide(self: *CodexPopup) void {
+        self.popup.hide();
+        self.module.codex.pressed = false;
+        self.module.codex.hovered = false;
+        update_codex_tooltip(self.module);
+    }
+    fn redraw(self: *CodexPopup) void {
+        self.popup.redraw();
+    }
+    fn dismiss(ptr: ?*anyopaque) void {
+        cast(CodexPopup, ptr).hide();
+    }
+    fn resized(ptr: ?*anyopaque) void {
+        cast(CodexPopup, ptr).redraw();
+    }
+    fn draw(ptr: ?*anyopaque, target: wire.Pixels) void {
+        const self = cast(CodexPopup, ptr);
+        @memset(target.pixels, 0);
+        self.paint(target) catch |err| {
+            std.log.err("Codex paint: {s}", .{@errorName(err)});
+            self.popup.requestHide();
+        };
+    }
+    fn paint(self: *CodexPopup, target: wire.Pixels) !void {
+        const view = &self.module.codex;
+        const scale = self.popup.surface.?.buffer_scale;
+        try view.prepare(scale);
+        self.bounds = self.popup.bounds(view.width, view.height);
+        const width = view.width * scale;
+        const height = view.height * scale;
+        try self.pixels.resize(module_allocator, @as(usize, width) * height);
+        view.paint(.{ .pixels = self.pixels.items, .width = width, .height = height });
+        const factor: f64 = @floatFromInt(scale);
+        try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(self.pixels.items), .width = width, .height = height, .stride = width * 4, .format = .argb }, .{
+            .x = self.bounds.x * factor,
+            .y = self.bounds.y * factor,
+            .width = self.bounds.width * factor,
+            .height = self.bounds.height * factor,
+        }, null);
+    }
+    fn onRefresh(self: *const CodexPopup, x: f64, y: f64) bool {
+        const zoom = self.bounds.width / @as(f64, @floatFromInt(self.module.codex.width));
+        return self.module.codex.refreshRect().contains((x - self.bounds.x) / zoom, (y - self.bounds.y) / zoom);
+    }
+    fn button(ptr: ?*anyopaque, _: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
+        const self = cast(CodexPopup, ptr);
+        if (!self.popup.visible or self.popup.close_idle != 0 or code != 272) return;
+        if (pressed and !self.bounds.contains(x, y)) {
+            self.popup.requestHide();
+            return;
+        }
+        const view = &self.module.codex;
+        const hit = self.onRefresh(x, y);
+        if (pressed) {
+            view.keyboard_focus = false;
+            view.pressed = view.enabled and hit;
+        } else {
+            const activate = view.pressed and hit;
+            view.pressed = false;
+            if (activate) codex_refresh(self.module);
+        }
+        self.redraw();
+    }
+    fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
+        const self = cast(CodexPopup, ptr);
+        if (!self.popup.visible or self.popup.close_idle != 0) return;
+        const hovered = self.onRefresh(x, y);
+        if (self.module.codex.hovered != hovered) {
+            self.module.codex.hovered = hovered;
+            self.redraw();
+        }
+    }
+    fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
+        const self = cast(CodexPopup, ptr);
+        self.module.codex.hovered = false;
+        self.redraw();
+    }
+    fn key(ptr: ?*anyopaque, _: *wire.Surface, symbol: u32, _: u32, pressed: bool) bool {
+        return !pressed or cast(CodexPopup, ptr).handleKey(symbol);
+    }
+    pub fn handleKey(self: *CodexPopup, symbol: u32) bool {
+        if (!self.popup.visible or self.popup.close_idle != 0) return true;
+        switch (symbol) {
+            0xff1b => self.popup.requestHide(),
+            0xff09, 0xfe20 => self.module.codex.keyboard_focus = true,
+            0xff0d, 0xff8d, 0x20 => codex_refresh(self.module),
+            else => return false,
+        }
+        self.redraw();
+        return true;
+    }
+};
+
 pub fn unref_module(m: *Module) callconv(.c) void {
     m.refs -= 1;
     if (m.refs != 0) return;
@@ -67,9 +198,6 @@ pub fn ensureStyle() void {
         \\window#desktop-panel { background: #000; color: #fff; }
         \\window#desktop-panel.overview { background: transparent; background-image: none; color: #fafafb; }
         \\.gnome-panel-module, .gnome-panel-module * { border: none; border-radius: 0; min-height: 0; padding: 0; margin: 0; }
-        \\popover.gnome-codex-menu, popover.gnome-codex-menu.background, popover.gnome-codex-menu > contents {
-        \\  background: transparent; background-image: none; border: none; border-radius: 0; padding: 0; margin: 0; box-shadow: none;
-        \\}
         \\tooltip, tooltip.background {
         \\  background: #36363a; color: #fff; border: 1px solid rgba(255,255,255,0.15); border-radius: 12px;
         \\}
@@ -77,9 +205,6 @@ pub fn ensureStyle() void {
     _ = c.gtk_css_provider_load_from_data(provider, rules, rules.len, null);
     c.gtk_style_context_add_provider_for_screen(screen, cast(c.GtkStyleProvider, provider), c.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     style_loaded = true;
-}
-pub fn css(widget: [*c]c.GtkWidget, name: [*c]const u8) callconv(.c) void {
-    c.gtk_style_context_add_class(c.gtk_widget_get_style_context(widget), name);
 }
 pub var power_ids: [3][*c]const u8 = [3][*c]const u8{
     "performance",
@@ -278,68 +403,48 @@ fn populate_notifications(m: *Module, reply: ?*c.GVariant) void {
 }
 pub fn update_codex_tooltip(m: *Module) callconv(.c) void {
     if (m.dead != 0 or m.box == null) return;
-    const hide = m.codex_menu != null and c.gtk_widget_get_visible(m.codex_menu) != 0;
+    const hide = m.codex_menu != null and m.codex_menu.?.popup.visible;
     c.gtk_widget_set_tooltip_text(m.box, if (hide or m.tooltip == null or m.tooltip.* == 0) null else m.tooltip);
     if (hide) c.gtk_widget_trigger_tooltip_query(m.box);
 }
-pub fn codex_menu_visibility(object: ?*c.GObject, pspec: ?*c.GParamSpec, data: c.gpointer) callconv(.c) void {
-    _ = object;
-    _ = pspec;
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    update_codex_tooltip(m);
-}
-pub fn codex_menu_closed(popover: [*c]c.GtkPopover, data: c.gpointer) callconv(.c) void {
-    _ = popover;
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
+pub fn showCodex(m: *Module, global_x: i32, global_y: i32) !void {
+    if (m.box != null) {
+        c.gtk_widget_set_tooltip_text(m.box, null);
+        c.gtk_widget_trigger_tooltip_query(m.box);
+    }
+    try m.codex_menu.?.show(global_x, global_y);
     update_codex_tooltip(m);
 }
 pub fn codex_click(widget: [*c]c.GtkWidget, event: [*c]c.GdkEventButton, data: c.gpointer) callconv(.c) c.gboolean {
     _ = widget;
     const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
     if (event.*.button != 1) return 0;
-    if (c.gtk_widget_get_visible(m.codex_menu) != 0) {
-        c.gtk_popover_popdown(cast(c.GtkPopover, m.codex_menu));
+    if (event.*.type != c.GDK_BUTTON_PRESS) return 1;
+    const menu = m.codex_menu orelse return 0;
+    if (menu.popup.visible) {
+        menu.hide();
     } else {
-        // Dismiss an active tooltip before the popover takes the pointer grab.
-        c.gtk_widget_set_tooltip_text(m.box, null);
-        c.gtk_widget_trigger_tooltip_query(m.box);
-        const pointing = c.GdkRectangle{ .x = 0, .y = 0, .width = c.gtk_widget_get_allocated_width(m.root), .height = 26 };
-        c.gtk_popover_set_pointing_to(cast(c.GtkPopover, m.codex_menu), &pointing);
-        c.gtk_popover_popup(cast(c.GtkPopover, m.codex_menu));
+        var x: i32 = 0;
+        var y: i32 = 0;
+        if (c.gtk_widget_get_window(m.root)) |window| _ = c.gdk_window_get_origin(window, &x, &y);
+        x += @divTrunc(c.gtk_widget_get_allocated_width(m.root), 2);
+        y += c.gtk_widget_get_allocated_height(m.root);
+        showCodex(m, x, y) catch |err| std.log.err("Codex popup: {s}", .{@errorName(err)});
     }
     update_codex_tooltip(m);
     return 1;
 }
 pub fn codex_refresh(m: *Module) void {
-    if (!m.codex.enabled or !std.mem.eql(u8, std.mem.span(m.source), "codex")) return;
+    if (m.dead != 0 or !m.codex.enabled or !std.mem.eql(u8, std.mem.span(m.source), "codex")) return;
     m.codex.enabled = false;
     m.codex.checked.set("Refreshing…");
-    if (m.codex_canvas != null) c.gtk_widget_queue_draw(m.codex_canvas);
+    if (m.codex_menu) |menu| menu.redraw();
     if (m.on_redraw) |cb| cb(m.redraw_context);
     if (refresh_source) |refresh| refresh("codex");
 }
 pub fn make_codex_menu(m: *Module) callconv(.c) void {
-    m.codex_menu = c.gtk_popover_new(m.root);
-    c.gtk_popover_set_constrain_to(cast(c.GtkPopover, m.codex_menu), c.GTK_POPOVER_CONSTRAINT_NONE);
-    c.gtk_popover_set_position(cast(c.GtkPopover, m.codex_menu), c.GTK_POS_BOTTOM);
-    css(m.codex_menu, "gnome-codex-menu");
-    m.codex_canvas = c.gtk_drawing_area_new();
-    c.gtk_widget_set_can_focus(m.codex_canvas, 1);
-    c.gtk_widget_add_events(m.codex_canvas, c.GDK_BUTTON_PRESS_MASK | c.GDK_BUTTON_RELEASE_MASK | c.GDK_POINTER_MOTION_MASK | c.GDK_LEAVE_NOTIFY_MASK | c.GDK_KEY_PRESS_MASK);
-    c.gtk_container_add(cast(c.GtkContainer, m.codex_menu), m.codex_canvas);
-    connect(m.codex_canvas, "draw", &draw_codex, m);
-    connect(m.codex_canvas, "notify::scale-factor", &codex_scale, m);
-    connect(m.codex_canvas, "button-press-event", &codex_press, m);
-    connect(m.codex_canvas, "button-release-event", &codex_release, m);
-    connect(m.codex_canvas, "motion-notify-event", &codex_motion, m);
-    connect(m.codex_canvas, "leave-notify-event", &codex_leave, m);
-    connect(m.codex_canvas, "key-press-event", &codex_key, m);
-    connect(m.codex_menu, "map", &codex_mapped, m);
-    connect(m.codex_menu, "notify::visible", &codex_menu_visibility, m);
-    connect(m.codex_menu, "closed", &codex_menu_closed, m);
-    connect(m.root, "button-press-event", &codex_click, m);
-    c.gtk_widget_set_size_request(m.codex_canvas, @intCast(m.codex.width), @intCast(m.codex.height));
-    c.gtk_widget_show_all(m.codex_canvas);
+    m.codex_menu = CodexPopup.create(m) catch @panic("cannot create Codex popup");
+    if (m.root != null) connect(m.root, "button-press-event", &codex_click, m);
 }
 pub fn update_codex(m: *Module, content: panel_data.Update) void {
     for (0..2) |i| {
@@ -355,7 +460,7 @@ pub fn update_codex(m: *Module, content: panel_data.Update) void {
     m.codex.checked.set(if (content.checked.len != 0) content.checked else "Checked: —");
     m.codex.error_label.set(content.@"error");
     m.codex.enabled = true;
-    resize_codex(m);
+    if (m.codex_menu) |menu| menu.redraw();
 }
 fn update_items(m: *Module, items: []const panel_data.Item) void {
     for (&m.view.items, 0..) |*item, i| {
@@ -460,7 +565,7 @@ pub fn init(root: *c.GtkWidget, options: Options) *Module {
 fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.zig").Service) void {
     if (m.monitors != 0) {
         resize(m);
-    } else if (m.view.codex and m.root != null) {
+    } else if (m.view.codex) {
         make_codex_menu(m);
     } else if (m.status != 0) {
         m.quick = quick.Controls.createWithDevices(if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
@@ -544,9 +649,8 @@ pub fn deinit(m: *Module) void {
     }
     if (m.date_controls) |controls| controls.destroy();
     m.date_controls = null;
-    if (m.codex_menu != null) {
-        c.gtk_widget_destroy(m.codex_menu);
-    }
+    if (m.codex_menu) |menu| menu.destroy();
+    m.codex_menu = null;
     if (m.quick) |controls| controls.deinit();
     if (m.power_timer != 0) _ = c.g_source_remove(m.power_timer);
     if (m.root != null) _ = c.g_signal_handlers_disconnect_matched(@as(c.gpointer, @ptrCast(m.root)), c.G_SIGNAL_MATCH_DATA, 0, @as(c.GQuark, 0), null, @as(?*anyopaque, @ptrFromInt(0)), @as(c.gpointer, @ptrCast(m)));
@@ -595,24 +699,15 @@ pub fn setOverviewState(m: *Module, active: bool, workspace_count: u8, workspace
 }
 fn draw_panel(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
     const m = cast(Module, ptr);
-    paint(widget, cr, m, false) catch |err| std.log.err("panel paint: {s}", .{@errorName(err)});
-    return 1;
-}
-fn draw_codex(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(.c) c.gboolean {
-    paint(widget, cr, cast(Module, ptr), true) catch |err| std.log.err("Codex paint: {s}", .{@errorName(err)});
-    return 1;
-}
-fn paint(widget: *c.GtkWidget, cr: *c.cairo_t, m: *Module, codex: bool) !void {
     const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(widget)));
-    const logical_width: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)));
-    const logical_height: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)));
-    if (codex) {
-        try m.codex.prepare(scale);
-        try c.__zig.paintCairo(cr, logical_width, logical_height, scale, &m.codex, native.Codex.paint);
-    } else {
-        try m.view.prepare(scale, @floatFromInt(logical_height));
-        try c.__zig.paintCairo(cr, logical_width, logical_height, scale, &m.view, native.View.paint);
-    }
+    const width: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_width(widget)));
+    const height: u32 = @intCast(@max(1, c.gtk_widget_get_allocated_height(widget)));
+    m.view.prepare(scale, @floatFromInt(height)) catch |err| {
+        std.log.err("panel paint: {s}", .{@errorName(err)});
+        return 1;
+    };
+    c.__zig.paintCairo(cr, width, height, scale, &m.view, native.View.paint) catch |err| std.log.err("panel paint: {s}", .{@errorName(err)});
+    return 1;
 }
 fn panel_motion(_: *c.GtkWidget, event: *c.GdkEventMotion, ptr: c.gpointer) callconv(.c) c.gboolean {
     const m = cast(Module, ptr);
@@ -625,7 +720,7 @@ fn panel_motion(_: *c.GtkWidget, event: *c.GdkEventMotion, ptr: c.gpointer) call
     } else if (m.codex_menu == null) {
         if (m.view.hit(event.x, event.y)) |index| tooltip = @constCast(m.view.items[index].tooltip.value.ptr);
     }
-    if (m.codex_menu != null and c.gtk_widget_get_visible(m.codex_menu) != 0) tooltip = null;
+    if (m.codex_menu != null and m.codex_menu.?.popup.visible) tooltip = null;
     c.gtk_widget_set_tooltip_text(m.box, tooltip);
     return 0;
 }
@@ -663,66 +758,16 @@ fn panel_key(widget: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv
     _ = c.gdk_event_get_keyval(event, &symbol);
     if (symbol != 0xff0d and symbol != 0xff8d and symbol != 0x20) return 0;
     var click = std.mem.zeroes(c.GdkEventButton);
+    click.type = c.GDK_BUTTON_PRESS;
     click.button = 1;
     var handled: c.gboolean = 0;
     c.g_signal_emit_by_name(widget, "button-press-event", &click, &handled);
     _ = ptr;
     return handled;
 }
-fn codex_press(_: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
-    if (event.button != 1) return 0;
-    const m = cast(Module, ptr);
-    m.codex.keyboard_focus = false;
-    m.codex.pressed = m.codex.enabled and m.codex.refreshRect().contains(event.x, event.y);
-    c.gtk_widget_grab_focus(m.codex_canvas);
-    c.gtk_widget_queue_draw(m.codex_canvas);
-    return 1;
-}
-fn codex_release(_: *c.GtkWidget, event: *c.GdkEventButton, ptr: c.gpointer) callconv(.c) c.gboolean {
-    if (event.button != 1) return 0;
-    const m = cast(Module, ptr);
-    const activate = m.codex.pressed and m.codex.refreshRect().contains(event.x, event.y);
-    m.codex.pressed = false;
-    if (activate) codex_refresh(m);
-    c.gtk_widget_queue_draw(m.codex_canvas);
-    return 1;
-}
-fn codex_motion(_: *c.GtkWidget, event: *c.GdkEventMotion, ptr: c.gpointer) callconv(.c) c.gboolean {
-    const m = cast(Module, ptr);
-    m.codex.hovered = m.codex.refreshRect().contains(event.x, event.y);
-    c.gtk_widget_queue_draw(m.codex_canvas);
-    return 0;
-}
-fn codex_leave(_: *c.GtkWidget, _: *c.GdkEventCrossing, ptr: c.gpointer) callconv(.c) c.gboolean {
-    const m = cast(Module, ptr);
-    m.codex.hovered = false;
-    c.gtk_widget_queue_draw(m.codex_canvas);
-    return 0;
-}
-fn codex_key(_: *c.GtkWidget, event: *c.GdkEvent, ptr: c.gpointer) callconv(.c) c.gboolean {
-    const m = cast(Module, ptr);
-    var symbol: c.guint = 0;
-    _ = c.gdk_event_get_keyval(event, &symbol);
-    switch (symbol) {
-        0xff1b => c.gtk_popover_popdown(cast(c.GtkPopover, m.codex_menu)),
-        0xff09, 0xfe20 => m.codex.keyboard_focus = true,
-        0xff0d, 0xff8d, 0x20 => codex_refresh(m),
-        else => return 0,
-    }
-    c.gtk_widget_queue_draw(m.codex_canvas);
-    return 1;
-}
-fn codex_mapped(_: *c.GtkWidget, ptr: c.gpointer) callconv(.c) void {
-    const m = cast(Module, ptr);
-    m.codex.pressed = false;
-    m.codex.hovered = false;
-    m.codex.keyboard_focus = true;
-    c.gtk_widget_grab_focus(m.codex_canvas);
-}
-
 fn query_tooltip(_: *c.GtkWidget, x: c_int, y: c_int, keyboard: c.gboolean, tooltip: ?*c.GtkTooltip, ptr: c.gpointer) callconv(.c) c.gboolean {
     const m = cast(Module, ptr);
-    if (m.codex_menu != null and c.gtk_widget_get_visible(m.codex_menu) != 0) return 0;
+    if (m.codex_menu != null and m.codex_menu.?.popup.visible) return 0;
     var value: [:0]const u8 = if (m.tooltip != null) std.mem.span(m.tooltip) else "";
     if (keyboard == 0) {
         if (m.monitors != 0) {
@@ -758,24 +803,4 @@ fn draw_tooltip(widget: *c.GtkWidget, cr: *c.cairo_t, ptr: c.gpointer) callconv(
 
 fn panel_scale(_: *c.GObject, _: *c.GParamSpec, ptr: c.gpointer) callconv(.c) void {
     resize(cast(Module, ptr));
-}
-fn codex_scale(_: *c.GObject, _: *c.GParamSpec, ptr: c.gpointer) callconv(.c) void {
-    resize_codex(cast(Module, ptr));
-}
-fn resize_codex(m: *Module) void {
-    if (m.codex_canvas == null) {
-        m.codex.prepare(@max(1, m.view.scale)) catch |err| {
-            std.log.err("Codex layout: {s}", .{@errorName(err)});
-            return;
-        };
-        if (m.on_redraw) |cb| cb(m.redraw_context);
-        return;
-    }
-    const scale: u32 = @intCast(@max(1, c.gtk_widget_get_scale_factor(m.codex_canvas)));
-    m.codex.prepare(scale) catch |err| {
-        std.log.err("Codex layout: {s}", .{@errorName(err)});
-        return;
-    };
-    c.gtk_widget_set_size_request(m.codex_canvas, @intCast(m.codex.width), @intCast(m.codex.height));
-    c.gtk_widget_queue_draw(m.codex_canvas);
 }
