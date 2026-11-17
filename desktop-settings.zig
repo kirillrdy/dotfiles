@@ -18,10 +18,18 @@ fn z(value: []const u8) [:0]u8 {
     return c.__zig.dupeZ(a, value);
 }
 pub const Mode = enum { sound, network };
+const Page = struct {
+    context: ?*anyopaque,
+    events: input.Events,
+    layout: *const fn (*native.Form) void,
+    paint: *const fn (*native.Form, raster.Buffer, u32) anyerror!void,
+    deactivate: ?*const fn (?*anyopaque) void = null,
+};
 pub const Settings = struct {
     mode: Mode = .network,
     sound: ?*Sound = null,
     form_input: input.Events = .{},
+    page: Page = undefined,
     window: *native.host.Window,
     ui: *native.Form,
     message: *native.Item,
@@ -69,14 +77,13 @@ pub const Settings = struct {
         self.window.setSize(980, 700);
         ui.window.surface.?.options.min_width = 680;
         ui.window.surface.?.options.min_height = 400;
-        ui.layout = &layout;
-        ui.painter = &paint;
         ui.scrolled = &scroll;
         ui.shortcut = &shortcut;
         ui.reveal = &reveal;
         self.network_client = network.Client.create(&networkChanged, self) catch null;
         ui.close_callback = &destroyed;
         self.form_input = ui.window.surface.?.input;
+        self.page = self.networkPage();
         const events = &ui.window.surface.?.input;
         events.button = &button;
         events.motion = &motion;
@@ -95,27 +102,46 @@ pub const Settings = struct {
     pub fn setMessage(self: *Settings, message: [:0]const u8) void {
         self.ui.setText(self.message.id, message) catch {};
     }
-    fn layout(ui: *native.Form) void {
-        const self = cast(Settings, ui.context);
-        if (self.mode == .sound) @import("desktop-preferences-view.zig").reset(ui) else self.view.layout(ui);
+    fn networkPage(self: *Settings) Page {
+        return .{ .context = self.ui, .events = self.form_input, .layout = &layoutNetwork, .paint = &paintNetwork };
     }
-    fn paint(ui: *native.Form, target: raster.Buffer, scale: u32) !void {
+    fn layoutNetwork(ui: *native.Form) void {
         const self = cast(Settings, ui.context);
-        if (self.mode == .sound) {
-            if (self.sound) |sound| try sound.paint(target);
-        } else try self.view.paint(ui, target, scale);
+        self.view.layout(ui);
+    }
+    fn paintNetwork(ui: *native.Form, target: raster.Buffer, scale: u32) !void {
+        const self = cast(Settings, ui.context);
+        try self.view.paint(ui, target, scale);
+    }
+    fn paintSound(ui: *native.Form, target: raster.Buffer, _: u32) !void {
+        try cast(Settings, ui.context).sound.?.paint(target);
+    }
+    fn deactivateSound(ptr: ?*anyopaque) void {
+        cast(Sound, ptr).deactivate();
     }
     pub fn selectMode(self: *Settings, mode: Mode) void {
         if (self.closed) return;
-        if (self.mode == .sound) if (self.sound) |sound| sound.deactivate();
+        if (self.page.deactivate) |callback| callback(self.page.context);
         self.ui.focus = null;
         self.ui.hover = null;
         self.ui.pressed = null;
         self.ui.expanded = null;
         self.mode = mode;
-        if (mode == .sound) {
-            if (self.sound == null) self.sound = Sound.create(self.window, self, &navigateSound) catch @panic("out of memory");
-        }
+        self.page = switch (mode) {
+            .network => self.networkPage(),
+            .sound => blk: {
+                if (self.sound == null) self.sound = Sound.create(self.window, self, &navigateSound) catch @panic("out of memory");
+                break :blk .{
+                    .context = self.sound.?,
+                    .events = .{ .button = &Sound.button, .motion = &Sound.motion, .leave = &Sound.leave, .focus = &Sound.focusChanged, .scroll = &Sound.scrolled, .symbol = &Sound.key },
+                    .layout = &@import("desktop-preferences-view.zig").reset,
+                    .paint = &paintSound,
+                    .deactivate = &deactivateSound,
+                };
+            },
+        };
+        self.ui.layout = self.page.layout;
+        self.ui.painter = self.page.paint;
         self.ui.relayout();
     }
     fn navigateSound(ptr: ?*anyopaque, control: SoundControl) void {
@@ -130,56 +156,32 @@ pub const Settings = struct {
     fn button(ptr: ?*anyopaque, surface: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
         const self = owner(ptr);
         if (self.closed or self.window.blocked()) return;
-        if (self.mode == .sound) {
-            Sound.button(self.sound.?, surface, code, pressed, x, y);
-        } else {
-            self.form_input.button.?(ptr, surface, code, pressed, x, y);
-        }
+        self.page.events.button.?(self.page.context, surface, code, pressed, x, y);
     }
     fn motion(ptr: ?*anyopaque, surface: *wire.Surface, x: f64, y: f64) void {
         const self = owner(ptr);
         if (self.closed or self.window.blocked()) return;
-        if (self.mode == .sound) {
-            Sound.motion(self.sound.?, surface, x, y);
-        } else {
-            self.form_input.motion.?(ptr, surface, x, y);
-        }
+        self.page.events.motion.?(self.page.context, surface, x, y);
     }
     fn leave(ptr: ?*anyopaque, surface: *wire.Surface) void {
         const self = owner(ptr);
         if (self.closed or self.window.blocked()) return;
-        if (self.mode == .sound) {
-            Sound.leave(self.sound.?, surface);
-        } else {
-            self.form_input.leave.?(ptr, surface);
-        }
+        self.page.events.leave.?(self.page.context, surface);
     }
     fn focusChanged(ptr: ?*anyopaque, surface: *wire.Surface, focused: bool) void {
         const self = owner(ptr);
         if (self.closed or self.window.blocked()) return;
-        if (self.mode == .sound) {
-            Sound.focusChanged(self.sound.?, surface, focused);
-        } else {
-            self.form_input.focus.?(ptr, surface, focused);
-        }
+        self.page.events.focus.?(self.page.context, surface, focused);
     }
     fn scrolled(ptr: ?*anyopaque, surface: *wire.Surface, axis: u32, delta: f64) void {
         const self = owner(ptr);
         if (self.closed or self.window.blocked()) return;
-        if (self.mode == .sound) {
-            Sound.scrolled(self.sound.?, surface, axis, delta);
-        } else {
-            self.form_input.scroll.?(ptr, surface, axis, delta);
-        }
+        self.page.events.scroll.?(self.page.context, surface, axis, delta);
     }
     fn symbolEvent(ptr: ?*anyopaque, surface: *wire.Surface, symbol: u32, modifiers: u32, pressed: bool) bool {
         const self = owner(ptr);
         if (self.closed or self.window.blocked()) return true;
-        if (self.mode == .sound) {
-            return Sound.key(self.sound.?, surface, symbol, modifiers, pressed);
-        } else {
-            return self.form_input.symbol.?(ptr, surface, symbol, modifiers, pressed);
-        }
+        return self.page.events.symbol.?(self.page.context, surface, symbol, modifiers, pressed);
     }
     fn owner(ptr: ?*anyopaque) *Settings {
         return cast(Settings, cast(native.Form, ptr).context);
