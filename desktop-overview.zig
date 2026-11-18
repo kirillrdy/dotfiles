@@ -719,7 +719,6 @@ const Overview = struct {
     fn createBackground(self: *Overview, output: *wire.Output) !*wire.Surface {
         const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-overview-background", .layer = 2, .anchors = wire.top | wire.bottom | wire.left | wire.right, .exclusive_zone = -1, .clear_buffer = false, .fully_opaque = true }, &paintBackground, self);
         surface.render_scale = &renderScale;
-        surface.next_frame = &backgroundFrame;
         return surface;
     }
     fn nextFrame(data: ?*anyopaque, surface: *wire.Surface, _: u32) bool {
@@ -976,7 +975,7 @@ const Overview = struct {
         const opacity = animation.controlsOpacity(self.progress);
         apps.paintRegionOpacity(target, scale, self.search, .{ &self.launcher, apps.Part.search }, apps.paintPart, opacity);
         if (self.strip.width > 0 and self.strip.height > 0) {
-            if (opacity == 1) {
+            if (opacity == 1 or self.gpu_previews) {
                 apps.paintRegionInPlace(target, scale, self.strip, .{ self, Part.strip }, paintPart);
             } else {
                 apps.paintRegionOpacity(target, scale, self.strip, .{ self, Part.strip }, paintPart, opacity);
@@ -988,9 +987,6 @@ const Overview = struct {
         }
         if (self.tooltip_visible) apps.paintRegionOpacity(target, scale, self.tooltip, .{ self, Part.tooltip }, paintPart, opacity);
         if (status > 0) apps.paintRegionOpacity(target, scale, .{ .y = @floatFromInt(height -| (footer + status)), .width = width, .height = status }, .{ &self.launcher, apps.Part.message }, apps.paintPart, opacity);
-    }
-    fn backgroundFrame(_: ?*anyopaque, _: *wire.Surface, _: u32) bool {
-        return false;
     }
     fn paintBackground(data: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(Overview, data);
@@ -1054,9 +1050,9 @@ const Overview = struct {
             }
             if (self.gpu_previews) view.roundedMask(canvas, pixelRect(rect), 4);
         }
-        if (client.count > 0) {
+        if (client.count > 0 and !self.painting_background) {
             const ind_x = geom.left + self.workspacePosition() * geom.step;
-            view.thumbnailIndicator(canvas, pixelRect(.{ .x = ind_x, .y = 6, .w = geom.thumb_w, .h = geom.thumb_h }));
+            view.thumbnailIndicator(canvas, pixelRect(.{ .x = ind_x, .y = 6, .w = geom.thumb_w, .h = geom.thumb_h }), if (self.gpu_previews) animation.controlsOpacity(self.progress) else 1);
         }
     }
     const FitAllLayout = struct {
@@ -1129,9 +1125,9 @@ const Overview = struct {
                     const window = item.window;
                     const g = window.geometry;
                     const r = Rect{ .x = bg.x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = bg.y + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
-                    if (self.gpu_previews) self.emitPreview(window, r, bg, 0, self.stage.y, 1) else view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(bg), radius, animated);
+                    if (self.gpu_previews) self.emitPreview(window, r, bg, 0, self.stage.y, animation.controlsOpacity(self.progress)) else view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(bg), radius, animated);
                 }
-                if (self.gpu_previews) view.roundedMask(canvas, pixelRect(bg), radius);
+                if (self.gpu_previews) view.roundedMaskShadow(canvas, pixelRect(bg), radius);
             }
             return;
         }
@@ -1203,7 +1199,7 @@ const Overview = struct {
             const window = item.window;
             if (self.gpu_previews) {
                 const r = view.previewRect(pixelRect(item.rect), item.hovered, ease);
-                self.emitPreview(window, .{ .x = r.x, .y = r.y, .w = r.width, .h = r.height }, .{ .x = 0, .y = -self.stage.y, .w = @floatFromInt(self.monitor.width), .h = @floatFromInt(self.monitor.height) }, 0, self.stage.y, 1);
+                self.emitPreview(window, .{ .x = r.x, .y = r.y, .w = r.width, .h = r.height }, .{ .x = 0, .y = @as(f64, 32) - self.stage.y, .w = @floatFromInt(self.monitor.width), .h = @floatFromInt(self.monitor.height -| 32) }, 0, self.stage.y, 1);
             }
             var caption: ?view.Caption = null;
             if (item.hovered and ease > 0.01) {

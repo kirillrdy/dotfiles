@@ -39,6 +39,12 @@ test "GPU preview corner masks match rounded content over the cached background"
                 try std.testing.expect(difference <= 2);
             }
         }
+        @memset(foreground, 0);
+        @memset(expected, 0xff222226);
+        view.workspaceCard(.{ .target = .{ .pixels = expected, .width = width, .height = height }, .scale = @floatFromInt(scale) }, bounds, null, 12, true, false);
+        view.roundedMaskShadow(.{ .target = .{ .pixels = foreground, .width = width, .height = height }, .scale = @floatFromInt(scale) }, bounds, 12);
+        const corner_pixel = (12 * scale) * width + 10 * scale;
+        try std.testing.expectEqual(expected[corner_pixel], foreground[corner_pixel]);
     }
 }
 
@@ -253,7 +259,7 @@ test "hovered window expands without white border and paints close states, capti
 
     // Active workspace thumbnail indicator draws border only (center remains transparent).
     @memset(pixels, 0);
-    view.thumbnailIndicator(canvas, .{ .x = 20, .y = 20, .width = 86, .height = 52 });
+    view.thumbnailIndicator(canvas, .{ .x = 20, .y = 20, .width = 86, .height = 52 }, 1);
     try std.testing.expectEqual(@as(u32, 0), pixels[46 * width + 63]);
     try std.testing.expectEqual(@as(u32, 0xff3584e4), pixels[19 * width + 63]);
 

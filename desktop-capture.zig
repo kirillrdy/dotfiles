@@ -283,7 +283,7 @@ fn appId(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1, value
     if (info == null) info = c.g_desktop_app_info_new(value);
     defer if (info != null) c.g_object_unref(info);
     const icon = if (info != null) c.g_app_info_get_icon(@ptrCast(info)) else null;
-    w.icon = c.__icons.loadThemed(icon, 64, null, "application-x-executable");
+    w.icon = c.__icons.loadThemed(icon, 128, null, "application-x-executable");
 }
 const control_listener = protocols.dotfiles_overview_v1_listener{ .workspace = &workspace, .window = &placement, .done = &snapshotDone };
 fn workspace(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, index: u32, name: [*c]const u8, active: u32) callconv(.c) void {

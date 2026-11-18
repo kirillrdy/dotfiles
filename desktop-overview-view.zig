@@ -65,13 +65,26 @@ pub fn miniatureRounded(canvas: Canvas, source: ?raster.Image, rect: Rect, clip:
 
 /// Cover the corners of GPU previews without repainting their content.
 pub fn roundedMask(canvas: Canvas, rect: Rect, radius: f64) void {
+    roundedMaskOptions(canvas, rect, radius, false);
+}
+
+pub fn roundedMaskShadow(canvas: Canvas, rect: Rect, radius: f64) void {
+    roundedMaskOptions(canvas, rect, radius, true);
+}
+
+fn roundedMaskOptions(canvas: Canvas, rect: Rect, radius: f64, shadow: bool) void {
     const context = Context.init(canvas) orelse return;
     defer context.deinit();
     c.cairo_rectangle(context.cr, rect.x, rect.y, rect.width, rect.height);
     rounded(context.cr, rect, radius);
     c.cairo_set_fill_rule(context.cr, 1); // CAIRO_FILL_RULE_EVEN_ODD
+    c.cairo_clip(context.cr);
     c.cairo_set_source_rgb(context.cr, 34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
-    c.cairo_fill(context.cr);
+    c.cairo_paint(context.cr);
+    if (shadow) {
+        c.cairo_set_fill_rule(context.cr, 0);
+        drawShadowRect(context.cr, rect, radius, 4, 4, 16, 0.2);
+    }
 }
 
 fn rounded(cr: *c.cairo_t, r: Rect, radius: f64) void {
@@ -268,12 +281,12 @@ pub fn closeButtonRect(preview: Rect) Rect {
     };
 }
 
-pub fn thumbnailIndicator(canvas: Canvas, thumbnail: Rect) void {
+pub fn thumbnailIndicator(canvas: Canvas, thumbnail: Rect, opacity: f64) void {
     const context = Context.init(canvas) orelse return;
     defer context.deinit();
     const cr = context.cr;
     rounded(cr, .{ .x = thumbnail.x - 1.5, .y = thumbnail.y - 1.5, .width = thumbnail.width + 3, .height = thumbnail.height + 3 }, 6.5);
-    c.cairo_set_source_rgb(cr, 0.208, 0.518, 0.894);
+    c.cairo_set_source_rgba(cr, 0.208, 0.518, 0.894, opacity);
     c.cairo_set_line_width(cr, 3);
     c.cairo_stroke(cr);
 }
