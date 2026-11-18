@@ -112,9 +112,6 @@ pub const Launcher = struct {
         return .{ .entries = .init(allocator), .visible = .init(allocator), .query = fold(""), .status = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory") };
     }
     pub fn bind(self: *Launcher) void {
-        self.bindControls();
-    }
-    pub fn bindControls(self: *Launcher) void {
         if (self.search_input == null) {
             self.search_input = input.Entry.create(&inputChanged, self) catch @panic("out of memory");
             self.search_input.?.makePublic();
@@ -315,13 +312,12 @@ fn inputChanged(data: ?*anyopaque) void {
     }
     self.redraw();
 }
-pub fn keyPress(_: ?*anyopaque, event: *KeyEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
-    const self = cast(Launcher, data);
+pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
     const symbol = event.keyval;
     const search_mode = self.searchMode();
     if (symbol == c.GDK_KEY_Escape) {
         self.hide();
-        return 1;
+        return true;
     }
     if (symbol == c.GDK_KEY_Return or symbol == c.GDK_KEY_KP_Enter) {
         const count = self.visible.items.len;
@@ -332,26 +328,26 @@ pub fn keyPress(_: ?*anyopaque, event: *KeyEvent, data: ?*anyopaque) callconv(.c
                 self.selected;
             if (selected < count) _ = self.launch(self.visible.items[selected].info);
         }
-        return 1;
+        return true;
     }
     if (symbol == 0xff56 or symbol == 0xff55) {
         self.changePage(if (symbol == 0xff56) 1 else -1);
-        return 1;
+        return true;
     }
     if (symbol == 0xff09 or symbol == 0xfe20) {
         if (self.search_focus and symbol == 0xff09 and event.state & c.GDK_SHIFT_MASK == 0) self.focusGrid() else {
             self.focusSearch();
         }
-        return 1;
+        return true;
     }
     if (self.search_focus and symbol == c.GDK_KEY_Down) {
         if (search_mode) {
-            if (self.visible.items.len == 0) return 1;
+            if (self.visible.items.len == 0) return true;
             self.selected = 0;
             self.hover = null;
         }
         self.focusGrid();
-        return 1;
+        return true;
     }
     if (self.search_focus and symbol == c.GDK_KEY_Right and
         event.state & (c.GDK_SHIFT_MASK | c.GDK_CONTROL_MASK | c.GDK_MOD1_MASK) == 0 and
@@ -363,7 +359,7 @@ pub fn keyPress(_: ?*anyopaque, event: *KeyEvent, data: ?*anyopaque) callconv(.c
             self.selected = 1;
             self.hover = null;
             self.focusGrid();
-            return 1;
+            return true;
         }
     }
     if (!self.search_focus and self.visible.items.len > 0) {
@@ -372,7 +368,7 @@ pub fn keyPress(_: ?*anyopaque, event: *KeyEvent, data: ?*anyopaque) callconv(.c
             if (shown > 0) {
                 if (symbol == c.GDK_KEY_Up) {
                     self.focusSearch();
-                    return 1;
+                    return true;
                 }
                 const delta: i64 = if (symbol == c.GDK_KEY_Left) -1 else if (symbol == c.GDK_KEY_Right) 1 else 0;
                 if (delta != 0 or symbol == 0xff50 or symbol == 0xff57) {
@@ -383,7 +379,7 @@ pub fn keyPress(_: ?*anyopaque, event: *KeyEvent, data: ?*anyopaque) callconv(.c
                     self.page = 0;
                     self.hover = null;
                     self.redraw();
-                    return 1;
+                    return true;
                 }
             }
         } else {
@@ -397,15 +393,15 @@ pub fn keyPress(_: ?*anyopaque, event: *KeyEvent, data: ?*anyopaque) callconv(.c
                 self.page = self.selected / self.geometry.capacity();
                 self.hover = null;
                 self.redraw();
-                return 1;
+                return true;
             }
         }
     }
     if (self.search_focus or symbol == c.GDK_KEY_BackSpace) {
         self.focusSearch();
-        return @intFromBool(self.search_input.?.key(symbol, event.state));
+        return self.search_input.?.key(symbol, event.state);
     }
-    return 0;
+    return false;
 }
 pub const Part = enum { search, grid, message };
 pub fn press(self: *Launcher, part: Part, x: f64, y: f64, modifiers: u32) void {
@@ -695,7 +691,7 @@ pub const Host = struct {
     fn symbol(data: ?*anyopaque, _: *wire.Surface, key: u32, modifiers: u32, pressed: bool) bool {
         if (!pressed) return false;
         var event: KeyEvent = .{ .state = modifiers, .keyval = key };
-        return keyPress(null, &event, cast(Host, data).launcher) != 0;
+        return keyPress(cast(Host, data).launcher, &event);
     }
     fn text(data: ?*anyopaque, _: *wire.Surface, value: []const u8) void {
         cast(Host, data).launcher.text(value);
@@ -815,7 +811,7 @@ test "launcher owners can defer hiding until an exit animation completes" {
     var state: State = .{};
     var launcher = Launcher.init();
     defer launcher.deinit();
-    launcher.bindControls();
+    launcher.bind();
     launcher.owner = &state;
     launcher.hide_requested_fn = &State.requested;
     launcher.hidden_fn = &State.complete;
@@ -830,7 +826,7 @@ test "launcher owners can defer hiding until an exit animation completes" {
 test "overview search navigates results from the end of the query" {
     var launcher = Launcher.init();
     defer launcher.deinit();
-    launcher.bindControls();
+    launcher.bind();
     launcher.overview_search = true;
     for (0..3) |index| {
         const keyfile = c.g_key_file_new();
@@ -846,23 +842,23 @@ test "overview search navigates results from the end of the query" {
     try std.testing.expectEqual(@as(usize, 3), launcher.visible.items.len);
 
     var event: KeyEvent = .{ .keyval = c.GDK_KEY_Left, .state = c.GDK_SHIFT_MASK };
-    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(launcher.search_input.?.buffer.selected());
     event = .{ .keyval = c.GDK_KEY_Right };
-    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(launcher.search_focus and !launcher.search_input.?.buffer.selected());
-    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(!launcher.search_focus and launcher.selected == 1);
-    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expectEqual(@as(usize, 2), launcher.selected);
 
     event.keyval = c.GDK_KEY_Left;
-    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expectEqual(@as(usize, 1), launcher.selected);
     event.keyval = c.GDK_KEY_Up;
-    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(launcher.search_focus);
     event.keyval = c.GDK_KEY_Down;
-    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(!launcher.search_focus and launcher.selected == 0);
 }

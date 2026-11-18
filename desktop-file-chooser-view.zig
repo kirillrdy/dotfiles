@@ -2,14 +2,14 @@
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const form = @import("desktop-form.zig");
+const prefs = @import("desktop-preferences-view.zig");
 const raster = @import("desktop-raster.zig");
 extern fn g_date_time_new_from_unix_local(i64) ?*c.GDateTime;
-extern fn g_memory_input_stream_new_from_data(*const anyopaque, isize, c.GDestroyNotify) ?*c.GInputStream;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 pub const Rect = form.Rect;
 pub const Row = struct { item: usize, entry: usize, ordinal: usize, icon: [:0]const u8, size: u64, modified: u64, directory: bool };
 pub const Place = struct { item: usize, path: [:0]const u8, icon: [:0]const u8 };
-const Icon = struct { name: [:0]const u8, size: u32, image: *c.GdkPixbuf };
+const fill = prefs.fill;
 
 pub const View = struct {
     path: usize = 0,
@@ -49,7 +49,7 @@ pub const View = struct {
     height: f64 = 600,
     sidebar: f64 = 180,
     columns: usize = 4,
-    icons: std.ArrayList(Icon) = .empty,
+    icons: prefs.Icons = .{},
     icon_scale: u32 = 0,
 
     pub const header_height = 46;
@@ -58,12 +58,7 @@ pub const View = struct {
     pub const cell_height = 138;
 
     pub fn deinit(self: *View) void {
-        self.clearIcons();
-        self.icons.deinit(a);
-    }
-    fn clearIcons(self: *View) void {
-        for (self.icons.items) |cached| c.g_object_unref(cached.image);
-        self.icons.clearRetainingCapacity();
+        self.icons.deinit();
     }
     pub fn rowHeight(self: *const View) f64 {
         return if (self.grid) cell_height else 52;
@@ -137,37 +132,11 @@ pub const View = struct {
         }
     }
 
-    fn fill(canvas: raster.Canvas, rect: Rect, rgb: u32, radius: f64) void {
-        canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height }, .radius = radius } }}, raster.Color.rgb(rgb, 1));
-    }
     fn label(ui: *form.Form, canvas: raster.Canvas, value: [:0]const u8, rect: Rect, bold: bool, centered: bool, tint: u32) !void {
-        const mask = try ui.renderer.renderLayout(a, value, .{ .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(@max(1, rect.width) * canvas.scale), .ellipsize = true, .lines = 1, .origin = .top, .alignment = if (centered) .center else .left });
-        defer mask.deinit(a);
-        mask.paint(canvas, rect.x, rect.y + (rect.height - @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale) / 2, raster.Color.rgb(tint, 1));
+        try prefs.text(ui, canvas, value, rect, 14.666, bold, centered, tint);
     }
     fn icon(self: *View, canvas: raster.Canvas, name: [:0]const u8, x: f64, y: f64, size: u32) !void {
-        const physical: u32 = @intFromFloat(@as(f64, @floatFromInt(size)) * canvas.scale);
-        var pixbuf: ?*c.GdkPixbuf = null;
-        for (self.icons.items) |entry| if (entry.size == physical and std.mem.eql(u8, entry.name, name)) {
-            pixbuf = entry.image;
-            break;
-        };
-        if (pixbuf == null) {
-            const asset: ?[]const u8 = if (std.mem.eql(u8, name, "file-chooser-options-symbolic")) @embedFile("desktop-icons/file-chooser-options-symbolic.svg") else if (std.mem.eql(u8, name, "file-chooser-folder-search-symbolic")) @embedFile("desktop-icons/file-chooser-folder-search-symbolic.svg") else null;
-            if (asset) |svg| {
-                const stream = g_memory_input_stream_new_from_data(svg.ptr, @intCast(svg.len), null) orelse return error.IconAllocation;
-                defer c.g_object_unref(stream);
-                pixbuf = c.gdk_pixbuf_new_from_stream_at_scale(stream, @intCast(physical), @intCast(physical), 1, null, null);
-            } else {
-                const symbolic = std.mem.endsWith(u8, name, "-symbolic");
-                pixbuf = @import("desktop-icons.zig").load(name, physical, 1, if (symbolic) @import("desktop-icons.zig").white else null);
-            }
-            if (pixbuf) |image| self.icons.append(a, .{ .name = name, .size = physical, .image = image }) catch |err| {
-                c.g_object_unref(image);
-                return err;
-            };
-        }
-        if (pixbuf) |image| c.__zig.blitPixbuf(canvas, image, .{ .x = x, .y = y, .width = @floatFromInt(size), .height = @floatFromInt(size) });
+        try self.icons.paint(canvas, name, x, y, size);
     }
     fn button(self: *View, ui: *form.Form, canvas: raster.Canvas, id: usize, name: [:0]const u8) !void {
         const item = ui.get(id);
@@ -188,7 +157,7 @@ pub const View = struct {
     }
     pub fn paint(self: *View, ui: *form.Form, target: raster.Buffer, scale: u32) !void {
         if (self.icon_scale != scale) {
-            self.clearIcons();
+            self.icons.clear();
             self.icon_scale = scale;
         }
         self.layout(ui);
@@ -325,16 +294,7 @@ pub const View = struct {
             fill(canvas, .{ .x = r.x - 8, .y = r.y - 8, .width = r.width + 16, .height = @as(f64, @floatFromInt(self.extras.len * 44)) + 12 }, 0x38383c, 12);
             for (self.extras) |id| try self.paintOption(ui, canvas, id);
         }
-        if (ui.expanded) |id| {
-            const field = ui.get(id);
-            const top = ui.optionTop(field);
-            fill(canvas, .{ .x = field.bounds.x, .y = top - 6, .width = field.bounds.width, .height = @as(f64, @floatFromInt(field.options.items.len * 36)) + 12 }, 0x38383c, 10);
-            for (field.options.items, 0..) |opt, i| {
-                const r = Rect{ .x = field.bounds.x + 6, .y = top + @as(f64, @floatFromInt(i * 36)), .width = field.bounds.width - 12, .height = 36 };
-                if (ui.option_cursor == i) fill(canvas, r, 0x4b4b50, 6);
-                try label(ui, canvas, opt.label, .{ .x = r.x + 8, .y = r.y, .width = r.width - 16, .height = 36 }, false, false, 0xffffff);
-            }
-        }
+        try prefs.expanded(ui, canvas);
     }
     fn paintOption(self: *View, ui: *form.Form, canvas: raster.Canvas, id: usize) !void {
         const field = ui.get(id);

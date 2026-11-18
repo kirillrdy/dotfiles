@@ -311,13 +311,7 @@ pub const Operation = struct {
         self.hint.?.paint(.{ .target = target, .scale = 1 }, @floatFromInt(32 * scale), @floatFromInt(40 * scale), raster.hex(0xffffff));
     }
     fn rectangle(self: *const Operation, width: u32, height: u32) sc.Rect {
-        const max_x: f64 = @floatFromInt(width);
-        const max_y: f64 = @floatFromInt(height);
-        const x1 = std.math.clamp(self.start_x, 0, max_x);
-        const x2 = std.math.clamp(self.current_x, 0, max_x);
-        const y1 = std.math.clamp(self.start_y, 0, max_y);
-        const y2 = std.math.clamp(self.current_y, 0, max_y);
-        return .{ .x = @intFromFloat(@min(x1, x2)), .y = @intFromFloat(@min(y1, y2)), .w = @intFromFloat(@abs(x2 - x1)), .h = @intFromFloat(@abs(y2 - y1)) };
+        return sc.Rect.between(self.start_x, self.start_y, self.current_x, self.current_y, width, height);
     }
     fn motion(data: ?*anyopaque, surface: *native.Surface, x: f64, y: f64) void {
         const self = cast(Operation, data);

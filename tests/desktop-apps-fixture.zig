@@ -125,17 +125,17 @@ pub fn main(init: std.process.Init) !void {
     launcher.focusGrid();
     pump();
     var navigation = apps.KeyEvent{ .state = 0, .keyval = 0xff56 };
-    assert(apps.keyPress(null, &navigation, &launcher) != 0);
+    assert(apps.keyPress(&launcher, &navigation));
     try std.testing.expectEqual(@as(usize, 1), launcher.page);
     try std.testing.expectEqual(@as(usize, 24), launcher.selected);
     navigation.keyval = 0xff57; // End
-    _ = apps.keyPress(null, &navigation, &launcher);
+    _ = apps.keyPress(&launcher, &navigation);
     try std.testing.expectEqual(@as(usize, 29), launcher.selected);
     navigation.keyval = c.GDK_KEY_Right;
-    _ = apps.keyPress(null, &navigation, &launcher);
+    _ = apps.keyPress(&launcher, &navigation);
     try std.testing.expectEqual(@as(usize, 29), launcher.selected);
     navigation.keyval = 0xff50; // Home
-    _ = apps.keyPress(null, &navigation, &launcher);
+    _ = apps.keyPress(&launcher, &navigation);
     assert(launcher.page == 0 and launcher.selected == 0);
     try launcher.setSearch("Paged fixture 29");
     assert(launcher.page == 0 and launcher.visible.items.len == 1);
@@ -173,7 +173,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Exercise Escape and repeat activation, including clearing a stale query.
     var escape = apps.KeyEvent{ .state = 0, .keyval = c.GDK_KEY_Escape };
-    assert(apps.keyPress(null, &escape, &launcher) != 0);
+    assert(apps.keyPress(&launcher, &escape));
     assert(!launcher.visible_window);
     var state: ?apps.Launcher = null;
     defer if (state) |*instance| instance.deinit();

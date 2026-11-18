@@ -7,21 +7,8 @@ const allocator = std.heap.page_allocator;
 
 const cast = c.__zig.cast;
 
-fn imageView(image: *c.GdkPixbuf) raster.Image {
-    const width: u32 = @intCast(c.gdk_pixbuf_get_width(image));
-    const height: u32 = @intCast(c.gdk_pixbuf_get_height(image));
-    const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(image));
-    const channels: u32 = @intCast(c.gdk_pixbuf_get_n_channels(image));
-    return .{
-        .pixels = c.gdk_pixbuf_get_pixels(image)[0 .. (height - 1) * stride + width * channels],
-        .width = width,
-        .height = height,
-        .stride = stride,
-        .format = if (channels == 4) .rgba else .rgb,
-    };
-}
 fn paint(target: native.Pixels, image: *c.GdkPixbuf) void {
-    raster.cover(target, imageView(image)) catch |err| std.log.err("wallpaper render: {s}", .{@errorName(err)});
+    raster.cover(target, c.__zig.pixbufImage(image)) catch |err| std.log.err("wallpaper render: {s}", .{@errorName(err)});
 }
 
 const Background = struct {
@@ -188,7 +175,7 @@ test "Zig wallpaper sampling agrees with Cairo for RGB, alpha and fractional siz
     for ([_]bool{ false, true }) |alpha| {
         const image = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, @intFromBool(alpha), 8, 7, 5).?;
         defer c.g_object_unref(image);
-        const source = imageView(image);
+        const source = c.__zig.pixbufImage(image);
         const bytes = c.gdk_pixbuf_get_pixels(image);
         var random: std.Random.DefaultPrng = .init(12345);
         random.random().bytes(bytes[0..source.pixels.len]);

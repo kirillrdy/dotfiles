@@ -97,7 +97,7 @@ const Overview = struct {
         self.gpu_previews = native.enablePreviews();
         self.surface = self.createSurface(native.outputs.items[0]) catch @panic("native overview surface");
         if (self.gpu_previews) self.background = self.createBackground(native.outputs.items[0]) catch @panic("overview background");
-        self.launcher.bindControls();
+        self.launcher.bind();
         self.launcher.search_input.?.client = native;
         self.launcher.owner = self;
         self.launcher.redraw_fn = &redraw;
@@ -314,24 +314,20 @@ const Overview = struct {
         self.redrawSelf();
         return 0;
     }
-    fn dashPress(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
-        if (event.button != 1) return 0;
-        const self = cast(Overview, data);
+    fn dashPress(self: *Overview, event: Pointer) void {
+        if (event.button != 1) return;
         self.hideTooltip();
         self.focusPart(.dash);
         self.dash_view.keyboard_focus = false;
         self.dash_view.pressed = self.dash_view.layout.hit(event.x, event.y);
         self.redrawSelf();
-        return 1;
     }
-    fn dashRelease(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
-        if (event.button != 1) return 0;
-        const self = cast(Overview, data);
+    fn dashRelease(self: *Overview, event: Pointer) void {
+        if (event.button != 1) return;
         const pressed = self.dash_view.pressed;
         self.dash_view.pressed = null;
         if (pressed) |index| if (self.dash_view.layout.hit(event.x, event.y) == index) self.activateDash(index);
         self.redrawSelf();
-        return 1;
     }
 
     fn hoverDash(self: *Overview, x: f64, y: f64) void {
@@ -343,13 +339,11 @@ const Overview = struct {
             self.redrawSelf();
         }
     }
-    fn dashLeave(_: ?*anyopaque, _: ?*Pointer, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
+    fn dashLeave(self: *Overview) void {
         self.hideTooltip();
         self.dash_view.hover = null;
         if (self.dash_view.keyboard_focus) self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
         self.redrawSelf();
-        return 0;
     }
 
     fn changed(data: ?*anyopaque) void {
@@ -452,8 +446,7 @@ const Overview = struct {
     fn searchChanged(data: ?*anyopaque) void {
         cast(Overview, data).updateMode();
     }
-    fn escape(_: ?*anyopaque, data: c.gpointer) callconv(.c) void {
-        const self = cast(Overview, data);
+    fn escape(self: *Overview) void {
         if (self.launcher.searchText().len != 0) self.launcher.setSearch("") catch {} else if (self.apps_mode) {
             self.apps_mode = false;
             self.updateMode();
@@ -483,11 +476,10 @@ const Overview = struct {
         };
         if (item.app) |app| _ = self.launcher.launch(app);
     }
-    fn key(_: ?*anyopaque, event: *apps.KeyEvent, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
+    fn key(self: *Overview, event: *apps.KeyEvent) bool {
         if (event.keyval == c.GDK_KEY_Escape) {
-            escape(null, data);
-            return 1;
+            self.escape();
+            return true;
         }
         const dash_focused = self.focus_part == .dash;
         const window_mode = !self.apps_mode and self.launcher.searchText().len == 0;
@@ -506,7 +498,7 @@ const Overview = struct {
                 self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
             }
             self.redrawSelf();
-            return 1;
+            return true;
         }
         if (dash_focused) {
             switch (event.keyval) {
@@ -523,13 +515,13 @@ const Overview = struct {
                 c.GDK_KEY_Up => {
                     if (window_mode) self.focusPart(.stage) else self.focusPart(.grid);
                 },
-                else => return apps.keyPress(null, event, &self.launcher),
+                else => return apps.keyPress(&self.launcher, event),
             }
             self.hideTooltip();
             if (self.dash_view.keyboard_focus and self.focus_part == .dash)
                 self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
             self.redrawSelf();
-            return 1;
+            return true;
         }
         if ((window_mode and (event.keyval == c.GDK_KEY_Page_Up or event.keyval == c.GDK_KEY_Page_Down)) or (event.state & c.GDK_CONTROL_MASK != 0 and (event.keyval == c.GDK_KEY_Left or event.keyval == c.GDK_KEY_Right))) {
             const direction: i32 = if (event.keyval == c.GDK_KEY_Page_Up or event.keyval == c.GDK_KEY_Left) -1 else 1;
@@ -539,7 +531,7 @@ const Overview = struct {
                     if (self.selected < client.windows.items.len and target >= 0 and target < client.count) client.move(client.windows.items[self.selected], @intCast(target));
                 }
             } else self.stepWorkspace(direction);
-            return 1;
+            return true;
         }
         if (!self.apps_mode and self.launcher.searchText().len == 0) {
             if (event.keyval == c.GDK_KEY_Return or event.keyval == c.GDK_KEY_KP_Enter) {
@@ -547,23 +539,22 @@ const Overview = struct {
                     client.activate(client.windows.items[self.selected]);
                     self.launcher.hide();
                 };
-                return 1;
+                return true;
             }
             const direction: i32 = if (event.keyval == c.GDK_KEY_Left or event.keyval == c.GDK_KEY_Up) -1 else if (event.keyval == c.GDK_KEY_Right or event.keyval == c.GDK_KEY_Down) 1 else 0;
             if (direction != 0) {
                 self.selectNext(direction);
-                return 1;
+                return true;
             }
         }
         return self.launcherKey(event);
     }
-    fn keyRelease(_: ?*anyopaque, event: *apps.KeyEvent, data: c.gpointer) callconv(.c) c.gboolean {
+    fn keyRelease(self: *Overview, event: *apps.KeyEvent) bool {
         if (event.keyval == c.GDK_KEY_Super_L or event.keyval == c.GDK_KEY_Super_R) {
-            const self = cast(Overview, data);
             if (self.transition.shown) self.launcher.hide() else self.present();
-            return 1;
+            return true;
         }
-        return 0;
+        return false;
     }
     fn selectNext(self: *Overview, direction: i32) void {
         const client = self.client orelse return;
@@ -625,10 +616,8 @@ const Overview = struct {
         }
         return null;
     }
-    fn workspaceClick(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
+    fn workspaceClick(self: *Overview, event: Pointer) void {
         if (self.workspaceAt(event.x)) |index| if (self.client) |client| client.switchWorkspace(index);
-        return 1;
     }
     fn closeHit(target: Rect, expanded: bool, x: f64, y: f64) bool {
         const preview = view.previewRect(.{ .x = target.x, .y = target.y, .width = target.w, .height = target.h }, expanded, 1);
@@ -659,17 +648,14 @@ const Overview = struct {
         }
         return best;
     }
-    fn motion(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
+    fn motion(self: *Overview, event: Pointer) void {
         self.hover = self.hit(event.x, event.y);
         self.close_hover = if (self.hover) |i| closeHit(self.client.?.windows.items[i].target, true, event.x, event.y) else false;
         if (self.drag != null and !self.close_pressed and (@abs(event.x - self.drag_x) > 8 or @abs(event.y - self.drag_y) > 8)) self.dragging = true;
         self.redrawSelf();
-        return 1;
     }
 
-    fn press(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
+    fn press(self: *Overview, event: Pointer) void {
         self.hover = self.hit(event.x, event.y);
         self.close_hover = if (self.hover) |i| closeHit(self.client.?.windows.items[i].target, true, event.x, event.y) else false;
         self.drag = if (self.hover) |i| self.client.?.windows.items[i] else null;
@@ -677,11 +663,9 @@ const Overview = struct {
         self.drag_x = event.x;
         self.drag_y = event.y;
         self.dragging = false;
-        return 1;
     }
-    fn release(_: ?*anyopaque, event: *Pointer, data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
-        const client = self.client orelse return 1;
+    fn release(self: *Overview, event: Pointer) void {
+        const client = self.client orelse return;
         const was_close_pressed = self.close_pressed;
         defer {
             self.drag = null;
@@ -700,7 +684,7 @@ const Overview = struct {
                     self.focusPart(.stage);
                 }
             }
-            return 1;
+            return;
         }
         if (self.drag) |window| {
             const r = window.target;
@@ -723,7 +707,6 @@ const Overview = struct {
         } else if (event.button == 1) {
             if (event.x > self.workspace_rect.x + self.workspace_rect.w + 12) self.stepWorkspace(1) else if (event.x < self.workspace_rect.x - 12) self.stepWorkspace(-1) else self.launcher.hide();
         }
-        return 1;
     }
     fn createSurface(self: *Overview, output: *wire.Output) !*wire.Surface {
         const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-overview", .layer = 2, .anchors = wire.top | wire.bottom | wire.left | wire.right, .keyboard = .exclusive, .exclusive_zone = -1, .interactive = true, .cursor = .arrow, .clear_buffer = false }, &paint, self);
@@ -804,9 +787,9 @@ const Overview = struct {
         self.launcher.search_input.?.focus(part == .search);
         self.redrawSelf();
     }
-    fn launcherKey(self: *Overview, event: *apps.KeyEvent) c.gboolean {
-        const handled = apps.keyPress(null, event, &self.launcher);
-        if (handled != 0) {
+    fn launcherKey(self: *Overview, event: *apps.KeyEvent) bool {
+        const handled = apps.keyPress(&self.launcher, event);
+        if (handled) {
             if (self.launcher.search_focus) self.focusPart(.search) else if (self.apps_mode or self.launcher.searchText().len != 0) self.focusPart(.grid);
         }
         return handled;
@@ -819,7 +802,7 @@ const Overview = struct {
         }
         self.modifiers = modifiers;
         var event: apps.KeyEvent = .{ .keyval = value, .state = modifiers };
-        return if (pressed) key(null, &event, data) != 0 else keyRelease(null, &event, data) != 0;
+        return if (pressed) self.key(&event) else self.keyRelease(&event);
     }
     fn inputText(data: ?*anyopaque, _: *wire.Surface, value: []const u8) void {
         const self = cast(Overview, data);
@@ -873,7 +856,7 @@ const Overview = struct {
         self.close_pressed = false;
         self.launcher.hover = null;
         self.launcher.search_hover = false;
-        _ = dashLeave(null, null, data);
+        self.dashLeave();
         self.redrawSelf();
     }
     fn inputMotion(data: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
@@ -881,7 +864,7 @@ const Overview = struct {
         if (!self.transition.shown) return;
         const current = if (self.pressed_part) |part| part else self.partAt(x, y);
         if (self.pointer_part != current) {
-            if (self.pointer_part == .dash) _ = dashLeave(null, null, data);
+            if (self.pointer_part == .dash) self.dashLeave();
             self.launcher.hover = null;
             self.launcher.search_hover = false;
             self.hover = null;
@@ -889,11 +872,9 @@ const Overview = struct {
         }
         self.pointer_part = current;
         const region = self.partRegion(current);
-        var event: Pointer = .{ .x = x - region.x, .y = y - region.y };
+        const event: Pointer = .{ .x = x - region.x, .y = y - region.y };
         switch (current) {
-            .stage => {
-                _ = motion(null, &event, data);
-            },
+            .stage => self.motion(event),
             .dash => self.hoverDash(event.x, event.y),
             .search => apps.motion(&self.launcher, .search, event.x, event.y),
             .grid => apps.motion(&self.launcher, .grid, event.x, event.y),
@@ -907,7 +888,7 @@ const Overview = struct {
         const current = self.pressed_part orelse self.partAt(x, y);
         if (down) self.pressed_part = current else self.pressed_part = null;
         const region = self.partRegion(current);
-        var event: Pointer = .{ .x = x - region.x, .y = y - region.y, .button = switch (code) {
+        const event: Pointer = .{ .x = x - region.x, .y = y - region.y, .button = switch (code) {
             272 => 1,
             273 => 3,
             274 => 2,
@@ -916,24 +897,10 @@ const Overview = struct {
         switch (current) {
             .stage => {
                 self.focusPart(.stage);
-                if (down) {
-                    _ = press(null, &event, data);
-                } else {
-                    _ = release(null, &event, data);
-                }
+                if (down) self.press(event) else self.release(event);
             },
-            .dash => {
-                if (down) {
-                    _ = dashPress(null, &event, data);
-                } else {
-                    _ = dashRelease(null, &event, data);
-                }
-            },
-            .strip => {
-                if (down) {
-                    _ = workspaceClick(null, &event, data);
-                }
-            },
+            .dash => if (down) self.dashPress(event) else self.dashRelease(event),
+            .strip => if (down) self.workspaceClick(event),
             .search, .grid => if (event.button == 1) {
                 self.focusPart(current);
                 const part: apps.Part = if (current == .search) .search else .grid;

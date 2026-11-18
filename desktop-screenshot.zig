@@ -36,6 +36,16 @@ pub const Rect = struct {
         if (w <= 0 or h <= 0) return null;
         return .{ .x = x, .y = y, .w = w, .h = h };
     }
+
+    pub fn between(start_x: f64, start_y: f64, current_x: f64, current_y: f64, width: u32, height: u32) Rect {
+        const max_x: f64 = @floatFromInt(@min(width, 16384));
+        const max_y: f64 = @floatFromInt(@min(height, 16384));
+        const x1 = std.math.clamp(start_x, 0, max_x);
+        const x2 = std.math.clamp(current_x, 0, max_x);
+        const y1 = std.math.clamp(start_y, 0, max_y);
+        const y2 = std.math.clamp(current_y, 0, max_y);
+        return .{ .x = @intFromFloat(@min(x1, x2)), .y = @intFromFloat(@min(y1, y2)), .w = @intFromFloat(@abs(x2 - x1)), .h = @intFromFloat(@abs(y2 - y1)) };
+    }
 };
 
 pub const Options = struct {
@@ -527,13 +537,7 @@ pub const SelectionOverlay = struct {
         };
     }
     fn rectangle(self: *const SelectionOverlay, width: u32, height: u32) Rect {
-        const max_x: f64 = @floatFromInt(@min(width, 16384));
-        const max_y: f64 = @floatFromInt(@min(height, 16384));
-        const x1 = std.math.clamp(self.start_x, 0, max_x);
-        const x2 = std.math.clamp(self.current_x, 0, max_x);
-        const y1 = std.math.clamp(self.start_y, 0, max_y);
-        const y2 = std.math.clamp(self.current_y, 0, max_y);
-        return .{ .x = @intFromFloat(@min(x1, x2)), .y = @intFromFloat(@min(y1, y2)), .w = @intFromFloat(@abs(x2 - x1)), .h = @intFromFloat(@abs(y2 - y1)) };
+        return Rect.between(self.start_x, self.start_y, self.current_x, self.current_y, width, height);
     }
     fn draw(self: *SelectionOverlay, layer: *Layer, buffer: native.Pixels) void {
         const selected = if (self.dragging and self.active == layer) self.rectangle(layer.surface.width, layer.surface.height) else null;
