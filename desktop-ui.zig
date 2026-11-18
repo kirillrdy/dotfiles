@@ -16,6 +16,9 @@ pub const variant = struct {
     pub fn builder(signature: [*:0]const u8) *c.GVariantBuilder {
         return c.g_variant_builder_new(@ptrCast(signature)).?;
     }
+    pub fn emptyDict() ?*c.GVariant {
+        return c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0);
+    }
     pub fn child(value: ?*c.GVariant, index: usize) *c.GVariant {
         return c.g_variant_get_child_value(value, index).?;
     }

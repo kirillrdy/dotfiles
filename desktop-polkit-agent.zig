@@ -211,7 +211,6 @@ const Auth = struct {
     invocation: *c.GDBusMethodInvocation,
     action: [:0]const u8,
     message: [:0]const u8,
-    icon: [:0]const u8,
     cookie: [:0]const u8,
     username: [:0]const u8,
     dialog: ?Dialog = null,
@@ -253,18 +252,18 @@ const Auth = struct {
         if (passwd == null) return error.UnknownUser;
         const username = try a.dupeSentinel(u8, std.mem.span(passwd.*.pw_name), 0);
         if (std.mem.indexOfAny(u8, username, "\r\n") != null) return error.InvalidUser;
-        var strings: [4][:0]const u8 = undefined;
-        for ([_]usize{ 0, 1, 2, 4 }, 0..) |index, dest| {
+        var strings: [3][:0]const u8 = undefined;
+        for ([_]usize{ 0, 1, 4 }, 0..) |index, dest| {
             const value = child(params, index);
             defer c.g_variant_unref(value);
             strings[dest] = try a.dupeSentinel(u8, text(value), 0);
         }
-        if (strings[3].len == 0 or strings[3].len > 4096 or std.mem.indexOfAny(u8, strings[3], "\r\n") != null) return error.InvalidCookie;
-        self.* = .{ .state = state, .arena = arena, .invocation = cast(c.GDBusMethodInvocation, c.g_object_ref(invocation)), .action = strings[0], .message = strings[1], .icon = strings[2], .cookie = strings[3], .username = username };
+        if (strings[2].len == 0 or strings[2].len > 4096 or std.mem.indexOfAny(u8, strings[2], "\r\n") != null) return error.InvalidCookie;
+        self.* = .{ .state = state, .arena = arena, .invocation = cast(c.GDBusMethodInvocation, c.g_object_ref(invocation)), .action = strings[0], .message = strings[1], .cookie = strings[2], .username = username };
         return self;
     }
     fn start(self: *Auth) void {
-        self.dialog = Dialog.create(self.action, self.message, self.username, if (self.icon.len > 0) self.icon else null) catch {
+        self.dialog = Dialog.create(self.action, self.message, self.username) catch {
             self.complete(false, false, "Could not create authentication dialog");
             return;
         };

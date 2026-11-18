@@ -426,7 +426,7 @@ pub const Settings = struct {
     fn forget(self: *Settings, key: [:0]const u8) void {
         const owned_key = z(key);
         defer a.free(owned_key);
-        const dialog = auth.Dialog.createWithOptions(.confirm, "Forget the selected connection and its saved credentials?", .{ .title = "Forget Connection", .role = "desktop-network-forget", .accept = "Forget", .cancel = "Cancel", .icon = "network-wireless" }) catch return;
+        const dialog = auth.Dialog.createWithOptions(.confirm, "Forget the selected connection and its saved credentials?", .{ .title = "Forget Connection", .role = "desktop-network-forget", .accept = "Forget", .cancel = "Cancel" }) catch return;
         defer dialog.destroy();
         dialog.window.parent = self.window;
         // Hold the controller across the nested dialog loop, even if its parent closes.
@@ -527,7 +527,7 @@ pub const Settings = struct {
         }
         const owned_path = z(path);
         defer a.free(owned_path);
-        const dialog = auth.Dialog.createWithOptions(.password, ap.title, .{ .title = "Authentication Required", .role = "desktop-network-auth", .accept = "Connect", .cancel = "Cancel", .icon = "network-wireless-symbolic" }) catch return;
+        const dialog = auth.Dialog.createWithOptions(.password, ap.title, .{ .title = "Authentication Required", .role = "desktop-network-auth", .accept = "Connect", .cancel = "Cancel" }) catch return;
         defer dialog.destroy();
         dialog.window.parent = self.window;
         self.network_operations += 1;

@@ -3,7 +3,9 @@ const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const cast = c.__zig.cast;
 const auth = @import("desktop-auth-dialog.zig");
-pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;
+const portal_options = @import("desktop-portal-options.zig");
+const Options = portal_options.Options(error.InvalidAccountReason);
+pub const Completion = portal_options.Completion;
 pub const Dialog = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
@@ -16,9 +18,8 @@ pub const Dialog = struct {
     finished: bool = false,
 
     pub fn create(allocator: std.mem.Allocator, app: [:0]const u8, parent: [:0]const u8, options: *c.GVariant, callback: Completion, data: ?*anyopaque) !*Dialog {
-        const reason = c.g_variant_lookup_value(options, "reason", null);
+        const reason = try Options.get(options, "reason", "s");
         defer if (reason != null) c.g_variant_unref(reason);
-        if (reason != null and !std.mem.eql(u8, std.mem.span(c.g_variant_get_type_string(reason)), "s")) return error.InvalidAccountReason;
         const self = try allocator.create(Dialog);
         self.* = .{
             .allocator = allocator,

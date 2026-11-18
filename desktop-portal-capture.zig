@@ -10,7 +10,9 @@ const sc = @import("desktop-screenshot.zig");
 const protocols = sc.protocols;
 pub const Image = @import("desktop-image.zig").Image;
 const cast = c.__zig.cast;
-pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;
+const portal_options = @import("desktop-portal-options.zig");
+const Options = portal_options.Options(error.InvalidScreenshotOptions);
+pub const Completion = portal_options.Completion;
 
 /// A private Wayland connection keeps capture traffic off GTK's event queue.
 pub const Capture = struct {
@@ -224,17 +226,8 @@ pub const Operation = struct {
     data: ?*anyopaque,
 
     pub fn create(allocator: std.mem.Allocator, app: [:0]const u8, parent: [:0]const u8, method: []const u8, options: *c.GVariant, callback: Completion, data: ?*anyopaque) !*Operation {
-        var interactive = false;
-        for ([_][*:0]const u8{ "interactive", "modal" }) |option_key| {
-            const value = c.g_variant_lookup_value(options, option_key, null);
-            defer if (value != null) c.g_variant_unref(value);
-            if (value != null and !std.mem.eql(u8, std.mem.span(c.g_variant_get_type_string(value)), "b")) return error.InvalidScreenshotOptions;
-        }
-        const hint = c.g_variant_lookup_value(options, "interactive", null);
-        if (hint != null) {
-            interactive = c.g_variant_get_boolean(hint) != 0;
-            c.g_variant_unref(hint);
-        }
+        const interactive = try Options.boolean(options, "interactive", false);
+        _ = try Options.boolean(options, "modal", true);
         const self = try allocator.create(Operation);
         errdefer allocator.destroy(self);
         self.* = .{ .allocator = allocator, .point = std.mem.eql(u8, method, "PickColor"), .callback = callback, .data = data };
@@ -440,7 +433,7 @@ pub const Operation = struct {
         self.finish(0, c.g_variant_builder_end(results));
     }
     fn finish(self: *Operation, code: u32, results: ?*c.GVariant) void {
-        self.callback(self.data, code, results orelse c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0));
+        self.callback(self.data, code, results orelse c.__zig.variant.emptyDict());
     }
 };
 

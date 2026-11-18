@@ -1,41 +1,53 @@
 //! Native Wayland windows for private compositor tests.
 const std = @import("std");
-const c = @import("desktop").gtk;
+const desktop = @import("desktop");
+const c = desktop.gtk;
+const wire = desktop.window.wire;
 const cast = c.__zig.cast;
-fn activeChanged(object: *c.GObject, _: ?*c.GParamSpec, _: ?*anyopaque) callconv(.c) void {
-    const window = cast(c.GtkWindow, object);
-    if (c.gtk_window_is_active(window) != 0) {
-        c.g_print("%lld %s\n", @as(c_longlong, c.g_get_monotonic_time()), c.gtk_window_get_title(window));
+
+const State = struct {
+    title: [:0]const u8,
+    surface: ?*wire.Surface = null,
+    frame: u32 = 0,
+    closed: bool = false,
+
+    fn output(_: ?*anyopaque, _: *wire.Output) void {}
+    fn paint(ptr: ?*anyopaque, pixels: wire.Pixels) void {
+        const self = cast(State, ptr);
+        @memset(pixels.pixels, 0xff245b98 +% self.frame);
     }
-}
-fn quit(_: ?*c.GtkWidget, _: ?*anyopaque) callconv(.c) void {
-    c.gtk_main_quit();
-}
-fn animate(data: c.gpointer) callconv(.c) c.gboolean {
-    const text = c.g_strdup_printf("Live frame %lld", @as(c_longlong, @divTrunc(c.g_get_monotonic_time(), 100000)));
-    defer c.g_free(text);
-    c.gtk_label_set_text(cast(c.GtkLabel, data), text);
-    return 1;
-}
+    fn close(ptr: ?*anyopaque) void {
+        cast(State, ptr).closed = true;
+    }
+    fn focus(ptr: ?*anyopaque, _: *wire.Surface, active: bool) void {
+        const self = cast(State, ptr);
+        if (active) c.g_print("%lld %s\n", @as(c_longlong, c.g_get_monotonic_time()), self.title.ptr);
+    }
+    fn animate(data: c.gpointer) callconv(.c) c.gboolean {
+        const self = cast(State, data);
+        self.frame +%= 0x00030507;
+        if (self.surface) |surface| surface.redraw();
+        return 1;
+    }
+};
+
 pub fn main(init: std.process.Init) !void {
     const a = std.heap.page_allocator;
     const args = try init.minimal.args.toSlice(a);
     if (args.len != 3) return error.InvalidArguments;
-    c.g_set_prgname(args[1]);
-    c.gtk_init(null, null);
-    const window = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);
-    c.gtk_window_set_title(cast(c.GtkWindow, window), args[2]);
-    c.gtk_window_set_default_size(cast(c.GtkWindow, window), 640, 420);
-    const label = c.gtk_label_new(args[2]);
-    c.gtk_container_add(cast(c.GtkContainer, window), label);
-    const timer = if (c.g_getenv("DESKTOP_FIXTURE_ANIMATE") != null) c.g_timeout_add(100, &animate, label) else 0;
+    var state: State = .{ .title = args[2] };
+    const client = try wire.Client.createInteractive(.{ .added = &State.output, .removed = &State.output }, &state);
+    defer client.destroy();
+    if (client.outputs.items.len == 0) return error.NoOutputs;
+    const surface = try wire.Surface.createPixels(client.outputs.items[0], .{ .namespace = args[1], .title = args[2], .role = .toplevel, .width = 640, .height = 420, .interactive = true, .cursor = .arrow }, &State.paint, &state);
+    state.surface = surface;
+    surface.input = .{ .focus = &State.focus };
+    surface.close = &State.close;
+    const timer = if (c.g_getenv("DESKTOP_FIXTURE_ANIMATE") != null) c.g_timeout_add(100, &State.animate, &state) else 0;
     defer if (timer != 0) {
         _ = c.g_source_remove(timer);
     };
-    _ = c.g_signal_connect_data(window, "notify::is-active", @ptrCast(&activeChanged), null, null, 0);
-    _ = c.g_signal_connect_data(window, "destroy", @ptrCast(&quit), null, null, 0);
-    c.gtk_widget_realize(window);
-    c.gdk_wayland_window_set_application_id(c.gtk_widget_get_window(window), args[1]);
-    c.gtk_widget_show_all(window);
-    c.gtk_main();
+    try client.start();
+    try surface.show();
+    while (!state.closed) _ = c.g_main_context_iteration(null, 1);
 }

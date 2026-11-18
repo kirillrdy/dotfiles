@@ -14,7 +14,7 @@ const Reply = struct {
     }
 };
 fn checkDialog() !void {
-    var dialog = try polkit.Dialog.create("org.dotfiles.test<&>", "Authentication is required: 東京", "test<&>", null);
+    var dialog = try polkit.Dialog.create("org.dotfiles.test<&>", "Authentication is required: 東京", "test<&>");
     defer dialog.destroy();
     var reply: Reply = .{};
     dialog.native.responded = &Reply.response;

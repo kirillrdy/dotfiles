@@ -1,6 +1,7 @@
 //! Typed portal options. Successful lookups return an owned variant reference.
 const std = @import("std");
 const c = @import("desktop-gtk.zig");
+pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;
 
 pub fn Options(comptime invalid: anyerror) type {
     return struct {

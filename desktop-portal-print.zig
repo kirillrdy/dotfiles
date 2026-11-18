@@ -7,9 +7,7 @@ const eq = c.__zig.eq;
 const Options = @import("desktop-portal-options.zig").Options(error.InvalidPrintOption);
 const option = Options.get;
 const boolean = Options.boolean;
-fn empty() ?*c.GVariant {
-    return c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0);
-}
+const empty = c.__zig.variant.emptyDict;
 fn capabilities(options: ?*c.GVariant) !c.GtkPrintCapabilities {
     var result: c.GtkPrintCapabilities = c.GTK_PRINT_CAPABILITY_PAGE_SET | c.GTK_PRINT_CAPABILITY_COPIES | c.GTK_PRINT_CAPABILITY_COLLATE | c.GTK_PRINT_CAPABILITY_REVERSE | c.GTK_PRINT_CAPABILITY_SCALE | c.GTK_PRINT_CAPABILITY_NUMBER_UP | c.GTK_PRINT_CAPABILITY_NUMBER_UP_LAYOUT;
     const formats = try option(options, "supported_output_file_formats", "as") orelse return result;
@@ -118,7 +116,7 @@ pub const Service = struct {
     }
 };
 
-pub const Completion = *const fn (?*anyopaque, u32, ?*c.GVariant) void;
+pub const Completion = @import("desktop-portal-options.zig").Completion;
 pub const Operation = struct {
     service: *Service,
     arena: std.heap.ArenaAllocator,

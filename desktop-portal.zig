@@ -38,9 +38,7 @@ fn tuple(values: []const ?*c.GVariant) ?*c.GVariant {
     for (values) |value| c.g_variant_unref(value);
     return result;
 }
-fn dict() ?*c.GVariant {
-    return c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0);
-}
+const dict = c.__zig.variant.emptyDict;
 const child = c.g_variant_get_child_value;
 fn errorReply(invocation: ?*c.GDBusMethodInvocation, message: [*:0]const u8) void {
     c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.portal.Error.Failed", message);

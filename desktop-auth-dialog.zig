@@ -39,7 +39,6 @@ pub const Dialog = struct {
         role: [:0]const u8 = "desktop-askpass",
         parent: [:0]const u8 = "",
         accept: ?[:0]const u8 = null,
-        icon: [:0]const u8 = "dialog-password",
         confirmation: bool = false,
         cancel: ?[:0]const u8 = null,
         // Choices and their labels must outlive the dialog; flags may update in place.
@@ -96,7 +95,7 @@ pub const Dialog = struct {
         self.size();
         changed(self);
     }
-    pub fn setStatus(self: *Dialog, value: [:0]const u8, is_error: bool) !void {
+    pub fn setStatus(self: *Dialog, value: []const u8, is_error: bool) !void {
         const status = try self.allocator.dupeSentinel(u8, value, 0);
         if (self.status) |old| self.allocator.free(old);
         self.status = status;

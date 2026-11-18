@@ -277,10 +277,10 @@ pub const Service = struct {
                 if (ch.* == '-') ch.* = '_';
             }
             if (std.mem.startsWith(u8, name_text, "app.")) {
-                c.g_dbus_connection_call(self.connection, notice.app, app_path, "org.freedesktop.Application", "ActivateAction", c.g_variant_new("(s@av@a{sv})", name + 4, c.g_variant_builder_end(arguments), c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0)), null, 0, 1000, null, null, null);
+                c.g_dbus_connection_call(self.connection, notice.app, app_path, "org.freedesktop.Application", "ActivateAction", c.g_variant_new("(s@av@a{sv})", name + 4, c.g_variant_builder_end(arguments), c.__zig.variant.emptyDict()), null, 0, 1000, null, null, null);
                 return;
             }
-            c.g_dbus_connection_call(self.connection, notice.app, app_path, "org.freedesktop.Application", "Activate", c.g_variant_new("(@a{sv})", c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0)), null, 0, 1000, null, null, null);
+            c.g_dbus_connection_call(self.connection, notice.app, app_path, "org.freedesktop.Application", "Activate", c.g_variant_new("(@a{sv})", c.__zig.variant.emptyDict()), null, 0, 1000, null, null, null);
             _ = c.g_dbus_connection_emit_signal(self.connection, notice.owner, "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Notification", "ActionInvoked", c.g_variant_new("(ss@av)", notice.key.ptr, name, c.g_variant_builder_end(arguments)), null);
             return;
         };

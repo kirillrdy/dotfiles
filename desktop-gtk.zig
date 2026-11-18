@@ -48,7 +48,6 @@ pub const GError = struct__GError;
 pub extern fn g_error_free(@"error": [*c]GError) void;
 pub extern fn g_clear_error(err: [*c][*c]GError) void;
 pub extern fn g_get_home_dir() [*c]const gchar;
-pub extern fn g_set_prgname(prgname: [*c]const gchar) void;
 pub const G_USER_DIRECTORY_PICTURES: c_int = 4;
 pub const GUserDirectory = c_uint;
 pub extern fn g_get_user_special_dir(directory: GUserDirectory) [*c]const gchar;
@@ -653,29 +652,16 @@ pub extern fn gdk_cairo_set_source_pixbuf(cr: ?*cairo_t, pixbuf: ?*const GdkPixb
 pub const struct__GtkWidget = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkWidget = struct__GtkWidget;
-pub const struct__GtkContainer = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkContainer = struct__GtkContainer;
 pub const struct__GtkWindow = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkWindow = struct__GtkWindow;
 pub extern fn gtk_widget_destroy(widget: [*c]GtkWidget) void;
 pub extern fn gtk_widget_show(widget: [*c]GtkWidget) void;
 pub extern fn gtk_widget_hide(widget: [*c]GtkWidget) void;
-pub extern fn gtk_widget_show_all(widget: [*c]GtkWidget) void;
-pub extern fn gtk_widget_realize(widget: [*c]GtkWidget) void;
 pub extern fn gtk_widget_get_sensitive(widget: [*c]GtkWidget) gboolean;
 pub extern fn gtk_widget_get_window(widget: [*c]GtkWidget) ?*GdkWindow;
-pub extern fn gtk_container_add(container: [*c]GtkContainer, widget: [*c]GtkWidget) void;
-pub const GTK_WINDOW_TOPLEVEL: c_int = 0;
-pub const GtkWindowType = c_uint;
-pub extern fn gtk_window_new(@"type": GtkWindowType) [*c]GtkWidget;
-pub extern fn gtk_window_set_title(window: [*c]GtkWindow, title: [*c]const gchar) void;
-pub extern fn gtk_window_get_title(window: [*c]GtkWindow) [*c]const gchar;
-pub extern fn gtk_window_is_active(window: [*c]GtkWindow) gboolean;
 pub extern fn gtk_window_set_modal(window: [*c]GtkWindow, modal: gboolean) void;
 pub extern fn gtk_window_present(window: [*c]GtkWindow) void;
-pub extern fn gtk_window_set_default_size(window: [*c]GtkWindow, width: gint, height: gint) void;
 pub const GTK_RESPONSE_OK: c_int = -5;
 pub const GTK_RESPONSE_CANCEL: c_int = -6;
 pub const struct__GtkDialog = extern struct { _opaque: [0]usize = .{} };
@@ -683,11 +669,6 @@ pub const struct__GtkDialog = extern struct { _opaque: [0]usize = .{} };
 pub const GtkDialog = struct__GtkDialog;
 pub extern fn gtk_dialog_set_default_response(dialog: [*c]GtkDialog, response_id: gint) void;
 pub extern fn gtk_dialog_response(dialog: [*c]GtkDialog, response_id: gint) void;
-pub const struct__GtkLabel = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkLabel = struct__GtkLabel;
-pub extern fn gtk_label_new(str: [*c]const gchar) [*c]GtkWidget;
-pub extern fn gtk_label_set_text(label: [*c]GtkLabel, str: [*c]const gchar) void;
 pub const struct__GtkButton = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkButton = struct__GtkButton;
@@ -706,10 +687,7 @@ pub extern fn gtk_icon_theme_append_search_path(icon_theme: [*c]GtkIconTheme, pa
 pub extern fn gtk_icon_theme_set_custom_theme(icon_theme: [*c]GtkIconTheme, theme_name: [*c]const gchar) void;
 pub extern fn gtk_icon_theme_lookup_icon(*GtkIconTheme, [*c]const u8, gint, GtkIconLookupFlags) ?*GtkIconInfo;
 pub extern fn gtk_icon_info_load_symbolic(*GtkIconInfo, *const GdkRGBA, ?*const GdkRGBA, ?*const GdkRGBA, ?*const GdkRGBA, ?*gboolean, [*c][*c]GError) ?*GdkPixbuf;
-pub extern fn gtk_init(argc: [*c]c_int, argv: [*c][*c][*c]u8) void;
 pub extern fn gtk_init_check(argc: [*c]c_int, argv: [*c][*c][*c]u8) gboolean;
-pub extern fn gtk_main() void;
-pub extern fn gtk_main_quit() void;
 pub const struct__GDesktopAppInfo = opaque {};
 
 pub const GDesktopAppInfo = struct__GDesktopAppInfo;
@@ -780,7 +758,6 @@ pub const WL_OUTPUT_MODE_CURRENT = wayland.WL_OUTPUT_MODE_CURRENT;
 pub const struct_wl_output_listener = wayland.struct_wl_output_listener;
 pub const wl_output_add_listener = wayland.wl_output_add_listener;
 pub const wl_output_destroy = wayland.wl_output_destroy;
-pub extern fn gdk_wayland_window_set_application_id(window: ?*GdkWindow, application_id: [*c]const u8) void;
 pub const SIGINT = @as(c_int, 2);
 pub const SIGTERM = @as(c_int, 15);
 pub const GDK_KEY_BackSpace = __helpers.promoteIntLiteral(c_int, 0xff08, .hex);

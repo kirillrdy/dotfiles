@@ -340,7 +340,6 @@ pub const Controls = struct {
         const dialog = auth.Dialog.createWithOptions(.information, "Choose a power mode.", .{
             .title = "Power Mode",
             .role = "desktop-power-settings",
-            .icon = "power-profile-balanced-symbolic",
             .choices = &self.power_choices,
         }) catch |err| {
             self.dialogError(err);
@@ -603,7 +602,6 @@ pub const Controls = struct {
             .title = "Authentication Required",
             .role = "desktop-network-auth",
             .accept = "Connect",
-            .icon = "network-wireless-symbolic",
         }) catch |err| {
             self.dialogError(err);
             return;
@@ -652,7 +650,6 @@ pub const Controls = struct {
             .role = "desktop-session-confirm",
             .accept = "Confirm",
             .cancel = "Cancel",
-            .icon = "system-shutdown-symbolic",
         }) catch |err| {
             self.dialogError(err);
             return;

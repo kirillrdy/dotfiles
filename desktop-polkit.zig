@@ -11,14 +11,12 @@ pub const Dialog = struct {
     message: [:0]const u8,
     user: ?[:0]const u8,
     prompt: ?[:0]u8 = null,
-    status: ?[:0]u8 = null,
 
-    pub fn create(action: ?[:0]const u8, message: [:0]const u8, user: ?[:0]const u8, icon: ?[:0]const u8) !Dialog {
+    pub fn create(action: ?[:0]const u8, message: [:0]const u8, user: ?[:0]const u8) !Dialog {
         const native = try auth.Dialog.createWithOptions(.password, message, .{
             .title = "Authentication Required",
             .role = "desktop-polkit",
             .accept = "Authenticate",
-            .icon = icon orelse "dialog-password",
         });
         errdefer native.destroy();
         var self: Dialog = .{ .native = native, .window = native.window, .action = action, .message = message, .user = user };
@@ -31,7 +29,6 @@ pub const Dialog = struct {
             self.message, self.action orelse "", self.prompt orelse "Password:", self.user orelse "",
         }, 0);
         defer a.free(value);
-        self.native.view.status = self.status;
         try self.native.setPrompt(value);
     }
     pub fn setPrompt(self: *Dialog, prompt: [:0]const u8, echo: bool) !void {
@@ -48,16 +45,10 @@ pub const Dialog = struct {
         self.native.focus(.entry);
     }
     pub fn setStatus(self: *Dialog, message: []const u8) !void {
-        const value = try a.dupeSentinel(u8, message, 0);
-        const old = self.status;
-        self.status = value;
-        self.native.view.status_error = false;
-        defer if (old) |v| a.free(v);
-        try self.refresh();
+        try self.native.setStatus(message, false);
     }
     pub fn setError(self: *Dialog, message: []const u8) !void {
-        try self.setStatus(message);
-        self.native.view.status_error = true;
+        try self.native.setStatus(message, true);
     }
     pub fn setEnabled(self: *Dialog, enabled: bool) void {
         self.native.setEnabled(enabled);
@@ -71,7 +62,6 @@ pub const Dialog = struct {
     pub fn destroy(self: *Dialog) void {
         self.native.destroy();
         if (self.prompt) |v| a.free(v);
-        if (self.status) |v| a.free(v);
     }
 };
 
