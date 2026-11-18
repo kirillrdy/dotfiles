@@ -99,18 +99,7 @@ const Server = struct {
     fn present(self: *Server) !void {
         const client = self.client orelse return;
         if (client.outputs.items.len == 0) return;
-        // Match GDK's primary monitor when available, then use the first output.
-        var output = client.outputs.items[0];
-        const display = c.gdk_display_get_default();
-        if (c.gdk_display_get_primary_monitor(display)) |monitor| {
-            var geometry: c.GdkRectangle = undefined;
-            c.gdk_monitor_get_geometry(monitor, &geometry);
-            for (client.outputs.items) |candidate| if (candidate.x == geometry.x and candidate.y == geometry.y) {
-                output = candidate;
-                break;
-            };
-        }
-        try self.map(output);
+        try self.map(client.outputs.items[0]);
     }
     fn map(self: *Server, output: *native.Output) !void {
         const notice = self.active orelse return;
@@ -500,5 +489,5 @@ pub const Service = struct {
 
 fn serviceLost(_: ?*c.GDBusConnection, _: [*c]const u8, data: c.gpointer) callconv(.c) void {
     cast(Server, data).owned = false;
-    if (c.g_application_get_default()) |app| c.g_application_quit(app) else c.gtk_main_quit();
+    if (c.g_application_get_default()) |app| c.g_application_quit(app);
 }

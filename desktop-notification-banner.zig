@@ -270,7 +270,6 @@ fn shadowMask(width: u32, height: u32, scale: u32) ![]u8 {
 }
 test "integration: native notification expansion wraps markup and keeps action hit regions inside the card at both scales" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
-    c.gtk_init(null, null);
     const actions = [_]data.Action{ .{ .key = "default", .label = "Open" }, .{ .key = "reply", .label = "Reply" }, .{ .key = "archive", .label = "Archive" } };
     for ([_]u32{ 1, 2 }) |scale| {
         var card = View.init(.{ .id = 1, .app = "Messages", .title = "東京 — مرحبا", .body = "<b>A long notification</b> with wrapping text. This message includes enough words to occupy several lines when expanded. It should wrap naturally and preserve bold markup, while the collapsed card displays just one line. More text ensures the action row moves down with the expanded body.", .created = 0, .actions = &actions }, .{}, 529);
@@ -310,7 +309,6 @@ test "integration: native notification expansion wraps markup and keeps action h
 
 test "integration: GNOME header keeps the age beside the source and reserves button space" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
-    c.gtk_init(null, null);
     for ([_]u32{ 1, 2 }) |scale| {
         var card = View.init(.{ .id = 1, .app = "Terminal", .title = "Build complete", .body = "All checks passed. Your desktop is ready.", .created = @divTrunc(c.g_get_real_time(), 1000000) }, .{}, 529);
         defer card.deinit();
@@ -330,7 +328,6 @@ test "integration: GNOME header keeps the age beside the source and reserves but
 
 test "integration: expanded banner matches GNOME's measured line and action geometry" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
-    c.gtk_init(null, null);
     const actions = [_]data.Action{ .{ .key = "open", .label = "Open Settings" }, .{ .key = "later", .label = "Later" } };
     for ([_]u32{ 1, 2 }) |scale| {
         var card = View.init(.{ .id = 1, .app = "Terminal", .title = "A longer notification title that should fit on one line", .body = "This notification contains a longer message that wraps onto multiple lines. Expand it to read the complete notification and choose an action.", .created = @divTrunc(c.g_get_real_time(), 1000000), .actions = &actions }, .{}, 529);

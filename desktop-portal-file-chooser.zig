@@ -66,7 +66,6 @@ pub const Dialog = struct {
     const window_items = 512;
 
     pub fn create(allocator: std.mem.Allocator, method: []const u8, parent: [:0]const u8, title: [:0]const u8, options: *c.GVariant, callback: Completion, data: ?*anyopaque) !*Dialog {
-        if (c.gtk_init_check(null, null) == 0) return error.DisplayUnavailable;
         const kind: @FieldType(Dialog, "method") = if (eq(method, "OpenFile")) .open else if (eq(method, "SaveFile")) .save else if (eq(method, "SaveFiles")) .save_files else return error.InvalidFileChooserMethod;
         const self = try allocator.create(Dialog);
         errdefer allocator.destroy(self);

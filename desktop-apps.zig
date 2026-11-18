@@ -108,7 +108,7 @@ pub const Launcher = struct {
     wheel: f64 = 0,
     wheel_time: u32 = 0,
 
-    pub fn init(_: ?*c.GtkApplication) Launcher {
+    pub fn init() Launcher {
         return .{ .entries = .init(allocator), .visible = .init(allocator), .query = fold(""), .status = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory") };
     }
     pub fn bind(self: *Launcher) void {
@@ -548,10 +548,9 @@ pub fn paint(l: *Launcher, part: Part, target: raster.Buffer, scale: u32) void {
         }
     }
 }
-pub fn activate(_: ?*c.GtkApplication, data: ?*anyopaque) callconv(.c) void {
-    const state = cast(?Launcher, data);
+pub fn activate(state: *?Launcher) void {
     if (state.* == null) {
-        state.* = Launcher.init(null);
+        state.* = Launcher.init();
         state.*.?.bind();
     }
     const self = &state.*.?;
@@ -814,7 +813,7 @@ test "launcher owners can defer hiding until an exit animation completes" {
         }
     };
     var state: State = .{};
-    var launcher = Launcher.init(null);
+    var launcher = Launcher.init();
     defer launcher.deinit();
     launcher.bindControls();
     launcher.owner = &state;
@@ -829,7 +828,7 @@ test "launcher owners can defer hiding until an exit animation completes" {
 }
 
 test "overview search navigates results from the end of the query" {
-    var launcher = Launcher.init(null);
+    var launcher = Launcher.init();
     defer launcher.deinit();
     launcher.bindControls();
     launcher.overview_search = true;

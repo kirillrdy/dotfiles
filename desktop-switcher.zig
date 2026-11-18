@@ -376,8 +376,6 @@ test "application grouping counts windows without merging missing app IDs" {
 
 test "integration: native switcher preserves its role and icons across selection changes" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
-    // The shared capture client still resolves window icons through GDK.
-    try std.testing.expect(c.gtk_init_check(null, null) != 0);
     const probe = @import("tests/desktop-surface-capture.zig");
     defer deinit();
     var snapshot: Snapshot = .{ .len = 3, .visible = true };

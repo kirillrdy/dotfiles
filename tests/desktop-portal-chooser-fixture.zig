@@ -89,7 +89,6 @@ pub fn main(init: std.process.Init) !void {
     defer a.free(unicode);
     _ = c.g_setenv("GTK_USE_PORTAL", "0", 1);
     _ = c.g_setenv("GIO_USE_VFS", "local", 1);
-    try expect(c.gtk_init_check(null, null) != 0);
     {
         const b = optionBuilder(root);
         defer c.g_variant_builder_unref(b);

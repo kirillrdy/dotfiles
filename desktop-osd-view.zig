@@ -4,15 +4,17 @@ const c = @import("desktop-gtk.zig");
 const raster = @import("desktop-raster.zig");
 pub const Kind = enum { volume, microphone, brightness };
 
+pub const Edges = struct { left: i16 = 0, right: i16 = 0, top: i16 = 0, bottom: i16 = 0 };
+
 pub const Theme = struct {
     background: raster.Color = .{ .red = 46.0 / 255.0, .green = 46.0 / 255.0, .blue = 51.0 / 255.0, .alpha = 1 },
     foreground: raster.Color = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 },
     track: raster.Color = .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.1 },
     fill: raster.Color = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 },
     border_color: raster.Color = .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.02 },
-    border: c.GtkBorder = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-    padding: c.GtkBorder = .{ .left = 18, .right = 18, .top = 12, .bottom = 12 },
-    bar_margin: c.GtkBorder = .{ .right = 6 },
+    border: Edges = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+    padding: Edges = .{ .left = 18, .right = 18, .top = 12, .bottom = 12 },
+    bar_margin: Edges = .{ .right = 6 },
     bar_width: u32 = 160,
     bar_height: u32 = 6,
 

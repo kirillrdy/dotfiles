@@ -16,7 +16,6 @@ fn waitControls(controls: *quick.Controls) void {
     assert(!controls.brightness_busy and controls.brightness_timer == 0);
 }
 fn controlsTest(backend: backlight.Backend, empty: bool, denied: bool) !void {
-    if (c.gtk_init_check(null, null) == 0) return error.NoDisplay;
     const controls = quick.Controls.create("true", "true");
     controls.backlight_backend = backend;
     controls.refresh();
@@ -114,8 +113,7 @@ fn runOsd(init: std.process.Init, backend: backlight.Backend) !void {
         std.debug.print("Usage: desktop-osd serve | volume up|down|mute | microphone mute | brightness up|down\n", .{});
         return error.InvalidArguments;
     }
-    _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
-    const app = c.gtk_application_new("org.dotfiles.DesktopOsd", c.G_APPLICATION_HANDLES_COMMAND_LINE);
+    const app = c.g_application_new("org.dotfiles.DesktopOsd", c.G_APPLICATION_HANDLES_COMMAND_LINE).?;
     defer c.g_object_unref(app);
     var server = osd.Server{ .backlight_backend = backend };
     defer server.deinit();
@@ -126,5 +124,5 @@ fn runOsd(init: std.process.Init, backend: backlight.Backend) !void {
     defer _ = c.g_source_remove(interrupt);
     const argv = try arena.allocator().allocSentinel(?[*:0]const u8, args.len, null);
     for (args, 0..) |arg, i| argv[i] = (try arena.allocator().dupeSentinel(u8, arg, 0)).ptr;
-    if (c.g_application_run(cast(c.GApplication, app), @intCast(args.len), @ptrCast(argv.ptr)) != 0) return error.CommandFailed;
+    if (c.g_application_run(app, @intCast(args.len), @ptrCast(argv.ptr)) != 0) return error.CommandFailed;
 }

@@ -61,11 +61,10 @@ fn click(sound: *settings.Sound, row: usize, control: @import("desktop").setting
     sound.pointerButton(false, rect.x + rect.width / 2, rect.y + rect.height / 2);
 }
 fn ui(service: *audio.Service) !void {
-    if (c.gtk_init_check(null, null) == 0) return error.NoDisplay;
     const controls = quick.Controls.create("true", "true");
-    const app = c.gtk_application_new("org.dotfiles.SettingsFixture", 0).?;
+    const app = c.g_application_new("org.dotfiles.SettingsFixture", 0).?;
     defer c.g_object_unref(app);
-    if (g_application_register(@ptrCast(app), null, null) == 0) return error.ApplicationRegistrationFailed;
+    if (g_application_register(app, null, null) == 0) return error.ApplicationRegistrationFailed;
     var dialogs: settings.Service = .{};
     defer {
         controls.deinit();
@@ -202,7 +201,6 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "dispose")) return;
     try ready(service);
     if (std.mem.startsWith(u8, args[1], "preview")) {
-        c.gtk_init(null, null);
         const shell = settings.Settings.create(.sound);
         const sound = shell.sound.?;
         defer {

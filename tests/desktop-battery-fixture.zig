@@ -70,7 +70,6 @@ pub fn main(init: std.process.Init) !void {
         try @import("desktop").battery_monitor.runWithOptions(.{ .source = options, .lid_root = lid, .action_delay_us = 750000 }, checked.allocator());
         return;
     }
-    if (c.gtk_init_check(null, null) == 0) return error.NoDisplay;
     controls = quick.Controls.create("true", "true");
     controls.?.monitorBattery(options);
     const service = try battery.Service.createWithOptions(options, &changed, null);

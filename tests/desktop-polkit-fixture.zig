@@ -6,11 +6,11 @@ const cast = c.__zig.cast;
 
 const Reply = struct {
     count: usize = 0,
-    id: c_int = 0,
+    accepted: bool = false,
     fn response(data: ?*anyopaque, accepted: bool) void {
         const self = cast(Reply, data);
         self.count += 1;
-        self.id = if (accepted) c.GTK_RESPONSE_OK else c.GTK_RESPONSE_CANCEL;
+        self.accepted = accepted;
     }
 };
 fn checkDialog() !void {
@@ -46,19 +46,18 @@ fn checkDialog() !void {
     try dialog.native.entry.?.insert("123456");
     try std.testing.expect(dialog.native.handleKey(0xff0d, 0));
     while (reply.count < 1) _ = c.g_main_context_iteration(null, 1);
-    try std.testing.expectEqual(c.GTK_RESPONSE_OK, reply.id);
+    try std.testing.expect(reply.accepted);
     dialog.clear();
     dialog.setEnabled(false);
     try std.testing.expect(dialog.native.handleKey('x', 0));
     try std.testing.expectEqualStrings("", dialog.answer());
     try std.testing.expect(dialog.native.handleKey(0xff1b, 0));
     while (reply.count < 2) _ = c.g_main_context_iteration(null, 1);
-    try std.testing.expectEqual(c.GTK_RESPONSE_CANCEL, reply.id);
+    try std.testing.expect(!reply.accepted);
     try std.testing.expectEqual(@as(usize, 2), reply.count);
 }
 pub fn main(init: std.process.Init) !void {
     _ = init;
-    c.gtk_init(null, null);
     try checkDialog();
     std.debug.print("desktop-polkit: native labels, locked entry, helper wait, status, MFA clearing and cancellation passed\n", .{});
 }

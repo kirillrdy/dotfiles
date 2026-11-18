@@ -11,7 +11,6 @@ pub fn main(init: std.process.Init) !void {
     d.util.io = init.io;
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     if (args.len < 2) return error.ExpectedOperation;
-    c.gtk_init(null, null);
     var changes: usize = 0;
     const client = try capture.Client.create(&changes, &changed);
     defer client.destroy();

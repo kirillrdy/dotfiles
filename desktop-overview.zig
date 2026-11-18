@@ -80,7 +80,7 @@ const Overview = struct {
     workspace_rect: Rect = .{},
     monitor: c.GdkRectangle = .{ .x = 0, .y = 0, .width = 1728, .height = 1080 },
 
-    fn create(_: *c.GtkApplication, path: [*:0]const u8) *Overview {
+    fn create(path: [*:0]const u8) *Overview {
         const self = a.create(Overview) catch @panic("out of memory");
         const native = wire.Client.createInteractive(.{ .added = &outputAdded, .removed = &outputRemoved }, self) catch @panic("native overview connection");
         if (native.outputs.items.len == 0) @panic("overview needs an output");
@@ -93,7 +93,7 @@ const Overview = struct {
             c.gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
             c.cairo_paint(cr);
         }
-        self.* = .{ .launcher = apps.Launcher.init(null), .native = native, .surface = null, .wallpaper = wallpaper };
+        self.* = .{ .launcher = apps.Launcher.init(), .native = native, .surface = null, .wallpaper = wallpaper };
         self.gpu_previews = native.enablePreviews();
         self.surface = self.createSurface(native.outputs.items[0]) catch @panic("native overview surface");
         if (self.gpu_previews) self.background = self.createBackground(native.outputs.items[0]) catch @panic("overview background");
@@ -188,17 +188,6 @@ const Overview = struct {
         }
         if (self.timer == 0) self.timer = c.g_timeout_add(33, &tick, self);
         if (self.client == null) self.client = capture.Client.create(self, &changed) catch null;
-        // GDK still supplies global pointer coordinates for choosing an output.
-        // All overview surfaces and their input live on our native connection.
-        const display = c.gdk_display_get_default();
-        const seat = c.gdk_display_get_default_seat(display);
-        var x: c_int = 0;
-        var y: c_int = 0;
-        c.gdk_device_get_position(c.gdk_seat_get_pointer(seat), null, &x, &y);
-        for (self.native.outputs.items) |output| if (x >= output.x and y >= output.y and x < output.x + output.width() and y < output.y + output.height()) {
-            self.surface.?.output = output;
-            break;
-        };
         const output = self.surface.?.output;
         self.monitor = .{ .x = output.x, .y = output.y, .width = output.width(), .height = output.height() };
         self.apps_mode = false;
@@ -1284,9 +1273,8 @@ fn pixelRect(rect: Rect) raster.Rect {
 }
 
 pub const State = struct { overview: ?*Overview = null, wallpaper: [*:0]const u8 };
-pub fn activate(app: *c.GtkApplication, data: c.gpointer) callconv(.c) void {
-    const state = cast(State, data);
-    if (state.overview == null) state.overview = Overview.create(app, state.wallpaper);
+pub fn activate(state: *State) void {
+    if (state.overview == null) state.overview = Overview.create(state.wallpaper);
     const self = state.overview.?;
     if (self.launcher.visible_window and self.transition.shown) self.launcher.hide() else self.present();
 }
@@ -1295,7 +1283,7 @@ pub fn deinit(state: *State) void {
     state.overview = null;
 }
 
-pub fn activateCorner(app: *c.GtkApplication, state: *State) void {
+pub fn activateCorner(state: *State) void {
     if (state.overview) |self| {
         const now = c.g_get_monotonic_time();
         // overview.js shouldToggleByCornerOrButton(): don't interrupt an
@@ -1303,5 +1291,5 @@ pub fn activateCorner(app: *c.GtkApplication, state: *State) void {
         if (self.transition.active(now) or self.dragging or self.drag != null) return;
         if (self.activation_time != 0 and now - self.activation_time <= 500_000) return;
     }
-    activate(app, state);
+    activate(state);
 }

@@ -21,7 +21,7 @@ comptime {
 var current: ?*Session = null;
 
 const Session = struct {
-    app: *c.GtkApplication,
+    app: *c.GApplication,
     devices: ?*device_service.Service = null,
     device_subscription: device_service.Subscriber = undefined,
     device_subscribed: bool = false,
@@ -56,7 +56,7 @@ const Session = struct {
         self.panels = try panel.Service.create(config, self.devices.?);
         self.notices = try notifications.Service.create();
         try self.media.start();
-        self.media.connection = c.g_application_get_dbus_connection(@ptrCast(self.app));
+        self.media.connection = c.g_application_get_dbus_connection(self.app);
         self.agent = polkit.Service.init() catch |err| blk: {
             std.log.warn("PolicyKit agent: {s}; will retry", .{@errorName(err)});
             break :blk null;
@@ -73,7 +73,7 @@ const Session = struct {
         current = self;
         widgets.refresh_source = &refresh;
         self.timer = c.g_timeout_add_seconds(5, &maintain, self);
-        c.g_application_hold(@ptrCast(self.app));
+        c.g_application_hold(self.app);
     }
 
     fn devicesChanged(ptr: ?*anyopaque, source: *device_service.Service, event: device_service.Event) void {
@@ -145,9 +145,9 @@ fn dispatch(self: *Session, args: []const []const u8) !void {
     if (std.mem.eql(u8, verb, "serve")) return self.start(args[1..]);
     if (!self.serving) return error.SessionNotRunning;
     if (std.mem.eql(u8, verb, "overview") and args.len == 1) {
-        overview.activate(self.app, &self.activities);
+        overview.activate(&self.activities);
     } else if (std.mem.eql(u8, verb, "overview-corner") and args.len == 1) {
-        overview.activateCorner(self.app, &self.activities);
+        overview.activateCorner(&self.activities);
     } else if (std.mem.eql(u8, verb, "settings") and (args.len == 1 or args.len == 2)) {
         const mode: settings.Mode = if (args.len == 1)
             .network
@@ -243,8 +243,7 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "output")) return @import("desktop-output.zig").run(args[2..]);
     if (std.mem.eql(u8, args[1], "lock")) return @import("desktop-lock.zig").run(args[2..]);
     if (!std.mem.eql(u8, args[1], "serve")) try requireSession();
-    _ = c.g_setenv("GDK_BACKEND", "wayland", 1);
-    const app = c.gtk_application_new("org.dotfiles.Desktop", c.G_APPLICATION_HANDLES_COMMAND_LINE).?;
+    const app = c.g_application_new("org.dotfiles.Desktop", c.G_APPLICATION_HANDLES_COMMAND_LINE).?;
     defer c.g_object_unref(app);
     defer @import("desktop-icons.zig").deinit();
     var session = Session{ .app = app };
@@ -257,7 +256,7 @@ pub fn main(init: std.process.Init) !void {
     defer _ = c.g_source_remove(interrupt);
     const argv = try arena.allocator().allocSentinel(?[*:0]const u8, args.len, null);
     for (args, 0..) |arg, i| argv[i] = (try arena.allocator().dupeSentinel(u8, arg, 0)).ptr;
-    const status = c.g_application_run(@ptrCast(app), @intCast(args.len), @ptrCast(argv.ptr));
+    const status = c.g_application_run(app, @intCast(args.len), @ptrCast(argv.ptr));
     if (status != 0) return error.CommandFailed;
     if (session.serving and !session.notices.?.isOwned()) return error.NotificationNameUnavailable;
 }

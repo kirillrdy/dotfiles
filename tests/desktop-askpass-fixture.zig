@@ -54,12 +54,12 @@ fn checkEditing() !void {
 const Trigger = enum { response, enter, escape, allow_key, accept_click, cancel_click, term, interrupt };
 const Response = struct {
     dialog: *askpass.Dialog,
-    response: c_int,
+    accepted: bool,
     trigger: Trigger = .response,
     fn send(data: c.gpointer) callconv(.c) c.gboolean {
         const self: *Response = @ptrCast(@alignCast(data));
         switch (self.trigger) {
-            .response => self.dialog.respond(self.response == c.GTK_RESPONSE_OK),
+            .response => self.dialog.respond(self.accepted),
             .enter => _ = self.dialog.handleKey(0xff0d, 0),
             .escape => _ = self.dialog.handleKey(0xff1b, 0),
             .allow_key => {
@@ -77,7 +77,7 @@ const Response = struct {
         return 0;
     }
 };
-fn check(init: std.process.Init, root: []const u8, mode: askpass.Mode, response: c_int, expected: []const u8, status: u8, trigger: Trigger) !void {
+fn check(init: std.process.Init, root: []const u8, mode: askpass.Mode, accepted: bool, expected: []const u8, status: u8, trigger: Trigger) !void {
     const prompt = "Enter passphrase for <test-key> at 100%: 東京";
     const dialog = try askpass.Dialog.create(mode, prompt);
     defer dialog.destroy();
@@ -85,7 +85,7 @@ fn check(init: std.process.Init, root: []const u8, mode: askpass.Mode, response:
     if (dialog.entry) |entry| {
         try entry.insert("test-secret:$()\\ 東京");
     } else assert(mode != .password);
-    var reply = Response{ .dialog = dialog, .response = response, .trigger = trigger };
+    var reply = Response{ .dialog = dialog, .accepted = accepted, .trigger = trigger };
     _ = c.g_timeout_add(25, &Response.send, &reply);
     dialog.run();
     const path = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/answer", .{root});
@@ -107,7 +107,6 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
-    c.gtk_init(null, null);
     try checkEditing();
     const root = c.g_dir_make_tmp("desktop-askpass-XXXXXX", null).?;
     defer c.g_free(root);
@@ -116,20 +115,19 @@ pub fn main(init: std.process.Init) !void {
     try std.testing.expectEqual(askpass.Mode.information, askpass.Mode.fromHint("none"));
     try std.testing.expectEqual(askpass.Mode.password, askpass.Mode.fromHint(null));
     try std.testing.expectEqual(askpass.Mode.password, askpass.Mode.fromHint("unknown"));
-    try check(init, std.mem.span(root), .password, c.GTK_RESPONSE_OK, "test-secret:$()\\ 東京\n", 0, .response);
-    try check(init, std.mem.span(root), .password, c.GTK_RESPONSE_CANCEL, "", 1, .response);
-    try check(init, std.mem.span(root), .password, c.GTK_RESPONSE_DELETE_EVENT, "", 1, .response);
-    try check(init, std.mem.span(root), .confirm, c.GTK_RESPONSE_OK, "yes\n", 0, .response);
-    try check(init, std.mem.span(root), .confirm, c.GTK_RESPONSE_CANCEL, "", 1, .response);
-    try check(init, std.mem.span(root), .information, c.GTK_RESPONSE_OK, "", 0, .enter);
-    try check(init, std.mem.span(root), .password, c.GTK_RESPONSE_CANCEL, "", 1, .term);
-    try check(init, std.mem.span(root), .password, c.GTK_RESPONSE_CANCEL, "", 1, .interrupt);
-    try check(init, std.mem.span(root), .password, c.GTK_RESPONSE_OK, "test-secret:$()\\ 東京\n", 0, .enter);
-    try check(init, std.mem.span(root), .password, c.GTK_RESPONSE_OK, "test-secret:$()\\ 東京\n", 0, .accept_click);
-    try check(init, std.mem.span(root), .password, c.GTK_RESPONSE_CANCEL, "", 1, .cancel_click);
-    try check(init, std.mem.span(root), .password, c.GTK_RESPONSE_CANCEL, "", 1, .escape);
-    try check(init, std.mem.span(root), .confirm, c.GTK_RESPONSE_CANCEL, "", 1, .enter);
-    try check(init, std.mem.span(root), .confirm, c.GTK_RESPONSE_OK, "yes\n", 0, .allow_key);
+    try check(init, std.mem.span(root), .password, true, "test-secret:$()\\ 東京\n", 0, .response);
+    try check(init, std.mem.span(root), .password, false, "", 1, .response);
+    try check(init, std.mem.span(root), .confirm, true, "yes\n", 0, .response);
+    try check(init, std.mem.span(root), .confirm, false, "", 1, .response);
+    try check(init, std.mem.span(root), .information, true, "", 0, .enter);
+    try check(init, std.mem.span(root), .password, false, "", 1, .term);
+    try check(init, std.mem.span(root), .password, false, "", 1, .interrupt);
+    try check(init, std.mem.span(root), .password, true, "test-secret:$()\\ 東京\n", 0, .enter);
+    try check(init, std.mem.span(root), .password, true, "test-secret:$()\\ 東京\n", 0, .accept_click);
+    try check(init, std.mem.span(root), .password, false, "", 1, .cancel_click);
+    try check(init, std.mem.span(root), .password, false, "", 1, .escape);
+    try check(init, std.mem.span(root), .confirm, false, "", 1, .enter);
+    try check(init, std.mem.span(root), .confirm, true, "yes\n", 0, .allow_key);
     if (args.len > 1) {
         var env = try init.minimal.environ.createMap(arena.allocator());
         try env.put("GDK_BACKEND", "wayland");

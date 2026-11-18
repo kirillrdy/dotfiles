@@ -27,7 +27,6 @@ fn checkPrompt(dialog: *secrets.Dialog) !void {
     _ = dialog.handleKey(0xff0d, 0);
 }
 fn checkDialogs() !void {
-    c.gtk_init(null, null);
     const dialog = try secrets.createImportDialog();
     defer dialog.destroy();
     try dialog.entry.?.insert("private-surrounding-text");

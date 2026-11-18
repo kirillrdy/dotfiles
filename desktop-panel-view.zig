@@ -383,7 +383,6 @@ test "panel labels retain masks across hover, refresh at output scale, and drop 
 
 test "integration: Codex wraps errors, scales pixels, and retains remaining-budget colors" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
-    try std.testing.expect(c.gtk_init_check(null, null) != 0);
     var view: Codex = .{};
     defer view.deinit();
     try view.prepare(1);

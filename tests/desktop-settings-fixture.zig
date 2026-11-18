@@ -53,7 +53,6 @@ fn pageInput(ui: *settings.Settings) !void {
     }
 }
 pub fn main() !void {
-    c.gtk_init(null, null);
     for (0..8) |cycle| {
         const ui = settings.Settings.create(if (cycle % 2 == 0) .network else .sound);
         try ui.ui.setText(ui.manual.id, "Cafe: Tokyo\\5G");

@@ -235,8 +235,6 @@ test "memory: detector controls" {
 test "memory: repeated asynchronous service and widget teardown releases ownership" {
     try fixture();
     if (env("DESKTOP_MEMORY_LEAK_PROBE") != null) return error.SkipZigTest;
-    if (c.gtk_init_check(null, null) == 0) return error.PrivateDisplayRequired;
-    c.g_object_set(c.gtk_settings_get_default(), "gtk-enable-animations", @as(c_int, 0), @as(?*anyopaque, null));
     for (0..4) |_| {
         try networkLifetime(false);
         try networkLifetime(true);

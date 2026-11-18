@@ -38,14 +38,9 @@ pub fn main(process_init: std.process.Init) !void {
         std.process.exit(0);
     }
     _ = c.g_setenv("GSETTINGS_BACKEND", "memory", 1);
-    c.gtk_init(null, null);
-    // Resolve and decode the SVGs, rather than only checking GtkImage names.
-    if (c.g_getenv("DESKTOP_PANEL_ICON_PATH")) |path| {
-        const theme = c.gtk_icon_theme_new();
-        defer c.g_object_unref(theme);
-        c.gtk_icon_theme_append_search_path(theme, path);
-        c.gtk_icon_theme_set_custom_theme(theme, "Adwaita");
-        for ([_][*:0]const u8{
+    // Resolve and decode the SVGs through the native icon loader.
+    if (c.g_getenv("DESKTOP_PANEL_ICON_PATH") != null) {
+        for ([_][:0]const u8{
             "network-wireless-signal-good-symbolic",
             "battery-level-90-symbolic",
             "battery-level-50-charging-symbolic",
@@ -54,11 +49,8 @@ pub fn main(process_init: std.process.Init) !void {
             "microphone-sensitivity-muted-symbolic",
             "display-brightness-symbolic",
         }) |name| {
-            for ([_]c_int{ 1, 2 }) |scale| {
-                var err: [*c]c.GError = null;
-                const pixbuf = c.gtk_icon_theme_load_icon_for_scale(theme, name, 16, scale, 0, &err);
-                if (err != null) c.g_printerr("Cannot load %s: %s\n", name, err.*.message);
-                assert(err == null and pixbuf != null);
+            for ([_]u32{ 1, 2 }) |scale| {
+                const pixbuf = c.__icons.load(name, 16, scale, null).?;
                 assert(c.gdk_pixbuf_get_width(pixbuf) > 0 and c.gdk_pixbuf_get_height(pixbuf) > 0);
                 c.g_object_unref(pixbuf);
             }

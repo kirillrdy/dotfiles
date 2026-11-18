@@ -93,7 +93,6 @@ test "session: private logind actions and quick-settings lifecycle" {
     const scenario = env("SESSION_CASE");
     const deadline = c.g_get_monotonic_time() + 8_000_000;
     if (std.mem.startsWith(u8, scenario, "ui-")) {
-        c.gtk_init(null, null);
         const controls = quick.Controls.create("true", "true");
         var live = true;
         c.g_object_weak_ref(@ptrCast(controls.cancel), &finalized, &live);

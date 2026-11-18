@@ -6,8 +6,6 @@ const c = desktop.gtk;
 extern fn cairo_surface_write_to_png(*c.cairo_surface_t, [*:0]const u8) c_int;
 
 pub fn main() !void {
-    c.gtk_init(null, null);
-    if (c.g_getenv("DESKTOP_PANEL_ICON_PATH")) |path| c.gtk_icon_theme_append_search_path(c.gtk_icon_theme_get_default(), path);
     var view: native.View = .{};
     defer view.deinit();
     for ([_]struct { title: [:0]const u8, icon: [:0]const u8 }{

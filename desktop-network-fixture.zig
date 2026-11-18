@@ -58,7 +58,6 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, args[1], "ui-parity")) {
-        c.gtk_init(null, null);
         const window = settings.Settings.create(.network);
         settle();
         try std.testing.expect(window.rows.items.len > 0);
@@ -137,7 +136,6 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.startsWith(u8, args[1], "preview")) {
-        c.gtk_init(null, null);
         const window = settings.Settings.create(.network);
         if (std.mem.eql(u8, args[1], "preview-network")) window.showPage(.network);
         if (std.mem.eql(u8, args[1], "preview-search")) {
@@ -157,7 +155,6 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, args[1], "edit") or std.mem.eql(u8, args[1], "new") or std.mem.eql(u8, args[1], "edit-secret") or std.mem.eql(u8, args[1], "edit-cancel")) {
-        c.gtk_init(null, null);
         const Noop = struct {
             fn paint(_: ?*anyopaque, _: @import("desktop").window.wire.Pixels) void {}
         };
@@ -205,7 +202,6 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, args[1], "ui")) {
-        c.gtk_init(null, null);
         const controls = quick.Controls.create("true", "true");
         const ui = settings.Settings.create(.network);
         try std.testing.expect(ui.network_client.?.service == client.service);

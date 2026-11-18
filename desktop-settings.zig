@@ -547,7 +547,7 @@ pub const Settings = struct {
 
 pub const Service = struct {
     windows: std.ArrayList(*Settings) = .empty,
-    pub fn show(self: *Service, app: *c.GtkApplication, mode: Mode) !void {
+    pub fn show(self: *Service, app: *c.GApplication, mode: Mode) !void {
         self.reap();
         for (self.windows.items) |settings| {
             if (!settings.closed) {
@@ -559,7 +559,7 @@ pub const Service = struct {
         try self.windows.ensureUnusedCapacity(a, 1);
         const settings = Settings.create(mode);
         self.windows.appendAssumeCapacity(settings);
-        settings.window.hold(@ptrCast(app));
+        settings.window.hold(app);
     }
 
     pub fn reap(self: *Service) void {

@@ -10,9 +10,7 @@ pub const __helpers = @import("std").zig.c_translation.helpers;
 
 // Zig helpers shared by toolkit consumers; excluded from C ABI comparisons.
 pub const __zig = @import("desktop-ui.zig");
-pub const gint8 = i8;
 pub const guint8 = u8;
-pub const gint16 = c_short;
 pub const gint32 = c_int;
 pub const guint32 = c_uint;
 pub const gint64 = c_long;
@@ -159,7 +157,6 @@ pub extern fn g_variant_lookup_value(dictionary: ?*GVariant, key: [*c]const gcha
 pub extern fn g_variant_get_fixed_array(value: ?*GVariant, n_elements: [*c]gsize, element_size: gsize) gconstpointer;
 pub extern fn g_variant_new(format_string: [*c]const gchar, ...) ?*GVariant;
 pub extern fn g_print(format: [*c]const gchar, ...) void;
-pub extern fn g_printerr(format: [*c]const gchar, ...) void;
 pub extern fn g_shell_quote(unquoted_string: [*c]const gchar) [*c]gchar;
 pub extern fn g_shell_parse_argv(command_line: [*c]const gchar, argcp: [*c]gint, argvp: [*c][*c][*c]gchar, @"error": [*c][*c]GError) gboolean;
 pub const GSpawnChildSetupFunc = ?*const fn (data: gpointer) callconv(.c) void;
@@ -205,7 +202,6 @@ pub const GInstanceInitFunc = ?*const fn (instance: [*c]GTypeInstance, g_class: 
 pub const GTypeFlags = c_uint;
 pub extern fn g_type_register_static_simple(parent_type: GType, type_name: [*c]const gchar, class_size: guint, class_init: GClassInitFunc, instance_size: guint, instance_init: GInstanceInitFunc, flags: GTypeFlags) GType;
 pub extern fn g_type_check_instance_is_a(instance: [*c]GTypeInstance, iface_type: GType) gboolean;
-pub extern fn g_type_name_from_instance(instance: [*c]GTypeInstance) [*c]const gchar;
 pub const GParamFlags = c_int;
 
 pub const struct__GParamSpec = extern struct {
@@ -230,7 +226,6 @@ pub const GCallback = ?*const fn () callconv(.c) void;
 pub const GConnectFlags = c_uint;
 pub const G_SIGNAL_MATCH_DATA: c_int = 16;
 pub const GSignalMatchType = c_uint;
-pub extern fn g_signal_emit_by_name(instance: gpointer, detailed_signal: [*c]const gchar, ...) void;
 pub extern fn g_signal_connect_data(instance: gpointer, detailed_signal: [*c]const gchar, c_handler: GCallback, data: gpointer, destroy_data: GClosureNotify, connect_flags: GConnectFlags) gulong;
 pub extern fn g_signal_handler_disconnect(instance: gpointer, handler_id: gulong) void;
 pub extern fn g_signal_handlers_disconnect_matched(instance: gpointer, mask: GSignalMatchType, signal_id: guint, detail: GQuark, closure: ?*GClosure, func: gpointer, data: gpointer) guint;
@@ -270,8 +265,6 @@ pub const struct__GObjectClass = extern struct {
 
 pub const GObjectClass = struct__GObjectClass;
 pub extern fn g_object_new(object_type: GType, first_property_name: [*c]const gchar, ...) gpointer;
-pub extern fn g_object_set(object: gpointer, first_property_name: [*c]const gchar, ...) void;
-pub extern fn g_object_ref_sink(object: gpointer) gpointer;
 pub extern fn g_object_ref(object: gpointer) gpointer;
 pub extern fn g_object_unref(object: gpointer) void;
 pub extern fn g_object_get_data(object: [*c]GObject, key: [*c]const gchar) gpointer;
@@ -473,6 +466,7 @@ pub extern fn g_app_info_get_id(appinfo: ?*GAppInfo) [*c]const gchar;
 pub extern fn g_app_info_launch(appinfo: ?*GAppInfo, files: [*c]GList, context: [*c]GAppLaunchContext, @"error": [*c][*c]GError) gboolean;
 pub extern fn g_app_info_should_show(appinfo: ?*GAppInfo) gboolean;
 pub extern fn g_app_info_get_all() [*c]GList;
+pub extern fn g_application_new(application_id: [*c]const gchar, flags: GApplicationFlags) [*c]GApplication;
 pub extern fn g_application_get_dbus_connection(application: [*c]GApplication) ?*GDBusConnection;
 pub extern fn g_application_hold(application: [*c]GApplication) void;
 pub extern fn g_application_run(application: [*c]GApplication, argc: c_int, argv: [*c][*c]u8) c_int;
@@ -629,41 +623,17 @@ pub const struct__GdkRGBA = extern struct {
 };
 
 pub const GdkRGBA = struct__GdkRGBA;
-pub const struct__GdkDevice = extern struct { _opaque: [0]usize = .{} };
-
-pub const GdkDevice = struct__GdkDevice;
 pub const struct__GdkDisplay = extern struct { _opaque: [0]usize = .{} };
 
 pub const GdkDisplay = struct__GdkDisplay;
-pub const struct__GdkScreen = extern struct { _opaque: [0]usize = .{} };
-
-pub const GdkScreen = struct__GdkScreen;
 pub const struct__GdkWindow = extern struct { _opaque: [0]usize = .{} };
 
 pub const GdkWindow = struct__GdkWindow;
-pub const struct__GdkSeat = extern struct { _opaque: [0]usize = .{} };
-
-pub const GdkSeat = struct__GdkSeat;
 pub const GDK_SHIFT_MASK: c_int = 1;
 pub const GDK_CONTROL_MASK: c_int = 4;
 pub const GDK_MOD1_MASK: c_int = 8;
-pub const GDK_POINTER_MOTION_MASK: c_int = 4;
-pub const GDK_BUTTON_PRESS_MASK: c_int = 256;
-pub const GDK_BUTTON_RELEASE_MASK: c_int = 512;
-pub const GDK_KEY_PRESS_MASK: c_int = 1024;
-pub const GDK_FOCUS_CHANGE_MASK: c_int = 16384;
-pub const GDK_LEAVE_NOTIFY_MASK: c_int = 8192;
-pub extern fn gdk_device_get_position(device: ?*GdkDevice, screen: [*c]?*GdkScreen, x: [*c]gint, y: [*c]gint) void;
-
 pub const GdkModifierType = c_uint;
-pub extern fn gdk_seat_get_pointer(seat: [*c]GdkSeat) ?*GdkDevice;
-pub const struct__GdkMonitor = extern struct { _opaque: [0]usize = .{} };
-
-pub const GdkMonitor = struct__GdkMonitor;
-pub extern fn gdk_monitor_get_geometry(monitor: ?*GdkMonitor, geometry: [*c]GdkRectangle) void;
 pub extern fn gdk_display_get_default() ?*GdkDisplay;
-pub extern fn gdk_display_get_default_seat(display: ?*GdkDisplay) [*c]GdkSeat;
-pub extern fn gdk_display_get_primary_monitor(display: ?*GdkDisplay) ?*GdkMonitor;
 pub extern fn gdk_rgba_parse(rgba: [*c]GdkRGBA, spec: [*c]const gchar) gboolean;
 pub const GDK_COLORSPACE_RGB: c_int = 0;
 pub const GdkColorspace = c_uint;
@@ -679,19 +649,6 @@ pub extern fn gdk_pixbuf_new_from_file(filename: [*c]const u8, @"error": [*c][*c
 pub extern fn gdk_pixbuf_new_from_file_at_scale(filename: [*c]const u8, width: c_int, height: c_int, preserve_aspect_ratio: gboolean, @"error": [*c][*c]GError) ?*GdkPixbuf;
 pub extern fn gdk_pixbuf_apply_embedded_orientation(src: ?*GdkPixbuf) ?*GdkPixbuf;
 pub extern fn gdk_cairo_set_source_pixbuf(cr: ?*cairo_t, pixbuf: ?*const GdkPixbuf, pixbuf_x: gdouble, pixbuf_y: gdouble) void;
-pub const GTK_STATE_FLAG_NORMAL: c_int = 0;
-
-pub const struct__GtkBorder = extern struct {
-    left: gint16 = 0,
-    right: gint16 = 0,
-    top: gint16 = 0,
-    bottom: gint16 = 0,
-};
-
-pub const GtkBorder = struct__GtkBorder;
-pub const struct__GtkSettings = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkSettings = struct__GtkSettings;
 
 pub const struct__GtkWidget = extern struct { _opaque: [0]usize = .{} };
 
@@ -707,17 +664,11 @@ pub extern fn gtk_widget_show(widget: [*c]GtkWidget) void;
 pub extern fn gtk_widget_hide(widget: [*c]GtkWidget) void;
 pub extern fn gtk_widget_show_all(widget: [*c]GtkWidget) void;
 pub extern fn gtk_widget_realize(widget: [*c]GtkWidget) void;
-pub extern fn gtk_widget_grab_focus(widget: [*c]GtkWidget) void;
 pub extern fn gtk_widget_get_sensitive(widget: [*c]GtkWidget) gboolean;
 pub extern fn gtk_widget_get_window(widget: [*c]GtkWidget) ?*GdkWindow;
-pub const struct__GtkApplication = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkApplication = struct__GtkApplication;
-pub extern fn gtk_application_new(application_id: [*c]const gchar, flags: GApplicationFlags) [*c]GtkApplication;
 pub extern fn gtk_container_add(container: [*c]GtkContainer, widget: [*c]GtkWidget) void;
 pub const GTK_WINDOW_TOPLEVEL: c_int = 0;
 pub const GtkWindowType = c_uint;
-pub const GTK_WIN_POS_CENTER: c_int = 1;
 pub extern fn gtk_window_new(@"type": GtkWindowType) [*c]GtkWidget;
 pub extern fn gtk_window_set_title(window: [*c]GtkWindow, title: [*c]const gchar) void;
 pub extern fn gtk_window_get_title(window: [*c]GtkWindow) [*c]const gchar;
@@ -725,7 +676,6 @@ pub extern fn gtk_window_is_active(window: [*c]GtkWindow) gboolean;
 pub extern fn gtk_window_set_modal(window: [*c]GtkWindow, modal: gboolean) void;
 pub extern fn gtk_window_present(window: [*c]GtkWindow) void;
 pub extern fn gtk_window_set_default_size(window: [*c]GtkWindow, width: gint, height: gint) void;
-pub const GTK_RESPONSE_DELETE_EVENT: c_int = -4;
 pub const GTK_RESPONSE_OK: c_int = -5;
 pub const GTK_RESPONSE_CANCEL: c_int = -6;
 pub const struct__GtkDialog = extern struct { _opaque: [0]usize = .{} };
@@ -752,18 +702,14 @@ pub const GtkIconTheme = struct__GtkIconTheme;
 pub const GTK_ICON_LOOKUP_FORCE_SIZE: c_int = 16;
 pub const GtkIconLookupFlags = c_uint;
 pub extern fn gtk_icon_theme_new() [*c]GtkIconTheme;
-pub extern fn gtk_icon_theme_get_default() [*c]GtkIconTheme;
 pub extern fn gtk_icon_theme_append_search_path(icon_theme: [*c]GtkIconTheme, path: [*c]const gchar) void;
 pub extern fn gtk_icon_theme_set_custom_theme(icon_theme: [*c]GtkIconTheme, theme_name: [*c]const gchar) void;
-pub extern fn gtk_icon_theme_load_icon(icon_theme: [*c]GtkIconTheme, icon_name: [*c]const gchar, size: gint, flags: GtkIconLookupFlags, @"error": [*c][*c]GError) ?*GdkPixbuf;
-pub extern fn gtk_icon_theme_load_icon_for_scale(icon_theme: [*c]GtkIconTheme, icon_name: [*c]const gchar, size: gint, scale: gint, flags: GtkIconLookupFlags, @"error": [*c][*c]GError) ?*GdkPixbuf;
 pub extern fn gtk_icon_theme_lookup_icon(*GtkIconTheme, [*c]const u8, gint, GtkIconLookupFlags) ?*GtkIconInfo;
 pub extern fn gtk_icon_info_load_symbolic(*GtkIconInfo, *const GdkRGBA, ?*const GdkRGBA, ?*const GdkRGBA, ?*const GdkRGBA, ?*gboolean, [*c][*c]GError) ?*GdkPixbuf;
 pub extern fn gtk_init(argc: [*c]c_int, argv: [*c][*c][*c]u8) void;
 pub extern fn gtk_init_check(argc: [*c]c_int, argv: [*c][*c][*c]u8) gboolean;
 pub extern fn gtk_main() void;
 pub extern fn gtk_main_quit() void;
-pub extern fn gtk_settings_get_default() [*c]GtkSettings;
 pub const struct__GDesktopAppInfo = opaque {};
 
 pub const GDesktopAppInfo = struct__GDesktopAppInfo;
@@ -1005,5 +951,6 @@ pub extern fn g_dbus_error_set_dbus_error([*c][*c]GError, [*c]const gchar, [*c]c
 pub const G_DBUS_CALL_FLAGS_NO_AUTO_START = 1;
 
 pub const __icons = struct {
+    pub const load = @import("desktop-icons.zig").load;
     pub const loadThemed = @import("desktop-icons.zig").loadThemed;
 };

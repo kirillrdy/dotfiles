@@ -117,7 +117,7 @@ pub const Controls = struct {
                 self.refs += 1;
                 _ = c.g_timeout_add(200, &screenshot, self);
             },
-            .power_settings => powerSettings(null, self),
+            .power_settings => self.powerSettings(),
             .network0, .network1, .network2, .network3, .network4, .network5, .network6, .network7 => self.connectNetwork(@backingInt(target) - @backingInt(native.Target.network0)),
             .suspend_action => self.confirmAction("suspend", "Suspend"),
             .reboot => self.confirmAction("reboot", "Restart…"),
@@ -373,8 +373,7 @@ pub const Controls = struct {
             dialog.window.redraw();
         };
     }
-    fn powerSettings(_: ?*c.GtkButton, ptr: c.gpointer) callconv(.c) void {
-        const self = cast(Controls, ptr);
+    fn powerSettings(self: *Controls) void {
         if (self.dialog) |dialog| {
             dialog.window.show() catch {};
             return;

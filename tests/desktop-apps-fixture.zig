@@ -74,15 +74,10 @@ pub fn main(init: std.process.Init) !void {
             .data = try std.fmt.allocPrint(a, "[Desktop Entry]\nType=Application\nExec=/proc/self/exe\nComment=unrelated description\n{s}", .{fixture.text}),
         });
     }
-    c.gtk_init(null, null);
-    if (c.g_getenv("DESKTOP_APPS_ICON_PATH")) |path| c.gtk_icon_theme_append_search_path(c.gtk_icon_theme_get_default(), path);
-    var icon_error: [*c]c.GError = null;
-    const svg = c.gtk_icon_theme_load_icon(c.gtk_icon_theme_get_default(), "desktop-apps-fixture-icon", 96, c.GTK_ICON_LOOKUP_FORCE_SIZE, &icon_error);
-    if (icon_error != null) std.debug.print("SVG icon failed: {s}\n", .{icon_error.*.message});
-    assert(svg != null and icon_error == null);
+    const svg = c.__icons.load("desktop-apps-fixture-icon", 96, 1, null).?;
     defer c.g_object_unref(svg);
     assert(c.gdk_pixbuf_get_width(svg) == 96 and c.gdk_pixbuf_get_height(svg) == 96);
-    var launcher = apps.Launcher.init(null);
+    var launcher = apps.Launcher.init();
     defer launcher.deinit();
     launcher.bind();
     try launcher.load();
@@ -182,13 +177,13 @@ pub fn main(init: std.process.Init) !void {
     assert(!launcher.visible_window);
     var state: ?apps.Launcher = null;
     defer if (state) |*instance| instance.deinit();
-    apps.activate(null, &state);
+    apps.activate(&state);
     const window = state.?.host.?.surface.?;
     assert(state.?.visible_window);
     try state.?.setSearch("stale");
-    apps.activate(null, &state);
+    apps.activate(&state);
     assert(!state.?.visible_window);
-    apps.activate(null, &state);
+    apps.activate(&state);
     assert(state.?.host.?.surface.? == window and state.?.visible_window);
     eq(state.?.searchText(), "");
     state.?.hide();

@@ -505,7 +505,6 @@ test "integration: native history preserves expansion and focus across snapshots
         \\ {"id":2,"created":2,"app":"Second","title":"Middle","body":"Two"},
         \\ {"id":3,"created":3,"app":"Messages 東京","title":"مرحبا <&>","body":"<b>Long body</b> &amp; 東京 long long long long long long long long long long long long long long long long long long long long long long long long long long", "actions":[{"key":"default","label":"Open"},{"key":"reply","label":"Reply"},{"key":"archive","label":"Archive"}]}]
     ;
-    c.gtk_init(null, null);
     var view = try View.init(std.testing.allocator);
     defer view.deinit();
     try view.prepare(1);
