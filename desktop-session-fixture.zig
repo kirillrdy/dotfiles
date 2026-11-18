@@ -133,7 +133,6 @@ test "session: private logind actions and quick-settings lifecycle" {
         controls.activate(.power_settings);
         try std.testing.expect(controls.dialog != null);
         controls.deinit();
-        c.gtk_widget_destroy(window);
         // Device workers retain their own cancellation objects after Controls
         // is freed. Drain their completion callbacks before the allocator audit.
         while ((live or battery_live or network_live) and c.g_get_monotonic_time() < deadline) pump();

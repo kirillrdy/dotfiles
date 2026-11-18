@@ -1,5 +1,4 @@
 //! Wayland client ABI and core protocol wrappers, independent of GTK.
-pub const wl_surface = opaque {};
 
 pub const struct_wl_interface = extern struct {
     name: [*c]const u8 = null,

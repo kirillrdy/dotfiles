@@ -80,7 +80,6 @@ let
     }).overrideAttrs
       (old: {
         pname = "desktop-gtk";
-        patches = (old.patches or [ ]) ++ [ ./gtk-wayland-custom-shell.patch ];
         separateDebugInfo = false;
         mesonFlags = old.mesonFlags ++ [
           "-Dprint_backends=file${pkgs.lib.optionalString printingSupport ",cups"}"

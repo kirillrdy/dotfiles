@@ -129,7 +129,6 @@ test {
     _ = @import("desktop-overview-layout.zig");
     _ = @import("desktop-hot-corner.zig");
     _ = @import("tests/desktop-overview-render.zig");
-    _ = @import("desktop-layer-shell.zig");
     _ = @import("desktop-wallpaper.zig");
     _ = @import("desktop-surface.zig");
     _ = @import("desktop-osd-view.zig");

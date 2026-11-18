@@ -1,5 +1,5 @@
 //! Explicit C ABI declarations for the desktop's GTK 3, GLib, Cairo,
-//! JSON-GLib, layer-shell, PolicyKit and Wayland APIs.
+//! PolicyKit and Wayland APIs.
 //! Toolkit handles use empty extern structs for nullable C pointers. Never
 //! allocate or copy these objects by value; only GTK owns their storage.
 //! Value types and layouts accessed by Zig are defined in full.
@@ -275,7 +275,6 @@ pub extern fn g_object_ref_sink(object: gpointer) gpointer;
 pub extern fn g_object_ref(object: gpointer) gpointer;
 pub extern fn g_object_unref(object: gpointer) void;
 pub extern fn g_object_get_data(object: [*c]GObject, key: [*c]const gchar) gpointer;
-pub extern fn g_object_set_data(object: [*c]GObject, key: [*c]const gchar, data: gpointer) void;
 pub extern fn g_object_set_data_full(object: [*c]GObject, key: [*c]const gchar, data: gpointer, destroy: GDestroyNotify) void;
 pub extern fn g_object_weak_ref(object: ?*GObject, notify: ?*const fn (?*anyopaque, ?*GObject) callconv(.c) void, data: ?*anyopaque) void;
 pub const GAppInfoCreateFlags = c_uint;
@@ -654,7 +653,6 @@ pub const GDK_BUTTON_RELEASE_MASK: c_int = 512;
 pub const GDK_KEY_PRESS_MASK: c_int = 1024;
 pub const GDK_FOCUS_CHANGE_MASK: c_int = 16384;
 pub const GDK_LEAVE_NOTIFY_MASK: c_int = 8192;
-pub const GdkWindowTypeHint = c_uint;
 pub extern fn gdk_device_get_position(device: ?*GdkDevice, screen: [*c]?*GdkScreen, x: [*c]gint, y: [*c]gint) void;
 
 pub const GdkModifierType = c_uint;
@@ -665,8 +663,6 @@ pub const GdkMonitor = struct__GdkMonitor;
 pub extern fn gdk_monitor_get_geometry(monitor: ?*GdkMonitor, geometry: [*c]GdkRectangle) void;
 pub extern fn gdk_display_get_default() ?*GdkDisplay;
 pub extern fn gdk_display_get_default_seat(display: ?*GdkDisplay) [*c]GdkSeat;
-pub extern fn gdk_display_get_n_monitors(display: ?*GdkDisplay) c_int;
-pub extern fn gdk_display_get_monitor(display: ?*GdkDisplay, monitor_num: c_int) ?*GdkMonitor;
 pub extern fn gdk_display_get_primary_monitor(display: ?*GdkDisplay) ?*GdkMonitor;
 pub extern fn gdk_rgba_parse(rgba: [*c]GdkRGBA, spec: [*c]const gchar) gboolean;
 pub const GDK_COLORSPACE_RGB: c_int = 0;
@@ -714,7 +710,6 @@ pub extern fn gtk_widget_realize(widget: [*c]GtkWidget) void;
 pub extern fn gtk_widget_grab_focus(widget: [*c]GtkWidget) void;
 pub extern fn gtk_widget_get_sensitive(widget: [*c]GtkWidget) gboolean;
 pub extern fn gtk_widget_get_window(widget: [*c]GtkWidget) ?*GdkWindow;
-pub extern fn gtk_widget_set_size_request(widget: [*c]GtkWidget, width: gint, height: gint) void;
 pub const struct__GtkApplication = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkApplication = struct__GtkApplication;
@@ -726,9 +721,7 @@ pub const GTK_WIN_POS_CENTER: c_int = 1;
 pub extern fn gtk_window_new(@"type": GtkWindowType) [*c]GtkWidget;
 pub extern fn gtk_window_set_title(window: [*c]GtkWindow, title: [*c]const gchar) void;
 pub extern fn gtk_window_get_title(window: [*c]GtkWindow) [*c]const gchar;
-pub extern fn gtk_window_set_type_hint(window: [*c]GtkWindow, hint: GdkWindowTypeHint) void;
 pub extern fn gtk_window_is_active(window: [*c]GtkWindow) gboolean;
-pub extern fn gtk_window_set_decorated(window: [*c]GtkWindow, setting: gboolean) void;
 pub extern fn gtk_window_set_modal(window: [*c]GtkWindow, modal: gboolean) void;
 pub extern fn gtk_window_present(window: [*c]GtkWindow) void;
 pub extern fn gtk_window_set_default_size(window: [*c]GtkWindow, width: gint, height: gint) void;
@@ -748,7 +741,6 @@ pub extern fn gtk_label_set_text(label: [*c]GtkLabel, str: [*c]const gchar) void
 pub const struct__GtkButton = extern struct { _opaque: [0]usize = .{} };
 
 pub const GtkButton = struct__GtkButton;
-pub extern fn gtk_button_new_with_label(label: [*c]const gchar) [*c]GtkWidget;
 pub extern fn gtk_button_set_label(button: [*c]GtkButton, label: [*c]const gchar) void;
 
 pub const struct__GtkIconInfo = extern struct { _opaque: [0]usize = .{} };
@@ -769,16 +761,8 @@ pub extern fn gtk_icon_theme_lookup_icon(*GtkIconTheme, [*c]const u8, gint, GtkI
 pub extern fn gtk_icon_info_load_symbolic(*GtkIconInfo, *const GdkRGBA, ?*const GdkRGBA, ?*const GdkRGBA, ?*const GdkRGBA, ?*gboolean, [*c][*c]GError) ?*GdkPixbuf;
 pub extern fn gtk_init(argc: [*c]c_int, argv: [*c][*c][*c]u8) void;
 pub extern fn gtk_init_check(argc: [*c]c_int, argv: [*c][*c][*c]u8) gboolean;
-pub extern fn gtk_events_pending() gboolean;
 pub extern fn gtk_main() void;
 pub extern fn gtk_main_quit() void;
-pub extern fn gtk_main_iteration() gboolean;
-pub const struct__GtkPopover = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkPopover = struct__GtkPopover;
-// /nix/store/zc6camr52n5kyqs1a32dg4s4vxb57h4a-gtk+3-3.24.52-dev/include/gtk-3.0/gtk/gtkpopover.h:51:15: warning: struct demoted to opaque type - has opaque field
-pub extern fn gtk_popover_new(relative_to: [*c]GtkWidget) [*c]GtkWidget;
-pub extern fn gtk_popover_popup(popover: [*c]GtkPopover) void;
 pub extern fn gtk_settings_get_default() [*c]GtkSettings;
 pub const struct__GDesktopAppInfo = opaque {};
 
@@ -790,34 +774,6 @@ pub extern fn g_desktop_app_info_new(desktop_id: [*c]const u8) ?*GDesktopAppInfo
 pub extern fn g_desktop_app_info_get_string(info: ?*GDesktopAppInfo, key: [*c]const u8) [*c]u8;
 pub extern fn g_desktop_app_info_get_boolean(info: ?*GDesktopAppInfo, key: [*c]const u8) gboolean;
 
-// Public GDK Wayland APIs used by the native layer-shell integration.
-pub const wl_surface = wayland.wl_surface;
-pub extern fn gdk_wayland_window_get_wl_surface(?*GdkWindow) ?*wl_surface;
-pub extern fn gdk_wayland_window_set_use_custom_surface(?*GdkWindow) void;
-pub extern fn gdk_wayland_display_get_wl_display(?*GdkDisplay) ?*wl_display;
-pub extern fn gdk_wayland_monitor_get_wl_output(?*GdkMonitor) ?*wl_output;
-pub extern fn gdk_window_invalidate_rect(?*GdkWindow, [*c]const GdkRectangle, gboolean) void;
-pub const GdkWindowHints = c_uint;
-pub const GDK_HINT_MIN_SIZE = 1 << 1;
-pub const GDK_HINT_MAX_SIZE = 1 << 2;
-pub const GdkGeometry = extern struct {
-    min_width: c_int = 0,
-    min_height: c_int = 0,
-    max_width: c_int = 0,
-    max_height: c_int = 0,
-    base_width: c_int = 0,
-    base_height: c_int = 0,
-    width_inc: c_int = 0,
-    height_inc: c_int = 0,
-    min_aspect: f64 = 0,
-    max_aspect: f64 = 0,
-    win_gravity: c_uint = 0,
-};
-pub extern fn gtk_window_set_geometry_hints([*c]GtkWindow, [*c]GtkWidget, [*c]GdkGeometry, GdkWindowHints) void;
-pub extern fn gtk_popover_set_modal([*c]GtkPopover, gboolean) void;
-pub extern fn gtk_window_set_transient_for([*c]GtkWindow, [*c]GtkWindow) void;
-pub const GTK_WINDOW_POPUP = 1;
-pub const GDK_WINDOW_TYPE_HINT_POPUP_MENU = 9;
 pub extern fn cairo_set_line_cap(?*cairo_t, c_uint) void;
 pub const CAIRO_OPERATOR_OVER = 2;
 pub extern fn g_unix_signal_add(signum: gint, handler: GSourceFunc, user_data: gpointer) guint;

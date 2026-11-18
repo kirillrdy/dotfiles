@@ -150,6 +150,7 @@ pub const Service = struct {
         errdefer allocator.destroy(self);
         self.client = try native.Client.create(.{ .added = &App.add, .removed = &App.remove }, &self.app);
         errdefer self.client.destroy();
+        if (self.client.shell == null) return error.LayerShellUnavailable;
         try self.client.start();
         return self;
     }

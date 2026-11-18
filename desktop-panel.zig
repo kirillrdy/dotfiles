@@ -470,6 +470,7 @@ pub const Service = struct {
             .changed = &App.onOutputChanged,
         }, &self.app);
         errdefer client.destroy();
+        if (client.shell == null) return error.LayerShellUnavailable;
         self.app.client = client;
         self.app.connectOverview();
         try client.start();
