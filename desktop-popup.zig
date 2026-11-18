@@ -4,6 +4,7 @@ const c = @import("desktop-gtk.zig");
 const wire = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const input = @import("desktop-input.zig");
+const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 
 pub const Host = struct {
@@ -15,6 +16,10 @@ pub const Host = struct {
     dismiss: *const fn (?*anyopaque) void,
     client: ?*wire.Client = null,
     surface: ?*wire.Surface = null,
+    pixels: std.ArrayList(u32) = .empty,
+    rect: raster.Rect = .{},
+    view_width: u32 = 1,
+    view_height: u32 = 1,
     visible: bool = false,
     close_idle: c.guint = 0,
     anchor_x: i32 = 0,
@@ -26,6 +31,8 @@ pub const Host = struct {
         if (self.client) |client| client.destroy();
         self.client = null;
         self.surface = null;
+        self.pixels.deinit(a);
+        self.pixels = .empty;
     }
     pub fn prepare(self: *Host, global_x: i32, global_y: i32) !void {
         if (self.client == null) {
@@ -80,6 +87,38 @@ pub const Host = struct {
     pub fn bounds(self: *const Host, width: u32, height: u32) raster.Rect {
         const output = (self.surface orelse return .{}).output;
         return placement(output.width(), output.height(), self.anchor_x - output.x, self.anchor_y - output.y, width, height);
+    }
+    pub fn place(self: *Host, width: u32, height: u32) void {
+        self.view_width = @max(1, width);
+        self.view_height = @max(1, height);
+        self.rect = self.bounds(width, height);
+    }
+    pub fn contains(self: *const Host, x: f64, y: f64) bool {
+        return self.rect.contains(x, y);
+    }
+    pub fn point(self: *const Host, x: f64, y: f64) raster.Point {
+        const zoom = self.rect.width / @as(f64, @floatFromInt(@max(1, self.view_width)));
+        return .{ .x = (x - self.rect.x) / zoom, .y = (y - self.rect.y) / zoom };
+    }
+    pub fn canvas(self: *Host, width: u32, height: u32) !wire.Pixels {
+        const factor = self.surface.?.buffer_scale;
+        self.place(width, height);
+        const physical_width = width * factor;
+        const physical_height = height * factor;
+        try self.pixels.resize(a, @as(usize, physical_width) * physical_height);
+        return .{ .pixels = self.pixels.items, .width = physical_width, .height = physical_height };
+    }
+    pub fn blit(self: *const Host, target: wire.Pixels) !void {
+        const factor = self.surface.?.buffer_scale;
+        const scale: f64 = @floatFromInt(factor);
+        const width = self.view_width * factor;
+        const height = self.view_height * factor;
+        try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(self.pixels.items), .width = width, .height = height, .stride = width * 4, .format = .argb }, .{
+            .x = self.rect.x * scale,
+            .y = self.rect.y * scale,
+            .width = self.rect.width * scale,
+            .height = self.rect.height * scale,
+        }, null);
     }
     fn cancelHide(self: *Host) void {
         if (self.close_idle != 0) _ = c.g_source_remove(self.close_idle);
@@ -176,4 +215,20 @@ test "popup dismissal callback can destroy its owner" {
     owner.host.requestHide();
     // The callback frees owner; dispatch must never read its host afterward.
     _ = c.g_main_context_iteration(null, 0);
+}
+
+test "popup placement fits output edges and small screens in logical coordinates" {
+    const center = placement(1728, 1080, 864, 32, 752, 420);
+    try std.testing.expectEqual(raster.Rect{ .x = 488, .y = 32, .width = 752, .height = 420 }, center);
+    const corner = placement(1728, 1080, 1728, 1079, 752, 420);
+    try std.testing.expectEqual(@as(f64, 968), corner.x);
+    try std.testing.expectEqual(@as(f64, 652), corner.y);
+    const right = placement(1728, 1080, 1700, 32, 376, 480);
+    try std.testing.expectEqual(raster.Rect{ .x = 1344, .y = 32, .width = 376, .height = 480 }, right);
+    for ([_][2]u32{ .{ 752, 420 }, .{ 376, 480 } }) |size| {
+        const small = placement(640, 360, 320, 32, size[0], size[1]);
+        try std.testing.expect(small.x >= 8 and small.y >= 8);
+        try std.testing.expect(small.x + small.width <= 632 and small.y + small.height <= 352);
+        try std.testing.expectApproxEqAbs(@as(f64, @floatFromInt(size[0])) / @as(f64, @floatFromInt(size[1])), small.width / small.height, 0.000001);
+    }
 }

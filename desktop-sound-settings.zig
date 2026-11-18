@@ -7,16 +7,12 @@ const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.pa
 const cast = c.__zig.cast;
 const host = @import("desktop-window.zig");
 const wire = host.wire;
-const Label = @import("desktop-panel-view.zig").Label;
+const Tooltip = @import("desktop-panel-view.zig").Tooltip;
 pub const Sound = struct {
     window: *host.Window,
     navigation_context: ?*anyopaque,
     navigate: *const fn (?*anyopaque, native.Control) void,
-    tooltip: Label = .{},
-    tooltip_timer: c.guint = 0,
-    tooltip_visible: bool = false,
-    pointer_x: f64 = 0,
-    pointer_y: f64 = 0,
+    tooltip: Tooltip = .{},
     view: native.View = .{},
     service: ?*audio.Service = null,
     cancel: *c.GCancellable,
@@ -39,7 +35,7 @@ pub const Sound = struct {
         return self;
     }
     pub fn deactivate(self: *Sound) void {
-        self.hideTooltip();
+        self.tooltip.hide();
         self.flushVolumes();
         self.view.focus = null;
         self.view.hover = null;
@@ -60,7 +56,7 @@ pub const Sound = struct {
     pub fn shutdown(self: *Sound) void {
         if (self.closed) return;
         self.closed = true;
-        self.hideTooltip();
+        self.tooltip.hide();
         c.g_cancellable_cancel(self.cancel);
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         self.timer = 0;
@@ -260,15 +256,7 @@ pub const Sound = struct {
         self.view.offset = std.math.clamp(self.view.offset, 0, self.view.maxOffset());
         try self.view.prepare(a, scale);
         self.view.paint(target);
-        if (self.tooltip_visible and self.tooltip.value.len != 0) {
-            try self.tooltip.prepare(&self.view.renderer, scale, 12, false, width -| 32, false);
-            const w = @min(@as(f64, @floatFromInt(width)), self.tooltip.width() + 16);
-            const h = self.tooltip.height() + 12;
-            const x = std.math.clamp(self.pointer_x + 12, 0, @max(0, @as(f64, @floatFromInt(width)) - w));
-            const y = std.math.clamp(self.pointer_y + 24, 0, @max(0, @as(f64, @floatFromInt(height)) - h));
-            @import("desktop-preferences-view.zig").fill(.{ .target = target, .scale = @floatFromInt(scale) }, .{ .x = x, .y = y, .width = w, .height = h }, 0x161619, 6);
-            self.tooltip.paint(target, x + 8, y + 6, .{ .red = 1, .green = 1, .blue = 1 });
-        }
+        try self.tooltip.paint(target, &self.view.renderer, scale);
     }
     fn focus(self: *Sound) void {
         if (self.view.focus) |target| {
@@ -283,7 +271,7 @@ pub const Sound = struct {
     }
     pub fn pointerButton(self: *Sound, pressed: bool, x: f64, y: f64) void {
         if (self.closed or self.window.closing) return;
-        self.hideTooltip();
+        self.tooltip.hide();
         if (!pressed) {
             const previous = self.view.pressed;
             self.view.pressed = null;
@@ -313,24 +301,15 @@ pub const Sound = struct {
     pub fn button(ptr: ?*anyopaque, _: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
         if (code == 272) cast(Sound, ptr).pointerButton(pressed, x, y);
     }
-    fn hideTooltip(self: *Sound) void {
-        if (self.tooltip_timer != 0) _ = c.g_source_remove(self.tooltip_timer);
-        self.tooltip_timer = 0;
-        self.tooltip_visible = false;
-    }
     fn showTooltip(ptr: ?*anyopaque) callconv(.c) c.gboolean {
         const self = cast(Sound, ptr);
-        self.tooltip_timer = 0;
-        self.tooltip_visible = true;
+        self.tooltip.show();
         self.window.redraw();
         return 0;
     }
     pub fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
         const self = cast(Sound, ptr);
         if (self.closed or self.window.closing) return;
-        self.pointer_x = x;
-        self.pointer_y = y;
-        self.hideTooltip();
         self.view.hover = self.view.hit(x, y);
         var value_buffer: [32]u8 = undefined;
         const tooltip: ?[:0]const u8 = if (self.view.hover) |t| switch (t.control) {
@@ -346,16 +325,14 @@ pub const Sound = struct {
             .network_nav => "Network",
             .sound_nav => "Sound",
         } else null;
-        self.tooltip.set(tooltip orelse "");
-        if (self.view.pressed) |target| {
-            if (target.control == .volume) self.setVolume(target.row, self.view.percent(target, x));
-        } else if (tooltip != null) self.tooltip_timer = c.g_timeout_add(500, &showTooltip, self);
+        self.tooltip.update(x, y, tooltip, self.view.pressed == null, &showTooltip, self);
+        if (self.view.pressed) |target| if (target.control == .volume) self.setVolume(target.row, self.view.percent(target, x));
         self.window.redraw();
     }
     pub fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
         const self = cast(Sound, ptr);
         self.view.hover = null;
-        self.hideTooltip();
+        self.tooltip.hide();
         self.window.redraw();
     }
     pub fn focusChanged(ptr: ?*anyopaque, _: *wire.Surface, focused: bool) void {
@@ -363,7 +340,7 @@ pub const Sound = struct {
         if (!focused) {
             self.view.pressed = null;
             self.view.keyboard_focus = false;
-            self.hideTooltip();
+            self.tooltip.hide();
             self.window.redraw();
         }
     }
@@ -372,7 +349,7 @@ pub const Sound = struct {
     }
     pub fn handleKey(self: *Sound, symbol: u32, modifiers: c.GdkModifierType) bool {
         if (self.closed or self.window.closing) return false;
-        self.hideTooltip();
+        self.tooltip.hide();
         if (self.view.expanded != null) {
             switch (symbol) {
                 0xff1b, 0xff09, 0xfe20 => self.view.expanded = null,
@@ -418,7 +395,7 @@ pub const Sound = struct {
     pub fn scrolled(ptr: ?*anyopaque, _: *wire.Surface, axis: u32, amount: f64) void {
         const self = cast(Sound, ptr);
         if (self.closed or self.window.closing or axis != 0) return;
-        self.hideTooltip();
+        self.tooltip.hide();
         const delta = amount * 4;
         if (self.view.expanded != null) {
             if (delta > 0 and self.view.optionAt(self.view.option_cursor + 1) != null) self.view.option_cursor += 1 else if (delta < 0) self.view.option_cursor -|= 1;

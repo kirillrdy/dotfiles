@@ -165,9 +165,9 @@ pub fn main(process_init: std.process.Init) !void {
     pumpEvents(50);
     const refresh_rect = usage.codex.refreshRect();
     const codex_surface = codex_menu.popup.surface.?;
-    const zoom = codex_menu.bounds.width / @as(f64, @floatFromInt(usage.codex.width));
-    const rx = codex_menu.bounds.x + (refresh_rect.x + refresh_rect.width / 2) * zoom;
-    const ry = codex_menu.bounds.y + (refresh_rect.y + refresh_rect.height / 2) * zoom;
+    const zoom = codex_menu.popup.rect.width / @as(f64, @floatFromInt(usage.codex.width));
+    const rx = codex_menu.popup.rect.x + (refresh_rect.x + refresh_rect.width / 2) * zoom;
+    const ry = codex_menu.popup.rect.y + (refresh_rect.y + refresh_rect.height / 2) * zoom;
     codex_surface.input.button.?(codex_menu, codex_surface, 272, true, rx, ry);
     assert(usage.codex.pressed);
     codex_surface.input.button.?(codex_menu, codex_surface, 272, false, rx, ry);

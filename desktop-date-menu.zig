@@ -3,7 +3,6 @@ const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const wire = @import("desktop-surface.zig");
 const popup = @import("desktop-popup.zig");
-const raster = @import("desktop-raster.zig");
 pub const native = @import("desktop-date-menu-view.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
@@ -19,8 +18,6 @@ pub const Controls = struct {
     popup: popup.Host = undefined,
     view: native.View,
     callbacks: Callbacks,
-    pixels: std.ArrayList(u32) = .empty,
-    bounds: raster.Rect = .{},
     pointer_x: f64 = 0,
     pointer_y: f64 = 0,
     scroll_grab: ?f64 = null,
@@ -44,13 +41,12 @@ pub const Controls = struct {
     }
     pub fn destroy(self: *Controls) void {
         self.popup.deinit();
-        self.pixels.deinit(a);
         self.view.deinit();
         a.destroy(self);
     }
     pub fn show(self: *Controls, global_x: i32, global_y: i32) !void {
         try self.popup.prepare(global_x, global_y);
-        self.updateBounds();
+        self.popup.place(self.view.width, self.view.height);
         try self.popup.show();
     }
     pub fn hide(self: *Controls) void {
@@ -69,11 +65,8 @@ pub const Controls = struct {
     }
     fn resized(ptr: ?*anyopaque) void {
         const self = cast(Controls, ptr);
-        self.updateBounds();
+        self.popup.place(self.view.width, self.view.height);
         self.redraw();
-    }
-    fn updateBounds(self: *Controls) void {
-        self.bounds = self.popup.bounds(752, 420);
     }
     pub fn reset(self: *Controls) void {
         self.view.navigate(0);
@@ -141,30 +134,20 @@ pub const Controls = struct {
         self.paint(target) catch |err| self.failed(err);
     }
     fn paint(self: *Controls, target: wire.Pixels) !void {
-        const factor = self.popup.surface.?.buffer_scale;
-        self.updateBounds();
-        try self.view.prepare(factor);
-        const width = self.view.width * factor;
-        const height = self.view.height * factor;
-        try self.pixels.resize(a, @as(usize, width) * height);
-        try self.view.paint(.{ .pixels = self.pixels.items, .width = width, .height = height });
-        try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(self.pixels.items), .width = width, .height = height, .stride = width * 4, .format = .argb }, .{
-            .x = self.bounds.x * @as(f64, @floatFromInt(factor)),
-            .y = self.bounds.y * @as(f64, @floatFromInt(factor)),
-            .width = self.bounds.width * @as(f64, @floatFromInt(factor)),
-            .height = self.bounds.height * @as(f64, @floatFromInt(factor)),
-        }, null);
+        try self.view.prepare(self.popup.surface.?.buffer_scale);
+        try self.view.paint(try self.popup.canvas(self.view.width, self.view.height));
+        try self.popup.blit(target);
     }
     fn point(self: *Controls, x: f64, y: f64) void {
-        const zoom = self.bounds.width / @as(f64, @floatFromInt(self.view.width));
-        self.pointer_x = (x - self.bounds.x) / zoom;
-        self.pointer_y = (y - self.bounds.y) / zoom;
+        const local = self.popup.point(x, y);
+        self.pointer_x = local.x;
+        self.pointer_y = local.y;
     }
     fn button(ptr: ?*anyopaque, _: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
         if (code != 272) return;
         const self = cast(Controls, ptr);
         if (!self.popup.visible or self.popup.close_idle != 0) return;
-        if (pressed and !self.bounds.contains(x, y)) {
+        if (pressed and !self.popup.contains(x, y)) {
             self.requestHide();
             return;
         }
@@ -219,15 +202,3 @@ pub const Controls = struct {
         self.redraw();
     }
 };
-
-test "date popup placement fits output edges and small screens in logical coordinates" {
-    const center = popup.placement(1728, 1080, 864, 32, 752, 420);
-    try std.testing.expectEqual(raster.Rect{ .x = 488, .y = 32, .width = 752, .height = 420 }, center);
-    const corner = popup.placement(1728, 1080, 1728, 1079, 752, 420);
-    try std.testing.expectEqual(@as(f64, 968), corner.x);
-    try std.testing.expectEqual(@as(f64, 652), corner.y);
-    const small = popup.placement(640, 360, 320, 32, 752, 420);
-    try std.testing.expect(small.x >= 8 and small.y >= 8);
-    try std.testing.expect(small.x + small.width <= 632 and small.y + small.height <= 352);
-    try std.testing.expectApproxEqAbs(@as(f64, 752.0 / 420.0), small.width / small.height, 0.000001);
-}

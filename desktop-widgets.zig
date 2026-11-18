@@ -4,7 +4,6 @@ const panel_data = @import("desktop-panel-data.zig");
 const power_backend = @import("desktop-power.zig");
 const popup = @import("desktop-popup.zig");
 const wire = @import("desktop-surface.zig");
-const raster = @import("desktop-raster.zig");
 const quick = @import("desktop-quick-settings.zig");
 pub const date_menu = @import("desktop-date-menu.zig");
 pub const c = @import("desktop-gtk.zig");
@@ -49,8 +48,6 @@ pub const Module = struct {
 pub const CodexPopup = struct {
     module: *Module,
     popup: popup.Host = undefined,
-    pixels: std.ArrayList(u32) = .empty,
-    bounds: raster.Rect = .{},
 
     fn create(module: *Module) !*CodexPopup {
         const self = try module_allocator.create(CodexPopup);
@@ -67,7 +64,6 @@ pub const CodexPopup = struct {
     }
     fn destroy(self: *CodexPopup) void {
         self.popup.deinit();
-        self.pixels.deinit(module_allocator);
         module_allocator.destroy(self);
     }
     pub fn show(self: *CodexPopup, global_x: i32, global_y: i32) !void {
@@ -77,7 +73,7 @@ pub const CodexPopup = struct {
         view.pressed = false;
         view.hovered = false;
         view.keyboard_focus = true;
-        self.bounds = self.popup.bounds(view.width, view.height);
+        self.popup.place(view.width, view.height);
         try self.popup.show();
     }
     pub fn hide(self: *CodexPopup) void {
@@ -104,29 +100,18 @@ pub const CodexPopup = struct {
     }
     fn paint(self: *CodexPopup, target: wire.Pixels) !void {
         const view = &self.module.codex;
-        const scale = self.popup.surface.?.buffer_scale;
-        try view.prepare(scale);
-        self.bounds = self.popup.bounds(view.width, view.height);
-        const width = view.width * scale;
-        const height = view.height * scale;
-        try self.pixels.resize(module_allocator, @as(usize, width) * height);
-        view.paint(.{ .pixels = self.pixels.items, .width = width, .height = height });
-        const factor: f64 = @floatFromInt(scale);
-        try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(self.pixels.items), .width = width, .height = height, .stride = width * 4, .format = .argb }, .{
-            .x = self.bounds.x * factor,
-            .y = self.bounds.y * factor,
-            .width = self.bounds.width * factor,
-            .height = self.bounds.height * factor,
-        }, null);
+        try view.prepare(self.popup.surface.?.buffer_scale);
+        view.paint(try self.popup.canvas(view.width, view.height));
+        try self.popup.blit(target);
     }
     fn onRefresh(self: *const CodexPopup, x: f64, y: f64) bool {
-        const zoom = self.bounds.width / @as(f64, @floatFromInt(self.module.codex.width));
-        return self.module.codex.refreshRect().contains((x - self.bounds.x) / zoom, (y - self.bounds.y) / zoom);
+        const local = self.popup.point(x, y);
+        return self.module.codex.refreshRect().contains(local.x, local.y);
     }
     fn button(ptr: ?*anyopaque, _: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
         const self = cast(CodexPopup, ptr);
         if (!self.popup.visible or self.popup.close_idle != 0 or code != 272) return;
-        if (pressed and !self.bounds.contains(x, y)) {
+        if (pressed and !self.popup.contains(x, y)) {
             self.popup.requestHide();
             return;
         }

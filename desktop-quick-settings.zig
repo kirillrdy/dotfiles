@@ -3,8 +3,7 @@ const std = @import("std");
 const c = @import("desktop-gtk.zig");
 const wire = @import("desktop-surface.zig");
 const popup = @import("desktop-popup.zig");
-const raster = @import("desktop-raster.zig");
-const Label = @import("desktop-panel-view.zig").Label;
+const Tooltip = @import("desktop-panel-view.zig").Tooltip;
 const devices = @import("desktop-devices.zig");
 const audio = @import("desktop-audio.zig");
 const battery_backend = @import("desktop-battery.zig");
@@ -32,13 +31,7 @@ pub fn bannersEnabled() bool {
 }
 pub const Controls = struct {
     popup: popup.Host = undefined,
-    pixels: std.ArrayList(u32) = .empty,
-    bounds: raster.Rect = .{},
-    tooltip: Label = .{},
-    tooltip_timer: c.guint = 0,
-    tooltip_visible: bool = false,
-    pointer_x: f64 = 0,
-    pointer_y: f64 = 0,
+    tooltip: Tooltip = .{},
     view: native.View = .{},
     network_paths: [8]?[:0]u8 = @splat(null),
     profile_context: ?*anyopaque = null,
@@ -152,22 +145,9 @@ pub const Controls = struct {
         }
         self.redraw();
     }
-    fn updateBounds(self: *Controls) void {
-        self.bounds = self.popup.bounds(self.view.width, self.view.height);
-    }
-    fn point(self: *const Controls, x: f64, y: f64) struct { x: f64, y: f64 } {
-        const zoom = self.bounds.width / @as(f64, @floatFromInt(@max(1, self.view.width)));
-        return .{ .x = (x - self.bounds.x) / zoom, .y = (y - self.bounds.y) / zoom };
-    }
-    fn hideTooltip(self: *Controls) void {
-        if (self.tooltip_timer != 0) _ = c.g_source_remove(self.tooltip_timer);
-        self.tooltip_timer = 0;
-        self.tooltip_visible = false;
-    }
     fn showTooltip(ptr: ?*anyopaque) callconv(.c) c.gboolean {
         const self = cast(Controls, ptr);
-        self.tooltip_timer = 0;
-        self.tooltip_visible = true;
+        self.tooltip.show();
         self.redraw();
         return 0;
     }
@@ -180,32 +160,13 @@ pub const Controls = struct {
     fn paint(self: *Controls, target: wire.Pixels) !void {
         const factor = self.popup.surface.?.buffer_scale;
         self.view.layout();
-        self.updateBounds();
-        const width = self.view.width * factor;
-        const height = self.view.height * factor;
-        try self.pixels.resize(a, @as(usize, width) * height);
-        try self.view.paint(a, .{ .pixels = self.pixels.items, .width = width, .height = height }, factor);
-        try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(self.pixels.items), .width = width, .height = height, .stride = width * 4, .format = .argb }, .{
-            .x = self.bounds.x * @as(f64, @floatFromInt(factor)),
-            .y = self.bounds.y * @as(f64, @floatFromInt(factor)),
-            .width = self.bounds.width * @as(f64, @floatFromInt(factor)),
-            .height = self.bounds.height * @as(f64, @floatFromInt(factor)),
-        }, null);
-        if (self.tooltip_visible and self.tooltip.value.len != 0) {
-            const logical_width = target.width / factor;
-            const logical_height = target.height / factor;
-            try self.tooltip.prepare(&self.view.renderer, factor, 12, false, logical_width -| 32, false);
-            const w = @min(@as(f64, @floatFromInt(logical_width)), self.tooltip.width() + 16);
-            const h = self.tooltip.height() + 12;
-            const x = std.math.clamp(self.pointer_x + 12, 0, @max(0, @as(f64, @floatFromInt(logical_width)) - w));
-            const y = std.math.clamp(self.pointer_y + 24, 0, @max(0, @as(f64, @floatFromInt(logical_height)) - h));
-            @import("desktop-preferences-view.zig").fill(.{ .target = target, .scale = @floatFromInt(factor) }, .{ .x = x, .y = y, .width = w, .height = h }, 0x161619, 6);
-            self.tooltip.paint(target, x + 8, y + 6, .{ .red = 1, .green = 1, .blue = 1 });
-        }
+        try self.view.paint(a, try self.popup.canvas(self.view.width, self.view.height), factor);
+        try self.popup.blit(target);
+        try self.tooltip.paint(target, &self.view.renderer, factor);
     }
     pub fn pointerButton(self: *Controls, pressed: bool, x: f64, y: f64) void {
         if (self.dead) return;
-        self.hideTooltip();
+        self.tooltip.hide();
         if (pressed) {
             self.view.keyboard_focus = false;
             self.view.hover = self.view.hit(x, y);
@@ -223,11 +184,11 @@ pub const Controls = struct {
         if (code != 272) return;
         const self = cast(Controls, ptr);
         if (!self.popup.visible or self.popup.close_idle != 0) return;
-        if (pressed and !self.bounds.contains(x, y)) {
+        if (pressed and !self.popup.contains(x, y)) {
             self.requestHide();
             return;
         }
-        const local = self.point(x, y);
+        const local = self.popup.point(x, y);
         self.pointerButton(pressed, local.x, local.y);
     }
     pub fn pointerMotion(self: *Controls, x: f64, y: f64) void {
@@ -243,11 +204,8 @@ pub const Controls = struct {
     fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
         const self = cast(Controls, ptr);
         if (!self.popup.visible or self.popup.close_idle != 0) return;
-        self.pointer_x = x;
-        self.pointer_y = y;
-        self.hideTooltip();
-        const local = self.point(x, y);
-        if (self.bounds.contains(x, y)) {
+        const local = self.popup.point(x, y);
+        if (self.popup.contains(x, y)) {
             self.pointerMotion(local.x, local.y);
         } else if (native.View.slider(self.view.pressed)) {
             self.pointerMotion(local.x, local.y);
@@ -271,13 +229,12 @@ pub const Controls = struct {
             .dnd => "Do Not Disturb",
             else => null,
         };
-        self.tooltip.set(tooltip orelse "");
-        if (!native.View.slider(self.view.pressed) and tooltip != null) self.tooltip_timer = c.g_timeout_add(500, &showTooltip, self);
+        self.tooltip.update(x, y, tooltip, !native.View.slider(self.view.pressed), &showTooltip, self);
     }
     fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
         const self = cast(Controls, ptr);
         self.view.hover = .none;
-        self.hideTooltip();
+        self.tooltip.hide();
         self.redraw();
     }
     fn key(ptr: ?*anyopaque, _: *wire.Surface, symbol: u32, modifiers: u32, pressed: bool) bool {
@@ -285,7 +242,7 @@ pub const Controls = struct {
     }
     pub fn handleKey(self: *Controls, symbol: u32, modifiers: u32) bool {
         if (self.dead or self.popup.close_idle != 0) return false;
-        self.hideTooltip();
+        self.tooltip.hide();
         self.view.pressed = .none;
         if (symbol == 0xff1b) {
             if (self.view.submenu != .none) {
@@ -312,8 +269,8 @@ pub const Controls = struct {
     }
     fn scroll(ptr: ?*anyopaque, _: *wire.Surface, axis: u32, amount: f64) void {
         const self = cast(Controls, ptr);
-        if (!self.popup.visible or self.popup.close_idle != 0 or axis != 0 or !self.bounds.contains(self.pointer_x, self.pointer_y)) return;
-        const local = self.point(self.pointer_x, self.pointer_y);
+        if (!self.popup.visible or self.popup.close_idle != 0 or axis != 0 or !self.popup.contains(self.tooltip.x, self.tooltip.y)) return;
+        const local = self.popup.point(self.tooltip.x, self.tooltip.y);
         const target = self.view.hit(local.x, local.y);
         if (!native.View.slider(target)) return;
         const value = if (target == .volume) self.view.model.volume.? else self.view.model.brightness.?;
@@ -427,11 +384,11 @@ pub const Controls = struct {
         self.view.layout();
         self.view.focus = .none;
         self.view.stepFocus(false);
-        self.updateBounds();
+        self.popup.place(self.view.width, self.view.height);
         try self.popup.show();
     }
     pub fn hide(self: *Controls) void {
-        self.hideTooltip();
+        self.tooltip.hide();
         self.view.submenu = .none;
         self.view.pressed = .none;
         self.view.hover = .none;
@@ -447,7 +404,7 @@ pub const Controls = struct {
     }
     fn resized(ptr: ?*anyopaque) void {
         const self = cast(Controls, ptr);
-        self.updateBounds();
+        self.popup.place(self.view.width, self.view.height);
         self.redraw();
     }
     fn refreshTimer(ptr: c.gpointer) callconv(.c) c.gboolean {
@@ -717,7 +674,7 @@ pub const Controls = struct {
     pub fn deinit(self: *Controls) void {
         self.dead = true;
         self.popup.deinit();
-        self.hideTooltip();
+        self.tooltip.hide();
         if (self.battery_service) |service| service.destroy();
         self.devices.unsubscribe(&self.subscription);
         if (self.owns_devices) self.devices.destroy();
@@ -740,7 +697,6 @@ pub const Controls = struct {
         self.refs -= 1;
         if (self.refs == 0) {
             self.clearNetworks();
-            self.pixels.deinit(a);
             self.tooltip.deinit();
             self.view.deinit(a);
             c.g_object_unref(self.cancel);
@@ -750,12 +706,3 @@ pub const Controls = struct {
         }
     }
 };
-
-test "quick settings popup placement fits output edges and small screens" {
-    const right = popup.placement(1728, 1080, 1700, 32, 376, 480);
-    try std.testing.expectEqual(raster.Rect{ .x = 1344, .y = 32, .width = 376, .height = 480 }, right);
-    const small = popup.placement(640, 360, 320, 32, 376, 480);
-    try std.testing.expect(small.x >= 8 and small.y >= 8);
-    try std.testing.expect(small.x + small.width <= 632 and small.y + small.height <= 352);
-    try std.testing.expectApproxEqAbs(@as(f64, 376.0 / 480.0), small.width / small.height, 0.000001);
-}

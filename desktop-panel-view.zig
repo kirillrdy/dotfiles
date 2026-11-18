@@ -51,6 +51,46 @@ pub const Label = struct {
         if (self.mask) |m| raster.mask(buffer, .{ .x = @as(i32, @intFromFloat(@round(x * @as(f64, @floatFromInt(self.scale))))) + m.left, .y = @as(i32, @intFromFloat(@round(y * @as(f64, @floatFromInt(self.scale))))) + m.top, .width = m.width, .height = m.height }, m.pixels, color);
     }
 };
+pub const Tooltip = struct {
+    label: Label = .{},
+    timer: c.guint = 0,
+    visible: bool = false,
+    x: f64 = 0,
+    y: f64 = 0,
+
+    pub fn deinit(self: *Tooltip) void {
+        self.hide();
+        self.label.deinit();
+    }
+    pub fn hide(self: *Tooltip) void {
+        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        self.timer = 0;
+        self.visible = false;
+    }
+    pub fn update(self: *Tooltip, x: f64, y: f64, value: ?[:0]const u8, active: bool, callback: c.GSourceFunc, data: ?*anyopaque) void {
+        self.x = x;
+        self.y = y;
+        self.hide();
+        self.label.set(value orelse "");
+        if (active and value != null) self.timer = c.g_timeout_add(500, callback, data);
+    }
+    pub fn show(self: *Tooltip) void {
+        self.timer = 0;
+        self.visible = true;
+    }
+    pub fn paint(self: *Tooltip, target: raster.Buffer, renderer: *text.Renderer, scale: u32) !void {
+        if (!self.visible or self.label.value.len == 0) return;
+        const logical_width = target.width / scale;
+        const logical_height = target.height / scale;
+        try self.label.prepare(renderer, scale, 12, false, logical_width -| 32, false);
+        const w = @min(@as(f64, @floatFromInt(logical_width)), self.label.width() + 16);
+        const h = self.label.height() + 12;
+        const x = std.math.clamp(self.x + 12, 0, @max(0, @as(f64, @floatFromInt(logical_width)) - w));
+        const y = std.math.clamp(self.y + 24, 0, @max(0, @as(f64, @floatFromInt(logical_height)) - h));
+        @import("desktop-preferences-view.zig").fill(.{ .target = target, .scale = @floatFromInt(scale) }, .{ .x = x, .y = y, .width = w, .height = h }, 0x161619, 6);
+        self.label.paint(target, x + 8, y + 6, white);
+    }
+};
 pub const Item = struct {
     label: Label = .{},
     icon: Label = .{},
