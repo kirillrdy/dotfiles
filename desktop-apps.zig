@@ -318,12 +318,20 @@ fn inputChanged(data: ?*anyopaque) void {
 pub fn keyPress(_: ?*anyopaque, event: *KeyEvent, data: ?*anyopaque) callconv(.c) c.gboolean {
     const self = cast(Launcher, data);
     const symbol = event.keyval;
+    const search_mode = self.searchMode();
     if (symbol == c.GDK_KEY_Escape) {
         self.hide();
         return 1;
     }
     if (symbol == c.GDK_KEY_Return or symbol == c.GDK_KEY_KP_Enter) {
-        if (self.selected < self.visible.items.len) _ = self.launch(self.visible.items[self.selected].info);
+        const count = self.visible.items.len;
+        if (count > 0) {
+            const selected = if (search_mode)
+                (if (self.search_focus) 0 else @min(self.selected, self.searchGrid().shown - 1))
+            else
+                self.selected;
+            if (selected < count) _ = self.launch(self.visible.items[selected].info);
+        }
         return 1;
     }
     if (symbol == 0xff56 or symbol == 0xff55) {
@@ -337,11 +345,29 @@ pub fn keyPress(_: ?*anyopaque, event: *KeyEvent, data: ?*anyopaque) callconv(.c
         return 1;
     }
     if (self.search_focus and symbol == c.GDK_KEY_Down) {
+        if (search_mode) {
+            if (self.visible.items.len == 0) return 1;
+            self.selected = 0;
+            self.hover = null;
+        }
         self.focusGrid();
         return 1;
     }
+    if (self.search_focus and symbol == c.GDK_KEY_Right and
+        event.state & (c.GDK_SHIFT_MASK | c.GDK_CONTROL_MASK | c.GDK_MOD1_MASK) == 0 and
+        search_mode and self.searchGrid().shown > 1)
+    {
+        const entry = self.search_input.?;
+        if (entry.buffer.cursor == entry.buffer.len and !entry.buffer.selected() and entry.composition.len == 0) {
+            // The first result is already highlighted while the query has focus.
+            self.selected = 1;
+            self.hover = null;
+            self.focusGrid();
+            return 1;
+        }
+    }
     if (!self.search_focus and self.visible.items.len > 0) {
-        if (self.searchMode()) {
+        if (search_mode) {
             const shown = self.searchGrid().shown;
             if (shown > 0) {
                 if (symbol == c.GDK_KEY_Up) {
@@ -351,7 +377,8 @@ pub fn keyPress(_: ?*anyopaque, event: *KeyEvent, data: ?*anyopaque) callconv(.c
                 const delta: i64 = if (symbol == c.GDK_KEY_Left) -1 else if (symbol == c.GDK_KEY_Right) 1 else 0;
                 if (delta != 0 or symbol == 0xff50 or symbol == 0xff57) {
                     const last: i64 = @intCast(shown - 1);
-                    const next: i64 = if (symbol == 0xff50) 0 else if (symbol == 0xff57) last else @as(i64, @intCast(self.selected)) + delta;
+                    const current: i64 = @intCast(@min(self.selected, shown - 1));
+                    const next: i64 = if (symbol == 0xff50) 0 else if (symbol == 0xff57) last else current + delta;
                     self.selected = @intCast(std.math.clamp(next, 0, last));
                     self.page = 0;
                     self.hover = null;
@@ -500,8 +527,8 @@ pub fn paint(l: *Launcher, part: Part, target: raster.Buffer, scale: u32) void {
                 const sg = l.searchGrid();
                 for (0..sg.shown) |i| {
                     const item = l.visible.items[i];
-                    const focused = !l.search_focus and l.selected == i;
-                    const selected = l.search_focus and l.selected == i;
+                    const focused = !l.search_focus and @min(l.selected, sg.shown - 1) == i;
+                    const selected = l.search_focus and i == 0;
                     item.tile.paint(canvas, scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), sg.tile(i), sg.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
                 }
             }
@@ -799,4 +826,44 @@ test "launcher owners can defer hiding until an exit animation completes" {
     state.defer_hide = false;
     launcher.hide();
     try std.testing.expect(!launcher.visible_window and state.hidden);
+}
+
+test "overview search navigates results from the end of the query" {
+    var launcher = Launcher.init(null);
+    defer launcher.deinit();
+    launcher.bindControls();
+    launcher.overview_search = true;
+    for (0..3) |index| {
+        const keyfile = c.g_key_file_new();
+        defer c.g_key_file_unref(keyfile);
+        var buffer: [128]u8 = undefined;
+        const source = try std.fmt.bufPrint(&buffer, "[Desktop Entry]\nType=Application\nName=Editor {d}\nExec=true\n", .{index});
+        try std.testing.expect(c.g_key_file_load_from_data(keyfile, source.ptr, source.len, 0, null) != 0);
+        const info = c.g_desktop_app_info_new_from_keyfile(keyfile) orelse return error.AppInfoCreationFailed;
+        defer c.g_object_unref(info);
+        try launcher.add(@ptrCast(info));
+    }
+    try launcher.setSearch("Editor");
+    try std.testing.expectEqual(@as(usize, 3), launcher.visible.items.len);
+
+    var event: KeyEvent = .{ .keyval = c.GDK_KEY_Left, .state = c.GDK_SHIFT_MASK };
+    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(launcher.search_input.?.buffer.selected());
+    event = .{ .keyval = c.GDK_KEY_Right };
+    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(launcher.search_focus and !launcher.search_input.?.buffer.selected());
+    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(!launcher.search_focus and launcher.selected == 1);
+    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expectEqual(@as(usize, 2), launcher.selected);
+
+    event.keyval = c.GDK_KEY_Left;
+    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expectEqual(@as(usize, 1), launcher.selected);
+    event.keyval = c.GDK_KEY_Up;
+    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(launcher.search_focus);
+    event.keyval = c.GDK_KEY_Down;
+    try std.testing.expect(keyPress(null, &event, &launcher) != 0);
+    try std.testing.expect(!launcher.search_focus and launcher.selected == 0);
 }
