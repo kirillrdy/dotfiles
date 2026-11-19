@@ -8,6 +8,8 @@ pub const Image = struct {
     height: u32,
     stride: usize,
     y_invert: bool = false,
+    /// Keep premultiplied alpha as straight RGBA instead of encoding opaque RGB.
+    alpha: bool = false,
 };
 
 fn chunk(output: *std.Io.Writer, kind: *const [4]u8, data: []const u8) !void {
@@ -21,14 +23,16 @@ fn chunk(output: *std.Io.Writer, kind: *const [4]u8, data: []const u8) !void {
     try output.writeInt(u32, crc.final(), .big);
 }
 
-/// Captures are opaque: ignore the high byte, including XRGB's undefined bits.
+/// Captures are opaque unless `alpha` is set: ignore the high byte, including
+/// XRGB's undefined bits.
 /// Keep only a filtered row and the compressor window in addition to the output.
 pub fn encode(allocator: std.mem.Allocator, image: Image) ![]u8 {
     if (image.width == 0 or image.height == 0 or image.width > 16384 or image.height > 16384) return error.InvalidImage;
     const pixel_bytes = try std.math.mul(usize, image.width, 4);
     const required = try std.math.add(usize, try std.math.mul(usize, image.height - 1, image.stride), pixel_bytes);
     if (image.stride < pixel_bytes or image.pixels.len < required) return error.InvalidImage;
-    const row = try allocator.alloc(u8, @as(usize, image.width) * 3 + 1);
+    const channels: usize = if (image.alpha) 4 else 3;
+    const row = try allocator.alloc(u8, @as(usize, image.width) * channels + 1);
     defer allocator.free(row);
     const window = try allocator.alloc(u8, std.compress.flate.max_window_len);
     defer allocator.free(window);
@@ -39,12 +43,16 @@ pub fn encode(allocator: std.mem.Allocator, image: Image) ![]u8 {
         const source_y = if (image.y_invert) image.height - 1 - y else y;
         const source = image.pixels[source_y * image.stride ..][0..pixel_bytes];
         row[0] = 1; // Sub filter compresses horizontal runs without a second row.
-        var previous: [3]u8 = @splat(0);
+        var previous: [4]u8 = @splat(0);
         for (0..image.width) |x| {
             const pixel = std.mem.readInt(u32, source[x * 4 ..][0..4], @import("builtin").cpu.arch.endian());
-            const rgb: [3]u8 = .{ @truncate(pixel >> 16), @truncate(pixel >> 8), @truncate(pixel) };
-            for (rgb, 0..) |value, channel| row[1 + x * 3 + channel] = value -% previous[channel];
-            previous = rgb;
+            const alpha = if (image.alpha) pixel >> 24 else 255;
+            var rgba: [4]u8 = .{ 0, 0, 0, @intCast(alpha) };
+            if (alpha != 0) for (rgba[0..3], [_]u5{ 16, 8, 0 }) |*value, shift| {
+                value.* = @intCast(@min(255, (((pixel >> shift) & 255) * 255 + alpha / 2) / alpha));
+            };
+            for (rgba[0..channels], 0..) |value, channel| row[1 + x * channels + channel] = value -% previous[channel];
+            previous = rgba;
         }
         try compressor.writer.writeAll(row);
     }
@@ -57,7 +65,7 @@ pub fn encode(allocator: std.mem.Allocator, image: Image) ![]u8 {
     std.mem.writeInt(u32, header[0..4], image.width, .big);
     std.mem.writeInt(u32, header[4..8], image.height, .big);
     header[8] = 8;
-    header[9] = 2; // Eight-bit RGB, no alpha.
+    header[9] = if (image.alpha) 6 else 2; // Eight-bit RGBA or RGB.
     try chunk(&output.writer, "IHDR", &header);
     // Bound chunk sizes independently of the compressed image dimensions.
     var remaining: []const u8 = compressed.written();

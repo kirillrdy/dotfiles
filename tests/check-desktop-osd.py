@@ -1,6 +1,5 @@
 """Headless integration test; run under dbus-run-session with desktop-zig, grim,
 wlr-randr, wtype, PipeWire, WirePlumber, and dbus-send on PATH. Audio uses private virtual devices.
-For an unwrapped development binary, supply --loader-cache explicitly.
 """
 
 import argparse
@@ -21,7 +20,6 @@ from session_fixture import read_png, terminate_processes, wait_until, wait_wayl
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True, type=Path)
 parser.add_argument("--style", type=Path)
-parser.add_argument("--loader-cache", type=Path)
 parser.add_argument("--dbus-config", type=Path)
 args = parser.parse_args()
 for tool in ("desktop-zig", "grim", "wlr-randr", "wtype", "dbus-send"):
@@ -42,7 +40,7 @@ def set_brightness(percent):
 
 backlight = BacklightMock(root, args.dbus_config, on_set=set_brightness)
 env = dict(os.environ)
-for name in ("DISPLAY", "WAYLAND_DISPLAY", "GDK_PIXBUF_MODULE_FILE"):
+for name in ("DISPLAY", "WAYLAND_DISPLAY"):
     env.pop(name, None)
 env.update(
     OSD_TEST_ROOT=str(root),
@@ -60,8 +58,6 @@ env.update(
     GTK_USE_PORTAL="0",
     DESKTOP_OSD_SOUND_FILE=str(root / "feedback.oga"),
 )
-if args.loader_cache:
-    env["GDK_PIXBUF_MODULE_FILE"] = str(args.loader_cache)
 processes = []
 audio = AudioServer(root, env)
 

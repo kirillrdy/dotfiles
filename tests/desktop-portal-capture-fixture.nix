@@ -8,7 +8,6 @@ import ./fixture.nix { inherit pkgs; } {
   pygobject = true;
   withDesktop = true;
   gtkEnv = true;
-  gdkPixbuf = false;
   iconTheme = false;
   fonts = true;
   nativeBuildInputs = [

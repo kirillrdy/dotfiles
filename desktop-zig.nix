@@ -95,7 +95,7 @@ pkgs.stdenv.mkDerivation {
   WLR_PROTOCOLS_DIR = "${pkgs.wlr-protocols}/share/wlr-protocols";
   buildInputs = [
     pkgs.glib
-    pkgs.gdk-pixbuf
+    textLibraries.rsvg
     textLibraries.cairo
     textLibraries.pango
     pkgs.wayland
@@ -111,7 +111,6 @@ pkgs.stdenv.mkDerivation {
   # Compile the former launcher's environment setup into the Zig executable.
   DESKTOP_RUNTIME_POWER_HELPER = "${placeholder "out"}/bin/desktop-zig";
   DESKTOP_RUNTIME_POWER_PKEXEC = "/run/wrappers/bin/pkexec";
-  DESKTOP_RUNTIME_PIXBUF_LOADERS = "${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache";
   DESKTOP_RUNTIME_SOUND_FILE = "${feedbackSound}";
   DESKTOP_RUNTIME_DATA_DIRS = "${placeholder "out"}/share:${pkgs.adwaita-icon-theme}/share:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${portalSettingsSchemas}/share/gsettings-schemas/gnome-settings-daemon-${pkgs.gnome-settings-daemon.version}";
   buildPhase = ''

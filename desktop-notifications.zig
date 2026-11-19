@@ -392,7 +392,7 @@ fn imageHint(hints: *c.GVariant) ?c.__icons.Image {
         const value = c.g_variant_get_string(image, null);
         const file = if (c.g_str_has_prefix(value, "file://") != 0) c.g_filename_from_uri(value, null, null) else c.g_strdup(value);
         defer c.g_free(file);
-        if (file != null and c.g_path_is_absolute(file) != 0) return @import("desktop-decode.zig").fileAt(file, 48);
+        if (file != null and c.g_path_is_absolute(file) != 0) return @import("desktop-decode.zig").file(file, 48);
     }
     return null;
 }

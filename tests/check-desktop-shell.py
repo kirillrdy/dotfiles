@@ -12,7 +12,7 @@ import time
 import sys
 sys.dont_write_bytecode = True
 from audio_server import AudioServer
-from session_fixture import Processes, wait_until, wait_wayland
+from session_fixture import Processes, wait_until, wait_wayland, write_wallpaper
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True, type=Path)
@@ -26,8 +26,7 @@ binary = str(args.binary.resolve())
 root = Path(tempfile.mkdtemp(prefix="desktop-shell-check-", dir="/tmp"))
 print(f"Artifacts: {root}", flush=True)
 (root / "runtime").mkdir(mode=0o700)
-# GdkPixbuf's built-in PPM decoder needs no external image module.
-(root / "wallpaper.ppm").write_bytes(b"P6\n2 2\n255\n" + bytes([20, 40, 80]) * 4)
+write_wallpaper(root / "wallpaper.png")
 (root / "panel.json").write_text(json.dumps({
     "left": [{"name": "gnome-activities", "kind": "activities"}],
     "center": [{"name": "gnome-clock", "kind": "clock"}],
@@ -99,7 +98,7 @@ try:
     compositor = start([args.compositor, "compositor-only"], "compositor.log")
     env["WAYLAND_DISPLAY"] = wait_wayland(root / "runtime", compositor, root / "compositor.log")
     assert run([binary, "ping"], ok=False).returncode != 0, "client must not start a desktop"
-    command = [binary, "serve", str(root / "wallpaper.ppm"),
+    command = [binary, "serve", str(root / "wallpaper.png"),
                str(args.panel_config or root / "panel.json")]
     shell = start(command, "shell.log")
     wait_for(lambda: run([binary, "ping"], ok=False).returncode == 0, "shell ready")

@@ -56,37 +56,32 @@ let
         "-Denable-docs=false"
       ];
   });
-  # The SVG loader must use the same text stack so it does not retain a second
-  # Pango build and its Xft dependencies through the pixbuf loader cache.
-  rsvgBuild =
+  # The desktop renders SVG straight into Cairo and decodes PNG with Cairo, so
+  # librsvg shares the text stack and needs neither GdkPixbuf nor its loader,
+  # rsvg-convert, or the AVIF decoder for embedded images.
+  rsvg =
     (pkgs.librsvg.override {
       inherit cairo pango;
       withIntrospection = false;
+      withPixbufLoader = false;
     }).overrideAttrs
-      {
+      (old: {
         pname = "desktop-rsvg";
         separateDebugInfo = false;
-      };
-  # Only the shared SVG loader is used at runtime. Keep rsvg-convert and its
-  # completions in the upstream build used for checks, outside the desktop.
-  rsvg =
-    pkgs.runCommand "desktop-svg-loader-${rsvgBuild.version}"
-      {
-        nativeBuildInputs = [ pkgs.patchelf ];
-        disallowedReferences = [ rsvgBuild ];
-      }
-      ''
-        mkdir -p "$out/lib"
-        cp -a ${rsvgBuild}/lib/librsvg-2.so* "$out/lib/"
-        cp -a ${rsvgBuild}/lib/gdk-pixbuf-2.0 "$out/lib/"
-        chmod -R u+w "$out"
-        loader="$out/lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader_svg.so"
-        patchelf --print-rpath "$loader" > loader-rpath
-        substituteInPlace loader-rpath --replace-fail '${rsvgBuild}/lib' "$out/lib"
-        patchelf --set-rpath "$(cat loader-rpath)" "$loader"
-        substituteInPlace "$out/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache" \
-          --replace-fail '${rsvgBuild}' "$out"
-      '';
+        buildInputs = pkgs.lib.remove pkgs.dav1d old.buildInputs;
+        propagatedBuildInputs = pkgs.lib.remove pkgs.gdk-pixbuf old.propagatedBuildInputs;
+        mesonFlags = old.mesonFlags ++ [
+          "-Dpixbuf=disabled"
+          "-Drsvg-convert=disabled"
+          "-Davif=disabled"
+        ];
+        # Upstream generates rsvg-convert shell completions here.
+        postInstall = "";
+        disallowedRequisites = [
+          pkgs.gdk-pixbuf
+          pkgs.dav1d
+        ];
+      });
 in
 {
   inherit

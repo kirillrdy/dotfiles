@@ -8,7 +8,7 @@ import tempfile
 import time
 sys.dont_write_bytecode = True
 from gi.repository import GLib
-from session_fixture import NotificationsClient, VirtualPointer, read_png, terminate_processes, wait_until
+from session_fixture import NotificationsClient, VirtualPointer, read_png, terminate_processes, wait_until, write_wallpaper
 
 bin_dir = Path(sys.argv[1]).resolve()
 root = Path(tempfile.mkdtemp(prefix="desktop-date-menu-check-", dir="/tmp"))
@@ -76,7 +76,7 @@ def card_ready():
     return rows[top + 108][(left + 100) * 3:(left + 100) * 3 + 3] == bytes([84, 84, 90])
 
 
-(root / "wallpaper.ppm").write_bytes(b"P6\n2 2\n255\n" + bytes([20, 40, 80]) * 4)
+write_wallpaper(root / "wallpaper.png")
 (root / "panel.json").write_text(json.dumps({
     "left": [], "center": [{"kind": "clock"}], "right": [],
 }))
@@ -88,7 +88,7 @@ log = root / "service.log"
 keyboard = sp.Popen(["wtype", "-s", "120000"])
 time.sleep(.1)
 with log.open("w") as output:
-    service = sp.Popen([str(bin_dir / "desktop-zig"), "serve", str(root / "wallpaper.ppm"),
+    service = sp.Popen([str(bin_dir / "desktop-zig"), "serve", str(root / "wallpaper.png"),
                         str(root / "panel.json")], stdout=output, stderr=sp.STDOUT, env=env)
 pointer = VirtualPointer(bin_dir / "desktop-pointer-fixture", delay=0.07)
 try:

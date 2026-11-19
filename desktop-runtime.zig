@@ -7,7 +7,6 @@ pub fn setup(a: std.mem.Allocator) !void {
     const settings = .{
         .{ "DESKTOP_POWER_HELPER", options.POWER_HELPER },
         .{ "DESKTOP_POWER_PKEXEC", options.POWER_PKEXEC },
-        .{ "GDK_PIXBUF_MODULE_FILE", options.PIXBUF_LOADERS },
         .{ "DESKTOP_OSD_SOUND_FILE", options.SOUND_FILE },
     };
     inline for (settings) |entry| {
@@ -62,7 +61,6 @@ test "configured startup exports helper paths and remains idempotent" {
     inline for (.{
         .{ "DESKTOP_POWER_HELPER", options.POWER_HELPER },
         .{ "DESKTOP_POWER_PKEXEC", options.POWER_PKEXEC },
-        .{ "GDK_PIXBUF_MODULE_FILE", options.PIXBUF_LOADERS },
         .{ "DESKTOP_OSD_SOUND_FILE", options.SOUND_FILE },
     }) |entry| {
         if (entry[1]) |expected| try std.testing.expectEqualStrings(expected, std.mem.span(std.c.getenv(entry[0]).?));

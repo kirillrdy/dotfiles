@@ -35,7 +35,6 @@ import ./fixture.nix { inherit pkgs; } {
         --dbus-config ${dbusConfig}
       ${dbusRun} python3 ${./check-desktop-osd.py} \
         --binary ${desktop.tests}/bin/desktop-backlight-fixture \
-        --loader-cache "$GDK_PIXBUF_MODULE_FILE" \
         --dbus-config ${dbusConfig}
     '';
 }

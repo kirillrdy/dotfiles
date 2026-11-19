@@ -36,11 +36,20 @@ class Processes:
         self.children.clear()
 
 
+def write_wallpaper(path, rgb=(20, 40, 80), size=2):
+    """Write a solid opaque RGB PNG, the format the desktop decodes."""
+    def chunk(tag, body):
+        return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", zlib.crc32(tag + body))
+    rows = (b"\0" + bytes(rgb) * size) * size
+    header = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
+    Path(path).write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+    return Path(path)
+
+
 def command(binary, root, wallpaper=None, panel_config=None):
     root = Path(root)
     if wallpaper is None:
-        wallpaper = root / "session-wallpaper.ppm"
-        wallpaper.write_bytes(b"P6\n2 2\n255\n" + bytes([20, 40, 80]) * 4)
+        wallpaper = write_wallpaper(root / "session-wallpaper.png")
     if panel_config is None:
         panel_config = root / "session-panel.json"
         panel_config.write_text(json.dumps({"left": [], "center": [], "right": []}))

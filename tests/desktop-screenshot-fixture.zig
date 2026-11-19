@@ -83,7 +83,7 @@ fn roundTrip(allocator: std.mem.Allocator, image: screenshot.png.Image) !void {
     }
     // Decode with the existing C library as an independent reference.
     const decode = @import("desktop").decode;
-    const decoded = decode.file(&path) orelse return error.PngDecodeFailed;
+    const decoded = decode.file(&path, null) orelse return error.PngDecodeFailed;
     defer decode.free(decoded);
     try std.testing.expectEqual(image.width, decoded.width);
     try std.testing.expectEqual(image.height, decoded.height);

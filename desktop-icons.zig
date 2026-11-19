@@ -299,7 +299,7 @@ pub fn load(name: [:0]const u8, size: u32, scale: u32, tint: ?Color) ?Image {
             if (std.mem.endsWith(u8, path, suffix)) return symbolic(path, physical, rgba);
         }
     }
-    return decode.fileAt(path, physical);
+    return decode.file(path, physical);
 }
 
 /// Loads a GIcon, falling back to a copy of `fallback` or then a named icon.
@@ -331,7 +331,7 @@ pub fn loadThemed(icon: ?*c.GIcon, size: u32, fallback: ?Image, fallback_name: ?
 fn symbolic(path: [:0]const u8, size: u32, tint: Color) ?Image {
     const data = read(path) orelse return null;
     defer c.g_free(data.ptr);
-    const natural = decode.dimensions(path) orelse return null;
+    const natural = decode.dimensions(data) orelse return null;
     const encoded = a.alloc(u8, std.base64.standard.Encoder.calcSize(data.len)) catch return null;
     defer a.free(encoded);
     _ = std.base64.standard.Encoder.encode(encoded, data);
@@ -353,7 +353,7 @@ fn symbolic(path: [:0]const u8, size: u32, tint: Color) ?Image {
 /// Recolors GTK's symbolic PNG palette: black takes the tint, while pure red,
 /// green and blue select the success, warning and error colors.
 fn symbolicPng(path: [:0]const u8, size: u32, tint: Color) ?Image {
-    const image = decode.fileAt(path, size) orelse return null;
+    const image = decode.file(path, size) orelse return null;
     const colors = [_][3]u32{
         .{ @intFromFloat(std.math.clamp(tint.red, 0, 1) * 255), @intFromFloat(std.math.clamp(tint.green, 0, 1) * 255), @intFromFloat(std.math.clamp(tint.blue, 0, 1) * 255) },
         .{ 77, 153, 5 },
@@ -498,14 +498,10 @@ test "symbolic SVG icons use the GTK palette, opacity and scale" {
 test "symbolic PNG palettes and file GIcons decode to premultiplied images" {
     var fixture = try Fixture.init();
     defer fixture.deinit();
-    const source = decode.api.gdk_pixbuf_new(decode.api.GDK_COLORSPACE_RGB, 1, 8, 4, 1) orelse return error.IconAllocation;
-    defer c.g_object_unref(source);
-    @memcpy(decode.api.gdk_pixbuf_get_pixels(source)[0..16], &[_]u8{ 0, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 128 });
-    var data: [*c]u8 = null;
-    var len: c.gsize = 0;
-    try std.testing.expect(decode.api.gdk_pixbuf_save_to_bufferv(source, &data, &len, "png", null, null, null) != 0);
-    defer c.g_free(data);
-    try fixture.put("palette-symbolic.symbolic.png", data[0..len]);
+    const palette = [_]u32{ 0xff000000, 0xffff0000, 0xff00ff00, 0x80000080 };
+    const data = try @import("desktop-png.zig").encode(std.testing.allocator, .{ .pixels = std.mem.sliceAsBytes(&palette), .width = 4, .height = 1, .stride = 16, .alpha = true });
+    defer std.testing.allocator.free(data);
+    try fixture.put("palette-symbolic.symbolic.png", data);
     const path = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/palette-symbolic.symbolic.png", .{fixture.root}, 0);
     defer std.testing.allocator.free(path);
     const tinted = load(path, 4, 1, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.5 }) orelse return error.IconDecode;

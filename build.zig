@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    for ([_][]const u8{ "gio-unix-2.0", "gdk-pixbuf-2.0", "cairo", "wayland-client", "libpipewire-0.3", "pam", "xkbcommon", "pangoft2" }) |name| desktop.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "gio-unix-2.0", "librsvg-2.0", "cairo", "wayland-client", "libpipewire-0.3", "pam", "xkbcommon", "pangoft2" }) |name| desktop.linkSystemLibrary(name, .{});
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
     const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
     const protocol_names = [_][]const u8{
@@ -103,7 +103,7 @@ pub fn build(b: *std.Build) void {
     const integration_tests = b.option(bool, "integration-tests", "Include system and Wayland integration tests") orelse false;
     const options = b.addOptions();
     options.addOption(bool, "integration_tests", integration_tests);
-    for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "PIXBUF_LOADERS", "SOUND_FILE", "DATA_DIRS" }) |name| {
+    for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "SOUND_FILE", "DATA_DIRS" }) |name| {
         options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
     }
     desktop.addOptions("options", options);
@@ -145,7 +145,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit, ABI and protocol checks");
     const unit_run = b.addRunArtifact(tests);
     test_step.dependOn(&unit_run.step);
-    test_module.addImport("glib-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gio/gio.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <cairo.h>\n#include <gdk-pixbuf/gdk-pixbuf.h>\n#include <pango/pangoft2.h>\n", &.{ "gio-unix-2.0", "gdk-pixbuf-2.0", "cairo", "wayland-client", "pangoft2" }));
+    test_module.addImport("glib-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gio/gio.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <cairo.h>\n#include <librsvg/rsvg.h>\n#include <pango/pangoft2.h>\n", &.{ "gio-unix-2.0", "librsvg-2.0", "cairo", "wayland-client", "pangoft2" }));
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
     const decoration_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-decoration-fixture.zig"), .target = target, .optimize = optimize, .link_libc = true });
     decoration_module.linkSystemLibrary("wayland-client", .{});

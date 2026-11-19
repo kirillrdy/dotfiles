@@ -10,7 +10,6 @@
   withDesktop ? false,
   fixture ? null,
   gtkEnv ? false,
-  gdkPixbuf ? gtkEnv,
   iconTheme ? gtkEnv,
   extraDataDirs ? [ ],
   fonts ? false,
@@ -106,9 +105,6 @@ let
     ''
     + lib.optionalString (dataDirs != [ ]) ''
       export XDG_DATA_DIRS=${lib.concatStringsSep ":" dataDirs}
-    ''
-    + lib.optionalString gdkPixbuf ''
-      export GDK_PIXBUF_MODULE_FILE=${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
     ''
     + lib.optionalString memorySettings ''
       export GSETTINGS_BACKEND=memory

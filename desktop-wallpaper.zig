@@ -124,7 +124,7 @@ pub const Service = struct {
     client: *native.Client,
 
     pub fn create(path: [:0]const u8) !*Service {
-        const image = decode.file(path) orelse return error.InvalidImage;
+        const image = decode.file(path, null) orelse return error.InvalidImage;
         errdefer decode.free(image);
         const self = try allocator.create(Service);
         self.* = .{ .app = .{ .image = image }, .client = undefined };

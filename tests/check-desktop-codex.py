@@ -8,13 +8,13 @@ import sys
 import tempfile
 import time
 sys.dont_write_bytecode = True
-from session_fixture import VirtualPointer, read_png, wait_until
+from session_fixture import VirtualPointer, read_png, wait_until, write_wallpaper
 from wayland_ui import VirtualKeyboard
 
 bin_dir = Path(sys.argv[1]).resolve()
 root = Path(tempfile.mkdtemp(prefix="desktop-codex-check-", dir="/tmp"))
 print(f"Codex artifacts: {root}", flush=True)
-(root / "wallpaper.ppm").write_bytes(b"P6\n2 2\n255\n" + bytes([20, 40, 80]) * 4)
+write_wallpaper(root / "wallpaper.png")
 (root / "panel.json").write_text(json.dumps({
     "left": [], "center": [],
     "right": [{"name": "gnome-codex", "source": "codex"}],
@@ -69,7 +69,7 @@ run(str(bin_dir / "desktop-zig"), "output", "--output", "HEADLESS-1", "--scale",
 keyboard = VirtualKeyboard(env)
 pointer = VirtualPointer(bin_dir / "desktop-pointer-fixture", env=env, delay=.07)
 with log.open("w") as output:
-    shell = sp.Popen([str(bin_dir / "desktop-zig"), "serve", str(root / "wallpaper.ppm"),
+    shell = sp.Popen([str(bin_dir / "desktop-zig"), "serve", str(root / "wallpaper.png"),
                       str(root / "panel.json")], env=env, stdout=output, stderr=sp.STDOUT)
 try:
     wait_for(lambda: sp.run([str(bin_dir / "desktop-zig"), "ping"], env=env,

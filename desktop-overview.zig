@@ -86,7 +86,7 @@ const Overview = struct {
         const native = wire.Client.createInteractive(.{ .added = &outputAdded, .removed = &outputRemoved }, self) catch @panic("native overview connection");
         if (native.outputs.items.len == 0) @panic("overview needs an output");
         var wallpaper: ?*c.cairo_surface_t = null;
-        if (decode.file(path)) |image| {
+        if (decode.file(path, null)) |image| {
             defer decode.free(image);
             wallpaper = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(image.width), @intCast(image.height));
             const data = c.cairo_image_surface_get_data(wallpaper);
