@@ -11,6 +11,7 @@ pub const Options = struct {
     timeout: std.Io.Duration = .fromSeconds(10),
     max_bytes: usize = 1024 * 1024,
     use_proxy: bool = true,
+    user_agent: []const u8 = "codex-cli",
 };
 
 pub fn get(a: std.mem.Allocator, io: std.Io, options: Options) !Response {
@@ -51,7 +52,7 @@ fn request(a: std.mem.Allocator, io: std.Io, options: Options) !Response {
         .redirect_behavior = .unhandled,
         .keep_alive = false,
         .headers = .{
-            .user_agent = .{ .override = "codex-cli" },
+            .user_agent = .{ .override = options.user_agent },
             .accept_encoding = .{ .override = "identity" },
         },
         // Redirects are disabled, so credentials remain on the original URL.

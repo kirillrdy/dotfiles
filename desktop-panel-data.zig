@@ -5,6 +5,7 @@ const u = @import("desktop-util.zig");
 const audio = @import("desktop-audio.zig");
 const battery = @import("desktop-battery.zig");
 const codex = @import("desktop-codex.zig");
+const claude = @import("desktop-claude.zig");
 const A = u.Allocator;
 pub const Item = struct {
     icon: []const u8 = "",
@@ -220,8 +221,9 @@ pub fn sample(a: A, kind: []const u8, icon: []const u8, demo: bool) !Update {
         return .{ .items = items };
     }
     // Decode the external API once; the session transports typed data throughout.
-    const result = if (demo) try u.parse(a, "{\"text\":\"54%\",\"tooltip\":\"5h: 54% remaining\\n7d: 93% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}]}") else try codex.readUsage(a, true, true);
-    items[0] = .{ .icon = icon, .text = u.string(u.get(result, "text")) };
+    const is_claude = u.eq(kind, "claude");
+    const result = if (demo) try u.parse(a, "{\"text\":\"54%\",\"tooltip\":\"5h: 54% remaining\\n7d: 93% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}]}") else if (is_claude) try claude.readUsage(a, true, true) else try codex.readUsage(a, true, true);
+    items[0] = .{ .icon = if (is_claude) "claude-usage-symbolic" else icon, .text = u.string(u.get(result, "text")) };
     const raw_windows = u.get(result, "windows");
     const windows = try a.alloc(Window, if (raw_windows == .array) raw_windows.array.items.len else 0);
     for (windows, 0..) |*window, i| {

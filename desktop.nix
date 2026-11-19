@@ -198,6 +198,10 @@ lib.mkIf enableLightDesktop {
           source = "codex";
         }
         {
+          name = "gnome-claude";
+          source = "claude";
+        }
+        {
           name = "gnome-monitors";
           kind = "monitors";
           source = "monitors";

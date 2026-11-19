@@ -2,6 +2,7 @@ const std = @import("std");
 const u = @import("desktop-util.zig");
 const panel = @import("desktop-panel-data.zig");
 const codex = @import("desktop-codex.zig");
+const claude = @import("desktop-claude.zig");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
@@ -66,18 +67,18 @@ test "Codex keeps used and remaining modes and both popup windows" {
     defer arena.deinit();
     const a = arena.allocator();
     const data = try u.parse(a, "{\"rate_limit\":{\"primary_window\":{\"used_percent\":46},\"secondary_window\":{\"used_percent\":7}}}");
-    const remaining = try codex.formatUsage(a, data, true, true, 1000);
+    const remaining = try codex.formatUsage(a, "Codex", data, true, true, 1000);
     try strings("54%", u.string(u.get(remaining, "text")));
     try expect(std.mem.indexOf(u8, u.string(u.get(remaining, "tooltip")), "7d: 93% remaining") != null);
     try equal(@as(?f64, 54), u.number(u.get(u.get(remaining, "windows").array.items[0], "percent")));
-    try strings("Codex 5h 46% · 7d 7%", u.string(u.get(try codex.formatUsage(a, data, false, false, 1000), "text")));
-    const missing = try codex.formatUsage(a, try u.parse(a, "{\"rate_limit\":{\"secondary_window\":{\"used_percent\":7}}}"), true, true, 1000);
+    try strings("Codex 5h 46% · 7d 7%", u.string(u.get(try codex.formatUsage(a, "Codex", data, false, false, 1000), "text")));
+    const missing = try codex.formatUsage(a, "Codex", try u.parse(a, "{\"rate_limit\":{\"secondary_window\":{\"used_percent\":7}}}"), true, true, 1000);
     try strings("—", u.string(u.get(missing, "text")));
     try expect(u.get(u.get(missing, "windows").array.items[0], "percent") == .null);
     try equal(@as(?f64, 93), u.number(u.get(u.get(missing, "windows").array.items[1], "percent")));
     for ([_][]const u8{ "null", "true", "\"50\"", "{}" }) |value| {
         const invalid = try u.parse(a, try u.fmt(a, "{{\"rate_limit\":{{\"primary_window\":{{\"used_percent\":{s}}}}}}}", .{value}));
-        try strings("unavailable", u.string(u.get(try codex.formatUsage(a, invalid, true, true, 1000), "class")));
+        try strings("unavailable", u.string(u.get(try codex.formatUsage(a, "Codex", invalid, true, true, 1000), "class")));
     }
 }
 test "Codex reset countdown handles missing invalid and past timestamps" {
@@ -187,4 +188,28 @@ test "integration: monitor updates retain their sampled values across later samp
     const second = try monitor.sample(alloc, true);
     try equal(original, first.monitors.?[0].values[0]);
     try expect(second.monitors.?[0].values[0] != original);
+}
+test "Claude parses RFC 3339 reset timestamps" {
+    try equal(@as(?i64, 1762232399), claude.parseTimestamp("2025-11-04T04:59:59.943648+00:00"));
+    try equal(@as(?i64, 1762232399), claude.parseTimestamp("2025-11-04T04:59:59Z"));
+    try equal(@as(?i64, 1762232399), claude.parseTimestamp("2025-11-04T15:59:59+11:00"));
+    try equal(@as(?i64, 951782400), claude.parseTimestamp("2000-02-29T00:00:00Z"));
+    for ([_][]const u8{ "", "2025-11-04", "2025-13-04T04:59:59Z", "2025-11-04T04:59:59", "2025-11-04T04:59:59.Z", "2025-11-04T04:59:59+0000" }) |value| try equal(@as(?i64, null), claude.parseTimestamp(value));
+}
+test "Claude maps five-hour and weekly utilization onto the shared windows" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const data = try u.parse(a, "{\"five_hour\":{\"utilization\":46.0,\"resets_at\":\"1970-01-01T00:16:40+00:00\"},\"seven_day\":{\"utilization\":7,\"resets_at\":\"1970-01-03T03:16:40Z\"},\"seven_day_opus\":null}");
+    const remaining = try claude.formatUsage(a, data, true, true, 1000);
+    try strings("54%", u.string(u.get(remaining, "text")));
+    try expect(std.mem.indexOf(u8, u.string(u.get(remaining, "tooltip")), "Claude allowance remaining") != null);
+    try strings("Resets in 2d 3h", u.string(u.get(u.get(remaining, "windows").array.items[1], "reset")));
+    try strings("Claude 5h 46% · 7d 7%", u.string(u.get(try claude.formatUsage(a, data, false, false, 1000), "text")));
+    // An idle five-hour window is reported as null and means nothing is used.
+    const idle = try claude.formatUsage(a, try u.parse(a, "{\"five_hour\":null,\"seven_day\":{\"utilization\":20}}"), true, true, 1000);
+    try strings("100%", u.string(u.get(idle, "text")));
+    for ([_][]const u8{ "{}", "{\"five_hour\":null,\"seven_day\":null}", "{\"error\":{}}" }) |value| {
+        try strings("unavailable", u.string(u.get(try claude.formatUsage(a, try u.parse(a, value), true, true, 1000), "class")));
+    }
 }

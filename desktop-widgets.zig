@@ -316,12 +316,13 @@ fn populate_notifications(m: *Module, reply: ?*c.GVariant) void {
     if (m.date_controls) |controls| controls.load(std.mem.span(raw));
 }
 pub fn codex_refresh(m: *Module) void {
-    if (m.dead != 0 or !m.codex.enabled or !std.mem.eql(u8, std.mem.span(m.source), "codex")) return;
+    const source = std.mem.span(m.source);
+    if (m.dead != 0 or !m.codex.enabled or !(std.mem.eql(u8, source, "codex") or std.mem.eql(u8, source, "claude"))) return;
     m.codex.enabled = false;
     m.codex.checked.set("Refreshing…");
     if (m.codex_menu) |menu| menu.redraw();
     if (m.on_redraw) |cb| cb(m.redraw_context);
-    if (refresh_source) |refresh| refresh("codex");
+    if (refresh_source) |refresh| refresh(source);
 }
 pub fn make_codex_menu(m: *Module) callconv(.c) void {
     m.codex_menu = CodexPopup.create(m) catch @panic("cannot create Codex popup");
@@ -468,7 +469,7 @@ pub fn init(options: Options, devices: ?*@import("desktop-devices.zig").Service,
         .cancel = c.g_cancellable_new(),
         .monitors = @intFromBool(std.mem.eql(u8, options.kind, "monitors")),
         .status = @intFromBool(std.mem.eql(u8, options.name, "gnome-status")),
-        .view = .{ .monitors = std.mem.eql(u8, options.kind, "monitors"), .status = std.mem.eql(u8, options.name, "gnome-status"), .activities = std.mem.eql(u8, options.kind, "activities"), .codex = std.mem.eql(u8, options.name, "gnome-codex"), .disk = std.mem.eql(u8, options.name, "gnome-disk") },
+        .view = .{ .monitors = std.mem.eql(u8, options.kind, "monitors"), .status = std.mem.eql(u8, options.name, "gnome-status"), .activities = std.mem.eql(u8, options.kind, "activities"), .codex = std.mem.eql(u8, options.name, "gnome-codex") or std.mem.eql(u8, options.name, "gnome-claude"), .disk = std.mem.eql(u8, options.name, "gnome-disk") },
         .on_redraw = on_redraw,
         .redraw_context = redraw_context,
     };

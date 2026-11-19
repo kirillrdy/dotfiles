@@ -34,6 +34,7 @@ print(f"Artifacts: {root}", flush=True)
     "right": [
         {"name": "gnome-monitors", "kind": "monitors", "source": "monitors"},
         {"name": "gnome-codex", "source": "codex"},
+        {"name": "gnome-claude", "source": "claude"},
         {"name": "gnome-disk", "source": "disk"},
         {"name": "gnome-status", "source": "status"},
     ],
@@ -114,6 +115,7 @@ try:
     assert run(command, ok=False).returncode != 0, "second serve must not create another shell"
     assert run([binary, "invalid-command"], ok=False).returncode != 0
     run([binary, "refresh", "codex"])
+    run([binary, "refresh", "claude"])
     run([binary, "refresh", "status"])
     def media_ready():
         run([binary, "volume", "up"])

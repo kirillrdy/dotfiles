@@ -7,13 +7,13 @@ const devices = @import("desktop-devices.zig");
 const battery = @import("desktop-battery.zig");
 const panel = @import("desktop-panel.zig");
 const a = std.heap.page_allocator;
-const kinds = [_][]const u8{ "monitors", "status", "disk", "codex" };
-const intervals = [_]u32{ 1, 10, 10, 120 }; // Half-second ticks.
+const kinds = [_][]const u8{ "monitors", "status", "disk", "codex", "claude" };
+const intervals = [_]u32{ 1, 10, 10, 120, 120 }; // Half-second ticks.
 
 pub const Service = struct {
     panel: *panel.Service,
     icon: []const u8,
-    sources: [4]Source = undefined,
+    sources: [kinds.len]Source = undefined,
     timer: c.guint = 0,
     dead: bool = false,
     revision: u64 = 0,

@@ -246,6 +246,7 @@ test "memory: repeated asynchronous service and widget teardown releases ownersh
         try soundLifetime(true);
         try widgetLifetime("gnome-status", "indicator", "status");
         try widgetLifetime("gnome-codex", "indicator", "codex");
+        try widgetLifetime("gnome-claude", "indicator", "claude");
         try widgetLifetime("gnome-clock", "clock", "");
     }
     // Release the font backend's process cache after every owned UI object is gone.

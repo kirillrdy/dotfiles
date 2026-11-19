@@ -159,7 +159,7 @@ fn dispatch(self: *Session, args: []const []const u8) !void {
             return error.InvalidSettingsMode;
         try self.dialogs.show(self.app, mode);
     } else if (std.mem.eql(u8, verb, "refresh") and args.len == 2) {
-        if (!std.mem.eql(u8, args[1], "codex") and !std.mem.eql(u8, args[1], "status")) return error.InvalidSource;
+        if (!std.mem.eql(u8, args[1], "codex") and !std.mem.eql(u8, args[1], "claude") and !std.mem.eql(u8, args[1], "status")) return error.InvalidSource;
         self.data.refresh(args[1]);
     } else if (std.mem.eql(u8, verb, "ping") and args.len == 1) {
         return;
@@ -204,7 +204,7 @@ pub fn main(init: std.process.Init) !void {
         return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig serve WALLPAPER [PANEL_CONFIG]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | askpass|power|screenshot [ARGS...]\n", .{});
+        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig serve WALLPAPER [PANEL_CONFIG]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|claude|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;
         return;
     }
