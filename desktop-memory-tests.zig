@@ -231,7 +231,8 @@ test "memory: detector controls" {
 test "memory: repeated asynchronous service and widget teardown releases ownership" {
     try fixture();
     if (env("DESKTOP_MEMORY_LEAK_PROBE") != null) return error.SkipZigTest;
-    for (0..4) |_| {
+    const iterations = std.fmt.parseInt(usize, env("DESKTOP_MEMORY_ITERATIONS") orelse "4", 10) catch 4;
+    for (0..iterations) |_| {
         try networkLifetime(false);
         try networkLifetime(true);
         try audioLifetime(false);

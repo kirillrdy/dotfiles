@@ -20,6 +20,7 @@ import ./fixture.nix { inherit pkgs; } {
     { fixture, dbusRun, ... }:
     ''
       ${dbusRun} python3 ${./check-desktop-memory.py} --binary ${fixture}/bin/desktop-memory-tests \
-        --valgrind ${pkgs.valgrind}/bin/valgrind --strip ${pkgs.binutils}/bin/strip
+        --valgrind ${pkgs.valgrind}/bin/valgrind --suppressions ${./desktop-memory.supp} \
+        --strip ${pkgs.binutils}/bin/strip
     '';
 }

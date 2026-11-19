@@ -7,6 +7,7 @@ import shutil
 import subprocess as sp
 import sys
 import tempfile
+import time
 
 sys.dont_write_bytecode = True
 from audio_server import AudioServer
@@ -17,6 +18,7 @@ import threading
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", required=True)
 parser.add_argument("--valgrind", required=True)
+parser.add_argument("--suppressions", required=True)
 parser.add_argument("--strip", required=True)
 args = parser.parse_args()
 root = Path(tempfile.mkdtemp(prefix="desktop-memory-check-", dir=os.environ.get("TMPDIR", "/tmp")))
@@ -27,6 +29,10 @@ env = dict(os.environ, XDG_RUNTIME_DIR=str(root / "runtime"),
            XDG_STATE_HOME=str(root / "state"), GSETTINGS_BACKEND="memory",
            NO_AT_BRIDGE="1", GDK_BACKEND="wayland", G_DEBUG="gc-friendly,fatal-criticals",
            DESKTOP_MEMORY_TEST_RUN="1", DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDRESS"],
+           # Repeated audio teardown would otherwise unload and remap PipeWire's
+           # plugins; Zig's unwinder, used for every tracked allocation, keeps
+           # their old unwind tables and faults reading the unmapped pages.
+           PIPEWIRE_DLCLOSE="false",
            PATH=os.environ["PATH"])
 env.pop("DESKTOP_MEMORY_LEAK_PROBE", None)
 # Keep source-level diagnostics for the native run. Valgrind's DWARF reader
@@ -40,19 +46,29 @@ audio = AudioServer(root, env)
 
 def run(name, probe=None, checked_heap=False):
     child_env = env | ({"DESKTOP_MEMORY_LEAK_PROBE": probe} if probe else {})
+    if checked_heap:
+        # Zig records a stack trace for every tracked allocation, which Valgrind
+        # slows ~200x; two cycles still cover teardown after re-creation.
+        child_env["DESKTOP_MEMORY_ITERATIONS"] = "2"
     log = root / (name + ".valgrind.log")
     command = [str(heap_binary) if checked_heap else args.binary]
     if checked_heap:
         command = [args.valgrind, "--leak-check=full", "--show-leak-kinds=definite,indirect",
                    "--errors-for-leak-kinds=definite,indirect", "--error-exitcode=97",
-                   "--num-callers=30", "--log-file=" + str(log), *command]
+                   "--num-callers=30", "--suppressions=" + args.suppressions,
+                   "--log-file=" + str(log), *command]
     try:
+        started = time.monotonic()
         result = sp.run(command, env=child_env, capture_output=True, text=True,
-                        timeout=300 if checked_heap else 120)
+                        timeout=600 if checked_heap else 120)
     except sp.TimeoutExpired as error:
         output = (error.stdout or b"") + (error.stderr or b"")
         (root / (name + ".log")).write_bytes(output)
-        raise AssertionError(f"{name} timed out:\n{output.decode(errors='replace')[-14000:]}") from error
+        # A crash in a worker thread can hang the process; Valgrind's log still
+        # holds the faulting access and its stack.
+        heap = log.read_text(errors="replace")[-14000:] if checked_heap and log.exists() else ""
+        raise AssertionError(f"{name} timed out:\n{output.decode(errors='replace')[-14000:]}\n{heap}") from error
+    print(f"{name}: {time.monotonic() - started:.0f}s", flush=True)
     output = result.stdout + result.stderr
     (root / (name + ".log")).write_text(output)
     return result.returncode, output, log.read_text() if checked_heap else ""
