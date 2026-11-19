@@ -204,10 +204,12 @@ pub const Controls = struct {
     fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
         const self = cast(Controls, ptr);
         if (!self.popup.visible or self.popup.close_idle != 0) return;
+        const previous_hover = self.view.hover;
+        const tooltip_was_visible = self.tooltip.visible;
+        // Pointer motion can repaint synchronously when the hovered control changes.
+        self.tooltip.hide();
         const local = self.popup.point(x, y);
-        if (self.popup.contains(x, y)) {
-            self.pointerMotion(local.x, local.y);
-        } else if (native.View.slider(self.view.pressed)) {
+        if (self.popup.contains(x, y) or native.View.slider(self.view.pressed)) {
             self.pointerMotion(local.x, local.y);
         } else if (self.view.hover != .none) {
             self.view.hover = .none;
@@ -230,6 +232,7 @@ pub const Controls = struct {
             else => null,
         };
         self.tooltip.update(x, y, tooltip, !native.View.slider(self.view.pressed), &showTooltip, self);
+        if (tooltip_was_visible and previous_hover == self.view.hover) self.redraw();
     }
     fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
         const self = cast(Controls, ptr);
