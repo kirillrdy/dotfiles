@@ -234,15 +234,9 @@ const Overview = struct {
         self.hideTooltip();
         self.dash_view.clear();
         var favorites: [*c][*c]u8 = null;
-        if (c.g_settings_schema_source_get_default()) |source| {
-            if (c.g_settings_schema_source_lookup(source, "org.gnome.shell", 1)) |schema| {
-                defer c.g_settings_schema_unref(schema);
-                if (c.g_settings_schema_has_key(schema, "favorite-apps") != 0) {
-                    const settings = c.g_settings_new_full(schema, null, null);
-                    defer c.g_object_unref(settings);
-                    favorites = c.g_settings_get_strv(settings, "favorite-apps");
-                }
-            }
+        if (c.__zig.settings("org.gnome.shell", "favorite-apps")) |settings| {
+            defer c.g_object_unref(settings);
+            favorites = c.g_settings_get_strv(settings, "favorite-apps");
         }
         defer c.g_strfreev(favorites);
         var favorite_index: usize = 0;

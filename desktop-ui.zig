@@ -13,6 +13,14 @@ pub fn dupeZ(allocator: std.mem.Allocator, value: []const u8) [:0]u8 {
 pub fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: anytype) void {
     _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
 }
+/// Opens an installed GSettings schema, optionally requiring `key` to exist.
+pub fn settings(schema: [*:0]const u8, key: ?[*:0]const u8) ?*c.GSettings {
+    const source = c.g_settings_schema_source_get_default() orelse return null;
+    const found = c.g_settings_schema_source_lookup(source, schema, 1) orelse return null;
+    defer c.g_settings_schema_unref(found);
+    if (key) |name| if (c.g_settings_schema_has_key(found, name) == 0) return null;
+    return c.g_settings_new_full(found, null, null);
+}
 pub const variant = struct {
     pub fn builder(signature: [*:0]const u8) *c.GVariantBuilder {
         return c.g_variant_builder_new(@ptrCast(signature)).?;

@@ -273,12 +273,9 @@ fn resolver() !*Resolver {
     };
     try roots.append(alloc, "/usr/share/pixmaps");
     var theme: []const u8 = "Adwaita";
-    if (theme_settings == null) if (c.g_settings_schema_source_get_default()) |source| {
-        if (c.g_settings_schema_source_lookup(source, "org.gnome.desktop.interface", 1)) |schema| {
-            defer c.g_settings_schema_unref(schema);
-            theme_settings = c.g_settings_new_full(schema, null, null);
-            _ = c.g_signal_connect_data(theme_settings.?, "changed::icon-theme", @ptrCast(&themeChanged), null, null, 0);
-        }
+    if (theme_settings == null) if (c.__zig.settings("org.gnome.desktop.interface", null)) |settings| {
+        theme_settings = settings;
+        _ = c.g_signal_connect_data(settings, "changed::icon-theme", @ptrCast(&themeChanged), null, null, 0);
     };
     if (theme_settings) |settings| {
         const name = c.g_settings_get_string(settings, "icon-theme");

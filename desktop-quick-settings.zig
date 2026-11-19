@@ -18,11 +18,8 @@ const power_backend = @import("desktop-power.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 const connect = c.__zig.connect;
-pub fn settings(schema: [*:0]const u8) ?*c.GSettings {
-    const source = c.g_settings_schema_source_get_default() orelse return null;
-    const found = c.g_settings_schema_source_lookup(source, schema, 1) orelse return null;
-    defer c.g_settings_schema_unref(found);
-    return c.g_settings_new_full(found, null, null);
+fn settings(schema: [*:0]const u8) ?*c.GSettings {
+    return c.__zig.settings(schema, null);
 }
 pub fn bannersEnabled() bool {
     const prefs = settings("org.gnome.desktop.notifications") orelse return true;

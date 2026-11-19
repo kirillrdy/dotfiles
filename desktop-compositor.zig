@@ -252,13 +252,7 @@ const Server = struct {
         const name = std.mem.span(socket);
         @memcpy(handle.socket[0..name.len], name);
         if (!c.wlr_backend_start(self.backend)) return error.StartBackend;
-        if (g.g_settings_schema_source_get_default()) |source| {
-            if (g.g_settings_schema_source_lookup(source, "org.gnome.desktop.interface", 1)) |schema| {
-                defer g.g_settings_schema_unref(schema);
-                if (g.g_settings_schema_has_key(schema, "enable-hot-corners") != 0)
-                    self.corner_settings = g.g_settings_new_full(schema, null, null);
-            }
-        }
+        self.corner_settings = g.__zig.settings("org.gnome.desktop.interface", "enable-hot-corners");
         std.log.info("desktop compositor ready on {s}", .{name});
     }
     fn deinit(self: *Server) void {
