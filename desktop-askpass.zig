@@ -1,6 +1,6 @@
 //! OpenSSH askpass protocol with native pixels and a locked, masked text entry.
 const std = @import("std");
-pub const c = @import("desktop-gtk.zig");
+pub const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 pub const native = @import("desktop-askpass-view.zig");
 pub const password = @import("desktop-password-entry.zig");

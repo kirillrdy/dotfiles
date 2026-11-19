@@ -15,7 +15,7 @@ pub const Item = struct {
 };
 pub const Graph = struct {
     values: []const f64,
-    colors: []const [:0]const u8 = &.{},
+    colors: []const u32 = &.{},
     sequence: i64,
     markup: []const u8 = "",
     tooltip: []const u8 = "",
@@ -30,9 +30,9 @@ pub const Update = struct {
     checked: []const u8 = "Checked: —",
     @"error": []const u8 = "",
 };
-const cpu_colors = [_][:0]const u8{ "#0072b3", "#0092e6", "#00a3ff", "#002f3d", "#001d26" };
-const memory_colors = [_][:0]const u8{ "#00b35b", "#00ff82", "#aaf5d0" };
-const network_colors = [_][:0]const u8{ "#fce94f", "#ff6e00", "#fb74fb", "#e0006e", "#ff0000" };
+const cpu_colors = [_]u32{ 0x0072b3, 0x0092e6, 0x00a3ff, 0x002f3d, 0x001d26 };
+const memory_colors = [_]u32{ 0x00b35b, 0x00ff82, 0xaaf5d0 };
+const network_colors = [_]u32{ 0xfce94f, 0xff6e00, 0xfb74fb, 0xe0006e, 0xff0000 };
 
 pub fn cpuCounters(contents: []const u8) [8]u64 {
     var words = std.mem.tokenizeAny(u8, contents[0 .. std.mem.indexOfScalar(u8, contents, '\n') orelse contents.len], " \t");

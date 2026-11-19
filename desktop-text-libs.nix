@@ -23,7 +23,7 @@ let
         separateDebugInfo = false;
       };
 
-  # GTK renders through Pango/Cairo; its separate Xft renderer is unused.
+  # The desktop renders text through Pango and FreeType; the Xft renderer is unused.
   pango =
     (pkgs.pango.override {
       inherit cairo;

@@ -1,6 +1,6 @@
 //! System battery policy and core read-only UPower status compatibility.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const battery = @import("desktop-battery.zig");
 const name = "org.freedesktop.UPower";

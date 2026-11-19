@@ -1,6 +1,6 @@
 //! Native Wayland layer-shell panel hosting native pixel views.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const p = @import("desktop-protocols.zig");
 const raster = @import("desktop-raster.zig");
 const wire = @import("desktop-surface.zig");

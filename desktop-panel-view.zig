@@ -1,8 +1,8 @@
-//! Cached native panel content and Codex usage controls. GTK only hosts the pixels.
+//! Cached native panel content and Codex usage controls.
 const std = @import("std");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 pub const Rect = @import("desktop-askpass-view.zig").Rect;
 const white: raster.Color = .{ .red = 1, .green = 1, .blue = 1 };
@@ -96,7 +96,7 @@ pub const Item = struct {
     icon: Label = .{},
     tooltip: Label = .{},
     command: Label = .{},
-    pixbuf: ?*c.GdkPixbuf = null,
+    image: ?c.__icons.Image = null,
     icon_scale: u32 = 0,
     visible: bool = false,
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
@@ -105,30 +105,30 @@ pub const Item = struct {
         self.icon.deinit();
         self.tooltip.deinit();
         self.command.deinit();
-        if (self.pixbuf) |image| c.g_object_unref(image);
-        self.pixbuf = null;
+        if (self.image) |image| c.__icons.free(image);
+        self.image = null;
     }
     pub fn setIcon(self: *Item, value: []const u8) void {
         if (std.mem.eql(u8, self.icon.value, value)) return;
         self.icon.set(value);
-        if (self.pixbuf) |image| c.g_object_unref(image);
-        self.pixbuf = null;
+        if (self.image) |image| c.__icons.free(image);
+        self.image = null;
         self.icon_scale = 0;
     }
     fn prepare(self: *Item, renderer: *text.Renderer, scale: u32, small: bool) !void {
         try self.label.prepare(renderer, scale, if (small) 12 else 14.666, true, null, false);
         if (self.icon_scale == scale) return;
-        if (self.pixbuf) |image| c.g_object_unref(image);
-        self.pixbuf = null;
+        if (self.image) |image| c.__icons.free(image);
+        self.image = null;
         if (self.icon.value.len != 0) {
-            self.pixbuf = @import("desktop-icons.zig").load(self.icon.value, 16, scale, @import("desktop-icons.zig").white);
+            self.image = @import("desktop-icons.zig").load(self.icon.value, 16, scale, @import("desktop-icons.zig").white);
         }
         self.icon_scale = scale;
     }
     fn paint(self: *const Item, buffer: raster.Buffer, scale: u32, foreground: raster.Color) void {
         var x = self.rect.x;
-        if (self.pixbuf) |image| {
-            c.__zig.blitPixbuf(.{ .target = buffer, .scale = @floatFromInt(scale) }, image, .{ .x = x, .y = (self.rect.height - 16) / 2, .width = 16, .height = 16 });
+        if (self.image) |image| {
+            c.__zig.blitImage(.{ .target = buffer, .scale = @floatFromInt(scale) }, image, .{ .x = x, .y = (self.rect.height - 16) / 2, .width = 16, .height = 16 });
         }
         if (self.icon.value.len != 0) x += 16 + (if (self.label.value.len != 0) @as(f64, 6) else 0);
         self.label.paint(buffer, x, (self.rect.height - self.label.height()) / 2, foreground);
@@ -136,7 +136,7 @@ pub const Item = struct {
 };
 pub const Graph = struct {
     history: [5][100]f64 = std.mem.zeroes([5][100]f64),
-    colors: [5]c.GdkRGBA = std.mem.zeroes([5]c.GdkRGBA),
+    colors: [5]raster.Color = @splat(.{ .red = 0, .green = 0, .blue = 0, .alpha = 0 }),
     count: u32 = 0,
     series: u32 = 0,
     sequence: i64 = -1,
@@ -196,8 +196,7 @@ pub const Graph = struct {
             len += 1;
             points[len] = .{ .x = @max(x, cx), .y = height };
             len += 1;
-            const color = self.colors[series];
-            canvas.draw(&.{.{ .polygon = points[0..len] }}, .{ .red = color.red, .green = color.green, .blue = color.blue, .alpha = color.alpha });
+            canvas.draw(&.{.{ .polygon = points[0..len] }}, self.colors[series]);
         }
     }
 };
@@ -348,10 +347,10 @@ pub const Codex = struct {
     fn prepareRefreshIcon(self: *Codex, scale: u32) !void {
         if (self.refresh_icon_scale == scale) return;
         const image = @import("desktop-icons.zig").load("view-refresh-symbolic", 14, scale, @import("desktop-icons.zig").white) orelse return;
-        defer c.g_object_unref(image);
+        defer c.__icons.free(image);
         var width: u32 = 0;
         var height: u32 = 0;
-        const coverage = try c.__zig.pixbufAlphaMask(a, image, &width, &height);
+        const coverage = try c.__zig.alphaMask(a, image, &width, &height);
         if (self.refresh_icon) |old| old.deinit(a);
         self.refresh_icon = .{ .pixels = coverage, .width = width, .height = height, .left = 0, .top = 0 };
         self.refresh_icon_scale = scale;

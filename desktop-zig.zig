@@ -1,6 +1,6 @@
 //! Session shell. Compositor-specific operations stay behind Wayland protocols.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 pub const libc = @import("desktop-libc.zig");
 const panel = @import("desktop-panel.zig");
 const wallpaper = @import("desktop-wallpaper.zig");
@@ -283,8 +283,9 @@ fn requireSession() !void {
 }
 
 // Shared production namespace for isolated protocol and lifecycle clients.
-pub const gtk = @import("desktop-gtk.zig");
+pub const glib = @import("desktop-glib.zig");
 pub const capture = @import("desktop-capture.zig");
+pub const decode = @import("desktop-decode.zig");
 pub const power = @import("desktop-power.zig");
 pub const secrets = @import("desktop-secrets.zig");
 pub const portal = @import("desktop-portal.zig");
@@ -304,7 +305,6 @@ pub const lock = @import("desktop-lock.zig");
 pub const auth = @import("desktop-lock-auth.zig");
 pub const apps = @import("desktop-apps.zig");
 pub const dash_view = @import("desktop-dash-view.zig");
-pub const printing = @import("desktop-portal-print.zig");
 pub const chooser = @import("desktop-portal-file-chooser.zig");
 pub const util = @import("desktop-util.zig");
 pub const posix = @import("posix");

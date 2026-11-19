@@ -1,6 +1,6 @@
 //! Native file controls under the headless compositor; portal result contracts.
 const std = @import("std");
-const c = @import("desktop").gtk;
+const c = @import("desktop").glib;
 const Dialog = @import("desktop").chooser.Dialog;
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
@@ -201,7 +201,7 @@ pub fn main(init: std.process.Init) !void {
         try expect(done.code == null);
         try expect(dialog.overwrite != null);
         dialog.ui.focusItem(dialog.name_item.?);
-        try expect(dialog.ui.handleKey('a', c.GDK_CONTROL_MASK));
+        try expect(dialog.ui.handleKey('a', c.__zig.control_mask));
         try expect(dialog.ui.handleKey('b', 0));
         try expect(dialog.overwrite == null);
         try dialog.ui.setText(dialog.name_item.?, "report.txt");
@@ -275,14 +275,14 @@ pub fn main(init: std.process.Init) !void {
         try expectEqual(@as(f64, 52), dialog.ui.get(dialog.rows.items[0].item).bounds.height);
         dialog.ui.activate(dialog.view.toggle_view);
         try expect(dialog.view.grid);
-        try expect(dialog.ui.shortcut.?(dialog, 'f', c.GDK_CONTROL_MASK));
+        try expect(dialog.ui.shortcut.?(dialog, 'f', c.__zig.control_mask));
         try dialog.ui.setText(dialog.view.query, "PAGE-599");
         dialog.ui.changed(dialog, dialog.view.query);
         try expectEqual(@as(usize, 1), dialog.view.count);
         try expect(dialog.ui.shortcut.?(dialog, 0xff1b, 0));
         try expect(dialog.view.count > 600);
         try std.testing.expectError(error.NoSelection, dialog.selectPath(hidden));
-        _ = dialog.ui.shortcut.?(dialog, 'h', c.GDK_CONTROL_MASK);
+        _ = dialog.ui.shortcut.?(dialog, 'h', c.__zig.control_mask);
         try expectEqual(@as(f64, 0), dialog.view.offset);
         try dialog.selectPath(first);
         try dialog.selectPath(hidden);

@@ -1,6 +1,6 @@
 //! Quick-settings layout, hit testing, and pixels. Services live in the controller.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const power = @import("desktop-power.zig");
@@ -133,9 +133,9 @@ const Icon = struct {
         self.name = try allocator.dupeSentinel(u8, name, 0);
         self.scale = scale;
         if (name.len == 0) return;
-        const pixbuf = @import("desktop-icons.zig").load(name, 16, scale, @import("desktop-icons.zig").white) orelse return;
-        defer c.g_object_unref(pixbuf);
-        self.pixels = try c.__zig.pixbufAlphaMask(allocator, pixbuf, &self.width, &self.height);
+        const image = @import("desktop-icons.zig").load(name, 16, scale, @import("desktop-icons.zig").white) orelse return;
+        defer c.__icons.free(image);
+        self.pixels = try c.__zig.alphaMask(allocator, image, &self.width, &self.height);
     }
 };
 

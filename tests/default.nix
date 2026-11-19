@@ -3,7 +3,6 @@
   desktop = import ./desktop-vm.nix { inherit pkgs; };
 }
 // pkgs.lib.genAttrs [
-  "accessibility"
   "audio"
   "backlight"
   "battery"

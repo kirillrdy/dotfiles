@@ -19,12 +19,12 @@ fn checkEditing() !void {
     var deadline = c.g_get_monotonic_time() + 3_000_000;
     while (entry.refs > 1 and c.g_get_monotonic_time() < deadline) pump();
     try std.testing.expectEqualStrings("paste-東京", entry.buffer.value());
-    try std.testing.expect(dialog.handleKey('a', c.GDK_CONTROL_MASK));
+    try std.testing.expect(dialog.handleKey('a', c.__zig.control_mask));
     try entry.insert("replacement");
     try std.testing.expectEqualStrings("replacement", entry.buffer.value());
     clipboard.copy("clipboard-guard");
-    try std.testing.expect(dialog.handleKey('c', c.GDK_CONTROL_MASK));
-    try std.testing.expect(dialog.handleKey('x', c.GDK_CONTROL_MASK));
+    try std.testing.expect(dialog.handleKey('c', c.__zig.control_mask));
+    try std.testing.expect(dialog.handleKey('x', c.__zig.control_mask));
     const Receipt = struct {
         done: bool = false,
         matches: bool = false,

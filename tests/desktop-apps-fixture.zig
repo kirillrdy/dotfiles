@@ -75,8 +75,8 @@ pub fn main(init: std.process.Init) !void {
         });
     }
     const svg = c.__icons.load("desktop-apps-fixture-icon", 96, 1, null).?;
-    defer c.g_object_unref(svg);
-    assert(c.gdk_pixbuf_get_width(svg) == 96 and c.gdk_pixbuf_get_height(svg) == 96);
+    defer c.__icons.free(svg);
+    assert(svg.width == 96 and svg.height == 96);
     var launcher = apps.Launcher.init();
     defer launcher.deinit();
     launcher.bind();
@@ -131,7 +131,7 @@ pub fn main(init: std.process.Init) !void {
     navigation.keyval = 0xff57; // End
     _ = apps.keyPress(&launcher, &navigation);
     try std.testing.expectEqual(@as(usize, 29), launcher.selected);
-    navigation.keyval = c.GDK_KEY_Right;
+    navigation.keyval = c.__zig.keys.Right;
     _ = apps.keyPress(&launcher, &navigation);
     try std.testing.expectEqual(@as(usize, 29), launcher.selected);
     navigation.keyval = 0xff50; // Home
@@ -172,7 +172,7 @@ pub fn main(init: std.process.Init) !void {
     assert(launcher.status.len != 0);
 
     // Exercise Escape and repeat activation, including clearing a stale query.
-    var escape = apps.KeyEvent{ .state = 0, .keyval = c.GDK_KEY_Escape };
+    var escape = apps.KeyEvent{ .state = 0, .keyval = c.__zig.keys.Escape };
     assert(apps.keyPress(&launcher, &escape));
     assert(!launcher.visible_window);
     var state: ?apps.Launcher = null;

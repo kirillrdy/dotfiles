@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    for ([_][]const u8{ "gtk+-3.0", "gio-unix-2.0", "wayland-client", "libpipewire-0.3", "pam", "xkbcommon", "pangoft2" }) |name| desktop.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "gio-unix-2.0", "gdk-pixbuf-2.0", "cairo", "wayland-client", "libpipewire-0.3", "pam", "xkbcommon", "pangoft2" }) |name| desktop.linkSystemLibrary(name, .{});
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
     const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
     const protocol_names = [_][]const u8{
@@ -145,7 +145,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit, ABI and protocol checks");
     const unit_run = b.addRunArtifact(tests);
     test_step.dependOn(&unit_run.step);
-    test_module.addImport("gtk-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gtk/gtk.h>\n#include <gtk/gtkunixprint.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <gdk/gdkwayland.h>\n#include <pango/pangoft2.h>\n", &.{ "gtk+-unix-print-3.0", "gio-unix-2.0", "wayland-client", "pangoft2" }));
+    test_module.addImport("glib-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gio/gio.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <cairo.h>\n#include <gdk-pixbuf/gdk-pixbuf.h>\n#include <pango/pangoft2.h>\n", &.{ "gio-unix-2.0", "gdk-pixbuf-2.0", "cairo", "wayland-client", "pangoft2" }));
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
     const decoration_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-decoration-fixture.zig"), .target = target, .optimize = optimize, .link_libc = true });
     decoration_module.linkSystemLibrary("wayland-client", .{});
@@ -184,7 +184,6 @@ pub fn build(b: *std.Build) void {
         .{ .name = "desktop-secrets-fixture", .source = "tests/desktop-secrets-fixture.zig", .step = "secrets-fixture" },
         .{ .name = "desktop-portal-fixture", .source = "tests/desktop-portal-fixture.zig", .step = "portal-fixture" },
         .{ .name = "desktop-portal-chooser-fixture", .source = "tests/desktop-portal-chooser-fixture.zig", .step = "portal-chooser-fixture" },
-        .{ .name = "desktop-portal-print-fixture", .source = "tests/desktop-portal-print-fixture.zig", .step = "portal-print-fixture" },
         .{ .name = "desktop-portal-video-fixture", .source = "tests/desktop-portal-video-fixture.zig", .step = "portal-video-fixture" },
         .{ .name = "desktop-pointer-fixture", .source = "tests/desktop-pointer-fixture.zig", .step = "pointer-fixture", .install = true },
         .{ .name = "desktop-battery-fixture", .source = "tests/desktop-battery-fixture.zig", .step = "battery-fixture", .install = true },

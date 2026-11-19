@@ -1,6 +1,6 @@
 //! PolicyKit prompts rendered with native pixels and a locked password buffer.
 const std = @import("std");
-pub const c = @import("desktop-gtk.zig");
+pub const c = @import("desktop-glib.zig");
 const auth = @import("desktop-auth-dialog.zig");
 const a = std.heap.page_allocator;
 

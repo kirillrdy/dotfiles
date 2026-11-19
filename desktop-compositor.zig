@@ -1,11 +1,11 @@
 //! Fixed desktop compositor policy. Rendering, KMS and input drivers stay in wlroots.
-//! All Wayland server state belongs to the compositor thread. GTK runs on the main
-//! thread so synchronous client roundtrips cannot deadlock the server.
+//! All Wayland server state belongs to the compositor thread. The desktop UI runs
+//! on the main thread so synchronous client roundtrips cannot deadlock the server.
 const std = @import("std");
 const c = @import("compositor-abi");
 const p = @import("desktop-protocols.zig");
 const hot_corner = @import("desktop-hot-corner.zig");
-const g = @import("desktop-gtk.zig");
+const g = @import("desktop-glib.zig");
 const heap = std.heap.page_allocator;
 
 pub const Handle = struct {
@@ -66,7 +66,7 @@ pub const Handle = struct {
         defer state.deinit();
         _ = c.write(self.ready[1], "\x01", 1);
         c.wl_display_run(state.display);
-        // An exit shortcut or backend shutdown must also end GTK and stop the
+        // An exit shortcut or backend shutdown must also end the UI and stop the
         // graphical session target. Normal main-thread shutdown already does so.
         if (self.show_ui and !self.stopping.load(.acquire)) _ = c.kill(c.getpid(), c.SIGTERM);
         return null;

@@ -1,7 +1,7 @@
 //! Live, per-window captures; no screenshots of the composed desktop.
 const std = @import("std");
 const wayland = @import("desktop-wayland.zig");
-pub const c = @import("desktop-gtk.zig");
+pub const c = @import("desktop-glib.zig");
 const protocols = @import("desktop-protocols.zig");
 const libc = @import("desktop-libc.zig");
 pub const Image = @import("desktop-image.zig").Image;
@@ -21,7 +21,7 @@ pub const Window = struct {
     stacking: usize = 0,
     geometry: Rect = .{},
     target: Rect = .{},
-    icon: ?*c.GdkPixbuf = null,
+    icon: ?c.__icons.Image = null,
     image: ?Image = null,
     thumbnail: ?*Thumbnail = null,
     source: ?*protocols.ext_image_capture_source_v1 = null,
@@ -69,7 +69,7 @@ pub const Window = struct {
     fn destroy(self: *Window) void {
         self.stop();
         if (self.image) |image| image.deinit(a);
-        if (self.icon) |icon| c.g_object_unref(icon);
+        if (self.icon) |icon| c.__icons.free(icon);
         c.g_free(self.id);
         c.g_free(self.title);
         c.g_free(self.app_id);
@@ -276,7 +276,8 @@ fn appId(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1, value
     const w = cast(Window, data);
     c.g_free(w.app_id);
     w.app_id = c.g_strdup(value);
-    if (w.icon) |icon| c.g_object_unref(icon);
+    if (w.icon) |icon| c.__icons.free(icon);
+    w.icon = null;
     var filename: [1024]u8 = undefined;
     const path = std.fmt.bufPrintSentinel(&filename, "{s}.desktop", .{std.mem.span(value)}, 0) catch return;
     var info = c.g_desktop_app_info_new(path);

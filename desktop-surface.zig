@@ -2,7 +2,7 @@
 //! Each client has a private connection, driven by GLib rather than GDK.
 const std = @import("std");
 const wayland = @import("desktop-wayland.zig");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const p = @import("desktop-protocols.zig");
 const input = @import("desktop-input.zig");

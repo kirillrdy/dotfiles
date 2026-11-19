@@ -4,7 +4,7 @@ const form = @import("desktop-form.zig");
 const fonts = @import("desktop-text.zig");
 const raster = @import("desktop-raster.zig");
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const sc = @import("desktop-screenshot.zig");
 const protocols = sc.protocols;
@@ -14,7 +14,7 @@ const portal_options = @import("desktop-portal-options.zig");
 const Options = portal_options.Options(error.InvalidScreenshotOptions);
 pub const Completion = portal_options.Completion;
 
-/// A private Wayland connection keeps capture traffic off GTK's event queue.
+/// A private Wayland connection keeps capture traffic off the main event queue.
 pub const Capture = struct {
     allocator: std.mem.Allocator,
     client: sc.WaylandClient,
@@ -171,7 +171,7 @@ pub const Picker = struct {
         self.respond(id == self.share);
     }
     fn shortcut(data: ?*anyopaque, symbol: u32, modifiers: u32) bool {
-        if (modifiers & c.GDK_MOD1_MASK == 0) return false;
+        if (modifiers & c.__zig.alt_mask == 0) return false;
         const self = cast(Picker, data);
         switch (symbol) {
             's', 'S' => self.ui.activate(self.share),

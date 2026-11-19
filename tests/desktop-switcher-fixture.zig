@@ -1,7 +1,7 @@
 //! Native Wayland windows for private compositor tests.
 const std = @import("std");
 const desktop = @import("desktop");
-const c = desktop.gtk;
+const c = desktop.glib;
 const wire = desktop.window.wire;
 const cast = c.__zig.cast;
 

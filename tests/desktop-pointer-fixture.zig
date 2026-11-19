@@ -1,6 +1,6 @@
 //! Persistent virtual pointer for isolated headless tests. Commands on stdin.
 const std = @import("std");
-const c = @import("desktop").gtk;
+const c = @import("desktop").glib;
 const protocols = @import("desktop").protocols;
 const pointer_api = @import("desktop-virtual-pointer.zig").Client(c, protocols);
 var manager: ?*pointer_api.Manager = null;

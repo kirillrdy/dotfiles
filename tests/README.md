@@ -16,7 +16,7 @@ nix build .#checks.x86_64-linux.desktop
 ```
 
 The `ui` VM runs the inline `integration:` tests and the GUI fixtures formerly
-run by the package check phase. The remaining feature VMs cover accessibility,
+run by the package check phase. The remaining feature VMs cover
 audio, backlight, battery, idle, lock, memory, network, output, polkit, portals,
 screenshots, secrets, session and shell behavior. These contract tests run as an
 unprivileged user with private compositors and mock services. `desktop` tests

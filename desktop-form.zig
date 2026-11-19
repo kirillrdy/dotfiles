@@ -1,6 +1,6 @@
 //! Raster form controls hosted directly in native Wayland windows.
 const std = @import("std");
-pub const c = @import("desktop-gtk.zig");
+pub const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const input = @import("desktop-password-entry.zig");
@@ -422,7 +422,7 @@ pub const Form = struct {
         };
         unreachable;
     }
-    pub fn handleKey(self: *Form, symbol: u32, modifiers: c.GdkModifierType) bool {
+    pub fn handleKey(self: *Form, symbol: u32, modifiers: c.__zig.Modifiers) bool {
         self.input_modifiers = modifiers;
         if (self.closed or self.window.closing) return false;
         if (symbol == 0xff1b) {
@@ -437,7 +437,7 @@ pub const Form = struct {
             self.relayout();
             const n = self.items.items.len;
             if (n == 0) return true;
-            const backwards = symbol == 0xfe20 or modifiers & c.GDK_SHIFT_MASK != 0;
+            const backwards = symbol == 0xfe20 or modifiers & c.__zig.shift_mask != 0;
             var start = if (backwards) @as(usize, 0) else n - 1;
             if (self.focus) |focused| for (0..n) |index| {
                 if (self.orderedId(index) == focused) {
@@ -477,7 +477,7 @@ pub const Form = struct {
         if (field.entry) |entry| {
             if (entry.key(symbol, modifiers)) return true;
             const codepoint = @import("desktop-keyboard.zig").unicode(symbol);
-            if (modifiers & (c.GDK_CONTROL_MASK | c.GDK_MOD1_MASK) != 0 or codepoint < 32 or codepoint == 127) return false;
+            if (modifiers & (c.__zig.control_mask | c.__zig.alt_mask) != 0 or codepoint < 32 or codepoint == 127) return false;
             var bytes: [4]u8 = @splat(0);
             defer std.crypto.secureZero(u8, &bytes);
             const len = std.unicode.utf8Encode(@intCast(codepoint), &bytes) catch return false;
@@ -794,15 +794,15 @@ test "integration: native forms preserve selections, isolate passwords and navig
     form.show();
     form.focusItem(name);
     try std.testing.expectEqual(@as(usize, 0), callbacks.edits);
-    try std.testing.expect(form.handleKey('a', c.GDK_CONTROL_MASK));
-    try std.testing.expect(form.handleKey('c', c.GDK_CONTROL_MASK));
+    try std.testing.expect(form.handleKey('a', c.__zig.control_mask));
+    try std.testing.expect(form.handleKey('c', c.__zig.control_mask));
     form.focusItem(secret);
-    try std.testing.expect(form.handleKey('a', c.GDK_CONTROL_MASK));
-    try std.testing.expect(form.handleKey('c', c.GDK_CONTROL_MASK));
+    try std.testing.expect(form.handleKey('a', c.__zig.control_mask));
+    try std.testing.expect(form.handleKey('c', c.__zig.control_mask));
     // A password copy must leave the public clipboard selection untouched.
     try form.setText(name, "");
     form.focusItem(name);
-    try std.testing.expect(form.handleKey('v', c.GDK_CONTROL_MASK));
+    try std.testing.expect(form.handleKey('v', c.__zig.control_mask));
     const deadline = c.g_get_monotonic_time() + 2_000_000;
     while (form.get(name).value().len == 0 and c.g_get_monotonic_time() < deadline) {
         _ = c.g_main_context_iteration(null, 0);
@@ -827,7 +827,7 @@ test "integration: native forms preserve selections, isolate passwords and navig
     try std.testing.expect(!form.get(toggle).checked);
     form.get(toggle).enabled = false;
     form.focusItem(button);
-    try std.testing.expect(form.handleKey(0xfe20, c.GDK_SHIFT_MASK));
+    try std.testing.expect(form.handleKey(0xfe20, c.__zig.shift_mask));
     try std.testing.expectEqual(choice, form.focus.?);
     form.activate(button);
     try std.testing.expectEqual(@as(usize, 1), callbacks.actions);

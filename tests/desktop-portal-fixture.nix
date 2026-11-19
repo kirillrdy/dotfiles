@@ -1,23 +1,15 @@
 { pkgs }:
-let
-  gtk =
-    (import ../desktop-gtk-libs.nix {
-      inherit pkgs;
-      dbus = import ../desktop-dbus-libs.nix { inherit pkgs; };
-    }).gtk;
-in
 import ./fixture.nix { inherit pkgs; } {
   name = "desktop-portal-check";
   fixture = {
     name = "desktop-portal-fixture";
-    steps = "portal-fixture portal-chooser-fixture portal-print-fixture";
+    steps = "portal-fixture portal-chooser-fixture";
   };
   pygobject = true;
   withDesktop = true;
   gtkEnv = true;
   fonts = true;
   cacheDir = true;
-  extraDataDirs = [ "${gtk}/share/gsettings-schemas/${gtk.name}" ];
   nativeBuildInputs = [
     pkgs.dbus
     pkgs.wlrctl
@@ -53,8 +45,5 @@ import ./fixture.nix { inherit pkgs; } {
       PY
       GSETTINGS_BACKEND=memory ${dbusRun} ${fixture}/bin/desktop-portal-chooser-fixture "$chooser_files"
       ${dbusRun} python3 ${./check-desktop-portal-chooser.py} --binary ${fixture}/bin/desktop-portal-fixture
-      export GTK_PRINT_BACKENDS=file
-      GSETTINGS_BACKEND=memory ${dbusRun} ${fixture}/bin/desktop-portal-print-fixture "$chooser_files"
-      ${dbusRun} python3 ${./check-desktop-portal-print.py} --binary ${fixture}/bin/desktop-portal-fixture
     '';
 }

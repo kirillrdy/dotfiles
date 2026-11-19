@@ -1,6 +1,6 @@
 //! Test-only sysfs injection; the installed shell always uses /sys/class/backlight.
 const std = @import("std");
-const c = @import("desktop").gtk;
+const c = @import("desktop").glib;
 const backlight = @import("desktop").backlight;
 const osd = @import("desktop").osd;
 const quick = @import("desktop").quick;

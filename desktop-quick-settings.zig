@@ -1,6 +1,6 @@
 //! Native Wayland quick-settings popup with asynchronous desktop service controls.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const wire = @import("desktop-surface.zig");
 const popup = @import("desktop-popup.zig");
 const Tooltip = @import("desktop-panel-view.zig").Tooltip;
@@ -261,7 +261,7 @@ pub const Controls = struct {
                 return true;
             }
         } else if (symbol == 0xff09 or symbol == 0xfe20 or symbol == 0xff52 or symbol == 0xff54) {
-            self.view.stepFocus(symbol == 0xfe20 or symbol == 0xff52 or (symbol == 0xff09 and modifiers & c.GDK_SHIFT_MASK != 0));
+            self.view.stepFocus(symbol == 0xfe20 or symbol == 0xff52 or (symbol == 0xff09 and modifiers & c.__zig.shift_mask != 0));
         } else if (native.View.slider(self.view.focus) and (symbol == 0xff51 or symbol == 0xff53 or symbol == 0xff50 or symbol == 0xff57)) {
             const value = if (self.view.focus == .volume) self.view.model.volume.? else self.view.model.brightness.?;
             self.setSlider(self.view.focus, if (symbol == 0xff50) 0 else if (symbol == 0xff57) 100 else value + (if (symbol == 0xff51) @as(f64, -5) else @as(f64, 5)));

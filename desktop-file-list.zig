@@ -1,6 +1,6 @@
 //! Local file enumeration and portal filters. No GTK widget or filter objects.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const cast = c.__zig.cast;
 const Enumerator = opaque {};
 const Info = opaque {};

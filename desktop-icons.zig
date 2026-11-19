@@ -1,9 +1,11 @@
-//! Icon theme lookup in Zig. GdkPixbuf remains the image decoder for this step.
+//! Icon theme lookup in Zig. Images decode through desktop-decode.zig.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const a = std.heap.page_allocator;
+const decode = @import("desktop-decode.zig");
+const Image = decode.Image;
+const Color = @import("desktop-raster.zig").Color;
 extern "c" fn access([*:0]const u8, c_int) c_int;
-extern "c" fn g_memory_input_stream_new_from_data(*const anyopaque, isize, c.GDestroyNotify) ?*c.GInputStream;
 extern "c" fn g_themed_icon_get_type() c.GType;
 extern "c" fn g_themed_icon_get_names(*c.GIcon) [*:null]?[*:0]const u8;
 extern "c" fn g_file_icon_get_type() c.GType;
@@ -12,10 +14,9 @@ extern "c" fn g_file_get_path(*c.GFile) ?[*:0]u8;
 extern "c" fn g_loadable_icon_get_type() c.GType;
 extern "c" fn g_loadable_icon_load(*c.GIcon, c_int, ?*?[*:0]u8, ?*c.GCancellable, ?*?*c.GError) ?*c.GInputStream;
 extern "c" fn g_icon_new_for_string([*:0]const u8, ?*?*c.GError) ?*c.GIcon;
-extern "c" fn gdk_pixbuf_save_to_bufferv(*c.GdkPixbuf, *?[*]u8, *usize, [*:0]const u8, ?*anyopaque, ?*anyopaque, ?*?*c.GError) c.gboolean;
 
-pub const white: c.GdkRGBA = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 };
-pub const foreground: c.GdkRGBA = .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0, .alpha = 1 };
+pub const white: Color = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 };
+pub const foreground: Color = .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0, .alpha = 1 };
 const Directory = struct {
     path: []const u8,
     size: i64 = 0,
@@ -241,7 +242,7 @@ fn read(path: [:0]const u8) ?[]u8 {
     return data[0..len];
 }
 
-// UI callers own one GObject reference to each returned image. Lookup metadata
+// Callers own each returned image and release it with decode.free. Lookup metadata
 // is shared on the UI thread, while views retain their existing image caches.
 var shared: ?Resolver = null;
 var theme_settings: ?*c.GSettings = null;
@@ -288,49 +289,49 @@ fn resolver() !*Resolver {
     return &shared.?;
 }
 
-pub fn load(name: [:0]const u8, size: u32, scale: u32, tint: ?c.GdkRGBA) ?*c.GdkPixbuf {
+pub fn load(name: [:0]const u8, size: u32, scale: u32, tint: ?Color) ?Image {
     if (size == 0 or size > 4096 or scale == 0 or scale > 8) return null;
     const path = if (std.fs.path.isAbsolute(name)) name else ((resolver() catch return null).lookup(name, size, scale) catch return null) orelse return null;
-    const physical: c_int = @intCast(size * scale);
+    const physical = size * scale;
     if (tint) |rgba| {
         if (std.mem.endsWith(u8, path, ".symbolic.png")) return symbolicPng(path, physical, rgba);
         for ([_][]const u8{ "-symbolic.svg", "-symbolic-ltr.svg", "-symbolic-rtl.svg" }) |suffix| {
             if (std.mem.endsWith(u8, path, suffix)) return symbolic(path, physical, rgba);
         }
     }
-    return c.gdk_pixbuf_new_from_file_at_scale(path, physical, physical, 1, null);
+    return decode.fileAt(path, physical);
 }
 
-pub fn loadThemed(icon: ?*c.GIcon, size: c_int, fallback: ?*c.GdkPixbuf, fallback_name: ?[*c]const u8) ?*c.GdkPixbuf {
-    if (size <= 0) return null;
+/// Loads a GIcon, falling back to a copy of `fallback` or then a named icon.
+pub fn loadThemed(icon: ?*c.GIcon, size: u32, fallback: ?Image, fallback_name: ?[:0]const u8) ?Image {
+    if (size == 0) return null;
     if (icon) |value| {
         if (c.g_type_check_instance_is_a(@ptrCast(@alignCast(value)), g_themed_icon_get_type()) != 0) {
             const names = g_themed_icon_get_names(value);
             var i: usize = 0;
-            while (names[i]) |name| : (i += 1) if (load(std.mem.span(name), @intCast(size), 1, foreground)) |image| return image;
+            while (names[i]) |name| : (i += 1) if (load(std.mem.span(name), size, 1, foreground)) |image| return image;
         } else if (c.g_type_check_instance_is_a(@ptrCast(@alignCast(value)), g_file_icon_get_type()) != 0) {
             if (g_file_get_path(g_file_icon_get_file(value))) |path| {
                 defer c.g_free(path);
-                if (load(std.mem.span(path), @intCast(size), 1, foreground)) |image| return image;
+                if (load(std.mem.span(path), size, 1, foreground)) |image| return image;
             }
         }
         if (c.g_type_check_instance_is_a(@ptrCast(@alignCast(value)), g_loadable_icon_get_type()) != 0) {
-            if (g_loadable_icon_load(value, size, null, null, null)) |stream| {
+            if (g_loadable_icon_load(value, @intCast(size), null, null, null)) |stream| {
                 defer c.g_object_unref(stream);
-                if (c.gdk_pixbuf_new_from_stream_at_scale(stream, size, size, 1, null, null)) |image| return image;
+                if (decode.stream(stream, size)) |image| return image;
             }
         }
     }
-    if (fallback) |image| return @ptrCast(@alignCast(c.g_object_ref(image)));
-    if (fallback_name) |name| return load(std.mem.span(name), @intCast(size), 1, null);
+    if (fallback) |image| return decode.clone(image);
+    if (fallback_name) |name| return load(name, size, 1, null);
     return null;
 }
 
-fn symbolic(path: [:0]const u8, size: c_int, tint: c.GdkRGBA) ?*c.GdkPixbuf {
+fn symbolic(path: [:0]const u8, size: u32, tint: Color) ?Image {
     const data = read(path) orelse return null;
     defer c.g_free(data.ptr);
-    const original = c.gdk_pixbuf_new_from_file(path, null) orelse return null;
-    defer c.g_object_unref(original);
+    const natural = decode.dimensions(path) orelse return null;
     const encoded = a.alloc(u8, std.base64.standard.Encoder.calcSize(data.len)) catch return null;
     defer a.free(encoded);
     _ = std.base64.standard.Encoder.encode(encoded, data);
@@ -344,38 +345,39 @@ fn symbolic(path: [:0]const u8, size: c_int, tint: c.GdkRGBA) ?*c.GdkPixbuf {
     for ([_][]const u8{ "rect.stroke,circle.stroke,path.stroke,p.stroke", ".success.stroke", ".warning.stroke", ".error.stroke" }, colors) |selector, rgb| {
         css.writer.print("{s}{{fill:none!important;stroke:rgb({d},{d},{d})!important}}", .{ selector, rgb[0], rgb[1], rgb[2] }) catch return null;
     }
-    const svg = std.fmt.allocPrint(a, "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xi=\"http://www.w3.org/2001/XInclude\" width=\"{d}\" height=\"{d}\"><style>{s}</style><g opacity=\"{d}\"><xi:include href=\"data:text/xml;base64,{s}\"/></g></svg>", .{ c.gdk_pixbuf_get_width(original), c.gdk_pixbuf_get_height(original), css.written(), std.math.clamp(tint.alpha, 0, 1), encoded }) catch return null;
+    const svg = std.fmt.allocPrint(a, "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xi=\"http://www.w3.org/2001/XInclude\" width=\"{d}\" height=\"{d}\"><style>{s}</style><g opacity=\"{d}\"><xi:include href=\"data:text/xml;base64,{s}\"/></g></svg>", .{ natural[0], natural[1], css.written(), std.math.clamp(tint.alpha, 0, 1), encoded }) catch return null;
     defer a.free(svg);
-    const stream = g_memory_input_stream_new_from_data(svg.ptr, @intCast(svg.len), null) orelse return null;
-    defer c.g_object_unref(stream);
-    return c.gdk_pixbuf_new_from_stream_at_scale(stream, size, size, 1, null, null);
+    return decode.bytes(svg, size);
 }
 
-fn symbolicPng(path: [:0]const u8, size: c_int, tint: c.GdkRGBA) ?*c.GdkPixbuf {
-    const image = c.gdk_pixbuf_new_from_file_at_scale(path, size, size, 1, null) orelse return null;
-    const view = c.__zig.pixbufImage(image);
-    if (view.format != .rgba) {
-        c.g_object_unref(image);
-        return null;
-    }
+/// Recolors GTK's symbolic PNG palette: black takes the tint, while pure red,
+/// green and blue select the success, warning and error colors.
+fn symbolicPng(path: [:0]const u8, size: u32, tint: Color) ?Image {
+    const image = decode.fileAt(path, size) orelse return null;
     const colors = [_][3]u32{
         .{ @intFromFloat(std.math.clamp(tint.red, 0, 1) * 255), @intFromFloat(std.math.clamp(tint.green, 0, 1) * 255), @intFromFloat(std.math.clamp(tint.blue, 0, 1) * 255) },
         .{ 77, 153, 5 },
         .{ 244, 120, 61 },
         .{ 203, 0, 0 },
     };
-    const alpha: u32 = @intFromFloat(std.math.clamp(tint.alpha, 0, 1) * 255);
-    const pixels = c.gdk_pixbuf_get_pixels(image);
-    for (0..view.height) |y| for (0..view.width) |x| {
-        const pixel = pixels[y * view.stride + x * 4 ..][0..4];
-        const weights = [4]u32{ 255 -| (@as(u32, pixel[0]) + pixel[1] + pixel[2]), pixel[0], pixel[1], pixel[2] };
+    const opacity: u32 = @intFromFloat(std.math.clamp(tint.alpha, 0, 1) * 255);
+    for (std.mem.bytesAsSlice(u32, image.pixels)) |*pixel| {
+        const alpha = pixel.* >> 24;
+        if (alpha == 0) {
+            pixel.* = 0;
+            continue;
+        }
+        var source: [3]u32 = undefined;
+        for (&source, [_]u5{ 16, 8, 0 }) |*channel, shift| channel.* = @min(255, (((pixel.* >> shift) & 255) * 255 + alpha / 2) / alpha);
+        const weights = [4]u32{ 255 -| (source[0] + source[1] + source[2]), source[0], source[1], source[2] };
         var rgb: [3]u32 = @splat(0);
         for (colors, weights) |color, weight| for (&rgb, color) |*out, channel| {
             out.* += channel * weight;
         };
-        for (pixel[0..3], rgb) |*out, channel| out.* = if (pixel[3] == 0) 0 else @intCast(@min(255, channel / 255));
-        pixel[3] = @intCast(@as(u32, pixel[3]) * alpha / 255);
-    };
+        const result = alpha * opacity / 255;
+        pixel.* = result << 24;
+        for (rgb, [_]u5{ 16, 8, 0 }) |channel, shift| pixel.* |= ((@min(255, channel / 255) * result + 127) / 255) << shift;
+    }
     return image;
 }
 
@@ -458,56 +460,63 @@ test "tied icon distance prefers downscaling larger icons over upscaling smaller
     try std.testing.expect(std.mem.endsWith(u8, (try theme.lookup("firefox", 96, 1)).?, "128x128/apps/firefox.png"));
 }
 
-test "Zig symbolic icon rendering matches GTK palette, opacity and scale without a display" {
+fn pixelAt(image: Image, x: usize, y: usize) u32 {
+    return std.mem.bytesAsSlice(u32, image.pixels)[y * image.stride / 4 + x];
+}
+
+fn premultiplied(rgb: u32, alpha: u32) u32 {
+    var pixel = alpha << 24;
+    for ([_]u5{ 16, 8, 0 }) |shift| pixel |= ((((rgb >> shift) & 255) * alpha + 127) / 255) << shift;
+    return pixel;
+}
+
+test "symbolic SVG icons use the GTK palette, opacity and scale" {
     var fixture = try Fixture.init();
     defer fixture.deinit();
     try fixture.put("Test/index.theme", "[Icon Theme]\nName=Test\nDirectories=scalable/status\n[scalable/status]\nSize=16\nType=Scalable\nMinSize=1\nMaxSize=64\n");
     try fixture.put("Test/scalable/status/probe-symbolic.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\"><path d=\"M0 0h4v16H0z\"/><path class=\"success\" d=\"M4 0h4v16H4z\"/><path class=\"warning\" d=\"M8 0h4v16H8z\"/><path class=\"error\" d=\"M12 0h4v16h-4z\"/></svg>");
-    const theme = c.gtk_icon_theme_new();
-    defer c.g_object_unref(theme);
-    c.gtk_icon_theme_append_search_path(theme, fixture.root);
-    c.gtk_icon_theme_set_custom_theme(theme, "Test");
     var lookup = try Resolver.init(std.testing.allocator, &.{fixture.root}, "Test");
     defer lookup.deinit();
-    const tint: c.GdkRGBA = .{ .red = 0.3, .green = 0.6, .blue = 0.9, .alpha = 0.7 };
+    const tint: Color = .{ .red = 0.3, .green = 0.6, .blue = 0.9, .alpha = 0.7 };
     for ([_]u32{ 1, 2 }) |scale| {
-        const size: c_int = @intCast(16 * scale);
-        const info = c.gtk_icon_theme_lookup_icon(theme, "probe-symbolic", size, c.GTK_ICON_LOOKUP_FORCE_SIZE) orelse return error.ReferenceIconMissing;
-        defer c.g_object_unref(info);
-        const expected = c.gtk_icon_info_load_symbolic(info, &tint, null, null, null, null, null) orelse return error.ReferenceIconDecode;
-        defer c.g_object_unref(expected);
-        const actual = symbolic((try lookup.lookup("probe-symbolic", 16, scale)).?, size, tint) orelse return error.IconDecode;
-        defer c.g_object_unref(actual);
-        const e = c.__zig.pixbufImage(expected);
-        const v = c.__zig.pixbufImage(actual);
-        try std.testing.expectEqual(e.width, v.width);
-        try std.testing.expectEqual(e.height, v.height);
-        for (0..v.height) |y| try std.testing.expectEqualSlices(u8, e.pixels[y * e.stride ..][0 .. e.width * 4], v.pixels[y * v.stride ..][0 .. v.width * 4]);
+        const image = symbolic((try lookup.lookup("probe-symbolic", 16, scale)).?, 16 * scale, tint) orelse return error.IconDecode;
+        defer decode.free(image);
+        try std.testing.expectEqual(16 * scale, image.width);
+        try std.testing.expectEqual(16 * scale, image.height);
+        // Sample each stripe's center: the tint, then success, warning and error.
+        for ([_]u32{ 0x4d99e6, 0x4e9a06, 0xf5793e, 0xcc0000 }, 0..) |rgb, stripe| {
+            const pixel = pixelAt(image, (stripe * 4 + 2) * scale, 8 * scale);
+            const expected = premultiplied(rgb, 179);
+            for ([_]u5{ 24, 16, 8, 0 }) |shift| {
+                const delta = @as(i32, @intCast((pixel >> shift) & 255)) - @as(i32, @intCast((expected >> shift) & 255));
+                try std.testing.expect(@abs(delta) <= 1);
+            }
+        }
     }
 }
 
-test "symbolic PNG palettes and file GIcons use the existing decoder without GTK lookup" {
+test "symbolic PNG palettes and file GIcons decode to premultiplied images" {
     var fixture = try Fixture.init();
     defer fixture.deinit();
-    const image = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 1, 8, 4, 1) orelse return error.IconAllocation;
-    defer c.g_object_unref(image);
-    @memcpy(c.gdk_pixbuf_get_pixels(image)[0..16], &[_]u8{ 0, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 128 });
-    var data: ?[*]u8 = null;
-    var len: usize = 0;
-    try std.testing.expect(gdk_pixbuf_save_to_bufferv(image, &data, &len, "png", null, null, null) != 0);
-    defer c.g_free(data.?);
-    try fixture.put("palette-symbolic.symbolic.png", data.?[0..len]);
+    const source = decode.api.gdk_pixbuf_new(decode.api.GDK_COLORSPACE_RGB, 1, 8, 4, 1) orelse return error.IconAllocation;
+    defer c.g_object_unref(source);
+    @memcpy(decode.api.gdk_pixbuf_get_pixels(source)[0..16], &[_]u8{ 0, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 128 });
+    var data: [*c]u8 = null;
+    var len: c.gsize = 0;
+    try std.testing.expect(decode.api.gdk_pixbuf_save_to_bufferv(source, &data, &len, "png", null, null, null) != 0);
+    defer c.g_free(data);
+    try fixture.put("palette-symbolic.symbolic.png", data[0..len]);
     const path = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/palette-symbolic.symbolic.png", .{fixture.root}, 0);
     defer std.testing.allocator.free(path);
     const tinted = load(path, 4, 1, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.5 }) orelse return error.IconDecode;
-    defer c.g_object_unref(tinted);
-    try std.testing.expectEqualSlices(u8, &.{ 255, 255, 255, 127, 77, 153, 5, 127, 244, 120, 61, 127, 203, 0, 0, 63 }, c.gdk_pixbuf_get_pixels(tinted)[0..16]);
+    defer decode.free(tinted);
+    try std.testing.expectEqualSlices(u32, &.{ premultiplied(0xffffff, 127), premultiplied(0x4d9905, 127), premultiplied(0xf4783d, 127), premultiplied(0xcb0000, 63) }, std.mem.bytesAsSlice(u32, tinted.pixels));
     const icon = g_icon_new_for_string(path, null) orelse return error.InvalidIcon;
     defer c.g_object_unref(icon);
     const loaded = loadThemed(icon, 8, null, null) orelse return error.IconDecode;
-    defer c.g_object_unref(loaded);
-    try std.testing.expectEqual(@as(c_int, 8), c.gdk_pixbuf_get_width(loaded));
-    try std.testing.expectEqual(@as(c_int, 2), c.gdk_pixbuf_get_height(loaded));
+    defer decode.free(loaded);
+    try std.testing.expectEqual(@as(u32, 8), loaded.width);
+    try std.testing.expectEqual(@as(u32, 2), loaded.height);
 }
 
 test "native icon lookup renders installed Adwaita symbols at both output scales" {
@@ -517,13 +526,10 @@ test "native icon lookup renders installed Adwaita symbols at both output scales
     for ([_][:0]const u8{ "view-app-grid-symbolic", "view-refresh-symbolic", "audio-volume-high-symbolic", "battery-level-50-symbolic", "dark-mode-symbolic" }) |name| {
         for ([_]u32{ 1, 2 }) |scale| {
             const image = load(name, 16, scale, white) orelse return error.InstalledIconMissing;
-            defer c.g_object_unref(image);
-            try std.testing.expectEqual(@as(c_int, @intCast(16 * scale)), c.gdk_pixbuf_get_width(image));
-            const pixels = c.__zig.pixbufImage(image);
+            defer decode.free(image);
+            try std.testing.expectEqual(16 * scale, image.width);
             var visible = false;
-            for (0..pixels.height) |y| for (0..pixels.width) |x| {
-                if (pixels.format == .rgba and pixels.pixels[y * pixels.stride + x * 4 + 3] != 0) visible = true;
-            };
+            for (std.mem.bytesAsSlice(u32, image.pixels)) |pixel| visible = visible or pixel >> 24 != 0;
             try std.testing.expect(visible);
         }
     }

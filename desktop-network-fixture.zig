@@ -1,6 +1,6 @@
 //! Isolated D-Bus integration driver; never run against the host system bus.
 const std = @import("std");
-const c = @import("desktop").gtk;
+const c = @import("desktop").glib;
 const network = @import("desktop").network;
 const settings = @import("desktop").settings;
 const editor = @import("desktop").network_editor;

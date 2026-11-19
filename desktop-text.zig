@@ -1,6 +1,6 @@
 //! Font shaping and grayscale masks; pixel compositing is handled in Zig.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 
 pub const api = struct {
     pub const PangoFontMap = opaque {};

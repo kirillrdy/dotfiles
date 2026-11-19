@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("desktop").gtk;
+const c = @import("desktop").glib;
 const idle = @import("desktop").idle;
 var stopping = false;
 var service_ptr: ?*idle.Service = null;

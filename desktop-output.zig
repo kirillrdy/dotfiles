@@ -1,6 +1,6 @@
 //! One-shot display scaling through wlr-output-management, independent of the shell daemon.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const wayland = @import("desktop-wayland.zig");
 const p = @import("desktop-protocols.zig");
 const a = std.heap.page_allocator;

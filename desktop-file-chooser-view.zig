@@ -1,6 +1,6 @@
 //! GNOME Files picker geometry and rendering, independent of portal requests.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const form = @import("desktop-form.zig");
 const prefs = @import("desktop-preferences-view.zig");
 const raster = @import("desktop-raster.zig");

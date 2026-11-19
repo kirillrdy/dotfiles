@@ -1,6 +1,6 @@
 //! Shared backlight discovery and asynchronous, session-authorized brightness changes.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;

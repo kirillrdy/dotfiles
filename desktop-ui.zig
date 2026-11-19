@@ -1,7 +1,8 @@
 //! UI helpers kept separate from the C ABI declarations.
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const std = @import("std");
 const raster = @import("desktop-raster.zig");
+const Image = @import("desktop-image.zig").Image;
 pub fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
 }
@@ -46,48 +47,41 @@ pub const variant = struct {
         return c.g_variant_lookup_value(section, key, null);
     }
 };
-pub fn parentTo(widget: *c.GtkWidget, allocator: std.mem.Allocator, parent: [:0]const u8) void {
-    const display = c.gdk_display_get_default();
-    const window = c.gtk_widget_get_window(widget) orelse return;
-    if (std.mem.startsWith(u8, parent, "wayland:") and c.g_type_check_instance_is_a(cast(c.GTypeInstance, display), c.gdk_wayland_display_get_type()) != 0) {
-        const handle = allocator.dupeSentinel(u8, parent[8..], 0) catch return;
-        defer allocator.free(handle);
-        _ = c.gdk_wayland_window_set_transient_for_exported(window, handle);
-    }
-}
-pub fn pixbufImage(pixbuf: *c.GdkPixbuf) raster.Image {
-    const width: u32 = @intCast(c.gdk_pixbuf_get_width(pixbuf));
-    const height: u32 = @intCast(c.gdk_pixbuf_get_height(pixbuf));
-    const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(pixbuf));
-    const channels: u32 = @intCast(c.gdk_pixbuf_get_n_channels(pixbuf));
-    return .{
-        .pixels = c.gdk_pixbuf_get_pixels(pixbuf)[0 .. (height - 1) * stride + width * channels],
-        .width = width,
-        .height = height,
-        .stride = stride,
-        .format = if (channels == 4) .rgba else .rgb,
-    };
-}
-pub fn blitPixbuf(canvas: raster.Canvas, pixbuf: *c.GdkPixbuf, rect: raster.Rect) void {
-    raster.blit(canvas.target, pixbufImage(pixbuf), .{
+/// X keysyms and modifier bits used by the native key handlers.
+pub const keys = struct {
+    pub const BackSpace: c_int = 0xff08;
+    pub const Return: c_int = 0xff0d;
+    pub const Escape: c_int = 0xff1b;
+    pub const Left: c_int = 0xff51;
+    pub const Up: c_int = 0xff52;
+    pub const Right: c_int = 0xff53;
+    pub const Down: c_int = 0xff54;
+    pub const Page_Up: c_int = 0xff55;
+    pub const Page_Down: c_int = 0xff56;
+    pub const KP_Enter: c_int = 0xff8d;
+    pub const Super_L: c_int = 0xffeb;
+    pub const Super_R: c_int = 0xffec;
+};
+pub const Modifiers = c_uint;
+pub const shift_mask: c_int = 1;
+pub const control_mask: c_int = 4;
+pub const alt_mask: c_int = 8;
+pub fn blitImage(canvas: raster.Canvas, image: Image, rect: raster.Rect) void {
+    raster.blit(canvas.target, image.view(), .{
         .x = (rect.x + canvas.origin.x) * canvas.scale,
         .y = (rect.y + canvas.origin.y) * canvas.scale,
         .width = rect.width * canvas.scale,
         .height = rect.height * canvas.scale,
     }, null) catch {};
 }
-pub fn pixbufAlphaMask(allocator: std.mem.Allocator, pixbuf: *c.GdkPixbuf, out_width: *u32, out_height: *u32) ![]u8 {
-    const width: u32 = @intCast(@max(0, c.gdk_pixbuf_get_width(pixbuf)));
-    const height: u32 = @intCast(@max(0, c.gdk_pixbuf_get_height(pixbuf)));
-    const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(pixbuf));
-    const channels: usize = @intCast(c.gdk_pixbuf_get_n_channels(pixbuf));
-    const source = c.gdk_pixbuf_get_pixels(pixbuf);
-    const mask = try allocator.alloc(u8, @as(usize, width) * height);
-    for (0..height) |y| for (0..width) |x| {
-        mask[y * width + x] = if (channels >= 4) source[y * stride + x * channels + 3] else source[y * stride + x * channels];
+/// Extracts an image's alpha channel as a glyph-style coverage mask.
+pub fn alphaMask(allocator: std.mem.Allocator, image: Image, out_width: *u32, out_height: *u32) ![]u8 {
+    const mask = try allocator.alloc(u8, @as(usize, image.width) * image.height);
+    for (0..image.height) |y| for (0..image.width) |x| {
+        mask[y * image.width + x] = @intCast(std.mem.readInt(u32, image.pixels[y * image.stride + x * 4 ..][0..4], @import("builtin").cpu.arch.endian()) >> 24);
     };
-    out_width.* = width;
-    out_height.* = height;
+    out_width.* = image.width;
+    out_height.* = image.height;
     return mask;
 }
 pub const ShmBuffer = struct {

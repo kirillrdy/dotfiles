@@ -1,6 +1,6 @@
 //! Compose mail through the configured mailto handler, without a portal backend.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 
 const Options = @import("desktop-portal-options.zig").Options(error.InvalidEmailOption);

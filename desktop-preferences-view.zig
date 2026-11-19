@@ -1,6 +1,6 @@
 //! Native Adwaita-style drawing primitives shared by settings pages.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const form = @import("desktop-form.zig");
 const raster = @import("desktop-raster.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
@@ -115,22 +115,21 @@ pub fn toast(ui: *form.Form, canvas: Canvas, id: usize, frame: Frame) !void {
     fill(canvas, r, 0x414145, 12);
     try text(ui, canvas, message, .{ .x = r.x + 12, .y = r.y, .width = r.width - 24, .height = 40 }, 14.666, false, true, 0xffffff);
 }
-extern fn g_memory_input_stream_new_from_data(*const anyopaque, isize, c.GDestroyNotify) ?*c.GInputStream;
 
 pub const Icons = struct {
-    const Icon = struct { name: [:0]const u8, size: u32, image: *c.GdkPixbuf };
+    const Icon = struct { name: [:0]const u8, size: u32, image: c.__icons.Image };
     entries: std.ArrayList(Icon) = .empty,
     pub fn deinit(self: *Icons) void {
         self.clear();
         self.entries.deinit(a);
     }
     pub fn clear(self: *Icons) void {
-        for (self.entries.items) |entry| c.g_object_unref(entry.image);
+        for (self.entries.items) |entry| c.__icons.free(entry.image);
         self.entries.clearRetainingCapacity();
     }
     pub fn paint(self: *Icons, canvas: Canvas, name: [:0]const u8, x: f64, y: f64, size: u32) !void {
         const physical: u32 = @intFromFloat(@as(f64, @floatFromInt(size)) * canvas.scale);
-        var image: ?*c.GdkPixbuf = null;
+        var image: ?c.__icons.Image = null;
         for (self.entries.items) |entry| if (entry.size == physical and std.mem.eql(u8, name, entry.name)) {
             image = entry.image;
             break;
@@ -138,18 +137,16 @@ pub const Icons = struct {
         if (image == null) {
             const asset: ?[]const u8 = if (std.mem.eql(u8, name, "file-chooser-options-symbolic")) @embedFile("desktop-icons/file-chooser-options-symbolic.svg") else if (std.mem.eql(u8, name, "file-chooser-folder-search-symbolic")) @embedFile("desktop-icons/file-chooser-folder-search-symbolic.svg") else null;
             if (asset) |svg| {
-                const stream = g_memory_input_stream_new_from_data(svg.ptr, @intCast(svg.len), null) orelse return error.IconAllocation;
-                defer c.g_object_unref(stream);
-                image = c.gdk_pixbuf_new_from_stream_at_scale(stream, @intCast(physical), @intCast(physical), 1, null, null);
+                image = @import("desktop-decode.zig").bytes(svg, physical);
             } else {
                 const symbolic = std.mem.endsWith(u8, name, "-symbolic");
                 image = @import("desktop-icons.zig").load(name, physical, 1, if (symbolic) @import("desktop-icons.zig").white else null);
             }
-            if (image) |pixbuf| self.entries.append(a, .{ .name = name, .size = physical, .image = pixbuf }) catch |err| {
-                c.g_object_unref(pixbuf);
+            if (image) |decoded| self.entries.append(a, .{ .name = name, .size = physical, .image = decoded }) catch |err| {
+                c.__icons.free(decoded);
                 return err;
             };
         }
-        if (image) |pixbuf| c.__zig.blitPixbuf(canvas, pixbuf, .{ .x = x, .y = y, .width = @floatFromInt(size), .height = @floatFromInt(size) });
+        if (image) |decoded| c.__zig.blitImage(canvas, decoded, .{ .x = x, .y = y, .width = @floatFromInt(size), .height = @floatFromInt(size) });
     }
 };

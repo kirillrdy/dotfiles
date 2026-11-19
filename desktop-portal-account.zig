@@ -1,6 +1,6 @@
 //! Account information is released only after explicit consent in a native dialog.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const cast = c.__zig.cast;
 const auth = @import("desktop-auth-dialog.zig");
 const portal_options = @import("desktop-portal-options.zig");

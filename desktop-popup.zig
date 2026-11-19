@@ -1,6 +1,6 @@
 //! Shared native popup surface, output selection, and deferred dismissal.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const wire = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const input = @import("desktop-input.zig");

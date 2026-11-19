@@ -1,7 +1,7 @@
 //! Independent ext-session-lock client. Only successful PAM authentication sends unlock.
 const std = @import("std");
 const wayland = @import("desktop-wayland.zig");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const p = @import("desktop-protocols.zig");
 const auth = @import("desktop-lock-auth.zig");

@@ -1,6 +1,6 @@
 //! Calendar geometry and native notification history, sharing banner rendering.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 pub const banner = @import("desktop-notification-banner.zig");

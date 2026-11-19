@@ -1,6 +1,6 @@
 //! Polkit D-Bus agent. The root-owned system helper performs PAM and grants auth.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const Dialog = @import("desktop-polkit.zig").Dialog;
 const name = "org.freedesktop.PolicyKit1";

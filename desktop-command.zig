@@ -1,6 +1,6 @@
 //! Observe desktop commands without blocking the compositor or UI thread.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const a = std.heap.page_allocator;
 
 pub fn commandLine(name: [:0]const u8, command: [:0]const u8) void {

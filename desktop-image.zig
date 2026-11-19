@@ -85,6 +85,22 @@ pub const Image = struct {
         return .{ .pixels = self.pixels, .width = self.width, .height = self.height, .stride = self.stride, .format = .argb };
     }
 
+    /// Packed straight-alpha RGBA bytes, as used by notification image data.
+    pub fn straightRgba(self: Image, allocator: std.mem.Allocator) ![]u8 {
+        const out = try allocator.alloc(u8, @as(usize, self.width) * self.height * 4);
+        const endian = @import("builtin").cpu.arch.endian();
+        for (0..self.height) |y| for (0..self.width) |x| {
+            const pixel = std.mem.readInt(u32, self.pixels[y * self.stride + x * 4 ..][0..4], endian);
+            const alpha = pixel >> 24;
+            const rgba = out[(y * self.width + x) * 4 ..][0..4];
+            for (rgba[0..3], [_]u5{ 16, 8, 0 }) |*channel, shift| {
+                channel.* = if (alpha == 0) 0 else @intCast(@min(255, (((pixel >> shift) & 255) * 255 + alpha / 2) / alpha));
+            }
+            rgba[3] = @intCast(alpha);
+        };
+        return out;
+    }
+
     pub fn deinit(self: Image, allocator: std.mem.Allocator) void {
         allocator.free(self.pixels);
     }

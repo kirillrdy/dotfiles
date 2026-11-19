@@ -1,6 +1,6 @@
 //! Native connection properties. Unknown settings round-trip without libnm.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const native = @import("desktop-form.zig");
 const network = @import("desktop-network.zig");
 const presentation = @import("desktop-network-editor-view.zig");

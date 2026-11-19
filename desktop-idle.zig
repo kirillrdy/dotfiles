@@ -1,7 +1,7 @@
 //! Native idle locking and logind suspend coordination. All callbacks run on the GLib context.
 const std = @import("std");
 const wayland = @import("desktop-wayland.zig");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const p = @import("desktop-protocols.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;

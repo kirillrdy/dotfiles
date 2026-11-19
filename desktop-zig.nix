@@ -1,11 +1,6 @@
 { pkgs }:
 let
   compositorLibraries = import ./desktop-compositor-libs.nix { inherit pkgs; };
-  dbusLibraries = import ./desktop-dbus-libs.nix { inherit pkgs; };
-  gtkLibraries = import ./desktop-gtk-libs.nix {
-    inherit pkgs;
-    dbus = dbusLibraries;
-  };
   audioLibraries = import ./desktop-audio-libs.nix { inherit pkgs; };
   pamLibraries = import ./desktop-pam-libs.nix { inherit pkgs; };
   textLibraries = import ./desktop-text-libs.nix { inherit pkgs; };
@@ -99,8 +94,12 @@ pkgs.stdenv.mkDerivation {
   WAYLAND_PROTOCOLS_DIR = "${pkgs.wayland-protocols}/share/wayland-protocols";
   WLR_PROTOCOLS_DIR = "${pkgs.wlr-protocols}/share/wlr-protocols";
   buildInputs = [
-    gtkLibraries.gtk
+    pkgs.glib
+    pkgs.gdk-pixbuf
+    textLibraries.cairo
+    textLibraries.pango
     pkgs.wayland
+    pkgs.wayland-protocols
     compositorLibraries
     pkgs.libinput
     pkgs.libdrm
@@ -114,7 +113,7 @@ pkgs.stdenv.mkDerivation {
   DESKTOP_RUNTIME_POWER_PKEXEC = "/run/wrappers/bin/pkexec";
   DESKTOP_RUNTIME_PIXBUF_LOADERS = "${textLibraries.rsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache";
   DESKTOP_RUNTIME_SOUND_FILE = "${feedbackSound}";
-  DESKTOP_RUNTIME_DATA_DIRS = "${placeholder "out"}/share:${gtkLibraries.gtk}/share/gsettings-schemas/${gtkLibraries.gtk.name}:${pkgs.adwaita-icon-theme}/share:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${portalSettingsSchemas}/share/gsettings-schemas/gnome-settings-daemon-${pkgs.gnome-settings-daemon.version}";
+  DESKTOP_RUNTIME_DATA_DIRS = "${placeholder "out"}/share:${pkgs.adwaita-icon-theme}/share:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${portalSettingsSchemas}/share/gsettings-schemas/gnome-settings-daemon-${pkgs.gnome-settings-daemon.version}";
   buildPhase = ''
     cp -r ${zigGlobalCache} "$TMPDIR/zig-cache"
     chmod -R u+w "$TMPDIR/zig-cache"

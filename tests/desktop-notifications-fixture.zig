@@ -1,6 +1,6 @@
 //! Standalone notification service for private headless D-Bus/input tests.
 const desktop = @import("desktop");
-const c = desktop.gtk;
+const c = desktop.glib;
 var running = true;
 fn quit(_: ?*anyopaque) callconv(.c) c.gboolean {
     running = false;

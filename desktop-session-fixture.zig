@@ -1,6 +1,6 @@
 //! Run only through tests/desktop-session-fixture.nix and its private system bus.
 const std = @import("std");
-const c = @import("desktop").gtk;
+const c = @import("desktop").glib;
 const session = @import("desktop").session_actions;
 const quick = @import("desktop").quick;
 

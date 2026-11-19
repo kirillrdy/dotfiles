@@ -1,6 +1,6 @@
 //! One settings window with Wi-Fi, Network, and Sound pages.
 const std = @import("std");
-pub const c = @import("desktop-gtk.zig");
+pub const c = @import("desktop-glib.zig");
 pub const SoundControl = @import("desktop-sound-view.zig").Control;
 pub const Sound = @import("desktop-sound-settings.zig").Sound;
 const network = @import("desktop-network.zig");
@@ -205,7 +205,7 @@ pub const Settings = struct {
             self.refresh();
             return true;
         }
-        if ((symbol == 'f' or symbol == 'F') and modifiers & c.GDK_CONTROL_MASK != 0) {
+        if ((symbol == 'f' or symbol == 'F') and modifiers & c.__zig.control_mask != 0) {
             self.showSearch();
             return true;
         }

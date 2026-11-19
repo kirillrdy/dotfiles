@@ -50,9 +50,9 @@ pub fn main(process_init: std.process.Init) !void {
             "display-brightness-symbolic",
         }) |name| {
             for ([_]u32{ 1, 2 }) |scale| {
-                const pixbuf = c.__icons.load(name, 16, scale, null).?;
-                assert(c.gdk_pixbuf_get_width(pixbuf) > 0 and c.gdk_pixbuf_get_height(pixbuf) > 0);
-                c.g_object_unref(pixbuf);
+                const image = c.__icons.load(name, 16, scale, null).?;
+                assert(image.width > 0 and image.height > 0);
+                c.__icons.free(image);
             }
         }
     }
@@ -221,7 +221,7 @@ pub fn main(process_init: std.process.Init) !void {
     // Exercise graph history rollover and the native draw callback after migration.
     const monitors = p.init(.{ .kind = "monitors" }, null, null, null);
     for (0..130) |i| {
-        p.update(monitors, .{ .monitors = &.{.{ .sequence = @intCast(i), .values = &.{@floatFromInt(i)}, .colors = &.{"#0072b3"}, .maximum = 100 }} });
+        p.update(monitors, .{ .monitors = &.{.{ .sequence = @intCast(i), .values = &.{@floatFromInt(i)}, .colors = &.{0x0072b3}, .maximum = 100 }} });
     }
     assert(monitors.view.graphs[0].count == 100);
     assert(monitors.view.graphs[0].history[0][0] == 30 and monitors.view.graphs[0].history[0][99] == 129);
@@ -233,8 +233,8 @@ pub fn main(process_init: std.process.Init) !void {
     var step_pixels: [110 * 32]u32 = @splat(0);
     empty_graph.view.graphs[0].paint(.{ .target = .{ .pixels = &step_pixels, .width = 110, .height = 32 }, .scale = 1 }, 5, 100, 32);
     assert(step_pixels[4] == 0 and step_pixels[5] == 0x16161616 and step_pixels[104] == 0x16161616 and step_pixels[105] == 0);
-    p.update(empty_graph, .{ .monitors = &.{.{ .sequence = 1, .values = &.{50}, .colors = &.{"#0072b3"}, .maximum = 100 }} });
-    p.update(empty_graph, .{ .monitors = &.{.{ .sequence = 2, .values = &.{50}, .colors = &.{"#0072b3"}, .maximum = 100 }} });
+    p.update(empty_graph, .{ .monitors = &.{.{ .sequence = 1, .values = &.{50}, .colors = &.{0x0072b3}, .maximum = 100 }} });
+    p.update(empty_graph, .{ .monitors = &.{.{ .sequence = 2, .values = &.{50}, .colors = &.{0x0072b3}, .maximum = 100 }} });
     @memset(&step_pixels, 0);
     empty_graph.view.graphs[0].paint(.{ .target = .{ .pixels = &step_pixels, .width = 110, .height = 32 }, .scale = 1 }, 5, 100, 32);
     assert(step_pixels[104] == 0x16161616);

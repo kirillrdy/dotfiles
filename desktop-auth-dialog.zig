@@ -1,6 +1,6 @@
 //! Native Wayland authentication dialogs with locked password buffers.
 const std = @import("std");
-pub const c = @import("desktop-gtk.zig");
+pub const c = @import("desktop-glib.zig");
 pub const native = @import("desktop-askpass-view.zig");
 pub const password = @import("desktop-password-entry.zig");
 pub const Mode = native.Mode;
@@ -304,7 +304,7 @@ pub const Dialog = struct {
     fn closeRequested(ptr: ?*anyopaque) void {
         cast(Dialog, ptr).respond(false);
     }
-    pub fn handleKey(self: *Dialog, symbol: u32, modifiers: c.GdkModifierType) bool {
+    pub fn handleKey(self: *Dialog, symbol: u32, modifiers: c.__zig.Modifiers) bool {
         self.view.keyboard_focus = true;
         switch (symbol) {
             0xff1b => {
@@ -312,7 +312,7 @@ pub const Dialog = struct {
                 return true;
             },
             0xff09, 0xfe20 => {
-                self.view.stepFocus(symbol == 0xfe20 or modifiers & c.GDK_SHIFT_MASK != 0);
+                self.view.stepFocus(symbol == 0xfe20 or modifiers & c.__zig.shift_mask != 0);
                 self.focus(self.view.focus);
             },
             0xff0d, 0xff8d => {
@@ -328,7 +328,7 @@ pub const Dialog = struct {
                     if (!self.enabled) return true;
                     if (!entry.key(symbol, modifiers)) {
                         const codepoint = @import("desktop-keyboard.zig").unicode(symbol);
-                        if (modifiers & (c.GDK_CONTROL_MASK | c.GDK_MOD1_MASK) != 0 or codepoint < 32 or codepoint == 127) return false;
+                        if (modifiers & (c.__zig.control_mask | c.__zig.alt_mask) != 0 or codepoint < 32 or codepoint == 127) return false;
                         var bytes: [4]u8 = @splat(0);
                         defer std.crypto.secureZero(u8, &bytes);
                         const len = std.unicode.utf8Encode(@intCast(codepoint), &bytes) catch return false;

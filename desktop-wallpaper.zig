@@ -2,20 +2,22 @@
 const native = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const allocator = std.heap.page_allocator;
+const decode = @import("desktop-decode.zig");
+const Image = decode.Image;
 
 const cast = c.__zig.cast;
 
-fn paint(target: native.Pixels, image: *c.GdkPixbuf) void {
-    raster.cover(target, c.__zig.pixbufImage(image)) catch |err| std.log.err("wallpaper render: {s}", .{@errorName(err)});
+fn paint(target: native.Pixels, image: Image) void {
+    raster.cover(target, image.view()) catch |err| std.log.err("wallpaper render: {s}", .{@errorName(err)});
 }
 
 const Background = struct {
     surface: *native.Surface,
-    image: *c.GdkPixbuf, // Owned by App; shared across outputs.
+    image: Image, // Owned by App; shared across outputs.
 
-    fn create(output: *native.Output, image: *c.GdkPixbuf) !*Background {
+    fn create(output: *native.Output, image: Image) !*Background {
         const self = try allocator.create(Background);
         errdefer allocator.destroy(self);
         self.* = .{ .surface = try native.Surface.createPixels(output, .{
@@ -37,7 +39,7 @@ const Background = struct {
 };
 
 const App = struct {
-    image: *c.GdkPixbuf,
+    image: Image,
     backgrounds: std.ArrayList(*Background) = .empty,
 
     fn add(data: ?*anyopaque, output: *native.Output) void {
@@ -60,15 +62,14 @@ const App = struct {
 
 test "fill crops the center of wide and tall images at both buffer scales" {
     for ([_]bool{ false, true }) |vertical| {
-        const image = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 0, 8, if (vertical) 4 else 12, if (vertical) 12 else 4).?;
-        defer c.g_object_unref(image);
-        const pixels = c.gdk_pixbuf_get_pixels(image);
-        const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(image));
-        const iw: usize = @intCast(c.gdk_pixbuf_get_width(image));
-        const ih: usize = @intCast(c.gdk_pixbuf_get_height(image));
+        const image = try decode.create(if (vertical) 4 else 12, if (vertical) 12 else 4);
+        defer decode.free(image);
+        const pixels = std.mem.bytesAsSlice(u32, image.pixels);
+        const iw: usize = image.width;
+        const ih: usize = image.height;
         for (0..ih) |y| for (0..iw) |x| {
             const band = (if (vertical) y else x) / 4;
-            for (0..3) |channel| pixels[y * stride + x * 3 + channel] = if (channel == band) 255 else 0;
+            pixels[y * iw + x] = @as(u32, 0xff000000) | (@as(u32, 0xff0000) >> @intCast(band * 8));
         };
         for ([_]c_int{ 1, 2 }) |scale| {
             var data: [64]u32 = undefined;
@@ -86,13 +87,9 @@ test "fill crops the center of wide and tall images at both buffer scales" {
 test "integration: background layer paints wallpaper pixels on the desktop" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
     const capture = @import("tests/desktop-surface-capture.zig");
-    const image = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 0, 8, 2, 2).?;
-    defer c.g_object_unref(image);
-    const pixels = c.gdk_pixbuf_get_pixels(image);
-    const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(image));
-    for (0..2) |y| for (0..2) |x| {
-        pixels[y * stride + x * 3 ..][0..3].* = .{ 20, 40, 80 };
-    };
+    const image = try decode.create(2, 2);
+    defer decode.free(image);
+    @memset(std.mem.bytesAsSlice(u32, image.pixels), 0xff142850);
     var app: App = .{ .image = image };
     const native_client = try native.Client.create(.{ .added = &App.add, .removed = &App.remove }, &app);
     defer native_client.destroy();
@@ -127,10 +124,8 @@ pub const Service = struct {
     client: *native.Client,
 
     pub fn create(path: [:0]const u8) !*Service {
-        const decoded = c.gdk_pixbuf_new_from_file(path, null) orelse return error.InvalidImage;
-        defer c.g_object_unref(decoded);
-        const image = c.gdk_pixbuf_apply_embedded_orientation(decoded) orelse return error.InvalidImage;
-        errdefer c.g_object_unref(image);
+        const image = decode.file(path) orelse return error.InvalidImage;
+        errdefer decode.free(image);
         const self = try allocator.create(Service);
         self.* = .{ .app = .{ .image = image }, .client = undefined };
         errdefer allocator.destroy(self);
@@ -145,19 +140,21 @@ pub const Service = struct {
         for (self.app.backgrounds.items) |background| background.destroy();
         self.app.backgrounds.deinit(allocator);
         self.client.destroy();
-        c.g_object_unref(self.app.image);
+        decode.free(self.app.image);
         allocator.destroy(self);
     }
 };
 
 // Cairo remains a test reference for the renderer it replaces.
-test "Zig wallpaper sampling agrees with Cairo for RGB, alpha and fractional sizes" {
+test "Zig wallpaper sampling agrees with Cairo for opaque, alpha and fractional sizes" {
     const Reference = struct {
-        fn reference(cr: *c.cairo_t, image: *c.GdkPixbuf, width: f64, height: f64) void {
+        fn reference(cr: *c.cairo_t, image: Image, width: f64, height: f64) void {
             if (width <= 0 or height <= 0) return;
-            const iw: f64 = @floatFromInt(c.gdk_pixbuf_get_width(image));
-            const ih: f64 = @floatFromInt(c.gdk_pixbuf_get_height(image));
+            const iw: f64 = @floatFromInt(image.width);
+            const ih: f64 = @floatFromInt(image.height);
             const scale = @max(width / iw, height / ih);
+            const surface = c.cairo_image_surface_create_for_data(image.pixels.ptr, c.CAIRO_FORMAT_ARGB32, @intCast(image.width), @intCast(image.height), @intCast(image.stride)).?;
+            defer c.cairo_surface_destroy(surface);
             c.cairo_save(cr);
             defer c.cairo_restore(cr);
             c.cairo_rectangle(cr, 0, 0, width, height);
@@ -166,19 +163,22 @@ test "Zig wallpaper sampling agrees with Cairo for RGB, alpha and fractional siz
             c.cairo_paint(cr);
             c.cairo_translate(cr, (width - iw * scale) / 2, (height - ih * scale) / 2);
             c.cairo_scale(cr, scale, scale);
-            c.gdk_cairo_set_source_pixbuf(cr, image, 0, 0);
+            c.cairo_set_source_surface(cr, surface, 0, 0);
             c.cairo_pattern_set_filter(c.cairo_get_source(cr), c.CAIRO_FILTER_BILINEAR);
             c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
             c.cairo_paint(cr);
         }
     };
     for ([_]bool{ false, true }) |alpha| {
-        const image = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, @intFromBool(alpha), 8, 7, 5).?;
-        defer c.g_object_unref(image);
-        const source = c.__zig.pixbufImage(image);
-        const bytes = c.gdk_pixbuf_get_pixels(image);
+        const image = try decode.create(7, 5);
+        defer decode.free(image);
+        const source = image.view();
         var random: std.Random.DefaultPrng = .init(12345);
-        random.random().bytes(bytes[0..source.pixels.len]);
+        for (std.mem.bytesAsSlice(u32, image.pixels)) |*pixel| {
+            const a: u32 = if (alpha) random.random().int(u8) else 255;
+            pixel.* = a << 24;
+            for ([_]u5{ 16, 8, 0 }) |shift| pixel.* |= random.random().uintAtMost(u32, a) << shift;
+        }
         for ([_][2]u32{ .{ 1, 1 }, .{ 3, 2 }, .{ 7, 5 }, .{ 13, 9 }, .{ 5, 17 }, .{ 16, 4 } }) |size| {
             const reference = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(size[0]), @intCast(size[1])).?;
             defer c.cairo_surface_destroy(reference);

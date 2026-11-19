@@ -1,6 +1,6 @@
 //! PipeWire registry, parameter cache and round trips on the GLib main thread.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const p = @import("pipewire");
 const Pod = @import("desktop-audio-pod.zig");
 const defaults = @import("desktop-audio-defaults.zig");

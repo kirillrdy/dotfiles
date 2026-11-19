@@ -1,6 +1,6 @@
 //! Application discovery, search, selection and native Wayland hosting.
 const std = @import("std");
-pub const c = @import("desktop-gtk.zig");
+pub const c = @import("desktop-glib.zig");
 pub const KeyEvent = struct { state: u32 = 0, keyval: u32 };
 const cast = c.__zig.cast;
 const wire = @import("desktop-surface.zig");
@@ -315,11 +315,11 @@ fn inputChanged(data: ?*anyopaque) void {
 pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
     const symbol = event.keyval;
     const search_mode = self.searchMode();
-    if (symbol == c.GDK_KEY_Escape) {
+    if (symbol == c.__zig.keys.Escape) {
         self.hide();
         return true;
     }
-    if (symbol == c.GDK_KEY_Return or symbol == c.GDK_KEY_KP_Enter) {
+    if (symbol == c.__zig.keys.Return or symbol == c.__zig.keys.KP_Enter) {
         const count = self.visible.items.len;
         if (count > 0) {
             const selected = if (search_mode)
@@ -335,12 +335,12 @@ pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
         return true;
     }
     if (symbol == 0xff09 or symbol == 0xfe20) {
-        if (self.search_focus and symbol == 0xff09 and event.state & c.GDK_SHIFT_MASK == 0) self.focusGrid() else {
+        if (self.search_focus and symbol == 0xff09 and event.state & c.__zig.shift_mask == 0) self.focusGrid() else {
             self.focusSearch();
         }
         return true;
     }
-    if (self.search_focus and symbol == c.GDK_KEY_Down) {
+    if (self.search_focus and symbol == c.__zig.keys.Down) {
         if (search_mode) {
             if (self.visible.items.len == 0) return true;
             self.selected = 0;
@@ -349,8 +349,8 @@ pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
         self.focusGrid();
         return true;
     }
-    if (self.search_focus and symbol == c.GDK_KEY_Right and
-        event.state & (c.GDK_SHIFT_MASK | c.GDK_CONTROL_MASK | c.GDK_MOD1_MASK) == 0 and
+    if (self.search_focus and symbol == c.__zig.keys.Right and
+        event.state & (c.__zig.shift_mask | c.__zig.control_mask | c.__zig.alt_mask) == 0 and
         search_mode and self.searchGrid().shown > 1)
     {
         const entry = self.search_input.?;
@@ -366,11 +366,11 @@ pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
         if (search_mode) {
             const shown = self.searchGrid().shown;
             if (shown > 0) {
-                if (symbol == c.GDK_KEY_Up) {
+                if (symbol == c.__zig.keys.Up) {
                     self.focusSearch();
                     return true;
                 }
-                const delta: i64 = if (symbol == c.GDK_KEY_Left) -1 else if (symbol == c.GDK_KEY_Right) 1 else 0;
+                const delta: i64 = if (symbol == c.__zig.keys.Left) -1 else if (symbol == c.__zig.keys.Right) 1 else 0;
                 if (delta != 0 or symbol == 0xff50 or symbol == 0xff57) {
                     const last: i64 = @intCast(shown - 1);
                     const current: i64 = @intCast(@min(self.selected, shown - 1));
@@ -384,10 +384,10 @@ pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
             }
         } else {
             const cols: i64 = @intCast(self.geometry.columns);
-            const delta: i64 = if (symbol == c.GDK_KEY_Left) -1 else if (symbol == c.GDK_KEY_Right) 1 else if (symbol == c.GDK_KEY_Up) -cols else if (symbol == c.GDK_KEY_Down) cols else 0;
+            const delta: i64 = if (symbol == c.__zig.keys.Left) -1 else if (symbol == c.__zig.keys.Right) 1 else if (symbol == c.__zig.keys.Up) -cols else if (symbol == c.__zig.keys.Down) cols else 0;
             if (delta != 0 or symbol == 0xff50 or symbol == 0xff57) {
                 const next: i64 = if (symbol == 0xff50) 0 else if (symbol == 0xff57) @intCast(self.visible.items.len - 1) else @as(i64, @intCast(self.selected)) + delta;
-                if (next < 0 and symbol == c.GDK_KEY_Up) {
+                if (next < 0 and symbol == c.__zig.keys.Up) {
                     self.focusSearch();
                 } else self.selected = @intCast(std.math.clamp(next, 0, @as(i64, @intCast(self.visible.items.len - 1))));
                 self.page = self.selected / self.geometry.capacity();
@@ -397,7 +397,7 @@ pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
             }
         }
     }
-    if (self.search_focus or symbol == c.GDK_KEY_BackSpace) {
+    if (self.search_focus or symbol == c.__zig.keys.BackSpace) {
         self.focusSearch();
         return self.search_input.?.key(symbol, event.state);
     }
@@ -841,10 +841,10 @@ test "overview search navigates results from the end of the query" {
     try launcher.setSearch("Editor");
     try std.testing.expectEqual(@as(usize, 3), launcher.visible.items.len);
 
-    var event: KeyEvent = .{ .keyval = c.GDK_KEY_Left, .state = c.GDK_SHIFT_MASK };
+    var event: KeyEvent = .{ .keyval = c.__zig.keys.Left, .state = c.__zig.shift_mask };
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(launcher.search_input.?.buffer.selected());
-    event = .{ .keyval = c.GDK_KEY_Right };
+    event = .{ .keyval = c.__zig.keys.Right };
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(launcher.search_focus and !launcher.search_input.?.buffer.selected());
     try std.testing.expect(keyPress(&launcher, &event));
@@ -852,13 +852,13 @@ test "overview search navigates results from the end of the query" {
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expectEqual(@as(usize, 2), launcher.selected);
 
-    event.keyval = c.GDK_KEY_Left;
+    event.keyval = c.__zig.keys.Left;
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expectEqual(@as(usize, 1), launcher.selected);
-    event.keyval = c.GDK_KEY_Up;
+    event.keyval = c.__zig.keys.Up;
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(launcher.search_focus);
-    event.keyval = c.GDK_KEY_Down;
+    event.keyval = c.__zig.keys.Down;
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(!launcher.search_focus and launcher.selected == 0);
 }

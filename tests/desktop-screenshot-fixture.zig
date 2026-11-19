@@ -82,23 +82,20 @@ fn roundTrip(allocator: std.mem.Allocator, image: screenshot.png.Image) !void {
         try screenshot.writeAll(fd, encoded);
     }
     // Decode with the existing C library as an independent reference.
-    const decoded = c.gdk_pixbuf_new_from_file(&path, null) orelse return error.PngDecodeFailed;
-    defer c.g_object_unref(decoded);
-    try std.testing.expectEqual(image.width, @as(u32, @intCast(c.gdk_pixbuf_get_width(decoded))));
-    try std.testing.expectEqual(image.height, @as(u32, @intCast(c.gdk_pixbuf_get_height(decoded))));
-    try std.testing.expectEqual(@as(c_int, 3), c.gdk_pixbuf_get_n_channels(decoded));
-    const stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(decoded));
-    const pixels = c.gdk_pixbuf_get_pixels(decoded);
+    const decode = @import("desktop").decode;
+    const decoded = decode.file(&path) orelse return error.PngDecodeFailed;
+    defer decode.free(decoded);
+    try std.testing.expectEqual(image.width, decoded.width);
+    try std.testing.expectEqual(image.height, decoded.height);
+    const pixels = std.mem.bytesAsSlice(u32, decoded.pixels);
     for (0..image.height) |y| {
         const source_y = if (image.y_invert) image.height - 1 - y else y;
         for (0..image.width) |x| {
             const original = std.mem.readInt(u32, image.pixels[source_y * image.stride + x * 4 ..][0..4], @import("builtin").cpu.arch.endian());
-            const expected: [3]u8 = .{ @truncate(original >> 16), @truncate(original >> 8), @truncate(original) };
-            try std.testing.expectEqualSlices(u8, &expected, pixels[y * stride + x * 3 ..][0..3]);
+            try std.testing.expectEqual(original | 0xff000000, pixels[y * decoded.stride / 4 + x]);
         }
     }
 }
-
 fn testPngEncoding(allocator: std.mem.Allocator) !void {
     var random: std.Random.DefaultPrng = .init(1234);
     // Include incompressible data crossing the compressor window and IDAT chunks.

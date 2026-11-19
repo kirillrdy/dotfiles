@@ -1,7 +1,7 @@
 //! Shared native toplevel connection and explicit window lifetimes.
 //! Owner callbacks run outside Wayland dispatch so they may destroy windows.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 pub const wire = @import("desktop-surface.zig");
 const a = std.heap.page_allocator;
 const cast = c.__zig.cast;

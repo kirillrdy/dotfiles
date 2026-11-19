@@ -1,6 +1,6 @@
 //! Translate portal notifications directly to the shell's notification service.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const fdo = "org.freedesktop.Notifications";
 const object_path = "/org/freedesktop/Notifications";
 const eq = c.__zig.eq;
@@ -122,16 +122,14 @@ pub const Service = struct {
             if (gicon != null and c.g_type_check_instance_is_a(@ptrCast(@alignCast(gicon)), c.g_bytes_icon_get_type()) != 0) {
                 const stream = c.g_memory_input_stream_new_from_bytes(c.g_bytes_icon_get_bytes(gicon));
                 defer if (stream != null) c.g_object_unref(stream);
-                const pixbuf = c.gdk_pixbuf_new_from_stream_at_scale(stream, 128, 128, 1, null, null);
-                defer if (pixbuf != null) c.g_object_unref(pixbuf);
-                if (pixbuf != null) {
-                    const width = c.gdk_pixbuf_get_width(pixbuf);
-                    const height = c.gdk_pixbuf_get_height(pixbuf);
-                    const stride = c.gdk_pixbuf_get_rowstride(pixbuf);
-                    const channels = c.gdk_pixbuf_get_n_channels(pixbuf);
-                    const bytes = @as(usize, @intCast((height - 1) * stride + width * channels));
-                    const data = c.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), c.gdk_pixbuf_get_pixels(pixbuf), bytes, 1);
-                    c.g_variant_builder_add(hints, "{sv}", @as([*:0]const u8, "image-data"), c.g_variant_new("(iiibii@ay)", width, height, stride, c.gdk_pixbuf_get_has_alpha(pixbuf), c.gdk_pixbuf_get_bits_per_sample(pixbuf), channels, data));
+                const decode = @import("desktop-decode.zig");
+                if (if (stream) |input| decode.stream(input, 128) else null) |image| {
+                    defer decode.free(image);
+                    const rgba = try image.straightRgba(self.allocator);
+                    defer self.allocator.free(rgba);
+                    const width: c_int = @intCast(image.width);
+                    const data = c.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), rgba.ptr, rgba.len, 1);
+                    c.g_variant_builder_add(hints, "{sv}", @as([*:0]const u8, "image-data"), c.g_variant_new("(iiibii@ay)", width, @as(c_int, @intCast(image.height)), width * 4, @as(c.gboolean, 1), @as(c_int, 8), @as(c_int, 4), data));
                 }
             } else if (gicon != null) {
                 const string = c.g_icon_to_string(gicon);

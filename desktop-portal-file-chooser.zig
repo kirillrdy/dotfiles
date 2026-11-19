@@ -1,6 +1,6 @@
 //! Portal file chooser with native Zig form controls and asynchronous GIO enumeration.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
 const child = c.g_variant_get_child_value;
@@ -605,8 +605,8 @@ pub const Dialog = struct {
             self.view.menu_open = false;
             self.view.options_open = false;
             const selected = self.ui.get(id).checked;
-            const control = self.ui.input_modifiers & c.GDK_CONTROL_MASK != 0;
-            const shift = self.ui.input_modifiers & c.GDK_SHIFT_MASK != 0;
+            const control = self.ui.input_modifiers & c.__zig.control_mask != 0;
+            const shift = self.ui.input_modifiers & c.__zig.shift_mask != 0;
             if (!self.multiple or (!control and !shift)) {
                 for (self.listing.?.entries.items) |*entry| entry.selected = false;
                 for (self.rows.items) |other| if (other.item != id) self.ui.setChecked(other.item, false);
@@ -733,7 +733,7 @@ pub const Dialog = struct {
             self.ui.focus = null;
             return true;
         }
-        if ((symbol == 'l' or symbol == 'L') and modifiers & c.GDK_CONTROL_MASK != 0) {
+        if ((symbol == 'l' or symbol == 'L') and modifiers & c.__zig.control_mask != 0) {
             self.view.editing_location = true;
             self.view.searching = false;
             self.ui.relayout();
@@ -742,20 +742,20 @@ pub const Dialog = struct {
             self.ui.redraw();
             return true;
         }
-        if ((symbol == 'f' or symbol == 'F') and modifiers & c.GDK_CONTROL_MASK != 0) {
+        if ((symbol == 'f' or symbol == 'F') and modifiers & c.__zig.control_mask != 0) {
             if (!self.view.searching) action(self, self.view.search);
             return true;
         }
-        if ((symbol == '1' or symbol == '2') and modifiers & c.GDK_CONTROL_MASK != 0) {
+        if ((symbol == '1' or symbol == '2') and modifiers & c.__zig.control_mask != 0) {
             if (self.view.grid != (symbol == '2')) action(self, self.view.toggle_view);
             return true;
         }
-        if ((symbol == 'h' or symbol == 'H') and modifiers & c.GDK_CONTROL_MASK != 0) {
+        if ((symbol == 'h' or symbol == 'H') and modifiers & c.__zig.control_mask != 0) {
             self.ui.setChecked(self.hidden_item, !self.ui.get(self.hidden_item).checked);
             changed(self, self.hidden_item);
             return true;
         }
-        if (modifiers & c.GDK_MOD1_MASK != 0) switch (symbol) {
+        if (modifiers & c.__zig.alt_mask != 0) switch (symbol) {
             0xff51 => {
                 action(self, self.view.back);
                 return true;
@@ -770,7 +770,7 @@ pub const Dialog = struct {
             },
             else => {},
         };
-        if ((symbol == 's' or symbol == 'S' or symbol == 'o' or symbol == 'O') and modifiers & c.GDK_MOD1_MASK != 0) {
+        if ((symbol == 's' or symbol == 'S' or symbol == 'o' or symbol == 'O') and modifiers & c.__zig.alt_mask != 0) {
             self.accept();
             return true;
         }
@@ -801,7 +801,7 @@ pub const Dialog = struct {
                 };
                 return true;
             }
-            if (self.multiple and (symbol == 'a' or symbol == 'A') and modifiers & c.GDK_CONTROL_MASK != 0 and self.ui.focus != self.view.query) {
+            if (self.multiple and (symbol == 'a' or symbol == 'A') and modifiers & c.__zig.control_mask != 0 and self.ui.focus != self.view.query) {
                 if (self.listing) |listing| for (self.visible_entries.items) |index| {
                     listing.entries.items[index].selected = self.directory or !listing.entries.items[index].directory;
                 };

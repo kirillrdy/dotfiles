@@ -1,6 +1,6 @@
 //! PipeWire video producer. All callbacks run on the broker's GLib thread.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const p = @import("pipewire");
 const Pod = @import("desktop-audio-pod.zig");
 const Capture = @import("desktop-portal-capture.zig").Capture;

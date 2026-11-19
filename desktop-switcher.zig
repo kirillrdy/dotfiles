@@ -1,6 +1,6 @@
 //! Native, input-transparent Wayland presentation for the application switcher.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const native = @import("desktop-surface.zig");
 const capture = @import("desktop-capture.zig");
 const raster = @import("desktop-raster.zig");
@@ -28,7 +28,7 @@ var ticker: c.guint = 0;
 var showing_previews = false;
 var icon_size: i32 = 96;
 var asset_scale: u32 = 0;
-var icons: [64]?*c.GdkPixbuf = @splat(null);
+var icons: [64]?c.__icons.Image = @splat(null);
 var labels: [64]?[:0]u8 = @splat(null);
 var label_masks: [64]?fonts.Mask = @splat(null);
 var preview_masks: [64]?fonts.Mask = @splat(null);
@@ -62,7 +62,7 @@ pub fn deinit() void {
 }
 fn clearAssets() void {
     for (&icons, &labels, &label_masks) |*icon, *label, *mask| {
-        if (icon.*) |value| c.g_object_unref(value);
+        if (icon.*) |value| c.__icons.free(value);
         if (label.*) |value| a.free(value);
         if (mask.*) |value| value.deinit(a);
         icon.* = null;
@@ -165,7 +165,7 @@ fn loadAssets(snapshot: *const Snapshot, scale: u32) void {
         labels[i] = a.dupeSentinel(u8, std.mem.span(name), 0) catch @panic("switcher label");
         label_masks[i] = makeLabel(labels[i].?, icon_size + 19, scale) catch null;
         const gicon = if (info) |value| c.g_app_info_get_icon(@ptrCast(value)) else null;
-        const size = icon_size * @as(i32, @intCast(scale));
+        const size = @as(u32, @intCast(icon_size)) * scale;
         icons[i] = @import("desktop-icons.zig").loadThemed(gicon, size, null, "application-x-executable");
     }
     asset_scale = scale;
@@ -224,7 +224,6 @@ fn arrow(canvas: raster.Canvas, x: f64, y: f64, item: Item) void {
     const shade: f64 = if (item.selected) 1 else 0.8;
     canvas.draw(&.{.{ .polygon = &.{ .{ .x = x, .y = y }, .{ .x = x + 8, .y = y }, .{ .x = x + 4, .y = y + 4 } } }}, .{ .red = shade, .green = shade, .blue = shade });
 }
-const pixbufImage = c.__zig.pixbufImage;
 fn draw(_: ?*anyopaque, buffer: native.Pixels) void {
     const scale = if (window) |value| value.output.scale else 1;
     const canvas: raster.Canvas = .{ .target = buffer, .scale = @floatFromInt(scale) };
@@ -234,7 +233,7 @@ fn draw(_: ?*anyopaque, buffer: native.Pixels) void {
         const size: f64 = @floatFromInt(icon_size);
         const item_width = size + 31;
         highlight(canvas, x, item_width, item_width, item.selected, latest.window_selection);
-        if (icons[i]) |icon| raster.blit(buffer, pixbufImage(icon), .{ .x = (x + (item_width - size) / 2) * canvas.scale, .y = 19 * canvas.scale, .width = size * canvas.scale, .height = size * canvas.scale }, null) catch |err| std.log.warn("switcher icon: {s}", .{@errorName(err)});
+        if (icons[i]) |icon| raster.blit(buffer, icon.view(), .{ .x = (x + (item_width - size) / 2) * canvas.scale, .y = 19 * canvas.scale, .width = size * canvas.scale, .height = size * canvas.scale }, null) catch |err| std.log.warn("switcher icon: {s}", .{@errorName(err)});
         paintLabel(canvas, label_masks[i], x + 6, 19 + size);
         arrow(canvas, x + (item_width - 8) / 2, 17 + item_width, item);
     }
@@ -389,7 +388,7 @@ test "integration: native switcher preserves its role and icons across selection
     const original_window = window.?;
     const original_role = original_window.role;
     const original_proxy = original_window.proxy;
-    const original_icon = icons[0];
+    const original_icon = if (icons[0]) |icon| icon.pixels.ptr else null;
     const original_label = labels[0].?.ptr;
     const original_mask = label_masks[0].?.pixels.ptr;
     try std.testing.expect(original_icon != null);
@@ -403,7 +402,7 @@ test "integration: native switcher preserves its role and icons across selection
     try std.testing.expectEqual(original_window, window.?);
     try std.testing.expectEqual(original_role, window.?.role);
     try std.testing.expectEqual(original_proxy, window.?.proxy);
-    try std.testing.expectEqual(original_icon, icons[0]);
+    try std.testing.expectEqual(original_icon, if (icons[0]) |icon| icon.pixels.ptr else null);
     try std.testing.expectEqual(original_label, labels[0].?.ptr);
     try std.testing.expectEqual(original_mask, label_masks[0].?.pixels.ptr);
     try std.testing.expect(!displayed.items[0].selected and displayed.items[1].selected);
@@ -438,14 +437,14 @@ test "integration: native switcher preserves its role and icons across selection
     try outputs.run(&.{ "--output", output_name, "--scale", "1" });
     probe.pump();
     try std.testing.expectEqual(@as(u32, 1), asset_scale);
-    const restored_icon = icons[0];
+    const restored_icon = if (icons[0]) |icon| icon.pixels.ptr else null;
     try present(&.{});
     try std.testing.expect(window.?.role == null and preview_window.?.role == null);
     try std.testing.expectEqual(@as(c.guint, 0), ticker);
     try present(&snapshot);
     probe.pump();
     try std.testing.expectEqual(original_window, window.?);
-    try std.testing.expectEqual(restored_icon, icons[0]);
+    try std.testing.expectEqual(restored_icon, if (icons[0]) |icon| icon.pixels.ptr else null);
 }
 
 test "Zig switcher panels retain transparent corners and group indicators" {
@@ -559,12 +558,18 @@ test "Zig switcher panels and highlights agree with Cairo at multiple scales" {
 }
 
 test "native icon scaling preserves Cairo colors and alpha" {
-    const icon = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 1, 8, 7, 5).?;
-    defer c.g_object_unref(icon);
-    const source = pixbufImage(icon);
-    const bytes = c.gdk_pixbuf_get_pixels(icon);
+    const decode = @import("desktop-decode.zig");
+    const icon = try decode.create(7, 5);
+    defer decode.free(icon);
+    const source = icon.view();
     var random: std.Random.DefaultPrng = .init(42);
-    random.random().bytes(bytes[0..source.pixels.len]);
+    for (std.mem.bytesAsSlice(u32, icon.pixels)) |*pixel| {
+        const alpha: u32 = random.random().int(u8);
+        pixel.* = alpha << 24;
+        for ([_]u5{ 16, 8, 0 }) |shift| pixel.* |= random.random().uintAtMost(u32, alpha) << shift;
+    }
+    const icon_surface = c.cairo_image_surface_create_for_data(icon.pixels.ptr, c.CAIRO_FORMAT_ARGB32, 7, 5, @intCast(icon.stride)).?;
+    defer c.cairo_surface_destroy(icon_surface);
     const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, 32, 32).?;
     defer c.cairo_surface_destroy(image);
     const cr = c.cairo_create(image).?;
@@ -578,7 +583,7 @@ test "native icon scaling preserves Cairo colors and alpha" {
         c.cairo_save(cr);
         c.cairo_translate(cr, 4, 4);
         c.cairo_scale(cr, @as(f64, @floatFromInt(size[0])) / 7, @as(f64, @floatFromInt(size[1])) / 5);
-        c.gdk_cairo_set_source_pixbuf(cr, icon, 0, 0);
+        c.cairo_set_source_surface(cr, icon_surface, 0, 0);
         c.cairo_paint(cr);
         c.cairo_restore(cr);
         c.cairo_surface_flush(image);

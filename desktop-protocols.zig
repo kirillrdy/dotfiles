@@ -1,5 +1,5 @@
 //! Native protocol wrappers over metadata generated from the protocol XML.
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 pub const Interface = c.struct_wl_interface;
 pub extern const xdg_activation_v1_interface: Interface;
 pub extern const xdg_activation_token_v1_interface: Interface;

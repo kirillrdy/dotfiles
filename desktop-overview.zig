@@ -1,6 +1,7 @@
 //! Activities: live window previews, workspace navigation, search and app grid.
 const wire = @import("desktop-surface.zig");
 const std = @import("std");
+const decode = @import("desktop-decode.zig");
 comptime {
     _ = @import("desktop-protocols.zig");
 }
@@ -78,20 +79,21 @@ const Overview = struct {
     workspace_target: u32 = 0,
     workspace_started: i64 = 0,
     workspace_rect: Rect = .{},
-    monitor: c.GdkRectangle = .{ .x = 0, .y = 0, .width = 1728, .height = 1080 },
+    monitor: c.cairo_rectangle_int_t = .{ .x = 0, .y = 0, .width = 1728, .height = 1080 },
 
     fn create(path: [*:0]const u8) *Overview {
         const self = a.create(Overview) catch @panic("out of memory");
         const native = wire.Client.createInteractive(.{ .added = &outputAdded, .removed = &outputRemoved }, self) catch @panic("native overview connection");
         if (native.outputs.items.len == 0) @panic("overview needs an output");
         var wallpaper: ?*c.cairo_surface_t = null;
-        if (c.gdk_pixbuf_new_from_file(path, null)) |pixbuf| {
-            defer c.g_object_unref(pixbuf);
-            wallpaper = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, c.gdk_pixbuf_get_width(pixbuf), c.gdk_pixbuf_get_height(pixbuf));
-            const cr = c.cairo_create(wallpaper);
-            defer c.cairo_destroy(cr);
-            c.gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
-            c.cairo_paint(cr);
+        if (decode.file(path)) |image| {
+            defer decode.free(image);
+            wallpaper = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(image.width), @intCast(image.height));
+            const data = c.cairo_image_surface_get_data(wallpaper);
+            const stride: usize = @intCast(c.cairo_image_surface_get_stride(wallpaper));
+            c.cairo_surface_flush(wallpaper);
+            for (0..image.height) |y| @memcpy(data[y * stride ..][0 .. image.width * 4], image.pixels[y * image.stride ..][0 .. image.width * 4]);
+            c.cairo_surface_mark_dirty(wallpaper);
         }
         self.* = .{ .launcher = apps.Launcher.init(), .native = native, .surface = null, .wallpaper = wallpaper };
         self.gpu_previews = native.enablePreviews();
@@ -477,14 +479,14 @@ const Overview = struct {
         if (item.app) |app| _ = self.launcher.launch(app);
     }
     fn key(self: *Overview, event: *apps.KeyEvent) bool {
-        if (event.keyval == c.GDK_KEY_Escape) {
+        if (event.keyval == c.__zig.keys.Escape) {
             self.escape();
             return true;
         }
         const dash_focused = self.focus_part == .dash;
         const window_mode = !self.apps_mode and self.launcher.searchText().len == 0;
         if (event.keyval == 0xff09 or event.keyval == 0xfe20) {
-            const backwards = event.keyval == 0xfe20 or event.state & c.GDK_SHIFT_MASK != 0;
+            const backwards = event.keyval == 0xfe20 or event.state & c.__zig.shift_mask != 0;
             const search_focused = self.focus_part == .search;
             if ((search_focused and backwards) or (!search_focused and !dash_focused and !backwards)) {
                 self.hideTooltip();
@@ -502,7 +504,7 @@ const Overview = struct {
         }
         if (dash_focused) {
             switch (event.keyval) {
-                c.GDK_KEY_Left, c.GDK_KEY_Right => self.dash_view.navigate(if (event.keyval == c.GDK_KEY_Left) -1 else 1),
+                c.__zig.keys.Left, c.__zig.keys.Right => self.dash_view.navigate(if (event.keyval == c.__zig.keys.Left) -1 else 1),
                 0xff50 => {
                     self.dash_view.focus = 0;
                     self.dash_view.keyboard_focus = true;
@@ -511,8 +513,8 @@ const Overview = struct {
                     self.dash_view.focus = self.dash_view.items.items.len -| 1;
                     self.dash_view.keyboard_focus = true;
                 },
-                c.GDK_KEY_Return, c.GDK_KEY_KP_Enter, 0x20 => self.activateDash(self.dash_view.focus),
-                c.GDK_KEY_Up => {
+                c.__zig.keys.Return, c.__zig.keys.KP_Enter, 0x20 => self.activateDash(self.dash_view.focus),
+                c.__zig.keys.Up => {
                     if (window_mode) self.focusPart(.stage) else self.focusPart(.grid);
                 },
                 else => return apps.keyPress(&self.launcher, event),
@@ -523,9 +525,9 @@ const Overview = struct {
             self.redrawSelf();
             return true;
         }
-        if ((window_mode and (event.keyval == c.GDK_KEY_Page_Up or event.keyval == c.GDK_KEY_Page_Down)) or (event.state & c.GDK_CONTROL_MASK != 0 and (event.keyval == c.GDK_KEY_Left or event.keyval == c.GDK_KEY_Right))) {
-            const direction: i32 = if (event.keyval == c.GDK_KEY_Page_Up or event.keyval == c.GDK_KEY_Left) -1 else 1;
-            if (event.state & c.GDK_SHIFT_MASK != 0) {
+        if ((window_mode and (event.keyval == c.__zig.keys.Page_Up or event.keyval == c.__zig.keys.Page_Down)) or (event.state & c.__zig.control_mask != 0 and (event.keyval == c.__zig.keys.Left or event.keyval == c.__zig.keys.Right))) {
+            const direction: i32 = if (event.keyval == c.__zig.keys.Page_Up or event.keyval == c.__zig.keys.Left) -1 else 1;
+            if (event.state & c.__zig.shift_mask != 0) {
                 if (self.client) |client| {
                     const target = @as(i64, client.current) + direction;
                     if (self.selected < client.windows.items.len and target >= 0 and target < client.count) client.move(client.windows.items[self.selected], @intCast(target));
@@ -534,14 +536,14 @@ const Overview = struct {
             return true;
         }
         if (!self.apps_mode and self.launcher.searchText().len == 0) {
-            if (event.keyval == c.GDK_KEY_Return or event.keyval == c.GDK_KEY_KP_Enter) {
+            if (event.keyval == c.__zig.keys.Return or event.keyval == c.__zig.keys.KP_Enter) {
                 if (self.client) |client| if (self.selected < client.windows.items.len and (client.windows.items[self.selected].workspace == client.current or client.windows.items[self.selected].sticky)) {
                     client.activate(client.windows.items[self.selected]);
                     self.launcher.hide();
                 };
                 return true;
             }
-            const direction: i32 = if (event.keyval == c.GDK_KEY_Left or event.keyval == c.GDK_KEY_Up) -1 else if (event.keyval == c.GDK_KEY_Right or event.keyval == c.GDK_KEY_Down) 1 else 0;
+            const direction: i32 = if (event.keyval == c.__zig.keys.Left or event.keyval == c.__zig.keys.Up) -1 else if (event.keyval == c.__zig.keys.Right or event.keyval == c.__zig.keys.Down) 1 else 0;
             if (direction != 0) {
                 self.selectNext(direction);
                 return true;
@@ -550,7 +552,7 @@ const Overview = struct {
         return self.launcherKey(event);
     }
     fn keyRelease(self: *Overview, event: *apps.KeyEvent) bool {
-        if (event.keyval == c.GDK_KEY_Super_L or event.keyval == c.GDK_KEY_Super_R) {
+        if (event.keyval == c.__zig.keys.Super_L or event.keyval == c.__zig.keys.Super_R) {
             if (self.transition.shown) self.launcher.hide() else self.present();
             return true;
         }
@@ -796,7 +798,7 @@ const Overview = struct {
     fn symbol(data: ?*anyopaque, _: *wire.Surface, value: u32, modifiers: u32, pressed: bool) bool {
         const self = cast(Overview, data);
         if (!self.transition.shown) {
-            if (!pressed and (value == c.GDK_KEY_Super_L or value == c.GDK_KEY_Super_R)) self.present();
+            if (!pressed and (value == c.__zig.keys.Super_L or value == c.__zig.keys.Super_R)) self.present();
             return true;
         }
         self.modifiers = modifiers;

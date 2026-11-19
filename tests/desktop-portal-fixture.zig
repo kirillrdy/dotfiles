@@ -2,7 +2,7 @@
 const std = @import("std");
 const desktop = @import("desktop");
 const wire = @import("desktop").window.wire;
-const c = desktop.gtk;
+const c = desktop.glib;
 var background: ?*wire.Client = null;
 var color = [3]f64{ 1, 0, 0 };
 fn draw(_: ?*anyopaque, target: wire.Pixels) void {

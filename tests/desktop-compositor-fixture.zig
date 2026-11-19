@@ -1,7 +1,7 @@
 //! End-to-end probe for workspace control and actual per-window capture.
 const std = @import("std");
 const d = @import("desktop");
-const c = d.gtk;
+const c = d.glib;
 const capture = d.capture;
 fn changed(data: ?*anyopaque) void {
     const count: *usize = @ptrCast(@alignCast(data.?));

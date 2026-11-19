@@ -1,8 +1,9 @@
 //! Activities compositing into native Wayland buffers, using Cairo's optimized
 //! filters and path rasterization for the opening and workspace animations.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
+const Image = @import("desktop-image.zig").Image;
 const text = @import("desktop-text.zig");
 const Rect = raster.Rect;
 const Canvas = raster.Canvas;
@@ -146,11 +147,11 @@ fn drawShadowRect(cr: *c.cairo_t, r: Rect, corner_radius: f64, offset_y: f64, sp
     }
 }
 
-fn drawIconShadow(cr: *c.cairo_t, icon: *c.GdkPixbuf, x: f64, y: f64, size: f64, offset_y: f64, alpha: f64) void {
+fn drawIconShadow(cr: *c.cairo_t, icon: Image, x: f64, y: f64, size: f64, offset_y: f64, alpha: f64) void {
     if (alpha <= 0) return;
-    const iw = c.gdk_pixbuf_get_width(icon);
-    const ih = c.gdk_pixbuf_get_height(icon);
-    if (iw <= 0 or ih <= 0) return;
+    const iw = icon.width;
+    const ih = icon.height;
+    if (iw == 0 or ih == 0) return;
     const grid: usize = 64;
     const pad: usize = 6;
     const dim: usize = grid + 2 * pad;
@@ -160,28 +161,26 @@ fn drawIconShadow(cr: *c.cairo_t, icon: *c.GdkPixbuf, x: f64, y: f64, size: f64,
     var buf_a: [dim * dim]f64 = @splat(0);
     var buf_b: [dim * dim]f64 = @splat(0);
 
-    const has_alpha = c.gdk_pixbuf_get_has_alpha(icon) != 0;
-    const channels: usize = @intCast(@max(1, c.gdk_pixbuf_get_n_channels(icon)));
-    const stride: usize = @intCast(@max(0, c.gdk_pixbuf_get_rowstride(icon)));
-    const pixels = c.gdk_pixbuf_get_pixels(icon);
+    const pixels = std.mem.bytesAsSlice(u32, icon.pixels);
+    const stride = icon.stride / 4;
     const fw: f64 = @floatFromInt(iw);
     const fh: f64 = @floatFromInt(ih);
 
     for (0..grid) |gy| {
         const sy_f = (@as(f64, @floatFromInt(gy)) + 0.5) * fh / @as(f64, @floatFromInt(grid)) - 0.5;
         const y0: usize = @intFromFloat(std.math.clamp(@floor(sy_f), 0, fh - 1));
-        const y1: usize = @min(y0 + 1, @as(usize, @intCast(ih - 1)));
+        const y1: usize = @min(y0 + 1, ih - 1);
         const fy = std.math.clamp(sy_f - @as(f64, @floatFromInt(y0)), 0, 1);
         for (0..grid) |gx| {
             const sx_f = (@as(f64, @floatFromInt(gx)) + 0.5) * fw / @as(f64, @floatFromInt(grid)) - 0.5;
             const x0: usize = @intFromFloat(std.math.clamp(@floor(sx_f), 0, fw - 1));
-            const x1: usize = @min(x0 + 1, @as(usize, @intCast(iw - 1)));
+            const x1: usize = @min(x0 + 1, iw - 1);
             const fx = std.math.clamp(sx_f - @as(f64, @floatFromInt(x0)), 0, 1);
-            const sample = if (!has_alpha or channels < 4) @as(f64, 1) else blk: {
-                const p00: f64 = @floatFromInt(pixels[y0 * stride + x0 * channels + 3]);
-                const p10: f64 = @floatFromInt(pixels[y0 * stride + x1 * channels + 3]);
-                const p01: f64 = @floatFromInt(pixels[y1 * stride + x0 * channels + 3]);
-                const p11: f64 = @floatFromInt(pixels[y1 * stride + x1 * channels + 3]);
+            const sample = blk: {
+                const p00: f64 = @floatFromInt(pixels[y0 * stride + x0] >> 24);
+                const p10: f64 = @floatFromInt(pixels[y0 * stride + x1] >> 24);
+                const p01: f64 = @floatFromInt(pixels[y1 * stride + x0] >> 24);
+                const p11: f64 = @floatFromInt(pixels[y1 * stride + x1] >> 24);
                 const top = p00 + (p10 - p00) * fx;
                 const bot = p01 + (p11 - p01) * fx;
                 break :blk (top + (bot - top) * fy) / 255.0;
@@ -324,7 +323,7 @@ pub fn workspaceCard(canvas: Canvas, r: Rect, wallpaper: ?*c.cairo_surface_t, co
     }
 }
 
-pub fn window(canvas: Canvas, r: Rect, captured: ?raster.Image, icon_image: ?*c.GdkPixbuf, state: WindowState) void {
+pub fn window(canvas: Canvas, r: Rect, captured: ?raster.Image, icon_image: ?Image, state: WindowState) void {
     const preview = previewRect(r, state.hovered, state.ease);
     {
         const context = Context.init(canvas) orelse return;
@@ -336,12 +335,7 @@ pub fn window(canvas: Canvas, r: Rect, captured: ?raster.Image, icon_image: ?*c.
             const icon_x = preview.x + preview.width / 2 - icon_size / 2;
             const icon_y = preview.y + preview.height - icon_size * icon_overlap;
             drawIconShadow(cr, icon, icon_x, icon_y, icon_size, 2, 0.4 * state.ease);
-            c.cairo_save(cr);
-            c.cairo_translate(cr, icon_x, icon_y);
-            c.cairo_scale(cr, icon_size / @as(f64, @floatFromInt(c.gdk_pixbuf_get_width(icon))), icon_size / @as(f64, @floatFromInt(c.gdk_pixbuf_get_height(icon))));
-            c.gdk_cairo_set_source_pixbuf(cr, icon, 0, 0);
-            c.cairo_paint_with_alpha(cr, state.ease);
-            c.cairo_restore(cr);
+            drawImage(cr, icon.view(), .{ .x = icon_x, .y = icon_y, .width = icon_size, .height = icon_size }, state.ease, false);
         }
         if (state.hovered) {
             const close_r = closeButtonRect(preview);

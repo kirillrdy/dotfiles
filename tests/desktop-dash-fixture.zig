@@ -2,7 +2,7 @@
 const std = @import("std");
 const desktop = @import("desktop");
 const native = desktop.dash_view;
-const c = desktop.gtk;
+const c = desktop.glib;
 extern fn cairo_surface_write_to_png(*c.cairo_surface_t, [*:0]const u8) c_int;
 
 pub fn main() !void {

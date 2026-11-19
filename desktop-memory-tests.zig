@@ -1,16 +1,12 @@
 //! Leak assertions only. Requires the private desktop-memory-fixture.nix runtime.
 const std = @import("std");
-const c = @import("desktop").gtk;
+const c = @import("desktop").glib;
 const audio = @import("desktop").audio;
 const network = @import("desktop").network;
 const battery = @import("desktop").battery;
 const settings = @import("desktop").settings;
 const editor = @import("desktop").network_editor;
 const widgets = @import("desktop").widgets;
-
-extern fn pango_cairo_font_map_get_default() *anyopaque;
-extern fn pango_cairo_font_map_set_default(?*anyopaque) void;
-extern fn pango_fc_font_map_cache_clear(*anyopaque) void;
 
 fn env(name: [:0]const u8) ?[]const u8 {
     return if (c.g_getenv(name)) |value| std.mem.span(value) else null;
@@ -249,8 +245,4 @@ test "memory: repeated asynchronous service and widget teardown releases ownersh
         try widgetLifetime("gnome-claude", "indicator", "claude");
         try widgetLifetime("gnome-clock", "clock", "");
     }
-    // Release the font backend's process cache after every owned UI object is gone.
-    // Keep the C-heap check strict instead of suppressing font allocation stacks.
-    pango_fc_font_map_cache_clear(pango_cairo_font_map_get_default());
-    pango_cairo_font_map_set_default(null);
 }

@@ -3,7 +3,7 @@ const std = @import("std");
 const protocols = @import("../desktop-protocols.zig");
 const Interface = protocols.Interface;
 
-fn sameMessages(actual: [*c]const @import("../desktop-gtk.zig").struct_wl_message, expected: [*c]const @import("../desktop-gtk.zig").struct_wl_message, count: usize) !void {
+fn sameMessages(actual: [*c]const @import("../desktop-glib.zig").struct_wl_message, expected: [*c]const @import("../desktop-glib.zig").struct_wl_message, count: usize) !void {
     for (0..count) |i| {
         try std.testing.expectEqualStrings(std.mem.span(expected[i].name), std.mem.span(actual[i].name));
         const signature = std.mem.span(expected[i].signature);
@@ -43,7 +43,7 @@ test "native Wayland metadata matches every reference interface and message" {
 }
 
 test "virtual pointer requests preserve protocol argument order, version and destroy flags" {
-    const gtk = @import("../desktop-gtk.zig");
+    const gtk = @import("../desktop-glib.zig");
     const transport = struct {
         pub const wl_proxy = gtk.wl_proxy;
         pub const wl_interface = gtk.wl_interface;

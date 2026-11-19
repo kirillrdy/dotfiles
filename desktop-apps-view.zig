@@ -1,7 +1,7 @@
 //! GNOME 50 app-grid geometry and native pixels. Theme references:
 //! gnome-shell-sass/widgets/{_app-grid,_search-entry}.scss and js/ui/iconGrid.js.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.c_allocator;
@@ -114,19 +114,19 @@ fn drawMask(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64, rgb: u32) vo
 }
 pub const Tile = struct {
     mask: ?text.Mask = null,
-    pixbuf: ?*c.GdkPixbuf = null,
+    image: ?c.__icons.Image = null,
     scale: u32 = 0,
     size: u32 = 0,
     pub fn deinit(self: *Tile) void {
         if (self.mask) |mask| mask.deinit(a);
-        if (self.pixbuf) |image| c.g_object_unref(image);
+        if (self.image) |image| c.__icons.free(image);
         self.* = .{};
     }
     pub fn paint(self: *Tile, canvas: raster.Canvas, scale: u32, renderer: *text.Renderer, name: [*c]const u8, icon: ?*c.GIcon, rect: Rect, size: u32, hover: bool, focused: bool, selected: bool, pressed: bool) !void {
         if (self.scale != scale or self.size != size) {
             self.deinit();
             self.mask = try renderer.renderLayout(a, std.mem.span(name), .{ .size = 14.6666666667 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat((rect.width - 24) * canvas.scale), .alignment = .center, .ellipsize = true, .origin = .top });
-            self.pixbuf = c.__icons.loadThemed(icon, @intCast(size * scale), null, "application-x-executable");
+            self.image = c.__icons.loadThemed(icon, size * scale, null, "application-x-executable");
             self.scale = scale;
             self.size = size;
         }
@@ -136,8 +136,8 @@ pub const Tile = struct {
         if (selected) rounded(canvas, rect, 24, if (pressed) @as(u32, 0x4b4b54) else if (hover) 0x46464e else 0x35353c);
         if (focused) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = rect.x + 1, .y = rect.y + 1, .width = rect.width - 2, .height = rect.height - 2 }, .radius = 23, .width = 2 } }}, color(0x719ed2));
         const icon_size: f64 = @floatFromInt(size);
-        if (self.pixbuf) |image| {
-            const source = c.__zig.pixbufImage(image);
+        if (self.image) |image| {
+            const source = image.view();
             const aspect = @as(f64, @floatFromInt(source.width)) / @as(f64, @floatFromInt(source.height));
             const iw = if (aspect > 1) icon_size else icon_size * aspect;
             const ih = if (aspect > 1) icon_size / aspect else icon_size;
@@ -147,12 +147,12 @@ pub const Tile = struct {
     }
 };
 pub const Search = struct {
-    find: ?*c.GdkPixbuf = null,
-    clear: ?*c.GdkPixbuf = null,
+    find: ?c.__icons.Image = null,
+    clear: ?c.__icons.Image = null,
     scale: u32 = 0,
     pub fn deinit(self: *Search) void {
-        if (self.find) |image| c.g_object_unref(image);
-        if (self.clear) |image| c.g_object_unref(image);
+        if (self.find) |image| c.__icons.free(image);
+        if (self.clear) |image| c.__icons.free(image);
         self.* = .{};
     }
     fn prepare(self: *Search, scale: u32) void {
@@ -162,13 +162,13 @@ pub const Search = struct {
         self.clear = symbol("edit-clear-symbolic", scale);
         self.scale = scale;
     }
-    fn symbol(name: [:0]const u8, scale: u32) ?*c.GdkPixbuf {
-        const tint: c.GdkRGBA = .{ .red = 0.98, .green = 0.98, .blue = 0.984, .alpha = 0.7 };
+    fn symbol(name: [:0]const u8, scale: u32) ?c.__icons.Image {
+        const tint: raster.Color = .{ .red = 0.98, .green = 0.98, .blue = 0.984, .alpha = 0.7 };
         return @import("desktop-icons.zig").load(name, 16, scale, tint);
     }
-    fn paintIcon(image: ?*c.GdkPixbuf, canvas: raster.Canvas, x: f64, y: f64) !void {
-        const pixbuf = image orelse return;
-        try raster.blit(canvas.target, c.__zig.pixbufImage(pixbuf), .{ .x = x * canvas.scale, .y = y * canvas.scale, .width = 16 * canvas.scale, .height = 16 * canvas.scale }, null);
+    fn paintIcon(image: ?c.__icons.Image, canvas: raster.Canvas, x: f64, y: f64) !void {
+        const icon = image orelse return;
+        try raster.blit(canvas.target, icon.view(), .{ .x = x * canvas.scale, .y = y * canvas.scale, .width = 16 * canvas.scale, .height = 16 * canvas.scale }, null);
     }
 };
 pub const PageArrow = enum(i32) { prev = -1, next = 1 };

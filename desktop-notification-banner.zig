@@ -1,6 +1,6 @@
 //! Native notification cards shared by Wayland banners and date-menu history.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const a = std.heap.page_allocator;
@@ -12,7 +12,7 @@ pub const Data = struct {
     title: [:0]const u8,
     body: [:0]const u8,
     icon: [:0]const u8 = "application-x-executable-symbolic",
-    image: ?*c.GdkPixbuf = null,
+    image: ?c.__icons.Image = null,
     actions: []const Action = &.{},
     created: i64,
 };
@@ -44,7 +44,7 @@ pub const View = struct {
     renderer: text.Renderer = .{},
     masks: [7]?text.Mask = @splat(null), // app, title, body, three actions, age
     shadow: ?[]u8 = null,
-    icon: ?*c.GdkPixbuf = null,
+    icon: ?c.__icons.Image = null,
     action_keys: [3]?[:0]const u8 = @splat(null),
     action_labels: [3]?[:0]const u8 = @splat(null),
     action_count: usize = 0,
@@ -76,7 +76,7 @@ pub const View = struct {
             if (slot.*) |mask| mask.deinit(a);
             slot.* = null;
         }
-        if (self.icon) |icon| c.g_object_unref(icon);
+        if (self.icon) |icon| c.__icons.free(icon);
         self.icon = null;
         self.scale = 0;
     }
@@ -176,7 +176,7 @@ pub const View = struct {
                 self.masks[3 + index] = try self.label(self.action_labels[index].?, limit, true, false, scale);
             }
         }
-        const foreground: c.GdkRGBA = .{ .red = self.theme.secondary.red, .green = self.theme.secondary.green, .blue = self.theme.secondary.blue, .alpha = self.theme.secondary.alpha };
+        const foreground: raster.Color = self.theme.secondary;
         self.icon = @import("desktop-icons.zig").load(self.notice.icon, 16, scale, foreground);
         self.scale = scale;
         if (!self.history) self.shadow = try shadowMask(self.width, self.height, scale);
@@ -204,13 +204,13 @@ pub const View = struct {
                 .{ .line = .{ .start = .{ .x = rect.x + 14, .y = tip }, .end = .{ .x = rect.x + 18, .y = y }, .radius = 1 } },
             }, self.theme.foreground);
         }
-        if (self.icon) |icon| c.__zig.blitPixbuf(canvas, icon, .{ .x = 21, .y = 24, .width = 16, .height = 16 });
+        if (self.icon) |icon| c.__zig.blitImage(canvas, icon, .{ .x = 21, .y = 24, .width = 16, .height = 16 });
         text.paintMask(canvas, self.masks[0], 43, 22, self.theme.secondary);
         text.paintMask(canvas, self.masks[6], self.age_x, 25, self.theme.secondary);
         const x: f64 = if (self.notice.image != null) 81 else 21;
         text.paintMask(canvas, self.masks[1], x, 55, self.theme.foreground);
         text.paintMask(canvas, self.masks[2], x, 78, self.theme.foreground);
-        if (self.notice.image) |pixbuf| c.__zig.blitPixbuf(canvas, pixbuf, .{ .x = 21, .y = 55, .width = 48, .height = 48 });
+        if (self.notice.image) |image| c.__zig.blitImage(canvas, image, .{ .x = 21, .y = 55, .width = 48, .height = 48 });
         if (self.expanded) for (0..self.action_count) |i| {
             const rect = self.actionRect(i);
             self.button(canvas, rect, @fromBackingInt(@intCast(@backingInt(Target.action0) + i)), 8);

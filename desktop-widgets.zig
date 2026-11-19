@@ -2,11 +2,12 @@
 const std = @import("std");
 const panel_data = @import("desktop-panel-data.zig");
 const power_backend = @import("desktop-power.zig");
+const raster = @import("desktop-raster.zig");
 const popup = @import("desktop-popup.zig");
 const wire = @import("desktop-surface.zig");
 const quick = @import("desktop-quick-settings.zig");
 pub const date_menu = @import("desktop-date-menu.zig");
-pub const c = @import("desktop-gtk.zig");
+pub const c = @import("desktop-glib.zig");
 pub const native = @import("desktop-panel-view.zig");
 const module_allocator = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
@@ -374,7 +375,7 @@ fn update_graph(g: *native.Graph, graph: panel_data.Graph) bool {
         const val = graph.values[i];
         total += if (std.math.isFinite(val)) @max(0, val) else 0;
         g.history[i][g.count] = total;
-        _ = c.gdk_rgba_parse(&g.colors[i], if (i < graph.colors.len) graph.colors[i] else "white");
+        g.colors[i] = raster.hex(if (i < graph.colors.len) graph.colors[i] else 0xffffff);
     }
     g.count += 1;
     return true;

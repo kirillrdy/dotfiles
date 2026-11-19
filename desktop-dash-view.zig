@@ -1,6 +1,6 @@
 //! Native Activities dash, following GNOME 50's dash and overview-tile styles.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
@@ -45,8 +45,8 @@ pub const Item = struct {
     app: ?*c.GAppInfo = null,
     window_id: ?[:0]u8 = null,
     icon: ?*c.GIcon = null,
-    fallback: ?*c.GdkPixbuf = null,
-    pixels: ?*c.GdkPixbuf = null,
+    fallback: ?c.__icons.Image = null,
+    pixels: ?c.__icons.Image = null,
     scale: u32 = 0,
     size: u32 = 0,
     show_apps: bool = false,
@@ -55,17 +55,17 @@ pub const Item = struct {
         if (self.window_id) |id| a.free(id);
         if (self.app) |app| c.g_object_unref(app);
         if (self.icon) |icon| c.g_object_unref(icon);
-        if (self.fallback) |image| c.g_object_unref(image);
-        if (self.pixels) |image| c.g_object_unref(image);
+        if (self.fallback) |image| c.__icons.free(image);
+        if (self.pixels) |image| c.__icons.free(image);
     }
     fn prepare(self: *Item, scale: u32, size: u32) void {
         if (self.scale == scale and self.size == size) return;
-        if (self.pixels) |image| c.g_object_unref(image);
+        if (self.pixels) |image| c.__icons.free(image);
         self.pixels = null;
         if (self.show_apps) {
             self.pixels = @import("desktop-icons.zig").load("view-app-grid-symbolic", size, scale, @import("desktop-icons.zig").foreground);
         } else {
-            self.pixels = c.__icons.loadThemed(self.icon, @intCast(size * scale), self.fallback, "application-x-executable");
+            self.pixels = c.__icons.loadThemed(self.icon, size * scale, self.fallback, "application-x-executable");
         }
         self.scale = scale;
         self.size = size;
@@ -98,16 +98,15 @@ pub const View = struct {
         self.pressed = null;
         self.invalidateTooltip();
     }
-    pub fn add(self: *View, title: [:0]const u8, app: ?*c.GAppInfo, window_id: ?[*:0]const u8, fallback: ?*c.GdkPixbuf) !void {
+    pub fn add(self: *View, title: [:0]const u8, app: ?*c.GAppInfo, window_id: ?[*:0]const u8, fallback: ?c.__icons.Image) !void {
         const owned = try a.dupeSentinel(u8, title, 0);
         errdefer a.free(owned);
         const id = if (window_id) |value| try a.dupeSentinel(u8, std.mem.span(value), 0) else null;
         errdefer if (id) |value| a.free(value);
-        try self.items.append(a, .{ .title = owned, .window_id = id, .app = app, .fallback = fallback, .icon = if (app) |info| c.g_app_info_get_icon(info) else null });
+        try self.items.append(a, .{ .title = owned, .window_id = id, .app = app, .fallback = if (fallback) |image| @import("desktop-decode.zig").clone(image) else null, .icon = if (app) |info| c.g_app_info_get_icon(info) else null });
         const item = &self.items.items[self.items.items.len - 1];
         if (item.app) |info| _ = c.g_object_ref(info);
         if (item.icon) |icon| _ = c.g_object_ref(icon);
-        if (fallback) |image| _ = c.g_object_ref(image);
     }
     pub fn relayout(self: *View, width: u32, height: u32) void {
         self.layout = Layout.init(width, height, self.items.items.len, self.separator);
@@ -168,7 +167,7 @@ pub const View = struct {
             if (hover or pressed or focused or checked) rounded(canvas, rect, 16, if (pressed) (if (focused) @as(u32, 0x505359) else @as(u32, 0x4e4e52)) else if (hover) (if (checked) @as(u32, 0x5c5c61) else if (focused) @as(u32, 0x4c4f55) else @as(u32, 0x49494d)) else if (checked) 0x4b4b4f else 0x3b3e43);
             if (focused) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = rect.x + 1, .y = rect.y + 1, .width = rect.width - 2, .height = rect.height - 2 }, .radius = 15, .width = 2 } }}, color(0x769dcc));
             if (item.pixels) |image| {
-                const source = c.__zig.pixbufImage(image);
+                const source = image.view();
                 const size: f64 = @floatFromInt(self.layout.icon_size);
                 const ratio = @as(f64, @floatFromInt(source.width)) / @as(f64, @floatFromInt(source.height));
                 const w = if (ratio > 1) size else size * ratio;

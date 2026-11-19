@@ -1,6 +1,6 @@
 //! Native audio commands and raster control integration against an isolated PipeWire server.
 const std = @import("std");
-const c = @import("desktop").gtk;
+const c = @import("desktop").glib;
 const audio = @import("desktop").audio;
 const quick = @import("desktop").quick;
 const settings = @import("desktop").settings;

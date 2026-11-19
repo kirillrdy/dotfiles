@@ -1,6 +1,6 @@
 //! Frozen Cairo reference for the Activities pixel renderer.
 const std = @import("std");
-const c = @import("../desktop-gtk.zig");
+const c = @import("../desktop-glib.zig");
 const raster = @import("../desktop-raster.zig");
 const text = @import("../desktop-text.zig");
 const view = @import("../desktop-overview-view.zig");
@@ -206,17 +206,10 @@ test "hovered window expands without white border and paints close states, capti
     defer a.free(pixels);
     const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = 1 };
 
-    const icon = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, 1, 8, 64, 64).?;
-    defer c.g_object_unref(icon);
-    const icon_stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(icon));
-    const icon_bytes = c.gdk_pixbuf_get_pixels(icon);
-    for (0..64) |y| for (0..64) |x| {
-        const offset = y * icon_stride + x * 4;
-        icon_bytes[offset] = 80;
-        icon_bytes[offset + 1] = 150;
-        icon_bytes[offset + 2] = 240;
-        icon_bytes[offset + 3] = 255;
-    };
+    var rgb: [64 * 64 * 3]u8 = undefined;
+    for (0..64 * 64) |i| rgb[i * 3 ..][0..3].* = .{ 80, 150, 240 };
+    const icon = try Image.normalize(a, .{ .pixels = &rgb, .width = 64, .height = 64, .stride = 64 * 3, .format = .rgb });
+    defer icon.deinit(a);
 
     var renderer: text.Renderer = .{};
     defer renderer.deinit();

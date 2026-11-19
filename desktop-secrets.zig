@@ -1,6 +1,6 @@
 //! Native Secret Service. Bus sessions and prompts belong to their unique caller.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const p = @import("posix");
 pub const store = @import("desktop-secrets-store.zig");
 const transport = @import("desktop-secrets-transport.zig");

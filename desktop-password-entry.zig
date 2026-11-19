@@ -1,6 +1,6 @@
 //! Locked native entry. Masked responses never enter text layouts; PAM can opt into echo.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
@@ -112,7 +112,7 @@ pub const Entry = struct {
     changed: *const fn (?*anyopaque) void,
     data: ?*anyopaque,
     rect: Rect = .{ .x = 0, .y = 0, .width = 400, .height = 42 },
-    location: c.GdkRectangle = .{ .x = 0, .y = 0, .width = 1, .height = 42 },
+    location: c.cairo_rectangle_int_t = .{ .x = 0, .y = 0, .width = 1, .height = 42 },
     focused: bool = false,
     // Echoed PAM challenges and public form fields use visible glyphs.
     // Only explicitly public fields may copy their text to the clipboard.
@@ -219,9 +219,9 @@ pub const Entry = struct {
         self.revision += 1;
         self.notify();
     }
-    pub fn key(self: *Entry, symbol: u32, modifiers: c.GdkModifierType) bool {
-        const control = modifiers & c.GDK_CONTROL_MASK != 0;
-        const shift = modifiers & c.GDK_SHIFT_MASK != 0;
+    pub fn key(self: *Entry, symbol: u32, modifiers: c.__zig.Modifiers) bool {
+        const control = modifiers & c.__zig.control_mask != 0;
+        const shift = modifiers & c.__zig.shift_mask != 0;
         switch (symbol) {
             0xff51, 0xff53 => {
                 self.resetComposition();
@@ -370,7 +370,7 @@ pub const Entry = struct {
         }
         const caret_x = rect.x + 12 + @as(f64, @floatFromInt(caret_index - self.first)) * self.advance;
         if (self.focused and self.caret) canvas.draw(&.{.{ .line = .{ .start = .{ .x = caret_x, .y = rect.y + 11 }, .end = .{ .x = caret_x, .y = rect.y + rect.height - 11 }, .radius = 0.65 } }}, color(0xffffff));
-        const location: c.GdkRectangle = .{ .x = @intFromFloat(caret_x), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
+        const location: c.cairo_rectangle_int_t = .{ .x = @intFromFloat(caret_x), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
         self.location = location;
     }
     fn paintFrame(self: *const Entry, canvas: raster.Canvas) void {
@@ -410,7 +410,7 @@ pub const Entry = struct {
         mask.paint(canvas, -self.text_offset, y, color(0xffffff));
         if (self.focused and self.caret) canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = cursor - self.text_offset, .y = 7, .width = 1, .height = @max(1, rect.height - 14) }, .radius = 0 } }}, color(0xffffff));
         try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(pixels), .width = width, .height = height, .stride = width * 4, .format = .argb }, .{ .x = (rect.x + 12) * factor, .y = rect.y * factor, .width = @floatFromInt(width), .height = @floatFromInt(height) }, null);
-        const location: c.GdkRectangle = .{ .x = @intFromFloat(rect.x + 12 + cursor - self.text_offset), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
+        const location: c.cairo_rectangle_int_t = .{ .x = @intFromFloat(rect.x + 12 + cursor - self.text_offset), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
         self.location = location;
     }
     pub fn destroy(self: *Entry) void {
@@ -495,7 +495,7 @@ test "native password pixels depend on character count rather than plaintext" {
     entry.setPreedit("とうきょう");
     try std.testing.expectEqual(@as(usize, 5), entry.preedit_count);
     try std.testing.expectEqualStrings("東京🔑", entry.buffer.value());
-    try std.testing.expect(entry.key('a', c.GDK_CONTROL_MASK));
+    try std.testing.expect(entry.key('a', c.__zig.control_mask));
     try entry.insert("x");
     try std.testing.expectEqualStrings("x", entry.buffer.value());
     for (entry.buffer.bytes[1..]) |byte| try std.testing.expectEqual(@as(u8, 0), byte);

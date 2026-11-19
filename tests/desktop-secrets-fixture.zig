@@ -1,7 +1,7 @@
 const std = @import("std");
 const desktop = @import("desktop");
 const secrets = desktop.secrets;
-const c = desktop.gtk;
+const c = desktop.glib;
 fn cleared(dialog: *secrets.Dialog) !void {
     for ([_]?*@import("desktop").askpass.password.Entry{ dialog.entry, dialog.confirmation }) |slot| {
         if (slot) |entry| {
@@ -63,10 +63,10 @@ fn checkDialogs() !void {
     try dialog.confirmation.?.insert("test-東京🔑");
     try std.testing.expect(try dialog.validatePassword());
     // Editing/select-all in the second field must leave the first intact.
-    try std.testing.expect(dialog.handleKey('a', c.GDK_CONTROL_MASK));
+    try std.testing.expect(dialog.handleKey('a', c.__zig.control_mask));
     try dialog.confirmation.?.insert("replacement");
     try std.testing.expectEqualStrings("test-東京🔑", dialog.entry.?.buffer.value());
-    try std.testing.expect(dialog.handleKey(0xfe20, c.GDK_SHIFT_MASK));
+    try std.testing.expect(dialog.handleKey(0xfe20, c.__zig.shift_mask));
     try std.testing.expect(dialog.entry.?.focused and !dialog.confirmation.?.focused);
     try std.testing.expect(dialog.handleKey(0xff1b, 0));
     try cleared(dialog);

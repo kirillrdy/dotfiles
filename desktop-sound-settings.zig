@@ -1,6 +1,6 @@
 //! Native Wayland sound settings with asynchronous PipeWire controls.
 const std = @import("std");
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const audio = @import("desktop-audio.zig");
 pub const native = @import("desktop-sound-view.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
@@ -347,7 +347,7 @@ pub const Sound = struct {
     pub fn key(ptr: ?*anyopaque, _: *wire.Surface, symbol: u32, modifiers: u32, pressed: bool) bool {
         return !pressed or cast(Sound, ptr).handleKey(symbol, modifiers);
     }
-    pub fn handleKey(self: *Sound, symbol: u32, modifiers: c.GdkModifierType) bool {
+    pub fn handleKey(self: *Sound, symbol: u32, modifiers: c.__zig.Modifiers) bool {
         if (self.closed or self.window.closing) return false;
         self.tooltip.hide();
         if (self.view.expanded != null) {
@@ -370,7 +370,7 @@ pub const Sound = struct {
         switch (symbol) {
             0xff1b => if (self.view.page == .levels) self.showPage(.sound) else self.close(),
             0xff09, 0xfe20 => { // Tab / Shift-Tab
-                self.view.moveFocus(modifiers & c.GDK_SHIFT_MASK != 0 or symbol == 0xfe20);
+                self.view.moveFocus(modifiers & c.__zig.shift_mask != 0 or symbol == 0xfe20);
                 self.focus();
             },
             0x20, 0xff0d, 0xff8d => if (self.view.focus) |target| self.activate(target),

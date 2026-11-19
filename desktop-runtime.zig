@@ -1,4 +1,4 @@
-//! Package paths and environment setup, performed before starting GTK or helpers.
+//! Package paths and environment setup, performed before starting the UI or helpers.
 const std = @import("std");
 const options = @import("options");
 extern "c" fn setenv([*:0]const u8, [*:0]const u8, c_int) c_int;

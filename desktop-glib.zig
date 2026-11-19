@@ -1,10 +1,9 @@
-//! Explicit C ABI declarations for the desktop's GTK 3, GLib, Cairo,
-//! PolicyKit and Wayland APIs.
-//! Toolkit handles use empty extern structs for nullable C pointers. Never
-//! allocate or copy these objects by value; only GTK owns their storage.
-//! Value types and layouts accessed by Zig are defined in full.
-//! Normal builds do not parse the toolkit's C headers. test-gtk-abi checks these
-//! declarations against the installed headers when updating dependencies.
+//! Explicit C ABI declarations for the desktop's GLib/GIO, Cairo, PolicyKit and
+//! Wayland APIs. Library handles use empty extern structs for nullable C
+//! pointers. Never allocate or copy these objects by value; only the library
+//! owns their storage. Value types and layouts accessed by Zig are defined in
+//! full. Normal builds do not parse the C headers. tests/desktop-glib-abi.zig
+//! checks these declarations against the installed headers.
 const wayland = @import("desktop-wayland.zig");
 pub const __helpers = @import("std").zig.c_translation.helpers;
 
@@ -612,82 +611,7 @@ pub const CAIRO_FILTER_GOOD: c_int = 1;
 pub const enum__cairo_filter = c_uint;
 pub const cairo_filter_t = enum__cairo_filter;
 pub extern fn cairo_pattern_set_filter(pattern: ?*cairo_pattern_t, filter: cairo_filter_t) void;
-pub const GdkRectangle = cairo_rectangle_int_t;
 
-pub const struct__GdkRGBA = extern struct {
-    red: gdouble = 0,
-    green: gdouble = 0,
-    blue: gdouble = 0,
-    alpha: gdouble = 0,
-};
-
-pub const GdkRGBA = struct__GdkRGBA;
-pub const struct__GdkDisplay = extern struct { _opaque: [0]usize = .{} };
-
-pub const GdkDisplay = struct__GdkDisplay;
-pub const struct__GdkWindow = extern struct { _opaque: [0]usize = .{} };
-
-pub const GdkWindow = struct__GdkWindow;
-pub const GDK_SHIFT_MASK: c_int = 1;
-pub const GDK_CONTROL_MASK: c_int = 4;
-pub const GDK_MOD1_MASK: c_int = 8;
-pub const GdkModifierType = c_uint;
-pub extern fn gdk_display_get_default() ?*GdkDisplay;
-pub extern fn gdk_rgba_parse(rgba: [*c]GdkRGBA, spec: [*c]const gchar) gboolean;
-pub const GDK_COLORSPACE_RGB: c_int = 0;
-pub const GdkColorspace = c_uint;
-pub const struct__GdkPixbuf = extern struct { _opaque: [0]usize = .{} };
-
-pub const GdkPixbuf = struct__GdkPixbuf;
-pub extern fn gdk_pixbuf_get_pixels(pixbuf: ?*const GdkPixbuf) [*c]guchar;
-pub extern fn gdk_pixbuf_get_width(pixbuf: ?*const GdkPixbuf) c_int;
-pub extern fn gdk_pixbuf_get_height(pixbuf: ?*const GdkPixbuf) c_int;
-pub extern fn gdk_pixbuf_get_rowstride(pixbuf: ?*const GdkPixbuf) c_int;
-pub extern fn gdk_pixbuf_new(colorspace: GdkColorspace, has_alpha: gboolean, bits_per_sample: c_int, width: c_int, height: c_int) ?*GdkPixbuf;
-pub extern fn gdk_pixbuf_new_from_file(filename: [*c]const u8, @"error": [*c][*c]GError) ?*GdkPixbuf;
-pub extern fn gdk_pixbuf_new_from_file_at_scale(filename: [*c]const u8, width: c_int, height: c_int, preserve_aspect_ratio: gboolean, @"error": [*c][*c]GError) ?*GdkPixbuf;
-pub extern fn gdk_pixbuf_apply_embedded_orientation(src: ?*GdkPixbuf) ?*GdkPixbuf;
-pub extern fn gdk_cairo_set_source_pixbuf(cr: ?*cairo_t, pixbuf: ?*const GdkPixbuf, pixbuf_x: gdouble, pixbuf_y: gdouble) void;
-
-pub const struct__GtkWidget = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkWidget = struct__GtkWidget;
-pub const struct__GtkWindow = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkWindow = struct__GtkWindow;
-pub extern fn gtk_widget_destroy(widget: [*c]GtkWidget) void;
-pub extern fn gtk_widget_show(widget: [*c]GtkWidget) void;
-pub extern fn gtk_widget_hide(widget: [*c]GtkWidget) void;
-pub extern fn gtk_widget_get_sensitive(widget: [*c]GtkWidget) gboolean;
-pub extern fn gtk_widget_get_window(widget: [*c]GtkWidget) ?*GdkWindow;
-pub extern fn gtk_window_set_modal(window: [*c]GtkWindow, modal: gboolean) void;
-pub extern fn gtk_window_present(window: [*c]GtkWindow) void;
-pub const GTK_RESPONSE_OK: c_int = -5;
-pub const GTK_RESPONSE_CANCEL: c_int = -6;
-pub const struct__GtkDialog = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkDialog = struct__GtkDialog;
-pub extern fn gtk_dialog_set_default_response(dialog: [*c]GtkDialog, response_id: gint) void;
-pub extern fn gtk_dialog_response(dialog: [*c]GtkDialog, response_id: gint) void;
-pub const struct__GtkButton = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkButton = struct__GtkButton;
-pub extern fn gtk_button_set_label(button: [*c]GtkButton, label: [*c]const gchar) void;
-
-pub const struct__GtkIconInfo = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkIconInfo = struct__GtkIconInfo;
-pub const struct__GtkIconTheme = extern struct { _opaque: [0]usize = .{} };
-
-pub const GtkIconTheme = struct__GtkIconTheme;
-pub const GTK_ICON_LOOKUP_FORCE_SIZE: c_int = 16;
-pub const GtkIconLookupFlags = c_uint;
-pub extern fn gtk_icon_theme_new() [*c]GtkIconTheme;
-pub extern fn gtk_icon_theme_append_search_path(icon_theme: [*c]GtkIconTheme, path: [*c]const gchar) void;
-pub extern fn gtk_icon_theme_set_custom_theme(icon_theme: [*c]GtkIconTheme, theme_name: [*c]const gchar) void;
-pub extern fn gtk_icon_theme_lookup_icon(*GtkIconTheme, [*c]const u8, gint, GtkIconLookupFlags) ?*GtkIconInfo;
-pub extern fn gtk_icon_info_load_symbolic(*GtkIconInfo, *const GdkRGBA, ?*const GdkRGBA, ?*const GdkRGBA, ?*const GdkRGBA, ?*gboolean, [*c][*c]GError) ?*GdkPixbuf;
-pub extern fn gtk_init_check(argc: [*c]c_int, argv: [*c][*c][*c]u8) gboolean;
 pub const struct__GDesktopAppInfo = opaque {};
 
 pub const GDesktopAppInfo = struct__GDesktopAppInfo;
@@ -760,18 +684,6 @@ pub const wl_output_add_listener = wayland.wl_output_add_listener;
 pub const wl_output_destroy = wayland.wl_output_destroy;
 pub const SIGINT = @as(c_int, 2);
 pub const SIGTERM = @as(c_int, 15);
-pub const GDK_KEY_BackSpace = __helpers.promoteIntLiteral(c_int, 0xff08, .hex);
-pub const GDK_KEY_Return = __helpers.promoteIntLiteral(c_int, 0xff0d, .hex);
-pub const GDK_KEY_Escape = __helpers.promoteIntLiteral(c_int, 0xff1b, .hex);
-pub const GDK_KEY_Left = __helpers.promoteIntLiteral(c_int, 0xff51, .hex);
-pub const GDK_KEY_Up = __helpers.promoteIntLiteral(c_int, 0xff52, .hex);
-pub const GDK_KEY_Right = __helpers.promoteIntLiteral(c_int, 0xff53, .hex);
-pub const GDK_KEY_Down = __helpers.promoteIntLiteral(c_int, 0xff54, .hex);
-pub const GDK_KEY_Page_Up = __helpers.promoteIntLiteral(c_int, 0xff55, .hex);
-pub const GDK_KEY_Page_Down = __helpers.promoteIntLiteral(c_int, 0xff56, .hex);
-pub const GDK_KEY_KP_Enter = __helpers.promoteIntLiteral(c_int, 0xff8d, .hex);
-pub const GDK_KEY_Super_L = __helpers.promoteIntLiteral(c_int, 0xffeb, .hex);
-pub const GDK_KEY_Super_R = __helpers.promoteIntLiteral(c_int, 0xffec, .hex);
 pub const wl_array = wayland.wl_array;
 pub const wl_display = wayland.wl_display;
 pub const wl_buffer = wayland.wl_buffer;
@@ -810,7 +722,6 @@ pub extern fn g_variant_parse(?*const GVariantType, [*c]const gchar, [*c]const g
 pub extern fn g_variant_type_string_is_valid([*c]const gchar) gboolean;
 pub extern fn g_uuid_string_random() [*c]gchar;
 pub extern fn g_dbus_error_get_remote_error([*c]const GError) [*c]gchar;
-pub extern fn gtk_dialog_get_widget_for_response([*c]GtkDialog, gint) [*c]GtkWidget;
 pub extern fn g_variant_type_is_definite(?*const GVariantType) gboolean;
 
 // Native portal broker: tuples and Unix file descriptor forwarding.
@@ -857,52 +768,12 @@ pub const GBytes = opaque {};
 pub extern fn g_bytes_icon_get_type() GType;
 pub extern fn g_bytes_icon_get_bytes(?*GIcon) ?*GBytes;
 pub extern fn g_memory_input_stream_new_from_bytes(?*GBytes) ?*GInputStream;
-pub extern fn gdk_pixbuf_new_from_stream_at_scale(?*GInputStream, c_int, c_int, gboolean, [*c]GCancellable, [*c][*c]GError) ?*GdkPixbuf;
-pub extern fn gdk_pixbuf_get_has_alpha(?*const GdkPixbuf) gboolean;
-pub extern fn gdk_pixbuf_get_bits_per_sample(?*const GdkPixbuf) c_int;
-pub extern fn gdk_pixbuf_get_n_channels(?*const GdkPixbuf) c_int;
 pub extern fn g_variant_new_fixed_array(?*const GVariantType, gconstpointer, gsize, gsize) ?*GVariant;
 pub extern fn g_markup_escape_text([*c]const gchar, gssize) [*c]gchar;
 // File chooser dialogs run in the native portal process.
 pub extern fn g_variant_equal(gconstpointer, gconstpointer) gboolean;
 pub extern fn g_file_get_child(?*GFile, [*c]const gchar) ?*GFile;
 pub extern fn g_file_query_exists(?*GFile, [*c]GCancellable) gboolean;
-pub extern fn gdk_wayland_display_get_type() GType;
-pub extern fn gdk_wayland_window_set_transient_for_exported(?*GdkWindow, [*c]gchar) gboolean;
-pub const GtkPrintUnixDialog = opaque {};
-pub const GtkPrintSettings = opaque {};
-pub const GtkPageSetup = opaque {};
-pub const GtkPrinter = opaque {};
-pub const GtkPrintJob = opaque {};
-pub const GtkPrintCapabilities = c_uint;
-pub const GTK_PRINT_CAPABILITY_PAGE_SET = 1 << 0;
-pub const GTK_PRINT_CAPABILITY_COPIES = 1 << 1;
-pub const GTK_PRINT_CAPABILITY_COLLATE = 1 << 2;
-pub const GTK_PRINT_CAPABILITY_REVERSE = 1 << 3;
-pub const GTK_PRINT_CAPABILITY_SCALE = 1 << 4;
-pub const GTK_PRINT_CAPABILITY_GENERATE_PDF = 1 << 5;
-pub const GTK_PRINT_CAPABILITY_GENERATE_PS = 1 << 6;
-pub const GTK_PRINT_CAPABILITY_NUMBER_UP = 1 << 8;
-pub const GTK_PRINT_CAPABILITY_NUMBER_UP_LAYOUT = 1 << 9;
-pub extern fn gtk_print_unix_dialog_new([*c]const gchar, ?*GtkWindow) ?*GtkWidget;
-pub extern fn gtk_print_unix_dialog_set_settings(?*GtkPrintUnixDialog, ?*GtkPrintSettings) void;
-pub extern fn gtk_print_unix_dialog_get_settings(?*GtkPrintUnixDialog) ?*GtkPrintSettings;
-pub extern fn gtk_print_unix_dialog_set_page_setup(?*GtkPrintUnixDialog, ?*GtkPageSetup) void;
-pub extern fn gtk_print_unix_dialog_get_page_setup(?*GtkPrintUnixDialog) ?*GtkPageSetup;
-pub extern fn gtk_print_unix_dialog_get_selected_printer(?*GtkPrintUnixDialog) ?*GtkPrinter;
-pub extern fn gtk_print_unix_dialog_set_manual_capabilities(?*GtkPrintUnixDialog, GtkPrintCapabilities) void;
-pub extern fn gtk_print_unix_dialog_set_embed_page_setup(?*GtkPrintUnixDialog, gboolean) void;
-pub extern fn gtk_print_unix_dialog_set_current_page(?*GtkPrintUnixDialog, gint) void;
-pub extern fn gtk_print_unix_dialog_set_support_selection(?*GtkPrintUnixDialog, gboolean) void;
-pub extern fn gtk_print_unix_dialog_set_has_selection(?*GtkPrintUnixDialog, gboolean) void;
-pub extern fn gtk_print_settings_new_from_gvariant(?*GVariant) ?*GtkPrintSettings;
-pub extern fn gtk_print_settings_to_gvariant(?*GtkPrintSettings) ?*GVariant;
-pub extern fn gtk_page_setup_new_from_gvariant(?*GVariant) ?*GtkPageSetup;
-pub extern fn gtk_page_setup_to_gvariant(?*GtkPageSetup) ?*GVariant;
-pub extern fn gtk_print_job_new([*c]const gchar, ?*GtkPrinter, ?*GtkPrintSettings, ?*GtkPageSetup) ?*GtkPrintJob;
-pub extern fn gtk_print_job_set_source_fd(?*GtkPrintJob, c_int, [*c][*c]GError) gboolean;
-pub const GtkPrintJobCompleteFunc = ?*const fn (?*GtkPrintJob, gpointer, [*c]const GError) callconv(.c) void;
-pub extern fn gtk_print_job_send(?*GtkPrintJob, GtkPrintJobCompleteFunc, gpointer, GDestroyNotify) void;
 pub extern fn g_random_int() guint32;
 pub extern fn g_idle_add(GSourceFunc, gpointer) guint;
 pub extern fn g_get_user_name() [*c]const gchar;
@@ -930,4 +801,6 @@ pub const G_DBUS_CALL_FLAGS_NO_AUTO_START = 1;
 pub const __icons = struct {
     pub const load = @import("desktop-icons.zig").load;
     pub const loadThemed = @import("desktop-icons.zig").loadThemed;
+    pub const Image = @import("desktop-decode.zig").Image;
+    pub const free = @import("desktop-decode.zig").free;
 };

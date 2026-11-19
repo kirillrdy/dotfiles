@@ -3,7 +3,7 @@ const native = @import("desktop-surface.zig");
 const banner = @import("desktop-notification-banner.zig");
 const std = @import("std");
 const view = banner;
-const c = @import("desktop-gtk.zig");
+const c = @import("desktop-glib.zig");
 const allocator = std.heap.page_allocator;
 const cast = c.__zig.cast;
 const path = "/org/freedesktop/Notifications";
@@ -36,14 +36,14 @@ const Notice = struct {
     sender: [:0]const u8,
     actions: []view.Action,
     created: i64,
-    image: ?*c.GdkPixbuf = null,
+    image: ?c.__icons.Image = null,
     critical: bool = false,
     transient: bool = false,
     resident: bool = false,
     pending: bool = true,
 
     fn destroy(self: *Notice) void {
-        if (self.image != null) c.g_object_unref(self.image);
+        if (self.image) |image| c.__icons.free(image);
         self.arena.deinit();
         allocator.destroy(self);
     }
@@ -366,7 +366,7 @@ fn hintByte(hints: *c.GVariant, key: [*:0]const u8) u8 {
     defer c.g_variant_unref(value);
     return c.g_variant_get_byte(value);
 }
-fn imageHint(hints: *c.GVariant) ?*c.GdkPixbuf {
+fn imageHint(hints: *c.GVariant) ?c.__icons.Image {
     for ([_][*:0]const u8{ "image-data", "image_data", "icon_data" }) |key| {
         const tuple = c.g_variant_lookup_value(hints, key, variantType("(iiibiiay)")) orelse continue;
         defer c.g_variant_unref(tuple);
@@ -384,18 +384,15 @@ fn imageHint(hints: *c.GVariant) ?*c.GdkPixbuf {
         const bytes: [*]const u8 = @ptrCast(c.g_variant_get_fixed_array(values[6], &length, 1) orelse return null);
         const row: usize = @intCast(width * channels);
         if (length < @as(usize, @intCast(stride)) * @as(usize, @intCast(height - 1)) + row) return null;
-        const pixbuf = c.gdk_pixbuf_new(c.GDK_COLORSPACE_RGB, @intFromBool(alpha), 8, width, height) orelse return null;
-        const pixels = c.gdk_pixbuf_get_pixels(pixbuf);
-        const dest_stride: usize = @intCast(c.gdk_pixbuf_get_rowstride(pixbuf));
-        for (0..@intCast(height)) |y| @memcpy(pixels[y * dest_stride ..][0..row], bytes[y * @as(usize, @intCast(stride)) ..][0..row]);
-        return pixbuf;
+        const decode = @import("desktop-decode.zig");
+        return decode.Image.normalize(decode.allocator, .{ .pixels = bytes[0..length], .width = @intCast(width), .height = @intCast(height), .stride = @intCast(stride), .format = if (alpha) .rgba else .rgb }) catch null;
     }
     if (c.g_variant_lookup_value(hints, "image-path", variantType("s"))) |image| {
         defer c.g_variant_unref(image);
         const value = c.g_variant_get_string(image, null);
         const file = if (c.g_str_has_prefix(value, "file://") != 0) c.g_filename_from_uri(value, null, null) else c.g_strdup(value);
         defer c.g_free(file);
-        if (file != null and c.g_path_is_absolute(file) != 0) return c.gdk_pixbuf_new_from_file_at_scale(file, 48, 48, 1, null);
+        if (file != null and c.g_path_is_absolute(file) != 0) return @import("desktop-decode.zig").fileAt(file, 48);
     }
     return null;
 }

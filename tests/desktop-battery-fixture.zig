@@ -1,6 +1,6 @@
 //! Test-only sysfs injection. Production always reads the fixed kernel paths.
 const std = @import("std");
-const c = @import("desktop").gtk;
+const c = @import("desktop").glib;
 const battery = @import("desktop").battery;
 const quick = @import("desktop").quick;
 const data = @import("desktop").panel_data;
