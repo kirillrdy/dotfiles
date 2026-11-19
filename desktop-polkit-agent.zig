@@ -87,7 +87,7 @@ fn subject(connection: *c.GDBusConnection) !*c.GVariant {
             if (std.mem.eql(u8, std.mem.span(c.g_variant_get_type_string(owned_id)), "s")) session_id = text(owned_id);
         }
     }
-    if (session_id == null) if (c.g_getenv("XDG_SESSION_ID")) |id| {
+    if (session_id == null) if (c.__zig.getenv("XDG_SESSION_ID")) |id| {
         if (id[0] != 0) session_id = std.mem.span(id);
     };
     const builder = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
@@ -135,7 +135,7 @@ const State = struct {
         const owner = try self.allocator.dupeSentinel(u8, text(value), 0);
         if (self.owner) |old| self.allocator.free(old);
         self.owner = owner;
-        const locale = c.g_getenv("LANG") orelse @as([*c]const u8, "C");
+        const locale = c.__zig.getenv("LANG") orelse @as([*c]const u8, "C");
         const registered = c.g_dbus_connection_call_sync(self.connection, owner, authority_path, authority, "RegisterAuthenticationAgent", c.g_variant_new("(@(sa{sv})so)", c.g_variant_ref(self.subject), locale, @as([*:0]const u8, path)), null, 0, 1500, null, null) orelse return error.PolicyKitUnavailable;
         c.g_variant_unref(registered);
         self.registered = true;

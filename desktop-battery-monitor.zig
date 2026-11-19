@@ -129,8 +129,8 @@ const Server = struct {
         if (self.stopping) return;
         const was_present = self.state.present;
         self.state = value;
-        self.update_time = @intCast(@divTrunc(c.g_get_real_time(), 1000000));
-        _ = self.policy.update(value, c.g_get_monotonic_time(), self.options.action_delay_us);
+        self.update_time = @intCast(@divTrunc(c.__zig.realTime(), 1000000));
+        _ = self.policy.update(value, c.__zig.monotonicTime(), self.options.action_delay_us);
         self.propertiesChanged(root, 0);
         self.propertiesChanged(display, 1);
         self.propertiesChanged(device, 1);
@@ -146,11 +146,11 @@ const Server = struct {
                 self.propertiesChanged(root, 0);
             }
         }
-        if (self.policy.update(self.state, c.g_get_monotonic_time(), self.options.action_delay_us)) {
+        if (self.policy.update(self.state, c.__zig.monotonicTime(), self.options.action_delay_us)) {
             self.policy.done = true;
             Job.start(self, null) catch {
                 self.policy.done = false;
-                self.policy.retry_at = c.g_get_monotonic_time() + 60 * 1000000;
+                self.policy.retry_at = c.__zig.monotonicTime() + 60 * 1000000;
             };
         }
         return 1;
@@ -197,7 +197,7 @@ const Job = struct {
             c.g_object_unref(invocation);
         } else if (!success and self.current()) {
             server.policy.done = false;
-            server.policy.retry_at = c.g_get_monotonic_time() + 60 * 1000000;
+            server.policy.retry_at = c.__zig.monotonicTime() + 60 * 1000000;
             std.log.warn("battery: critical power action unavailable; retrying in one minute", .{});
         }
         server.jobs -= 1;

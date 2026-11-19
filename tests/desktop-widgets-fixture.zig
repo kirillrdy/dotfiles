@@ -7,8 +7,8 @@ fn eq(a: [*c]const u8, b: [:0]const u8) void {
     assert(std.mem.eql(u8, std.mem.span(a), b));
 }
 fn pumpEvents(milliseconds: i64) void {
-    const end = c.g_get_monotonic_time() + milliseconds * 1000;
-    while (c.g_get_monotonic_time() < end) {
+    const end = c.__zig.monotonicTime() + milliseconds * 1000;
+    while (c.__zig.monotonicTime() < end) {
         while (c.g_main_context_iteration(null, 0) != 0) {}
         c.g_usleep(1000);
     }
@@ -39,7 +39,7 @@ pub fn main(process_init: std.process.Init) !void {
     }
     _ = c.g_setenv("GSETTINGS_BACKEND", "memory", 1);
     // Resolve and decode the SVGs through the native icon loader.
-    if (c.g_getenv("DESKTOP_PANEL_ICON_PATH") != null) {
+    if (c.__zig.getenv("DESKTOP_PANEL_ICON_PATH") != null) {
         for ([_][:0]const u8{
             "network-wireless-signal-good-symbolic",
             "battery-level-90-symbolic",

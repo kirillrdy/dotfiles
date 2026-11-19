@@ -57,8 +57,8 @@ pub fn main(init: std.process.Init) !void {
     surface.close = &State.close;
     try client.start();
     try surface.show();
-    const deadline = c.g_get_monotonic_time() + 8_000_000;
-    while (!state.closed and c.g_get_monotonic_time() < deadline) {
+    const deadline = c.__zig.monotonicTime() + 8_000_000;
+    while (!state.closed and c.__zig.monotonicTime() < deadline) {
         while (c.g_main_context_iteration(null, 0) != 0) {}
         try init.io.sleep(.fromMilliseconds(5), .awake);
     }
@@ -79,8 +79,8 @@ fn idle(init: std.process.Init) !void {
             @memset(pixels.pixels, 0xff245b98);
         }
         fn pump(io: std.Io, milliseconds: i64) !void {
-            const until = c.g_get_monotonic_time() + milliseconds * 1000;
-            while (c.g_get_monotonic_time() < until) {
+            const until = c.__zig.monotonicTime() + milliseconds * 1000;
+            while (c.__zig.monotonicTime() < until) {
                 while (c.g_main_context_iteration(null, 0) != 0) {}
                 try io.sleep(.fromMilliseconds(1), .awake);
             }
@@ -137,8 +137,8 @@ fn frames(init: std.process.Init) !void {
     surface.next_frame = &Animation.next;
     try client.start();
     try surface.show();
-    const deadline = c.g_get_monotonic_time() + 5_000_000;
-    while (animation.frames < 60 and c.g_get_monotonic_time() < deadline) {
+    const deadline = c.__zig.monotonicTime() + 5_000_000;
+    while (animation.frames < 60 and c.__zig.monotonicTime() < deadline) {
         while (c.g_main_context_iteration(null, 0) != 0) {}
         try init.io.sleep(.fromMilliseconds(1), .awake);
     }
@@ -158,8 +158,8 @@ fn consent(init: std.process.Init) !void {
     defer if (allocator.deinit() == .leak) @panic("native consent allocation leak");
     const dialog = try native.auth.Dialog.createWithOptions(.confirm, "An application requests your account information.\nName: 日本語", .{ .allocator = allocator.allocator(), .title = "Native consent fixture", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .response_context = &done, .responded = &Done.completed });
     defer dialog.destroy();
-    const deadline = c.g_get_monotonic_time() + 8_000_000;
-    while (done.accepted == null and c.g_get_monotonic_time() < deadline) {
+    const deadline = c.__zig.monotonicTime() + 8_000_000;
+    while (done.accepted == null and c.__zig.monotonicTime() < deadline) {
         while (c.g_main_context_iteration(null, 0) != 0) {}
         try init.io.sleep(.fromMilliseconds(5), .awake);
     }
@@ -197,14 +197,14 @@ fn forms() !void {
     try external.start();
     const device = form.get(field).entry.?.clipboard().?;
     external.seats.items[0].clipboard.?.copy("Text from another client");
-    const clipboard_deadline = c.g_get_monotonic_time() + 2_000_000;
-    while ((device.source != null or device.selection == null) and c.g_get_monotonic_time() < clipboard_deadline) {
+    const clipboard_deadline = c.__zig.monotonicTime() + 2_000_000;
+    while ((device.source != null or device.selection == null) and c.__zig.monotonicTime() < clipboard_deadline) {
         _ = c.g_main_context_iteration(null, 0);
         c.g_usleep(1000);
     }
     try form.setText(field, "");
     form.get(field).entry.?.paste();
-    while (device.requests.items.len != 0 and c.g_get_monotonic_time() < clipboard_deadline) {
+    while (device.requests.items.len != 0 and c.__zig.monotonicTime() < clipboard_deadline) {
         _ = c.g_main_context_iteration(null, 0);
         c.g_usleep(1000);
     }
@@ -216,14 +216,14 @@ fn forms() !void {
     try std.testing.expectEqualStrings("", dialog.entry.?.buffer.value());
     dialog.entry.?.paste();
     dialog.clear();
-    while (device.requests.items.len != 0 and c.g_get_monotonic_time() < clipboard_deadline) {
+    while (device.requests.items.len != 0 and c.__zig.monotonicTime() < clipboard_deadline) {
         _ = c.g_main_context_iteration(null, 0);
         c.g_usleep(1000);
     }
     try std.testing.expectEqualStrings("", dialog.entry.?.buffer.value());
     form.show();
-    const deadline = c.g_get_monotonic_time() + 2_000_000;
-    while (!form.window.surface.?.configured and c.g_get_monotonic_time() < deadline) {
+    const deadline = c.__zig.monotonicTime() + 2_000_000;
+    while (!form.window.surface.?.configured and c.__zig.monotonicTime() < deadline) {
         _ = c.g_main_context_iteration(null, 0);
         c.g_usleep(1000);
     }

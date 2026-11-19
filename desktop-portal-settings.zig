@@ -48,8 +48,7 @@ pub const Service = struct {
             _ = c.g_signal_connect_data(bundle.settings, "changed", @ptrCast(&changed), bundle, null, 0);
         };
         try self.watch("/etc/fonts");
-        const home = c.g_getenv("HOME");
-        if (home != null) {
+        if (c.__zig.getenv("HOME")) |home| {
             const directory = try std.fmt.allocPrintSentinel(allocator, "{s}/.fonts", .{home}, 0);
             defer allocator.free(directory);
             try self.watch(directory);

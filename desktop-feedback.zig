@@ -53,7 +53,7 @@ pub const Feedback = struct {
         const loop = self.loop orelse return false;
         p.pw_thread_loop_lock(loop);
         defer p.pw_thread_loop_unlock(loop);
-        return self.active and c.g_get_monotonic_time() < self.deadline;
+        return self.active and c.__zig.monotonicTime() < self.deadline;
     }
 
     pub fn play(self: *Feedback, path: [*:0]const u8) void {
@@ -103,7 +103,7 @@ pub const Feedback = struct {
         } };
         var params = [_][*c]const p.spa_pod{@ptrCast(&format)};
         self.active = true;
-        self.deadline = c.g_get_monotonic_time() + 5_000_000 + @as(i64, @intCast(self.wave.samples.len * 1_000_000 / (self.wave.rate * self.wave.channels * 2)));
+        self.deadline = c.__zig.monotonicTime() + 5_000_000 + @as(i64, @intCast(self.wave.samples.len * 1_000_000 / (self.wave.rate * self.wave.channels * 2)));
         if (p.pw_stream_connect(self.stream, p.PW_DIRECTION_OUTPUT, p.PW_ID_ANY, p.PW_STREAM_FLAG_AUTOCONNECT | p.PW_STREAM_FLAG_MAP_BUFFERS, &params, 1) < 0 or p.pw_thread_loop_start(loop) < 0) self.deinit();
     }
 

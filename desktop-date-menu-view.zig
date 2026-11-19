@@ -186,7 +186,7 @@ pub const View = struct {
         self.ensureFocusVisible();
     }
     pub fn prepare(self: *View, scale: u32) !void {
-        const minute = @divTrunc(c.g_get_real_time(), 60_000_000);
+        const minute = @divTrunc(c.__zig.realTime(), 60_000_000);
         if (minute != self.minute) {
             self.minute = minute;
             self.invalidate();

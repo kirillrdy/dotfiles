@@ -213,8 +213,8 @@ pub fn power_set_ready(source: ?*c.GObject, result: ?*c.GAsyncResult, data: c.gp
 }
 fn select_power(m: *Module, id: [*c]const u8) void {
     if (m.dead != 0 or m.power_pending != 0) return;
-    const helper = c.g_getenv("DESKTOP_POWER_HELPER");
-    const pkexec = c.g_getenv("DESKTOP_POWER_PKEXEC");
+    const helper = c.__zig.getenv("DESKTOP_POWER_HELPER");
+    const pkexec = c.__zig.getenv("DESKTOP_POWER_PKEXEC");
     if (helper == null or pkexec == null) {
         set_power_message(m, "Power profile helper unavailable");
         return;

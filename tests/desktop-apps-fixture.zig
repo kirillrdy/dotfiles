@@ -9,8 +9,8 @@ fn eq(actual: [*c]const u8, expected: []const u8) void {
     assert(std.mem.eql(u8, std.mem.span(actual), expected));
 }
 fn pump() void {
-    const end = @divTrunc(c.g_get_monotonic_time(), 1000) + 100;
-    while (@divTrunc(c.g_get_monotonic_time(), 1000) < end) {
+    const end = @divTrunc(c.__zig.monotonicTime(), 1000) + 100;
+    while (@divTrunc(c.__zig.monotonicTime(), 1000) < end) {
         while (c.g_main_context_iteration(null, 0) != 0) {}
         c.g_usleep(1000);
     }
@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
     }
     // GLib can cache XDG paths in library constructors, before main. Re-exec
     // with the isolated paths already in the environment.
-    if (c.g_getenv("DESKTOP_APPS_FIXTURE_ROOT") == null) {
+    if (c.__zig.getenv("DESKTOP_APPS_FIXTURE_ROOT") == null) {
         const root = c.g_dir_make_tmp("desktop-apps-XXXXXX", null);
         assert(root != null);
         defer c.g_free(root);
@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
         if (term != .exited or term.exited != 0) return error.FixtureFailed;
         return;
     }
-    const base = c.g_getenv("DESKTOP_APPS_FIXTURE_ROOT").?;
+    const base = c.__zig.getenv("DESKTOP_APPS_FIXTURE_ROOT").?;
     const applications = try std.fmt.allocPrint(a, "{s}/applications", .{base});
     try std.Io.Dir.createDirAbsolute(init.io, applications, .default_dir);
     const theme = try std.fmt.allocPrint(a, "{s}/icons/hicolor", .{base});
@@ -199,8 +199,8 @@ pub fn main(init: std.process.Init) !void {
     defer c.g_object_unref(success);
     assert(launcher.launch(success));
     assert(!launcher.visible_window);
-    const deadline = @divTrunc(c.g_get_monotonic_time(), 1000) + 5000;
-    while (@divTrunc(c.g_get_monotonic_time(), 1000) < deadline) {
+    const deadline = @divTrunc(c.__zig.monotonicTime(), 1000) + 5000;
+    while (@divTrunc(c.__zig.monotonicTime(), 1000) < deadline) {
         if (std.Io.Dir.openFileAbsolute(init.io, marker, .{})) |file| {
             file.close(init.io);
             break;
@@ -211,7 +211,7 @@ pub fn main(init: std.process.Init) !void {
     eq((try a.dupeSentinel(u8, recorded, 0)).ptr, "launched");
 
     // Render a screenshot when explicitly requested for visual inspection.
-    if (c.g_getenv("DESKTOP_APPS_SCREENSHOT")) |path| {
+    if (c.__zig.getenv("DESKTOP_APPS_SCREENSHOT")) |path| {
         launcher.present();
         pump();
         const host = launcher.host.?;

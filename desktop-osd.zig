@@ -209,7 +209,7 @@ pub const Server = struct {
     }
 
     fn feedback(self: *Server) void {
-        const path = c.g_getenv("DESKTOP_OSD_SOUND_FILE") orelse return;
+        const path = c.__zig.getenv("DESKTOP_OSD_SOUND_FILE") orelse return;
         self.feedback_player.play(@ptrCast(path));
     }
 

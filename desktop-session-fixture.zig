@@ -5,7 +5,7 @@ const session = @import("desktop").session_actions;
 const quick = @import("desktop").quick;
 
 fn env(key: [:0]const u8) []const u8 {
-    return if (c.g_getenv(key)) |value| std.mem.span(value) else "";
+    return if (c.__zig.getenv(key)) |value| std.mem.span(value) else "";
 }
 fn pump() void {
     while (c.g_main_context_iteration(null, 0) != 0) {}
@@ -91,7 +91,7 @@ test "session: private logind actions and quick-settings lifecycle" {
     try std.testing.expectEqualStrings("1", env("DESKTOP_SESSION_TEST_RUN"));
     try std.testing.expect(env("DBUS_SYSTEM_BUS_ADDRESS").len != 0);
     const scenario = env("SESSION_CASE");
-    const deadline = c.g_get_monotonic_time() + 8_000_000;
+    const deadline = c.__zig.monotonicTime() + 8_000_000;
     if (std.mem.startsWith(u8, scenario, "ui-")) {
         const controls = quick.Controls.create("true", "true");
         var live = true;
@@ -118,12 +118,12 @@ test "session: private logind actions and quick-settings lifecycle" {
         pump();
         controls.sessionAction(.reboot); // A pending action must prevent duplicate requests.
         if (std.mem.eql(u8, scenario, "ui-denied")) {
-            while (controls.session_busy and c.g_get_monotonic_time() < deadline) pump();
+            while (controls.session_busy and c.__zig.monotonicTime() < deadline) pump();
             try std.testing.expect(!controls.session_busy);
             try std.testing.expect(std.mem.indexOf(u8, controls.view.model.message.slice(), "denied") != null);
         } else {
-            const ready = c.g_get_monotonic_time() + 100_000;
-            while (c.g_get_monotonic_time() < ready) pump();
+            const ready = c.__zig.monotonicTime() + 100_000;
+            while (c.__zig.monotonicTime() < ready) pump();
             try std.testing.expect(controls.session_busy);
         }
         // A shown native dialog must release its reference during shutdown.
@@ -134,7 +134,7 @@ test "session: private logind actions and quick-settings lifecycle" {
         controls.deinit();
         // Device workers retain their own cancellation objects after Controls
         // is freed. Drain their completion callbacks before the allocator audit.
-        while ((live or battery_live or network_live) and c.g_get_monotonic_time() < deadline) pump();
+        while ((live or battery_live or network_live) and c.__zig.monotonicTime() < deadline) pump();
         try std.testing.expect(!live and !battery_live and !network_live);
         return;
     }
@@ -145,7 +145,7 @@ test "session: private logind actions and quick-settings lifecycle" {
     session.perform(action, cancel, &Completion.done, &completion);
     if (std.mem.eql(u8, scenario, "cancel-immediate")) c.g_cancellable_cancel(cancel);
     if (std.mem.startsWith(u8, scenario, "cancel-delayed")) _ = c.g_timeout_add(100, &cancelLater, cancel);
-    while (completion.count == 0 and c.g_get_monotonic_time() < deadline) pump();
+    while (completion.count == 0 and c.__zig.monotonicTime() < deadline) pump();
     try std.testing.expectEqual(@as(usize, 1), completion.count);
     const expected = env("SESSION_EXPECT");
     if (std.mem.eql(u8, expected, "success")) {

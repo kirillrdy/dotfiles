@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, command, "relative")) {
             const dx = try std.fmt.parseInt(i32, tokens.next() orelse return error.MissingValue, 10);
             const dy = try std.fmt.parseInt(i32, tokens.next() orelse return error.MissingValue, 10);
-            pointer_api.relative(pointer, dx, dy, @truncate(@as(u64, @intCast(@divTrunc(c.g_get_monotonic_time(), 1000)))));
+            pointer_api.relative(pointer, dx, dy, @truncate(@as(u64, @intCast(@divTrunc(c.__zig.monotonicTime(), 1000)))));
             pointer_api.frame(pointer);
             if (c.wl_display_roundtrip(display) < 0) return error.Disconnected;
             try writer.interface.writeAll("ok\n");

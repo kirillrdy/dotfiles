@@ -76,8 +76,8 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "--dispose")) {
         controls.?.deinit();
         service.destroy();
-        const deadline = c.g_get_monotonic_time() + 500000;
-        while (c.g_get_monotonic_time() < deadline) {
+        const deadline = c.__zig.monotonicTime() + 500000;
+        while (c.__zig.monotonicTime() < deadline) {
             while (c.g_main_context_iteration(null, 0) != 0) {}
             c.g_usleep(1000);
         }
@@ -92,8 +92,8 @@ pub fn main(init: std.process.Init) !void {
     while (service.pending) _ = c.g_main_context_iteration(null, 1);
     service.destroy();
     controls.?.deinit();
-    const deadline = c.g_get_monotonic_time() + 250000;
-    while (c.g_get_monotonic_time() < deadline) {
+    const deadline = c.__zig.monotonicTime() + 250000;
+    while (c.__zig.monotonicTime() < deadline) {
         while (c.g_main_context_iteration(null, 0) != 0) {}
         c.g_usleep(1000);
     }

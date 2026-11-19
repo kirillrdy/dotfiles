@@ -181,7 +181,7 @@ const Overview = struct {
         if (self.surface == null) return;
         if (self.launcher.visible_window) {
             if (!self.transition.shown) {
-                self.transition.setShown(true, c.g_get_monotonic_time());
+                self.transition.setShown(true, c.__zig.monotonicTime());
                 if (self.client) |client| client.visible(!self.gpu_previews);
                 self.focusPart(.stage);
                 self.redrawSelf();
@@ -210,8 +210,8 @@ const Overview = struct {
             self.selected = top orelse 0;
             if (!self.gpu_previews) client.captureMissing();
         }
-        self.transition.setShown(true, c.g_get_monotonic_time());
-        self.activation_time = c.g_get_monotonic_time();
+        self.transition.setShown(true, c.__zig.monotonicTime());
+        self.activation_time = c.__zig.monotonicTime();
         self.rebuildDash();
         self.launcher.visible_window = true;
         self.updateMode();
@@ -349,7 +349,7 @@ const Overview = struct {
             if (client.current != self.workspace_target) {
                 self.workspace_from = self.workspacePosition();
                 self.workspace_target = client.current;
-                self.workspace_started = c.g_get_monotonic_time();
+                self.workspace_started = c.__zig.monotonicTime();
             }
             if (self.drag) |drag| {
                 var found = false;
@@ -386,7 +386,7 @@ const Overview = struct {
         if (!self.launcher.visible_window) return 1;
         // Existing previews are sufficient during the short transition. Avoid
         // capture readbacks competing with high-refresh animation frames.
-        const now = c.g_get_monotonic_time();
+        const now = c.__zig.monotonicTime();
         if (self.previewsPaused(now)) {
             if (self.client) |client| client.streaming = false;
             return 1;
@@ -405,7 +405,7 @@ const Overview = struct {
         const self = cast(Overview, data);
         // App-grid/search transitions are separate from the window picker.
         if (self.apps_mode or self.launcher.searchText().len != 0 or self.surface == null or self.surface.?.role == null) return false;
-        const now = c.g_get_monotonic_time();
+        const now = c.__zig.monotonicTime();
         if (!self.transition.shown) return self.transition.active(now);
         if (self.transition.value(now) == 0) return false;
         self.transition.setShown(false, now);
@@ -422,7 +422,7 @@ const Overview = struct {
     }
     fn hidden(data: ?*anyopaque) void {
         const self = cast(Overview, data);
-        self.transition.setShown(false, c.g_get_monotonic_time());
+        self.transition.setShown(false, c.__zig.monotonicTime());
         self.transition.finish();
         self.hideTooltip();
         self.dash_view.hover = null;
@@ -729,7 +729,7 @@ const Overview = struct {
     }
     fn renderScale(data: ?*anyopaque, surface: *wire.Surface) u32 {
         const self = cast(Overview, data);
-        const now = c.g_get_monotonic_time();
+        const now = c.__zig.monotonicTime();
         // Fractional outputs otherwise render at the next integer scale (for
         // example 2x buffers on a 1.625x display). Keep motion inexpensive, then
         // restore native text/icon detail on the final compositor-paced frame.
@@ -745,7 +745,7 @@ const Overview = struct {
         const self = cast(Overview, data);
         const surface = self.surface orelse return;
         if (surface.output != output) return;
-        self.transition.setShown(false, c.g_get_monotonic_time());
+        self.transition.setShown(false, c.__zig.monotonicTime());
         self.transition.finish();
         self.launcher.hide();
         for (self.native.outputs.items) |candidate| if (candidate != output) {
@@ -763,7 +763,7 @@ const Overview = struct {
         cast(Overview, data).redrawSelf();
     }
     fn redrawSelf(self: *Overview) void {
-        if (self.previewsPaused(c.g_get_monotonic_time())) if (self.client) |client| {
+        if (self.previewsPaused(c.__zig.monotonicTime())) if (self.client) |client| {
             client.streaming = false;
         };
         for (self.native.seats.items) |seat| if (seat.text_input) |value| value.update();
@@ -951,7 +951,7 @@ const Overview = struct {
     fn paint(data: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(Overview, data);
         self.painting = true;
-        self.progress = self.transition.value(c.g_get_monotonic_time());
+        self.progress = self.transition.value(c.__zig.monotonicTime());
         self.animating = self.progress != (if (self.transition.shown) @as(f64, 1) else 0);
         defer self.painting = false;
         const scale = self.surface.?.buffer_scale;
@@ -1020,7 +1020,7 @@ const Overview = struct {
     }
     fn paintStrip(self: *Overview, canvas: raster.Canvas, width: f64) void {
         const client = self.client orelse return;
-        const now = c.g_get_monotonic_time();
+        const now = c.__zig.monotonicTime();
         const animated = self.transition.active(now) or !self.transition.shown or now - self.workspace_started < 250000;
         const geom = self.stripGeometry(width, client.count);
         const work_w: f64 = @floatFromInt(self.monitor.width);
@@ -1087,7 +1087,7 @@ const Overview = struct {
         };
     }
     fn workspacePosition(self: *const Overview) f64 {
-        const t = std.math.clamp(@as(f64, @floatFromInt(c.g_get_monotonic_time() - self.workspace_started)) / 250000, 0, 1);
+        const t = std.math.clamp(@as(f64, @floatFromInt(c.__zig.monotonicTime() - self.workspace_started)) / 250000, 0, 1);
         const ease = 1 - (1 - t) * (1 - t) * (1 - t);
         return self.workspace_from + (@as(f64, @floatFromInt(self.workspace_target)) - self.workspace_from) * ease;
     }
@@ -1244,7 +1244,7 @@ pub fn deinit(state: *State) void {
 
 pub fn activateCorner(state: *State) void {
     if (state.overview) |self| {
-        const now = c.g_get_monotonic_time();
+        const now = c.__zig.monotonicTime();
         // overview.js shouldToggleByCornerOrButton(): don't interrupt an
         // animation or drag, and debounce for 500 ms after opening.
         if (self.transition.active(now) or self.dragging or self.drag != null) return;

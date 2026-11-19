@@ -36,7 +36,7 @@ pub fn main() !void {
     defer c.g_object_unref(connection);
     const node = c.g_dbus_node_info_new_for_xml("<node><interface name='org.dotfiles.CaptureFixture'><method name='Color'><arg type='d' direction='in'/><arg type='d' direction='in'/><arg type='d' direction='in'/></method></interface></node>", null) orelse return error.InvalidXml;
     defer c.g_dbus_node_info_unref(node);
-    const registration = if (c.g_getenv("DESKTOP_PORTAL_FIXTURE_CAPTURE") != null) c.g_dbus_connection_register_object(connection, "/org/dotfiles/CaptureFixture", node.*.interfaces[0], &vtable, null, null, null) else 0;
+    const registration = if (c.__zig.getenv("DESKTOP_PORTAL_FIXTURE_CAPTURE") != null) c.g_dbus_connection_register_object(connection, "/org/dotfiles/CaptureFixture", node.*.interfaces[0], &vtable, null, null, null) else 0;
     defer {
         if (registration != 0) _ = c.g_dbus_connection_unregister_object(connection, registration);
     }

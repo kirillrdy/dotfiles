@@ -9,7 +9,7 @@ const editor = @import("desktop").network_editor;
 const widgets = @import("desktop").widgets;
 
 fn env(name: [:0]const u8) ?[]const u8 {
-    return if (c.g_getenv(name)) |value| std.mem.span(value) else null;
+    return if (c.__zig.getenv(name)) |value| std.mem.span(value) else null;
 }
 fn pump() void {
     while (c.g_main_context_iteration(null, 0) != 0) {}
@@ -29,8 +29,8 @@ const Objects = struct {
         self.live -= 1;
     }
     fn wait(self: *Objects, timeout_us: i64) !void {
-        const deadline = c.g_get_monotonic_time() + timeout_us;
-        while (self.live != 0 and c.g_get_monotonic_time() < deadline) pump();
+        const deadline = c.__zig.monotonicTime() + timeout_us;
+        while (self.live != 0 and c.__zig.monotonicTime() < deadline) pump();
         if (self.live != 0) {
             std.debug.print("memory: {d} owned GObjects were not finalized\n", .{self.live});
             return error.RetainedObjects;
@@ -40,8 +40,8 @@ const Objects = struct {
 fn audioChanged(_: ?*anyopaque, _: *audio.Service) void {}
 fn batteryChanged(_: ?*anyopaque, _: battery.State) void {}
 fn ready(service: *audio.Service) !void {
-    const deadline = c.g_get_monotonic_time() + 15_000_000;
-    while ((!service.ready or service.state(.output) == null) and c.g_get_monotonic_time() < deadline) pump();
+    const deadline = c.__zig.monotonicTime() + 15_000_000;
+    while ((!service.ready or service.state(.output) == null) and c.__zig.monotonicTime() < deadline) pump();
     if (!service.ready or service.state(.output) == null) return error.PrivateAudioNotReady;
 }
 const Completion = struct {
@@ -75,8 +75,8 @@ fn batteryLifetime(settle: bool) !void {
     var objects = Objects{};
     const service = try battery.Service.create(&batteryChanged, null);
     if (settle) {
-        const deadline = c.g_get_monotonic_time() + 15_000_000;
-        while (service.pending and c.g_get_monotonic_time() < deadline) pump();
+        const deadline = c.__zig.monotonicTime() + 15_000_000;
+        while (service.pending and c.__zig.monotonicTime() < deadline) pump();
         try std.testing.expect(!service.pending);
     }
     objects.watch(service.cancel);
@@ -103,8 +103,8 @@ fn networkLifetime(settle: bool) !void {
     objects.watch(client.service.cancel);
     var activation = NetworkCompletion{};
     if (settle) {
-        const deadline = c.g_get_monotonic_time() + 15_000_000;
-        while ((!client.state().available or client.state().profiles.items.len == 0) and c.g_get_monotonic_time() < deadline) pump();
+        const deadline = c.__zig.monotonicTime() + 15_000_000;
+        while ((!client.state().available or client.state().profiles.items.len == 0) and c.__zig.monotonicTime() < deadline) pump();
         try std.testing.expect(client.state().available and client.state().profiles.items.len != 0);
         if (client.service.manager) |manager| objects.watch(manager);
         const cancel = c.g_cancellable_new().?;
@@ -113,7 +113,7 @@ fn networkLifetime(settle: bool) !void {
         var connected = NetworkCompletion{};
         const ap = client.state().access_points.items[0];
         client.perform(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = "memory-secret" } }, cancel, &NetworkCompletion.done, &connected);
-        while (!connected.finished and c.g_get_monotonic_time() < deadline) pump();
+        while (!connected.finished and c.__zig.monotonicTime() < deadline) pump();
         try std.testing.expect(connected.finished and connected.succeeded);
         const ui = settings.Settings.create(.network);
         objects.watch(ui.audio_cancel);
@@ -133,7 +133,7 @@ fn networkLifetime(settle: bool) !void {
         while (ui.network_operations != 0) pump();
         ui.destroy();
         client.perform(.{ .activate = client.state().profiles.items[0].path }, cancel, &NetworkCompletion.done, &activation);
-        while (!activation.finished and client.service.waiting.items.len == 0 and c.g_get_monotonic_time() < deadline) pump();
+        while (!activation.finished and client.service.waiting.items.len == 0 and c.__zig.monotonicTime() < deadline) pump();
         try std.testing.expect(activation.finished or client.service.waiting.items.len != 0);
     }
     second.destroy();
@@ -150,15 +150,15 @@ fn soundLifetime(settle: bool) !void {
     if (sound.service) |service| {
         if (settle) {
             try ready(service);
-            const deadline = c.g_get_monotonic_time() + 15_000_000;
-            while (sound.view.rows.items.len == 0 and c.g_get_monotonic_time() < deadline) pump();
+            const deadline = c.__zig.monotonicTime() + 15_000_000;
+            while (sound.view.rows.items.len == 0 and c.__zig.monotonicTime() < deadline) pump();
             try std.testing.expect(sound.view.rows.items.len != 0);
         }
     }
     sound.close();
     while (!sound.closed) pump();
-    const deadline = c.g_get_monotonic_time() + 15_000_000;
-    while ((sound.operations != 0 or shell.network_operations != 0) and c.g_get_monotonic_time() < deadline) pump();
+    const deadline = c.__zig.monotonicTime() + 15_000_000;
+    while ((sound.operations != 0 or shell.network_operations != 0) and c.__zig.monotonicTime() < deadline) pump();
     try std.testing.expect(sound.operations == 0 and shell.network_operations == 0);
     try std.testing.expect(shell.closed);
     shell.destroy();
@@ -179,8 +179,8 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         if (controls.devices.battery_service) |service| objects.watch(service.cancel);
         for (0..2) |cycle| {
             try controls.show(320, 32);
-            const deadline = c.g_get_monotonic_time() + 5_000_000;
-            while (!controls.popup.surface.?.configured and c.g_get_monotonic_time() < deadline) pump();
+            const deadline = c.__zig.monotonicTime() + 5_000_000;
+            while (!controls.popup.surface.?.configured and c.__zig.monotonicTime() < deadline) pump();
             try std.testing.expect(controls.popup.surface.?.configured);
             if (cycle == 0) controls.hide() else _ = controls.handleKey(0xff1b, 0);
         }
@@ -188,8 +188,8 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
     if (module.usage_menu) |menu| {
         for (0..2) |cycle| {
             try menu.show(320, 32);
-            const deadline = c.g_get_monotonic_time() + 5_000_000;
-            while (!menu.popup.surface.?.configured and c.g_get_monotonic_time() < deadline) pump();
+            const deadline = c.__zig.monotonicTime() + 5_000_000;
+            while (!menu.popup.surface.?.configured and c.__zig.monotonicTime() < deadline) pump();
             try std.testing.expect(menu.popup.surface.?.configured);
             if (cycle == 0) menu.hide() else _ = menu.handleKey(0xff1b);
         }
@@ -199,8 +199,8 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         // with a dismissal still queued rather than merely freeing its model.
         for (0..2) |cycle| {
             try controls.show(320, 32);
-            const deadline = c.g_get_monotonic_time() + 5_000_000;
-            while (!controls.popup.surface.?.configured and c.g_get_monotonic_time() < deadline) pump();
+            const deadline = c.__zig.monotonicTime() + 5_000_000;
+            while (!controls.popup.surface.?.configured and c.__zig.monotonicTime() < deadline) pump();
             try std.testing.expect(controls.popup.surface.?.configured);
             if (cycle == 0) controls.hide() else _ = controls.handleKey(0xff1b, 0);
         }

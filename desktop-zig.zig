@@ -61,7 +61,7 @@ const Session = struct {
             std.log.warn("PolicyKit agent: {s}; will retry", .{@errorName(err)});
             break :blk null;
         };
-        self.data = .{ .devices = self.devices.?, .panel = self.panels.?, .icon = if (c.g_getenv("DESKTOP_CODEX_ICON")) |icon| std.mem.span(icon) else "" };
+        self.data = .{ .devices = self.devices.?, .panel = self.panels.?, .icon = if (c.__zig.getenv("DESKTOP_CODEX_ICON")) |icon| std.mem.span(icon) else "" };
         self.data.start();
         self.data_started = true;
         self.inactivity = try idle.Service.create(.{ .session_inhibit = true });

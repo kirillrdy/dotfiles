@@ -556,8 +556,8 @@ fn openRemote(server: *Server, client_info: *Client, params: ?*c.GVariant, invoc
     if (session_info.state != .started) return error.InvalidSessionState;
     // Host clients already have access to this socket. Sandboxed callers are
     // rejected before dispatch rather than receiving an unrestricted remote.
-    const runtime = c.g_getenv("XDG_RUNTIME_DIR") orelse return error.NoRuntimeDirectory;
-    const remote: [*c]const u8 = c.g_getenv("PIPEWIRE_REMOTE") orelse @as([*c]const u8, "pipewire-0");
+    const runtime = c.__zig.getenv("XDG_RUNTIME_DIR") orelse return error.NoRuntimeDirectory;
+    const remote: [*c]const u8 = c.__zig.getenv("PIPEWIRE_REMOTE") orelse @as([*c]const u8, "pipewire-0");
     var address = std.mem.zeroes(libc.struct_sockaddr_un);
     address.sun_family = libc.AF_UNIX;
     const socket_path = if (std.mem.startsWith(u8, std.mem.span(remote), "/")) try std.fmt.bufPrint(&address.sun_path, "{s}", .{remote}) else try std.fmt.bufPrint(&address.sun_path, "{s}/{s}", .{ runtime, remote });

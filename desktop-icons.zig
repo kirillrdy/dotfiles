@@ -262,11 +262,11 @@ fn resolver() !*Resolver {
     defer arena.deinit();
     const alloc = arena.allocator();
     var roots: std.ArrayList([]const u8) = .empty;
-    for ([_][:0]const u8{ "DESKTOP_PANEL_ICON_PATH", "DESKTOP_APPS_ICON_PATH" }) |name| if (c.g_getenv(name)) |path| try roots.append(alloc, std.mem.span(path));
+    for ([_][:0]const u8{ "DESKTOP_PANEL_ICON_PATH", "DESKTOP_APPS_ICON_PATH" }) |name| if (c.__zig.getenv(name)) |path| try roots.append(alloc, std.mem.span(path));
     const home = std.mem.span(c.g_get_home_dir());
     try roots.append(alloc, try std.fmt.allocPrint(alloc, "{s}/.icons", .{home}));
     try roots.append(alloc, try std.fmt.allocPrint(alloc, "{s}/icons", .{std.mem.span(c.g_get_user_data_dir())}));
-    const dirs = if (c.g_getenv("XDG_DATA_DIRS")) |value| std.mem.span(value) else "/usr/local/share:/usr/share";
+    const dirs = if (c.__zig.getenv("XDG_DATA_DIRS")) |value| std.mem.span(value) else "/usr/local/share:/usr/share";
     var paths = std.mem.splitScalar(u8, dirs, ':');
     while (paths.next()) |path| if (std.fs.path.isAbsolute(path)) {
         try roots.append(alloc, try std.fmt.allocPrint(alloc, "{s}/icons", .{path}));

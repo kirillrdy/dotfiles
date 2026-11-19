@@ -571,7 +571,7 @@ pub const Form = struct {
                 self.relayout();
                 return;
             };
-            const now = c.g_get_monotonic_time();
+            const now = c.__zig.monotonicTime();
             const double = self.last_item == id and now - self.last_click < 400_000 and @abs(x - self.last_x) < 5 and @abs(screen_y - self.last_y) < 5;
             self.last_item = id;
             self.last_click = now;
@@ -803,8 +803,8 @@ test "integration: native forms preserve selections, isolate passwords and navig
     try form.setText(name, "");
     form.focusItem(name);
     try std.testing.expect(form.handleKey('v', c.__zig.control_mask));
-    const deadline = c.g_get_monotonic_time() + 2_000_000;
-    while (form.get(name).value().len == 0 and c.g_get_monotonic_time() < deadline) {
+    const deadline = c.__zig.monotonicTime() + 2_000_000;
+    while (form.get(name).value().len == 0 and c.__zig.monotonicTime() < deadline) {
         _ = c.g_main_context_iteration(null, 0);
         c.g_usleep(1000);
     }
@@ -884,8 +884,8 @@ test "integration: native form children share their parent connection and close 
     try std.testing.expectEqual(parent.window.surface.?.client, child.window.surface.?.client);
     try std.testing.expect(parent.window.blocked());
     parent.close();
-    const deadline = c.g_get_monotonic_time() + 2_000_000;
-    while (owner.closes != 2 and c.g_get_monotonic_time() < deadline) {
+    const deadline = c.__zig.monotonicTime() + 2_000_000;
+    while (owner.closes != 2 and c.__zig.monotonicTime() < deadline) {
         _ = c.g_main_context_iteration(null, 0);
         c.g_usleep(1000);
     }

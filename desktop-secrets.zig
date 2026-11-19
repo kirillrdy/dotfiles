@@ -39,7 +39,7 @@ fn stringVariant(value: [:0]const u8) *c.GVariant {
     return variantString(value.ptr).?;
 }
 fn now() u64 {
-    return @intCast(@divTrunc(c.g_get_real_time(), 1000000));
+    return @intCast(@divTrunc(c.__zig.realTime(), 1000000));
 }
 fn append(comptime T: type, a: std.mem.Allocator, old: []const T, value: T) ![]const T {
     const out = try a.alloc(T, old.len + 1);

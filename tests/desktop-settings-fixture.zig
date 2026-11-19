@@ -66,8 +66,8 @@ pub fn main() !void {
         while (!ui.closed) _ = c.g_main_context_iteration(null, 1);
         while (ui.network_operations != 0 or ui.sound.?.operations != 0) _ = c.g_main_context_iteration(null, 1);
         ui.destroy();
-        const deadline = c.g_get_monotonic_time() + 100000;
-        while (c.g_get_monotonic_time() < deadline) {
+        const deadline = c.__zig.monotonicTime() + 100000;
+        while (c.__zig.monotonicTime() < deadline) {
             while (c.g_main_context_iteration(null, 0) != 0) {}
             c.g_usleep(1000);
         }

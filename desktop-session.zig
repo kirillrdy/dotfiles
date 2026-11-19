@@ -17,7 +17,7 @@ pub fn perform(action: Action, cancel: *c.GCancellable, callback: Callback, data
     };
     job.* = .{ .action = action, .cancel = cancel, .callback = callback, .data = data };
     if (action == .logout) {
-        if (c.g_getenv("XDG_SESSION_ID")) |id| {
+        if (c.__zig.getenv("XDG_SESSION_ID")) |id| {
             if (id[0] != 0) job.session_id = a.dupeSentinel(u8, std.mem.span(id), 0) catch {
                 a.destroy(job);
                 callback(data, .{ .failure = "Could not allocate session ID" });

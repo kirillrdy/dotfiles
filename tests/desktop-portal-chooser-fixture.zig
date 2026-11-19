@@ -31,8 +31,8 @@ const Done = struct {
         if (self.result != null) c.g_variant_unref(self.result);
     }
     fn accept(self: *Done, dialog: *Dialog) !void {
-        const deadline = c.g_get_monotonic_time() + 5_000_000;
-        while (self.code == null and c.g_get_monotonic_time() < deadline) {
+        const deadline = c.__zig.monotonicTime() + 5_000_000;
+        while (self.code == null and c.__zig.monotonicTime() < deadline) {
             pump();
             dialog.accept();
         }
@@ -40,8 +40,8 @@ const Done = struct {
     }
 };
 fn loaded(dialog: *Dialog) !void {
-    const deadline = c.g_get_monotonic_time() + 5_000_000;
-    while (dialog.pending != null and c.g_get_monotonic_time() < deadline) pump();
+    const deadline = c.__zig.monotonicTime() + 5_000_000;
+    while (dialog.pending != null and c.__zig.monotonicTime() < deadline) pump();
     try expect(dialog.pending == null and dialog.listing != null);
 }
 fn select(dialog: *Dialog, paths: []const [:0]const u8) !void {

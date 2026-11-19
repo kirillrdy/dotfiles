@@ -23,7 +23,7 @@ pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const text = try arena.allocator().dupeSentinel(u8, if (args.len > 1) args[1] else "Enter your SSH passphrase:", 0);
-    const hint = c.g_getenv("SSH_ASKPASS_PROMPT");
+    const hint = c.__zig.getenv("SSH_ASKPASS_PROMPT");
     const dialog = Dialog.create(Mode.fromHint(if (hint) |h| std.mem.span(h) else null), text) catch return 1;
     defer dialog.destroy();
     dialog.run();

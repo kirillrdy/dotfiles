@@ -271,7 +271,7 @@ const Server = struct {
     }
     fn notify(self: *Server, sender: [*:0]const u8, parameters: *c.GVariant) !u32 {
         const notice = try allocator.create(Notice);
-        notice.* = .{ .arena = std.heap.ArenaAllocator.init(allocator), .id = 0, .app = "", .title = "", .body = "", .icon = "", .sender = "", .actions = &.{}, .created = @divTrunc(c.g_get_real_time(), 1000000) };
+        notice.* = .{ .arena = std.heap.ArenaAllocator.init(allocator), .id = 0, .app = "", .title = "", .body = "", .icon = "", .sender = "", .actions = &.{}, .created = @divTrunc(c.__zig.realTime(), 1000000) };
         errdefer notice.destroy();
         const a = notice.arena.allocator();
         notice.app = try stringField(a, parameters, 0, 150);

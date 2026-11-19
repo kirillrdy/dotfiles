@@ -11,8 +11,8 @@ fn pump() void {
     c.g_usleep(1000);
 }
 fn waitControls(controls: *quick.Controls) void {
-    const deadline = c.g_get_monotonic_time() + 8_000_000;
-    while ((controls.brightness_busy or controls.brightness_timer != 0) and c.g_get_monotonic_time() < deadline) pump();
+    const deadline = c.__zig.monotonicTime() + 8_000_000;
+    while ((controls.brightness_busy or controls.brightness_timer != 0) and c.__zig.monotonicTime() < deadline) pump();
     assert(!controls.brightness_busy and controls.brightness_timer == 0);
 }
 fn controlsTest(backend: backlight.Backend, empty: bool, denied: bool) !void {
@@ -30,8 +30,8 @@ fn controlsTest(backend: backlight.Backend, empty: bool, denied: bool) !void {
         assert(controls.view.model.brightness != null);
         assert(@abs(controls.view.model.brightness.? - 20) < 0.01);
         controls.setSlider(.brightness, 75);
-        const deadline = c.g_get_monotonic_time() + 3_000_000;
-        while (!controls.brightness_busy and c.g_get_monotonic_time() < deadline) pump();
+        const deadline = c.__zig.monotonicTime() + 3_000_000;
+        while (!controls.brightness_busy and c.__zig.monotonicTime() < deadline) pump();
         assert(controls.brightness_busy);
         controls.setSlider(.brightness, 38);
         waitControls(controls);
@@ -42,8 +42,8 @@ fn controlsTest(backend: backlight.Backend, empty: bool, denied: bool) !void {
         controls.refresh(); // Exercise disposal while a native read is in flight.
     }
     controls.deinit();
-    const deadline = c.g_get_monotonic_time() + 250_000;
-    while (c.g_get_monotonic_time() < deadline) pump();
+    const deadline = c.__zig.monotonicTime() + 250_000;
+    while (c.__zig.monotonicTime() < deadline) pump();
 }
 const Completion = struct {
     result: ?backlight.Result = null,
@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
-    const root = c.g_getenv("DESKTOP_BACKLIGHT_FIXTURE_ROOT") orelse return error.ExpectedFixtureRoot;
+    const root = c.__zig.getenv("DESKTOP_BACKLIGHT_FIXTURE_ROOT") orelse return error.ExpectedFixtureRoot;
     const backend = backlight.Backend{ .root = std.mem.span(root) };
     if (args.len < 2) return error.ExpectedMode;
     if (std.mem.eql(u8, args[1], "serve") or osd.parseCommand(args[1..]) != null) return runOsd(init, backend);

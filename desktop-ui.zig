@@ -6,7 +6,11 @@ const Image = @import("desktop-image.zig").Image;
 pub fn cast(comptime T: type, ptr: anytype) *T {
     return @ptrCast(@alignCast(ptr));
 }
-pub const eq = @import("desktop-util.zig").eq;
+const util = @import("desktop-util.zig");
+pub const eq = util.eq;
+pub const monotonicTime = util.monotonicTime;
+pub const realTime = util.realTime;
+pub const getenv = std.c.getenv;
 pub fn dupeZ(allocator: std.mem.Allocator, value: []const u8) [:0]u8 {
     return allocator.dupeSentinel(u8, value, 0) catch @panic("out of memory");
 }

@@ -782,8 +782,8 @@ test "integration: frame callbacks coalesce redraws, finish animation and cancel
     surface.render_scale = &State.scale;
     try client.start();
     try surface.show();
-    const deadline = c.g_get_monotonic_time() + 2_000_000;
-    while (state.paints == 0 and c.g_get_monotonic_time() < deadline) {
+    const deadline = c.__zig.monotonicTime() + 2_000_000;
+    while (state.paints == 0 and c.__zig.monotonicTime() < deadline) {
         while (c.g_main_context_iteration(null, 0) != 0) {}
         c.g_usleep(1000);
     }
@@ -792,7 +792,7 @@ test "integration: frame callbacks coalesce redraws, finish animation and cancel
     for (0..20) |_| surface.redraw();
     try std.testing.expectEqual(paints, state.paints);
     try std.testing.expect(surface.pending);
-    while ((state.frames < 4 or surface.frame_callback != null or surface.pending) and c.g_get_monotonic_time() < deadline) {
+    while ((state.frames < 4 or surface.frame_callback != null or surface.pending) and c.__zig.monotonicTime() < deadline) {
         while (c.g_main_context_iteration(null, 0) != 0) {}
         c.g_usleep(1000);
     }

@@ -7,6 +7,19 @@ pub const libc = @import("desktop-libc.zig");
 pub fn sleep(nanoseconds: u64) void {
     io.sleep(.fromNanoseconds(nanoseconds), .awake) catch {};
 }
+fn micros(clock: std.c.clockid_t) i64 {
+    var now: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(clock, &now);
+    return @as(i64, now.sec) * std.time.us_per_s + @divTrunc(@as(i64, now.nsec), std.time.ns_per_us);
+}
+/// CLOCK_MONOTONIC in microseconds, matching g_get_monotonic_time().
+pub fn monotonicTime() i64 {
+    return micros(.MONOTONIC);
+}
+/// CLOCK_REALTIME in microseconds, matching g_get_real_time().
+pub fn realTime() i64 {
+    return micros(.REALTIME);
+}
 pub fn timestamp() i64 {
     return std.Io.Clock.real.now(io).toSeconds();
 }

@@ -96,7 +96,7 @@ fn tooltipSnapshot(view: *native.View, scale: u32) !void {
     try snapshot(surface, scale, "tooltip");
 }
 fn snapshot(surface: *c.cairo_surface_t, scale: u32, state: []const u8) !void {
-    const root = c.g_getenv("DESKTOP_DASH_SCREENSHOTS") orelse return;
+    const root = c.__zig.getenv("DESKTOP_DASH_SCREENSHOTS") orelse return;
     const path = try std.fmt.allocPrintSentinel(std.heap.page_allocator, "{s}/dash-{s}-{d}x.png", .{ root, state, scale }, 0);
     defer std.heap.page_allocator.free(path);
     c.cairo_surface_mark_dirty(surface);

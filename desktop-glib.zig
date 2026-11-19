@@ -75,7 +75,6 @@ pub extern fn g_filename_from_uri(uri: [*c]const gchar, hostname: [*c][*c]gchar,
 pub const struct__GData = opaque {};
 
 pub const GData = struct__GData;
-pub extern fn g_getenv(variable: [*c]const gchar) [*c]const gchar;
 pub extern fn g_setenv(variable: [*c]const gchar, value: [*c]const gchar, overwrite: gboolean) gboolean;
 pub extern fn g_file_get_contents(filename: [*c]const gchar, contents: [*c][*c]gchar, length: [*c]gsize, @"error": [*c][*c]GError) gboolean;
 pub extern fn g_dir_make_tmp(tmpl: [*c]const gchar, @"error": [*c][*c]GError) [*c]gchar;
@@ -110,8 +109,6 @@ pub const struct__GMainContext = opaque {};
 pub const GMainContext = struct__GMainContext;
 pub const GSourceFunc = ?*const fn (user_data: gpointer) callconv(.c) gboolean;
 pub extern fn g_main_context_iteration(context: ?*GMainContext, may_block: gboolean) gboolean;
-pub extern fn g_get_monotonic_time() gint64;
-pub extern fn g_get_real_time() gint64;
 pub extern fn g_source_remove(tag: guint) gboolean;
 pub extern fn g_timeout_add(interval: guint, function: GSourceFunc, data: gpointer) guint;
 pub extern fn g_timeout_add_seconds(interval: guint, function: GSourceFunc, data: gpointer) guint;

@@ -27,8 +27,8 @@ fn pump() void {
     c.g_usleep(1000);
 }
 fn settle() void {
-    const deadline = c.g_get_monotonic_time() + 100000;
-    while (c.g_get_monotonic_time() < deadline) pump();
+    const deadline = c.__zig.monotonicTime() + 100000;
+    while (c.__zig.monotonicTime() < deadline) pump();
 }
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
@@ -38,16 +38,16 @@ pub fn main(init: std.process.Init) !void {
         client.destroy();
         settle();
     }
-    const limit = c.g_get_monotonic_time() + 5_000_000;
-    while ((!client.state().available or client.state().profiles.items.len == 0) and c.g_get_monotonic_time() < limit) pump();
+    const limit = c.__zig.monotonicTime() + 5_000_000;
+    while ((!client.state().available or client.state().profiles.items.len == 0) and c.__zig.monotonicTime() < limit) pump();
     try std.testing.expect(client.state().available);
     const state = client.state();
     if (std.mem.eql(u8, args[1], "events")) {
         fixture_io = init.io;
         watching = true;
         changed(null, client);
-        const deadline = c.g_get_monotonic_time() + 8_000_000;
-        while (c.g_get_monotonic_time() < deadline) pump();
+        const deadline = c.__zig.monotonicTime() + 8_000_000;
+        while (c.__zig.monotonicTime() < deadline) pump();
         watching = false;
         return;
     }
@@ -193,8 +193,8 @@ pub fn main(init: std.process.Init) !void {
         const cancel = c.g_cancellable_new().?;
         defer c.g_object_unref(cancel);
         client.perform(.{ .save = .{ .path = ui.path, .settings = values, .version = ui.version } }, cancel, &done, null);
-        const deadline = c.g_get_monotonic_time() + 8_000_000;
-        while (!complete and c.g_get_monotonic_time() < deadline) pump();
+        const deadline = c.__zig.monotonicTime() + 8_000_000;
+        while (!complete and c.__zig.monotonicTime() < deadline) pump();
         ui.ui.close();
         settle();
         try std.testing.expect(complete);
@@ -257,8 +257,8 @@ pub fn main(init: std.process.Init) !void {
     } else .{ .connect = .{ .ssid = args[2], .password = if (args.len > 3) args[3] else "", .hidden = true } };
     client.perform(action, cancel, &done, null);
     if (std.mem.eql(u8, command, "cancel")) c.g_cancellable_cancel(cancel);
-    const deadline = c.g_get_monotonic_time() + 8_000_000;
-    while (!complete and c.g_get_monotonic_time() < deadline) pump();
+    const deadline = c.__zig.monotonicTime() + 8_000_000;
+    while (!complete and c.__zig.monotonicTime() < deadline) pump();
     try std.testing.expect(complete);
     if (std.mem.eql(u8, command, "cancel")) try std.testing.expect(!success) else try std.testing.expect(success);
 }

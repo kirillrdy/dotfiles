@@ -85,7 +85,7 @@ pub const Controls = struct {
             self.requestHide();
             return;
         }
-        if (self.view.minute != @divTrunc(c.g_get_real_time(), 60_000_000)) self.redraw();
+        if (self.view.minute != @divTrunc(c.__zig.realTime(), 60_000_000)) self.redraw();
     }
     fn redraw(self: *Controls) void {
         self.popup.redraw();

@@ -21,7 +21,7 @@ const State = struct {
     }
     fn focus(ptr: ?*anyopaque, _: *wire.Surface, active: bool) void {
         const self = cast(State, ptr);
-        if (active) c.g_print("%lld %s\n", @as(c_longlong, c.g_get_monotonic_time()), self.title.ptr);
+        if (active) c.g_print("%lld %s\n", @as(c_longlong, c.__zig.monotonicTime()), self.title.ptr);
     }
     fn animate(data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(State, data);
@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     state.surface = surface;
     surface.input = .{ .focus = &State.focus };
     surface.close = &State.close;
-    const timer = if (c.g_getenv("DESKTOP_FIXTURE_ANIMATE") != null) c.g_timeout_add(100, &State.animate, &state) else 0;
+    const timer = if (c.__zig.getenv("DESKTOP_FIXTURE_ANIMATE") != null) c.g_timeout_add(100, &State.animate, &state) else 0;
     defer if (timer != 0) {
         _ = c.g_source_remove(timer);
     };

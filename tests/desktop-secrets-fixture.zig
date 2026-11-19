@@ -81,7 +81,7 @@ pub fn main(init: std.process.Init) !void {
         return secrets.importAt(try arena.allocator().dupeSentinel(u8, args[2], 0), "integration-vault-password");
     }
     if (args.len != 2) return error.ExpectedDirectory;
-    const mode = c.g_getenv("DESKTOP_SECRETS_FIXTURE_PROMPTS");
+    const mode = c.__zig.getenv("DESKTOP_SECRETS_FIXTURE_PROMPTS");
     try secrets.runAtWithOptions(try arena.allocator().dupeSentinel(u8, args[1], 0), .{
         .prompt_ready = if (mode != null and std.mem.eql(u8, std.mem.span(mode.?), "accept")) &ready else null,
     });
