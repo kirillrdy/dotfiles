@@ -8,7 +8,7 @@ const battery = @import("desktop-battery.zig");
 const panel = @import("desktop-panel.zig");
 const a = std.heap.page_allocator;
 const kinds = [_][]const u8{ "monitors", "status", "disk", "codex", "claude" };
-const intervals = [_]u32{ 1, 10, 10, 120, 120 }; // Half-second ticks.
+const intervals = [_]u32{ 1, 10, 10, 240, 240 }; // Half-second ticks.
 
 pub const Service = struct {
     panel: *panel.Service,
