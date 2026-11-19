@@ -126,6 +126,7 @@
       (if enableNvidia then nvtopPackages.nvidia else nvtopPackages.intel)
       file
       firefox-bin
+      ghostty
       slack
     ])
     ++ lib.optionals (!enableLightDesktop) (
