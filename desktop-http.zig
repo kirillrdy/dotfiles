@@ -4,6 +4,8 @@ const std = @import("std");
 pub const Response = struct {
     status: std.http.Status,
     body: []u8,
+    /// Seconds from a numeric Retry-After header; HTTP-date values are ignored.
+    retry_after: ?u32 = null,
 };
 pub const Options = struct {
     url: []const u8,
@@ -62,9 +64,15 @@ fn request(a: std.mem.Allocator, io: std.Io, options: Options) !Response {
     try req.sendBodiless();
     var response = try req.receiveHead(&.{});
     if (response.head.content_encoding != .identity) return error.UnsupportedEncoding;
+    // Head bytes are only valid until the body reader takes over the buffer.
+    var retry_after: ?u32 = null;
+    var headers = response.head.iterateHeaders();
+    while (headers.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "retry-after")) retry_after = std.fmt.parseInt(u32, std.mem.trim(u8, header.value, " \t"), 10) catch null;
+    }
     var transfer_buffer: [4096]u8 = undefined;
     const body = try response.reader(&transfer_buffer).allocRemaining(a, .limited(options.max_bytes));
-    return .{ .status = response.head.status, .body = body };
+    return .{ .status = response.head.status, .body = body, .retry_after = retry_after };
 }
 
 const Fixture = struct {

@@ -121,7 +121,7 @@ test {
     // Nix builds do not inherit the graphical session's loader environment.
     try @import("desktop-runtime.zig").setup(std.testing.allocator);
     _ = @import("desktop-zig.zig");
-    _ = @import("tests/desktop-gtk-abi.zig");
+    _ = @import("tests/desktop-glib-abi.zig");
     _ = @import("tests/desktop-libc-abi.zig");
     _ = @import("tests/desktop-protocols.zig");
     _ = @import("desktop-switcher.zig");
@@ -148,6 +148,7 @@ test {
     _ = @import("desktop-panel-view.zig");
     _ = @import("desktop-widgets.zig");
     _ = @import("desktop-icons.zig");
+    _ = @import("desktop-decode.zig");
     _ = @import("desktop-form.zig");
     _ = @import("desktop-file-list.zig");
     _ = @import("desktop-keyboard.zig");
@@ -212,4 +213,21 @@ test "Claude maps five-hour and weekly utilization onto the shared windows" {
     for ([_][]const u8{ "{}", "{\"five_hour\":null,\"seven_day\":null}", "{\"error\":{}}" }) |value| {
         try strings("unavailable", u.string(u.get(try claude.formatUsage(a, try u.parse(a, value), true, true, 1000), "class")));
     }
+}
+
+test "Claude backs off after 429 like Claude Code and keeps the last usage" {
+    try equal(@as(i64, 300), claude.backoffSeconds(null));
+    try equal(@as(i64, 300), claude.backoffSeconds(0));
+    try equal(@as(i64, 90), claude.backoffSeconds(90));
+    try equal(@as(i64, 3600), claude.backoffSeconds(86400));
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const kept = try claude.rateLimited(a, "{\"five_hour\":{\"utilization\":46},\"seven_day\":{\"utilization\":7}}", 1000, 1300, true, true, 1100);
+    try strings("54%", u.string(u.get(kept, "text")));
+    try expect(std.mem.indexOf(u8, u.string(u.get(kept, "tooltip")), "Rate limited; retrying at") != null);
+    try expect(std.mem.indexOf(u8, u.string(u.get(kept, "checked")), "retry") != null);
+    const empty = try claude.rateLimited(a, null, 0, 1300, true, true, 1100);
+    try strings("unavailable", u.string(u.get(empty, "class")));
+    try expect(std.mem.indexOf(u8, u.string(u.get(empty, "tooltip")), "rate limited") != null);
 }

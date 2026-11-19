@@ -68,10 +68,37 @@ pub fn formatUsage(a: A, data: V, remaining: bool, compact: bool, now: i64) !V {
     return codex.formatUsage(a, "Claude", shaped, remaining, compact, now);
 }
 
+/// Mirrors Claude Code: honour Retry-After, else wait 5 minutes, never over an hour.
+pub fn backoffSeconds(retry_after: ?u32) i64 {
+    const seconds: i64 = retry_after orelse 0;
+    return @min(if (seconds > 0) seconds else 300, 3600);
+}
+
+/// Shows the last good response while rate limited, so a 429 does not blank
+/// the widget; without one, explains when the next request will be made.
+pub fn rateLimited(a: A, last: ?[]const u8, checked: i64, until: i64, remaining: bool, compact: bool, now: i64) !V {
+    const retry = try u.localTime(a, until, "%H:%M");
+    const body = last orelse return codex.unavailable(a, "Claude", try u.fmt(a, "Claude usage is rate limited; retrying at {s}", .{retry}), compact);
+    var result = try formatUsage(a, try u.parse(a, body), remaining, compact, now);
+    if (u.get(result, "windows") != .array) return result;
+    try u.put(a, &result, "tooltip", u.str(try u.fmt(a, "{s}\nRate limited; retrying at {s}", .{ u.string(u.get(result, "tooltip")), retry })));
+    try u.put(a, &result, "checked", u.str(try u.fmt(a, "Checked {s} · retry {s}", .{ try u.localTime(a, checked, "%H:%M"), retry })));
+    return result;
+}
+
+// Only touched from the collector's worker, which runs one Claude fetch at a time.
+const persistent = std.heap.page_allocator;
+var backoff_until: i64 = 0;
+var last_body: ?[]u8 = null;
+var last_checked: i64 = 0;
+
 pub fn readUsage(a: A, remaining: bool, compact: bool) !V {
     return fetchUsage(a, remaining, compact) catch codex.unavailable(a, "Claude", "Claude usage is unavailable; check login and network", compact);
 }
 fn fetchUsage(a: A, remaining: bool, compact: bool) !V {
+    // Manual refreshes land here too, so they also respect the back-off.
+    const now = u.timestamp();
+    if (now < backoff_until) return rateLimited(a, last_body, last_checked, backoff_until, remaining, compact, now);
     const dir = u.env("CLAUDE_CONFIG_DIR") orelse try u.fmt(a, "{s}/.claude", .{u.env("HOME") orelse return error.NoHome});
     const path = try u.fmt(a, "{s}/.credentials.json", .{dir});
     const raw = u.read(a, path) catch return codex.unavailable(a, "Claude", "Sign in with claude to see account usage", compact);
@@ -95,6 +122,17 @@ fn fetchUsage(a: A, remaining: bool, compact: bool) !V {
     defer a.free(response.body);
     const status = @backingInt(response.status);
     if (status == 401 or status == 403) return codex.unavailable(a, "Claude", "Claude login needs refreshing; run claude", compact);
+    if (status == 429) {
+        backoff_until = now + backoffSeconds(response.retry_after);
+        return rateLimited(a, last_body, last_checked, backoff_until, remaining, compact, now);
+    }
     if (status != 200) return codex.unavailable(a, "Claude", try u.fmt(a, "Claude usage service returned HTTP {d}", .{status}), compact);
-    return formatUsage(a, try u.parse(a, response.body), remaining, compact, u.timestamp());
+    const result = try formatUsage(a, try u.parse(a, response.body), remaining, compact, now);
+    if (u.get(result, "windows") == .array) {
+        const copy = try persistent.dupe(u8, response.body);
+        if (last_body) |old| persistent.free(old);
+        last_body = copy;
+        last_checked = now;
+    }
+    return result;
 }
