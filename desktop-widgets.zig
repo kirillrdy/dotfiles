@@ -37,25 +37,25 @@ pub const Module = struct {
     settings_subscription: c.guint = 0,
     quick: ?*quick.Controls = null,
     power_pending: c.gboolean = 0,
-    codex_menu: ?*CodexPopup = null,
+    usage_menu: ?*UsagePopup = null,
     view: native.View = .{},
-    codex: native.Codex = .{},
+    usage: native.Usage = .{},
     tooltip: [*c]u8 = null,
     on_redraw: ?*const fn (?*anyopaque) void = null,
     redraw_context: ?*anyopaque = null,
 };
 
-/// Native popup controller using the module's existing Codex view.
-pub const CodexPopup = struct {
+/// Native popup controller using the module's existing usage view.
+pub const UsagePopup = struct {
     module: *Module,
     popup: popup.Host = undefined,
 
-    fn create(module: *Module) !*CodexPopup {
-        const self = try module_allocator.create(CodexPopup);
+    fn create(module: *Module) !*UsagePopup {
+        const self = try module_allocator.create(UsagePopup);
         self.* = .{ .module = module };
         self.popup = .{
             .context = self,
-            .namespace = "desktop-codex",
+            .namespace = "desktop-usage",
             .paint = &draw,
             .input = .{ .button = &button, .motion = &motion, .leave = &leave, .symbol = &key },
             .resized = &resized,
@@ -63,13 +63,13 @@ pub const CodexPopup = struct {
         };
         return self;
     }
-    fn destroy(self: *CodexPopup) void {
+    fn destroy(self: *UsagePopup) void {
         self.popup.deinit();
         module_allocator.destroy(self);
     }
-    pub fn show(self: *CodexPopup, global_x: i32, global_y: i32) !void {
+    pub fn show(self: *UsagePopup, global_x: i32, global_y: i32) !void {
         try self.popup.prepare(global_x, global_y);
-        const view = &self.module.codex;
+        const view = &self.module.usage;
         try view.prepare(self.popup.surface.?.output.scale);
         view.pressed = false;
         view.hovered = false;
@@ -77,46 +77,46 @@ pub const CodexPopup = struct {
         self.popup.place(view.width, view.height);
         try self.popup.show();
     }
-    pub fn hide(self: *CodexPopup) void {
+    pub fn hide(self: *UsagePopup) void {
         self.popup.hide();
-        self.module.codex.pressed = false;
-        self.module.codex.hovered = false;
+        self.module.usage.pressed = false;
+        self.module.usage.hovered = false;
     }
-    fn redraw(self: *CodexPopup) void {
+    fn redraw(self: *UsagePopup) void {
         self.popup.redraw();
     }
     fn dismiss(ptr: ?*anyopaque) void {
-        cast(CodexPopup, ptr).hide();
+        cast(UsagePopup, ptr).hide();
     }
     fn resized(ptr: ?*anyopaque) void {
-        cast(CodexPopup, ptr).redraw();
+        cast(UsagePopup, ptr).redraw();
     }
     fn draw(ptr: ?*anyopaque, target: wire.Pixels) void {
-        const self = cast(CodexPopup, ptr);
+        const self = cast(UsagePopup, ptr);
         @memset(target.pixels, 0);
         self.paint(target) catch |err| {
-            std.log.err("Codex paint: {s}", .{@errorName(err)});
+            std.log.err("Usage paint: {s}", .{@errorName(err)});
             self.popup.requestHide();
         };
     }
-    fn paint(self: *CodexPopup, target: wire.Pixels) !void {
-        const view = &self.module.codex;
+    fn paint(self: *UsagePopup, target: wire.Pixels) !void {
+        const view = &self.module.usage;
         try view.prepare(self.popup.surface.?.buffer_scale);
         view.paint(try self.popup.canvas(view.width, view.height));
         try self.popup.blit(target);
     }
-    fn onRefresh(self: *const CodexPopup, x: f64, y: f64) bool {
+    fn onRefresh(self: *const UsagePopup, x: f64, y: f64) bool {
         const local = self.popup.point(x, y);
-        return self.module.codex.refreshRect().contains(local.x, local.y);
+        return self.module.usage.refreshRect().contains(local.x, local.y);
     }
     fn button(ptr: ?*anyopaque, _: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
-        const self = cast(CodexPopup, ptr);
+        const self = cast(UsagePopup, ptr);
         if (!self.popup.visible or self.popup.close_idle != 0 or code != 272) return;
         if (pressed and !self.popup.contains(x, y)) {
             self.popup.requestHide();
             return;
         }
-        const view = &self.module.codex;
+        const view = &self.module.usage;
         const hit = self.onRefresh(x, y);
         if (pressed) {
             view.keyboard_focus = false;
@@ -124,33 +124,33 @@ pub const CodexPopup = struct {
         } else {
             const activate = view.pressed and hit;
             view.pressed = false;
-            if (activate) codex_refresh(self.module);
+            if (activate) usage_refresh(self.module);
         }
         self.redraw();
     }
     fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
-        const self = cast(CodexPopup, ptr);
+        const self = cast(UsagePopup, ptr);
         if (!self.popup.visible or self.popup.close_idle != 0) return;
         const hovered = self.onRefresh(x, y);
-        if (self.module.codex.hovered != hovered) {
-            self.module.codex.hovered = hovered;
+        if (self.module.usage.hovered != hovered) {
+            self.module.usage.hovered = hovered;
             self.redraw();
         }
     }
     fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
-        const self = cast(CodexPopup, ptr);
-        self.module.codex.hovered = false;
+        const self = cast(UsagePopup, ptr);
+        self.module.usage.hovered = false;
         self.redraw();
     }
     fn key(ptr: ?*anyopaque, _: *wire.Surface, symbol: u32, _: u32, pressed: bool) bool {
-        return !pressed or cast(CodexPopup, ptr).handleKey(symbol);
+        return !pressed or cast(UsagePopup, ptr).handleKey(symbol);
     }
-    pub fn handleKey(self: *CodexPopup, symbol: u32) bool {
+    pub fn handleKey(self: *UsagePopup, symbol: u32) bool {
         if (!self.popup.visible or self.popup.close_idle != 0) return true;
         switch (symbol) {
             0xff1b => self.popup.requestHide(),
-            0xff09, 0xfe20 => self.module.codex.keyboard_focus = true,
-            0xff0d, 0xff8d, 0x20 => codex_refresh(self.module),
+            0xff09, 0xfe20 => self.module.usage.keyboard_focus = true,
+            0xff0d, 0xff8d, 0x20 => usage_refresh(self.module),
             else => return false,
         }
         self.redraw();
@@ -165,7 +165,7 @@ pub fn unref_module(m: *Module) callconv(.c) void {
     if (m.session != null) c.g_object_unref(m.session);
     c.g_free(m.tooltip);
     m.view.deinit();
-    m.codex.deinit();
+    m.usage.deinit();
     module_allocator.destroy(m);
 }
 pub var power_ids: [3][*c]const u8 = [3][*c]const u8{
@@ -316,33 +316,33 @@ fn populate_notifications(m: *Module, reply: ?*c.GVariant) void {
     if (raw == null) return;
     if (m.date_controls) |controls| controls.load(std.mem.span(raw));
 }
-pub fn codex_refresh(m: *Module) void {
+pub fn usage_refresh(m: *Module) void {
     const source = std.mem.span(m.source);
-    if (m.dead != 0 or !m.codex.enabled or !(std.mem.eql(u8, source, "codex") or std.mem.eql(u8, source, "claude"))) return;
-    m.codex.enabled = false;
-    m.codex.checked.set("Refreshing…");
-    if (m.codex_menu) |menu| menu.redraw();
+    if (m.dead != 0 or !m.usage.enabled or !(std.mem.eql(u8, source, "codex") or std.mem.eql(u8, source, "claude"))) return;
+    m.usage.enabled = false;
+    m.usage.checked.set("Refreshing…");
+    if (m.usage_menu) |menu| menu.redraw();
     if (m.on_redraw) |cb| cb(m.redraw_context);
     if (refresh_source) |refresh| refresh(source);
 }
-pub fn make_codex_menu(m: *Module) callconv(.c) void {
-    m.codex_menu = CodexPopup.create(m) catch @panic("cannot create Codex popup");
+pub fn make_usage_menu(m: *Module) callconv(.c) void {
+    m.usage_menu = UsagePopup.create(m) catch @panic("cannot create usage popup");
 }
-pub fn update_codex(m: *Module, content: panel_data.Update) void {
+pub fn update_usage(m: *Module, content: panel_data.Update) void {
     for (0..2) |i| {
         const window: panel_data.Window = if (i < content.windows.len) content.windows[i] else .{};
         const valid = if (window.percent) |p| std.math.isFinite(p) else false;
         const value = if (valid) std.math.clamp(window.percent.?, 0, 100) else 0;
         const label = if (valid) c.g_strdup_printf("%.1f%% remaining", value) else c.g_strdup("—");
-        m.codex.percent[i].set(std.mem.span(label));
+        m.usage.percent[i].set(std.mem.span(label));
         c.g_free(@as(c.gpointer, @ptrCast(label)));
-        m.codex.values[i] = value;
-        m.codex.reset[i].set(window.reset);
+        m.usage.values[i] = value;
+        m.usage.reset[i].set(window.reset);
     }
-    m.codex.checked.set(if (content.checked.len != 0) content.checked else "Checked: —");
-    m.codex.error_label.set(content.@"error");
-    m.codex.enabled = true;
-    if (m.codex_menu) |menu| menu.redraw();
+    m.usage.checked.set(if (content.checked.len != 0) content.checked else "Checked: —");
+    m.usage.error_label.set(content.@"error");
+    m.usage.enabled = true;
+    if (m.usage_menu) |menu| menu.redraw();
 }
 fn update_items(m: *Module, items: []const panel_data.Item) void {
     for (&m.view.items, 0..) |*item, i| {
@@ -390,7 +390,7 @@ pub fn update(m: *Module, value: panel_data.Update) void {
     } else if (value.items) |items| update_items(m, items);
     c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
     m.tooltip = c.g_strndup(value.tooltip.ptr, value.tooltip.len);
-    if (m.view.codex) update_codex(m, value);
+    if (m.view.usage) update_usage(m, value);
     if (changed) resize(m);
 }
 
@@ -443,8 +443,8 @@ fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) c
 fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.zig").Service) void {
     if (m.monitors != 0) {
         resize(m);
-    } else if (m.view.codex) {
-        make_codex_menu(m);
+    } else if (m.view.usage) {
+        make_usage_menu(m);
     } else if (m.status != 0) {
         m.quick = quick.Controls.createWithDevices(if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
         const controls = m.quick.?;
@@ -470,7 +470,7 @@ pub fn init(options: Options, devices: ?*@import("desktop-devices.zig").Service,
         .cancel = c.g_cancellable_new(),
         .monitors = @intFromBool(std.mem.eql(u8, options.kind, "monitors")),
         .status = @intFromBool(std.mem.eql(u8, options.name, "gnome-status")),
-        .view = .{ .monitors = std.mem.eql(u8, options.kind, "monitors"), .status = std.mem.eql(u8, options.name, "gnome-status"), .activities = std.mem.eql(u8, options.kind, "activities"), .codex = std.mem.eql(u8, options.name, "gnome-codex") or std.mem.eql(u8, options.name, "gnome-claude"), .disk = std.mem.eql(u8, options.name, "gnome-disk") },
+        .view = .{ .monitors = std.mem.eql(u8, options.kind, "monitors"), .status = std.mem.eql(u8, options.name, "gnome-status"), .activities = std.mem.eql(u8, options.kind, "activities"), .usage = std.mem.eql(u8, options.name, "gnome-codex") or std.mem.eql(u8, options.name, "gnome-claude"), .disk = std.mem.eql(u8, options.name, "gnome-disk") },
         .on_redraw = on_redraw,
         .redraw_context = redraw_context,
     };
@@ -492,8 +492,8 @@ pub fn deinit(m: *Module) void {
     }
     if (m.date_controls) |controls| controls.destroy();
     m.date_controls = null;
-    if (m.codex_menu) |menu| menu.destroy();
-    m.codex_menu = null;
+    if (m.usage_menu) |menu| menu.destroy();
+    m.usage_menu = null;
     if (m.quick) |controls| controls.deinit();
     if (m.power_timer != 0) _ = c.g_source_remove(m.power_timer);
     c.g_cancellable_cancel(m.cancel);

@@ -185,7 +185,7 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
             if (cycle == 0) controls.hide() else _ = controls.handleKey(0xff1b, 0);
         }
     }
-    if (module.codex_menu) |menu| {
+    if (module.usage_menu) |menu| {
         for (0..2) |cycle| {
             try menu.show(320, 32);
             const deadline = c.g_get_monotonic_time() + 5_000_000;

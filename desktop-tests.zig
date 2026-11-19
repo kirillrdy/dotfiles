@@ -3,6 +3,7 @@ const u = @import("desktop-util.zig");
 const panel = @import("desktop-panel-data.zig");
 const codex = @import("desktop-codex.zig");
 const claude = @import("desktop-claude.zig");
+const usage = @import("desktop-usage.zig");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
 const strings = std.testing.expectEqualStrings;
@@ -62,33 +63,39 @@ test "panel appends native battery state and omits absent batteries" {
     try strings("battery-level-80-symbolic", items[1].icon);
     try strings("2∶30", items[1].text);
 }
-test "Codex keeps used and remaining modes and both popup windows" {
+test "usage renders remaining budget for both popup windows" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const data = try u.parse(a, "{\"rate_limit\":{\"primary_window\":{\"used_percent\":46},\"secondary_window\":{\"used_percent\":7}}}");
-    const remaining = try codex.formatUsage(a, "Codex", data, true, true, 1000);
-    try strings("54%", u.string(u.get(remaining, "text")));
-    try expect(std.mem.indexOf(u8, u.string(u.get(remaining, "tooltip")), "7d: 93% remaining") != null);
-    try equal(@as(?f64, 54), u.number(u.get(u.get(remaining, "windows").array.items[0], "percent")));
-    try strings("Codex 5h 46% · 7d 7%", u.string(u.get(try codex.formatUsage(a, "Codex", data, false, false, 1000), "text")));
-    const missing = try codex.formatUsage(a, "Codex", try u.parse(a, "{\"rate_limit\":{\"secondary_window\":{\"used_percent\":7}}}"), true, true, 1000);
-    try strings("—", u.string(u.get(missing, "text")));
-    try expect(u.get(u.get(missing, "windows").array.items[0], "percent") == .null);
-    try equal(@as(?f64, 93), u.number(u.get(u.get(missing, "windows").array.items[1], "percent")));
+    const windows = codex.parseUsage(try u.parse(a, "{\"rate_limit\":{\"primary_window\":{\"used_percent\":46},\"secondary_window\":{\"used_percent\":7}}}"));
+    const out = try usage.update(a, .{ .name = "Codex", .windows = windows }, "icon", 1000);
+    try strings("54%", out.items.?[0].text);
+    try strings("icon", out.items.?[0].icon);
+    try expect(std.mem.indexOf(u8, out.tooltip, "Codex allowance remaining") != null);
+    try expect(std.mem.indexOf(u8, out.tooltip, "7d: 93% remaining") != null);
+    try equal(@as(?f64, 54), out.windows[0].percent);
+    try strings("", out.@"error");
+    const missing = try usage.update(a, .{ .name = "Codex", .windows = codex.parseUsage(try u.parse(a, "{\"rate_limit\":{\"secondary_window\":{\"used_percent\":7}}}")) }, "", 1000);
+    try strings("—", missing.items.?[0].text);
+    try equal(@as(?f64, null), missing.windows[0].percent);
+    try equal(@as(?f64, 93), missing.windows[1].percent);
     for ([_][]const u8{ "null", "true", "\"50\"", "{}" }) |value| {
         const invalid = try u.parse(a, try u.fmt(a, "{{\"rate_limit\":{{\"primary_window\":{{\"used_percent\":{s}}}}}}}", .{value}));
-        try strings("unavailable", u.string(u.get(try codex.formatUsage(a, "Codex", invalid, true, true, 1000), "class")));
+        const out_invalid = try usage.update(a, .{ .name = "Codex", .windows = codex.parseUsage(invalid) }, "", 1000);
+        try strings("Codex usage is unavailable", out_invalid.@"error");
+        try equal(@as(usize, 0), out_invalid.windows.len);
     }
 }
-test "Codex reset countdown handles missing invalid and past timestamps" {
+test "usage reset countdown handles missing invalid and past timestamps" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    try strings("Resets in 2d 3h", try codex.resetText(a, u.num(1000 + 2 * 86400 + 3 * 3600), 1000));
-    try strings("Resets in 2h 15m", try codex.resetText(a, u.num(1000 + 2 * 3600 + 15 * 60), 1000));
-    try strings("Resets in now", try codex.resetText(a, u.num(900), 1000));
-    for ([_]u.Value{ .null, .{ .bool = true }, u.str("1000"), u.num(std.math.nan(f64)), u.num(std.math.inf(f64)) }) |value| try strings("Resets: —", try codex.resetText(a, value, 1000));
+    try strings("Resets in 2d 3h", try usage.resetText(a, 1000 + 2 * 86400 + 3 * 3600, 1000));
+    try strings("Resets in 2h 15m", try usage.resetText(a, 1000 + 2 * 3600 + 15 * 60, 1000));
+    try strings("Resets in now", try usage.resetText(a, 900, 1000));
+    try strings("Resets: —", try usage.resetText(a, null, 1000));
+    for ([_]u.Value{ .null, .{ .bool = true }, u.str("1000"), u.num(std.math.nan(f64)), u.num(std.math.inf(f64)), u.num(1e13) }) |value| try equal(@as(?i64, null), usage.stamp(value));
+    try equal(@as(?i64, 1000), usage.stamp(u.num(1000.5)));
 }
 
 test "disk usage uses fragment sizes and excludes free reserved blocks" {
@@ -201,17 +208,17 @@ test "Claude maps five-hour and weekly utilization onto the shared windows" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const data = try u.parse(a, "{\"five_hour\":{\"utilization\":46.0,\"resets_at\":\"1970-01-01T00:16:40+00:00\"},\"seven_day\":{\"utilization\":7,\"resets_at\":\"1970-01-03T03:16:40Z\"},\"seven_day_opus\":null}");
-    const remaining = try claude.formatUsage(a, data, true, true, 1000);
-    try strings("54%", u.string(u.get(remaining, "text")));
-    try expect(std.mem.indexOf(u8, u.string(u.get(remaining, "tooltip")), "Claude allowance remaining") != null);
-    try strings("Resets in 2d 3h", u.string(u.get(u.get(remaining, "windows").array.items[1], "reset")));
-    try strings("Claude 5h 46% · 7d 7%", u.string(u.get(try claude.formatUsage(a, data, false, false, 1000), "text")));
+    const windows = claude.parseUsage(try u.parse(a, "{\"five_hour\":{\"utilization\":46.0,\"resets_at\":\"1970-01-01T00:16:40+00:00\"},\"seven_day\":{\"utilization\":7,\"resets_at\":\"1970-01-03T03:16:40Z\"},\"seven_day_opus\":null}"));
+    const out = try usage.update(a, .{ .name = "Claude", .windows = windows }, "", 1000);
+    try strings("54%", out.items.?[0].text);
+    try expect(std.mem.indexOf(u8, out.tooltip, "Claude allowance remaining") != null);
+    try strings("Resets in 2d 3h", out.windows[1].reset);
     // An idle five-hour window is reported as null and means nothing is used.
-    const idle = try claude.formatUsage(a, try u.parse(a, "{\"five_hour\":null,\"seven_day\":{\"utilization\":20}}"), true, true, 1000);
-    try strings("100%", u.string(u.get(idle, "text")));
+    const idle = claude.parseUsage(try u.parse(a, "{\"five_hour\":null,\"seven_day\":{\"utilization\":20}}"));
+    try strings("100%", (try usage.update(a, .{ .name = "Claude", .windows = idle }, "", 1000)).items.?[0].text);
     for ([_][]const u8{ "{}", "{\"five_hour\":null,\"seven_day\":null}", "{\"error\":{}}" }) |value| {
-        try strings("unavailable", u.string(u.get(try claude.formatUsage(a, try u.parse(a, value), true, true, 1000), "class")));
+        const none = claude.parseUsage(try u.parse(a, value));
+        try expect(none[0] == null and none[1] == null);
     }
 }
 
@@ -223,11 +230,12 @@ test "Claude backs off after 429 like Claude Code and keeps the last usage" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const kept = try claude.rateLimited(a, "{\"five_hour\":{\"utilization\":46},\"seven_day\":{\"utilization\":7}}", 1000, 1300, true, true, 1100);
-    try strings("54%", u.string(u.get(kept, "text")));
-    try expect(std.mem.indexOf(u8, u.string(u.get(kept, "tooltip")), "Rate limited; retrying at") != null);
-    try expect(std.mem.indexOf(u8, u.string(u.get(kept, "checked")), "retry") != null);
-    const empty = try claude.rateLimited(a, null, 0, 1300, true, true, 1100);
-    try strings("unavailable", u.string(u.get(empty, "class")));
-    try expect(std.mem.indexOf(u8, u.string(u.get(empty, "tooltip")), "rate limited") != null);
+    const previous: usage.Report = .{ .name = "Claude", .windows = .{ .{ .used = 46 }, .{ .used = 7 } }, .checked = 1000 };
+    const kept = try usage.update(a, try claude.rateLimited(a, previous, 1300), "", 1100);
+    try strings("54%", kept.items.?[0].text);
+    try expect(std.mem.indexOf(u8, kept.tooltip, "Rate limited; retrying at") != null);
+    try expect(std.mem.indexOf(u8, kept.checked, "retry") != null);
+    const empty = try usage.update(a, try claude.rateLimited(a, null, 1300), "", 1100);
+    try equal(@as(usize, 0), empty.windows.len);
+    try expect(std.mem.indexOf(u8, empty.@"error", "rate limited") != null);
 }

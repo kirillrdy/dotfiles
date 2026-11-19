@@ -164,14 +164,14 @@ const Panel = struct {
     }
 
     fn tooltipFor(self: *const Panel, index: usize, x: f64, y: f64) [:0]const u8 {
-        if (self.codexVisible()) return "";
+        if (self.usageVisible()) return "";
         const slot = self.slots.items[index];
         const m = slot.module;
         const local_x = x - slot.x;
         if (m.monitors != 0) {
             const gi: usize = @intFromFloat(@max(0, local_x - 18) / 118);
             if (gi < 3) return m.view.graphs[gi].tooltip.value;
-        } else if (!m.view.codex) {
+        } else if (!m.view.usage) {
             if (m.view.hit(local_x, y)) |item_idx| {
                 if (m.view.items[item_idx].tooltip.value.len != 0) return m.view.items[item_idx].tooltip.value;
             }
@@ -187,7 +187,7 @@ const Panel = struct {
     }
 
     fn showTooltip(self: *Panel) !void {
-        if (self.tooltip_text.len == 0 or self.codexVisible()) return;
+        if (self.tooltip_text.len == 0 or self.usageVisible()) return;
         const scale = self.output.scale;
         self.tooltip_label.set(self.tooltip_text);
         try self.tooltip_label.prepare(&self.slots.items[0].module.view.renderer, scale, 13.333, false, null, false);
@@ -297,29 +297,29 @@ const Panel = struct {
             }
             return;
         }
-        if (m.view.codex) {
-            self.toggleCodex(m, global_x, global_y) catch |err| std.log.err("codex popup: {s}", .{@errorName(err)});
+        if (m.view.usage) {
+            self.toggleUsage(m, global_x, global_y) catch |err| std.log.err("usage popup: {s}", .{@errorName(err)});
             return;
         }
         if (m.view.hit(x - slot.x, y)) |item_idx| spawnAsync(m.view.items[item_idx].command.value);
     }
 
-    fn codexVisible(self: *const Panel) bool {
-        for (self.slots.items) |slot| if (slot.module.codex_menu) |menu| {
+    fn usageVisible(self: *const Panel) bool {
+        for (self.slots.items) |slot| if (slot.module.usage_menu) |menu| {
             if (menu.popup.visible) return true;
         };
         return false;
     }
-    fn hideCodex(self: *Panel) void {
-        for (self.slots.items) |slot| if (slot.module.codex_menu) |menu| menu.hide();
+    fn hideUsage(self: *Panel) void {
+        for (self.slots.items) |slot| if (slot.module.usage_menu) |menu| menu.hide();
     }
-    fn toggleCodex(self: *Panel, m: *widgets.Module, global_x: i32, global_y: i32) !void {
-        if (self.codexVisible()) {
-            self.hideCodex();
+    fn toggleUsage(self: *Panel, m: *widgets.Module, global_x: i32, global_y: i32) !void {
+        if (self.usageVisible()) {
+            self.hideUsage();
             return;
         }
         self.hideTooltip();
-        try m.codex_menu.?.show(global_x, global_y);
+        try m.usage_menu.?.show(global_x, global_y);
     }
 
     fn applyOverview(self: *Panel, active: bool, workspace_count: u8, workspace_active: u8) void {
@@ -329,7 +329,7 @@ const Panel = struct {
 
     fn destroy(self: *Panel) void {
         self.hideTooltip();
-        self.hideCodex();
+        self.hideUsage();
         if (self.tooltip_surface) |surface| surface.destroy();
         self.tooltip_label.deinit();
         for (self.slots.items) |slot| widgets.deinit(slot.module);

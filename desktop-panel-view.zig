@@ -1,4 +1,4 @@
-//! Cached native panel content and Codex usage controls.
+//! Cached native panel content and Codex/Claude usage controls.
 const std = @import("std");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
@@ -209,7 +209,7 @@ pub const View = struct {
     activities: bool = false,
     monitors: bool = false,
     status: bool = false,
-    codex: bool = false,
+    usage: bool = false,
     disk: bool = false,
     hovered: bool = false,
     focus: bool = false,
@@ -226,7 +226,7 @@ pub const View = struct {
     }
     pub fn prepare(self: *View, scale: u32, height: f64) !void {
         self.scale = scale;
-        const padding: f64 = if (self.disk) 0 else if (self.codex) 15 else 18;
+        const padding: f64 = if (self.disk) 0 else if (self.usage) 15 else 18;
         var x = padding;
         if (self.activities) {
             const count: usize = @max(1, self.workspace_count);
@@ -242,7 +242,7 @@ pub const View = struct {
             x += self.clock.width();
         } else for (&self.items) |*item| {
             if (!item.visible) continue;
-            try item.prepare(&self.renderer, scale, self.codex);
+            try item.prepare(&self.renderer, scale, self.usage);
             const gap: f64 = if (self.status) 8 else 0;
             x += gap / 2;
             const width = (if (item.icon.value.len != 0) @as(f64, 16) else 0) + (if (item.icon.value.len != 0 and item.label.value.len != 0) @as(f64, 6) else 0) + item.label.width();
@@ -269,7 +269,7 @@ pub const View = struct {
         else
             null;
         if (pill_color) |color| canvas.draw(&.{.{ .rounded = .{ .x = 3, .y = 3, .width = @max(0, width - 6), .height = @max(0, height - 6) } }}, color);
-        const padding: f64 = if (self.disk) 0 else if (self.codex) 15 else 18;
+        const padding: f64 = if (self.disk) 0 else if (self.usage) 15 else 18;
         if (self.activities) {
             const count: usize = @max(1, self.workspace_count);
             const active = @min(self.workspace_active, count - 1);
@@ -305,7 +305,7 @@ pub const View = struct {
     }
 };
 
-pub const Codex = struct {
+pub const Usage = struct {
     renderer: text.Renderer = .{},
     titles: [2]Label = .{ .{ .value = "5-Hour Remaining" }, .{ .value = "Weekly Remaining" } },
     percent: [2]Label = .{ .{ .value = "—" }, .{ .value = "—" } },
@@ -323,7 +323,7 @@ pub const Codex = struct {
     scale: u32 = 1,
     width: u32 = 340,
     height: u32 = 280,
-    pub fn deinit(self: *Codex) void {
+    pub fn deinit(self: *Usage) void {
         for (&self.titles) |*label| label.deinit();
         for (&self.percent) |*label| label.deinit();
         for (&self.reset) |*label| label.deinit();
@@ -333,7 +333,7 @@ pub const Codex = struct {
         if (self.refresh_icon) |mask| mask.deinit(a);
         self.renderer.deinit();
     }
-    pub fn prepare(self: *Codex, scale: u32) !void {
+    pub fn prepare(self: *Usage, scale: u32) !void {
         self.scale = scale;
         for (&self.titles) |*label| try label.prepare(&self.renderer, scale, 13, true, null, false);
         for (&self.percent) |*label| try label.prepare(&self.renderer, scale, 13, true, null, false);
@@ -344,7 +344,7 @@ pub const Codex = struct {
         try self.error_label.prepare(&self.renderer, scale, 11, false, 300, false);
         self.height = @intFromFloat(280 + (if (self.error_label.value.len == 0) @as(f64, 0) else self.error_label.height() + 12));
     }
-    fn prepareRefreshIcon(self: *Codex, scale: u32) !void {
+    fn prepareRefreshIcon(self: *Usage, scale: u32) !void {
         if (self.refresh_icon_scale == scale) return;
         const image = @import("desktop-icons.zig").load("view-refresh-symbolic", 14, scale, @import("desktop-icons.zig").white) orelse return;
         defer c.__icons.free(image);
@@ -355,10 +355,10 @@ pub const Codex = struct {
         self.refresh_icon = .{ .pixels = coverage, .width = width, .height = height, .left = 0, .top = 0 };
         self.refresh_icon_scale = scale;
     }
-    pub fn refreshRect(_: *const Codex) Rect {
+    pub fn refreshRect(_: *const Usage) Rect {
         return .{ .x = 20, .y = 226, .width = 100, .height = 32 };
     }
-    pub fn paint(self: *const Codex, buffer: raster.Buffer) void {
+    pub fn paint(self: *const Usage, buffer: raster.Buffer) void {
         @memset(buffer.pixels, 0);
         const canvas: raster.Canvas = .{ .target = buffer, .scale = @floatFromInt(self.scale) };
         const card: raster.Rect = .{ .x = 1, .y = 1, .width = @floatFromInt(self.width - 2), .height = @floatFromInt(self.height - 2) };
@@ -420,9 +420,9 @@ test "panel labels retain masks across hover, refresh at output scale, and drop 
     try std.testing.expectEqual(@as(u32, 0x12345678), pixels[pixels.len - 1]);
 }
 
-test "integration: Codex wraps errors, scales pixels, and retains remaining-budget colors" {
+test "integration: Usage wraps errors, scales pixels, and retains remaining-budget colors" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
-    var view: Codex = .{};
+    var view: Usage = .{};
     defer view.deinit();
     try view.prepare(1);
     const height = view.height;

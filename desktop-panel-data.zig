@@ -6,6 +6,7 @@ const audio = @import("desktop-audio.zig");
 const battery = @import("desktop-battery.zig");
 const codex = @import("desktop-codex.zig");
 const claude = @import("desktop-claude.zig");
+const usage = @import("desktop-usage.zig");
 const A = u.Allocator;
 pub const Item = struct {
     icon: []const u8 = "",
@@ -214,27 +215,13 @@ pub fn sample(a: A, kind: []const u8, icon: []const u8, demo: bool) !Update {
         .{ .icon = "audio-volume-high-symbolic", .tooltip = "Volume" },
         .{ .icon = "battery-level-80-symbolic", .text = "5∶42", .tooltip = "Battery" },
     } else &.{} };
-    const items = try a.alloc(Item, 1);
     if (u.eq(kind, "disk")) {
+        const items = try a.alloc(Item, 1);
         var stats: u.libc.struct_statvfs = undefined;
         items[0] = .{ .text = if (u.libc.statvfs("/", &stats) == 0) try diskUsageText(a, stats) else "—/—", .tooltip = "Root filesystem usage", .command = "ghostty -e ncdu /" };
         return .{ .items = items };
     }
-    // Decode the external API once; the session transports typed data throughout.
-    const is_claude = u.eq(kind, "claude");
-    const result = if (demo) try u.parse(a, "{\"text\":\"54%\",\"tooltip\":\"5h: 54% remaining\\n7d: 93% remaining\",\"windows\":[{\"percent\":54,\"reset\":\"Resets in 2h 15m\"},{\"percent\":93,\"reset\":\"Resets in 4d 8h\"}]}") else if (is_claude) try claude.readUsage(a, true, true) else try codex.readUsage(a, true, true);
-    items[0] = .{ .icon = if (is_claude) "claude-usage-symbolic" else icon, .text = u.string(u.get(result, "text")) };
-    const raw_windows = u.get(result, "windows");
-    const windows = try a.alloc(Window, if (raw_windows == .array) raw_windows.array.items.len else 0);
-    for (windows, 0..) |*window, i| {
-        const value = raw_windows.array.items[i];
-        window.* = .{ .percent = u.number(u.get(value, "percent")), .reset = u.string(u.get(value, "reset")) };
-    }
-    return .{
-        .items = items,
-        .tooltip = u.string(u.get(result, "tooltip")),
-        .windows = windows,
-        .@"error" = if (windows.len > 0) "" else u.string(u.get(result, "tooltip")),
-        .checked = if (demo) try u.localTime(a, u.timestamp(), "Checked: %H:%M:%S") else if (u.get(result, "checked") == .string) u.string(u.get(result, "checked")) else "Checked: —",
-    };
+    const now = u.timestamp();
+    if (u.eq(kind, "claude")) return usage.update(a, if (demo) usage.demo(now) else claude.read(a), "claude-usage-symbolic", now);
+    return usage.update(a, if (demo) usage.demo(now) else codex.read(a), icon, now);
 }

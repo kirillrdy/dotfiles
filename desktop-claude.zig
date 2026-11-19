@@ -5,7 +5,7 @@ const u = @import("desktop-util.zig");
 const A = u.Allocator;
 const V = u.Value;
 const http = @import("desktop-http.zig");
-const codex = @import("desktop-codex.zig");
+const usage = @import("desktop-usage.zig");
 
 /// Parses RFC 3339 timestamps such as 2025-11-04T04:59:59.943648+00:00.
 pub fn parseTimestamp(s: []const u8) ?i64 {
@@ -43,29 +43,20 @@ pub fn parseTimestamp(s: []const u8) ?i64 {
     return days * 86400 + @as(i64, hour) * 3600 + @as(i64, minute) * 60 + second - offset;
 }
 
-/// Converts the OAuth usage response into the shared two-window shape.
-pub fn formatUsage(a: A, data: V, remaining: bool, compact: bool, now: i64) !V {
+/// Reads the OAuth usage response. A null window means no usage has started it
+/// yet; at least one window object is required so an unexpected response is
+/// not shown as a full budget.
+pub fn parseUsage(data: V) [2]?usage.Window {
     const keys = [_][]const u8{ "five_hour", "seven_day" };
-    // A null window means no usage has started it yet; require at least one
-    // window object so an unexpected response is not shown as a full budget.
-    if (u.get(data, keys[0]) != .object and u.get(data, keys[1]) != .object) return codex.unavailable(a, "Claude", "Claude usage is unavailable", compact);
-    var limits = u.object();
-    for (keys, [_][]const u8{ "primary_window", "secondary_window" }) |key, name| {
+    var windows: [2]?usage.Window = .{ null, null };
+    if (u.get(data, keys[0]) != .object and u.get(data, keys[1]) != .object) return windows;
+    for (&windows, keys) |*window, key| {
         const source = u.get(data, key);
-        var window = u.object();
-        if (source == .null) {
-            try u.put(a, &window, "used_percent", u.num(0));
-        } else if (u.number(u.get(source, "utilization"))) |used| {
-            try u.put(a, &window, "used_percent", u.num(used));
-        } else if (source == .object and u.get(source, "utilization") == .null) {
-            try u.put(a, &window, "used_percent", u.num(0));
-        }
-        if (parseTimestamp(u.string(u.get(source, "resets_at")))) |stamp| try u.put(a, &window, "reset_at", .{ .integer = stamp });
-        try u.put(a, &limits, name, window);
+        const utilization = u.get(source, "utilization");
+        const used = if (source == .null or (source == .object and utilization == .null)) 0 else u.number(utilization) orelse continue;
+        window.* = .{ .used = used, .reset_at = parseTimestamp(u.string(u.get(source, "resets_at"))) };
     }
-    var shaped = u.object();
-    try u.put(a, &shaped, "rate_limit", limits);
-    return codex.formatUsage(a, "Claude", shaped, remaining, compact, now);
+    return windows;
 }
 
 /// Mirrors Claude Code: honour Retry-After, else wait 5 minutes, never over an hour.
@@ -74,41 +65,39 @@ pub fn backoffSeconds(retry_after: ?u32) i64 {
     return @min(if (seconds > 0) seconds else 300, 3600);
 }
 
-/// Shows the last good response while rate limited, so a 429 does not blank
+fn unavailable(message: []const u8) usage.Report {
+    return .{ .name = "Claude", .@"error" = message };
+}
+
+/// Shows the last good report while rate limited, so a 429 does not blank
 /// the widget; without one, explains when the next request will be made.
-pub fn rateLimited(a: A, last: ?[]const u8, checked: i64, until: i64, remaining: bool, compact: bool, now: i64) !V {
-    const retry = try u.localTime(a, until, "%H:%M");
-    const body = last orelse return codex.unavailable(a, "Claude", try u.fmt(a, "Claude usage is rate limited; retrying at {s}", .{retry}), compact);
-    var result = try formatUsage(a, try u.parse(a, body), remaining, compact, now);
-    if (u.get(result, "windows") != .array) return result;
-    try u.put(a, &result, "tooltip", u.str(try u.fmt(a, "{s}\nRate limited; retrying at {s}", .{ u.string(u.get(result, "tooltip")), retry })));
-    try u.put(a, &result, "checked", u.str(try u.fmt(a, "Checked {s} · retry {s}", .{ try u.localTime(a, checked, "%H:%M"), retry })));
-    return result;
+pub fn rateLimited(a: A, previous: ?usage.Report, until: i64) !usage.Report {
+    var report = previous orelse return unavailable(try u.fmt(a, "Claude usage is rate limited; retrying at {s}", .{try u.localTime(a, until, "%H:%M")}));
+    report.retry_at = until;
+    return report;
 }
 
 // Only touched from the collector's worker, which runs one Claude fetch at a time.
-const persistent = std.heap.page_allocator;
 var backoff_until: i64 = 0;
-var last_body: ?[]u8 = null;
-var last_checked: i64 = 0;
+var last: ?usage.Report = null;
 
-pub fn readUsage(a: A, remaining: bool, compact: bool) !V {
-    return fetchUsage(a, remaining, compact) catch codex.unavailable(a, "Claude", "Claude usage is unavailable; check login and network", compact);
+pub fn read(a: A) usage.Report {
+    return fetch(a) catch unavailable("Claude usage is unavailable; check login and network");
 }
-fn fetchUsage(a: A, remaining: bool, compact: bool) !V {
+fn fetch(a: A) !usage.Report {
     // Manual refreshes land here too, so they also respect the back-off.
     const now = u.timestamp();
-    if (now < backoff_until) return rateLimited(a, last_body, last_checked, backoff_until, remaining, compact, now);
+    if (now < backoff_until) return rateLimited(a, last, backoff_until);
     const dir = u.env("CLAUDE_CONFIG_DIR") orelse try u.fmt(a, "{s}/.claude", .{u.env("HOME") orelse return error.NoHome});
     const path = try u.fmt(a, "{s}/.credentials.json", .{dir});
-    const raw = u.read(a, path) catch return codex.unavailable(a, "Claude", "Sign in with claude to see account usage", compact);
+    const raw = u.read(a, path) catch return unavailable("Sign in with claude to see account usage");
     const oauth = u.get(try u.parse(a, raw), "claudeAiOauth");
     const token = u.string(u.get(oauth, "accessToken"));
-    if (token.len == 0) return codex.unavailable(a, "Claude", "Sign in with claude to see account usage", compact);
+    if (token.len == 0) return unavailable("Sign in with claude to see account usage");
     // Never pass authorization through process arguments or log HTTP headers.
     if (std.mem.indexOfAny(u8, token, "\r\n") != null) return error.InvalidToken;
     if (u.number(u.get(oauth, "expiresAt"))) |expires| {
-        if (expires / 1000 < @as(f64, @floatFromInt(u.timestamp()))) return codex.unavailable(a, "Claude", "Claude login expired; run claude to refresh it", compact);
+        if (expires / 1000 < @as(f64, @floatFromInt(now))) return unavailable("Claude login expired; run claude to refresh it");
     }
     const headers = [_]std.http.Header{
         .{ .name = "Authorization", .value = try u.fmt(a, "Bearer {s}", .{token}) },
@@ -121,18 +110,13 @@ fn fetchUsage(a: A, remaining: bool, compact: bool) !V {
     });
     defer a.free(response.body);
     const status = @backingInt(response.status);
-    if (status == 401 or status == 403) return codex.unavailable(a, "Claude", "Claude login needs refreshing; run claude", compact);
+    if (status == 401 or status == 403) return unavailable("Claude login needs refreshing; run claude");
     if (status == 429) {
         backoff_until = now + backoffSeconds(response.retry_after);
-        return rateLimited(a, last_body, last_checked, backoff_until, remaining, compact, now);
+        return rateLimited(a, last, backoff_until);
     }
-    if (status != 200) return codex.unavailable(a, "Claude", try u.fmt(a, "Claude usage service returned HTTP {d}", .{status}), compact);
-    const result = try formatUsage(a, try u.parse(a, response.body), remaining, compact, now);
-    if (u.get(result, "windows") == .array) {
-        const copy = try persistent.dupe(u8, response.body);
-        if (last_body) |old| persistent.free(old);
-        last_body = copy;
-        last_checked = now;
-    }
-    return result;
+    if (status != 200) return unavailable(try u.fmt(a, "Claude usage service returned HTTP {d}", .{status}));
+    const report: usage.Report = .{ .name = "Claude", .windows = parseUsage(try u.parse(a, response.body)), .checked = now };
+    if (report.windows[0] != null or report.windows[1] != null) last = report;
+    return report;
 }
