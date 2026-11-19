@@ -146,17 +146,82 @@ pub const Renderer = struct {
         var logical: api.PangoRectangle = .{};
         api.pango_layout_get_pixel_extents(layout, &ink, &logical);
         if (ink.width < 0 or ink.height < 0 or ink.width > 32768 or ink.height > 4096 or @as(i64, ink.width) * ink.height > 16 * 1024 * 1024) return error.TextTooLarge;
-        const width: u32 = @intCast(ink.width);
-        const height: u32 = @intCast(ink.height);
-        const pixels = try allocator.alloc(u8, @as(usize, width) * height);
-        @memset(pixels, 0);
-        if (pixels.len > 0) {
-            var bitmap: api.FT_Bitmap = .{ .rows = height, .width = width, .pitch = @intCast(width), .buffer = pixels.ptr };
-            api.pango_ft2_render_layout(&bitmap, layout, -ink.x, -ink.y);
-        }
-        return .{ .pixels = pixels, .width = width, .height = height, .left = ink.x, .top = ink.y - (if (options.origin == .baseline) @divTrunc(api.pango_layout_get_baseline(layout), 1024) else @as(c_int, 0)), .logical_height = @intCast(@max(0, logical.height)), .logical_width = @intCast(@max(0, logical.width)), .ellipsized = c.pango_layout_is_ellipsized(layout) != 0 };
+        const box = try renderInk(allocator, layout, ink);
+        return .{ .pixels = box.pixels, .width = box.width, .height = box.height, .left = box.x, .top = box.y - (if (options.origin == .baseline) @divTrunc(api.pango_layout_get_baseline(layout), 1024) else @as(c_int, 0)), .logical_height = @intCast(@max(0, logical.height)), .logical_width = @intCast(@max(0, logical.width)), .ellipsized = c.pango_layout_is_ellipsized(layout) != 0 };
     }
 };
+
+const InkBox = struct { pixels: []u8, width: u32, height: u32, x: i32, y: i32 };
+
+/// Pango's ink extents come from unhinted metrics, but FreeType rasterizes
+/// hinted glyphs that can extend a row beyond them. Render with a margin and
+/// trim to the pixels actually drawn so no edge is clipped.
+fn renderInk(allocator: std.mem.Allocator, layout: *c.PangoLayout, ink: api.PangoRectangle) !InkBox {
+    if (ink.width == 0 or ink.height == 0) return .{ .pixels = try allocator.alloc(u8, 0), .width = 0, .height = 0, .x = ink.x, .y = ink.y };
+    const margin = 4;
+    const width: u32 = @intCast(ink.width + 2 * margin);
+    const height: u32 = @intCast(ink.height + 2 * margin);
+    const padded = try allocator.alloc(u8, @as(usize, width) * height);
+    defer allocator.free(padded);
+    @memset(padded, 0);
+    var bitmap: api.FT_Bitmap = .{ .rows = height, .width = width, .pitch = @intCast(width), .buffer = padded.ptr };
+    api.pango_ft2_render_layout(&bitmap, layout, margin - ink.x, margin - ink.y);
+    var left: u32 = width;
+    var right: u32 = 0;
+    var top: u32 = height;
+    var bottom: u32 = 0;
+    for (0..height) |y| for (0..width) |x| if (padded[y * width + x] != 0) {
+        left = @min(left, @as(u32, @intCast(x)));
+        right = @max(right, @as(u32, @intCast(x)));
+        top = @min(top, @as(u32, @intCast(y)));
+        bottom = @max(bottom, @as(u32, @intCast(y)));
+    };
+    if (left > right) return .{ .pixels = try allocator.alloc(u8, 0), .width = 0, .height = 0, .x = ink.x, .y = ink.y };
+    const trimmed_width = right - left + 1;
+    const trimmed_height = bottom - top + 1;
+    const pixels = try allocator.alloc(u8, @as(usize, trimmed_width) * trimmed_height);
+    for (0..trimmed_height) |row| {
+        const source = (top + row) * width + left;
+        @memcpy(pixels[row * trimmed_width ..][0..trimmed_width], padded[source..][0..trimmed_width]);
+    }
+    return .{ .pixels = pixels, .width = trimmed_width, .height = trimmed_height, .x = ink.x - margin + @as(i32, @intCast(left)), .y = ink.y - margin + @as(i32, @intCast(top)) };
+}
+
+test "hinted glyph rows outside Pango's ink extents are not clipped" {
+    var renderer: Renderer = .{};
+    defer renderer.deinit();
+    const allocator = std.testing.allocator;
+    // 17px Adwaita Sans hints the "P" and "E" top bars one row above Pango's ink extents.
+    for ([_]f64{ 12, 14.6666666667, 17, 26, 34 }) |size| {
+        const label = "Password, then Enter";
+        const mask = try renderer.renderLayout(allocator, label, .{ .size = size });
+        defer mask.deinit(allocator);
+        // Reference: the same layout rendered with a generous margin.
+        const layout = api.pango_layout_new(renderer.context.?).?;
+        defer c.g_object_unref(layout);
+        const description = api.pango_font_description_from_string("Adwaita Sans").?;
+        defer api.pango_font_description_free(description);
+        api.pango_font_description_set_absolute_size(description, size * 1024);
+        api.pango_layout_set_font_description(layout, description);
+        api.pango_layout_set_single_paragraph_mode(layout, 1);
+        api.pango_layout_set_text(layout, label, label.len);
+        var ink: api.PangoRectangle = .{};
+        api.pango_layout_get_pixel_extents(layout, &ink, null);
+        const margin = 16;
+        const width: u32 = @intCast(ink.width + 2 * margin);
+        const height: u32 = @intCast(ink.height + 2 * margin);
+        const reference = try allocator.alloc(u8, @as(usize, width) * height);
+        defer allocator.free(reference);
+        @memset(reference, 0);
+        var bitmap: api.FT_Bitmap = .{ .rows = height, .width = width, .pitch = @intCast(width), .buffer = reference.ptr };
+        api.pango_ft2_render_layout(&bitmap, layout, margin - ink.x, margin - ink.y);
+        var expected: u64 = 0;
+        for (reference) |value| expected += value;
+        var actual: u64 = 0;
+        for (mask.pixels) |value| actual += value;
+        try std.testing.expectEqual(expected, actual);
+    }
+}
 
 test "variable font weight changes native glyph coverage" {
     var renderer: Renderer = .{};
