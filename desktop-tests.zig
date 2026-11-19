@@ -120,7 +120,7 @@ test "integration: disk panel queries the root filesystem without commands" {
     const label = entry.text;
     try expect(!std.mem.eql(u8, label, "—/—"));
     try expect(std.mem.indexOfScalar(u8, label, '/') != null);
-    try strings("ghostty -e ncdu /", entry.command);
+    try strings("", entry.command);
 }
 
 test {

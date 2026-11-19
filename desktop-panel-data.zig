@@ -218,7 +218,7 @@ pub fn sample(a: A, kind: []const u8, icon: []const u8, demo: bool) !Update {
     if (u.eq(kind, "disk")) {
         const items = try a.alloc(Item, 1);
         var stats: u.libc.struct_statvfs = undefined;
-        items[0] = .{ .text = if (u.libc.statvfs("/", &stats) == 0) try diskUsageText(a, stats) else "—/—", .tooltip = "Root filesystem usage", .command = "ghostty -e ncdu /" };
+        items[0] = .{ .text = if (u.libc.statvfs("/", &stats) == 0) try diskUsageText(a, stats) else "—/—", .tooltip = "Root filesystem usage" };
         return .{ .items = items };
     }
     const now = u.timestamp();
