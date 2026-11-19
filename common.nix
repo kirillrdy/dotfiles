@@ -1,7 +1,8 @@
 pkgs: with pkgs; [
   (import ./neovim.nix pkgs)
-  antigravity-cli
   awscli2
+  claude-code
+  codex
   ncdu
   gh
   jq
