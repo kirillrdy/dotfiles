@@ -569,6 +569,8 @@ pub extern fn g_variant_get_variant(?*GVariant) ?*GVariant;
 pub extern fn g_file_read_link([*c]const gchar, [*c][*c]GError) [*c]gchar;
 pub extern fn g_subprocess_launcher_take_fd(?*GSubprocessLauncher, gint, gint) void;
 pub extern fn g_cancellable_is_cancelled([*c]GCancellable) gboolean;
+pub extern fn g_cancellable_connect([*c]GCancellable, GCallback, gpointer, GDestroyNotify) gulong;
+pub extern fn g_cancellable_disconnect([*c]GCancellable, gulong) void;
 
 // GIO proxy properties and variant helpers.
 pub const GDBusProxy = extern struct {};

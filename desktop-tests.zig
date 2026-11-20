@@ -187,6 +187,7 @@ test {
     _ = @import("desktop-http.zig");
     _ = @import("desktop-lock-auth.zig");
     _ = @import("desktop-wayland-client.zig");
+    _ = @import("tests/desktop-dbus-oracle.zig");
     _ = @import("tests/desktop-power-fixture.zig");
 }
 

@@ -109,6 +109,9 @@ pub fn build(b: *std.Build) void {
     wayland_client.addImport("wayland-wire", wire);
     desktop.addImport("wayland-wire", wire);
     desktop.addImport("wayland-client", wayland_client);
+    // Native D-Bus client runtime, independent of GLib.
+    const dbus = b.createModule(.{ .root_source_file = b.path("desktop-dbus.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    desktop.addImport("dbus", dbus);
     const integration_tests = b.option(bool, "integration-tests", "Include system and Wayland integration tests") orelse false;
     const options = b.addOptions();
     options.addOption(bool, "integration_tests", integration_tests);
@@ -162,6 +165,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&unit_run.step);
     // The wire runtime is its own module, so its tests need their own root.
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "desktop-wire-tests", .root_module = wire })).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "desktop-dbus-tests", .root_module = dbus })).step);
     test_module.addImport("glib-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gio/gio.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <cairo.h>\n", &.{ "gio-unix-2.0", "cairo", "wayland-client" }));
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
     const decoration_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-decoration-fixture.zig"), .target = target, .optimize = optimize, .link_libc = true });
