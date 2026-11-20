@@ -701,13 +701,31 @@ const Overview = struct {
         surface.close = &closed;
         surface.next_frame = &nextFrame;
         surface.render_scale = &renderScale;
+        surface.ready = &surfaceReady;
         surface.input = .{ .symbol = &symbol, .text = &inputText, .motion = &inputMotion, .button = &inputButton, .scroll = &inputScroll, .leave = &inputLeave, .focus = &inputFocus, .surrounding = &surrounding, .preedit = &preedit, .commit = &commit, .delete = &delete };
         return surface;
     }
     fn createBackground(self: *Overview, output: *wire.Output) !*wire.Surface {
         const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-overview-background", .layer = 2, .anchors = wire.top | wire.bottom | wire.left | wire.right, .exclusive_zone = -1, .clear_buffer = false, .fully_opaque = true }, &paintBackground, self);
         surface.render_scale = &renderScale;
+        surface.ready = &backgroundReady;
         return surface;
+    }
+    /// GPU previews belong to the overview surface's commits, so the opaque
+    /// background must never reach the screen without them: a lone background
+    /// frame covers every window with wallpaper or a stale stage layout.
+    fn surfaceReady(data: ?*anyopaque, _: *wire.Surface) bool {
+        const self = cast(Overview, data);
+        const background = self.background orelse return true;
+        // A background that failed to show must not hold the overview back.
+        return background.configured or background.role == null;
+    }
+    fn backgroundReady(data: ?*anyopaque, _: *wire.Surface) bool {
+        const self = cast(Overview, data);
+        if (self.painting) return true;
+        // Configure or a buffer release: repaint both surfaces together.
+        self.redrawSelf();
+        return false;
     }
     fn nextFrame(data: ?*anyopaque, surface: *wire.Surface, _: u32) bool {
         const self = cast(Overview, data);

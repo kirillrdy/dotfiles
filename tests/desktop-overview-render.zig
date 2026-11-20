@@ -292,3 +292,42 @@ test "window previews retain client corners and do not add a second frame" {
         try std.testing.expectEqual(@as(u32, 0), pixels[80 * scale * width + 170 * scale]);
     }
 }
+
+test "large wallpapers downscale into workspace cards like Cairo while animating and at rest" {
+    const a = std.testing.allocator;
+    const iw = 640;
+    const ih = 400;
+    const words = try a.alloc(u32, iw * ih);
+    defer a.free(words);
+    for (words, 0..) |*word, i| {
+        const x: u32 = @intCast(i % iw);
+        const y: u32 = @intCast(i / iw);
+        word.* = 0xff000000 | ((x * 255 / iw) << 16) | ((y * 255 / ih) << 8) | ((x ^ y) & 255);
+    }
+    const image: raster.Image = .{ .pixels = std.mem.sliceAsBytes(words), .width = iw, .height = ih, .stride = iw * 4, .format = .argb };
+    const wallpaper = cairo.cairo_image_surface_create_for_data(@ptrCast(words.ptr), cairo.CAIRO_FORMAT_ARGB32, iw, ih, iw * 4).?;
+    defer cairo.cairo_surface_destroy(wallpaper);
+    const cards = [_]Rect{ .{ .x = 3.3, .y = 2.6, .w = 250, .h = 150 }, .{ .x = 10, .y = 20, .w = 120.5, .h = 70.25 }, .{ .x = -30, .y = 5, .w = 300, .h = 190 }, .{ .x = 40.7, .y = 30.1, .w = 64, .h = 40 } };
+    for ([_]u32{ 1, 2 }) |scale| for (cards) |card| for ([_]bool{ false, true }) |animated| {
+        const width = 260 * scale;
+        const height = 200 * scale;
+        const pixels = try a.alloc(u32, width * height);
+        defer a.free(pixels);
+        @memset(pixels, 0xff222226);
+        view.workspaceCard(.{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) }, rect(card), image, 30, false, animated);
+        const surface = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
+        defer cairo.cairo_surface_destroy(surface);
+        const cr = cairo.cairo_create(surface).?;
+        defer cairo.cairo_destroy(cr);
+        cairo.cairo_scale(cr, @floatFromInt(scale), @floatFromInt(scale));
+        cairo.cairo_set_source_rgb(cr, 34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
+        cairo.cairo_paint(cr);
+        reference.workspace(cr, card, wallpaper);
+        cairo.cairo_surface_flush(surface);
+        const expected: [*]const u32 = @ptrCast(@alignCast(cairo.cairo_image_surface_get_data(surface)));
+        compare(expected[0 .. width * height], pixels, scale, if (animated) 1 else 0) catch |err| {
+            std.debug.print("card {any} animated={}\n", .{ card, animated });
+            return err;
+        };
+    };
+}

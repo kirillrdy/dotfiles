@@ -468,6 +468,9 @@ pub const Surface = struct {
     frame_callback: ?*Proxy = null,
     /// Optional quality policy for the next buffer; logical geometry is stable.
     render_scale: ?*const fn (?*anyopaque, *Surface) u32 = null,
+    /// Optional commit gate. Returning false keeps the redraw pending, so
+    /// surfaces that must appear together can commit in the same dispatch.
+    ready: ?*const fn (?*anyopaque, *Surface) bool = null,
     buffer_scale: u32 = 1,
     pending_width: u32 = 0,
     pending_height: u32 = 0,
@@ -620,6 +623,7 @@ pub const Surface = struct {
     }
     fn render(self: *Surface) !void {
         if (!self.pending or !self.configured or self.client.failed or self.frame_callback != null or self.rendering) return;
+        if (self.ready) |ready| if (!ready(self.data, self)) return;
         self.rendering = true;
         defer self.rendering = false;
         const scale = if (self.render_scale) |choose| choose(self.data, self) else self.output.scale;
