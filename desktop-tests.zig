@@ -115,7 +115,7 @@ test "integration: disk panel queries the root filesystem without commands" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const result = try panel.sample(arena.allocator(), "disk", "", false);
+    const result = try panel.sample(arena.allocator(), "disk", false);
     const entry = result.items.?[0];
     const label = entry.text;
     try expect(!std.mem.eql(u8, label, "—/—"));
