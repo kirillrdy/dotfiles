@@ -1,5 +1,6 @@
 //! Native Zig OSD rendering.
 const std = @import("std");
+const cairo = @import("tests/desktop-cairo.zig");
 const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
 pub const Kind = enum { volume, microphone, brightness };
@@ -101,21 +102,21 @@ test "Zig OSD has transparent corners, distinct progress, and muted feedback at 
 
 test "Zig OSD agrees with Cairo for every icon, level, mute state and scale" {
     const reference = struct {
-        fn source(cr: *c.cairo_t, color: raster.Color, opacity: f64) void {
-            c.cairo_set_source_rgba(cr, color.red, color.green, color.blue, color.alpha * opacity);
+        fn source(cr: *cairo.cairo_t, color: raster.Color, opacity: f64) void {
+            cairo.cairo_set_source_rgba(cr, color.red, color.green, color.blue, color.alpha * opacity);
         }
-        fn cairoCapsule(cr: *c.cairo_t, x: f64, y: f64, width: f64, height: f64) void {
+        fn cairoCapsule(cr: *cairo.cairo_t, x: f64, y: f64, width: f64, height: f64) void {
             if (width <= 0 or height <= 0) return;
             const radius = @min(width, height) / 2;
-            c.cairo_new_sub_path(cr);
-            c.cairo_arc(cr, x + width - radius, y + radius, radius, -std.math.pi / 2.0, 0);
-            c.cairo_arc(cr, x + width - radius, y + height - radius, radius, 0, std.math.pi / 2.0);
-            c.cairo_arc(cr, x + radius, y + height - radius, radius, std.math.pi / 2.0, std.math.pi);
-            c.cairo_arc(cr, x + radius, y + radius, radius, std.math.pi, 3 * std.math.pi / 2.0);
-            c.cairo_close_path(cr);
-            c.cairo_fill(cr);
+            cairo.cairo_new_sub_path(cr);
+            cairo.cairo_arc(cr, x + width - radius, y + radius, radius, -std.math.pi / 2.0, 0);
+            cairo.cairo_arc(cr, x + width - radius, y + height - radius, radius, 0, std.math.pi / 2.0);
+            cairo.cairo_arc(cr, x + radius, y + height - radius, radius, std.math.pi / 2.0, std.math.pi);
+            cairo.cairo_arc(cr, x + radius, y + radius, radius, std.math.pi, 3 * std.math.pi / 2.0);
+            cairo.cairo_close_path(cr);
+            cairo.cairo_fill(cr);
         }
-        fn draw(cr: *c.cairo_t, theme: Theme, kind: Kind, percent: f64, muted: bool, width: f64, height: f64) void {
+        fn draw(cr: *cairo.cairo_t, theme: Theme, kind: Kind, percent: f64, muted: bool, width: f64, height: f64) void {
             source(cr, theme.border_color, 1);
             cairoCapsule(cr, 0, 0, width, height);
             source(cr, theme.background, 1);
@@ -128,53 +129,53 @@ test "Zig OSD agrees with Cairo for every icon, level, mute state and scale" {
             cairoCapsule(cr, bar_x, bar_y, @floatFromInt(theme.bar_width), @floatFromInt(theme.bar_height));
             source(cr, theme.fill, opacity);
             cairoCapsule(cr, bar_x, bar_y, @as(f64, @floatFromInt(theme.bar_width)) * std.math.clamp(percent, 0, 100) / 100, @floatFromInt(theme.bar_height));
-            c.cairo_save(cr);
-            defer c.cairo_restore(cr);
-            c.cairo_translate(cr, x, (height - 24) / 2);
+            cairo.cairo_save(cr);
+            defer cairo.cairo_restore(cr);
+            cairo.cairo_translate(cr, x, (height - 24) / 2);
             source(cr, theme.foreground, opacity);
-            c.cairo_set_line_width(cr, 2);
-            c.cairo_set_line_cap(cr, 1);
+            cairo.cairo_set_line_width(cr, 2);
+            cairo.cairo_set_line_cap(cr, 1);
             switch (kind) {
                 .brightness => {
-                    c.cairo_arc(cr, 12, 12, 4, 0, 2 * std.math.pi);
-                    c.cairo_fill(cr);
+                    cairo.cairo_arc(cr, 12, 12, 4, 0, 2 * std.math.pi);
+                    cairo.cairo_fill(cr);
                     for (0..8) |i| {
                         const angle = @as(f64, @floatFromInt(i)) * std.math.pi / 4;
-                        c.cairo_move_to(cr, 12 + @cos(angle) * 7, 12 + @sin(angle) * 7);
-                        c.cairo_line_to(cr, 12 + @cos(angle) * 10, 12 + @sin(angle) * 10);
+                        cairo.cairo_move_to(cr, 12 + @cos(angle) * 7, 12 + @sin(angle) * 7);
+                        cairo.cairo_line_to(cr, 12 + @cos(angle) * 10, 12 + @sin(angle) * 10);
                     }
-                    c.cairo_stroke(cr);
+                    cairo.cairo_stroke(cr);
                 },
                 .microphone => {
                     cairoCapsule(cr, 8, 2, 8, 12);
-                    c.cairo_arc(cr, 12, 10, 7, 0, std.math.pi);
-                    c.cairo_move_to(cr, 12, 17);
-                    c.cairo_line_to(cr, 12, 22);
-                    c.cairo_move_to(cr, 8, 22);
-                    c.cairo_line_to(cr, 16, 22);
-                    c.cairo_stroke(cr);
+                    cairo.cairo_arc(cr, 12, 10, 7, 0, std.math.pi);
+                    cairo.cairo_move_to(cr, 12, 17);
+                    cairo.cairo_line_to(cr, 12, 22);
+                    cairo.cairo_move_to(cr, 8, 22);
+                    cairo.cairo_line_to(cr, 16, 22);
+                    cairo.cairo_stroke(cr);
                 },
                 .volume => {
-                    c.cairo_move_to(cr, 3, 9);
-                    c.cairo_line_to(cr, 7, 9);
-                    c.cairo_line_to(cr, 12, 4);
-                    c.cairo_line_to(cr, 12, 20);
-                    c.cairo_line_to(cr, 7, 15);
-                    c.cairo_line_to(cr, 3, 15);
-                    c.cairo_close_path(cr);
-                    c.cairo_fill(cr);
+                    cairo.cairo_move_to(cr, 3, 9);
+                    cairo.cairo_line_to(cr, 7, 9);
+                    cairo.cairo_line_to(cr, 12, 4);
+                    cairo.cairo_line_to(cr, 12, 20);
+                    cairo.cairo_line_to(cr, 7, 15);
+                    cairo.cairo_line_to(cr, 3, 15);
+                    cairo.cairo_close_path(cr);
+                    cairo.cairo_fill(cr);
                     if (!muted and percent > 0) for ([_]f64{ 5, 8, 11 }, 0..) |radius, i| {
                         if (i > 0 and percent < @as(f64, @floatFromInt(i)) * 33) break;
-                        c.cairo_new_sub_path(cr);
-                        c.cairo_arc(cr, 11, 12, radius, -std.math.pi / 3.0, std.math.pi / 3.0);
-                        c.cairo_stroke(cr);
+                        cairo.cairo_new_sub_path(cr);
+                        cairo.cairo_arc(cr, 11, 12, radius, -std.math.pi / 3.0, std.math.pi / 3.0);
+                        cairo.cairo_stroke(cr);
                     };
                 },
             }
             if (muted) {
-                c.cairo_move_to(cr, 3, 3);
-                c.cairo_line_to(cr, 21, 21);
-                c.cairo_stroke(cr);
+                cairo.cairo_move_to(cr, 3, 3);
+                cairo.cairo_line_to(cr, 21, 21);
+                cairo.cairo_stroke(cr);
             }
         }
     };
@@ -188,23 +189,23 @@ test "Zig OSD agrees with Cairo for every icon, level, mute state and scale" {
     for ([_]Theme{ .{}, alternate }) |theme| for ([_]u32{ 1, 2, 3 }) |scale| {
         const width = theme.width() * scale;
         const height = theme.height() * scale;
-        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
-        defer c.cairo_surface_destroy(image);
-        c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-        const cr = c.cairo_create(image).?;
-        defer c.cairo_destroy(cr);
+        const image = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
+        defer cairo.cairo_surface_destroy(image);
+        cairo.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
+        const cr = cairo.cairo_create(image).?;
+        defer cairo.cairo_destroy(cr);
         const actual = try std.testing.allocator.alloc(u32, width * height);
         defer std.testing.allocator.free(actual);
         for ([_]Kind{ .volume, .microphone, .brightness }) |kind| for ([_]f64{ 0, 50, 100 }) |percent| for ([_]bool{ false, true }) |muted| {
             @memset(actual, 0);
             paint(.{ .pixels = actual, .width = width, .height = height }, scale, theme, kind, percent, muted);
-            c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
-            c.cairo_paint(cr);
-            c.cairo_set_operator(cr, c.CAIRO_OPERATOR_OVER);
+            cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_CLEAR);
+            cairo.cairo_paint(cr);
+            cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_OVER);
             reference.draw(cr, theme, kind, percent, muted, @floatFromInt(theme.width()), @floatFromInt(theme.height()));
-            c.cairo_surface_flush(image);
-            const expected: [*]const u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
-            const stride: usize = @intCast(@divTrunc(c.cairo_image_surface_get_stride(image), 4));
+            cairo.cairo_surface_flush(image);
+            const expected: [*]const u32 = @ptrCast(@alignCast(cairo.cairo_image_surface_get_data(image)));
+            const stride: usize = @intCast(@divTrunc(cairo.cairo_image_surface_get_stride(image), 4));
             var total: u64 = 0;
             var icon_total: u64 = 0;
             var icon_count: u64 = 0;

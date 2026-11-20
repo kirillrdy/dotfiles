@@ -403,25 +403,8 @@ const Thumbnail = struct {
         const ratio = 1024.0 / @as(f64, @floatFromInt(@max(source.width, source.height)));
         const width: u32 = @max(1, @as(u32, @intFromFloat(@as(f64, @floatFromInt(source.width)) * ratio)));
         const height: u32 = @max(1, @as(u32, @intFromFloat(@as(f64, @floatFromInt(source.height)) * ratio)));
-        const stride = @as(usize, width) * 4;
-        const pixels = try allocator.alignedAlloc(u8, .of(u32), stride * height);
-        errdefer allocator.free(pixels);
-        // Independent Cairo image surfaces are safe on the worker. GOOD uses
-        // area filtering for minification without the scalar raster loop.
-        const input = c.cairo_image_surface_create_for_data(normalized.pixels.ptr, c.CAIRO_FORMAT_ARGB32, @intCast(normalized.width), @intCast(normalized.height), @intCast(normalized.stride));
-        defer c.cairo_surface_destroy(input);
-        const output = c.cairo_image_surface_create_for_data(pixels.ptr, c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height), @intCast(stride));
-        defer c.cairo_surface_destroy(output);
-        const cr = c.cairo_create(output);
-        defer c.cairo_destroy(cr);
-        c.cairo_set_operator(cr, c.CAIRO_OPERATOR_SOURCE);
-        c.cairo_scale(cr, @as(f64, @floatFromInt(width)) / @as(f64, @floatFromInt(source.width)), @as(f64, @floatFromInt(height)) / @as(f64, @floatFromInt(source.height)));
-        c.cairo_set_source_surface(cr, input, 0, 0);
-        c.cairo_pattern_set_filter(c.cairo_get_source(cr), c.CAIRO_FILTER_GOOD);
-        c.cairo_paint(cr);
-        if (c.cairo_surface_status(input) != c.CAIRO_STATUS_SUCCESS or c.cairo_status(cr) != c.CAIRO_STATUS_SUCCESS) return error.ThumbnailRenderFailed;
-        c.cairo_surface_flush(output);
-        return .{ .pixels = pixels, .width = width, .height = height, .stride = stride };
+        // Area filtering keeps text in large windows legible when minified.
+        return @import("desktop-image.zig").resample(allocator, normalized, width, height);
     }
     fn completed(_: ?*c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
         const self = cast(Thumbnail, data);

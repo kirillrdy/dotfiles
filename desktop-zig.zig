@@ -286,6 +286,7 @@ fn requireSession() !void {
 pub const glib = @import("desktop-glib.zig");
 pub const capture = @import("desktop-capture.zig");
 pub const decode = @import("desktop-decode.zig");
+pub const png = @import("desktop-png.zig");
 pub const power = @import("desktop-power.zig");
 pub const secrets = @import("desktop-secrets.zig");
 pub const portal = @import("desktop-portal.zig");

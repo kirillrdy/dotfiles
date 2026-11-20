@@ -14,6 +14,7 @@ let
     find $out/share/X11/locale -type f -exec sed -i \
       "s@${pkgs.libx11}/share/X11/locale@$out/share/X11/locale@g" {} +
       '';
+  # Cairo renders frozen reference images in unit tests; the desktop does not link it.
   cairo =
     (pkgs.cairo.override {
       x11Support = false;
@@ -23,19 +24,6 @@ let
         separateDebugInfo = false;
       };
 
-  # The desktop renders text through Pango and FreeType; the Xft renderer is unused.
-  pango =
-    (pkgs.pango.override {
-      inherit cairo;
-      x11Support = false;
-      withIntrospection = false;
-    }).overrideAttrs
-      (old: {
-        pname = "desktop-pango";
-        patches = (old.patches or [ ]) ++ [ ./pango-ft2-variations.patch ];
-        separateDebugInfo = false;
-        postFixup = "";
-      });
   # Wayland supplies complete keymaps. Keep the compiler, layouts, and compose
   # data, without registry enumeration, X11 helpers, or interactive CLI tools.
   xkbcommon = (pkgs.libxkbcommon.override { withWaylandTools = false; }).overrideAttrs (old: {
@@ -56,38 +44,10 @@ let
         "-Denable-docs=false"
       ];
   });
-  # The desktop renders SVG straight into Cairo and decodes PNG with Cairo, so
-  # librsvg shares the text stack and needs neither GdkPixbuf nor its loader,
-  # rsvg-convert, or the AVIF decoder for embedded images.
-  rsvg =
-    (pkgs.librsvg.override {
-      inherit cairo pango;
-      withIntrospection = false;
-      withPixbufLoader = false;
-    }).overrideAttrs
-      (old: {
-        pname = "desktop-rsvg";
-        separateDebugInfo = false;
-        buildInputs = pkgs.lib.remove pkgs.dav1d old.buildInputs;
-        propagatedBuildInputs = pkgs.lib.remove pkgs.gdk-pixbuf old.propagatedBuildInputs;
-        mesonFlags = old.mesonFlags ++ [
-          "-Dpixbuf=disabled"
-          "-Drsvg-convert=disabled"
-          "-Davif=disabled"
-        ];
-        # Upstream generates rsvg-convert shell completions here.
-        postInstall = "";
-        disallowedRequisites = [
-          pkgs.gdk-pixbuf
-          pkgs.dav1d
-        ];
-      });
 in
 {
   inherit
     cairo
-    pango
     xkbcommon
-    rsvg
     ;
 }

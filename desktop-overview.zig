@@ -2,6 +2,7 @@
 const wire = @import("desktop-surface.zig");
 const std = @import("std");
 const decode = @import("desktop-decode.zig");
+const Image = decode.Image;
 comptime {
     _ = @import("desktop-protocols.zig");
 }
@@ -53,7 +54,7 @@ const Overview = struct {
     repaint_source: c.guint = 0,
     dash_view: native_dash.View = .{},
     tooltip_timer: c.guint = 0,
-    wallpaper: ?*c.cairo_surface_t,
+    wallpaper: ?Image,
     timer: c.guint = 0,
     tick_count: u32 = 0,
     apps_mode: bool = false,
@@ -79,22 +80,13 @@ const Overview = struct {
     workspace_target: u32 = 0,
     workspace_started: i64 = 0,
     workspace_rect: Rect = .{},
-    monitor: c.cairo_rectangle_int_t = .{ .x = 0, .y = 0, .width = 1728, .height = 1080 },
+    monitor: raster.IntRect = .{ .x = 0, .y = 0, .width = 1728, .height = 1080 },
 
     fn create(path: [*:0]const u8) *Overview {
         const self = a.create(Overview) catch @panic("out of memory");
         const native = wire.Client.createInteractive(.{ .added = &outputAdded, .removed = &outputRemoved }, self) catch @panic("native overview connection");
         if (native.outputs.items.len == 0) @panic("overview needs an output");
-        var wallpaper: ?*c.cairo_surface_t = null;
-        if (decode.file(path, null)) |image| {
-            defer decode.free(image);
-            wallpaper = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(image.width), @intCast(image.height));
-            const data = c.cairo_image_surface_get_data(wallpaper);
-            const stride: usize = @intCast(c.cairo_image_surface_get_stride(wallpaper));
-            c.cairo_surface_flush(wallpaper);
-            for (0..image.height) |y| @memcpy(data[y * stride ..][0 .. image.width * 4], image.pixels[y * image.stride ..][0 .. image.width * 4]);
-            c.cairo_surface_mark_dirty(wallpaper);
-        }
+        const wallpaper = decode.file(path, null);
         self.* = .{ .launcher = apps.Launcher.init(), .native = native, .surface = null, .wallpaper = wallpaper };
         self.gpu_previews = native.enablePreviews();
         self.surface = self.createSurface(native.outputs.items[0]) catch @panic("native overview surface");
@@ -126,7 +118,7 @@ const Overview = struct {
         self.window_paints.deinit(a);
         self.picker_layout.deinit(a);
         self.clearCaption();
-        if (self.wallpaper) |image| c.cairo_surface_destroy(image);
+        if (self.wallpaper) |image| decode.free(image);
         a.destroy(self);
     }
     fn clearCaption(self: *Overview) void {
@@ -1107,7 +1099,7 @@ const Overview = struct {
                 const bg = layout.cardRect(i, position);
                 if (bg.x > width or bg.x + bg.w < 0) continue;
                 const radius = @max(10.0, 30.0 * (bg.h / @max(1.0, work_h * 0.74)));
-                if (!self.gpu_previews or self.painting_background) view.workspaceCard(canvas, pixelRect(bg), self.wallpaper, radius, true, animated);
+                if (!self.gpu_previews or self.painting_background) view.workspaceCard(canvas, pixelRect(bg), if (self.wallpaper) |image| image.view() else null, radius, true, animated);
                 if (self.painting_background) continue;
                 self.window_paints.clearRetainingCapacity();
                 for (client.windows.items) |window| {
@@ -1144,7 +1136,7 @@ const Overview = struct {
                 .h = start.h + (base.h * ratio - start.h) * ease,
             };
             if (background.x > width or background.x + background.w < 0) continue;
-            if (!self.gpu_previews or self.painting_background) view.workspaceProgress(canvas, pixelRect(background), self.wallpaper, ease, animated);
+            if (!self.gpu_previews or self.painting_background) view.workspaceProgress(canvas, pixelRect(background), if (self.wallpaper) |image| image.view() else null, ease, animated);
             if (self.painting_background) continue;
             self.drawWindows(canvas, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1, animated, width);
         }

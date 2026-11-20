@@ -1,5 +1,6 @@
 //! Frozen Cairo reference for the Activities pixel renderer.
 const std = @import("std");
+const cairo = @import("desktop-cairo.zig");
 const c = @import("../desktop-glib.zig");
 const raster = @import("../desktop-raster.zig");
 const text = @import("../desktop-text.zig");
@@ -49,52 +50,52 @@ test "GPU preview corner masks match rounded content over the cached background"
 }
 
 const reference = struct {
-    fn rounded(cr: *c.cairo_t, r: Rect, radius: f64) void {
+    fn rounded(cr: *cairo.cairo_t, r: Rect, radius: f64) void {
         const rad = @max(0, @min(radius, @min(r.w, r.h) / 2));
-        c.cairo_new_sub_path(cr);
-        c.cairo_arc(cr, r.x + r.w - rad, r.y + rad, rad, -std.math.pi / 2.0, 0);
-        c.cairo_arc(cr, r.x + r.w - rad, r.y + r.h - rad, rad, 0, std.math.pi / 2.0);
-        c.cairo_arc(cr, r.x + rad, r.y + r.h - rad, rad, std.math.pi / 2.0, std.math.pi);
-        c.cairo_arc(cr, r.x + rad, r.y + rad, rad, std.math.pi, 1.5 * std.math.pi);
-        c.cairo_close_path(cr);
+        cairo.cairo_new_sub_path(cr);
+        cairo.cairo_arc(cr, r.x + r.w - rad, r.y + rad, rad, -std.math.pi / 2.0, 0);
+        cairo.cairo_arc(cr, r.x + r.w - rad, r.y + r.h - rad, rad, 0, std.math.pi / 2.0);
+        cairo.cairo_arc(cr, r.x + rad, r.y + r.h - rad, rad, std.math.pi / 2.0, std.math.pi);
+        cairo.cairo_arc(cr, r.x + rad, r.y + rad, rad, std.math.pi, 1.5 * std.math.pi);
+        cairo.cairo_close_path(cr);
     }
-    fn drawImage(cr: *c.cairo_t, image: ?capture.Image, r: Rect, opacity: f64) void {
-        c.cairo_save(cr);
-        defer c.cairo_restore(cr);
-        c.cairo_translate(cr, r.x, r.y);
-        c.cairo_rectangle(cr, 0, 0, r.w, r.h);
-        c.cairo_clip(cr);
+    fn drawImage(cr: *cairo.cairo_t, image: ?capture.Image, r: Rect, opacity: f64) void {
+        cairo.cairo_save(cr);
+        defer cairo.cairo_restore(cr);
+        cairo.cairo_translate(cr, r.x, r.y);
+        cairo.cairo_rectangle(cr, 0, 0, r.w, r.h);
+        cairo.cairo_clip(cr);
         if (image) |pixels| {
             // Borrow capture storage only for this draw; no Cairo object owns it.
-            const surface = c.cairo_image_surface_create_for_data(pixels.pixels.ptr, c.CAIRO_FORMAT_ARGB32, @intCast(pixels.width), @intCast(pixels.height), @intCast(pixels.stride)) orelse return;
-            defer c.cairo_surface_destroy(surface);
-            if (c.cairo_surface_status(surface) != c.CAIRO_STATUS_SUCCESS) return;
-            c.cairo_scale(cr, r.w / @as(f64, @floatFromInt(pixels.width)), r.h / @as(f64, @floatFromInt(pixels.height)));
-            c.cairo_set_source_surface(cr, surface, 0, 0);
-            c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
-            c.cairo_paint_with_alpha(cr, opacity);
+            const surface = cairo.cairo_image_surface_create_for_data(pixels.pixels.ptr, cairo.CAIRO_FORMAT_ARGB32, @intCast(pixels.width), @intCast(pixels.height), @intCast(pixels.stride)) orelse return;
+            defer cairo.cairo_surface_destroy(surface);
+            if (cairo.cairo_surface_status(surface) != cairo.CAIRO_STATUS_SUCCESS) return;
+            cairo.cairo_scale(cr, r.w / @as(f64, @floatFromInt(pixels.width)), r.h / @as(f64, @floatFromInt(pixels.height)));
+            cairo.cairo_set_source_surface(cr, surface, 0, 0);
+            cairo.cairo_pattern_set_extend(cairo.cairo_get_source(cr), cairo.CAIRO_EXTEND_PAD);
+            cairo.cairo_paint_with_alpha(cr, opacity);
         } else {
-            c.cairo_rectangle(cr, 0, 0, r.w, r.h);
-            c.cairo_set_source_rgb(cr, 0.3, 0.3, 0.33);
-            c.cairo_fill(cr);
+            cairo.cairo_rectangle(cr, 0, 0, r.w, r.h);
+            cairo.cairo_set_source_rgb(cr, 0.3, 0.3, 0.33);
+            cairo.cairo_fill(cr);
         }
     }
-    fn workspace(cr: *c.cairo_t, r: Rect, wallpaper: ?*c.cairo_surface_t) void {
-        c.cairo_save(cr);
-        defer c.cairo_restore(cr);
+    fn workspace(cr: *cairo.cairo_t, r: Rect, wallpaper: ?*cairo.cairo_surface_t) void {
+        cairo.cairo_save(cr);
+        defer cairo.cairo_restore(cr);
         rounded(cr, r, 30);
-        c.cairo_clip(cr);
-        c.cairo_set_source_rgb(cr, 0.015, 0.235, 0.53);
-        c.cairo_paint(cr);
+        cairo.cairo_clip(cr);
+        cairo.cairo_set_source_rgb(cr, 0.015, 0.235, 0.53);
+        cairo.cairo_paint(cr);
         if (wallpaper) |image| {
-            const iw: f64 = @floatFromInt(c.cairo_image_surface_get_width(image));
-            const ih: f64 = @floatFromInt(c.cairo_image_surface_get_height(image));
+            const iw: f64 = @floatFromInt(cairo.cairo_image_surface_get_width(image));
+            const ih: f64 = @floatFromInt(cairo.cairo_image_surface_get_height(image));
             const scale = @max(r.w / iw, r.h / ih);
-            c.cairo_translate(cr, r.x + (r.w - iw * scale) / 2, r.y + (r.h - ih * scale) / 2);
-            c.cairo_scale(cr, scale, scale);
-            c.cairo_set_source_surface(cr, image, 0, 0);
-            c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
-            c.cairo_paint(cr);
+            cairo.cairo_translate(cr, r.x + (r.w - iw * scale) / 2, r.y + (r.h - ih * scale) / 2);
+            cairo.cairo_scale(cr, scale, scale);
+            cairo.cairo_set_source_surface(cr, image, 0, 0);
+            cairo.cairo_pattern_set_extend(cairo.cairo_get_source(cr), cairo.CAIRO_EXTEND_PAD);
+            cairo.cairo_paint(cr);
         }
     }
 };
@@ -133,8 +134,8 @@ test "native buffer overview preserves wallpaper crops and workspace clipping" {
     }
     const image = try Image.thumbnail(a, .{ .pixels = std.mem.sliceAsBytes(&words), .width = 11, .height = 9, .stride = 44, .format = .argb });
     defer image.deinit(a);
-    const wallpaper = c.cairo_image_surface_create_for_data(image.pixels.ptr, c.CAIRO_FORMAT_ARGB32, 11, 9, 44).?;
-    defer c.cairo_surface_destroy(wallpaper);
+    const wallpaper = cairo.cairo_image_surface_create_for_data(image.pixels.ptr, cairo.CAIRO_FORMAT_ARGB32, 11, 9, 44).?;
+    defer cairo.cairo_surface_destroy(wallpaper);
     const workspace: Rect = .{ .x = 10.25, .y = 8.75, .w = 240, .h = 138 };
     const miniature: Rect = .{ .x = -4, .y = 156, .w = 80, .h = 40 };
     const clip: Rect = .{ .x = 12, .y = 160, .w = 55, .h = 30 };
@@ -145,23 +146,23 @@ test "native buffer overview preserves wallpaper crops and workspace clipping" {
         defer a.free(pixels);
         @memset(pixels, 0xff222226);
         const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) };
-        view.workspaceCard(canvas, rect(workspace), if (available) wallpaper else null, 30, false, false);
+        view.workspaceCard(canvas, rect(workspace), if (available) image.view() else null, 30, false, false);
         view.miniatureRounded(canvas, if (available) image.view() else null, rect(miniature), rect(clip), 0, false);
-        const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
-        defer c.cairo_surface_destroy(surface);
-        const cr = c.cairo_create(surface).?;
-        defer c.cairo_destroy(cr);
-        c.cairo_scale(cr, @floatFromInt(scale), @floatFromInt(scale));
-        c.cairo_set_source_rgb(cr, 34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
-        c.cairo_paint(cr);
+        const surface = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
+        defer cairo.cairo_surface_destroy(surface);
+        const cr = cairo.cairo_create(surface).?;
+        defer cairo.cairo_destroy(cr);
+        cairo.cairo_scale(cr, @floatFromInt(scale), @floatFromInt(scale));
+        cairo.cairo_set_source_rgb(cr, 34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
+        cairo.cairo_paint(cr);
         reference.workspace(cr, workspace, if (available) wallpaper else null);
-        c.cairo_save(cr);
-        c.cairo_rectangle(cr, clip.x, clip.y, clip.w, clip.h);
-        c.cairo_clip(cr);
+        cairo.cairo_save(cr);
+        cairo.cairo_rectangle(cr, clip.x, clip.y, clip.w, clip.h);
+        cairo.cairo_clip(cr);
         reference.drawImage(cr, if (available) image else null, miniature, 1);
-        c.cairo_restore(cr);
-        c.cairo_surface_flush(surface);
-        const expected: [*]const u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(surface)));
+        cairo.cairo_restore(cr);
+        cairo.cairo_surface_flush(surface);
+        const expected: [*]const u32 = @ptrCast(@alignCast(cairo.cairo_image_surface_get_data(surface)));
         try compare(expected[0 .. width * height], pixels, scale, ease);
     };
 }
@@ -266,13 +267,13 @@ test "hovered window expands without white border and paints close states, capti
 test "tiny wallpaper stays opaque and uniformly colored when enlarged" {
     const a = std.testing.allocator;
     var source: [4]u32 = @splat(0xff142850);
-    const wallpaper = c.cairo_image_surface_create_for_data(@ptrCast(&source), c.CAIRO_FORMAT_ARGB32, 2, 2, 8).?;
-    defer c.cairo_surface_destroy(wallpaper);
+    const wallpaper = cairo.cairo_image_surface_create_for_data(@ptrCast(&source), cairo.CAIRO_FORMAT_ARGB32, 2, 2, 8).?;
+    defer cairo.cairo_surface_destroy(wallpaper);
     const pixels = try a.alloc(u32, 200 * 120);
     defer a.free(pixels);
     @memset(pixels, 0);
     const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = 200, .height = 120 }, .scale = 1 };
-    view.workspaceCard(canvas, .{ .width = 200, .height = 120 }, wallpaper, 30, false, false);
+    view.workspaceCard(canvas, .{ .width = 200, .height = 120 }, .{ .pixels = std.mem.sliceAsBytes(&source), .width = 2, .height = 2, .stride = 8, .format = .argb }, 30, false, false);
     for ([_]usize{ 2 * 200 + 100, 60 * 200 + 2, 60 * 200 + 100, 60 * 200 + 197, 117 * 200 + 100 }) |i| try std.testing.expectEqual(@as(u32, 0xff142850), pixels[i]);
 }
 

@@ -1,7 +1,7 @@
-//! Activities compositing into native Wayland buffers, using Cairo's optimized
-//! filters and path rasterization for the opening and workspace animations.
+//! Activities compositing into native Wayland buffers, using the native canvas
+//! for filtered image scaling and path rasterization in the animations.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const draw = @import("desktop-canvas.zig");
 const raster = @import("desktop-raster.zig");
 const Image = @import("desktop-image.zig").Image;
 const text = @import("desktop-text.zig");
@@ -30,38 +30,27 @@ pub const icon_overlap: f64 = 0.7;
 const window_active_size_inc: f64 = 5;
 
 // Borrow the destination only for this draw. Native Wayland retains ownership
-// of the shared-memory buffer; no GTK window or persistent Cairo storage is used.
+// of the shared-memory buffer; no GTK window or persistent drawing storage is used.
 const Context = struct {
-    surface: *c.cairo_surface_t,
-    cr: *c.cairo_t,
+    cr: draw.Context,
 
     fn init(canvas: Canvas) ?Context {
-        const surface = c.cairo_image_surface_create_for_data(@ptrCast(canvas.target.pixels.ptr), c.CAIRO_FORMAT_ARGB32, @intCast(canvas.target.width), @intCast(canvas.target.height), @intCast(canvas.target.width * 4)) orelse return null;
-        if (c.cairo_surface_status(surface) != c.CAIRO_STATUS_SUCCESS) {
-            c.cairo_surface_destroy(surface);
-            return null;
-        }
-        const cr = c.cairo_create(surface) orelse {
-            c.cairo_surface_destroy(surface);
-            return null;
-        };
-        c.cairo_scale(cr, canvas.scale, canvas.scale);
-        c.cairo_translate(cr, canvas.origin.x, canvas.origin.y);
-        return .{ .surface = surface, .cr = cr };
+        var cr = draw.Context.init(std.heap.c_allocator, .{ .pixels = canvas.target.pixels, .width = canvas.target.width, .height = canvas.target.height, .stride = canvas.target.width });
+        cr.scale(canvas.scale, canvas.scale);
+        cr.translate(canvas.origin.x, canvas.origin.y);
+        return .{ .cr = cr };
     }
-    fn deinit(self: Context) void {
-        c.cairo_destroy(self.cr);
-        c.cairo_surface_flush(self.surface);
-        c.cairo_surface_destroy(self.surface);
+    fn deinit(self: *Context) void {
+        self.cr.deinit();
     }
 };
 
 pub fn miniatureRounded(canvas: Canvas, source: ?raster.Image, rect: Rect, clip: Rect, radius: f64, animated: bool) void {
-    const context = Context.init(canvas) orelse return;
+    var context = Context.init(canvas) orelse return;
     defer context.deinit();
-    if (radius > 0) rounded(context.cr, clip, radius) else c.cairo_rectangle(context.cr, clip.x, clip.y, clip.width, clip.height);
-    c.cairo_clip(context.cr);
-    drawImage(context.cr, source, rect, 1, animated);
+    if (radius > 0) rounded(&context.cr, clip, radius) else context.cr.rectangle(clip.x, clip.y, clip.width, clip.height);
+    context.cr.clip();
+    drawImage(&context.cr, source, rect, 1, animated);
 }
 
 /// Cover the corners of GPU previews without repainting their content.
@@ -74,53 +63,50 @@ pub fn roundedMaskShadow(canvas: Canvas, rect: Rect, radius: f64) void {
 }
 
 fn roundedMaskOptions(canvas: Canvas, rect: Rect, radius: f64, shadow: bool) void {
-    const context = Context.init(canvas) orelse return;
+    var context = Context.init(canvas) orelse return;
     defer context.deinit();
-    c.cairo_rectangle(context.cr, rect.x, rect.y, rect.width, rect.height);
-    rounded(context.cr, rect, radius);
-    c.cairo_set_fill_rule(context.cr, 1); // CAIRO_FILL_RULE_EVEN_ODD
-    c.cairo_clip(context.cr);
-    c.cairo_set_source_rgb(context.cr, 34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
-    c.cairo_paint(context.cr);
+    context.cr.rectangle(rect.x, rect.y, rect.width, rect.height);
+    rounded(&context.cr, rect, radius);
+    context.cr.setFillRule(.evenodd);
+    context.cr.clip();
+    context.cr.setSourceRgb(34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
+    context.cr.paint();
     if (shadow) {
-        c.cairo_set_fill_rule(context.cr, 0);
-        drawShadowRect(context.cr, rect, radius, 4, 4, 16, 0.2);
+        context.cr.setFillRule(.nonzero);
+        drawShadowRect(&context.cr, rect, radius, 4, 4, 16, 0.2);
     }
 }
 
-fn rounded(cr: *c.cairo_t, r: Rect, radius: f64) void {
+fn rounded(cr: *draw.Context, r: Rect, radius: f64) void {
     const rad = @max(0, @min(radius, @min(r.width, r.height) / 2));
-    c.cairo_new_sub_path(cr);
-    c.cairo_arc(cr, r.x + r.width - rad, r.y + rad, rad, -std.math.pi / 2.0, 0);
-    c.cairo_arc(cr, r.x + r.width - rad, r.y + r.height - rad, rad, 0, std.math.pi / 2.0);
-    c.cairo_arc(cr, r.x + rad, r.y + r.height - rad, rad, std.math.pi / 2.0, std.math.pi);
-    c.cairo_arc(cr, r.x + rad, r.y + rad, rad, std.math.pi, 1.5 * std.math.pi);
-    c.cairo_close_path(cr);
+    cr.newSubPath();
+    cr.arc(r.x + r.width - rad, r.y + rad, rad, -std.math.pi / 2.0, 0);
+    cr.arc(r.x + r.width - rad, r.y + r.height - rad, rad, 0, std.math.pi / 2.0);
+    cr.arc(r.x + rad, r.y + r.height - rad, rad, std.math.pi / 2.0, std.math.pi);
+    cr.arc(r.x + rad, r.y + rad, rad, std.math.pi, 1.5 * std.math.pi);
+    cr.closePath();
 }
-fn drawImage(cr: *c.cairo_t, image: ?raster.Image, r: Rect, opacity: f64, animated: bool) void {
-    c.cairo_save(cr);
-    defer c.cairo_restore(cr);
-    c.cairo_translate(cr, r.x, r.y);
-    c.cairo_rectangle(cr, 0, 0, r.width, r.height);
-    c.cairo_clip(cr);
+fn drawImage(cr: *draw.Context, image: ?raster.Image, r: Rect, opacity: f64, animated: bool) void {
+    cr.save();
+    defer cr.restore();
+    cr.translate(r.x, r.y);
+    cr.rectangle(0, 0, r.width, r.height);
+    cr.clip();
     if (image) |pixels| {
         std.debug.assert(pixels.format == .argb);
-        // Borrow capture storage only for this draw; no Cairo object owns it.
-        const surface = c.cairo_image_surface_create_for_data(@constCast(pixels.pixels.ptr), c.CAIRO_FORMAT_ARGB32, @intCast(pixels.width), @intCast(pixels.height), @intCast(pixels.stride)) orelse return;
-        defer c.cairo_surface_destroy(surface);
-        if (c.cairo_surface_status(surface) != c.CAIRO_STATUS_SUCCESS) return;
-        c.cairo_scale(cr, r.width / @as(f64, @floatFromInt(pixels.width)), r.height / @as(f64, @floatFromInt(pixels.height)));
-        c.cairo_set_source_surface(cr, surface, 0, 0);
-        c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
-        if (animated) c.cairo_pattern_set_filter(c.cairo_get_source(cr), c.CAIRO_FILTER_BILINEAR);
-        c.cairo_paint_with_alpha(cr, opacity);
+        // Borrow capture storage only for this draw.
+        cr.scale(r.width / @as(f64, @floatFromInt(pixels.width)), r.height / @as(f64, @floatFromInt(pixels.height)));
+        cr.setSourceImage(.fromRaster(pixels), 0, 0);
+        cr.setExtend(.pad);
+        if (animated) cr.setFilter(.bilinear);
+        cr.paintWithAlpha(opacity);
     } else {
-        c.cairo_rectangle(cr, 0, 0, r.width, r.height);
-        c.cairo_set_source_rgb(cr, 0.3, 0.3, 0.33);
-        c.cairo_fill(cr);
+        cr.rectangle(0, 0, r.width, r.height);
+        cr.setSourceRgb(0.3, 0.3, 0.33);
+        cr.fill();
     }
 }
-fn drawShadowRect(cr: *c.cairo_t, r: Rect, corner_radius: f64, offset_y: f64, spread: f64, blur: f64, alpha: f64) void {
+fn drawShadowRect(cr: *draw.Context, r: Rect, corner_radius: f64, offset_y: f64, spread: f64, blur: f64, alpha: f64) void {
     if (alpha <= 0 or r.width <= 0 or r.height <= 0) return;
     const steps: usize = 8;
     const outer = spread + blur;
@@ -142,12 +128,12 @@ fn drawShadowRect(cr: *c.cairo_t, r: Rect, corner_radius: f64, offset_y: f64, sp
         };
         if (sr.width <= 0 or sr.height <= 0) continue;
         rounded(cr, sr, @max(0, corner_radius + expand));
-        c.cairo_set_source_rgba(cr, 0, 0, 0, step_alpha);
-        c.cairo_fill(cr);
+        cr.setSourceRgba(0, 0, 0, step_alpha);
+        cr.fill();
     }
 }
 
-fn drawIconShadow(cr: *c.cairo_t, icon: Image, x: f64, y: f64, size: f64, offset_y: f64, alpha: f64) void {
+fn drawIconShadow(cr: *draw.Context, icon: Image, x: f64, y: f64, size: f64, offset_y: f64, alpha: f64) void {
     if (alpha <= 0) return;
     const iw = icon.width;
     const ih = icon.height;
@@ -219,28 +205,22 @@ fn drawIconShadow(cr: *c.cairo_t, icon: Image, x: f64, y: f64, size: f64, offset
         }
     }
 
-    const shadow_surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, dim, dim) orelse return;
-    defer c.cairo_surface_destroy(shadow_surface);
-    if (c.cairo_surface_status(shadow_surface) != c.CAIRO_STATUS_SUCCESS) return;
-    const raw = c.cairo_image_surface_get_data(shadow_surface);
-    const out_stride: usize = @intCast(c.cairo_image_surface_get_stride(shadow_surface));
+    var shadow: [dim * dim]u32 = undefined;
     for (0..dim) |row| {
-        const row_ptr: [*]u32 = @ptrCast(@alignCast(raw + row * out_stride));
         for (0..dim) |col| {
             const byte: u32 = @intFromFloat(@round(std.math.clamp(buf_a[row * dim + col] * alpha, 0, 1) * 255.0));
-            row_ptr[col] = byte << 24;
+            shadow[row * dim + col] = byte << 24;
         }
     }
-    c.cairo_surface_mark_dirty(shadow_surface);
 
     const icon_scale = size / @as(f64, @floatFromInt(grid));
-    c.cairo_save(cr);
-    defer c.cairo_restore(cr);
-    c.cairo_translate(cr, x - @as(f64, @floatFromInt(pad)) * icon_scale, y + offset_y - @as(f64, @floatFromInt(pad)) * icon_scale);
-    c.cairo_scale(cr, icon_scale, icon_scale);
-    c.cairo_set_source_surface(cr, shadow_surface, 0, 0);
-    c.cairo_pattern_set_filter(c.cairo_get_source(cr), c.CAIRO_FILTER_BILINEAR);
-    c.cairo_paint(cr);
+    cr.save();
+    defer cr.restore();
+    cr.translate(x - @as(f64, @floatFromInt(pad)) * icon_scale, y + offset_y - @as(f64, @floatFromInt(pad)) * icon_scale);
+    cr.scale(icon_scale, icon_scale);
+    cr.setSourceImage(.{ .pixels = &shadow, .width = dim, .height = dim, .stride = dim }, 0, 0);
+    cr.setFilter(.bilinear);
+    cr.paint();
 }
 
 pub fn pill(canvas: Canvas, rect: Rect) void {
@@ -281,54 +261,54 @@ pub fn closeButtonRect(preview: Rect) Rect {
 }
 
 pub fn thumbnailIndicator(canvas: Canvas, thumbnail: Rect, opacity: f64) void {
-    const context = Context.init(canvas) orelse return;
+    var context = Context.init(canvas) orelse return;
     defer context.deinit();
-    const cr = context.cr;
+    const cr = &context.cr;
     rounded(cr, .{ .x = thumbnail.x - 1.5, .y = thumbnail.y - 1.5, .width = thumbnail.width + 3, .height = thumbnail.height + 3 }, 6.5);
-    c.cairo_set_source_rgba(cr, 0.208, 0.518, 0.894, opacity);
-    c.cairo_set_line_width(cr, 3);
-    c.cairo_stroke(cr);
+    cr.setSourceRgba(0.208, 0.518, 0.894, opacity);
+    cr.setLineWidth(3);
+    cr.stroke();
 }
 
-pub fn workspace(canvas: Canvas, r: Rect, wallpaper: ?*c.cairo_surface_t, animated: bool) void {
+pub fn workspace(canvas: Canvas, r: Rect, wallpaper: ?raster.Image, animated: bool) void {
     workspaceProgress(canvas, r, wallpaper, 1, animated);
 }
 
-pub fn workspaceProgress(canvas: Canvas, r: Rect, wallpaper: ?*c.cairo_surface_t, progress: f64, animated: bool) void {
+pub fn workspaceProgress(canvas: Canvas, r: Rect, wallpaper: ?raster.Image, progress: f64, animated: bool) void {
     const clamped = std.math.clamp(progress, 0, 1);
     workspaceCard(canvas, r, wallpaper, 30 * clamped, clamped > 0, animated);
 }
 
-pub fn workspaceCard(canvas: Canvas, r: Rect, wallpaper: ?*c.cairo_surface_t, corner_radius: f64, shadow: bool, animated: bool) void {
-    const context = Context.init(canvas) orelse return;
+pub fn workspaceCard(canvas: Canvas, r: Rect, wallpaper: ?raster.Image, corner_radius: f64, shadow: bool, animated: bool) void {
+    var context = Context.init(canvas) orelse return;
     defer context.deinit();
-    const cr = context.cr;
+    const cr = &context.cr;
     if (shadow) drawShadowRect(cr, r, corner_radius, 4, 4, 16, 0.2);
-    c.cairo_save(cr);
-    defer c.cairo_restore(cr);
+    cr.save();
+    defer cr.restore();
     rounded(cr, r, corner_radius);
-    c.cairo_clip(cr);
-    c.cairo_set_source_rgb(cr, 0.015, 0.235, 0.53);
-    c.cairo_paint(cr);
+    cr.clip();
+    cr.setSourceRgb(0.015, 0.235, 0.53);
+    cr.paint();
     if (wallpaper) |image| {
-        const iw: f64 = @floatFromInt(c.cairo_image_surface_get_width(image));
-        const ih: f64 = @floatFromInt(c.cairo_image_surface_get_height(image));
+        const iw: f64 = @floatFromInt(image.width);
+        const ih: f64 = @floatFromInt(image.height);
         const scale = @max(r.width / iw, r.height / ih);
-        c.cairo_translate(cr, r.x + (r.width - iw * scale) / 2, r.y + (r.height - ih * scale) / 2);
-        c.cairo_scale(cr, scale, scale);
-        c.cairo_set_source_surface(cr, image, 0, 0);
-        c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
-        if (animated) c.cairo_pattern_set_filter(c.cairo_get_source(cr), c.CAIRO_FILTER_BILINEAR);
-        c.cairo_paint(cr);
+        cr.translate(r.x + (r.width - iw * scale) / 2, r.y + (r.height - ih * scale) / 2);
+        cr.scale(scale, scale);
+        cr.setSourceImage(.fromRaster(image), 0, 0);
+        cr.setExtend(.pad);
+        if (animated) cr.setFilter(.bilinear);
+        cr.paint();
     }
 }
 
 pub fn window(canvas: Canvas, r: Rect, captured: ?raster.Image, icon_image: ?Image, state: WindowState) void {
     const preview = previewRect(r, state.hovered, state.ease);
     {
-        const context = Context.init(canvas) orelse return;
+        var context = Context.init(canvas) orelse return;
         defer context.deinit();
-        const cr = context.cr;
+        const cr = &context.cr;
         // Captures already contain client decoration and corner transparency.
         if (!state.external_content) drawImage(cr, captured, preview, 1, state.animated);
         if (icon_image) |icon| {
@@ -342,23 +322,23 @@ pub fn window(canvas: Canvas, r: Rect, captured: ?raster.Image, icon_image: ?Ima
             const close_cx = close_r.x + close_button_radius;
             const close_cy = close_r.y + close_button_radius;
             drawShadowRect(cr, close_r, close_button_radius, 2, 0, 4, 0.2 * state.ease);
-            c.cairo_arc(cr, close_cx, close_cy, close_button_radius, 0, 2 * std.math.pi);
+            cr.arc(close_cx, close_cy, close_button_radius, 0, 2 * std.math.pi);
             if (state.close_pressed) {
-                c.cairo_set_source_rgba(cr, 94.0 / 255.0, 94.0 / 255.0, 105.0 / 255.0, 0.98 * state.ease);
+                cr.setSourceRgba(94.0 / 255.0, 94.0 / 255.0, 105.0 / 255.0, 0.98 * state.ease);
             } else if (state.close_hovered) {
-                c.cairo_set_source_rgba(cr, 80.0 / 255.0, 80.0 / 255.0, 89.0 / 255.0, 0.98 * state.ease);
+                cr.setSourceRgba(80.0 / 255.0, 80.0 / 255.0, 89.0 / 255.0, 0.98 * state.ease);
             } else {
-                c.cairo_set_source_rgba(cr, 63.0 / 255.0, 63.0 / 255.0, 70.0 / 255.0, 0.98 * state.ease);
+                cr.setSourceRgba(63.0 / 255.0, 63.0 / 255.0, 70.0 / 255.0, 0.98 * state.ease);
             }
-            c.cairo_fill(cr);
-            c.cairo_set_source_rgba(cr, 1, 1, 1, state.ease);
-            c.cairo_set_line_width(cr, 2);
-            c.cairo_set_line_cap(cr, 1);
-            c.cairo_move_to(cr, close_cx - 5, close_cy - 5);
-            c.cairo_line_to(cr, close_cx + 5, close_cy + 5);
-            c.cairo_move_to(cr, close_cx + 5, close_cy - 5);
-            c.cairo_line_to(cr, close_cx - 5, close_cy + 5);
-            c.cairo_stroke(cr);
+            cr.fill();
+            cr.setSourceRgba(1, 1, 1, state.ease);
+            cr.setLineWidth(2);
+            cr.setLineCap(.round);
+            cr.moveTo(close_cx - 5, close_cy - 5);
+            cr.lineTo(close_cx + 5, close_cy + 5);
+            cr.moveTo(close_cx + 5, close_cy - 5);
+            cr.lineTo(close_cx - 5, close_cy + 5);
+            cr.stroke();
         }
     }
     if (state.hovered and state.ease > 0.01) if (state.caption) |caption| {

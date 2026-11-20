@@ -10,7 +10,7 @@ const Proxy = c.wl_proxy;
 const cast = c.__zig.cast;
 const protocols = @import("desktop-protocols.zig");
 
-pub const TextState = struct { text: [:0]const u8, cursor: u32, anchor: u32, rect: c.cairo_rectangle_int_t, private: bool = false };
+pub const TextState = struct { text: [:0]const u8, cursor: u32, anchor: u32, rect: @import("desktop-raster.zig").IntRect, private: bool = false };
 
 pub const Events = struct {
     leave: ?*const fn (?*anyopaque, *native.Surface) void = null,

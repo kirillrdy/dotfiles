@@ -326,25 +326,15 @@ pub fn loadThemed(icon: ?*c.GIcon, size: u32, fallback: ?Image, fallback_name: ?
 }
 
 fn symbolic(path: [:0]const u8, size: u32, tint: Color) ?Image {
-    const data = read(path) orelse return null;
-    defer c.g_free(data.ptr);
-    const natural = decode.dimensions(data) orelse return null;
-    const encoded = a.alloc(u8, std.base64.standard.Encoder.calcSize(data.len)) catch return null;
-    defer a.free(encoded);
-    _ = std.base64.standard.Encoder.encode(encoded, data);
-    var css: std.Io.Writer.Allocating = .init(a);
-    defer css.deinit();
-    const rgba = [3]u32{ @intFromFloat(@round(std.math.clamp(tint.red, 0, 1) * 255)), @intFromFloat(@round(std.math.clamp(tint.green, 0, 1) * 255)), @intFromFloat(@round(std.math.clamp(tint.blue, 0, 1) * 255)) };
-    const colors = [_][3]u32{ rgba, .{ 78, 154, 6 }, .{ 245, 121, 62 }, .{ 204, 0, 0 } };
-    for ([_][]const u8{ "rect,circle,path,p", ".success", ".warning", ".error" }, colors) |selector, rgb| {
-        css.writer.print("{s}{{fill:rgb({d},{d},{d})!important;stroke:none!important}}", .{ selector, rgb[0], rgb[1], rgb[2] }) catch return null;
-    }
-    for ([_][]const u8{ "rect.stroke,circle.stroke,path.stroke,p.stroke", ".success.stroke", ".warning.stroke", ".error.stroke" }, colors) |selector, rgb| {
-        css.writer.print("{s}{{fill:none!important;stroke:rgb({d},{d},{d})!important}}", .{ selector, rgb[0], rgb[1], rgb[2] }) catch return null;
-    }
-    const svg = std.fmt.allocPrint(a, "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xi=\"http://www.w3.org/2001/XInclude\" width=\"{d}\" height=\"{d}\"><style>{s}</style><g opacity=\"{d}\"><xi:include href=\"data:text/xml;base64,{s}\"/></g></svg>", .{ natural[0], natural[1], css.written(), std.math.clamp(tint.alpha, 0, 1), encoded }) catch return null;
-    defer a.free(svg);
-    return decode.bytes(svg, size);
+    const data = decode.read(path) orelse return null;
+    defer decode.allocator.free(data);
+    const channel = struct {
+        fn f(value: f64) u32 {
+            return @intFromFloat(@round(std.math.clamp(value, 0, 1) * 255));
+        }
+    }.f;
+    const color: decode.Color = .{ .rgb = channel(tint.red) << 16 | channel(tint.green) << 8 | channel(tint.blue) };
+    return decode.symbolic(data, size, .{ .foreground = color }, tint.alpha);
 }
 
 /// Recolors GTK's symbolic PNG palette: black takes the tint, while pure red,

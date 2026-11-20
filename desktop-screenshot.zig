@@ -1,6 +1,7 @@
 //! Wayland screenshot tool with region selection and clipboard support.
 const native = @import("desktop-surface.zig");
 const std = @import("std");
+const cairo = @import("tests/desktop-cairo.zig");
 const wayland = @import("desktop-wayland.zig");
 pub const protocols = @import("desktop-protocols.zig");
 const libc = @import("desktop-libc.zig");
@@ -784,29 +785,29 @@ test "Escape during a drag ignores queued pointer events" {
 
 test "native selection geometry agrees with Cairo at clipped edges and output scales" {
     const reference = struct {
-        fn paint(cr: *c.cairo_t, width: f64, height: f64, selected: ?Rect) void {
-            c.cairo_set_source_rgba(cr, 0, 0, 0, 0.35);
-            c.cairo_paint(cr);
+        fn paint(cr: *cairo.cairo_t, width: f64, height: f64, selected: ?Rect) void {
+            cairo.cairo_set_source_rgba(cr, 0, 0, 0, 0.35);
+            cairo.cairo_paint(cr);
             const rect = selected orelse return;
             if (rect.w <= 1 or rect.h <= 1) return;
             const rx: f64 = @floatFromInt(rect.x);
             const ry: f64 = @floatFromInt(rect.y);
             const rw: f64 = @floatFromInt(rect.w);
             const rh: f64 = @floatFromInt(rect.h);
-            c.cairo_save(cr);
-            c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
-            c.cairo_rectangle(cr, rx, ry, rw, rh);
-            c.cairo_fill(cr);
-            c.cairo_restore(cr);
-            c.cairo_set_source_rgb(cr, 0.208, 0.518, 0.894);
-            c.cairo_set_line_width(cr, 2);
-            c.cairo_rectangle(cr, rx, ry, rw, rh);
-            c.cairo_stroke(cr);
+            cairo.cairo_save(cr);
+            cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_CLEAR);
+            cairo.cairo_rectangle(cr, rx, ry, rw, rh);
+            cairo.cairo_fill(cr);
+            cairo.cairo_restore(cr);
+            cairo.cairo_set_source_rgb(cr, 0.208, 0.518, 0.894);
+            cairo.cairo_set_line_width(cr, 2);
+            cairo.cairo_rectangle(cr, rx, ry, rw, rh);
+            cairo.cairo_stroke(cr);
             const label_x = @max(0, @min(rx, width - 90));
             const label_y = @max(0, @min(ry + rh + 6, height - 22));
-            c.cairo_set_source_rgba(cr, 0.1, 0.1, 0.1, 0.85);
-            c.cairo_rectangle(cr, label_x, label_y, 90, 22);
-            c.cairo_fill(cr);
+            cairo.cairo_set_source_rgba(cr, 0.1, 0.1, 0.1, 0.85);
+            cairo.cairo_rectangle(cr, label_x, label_y, 90, 22);
+            cairo.cairo_fill(cr);
         }
     };
     for ([_]u32{ 1, 2, 3 }) |scale| {
@@ -815,19 +816,19 @@ test "native selection geometry agrees with Cairo at clipped edges and output sc
         const pixels = try std.testing.allocator.alloc(u32, width * height);
         defer std.testing.allocator.free(pixels);
         const target: raster.Buffer = .{ .pixels = pixels, .width = width, .height = height };
-        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
-        defer c.cairo_surface_destroy(image);
-        c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-        const cr = c.cairo_create(image).?;
-        defer c.cairo_destroy(cr);
+        const image = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
+        defer cairo.cairo_surface_destroy(image);
+        cairo.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
+        const cr = cairo.cairo_create(image).?;
+        defer cairo.cairo_destroy(cr);
         for ([_]?Rect{ null, .{ .x = 10, .y = 15, .w = 70, .h = 40 }, .{ .x = 0, .y = 0, .w = 140, .h = 100 }, .{ .x = 130, .y = 90, .w = 10, .h = 10 }, .{ .x = 12, .y = 8, .w = 2, .h = 2 } }) |rect| {
             paintSelection(target, scale, rect, null);
-            c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
-            c.cairo_paint(cr);
-            c.cairo_set_operator(cr, c.CAIRO_OPERATOR_OVER);
+            cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_CLEAR);
+            cairo.cairo_paint(cr);
+            cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_OVER);
             reference.paint(cr, 140, 100, rect);
-            c.cairo_surface_flush(image);
-            const expected: [*]const u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
+            cairo.cairo_surface_flush(image);
+            const expected: [*]const u32 = @ptrCast(@alignCast(cairo.cairo_image_surface_get_data(image)));
             for (pixels, 0..) |value, i| inline for (.{ 0, 8, 16, 24 }) |shift| {
                 const left: i32 = @intCast((value >> shift) & 255);
                 const right: i32 = @intCast((expected[i] >> shift) & 255);

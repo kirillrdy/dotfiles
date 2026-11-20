@@ -21,7 +21,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    for ([_][]const u8{ "gio-unix-2.0", "librsvg-2.0", "cairo", "wayland-client", "libpipewire-0.3", "pam", "xkbcommon", "pangoft2" }) |name| desktop.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "gio-unix-2.0", "wayland-client", "libpipewire-0.3", "pam", "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| desktop.linkSystemLibrary(name, .{});
+    const text_c = bindings(b, target, optimize, "#include <ft2build.h>\n#include FT_FREETYPE_H\n#include FT_MULTIPLE_MASTERS_H\n#include FT_SYNTHESIS_H\n#include <hb.h>\n#include <hb-ft.h>\n#include <fontconfig/fontconfig.h>\n", &.{ "freetype2", "harfbuzz", "fontconfig" });
+    desktop.addImport("text-c", text_c);
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
     const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
     const protocol_names = [_][]const u8{
@@ -128,7 +130,8 @@ pub fn build(b: *std.Build) void {
 
     // Prove the replacement window host has no GTK/GDK link dependency.
     const native = b.createModule(.{ .root_source_file = b.path("desktop-native.zig"), .target = target, .optimize = optimize, .link_libc = true });
-    for ([_][]const u8{ "gio-unix-2.0", "wayland-client", "xkbcommon", "pangoft2" }) |name| native.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "gio-unix-2.0", "wayland-client", "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| native.linkSystemLibrary(name, .{});
+    native.addImport("text-c", text_c);
     native.addImport("protocol-metadata", metadata);
     const window_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-window-fixture.zig"), .target = target, .optimize = optimize });
     window_module.addImport("native", native);
@@ -140,12 +143,14 @@ pub fn build(b: *std.Build) void {
     const test_module = b.createModule(.{ .root_source_file = b.path("desktop-tests.zig"), .target = target, .optimize = optimize, .link_libc = true });
     for (desktop.import_table.keys(), desktop.import_table.values()) |name, dependency| test_module.addImport(name, dependency);
     test_module.link_objects.appendSlice(b.graph.arena, desktop.link_objects.items) catch @panic("OOM");
+    // Cairo renders frozen reference images in unit tests only.
+    test_module.linkSystemLibrary("cairo", .{});
     const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module, .filters = if (integration_tests) &.{"integration:"} else &.{} });
     b.step("test-binary", "Build tests for execution in a NixOS VM").dependOn(&b.addInstallArtifact(tests, fixture_install).step);
     const test_step = b.step("test", "Run unit, ABI and protocol checks");
     const unit_run = b.addRunArtifact(tests);
     test_step.dependOn(&unit_run.step);
-    test_module.addImport("glib-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gio/gio.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <cairo.h>\n#include <librsvg/rsvg.h>\n#include <pango/pangoft2.h>\n", &.{ "gio-unix-2.0", "librsvg-2.0", "cairo", "wayland-client", "pangoft2" }));
+    test_module.addImport("glib-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gio/gio.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <cairo.h>\n", &.{ "gio-unix-2.0", "cairo", "wayland-client" }));
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
     const decoration_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-decoration-fixture.zig"), .target = target, .optimize = optimize, .link_libc = true });
     decoration_module.linkSystemLibrary("wayland-client", .{});

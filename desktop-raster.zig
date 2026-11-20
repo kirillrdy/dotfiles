@@ -27,6 +27,8 @@ pub fn hex(value: u32) Color {
     return Color.rgb(value, 1);
 }
 pub const Region = struct { x: i32, y: i32, width: u32, height: u32 };
+/// An integer rectangle in logical pixels, as reported for text-input carets.
+pub const IntRect = struct { x: c_int = 0, y: c_int = 0, width: c_int = 0, height: c_int = 0 };
 
 /// Composite a premultiplied ARGB source over a premultiplied destination.
 pub fn over(destination: u32, source: u32) u32 {

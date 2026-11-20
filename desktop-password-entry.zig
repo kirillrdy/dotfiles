@@ -112,7 +112,7 @@ pub const Entry = struct {
     changed: *const fn (?*anyopaque) void,
     data: ?*anyopaque,
     rect: Rect = .{ .x = 0, .y = 0, .width = 400, .height = 42 },
-    location: c.cairo_rectangle_int_t = .{ .x = 0, .y = 0, .width = 1, .height = 42 },
+    location: raster.IntRect = .{ .x = 0, .y = 0, .width = 1, .height = 42 },
     focused: bool = false,
     // Echoed PAM challenges and public form fields use visible glyphs.
     // Only explicitly public fields may copy their text to the clipboard.
@@ -370,7 +370,7 @@ pub const Entry = struct {
         }
         const caret_x = rect.x + 12 + @as(f64, @floatFromInt(caret_index - self.first)) * self.advance;
         if (self.focused and self.caret) canvas.draw(&.{.{ .line = .{ .start = .{ .x = caret_x, .y = rect.y + 11 }, .end = .{ .x = caret_x, .y = rect.y + rect.height - 11 }, .radius = 0.65 } }}, color(0xffffff));
-        const location: c.cairo_rectangle_int_t = .{ .x = @intFromFloat(caret_x), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
+        const location: raster.IntRect = .{ .x = @intFromFloat(caret_x), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
         self.location = location;
     }
     fn paintFrame(self: *const Entry, canvas: raster.Canvas) void {
@@ -410,7 +410,7 @@ pub const Entry = struct {
         mask.paint(canvas, -self.text_offset, y, color(0xffffff));
         if (self.focused and self.caret) canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = cursor - self.text_offset, .y = 7, .width = 1, .height = @max(1, rect.height - 14) }, .radius = 0 } }}, color(0xffffff));
         try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(pixels), .width = width, .height = height, .stride = width * 4, .format = .argb }, .{ .x = (rect.x + 12) * factor, .y = rect.y * factor, .width = @floatFromInt(width), .height = @floatFromInt(height) }, null);
-        const location: c.cairo_rectangle_int_t = .{ .x = @intFromFloat(rect.x + 12 + cursor - self.text_offset), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
+        const location: raster.IntRect = .{ .x = @intFromFloat(rect.x + 12 + cursor - self.text_offset), .y = @intFromFloat(rect.y), .width = 1, .height = @intFromFloat(rect.height) };
         self.location = location;
     }
     pub fn destroy(self: *Entry) void {

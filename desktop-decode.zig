@@ -1,114 +1,61 @@
-//! The desktop's only image decoder. Cairo reads PNG and librsvg renders SVG;
-//! both paint into owned premultiplied ARGB images. Release results with `free`.
+//! The desktop's only image decoder. PNG and SVG are decoded in Zig and
+//! painted into owned premultiplied ARGB images. Release results with `free`.
 const std = @import("std");
 const c = @import("desktop-glib.zig");
+const png = @import("desktop-png.zig");
+const svg = @import("desktop-svg.zig");
+const vec = @import("desktop-path.zig");
 pub const Image = @import("desktop-image.zig").Image;
+pub const Symbolic = svg.Symbolic;
+pub const Color = svg.Color;
 
 pub const allocator = std.heap.c_allocator;
 
-pub const api = struct {
-    pub const RsvgHandle = opaque {};
-    pub const RsvgRectangle = extern struct { x: f64, y: f64, width: f64, height: f64 };
-    pub const RsvgUnit = c_uint;
-    pub const RsvgLength = extern struct { length: f64, unit: RsvgUnit };
-    pub extern fn rsvg_handle_new_from_data([*c]const c.guint8, c.gsize, [*c][*c]c.GError) ?*RsvgHandle;
-    pub extern fn rsvg_handle_get_intrinsic_size_in_pixels(?*RsvgHandle, [*c]f64, [*c]f64) c.gboolean;
-    pub extern fn rsvg_handle_get_intrinsic_dimensions(?*RsvgHandle, [*c]c.gboolean, [*c]RsvgLength, [*c]c.gboolean, [*c]RsvgLength, [*c]c.gboolean, [*c]RsvgRectangle) void;
-    pub extern fn rsvg_handle_render_document(?*RsvgHandle, ?*c.cairo_t, [*c]const RsvgRectangle, [*c][*c]c.GError) c.gboolean;
-    pub const CAIRO_STATUS_READ_ERROR: c_int = 10;
-    pub const cairo_read_func_t = ?*const fn (?*anyopaque, [*c]u8, c_uint) callconv(.c) c.cairo_status_t;
-    pub extern fn cairo_image_surface_create_from_png_stream(cairo_read_func_t, ?*anyopaque) ?*c.cairo_surface_t;
-    pub extern fn g_input_stream_read(?*c.GInputStream, ?*anyopaque, c.gsize, [*c]c.GCancellable, [*c][*c]c.GError) c.gssize;
-};
-
 const max_side = 8192;
 const max_encoded = 64 << 20;
-const png_signature = "\x89PNG\r\n\x1a\n";
 
 const Source = union(enum) {
-    png: *c.cairo_surface_t,
-    svg: *api.RsvgHandle,
+    png: png.Decoded,
+    svg: *svg.Document,
 
     fn open(data: []const u8) ?Source {
-        if (std.mem.startsWith(u8, data, png_signature)) {
-            var input = data;
-            const surface = api.cairo_image_surface_create_from_png_stream(&readPng, @ptrCast(&input)) orelse return null;
-            if (c.cairo_surface_status(surface) != 0) {
-                c.cairo_surface_destroy(surface);
-                return null;
-            }
-            return .{ .png = surface };
-        }
-        return .{ .svg = api.rsvg_handle_new_from_data(data.ptr, data.len, null) orelse return null };
+        if (std.mem.startsWith(u8, data, png.signature)) return .{ .png = png.decode(allocator, data) catch return null };
+        return .{ .svg = svg.Document.parse(allocator, data) catch return null };
     }
 
     fn close(self: Source) void {
         switch (self) {
-            .png => |surface| c.cairo_surface_destroy(surface),
-            .svg => |handle| c.g_object_unref(handle),
+            .png => |image| allocator.free(image.pixels),
+            .svg => |doc| doc.deinit(),
         }
     }
 
     fn size(self: Source) ?[2]u32 {
-        var width: f64 = 0;
-        var height: f64 = 0;
-        switch (self) {
-            .png => |surface| {
-                width = @floatFromInt(c.cairo_image_surface_get_width(surface));
-                height = @floatFromInt(c.cairo_image_surface_get_height(surface));
-            },
-            .svg => |handle| if (api.rsvg_handle_get_intrinsic_size_in_pixels(handle, &width, &height) == 0) {
-                // Without absolute width and height, the viewBox gives the natural size.
-                var has_viewbox: c.gboolean = 0;
-                var viewbox: api.RsvgRectangle = undefined;
-                api.rsvg_handle_get_intrinsic_dimensions(handle, null, null, null, null, &has_viewbox, &viewbox);
-                if (has_viewbox == 0) return null;
-                width = viewbox.width;
-                height = viewbox.height;
-            },
-        }
+        const natural: [2]f64 = switch (self) {
+            .png => |image| .{ @floatFromInt(image.width), @floatFromInt(image.height) },
+            .svg => |doc| doc.size() orelse return null,
+        };
+        const width = natural[0];
+        const height = natural[1];
         if (!(width >= 0.5 and height >= 0.5 and width <= max_side and height <= max_side)) return null;
         return .{ @intFromFloat(@ceil(width - 0.001)), @intFromFloat(@ceil(height - 0.001)) };
     }
 
-    fn render(self: Source, width: u32, height: u32) ?Image {
-        const image = create(width, height) catch return null;
-        @memset(image.pixels, 0);
-        const surface = c.cairo_image_surface_create_for_data(image.pixels.ptr, c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height), @intCast(image.stride));
-        defer c.cairo_surface_destroy(surface);
-        const cr = c.cairo_create(surface);
-        defer c.cairo_destroy(cr);
-        const drawn = switch (self) {
-            .png => |png| blk: {
-                const natural = self.size().?;
-                c.cairo_scale(cr, @as(f64, @floatFromInt(width)) / @as(f64, @floatFromInt(natural[0])), @as(f64, @floatFromInt(height)) / @as(f64, @floatFromInt(natural[1])));
-                c.cairo_set_source_surface(cr, png, 0, 0);
-                c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
-                c.cairo_pattern_set_filter(c.cairo_get_source(cr), c.CAIRO_FILTER_GOOD);
-                c.cairo_paint(cr);
-                break :blk true;
+    fn render(self: Source, width: u32, height: u32, options: svg.Options) ?Image {
+        switch (self) {
+            .png => |image| return @import("desktop-image.zig").resample(allocator, .{ .pixels = image.pixels, .width = image.width, .height = image.height, .stride = @as(usize, image.width) * 4 }, width, height) catch null,
+            .svg => |doc| {
+                const image = create(width, height) catch return null;
+                @memset(image.pixels, 0);
+                doc.render(allocator, vec.Target.fromBytes(image.pixels, width, height, image.stride), options) catch {
+                    free(image);
+                    return null;
+                };
+                return image;
             },
-            .svg => |handle| blk: {
-                const viewport: api.RsvgRectangle = .{ .x = 0, .y = 0, .width = @floatFromInt(width), .height = @floatFromInt(height) };
-                break :blk api.rsvg_handle_render_document(handle, cr, &viewport, null) != 0;
-            },
-        };
-        c.cairo_surface_flush(surface);
-        if (!drawn or c.cairo_status(cr) != 0) {
-            free(image);
-            return null;
         }
-        return image;
     }
 };
-
-fn readPng(closure: ?*anyopaque, data: [*c]u8, length: c_uint) callconv(.c) c.cairo_status_t {
-    const input: *[]const u8 = @ptrCast(@alignCast(closure.?));
-    if (input.len < length) return api.CAIRO_STATUS_READ_ERROR;
-    @memcpy(data[0..length], input.*[0..length]);
-    input.* = input.*[length..];
-    return 0;
-}
 
 /// Fits a natural size into a `size` square, keeping its aspect ratio.
 fn fit(natural: [2]u32, size: u32) [2]u32 {
@@ -119,23 +66,61 @@ fn fit(natural: [2]u32, size: u32) [2]u32 {
     return .{ @max(1, @as(u32, @intFromFloat(width * box / height + 0.5))), size };
 }
 
-/// Decodes PNG or SVG bytes at their natural size, or scaled to fit a `size` square.
-pub fn bytes(data: []const u8, size: ?u32) ?Image {
+fn decodeWith(data: []const u8, size: ?u32, options: svg.Options) ?Image {
     if (size) |side| if (side == 0 or side > max_side) return null;
     const source = Source.open(data) orelse return null;
     defer source.close();
     const natural = source.size() orelse return null;
     const target = if (size) |side| fit(natural, side) else natural;
-    return source.render(target[0], target[1]);
+    return source.render(target[0], target[1], options);
+}
+
+/// Decodes PNG or SVG bytes at their natural size, or scaled to fit a `size` square.
+pub fn bytes(data: []const u8, size: ?u32) ?Image {
+    return decodeWith(data, size, .{});
+}
+
+/// Renders a symbolic SVG icon recolored with GTK's palette, faded by `opacity`.
+pub fn symbolic(data: []const u8, size: u32, palette: Symbolic, opacity: f64) ?Image {
+    return decodeWith(data, size, .{ .symbolic = palette, .opacity = std.math.clamp(opacity, 0, 1) });
+}
+
+/// Reads a whole image file, bounded by the decoder's input limit.
+/// Uses libc directly so it works in any thread or test client, without a
+/// process-wide std.Io instance.
+pub fn read(path: []const u8) ?[]const u8 {
+    var name: [std.fs.max_path_bytes:0]u8 = undefined;
+    if (path.len >= name.len) return null;
+    @memcpy(name[0..path.len], path);
+    name[path.len] = 0;
+    const handle = std.c.fopen(&name, "rb") orelse return null;
+    defer _ = std.c.fclose(handle);
+    var data: std.ArrayList(u8) = .empty;
+    while (true) {
+        data.ensureUnusedCapacity(allocator, 64 << 10) catch {
+            data.deinit(allocator);
+            return null;
+        };
+        const unused = data.unusedCapacitySlice();
+        const n = std.c.fread(unused.ptr, 1, unused.len, handle);
+        data.items.len += n;
+        if (data.items.len > max_encoded) {
+            data.deinit(allocator);
+            return null;
+        }
+        if (n < unused.len) break;
+    }
+    return data.toOwnedSlice(allocator) catch {
+        data.deinit(allocator);
+        return null;
+    };
 }
 
 /// Decodes a PNG or SVG file at its natural size, or scaled to fit a `size` square.
 pub fn file(path: [*:0]const u8, size: ?u32) ?Image {
-    var data: [*c]u8 = null;
-    var len: c.gsize = 0;
-    if (c.g_file_get_contents(path, &data, &len, null) == 0) return null;
-    defer c.g_free(data);
-    return bytes(data[0..len], size);
+    const data = read(std.mem.span(path)) orelse return null;
+    defer allocator.free(data);
+    return bytes(data, size);
 }
 
 /// Decodes a PNG or SVG stream scaled to fit a `size` square.
@@ -145,25 +130,21 @@ pub fn stream(input: *c.GInputStream, size: u32) ?Image {
     while (true) {
         data.ensureUnusedCapacity(allocator, 64 << 10) catch return null;
         const unused = data.unusedCapacitySlice();
-        const read = api.g_input_stream_read(input, unused.ptr, unused.len, null, null);
-        if (read < 0) return null;
-        if (read == 0) break;
-        data.items.len += @intCast(read);
+        const read_len = api.g_input_stream_read(input, unused.ptr, unused.len, null, null);
+        if (read_len < 0) return null;
+        if (read_len == 0) break;
+        data.items.len += @intCast(read_len);
         if (data.items.len > max_encoded) return null;
     }
     return bytes(data.items, size);
 }
+pub const api = struct {
+    pub extern fn g_input_stream_read(?*c.GInputStream, ?*anyopaque, c.gsize, [*c]c.GCancellable, [*c][*c]c.GError) c.gssize;
+};
 
 /// Reads the natural dimensions of encoded PNG or SVG bytes.
 pub fn dimensions(data: []const u8) ?[2]u32 {
-    if (std.mem.startsWith(u8, data, png_signature)) {
-        // The IHDR chunk always comes first and holds the big-endian size.
-        if (data.len < 24 or !std.mem.eql(u8, data[12..16], "IHDR")) return null;
-        const width = std.mem.readInt(u32, data[16..20], .big);
-        const height = std.mem.readInt(u32, data[20..24], .big);
-        if (width == 0 or height == 0 or width > max_side or height > max_side) return null;
-        return .{ width, height };
-    }
+    if (std.mem.startsWith(u8, data, png.signature)) return png.dimensions(data);
     const source = Source.open(data) orelse return null;
     defer source.close();
     return source.size();
@@ -213,4 +194,16 @@ test "SVGs render at their intrinsic or viewBox size and fit a requested square"
     defer free(scaled);
     try std.testing.expectEqual([2]u32{ 8, 16 }, [2]u32{ scaled.width, scaled.height });
     try std.testing.expectEqual(@as(?Image, null), bytes("not an image", 16));
+}
+
+test "PNG resampling averages when shrinking and pads edges when growing" {
+    var pixels = [_]u32{ 0xff000000, 0xffffffff, 0xff000000, 0xffffffff };
+    const resample = @import("desktop-image.zig").resample;
+    const shrunk = try resample(allocator, .{ .pixels = std.mem.sliceAsBytes(&pixels), .width = 4, .height = 1, .stride = 16 }, 2, 1);
+    defer free(shrunk);
+    for (std.mem.bytesAsSlice(u32, shrunk.pixels)) |pixel| try std.testing.expectEqual(@as(u32, 0xff808080), pixel);
+    var single = [_]u32{0xff00ff00};
+    const grown = try resample(allocator, .{ .pixels = std.mem.sliceAsBytes(&single), .width = 1, .height = 1, .stride = 4 }, 3, 3);
+    defer free(grown);
+    for (std.mem.bytesAsSlice(u32, grown.pixels)) |pixel| try std.testing.expectEqual(@as(u32, 0xff00ff00), pixel);
 }

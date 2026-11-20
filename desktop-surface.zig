@@ -1,6 +1,7 @@
 //! Native Wayland layer surfaces and application windows with SHM rendering.
 //! Each client has a private connection, driven by GLib rather than GDK.
 const std = @import("std");
+const cairo = @import("tests/desktop-cairo.zig");
 const wayland = @import("desktop-wayland.zig");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
@@ -818,27 +819,27 @@ test "native cursor matches Cairo strokes and transparency at every output scale
     for (1..9) |value| {
         const scale: u32 = @intCast(value);
         const size = 24 * scale;
-        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(size), @intCast(size)).?;
-        defer c.cairo_surface_destroy(image);
-        c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-        const cr = c.cairo_create(image).?;
-        defer c.cairo_destroy(cr);
-        c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
-        c.cairo_paint(cr);
-        c.cairo_set_operator(cr, c.CAIRO_OPERATOR_OVER);
+        const image = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(size), @intCast(size)).?;
+        defer cairo.cairo_surface_destroy(image);
+        cairo.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
+        const cr = cairo.cairo_create(image).?;
+        defer cairo.cairo_destroy(cr);
+        cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_CLEAR);
+        cairo.cairo_paint(cr);
+        cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_OVER);
         for ([_]f64{ 4, 2 }, 0..) |width, i| {
             const color: f64 = if (i == 0) 0 else 1;
-            c.cairo_set_source_rgba(cr, color, color, color, 1);
-            c.cairo_set_line_width(cr, width);
-            c.cairo_move_to(cr, 12, 2);
-            c.cairo_line_to(cr, 12, 22);
-            c.cairo_move_to(cr, 2, 12);
-            c.cairo_line_to(cr, 22, 12);
-            c.cairo_stroke(cr);
+            cairo.cairo_set_source_rgba(cr, color, color, color, 1);
+            cairo.cairo_set_line_width(cr, width);
+            cairo.cairo_move_to(cr, 12, 2);
+            cairo.cairo_line_to(cr, 12, 22);
+            cairo.cairo_move_to(cr, 2, 12);
+            cairo.cairo_line_to(cr, 22, 12);
+            cairo.cairo_stroke(cr);
         }
-        c.cairo_surface_flush(image);
+        cairo.cairo_surface_flush(image);
 
-        const expected: [*]const u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
+        const expected: [*]const u32 = @ptrCast(@alignCast(cairo.cairo_image_surface_get_data(image)));
         const pixels = try std.testing.allocator.alloc(u32, size * size);
         defer std.testing.allocator.free(pixels);
         raster.crosshair(pixels, scale);

@@ -3,7 +3,6 @@ const std = @import("std");
 const desktop = @import("desktop");
 const native = desktop.dash_view;
 const c = desktop.glib;
-extern fn cairo_surface_write_to_png(*c.cairo_surface_t, [*:0]const u8) c_int;
 
 pub fn main() !void {
     var view: native.View = .{};
@@ -34,10 +33,9 @@ pub fn main() !void {
     for ([_]u32{ 1, 2 }) |scale| {
         const width = view.layout.width * scale;
         const height = view.layout.height * scale;
-        const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
-        defer c.cairo_surface_destroy(surface);
-        const data: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(surface)));
-        const pixels = data[0 .. width * height];
+        const pixels = try std.heap.page_allocator.alloc(u32, width * height);
+        defer std.heap.page_allocator.free(pixels);
+        @memset(pixels, 0);
         const target: native.Buffer = .{ .pixels = pixels, .width = width, .height = height };
         try view.paint(target, scale);
         const normal = try std.heap.page_allocator.dupe(u32, pixels);
@@ -47,29 +45,29 @@ pub fn main() !void {
         try view.paint(target, scale);
         try std.testing.expectEqual(icon, view.items.items[0].pixels);
         try std.testing.expectEqualSlices(u32, normal, pixels);
-        try snapshot(surface, scale, "normal");
+        try snapshot(pixels, width, height, scale, "normal");
         view.hover = 0;
         try view.paint(target, scale);
         try std.testing.expect(!std.mem.eql(u32, normal, pixels));
         const hovered = try std.heap.page_allocator.dupe(u32, pixels);
         defer std.heap.page_allocator.free(hovered);
-        try snapshot(surface, scale, "hover");
+        try snapshot(pixels, width, height, scale, "hover");
         view.pressed = 0;
         try view.paint(target, scale);
         try std.testing.expect(!std.mem.eql(u32, hovered, pixels));
-        try snapshot(surface, scale, "press");
+        try snapshot(pixels, width, height, scale, "press");
         view.pressed = null;
         view.hover = null;
         view.keyboard_focus = true;
         view.focus = 0;
         try view.paint(target, scale);
         try std.testing.expect(!std.mem.eql(u32, normal, pixels));
-        try snapshot(surface, scale, "focus");
+        try snapshot(pixels, width, height, scale, "focus");
         view.keyboard_focus = false;
         view.apps_mode = true;
         try view.paint(target, scale);
         try std.testing.expect(!std.mem.eql(u32, normal, pixels));
-        try snapshot(surface, scale, "checked");
+        try snapshot(pixels, width, height, scale, "checked");
         view.apps_mode = false;
         try view.prepareTooltip(0, scale);
         try std.testing.expect(view.tooltip_mask.?.logical_width < 360 * scale);
@@ -86,19 +84,26 @@ pub fn main() !void {
 fn tooltipSnapshot(view: *native.View, scale: u32) !void {
     const width = view.tooltip_mask.?.logical_width + 26 * scale;
     const height = view.tooltip_mask.?.logical_height + 14 * scale;
-    const surface = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
-    defer c.cairo_surface_destroy(surface);
-    const data: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(surface)));
-    view.paintTooltip(.{ .pixels = data[0 .. width * height], .width = width, .height = height }, scale);
+    const data = try std.heap.page_allocator.alloc(u32, width * height);
+    defer std.heap.page_allocator.free(data);
+    @memset(data, 0);
+    view.paintTooltip(.{ .pixels = data, .width = width, .height = height }, scale);
     try std.testing.expectEqual(@as(u32, 0), data[0]);
     const alpha = data[(height / 2) * width + 3 * scale] >> 24;
     try std.testing.expect(alpha >= 229 and alpha <= 231);
-    try snapshot(surface, scale, "tooltip");
+    try snapshot(data, width, height, scale, "tooltip");
 }
-fn snapshot(surface: *c.cairo_surface_t, scale: u32, state: []const u8) !void {
+fn snapshot(pixels: []const u32, width: u32, height: u32, scale: u32, state: []const u8) !void {
     const root = c.__zig.getenv("DESKTOP_DASH_SCREENSHOTS") orelse return;
     const path = try std.fmt.allocPrintSentinel(std.heap.page_allocator, "{s}/dash-{s}-{d}x.png", .{ root, state, scale }, 0);
     defer std.heap.page_allocator.free(path);
-    c.cairo_surface_mark_dirty(surface);
-    try std.testing.expectEqual(@as(c_int, 0), cairo_surface_write_to_png(surface, path));
+    try writePng(pixels, width, height, path);
+}
+
+fn writePng(pixels: []const u32, width: u32, height: u32, path: [*:0]const u8) !void {
+    const encoded = try desktop.png.encode(std.heap.page_allocator, .{ .pixels = std.mem.sliceAsBytes(pixels), .width = width, .height = height, .stride = width * 4, .alpha = true });
+    defer std.heap.page_allocator.free(encoded);
+    const file = std.c.fopen(path, "wb") orelse return error.WriteFailed;
+    defer _ = std.c.fclose(file);
+    if (std.c.fwrite(encoded.ptr, 1, encoded.len, file) != encoded.len) return error.WriteFailed;
 }

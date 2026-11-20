@@ -1,5 +1,6 @@
 //! Native, input-transparent Wayland presentation for the application switcher.
 const std = @import("std");
+const cairo = @import("tests/desktop-cairo.zig");
 const c = @import("desktop-glib.zig");
 const native = @import("desktop-surface.zig");
 const capture = @import("desktop-capture.zig");
@@ -497,29 +498,29 @@ test "window preview rendering fits the captured image without stretching" {
 
 test "Zig switcher panels and highlights agree with Cairo at multiple scales" {
     const reference = struct {
-        fn rounded(cr: *c.cairo_t, x: f64, y: f64, width: f64, height: f64, requested_radius: f64) void {
+        fn rounded(cr: *cairo.cairo_t, x: f64, y: f64, width: f64, height: f64, requested_radius: f64) void {
             const radius = @min(requested_radius, @min(width, height) / 2);
-            c.cairo_new_sub_path(cr);
-            c.cairo_arc(cr, x + width - radius, y + radius, radius, -std.math.pi / 2.0, 0);
-            c.cairo_arc(cr, x + width - radius, y + height - radius, radius, 0, std.math.pi / 2.0);
-            c.cairo_arc(cr, x + radius, y + height - radius, radius, std.math.pi / 2.0, std.math.pi);
-            c.cairo_arc(cr, x + radius, y + radius, radius, std.math.pi, 3 * std.math.pi / 2.0);
-            c.cairo_close_path(cr);
+            cairo.cairo_new_sub_path(cr);
+            cairo.cairo_arc(cr, x + width - radius, y + radius, radius, -std.math.pi / 2.0, 0);
+            cairo.cairo_arc(cr, x + width - radius, y + height - radius, radius, 0, std.math.pi / 2.0);
+            cairo.cairo_arc(cr, x + radius, y + height - radius, radius, std.math.pi / 2.0, std.math.pi);
+            cairo.cairo_arc(cr, x + radius, y + radius, radius, std.math.pi, 3 * std.math.pi / 2.0);
+            cairo.cairo_close_path(cr);
         }
-        fn panel(cr: *c.cairo_t, width: f64, height: f64) void {
+        fn panel(cr: *cairo.cairo_t, width: f64, height: f64) void {
             rounded(cr, 0.5, 0.5, width - 1, height - 1, 28);
-            c.cairo_set_source_rgb(cr, 46.0 / 255.0, 46.0 / 255.0, 51.0 / 255.0);
-            c.cairo_fill(cr);
+            cairo.cairo_set_source_rgb(cr, 46.0 / 255.0, 46.0 / 255.0, 51.0 / 255.0);
+            cairo.cairo_fill(cr);
             rounded(cr, 0.5, 0.5, width - 1, height - 1, 28);
-            c.cairo_set_source_rgba(cr, 1, 1, 1, 0.02);
-            c.cairo_set_line_width(cr, 1);
-            c.cairo_stroke(cr);
+            cairo.cairo_set_source_rgba(cr, 1, 1, 1, 0.02);
+            cairo.cairo_set_line_width(cr, 1);
+            cairo.cairo_stroke(cr);
         }
-        fn highlight(cr: *c.cairo_t, x: f64, width: f64, height: f64, active_tile: bool, windows: bool) void {
+        fn highlight(cr: *cairo.cairo_t, x: f64, width: f64, height: f64, active_tile: bool, windows: bool) void {
             if (!active_tile) return;
             rounded(cr, x, 13, width, height, 16);
-            if (windows) c.cairo_set_source_rgb(cr, 65.0 / 255.0, 65.0 / 255.0, 73.0 / 255.0) else c.cairo_set_source_rgba(cr, 1, 1, 1, 0.2);
-            c.cairo_fill(cr);
+            if (windows) cairo.cairo_set_source_rgb(cr, 65.0 / 255.0, 65.0 / 255.0, 73.0 / 255.0) else cairo.cairo_set_source_rgba(cr, 1, 1, 1, 0.2);
+            cairo.cairo_fill(cr);
         }
     };
     for ([_]u32{ 1, 2, 3 }) |scale| {
@@ -528,22 +529,22 @@ test "Zig switcher panels and highlights agree with Cairo at multiple scales" {
         const pixels = try std.testing.allocator.alloc(u32, width * height);
         defer std.testing.allocator.free(pixels);
         const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) };
-        const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
-        defer c.cairo_surface_destroy(image);
-        c.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-        const cr = c.cairo_create(image).?;
-        defer c.cairo_destroy(cr);
+        const image = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
+        defer cairo.cairo_surface_destroy(image);
+        cairo.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
+        const cr = cairo.cairo_create(image).?;
+        defer cairo.cairo_destroy(cr);
         for ([_]bool{ false, true }) |windows| {
             @memset(pixels, 0);
-            c.cairo_set_operator(cr, c.CAIRO_OPERATOR_CLEAR);
-            c.cairo_paint(cr);
-            c.cairo_set_operator(cr, c.CAIRO_OPERATOR_OVER);
+            cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_CLEAR);
+            cairo.cairo_paint(cr);
+            cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_OVER);
             panel(canvas);
             highlight(canvas, 13, 127, 127, true, windows);
             reference.panel(cr, 292, 153);
             reference.highlight(cr, 13, 127, 127, true, windows);
-            c.cairo_surface_flush(image);
-            const expected: [*]const u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
+            cairo.cairo_surface_flush(image);
+            const expected: [*]const u32 = @ptrCast(@alignCast(cairo.cairo_image_surface_get_data(image)));
             var total: u64 = 0;
             for (pixels, 0..) |pixel, i| inline for (.{ 0, 8, 16, 24 }) |shift| {
                 const actual: i32 = @intCast((pixel >> shift) & 255);
@@ -568,26 +569,26 @@ test "native icon scaling preserves Cairo colors and alpha" {
         pixel.* = alpha << 24;
         for ([_]u5{ 16, 8, 0 }) |shift| pixel.* |= random.random().uintAtMost(u32, alpha) << shift;
     }
-    const icon_surface = c.cairo_image_surface_create_for_data(icon.pixels.ptr, c.CAIRO_FORMAT_ARGB32, 7, 5, @intCast(icon.stride)).?;
-    defer c.cairo_surface_destroy(icon_surface);
-    const image = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, 32, 32).?;
-    defer c.cairo_surface_destroy(image);
-    const cr = c.cairo_create(image).?;
-    defer c.cairo_destroy(cr);
+    const icon_surface = cairo.cairo_image_surface_create_for_data(icon.pixels.ptr, cairo.CAIRO_FORMAT_ARGB32, 7, 5, @intCast(icon.stride)).?;
+    defer cairo.cairo_surface_destroy(icon_surface);
+    const image = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, 32, 32).?;
+    defer cairo.cairo_surface_destroy(image);
+    const cr = cairo.cairo_create(image).?;
+    defer cairo.cairo_destroy(cr);
     var pixels: [32 * 32]u32 = undefined;
     for ([_][2]u32{ .{ 7, 5 }, .{ 13, 9 }, .{ 6, 4 }, .{ 5, 3 }, .{ 3, 2 } }) |size| {
         @memset(&pixels, 0xff2e2e33);
         try raster.blit(.{ .pixels = &pixels, .width = 32, .height = 32 }, source, .{ .x = 4, .y = 4, .width = @floatFromInt(size[0]), .height = @floatFromInt(size[1]) }, null);
-        c.cairo_set_source_rgb(cr, 46.0 / 255.0, 46.0 / 255.0, 51.0 / 255.0);
-        c.cairo_paint(cr);
-        c.cairo_save(cr);
-        c.cairo_translate(cr, 4, 4);
-        c.cairo_scale(cr, @as(f64, @floatFromInt(size[0])) / 7, @as(f64, @floatFromInt(size[1])) / 5);
-        c.cairo_set_source_surface(cr, icon_surface, 0, 0);
-        c.cairo_paint(cr);
-        c.cairo_restore(cr);
-        c.cairo_surface_flush(image);
-        const expected: [*]const u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(image)));
+        cairo.cairo_set_source_rgb(cr, 46.0 / 255.0, 46.0 / 255.0, 51.0 / 255.0);
+        cairo.cairo_paint(cr);
+        cairo.cairo_save(cr);
+        cairo.cairo_translate(cr, 4, 4);
+        cairo.cairo_scale(cr, @as(f64, @floatFromInt(size[0])) / 7, @as(f64, @floatFromInt(size[1])) / 5);
+        cairo.cairo_set_source_surface(cr, icon_surface, 0, 0);
+        cairo.cairo_paint(cr);
+        cairo.cairo_restore(cr);
+        cairo.cairo_surface_flush(image);
+        const expected: [*]const u32 = @ptrCast(@alignCast(cairo.cairo_image_surface_get_data(image)));
         for (4..4 + size[1]) |y| for (4..4 + size[0]) |x| inline for (.{ 0, 8, 16, 24 }) |shift| {
             const actual: i32 = @intCast((pixels[y * 32 + x] >> shift) & 255);
             const wanted: i32 = @intCast((expected[y * 32 + x] >> shift) & 255);

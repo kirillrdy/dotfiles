@@ -95,9 +95,12 @@ pkgs.stdenv.mkDerivation {
   WLR_PROTOCOLS_DIR = "${pkgs.wlr-protocols}/share/wlr-protocols";
   buildInputs = [
     pkgs.glib
-    textLibraries.rsvg
+    # Text: fontconfig matching, HarfBuzz shaping and FreeType rasterization.
+    pkgs.fontconfig
+    pkgs.freetype
+    pkgs.harfbuzz
+    # Reference renderer for unit tests only.
     textLibraries.cairo
-    textLibraries.pango
     pkgs.wayland
     pkgs.wayland-protocols
     compositorLibraries

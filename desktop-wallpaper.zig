@@ -2,6 +2,7 @@
 const native = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const std = @import("std");
+const cairo = @import("tests/desktop-cairo.zig");
 const c = @import("desktop-glib.zig");
 const allocator = std.heap.page_allocator;
 const decode = @import("desktop-decode.zig");
@@ -148,25 +149,25 @@ pub const Service = struct {
 // Cairo remains a test reference for the renderer it replaces.
 test "Zig wallpaper sampling agrees with Cairo for opaque, alpha and fractional sizes" {
     const Reference = struct {
-        fn reference(cr: *c.cairo_t, image: Image, width: f64, height: f64) void {
+        fn reference(cr: *cairo.cairo_t, image: Image, width: f64, height: f64) void {
             if (width <= 0 or height <= 0) return;
             const iw: f64 = @floatFromInt(image.width);
             const ih: f64 = @floatFromInt(image.height);
             const scale = @max(width / iw, height / ih);
-            const surface = c.cairo_image_surface_create_for_data(image.pixels.ptr, c.CAIRO_FORMAT_ARGB32, @intCast(image.width), @intCast(image.height), @intCast(image.stride)).?;
-            defer c.cairo_surface_destroy(surface);
-            c.cairo_save(cr);
-            defer c.cairo_restore(cr);
-            c.cairo_rectangle(cr, 0, 0, width, height);
-            c.cairo_clip(cr);
-            c.cairo_set_source_rgb(cr, 0, 0, 0);
-            c.cairo_paint(cr);
-            c.cairo_translate(cr, (width - iw * scale) / 2, (height - ih * scale) / 2);
-            c.cairo_scale(cr, scale, scale);
-            c.cairo_set_source_surface(cr, surface, 0, 0);
-            c.cairo_pattern_set_filter(c.cairo_get_source(cr), c.CAIRO_FILTER_BILINEAR);
-            c.cairo_pattern_set_extend(c.cairo_get_source(cr), c.CAIRO_EXTEND_PAD);
-            c.cairo_paint(cr);
+            const surface = cairo.cairo_image_surface_create_for_data(image.pixels.ptr, cairo.CAIRO_FORMAT_ARGB32, @intCast(image.width), @intCast(image.height), @intCast(image.stride)).?;
+            defer cairo.cairo_surface_destroy(surface);
+            cairo.cairo_save(cr);
+            defer cairo.cairo_restore(cr);
+            cairo.cairo_rectangle(cr, 0, 0, width, height);
+            cairo.cairo_clip(cr);
+            cairo.cairo_set_source_rgb(cr, 0, 0, 0);
+            cairo.cairo_paint(cr);
+            cairo.cairo_translate(cr, (width - iw * scale) / 2, (height - ih * scale) / 2);
+            cairo.cairo_scale(cr, scale, scale);
+            cairo.cairo_set_source_surface(cr, surface, 0, 0);
+            cairo.cairo_pattern_set_filter(cairo.cairo_get_source(cr), cairo.CAIRO_FILTER_BILINEAR);
+            cairo.cairo_pattern_set_extend(cairo.cairo_get_source(cr), cairo.CAIRO_EXTEND_PAD);
+            cairo.cairo_paint(cr);
         }
     };
     for ([_]bool{ false, true }) |alpha| {
@@ -180,14 +181,14 @@ test "Zig wallpaper sampling agrees with Cairo for opaque, alpha and fractional 
             for ([_]u5{ 16, 8, 0 }) |shift| pixel.* |= random.random().uintAtMost(u32, a) << shift;
         }
         for ([_][2]u32{ .{ 1, 1 }, .{ 3, 2 }, .{ 7, 5 }, .{ 13, 9 }, .{ 5, 17 }, .{ 16, 4 } }) |size| {
-            const reference = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(size[0]), @intCast(size[1])).?;
-            defer c.cairo_surface_destroy(reference);
-            const cr = c.cairo_create(reference).?;
-            defer c.cairo_destroy(cr);
+            const reference = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(size[0]), @intCast(size[1])).?;
+            defer cairo.cairo_surface_destroy(reference);
+            const cr = cairo.cairo_create(reference).?;
+            defer cairo.cairo_destroy(cr);
             Reference.reference(cr, image, @floatFromInt(size[0]), @floatFromInt(size[1]));
-            c.cairo_surface_flush(reference);
-            const expected: [*]const u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(reference)));
-            const stride: usize = @intCast(@divTrunc(c.cairo_image_surface_get_stride(reference), 4));
+            cairo.cairo_surface_flush(reference);
+            const expected: [*]const u32 = @ptrCast(@alignCast(cairo.cairo_image_surface_get_data(reference)));
+            const stride: usize = @intCast(@divTrunc(cairo.cairo_image_surface_get_stride(reference), 4));
             var actual: [256]u32 = undefined;
             try raster.cover(.{ .pixels = &actual, .width = size[0], .height = size[1] }, source);
             for (0..size[1]) |y| for (0..size[0]) |x| {

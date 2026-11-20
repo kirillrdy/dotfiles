@@ -4,7 +4,6 @@ const apps = @import("desktop").apps;
 const c = apps.c;
 const assert = std.debug.assert;
 const cast = c.__zig.cast;
-extern fn cairo_surface_write_to_png(*c.cairo_surface_t, [*:0]const u8) c_int;
 fn eq(actual: [*c]const u8, expected: []const u8) void {
     assert(std.mem.eql(u8, std.mem.span(actual), expected));
 }
@@ -216,12 +215,17 @@ pub fn main(init: std.process.Init) !void {
         pump();
         const host = launcher.host.?;
         const scale = host.surface.?.output.scale;
-        const frame = c.cairo_image_surface_create(c.CAIRO_FORMAT_ARGB32, @intCast(host.surface.?.width * scale), @intCast(host.surface.?.height * scale)).?;
-        defer c.cairo_surface_destroy(frame);
-        const pixels: [*]u32 = @ptrCast(@alignCast(c.cairo_image_surface_get_data(frame)));
-        apps.Host.draw(host, .{ .pixels = pixels[0 .. host.surface.?.width * host.surface.?.height * scale * scale], .width = host.surface.?.width * scale, .height = host.surface.?.height * scale });
-        c.cairo_surface_mark_dirty(frame);
-        assert(cairo_surface_write_to_png(frame, path) == 0);
+        const width = host.surface.?.width * scale;
+        const height = host.surface.?.height * scale;
+        const pixels = std.heap.page_allocator.alloc(u32, width * height) catch @panic("out of memory");
+        defer std.heap.page_allocator.free(pixels);
+        @memset(pixels, 0);
+        apps.Host.draw(host, .{ .pixels = pixels, .width = width, .height = height });
+        const encoded = @import("desktop").png.encode(std.heap.page_allocator, .{ .pixels = std.mem.sliceAsBytes(pixels), .width = width, .height = height, .stride = width * 4, .alpha = true }) catch @panic("PNG encoding failed");
+        defer std.heap.page_allocator.free(encoded);
+        const file = std.c.fopen(path, "wb") orelse @panic("cannot write screenshot");
+        defer _ = std.c.fclose(file);
+        assert(std.c.fwrite(encoded.ptr, 1, encoded.len, file) == encoded.len);
     }
     std.debug.print("desktop-apps: discovery, Unicode search, IME, paging, keyboard selection, terminal argv and launch lifecycle passed\n", .{});
 }

@@ -528,86 +528,12 @@ pub extern fn g_task_return_pointer(task: ?*GTask, result: gpointer, result_dest
 pub extern fn g_task_return_boolean(task: ?*GTask, result: gboolean) void;
 pub extern fn g_task_propagate_pointer(task: ?*GTask, @"error": [*c][*c]GError) gpointer;
 pub extern fn g_task_propagate_boolean(task: ?*GTask, @"error": [*c][*c]GError) gboolean;
-pub const struct__PangoAttrList = opaque {};
 
-pub const PangoAttrList = struct__PangoAttrList;
-pub const struct__PangoLayout = opaque {};
 
-pub const PangoLayout = struct__PangoLayout;
-pub const PANGO_WRAP_WORD_CHAR: c_int = 2;
-pub const PANGO_ELLIPSIZE_END: c_int = 3;
-pub extern fn pango_layout_is_ellipsized(layout: ?*PangoLayout) gboolean;
-pub extern fn pango_parse_markup(markup_text: [*c]const u8, length: c_int, accel_marker: gunichar, attr_list: [*c]?*PangoAttrList, text: [*c][*c]u8, accel_char: [*c]gunichar, @"error": [*c][*c]GError) gboolean;
-pub const struct__cairo = opaque {};
 
-pub const cairo_t = struct__cairo;
-pub const struct__cairo_surface = opaque {};
 
-pub const cairo_surface_t = struct__cairo_surface;
-pub const struct__cairo_pattern = opaque {};
 
-pub const cairo_pattern_t = struct__cairo_pattern;
-pub const CAIRO_STATUS_SUCCESS: c_int = 0;
-pub const enum__cairo_status = c_uint;
-pub const cairo_status_t = enum__cairo_status;
-pub const CAIRO_FORMAT_ARGB32: c_int = 0;
-pub const enum__cairo_format = c_int;
-pub const cairo_format_t = enum__cairo_format;
 
-pub const struct__cairo_rectangle_int = extern struct {
-    x: c_int = 0,
-    y: c_int = 0,
-    width: c_int = 0,
-    height: c_int = 0,
-};
-
-pub const cairo_rectangle_int_t = struct__cairo_rectangle_int;
-pub extern fn cairo_create(target: ?*cairo_surface_t) ?*cairo_t;
-pub extern fn cairo_destroy(cr: ?*cairo_t) void;
-pub extern fn cairo_save(cr: ?*cairo_t) void;
-pub extern fn cairo_restore(cr: ?*cairo_t) void;
-pub const CAIRO_OPERATOR_CLEAR: c_int = 0;
-pub const CAIRO_OPERATOR_SOURCE: c_int = 1;
-pub const enum__cairo_operator = c_uint;
-pub const cairo_operator_t = enum__cairo_operator;
-pub extern fn cairo_set_operator(cr: ?*cairo_t, op: cairo_operator_t) void;
-pub extern fn cairo_set_source_rgb(cr: ?*cairo_t, red: f64, green: f64, blue: f64) void;
-pub extern fn cairo_set_source_rgba(cr: ?*cairo_t, red: f64, green: f64, blue: f64, alpha: f64) void;
-pub extern fn cairo_set_source_surface(cr: ?*cairo_t, surface: ?*cairo_surface_t, x: f64, y: f64) void;
-pub extern fn cairo_set_line_width(cr: ?*cairo_t, width: f64) void;
-pub extern fn cairo_translate(cr: ?*cairo_t, tx: f64, ty: f64) void;
-pub extern fn cairo_scale(cr: ?*cairo_t, sx: f64, sy: f64) void;
-pub extern fn cairo_move_to(cr: ?*cairo_t, x: f64, y: f64) void;
-pub extern fn cairo_new_sub_path(cr: ?*cairo_t) void;
-pub extern fn cairo_line_to(cr: ?*cairo_t, x: f64, y: f64) void;
-pub extern fn cairo_arc(cr: ?*cairo_t, xc: f64, yc: f64, radius: f64, angle1: f64, angle2: f64) void;
-pub extern fn cairo_rectangle(cr: ?*cairo_t, x: f64, y: f64, width: f64, height: f64) void;
-pub extern fn cairo_close_path(cr: ?*cairo_t) void;
-pub extern fn cairo_paint(cr: ?*cairo_t) void;
-pub extern fn cairo_paint_with_alpha(cr: ?*cairo_t, alpha: f64) void;
-pub extern fn cairo_stroke(cr: ?*cairo_t) void;
-pub extern fn cairo_fill(cr: ?*cairo_t) void;
-pub extern fn cairo_clip(cr: ?*cairo_t) void;
-pub extern fn cairo_get_source(cr: ?*cairo_t) ?*cairo_pattern_t;
-pub extern fn cairo_surface_destroy(surface: ?*cairo_surface_t) void;
-pub extern fn cairo_surface_flush(surface: ?*cairo_surface_t) void;
-pub extern fn cairo_surface_mark_dirty(?*cairo_surface_t) void;
-pub extern fn cairo_surface_set_device_scale(surface: ?*cairo_surface_t, x_scale: f64, y_scale: f64) void;
-pub extern fn cairo_image_surface_create(format: cairo_format_t, width: c_int, height: c_int) ?*cairo_surface_t;
-pub extern fn cairo_image_surface_create_for_data(data: [*c]u8, format: cairo_format_t, width: c_int, height: c_int, stride: c_int) ?*cairo_surface_t;
-pub extern fn cairo_image_surface_get_data(surface: ?*cairo_surface_t) [*c]u8;
-pub extern fn cairo_image_surface_get_width(surface: ?*cairo_surface_t) c_int;
-pub extern fn cairo_image_surface_get_height(surface: ?*cairo_surface_t) c_int;
-pub extern fn cairo_image_surface_get_stride(surface: ?*cairo_surface_t) c_int;
-pub const CAIRO_EXTEND_PAD: c_int = 3;
-pub const enum__cairo_extend = c_uint;
-pub const cairo_extend_t = enum__cairo_extend;
-pub extern fn cairo_pattern_set_extend(pattern: ?*cairo_pattern_t, extend: cairo_extend_t) void;
-pub const CAIRO_FILTER_BILINEAR: c_int = 4;
-pub const CAIRO_FILTER_GOOD: c_int = 1;
-pub const enum__cairo_filter = c_uint;
-pub const cairo_filter_t = enum__cairo_filter;
-pub extern fn cairo_pattern_set_filter(pattern: ?*cairo_pattern_t, filter: cairo_filter_t) void;
 
 pub const struct__GDesktopAppInfo = opaque {};
 
@@ -619,8 +545,6 @@ pub extern fn g_desktop_app_info_new(desktop_id: [*c]const u8) ?*GDesktopAppInfo
 pub extern fn g_desktop_app_info_get_string(info: ?*GDesktopAppInfo, key: [*c]const u8) [*c]u8;
 pub extern fn g_desktop_app_info_get_boolean(info: ?*GDesktopAppInfo, key: [*c]const u8) gboolean;
 
-pub extern fn cairo_set_line_cap(?*cairo_t, c_uint) void;
-pub const CAIRO_OPERATOR_OVER = 2;
 pub extern fn g_unix_signal_add(signum: gint, handler: GSourceFunc, user_data: gpointer) guint;
 pub const GUnixFDSourceFunc = ?*const fn (fd: gint, condition: GIOCondition, user_data: gpointer) callconv(.c) gboolean;
 pub extern fn g_unix_fd_add(fd: gint, condition: GIOCondition, function: GUnixFDSourceFunc, user_data: gpointer) guint;
@@ -648,9 +572,6 @@ pub const wl_display_read_events = wayland.wl_display_read_events;
 pub extern fn g_mkstemp([*c]u8) c_int;
 pub extern fn g_filename_to_uri([*c]const u8, [*c]const u8, [*c][*c]GError) [*c]u8;
 pub extern fn g_get_user_runtime_dir() [*:0]const u8;
-pub extern fn cairo_surface_status(?*cairo_surface_t) cairo_status_t;
-pub extern fn cairo_status(?*cairo_t) cairo_status_t;
-pub extern fn cairo_set_fill_rule(?*cairo_t, c_uint) void;
 pub const wl_display_flush = wayland.wl_display_flush;
 pub const wl_display_roundtrip = wayland.wl_display_roundtrip;
 pub const struct_wl_buffer = wayland.struct_wl_buffer;
