@@ -577,8 +577,8 @@ fn strokePolyline(a: std.mem.Allocator, raw: []const Point, closed_input: bool, 
         try sideJoin(a, &right, pts[0], directions[segments - 1], directions[0], -1, stroke, tolerance);
         _ = left.pop();
         _ = right.pop();
-        try out.contourRaw(a, left.items, false);
-        try out.contourRaw(a, right.items, true);
+        try out.contourRaw(a, left.items, true);
+        try out.contourRaw(a, right.items, false);
         return;
     }
     // Open: left side, end cap, right side backwards, start cap.
@@ -592,7 +592,8 @@ fn strokePolyline(a: std.mem.Allocator, raw: []const Point, closed_input: bool, 
     const first = directions[0];
     try capPoints(a, &left, pts[0], .{ .x = -first.x, .y = -first.y }, stroke, tolerance);
     _ = left.pop();
-    try out.contourRaw(a, left.items, false);
+    // Stroke outlines must wind in the same direction as standalone caps.
+    try out.contourRaw(a, left.items, true);
 }
 
 /// Builds fill polygons covering `stroke` of the user-space polylines in `flat`.
@@ -807,21 +808,8 @@ pub const Builder = struct {
     }
 };
 
-/// Per-row accumulation of sub-scanline spans: partial-pixel cover and run
-/// deltas per column, plus each touched column recorded once.
-/// Coverage from accumulated signed winding area: |w| clamped for nonzero,
-/// folded modulo 2 for even-odd (FreeType's smooth rasterizer does the same).
-fn fold(value: f32, rule: FillRule) f32 {
-    const w = @abs(value);
-    return switch (rule) {
-        .nonzero => @min(w, 1),
-        .evenodd => blk: {
-            const t = @mod(w, 2);
-            break :blk if (t > 1) 2 - t else t;
-        },
-    };
-}
-
+/// Per-row partial-pixel coverage and run deltas, with each touched column
+/// recorded once.
 const Accumulator = struct {
     cover: []f32,
     delta: []f32,
@@ -885,7 +873,7 @@ const Accumulator = struct {
     }
 
     /// Emits the row's runs in column order and resets the touched columns.
-    fn flush(self: *Accumulator, builder: *Builder, rule: FillRule) !void {
+    fn flush(self: *Accumulator, builder: *Builder) !void {
         const items = self.touched.items;
         if (items.len < 32) {
             var k: usize = 1;
@@ -905,15 +893,37 @@ const Accumulator = struct {
             self.delta[x - self.left] = 0;
             self.marked[x - self.left] = false;
             if (x >= self.width) continue;
-            if (x > cursor) try builder.add(cursor, x - cursor, fold(running, rule));
+            if (x > cursor) try builder.add(cursor, x - cursor, @abs(running));
             running += delta;
-            try builder.add(x, 1, fold(cover + running, rule));
+            try builder.add(x, 1, @abs(cover + running));
             cursor = x + 1;
         }
-        if (cursor < self.width and fold(running, rule) > 1.0 / 512.0) try builder.add(cursor, self.width - cursor, fold(running, rule));
+        if (cursor < self.width) try builder.add(cursor, self.width - cursor, @abs(running));
         self.touched.clearRetainingCapacity();
     }
 };
+
+/// Apply parity to sorted crossings before summing pixel coverage.
+fn evenOddRow(a: std.mem.Allocator, accumulator: *Accumulator, crossings: *std.ArrayList(f64), edges: []const Edge, y: f64, vertical: bool) !void {
+    const samples: usize = if (vertical) 1 else 16;
+    const weight: f32 = 1 / @as(f32, @floatFromInt(samples));
+    for (0..samples) |sample| {
+        const scan_y = y + (@as(f64, @floatFromInt(sample)) + 0.5) / @as(f64, @floatFromInt(samples));
+        crossings.clearRetainingCapacity();
+        for (edges) |edge| {
+            if (edge.y0 <= scan_y and scan_y < edge.y1) try crossings.append(a, edge.at(scan_y));
+        }
+        const xs = crossings.items;
+        std.mem.sortUnstable(f64, xs, {}, std.sort.asc(f64));
+        var i: usize = 0;
+        while (i + 1 < xs.len) : (i += 2) {
+            if (xs[i] == xs[i + 1]) continue;
+            try accumulator.column(a, xs[i], 1, weight);
+            try accumulator.column(a, xs[i + 1], 1, -weight);
+        }
+    }
+}
+
 /// Computes anti-aliased coverage of the closed device-space contours in `flat` as runs.
 pub fn rasterizeSpans(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u32, height: u32) !Spans {
     var edges: std.ArrayList(Edge) = .empty;
@@ -953,6 +963,8 @@ pub fn rasterizeSpans(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u
     errdefer builder.deinit();
     var active: std.ArrayList(Edge) = .empty;
     defer active.deinit(a);
+    var crossings: std.ArrayList(f64) = .empty;
+    defer crossings.deinit(a);
     const fw: f64 = @floatFromInt(width);
     const left: u32 = @intFromFloat(std.math.clamp(@floor(min_x), 0, fw));
     const right: u32 = @intFromFloat(std.math.clamp(@ceil(max_x) + 1, 0, fw));
@@ -972,19 +984,19 @@ pub fn rasterizeSpans(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u
         while (next < edges.items.len and edges.items[next].y0 < y + 1) : (next += 1) {
             if (edges.items[next].y1 > y) try active.append(a, edges.items[next]);
         }
-        // Exact signed area of each edge piece within the row, as in FreeType's
-        // smooth rasterizer; the fill rule is applied when the row is flushed.
+        // Integrate signed edge areas directly for nonzero fills.
         var vertical = true;
         var last: f64 = @floatFromInt(y1);
         for (active.items) |e| {
             const ya = @max(e.y0, y);
             const yb = @min(e.y1, y + 1);
             if (yb <= ya) continue;
-            try accumulator.edge(a, e.at(ya), e.at(yb), @as(f32, @floatCast(yb - ya)) * @as(f32, @floatFromInt(e.dir)));
+            if (rule == .nonzero) try accumulator.edge(a, e.at(ya), e.at(yb), @as(f32, @floatCast(yb - ya)) * @as(f32, @floatFromInt(e.dir)));
             vertical = vertical and e.x0 == e.x1 and ya == y and yb == y + 1;
             last = @min(last, @floor(e.y1));
         }
-        try accumulator.flush(&builder, rule);
+        if (rule == .evenodd) try evenOddRow(a, &accumulator, &crossings, active.items, y, vertical);
+        try accumulator.flush(&builder);
         try builder.endRow();
         // Rows between vertical edges repeat until an edge ends or starts
         // (Cairo renders such rows in one step too).
@@ -1295,6 +1307,30 @@ test "even-odd fill leaves holes while nonzero fills nested contours" {
     try std.testing.expectEqual(@as(f32, 0), even.at(5, 5));
     try std.testing.expectEqual(@as(f32, 1), nonzero.at(5, 5));
     try std.testing.expectEqual(@as(f32, 1), even.at(1, 1));
+}
+
+test "even-odd fill cancels coincident contours along a fractional edge" {
+    const a = std.testing.allocator;
+    var path: Path = .{};
+    defer path.deinit(a);
+    try path.rect(a, 0, 0, 1.5, 2);
+    try path.rect(a, 0, 0, 1.5, 2);
+    const mask = try fillMask(a, path, .identity, .evenodd, 3, 2);
+    defer mask.deinit(a);
+    try std.testing.expectEqual(@as(f32, 0), mask.at(1, 0));
+}
+
+test "standalone round caps and overlapping strokes have compatible winding" {
+    const a = std.testing.allocator;
+    var path: Path = .{};
+    defer path.deinit(a);
+    try path.moveTo(a, .{ .x = 2, .y = 8 });
+    try path.lineTo(a, .{ .x = 14, .y = 8 });
+    try path.moveTo(a, .{ .x = 8, .y = 8 });
+    try path.lineTo(a, .{ .x = 8, .y = 8 });
+    const mask = try strokeMask(a, path, .identity, .{ .width = 6, .cap = .round }, 16, 16);
+    defer mask.deinit(a);
+    try std.testing.expectEqual(@as(f32, 1), mask.at(8, 8));
 }
 
 test "circles approximate pi r squared and strokes cover their width" {

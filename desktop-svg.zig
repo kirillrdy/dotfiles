@@ -976,9 +976,6 @@ const Renderer = struct {
                 if (box[2] > 0 and box[3] > 0) local = local.mul(viewportTransform(box, .{ 0, 0, w, h }, parseAspect(node.get("preserveAspectRatio"))));
             }
         }
-        // Masks and clips are costly; skip elements that cannot reach the output,
-        // as librsvg does.
-        if ((style.clip_path != null or style.mask != null) and !eql(u8, name, "use") and !self.visible(node, local, style, depth)) return;
         var path: vec.Path = .{};
         defer path.deinit(self.gpa);
         const is_shape = try self.shape(node, &path);
@@ -988,6 +985,10 @@ const Renderer = struct {
         const stroke_visible = (style.stroke.solid != .none or style.stroke.url != null) and style.stroke_width > 0;
         // A single paint operation can carry the group opacity without a layer.
         const filter = if (style.filter) |id| self.doc.ids.get(id) else null;
+        if (is_shape and filter == null and (style.clip_path != null or style.mask != null)) {
+            const box = path.bounds() orelse return;
+            if (!self.visible(box, local, style, stroke_visible)) return;
+        }
         const fold = filter == null and style.clip_path == null and style.mask == null and (is_image or (is_shape and !(fill_visible and stroke_visible)));
         const needs_layer = !fold and (style.opacity < 1 or style.clip_path != null or style.mask != null or filter != null);
         var dest = target;
@@ -1038,6 +1039,9 @@ const Renderer = struct {
         var mask: ?[]f32 = null;
         defer if (mask) |values| self.gpa.free(values);
         if (style.clip_path != null or style.mask != null) {
+            // A group's geometry bounds omit descendant strokes and referenced
+            // images. Check its rendered layer before allocating the masks.
+            if (filter == null and std.mem.allEqual(u32, value.pixels, 0)) return;
             const box = self.bbox(node, depth);
             if (style.clip_path) |id| mask = try self.clipCoverage(id, local, box, depth);
             if (style.mask) |id| if (try self.maskCoverage(id, local, box, depth)) |values| {
@@ -1141,10 +1145,13 @@ const Renderer = struct {
         try vec.fillPath(self.gpa, dest, outline, placement, .nonzero, .{ .shader = .{ .context = &sampler, .sample = ImageShader.sample } }, @floatCast(opacity));
     }
 
-    /// Whether the element's bounds, padded for strokes, overlap the target.
-    fn visible(self: *Renderer, node: *const Node, t: vec.Transform, style: Style, depth: u32) bool {
-        const box = self.bbox(node, depth) orelse return true;
-        const pad = @max(style.stroke_width, 1) * @max(t.scaleFactor(), 1) + 2;
+    /// Whether a shape's bounds, including its stroke, overlap the target.
+    fn visible(self: *Renderer, box: [4]f64, t: vec.Transform, style: Style, stroke_visible: bool) bool {
+        const cap_extent: f64 = if (style.cap == .square) @sqrt(2.0) else 1;
+        const join_extent = if (style.join == .miter) style.miter_limit else 1;
+        const extent = if (stroke_visible) style.stroke_width / 2 * @max(cap_extent, join_extent) else 0;
+        const pad_x = extent * std.math.hypot(t.a, t.c);
+        const pad_y = extent * std.math.hypot(t.b, t.d);
         var lo: vec.Point = .{ .x = std.math.inf(f64), .y = std.math.inf(f64) };
         var hi: vec.Point = .{ .x = -std.math.inf(f64), .y = -std.math.inf(f64) };
         for ([_][2]f64{ .{ box[0], box[1] }, .{ box[2], box[1] }, .{ box[0], box[3] }, .{ box[2], box[3] } }) |corner| {
@@ -1154,7 +1161,7 @@ const Renderer = struct {
         }
         const w: f64 = @floatFromInt(self.width);
         const h: f64 = @floatFromInt(self.height);
-        return hi.x + pad > 0 and hi.y + pad > 0 and lo.x - pad < w and lo.y - pad < h;
+        return hi.x + pad_x > 0 and hi.y + pad_y > 0 and lo.x - pad_x < w and lo.y - pad_y < h;
     }
 
     /// Bounding box in the element's own user space (after its transform).
@@ -1940,4 +1947,22 @@ test "SVG embedded PNG images are drawn scaled" {
     const pixels = try renderTest(svg, 4, 4, .{});
     defer a.free(pixels);
     for (pixels) |value| try std.testing.expectEqual(@as(u32, 0xff00ff00), value);
+}
+
+test "an SVG clip preserves descendant strokes that reach the viewport" {
+    const a = std.testing.allocator;
+    const doc = try Document.parse(a,
+        \\<svg width="20" height="20">
+        \\  <defs><clipPath id="c"><rect width="20" height="20"/></clipPath></defs>
+        \\  <g clip-path="url(#c)">
+        \\    <path d="M25 0v20" fill="none" stroke="red" stroke-width="20"/>
+        \\  </g>
+        \\</svg>
+    );
+    defer doc.deinit();
+    const target = try vec.Target.init(a, 20, 20);
+    defer target.deinit(a);
+    try doc.render(a, target, .{});
+    try std.testing.expectEqual(@as(u32, 0xffff0000), target.pixels[10 * target.stride + 17]);
+    try std.testing.expectEqual(@as(u32, 0), target.pixels[10 * target.stride + 14]);
 }

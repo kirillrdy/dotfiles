@@ -37,16 +37,19 @@ const Pattern = struct {
         const w: f64 = @floatFromInt(self.image.width);
         const h: f64 = @floatFromInt(self.image.height);
         var box = [4]f64{ std.math.inf(f64), std.math.inf(f64), -std.math.inf(f64), -std.math.inf(f64) };
-        for ([_][2]f64{ .{ 0, 0 }, .{ w, 0 }, .{ 0, h }, .{ w, h } }) |corner| {
+        // Bilinear taps reach half a texel beyond each image edge. GOOD can
+        // additionally sample across the destination pixel when shrinking.
+        for ([_][2]f64{ .{ -0.5, -0.5 }, .{ w + 0.5, -0.5 }, .{ -0.5, h + 0.5 }, .{ w + 0.5, h + 0.5 } }) |corner| {
             const p = forward.apply(.{ .x = corner[0], .y = corner[1] });
             box = .{ @min(box[0], p.x), @min(box[1], p.y), @max(box[2], p.x), @max(box[3], p.y) };
         }
         const limit: f64 = 1 << 30;
+        const pad: f64 = if (self.filter == .good) 0.5 else 0;
         return .{
-            @intFromFloat(std.math.clamp(@floor(box[0]) - 1, 0, limit)),
-            @intFromFloat(std.math.clamp(@floor(box[1]) - 1, 0, limit)),
-            @intFromFloat(std.math.clamp(@ceil(box[2]) + 1, 0, limit)),
-            @intFromFloat(std.math.clamp(@ceil(box[3]) + 1, 0, limit)),
+            @intFromFloat(std.math.clamp(@floor(box[0] - pad), 0, limit)),
+            @intFromFloat(std.math.clamp(@floor(box[1] - pad), 0, limit)),
+            @intFromFloat(std.math.clamp(@ceil(box[2] + pad), 0, limit)),
+            @intFromFloat(std.math.clamp(@ceil(box[3] + pad), 0, limit)),
         };
     }
 
@@ -724,6 +727,22 @@ test "canvas arcs continue the current point and close rounded shapes" {
     for (target.pixels) |pixel| area += @as(f64, @floatFromInt(pixel >> 24)) / 255;
     // Cairo's 0.1 px flattening tolerance inscribes chords, losing about 1% here.
     try std.testing.expectApproxEqRel(std.math.pi * 100, area, 0.02);
+}
+
+test "unextended image bounds include the scaled bilinear fringe" {
+    const a = std.testing.allocator;
+    const target = try vec.Target.init(a, 32, 32);
+    defer target.deinit(a);
+    var cr = Context.init(a, target);
+    defer cr.deinit();
+    cr.translate(8, 8);
+    cr.scale(8, 8);
+    cr.setSourceImage(.{ .pixels = &.{0xffffffff}, .width = 1, .height = 1, .stride = 1 }, 0, 0);
+    cr.setFilter(.bilinear);
+    cr.paint();
+    try std.testing.expectEqual(@as(u32, 75), target.pixels[11 * target.stride + 6] >> 24);
+    try std.testing.expectEqual(@as(u32, 75), target.pixels[11 * target.stride + 17] >> 24);
+    try std.testing.expectEqual(@as(u32, 0), target.pixels[11 * target.stride + 3] >> 24);
 }
 
 /// Weighted sum of two premultiplied pixels; weights are out of 256.
