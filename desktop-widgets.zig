@@ -448,6 +448,11 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
     if (m.monitors != 0) {
         resize(m);
     } else if (m.view.usage) {
+        const claude = std.mem.eql(u8, options.source, "claude");
+        const icon = panel_data.usageIcon(options.source);
+        update_items(m, &.{.{ .icon = icon, .text = if (icon.len == 0) "Codex…" else "…" }});
+        m.tooltip = c.g_strdup(if (claude) "Loading Claude usage…" else "Loading Codex usage…");
+        m.usage.checked.set("Loading…");
         make_usage_menu(m);
     } else if (m.status != 0) {
         m.quick = quick.Controls.createWithDevices(if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
@@ -481,6 +486,25 @@ pub fn init(options: Options, devices: ?*@import("desktop-devices.zig").Service,
     initCommon(m, options, devices);
     return m;
 }
+
+test "usage indicators are visible before either collector returns" {
+    const codex = init(.{ .name = "gnome-codex", .source = "codex" }, null, null, null);
+    defer deinit(codex);
+    const claude = init(.{ .name = "gnome-claude", .source = "claude" }, null, null, null);
+    defer deinit(claude);
+
+    update(claude, .{ .items = &.{.{ .text = "72%" }} });
+    try std.testing.expectEqualStrings("72%", claude.view.items[0].label.value);
+    try std.testing.expect(codex.view.items[0].visible);
+    try std.testing.expectEqualStrings("Loading Codex usage…", std.mem.span(codex.tooltip));
+    try std.testing.expectEqualStrings("Loading…", codex.usage.checked.value);
+    try std.testing.expect(!codex.usage.enabled);
+
+    update(codex, .{ .items = &.{.{ .text = "54%" }} });
+    try std.testing.expectEqualStrings("54%", codex.view.items[0].label.value);
+    try std.testing.expect(codex.usage.enabled);
+}
+
 pub fn deinit(m: *Module) void {
     // Closing a clock during panel/output teardown must restore banners even
     // though its outstanding history requests are about to be cancelled.

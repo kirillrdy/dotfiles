@@ -12,7 +12,6 @@ const intervals = [_]u32{ 1, 10, 10, 240, 240 }; // Half-second ticks.
 
 pub const Service = struct {
     panel: *panel.Service,
-    icon: []const u8,
     sources: [kinds.len]Source = undefined,
     timer: c.guint = 0,
     dead: bool = false,
@@ -110,7 +109,7 @@ const Source = struct {
                 if (self.monitor == null) self.monitor = data.Monitor.init(alloc) catch break :blk null;
                 break :blk self.monitor.?.sample(alloc, demo) catch null;
             }
-            break :blk data.sample(alloc, kinds[self.index], self.owner.icon, demo) catch null;
+            break :blk data.sample(alloc, kinds[self.index], demo) catch null;
         };
         // Transfer the arena and its typed update to the main thread.
         if (result) |value| {

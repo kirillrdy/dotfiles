@@ -208,8 +208,13 @@ pub fn diskUsageText(a: A, stats: u.libc.struct_statvfs) ![]const u8 {
     return u.fmt(a, "{s}/{s}", .{ try diskSize(a, used), try diskSize(a, total) });
 }
 
+pub fn usageIcon(kind: []const u8) []const u8 {
+    if (u.eq(kind, "claude")) return "claude-usage-symbolic";
+    return u.env("DESKTOP_CODEX_ICON") orelse "";
+}
+
 /// One bounded update, suitable for a shared session worker.
-pub fn sample(a: A, kind: []const u8, icon: []const u8, demo: bool) !Update {
+pub fn sample(a: A, kind: []const u8, demo: bool) !Update {
     if (u.eq(kind, "status")) return .{ .items = if (demo) &.{
         .{ .icon = "network-wireless-signal-excellent-symbolic", .tooltip = "Wi-Fi" },
         .{ .icon = "audio-volume-high-symbolic", .tooltip = "Volume" },
@@ -222,6 +227,6 @@ pub fn sample(a: A, kind: []const u8, icon: []const u8, demo: bool) !Update {
         return .{ .items = items };
     }
     const now = u.timestamp();
-    if (u.eq(kind, "claude")) return usage.update(a, if (demo) usage.demo(now) else claude.read(a), "claude-usage-symbolic", now);
-    return usage.update(a, if (demo) usage.demo(now) else codex.read(a), icon, now);
+    const report = if (demo) usage.demo(now) else if (u.eq(kind, "claude")) claude.read(a) else codex.read(a);
+    return usage.update(a, report, usageIcon(kind), now);
 }
