@@ -497,18 +497,25 @@ test "only complete kernel power-supply events trigger a scan" {
 
 /// Session-only warnings; the system monitor never connects to a user bus.
 pub fn notifyWarning(level: Warning) void {
-    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return;
-    defer c.g_object_unref(bus);
-    const hints = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
-    defer c.g_variant_builder_unref(hints);
-    c.g_variant_builder_add(hints, "{sv}", @as([*:0]const u8, "urgency"), c.g_variant_new("y", @as(c_int, if (level == .low) 1 else 2)));
     const title: [*:0]const u8 = switch (level) {
         .low => "Battery Low",
         .critical => "Battery Critically Low",
         .action => "Battery Almost Empty",
         else => return,
     };
-    c.g_dbus_connection_call(bus, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "Notify", c.g_variant_new("(susss@as@a{sv}i)", @as([*:0]const u8, "desktop-zig"), @as(c_uint, 0), @as([*:0]const u8, "battery-caution-symbolic"), title, @as([*:0]const u8, "Connect a power source."), c.g_variant_new_strv(null, 0), c.g_variant_builder_end(hints), @as(c_int, -1)), null, 0, 3000, null, null, null);
+    // GLib holds the shared session bus only weakly. Keep this reference until
+    // the reply arrives: releasing it right after queueing the call can close
+    // a bus nothing else uses before the message is written.
+    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return;
+    const hints = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
+    defer c.g_variant_builder_unref(hints);
+    c.g_variant_builder_add(hints, "{sv}", @as([*:0]const u8, "urgency"), c.g_variant_new("y", @as(c_int, if (level == .low) 1 else 2)));
+    c.g_dbus_connection_call(bus, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "Notify", c.g_variant_new("(susss@as@a{sv}i)", @as([*:0]const u8, "desktop-zig"), @as(c_uint, 0), @as([*:0]const u8, "battery-caution-symbolic"), title, @as([*:0]const u8, "Connect a power source."), c.g_variant_new_strv(null, 0), c.g_variant_builder_end(hints), @as(c_int, -1)), null, 0, 3000, null, &notified, null);
+}
+fn notified(source: [*c]c.GObject, result: ?*c.GAsyncResult, _: ?*anyopaque) callconv(.c) void {
+    // Failures are not reported: a missing notification daemon must not affect power policy.
+    if (c.g_dbus_connection_call_finish(@ptrCast(source), result, null)) |reply| c.g_variant_unref(reply);
+    c.g_object_unref(source);
 }
 
 test "disposing an in-flight sysfs scan releases ownership without publishing after destruction" {
