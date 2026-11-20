@@ -157,6 +157,7 @@ pub const Document = struct {
             .symbolic = options.symbolic,
             .viewport = if (self.view_box) |box| .{ box[2], box[3] } else natural,
         };
+        defer renderer.boxes.deinit(gpa);
         if (options.opacity >= 1) return renderer.element(target, self.root, base, .{}, 0);
         if (options.opacity <= 0) return;
         const layer = try vec.Target.init(gpa, target.width, target.height);
@@ -865,6 +866,7 @@ const Renderer = struct {
     symbolic: ?Symbolic,
     viewport: [2]f64,
     pattern_depth: u32 = 0,
+    boxes: std.AutoHashMapUnmanaged(*const Node, ?[4]f64) = .empty,
 
     fn compute(self: *Renderer, a: std.mem.Allocator, node: *const Node, parent: Style) Style {
         var style = Style.inherit(parent);
@@ -974,6 +976,9 @@ const Renderer = struct {
                 if (box[2] > 0 and box[3] > 0) local = local.mul(viewportTransform(box, .{ 0, 0, w, h }, parseAspect(node.get("preserveAspectRatio"))));
             }
         }
+        // Masks and clips are costly; skip elements that cannot reach the output,
+        // as librsvg does.
+        if ((style.clip_path != null or style.mask != null) and !eql(u8, name, "use") and !self.visible(node, local, style, depth)) return;
         var path: vec.Path = .{};
         defer path.deinit(self.gpa);
         const is_shape = try self.shape(node, &path);
@@ -1136,16 +1141,40 @@ const Renderer = struct {
         try vec.fillPath(self.gpa, dest, outline, placement, .nonzero, .{ .shader = .{ .context = &sampler, .sample = ImageShader.sample } }, @floatCast(opacity));
     }
 
+    /// Whether the element's bounds, padded for strokes, overlap the target.
+    fn visible(self: *Renderer, node: *const Node, t: vec.Transform, style: Style, depth: u32) bool {
+        const box = self.bbox(node, depth) orelse return true;
+        const pad = @max(style.stroke_width, 1) * @max(t.scaleFactor(), 1) + 2;
+        var lo: vec.Point = .{ .x = std.math.inf(f64), .y = std.math.inf(f64) };
+        var hi: vec.Point = .{ .x = -std.math.inf(f64), .y = -std.math.inf(f64) };
+        for ([_][2]f64{ .{ box[0], box[1] }, .{ box[2], box[1] }, .{ box[0], box[3] }, .{ box[2], box[3] } }) |corner| {
+            const p = t.apply(.{ .x = corner[0], .y = corner[1] });
+            lo = .{ .x = @min(lo.x, p.x), .y = @min(lo.y, p.y) };
+            hi = .{ .x = @max(hi.x, p.x), .y = @max(hi.y, p.y) };
+        }
+        const w: f64 = @floatFromInt(self.width);
+        const h: f64 = @floatFromInt(self.height);
+        return hi.x + pad > 0 and hi.y + pad > 0 and lo.x - pad < w and lo.y - pad < h;
+    }
+
     /// Bounding box in the element's own user space (after its transform).
     fn bbox(self: *Renderer, node: *const Node, depth: u32) ?[4]f64 {
         if (depth > max_depth) return null;
+        // Nested masked groups ask for the same boxes repeatedly; compute each once.
+        if (self.boxes.get(node)) |cached| return cached;
+        const box = self.computeBbox(node, depth);
+        self.boxes.put(self.gpa, node, box) catch {};
+        return box;
+    }
+
+    fn computeBbox(self: *Renderer, node: *const Node, depth: u32) ?[4]f64 {
         var path: vec.Path = .{};
         defer path.deinit(self.gpa);
         const is_shape = self.shape(node, &path) catch return null;
         if (is_shape) {
             var flat: vec.Flat = .{};
             defer flat.deinit(self.gpa);
-            vec.flatten(self.gpa, path, .identity, 0.01, &flat) catch return null;
+            vec.flatten(self.gpa, path, .identity, 0.05, &flat) catch return null;
             var box: ?[4]f64 = null;
             for (flat.points.items) |p| box = extend(box, p);
             return box;
@@ -1272,7 +1301,20 @@ fn applyFilter(node: *const Node, layer: vec.Target) void {
         count += 1;
     }
     if (count == 0) return;
+    // Adwaita's alpha-to-white matrix: integer path. Otherwise skip transparent
+    // pixels whenever the matrix keeps them transparent.
+    const white = [20]f64{ 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0 };
+    if (count == 1 and std.mem.eql(f64, &matrices[0], &white)) {
+        for (layer.pixels) |*pixel| {
+            const a = pixel.* >> 24;
+            pixel.* = a * 0x01010101;
+        }
+        return;
+    }
+    var transparent_stays = true;
+    for (matrices[0..count]) |m| transparent_stays = transparent_stays and m[19] <= 0;
     for (layer.pixels) |*pixel| {
+        if (pixel.* == 0 and transparent_stays) continue;
         const alpha: f64 = @floatFromInt(pixel.* >> 24);
         var rgba: [4]f64 = .{ 0, 0, 0, alpha / 255 };
         if (alpha > 0) for (rgba[0..3], [_]u5{ 16, 8, 0 }) |*channel, shift| {
@@ -1447,6 +1489,9 @@ const Pattern = struct {
         const tile = try vec.Target.init(renderer.gpa, tw, th);
         self.tile = tile;
         var sub = renderer.*;
+        // The copy gets its own cache so growing it cannot invalidate the original.
+        sub.boxes = .empty;
+        defer sub.boxes.deinit(renderer.gpa);
         sub.width = tw;
         sub.height = th;
         sub.pattern_depth += 1;

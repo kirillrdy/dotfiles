@@ -247,6 +247,12 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Decoded {
             try unfilter(filter, line, previous, bpp);
             previous = line;
             const y = pass.y + row * pass.dy;
+            // Fast path: 8-bit RGBA or RGB rows of a non-interlaced image.
+            if (pass.dx == 1 and h.depth == 8 and (h.color == 6 or (h.color == 2 and key == null))) {
+                const out = output[y * h.width ..][0..pw];
+                if (h.color == 6) rgbaRow(out, line) else rgbRow(out, line);
+                continue;
+            }
             for (0..pw) |column| {
                 const x = pass.x + column * pass.dx;
                 output[y * h.width + x] = decodePixel(h, line, column, &palette, palette_len, key);
@@ -388,4 +394,28 @@ test "PNG decoding handles palettes, low bit depths, transparency keys and inter
     try std.testing.expectEqualSlices(u32, &.{ 0xffff0000, 0, 0xffff0000, 0 }, std.mem.bytesAsSlice(u32, decoded.pixels));
     try std.testing.expectError(error.InvalidImage, decode(a, file.written()[0..40]));
     try std.testing.expectError(error.InvalidImage, decode(a, "not a png"));
+}
+
+/// Straight 8-bit RGBA to premultiplied ARGB, exact x * a / 255 rounding.
+fn rgbaRow(out: []u32, line: []const u8) void {
+    @setRuntimeSafety(false);
+    for (out, 0..) |*pixel, i| {
+        const p = line[i * 4 ..][0..4];
+        const alpha: u32 = p[3];
+        if (alpha == 255) {
+            pixel.* = 0xff000000 | (@as(u32, p[0]) << 16) | (@as(u32, p[1]) << 8) | p[2];
+        } else if (alpha == 0) {
+            pixel.* = 0;
+        } else {
+            pixel.* = (alpha << 24) | (((@as(u32, p[0]) * alpha + 127) / 255) << 16) | (((@as(u32, p[1]) * alpha + 127) / 255) << 8) | ((@as(u32, p[2]) * alpha + 127) / 255);
+        }
+    }
+}
+
+fn rgbRow(out: []u32, line: []const u8) void {
+    @setRuntimeSafety(false);
+    for (out, 0..) |*pixel, i| {
+        const p = line[i * 3 ..][0..3];
+        pixel.* = 0xff000000 | (@as(u32, p[0]) << 16) | (@as(u32, p[1]) << 8) | p[2];
+    }
 }

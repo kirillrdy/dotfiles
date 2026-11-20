@@ -131,8 +131,13 @@ const State = struct {
     clips: usize = 0,
 };
 
+/// Cairo's default flattening tolerance in device pixels.
+const cairo_tolerance = 0.1;
+
 pub const Context = struct {
     gpa: std.mem.Allocator,
+    /// Per-operation temporaries, reset after each fill, stroke or paint.
+    scratch: std.heap.ArenaAllocator,
     target: vec.Target,
     path: vec.Path = .{},
     state: State = .{},
@@ -141,7 +146,7 @@ pub const Context = struct {
     clips: std.ArrayList(vec.Spans) = .empty,
 
     pub fn init(gpa: std.mem.Allocator, target: vec.Target) Context {
-        return .{ .gpa = gpa, .target = target };
+        return .{ .gpa = gpa, .target = target, .scratch = .init(gpa) };
     }
     /// Wraps borrowed ARGB storage whose stride is given in bytes.
     pub fn forBytes(gpa: std.mem.Allocator, pixels: []align(@alignOf(u32)) u8, width: u32, height: u32, stride: usize) Context {
@@ -149,6 +154,7 @@ pub const Context = struct {
     }
     pub fn deinit(self: *Context) void {
         self.path.deinit(self.gpa);
+        self.scratch.deinit();
         self.stack.deinit(self.gpa);
         for (self.clips.items) |mask| mask.deinit(self.gpa);
         self.clips.deinit(self.gpa);
@@ -276,16 +282,16 @@ pub const Context = struct {
     }
 
     pub fn fill(self: *Context) void {
-        const spans = vec.fillSpans(self.gpa, self.path, .identity, self.state.fill_rule, self.target.width, self.target.height) catch vec.Spans{};
-        defer spans.deinit(self.gpa);
+        defer _ = self.scratch.reset(.retain_capacity);
+        const spans = vec.fillSpans(self.scratch.allocator(), self.path, .identity, self.state.fill_rule, self.target.width, self.target.height, cairo_tolerance) catch vec.Spans{};
         self.path.clear();
         self.composite(spans, 1);
     }
 
     pub fn stroke(self: *Context) void {
         const width = self.state.line_width * self.state.ctm.scaleFactor();
-        const spans = vec.strokeSpans(self.gpa, self.path, .identity, .{ .width = width, .cap = self.state.cap, .join = self.state.join }, self.target.width, self.target.height) catch vec.Spans{};
-        defer spans.deinit(self.gpa);
+        defer _ = self.scratch.reset(.retain_capacity);
+        const spans = vec.strokeSpans(self.scratch.allocator(), self.path, .identity, .{ .width = width, .cap = self.state.cap, .join = self.state.join }, self.target.width, self.target.height, cairo_tolerance) catch vec.Spans{};
         self.path.clear();
         self.composite(spans, 1);
     }
@@ -294,12 +300,13 @@ pub const Context = struct {
         self.paintWithAlpha(1);
     }
     pub fn paintWithAlpha(self: *Context, alpha: f64) void {
+        defer _ = self.scratch.reset(.retain_capacity);
         self.composite(null, @floatCast(std.math.clamp(alpha, 0, 1)));
     }
 
     /// Intersects the clip with the current path and clears the path.
     pub fn clip(self: *Context) void {
-        var spans = vec.fillSpans(self.gpa, self.path, .identity, self.state.fill_rule, self.target.width, self.target.height) catch vec.Spans{};
+        var spans = vec.fillSpans(self.gpa, self.path, .identity, self.state.fill_rule, self.target.width, self.target.height, cairo_tolerance) catch vec.Spans{};
         self.path.clear();
         if (self.currentClip()) |previous| {
             const combined = vec.Spans.intersect(self.gpa, spans, previous.*) catch vec.Spans{};
@@ -356,9 +363,8 @@ pub const Context = struct {
         }
         if (x1 <= x0 or y1 <= y0 or alpha <= 0) return;
         const width = x1 - x0;
-        var arena: std.heap.ArenaAllocator = .init(self.gpa);
-        defer arena.deinit();
-        const a = arena.allocator();
+        // Temporaries live in the scratch arena; the caller or paint resets it.
+        const a = self.scratch.allocator();
         const colors = a.alloc(u32, width) catch return;
         var runs: std.ArrayList(vec.Spans.Run) = .empty;
         var axis: ?AxisSampler = null;
@@ -414,10 +420,10 @@ pub const Context = struct {
                 const pixels = line[run.x..][0..run.len];
                 const source = colors[run.x - x0 ..][0..run.len];
                 switch (operator) {
-                    .over => if (factor == 255) {
-                        for (pixels, source) |*pixel, color| pixel.* = if (color >> 24 == 255) color else vec.over(pixel.*, color);
-                    } else {
-                        for (pixels, source) |*pixel, color| pixel.* = vec.over(pixel.*, vec.fade(color, factor));
+                    .over => switch (self.state.source) {
+                        // One faded color per run: blend as a solid fill.
+                        .solid => |color| vec.overSolid(pixels, if (factor == 255) color else vec.fade(color, factor)),
+                        .pattern => vec.overSpan(pixels, source, factor),
                     },
                     .source => if (factor == 255) {
                         @memcpy(pixels, source);
@@ -453,6 +459,14 @@ const Taps = struct {
         const limit: f64 = @floatFromInt(size);
         for (0..len) |i| {
             const center = (@as(f64, @floatFromInt(start + i)) + 0.5) * scale + offset;
+            if (!box) {
+                const tap = bilinearTap(center, size, extend);
+                taps.first[i] = tap.first;
+                taps.count[i] = tap.count;
+                taps.weights[i * 2] = tap.w0;
+                taps.weights[i * 2 + 1] = tap.w1;
+                continue;
+            }
             var raw: [64]f64 = undefined;
             var first: f64 = undefined;
             var n: usize = 0;
@@ -530,6 +544,8 @@ const Taps = struct {
 const AxisSampler = struct {
     pattern: *const Pattern,
     columns: Taps,
+    /// One vertically blended source row.
+    scratch: []u32,
 
     fn init(a: std.mem.Allocator, pattern: *const Pattern, x0: u32, x1: u32) !?AxisSampler {
         const t = pattern.inverse;
@@ -537,6 +553,7 @@ const AxisSampler = struct {
         return .{
             .pattern = pattern,
             .columns = try Taps.init(a, x0, x1 - x0, t.a, t.e, pattern.image.width, pattern.filter, pattern.extend),
+            .scratch = try a.alloc(u32, pattern.image.width + 1),
         };
     }
 
@@ -562,23 +579,17 @@ const AxisSampler = struct {
             return;
         }
         if (row_count <= 2 and columns.stride == 2) {
-            // Bilinear: four channels per vector; unused taps carry zero weight.
+            // Bilinear, separable as in pixman: blend the two source rows once
+            // (SIMD), then each output pixel mixes two neighbours of that row.
             const r0 = image.pixels[@as(usize, @intCast(first[0])) * image.stride ..];
             const r1 = if (row_count == 2) image.pixels[@as(usize, @intCast(first[0] + 1)) * image.stride ..] else r0;
-            const wy0: V16 = @splat(weights[0]);
-            const wy1: V16 = @splat(if (row_count == 2) weights[1] else 0);
-            const half: V16 = @splat(128);
+            const w0: u32 = weights[0];
+            const w1: u32 = if (row_count == 2) weights[1] else 0;
             const last = image.width - 1;
-            for (out, offset..) |*pixel, i| {
-                const x: usize = @intCast(columns.first[i]);
-                const x1 = @min(x + 1, last);
-                const wx0: V16 = @splat(columns.weights[i * 2]);
-                const wx1: V16 = @splat(columns.weights[i * 2 + 1]);
-                // Each product fits 16 bits because paired weights sum to 256.
-                const top = (unpack16(r0[x]) *% wx0 +% unpack16(r0[x1]) *% wx1 +% half) >> @splat(8);
-                const bottom = (unpack16(r1[x]) *% wx0 +% unpack16(r1[x1]) *% wx1 +% half) >> @splat(8);
-                pixel.* = pack16((top *% wy0 +% bottom *% wy1 +% half) >> @splat(8));
-            }
+            const lo: usize = @intCast(columns.first[offset]);
+            const hi: usize = @min(@as(usize, @intCast(columns.first[offset + out.len - 1])) + 1, last);
+            if (hi >= lo) blendRows(self.scratch[lo .. hi + 1], r0[lo .. hi + 1], r1[lo .. hi + 1], w0, w1);
+            mixColumns(out, self.scratch, columns, offset, last);
             return;
         }
         // General separable area filter with per-channel accumulators.
@@ -605,6 +616,15 @@ const AxisSampler = struct {
 };
 
 fn rowTaps(taps: *Taps, y: u32, scale: f64, offset: f64, size: u32, filter: Filter, extend: Extend) void {
+    if (!(filter == .good and scale > 1.01)) {
+        // Bilinear rows need just two weights; skip the general tap builder.
+        const tap = bilinearTap((@as(f64, @floatFromInt(y)) + 0.5) * scale + offset, size, extend);
+        taps.first[0] = tap.first;
+        taps.count[0] = tap.count;
+        taps.weights[0] = tap.w0;
+        taps.weights[1] = tap.w1;
+        return;
+    }
     var buffer: [4096]u8 = undefined;
     var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
     const computed = Taps.init(fixed.allocator(), y, 1, scale, offset, size, filter, extend) catch {
@@ -702,5 +722,92 @@ test "canvas arcs continue the current point and close rounded shapes" {
     cr.fill();
     var area: f64 = 0;
     for (target.pixels) |pixel| area += @as(f64, @floatFromInt(pixel >> 24)) / 255;
-    try std.testing.expectApproxEqRel(std.math.pi * 100, area, 0.01);
+    // Cairo's 0.1 px flattening tolerance inscribes chords, losing about 1% here.
+    try std.testing.expectApproxEqRel(std.math.pi * 100, area, 0.02);
+}
+
+/// Weighted sum of two premultiplied pixels; weights are out of 256.
+inline fn mixPair(a: u32, b: u32, wa: u32, wb: u32) u32 {
+    // Each 16-bit lane holds at most 255 * 256 + 128, so wrapping ops are exact.
+    const rb = (((a & 0x00ff00ff) *% wa +% (b & 0x00ff00ff) *% wb +% 0x00800080) >> 8) & 0x00ff00ff;
+    const ag = ((((a >> 8) & 0x00ff00ff) *% wa +% ((b >> 8) & 0x00ff00ff) *% wb +% 0x00800080) >> 8) & 0x00ff00ff;
+    return rb | (ag << 8);
+}
+
+/// out = (top * w0 + bottom * w1) / 256 per channel, four pixels per vector.
+fn blendRows(out: []u32, top: []const u32, bottom: []const u32, w0: u32, w1: u32) void {
+    @setRuntimeSafety(false);
+    if (w1 == 0 and w0 == 256) return @memcpy(out, top);
+    const Lanes = @Vector(16, u16);
+    const Bytes = @Vector(16, u8);
+    const a: Lanes = @splat(@intCast(w0));
+    const b: Lanes = @splat(@intCast(w1));
+    const half: Lanes = @splat(128);
+    var i: usize = 0;
+    while (i + 4 <= out.len) : (i += 4) {
+        const t: Lanes = @as(Bytes, @bitCast(top[i..][0..4].*));
+        const u: Lanes = @as(Bytes, @bitCast(bottom[i..][0..4].*));
+        // Weights sum to at most 256, so every lane stays within 16 bits.
+        const v = (t *% a +% u *% b +% half) >> @splat(8);
+        out[i..][0..4].* = @bitCast(@as(Bytes, @truncate(v)));
+    }
+    while (i < out.len) : (i += 1) out[i] = mixPair(top[i], bottom[i], w0, w1);
+}
+
+const BilinearTap = struct { first: i32, count: u8, w0: u16, w1: u16 };
+
+/// The two texels around sample position `center` (pixel centers at +0.5),
+/// resolved against the edges: padding clamps, no extend drops weight.
+fn bilinearTap(center: f64, size: u32, extend: Extend) BilinearTap {
+    const f = center - 0.5;
+    const fl = @floor(f);
+    const w1: u16 = @intFromFloat(@round((f - fl) * 256));
+    const limit: f64 = @floatFromInt(size);
+    const size_i: i64 = size;
+    var x0: i64 = @intFromFloat(std.math.clamp(fl, -2, limit + 1));
+    var x1: i64 = x0 + 1;
+    var weight0: u16 = 256 - w1;
+    var weight1: u16 = w1;
+    if (extend == .none) {
+        if (x0 < 0 or x0 >= size_i) weight0 = 0;
+        if (x1 < 0 or x1 >= size_i) weight1 = 0;
+    }
+    x0 = std.math.clamp(x0, 0, size_i - 1);
+    x1 = std.math.clamp(x1, 0, size_i - 1);
+    if (x0 == x1) return .{ .first = @intCast(x0), .count = if (weight0 + weight1 > 0) 1 else 0, .w0 = weight0 + weight1, .w1 = 0 };
+    return .{ .first = @intCast(x0), .count = 2, .w0 = weight0, .w1 = weight1 };
+}
+
+/// Horizontal bilinear step: out[k] mixes row[x] and row[x + 1] for each
+/// column's taps, four pixels per vector with per-pixel weights.
+fn mixColumns(out: []u32, row: []const u32, columns: *const Taps, offset: usize, last: usize) void {
+    @setRuntimeSafety(false);
+    const Lanes = @Vector(16, u16);
+    const Bytes = @Vector(16, u8);
+    const spread: @Vector(16, i32) = .{ 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3 };
+    const half: Lanes = @splat(128);
+    var k: usize = 0;
+    while (k + 4 <= out.len) : (k += 4) {
+        var left: [4]u32 = undefined;
+        var right: [4]u32 = undefined;
+        var wl: @Vector(4, u16) = undefined;
+        var wr: @Vector(4, u16) = undefined;
+        inline for (0..4) |j| {
+            const i = offset + k + j;
+            const x: usize = @intCast(columns.first[i]);
+            left[j] = row[x];
+            right[j] = row[@min(x + 1, last)];
+            wl[j] = columns.weights[i * 2];
+            wr[j] = columns.weights[i * 2 + 1];
+        }
+        const a: Lanes = @as(Bytes, @bitCast(left));
+        const b: Lanes = @as(Bytes, @bitCast(right));
+        const v = (a *% @shuffle(u16, wl, undefined, spread) +% b *% @shuffle(u16, wr, undefined, spread) +% half) >> @splat(8);
+        out[k..][0..4].* = @bitCast(@as(Bytes, @truncate(v)));
+    }
+    while (k < out.len) : (k += 1) {
+        const i = offset + k;
+        const x: usize = @intCast(columns.first[i]);
+        out[k] = mixPair(row[x], row[@min(x + 1, last)], columns.weights[i * 2], columns.weights[i * 2 + 1]);
+    }
 }
