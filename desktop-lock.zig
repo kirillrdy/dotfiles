@@ -94,7 +94,7 @@ const Output = struct {
         const s = self.state;
         const shm = c.__zig.createShmBuffer(s.shm, "desktop-lock", size, width, height, width * 4, c.WL_SHM_FORMAT_XRGB8888) catch std.process.exit(1);
         const pixels: [*]u32 = @ptrCast(@alignCast(shm.memory));
-        s.view.paint(.{ .pixels = pixels[0 .. size / 4], .width = width, .height = height }, if (s.failed) .failed else if (s.busy) .authenticating else .ready);
+        s.view.paint(.{ .pixels = pixels[0 .. size / 4], .width = width, .height = height }, if (s.failed) .failed else if (s.busy) .authenticating else .ready, s.typed);
         const buffer = shm.proxy;
         const storage = a.create(Buffer) catch std.process.exit(1);
         storage.* = .{ .proxy = buffer, .memory = shm.memory, .size = size };
@@ -158,7 +158,10 @@ const Seat = struct {
     fn enter(_: ?*anyopaque, _: ?*Proxy, _: u32, _: ?*Proxy, _: ?*c.wl_array) callconv(.c) void {}
     fn leave(data: ?*anyopaque, _: ?*Proxy, _: u32, _: ?*Proxy) callconv(.c) void {
         const self = cast(Seat, data);
-        if (!self.state.busy) self.state.password.clear();
+        if (!self.state.busy) {
+            self.state.password.clear();
+            self.state.changed();
+        }
     }
     fn key(data: ?*anyopaque, _: ?*Proxy, _: u32, _: u32, code: u32, pressed: u32) callconv(.c) void {
         const self = cast(Seat, data);
@@ -170,14 +173,21 @@ const Seat = struct {
             0xff1b => {
                 s.password.clear();
                 s.failed = false;
+                s.typed = 0;
                 s.render();
             },
-            0xff08 => s.password.backspace(),
+            0xff08 => {
+                s.password.backspace();
+                s.changed();
+            },
             else => {
                 var bytes: [64]u8 = @splat(0);
                 defer std.crypto.secureZero(u8, &bytes);
                 const len = kb.xkb_state_key_get_utf8(self.xkb.?, code + 8, &bytes, bytes.len);
-                if (len > 0 and len < bytes.len and bytes[0] >= 32 and bytes[0] != 127) s.password.append(bytes[0..@intCast(len)]);
+                if (len > 0 and len < bytes.len and bytes[0] >= 32 and bytes[0] != 127) {
+                    s.password.append(bytes[0..@intCast(len)]);
+                    s.changed();
+                }
             },
         }
     }
@@ -218,9 +228,21 @@ const State = struct {
     unlocked: bool = false,
     busy: bool = false,
     failed: bool = false,
+    /// Characters shown as dots, tracked on the main thread so rendering never
+    /// reads the password while the authentication thread may be clearing it.
+    typed: usize = 0,
     fn render(self: *State) void {
         var output = self.outputs;
         while (output) |o| : (output = o.next) o.render();
+    }
+    fn changed(self: *State) void {
+        var count: usize = 0;
+        for (self.password.bytes[0..self.password.len]) |byte| count += @intFromBool(byte & 0xc0 != 0x80);
+        if (count == self.typed) return;
+        self.typed = count;
+        // Typing again after a rejection returns to the normal prompt.
+        if (count > 0) self.failed = false;
+        self.render();
     }
     fn authenticate(self: *State) void {
         if (self.password.len == 0) return;
@@ -245,6 +267,7 @@ const State = struct {
     fn authDone(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
         const self = cast(State, data);
         self.busy = false;
+        self.typed = 0;
         if (c.g_task_propagate_boolean(@ptrCast(result), null) != 0 and self.locked and !self.done) {
             self.done = true;
             // Revoke managed readiness before the compositor processes unlock.

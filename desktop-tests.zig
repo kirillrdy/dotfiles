@@ -180,6 +180,7 @@ test {
     _ = @import("desktop-portal-capture.zig");
     _ = @import("desktop-output.zig");
     _ = @import("desktop-lock.zig");
+    _ = @import("desktop-lock-view.zig");
     _ = @import("desktop-idle.zig");
     _ = @import("desktop-osd.zig");
     _ = @import("desktop-settings.zig");
