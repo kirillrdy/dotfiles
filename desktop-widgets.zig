@@ -269,7 +269,11 @@ fn calendar_closed(data: ?*anyopaque) void {
     history_call(m, "CalendarOpen", c.g_variant_new("(b)", @as(c_int, 0)));
 }
 fn history_call(m: *Module, member: [*:0]const u8, parameters: ?*c.GVariant) void {
-    if (m.dead != 0 or m.session == null) return;
+    if (m.dead != 0 or m.session == null) {
+        // The call would have consumed the floating parameters; release them instead.
+        if (parameters) |value| c.g_variant_unref(c.g_variant_ref_sink(value));
+        return;
+    }
     c.g_dbus_connection_call(m.session, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.dotfiles.Notifications", member, parameters, null, c.G_DBUS_CALL_FLAGS_NONE, 2000, m.cancel, null, null);
 }
 fn history_clear(data: ?*anyopaque) void {
