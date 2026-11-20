@@ -193,8 +193,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "desktop-pointer-fixture", .source = "tests/desktop-pointer-fixture.zig", .step = "pointer-fixture", .install = true },
         .{ .name = "desktop-battery-fixture", .source = "tests/desktop-battery-fixture.zig", .step = "battery-fixture", .install = true },
         .{ .name = "desktop-audio-fixture", .source = "tests/desktop-audio-fixture.zig", .step = "audio-fixture", .install = true },
-        .{ .name = "desktop-backlight-fixture", .source = "desktop-backlight-fixture.zig", .step = "backlight-fixture", .install = true },
-        .{ .name = "desktop-network-fixture", .source = "desktop-network-fixture.zig", .step = "network-fixture" },
+        .{ .name = "desktop-backlight-fixture", .source = "tests/desktop-backlight-fixture.zig", .step = "backlight-fixture", .install = true },
+        .{ .name = "desktop-network-fixture", .source = "tests/desktop-network-fixture.zig", .step = "network-fixture" },
         .{ .name = "desktop-idle-fixture", .source = "tests/desktop-idle-fixture.zig", .step = "idle-fixture", .install = true },
         .{ .name = "desktop-lock-fixture", .source = "tests/desktop-lock-fixture.zig", .step = "lock-fixture", .install = true },
         .{ .name = "desktop-apps-fixture", .source = "tests/desktop-apps-fixture.zig", .step = "apps-fixture", .install = true },
@@ -208,8 +208,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "desktop-screenshot-fixture", .source = "tests/desktop-screenshot-fixture.zig", .step = "screenshot-fixture", .install = true },
         .{ .name = "desktop-command-fixture", .source = "tests/desktop-command-fixture.zig", .step = "command-fixture", .install = true },
         .{ .name = "desktop-notifications-fixture", .source = "tests/desktop-notifications-fixture.zig", .step = "notifications-fixture", .install = true },
-        .{ .name = "desktop-session-fixture", .source = "desktop-session-fixture.zig", .step = "session-fixture", .test_runner = true },
-        .{ .name = "desktop-memory-tests", .source = "desktop-memory-tests.zig", .step = "memory-tests", .test_runner = true },
+        .{ .name = "desktop-session-fixture", .source = "tests/desktop-session-fixture.zig", .step = "session-fixture", .test_runner = true },
+        .{ .name = "desktop-memory-tests", .source = "tests/desktop-memory-tests.zig", .step = "memory-tests", .test_runner = true },
     };
     const capture = b.step("portal-capture-fixtures", "Build the capture protocol test clients");
     for (fixtures) |fixture| {
