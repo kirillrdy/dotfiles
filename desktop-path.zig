@@ -545,18 +545,209 @@ const samples = 16;
 /// Maximum chord deviation of flattened curves, in device pixels.
 const default_tolerance = 0.03;
 
-/// Computes anti-aliased coverage of the closed device-space contours in `flat`.
-pub fn rasterize(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u32, height: u32) !Mask {
+/// Coverage as runs of constant alpha per row; pixels outside every run are 0.
+/// Interiors and empty areas cost one run each, so large shapes stay cheap.
+pub const Spans = struct {
+    y: u32 = 0,
+    height: u32 = 0,
+    /// Bounds of all runs, for clipping regions.
+    x0: u32 = 0,
+    x1: u32 = 0,
+    /// Runs of row `y + i` are `runs[rows[i]..rows[i + 1]]`, sorted by x.
+    rows: []u32 = &.{},
+    runs: []Run = &.{},
+
+    pub const Run = struct { x: u32, len: u32, alpha: f32 };
+
+    pub fn deinit(self: Spans, a: std.mem.Allocator) void {
+        a.free(self.rows);
+        a.free(self.runs);
+    }
+    /// The runs of absolute row `y`, empty outside the spans.
+    pub fn row(self: Spans, y: usize) []const Run {
+        if (y < self.y or y >= self.y + self.height) return &.{};
+        const i = y - self.y;
+        return self.runs[self.rows[i]..self.rows[i + 1]];
+    }
+    pub fn empty(self: Spans) bool {
+        return self.runs.len == 0;
+    }
+
+    /// Row-wise product of two coverages.
+    pub fn intersect(a: std.mem.Allocator, first: Spans, second: Spans) !Spans {
+        const y0 = @max(first.y, second.y);
+        const y1 = @min(first.y + first.height, second.y + second.height);
+        if (y1 <= y0) return .{};
+        var builder: Builder = try .init(a, y0, y1 - y0);
+        errdefer builder.deinit();
+        for (y0..y1) |y| {
+            try intersectRuns(&builder, first.row(y), second.row(y), 1);
+            try builder.endRow();
+        }
+        return builder.finish();
+    }
+};
+
+/// Appends the product of two sorted run lists, scaled by `scale`.
+pub fn intersectRuns(builder: *Builder, first: []const Spans.Run, second: []const Spans.Run, scale: f32) !void {
+    var i: usize = 0;
+    var j: usize = 0;
+    while (i < first.len and j < second.len) {
+        const r = first[i];
+        const s = second[j];
+        const start = @max(r.x, s.x);
+        const end = @min(r.x + r.len, s.x + s.len);
+        if (end > start) try builder.add(start, end - start, r.alpha * s.alpha * scale);
+        if (r.x + r.len <= s.x + s.len) i += 1 else j += 1;
+    }
+}
+
+/// Accumulates runs row by row, merging equal neighbors.
+pub const Builder = struct {
+    a: std.mem.Allocator,
+    y: u32,
+    height: u32,
+    rows: std.ArrayList(u32) = .empty,
+    runs: std.ArrayList(Spans.Run) = .empty,
+    x0: u32 = std.math.maxInt(u32),
+    x1: u32 = 0,
+
+    pub fn init(a: std.mem.Allocator, y: u32, height: u32) !Builder {
+        var builder: Builder = .{ .a = a, .y = y, .height = height };
+        try builder.rows.ensureTotalCapacity(a, height + 1);
+        builder.rows.appendAssumeCapacity(0);
+        return builder;
+    }
+    pub fn deinit(self: *Builder) void {
+        self.rows.deinit(self.a);
+        self.runs.deinit(self.a);
+    }
+    pub fn add(self: *Builder, x: u32, len: u32, alpha: f32) !void {
+        if (len == 0 or !(alpha > 1.0 / 512.0)) return;
+        const value = @min(alpha, 1);
+        const row_start = self.rows.items[self.rows.items.len - 1];
+        if (self.runs.items.len > row_start) {
+            const last = &self.runs.items[self.runs.items.len - 1];
+            if (last.x + last.len == x and @abs(last.alpha - value) < 1.0 / 1024.0) {
+                last.len += len;
+                self.x1 = @max(self.x1, x + len);
+                return;
+            }
+        }
+        try self.runs.append(self.a, .{ .x = x, .len = len, .alpha = value });
+        self.x0 = @min(self.x0, x);
+        self.x1 = @max(self.x1, x + len);
+    }
+    pub fn endRow(self: *Builder) !void {
+        try self.rows.append(self.a, @intCast(self.runs.items.len));
+    }
+    pub fn finish(self: *Builder) !Spans {
+        if (self.runs.items.len == 0) {
+            self.deinit();
+            return .{};
+        }
+        return .{
+            .y = self.y,
+            .height = self.height,
+            .x0 = self.x0,
+            .x1 = self.x1,
+            .rows = try self.rows.toOwnedSlice(self.a),
+            .runs = try self.runs.toOwnedSlice(self.a),
+        };
+    }
+};
+
+/// Per-row accumulation of sub-scanline spans: partial-pixel cover and run
+/// deltas per column, plus each touched column recorded once.
+const Accumulator = struct {
+    cover: []f32,
+    delta: []f32,
+    touched: std.ArrayList(u32) = .empty,
+    marked: []bool,
+    width: u32,
+
+    fn init(a: std.mem.Allocator, width: u32) !Accumulator {
+        const n = @as(usize, width) + 2;
+        const self: Accumulator = .{ .cover = try a.alloc(f32, n), .delta = try a.alloc(f32, n), .marked = try a.alloc(bool, n), .width = width };
+        @memset(self.cover, 0);
+        @memset(self.delta, 0);
+        @memset(self.marked, false);
+        return self;
+    }
+    fn deinit(self: *Accumulator, a: std.mem.Allocator) void {
+        a.free(self.cover);
+        a.free(self.delta);
+        a.free(self.marked);
+        self.touched.deinit(a);
+    }
+    fn touch(self: *Accumulator, a: std.mem.Allocator, x: u32) !void {
+        if (self.marked[x]) return;
+        self.marked[x] = true;
+        try self.touched.append(a, x);
+    }
+    fn span(self: *Accumulator, a: std.mem.Allocator, from: f64, to: f64, weight: f32) !void {
+        const fw: f64 = @floatFromInt(self.width);
+        const xa = std.math.clamp(from, 0, fw);
+        const xb = std.math.clamp(to, 0, fw);
+        if (xb <= xa) return;
+        const ia: u32 = @intFromFloat(@floor(xa));
+        const ib: u32 = @intFromFloat(@floor(xb));
+        if (ia == ib) {
+            self.cover[ia] += @as(f32, @floatCast(xb - xa)) * weight;
+            return self.touch(a, ia);
+        }
+        self.cover[ia] += @as(f32, @floatCast(@as(f64, @floatFromInt(ia + 1)) - xa)) * weight;
+        self.delta[ia + 1] += weight;
+        self.delta[ib] -= weight;
+        self.cover[ib] += @as(f32, @floatCast(xb - @as(f64, @floatFromInt(ib)))) * weight;
+        try self.touch(a, ia);
+        try self.touch(a, ia + 1);
+        try self.touch(a, ib);
+    }
+    /// Emits the row's runs in column order and resets the touched columns.
+    fn flush(self: *Accumulator, builder: *Builder) !void {
+        const items = self.touched.items;
+        if (items.len < 32) {
+            var k: usize = 1;
+            while (k < items.len) : (k += 1) {
+                const value = items[k];
+                var j = k;
+                while (j > 0 and items[j - 1] > value) : (j -= 1) items[j] = items[j - 1];
+                items[j] = value;
+            }
+        } else std.sort.pdq(u32, items, {}, std.sort.asc(u32));
+        var running: f32 = 0;
+        var cursor: u32 = 0;
+        for (items) |x| {
+            const cover = self.cover[x];
+            const delta = self.delta[x];
+            self.cover[x] = 0;
+            self.delta[x] = 0;
+            self.marked[x] = false;
+            if (x >= self.width) continue;
+            if (x > cursor) try builder.add(cursor, x - cursor, std.math.clamp(running, 0, 1));
+            running += delta;
+            try builder.add(x, 1, std.math.clamp(cover + running, 0, 1));
+            cursor = x + 1;
+        }
+        if (cursor < self.width and running > 1.0 / 512.0) try builder.add(cursor, self.width - cursor, std.math.clamp(running, 0, 1));
+        self.touched.clearRetainingCapacity();
+    }
+};
+/// Computes anti-aliased coverage of the closed device-space contours in `flat` as runs.
+pub fn rasterizeSpans(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u32, height: u32) !Spans {
     var edges: std.ArrayList(Edge) = .empty;
     defer edges.deinit(a);
-    var box = [4]f64{ std.math.inf(f64), std.math.inf(f64), -std.math.inf(f64), -std.math.inf(f64) };
+    var top: f64 = std.math.inf(f64);
+    var bottom: f64 = -std.math.inf(f64);
     for (flat.contours.items) |c| {
         const points = flat.contour(c);
         if (points.len < 2) continue;
         for (points, 0..) |p, i| {
             if (!std.math.isFinite(p.x) or !std.math.isFinite(p.y)) return .{};
             const q = points[(i + 1) % points.len];
-            box = .{ @min(box[0], p.x), @min(box[1], p.y), @max(box[2], p.x), @max(box[3], p.y) };
+            top = @min(top, p.y);
+            bottom = @max(bottom, p.y);
             if (p.y == q.y) continue;
             try edges.append(a, if (p.y < q.y)
                 .{ .x0 = p.x, .y0 = p.y, .x1 = q.x, .y1 = q.y, .dir = 1 }
@@ -565,37 +756,27 @@ pub fn rasterize(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u32, h
         }
     }
     if (edges.items.len == 0) return .{};
-    const fw: f64 = @floatFromInt(width);
     const fh: f64 = @floatFromInt(height);
-    const x0: u32 = @intFromFloat(std.math.clamp(@floor(box[0]), 0, fw));
-    const y0: u32 = @intFromFloat(std.math.clamp(@floor(box[1]), 0, fh));
-    const x1: u32 = @intFromFloat(std.math.clamp(@ceil(box[2]), 0, fw));
-    const y1: u32 = @intFromFloat(std.math.clamp(@ceil(box[3]), 0, fh));
-    if (x1 <= x0 or y1 <= y0) return .{};
-    const mw = x1 - x0;
-    const mh = y1 - y0;
-    const alpha = try a.alloc(f32, @as(usize, mw) * mh);
-    errdefer a.free(alpha);
+    const y0: u32 = @intFromFloat(std.math.clamp(@floor(top), 0, fh));
+    const y1: u32 = @intFromFloat(std.math.clamp(@ceil(bottom), 0, fh));
+    if (y1 <= y0 or width == 0) return .{};
     std.mem.sort(Edge, edges.items, {}, struct {
         fn less(_: void, l: Edge, r: Edge) bool {
             return l.y0 < r.y0;
         }
     }.less);
-    const cover = try a.alloc(f32, mw + 2);
-    defer a.free(cover);
-    const delta = try a.alloc(f32, mw + 2);
-    defer a.free(delta);
+    var builder: Builder = try .init(a, y0, y1 - y0);
+    errdefer builder.deinit();
     var active: std.ArrayList(Edge) = .empty;
     defer active.deinit(a);
     var crossings: std.ArrayList(Crossing) = .empty;
     defer crossings.deinit(a);
+    var accumulator: Accumulator = try .init(a, width);
+    defer accumulator.deinit(a);
     var next: usize = 0;
-    const left: f64 = @floatFromInt(x0);
     const weight: f32 = 1.0 / @as(f32, samples);
-    for (0..mh) |row| {
-        const y: f64 = @floatFromInt(y0 + row);
-        @memset(cover, 0);
-        @memset(delta, 0);
+    for (y0..y1) |row_y| {
+        const y: f64 = @floatFromInt(row_y);
         // Retire finished edges and admit those starting in this row.
         var keep: usize = 0;
         for (active.items) |e| if (e.y1 > y) {
@@ -606,21 +787,39 @@ pub fn rasterize(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u32, h
         while (next < edges.items.len and edges.items[next].y0 < y + 1) : (next += 1) {
             if (edges.items[next].y1 > y) try active.append(a, edges.items[next]);
         }
-        for (0..samples) |s| {
-            const sy = y + (@as(f64, @floatFromInt(s)) + 0.5) / samples;
+        // Rows crossed only by vertical edges spanning the whole row have the same
+        // coverage on every sub-scanline: sample them once at full weight.
+        var uniform = true;
+        for (active.items) |e| {
+            if (e.x0 != e.x1 or e.y0 > y or e.y1 < y + 1) {
+                uniform = false;
+                break;
+            }
+        }
+        const passes: usize = if (uniform) 1 else samples;
+        const pass_weight: f32 = if (uniform) 1 else weight;
+        for (0..passes) |s| {
+            const sy = if (uniform) y + 0.5 else y + (@as(f64, @floatFromInt(s)) + 0.5) / samples;
             crossings.clearRetainingCapacity();
             for (active.items) |e| if (e.y0 <= sy and sy < e.y1) {
-                try crossings.append(a, .{ .x = e.x0 + (sy - e.y0) * (e.x1 - e.x0) / (e.y1 - e.y0) - left, .dir = e.dir });
+                try crossings.append(a, .{ .x = e.x0 + (sy - e.y0) * (e.x1 - e.x0) / (e.y1 - e.y0), .dir = e.dir });
             };
             const items = crossings.items;
-            // Insertion sort: crossings per scanline are few and nearly ordered.
-            var k: usize = 1;
-            while (k < items.len) : (k += 1) {
-                const value = items[k];
-                var j = k;
-                while (j > 0 and items[j - 1].x > value.x) : (j -= 1) items[j] = items[j - 1];
-                items[j] = value;
-            }
+            // Insertion sort suits the few, nearly ordered crossings of fills;
+            // stroke outlines overlap many pieces and need a general sort.
+            if (items.len < 32) {
+                var k: usize = 1;
+                while (k < items.len) : (k += 1) {
+                    const value = items[k];
+                    var j = k;
+                    while (j > 0 and items[j - 1].x > value.x) : (j -= 1) items[j] = items[j - 1];
+                    items[j] = value;
+                }
+            } else std.sort.pdq(Crossing, items, {}, struct {
+                fn less(_: void, l: Crossing, r: Crossing) bool {
+                    return l.x < r.x;
+                }
+            }.less);
             var winding: i32 = 0;
             for (items, 0..) |crossing, i| {
                 winding += crossing.dir;
@@ -628,34 +827,32 @@ pub fn rasterize(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u32, h
                     .nonzero => winding != 0,
                     .evenodd => winding & 1 != 0,
                 };
-                if (inside and i + 1 < items.len) span(cover, delta, crossing.x, items[i + 1].x, mw, weight);
+                if (inside and i + 1 < items.len) try accumulator.span(a, crossing.x, items[i + 1].x, pass_weight);
             }
         }
-        var running: f32 = 0;
-        const out = alpha[row * mw ..][0..mw];
-        for (out, 0..) |*value, x| {
-            running += delta[x];
-            value.* = std.math.clamp(cover[x] + running, 0, 1);
-        }
+        try accumulator.flush(&builder);
+        try builder.endRow();
     }
-    return .{ .x = x0, .y = y0, .width = mw, .height = mh, .alpha = alpha };
+    return builder.finish();
 }
 
-fn span(cover: []f32, delta: []f32, from: f64, to: f64, width: u32, weight: f32) void {
-    const fw: f64 = @floatFromInt(width);
-    const xa = std.math.clamp(from, 0, fw);
-    const xb = std.math.clamp(to, 0, fw);
-    if (xb <= xa) return;
-    const ia: usize = @intFromFloat(@floor(xa));
-    const ib: usize = @intFromFloat(@floor(xb));
-    if (ia == ib) {
-        cover[ia] += @as(f32, @floatCast(xb - xa)) * weight;
-        return;
+/// Computes anti-aliased coverage of the closed device-space contours in `flat`.
+pub fn rasterize(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u32, height: u32) !Mask {
+    const spans = try rasterizeSpans(a, flat, rule, width, height);
+    defer spans.deinit(a);
+    return expand(a, spans);
+}
+
+/// Converts runs into dense per-pixel coverage over their bounding box.
+pub fn expand(a: std.mem.Allocator, spans: Spans) !Mask {
+    if (spans.empty()) return .{};
+    const mw = spans.x1 - spans.x0;
+    const alpha = try a.alloc(f32, @as(usize, mw) * spans.height);
+    @memset(alpha, 0);
+    for (0..spans.height) |r| {
+        for (spans.row(spans.y + r)) |run| @memset(alpha[r * mw + (run.x - spans.x0) ..][0..run.len], run.alpha);
     }
-    cover[ia] += @as(f32, @floatCast(@as(f64, @floatFromInt(ia + 1)) - xa)) * weight;
-    delta[ia + 1] += weight;
-    delta[ib] -= weight;
-    cover[ib] += @as(f32, @floatCast(xb - @as(f64, @floatFromInt(ib)))) * weight;
+    return .{ .x = spans.x0, .y = spans.y, .width = mw, .height = spans.height, .alpha = alpha };
 }
 
 /// Premultiplied native-endian ARGB pixels; `stride` counts pixels.
@@ -766,13 +963,25 @@ pub fn strokePath(a: std.mem.Allocator, target: Target, path: Path, t: Transform
 }
 
 pub fn fillMask(a: std.mem.Allocator, path: Path, t: Transform, rule: FillRule, width: u32, height: u32) !Mask {
-    var flat: Flat = .{};
-    defer flat.deinit(a);
-    try flatten(a, path, t, default_tolerance, &flat);
-    return rasterize(a, flat, rule, width, height);
+    const spans = try fillSpans(a, path, t, rule, width, height);
+    defer spans.deinit(a);
+    return expand(a, spans);
 }
 
 pub fn strokeMask(a: std.mem.Allocator, path: Path, t: Transform, stroke: Stroke, width: u32, height: u32) !Mask {
+    const spans = try strokeSpans(a, path, t, stroke, width, height);
+    defer spans.deinit(a);
+    return expand(a, spans);
+}
+
+pub fn fillSpans(a: std.mem.Allocator, path: Path, t: Transform, rule: FillRule, width: u32, height: u32) !Spans {
+    var flat: Flat = .{};
+    defer flat.deinit(a);
+    try flatten(a, path, t, default_tolerance, &flat);
+    return rasterizeSpans(a, flat, rule, width, height);
+}
+
+pub fn strokeSpans(a: std.mem.Allocator, path: Path, t: Transform, stroke: Stroke, width: u32, height: u32) !Spans {
     const factor = @max(t.scaleFactor(), 1e-6);
     const tolerance = default_tolerance / factor;
     var user: Flat = .{};
@@ -782,7 +991,7 @@ pub fn strokeMask(a: std.mem.Allocator, path: Path, t: Transform, stroke: Stroke
     defer outline.deinit(a);
     try strokeOutline(a, user, stroke, tolerance, &outline);
     outline.transform(t);
-    return rasterize(a, outline, .nonzero, width, height);
+    return rasterizeSpans(a, outline, .nonzero, width, height);
 }
 
 /// Composites `layer` onto `target` scaled by `opacity` and an optional full-size `mask`.

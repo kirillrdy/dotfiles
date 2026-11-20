@@ -31,6 +31,25 @@ const Pattern = struct {
     filter: Filter = .good,
     extend: Extend = .none,
 
+    /// Device pixels the image can touch, padded for filter fringes.
+    fn bounds(self: *const Pattern) [4]u32 {
+        const forward = self.inverse.invert() orelse return .{ 0, 0, std.math.maxInt(u32), std.math.maxInt(u32) };
+        const w: f64 = @floatFromInt(self.image.width);
+        const h: f64 = @floatFromInt(self.image.height);
+        var box = [4]f64{ std.math.inf(f64), std.math.inf(f64), -std.math.inf(f64), -std.math.inf(f64) };
+        for ([_][2]f64{ .{ 0, 0 }, .{ w, 0 }, .{ 0, h }, .{ w, h } }) |corner| {
+            const p = forward.apply(.{ .x = corner[0], .y = corner[1] });
+            box = .{ @min(box[0], p.x), @min(box[1], p.y), @max(box[2], p.x), @max(box[3], p.y) };
+        }
+        const limit: f64 = 1 << 30;
+        return .{
+            @intFromFloat(std.math.clamp(@floor(box[0]) - 1, 0, limit)),
+            @intFromFloat(std.math.clamp(@floor(box[1]) - 1, 0, limit)),
+            @intFromFloat(std.math.clamp(@ceil(box[2]) + 1, 0, limit)),
+            @intFromFloat(std.math.clamp(@ceil(box[3]) + 1, 0, limit)),
+        };
+    }
+
     inline fn texel(self: *const Pattern, x: i64, y: i64) u32 {
         const w: i64 = self.image.width;
         const h: i64 = self.image.height;
@@ -119,7 +138,7 @@ pub const Context = struct {
     state: State = .{},
     stack: std.ArrayList(State) = .empty,
     /// Each entry is already intersected with the ones before it.
-    clips: std.ArrayList(vec.Mask) = .empty,
+    clips: std.ArrayList(vec.Spans) = .empty,
 
     pub fn init(gpa: std.mem.Allocator, target: vec.Target) Context {
         return .{ .gpa = gpa, .target = target };
@@ -257,24 +276,18 @@ pub const Context = struct {
     }
 
     pub fn fill(self: *Context) void {
-        const mask = vec.fillMask(self.gpa, self.path, .identity, self.state.fill_rule, self.target.width, self.target.height) catch {
-            self.path.clear();
-            return;
-        };
-        defer mask.deinit(self.gpa);
+        const spans = vec.fillSpans(self.gpa, self.path, .identity, self.state.fill_rule, self.target.width, self.target.height) catch vec.Spans{};
+        defer spans.deinit(self.gpa);
         self.path.clear();
-        self.composite(mask, 1);
+        self.composite(spans, 1);
     }
 
     pub fn stroke(self: *Context) void {
         const width = self.state.line_width * self.state.ctm.scaleFactor();
-        const mask = vec.strokeMask(self.gpa, self.path, .identity, .{ .width = width, .cap = self.state.cap, .join = self.state.join }, self.target.width, self.target.height) catch {
-            self.path.clear();
-            return;
-        };
-        defer mask.deinit(self.gpa);
+        const spans = vec.strokeSpans(self.gpa, self.path, .identity, .{ .width = width, .cap = self.state.cap, .join = self.state.join }, self.target.width, self.target.height) catch vec.Spans{};
+        defer spans.deinit(self.gpa);
         self.path.clear();
-        self.composite(mask, 1);
+        self.composite(spans, 1);
     }
 
     pub fn paint(self: *Context) void {
@@ -286,131 +299,133 @@ pub const Context = struct {
 
     /// Intersects the clip with the current path and clears the path.
     pub fn clip(self: *Context) void {
-        var mask = vec.fillMask(self.gpa, self.path, .identity, self.state.fill_rule, self.target.width, self.target.height) catch vec.Mask{};
+        var spans = vec.fillSpans(self.gpa, self.path, .identity, self.state.fill_rule, self.target.width, self.target.height) catch vec.Spans{};
         self.path.clear();
         if (self.currentClip()) |previous| {
-            const x0 = @max(mask.x, previous.x);
-            const y0 = @max(mask.y, previous.y);
-            const x1 = @min(mask.x + mask.width, previous.x + previous.width);
-            const y1 = @min(mask.y + mask.height, previous.y + previous.height);
-            var combined: vec.Mask = .{};
-            if (x1 > x0 and y1 > y0) {
-                if (self.gpa.alloc(f32, @as(usize, x1 - x0) * (y1 - y0))) |alpha| {
-                    combined = .{ .x = x0, .y = y0, .width = x1 - x0, .height = y1 - y0, .alpha = alpha };
-                    for (0..combined.height) |row| for (0..combined.width) |column| {
-                        const x: u32 = @intCast(x0 + column);
-                        const y: u32 = @intCast(y0 + row);
-                        alpha[row * combined.width + column] = mask.at(x, y) * previous.at(x, y);
-                    };
-                } else |_| {}
-            }
-            mask.deinit(self.gpa);
-            mask = combined;
+            const combined = vec.Spans.intersect(self.gpa, spans, previous.*) catch vec.Spans{};
+            spans.deinit(self.gpa);
+            spans = combined;
         }
-        self.clips.append(self.gpa, mask) catch {
-            mask.deinit(self.gpa);
+        self.clips.append(self.gpa, spans) catch {
+            spans.deinit(self.gpa);
             return;
         };
         self.state.clips = self.clips.items.len;
     }
 
-    fn currentClip(self: *const Context) ?*const vec.Mask {
+    fn currentClip(self: *const Context) ?*const vec.Spans {
         if (self.state.clips == 0) return null;
         return &self.clips.items[self.state.clips - 1];
     }
 
-    fn composite(self: *Context, shape: ?vec.Mask, alpha: f32) void {
+    /// Blends the source through `shape` (or everywhere for paint), the clip and `alpha`.
+    /// Only runs with coverage are visited, as Cairo's span compositor does.
+    fn composite(self: *Context, shape: ?vec.Spans, alpha: f32) void {
         // Indices below are bounded by the clipped region; avoid per-pixel checks.
         @setRuntimeSafety(false);
         var x0: u32 = 0;
         var y0: u32 = 0;
         var x1 = self.target.width;
         var y1 = self.target.height;
-        if (shape) |mask| {
-            x0 = mask.x;
-            y0 = mask.y;
-            x1 = mask.x + mask.width;
-            y1 = mask.y + mask.height;
+        if (shape) |spans| {
+            if (spans.empty()) return;
+            x0 = spans.x0;
+            y0 = spans.y;
+            x1 = spans.x1;
+            y1 = spans.y + spans.height;
         }
-        const clip_mask = self.currentClip();
-        if (clip_mask) |mask| {
-            x0 = @max(x0, mask.x);
-            y0 = @max(y0, mask.y);
-            x1 = @min(x1, mask.x + mask.width);
-            y1 = @min(y1, mask.y + mask.height);
+        const clip_spans = self.currentClip();
+        if (clip_spans) |spans| {
+            if (spans.empty()) return;
+            x0 = @max(x0, spans.x0);
+            y0 = @max(y0, spans.y);
+            x1 = @min(x1, spans.x1);
+            y1 = @min(y1, spans.y + spans.height);
+        }
+        const operator = self.state.operator;
+        // Outside an unextended image OVER changes nothing, so bound the region to it.
+        switch (self.state.source) {
+            .pattern => |pattern| if (pattern.extend == .none and operator == .over) {
+                const b = pattern.bounds();
+                x0 = @max(x0, b[0]);
+                y0 = @max(y0, b[1]);
+                x1 = @min(x1, b[2]);
+                y1 = @min(y1, b[3]);
+            },
+            .solid => {},
         }
         if (x1 <= x0 or y1 <= y0 or alpha <= 0) return;
         const width = x1 - x0;
         var arena: std.heap.ArenaAllocator = .init(self.gpa);
         defer arena.deinit();
         const a = arena.allocator();
-        const coverage = a.alloc(u8, width) catch return;
         const colors = a.alloc(u32, width) catch return;
-        const operator = self.state.operator;
+        var runs: std.ArrayList(vec.Spans.Run) = .empty;
         var axis: ?AxisSampler = null;
         switch (self.state.source) {
             .solid => |value| @memset(colors, value),
             .pattern => |*pattern| axis = AxisSampler.init(a, pattern, x0, x1) catch null,
         }
-        const global: u32 = @intFromFloat(@round(@min(alpha, 1) * 255));
+        const full = [_]vec.Spans.Run{.{ .x = x0, .len = width, .alpha = 1 }};
         for (y0..y1) |y| {
-            // Combine shape, clip and global alpha into one byte per pixel.
-            var any = false;
-            const shape_row: ?[]const f32 = if (shape) |mask| mask.alpha[(y - mask.y) * mask.width + (x0 - mask.x) ..][0..width] else null;
-            const clip_row: ?[]const f32 = if (clip_mask) |mask| mask.alpha[(y - mask.y) * mask.width + (x0 - mask.x) ..][0..width] else null;
-            for (coverage, 0..) |*value, i| {
-                var c: f32 = 1;
-                if (shape_row) |row| c *= row[i];
-                if (clip_row) |row| c *= row[i];
-                // Interior pixels are exactly 1; skip the rounding and division there.
-                if (c >= 1 and global == 255) {
-                    value.* = 255;
-                    any = true;
-                    continue;
+            // Coverage runs of this row, limited to the region.
+            runs.clearRetainingCapacity();
+            const base: []const vec.Spans.Run = if (shape) |spans| spans.row(y) else &full;
+            const other: []const vec.Spans.Run = if (clip_spans) |spans| spans.row(y) else &full;
+            var i: usize = 0;
+            var j: usize = 0;
+            while (i < base.len and j < other.len) {
+                const r = base[i];
+                const s = other[j];
+                const start = @max(@max(r.x, s.x), x0);
+                const end = @min(@min(r.x + r.len, s.x + s.len), x1);
+                if (end > start) {
+                    const factor: u32 = @intFromFloat(@round(@min(r.alpha * s.alpha * alpha, 1) * 255));
+                    if (factor != 0) runs.append(a, .{ .x = start, .len = end - start, .alpha = @floatFromInt(factor) }) catch return;
                 }
-                if (c <= 0) {
-                    value.* = 0;
-                    continue;
-                }
-                const byte: u32 = @intFromFloat(c * (@as(f32, @floatFromInt(global)) * (255.0 / 255.0)) + 0.5);
-                value.* = @intCast(@min(byte, 255));
-                any = any or value.* != 0;
+                if (r.x + r.len <= s.x + s.len) i += 1 else j += 1;
             }
-            if (!any) continue;
-            const line = self.target.pixels[y * self.target.stride + x0 ..][0..width];
+            if (runs.items.len == 0) continue;
+            const line = self.target.pixels[y * self.target.stride ..];
             if (operator == .clear) {
-                for (line, coverage) |*pixel, factor| {
-                    if (factor != 0) pixel.* = vec.fade(pixel.*, 255 - @as(u32, factor));
+                for (runs.items) |run| {
+                    const factor: u32 = @intFromFloat(run.alpha);
+                    for (line[run.x..][0..run.len]) |*pixel| pixel.* = vec.fade(pixel.*, 255 - factor);
                 }
                 continue;
             }
+            // Sample the image only across the touched columns.
             switch (self.state.source) {
                 .solid => {},
-                .pattern => |*pattern| if (axis) |*sampler| {
-                    sampler.row(@intCast(y), colors);
-                } else {
-                    const fy = @as(f64, @floatFromInt(y)) + 0.5;
-                    for (colors, coverage, x0..) |*color, factor, x| {
-                        if (factor != 0) color.* = pattern.sample(@as(f64, @floatFromInt(x)) + 0.5, fy);
+                .pattern => |*pattern| {
+                    const first = runs.items[0].x;
+                    const last = runs.items[runs.items.len - 1].x + runs.items[runs.items.len - 1].len;
+                    const out = colors[first - x0 .. last - x0];
+                    if (axis) |*sampler| {
+                        sampler.row(@intCast(y), first - x0, out);
+                    } else {
+                        const fy = @as(f64, @floatFromInt(y)) + 0.5;
+                        for (out, first..) |*color, x| color.* = pattern.sample(@as(f64, @floatFromInt(x)) + 0.5, fy);
                     }
                 },
             }
-            switch (operator) {
-                .over => for (line, colors, coverage) |*pixel, color, factor| {
-                    if (factor == 255) {
-                        pixel.* = if (color >> 24 == 255) color else vec.over(pixel.*, color);
-                    } else if (factor != 0) {
-                        pixel.* = vec.over(pixel.*, vec.fade(color, factor));
-                    }
-                },
-                .source => for (line, colors, coverage) |*pixel, color, factor| {
-                    if (factor == 255) {
-                        pixel.* = color;
-                    } else if (factor != 0) {
-                        pixel.* = vec.fade(color, factor) +% vec.fade(pixel.*, 255 - @as(u32, factor));
-                    }
-                },
-                .clear => unreachable,
+            for (runs.items) |run| {
+                const factor: u32 = @intFromFloat(run.alpha);
+                const pixels = line[run.x..][0..run.len];
+                const source = colors[run.x - x0 ..][0..run.len];
+                switch (operator) {
+                    .over => if (factor == 255) {
+                        for (pixels, source) |*pixel, color| pixel.* = if (color >> 24 == 255) color else vec.over(pixel.*, color);
+                    } else {
+                        for (pixels, source) |*pixel, color| pixel.* = vec.over(pixel.*, vec.fade(color, factor));
+                    },
+                    .source => if (factor == 255) {
+                        @memcpy(pixels, source);
+                    } else {
+                        for (pixels, source) |*pixel, color| pixel.* = vec.fade(color, factor) +% vec.fade(pixel.*, 255 - factor);
+                    },
+                    .clear => unreachable,
+                }
             }
         }
     }
@@ -525,7 +540,8 @@ const AxisSampler = struct {
         };
     }
 
-    fn row(self: *AxisSampler, y: u32, out: []u32) void {
+    /// Samples row `y` for region columns starting at `offset` into `out`.
+    fn row(self: *AxisSampler, y: u32, offset: usize, out: []u32) void {
         // Tap indices are resolved within the image bounds by Taps.init.
         @setRuntimeSafety(false);
         const p = self.pattern;
@@ -553,7 +569,7 @@ const AxisSampler = struct {
             const wy1: V16 = @splat(if (row_count == 2) weights[1] else 0);
             const half: V16 = @splat(128);
             const last = image.width - 1;
-            for (out, 0..) |*pixel, i| {
+            for (out, offset..) |*pixel, i| {
                 const x: usize = @intCast(columns.first[i]);
                 const x1 = @min(x + 1, last);
                 const wx0: V16 = @splat(columns.weights[i * 2]);
@@ -566,7 +582,7 @@ const AxisSampler = struct {
             return;
         }
         // General separable area filter with per-channel accumulators.
-        for (out, 0..) |*pixel, i| {
+        for (out, offset..) |*pixel, i| {
             const n = columns.count[i];
             const x: usize = @intCast(@max(columns.first[i], 0));
             var acc: [4]u32 = @splat(0);
