@@ -64,7 +64,7 @@ const Session = struct {
         self.data = .{ .devices = self.devices.?, .panel = self.panels.? };
         self.data.start();
         self.data_started = true;
-        self.inactivity = try idle.Service.create(.{ .session_inhibit = true });
+        self.inactivity = try idle.Service.create(.{ .session_inhibit = true, .wallpaper = self.image.? });
         self.device_subscription = .{ .context = self, .changed = &devicesChanged };
         self.devices.?.subscribe(&self.device_subscription);
         self.device_subscribed = true;

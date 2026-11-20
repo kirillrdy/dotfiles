@@ -30,6 +30,8 @@ pub const Options = struct {
     // Explicit dependency injection for the standalone compositor fixture.
     lock_executable: ?[:0]const u8 = null,
     session_inhibit: bool = false,
+    /// Shown blurred behind the lock screen, as GNOME does.
+    wallpaper: ?[:0]const u8 = null,
 };
 const ScreenSaverInhibitor = struct {
     cookie: u32,
@@ -93,6 +95,7 @@ const Call = struct {
 pub const Service = struct {
     timeout_ms: u32,
     executable: [:0]u8,
+    wallpaper: ?[:0]u8 = null,
     session_inhibit: bool = false,
     refs: usize = 1,
     stopped: bool = false,
@@ -142,8 +145,10 @@ pub const Service = struct {
             break :blk try a.dupeSentinel(u8, std.mem.span(resolved), 0);
         };
         errdefer a.free(path);
+        const wallpaper = if (options.wallpaper) |value| try a.dupeSentinel(u8, value, 0) else null;
+        errdefer if (wallpaper) |value| a.free(value);
         const self = try a.create(Service);
-        self.* = .{ .timeout_ms = options.timeout_ms, .executable = path, .session_inhibit = options.session_inhibit, .cancel = c.g_cancellable_new() };
+        self.* = .{ .timeout_ms = options.timeout_ms, .executable = path, .wallpaper = wallpaper, .session_inhibit = options.session_inhibit, .cancel = c.g_cancellable_new() };
         self.connectWayland();
         self.connectBus();
         self.connectSessionBus();
@@ -167,6 +172,7 @@ pub const Service = struct {
             c.g_object_unref(self.cancel);
             self.screensaver_inhibitors.deinit(a);
             a.free(self.executable);
+            if (self.wallpaper) |value| a.free(value);
             a.destroy(self);
         }
     }
@@ -608,7 +614,12 @@ pub const Service = struct {
         const launcher = c.g_subprocess_launcher_new(0);
         defer c.g_object_unref(launcher);
         c.g_subprocess_launcher_take_fd(launcher, fds[1], 3);
-        const argv = [_:null]?[*:0]const u8{ self.executable.ptr, "lock", "--ready-fd", "3" };
+        // The first null ends argv when there is no wallpaper.
+        var argv = [_:null]?[*:0]const u8{ self.executable.ptr, "lock", "--ready-fd", "3", null, null };
+        if (self.wallpaper) |path| {
+            argv[4] = "--wallpaper";
+            argv[5] = path.ptr;
+        }
         self.process = c.g_subprocess_launcher_spawnv(launcher, @ptrCast(&argv), null) orelse {
             _ = libc.close(fds[0]);
             std.log.warn("idle: could not start lock client; retaining sleep inhibitor", .{});

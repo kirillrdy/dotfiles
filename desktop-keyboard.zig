@@ -13,7 +13,7 @@ pub extern fn xkb_keymap_unref(?*Keymap) void;
 pub extern fn xkb_state_new(*Keymap) ?*State;
 pub extern fn xkb_state_unref(?*State) void;
 pub extern fn xkb_state_update_mask(*State, u32, u32, u32, u32, u32, u32) c_int;
-extern fn xkb_state_mod_name_is_active(*State, [*:0]const u8, c_int) c_int;
+pub extern fn xkb_state_mod_name_is_active(*State, [*:0]const u8, c_int) c_int;
 pub extern fn xkb_state_key_get_one_sym(*State, u32) u32;
 pub extern fn xkb_state_key_get_utf8(*State, u32, [*]u8, usize) c_int;
 extern fn xkb_keymap_key_repeats(*Keymap, u32) c_int;
