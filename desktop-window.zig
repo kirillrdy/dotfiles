@@ -49,8 +49,8 @@ pub const Window = struct {
         const mapped = surface.role != null;
         try surface.show();
         if (mapped) surface.present();
-        if (self.parent) |parent| if (parent.surface) |other| if (other.role) |role| {
-            _ = c.wl_proxy_marshal_flags(surface.role.?, 1, null, c.wl_proxy_get_version(surface.role.?), 0, role);
+        if (self.parent) |parent| if (parent.surface) |other| if (other.toplevel != null and surface.toplevel != null) {
+            surface.toplevel.?.set_parent(other.toplevel);
             surface.client.flush();
         };
     }
@@ -69,8 +69,8 @@ pub const Window = struct {
     pub fn setTitle(self: *Window, title: [:0]const u8) void {
         const surface = self.surface orelse return;
         surface.options.title = title;
-        if (surface.role) |role| {
-            _ = c.wl_proxy_marshal_flags(role, 2, null, c.wl_proxy_get_version(role), 0, title.ptr);
+        if (surface.toplevel) |toplevel| {
+            toplevel.set_title(title);
             surface.client.flush();
         }
     }

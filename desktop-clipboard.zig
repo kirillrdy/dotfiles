@@ -2,37 +2,25 @@
 const std = @import("std");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
-const p = @import("desktop-protocols.zig");
+const wl = @import("wayland-client");
 const input = @import("desktop-input.zig");
 const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
-const Proxy = c.wl_proxy;
 const capacity = 4096;
 const utf8: [:0]const u8 = "text/plain;charset=utf-8";
 pub const Callback = *const fn (?*anyopaque, ?[]const u8) void;
-fn send(proxy: *Proxy, opcode: u32, args: anytype) void {
-    _ = @call(.auto, c.wl_proxy_marshal_flags, .{ proxy, opcode, @as([*c]const c.wl_interface, null), c.wl_proxy_get_version(proxy), @as(u32, 0) } ++ args);
-}
-fn destroyProxy(proxy: *Proxy, opcode: u32) void {
-    _ = c.wl_proxy_marshal_flags(proxy, opcode, null, c.wl_proxy_get_version(proxy), 1);
-}
-fn listen(proxy: *Proxy, listener: anytype, context: anytype) void {
-    if (c.wl_proxy_add_listener(proxy, @ptrCast(@constCast(listener)), context) != 0) @panic("clipboard listener");
-}
 pub const Device = struct {
     seat: *input.Seat,
-    proxy: *Proxy,
+    proxy: wl.zwlr_data_control_device_v1,
     offers: std.ArrayList(*Offer) = .empty,
     selection: ?*Offer = null,
     source: ?*Source = null,
     requests: std.ArrayList(*Request) = .empty,
     stopped: bool = false,
-    pub fn create(seat: *input.Seat, manager: *Proxy) !*Device {
+    pub fn create(seat: *input.Seat, manager: wl.zwlr_data_control_manager_v1) !*Device {
         const self = try a.create(Device);
-        errdefer a.destroy(self);
-        const proxy = c.wl_proxy_marshal_flags(manager, 1, &p.zwlr_data_control_device_v1_interface, 1, 0, @as(?*anyopaque, null), seat.proxy) orelse return error.Clipboard;
-        self.* = .{ .seat = seat, .proxy = proxy };
-        listen(proxy, &listener, self);
+        self.* = .{ .seat = seat, .proxy = manager.get_data_device(seat.proxy) };
+        self.proxy.listen(Device, self, deviceEvent);
         return self;
     }
     pub fn destroy(self: *Device) void {
@@ -41,7 +29,7 @@ pub const Device = struct {
         for (self.offers.items) |offer| offer.destroy();
         self.offers.deinit(a);
         if (self.source) |source| source.destroy();
-        destroyProxy(self.proxy, 1);
+        self.proxy.destroy();
         a.destroy(self);
     }
     pub fn copy(self: *Device, value: []const u8) void {
@@ -52,18 +40,13 @@ pub const Device = struct {
             a.destroy(source);
             return;
         };
-        const proxy = c.wl_proxy_marshal_flags(manager, 0, &p.zwlr_data_control_source_v1_interface, 1, 0, @as(?*anyopaque, null)) orelse {
-            a.free(text);
-            a.destroy(source);
-            return;
-        };
-        source.* = .{ .device = self, .proxy = proxy, .text = text };
-        listen(proxy, &Source.listener, source);
-        send(proxy, 0, .{utf8.ptr});
-        send(proxy, 0, .{@as([*:0]const u8, "text/plain")});
+        source.* = .{ .device = self, .proxy = manager.create_data_source(), .text = text };
+        source.proxy.listen(Source, source, Source.sourceEvent);
+        source.proxy.offer(utf8);
+        source.proxy.offer("text/plain");
         if (self.source) |previous| previous.destroy();
         self.source = source;
-        send(self.proxy, 0, .{proxy});
+        self.proxy.set_selection(source.proxy);
         self.seat.client.flush();
     }
     pub fn paste(self: *Device, callback: Callback, context: ?*anyopaque) void {
@@ -102,65 +85,75 @@ pub const Device = struct {
             callback(context, null);
             return;
         };
-        send(offer.proxy, 0, .{ mime.ptr, fds[1] });
+        offer.proxy.receive(mime, fds[1]);
         _ = libc.close(fds[1]);
         request.source = c.g_unix_fd_add(fds[0], c.G_IO_IN | c.G_IO_HUP | c.G_IO_ERR, &Request.read, request);
         request.timer = c.g_timeout_add(5000, &Request.timeout, request);
         self.seat.client.flush();
     }
-    fn offered(ptr: ?*anyopaque, _: *Proxy, proxy: *Proxy) callconv(.c) void {
-        const self = cast(Device, ptr);
-        const offer = a.create(Offer) catch @panic("clipboard offer");
-        offer.* = .{ .proxy = proxy };
-        self.offers.append(a, offer) catch @panic("clipboard offer");
-        listen(proxy, &Offer.listener, offer);
-    }
-    fn selected(ptr: ?*anyopaque, _: *Proxy, proxy: ?*Proxy) callconv(.c) void {
-        const self = cast(Device, ptr);
-        self.selection = null;
-        var index: usize = 0;
-        while (index < self.offers.items.len) {
-            const offer = self.offers.items[index];
-            if (offer.proxy == proxy) {
-                self.selection = offer;
-                index += 1;
-            } else {
-                _ = self.offers.orderedRemove(index);
-                offer.destroy();
-            }
+    fn deviceEvent(self: *Device, _: wl.zwlr_data_control_device_v1, event: wl.zwlr_data_control_device_v1.Event) void {
+        switch (event) {
+            .data_offer => |value| {
+                const offer = a.create(Offer) catch @panic("clipboard offer");
+                offer.* = .{ .proxy = value.id };
+                self.offers.append(a, offer) catch @panic("clipboard offer");
+                value.id.listen(Offer, offer, Offer.offerEvent);
+            },
+            .selection => |value| {
+                self.selection = null;
+                var index: usize = 0;
+                while (index < self.offers.items.len) {
+                    const offer = self.offers.items[index];
+                    if (@import("desktop-surface.zig").same(@as(?wl.zwlr_data_control_offer_v1, offer.proxy), value.id)) {
+                        self.selection = offer;
+                        index += 1;
+                    } else {
+                        _ = self.offers.orderedRemove(index);
+                        offer.destroy();
+                    }
+                }
+            },
+            .finished => {
+                self.stopped = true;
+                while (self.requests.items.len != 0) self.requests.items[0].finish(null);
+            },
+            // Primary selection offers are not tracked; destroy them so they do not leak.
+            .primary_selection => |value| if (value.id) |offer| {
+                for (self.offers.items, 0..) |entry, index| if (entry.proxy.proxy.id == offer.proxy.id) {
+                    _ = self.offers.orderedRemove(index);
+                    entry.destroy();
+                    break;
+                };
+            },
         }
     }
-    fn finished(ptr: ?*anyopaque, _: *Proxy) callconv(.c) void {
-        const self = cast(Device, ptr);
-        self.stopped = true;
-        while (self.requests.items.len != 0) self.requests.items[0].finish(null);
-    }
-    const listener = extern struct {
-        offer: *const @TypeOf(offered) = &offered,
-        selection: *const @TypeOf(selected) = &selected,
-        finished: *const @TypeOf(finished) = &finished,
-    }{};
 };
 const Offer = struct {
-    proxy: *Proxy,
+    proxy: wl.zwlr_data_control_offer_v1,
     mime: ?[:0]const u8 = null,
-    fn offered(ptr: ?*anyopaque, _: *Proxy, mime: [*c]const u8) callconv(.c) void {
-        const self = cast(Offer, ptr);
-        const value = std.mem.span(mime);
+    fn offerEvent(self: *Offer, _: wl.zwlr_data_control_offer_v1, event: wl.zwlr_data_control_offer_v1.Event) void {
+        const value = event.offer.mime_type;
         if (std.mem.eql(u8, value, utf8)) self.mime = utf8 else if (self.mime == null and (std.mem.eql(u8, value, "text/plain") or std.mem.eql(u8, value, "UTF8_STRING"))) self.mime = if (std.mem.eql(u8, value, "UTF8_STRING")) "UTF8_STRING" else "text/plain";
     }
-    const listener = extern struct { offer: *const @TypeOf(offered) = &offered }{};
     fn destroy(self: *Offer) void {
-        destroyProxy(self.proxy, 1);
+        self.proxy.destroy();
         a.destroy(self);
     }
 };
 const Source = struct {
     device: *Device,
-    proxy: *Proxy,
+    proxy: wl.zwlr_data_control_source_v1,
     text: []u8,
-    fn write(ptr: ?*anyopaque, _: *Proxy, _: [*c]const u8, fd: c_int) callconv(.c) void {
-        const self = cast(Source, ptr);
+    fn sourceEvent(self: *Source, _: wl.zwlr_data_control_source_v1, event: wl.zwlr_data_control_source_v1.Event) void {
+        switch (event) {
+            .send => |value| self.write(value.fd),
+            .cancelled => {
+                if (self.device.source == self) self.device.source = null;
+                self.destroy();
+            },
+        }
+    }
+    fn write(self: *Source, fd: c_int) void {
         defer _ = libc.close(fd);
         // Text is bounded to PIPE_BUF, so the empty transfer pipe cannot block.
         var offset: usize = 0;
@@ -174,14 +167,8 @@ const Source = struct {
             offset += @intCast(n);
         }
     }
-    fn cancelled(ptr: ?*anyopaque, _: *Proxy) callconv(.c) void {
-        const self = cast(Source, ptr);
-        if (self.device.source == self) self.device.source = null;
-        self.destroy();
-    }
-    const listener = extern struct { send: *const @TypeOf(write) = &write, cancelled: *const @TypeOf(cancelled) = &cancelled }{};
     fn destroy(self: *Source) void {
-        destroyProxy(self.proxy, 1);
+        self.proxy.destroy();
         a.free(self.text);
         a.destroy(self);
     }

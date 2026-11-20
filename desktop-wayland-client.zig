@@ -1,6 +1,36 @@
-//! Typed Wayland client bindings over the native wire runtime.
+//! Typed Wayland client bindings over the native wire runtime, plus shared helpers.
+const std = @import("std");
+const libc = @import("desktop-libc.zig");
 pub const wire = @import("wayland-wire");
 pub const protocol = @import("wayland-client");
+
+pub const ShmBuffer = struct {
+    buffer: protocol.wl_buffer,
+    memory: [*]u8,
+    size: usize,
+
+    /// Unmaps the pixels; the caller destroys `buffer` when the compositor is done with it.
+    pub fn unmap(self: ShmBuffer) void {
+        _ = libc.munmap(self.memory, self.size);
+    }
+};
+
+/// A memfd-backed buffer of `width` x `height` 32-bit pixels in `format`.
+pub fn shmBuffer(shm: protocol.wl_shm, name: [*:0]const u8, width: u32, height: u32, format: u32) !ShmBuffer {
+    if (width == 0 or height == 0 or width > 16384 or height > 16384) return error.SharedMemory;
+    const size = @as(usize, width) * height * 4;
+    const fd = libc.memfd_create(name, libc.MFD_CLOEXEC);
+    if (fd < 0) return error.SharedMemory;
+    defer _ = libc.close(fd);
+    if (libc.ftruncate(fd, @intCast(size)) != 0) return error.SharedMemory;
+    const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
+    if (memory == libc.MAP_FAILED or memory == null) return error.SharedMemory;
+    // The pool only lives long enough to carve out one buffer; the buffer keeps the memory.
+    const pool = shm.create_pool(fd, @intCast(size));
+    defer pool.destroy();
+    const buffer = pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), format);
+    return .{ .buffer = buffer, .memory = @ptrCast(memory.?), .size = size };
+}
 
 /// Forces semantic analysis of every non-generic declaration below `T`.
 fn analyze(comptime T: type) void {

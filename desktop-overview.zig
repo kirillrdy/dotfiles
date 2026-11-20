@@ -426,7 +426,7 @@ const Overview = struct {
         self.repaint_source = 0;
         if (self.client) |client| client.visible(false);
         if (self.native.preview_control) |control| {
-            @import("desktop-protocols.zig").dotfiles_overview_v1_begin_previews(control, null);
+            control.begin_previews(null);
         }
         if (self.surface) |surface| surface.hide();
         if (self.background) |background| background.hide();
@@ -971,7 +971,7 @@ const Overview = struct {
         const status: u32 = if (self.launcher.status.len > 0) 64 else 0;
         self.layoutRegions(width, height);
         if (self.gpu_previews) {
-            @import("desktop-protocols.zig").dotfiles_overview_v1_begin_previews(self.native.preview_control, self.surface.?.proxy);
+            self.native.preview_control.?.begin_previews(self.surface.?.proxy);
             if (self.background) |background| background.redraw();
         }
         @memset(target.pixels, if (self.gpu_previews) 0 else 0xff222226);
@@ -1014,8 +1014,8 @@ const Overview = struct {
             if (!std.math.isFinite(value)) return;
             out.* = @intFromFloat(@round(std.math.clamp(value * 256, -2147483648, 2147483647)));
         }
-        const array: c.wl_array = .{ .size = @sizeOf(@TypeOf(fixed)), .alloc = 0, .data = &fixed };
-        @import("desktop-protocols.zig").dotfiles_overview_v1_preview(self.native.preview_control, window.id, &array);
+        const control = self.native.preview_control orelse return;
+        control.preview(std.mem.span(window.id), std.mem.asBytes(&fixed));
     }
     fn paintPart(context: struct { *Overview, Part }, target: raster.Buffer, scale: u32) void {
         const self = context[0];

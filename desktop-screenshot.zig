@@ -503,7 +503,7 @@ pub const SelectionOverlay = struct {
             self.layers.deinit(allocator);
             self.layers = .empty;
             // Ensure overlays are gone before a new connection captures pixels.
-            if (!client.failed) _ = c.wl_display_roundtrip(client.display);
+            client.roundtrip();
         }
         client.start() catch return null;
         while (!self.done and !client.failed and client.hasInput() and self.hasLayers()) _ = c.g_main_context_iteration(null, 1);

@@ -1,7 +1,7 @@
 //! Native Wayland layer-shell panel hosting native pixel views.
 const std = @import("std");
 const c = @import("desktop-glib.zig");
-const p = @import("desktop-protocols.zig");
+const wl = @import("wayland-client");
 const raster = @import("desktop-raster.zig");
 const wire = @import("desktop-surface.zig");
 const widgets = @import("desktop-widgets.zig");
@@ -351,71 +351,63 @@ const App = struct {
     workspace_active: u8 = 0,
     pending_count: u8 = 0,
     pending_active: u8 = 0,
-    registry: ?*c.wl_registry = null,
-    overview: ?*p.dotfiles_overview_v1 = null,
+    registry: ?wl.wl_registry = null,
+    overview: ?wl.dotfiles_overview_v1 = null,
 
     fn syncPanels(self: *App) void {
         for (self.panels.items) |panel| panel.applyOverview(self.overview_active, self.workspace_count, self.workspace_active);
     }
 
     fn connectOverview(self: *App) void {
-        const registry = c.wl_display_get_registry(self.client.display) orelse return;
+        // A second registry on the shared connection finds the overview global.
+        const display: wl.wl_display = .{ .proxy = self.client.connection.display() };
+        const registry = display.get_registry();
         self.registry = registry;
-        _ = c.wl_registry_add_listener(registry, &registry_listener, self);
-        _ = c.wl_display_roundtrip(self.client.display);
+        registry.listen(App, self, registryEvent);
+        self.client.roundtrip();
     }
 
     fn deinitOverview(self: *App) void {
-        if (self.overview) |overview| p.dotfiles_overview_v1_destroy(overview);
-        if (self.registry) |registry| c.wl_registry_destroy(registry);
+        if (self.overview) |overview| overview.destroy();
+        if (self.registry) |registry| registry.destroy();
         self.overview = null;
         self.registry = null;
     }
 
-    fn onGlobal(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*c]const u8, version: u32) callconv(.c) void {
-        const self: *App = @ptrCast(@alignCast(data));
-        if (self.overview == null and version >= 2 and std.mem.eql(u8, std.mem.span(interface), "dotfiles_overview_v1")) {
-            self.overview = @ptrCast(c.wl_registry_bind(registry, name, &p.dotfiles_overview_v1_interface, 2));
-            if (self.overview) |overview| _ = p.dotfiles_overview_v1_add_listener(overview, &overview_listener, self);
+    fn registryEvent(self: *App, registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+        const global = switch (event) {
+            .global => |value| value,
+            .global_remove => return,
+        };
+        if (self.overview == null and global.version >= 2 and std.mem.eql(u8, global.interface, "dotfiles_overview_v1")) {
+            const overview = registry.bind(global.name, wl.dotfiles_overview_v1, 2);
+            self.overview = overview;
+            overview.listen(App, self, overviewEvent);
         }
     }
 
-    fn onGlobalRemove(_: ?*anyopaque, _: ?*c.wl_registry, _: u32) callconv(.c) void {}
-
-    fn onWorkspace(data: ?*anyopaque, _: ?*p.dotfiles_overview_v1, index: u32, _: [*c]const u8, active: u32) callconv(.c) void {
-        const self: *App = @ptrCast(@alignCast(data));
-        self.pending_count = @max(self.pending_count, @as(u8, @intCast(@min(index + 1, 16))));
-        if (active != 0) self.pending_active = @intCast(@min(index, 15));
-    }
-
-    fn onWindow(_: ?*anyopaque, _: ?*p.dotfiles_overview_v1, _: [*c]const u8, _: u32, _: i32, _: i32, _: i32, _: i32, _: u32) callconv(.c) void {}
-
-    fn onDone(data: ?*anyopaque, _: ?*p.dotfiles_overview_v1) callconv(.c) void {
-        const self: *App = @ptrCast(@alignCast(data));
-        if (self.pending_count > 0) {
-            self.workspace_count = self.pending_count;
-            self.workspace_active = @min(self.pending_active, self.workspace_count - 1);
-            self.pending_count = 0;
-            self.pending_active = 0;
-            self.syncPanels();
+    fn overviewEvent(self: *App, _: wl.dotfiles_overview_v1, event: wl.dotfiles_overview_v1.Event) void {
+        switch (event) {
+            .workspace => |value| {
+                self.pending_count = @max(self.pending_count, @as(u8, @intCast(@min(value.index + 1, 16))));
+                if (value.active != 0) self.pending_active = @intCast(@min(value.index, 15));
+            },
+            .window => {},
+            .done => if (self.pending_count > 0) {
+                self.workspace_count = self.pending_count;
+                self.workspace_active = @min(self.pending_active, self.workspace_count - 1);
+                self.pending_count = 0;
+                self.pending_active = 0;
+                self.syncPanels();
+            },
+            .overview => |value| {
+                const next = value.active != 0;
+                if (self.overview_active == next) return;
+                self.overview_active = next;
+                self.syncPanels();
+            },
         }
     }
-
-    fn onOverview(data: ?*anyopaque, _: ?*p.dotfiles_overview_v1, active: u32) callconv(.c) void {
-        const self: *App = @ptrCast(@alignCast(data));
-        const next = active != 0;
-        if (self.overview_active == next) return;
-        self.overview_active = next;
-        self.syncPanels();
-    }
-
-    const registry_listener: c.wl_registry_listener = .{ .global = &onGlobal, .global_remove = &onGlobalRemove };
-    const overview_listener: p.dotfiles_overview_v1_listener = .{
-        .workspace = &onWorkspace,
-        .window = &onWindow,
-        .done = &onDone,
-        .overview = &onOverview,
-    };
 
     fn onOutputAdded(data: ?*anyopaque, output: *wire.Output) void {
         const self: *App = @ptrCast(@alignCast(data));

@@ -2,6 +2,7 @@
 const std = @import("std");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
+const helpers = @import("desktop-wayland-client.zig");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const auth = @import("desktop-lock-auth.zig");
@@ -48,28 +49,21 @@ const Password = struct {
 };
 /// One shared-memory frame, freed when the compositor releases it.
 const Buffer = struct {
-    buffer: wl.wl_buffer,
-    memory: *anyopaque,
-    size: usize,
+    shm: helpers.ShmBuffer,
     fn create(shm: wl.wl_shm, width: u32, height: u32) !*Buffer {
-        const size = @as(usize, width) * height * 4;
-        const fd = libc.memfd_create("desktop-lock", libc.MFD_CLOEXEC);
-        if (fd < 0) return error.SharedMemory;
-        defer _ = libc.close(fd);
-        if (libc.ftruncate(fd, @intCast(size)) != 0) return error.SharedMemory;
-        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
-        if (memory == libc.MAP_FAILED or memory == null) return error.SharedMemory;
-        errdefer _ = libc.munmap(memory, size);
+        const frame = try helpers.shmBuffer(shm, "desktop-lock", width, height, wl.wl_shm.Format.xrgb8888);
+        errdefer {
+            frame.buffer.destroy();
+            frame.unmap();
+        }
         const self = try a.create(Buffer);
-        const pool = shm.create_pool(fd, @intCast(size));
-        defer pool.destroy();
-        self.* = .{ .buffer = pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), wl.wl_shm.Format.xrgb8888), .memory = memory.?, .size = size };
-        self.buffer.listen(Buffer, self, released);
+        self.* = .{ .shm = frame };
+        frame.buffer.listen(Buffer, self, released);
         return self;
     }
     fn released(self: *Buffer, buffer: wl.wl_buffer, _: wl.wl_buffer.Event) void {
         buffer.destroy();
-        _ = libc.munmap(self.memory, self.size);
+        self.shm.unmap();
         a.destroy(self);
     }
 };
@@ -107,14 +101,14 @@ const Output = struct {
         const height = self.height * scale;
         if (width > 16384 or height > 16384 or @as(u64, width) * height > 64 * 1024 * 1024) std.process.exit(1);
         const frame = Buffer.create(s.shm.?, width, height) catch std.process.exit(1);
-        const pixels: [*]u32 = @ptrCast(@alignCast(frame.memory));
-        const target: raster.Buffer = .{ .pixels = pixels[0 .. frame.size / 4], .width = width, .height = height };
+        const pixels: [*]u32 = @ptrCast(@alignCast(frame.shm.memory));
+        const target: raster.Buffer = .{ .pixels = pixels[0 .. frame.shm.size / 4], .width = width, .height = height };
         if (self.backdrop_width != width or self.backdrop_height != height) {
             a.free(self.backdrop);
             self.backdrop = &.{};
             self.backdrop_width = 0;
             self.backdrop_height = 0;
-            if (a.alloc(u32, frame.size / 4)) |memory| {
+            if (a.alloc(u32, frame.shm.size / 4)) |memory| {
                 s.view.background(.{ .pixels = memory, .width = width, .height = height });
                 self.backdrop = memory;
                 self.backdrop_width = width;
@@ -124,7 +118,7 @@ const Output = struct {
         if (self.backdrop.len == target.pixels.len) @memcpy(target.pixels, self.backdrop) else s.view.background(target);
         s.view.paint(target, scale, s.frame());
         if (versioned) surface.set_buffer_scale(@intCast(scale));
-        surface.attach(frame.buffer, 0, 0);
+        surface.attach(frame.shm.buffer, 0, 0);
         surface.damage(0, 0, @intCast(self.width), @intCast(self.height));
         surface.commit();
     }

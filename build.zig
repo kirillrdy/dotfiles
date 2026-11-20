@@ -144,6 +144,8 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "gio-unix-2.0", "wayland-client", "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| native.linkSystemLibrary(name, .{});
     native.addImport("text-c", text_c);
     native.addImport("protocol-metadata", metadata);
+    native.addImport("wayland-wire", wire);
+    native.addImport("wayland-client", wayland_client);
     const window_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-window-fixture.zig"), .target = target, .optimize = optimize });
     window_module.addImport("native", native);
     const window_fixture = b.addExecutable(.{ .name = "desktop-window-fixture", .root_module = window_module });
