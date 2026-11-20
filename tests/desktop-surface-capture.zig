@@ -22,15 +22,11 @@ pub fn capture() !Frame {
     defer client.deinit();
     var frame: sc.FrameCapture = .{
         .shm = client.shm.?,
-        .frame = sc.protocols.zwlr_screencopy_manager_v1_capture_output(client.screencopy_mgr.?, 0, client.outputs.items[0].wl_out).?,
+        .frame = client.screencopy_mgr.?.capture_output(0, client.outputs.items[0].wl_out),
     };
-    defer sc.protocols.zwlr_screencopy_frame_v1_destroy(frame.frame);
-    defer {
-        if (frame.buffer) |buffer| c.wl_buffer_destroy(buffer);
-        if (frame.memory) |memory| _ = libc.munmap(memory, frame.length);
-    }
-    _ = sc.protocols.zwlr_screencopy_frame_v1_add_listener(frame.frame, &sc.FrameCapture.listener, &frame);
-    while (!frame.done and !frame.failed) try std.testing.expect(c.wl_display_dispatch(client.display) >= 0);
+    defer frame.deinit();
+    frame.listen();
+    while (!frame.done and !frame.failed) try client.dispatch();
     try std.testing.expect(!frame.failed and frame.memory != null);
     return .{ .bytes = try std.testing.allocator.dupe(u8, frame.memory.?[0..frame.length]), .width = frame.width, .height = frame.height, .stride = frame.stride };
 }

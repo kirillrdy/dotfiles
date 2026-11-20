@@ -1,18 +1,20 @@
 //! Live, per-window captures; no screenshots of the composed desktop.
 const std = @import("std");
-const wayland = @import("desktop-wayland.zig");
+const wl = @import("wayland-client");
+const wire = @import("wayland-wire");
+const helpers = @import("desktop-wayland-client.zig");
 pub const c = @import("desktop-glib.zig");
-const protocols = @import("desktop-protocols.zig");
 const libc = @import("desktop-libc.zig");
 pub const Image = @import("desktop-image.zig").Image;
 const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
+const formats = wl.wl_shm.Format;
 pub const Rect = struct { x: f64 = 0, y: f64 = 0, w: f64 = 1, h: f64 = 1 };
 pub const Workspace = struct { name: [128:0]u8 = @splat(0) };
 
 pub const Window = struct {
     client: *Client,
-    handle: *protocols.ext_foreign_toplevel_handle_v1,
+    handle: wl.ext_foreign_toplevel_handle_v1,
     id: [*c]u8 = null,
     title: [*c]u8 = null,
     app_id: [*c]u8 = null,
@@ -24,10 +26,10 @@ pub const Window = struct {
     icon: ?c.__icons.Image = null,
     image: ?Image = null,
     thumbnail: ?*Thumbnail = null,
-    source: ?*protocols.ext_image_capture_source_v1 = null,
-    session: ?*protocols.ext_image_copy_capture_session_v1 = null,
-    frame: ?*protocols.ext_image_copy_capture_frame_v1 = null,
-    buffer: ?*c.wl_buffer = null,
+    source: ?wl.ext_image_capture_source_v1 = null,
+    session: ?wl.ext_image_copy_capture_session_v1 = null,
+    frame: ?wl.ext_image_copy_capture_frame_v1 = null,
+    buffer: ?wl.wl_buffer = null,
     mapped: ?*anyopaque = null,
     length: usize = 0,
     buffer_width: u32 = 0,
@@ -35,7 +37,7 @@ pub const Window = struct {
     buffer_format: u32 = 0,
     width: u32 = 0,
     height: u32 = 0,
-    format: u32 = c.WL_SHM_FORMAT_XRGB8888,
+    format: u32 = formats.xrgb8888,
     supported: bool = false,
     constraints: bool = false,
 
@@ -49,18 +51,18 @@ pub const Window = struct {
             self.length = 0;
             self.thumbnail = null;
         }
-        if (self.frame) |frame| protocols.ext_image_copy_capture_frame_v1_destroy(frame);
+        if (self.frame) |frame| frame.destroy();
         self.frame = null;
-        if (self.session) |session| protocols.ext_image_copy_capture_session_v1_destroy(session);
+        if (self.session) |session| session.destroy();
         self.session = null;
-        if (self.source) |source| protocols.ext_image_capture_source_v1_destroy(source);
+        if (self.source) |source| source.destroy();
         self.source = null;
         self.freeBuffer();
         self.constraints = false;
         self.supported = false;
     }
     fn freeBuffer(self: *Window) void {
-        if (self.buffer) |buffer| c.wl_buffer_destroy(buffer);
+        if (self.buffer) |buffer| buffer.destroy();
         self.buffer = null;
         if (self.mapped) |memory| _ = libc.munmap(memory, self.length);
         self.mapped = null;
@@ -73,15 +75,17 @@ pub const Window = struct {
         c.g_free(self.id);
         c.g_free(self.title);
         c.g_free(self.app_id);
-        protocols.ext_foreign_toplevel_handle_v1_destroy(self.handle);
+        self.handle.destroy();
         a.destroy(self);
     }
     fn capture(self: *Window) void {
         const client = self.client;
         if (self.session == null) {
-            self.source = protocols.ext_foreign_toplevel_image_capture_source_manager_v1_create_source(client.sources, self.handle);
-            self.session = protocols.ext_image_copy_capture_manager_v1_create_session(client.captures, self.source, 0);
-            _ = protocols.ext_image_copy_capture_session_v1_add_listener(self.session, &session_listener, self);
+            const source = client.sources.?.create_source(self.handle);
+            self.source = source;
+            const session = client.captures.?.create_session(source, 0);
+            self.session = session;
+            session.listen(Window, self, sessionEvent);
             return;
         }
         if (!self.constraints or !self.supported or self.frame != null or self.thumbnail != null) return;
@@ -91,30 +95,79 @@ pub const Window = struct {
         if (length > 64 * 1024 * 1024) return;
         if (self.buffer != null and (self.buffer_width != self.width or self.buffer_height != self.height or self.buffer_format != self.format)) self.freeBuffer();
         if (self.buffer == null) {
-            const shm = c.__zig.createShmBuffer(client.shm, "desktop-overview", length, self.width, self.height, stride, self.format) catch return;
+            const shm = helpers.shmBufferLayout(client.shm.?, "desktop-overview", length, self.width, self.height, stride, self.format) catch return;
             self.mapped = shm.memory;
             self.length = length;
             self.buffer_width = self.width;
             self.buffer_height = self.height;
             self.buffer_format = self.format;
-            self.buffer = shm.proxy;
+            self.buffer = shm.buffer;
         }
-        self.frame = protocols.ext_image_copy_capture_session_v1_create_frame(self.session);
-        _ = protocols.ext_image_copy_capture_frame_v1_add_listener(self.frame, &frame_listener, self);
-        protocols.ext_image_copy_capture_frame_v1_attach_buffer(self.frame, self.buffer);
-        protocols.ext_image_copy_capture_frame_v1_damage_buffer(self.frame, 0, 0, @intCast(self.width), @intCast(self.height));
-        protocols.ext_image_copy_capture_frame_v1_capture(self.frame);
+        const frame = self.session.?.create_frame();
+        self.frame = frame;
+        frame.listen(Window, self, frameEvent);
+        frame.attach_buffer(self.buffer.?);
+        frame.damage_buffer(0, 0, @intCast(self.width), @intCast(self.height));
+        frame.capture();
+    }
+    fn handleEvent(self: *Window, _: wl.ext_foreign_toplevel_handle_v1, event: wl.ext_foreign_toplevel_handle_v1.Event) void {
+        switch (event) {
+            .closed => closed(self),
+            .done => self.client.changed(self.client.context),
+            .title => |value| {
+                c.g_free(self.title);
+                self.title = c.g_strdup(value.title.ptr);
+            },
+            .app_id => |value| appId(self, value.app_id),
+            .identifier => |value| {
+                c.g_free(self.id);
+                self.id = c.g_strdup(value.identifier.ptr);
+            },
+        }
+    }
+    fn sessionEvent(self: *Window, _: wl.ext_image_copy_capture_session_v1, event: wl.ext_image_copy_capture_session_v1.Event) void {
+        switch (event) {
+            .buffer_size => |value| {
+                self.width = value.width;
+                self.height = value.height;
+            },
+            .shm_format => |value| shmFormat(self, value.format),
+            .done => {
+                self.constraints = true;
+                if (self.client.active) {
+                    self.capture();
+                    self.client.flush();
+                }
+            },
+            .stopped => self.stop(),
+            else => {},
+        }
+    }
+    fn frameEvent(self: *Window, frame: wl.ext_image_copy_capture_frame_v1, event: wl.ext_image_copy_capture_frame_v1.Event) void {
+        switch (event) {
+            .ready => {
+                frame.destroy();
+                self.frame = null;
+                ready(self);
+            },
+            .failed => {
+                frame.destroy();
+                self.frame = null;
+                self.freeBuffer();
+            },
+            else => {},
+        }
     }
 };
 
 pub const Client = struct {
-    display: *c.wl_display,
-    registry: *c.wl_registry,
-    shm: ?*c.wl_shm = null,
-    list: ?*protocols.ext_foreign_toplevel_list_v1 = null,
-    sources: ?*protocols.ext_foreign_toplevel_image_capture_source_manager_v1 = null,
-    captures: ?*protocols.ext_image_copy_capture_manager_v1 = null,
-    control: ?*protocols.dotfiles_overview_v1 = null,
+    connection: *wire.Connection,
+    registry: wl.wl_registry,
+    shm: ?wl.wl_shm = null,
+    list: ?wl.ext_foreign_toplevel_list_v1 = null,
+    sources: ?wl.ext_foreign_toplevel_image_capture_source_manager_v1 = null,
+    captures: ?wl.ext_image_copy_capture_manager_v1 = null,
+    control: ?wl.dotfiles_overview_v1 = null,
     windows: std.ArrayList(*Window) = .empty,
     workspaces: [32]Workspace = @splat(.{}),
     count: u32 = 0,
@@ -131,28 +184,32 @@ pub const Client = struct {
     changed: *const fn (?*anyopaque) void,
 
     pub fn create(context: ?*anyopaque, changed: *const fn (?*anyopaque) void) !*Client {
-        const display = c.wl_display_connect(null) orelse return error.NoWaylandDisplay;
-        const self = try a.create(Client);
-        self.* = .{ .display = display, .registry = c.wl_display_get_registry(display).?, .context = context, .changed = changed };
+        const connection = wire.Connection.connect(a) catch return error.NoWaylandDisplay;
+        const self = a.create(Client) catch |err| {
+            connection.deinit();
+            return err;
+        };
+        const display: wl.wl_display = .{ .proxy = connection.display() };
+        self.* = .{ .connection = connection, .registry = display.get_registry(), .context = context, .changed = changed };
         errdefer self.destroy();
-        _ = c.wl_registry_add_listener(self.registry, &registry_listener, self);
-        if (c.wl_display_roundtrip(display) < 0 or c.wl_display_roundtrip(display) < 0) return error.WaylandDisconnected;
+        self.registry.listen(Client, self, registryEvent);
+        connection.roundtrip() catch return error.WaylandDisconnected;
+        connection.roundtrip() catch return error.WaylandDisconnected;
         if (self.shm == null or self.list == null or self.sources == null or self.captures == null or self.control == null) return error.OverviewProtocolUnavailable;
-        self.fd_source = c.g_unix_fd_add(c.wl_display_get_fd(display), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
-        _ = c.wl_display_dispatch_pending(display);
+        self.fd_source = c.g_unix_fd_add(connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
         return self;
     }
     pub fn destroy(self: *Client) void {
         if (self.fd_source != 0) _ = c.g_source_remove(self.fd_source);
         for (self.windows.items) |window| window.destroy();
         self.windows.deinit(a);
-        if (self.control) |control| protocols.dotfiles_overview_v1_destroy(control);
-        if (self.captures) |manager| protocols.ext_image_copy_capture_manager_v1_destroy(manager);
-        if (self.sources) |manager| protocols.ext_foreign_toplevel_image_capture_source_manager_v1_destroy(manager);
-        if (self.list) |list| protocols.ext_foreign_toplevel_list_v1_destroy(list);
-        if (self.shm) |shm| c.wl_shm_destroy(shm);
-        c.wl_registry_destroy(self.registry);
-        c.wl_display_disconnect(self.display);
+        if (self.control) |control| control.destroy();
+        if (self.captures) |manager| manager.destroy();
+        if (self.sources) |manager| manager.destroy();
+        if (self.list) |list| list.destroy();
+        if (self.shm) |shm| shm.destroy();
+        self.registry.destroy();
+        self.connection.deinit();
         a.destroy(self);
     }
     pub fn visible(self: *Client, active: bool) void {
@@ -166,7 +223,7 @@ pub const Client = struct {
         self.pending_count = 0;
         self.pending_current = self.current;
         self.snapshot_dirty = false;
-        protocols.dotfiles_overview_v1_refresh(self.control);
+        self.control.?.refresh();
         self.flush();
     }
     pub fn tick(self: *Client) void {
@@ -180,7 +237,7 @@ pub const Client = struct {
     /// Resolve desktop geometry and stacking before mapping the opening frame.
     pub fn refreshBeforeShow(self: *Client) void {
         self.refresh();
-        if (self.connected and c.wl_display_roundtrip(self.display) < 0) self.connected = false;
+        if (self.connected) self.connection.roundtrip() catch self.disconnect();
     }
     /// Seed previews on first open without recapturing existing thumbnails
     /// during a transition. Regular live updates resume after the animation.
@@ -190,66 +247,91 @@ pub const Client = struct {
         self.flush();
     }
     pub fn flush(self: *Client) void {
-        if (self.connected) _ = c.wl_display_flush(self.display);
+        if (self.connected) self.connection.flush() catch self.disconnect();
+    }
+    fn disconnect(self: *Client) void {
+        self.connected = false;
+        if (self.fd_source != 0) _ = c.g_source_remove(self.fd_source);
+        self.fd_source = 0;
     }
     pub fn activate(self: *Client, window: *Window) void {
-        protocols.dotfiles_overview_v1_activate(self.control, window.id);
+        if (window.id == null) return;
+        self.control.?.activate(std.mem.span(window.id));
         // The closing transition must already have the newly raised window
         // above its neighbours, even before the next periodic refresh.
         self.refreshBeforeShow();
     }
     pub fn close(self: *Client, window: *Window) void {
-        protocols.dotfiles_overview_v1_close(self.control, window.id);
+        if (window.id == null) return;
+        self.control.?.close(std.mem.span(window.id));
         self.flush();
     }
     pub fn switchWorkspace(self: *Client, index: u32) void {
-        protocols.dotfiles_overview_v1_switch_workspace(self.control, index);
+        self.control.?.switch_workspace(index);
         self.flush();
         self.refresh();
     }
     pub fn move(self: *Client, window: *Window, index: u32) void {
-        protocols.dotfiles_overview_v1_move(self.control, window.id, index);
+        if (window.id == null) return;
+        self.control.?.move(std.mem.span(window.id), index);
         self.flush();
         self.refresh();
+    }
+    fn registryEvent(self: *Client, registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+        const value = switch (event) {
+            .global => |global| global,
+            .global_remove => return,
+        };
+        const s = value.interface;
+        if (std.mem.eql(u8, s, "wl_shm")) {
+            self.shm = registry.bind(value.name, wl.wl_shm, 1);
+        } else if (std.mem.eql(u8, s, "ext_foreign_toplevel_list_v1")) {
+            const list = registry.bind(value.name, wl.ext_foreign_toplevel_list_v1, 1);
+            self.list = list;
+            list.listen(Client, self, listEvent);
+        } else if (std.mem.eql(u8, s, "ext_foreign_toplevel_image_capture_source_manager_v1")) {
+            self.sources = registry.bind(value.name, wl.ext_foreign_toplevel_image_capture_source_manager_v1, 1);
+        } else if (std.mem.eql(u8, s, "ext_image_copy_capture_manager_v1")) {
+            self.captures = registry.bind(value.name, wl.ext_image_copy_capture_manager_v1, 1);
+        } else if (std.mem.eql(u8, s, "dotfiles_overview_v1")) {
+            const control = registry.bind(value.name, wl.dotfiles_overview_v1, 1);
+            self.control = control;
+            control.listen(Client, self, controlEvent);
+        }
+    }
+    fn listEvent(self: *Client, _: wl.ext_foreign_toplevel_list_v1, event: wl.ext_foreign_toplevel_list_v1.Event) void {
+        switch (event) {
+            .toplevel => |value| {
+                const window = a.create(Window) catch @panic("out of memory");
+                window.* = .{ .client = self, .handle = value.toplevel };
+                self.windows.append(a, window) catch @panic("out of memory");
+                value.toplevel.listen(Window, window, Window.handleEvent);
+            },
+            .finished => {},
+        }
+    }
+    fn controlEvent(self: *Client, _: wl.dotfiles_overview_v1, event: wl.dotfiles_overview_v1.Event) void {
+        switch (event) {
+            .workspace => |value| workspace(self, value.index, value.name, value.active),
+            .window => |value| placement(self, value.identifier, value.workspace, value.x, value.y, value.width, value.height, value.sticky),
+            .done => snapshotDone(self),
+            .overview => {},
+        }
     }
 };
 
 fn dispatch(_: c_int, condition: c.GIOCondition, data: c.gpointer) callconv(.c) c.gboolean {
     const self = cast(Client, data);
-    if (condition & (c.G_IO_HUP | c.G_IO_ERR) != 0 or !c.__zig.dispatchWayland(self.display)) {
+    const ok = condition & (c.G_IO_HUP | c.G_IO_ERR) == 0 and if (self.connection.readAndDispatch()) |_| true else |_| false;
+    if (!ok) {
         self.connected = false;
         self.fd_source = 0;
         self.changed(self.context);
         return 0;
     }
-    self.flush();
     return 1;
 }
-const registry_listener = c.wl_registry_listener{ .global = &global, .global_remove = &globalRemove };
-fn global(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*c]const u8, _: u32) callconv(.c) void {
-    const self = cast(Client, data);
-    const s = std.mem.span(interface);
-    if (std.mem.eql(u8, s, "wl_shm")) self.shm = @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_shm_interface, 1)) else if (std.mem.eql(u8, s, "ext_foreign_toplevel_list_v1")) {
-        self.list = @ptrCast(c.wl_registry_bind(registry, name, &protocols.ext_foreign_toplevel_list_v1_interface, 1));
-        _ = protocols.ext_foreign_toplevel_list_v1_add_listener(self.list, &list_listener, self);
-    } else if (std.mem.eql(u8, s, "ext_foreign_toplevel_image_capture_source_manager_v1")) self.sources = @ptrCast(c.wl_registry_bind(registry, name, &protocols.ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1)) else if (std.mem.eql(u8, s, "ext_image_copy_capture_manager_v1")) self.captures = @ptrCast(c.wl_registry_bind(registry, name, &protocols.ext_image_copy_capture_manager_v1_interface, 1)) else if (std.mem.eql(u8, s, "dotfiles_overview_v1")) {
-        self.control = @ptrCast(c.wl_registry_bind(registry, name, &protocols.dotfiles_overview_v1_interface, 1));
-        _ = protocols.dotfiles_overview_v1_add_listener(self.control, &control_listener, self);
-    }
-}
-fn globalRemove(_: ?*anyopaque, _: ?*c.wl_registry, _: u32) callconv(.c) void {}
-const list_listener = protocols.ext_foreign_toplevel_list_v1_listener{ .toplevel = &toplevel, .finished = &finished };
-fn toplevel(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_list_v1, handle: ?*protocols.ext_foreign_toplevel_handle_v1) callconv(.c) void {
-    const self = cast(Client, data);
-    const window = a.create(Window) catch @panic("out of memory");
-    window.* = .{ .client = self, .handle = handle.? };
-    self.windows.append(a, window) catch @panic("out of memory");
-    _ = protocols.ext_foreign_toplevel_handle_v1_add_listener(handle, &handle_listener, window);
-}
-fn finished(_: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_list_v1) callconv(.c) void {}
-const handle_listener = protocols.ext_foreign_toplevel_handle_v1_listener{ .closed = &closed, .done = &done, .title = &title, .app_id = &appId, .identifier = &identifier };
-fn closed(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1) callconv(.c) void {
-    const window = cast(Window, data);
+fn closed(window: *Window) void {
     const client = window.client;
     for (client.windows.items, 0..) |item, i| if (item == window) {
         _ = client.windows.orderedRemove(i);
@@ -258,54 +340,36 @@ fn closed(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1) call
     window.destroy();
     client.changed(client.context);
 }
-fn done(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1) callconv(.c) void {
-    const window = cast(Window, data);
-    window.client.changed(window.client.context);
-}
-fn title(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1, value: [*c]const u8) callconv(.c) void {
-    const w = cast(Window, data);
-    c.g_free(w.title);
-    w.title = c.g_strdup(value);
-}
-fn identifier(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1, value: [*c]const u8) callconv(.c) void {
-    const w = cast(Window, data);
-    c.g_free(w.id);
-    w.id = c.g_strdup(value);
-}
-fn appId(data: ?*anyopaque, _: ?*protocols.ext_foreign_toplevel_handle_v1, value: [*c]const u8) callconv(.c) void {
-    const w = cast(Window, data);
+fn appId(w: *Window, value: [:0]const u8) void {
     c.g_free(w.app_id);
-    w.app_id = c.g_strdup(value);
+    w.app_id = c.g_strdup(value.ptr);
     if (w.icon) |icon| c.__icons.free(icon);
     w.icon = null;
     var filename: [1024]u8 = undefined;
-    const path = std.fmt.bufPrintSentinel(&filename, "{s}.desktop", .{std.mem.span(value)}, 0) catch return;
+    const path = std.fmt.bufPrintSentinel(&filename, "{s}.desktop", .{value}, 0) catch return;
     var info = c.g_desktop_app_info_new(path);
-    if (info == null) info = c.g_desktop_app_info_new(value);
+    if (info == null) info = c.g_desktop_app_info_new(value.ptr);
     defer if (info != null) c.g_object_unref(info);
     const icon = if (info != null) c.g_app_info_get_icon(@ptrCast(info)) else null;
     w.icon = c.__icons.loadThemed(icon, 128, null, "application-x-executable");
 }
-const control_listener = protocols.dotfiles_overview_v1_listener{ .workspace = &workspace, .window = &placement, .done = &snapshotDone };
-fn workspace(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, index: u32, name: [*c]const u8, active: u32) callconv(.c) void {
-    const self = cast(Client, data);
+fn workspace(self: *Client, index: u32, name: [:0]const u8, active: u32) void {
     if (index >= self.workspaces.len) return;
     if (index == 0) {
         self.pending_count = 0;
         self.pending_stacking = 0;
     }
-    if (c.g_strcmp0(&self.workspaces[index].name, name) != 0) {
-        _ = c.g_strlcpy(&self.workspaces[index].name, name, self.workspaces[index].name.len);
+    if (c.g_strcmp0(&self.workspaces[index].name, name.ptr) != 0) {
+        _ = c.g_strlcpy(&self.workspaces[index].name, name.ptr, self.workspaces[index].name.len);
         self.snapshot_dirty = true;
     }
     self.pending_count = @max(self.pending_count, index + 1);
     if (active != 0) self.pending_current = index;
 }
-fn placement(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, id: [*c]const u8, index: u32, x: i32, y: i32, width: i32, height: i32, sticky: u32) callconv(.c) void {
-    const self = cast(Client, data);
+fn placement(self: *Client, id: [:0]const u8, index: u32, x: i32, y: i32, width: i32, height: i32, sticky: u32) void {
     const stacking = self.pending_stacking;
     self.pending_stacking += 1;
-    for (self.windows.items) |w| if (c.g_strcmp0(w.id, id) == 0) {
+    for (self.windows.items) |w| if (c.g_strcmp0(w.id, id.ptr) == 0) {
         if (w.stacking != stacking) {
             w.stacking = stacking;
             self.snapshot_dirty = true;
@@ -321,8 +385,7 @@ fn placement(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1, id: [*c]con
         break;
     };
 }
-fn snapshotDone(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1) callconv(.c) void {
-    const self = cast(Client, data);
+fn snapshotDone(self: *Client) void {
     if (self.count != self.pending_count or self.current != self.pending_current) {
         self.count = self.pending_count;
         self.current = self.pending_current;
@@ -333,41 +396,17 @@ fn snapshotDone(data: ?*anyopaque, _: ?*protocols.dotfiles_overview_v1) callconv
         self.changed(self.context);
     }
 }
-const session_listener = protocols.ext_image_copy_capture_session_v1_listener{ .buffer_size = &bufferSize, .shm_format = &shmFormat, .dmabuf_device = &device, .dmabuf_format = &format, .done = &constraintsDone, .stopped = &stopped };
-fn bufferSize(data: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, width: u32, height: u32) callconv(.c) void {
-    const w = cast(Window, data);
-    w.width = width;
-    w.height = height;
-}
-fn shmFormat(data: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, value: u32) callconv(.c) void {
-    const w = cast(Window, data);
-    if (value == c.WL_SHM_FORMAT_ARGB8888 or value == c.WL_SHM_FORMAT_XRGB8888 or value == c.WL_SHM_FORMAT_ABGR8888 or value == c.WL_SHM_FORMAT_XBGR8888 or value == c.WL_SHM_FORMAT_BGR888) {
+fn shmFormat(w: *Window, value: u32) void {
+    if (value == formats.argb8888 or value == formats.xrgb8888 or value == formats.abgr8888 or value == formats.xbgr8888 or value == formats.bgr888) {
         w.format = value;
         w.supported = true;
     }
 }
 fn captureStride(width: u32, format_value: u32) u32 {
     // NVIDIA can prefer packed RGB readback. Keep every SHM row aligned.
-    const bytes: u32 = if (format_value == c.WL_SHM_FORMAT_BGR888) 3 else 4;
+    const bytes: u32 = if (format_value == formats.bgr888) 3 else 4;
     return std.mem.alignForward(u32, width * bytes, 4);
 }
-fn device(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, _: [*c]c.wl_array) callconv(.c) void {}
-fn format(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1, _: u32, _: [*c]c.wl_array) callconv(.c) void {}
-fn constraintsDone(data: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1) callconv(.c) void {
-    const window = cast(Window, data);
-    window.constraints = true;
-    if (window.client.active) {
-        window.capture();
-        window.client.flush();
-    }
-}
-fn stopped(data: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_session_v1) callconv(.c) void {
-    cast(Window, data).stop();
-}
-const frame_listener = protocols.ext_image_copy_capture_frame_v1_listener{ .transform = &transform, .damage = &damage, .presentation_time = &presentation, .ready = &ready, .failed = &failed };
-fn transform(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {}
-fn damage(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: i32, _: i32, _: i32, _: i32) callconv(.c) void {}
-fn presentation(_: ?*anyopaque, _: ?*protocols.ext_image_copy_capture_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {}
 // Filtering a large capture can exceed a high-refresh display's frame budget.
 // Workers only read pixels and create owned thumbnails. Wayland objects and
 // window state stay on the main context. Until completion, capture() cannot
@@ -435,10 +474,7 @@ const Thumbnail = struct {
     }
 };
 
-fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) callconv(.c) void {
-    const w = cast(Window, data);
-    protocols.ext_image_copy_capture_frame_v1_destroy(frame);
-    w.frame = null;
+fn ready(w: *Window) void {
     const memory: [*]const u8 = @ptrCast(w.mapped orelse return);
     Thumbnail.start(w, .{
         .pixels = memory[0..w.length],
@@ -446,28 +482,22 @@ fn ready(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1) 
         .height = w.buffer_height,
         .stride = captureStride(w.buffer_width, w.buffer_format),
         .format = switch (w.buffer_format) {
-            c.WL_SHM_FORMAT_ARGB8888 => .argb,
-            c.WL_SHM_FORMAT_XRGB8888 => .xrgb,
-            c.WL_SHM_FORMAT_ABGR8888 => .abgr,
-            c.WL_SHM_FORMAT_XBGR8888 => .xbgr,
+            formats.argb8888 => .argb,
+            formats.xrgb8888 => .xrgb,
+            formats.abgr8888 => .abgr,
+            formats.xbgr8888 => .xbgr,
             // DRM BGR888 is stored as R, G, B bytes on our little-endian hosts.
-            c.WL_SHM_FORMAT_BGR888 => .rgb,
+            formats.bgr888 => .rgb,
             else => return,
         },
     });
 }
-fn failed(data: ?*anyopaque, frame: ?*protocols.ext_image_copy_capture_frame_v1, _: u32) callconv(.c) void {
-    const w = cast(Window, data);
-    protocols.ext_image_copy_capture_frame_v1_destroy(frame);
-    w.frame = null;
-    w.freeBuffer();
-}
 
 test "NVIDIA packed RGB capture negotiates and preserves colors across padded rows" {
     var window: Window = .{ .client = undefined, .handle = undefined };
-    shmFormat(&window, null, c.WL_SHM_FORMAT_BGR888);
+    shmFormat(&window, formats.bgr888);
     try std.testing.expect(window.supported);
-    try std.testing.expectEqual(@as(u32, c.WL_SHM_FORMAT_BGR888), window.format);
+    try std.testing.expectEqual(@as(u32, formats.bgr888), window.format);
     const stride = captureStride(1, window.format);
     try std.testing.expectEqual(@as(u32, 4), stride);
     try std.testing.expectEqual(@as(u32, 12), captureStride(3, window.format));
@@ -510,7 +540,7 @@ test "overview snapshots track focus stacking changes without changing picker or
         }
     };
     var state: State = .{};
-    var client: Client = .{ .display = undefined, .registry = undefined, .context = &state, .changed = &State.change };
+    var client: Client = .{ .connection = undefined, .registry = undefined, .context = &state, .changed = &State.change };
     var older: Window = .{ .client = &client, .handle = undefined, .id = c.g_strdup("older") };
     defer c.g_free(older.id);
     var newer: Window = .{ .client = &client, .handle = undefined, .id = c.g_strdup("newer") };
@@ -518,18 +548,18 @@ test "overview snapshots track focus stacking changes without changing picker or
     defer client.windows.deinit(a);
     try client.windows.appendSlice(a, &.{ &older, &newer });
 
-    workspace(&client, null, 0, "1", 1);
-    placement(&client, null, "older", 0, 0, 32, 800, 600, 0);
-    placement(&client, null, "newer", 0, 0, 32, 800, 600, 0);
-    snapshotDone(&client, null);
+    workspace(&client, 0, "1", 1);
+    placement(&client, "older", 0, 0, 32, 800, 600, 0);
+    placement(&client, "newer", 0, 0, 32, 800, 600, 0);
+    snapshotDone(&client);
     try std.testing.expect(older.stacking < newer.stacking);
     state.changes = 0;
 
     // Reactivate the older window with identical geometry.
-    workspace(&client, null, 0, "1", 1);
-    placement(&client, null, "newer", 0, 0, 32, 800, 600, 0);
-    placement(&client, null, "older", 0, 0, 32, 800, 600, 0);
-    snapshotDone(&client, null);
+    workspace(&client, 0, "1", 1);
+    placement(&client, "newer", 0, 0, 32, 800, 600, 0);
+    placement(&client, "older", 0, 0, 32, 800, 600, 0);
+    snapshotDone(&client);
     try std.testing.expect(older.stacking > newer.stacking);
     try std.testing.expectEqual(@as(usize, 1), state.changes);
     try std.testing.expectEqual(&older, client.windows.items[0]);
@@ -544,7 +574,7 @@ test "thumbnail workers publish owned pixels and discard captures detached on hi
         }
     };
     var state: State = .{};
-    var client: Client = .{ .display = undefined, .registry = undefined, .context = &state, .changed = &State.change };
+    var client: Client = .{ .connection = undefined, .registry = undefined, .context = &state, .changed = &State.change };
     var window: Window = .{ .client = &client, .handle = undefined };
     defer {
         window.stop();

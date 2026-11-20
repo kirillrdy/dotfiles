@@ -7,7 +7,6 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const sc = @import("desktop-screenshot.zig");
-const protocols = sc.protocols;
 pub const Image = @import("desktop-image.zig").Image;
 const cast = c.__zig.cast;
 const portal_options = @import("desktop-portal-options.zig");
@@ -45,19 +44,15 @@ pub const Capture = struct {
         const target = output orelse return error.OutputUnavailable;
         self.frame = .{
             .shm = self.client.shm orelse return error.NoShm,
-            .frame = protocols.zwlr_screencopy_manager_v1_capture_output(mgr, @intFromBool(cursor), target.wl_out) orelse return error.CaptureFailed,
+            .frame = mgr.capture_output(@intFromBool(cursor), target.wl_out),
         };
-        _ = protocols.zwlr_screencopy_frame_v1_add_listener(self.frame.?.frame, &sc.FrameCapture.listener, &self.frame.?);
-        _ = c.wl_display_flush(self.client.display);
-        self.source = c.g_unix_fd_add(c.wl_display_get_fd(self.client.display), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
+        self.frame.?.listen();
+        self.client.connection.flush() catch return error.CaptureFailed;
+        self.source = c.g_unix_fd_add(self.client.connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
         self.timeout = c.g_timeout_add_seconds(10, &expired, self);
     }
     fn clearFrame(self: *Capture) void {
-        if (self.frame) |frame| {
-            protocols.zwlr_screencopy_frame_v1_destroy(frame.frame);
-            if (frame.buffer) |buffer| c.wl_buffer_destroy(buffer);
-            if (frame.memory) |memory| _ = libc.munmap(memory, frame.length);
-        }
+        if (self.frame) |*frame| frame.deinit();
         self.frame = null;
     }
     pub fn destroy(self: *Capture) void {
@@ -77,8 +72,7 @@ pub const Capture = struct {
     }
     fn dispatch(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Capture, data);
-        const ok = condition & (c.G_IO_ERR | c.G_IO_HUP) == 0 and c.__zig.dispatchWayland(self.client.display);
-        if (ok) _ = c.wl_display_flush(self.client.display);
+        const ok = condition & (c.G_IO_ERR | c.G_IO_HUP) == 0 and if (self.client.connection.readAndDispatch()) |_| true else |_| false;
         const frame = &self.frame.?;
         if (ok and !frame.done and !frame.failed) return 1;
         self.source = 0;
@@ -94,7 +88,7 @@ pub const Capture = struct {
 /// Copy XRGB/ARGB capture pixels into an owned, top-down Zig image.
 pub fn image(allocator: std.mem.Allocator, frame: *const sc.FrameCapture) !Image {
     if (frame.memory == null) return error.InvalidFrame;
-    if (frame.format != c.WL_SHM_FORMAT_XRGB8888 and frame.format != c.WL_SHM_FORMAT_ARGB8888) return error.UnsupportedFormat;
+    if (frame.format != sc.wl.wl_shm.Format.xrgb8888 and frame.format != sc.wl.wl_shm.Format.argb8888) return error.UnsupportedFormat;
     return Image.copy(allocator, .{
         .pixels = frame.memory.?[0..frame.length],
         .width = frame.width,
@@ -442,7 +436,7 @@ test "capture images normalize inverted rows and preserve padding and RGB channe
     const frame = sc.FrameCapture{
         .shm = undefined,
         .frame = undefined,
-        .format = c.WL_SHM_FORMAT_XRGB8888,
+        .format = sc.wl.wl_shm.Format.xrgb8888,
         .width = 2,
         .height = 2,
         .stride = 12,

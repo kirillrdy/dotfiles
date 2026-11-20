@@ -15,7 +15,7 @@ pub fn main(init: std.process.Init) !void {
     const client = try capture.Client.create(&changes, &changed);
     defer client.destroy();
     client.refresh();
-    if (c.wl_display_roundtrip(client.display) < 0) return error.Disconnected;
+    client.connection.roundtrip() catch return error.Disconnected;
     if (std.mem.eql(u8, args[1], "workspace")) {
         client.switchWorkspace(try std.fmt.parseInt(u32, args[2], 10));
     } else if (args.len > 2) {
@@ -67,7 +67,7 @@ pub fn main(init: std.process.Init) !void {
         if (changes == previous) return error.CaptureDidNotResume;
     }
     client.refresh();
-    if (c.wl_display_roundtrip(client.display) < 0) return error.Disconnected;
+    client.connection.roundtrip() catch return error.Disconnected;
     c.g_print("workspace %u/%u\n", client.current, client.count);
     for (client.windows.items) |window| c.g_print("window %s workspace %u size %ux%u captured %u\n", window.title, window.workspace, @as(u32, @intFromFloat(window.geometry.w)), @as(u32, @intFromFloat(window.geometry.h)), @as(u32, @intFromBool(window.image != null)));
 }

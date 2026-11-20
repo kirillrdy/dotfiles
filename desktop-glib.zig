@@ -4,7 +4,6 @@
 //! owns their storage. Value types and layouts accessed by Zig are defined in
 //! full. Normal builds do not parse the C headers. tests/desktop-glib-abi.zig
 //! checks these declarations against the installed headers.
-const wayland = @import("desktop-wayland.zig");
 pub const __helpers = @import("std").zig.c_translation.helpers;
 
 // Zig helpers shared by toolkit consumers; excluded from C ABI comparisons.
@@ -548,69 +547,11 @@ pub extern fn g_desktop_app_info_get_boolean(info: ?*GDesktopAppInfo, key: [*c]c
 pub extern fn g_unix_signal_add(signum: gint, handler: GSourceFunc, user_data: gpointer) guint;
 pub const GUnixFDSourceFunc = ?*const fn (fd: gint, condition: GIOCondition, user_data: gpointer) callconv(.c) gboolean;
 pub extern fn g_unix_fd_add(fd: gint, condition: GIOCondition, function: GUnixFDSourceFunc, user_data: gpointer) guint;
-pub const struct_wl_interface = wayland.struct_wl_interface;
-pub const struct_wl_message = wayland.struct_wl_message;
-pub const struct_wl_array = wayland.struct_wl_array;
-pub const struct_wl_proxy = wayland.struct_wl_proxy;
-pub const wl_proxy = wayland.wl_proxy;
-pub const wl_interface = wayland.wl_interface;
-pub const struct_wl_display = wayland.struct_wl_display;
-pub const wl_proxy_marshal_flags = wayland.wl_proxy_marshal_flags;
-pub const wl_proxy_destroy = wayland.wl_proxy_destroy;
-pub const wl_proxy_add_listener = wayland.wl_proxy_add_listener;
-pub const wl_proxy_get_version = wayland.wl_proxy_get_version;
-pub const wl_object = wayland.wl_object;
-pub const wl_argument = wayland.wl_argument;
-pub const wl_proxy_marshal_array_flags = wayland.wl_proxy_marshal_array_flags;
-pub const wl_display_connect = wayland.wl_display_connect;
-pub const wl_display_disconnect = wayland.wl_display_disconnect;
-pub const wl_display_get_fd = wayland.wl_display_get_fd;
-pub const wl_display_dispatch = wayland.wl_display_dispatch;
-pub const wl_display_dispatch_pending = wayland.wl_display_dispatch_pending;
-pub const wl_display_prepare_read = wayland.wl_display_prepare_read;
-pub const wl_display_read_events = wayland.wl_display_read_events;
 pub extern fn g_mkstemp([*c]u8) c_int;
 pub extern fn g_filename_to_uri([*c]const u8, [*c]const u8, [*c][*c]GError) [*c]u8;
 pub extern fn g_get_user_runtime_dir() [*:0]const u8;
-pub const wl_display_flush = wayland.wl_display_flush;
-pub const wl_display_roundtrip = wayland.wl_display_roundtrip;
-pub const struct_wl_buffer = wayland.struct_wl_buffer;
-pub const struct_wl_output = wayland.struct_wl_output;
-pub const struct_wl_registry = wayland.struct_wl_registry;
-pub const struct_wl_seat = wayland.struct_wl_seat;
-pub const struct_wl_shm = wayland.struct_wl_shm;
-pub const struct_wl_shm_pool = wayland.struct_wl_shm_pool;
-pub const wl_display_get_registry = wayland.wl_display_get_registry;
-pub const struct_wl_registry_listener = wayland.struct_wl_registry_listener;
-pub const wl_registry_add_listener = wayland.wl_registry_add_listener;
-pub const wl_registry_destroy = wayland.wl_registry_destroy;
-pub const wl_registry_bind = wayland.wl_registry_bind;
-pub const wl_shm_pool_create_buffer = wayland.wl_shm_pool_create_buffer;
-pub const wl_shm_pool_destroy = wayland.wl_shm_pool_destroy;
-pub const WL_SHM_FORMAT_ARGB8888 = wayland.WL_SHM_FORMAT_ARGB8888;
-pub const WL_SHM_FORMAT_XRGB8888 = wayland.WL_SHM_FORMAT_XRGB8888;
-pub const WL_SHM_FORMAT_XBGR8888 = wayland.WL_SHM_FORMAT_XBGR8888;
-pub const WL_SHM_FORMAT_ABGR8888 = wayland.WL_SHM_FORMAT_ABGR8888;
-pub const WL_SHM_FORMAT_BGR888 = wayland.WL_SHM_FORMAT_BGR888;
-pub const wl_shm_destroy = wayland.wl_shm_destroy;
-pub const wl_shm_create_pool = wayland.wl_shm_create_pool;
-pub const wl_buffer_destroy = wayland.wl_buffer_destroy;
-pub const wl_seat_destroy = wayland.wl_seat_destroy;
-pub const WL_OUTPUT_MODE_CURRENT = wayland.WL_OUTPUT_MODE_CURRENT;
-pub const struct_wl_output_listener = wayland.struct_wl_output_listener;
-pub const wl_output_add_listener = wayland.wl_output_add_listener;
-pub const wl_output_destroy = wayland.wl_output_destroy;
 pub const SIGINT = @as(c_int, 2);
 pub const SIGTERM = @as(c_int, 15);
-pub const wl_array = wayland.wl_array;
-pub const wl_display = wayland.wl_display;
-pub const wl_buffer = wayland.wl_buffer;
-pub const wl_output = wayland.wl_output;
-pub const wl_registry = wayland.wl_registry;
-pub const wl_seat = wayland.wl_seat;
-pub const wl_shm = wayland.wl_shm;
-pub const wl_registry_listener = wayland.wl_registry_listener;
-pub const wl_output_listener = wayland.wl_output_listener;
 pub const GUnixFDList = extern struct { parent_instance: GObject, priv: ?*anyopaque };
 pub const G_BUS_TYPE_SYSTEM: c_int = 1;
 pub const GBusNameWatcherFlags = c_uint;

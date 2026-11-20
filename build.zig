@@ -21,7 +21,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    for ([_][]const u8{ "gio-unix-2.0", "wayland-client", "libpipewire-0.3", "pam", "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| desktop.linkSystemLibrary(name, .{});
+    // Wayland clients use the native wire runtime; only the compositor links libwayland (server).
+    for ([_][]const u8{ "gio-unix-2.0", "libpipewire-0.3", "pam", "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| desktop.linkSystemLibrary(name, .{});
     const text_c = bindings(b, target, optimize, "#include <ft2build.h>\n#include FT_FREETYPE_H\n#include FT_MULTIPLE_MASTERS_H\n#include FT_SYNTHESIS_H\n#include <hb.h>\n#include <hb-ft.h>\n#include <fontconfig/fontconfig.h>\n", &.{ "freetype2", "harfbuzz", "fontconfig" });
     desktop.addImport("text-c", text_c);
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
@@ -95,13 +96,8 @@ pub fn build(b: *std.Build) void {
         .{ .cwd_relative = b.fmt("{s}/staging/ext-idle-notify/ext-idle-notify-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-output-management-unstable-v1.xml", .{wlr_protocols}) },
     };
-    const metadata_command = b.addSystemCommand(&.{"python3"});
-    metadata_command.addFileArg(b.path("tools/protocol-metadata.py"));
-    const metadata_source = metadata_command.addOutputFileArg("protocol-metadata.zig");
-    metadata_command.addArg(std.mem.join(b.allocator, ",", &protocol_names) catch @panic("OOM"));
-    for (protocol_files) |xml| metadata_command.addFileArg(xml);
-    const metadata = b.createModule(.{ .root_source_file = metadata_source, .target = target, .optimize = optimize });
-    desktop.addImport("protocol-metadata", metadata);
+    // The compositor serves dotfiles_overview_v1 from wayland-scanner's C metadata.
+    desktop.addCSourceFile(.{ .file = protocolCode(b, b.path("desktop-overview-v1.xml"), "dotfiles-overview-v1-protocol.c") });
     // Native Wayland client: the wire runtime plus typed bindings for every protocol used.
     const wire = b.createModule(.{ .root_source_file = b.path("desktop-wire.zig"), .target = target, .optimize = optimize, .link_libc = true });
     const client_command = b.addSystemCommand(&.{"python3"});
@@ -116,6 +112,8 @@ pub fn build(b: *std.Build) void {
     const integration_tests = b.option(bool, "integration-tests", "Include system and Wayland integration tests") orelse false;
     const options = b.addOptions();
     options.addOption(bool, "integration_tests", integration_tests);
+    // Interfaces whose wayland-scanner tables are compiled into tests as reference_*.
+    options.addOption([]const []const u8, "reference_interfaces", &protocol_names);
     for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "SOUND_FILE", "DATA_DIRS" }) |name| {
         options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
     }
@@ -141,9 +139,8 @@ pub fn build(b: *std.Build) void {
 
     // Prove the replacement window host has no GTK/GDK link dependency.
     const native = b.createModule(.{ .root_source_file = b.path("desktop-native.zig"), .target = target, .optimize = optimize, .link_libc = true });
-    for ([_][]const u8{ "gio-unix-2.0", "wayland-client", "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| native.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "gio-unix-2.0", "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| native.linkSystemLibrary(name, .{});
     native.addImport("text-c", text_c);
-    native.addImport("protocol-metadata", metadata);
     native.addImport("wayland-wire", wire);
     native.addImport("wayland-client", wayland_client);
     const window_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-window-fixture.zig"), .target = target, .optimize = optimize });

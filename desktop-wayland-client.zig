@@ -17,8 +17,13 @@ pub const ShmBuffer = struct {
 
 /// A memfd-backed buffer of `width` x `height` 32-bit pixels in `format`.
 pub fn shmBuffer(shm: protocol.wl_shm, name: [*:0]const u8, width: u32, height: u32, format: u32) !ShmBuffer {
+    return shmBufferLayout(shm, name, @as(usize, width) * height * 4, width, height, width * 4, format);
+}
+
+/// Like `shmBuffer` with an explicit row stride and a mapping of at least `size` bytes.
+pub fn shmBufferLayout(shm: protocol.wl_shm, name: [*:0]const u8, size: usize, width: u32, height: u32, stride: u32, format: u32) !ShmBuffer {
     if (width == 0 or height == 0 or width > 16384 or height > 16384) return error.SharedMemory;
-    const size = @as(usize, width) * height * 4;
+    if (size < @as(usize, stride) * height or size > std.math.maxInt(i32)) return error.SharedMemory;
     const fd = libc.memfd_create(name, libc.MFD_CLOEXEC);
     if (fd < 0) return error.SharedMemory;
     defer _ = libc.close(fd);
@@ -28,7 +33,7 @@ pub fn shmBuffer(shm: protocol.wl_shm, name: [*:0]const u8, width: u32, height: 
     // The pool only lives long enough to carve out one buffer; the buffer keeps the memory.
     const pool = shm.create_pool(fd, @intCast(size));
     defer pool.destroy();
-    const buffer = pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), format);
+    const buffer = pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(stride), format);
     return .{ .buffer = buffer, .memory = @ptrCast(memory.?), .size = size };
 }
 

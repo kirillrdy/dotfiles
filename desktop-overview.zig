@@ -3,9 +3,6 @@ const wire = @import("desktop-surface.zig");
 const std = @import("std");
 const decode = @import("desktop-decode.zig");
 const Image = decode.Image;
-comptime {
-    _ = @import("desktop-protocols.zig");
-}
 const apps = @import("desktop-apps.zig");
 const capture = @import("desktop-capture.zig");
 const native_dash = @import("desktop-dash-view.zig");

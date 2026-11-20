@@ -96,29 +96,3 @@ pub fn alphaMask(allocator: std.mem.Allocator, image: Image, out_width: *u32, ou
     out_height.* = image.height;
     return mask;
 }
-pub const ShmBuffer = struct {
-    proxy: *c.wl_buffer,
-    memory: *anyopaque,
-};
-pub fn createShmBuffer(shm: ?*c.wl_shm, name: [*:0]const u8, length: usize, width: u32, height: u32, stride: u32, format: u32) !ShmBuffer {
-    const libc = @import("desktop-libc.zig");
-    const fd = libc.memfd_create(name, libc.MFD_CLOEXEC);
-    if (fd < 0) return error.SharedMemory;
-    defer _ = libc.close(fd);
-    if (libc.ftruncate(fd, @intCast(length)) != 0) return error.SharedMemory;
-    const memory = libc.mmap(null, length, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
-    if (memory == libc.MAP_FAILED or memory == null) return error.SharedMemory;
-    errdefer _ = libc.munmap(memory, length);
-    const pool = c.wl_shm_create_pool(shm, fd, @intCast(length)) orelse return error.SharedMemory;
-    defer c.wl_shm_pool_destroy(pool);
-    const proxy = c.wl_shm_pool_create_buffer(pool, 0, @intCast(width), @intCast(height), @intCast(stride), format) orelse return error.SharedMemory;
-    return .{ .proxy = proxy, .memory = memory.? };
-}
-pub fn dispatchWayland(display: ?*c.wl_display) bool {
-    const libc = @import("desktop-libc.zig");
-    while (c.wl_display_prepare_read(display) != 0) {
-        if (c.wl_display_dispatch_pending(display) < 0) return false;
-    }
-    if (c.wl_display_read_events(display) < 0 and libc.__errno_location().* != @backingInt(std.c.E.AGAIN)) return false;
-    return c.wl_display_dispatch_pending(display) >= 0;
-}

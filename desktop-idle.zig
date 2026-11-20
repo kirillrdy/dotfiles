@@ -1,11 +1,10 @@
 //! Native idle locking and logind suspend coordination. All callbacks run on the GLib context.
 const std = @import("std");
-const wayland = @import("desktop-wayland.zig");
+const wl = @import("wayland-client");
+const wire = @import("wayland-wire");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
-const p = @import("desktop-protocols.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
-const Proxy = c.wl_proxy;
 const login_name = "org.freedesktop.login1";
 const login_path = "/org/freedesktop/login1";
 const login_interface = "org.freedesktop.login1.Manager";
@@ -21,9 +20,6 @@ const portal_name = "org.freedesktop.portal.Desktop";
 const portal_path = "/org/dotfiles/Portal";
 const portal_interface = "org.dotfiles.Portal";
 const cast = c.__zig.cast;
-fn destroyProxy(proxy: *Proxy) void {
-    _ = c.wl_proxy_marshal_flags(proxy, 0, null, c.wl_proxy_get_version(proxy), 1);
-}
 
 pub const Options = struct {
     timeout_ms: u32 = 10 * 60 * 1000,
@@ -40,33 +36,36 @@ const ScreenSaverInhibitor = struct {
 const Seat = struct {
     service: *Service,
     name: u32,
-    proxy: *c.wl_seat,
-    notification: ?*Proxy = null,
+    proxy: wl.wl_seat,
+    notification: ?wl.ext_idle_notification_v1 = null,
     idle: bool = false,
     next: ?*Seat = null,
     fn watch(self: *Seat) void {
-        if (self.service.idleInhibited() or self.notification != null or self.service.notifier == null) return;
-        self.notification = c.wl_proxy_marshal_flags(self.service.notifier, 1, &p.ext_idle_notification_v1_interface, 1, 0, @as(?*anyopaque, null), self.service.timeout_ms, self.proxy) orelse return;
-        if (c.wl_proxy_add_listener(self.notification, @ptrCast(@constCast(&idle_listener)), self) != 0) {
-            destroyProxy(self.notification.?);
-            self.notification = null;
+        if (self.service.idleInhibited() or self.notification != null) return;
+        const notifier = self.service.notifier orelse return;
+        const notification = notifier.get_idle_notification(self.service.timeout_ms, self.proxy);
+        self.notification = notification;
+        notification.listen(Seat, self, idleEvent);
+    }
+    fn unwatch(self: *Seat) void {
+        if (self.notification) |notification| notification.destroy();
+        self.notification = null;
+    }
+    fn idleEvent(self: *Seat, _: wl.ext_idle_notification_v1, event: wl.ext_idle_notification_v1.Event) void {
+        switch (event) {
+            .idled => {
+                self.idle = true;
+                if (self.service.allIdle()) self.service.ensureLocked();
+            },
+            .resumed => self.idle = false,
         }
     }
-    fn idled(data: ?*anyopaque, _: ?*Proxy) callconv(.c) void {
-        const self = cast(Seat, data);
-        self.idle = true;
-        if (self.service.allIdle()) self.service.ensureLocked();
-    }
-    fn resumed(data: ?*anyopaque, _: ?*Proxy) callconv(.c) void {
-        cast(Seat, data).idle = false;
-    }
     fn deinit(self: *Seat) void {
-        if (self.notification) |notification| destroyProxy(notification);
-        c.wl_seat_destroy(self.proxy);
+        self.unwatch();
+        self.proxy.destroy();
         a.destroy(self);
     }
 };
-const idle_listener = extern struct { idled: *const @TypeOf(Seat.idled), resumed: *const @TypeOf(Seat.resumed) }{ .idled = Seat.idled, .resumed = Seat.resumed };
 
 // An epoch prevents replies from a previous logind owner from changing current state.
 const Call = struct {
@@ -100,9 +99,9 @@ pub const Service = struct {
     refs: usize = 1,
     stopped: bool = false,
     timer: c.guint = 0,
-    display: ?*c.wl_display = null,
-    registry: ?*c.wl_registry = null,
-    notifier: ?*Proxy = null,
+    connection: ?*wire.Connection = null,
+    registry: ?wl.wl_registry = null,
+    notifier: ?wl.ext_idle_notifier_v1 = null,
     notifier_name: u32 = 0,
     seats: ?*Seat = null,
     wayland_source: c.guint = 0,
@@ -178,7 +177,7 @@ pub const Service = struct {
     }
     fn maintain(data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Service, data);
-        if (self.display == null) self.connectWayland();
+        if (self.connection == null) self.connectWayland();
         if (self.bus) |bus| if (c.g_dbus_connection_is_closed(bus) != 0) self.disconnectBus();
         if (self.bus == null) self.connectBus();
         if (self.session_inhibit) {
@@ -197,6 +196,10 @@ pub const Service = struct {
     pub fn idleInhibited(self: *const Service) bool {
         return self.portal_inhibited or self.audio_inhibited or self.screensaver_inhibitors.items.len > 0;
     }
+    fn flushWayland(self: *Service) void {
+        const connection = self.connection orelse return;
+        connection.flush() catch self.disconnectWayland();
+    }
     fn syncInhibition(self: *Service) void {
         if (self.stopped) return;
         const active = self.idleInhibited();
@@ -206,28 +209,22 @@ pub const Service = struct {
         if (active) {
             while (seat) |s| : (seat = s.next) {
                 s.idle = false;
-                if (s.notification) |notification| {
-                    destroyProxy(notification);
-                    s.notification = null;
-                }
+                s.unwatch();
             }
         } else {
             while (seat) |s| : (seat = s.next) s.watch();
         }
-        if (self.display) |display| _ = c.wl_display_flush(display);
+        self.flushWayland();
     }
     fn resetIdleTimer(self: *Service) void {
         if (self.stopped or self.idleInhibited()) return;
         var seat = self.seats;
         while (seat) |s| : (seat = s.next) {
             s.idle = false;
-            if (s.notification) |notification| {
-                destroyProxy(notification);
-                s.notification = null;
-            }
+            s.unwatch();
             s.watch();
         }
-        if (self.display) |display| _ = c.wl_display_flush(display);
+        self.flushWayland();
     }
     fn allIdle(self: *Service) bool {
         if (self.idleInhibited()) return false;
@@ -238,20 +235,21 @@ pub const Service = struct {
         }
     }
     fn connectWayland(self: *Service) void {
-        self.display = c.wl_display_connect(null) orelse {
+        const connection = wire.Connection.connect(a) catch {
             std.log.warn("idle: Wayland connection unavailable; will retry", .{});
             return;
         };
-        self.registry = c.wl_display_get_registry(self.display);
-        _ = c.wl_registry_add_listener(self.registry, &registry_listener, self);
-        if (c.wl_display_roundtrip(self.display) < 0 or c.wl_display_roundtrip(self.display) < 0) {
-            self.disconnectWayland();
-            return;
-        }
+        self.connection = connection;
+        const display: wl.wl_display = .{ .proxy = connection.display() };
+        const registry = display.get_registry();
+        self.registry = registry;
+        registry.listen(Service, self, registryEvent);
+        // The second round trip delivers the seats' initial idle state.
+        connection.roundtrip() catch return self.disconnectWayland();
+        connection.roundtrip() catch return self.disconnectWayland();
         if (self.notifier == null) std.log.warn("idle: ext-idle-notify unavailable", .{});
-        self.wayland_source = c.g_unix_fd_add(c.wl_display_get_fd(self.display), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
-        _ = c.wl_display_dispatch_pending(self.display);
-        _ = c.wl_display_flush(self.display);
+        self.wayland_source = c.g_unix_fd_add(connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
+        self.flushWayland();
     }
     fn disconnectWayland(self: *Service) void {
         if (self.wayland_source != 0) _ = c.g_source_remove(self.wayland_source);
@@ -260,30 +258,33 @@ pub const Service = struct {
             self.seats = seat.next;
             seat.deinit();
         }
-        if (self.notifier) |notifier| destroyProxy(notifier);
+        if (self.notifier) |notifier| notifier.destroy();
         self.notifier = null;
-        if (self.registry) |registry| c.wl_registry_destroy(registry);
+        if (self.registry) |registry| registry.destroy();
         self.registry = null;
-        if (self.display) |display| c.wl_display_disconnect(display);
-        self.display = null;
+        if (self.connection) |connection| connection.deinit();
+        self.connection = null;
     }
-    fn global(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*c]const u8, _: u32) callconv(.c) void {
-        const self = cast(Service, data);
-        const kind = std.mem.span(interface);
+    fn registryEvent(self: *Service, registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+        switch (event) {
+            .global => |value| self.global(registry, value.name, value.interface),
+            .global_remove => |value| self.globalRemove(value.name),
+        }
+    }
+    fn global(self: *Service, registry: wl.wl_registry, name: u32, kind: []const u8) void {
         if (std.mem.eql(u8, kind, "ext_idle_notifier_v1")) {
-            self.notifier = cast(Proxy, c.wl_registry_bind(registry, name, &p.ext_idle_notifier_v1_interface, 1));
+            self.notifier = registry.bind(name, wl.ext_idle_notifier_v1, 1);
             self.notifier_name = name;
             var seat = self.seats;
             while (seat) |s| : (seat = s.next) s.watch();
         } else if (std.mem.eql(u8, kind, "wl_seat")) {
             const seat = a.create(Seat) catch @panic("out of memory");
-            seat.* = .{ .service = self, .name = name, .proxy = cast(c.wl_seat, c.wl_registry_bind(registry, name, &wayland.wl_seat_interface, 1)), .next = self.seats };
+            seat.* = .{ .service = self, .name = name, .proxy = registry.bind(name, wl.wl_seat, 1), .next = self.seats };
             self.seats = seat;
             seat.watch();
         }
     }
-    fn globalRemove(data: ?*anyopaque, _: ?*c.wl_registry, name: u32) callconv(.c) void {
-        const self = cast(Service, data);
+    fn globalRemove(self: *Service, name: u32) void {
         var seat = &self.seats;
         while (seat.*) |s| {
             if (s.name == name) {
@@ -296,23 +297,22 @@ pub const Service = struct {
         if (self.notifier != null and self.notifier_name == name) {
             var current = self.seats;
             while (current) |s| : (current = s.next) {
-                if (s.notification) |notification| destroyProxy(notification);
-                s.notification = null;
+                s.unwatch();
                 s.idle = false;
             }
-            destroyProxy(self.notifier.?);
+            self.notifier.?.destroy();
             self.notifier = null;
         }
         if (self.allIdle()) self.ensureLocked();
     }
     fn dispatch(_: c_int, flags: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Service, data);
-        if (flags & (c.G_IO_HUP | c.G_IO_ERR) != 0 or !c.__zig.dispatchWayland(self.display)) {
+        const ok = flags & (c.G_IO_HUP | c.G_IO_ERR) == 0 and if (self.connection) |connection| if (connection.readAndDispatch()) |_| true else |_| false else false;
+        if (!ok) {
             self.wayland_source = 0;
             self.disconnectWayland();
             return 0;
         }
-        _ = c.wl_display_flush(self.display);
         return 1;
     }
     fn connectBus(self: *Service) void {
@@ -669,7 +669,6 @@ pub const Service = struct {
         if (!self.stopped and self.sleeping and successful) self.ensureLocked();
     }
 };
-const registry_listener = c.wl_registry_listener{ .global = Service.global, .global_remove = Service.globalRemove };
 const screensaver_vtable = c.GDBusInterfaceVTable{ .method_call = &Service.screensaverCall };
 
 test "ScreenSaver inhibitors track senders and enforce ownership" {

@@ -77,7 +77,6 @@ pkgs.stdenv.mkDerivation {
       || file.hasExt "h"
       || file.hasExt "svg"
       || file.hasExt "xml"
-      || file.name == "protocol-metadata.py"
       || file.name == "wayland-zig.py"
     ) ./.;
   };

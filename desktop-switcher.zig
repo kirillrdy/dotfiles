@@ -477,7 +477,7 @@ test "window preview rendering fits the captured image without stretching" {
     defer image.deinit(std.testing.allocator);
     var source: capture.Window = .{ .client = undefined, .handle = undefined, .id = @constCast("test-window"), .image = image };
     var sources = [_]*capture.Window{&source};
-    var fake: capture.Client = .{ .display = undefined, .registry = undefined, .context = null, .changed = &captureChanged };
+    var fake: capture.Client = .{ .connection = undefined, .registry = undefined, .context = null, .changed = &captureChanged };
     fake.windows.items = &sources;
     fake.windows.capacity = 1;
     client = &fake;

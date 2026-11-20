@@ -15,9 +15,6 @@ pub const widgets = @import("desktop-widgets.zig");
 pub const idle = @import("desktop-idle.zig");
 const device_service = @import("desktop-devices.zig");
 const a = std.heap.page_allocator;
-comptime {
-    _ = @import("desktop-protocols.zig");
-}
 var current: ?*Session = null;
 
 const Session = struct {
@@ -296,7 +293,7 @@ pub const audio_pod = @import("desktop-audio-pod.zig");
 pub const battery = @import("desktop-battery.zig");
 pub const battery_monitor = @import("desktop-battery-monitor.zig");
 pub const backlight = @import("desktop-backlight.zig");
-pub const protocols = @import("desktop-protocols.zig");
+pub const wayland = @import("desktop-wayland-client.zig");
 pub const quick = @import("desktop-quick-settings.zig");
 pub const panel_data = @import("desktop-panel-data.zig");
 pub const askpass = @import("desktop-askpass.zig");

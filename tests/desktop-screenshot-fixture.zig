@@ -2,6 +2,7 @@
 const std = @import("std");
 const screenshot = @import("desktop").screenshot;
 const c = screenshot.c;
+const wl_formats = screenshot.wl.wl_shm.Format;
 const assert = std.debug.assert;
 const libc = @import("desktop").libc;
 
@@ -130,7 +131,7 @@ fn testCaptureFormats(allocator: std.mem.Allocator) !void {
         var frame: screenshot.FrameCapture = .{
             .shm = undefined,
             .frame = undefined,
-            .format = c.WL_SHM_FORMAT_BGR888,
+            .format = wl_formats.bgr888,
             .width = 2,
             .height = 2,
             .stride = stride,
@@ -138,9 +139,9 @@ fn testCaptureFormats(allocator: std.mem.Allocator) !void {
             .length = pixels.len,
             .y_invert = true,
         };
-        screenshot.FrameCapture.listener.ready.?(&frame, null, 0, 0, 0);
+        frame.onReady();
         try std.testing.expect(frame.done and !frame.failed and frame.y_invert);
-        try std.testing.expectEqual(@as(u32, c.WL_SHM_FORMAT_XRGB8888), frame.format);
+        try std.testing.expectEqual(@as(u32, wl_formats.xrgb8888), frame.format);
         try std.testing.expectEqual(@max(stride, 8), frame.stride);
         for (colors, 0..) |color, i| {
             const offset = (i / 2) * frame.stride + (i % 2) * 4;
@@ -148,9 +149,9 @@ fn testCaptureFormats(allocator: std.mem.Allocator) !void {
         }
         try roundTrip(allocator, .{ .pixels = &pixels, .width = 2, .height = 2, .stride = frame.stride, .y_invert = true });
     }
-    for ([_]u32{ c.WL_SHM_FORMAT_XRGB8888, c.WL_SHM_FORMAT_ARGB8888, c.WL_SHM_FORMAT_XBGR8888, c.WL_SHM_FORMAT_ABGR8888 }) |format| {
+    for ([_]u32{ wl_formats.xrgb8888, wl_formats.argb8888, wl_formats.xbgr8888, wl_formats.abgr8888 }) |format| {
         var pixels: [24]u8 = @splat(0xa5); // Two rows, including stride padding.
-        const swapped = format == c.WL_SHM_FORMAT_XBGR8888 or format == c.WL_SHM_FORMAT_ABGR8888;
+        const swapped = format == wl_formats.xbgr8888 or format == wl_formats.abgr8888;
         for (0..2) |y| for (0..2) |x| {
             std.mem.writeInt(u32, pixels[y * 12 + x * 4 ..][0..4], if (swapped) 0x7f332211 else 0x7f112233, endian);
         };
@@ -165,9 +166,9 @@ fn testCaptureFormats(allocator: std.mem.Allocator) !void {
             .length = pixels.len,
             .y_invert = true,
         };
-        screenshot.FrameCapture.listener.ready.?(&frame, null, 0, 0, 0);
+        frame.onReady();
         try std.testing.expect(frame.done and !frame.failed and frame.y_invert);
-        try std.testing.expectEqual(@as(u32, if (format == c.WL_SHM_FORMAT_XRGB8888 or format == c.WL_SHM_FORMAT_XBGR8888) c.WL_SHM_FORMAT_XRGB8888 else c.WL_SHM_FORMAT_ARGB8888), frame.format);
+        try std.testing.expectEqual(@as(u32, if (format == wl_formats.xrgb8888 or format == wl_formats.xbgr8888) wl_formats.xrgb8888 else wl_formats.argb8888), frame.format);
         for (0..2) |y| {
             for (0..2) |x| try std.testing.expectEqual(@as(u32, 0x7f112233), std.mem.readInt(u32, pixels[y * 12 + x * 4 ..][0..4], endian));
             try std.testing.expectEqualSlices(u8, &.{ 0xa5, 0xa5, 0xa5, 0xa5 }, pixels[y * 12 + 8 ..][0..4]);

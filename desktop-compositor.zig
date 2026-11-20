@@ -3,7 +3,8 @@
 //! on the main thread so synchronous client roundtrips cannot deadlock the server.
 const std = @import("std");
 const c = @import("compositor-abi");
-const p = @import("desktop-protocols.zig");
+/// From wayland-scanner private-code for desktop-overview-v1.xml.
+extern const dotfiles_overview_v1_interface: c.wl_interface;
 const hot_corner = @import("desktop-hot-corner.zig");
 const g = @import("desktop-glib.zig");
 const heap = std.heap.page_allocator;
@@ -245,7 +246,7 @@ const Server = struct {
         self.output_manager = c.wlr_output_manager_v1_create(self.display).?;
         self.hooks.add(&self.output_manager.events.apply, self, &applyOutputs);
         self.hooks.add(&self.output_manager.events.@"test", self, &testOutputs);
-        _ = c.wl_global_create(self.display, @ptrCast(&p.dotfiles_overview_v1_interface), 3, self, &Overview.bind) orelse return error.Overview;
+        _ = c.wl_global_create(self.display, @ptrCast(&dotfiles_overview_v1_interface), 3, self, &Overview.bind) orelse return error.Overview;
         _ = c.wl_event_loop_add_fd(self.loop, handle.stop_pipe[0], c.WL_EVENT_READABLE, &stopEvent, self) orelse return error.StopEvent;
         self.lock_blank_timer = c.wl_event_loop_add_timer(self.loop, &lockBlankTimeout, self) orelse return error.LockTimer;
         const socket = c.wl_display_add_socket_auto(self.display) orelse return error.Socket;
@@ -1746,7 +1747,7 @@ const Overview = struct {
     fn bind(client: ?*c.wl_client, ptr: ?*anyopaque, version: u32, id: u32) callconv(.c) void {
         const s = cast(Server, ptr);
         const bound_version: c_int = @intCast(@min(version, 3));
-        const resource = c.wl_resource_create(client, @ptrCast(&p.dotfiles_overview_v1_interface), bound_version, id) orelse {
+        const resource = c.wl_resource_create(client, @ptrCast(&dotfiles_overview_v1_interface), bound_version, id) orelse {
             c.wl_client_post_no_memory(client);
             return;
         };

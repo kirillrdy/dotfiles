@@ -572,6 +572,21 @@ pub const Connection = struct {
         try self.dispatchPending();
     }
 
+    /// Like `dispatch`, but gives up after `timeout_ms`; returns whether anything arrived.
+    pub fn dispatchTimeout(self: *Connection, timeout_ms: i32) Error!bool {
+        try self.flush();
+        try self.dispatchPending();
+        if (!try self.read()) {
+            var poll = [_]std.c.pollfd{.{ .fd = self.fd, .events = std.c.POLL.IN, .revents = 0 }};
+            const ready = std.c.poll(&poll, 1, timeout_ms);
+            if (ready < 0 and std.c._errno().* != 4) return self.broken(error.IoFailed);
+            if (ready <= 0 or !try self.read()) return false;
+        }
+        while (try self.read()) {}
+        try self.dispatchPending();
+        return true;
+    }
+
     /// Blocks until the server has processed every request sent so far.
     pub fn roundtrip(self: *Connection) Error!void {
         var done = false;

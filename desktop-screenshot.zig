@@ -2,8 +2,9 @@
 const native = @import("desktop-surface.zig");
 const std = @import("std");
 const cairo = @import("tests/desktop-cairo.zig");
-const wayland = @import("desktop-wayland.zig");
-pub const protocols = @import("desktop-protocols.zig");
+pub const wl = @import("wayland-client");
+const wire = @import("wayland-wire");
+const helpers = @import("desktop-wayland-client.zig");
 const libc = @import("desktop-libc.zig");
 pub const c = @import("desktop-glib.zig");
 pub const png = @import("desktop-png.zig");
@@ -136,7 +137,7 @@ fn writeFile(path: [:0]const u8, bytes: []const u8) !void {
 }
 
 pub const Output = struct {
-    wl_out: *c.wl_output,
+    wl_out: wl.wl_output,
     global_name: u32 = 0,
     available: bool = true,
     name: [64:0]u8 = @splat(0),
@@ -145,138 +146,152 @@ pub const Output = struct {
     width: i32 = 0,
     height: i32 = 0,
     scale: i32 = 1,
+
+    fn outputEvent(out: *Output, _: wl.wl_output, event: wl.wl_output.Event) void {
+        switch (event) {
+            .geometry => |value| {
+                out.x = value.x;
+                out.y = value.y;
+            },
+            .mode => |value| if (value.flags & wl.wl_output.Mode.current != 0) {
+                out.width = value.width;
+                out.height = value.height;
+            },
+            .scale => |value| out.scale = value.factor,
+            .name => |value| if (value.name.len < out.name.len) {
+                @memcpy(out.name[0..value.name.len], value.name);
+                out.name[value.name.len] = 0;
+            },
+            else => {},
+        }
+    }
 };
 
 pub const WaylandClient = struct {
     allocator: std.mem.Allocator,
-    display: *c.wl_display,
-    registry: *c.wl_registry,
-    shm: ?*c.wl_shm = null,
-    screencopy_mgr: ?*protocols.zwlr_screencopy_manager_v1 = null,
-    data_control_mgr: ?*protocols.zwlr_data_control_manager_v1 = null,
-    seat: ?*c.wl_seat = null,
+    connection: *wire.Connection,
+    registry: wl.wl_registry,
+    shm: ?wl.wl_shm = null,
+    screencopy_mgr: ?wl.zwlr_screencopy_manager_v1 = null,
+    data_control_mgr: ?wl.zwlr_data_control_manager_v1 = null,
+    seat: ?wl.wl_seat = null,
     outputs: std.ArrayList(Output) = .empty,
 
     /// Initialize in the final location: Wayland listeners retain this address.
     pub fn init(self: *WaylandClient, allocator: std.mem.Allocator) !void {
-        const display = c.wl_display_connect(null) orelse return error.ConnectFailed;
-        errdefer c.wl_display_disconnect(display);
-
-        const registry = c.wl_display_get_registry(display) orelse return error.RegistryFailed;
-        errdefer c.wl_registry_destroy(registry);
+        const connection = wire.Connection.connect(allocator) catch return error.ConnectFailed;
+        errdefer connection.deinit();
+        const display: wl.wl_display = .{ .proxy = connection.display() };
         self.* = WaylandClient{
             .allocator = allocator,
-            .display = display,
-            .registry = registry,
+            .connection = connection,
+            .registry = display.get_registry(),
         };
 
         // Output listeners also need stable addresses while globals arrive.
         try self.outputs.ensureTotalCapacity(allocator, 64);
         errdefer self.outputs.deinit(allocator);
-        _ = c.wl_registry_add_listener(registry, &registry_listener, self);
-        if (c.wl_display_roundtrip(display) < 0 or c.wl_display_roundtrip(display) < 0) return error.DispatchFailed;
+        self.registry.listen(WaylandClient, self, registryEvent);
+        connection.roundtrip() catch return error.DispatchFailed;
+        connection.roundtrip() catch return error.DispatchFailed;
     }
 
     pub fn deinit(self: *WaylandClient) void {
-        for (self.outputs.items) |out| c.wl_output_destroy(out.wl_out);
+        for (self.outputs.items) |out| out.wl_out.destroy();
         self.outputs.deinit(self.allocator);
-        if (self.screencopy_mgr) |mgr| protocols.zwlr_screencopy_manager_v1_destroy(mgr);
-        if (self.data_control_mgr) |mgr| protocols.zwlr_data_control_manager_v1_destroy(mgr);
-        if (self.shm) |s| c.wl_shm_destroy(s);
-        if (self.seat) |seat| c.wl_seat_destroy(seat);
-        c.wl_registry_destroy(self.registry);
-        c.wl_display_disconnect(self.display);
+        if (self.screencopy_mgr) |mgr| mgr.destroy();
+        if (self.data_control_mgr) |mgr| mgr.destroy();
+        if (self.shm) |s| s.destroy();
+        if (self.seat) |seat| seat.destroy();
+        self.registry.destroy();
+        self.connection.deinit();
     }
 
-    fn registryGlobal(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*c]const u8, version: u32) callconv(.c) void {
-        const self: *WaylandClient = @ptrCast(@alignCast(data));
-        const iface = std.mem.span(interface);
-        if (std.mem.eql(u8, iface, "wl_shm")) {
-            self.shm = @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_shm_interface, 1));
-        } else if (std.mem.eql(u8, iface, "zwlr_screencopy_manager_v1")) {
-            self.screencopy_mgr = @ptrCast(c.wl_registry_bind(registry, name, &protocols.zwlr_screencopy_manager_v1_interface, @min(version, 3)));
-        } else if (std.mem.eql(u8, iface, "zwlr_data_control_manager_v1")) {
-            self.data_control_mgr = @ptrCast(c.wl_registry_bind(registry, name, &protocols.zwlr_data_control_manager_v1_interface, @min(version, 2)));
-        } else if (std.mem.eql(u8, iface, "wl_seat")) {
-            self.seat = @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_seat_interface, 1));
-        } else if (std.mem.eql(u8, iface, "wl_output")) {
-            if (self.outputs.items.len == self.outputs.capacity) return;
-            const out = @as(?*c.wl_output, @ptrCast(c.wl_registry_bind(registry, name, &wayland.wl_output_interface, @min(version, 4)))) orelse return;
-            self.outputs.append(self.allocator, .{ .wl_out = out, .global_name = name }) catch return;
-            const item = &self.outputs.items[self.outputs.items.len - 1];
-            _ = c.wl_output_add_listener(out, &output_listener, item);
+    /// Blocks for the next batch of events.
+    pub fn dispatch(self: *WaylandClient) !void {
+        self.connection.dispatch() catch return error.DispatchFailed;
+    }
+
+    fn registryEvent(self: *WaylandClient, registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+        switch (event) {
+            .global => |value| {
+                const name = value.name;
+                const iface = value.interface;
+                if (std.mem.eql(u8, iface, "wl_shm")) {
+                    self.shm = registry.bind(name, wl.wl_shm, 1);
+                } else if (std.mem.eql(u8, iface, "zwlr_screencopy_manager_v1")) {
+                    self.screencopy_mgr = registry.bind(name, wl.zwlr_screencopy_manager_v1, @min(value.version, 3));
+                } else if (std.mem.eql(u8, iface, "zwlr_data_control_manager_v1")) {
+                    self.data_control_mgr = registry.bind(name, wl.zwlr_data_control_manager_v1, @min(value.version, 2));
+                } else if (std.mem.eql(u8, iface, "wl_seat")) {
+                    self.seat = registry.bind(name, wl.wl_seat, 1);
+                } else if (std.mem.eql(u8, iface, "wl_output")) {
+                    if (self.outputs.items.len == self.outputs.capacity) return;
+                    const out = registry.bind(name, wl.wl_output, @min(value.version, 4));
+                    self.outputs.appendAssumeCapacity(.{ .wl_out = out, .global_name = name });
+                    const item = &self.outputs.items[self.outputs.items.len - 1];
+                    out.listen(Output, item, Output.outputEvent);
+                }
+            },
+            .global_remove => |value| for (self.outputs.items) |*output| if (output.global_name == value.name) {
+                output.available = false;
+            },
         }
     }
-
-    fn registryRemove(data: ?*anyopaque, _: ?*c.wl_registry, name: u32) callconv(.c) void {
-        const self = cast(WaylandClient, data);
-        for (self.outputs.items) |*output| if (output.global_name == name) {
-            output.available = false;
-        };
-    }
-
-    const registry_listener = c.wl_registry_listener{
-        .global = &registryGlobal,
-        .global_remove = &registryRemove,
-    };
-
-    fn outputGeometry(data: ?*anyopaque, _: ?*c.wl_output, x: i32, y: i32, _: i32, _: i32, _: i32, _: [*c]const u8, _: [*c]const u8, _: i32) callconv(.c) void {
-        const out: *Output = @ptrCast(@alignCast(data));
-        out.x = x;
-        out.y = y;
-    }
-    fn outputMode(data: ?*anyopaque, _: ?*c.wl_output, flags: u32, width: i32, height: i32, _: i32) callconv(.c) void {
-        const out: *Output = @ptrCast(@alignCast(data));
-        if ((flags & c.WL_OUTPUT_MODE_CURRENT) != 0) {
-            out.width = width;
-            out.height = height;
-        }
-    }
-    fn outputDone(_: ?*anyopaque, _: ?*c.wl_output) callconv(.c) void {}
-    fn outputScale(data: ?*anyopaque, _: ?*c.wl_output, factor: i32) callconv(.c) void {
-        const out: *Output = @ptrCast(@alignCast(data));
-        out.scale = factor;
-    }
-    fn outputName(data: ?*anyopaque, _: ?*c.wl_output, name: [*c]const u8) callconv(.c) void {
-        const out: *Output = @ptrCast(@alignCast(data));
-        const span = std.mem.span(name);
-        if (span.len < out.name.len) {
-            @memcpy(out.name[0..span.len], span);
-            out.name[span.len] = 0;
-        }
-    }
-    fn outputDescription(_: ?*anyopaque, _: ?*c.wl_output, _: [*c]const u8) callconv(.c) void {}
-
-    const output_listener = c.wl_output_listener{
-        .geometry = &outputGeometry,
-        .mode = &outputMode,
-        .done = &outputDone,
-        .scale = &outputScale,
-        .name = &outputName,
-        .description = &outputDescription,
-    };
 };
 
 pub const FrameCapture = struct {
-    shm: *c.wl_shm,
-    frame: *protocols.zwlr_screencopy_frame_v1,
+    shm: wl.wl_shm,
+    frame: wl.zwlr_screencopy_frame_v1,
     format: u32 = 0,
     width: u32 = 0,
     height: u32 = 0,
     stride: u32 = 0,
-    buffer: ?*c.wl_buffer = null,
+    buffer: ?wl.wl_buffer = null,
     memory: ?[*]u8 = null,
     length: usize = 0,
     done: bool = false,
     failed: bool = false,
     y_invert: bool = false,
 
-    fn onBuffer(data: ?*anyopaque, frame: ?*protocols.zwlr_screencopy_frame_v1, format: u32, width: u32, height: u32, stride: u32) callconv(.c) void {
-        const self: *FrameCapture = @ptrCast(@alignCast(data));
-        const packed_bgr = format == c.WL_SHM_FORMAT_BGR888;
+    /// Starts receiving frame events; `self` must stay at this address.
+    pub fn listen(self: *FrameCapture) void {
+        self.frame.listen(FrameCapture, self, frameEvent);
+    }
+
+    /// Destroys the frame and releases any buffer it was copied into.
+    pub fn deinit(self: *FrameCapture) void {
+        self.frame.destroy();
+        if (self.buffer) |buffer| buffer.destroy();
+        if (self.memory) |memory| _ = libc.munmap(memory, self.length);
+        self.buffer = null;
+        self.memory = null;
+    }
+
+    fn frameEvent(self: *FrameCapture, frame: wl.zwlr_screencopy_frame_v1, event: wl.zwlr_screencopy_frame_v1.Event) void {
+        switch (event) {
+            .buffer => |value| self.onBuffer(frame, value.format, value.width, value.height, value.stride),
+            .buffer_done => {
+                if (self.failed) return;
+                const buffer = self.buffer orelse {
+                    self.failed = true;
+                    return;
+                };
+                frame.copy(buffer);
+            },
+            .flags => |value| self.y_invert = (value.flags & wl.zwlr_screencopy_frame_v1.Flags.y_invert) != 0,
+            .ready => self.onReady(),
+            .failed => self.failed = true,
+            else => {},
+        }
+    }
+
+    fn onBuffer(self: *FrameCapture, frame: wl.zwlr_screencopy_frame_v1, format: u32, width: u32, height: u32, stride: u32) void {
+        const formats = wl.wl_shm.Format;
+        const packed_bgr = format == formats.bgr888;
         if (self.buffer != null or width == 0 or height == 0 or width > 16384 or height > 16384 or stride < width * @as(u32, if (packed_bgr) 3 else 4) or @as(u64, @max(stride, width * 4)) * height > 256 * 1024 * 1024 or
-            (format != c.WL_SHM_FORMAT_ARGB8888 and format != c.WL_SHM_FORMAT_XRGB8888 and
-                format != c.WL_SHM_FORMAT_ABGR8888 and format != c.WL_SHM_FORMAT_XBGR8888 and !packed_bgr))
+            (format != formats.argb8888 and format != formats.xrgb8888 and
+                format != formats.abgr8888 and format != formats.xbgr8888 and !packed_bgr))
         {
             self.failed = true;
             return;
@@ -288,42 +303,23 @@ pub const FrameCapture = struct {
         // Reserve room to expand packed GPU readback pixels after ready. The
         // compositor still receives its advertised format and source stride.
         self.length = @as(usize, @max(stride, width * 4)) * height;
-        const shm = c.__zig.createShmBuffer(self.shm, "desktop-screenshot", self.length, width, height, stride, format) catch {
+        const shm = helpers.shmBufferLayout(self.shm, "desktop-screenshot", self.length, width, height, stride, format) catch {
             self.failed = true;
             return;
         };
-        self.memory = @ptrCast(shm.memory);
-        self.buffer = shm.proxy;
+        self.memory = shm.memory;
+        self.buffer = shm.buffer;
 
-        if (protocols.zwlr_screencopy_frame_v1_get_version(frame) < 3) {
-            protocols.zwlr_screencopy_frame_v1_copy(frame, self.buffer);
-        }
+        if (frame.version() < 3) frame.copy(shm.buffer);
     }
 
-    fn onBufferDone(data: ?*anyopaque, frame: ?*protocols.zwlr_screencopy_frame_v1) callconv(.c) void {
-        const self: *FrameCapture = @ptrCast(@alignCast(data));
-        if (self.failed) return;
-        if (self.buffer == null) {
-            self.failed = true;
-            return;
-        }
-        protocols.zwlr_screencopy_frame_v1_copy(frame, self.buffer);
-    }
-
-    fn onLinuxDmabuf(_: ?*anyopaque, _: ?*protocols.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {}
-    fn onDamage(_: ?*anyopaque, _: ?*protocols.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32, _: u32) callconv(.c) void {}
-
-    fn onFlags(data: ?*anyopaque, _: ?*protocols.zwlr_screencopy_frame_v1, flags: u32) callconv(.c) void {
-        const self: *FrameCapture = @ptrCast(@alignCast(data));
-        self.y_invert = (flags & protocols.ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT) != 0;
-    }
-
-    fn onReady(data: ?*anyopaque, _: ?*protocols.zwlr_screencopy_frame_v1, _: u32, _: u32, _: u32) callconv(.c) void {
-        const self: *FrameCapture = @ptrCast(@alignCast(data));
+    /// Normalizes received pixels to XRGB/ARGB; runs on the ready event.
+    pub fn onReady(self: *FrameCapture) void {
+        const formats = wl.wl_shm.Format;
         // GPU renderers can offer XBGR/ABGR instead of XRGB/ARGB. Normalize
         // once here so PNG, clipboard, portal images and color picking agree.
         if (self.memory) |memory| {
-            if (self.format == c.WL_SHM_FORMAT_BGR888) {
+            if (self.format == formats.bgr888) {
                 const stride = @max(self.stride, self.width * 4);
                 // Expand backwards so neither later rows nor unread pixels
                 // are overwritten, including when source rows have padding.
@@ -340,34 +336,19 @@ pub const FrameCapture = struct {
                     }
                 }
                 self.stride = stride;
-                self.format = c.WL_SHM_FORMAT_XRGB8888;
-            } else if (self.format == c.WL_SHM_FORMAT_XBGR8888 or self.format == c.WL_SHM_FORMAT_ABGR8888) {
+                self.format = formats.xrgb8888;
+            } else if (self.format == formats.xbgr8888 or self.format == formats.abgr8888) {
                 for (0..self.height) |y| for (0..self.width) |x| {
                     const pixel = memory[y * self.stride + x * 4 ..][0..4];
                     const value = std.mem.readInt(u32, pixel, @import("builtin").cpu.arch.endian());
                     const swapped = (value & 0xff00ff00) | ((value & 0xff) << 16) | ((value >> 16) & 0xff);
                     std.mem.writeInt(u32, pixel, swapped, @import("builtin").cpu.arch.endian());
                 };
-                self.format = if (self.format == c.WL_SHM_FORMAT_XBGR8888) c.WL_SHM_FORMAT_XRGB8888 else c.WL_SHM_FORMAT_ARGB8888;
+                self.format = if (self.format == formats.xbgr8888) formats.xrgb8888 else formats.argb8888;
             }
         }
         self.done = true;
     }
-
-    fn onFailed(data: ?*anyopaque, _: ?*protocols.zwlr_screencopy_frame_v1) callconv(.c) void {
-        const self: *FrameCapture = @ptrCast(@alignCast(data));
-        self.failed = true;
-    }
-
-    pub const listener = protocols.zwlr_screencopy_frame_v1_listener{
-        .buffer = &onBuffer,
-        .flags = &onFlags,
-        .ready = &onReady,
-        .failed = &onFailed,
-        .damage = &onDamage,
-        .linux_dmabuf = &onLinuxDmabuf,
-        .buffer_done = &onBufferDone,
-    };
 };
 
 pub const SelectionOverlay = struct {
@@ -582,40 +563,33 @@ const ClipboardOffer = struct {
     png_data: []const u8,
     cancelled: bool = false,
 
-    fn onSend(data: ?*anyopaque, _: ?*protocols.zwlr_data_control_source_v1, mime: [*c]const u8, fd: i32) callconv(.c) void {
-        const self: *ClipboardOffer = @ptrCast(@alignCast(data));
-        defer _ = libc.close(fd);
-        const mime_str = std.mem.span(mime);
-        if (std.mem.eql(u8, mime_str, "image/png") or std.mem.eql(u8, mime_str, "image/x-png")) {
-            writeAll(fd, self.png_data) catch {};
+    fn sourceEvent(self: *ClipboardOffer, _: wl.zwlr_data_control_source_v1, event: wl.zwlr_data_control_source_v1.Event) void {
+        switch (event) {
+            .send => |value| {
+                defer _ = libc.close(value.fd);
+                if (std.mem.eql(u8, value.mime_type, "image/png") or std.mem.eql(u8, value.mime_type, "image/x-png")) {
+                    writeAll(value.fd, self.png_data) catch {};
+                }
+            },
+            .cancelled => self.cancelled = true,
         }
     }
-
-    fn onCancelled(data: ?*anyopaque, _: ?*protocols.zwlr_data_control_source_v1) callconv(.c) void {
-        const self: *ClipboardOffer = @ptrCast(@alignCast(data));
-        self.cancelled = true;
-    }
-
-    const listener = protocols.zwlr_data_control_source_v1_listener{
-        .send = &onSend,
-        .cancelled = &onCancelled,
-    };
 };
 
 pub fn copyToClipboard(client: *WaylandClient, png_data: []const u8) !void {
     const mgr = client.data_control_mgr orelse return error.NoDataControl;
     const seat = client.seat orelse return error.NoSeat;
 
-    const source = protocols.zwlr_data_control_manager_v1_create_data_source(mgr) orelse return error.CreateSourceFailed;
-    protocols.zwlr_data_control_source_v1_offer(source, "image/png");
-    protocols.zwlr_data_control_source_v1_offer(source, "image/x-png");
+    const source = mgr.create_data_source();
+    source.offer("image/png");
+    source.offer("image/x-png");
 
     var offer = ClipboardOffer{ .png_data = png_data };
-    _ = protocols.zwlr_data_control_source_v1_add_listener(source, &ClipboardOffer.listener, &offer);
+    source.listen(ClipboardOffer, &offer, ClipboardOffer.sourceEvent);
 
-    const device = protocols.zwlr_data_control_manager_v1_get_data_device(mgr, seat) orelse return error.GetDeviceFailed;
-    protocols.zwlr_data_control_device_v1_set_selection(device, source);
-    _ = c.wl_display_roundtrip(client.display);
+    const device = mgr.get_data_device(seat);
+    device.set_selection(source);
+    client.connection.roundtrip() catch return error.DispatchFailed;
 
     // Fork into background to serve clipboard paste requests until replaced
     const pid = libc.fork();
@@ -623,11 +597,10 @@ pub fn copyToClipboard(client: *WaylandClient, png_data: []const u8) !void {
     if (pid != 0) return; // Parent returns immediately
 
     // Background child daemon serves paste requests
-    while (!offer.cancelled) {
-        if (c.wl_display_dispatch(client.display) < 0) break;
-    }
-    protocols.zwlr_data_control_source_v1_destroy(source);
-    protocols.zwlr_data_control_device_v1_destroy(device);
+    while (!offer.cancelled) client.dispatch() catch break;
+    source.destroy();
+    device.destroy();
+    client.connection.flush() catch {};
     std.process.exit(0);
 }
 
@@ -651,25 +624,15 @@ pub fn captureAndWrite(options: Options, allocator: std.mem.Allocator) !void {
 
     var capture = FrameCapture{
         .shm = client.shm orelse return error.NoShm,
-        .frame = undefined,
+        .frame = if (options.geometry) |geom|
+            screencopy_mgr.capture_output_region(1, target_output.wl_out, geom.x, geom.y, geom.w, geom.h)
+        else
+            screencopy_mgr.capture_output(1, target_output.wl_out),
     };
+    defer capture.deinit();
+    capture.listen();
 
-    if (options.geometry) |geom| {
-        capture.frame = protocols.zwlr_screencopy_manager_v1_capture_output_region(screencopy_mgr, 1, target_output.wl_out, geom.x, geom.y, geom.w, geom.h) orelse return error.CaptureFailed;
-    } else {
-        capture.frame = protocols.zwlr_screencopy_manager_v1_capture_output(screencopy_mgr, 1, target_output.wl_out) orelse return error.CaptureFailed;
-    }
-    defer protocols.zwlr_screencopy_frame_v1_destroy(capture.frame);
-    defer {
-        if (capture.buffer) |buffer| c.wl_buffer_destroy(buffer);
-        if (capture.memory) |memory| _ = libc.munmap(memory, capture.length);
-    }
-
-    _ = protocols.zwlr_screencopy_frame_v1_add_listener(capture.frame, &FrameCapture.listener, &capture);
-
-    while (!capture.done and !capture.failed) {
-        if (c.wl_display_dispatch(client.display) < 0) return error.DispatchFailed;
-    }
+    while (!capture.done and !capture.failed) try client.dispatch();
     if (capture.failed or capture.memory == null) return error.CaptureFailed;
 
     const encoded = try png.encode(allocator, .{
