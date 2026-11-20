@@ -78,6 +78,7 @@ pkgs.stdenv.mkDerivation {
       || file.hasExt "svg"
       || file.hasExt "xml"
       || file.name == "protocol-metadata.py"
+      || file.name == "wayland-zig.py"
     ) ./.;
   };
   nativeBuildInputs = [
@@ -93,6 +94,7 @@ pkgs.stdenv.mkDerivation {
   dontStrip = true;
   WAYLAND_PROTOCOLS_DIR = "${pkgs.wayland-protocols}/share/wayland-protocols";
   WLR_PROTOCOLS_DIR = "${pkgs.wlr-protocols}/share/wlr-protocols";
+  WAYLAND_XML = "${pkgs.wayland-scanner}/share/wayland/wayland.xml";
   buildInputs = [
     pkgs.glib
     # Text: fontconfig matching, HarfBuzz shaping and FreeType rasterization.

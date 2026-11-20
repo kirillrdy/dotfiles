@@ -102,6 +102,17 @@ pub fn build(b: *std.Build) void {
     for (protocol_files) |xml| metadata_command.addFileArg(xml);
     const metadata = b.createModule(.{ .root_source_file = metadata_source, .target = target, .optimize = optimize });
     desktop.addImport("protocol-metadata", metadata);
+    // Native Wayland client: the wire runtime plus typed bindings for every protocol used.
+    const wire = b.createModule(.{ .root_source_file = b.path("desktop-wire.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    const client_command = b.addSystemCommand(&.{"python3"});
+    client_command.addFileArg(b.path("tools/wayland-zig.py"));
+    const client_source = client_command.addOutputFileArg("wayland-client.zig");
+    client_command.addFileArg(.{ .cwd_relative = b.graph.environ_map.get("WAYLAND_XML") orelse "/usr/share/wayland/wayland.xml" });
+    for (protocol_files) |xml| client_command.addFileArg(xml);
+    const wayland_client = b.createModule(.{ .root_source_file = client_source, .target = target, .optimize = optimize });
+    wayland_client.addImport("wayland-wire", wire);
+    desktop.addImport("wayland-wire", wire);
+    desktop.addImport("wayland-client", wayland_client);
     const integration_tests = b.option(bool, "integration-tests", "Include system and Wayland integration tests") orelse false;
     const options = b.addOptions();
     options.addOption(bool, "integration_tests", integration_tests);
@@ -150,6 +161,8 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit, ABI and protocol checks");
     const unit_run = b.addRunArtifact(tests);
     test_step.dependOn(&unit_run.step);
+    // The wire runtime is its own module, so its tests need their own root.
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "desktop-wire-tests", .root_module = wire })).step);
     test_module.addImport("glib-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <gio/gio.h>\n#include <gio/gdesktopappinfo.h>\n#include <glib-unix.h>\n#include <signal.h>\n#include <wayland-client.h>\n#include <cairo.h>\n", &.{ "gio-unix-2.0", "cairo", "wayland-client" }));
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <sys/statvfs.h>\n", &.{}));
     const decoration_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-decoration-fixture.zig"), .target = target, .optimize = optimize, .link_libc = true });

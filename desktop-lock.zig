@@ -1,16 +1,15 @@
 //! Independent ext-session-lock client. Only successful PAM authentication sends unlock.
 const std = @import("std");
-const wayland = @import("desktop-wayland.zig");
+const wl = @import("wayland-client");
+const wire = @import("wayland-wire");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
-const p = @import("desktop-protocols.zig");
 const auth = @import("desktop-lock-auth.zig");
 const view = @import("desktop-lock-view.zig");
 const raster = @import("desktop-raster.zig");
 const a = std.heap.page_allocator;
 const kb = @import("desktop-keyboard.zig");
 const u = @import("desktop-util.zig");
-const Proxy = c.wl_proxy;
 
 const cast = c.__zig.cast;
 
@@ -26,18 +25,6 @@ fn unlockSecrets(password: []const u8) void {
     const bytes = c.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), password.ptr, password.len, 1);
     const reply = c.g_dbus_connection_call_sync(bus, "org.freedesktop.secrets", "/org/freedesktop/secrets", "org.dotfiles.Desktop.Secrets", "LoginUnlock", c.g_variant_new("(@ay)", bytes), null, c.G_DBUS_CALL_FLAGS_NO_AUTO_START, 30000, null, null) orelse return;
     c.g_variant_unref(reply);
-}
-fn request(proxy: *Proxy, opcode: u32) void {
-    _ = c.wl_proxy_marshal_flags(proxy, opcode, null, c.wl_proxy_get_version(proxy), 0);
-}
-fn destroy(proxy: *Proxy, opcode: u32) void {
-    _ = c.wl_proxy_marshal_flags(proxy, opcode, null, c.wl_proxy_get_version(proxy), 1);
-}
-fn listen(proxy: *Proxy, listener: anytype, data: anytype) void {
-    if (c.wl_proxy_add_listener(proxy, @ptrCast(@constCast(listener)), data) != 0) std.process.exit(1);
-}
-fn create(proxy: *Proxy, opcode: u32, interface: *const c.wl_interface) *Proxy {
-    return c.wl_proxy_marshal_flags(proxy, opcode, interface, 1, 0, @as(?*anyopaque, null)) orelse std.process.exit(1);
 }
 const Password = struct {
     bytes: [1024:0]u8 = @splat(0),
@@ -59,24 +46,39 @@ const Password = struct {
         self.bytes[self.len] = 0;
     }
 };
+/// One shared-memory frame, freed when the compositor releases it.
 const Buffer = struct {
-    proxy: *c.wl_buffer,
+    buffer: wl.wl_buffer,
     memory: *anyopaque,
     size: usize,
-    fn release(data: ?*anyopaque, _: ?*c.wl_buffer) callconv(.c) void {
-        const self = cast(Buffer, data);
-        c.wl_buffer_destroy(self.proxy);
+    fn create(shm: wl.wl_shm, width: u32, height: u32) !*Buffer {
+        const size = @as(usize, width) * height * 4;
+        const fd = libc.memfd_create("desktop-lock", libc.MFD_CLOEXEC);
+        if (fd < 0) return error.SharedMemory;
+        defer _ = libc.close(fd);
+        if (libc.ftruncate(fd, @intCast(size)) != 0) return error.SharedMemory;
+        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0);
+        if (memory == libc.MAP_FAILED or memory == null) return error.SharedMemory;
+        errdefer _ = libc.munmap(memory, size);
+        const self = try a.create(Buffer);
+        const pool = shm.create_pool(fd, @intCast(size));
+        defer pool.destroy();
+        self.* = .{ .buffer = pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), wl.wl_shm.Format.xrgb8888), .memory = memory.?, .size = size };
+        self.buffer.listen(Buffer, self, released);
+        return self;
+    }
+    fn released(self: *Buffer, buffer: wl.wl_buffer, _: wl.wl_buffer.Event) void {
+        buffer.destroy();
         _ = libc.munmap(self.memory, self.size);
         a.destroy(self);
     }
 };
-const buffer_listener = extern struct { release: *const @TypeOf(Buffer.release) }{ .release = Buffer.release };
 const Output = struct {
     state: *State,
     name: u32,
-    proxy: *c.wl_output,
-    surface: ?*Proxy = null,
-    lock_surface: ?*Proxy = null,
+    output: wl.wl_output,
+    surface: ?wl.wl_surface = null,
+    lock_surface: ?wl.ext_session_lock_surface_v1 = null,
     width: u32 = 0,
     height: u32 = 0,
     scale: u32 = 1,
@@ -88,133 +90,143 @@ const Output = struct {
     fn lock(self: *Output) void {
         if (self.lock_surface != null) return;
         const s = self.state;
-        // Surfaces inherit the compositor's version so buffer scale is available.
-        self.surface = c.wl_proxy_marshal_flags(s.compositor.?, 0, &wayland.wl_surface_interface, c.wl_proxy_get_version(s.compositor.?), 0, @as(?*anyopaque, null)) orelse std.process.exit(1);
-        self.lock_surface = c.wl_proxy_marshal_flags(s.lock.?, 1, &p.ext_session_lock_surface_v1_interface, 1, 0, @as(?*anyopaque, null), self.surface.?, self.proxy) orelse std.process.exit(1);
-        listen(self.lock_surface.?, &surface_listener, self);
+        const surface = s.compositor.?.create_surface();
+        self.surface = surface;
+        const lock_surface = s.lock.?.get_lock_surface(surface, self.output);
+        self.lock_surface = lock_surface;
+        lock_surface.listen(Output, self, configured);
     }
     fn render(self: *Output) void {
-        if (self.width == 0 or self.height == 0 or self.surface == null) return;
+        if (self.width == 0 or self.height == 0) return;
+        const surface = self.surface orelse return;
         const s = self.state;
         // Integer buffer scale, as the shell's own surfaces use, needs wl_surface v3.
-        const versioned = c.wl_proxy_get_version(self.surface.?) >= 3;
+        const versioned = surface.version() >= 3;
         const scale: u32 = if (versioned) self.scale else 1;
         const width = self.width * scale;
         const height = self.height * scale;
         if (width > 16384 or height > 16384 or @as(u64, width) * height > 64 * 1024 * 1024) std.process.exit(1);
-        const size: usize = @as(usize, width) * height * 4;
-        const shm = c.__zig.createShmBuffer(s.shm, "desktop-lock", size, width, height, width * 4, c.WL_SHM_FORMAT_XRGB8888) catch std.process.exit(1);
-        const pixels: [*]u32 = @ptrCast(@alignCast(shm.memory));
-        const target: raster.Buffer = .{ .pixels = pixels[0 .. size / 4], .width = width, .height = height };
+        const frame = Buffer.create(s.shm.?, width, height) catch std.process.exit(1);
+        const pixels: [*]u32 = @ptrCast(@alignCast(frame.memory));
+        const target: raster.Buffer = .{ .pixels = pixels[0 .. frame.size / 4], .width = width, .height = height };
         if (self.backdrop_width != width or self.backdrop_height != height) {
             a.free(self.backdrop);
             self.backdrop = &.{};
             self.backdrop_width = 0;
             self.backdrop_height = 0;
-            if (a.alloc(u32, size / 4)) |memory| {
+            if (a.alloc(u32, frame.size / 4)) |memory| {
                 s.view.background(.{ .pixels = memory, .width = width, .height = height });
                 self.backdrop = memory;
                 self.backdrop_width = width;
                 self.backdrop_height = height;
             } else |_| {}
         }
-        if (self.backdrop.len == size / 4) @memcpy(target.pixels, self.backdrop) else s.view.background(target);
+        if (self.backdrop.len == target.pixels.len) @memcpy(target.pixels, self.backdrop) else s.view.background(target);
         s.view.paint(target, scale, s.frame());
-        const buffer = shm.proxy;
-        const storage = a.create(Buffer) catch std.process.exit(1);
-        storage.* = .{ .proxy = buffer, .memory = shm.memory, .size = size };
-        listen(cast(Proxy, buffer), &buffer_listener, storage);
-        if (versioned) _ = c.wl_proxy_marshal_flags(self.surface.?, 8, null, c.wl_proxy_get_version(self.surface.?), 0, @as(i32, @intCast(scale)));
-        _ = c.wl_proxy_marshal_flags(self.surface.?, 1, null, 1, 0, buffer, @as(i32, 0), @as(i32, 0));
-        _ = c.wl_proxy_marshal_flags(self.surface.?, 2, null, 1, 0, @as(i32, 0), @as(i32, 0), @as(i32, @intCast(self.width)), @as(i32, @intCast(self.height)));
-        request(self.surface.?, 6);
+        if (versioned) surface.set_buffer_scale(@intCast(scale));
+        surface.attach(frame.buffer, 0, 0);
+        surface.damage(0, 0, @intCast(self.width), @intCast(self.height));
+        surface.commit();
     }
-    fn geometry(_: ?*anyopaque, _: ?*Proxy, _: i32, _: i32, _: i32, _: i32, _: i32, _: [*c]const u8, _: [*c]const u8, _: i32) callconv(.c) void {}
-    fn mode(_: ?*anyopaque, _: ?*Proxy, _: u32, _: i32, _: i32, _: i32) callconv(.c) void {}
-    fn done(_: ?*anyopaque, _: ?*Proxy) callconv(.c) void {}
-    fn scaled(data: ?*anyopaque, _: ?*Proxy, factor: i32) callconv(.c) void {
-        const self = cast(Output, data);
-        const scale: u32 = @intCast(std.math.clamp(factor, 1, 8));
-        if (scale == self.scale) return;
-        self.scale = scale;
-        self.render();
+    fn outputEvent(self: *Output, _: wl.wl_output, event: wl.wl_output.Event) void {
+        switch (event) {
+            .scale => |value| {
+                const scale: u32 = @intCast(std.math.clamp(value.factor, 1, 8));
+                if (scale == self.scale) return;
+                self.scale = scale;
+                self.render();
+            },
+            else => {},
+        }
     }
-    fn configure(data: ?*anyopaque, surface: ?*Proxy, serial: u32, width: u32, height: u32) callconv(.c) void {
-        const self = cast(Output, data);
-        _ = c.wl_proxy_marshal_flags(surface, 1, null, 1, 0, serial);
-        self.width = width;
-        self.height = height;
+    fn configured(self: *Output, lock_surface: wl.ext_session_lock_surface_v1, event: wl.ext_session_lock_surface_v1.Event) void {
+        const value = event.configure;
+        lock_surface.ack_configure(value.serial);
+        self.width = value.width;
+        self.height = value.height;
         self.render();
     }
     fn deinit(self: *Output) void {
-        if (self.lock_surface) |proxy| destroy(proxy, 0);
-        if (self.surface) |proxy| destroy(proxy, 0);
+        if (self.lock_surface) |value| value.destroy();
+        if (self.surface) |value| value.destroy();
         if (self.state.pointer_output == self) self.state.pointer_output = null;
-        c.wl_output_destroy(self.proxy);
+        if (self.output.version() >= 3) self.output.release() else self.output.destroy();
         a.free(self.backdrop);
         a.destroy(self);
     }
 };
-const surface_listener = extern struct { configure: *const @TypeOf(Output.configure) }{ .configure = Output.configure };
-const output_listener = extern struct {
-    geometry: *const @TypeOf(Output.geometry),
-    mode: *const @TypeOf(Output.mode),
-    done: *const @TypeOf(Output.done),
-    scale: *const @TypeOf(Output.scaled),
-}{ .geometry = Output.geometry, .mode = Output.mode, .done = Output.done, .scale = Output.scaled };
 const Seat = struct {
     state: *State,
     name: u32,
-    proxy: *Proxy,
-    keyboard: ?*Proxy = null,
-    pointer: ?*Proxy = null,
+    seat: wl.wl_seat,
+    keyboard: ?wl.wl_keyboard = null,
+    pointer: ?wl.wl_pointer = null,
     xkb: ?*kb.State = null,
     next: ?*Seat = null,
-    fn capabilities(data: ?*anyopaque, _: ?*Proxy, flags: u32) callconv(.c) void {
-        const self = cast(Seat, data);
-        if (flags & 2 != 0 and self.keyboard == null) {
-            self.keyboard = create(self.proxy, 1, &wayland.wl_keyboard_interface);
-            listen(self.keyboard.?, &keyboard_listener, self);
-        } else if (flags & 2 == 0 and self.keyboard != null) {
-            c.wl_proxy_destroy(self.keyboard);
+    fn seatEvent(self: *Seat, seat: wl.wl_seat, event: wl.wl_seat.Event) void {
+        const flags = switch (event) {
+            .capabilities => |value| value.capabilities,
+            else => return,
+        };
+        if (flags & wl.wl_seat.Capability.keyboard != 0 and self.keyboard == null) {
+            const keyboard = seat.get_keyboard();
+            self.keyboard = keyboard;
+            keyboard.listen(Seat, self, keyboardEvent);
+        } else if (flags & wl.wl_seat.Capability.keyboard == 0) if (self.keyboard) |keyboard| {
+            keyboard.destroy();
             self.keyboard = null;
             kb.xkb_state_unref(self.xkb);
             self.xkb = null;
-        }
-        if (flags & 1 != 0 and self.pointer == null) {
-            self.pointer = create(self.proxy, 0, &wayland.wl_pointer_interface);
-            listen(self.pointer.?, &pointer_listener, self);
-        } else if (flags & 1 == 0 and self.pointer != null) {
-            c.wl_proxy_destroy(self.pointer);
-            self.pointer = null;
-        }
-    }
-    fn pointerEnter(data: ?*anyopaque, _: ?*Proxy, _: u32, surface: ?*Proxy, x: i32, y: i32) callconv(.c) void {
-        const s = cast(Seat, data).state;
-        s.pointer_output = null;
-        var output = s.outputs;
-        while (output) |o| : (output = o.next) if (o.surface == surface) {
-            s.pointer_output = o;
         };
-        s.pointerMoved(x, y);
+        if (flags & wl.wl_seat.Capability.pointer != 0 and self.pointer == null) {
+            const pointer = seat.get_pointer();
+            self.pointer = pointer;
+            pointer.listen(Seat, self, pointerEvent);
+        } else if (flags & wl.wl_seat.Capability.pointer == 0) if (self.pointer) |pointer| {
+            pointer.destroy();
+            self.pointer = null;
+        };
     }
-    fn pointerLeave(data: ?*anyopaque, _: ?*Proxy, _: u32, _: ?*Proxy) callconv(.c) void {
-        cast(Seat, data).state.pointer_output = null;
+    fn pointerEvent(self: *Seat, _: wl.wl_pointer, event: wl.wl_pointer.Event) void {
+        const s = self.state;
+        switch (event) {
+            .enter => |value| {
+                s.pointer_output = null;
+                var output = s.outputs;
+                while (output) |o| : (output = o.next) {
+                    if (o.surface) |surface| if (surface.proxy.id == value.surface.proxy.id) {
+                        s.pointer_output = o;
+                    };
+                }
+                s.pointer_x = value.surface_x;
+                s.pointer_y = value.surface_y;
+            },
+            .leave => s.pointer_output = null,
+            .motion => |value| {
+                s.pointer_x = value.surface_x;
+                s.pointer_y = value.surface_y;
+            },
+            .button => |value| if (value.state == wl.wl_pointer.ButtonState.pressed) s.click(),
+            else => {},
+        }
     }
-    fn pointerMotion(data: ?*anyopaque, _: ?*Proxy, _: u32, x: i32, y: i32) callconv(.c) void {
-        cast(Seat, data).state.pointerMoved(x, y);
+    fn keyboardEvent(self: *Seat, _: wl.wl_keyboard, event: wl.wl_keyboard.Event) void {
+        switch (event) {
+            .keymap => |value| self.keymap(value.format, value.fd, value.size),
+            .leave => if (!self.state.busy) {
+                self.state.password.clear();
+                self.state.changed();
+            },
+            .key => |value| self.key(value.key, value.state),
+            .modifiers => |value| self.modifiers(value.mods_depressed, value.mods_latched, value.mods_locked, value.group),
+            else => {},
+        }
     }
-    fn pointerButton(data: ?*anyopaque, _: ?*Proxy, _: u32, _: u32, _: u32, pressed: u32) callconv(.c) void {
-        if (pressed == 1) cast(Seat, data).state.click();
-    }
-    fn pointerAxis(_: ?*anyopaque, _: ?*Proxy, _: u32, _: u32, _: i32) callconv(.c) void {}
-    fn seatName(_: ?*anyopaque, _: ?*Proxy, _: [*c]const u8) callconv(.c) void {}
-    fn keymap(data: ?*anyopaque, _: ?*Proxy, format: u32, fd: c_int, size: u32) callconv(.c) void {
+    fn keymap(self: *Seat, format: u32, fd: wire.Fd, size: u32) void {
         defer _ = libc.close(fd);
-        const self = cast(Seat, data);
         kb.xkb_state_unref(self.xkb);
         self.xkb = null;
-        if (format != 1 or size == 0 or size > 16 * 1024 * 1024) return;
+        if (format != wl.wl_keyboard.KeymapFormat.xkb_v1 or size == 0 or size > 16 * 1024 * 1024) return;
         const memory = libc.mmap(null, size, libc.PROT_READ, libc.MAP_SHARED, fd, 0);
         if (memory == libc.MAP_FAILED or memory == null) return;
         defer _ = libc.munmap(memory, size);
@@ -226,18 +238,9 @@ const Seat = struct {
         defer kb.xkb_keymap_unref(map);
         self.xkb = kb.xkb_state_new(map);
     }
-    fn enter(_: ?*anyopaque, _: ?*Proxy, _: u32, _: ?*Proxy, _: ?*c.wl_array) callconv(.c) void {}
-    fn leave(data: ?*anyopaque, _: ?*Proxy, _: u32, _: ?*Proxy) callconv(.c) void {
-        const self = cast(Seat, data);
-        if (!self.state.busy) {
-            self.state.password.clear();
-            self.state.changed();
-        }
-    }
-    fn key(data: ?*anyopaque, _: ?*Proxy, _: u32, _: u32, code: u32, pressed: u32) callconv(.c) void {
-        const self = cast(Seat, data);
+    fn key(self: *Seat, code: u32, pressed: u32) void {
         const s = self.state;
-        if (pressed != 1 or self.xkb == null or s.busy or !s.locked or s.done) return;
+        if (pressed != wl.wl_keyboard.KeyState.pressed or self.xkb == null or s.busy or !s.locked or s.done) return;
         const symbol = kb.xkb_state_key_get_one_sym(self.xkb.?, code + 8);
         // Modifiers alone, including Caps Lock, neither reveal nor edit the prompt.
         if (symbol >= 0xffe1 and symbol <= 0xffee) return;
@@ -269,46 +272,31 @@ const Seat = struct {
         const len = kb.xkb_state_key_get_utf8(self.xkb.?, code + 8, &bytes, bytes.len);
         if (len > 0 and len < bytes.len and bytes[0] >= 32 and bytes[0] != 127) self.state.password.append(bytes[0..@intCast(len)]);
     }
-    fn modifiers(data: ?*anyopaque, _: ?*Proxy, _: u32, depressed: u32, latched: u32, locked: u32, group: u32) callconv(.c) void {
-        const state = cast(Seat, data).xkb orelse return;
+    fn modifiers(self: *Seat, depressed: u32, latched: u32, locked: u32, group: u32) void {
+        const state = self.xkb orelse return;
         _ = kb.xkb_state_update_mask(state, depressed, latched, locked, 0, 0, group);
-        const s = cast(Seat, data).state;
+        const s = self.state;
         const caps = kb.xkb_state_mod_name_is_active(state, "Lock", 1 << 3) > 0;
         if (caps == s.caps_lock) return;
         s.caps_lock = caps;
         if (s.stage == .prompt) s.render();
     }
     fn deinit(self: *Seat) void {
-        if (self.keyboard) |keyboard| c.wl_proxy_destroy(keyboard);
-        if (self.pointer) |pointer| c.wl_proxy_destroy(pointer);
+        if (self.keyboard) |keyboard| keyboard.destroy();
+        if (self.pointer) |pointer| pointer.destroy();
         kb.xkb_state_unref(self.xkb);
-        c.wl_proxy_destroy(self.proxy);
+        if (self.seat.version() >= 5) self.seat.release() else self.seat.destroy();
         a.destroy(self);
     }
 };
-const seat_listener = extern struct { capabilities: *const @TypeOf(Seat.capabilities), name: *const @TypeOf(Seat.seatName) }{ .capabilities = Seat.capabilities, .name = Seat.seatName };
-const keyboard_listener = extern struct {
-    keymap: *const @TypeOf(Seat.keymap),
-    enter: *const @TypeOf(Seat.enter),
-    leave: *const @TypeOf(Seat.leave),
-    key: *const @TypeOf(Seat.key),
-    modifiers: *const @TypeOf(Seat.modifiers),
-}{ .keymap = Seat.keymap, .enter = Seat.enter, .leave = Seat.leave, .key = Seat.key, .modifiers = Seat.modifiers };
-const pointer_listener = extern struct {
-    enter: *const @TypeOf(Seat.pointerEnter),
-    leave: *const @TypeOf(Seat.pointerLeave),
-    motion: *const @TypeOf(Seat.pointerMotion),
-    button: *const @TypeOf(Seat.pointerButton),
-    axis: *const @TypeOf(Seat.pointerAxis),
-}{ .enter = Seat.pointerEnter, .leave = Seat.pointerLeave, .motion = Seat.pointerMotion, .button = Seat.pointerButton, .axis = Seat.pointerAxis };
 /// GNOME returns an unattended prompt to the clock after two minutes.
 const prompt_timeout_us = 120 * std.time.us_per_s;
 const State = struct {
-    display: *c.wl_display,
-    compositor: ?*Proxy = null,
-    shm: ?*c.wl_shm = null,
-    manager: ?*Proxy = null,
-    lock: ?*Proxy = null,
+    connection: *wire.Connection,
+    compositor: ?wl.wl_compositor = null,
+    shm: ?wl.wl_shm = null,
+    manager: ?wl.ext_session_lock_manager_v1 = null,
+    lock: ?wl.ext_session_lock_v1 = null,
     outputs: ?*Output = null,
     seats: ?*Seat = null,
     view: *view.View,
@@ -368,10 +356,6 @@ const State = struct {
         self.failed = false;
         self.stage = .clock;
         self.render();
-    }
-    fn pointerMoved(self: *State, x: i32, y: i32) void {
-        self.pointer_x = @as(f64, @floatFromInt(x)) / 256;
-        self.pointer_y = @as(f64, @floatFromInt(y)) / 256;
     }
     fn click(self: *State) void {
         if (self.busy or !self.locked or self.done) return;
@@ -435,9 +419,9 @@ const State = struct {
                 _ = libc.close(self.ready_fd);
                 self.ready_fd = -1;
             }
-            destroy(self.lock.?, 2);
+            self.lock.?.unlock_and_destroy();
             self.lock = null;
-            if (c.wl_display_roundtrip(self.display) < 0) std.process.exit(1);
+            self.connection.roundtrip() catch std.process.exit(1);
             self.unlocked = true;
             self.done = true;
         } else {
@@ -453,48 +437,51 @@ const State = struct {
         cast(State, data).busy = false;
         return 0;
     }
-    fn lockedEvent(data: ?*anyopaque, _: ?*Proxy) callconv(.c) void {
-        const self = cast(State, data);
-        self.locked = true;
-        screenLocked(true);
-        if (self.ready_fd >= 0) {
-            // Keep protecting the session if the requesting shell has exited.
-            if (libc.write(self.ready_fd, "1", 1) != 1) std.log.warn("lock readiness receiver disconnected", .{});
-            if (!self.managed_readiness) {
-                _ = libc.close(self.ready_fd);
-                self.ready_fd = -1;
-            }
+    fn lockEvent(self: *State, _: wl.ext_session_lock_v1, event: wl.ext_session_lock_v1.Event) void {
+        switch (event) {
+            .locked => {
+                self.locked = true;
+                screenLocked(true);
+                if (self.ready_fd >= 0) {
+                    // Keep protecting the session if the requesting shell has exited.
+                    if (libc.write(self.ready_fd, "1", 1) != 1) std.log.warn("lock readiness receiver disconnected", .{});
+                    if (!self.managed_readiness) {
+                        _ = libc.close(self.ready_fd);
+                        self.ready_fd = -1;
+                    }
+                }
+            },
+            // Never send unlock on rejection or compositor termination.
+            .finished => self.done = true,
         }
     }
-    fn finished(data: ?*anyopaque, _: ?*Proxy) callconv(.c) void {
-        const self = cast(State, data);
-        // Never send unlock on rejection or compositor termination.
-        self.done = true;
+    fn registryEvent(self: *State, registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+        switch (event) {
+            .global => |value| self.global(registry, value.name, value.interface, value.version),
+            .global_remove => |removed| self.remove(removed.name),
+        }
     }
-    fn global(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*c]const u8, version: u32) callconv(.c) void {
-        const self = cast(State, data);
-        const kind = std.mem.span(interface);
-        if (std.mem.eql(u8, kind, "wl_compositor")) {
-            self.compositor = cast(Proxy, c.wl_registry_bind(registry, name, &wayland.wl_compositor_interface, @min(version, 4)));
-        } else if (std.mem.eql(u8, kind, "wl_shm")) {
-            self.shm = cast(c.wl_shm, c.wl_registry_bind(registry, name, &wayland.wl_shm_interface, 1));
-        } else if (std.mem.eql(u8, kind, "ext_session_lock_manager_v1")) {
-            self.manager = cast(Proxy, c.wl_registry_bind(registry, name, &p.ext_session_lock_manager_v1_interface, 1));
-        } else if (std.mem.eql(u8, kind, "wl_output")) {
+    fn global(self: *State, registry: wl.wl_registry, name: u32, interface: []const u8, version: u32) void {
+        if (std.mem.eql(u8, interface, "wl_compositor")) {
+            self.compositor = registry.bind(name, wl.wl_compositor, @min(version, 4));
+        } else if (std.mem.eql(u8, interface, "wl_shm")) {
+            self.shm = registry.bind(name, wl.wl_shm, 1);
+        } else if (std.mem.eql(u8, interface, "ext_session_lock_manager_v1")) {
+            self.manager = registry.bind(name, wl.ext_session_lock_manager_v1, 1);
+        } else if (std.mem.eql(u8, interface, "wl_output")) {
             const output = a.create(Output) catch std.process.exit(1);
-            output.* = .{ .state = self, .name = name, .proxy = cast(c.wl_output, c.wl_registry_bind(registry, name, &wayland.wl_output_interface, @min(version, 2))), .next = self.outputs };
-            listen(cast(Proxy, output.proxy), &output_listener, output);
+            output.* = .{ .state = self, .name = name, .output = registry.bind(name, wl.wl_output, @min(version, 3)), .next = self.outputs };
+            output.output.listen(Output, output, Output.outputEvent);
             self.outputs = output;
             if (self.lock != null) output.lock();
-        } else if (std.mem.eql(u8, kind, "wl_seat")) {
+        } else if (std.mem.eql(u8, interface, "wl_seat")) {
             const seat = a.create(Seat) catch std.process.exit(1);
-            seat.* = .{ .state = self, .name = name, .proxy = cast(Proxy, c.wl_registry_bind(registry, name, &wayland.wl_seat_interface, 1)), .next = self.seats };
+            seat.* = .{ .state = self, .name = name, .seat = registry.bind(name, wl.wl_seat, @min(version, 5)), .next = self.seats };
             self.seats = seat;
-            listen(seat.proxy, &seat_listener, seat);
+            seat.seat.listen(Seat, seat, Seat.seatEvent);
         }
     }
-    fn remove(data: ?*anyopaque, _: ?*c.wl_registry, name: u32) callconv(.c) void {
-        const self = cast(State, data);
+    fn remove(self: *State, name: u32) void {
         var output = &self.outputs;
         while (output.*) |o| {
             if (o.name == name) {
@@ -516,12 +503,11 @@ const State = struct {
     }
     fn readable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(State, data);
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0 or !c.__zig.dispatchWayland(self.display)) std.process.exit(1);
+        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) std.process.exit(1);
+        self.connection.readAndDispatch() catch std.process.exit(1);
         return 1;
     }
 };
-const registry_listener = c.wl_registry_listener{ .global = State.global, .global_remove = State.remove };
-const lock_listener = extern struct { locked: *const @TypeOf(State.lockedEvent), finished: *const @TypeOf(State.finished) }{ .locked = State.lockedEvent, .finished = State.finished };
 
 pub fn run(args: []const []const u8) !void {
     return runWithAuthenticator(args, auth.authenticate);
@@ -596,8 +582,8 @@ pub fn runWithAuthenticator(args: []const []const u8, authenticator: *const fn (
     if (user == null) return error.UnknownUser;
     const username = try a.dupeSentinel(u8, std.mem.span(user.*.pw_name), 0);
     defer a.free(username);
-    const display = c.wl_display_connect(null) orelse return error.NoWaylandDisplay;
-    defer c.wl_display_disconnect(display);
+    const connection = wire.Connection.connect(a) catch return error.NoWaylandDisplay;
+    defer connection.deinit();
     // Prepare public labels and the blurred wallpaper before requesting the session lock.
     const wallpaper_path = if (wallpaper) |path| try a.dupeSentinel(u8, path, 0) else null;
     defer if (wallpaper_path) |path| a.free(path);
@@ -611,16 +597,18 @@ pub fn runWithAuthenticator(args: []const []const u8, authenticator: *const fn (
         .name = if (gecos.len > 0 and std.unicode.utf8ValidateSlice(gecos)) gecos else username,
     });
     defer lock_view.deinit();
-    var state = State{ .view = &lock_view, .display = display, .password = password, .user = username.ptr, .authenticator = authenticator, .ready_fd = ready_fd, .managed_readiness = !daemonize and ready_fd >= 0 };
-    const registry = c.wl_display_get_registry(display);
-    _ = c.wl_registry_add_listener(registry, &registry_listener, &state);
-    if (c.wl_display_roundtrip(display) < 0) return error.WaylandDisconnected;
+    var state = State{ .view = &lock_view, .connection = connection, .password = password, .user = username.ptr, .authenticator = authenticator, .ready_fd = ready_fd, .managed_readiness = !daemonize and ready_fd >= 0 };
+    const display: wl.wl_display = .{ .proxy = connection.display() };
+    const registry = display.get_registry();
+    registry.listen(State, &state, State.registryEvent);
+    connection.roundtrip() catch return error.WaylandDisconnected;
     if (state.manager == null or state.compositor == null or state.shm == null) return error.SessionLockUnavailable;
-    state.lock = create(state.manager.?, 1, &p.ext_session_lock_v1_interface);
-    listen(state.lock.?, &lock_listener, &state);
+    const lock = state.manager.?.lock();
+    state.lock = lock;
+    lock.listen(State, &state, State.lockEvent);
     var output = state.outputs;
     while (output) |o| : (output = o.next) o.lock();
-    const source = c.g_unix_fd_add(c.wl_display_get_fd(display), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &State.readable, &state);
+    const source = c.g_unix_fd_add(connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &State.readable, &state);
     defer _ = c.g_source_remove(source);
     const clock = c.g_timeout_add_seconds(1, &State.tick, &state);
     defer _ = c.g_source_remove(clock);
@@ -628,7 +616,7 @@ pub fn runWithAuthenticator(args: []const []const u8, authenticator: *const fn (
         _ = c.g_source_remove(state.spinner);
     };
     while (!state.done) {
-        _ = c.wl_display_flush(display);
+        connection.flush() catch std.process.exit(1);
         _ = c.g_main_context_iteration(null, 1);
     }
     // Keep the worker and its secrets alive until its completion callback has run.
