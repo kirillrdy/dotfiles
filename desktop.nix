@@ -205,7 +205,6 @@ lib.mkIf enableLightDesktop {
           name = "gnome-monitors";
           kind = "monitors";
           source = "monitors";
-          on_click = "ghostty -e btop";
         }
         {
           name = "gnome-disk";
