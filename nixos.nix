@@ -26,6 +26,15 @@
   };
   hardware.nvidia.open = true;
   hardware.cpu.intel.updateMicrocode = true;
+  # The SoundWire speaker amp's mute control is not bound to the speaker mute
+  # LED by the kernel or UCM (UCM's sysw runs unprivileged in WirePlumber), so
+  # the F4 LED never lights. Bind the amp DAC switch, which PipeWire toggles on mute.
+  boot.kernelModules = [ "snd_ctl_led" ];
+  services.udev.extraRules = ''
+    ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="sofsoundwire", RUN+="${pkgs.writeShellScript "speaker-mute-led" ''
+      echo "name='rt1318-1 DAC Switch'" > "/sys/class/sound/ctl-led/speaker/card$1/attach" || true
+    ''} %n"
+  '';
   i18n.defaultLocale = "en_AU.UTF-8";
   networking.firewall.enable = false;
   networking.hostId = "00000000";
