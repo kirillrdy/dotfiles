@@ -1010,13 +1010,6 @@ pub fn rasterizeSpans(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u
     return builder.finish();
 }
 
-/// Computes anti-aliased coverage of the closed device-space contours in `flat`.
-pub fn rasterize(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u32, height: u32) !Mask {
-    const spans = try rasterizeSpans(a, flat, rule, width, height);
-    defer spans.deinit(a);
-    return expand(a, spans);
-}
-
 /// Converts runs into dense per-pixel coverage over their bounding box.
 pub fn expand(a: std.mem.Allocator, spans: Spans) !Mask {
     if (spans.empty()) return .{};

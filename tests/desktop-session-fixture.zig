@@ -98,8 +98,7 @@ test "session: private logind actions and quick-settings lifecycle" {
         c.g_object_weak_ref(@ptrCast(controls.cancel), &finalized, &live);
         var battery_live = controls.battery_service != null;
         if (controls.battery_service) |service| c.g_object_weak_ref(@ptrCast(service.cancel), &finalized, &battery_live);
-        var network_live = controls.devices.network_client != null;
-        if (controls.devices.network_client) |client| c.g_object_weak_ref(@ptrCast(client.service.cancel), &finalized, &network_live);
+        const network = @import("desktop").network;
         try checkPowerDialog(controls);
         // Enter defaults to Cancel. Explicit keyboard selection sends one action.
         controls.view.submenu = .power;
@@ -134,8 +133,8 @@ test "session: private logind actions and quick-settings lifecycle" {
         controls.deinit();
         // Device workers retain their own cancellation objects after Controls
         // is freed. Drain their completion callbacks before the allocator audit.
-        while ((live or battery_live or network_live) and c.__zig.monotonicTime() < deadline) pump();
-        try std.testing.expect(!live and !battery_live and !network_live);
+        while ((live or battery_live or network.live_services != 0) and c.__zig.monotonicTime() < deadline) pump();
+        try std.testing.expect(!live and !battery_live and network.live_services == 0);
         return;
     }
     const action = std.meta.stringToEnum(session.Action, env("SESSION_ACTION")) orelse return error.UnknownAction;

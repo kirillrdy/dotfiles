@@ -6,13 +6,11 @@ const bridge = @import("desktop-dbus-gvariant.zig");
 const fdo = "org.freedesktop.Notifications";
 const object_path = "/org/freedesktop/Notifications";
 const eq = c.__zig.eq;
-const cast = c.__zig.cast;
 const lookup = c.__zig.variant.lookup;
 const child = c.g_variant_get_child_value;
 fn text(value: ?*c.GVariant) [*:0]const u8 {
     return if (value == null) "" else c.g_variant_get_string(value, null);
 }
-const builder = c.__zig.variant.builder;
 const Notice = struct {
     service: *Service,
     owner: [:0]u8,

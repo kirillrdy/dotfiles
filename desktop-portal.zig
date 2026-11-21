@@ -30,9 +30,6 @@ const text = c.__zig.variant.text;
 fn string(value: [*:0]const u8) ?*c.GVariant {
     return c.g_variant_new("s", value);
 }
-fn object(value: [*:0]const u8) ?*c.GVariant {
-    return c.g_variant_new("o", value);
-}
 // Consume owned or floating children, returning a floating tuple.
 fn tuple(values: []const ?*c.GVariant) ?*c.GVariant {
     for (values) |value| _ = c.g_variant_take_ref(value);

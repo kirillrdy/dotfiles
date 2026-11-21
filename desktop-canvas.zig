@@ -151,10 +151,6 @@ pub const Context = struct {
     pub fn init(gpa: std.mem.Allocator, target: vec.Target) Context {
         return .{ .gpa = gpa, .target = target, .scratch = .init(gpa) };
     }
-    /// Wraps borrowed ARGB storage whose stride is given in bytes.
-    pub fn forBytes(gpa: std.mem.Allocator, pixels: []align(@alignOf(u32)) u8, width: u32, height: u32, stride: usize) Context {
-        return init(gpa, vec.Target.fromBytes(pixels, width, height, stride));
-    }
     pub fn deinit(self: *Context) void {
         self.path.deinit(self.gpa);
         self.scratch.deinit();
@@ -224,9 +220,6 @@ pub const Context = struct {
 
     fn device(self: *const Context, x: f64, y: f64) vec.Point {
         return self.state.ctm.apply(.{ .x = x, .y = y });
-    }
-    pub fn newPath(self: *Context) void {
-        self.path.clear();
     }
     pub fn newSubPath(self: *Context) void {
         self.path.current = null;

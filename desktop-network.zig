@@ -173,12 +173,13 @@ pub fn deviceState(state: u32) [:0]const u8 {
 const Record = struct { path: [:0]u8, settings: ?*c.GVariant = null, dirty: bool = true, loading: bool = false, seen: bool = false, version: u64 = 0 };
 const Fetch = struct { service: *Service, path: [:0]u8, epoch: u64, version: u64, serial: u32 = 0 };
 var shared: ?*Service = null;
+/// Services not yet freed, so lifetime tests can wait for teardown.
+pub var live_services: usize = 0;
 pub const Service = struct {
     source: ?*loop.Source = null,
     manager: ?*objects.Manager = null,
     /// GetSettings calls awaiting replies; each holds a reference on the service.
     fetches: std.ArrayList(*Fetch) = .empty,
-    cancel: *c.GCancellable,
     clients: std.ArrayList(*Client) = .empty,
     records: std.ArrayList(*Record) = .empty,
     waiting: std.ArrayList(*Call) = .empty,
@@ -201,8 +202,8 @@ pub const Service = struct {
         self.waiting.deinit(a);
         self.fetches.deinit(a);
         self.clients.deinit(a);
-        c.g_object_unref(self.cancel);
         a.destroy(self);
+        live_services -= 1;
     }
     fn clearRecords(self: *Service) void {
         for (self.records.items) |r| {
@@ -252,7 +253,6 @@ pub const Service = struct {
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         self.idle = 0;
         self.timer = 0;
-        c.g_cancellable_cancel(self.cancel);
         self.ref();
         defer self.unref();
         self.dropManager();
@@ -453,7 +453,8 @@ pub const Client = struct {
         errdefer a.destroy(self);
         const service = shared orelse blk: {
             const value = try a.create(Service);
-            value.* = .{ .cancel = c.g_cancellable_new().? };
+            value.* = .{};
+            live_services += 1;
             break :blk value;
         };
         service.ref();

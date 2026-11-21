@@ -100,13 +100,11 @@ fn networkLifetime(settle: bool) !void {
     try std.testing.expect(client.service == second.service);
     objects.watch(client.cancel);
     objects.watch(second.cancel);
-    objects.watch(client.service.cancel);
     var activation = NetworkCompletion{};
     if (settle) {
         const deadline = c.__zig.monotonicTime() + 15_000_000;
         while ((!client.state().available or client.state().profiles.items.len == 0) and c.__zig.monotonicTime() < deadline) pump();
         try std.testing.expect(client.state().available and client.state().profiles.items.len != 0);
-        // The ObjectManager client is native now; its memory is checked by the allocator, not GObject refs.
         const cancel = c.g_cancellable_new().?;
         defer c.g_object_unref(cancel);
         objects.watch(cancel);
@@ -174,7 +172,6 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         if (controls.notifications) |prefs| objects.watch(prefs);
         if (controls.devices.network_client) |client| {
             objects.watch(client.cancel);
-            objects.watch(client.service.cancel);
         }
         if (controls.devices.battery_service) |service| objects.watch(service.cancel);
         for (0..2) |cycle| {

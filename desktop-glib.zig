@@ -4,7 +4,6 @@
 //! owns their storage. Value types and layouts accessed by Zig are defined in
 //! full. Normal builds do not parse the C headers. tests/desktop-glib-abi.zig
 //! checks these declarations against the installed headers.
-pub const __helpers = @import("std").zig.c_translation.helpers;
 
 // Zig helpers shared by toolkit consumers; excluded from C ABI comparisons.
 pub const __zig = @import("desktop-ui.zig");
@@ -26,7 +25,6 @@ pub const gchar = u8;
 pub const glong = c_long;
 pub const gint = c_int;
 pub const gboolean = gint;
-pub const guchar = u8;
 pub const gulong = c_ulong;
 pub const guint = c_uint;
 pub const gfloat = f32;
@@ -111,9 +109,7 @@ pub extern fn g_main_context_iteration(context: ?*GMainContext, may_block: gbool
 pub extern fn g_source_remove(tag: guint) gboolean;
 pub extern fn g_timeout_add(interval: guint, function: GSourceFunc, data: gpointer) guint;
 pub extern fn g_timeout_add_seconds(interval: guint, function: GSourceFunc, data: gpointer) guint;
-pub const gunichar = guint32;
 pub extern fn g_utf8_offset_to_pointer(str: [*c]const gchar, offset: glong) [*c]gchar;
-pub extern fn g_utf8_strlen(p: [*c]const gchar, max: gssize) glong;
 pub extern fn g_utf8_casefold(str: [*c]const gchar, len: gssize) [*c]gchar;
 pub const G_NORMALIZE_ALL_COMPOSE: c_int = 3;
 pub const GNormalizeMode = c_uint;
@@ -139,7 +135,6 @@ pub const struct__GVariant = opaque {};
 
 pub const GVariant = struct__GVariant;
 pub extern fn g_variant_unref(value: ?*GVariant) void;
-pub extern fn g_variant_new_strv(strv: [*c]const [*c]const gchar, length: gssize) ?*GVariant;
 pub extern fn g_variant_get_boolean(value: ?*GVariant) gboolean;
 pub extern fn g_variant_get_byte(value: ?*GVariant) guint8;
 pub extern fn g_variant_get_int32(value: ?*GVariant) gint32;
@@ -265,7 +260,6 @@ pub extern fn g_object_get_data(object: [*c]GObject, key: [*c]const gchar) gpoin
 pub extern fn g_object_set_data_full(object: [*c]GObject, key: [*c]const gchar, data: gpointer, destroy: GDestroyNotify) void;
 pub extern fn g_object_weak_ref(object: ?*GObject, notify: ?*const fn (?*anyopaque, ?*GObject) callconv(.c) void, data: ?*anyopaque) void;
 pub const GAppInfoCreateFlags = c_uint;
-pub const G_APPLICATION_HANDLES_COMMAND_LINE: c_int = 8;
 pub const G_SUBPROCESS_FLAGS_NONE: c_int = 0;
 pub const G_SUBPROCESS_FLAGS_STDOUT_SILENCE: c_int = 8;
 pub const G_SUBPROCESS_FLAGS_STDERR_PIPE: c_int = 16;
@@ -492,7 +486,6 @@ pub extern fn g_markup_escape_text([*c]const gchar, gssize) [*c]gchar;
 pub extern fn g_variant_equal(gconstpointer, gconstpointer) gboolean;
 pub extern fn g_file_get_child(?*GFile, [*c]const gchar) ?*GFile;
 pub extern fn g_file_query_exists(?*GFile, [*c]GCancellable) gboolean;
-pub extern fn g_random_int() guint32;
 pub extern fn g_idle_add(GSourceFunc, gpointer) guint;
 pub extern fn g_get_user_name() [*c]const gchar;
 pub extern fn g_get_real_name() [*c]const gchar;
