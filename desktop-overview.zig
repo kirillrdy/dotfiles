@@ -704,14 +704,16 @@ const Overview = struct {
         return surface;
     }
     fn createBackground(self: *Overview, output: *wire.Output) !*wire.Surface {
-        const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-overview-background", .layer = 2, .anchors = wire.top | wire.bottom | wire.left | wire.right, .exclusive_zone = -1, .clear_buffer = false, .fully_opaque = true }, &paintBackground, self);
+        const surface = try wire.Surface.createPixels(output, .{ .namespace = "desktop-overview-background", .layer = 2, .anchors = wire.top | wire.bottom | wire.left | wire.right, .exclusive_zone = -1, .clear_buffer = false, .fully_opaque = true, .defer_flush = true }, &paintBackground, self);
         surface.render_scale = &renderScale;
         surface.ready = &backgroundReady;
         return surface;
     }
     /// GPU previews belong to the overview surface's commits, so the opaque
     /// background must never reach the screen without them: a lone background
-    /// frame covers every window with wallpaper or a stale stage layout.
+    /// frame covers every window with wallpaper or a stale stage layout. The
+    /// background only renders inside the overview paint and defers its flush,
+    /// so its commit travels in the same write as the overview's commit.
     fn surfaceReady(data: ?*anyopaque, _: *wire.Surface) bool {
         const self = cast(Overview, data);
         const background = self.background orelse return true;

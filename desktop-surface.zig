@@ -389,6 +389,9 @@ pub const Options = struct {
     /// Disable only when the painter replaces every destination pixel.
     clear_buffer: bool = true,
     fully_opaque: bool = false,
+    /// Leave the commit queued for a sibling surface's flush, so both commits
+    /// reach the compositor in one write and render in the same frame.
+    defer_flush: bool = false,
 };
 pub const Pixels = raster.Buffer;
 /// Physical pixels, cleared by default, writable only during the callback.
@@ -648,7 +651,7 @@ pub const Surface = struct {
         buffer.busy = true;
         self.pending = false;
         surface.commit();
-        self.client.flush();
+        if (!self.options.defer_flush) self.client.flush();
     }
     fn frameDone(self: *Surface, _: wl.wl_callback, event: wl.wl_callback.Event) void {
         // The callback is gone once done arrives; the runtime retires it.
