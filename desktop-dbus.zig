@@ -530,6 +530,19 @@ pub const Message = struct {
         if (reader.position != self.body.len) return error.InvalidMessage;
         return result;
     }
+    /// Decodes every argument dynamically, whatever the signature.
+    pub fn values(self: *const Message) ![]const Value {
+        var reader: Reader = .{ .bytes = self.body, .arena = self.arena, .fds = self.fds };
+        var result: std.ArrayList(Value) = .empty;
+        var at: usize = 0;
+        while (at < self.signature.len) {
+            const next = try completeType(self.signature, at);
+            try result.append(self.arena, try reader.value(self.signature[at..next]));
+            at = next;
+        }
+        if (reader.position != self.body.len) return error.InvalidMessage;
+        return result.items;
+    }
     /// The first string argument, as error replies carry their description there.
     pub fn errorText(self: *const Message) []const u8 {
         if (!std.mem.startsWith(u8, self.signature, "s")) return "";
@@ -538,11 +551,26 @@ pub const Message = struct {
     }
 };
 
+/// A message body whose arguments are only known at run time, encoded value by value.
+pub const Body = struct { values: []const Value };
 /// Encodes a complete message with `args` (a tuple) as its body.
 pub fn encode(allocator: std.mem.Allocator, header: Message, args: anytype) !Writer {
     var body: Writer = .{ .allocator = allocator };
     defer body.deinit();
-    inline for (@typeInfo(@TypeOf(args)).@"struct".field_names) |name| try body.put(@field(args, name));
+    const dynamic = @TypeOf(args) == Body;
+    var signature_buffer: [256]u8 = undefined;
+    var signature: []const u8 = undefined;
+    if (dynamic) {
+        var writer: std.Io.Writer = .fixed(&signature_buffer);
+        for (args.values) |value| {
+            value.writeSignature(&writer) catch return error.InvalidMessage;
+            try body.putValue(value);
+        }
+        signature = writer.buffered();
+    } else {
+        inline for (@typeInfo(@TypeOf(args)).@"struct".field_names) |name| try body.put(@field(args, name));
+        signature = comptime bodySignature(@TypeOf(args));
+    }
     var message: Writer = .{ .allocator = allocator };
     errdefer message.deinit();
     try message.bytes.appendSlice(allocator, &.{ 'l', @intFromEnum(header.kind), header.flags, 1 });
@@ -551,7 +579,6 @@ pub fn encode(allocator: std.mem.Allocator, header: Message, args: anytype) !Wri
     const Field = struct { code: u8, value: Value };
     var fields: [9]Field = undefined;
     var count: usize = 0;
-    const signature = comptime bodySignature(@TypeOf(args));
     if (header.path) |v| addField(&fields, &count, 1, .{ .object_path = v });
     if (header.interface) |v| addField(&fields, &count, 2, .{ .string = v });
     if (header.member) |v| addField(&fields, &count, 3, .{ .string = v });
@@ -673,6 +700,9 @@ pub const Invocation = struct {
 
 /// Reads a property for `Properties.Get`/`GetAll`; values may use `arena`. Null means unavailable.
 pub const PropertyGetter = *const fn (context: ?*anyopaque, path: []const u8, interface: []const u8, property: []const u8, arena: std.mem.Allocator) ?Value;
+/// Answers Properties.Set; returns null on success or the D-Bus error to reply with.
+pub const PropertySetter = *const fn (context: ?*anyopaque, path: []const u8, interface: []const u8, property: []const u8, value: Value) ?Failure;
+pub const Failure = struct { name: []const u8, text: []const u8 };
 const Export = struct {
     id: u32,
     path: []u8,
@@ -682,6 +712,7 @@ const Export = struct {
     /// From introspection XML: enables argument checks, introspection and properties.
     info: ?*const InterfaceInfo = null,
     get: ?PropertyGetter = null,
+    set: ?PropertySetter = null,
 };
 /// The current unique owner of a well-known name used as a signal sender filter.
 /// Signals carry unique sender names, so filters on well-known names compare against the owner.
@@ -1039,10 +1070,15 @@ pub const Connection = struct {
     /// reaching `handler`, and introspection and properties (through `get`) are answered here.
     /// `info` must outlive the export.
     pub fn exportObject(self: *Connection, path: []const u8, info: *const InterfaceInfo, handler: ?MessageHandler, get: ?PropertyGetter, context: ?*anyopaque) Error!u32 {
+        return self.exportWritable(path, info, handler, get, null, context);
+    }
+    /// Like `exportObject`, with `set` answering Properties.Set for writable properties.
+    pub fn exportWritable(self: *Connection, path: []const u8, info: *const InterfaceInfo, handler: ?MessageHandler, get: ?PropertyGetter, set: ?PropertySetter, context: ?*anyopaque) Error!u32 {
         const id = try self.register(path, info.name, handler orelse &ignoreCall, context);
         const item = &self.exports.items[self.exports.items.len - 1];
         item.info = info;
         item.get = get;
+        item.set = set;
         if (handler == null) item.handler = null;
         return id;
     }
@@ -1180,7 +1216,9 @@ pub const Connection = struct {
         pub fn message(self: *const Owned) *const Message {
             return &self.value;
         }
+        /// Closes the message's descriptors too: like a GUnixFDList, keepers must dup what they keep.
         pub fn deinit(self: *const Owned) void {
+            for (self.value.fds) |fd| _ = std.c.close(fd);
             const child = self.arena.child_allocator;
             self.arena.deinit();
             child.destroy(self.arena);
@@ -1323,10 +1361,8 @@ pub const Connection = struct {
             if (std.mem.eql(u8, name, "org.freedesktop.DBus.Introspectable") and std.mem.eql(u8, member, "Introspect")) return self.introspect(message, path);
             if (std.mem.eql(u8, name, "org.freedesktop.DBus.Properties")) return self.properties(message, path, member);
         }
-        var object_exists = false;
         for (self.exports.items) |*item| {
             if (!std.mem.eql(u8, item.path, path)) continue;
-            object_exists = true;
             if (interface) |name| if (!std.mem.eql(u8, name, item.interface)) continue;
             if (item.info) |info| {
                 const method = info.method(member) orelse {
@@ -1340,8 +1376,9 @@ pub const Connection = struct {
             handler(item.context, message);
             return;
         }
-        if (object_exists) return self.replyErrorFormat(message, "org.freedesktop.DBus.Error.UnknownMethod", "No such interface “{s}” on object at path {s}", .{ interface orelse "", path });
-        return self.replyErrorFormat(message, "org.freedesktop.DBus.Error.UnknownObject", "No such object path “{s}”", .{path});
+        // Like GDBus, an unknown path is reported the same way as an unknown interface,
+        // so clients written against GDBus services see the same error.
+        return self.replyErrorFormat(message, "org.freedesktop.DBus.Error.UnknownMethod", "No such interface “{s}” on object at path {s}", .{ interface orelse "", path });
     }
     fn replyErrorFormat(self: *Connection, to: *const Message, name: []const u8, comptime format: []const u8, args: anytype) Error!void {
         var buffer: [512]u8 = undefined;
@@ -1366,7 +1403,19 @@ pub const Connection = struct {
             const value = get(item.context, item.path, item.interface, property.name, message.arena) orelse return self.replyError(message, "org.freedesktop.DBus.Error.Failed", "Property unavailable");
             return self.reply(message, .{value});
         }
-        if (std.mem.eql(u8, member, "Set")) return self.replyError(message, "org.freedesktop.DBus.Error.PropertyReadOnly", "Properties are read-only");
+        if (std.mem.eql(u8, member, "Set")) {
+            const args = message.read(struct { []const u8, []const u8, Value }) catch return self.replyError(message, invalid, "Expected (ssv)");
+            const item = self.findExport(path, args[0]) orelse return self.replyErrorFormat(message, invalid, "No such interface “{s}”", .{args[0]});
+            const info = item.info orelse return self.replyErrorFormat(message, invalid, "No such property “{s}”", .{args[1]});
+            const property = info.property(args[1]) orelse return self.replyErrorFormat(message, invalid, "No such property “{s}”", .{args[1]});
+            const set = item.set orelse return self.replyError(message, "org.freedesktop.DBus.Error.PropertyReadOnly", "Properties are read-only");
+            if (!property.writable) return self.replyErrorFormat(message, "org.freedesktop.DBus.Error.PropertyReadOnly", "Property “{s}” is not writable", .{args[1]});
+            var buffer: [256]u8 = undefined;
+            const signature = args[2].signatureInto(&buffer) catch "";
+            if (!std.mem.eql(u8, signature, property.signature)) return self.replyErrorFormat(message, invalid, "Property “{s}” has type “{s}”", .{ property.name, property.signature });
+            if (set(item.context, item.path, item.interface, property.name, args[2])) |failure| return self.replyError(message, failure.name, failure.text);
+            return self.reply(message, .{});
+        }
         return self.replyErrorFormat(message, "org.freedesktop.DBus.Error.UnknownMethod", "No such method “{s}”", .{member});
     }
 
@@ -1522,6 +1571,95 @@ const standard_interfaces =
     \\  </interface>
     \\
 ;
+
+/// Follows the owner of a bus name like `g_bus_watch_name`: the first callback
+/// reports the current state, then each change calls `vanished` for a lost
+/// owner and `appeared` for a new one. Callbacks may stop the watcher.
+pub const NameWatcher = struct {
+    connection: *Connection,
+    name: []u8,
+    subscription: u32 = 0,
+    serial: u32 = 0,
+    owner: ?[]u8 = null,
+    /// Set once the first state is known; a reply older than a signal is ignored.
+    known: bool = false,
+    /// While callbacks run, `destroy` only marks the watcher.
+    dispatching: bool = false,
+    dying: bool = false,
+    appeared: *const fn (context: ?*anyopaque, owner: []const u8) void,
+    vanished: *const fn (context: ?*anyopaque) void,
+    context: ?*anyopaque,
+
+    pub fn create(connection: *Connection, name: []const u8, appeared: *const fn (?*anyopaque, []const u8) void, vanished: *const fn (?*anyopaque) void, context: ?*anyopaque) Error!*NameWatcher {
+        const allocator = connection.allocator;
+        const self = try allocator.create(NameWatcher);
+        errdefer allocator.destroy(self);
+        const copy = try allocator.dupe(u8, name);
+        errdefer allocator.free(copy);
+        self.* = .{ .connection = connection, .name = copy, .appeared = appeared, .vanished = vanished, .context = context };
+        self.subscription = try connection.subscribeArg0(bus_name, bus_name, "NameOwnerChanged", bus_path, name, &changed, self);
+        errdefer connection.unsubscribe(self.subscription);
+        self.serial = try connection.call(.{ .destination = bus_name, .path = bus_path, .interface = bus_name, .member = "GetNameOwner" }, .{name}, 25000, &replied, self);
+        return self;
+    }
+    pub fn destroy(self: *NameWatcher) void {
+        if (self.dying) return;
+        self.dying = true;
+        if (self.serial != 0) self.connection.cancel(self.serial);
+        self.serial = 0;
+        self.connection.unsubscribe(self.subscription);
+        if (!self.dispatching) self.free();
+    }
+    fn free(self: *NameWatcher) void {
+        const allocator = self.connection.allocator;
+        if (self.owner) |owner| allocator.free(owner);
+        allocator.free(self.name);
+        allocator.destroy(self);
+    }
+    fn replied(context: ?*anyopaque, reply: Reply) void {
+        const self: *NameWatcher = @ptrCast(@alignCast(context));
+        self.serial = 0;
+        if (self.known) return;
+        const owner: ?[]const u8 = switch (reply) {
+            .ok => |message| if (message.read(struct { []const u8 })) |args| args[0] else |_| null,
+            .failed => null,
+        };
+        self.dispatching = true;
+        self.update(owner);
+        self.finish();
+    }
+    fn changed(context: ?*anyopaque, message: *const Message) void {
+        const self: *NameWatcher = @ptrCast(@alignCast(context));
+        const args = message.read(struct { []const u8, []const u8, []const u8 }) catch return;
+        if (!std.mem.eql(u8, args[0], self.name)) return;
+        self.dispatching = true;
+        // A lost owner is reported before its replacement appears.
+        if (self.owner != null and args[2].len > 0) self.update(null);
+        if (!self.dying) self.update(if (args[2].len > 0) args[2] else null);
+        self.finish();
+    }
+    fn finish(self: *NameWatcher) void {
+        self.dispatching = false;
+        if (self.dying) self.free();
+    }
+    fn update(self: *NameWatcher, owner: ?[]const u8) void {
+        const first = !self.known;
+        self.known = true;
+        const allocator = self.connection.allocator;
+        if (owner) |value| {
+            if (self.owner) |old| if (std.mem.eql(u8, old, value)) return;
+            const copy = allocator.dupe(u8, value) catch return;
+            if (self.owner) |old| allocator.free(old);
+            self.owner = copy;
+            self.appeared(self.context, copy);
+        } else {
+            const had = self.owner != null;
+            if (self.owner) |old| allocator.free(old);
+            self.owner = null;
+            if (had or first) self.vanished(self.context);
+        }
+    }
+};
 
 pub const MethodInfo = struct { name: []const u8, in: []const u8, out: []const u8 };
 pub const PropertyInfo = struct { name: []const u8, signature: []const u8, readable: bool, writable: bool };

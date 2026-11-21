@@ -1,6 +1,8 @@
 //! Portal settings read directly from the desktop's GSettings schemas.
 const std = @import("std");
 const c = @import("desktop-glib.zig");
+const dbus = @import("dbus");
+const bridge = @import("desktop-dbus-gvariant.zig");
 const schemas = [_][:0]const u8{
     "org.gnome.desktop.a11y",           "org.gnome.desktop.a11y.interface",
     "org.gnome.desktop.calendar",       "org.gnome.desktop.input-sources",
@@ -21,13 +23,13 @@ const Bundle = struct {
 };
 pub const Service = struct {
     allocator: std.mem.Allocator,
-    connection: *c.GDBusConnection,
+    connection: *dbus.Connection,
     bundles: std.ArrayList(*Bundle) = .empty,
     monitors: std.ArrayList(*c.GFileMonitor) = .empty,
     serial: i32 = 0,
     timer: c.guint = 0,
 
-    pub fn create(allocator: std.mem.Allocator, connection: *c.GDBusConnection) !*Service {
+    pub fn create(allocator: std.mem.Allocator, connection: *dbus.Connection) !*Service {
         const self = try allocator.create(Service);
         self.* = .{ .allocator = allocator, .connection = connection };
         errdefer self.destroy();
@@ -85,9 +87,10 @@ pub const Service = struct {
         _ = c.g_signal_connect_data(monitor, "changed", @ptrCast(&fontsChanged), self, null, 0);
     }
     fn emit(self: *Service, namespace: [*:0]const u8, key: [*:0]const u8, value: ?*c.GVariant) void {
-        const owned = c.g_variant_take_ref(value);
-        defer c.g_variant_unref(owned);
-        _ = c.g_dbus_connection_emit_signal(self.connection, null, "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "SettingChanged", c.g_variant_new("(ssv)", namespace, key, owned), null);
+        var arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer arena.deinit();
+        const converted = bridge.fromVariant(arena.allocator(), value orelse return) catch return;
+        self.connection.emit("/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "SettingChanged", .{ std.mem.span(namespace), std.mem.span(key), converted }) catch {};
     }
     fn changed(_: *c.GSettings, key: [*:0]const u8, data: ?*anyopaque) callconv(.c) void {
         const bundle = cast(Bundle, data);
@@ -122,19 +125,15 @@ pub const Service = struct {
         for (self.bundles.items) |bundle| if (eq(bundle.name, namespace) and c.g_settings_schema_has_key(bundle.schema, key) != 0) return c.g_settings_get_value(bundle.settings, key);
         return null;
     }
-    fn matches(namespace: []const u8, patterns: ?*c.GVariant) bool {
-        const count = c.g_variant_n_children(patterns);
-        if (count == 0) return true;
-        for (0..count) |index| {
-            const value = c.g_variant_get_child_value(patterns, index);
-            defer c.g_variant_unref(value);
-            const pattern = std.mem.span(c.g_variant_get_string(value, null));
+    fn matches(namespace: []const u8, patterns: []const []const u8) bool {
+        if (patterns.len == 0) return true;
+        for (patterns) |pattern| {
             if (pattern.len == 0 or eq(pattern, namespace)) return true;
             if (std.mem.endsWith(u8, pattern, "*") and std.mem.startsWith(u8, namespace, pattern[0 .. pattern.len - 1])) return true;
         }
         return false;
     }
-    pub fn readAll(self: *Service, patterns: ?*c.GVariant) ?*c.GVariant {
+    pub fn readAll(self: *Service, patterns: []const []const u8) ?*c.GVariant {
         const outer = builder("a{sa{sv}}");
         defer c.g_variant_builder_unref(outer);
         for (self.bundles.items) |bundle| {
@@ -169,26 +168,33 @@ pub const Service = struct {
         }
         return c.g_variant_builder_end(outer);
     }
-    pub fn call(self: *Service, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) void {
-        const namespace = c.g_variant_get_child_value(params, 0);
-        defer c.g_variant_unref(namespace);
+    /// Answers Read, ReadOne and ReadAll.
+    pub fn call(self: *Service, method: []const u8, message: *const dbus.Message) !void {
+        const connection = self.connection;
+        var arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer arena.deinit();
         if (eq(method, "ReadAll")) {
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(@a{sa{sv}})", self.readAll(namespace)));
-            return;
+            const patterns = (try message.read(struct { []const []const u8 }))[0];
+            const all = c.g_variant_take_ref(self.readAll(patterns)).?;
+            defer c.g_variant_unref(all);
+            const Namespaces = dbus.Dict([]const u8, bridge.Dict);
+            const entries = try arena.allocator().alloc(Namespaces.Entry, c.g_variant_n_children(all));
+            for (entries, 0..) |*entry, index| {
+                const pair = c.g_variant_get_child_value(all, index);
+                defer c.g_variant_unref(pair);
+                const name = c.g_variant_get_child_value(pair, 0);
+                defer c.g_variant_unref(name);
+                entry.* = .{ .key = std.mem.span(c.g_variant_get_string(name, null)), .value = try bridge.dictFromVariant(arena.allocator(), c.g_variant_get_child_value(pair, 1)) };
+                entry.key = try arena.allocator().dupe(u8, entry.key);
+            }
+            return connection.reply(message, .{Namespaces{ .entries = entries }});
         }
-        const key = c.g_variant_get_child_value(params, 1);
-        defer c.g_variant_unref(key);
-        const value = self.read(std.mem.span(c.g_variant_get_string(namespace, null)), c.g_variant_get_string(key, null));
-        if (value == null) {
-            c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.portal.Error.NotFound", "Requested setting not found");
-            return;
-        }
-        const owned = c.g_variant_take_ref(value);
-        defer c.g_variant_unref(owned);
-        if (eq(method, "Read")) {
-            const wrapped = c.g_variant_take_ref(c.g_variant_new("v", owned));
-            defer c.g_variant_unref(wrapped);
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(v)", wrapped));
-        } else c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(v)", owned));
+        const args = try message.read(struct { []const u8, []const u8 });
+        const key = try arena.allocator().dupeSentinel(u8, args[1], 0);
+        const variant = self.read(args[0], key) orelse return connection.replyError(message, "org.freedesktop.portal.Error.NotFound", "Requested setting not found");
+        const value = try bridge.fromVariant(arena.allocator(), variant);
+        // The deprecated Read wraps the value in a second variant.
+        if (eq(method, "Read")) return connection.reply(message, .{dbus.Value{ .variant = &value }});
+        try connection.reply(message, .{value});
     }
 };

@@ -2,6 +2,9 @@
 const std = @import("std");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
+const dbus = @import("dbus");
+const loop = @import("desktop-dbus-loop.zig");
+const bridge = @import("desktop-dbus-gvariant.zig");
 var a: std.mem.Allocator = std.heap.page_allocator;
 const path = "/org/freedesktop/portal/desktop";
 const public = "org.freedesktop.portal.";
@@ -39,8 +42,8 @@ fn tuple(values: []const ?*c.GVariant) ?*c.GVariant {
 }
 const dict = c.__zig.variant.emptyDict;
 const child = c.g_variant_get_child_value;
-fn errorReply(invocation: ?*c.GDBusMethodInvocation, message: [*:0]const u8) void {
-    c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.portal.Error.Failed", message);
+fn errorReply(connection: *dbus.Connection, message: *const dbus.Message, text_value: []const u8) void {
+    connection.replyError(message, "org.freedesktop.portal.Error.Failed", text_value) catch {};
 }
 fn validToken(value: []const u8) bool {
     if (value.len == 0 or value.len > 128) return false;
@@ -64,7 +67,7 @@ const Session = struct {
     arena: std.heap.ArenaAllocator,
     owner: [:0]const u8,
     handle: [:0]const u8,
-    registration: c.guint = 0,
+    registration: u32 = 0,
     state: State = .creating,
     cursor: bool = false,
     stream: ?*Video.Stream = null,
@@ -73,17 +76,17 @@ const Session = struct {
     height: i32 = 0,
     fn destroy(self: *Session) void {
         if (self.stream) |stream| stream.destroy();
-        _ = c.g_dbus_connection_unregister_object(self.server.connection, self.registration);
+        self.server.connection.unregister(self.registration);
         self.arena.deinit();
         a.destroy(self);
     }
 };
 const Server = struct {
-    connection: *c.GDBusConnection,
-    node: *c.GDBusNodeInfo,
-    idle_node: ?*c.GDBusNodeInfo = null,
-    registrations: std.ArrayList(c.guint) = .empty,
-    subscriptions: std.ArrayList(c.guint) = .empty,
+    connection: *dbus.Connection,
+    introspection: dbus.Introspection,
+    idle_introspection: ?dbus.Introspection = null,
+    registrations: std.ArrayList(u32) = .empty,
+    subscriptions: std.ArrayList(u32) = .empty,
     clients: std.ArrayList(*Client) = .empty,
     requests: std.ArrayList(*Request) = .empty,
     sessions: std.ArrayList(*Session) = .empty,
@@ -93,29 +96,17 @@ const Server = struct {
     serial: u64 = 0,
     quitting: bool = false,
 
-    fn info(self: *Server, name: [*:0]const u8) *c.GDBusInterfaceInfo {
-        var i: usize = 0;
-        while (self.node.interfaces[i] != null) : (i += 1) {
-            const item = self.node.interfaces[i];
-            if (eq(std.mem.span(item.*.name), std.mem.span(name))) return item;
-        }
-        unreachable;
+    fn info(self: *Server, name: []const u8) *const dbus.InterfaceInfo {
+        return self.introspection.find(name).?;
     }
     fn start(self: *Server) !void {
-        var i: usize = 0;
-        while (self.node.interfaces[i] != null) : (i += 1) {
-            const item = self.node.interfaces[i];
-            const name = std.mem.span(item.*.name);
-            if (eq(name, public ++ "Request") or eq(name, public ++ "Session")) continue;
-            const id = c.g_dbus_connection_register_object(self.connection, path, item, &main_vtable, self, null, null);
-            if (id == 0) return error.PortalRegistrationFailed;
-            try self.registrations.append(a, id);
+        for (self.introspection.interfaces) |*item| {
+            if (eq(item.name, public ++ "Request") or eq(item.name, public ++ "Session")) continue;
+            try self.registrations.append(a, try self.connection.exportObject(path, item, &methodCall, &getProperty, self));
         }
-        self.idle_node = c.g_dbus_node_info_new_for_xml(idle_portal_xml, null) orelse return error.InvalidPortalXml;
-        const idle_id = c.g_dbus_connection_register_object(self.connection, idle_portal_path, self.idle_node.?.interfaces[0], &idle_portal_vtable, self, null, null);
-        if (idle_id == 0) return error.PortalRegistrationFailed;
-        try self.registrations.append(a, idle_id);
-        try self.subscriptions.append(a, c.g_dbus_connection_signal_subscribe(self.connection, bus, bus, "NameOwnerChanged", bus_path, null, 0, &ownerChanged, self, null));
+        self.idle_introspection = try dbus.Introspection.parse(a, idle_portal_xml);
+        try self.registrations.append(a, try self.connection.exportObject(idle_portal_path, &self.idle_introspection.?.interfaces[0], &idlePortalCall, null, self));
+        try self.subscriptions.append(a, try self.connection.subscribe(bus, bus, "NameOwnerChanged", bus_path, &ownerChanged, self));
         self.settings = try Settings.create(a, self.connection);
         self.notifications = try Notifications.create(a, self.connection);
         if (c.g_network_monitor_get_default()) |monitor| _ = c.g_signal_connect_data(monitor, "network-changed", @ptrCast(&networkChanged), self, null, 0);
@@ -125,12 +116,12 @@ const Server = struct {
         if (self.settings) |settings| settings.destroy();
         if (self.notifications) |notifications| notifications.destroy();
         if (c.g_network_monitor_get_default()) |monitor| _ = c.g_signal_handlers_disconnect_matched(monitor, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-        for (self.subscriptions.items) |id| c.g_dbus_connection_signal_unsubscribe(self.connection, id);
+        for (self.subscriptions.items) |id| self.connection.unsubscribe(id);
         self.cancelRequests(null);
         while (self.requests.items.len > 0) _ = c.g_main_context_iteration(null, 1);
         while (self.sessions.items.len > 0) self.closeSession(self.sessions.items[0]);
-        for (self.registrations.items) |id| _ = c.g_dbus_connection_unregister_object(self.connection, id);
-        if (self.idle_node) |idle_node| c.g_dbus_node_info_unref(idle_node);
+        for (self.registrations.items) |id| self.connection.unregister(id);
+        if (self.idle_introspection) |*idle| idle.deinit();
         for (self.clients.items) |client| client.destroy();
         self.registrations.deinit(a);
         self.subscriptions.deinit(a);
@@ -146,14 +137,12 @@ const Server = struct {
             if (index < self.requests.items.len and self.requests.items[index] == request) index += 1;
         }
     }
-    fn getClient(self: *Server, sender: [*:0]const u8) !*Client {
-        for (self.clients.items) |item| if (eq(item.sender, std.mem.span(sender))) return item;
+    fn getClient(self: *Server, sender: []const u8) !*Client {
+        for (self.clients.items) |item| if (eq(item.sender, sender)) return item;
         if (self.clients.items.len >= 128) return error.TooManyClients;
-        const reply = c.g_dbus_connection_call_sync(self.connection, bus, bus_path, bus, "GetConnectionUnixProcessID", c.g_variant_new("(s)", sender), @ptrCast(@as([*:0]const u8, "(u)")), 0, 1000, null, null) orelse return error.UnknownClient;
-        defer c.g_variant_unref(reply);
-        const value = child(reply, 0);
-        defer c.g_variant_unref(value);
-        const pid = c.g_variant_get_uint32(value);
+        const reply = self.connection.callBlocking(.{ .destination = bus, .path = bus_path, .interface = bus, .member = "GetConnectionUnixProcessID" }, .{sender}, 1000) catch return error.UnknownClient;
+        defer reply.deinit();
+        const pid = (reply.message().read(struct { u32 }) catch return error.UnknownClient)[0];
         var buffer: [128]u8 = undefined;
         const flatpak = try std.fmt.bufPrintSentinel(&buffer, "/proc/{d}/root/.flatpak-info", .{pid}, 0);
         const fd = libc.open(flatpak, libc.O_RDONLY);
@@ -175,7 +164,7 @@ const Server = struct {
         item.arena = std.heap.ArenaAllocator.init(a);
         errdefer item.arena.deinit();
         const alloc = item.arena.allocator();
-        item.sender = try alloc.dupeSentinel(u8, std.mem.span(sender), 0);
+        item.sender = try alloc.dupeSentinel(u8, sender, 0);
         item.component = try alloc.dupeSentinel(u8, std.mem.trimStart(u8, item.sender, ":"), 0);
         for (@constCast(item.component)) |*ch| if (ch.* == '.') {
             ch.* = '_';
@@ -194,7 +183,7 @@ const Server = struct {
             request.session_handle = null;
             request.close();
         }
-        _ = c.g_dbus_connection_emit_signal(self.connection, item.owner, item.handle, public ++ "Session", "Closed", tuple(&.{dict()}), null);
+        self.connection.emitTo(item.owner, item.handle, public ++ "Session", "Closed", .{bridge.Dict{ .entries = &.{} }}) catch {};
         for (self.sessions.items, 0..) |current, i| if (current == item) {
             _ = self.sessions.swapRemove(i);
             break;
@@ -212,7 +201,7 @@ const Server = struct {
         const next = self.hasIdleInhibitor();
         if (next == self.idle_inhibited) return;
         self.idle_inhibited = next;
-        _ = c.g_dbus_connection_emit_signal(self.connection, null, idle_portal_path, idle_portal_interface, "IdleInhibitedChanged", c.g_variant_new("(b)", @as(c.gboolean, @intFromBool(next))), null);
+        self.connection.emit(idle_portal_path, idle_portal_interface, "IdleInhibitedChanged", .{next}) catch {};
     }
     fn createSession(self: *Server, client_info: *Client, options: ?*c.GVariant) !*Session {
         if (self.sessions.items.len >= 64) return error.TooManySessions;
@@ -232,27 +221,25 @@ const Server = struct {
         item.owner = try alloc.dupeSentinel(u8, client_info.sender, 0);
         item.handle = try std.fmt.allocPrintSentinel(alloc, "/org/freedesktop/portal/desktop/session/{s}/{s}", .{ client_info.component, suffix }, 0);
         if (self.session(item.handle, item.owner) != null) return error.DuplicateSession;
-        item.registration = c.g_dbus_connection_register_object(self.connection, item.handle, self.info(public ++ "Session"), &session_vtable, item, null, null);
+        item.registration = self.connection.exportObject(item.handle, self.info(public ++ "Session"), &closeSessionCall, null, item) catch 0;
         if (item.registration == 0) return error.SessionRegistrationFailed;
-        errdefer _ = c.g_dbus_connection_unregister_object(self.connection, item.registration);
+        errdefer self.connection.unregister(item.registration);
         try self.sessions.append(a, item);
         return item;
     }
-    fn ownerChanged(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, params: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
+    fn ownerChanged(data: ?*anyopaque, message: *const dbus.Message) void {
         const self = cast(Server, data);
-        const name = child(params, 0);
-        defer c.g_variant_unref(name);
-        const owner = child(params, 2);
-        defer c.g_variant_unref(owner);
-        if (text(owner).len != 0) return;
-        if (!std.mem.startsWith(u8, text(name), ":")) return;
-        self.cancelRequests(text(name));
+        const args = message.read(struct { []const u8, []const u8, []const u8 }) catch return;
+        const name = args[0];
+        if (args[2].len != 0) return;
+        if (!std.mem.startsWith(u8, name, ":")) return;
+        self.cancelRequests(name);
         var i: usize = 0;
         while (i < self.sessions.items.len) {
             const item = self.sessions.items[i];
-            if (eq(item.owner, text(name))) self.closeSession(item) else i += 1;
+            if (eq(item.owner, name)) self.closeSession(item) else i += 1;
         }
-        for (self.clients.items, 0..) |client_info, index| if (eq(client_info.sender, text(name))) {
+        for (self.clients.items, 0..) |client_info, index| if (eq(client_info.sender, name)) {
             _ = self.clients.swapRemove(index);
             client_info.destroy();
             break;
@@ -260,7 +247,7 @@ const Server = struct {
     }
     fn networkChanged(_: ?*c.GNetworkMonitor, _: c.gboolean, data: ?*anyopaque) callconv(.c) void {
         const self = cast(Server, data);
-        _ = c.g_dbus_connection_emit_signal(self.connection, null, path, public ++ "NetworkMonitor", "changed", null, null);
+        self.connection.emit(path, public ++ "NetworkMonitor", "changed", .{}) catch {};
     }
 };
 const Kind = enum { direct, uri, inhibit, dialog };
@@ -274,9 +261,10 @@ const Request = struct {
     method: [:0]const u8,
     session_handle: ?[:0]const u8 = null,
     cancel: *c.GCancellable,
-    registration: c.guint = 0,
+    registration: u32 = 0,
     kind: Kind,
-    invocation: ?*c.GDBusMethodInvocation = null,
+    /// A held NetworkMonitor.CanReach call, answered when the probe finishes.
+    invocation: ?dbus.Invocation = null,
     closed: bool = false,
     inhibit_idle: bool = false,
     inhibitor_fd: c_int = -1,
@@ -314,11 +302,11 @@ const Request = struct {
         item.handle = try std.fmt.allocPrintSentinel(alloc, "/org/freedesktop/portal/desktop/request/{s}/{s}", .{ client_info.component, suffix }, 0);
         for (server.requests.items) |existing| if (eq(existing.handle, item.handle)) return error.DuplicateHandle;
         if (kind != .direct) {
-            item.registration = c.g_dbus_connection_register_object(server.connection, item.handle, server.info(public ++ "Request"), &request_vtable, item, null, null);
+            item.registration = server.connection.exportObject(item.handle, server.info(public ++ "Request"), &closeRequest, null, item) catch 0;
             if (item.registration == 0) return error.RequestRegistrationFailed;
         }
         errdefer if (item.registration != 0) {
-            _ = c.g_dbus_connection_unregister_object(server.connection, item.registration);
+            server.connection.unregister(item.registration);
         };
         try server.requests.append(a, item);
         return item;
@@ -327,7 +315,7 @@ const Request = struct {
         if (self.closed) return;
         self.closed = true;
         if (self.registration != 0) {
-            _ = c.g_dbus_connection_unregister_object(self.server.connection, self.registration);
+            self.server.connection.unregister(self.registration);
             self.registration = 0;
         }
         c.g_cancellable_cancel(self.cancel);
@@ -361,8 +349,8 @@ const Request = struct {
         if (self.dialog) |dialog| dialog.destroy();
         if (self.account) |dialog| dialog.destroy();
         if (self.screenshot) |operation| operation.destroy();
-        if (self.registration != 0) _ = c.g_dbus_connection_unregister_object(self.server.connection, self.registration);
-        if (self.invocation) |invocation| c.g_object_unref(invocation);
+        if (self.registration != 0) self.server.connection.unregister(self.registration);
+        if (self.invocation) |*invocation| invocation.release(self.server.connection.allocator);
         c.g_object_unref(self.cancel);
         for (self.server.requests.items, 0..) |item, index| if (item == self) {
             _ = self.server.requests.swapRemove(index);
@@ -373,9 +361,11 @@ const Request = struct {
         if (had_idle) server.updateIdleInhibition();
     }
     fn respond(self: *Request, code: u32, results: ?*c.GVariant) void {
-        if (!self.closed and !self.server.quitting) _ = c.g_dbus_connection_emit_signal(self.server.connection, self.owner, self.handle, public ++ "Request", "Response", tuple(&.{ c.g_variant_new("u", code), results }), null) else {
-            c.g_variant_unref(c.g_variant_take_ref(results));
-        }
+        var arena: std.heap.ArenaAllocator = .init(a);
+        defer arena.deinit();
+        // Converting also releases a floating `results`.
+        const values = bridge.dictFromVariant(arena.allocator(), results) catch bridge.Dict{ .entries = &.{} };
+        if (!self.closed and !self.server.quitting) self.server.connection.emitTo(self.owner, self.handle, public ++ "Request", "Response", .{ code, values }) catch {};
     }
     fn nativeFinished(data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Request, data);
@@ -439,18 +429,16 @@ const Request = struct {
         self.respond(code, results);
         self.destroy();
     }
-    fn inhibitorFinished(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+    fn inhibitorFinished(data: ?*anyopaque, reply: dbus.Reply) void {
         const self = cast(Request, data);
-        var fds: [*c]c.GUnixFDList = null;
-        const reply = c.g_dbus_connection_call_with_unix_fd_list_finish(@ptrCast(source), &fds, result, null);
-        defer if (reply != null) c.g_variant_unref(reply);
-        defer if (fds != null) c.g_object_unref(fds);
-        if (!self.closed and !self.server.quitting and reply != null and fds != null) {
-            const handle = child(reply, 0);
-            defer c.g_variant_unref(handle);
-            self.inhibitor_fd = c.g_unix_fd_list_get(fds, c.g_variant_get_handle(handle), null);
-            if (self.inhibitor_fd >= 0) return;
-        }
+        if (!self.closed and !self.server.quitting) switch (reply) {
+            .ok => |message| if (message.read(struct { dbus.Fd })) |args| {
+                // The reply owns its descriptor; keep a duplicate for the lifetime of the inhibition.
+                self.inhibitor_fd = std.c.fcntl(args[0].value, std.c.F.DUPFD_CLOEXEC, @as(c_int, 0));
+                if (self.inhibitor_fd >= 0) return;
+            } else |_| {},
+            .failed => {},
+        };
         self.respond(2, dict());
         self.destroy();
     }
@@ -458,9 +446,13 @@ const Request = struct {
         const self = cast(Request, data);
         defer self.destroy();
         var err: ?*c.GError = null;
-        const ok = c.g_network_monitor_can_reach_finish(c.g_network_monitor_get_default(), result, &err);
+        const ok = c.g_network_monitor_can_reach_finish(c.g_network_monitor_get_default(), result, &err) != 0;
         defer if (err != null) c.g_error_free(err);
-        if (!self.closed and !self.server.quitting) c.g_dbus_method_invocation_return_value(self.invocation, c.g_variant_new("(b)", ok)) else errorReply(self.invocation, "Request cancelled");
+        const connection = self.server.connection;
+        if (self.invocation) |*invocation| {
+            if (!self.closed and !self.server.quitting) connection.answer(invocation, .{ok}) catch {} else connection.answerError(invocation, "org.freedesktop.portal.Error.Failed", "Request cancelled") catch {};
+            self.invocation = null;
+        }
     }
     fn uriFinished(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
         const self = cast(Request, data);
@@ -472,7 +464,7 @@ const Request = struct {
     }
 };
 
-fn screencast(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+fn screencast(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
     const count = c.g_variant_n_children(params);
     const options = child(params, count - 1);
     defer c.g_variant_unref(options);
@@ -515,9 +507,9 @@ fn screencast(server: *Server, client_info: *Client, method: []const u8, params:
         session_info.state = if (eq(method, "CreateSession")) .creating else .selecting;
         request.idle = c.g_idle_add(&Request.nativeFinished, request);
     }
-    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
+    replyHandle(server, message, request.handle);
 }
-fn screenshot(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+fn screenshot(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
     const parent = child(params, 0);
     defer c.g_variant_unref(parent);
     const options = child(params, 1);
@@ -525,9 +517,9 @@ fn screenshot(server: *Server, client_info: *Client, method: []const u8, params:
     const request = try Request.create(server, client_info, "Screenshot", method, options, .dialog);
     errdefer request.destroy();
     request.screenshot = try Capture.Operation.create(a, client_info.app, std.mem.span(c.g_variant_get_string(parent, null)), method, options.?, &Request.dialogFinished, request);
-    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
+    replyHandle(server, message, request.handle);
 }
-fn chooseFile(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+fn chooseFile(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
     const parent = child(params, 0);
     defer c.g_variant_unref(parent);
     const title = child(params, 1);
@@ -537,9 +529,9 @@ fn chooseFile(server: *Server, client_info: *Client, method: []const u8, params:
     const request = try Request.create(server, client_info, "FileChooser", method, options, .dialog);
     errdefer request.destroy();
     request.dialog = try FileChooser.create(a, method, std.mem.span(c.g_variant_get_string(parent, null)), std.mem.span(c.g_variant_get_string(title, null)), options.?, &Request.dialogFinished, request);
-    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
+    replyHandle(server, message, request.handle);
 }
-fn userInformation(server: *Server, client_info: *Client, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+fn userInformation(server: *Server, client_info: *Client, params: ?*c.GVariant, message: *const dbus.Message) !void {
     const parent = child(params, 0);
     defer c.g_variant_unref(parent);
     const options = child(params, 1);
@@ -547,9 +539,9 @@ fn userInformation(server: *Server, client_info: *Client, params: ?*c.GVariant, 
     const request = try Request.create(server, client_info, "Account", "GetUserInformation", options, .dialog);
     errdefer request.destroy();
     request.account = try Account.create(a, client_info.app, std.mem.span(c.g_variant_get_string(parent, null)), options.?, &Request.dialogFinished, request);
-    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
+    replyHandle(server, message, request.handle);
 }
-fn openRemote(server: *Server, client_info: *Client, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+fn openRemote(server: *Server, client_info: *Client, params: ?*c.GVariant, message: *const dbus.Message) !void {
     const handle = child(params, 0);
     defer c.g_variant_unref(handle);
     const session_info = server.session(text(handle), client_info.sender) orelse return error.InvalidSession;
@@ -566,19 +558,15 @@ fn openRemote(server: *Server, client_info: *Client, params: ?*c.GVariant, invoc
     if (fd < 0) return error.PipeWireUnavailable;
     defer _ = libc.close(fd);
     if (libc.connect(fd, @ptrCast(&address), @intCast(@offsetOf(libc.struct_sockaddr_un, "sun_path") + socket_path.len + 1)) != 0) return error.PipeWireUnavailable;
-    const fds = c.g_unix_fd_list_new();
-    defer c.g_object_unref(fds);
-    const index = c.g_unix_fd_list_append(fds, fd, null);
-    if (index < 0) return error.FileDescriptorFailed;
-    c.g_dbus_method_invocation_return_value_with_unix_fd_list(invocation, c.g_variant_new("(h)", index), fds);
+    server.connection.reply(message, .{dbus.Fd{ .value = fd }}) catch {};
 }
-fn openUri(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+fn openUri(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
     const arg = child(params, if (eq(method, "SchemeSupported")) 0 else 1);
     defer c.g_variant_unref(arg);
     if (eq(method, "SchemeSupported")) {
         const app_info = c.g_app_info_get_default_for_uri_scheme(c.g_variant_get_string(arg, null));
         defer if (app_info != null) c.g_object_unref(app_info);
-        c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(b)", @as(c_int, @intFromBool(app_info != null))));
+        server.connection.reply(message, .{app_info != null}) catch {};
         return;
     }
     const options = child(params, 2);
@@ -590,9 +578,10 @@ fn openUri(server: *Server, client_info: *Client, method: []const u8, params: ?*
         uri = c.g_variant_get_string(arg, null);
         if (std.mem.indexOfScalar(u8, std.mem.span(uri), ':') == null) return error.InvalidUri;
     } else {
-        const fds = c.g_dbus_message_get_unix_fd_list(c.g_dbus_method_invocation_get_message(invocation));
-        if (fds == null) return error.MissingFileDescriptor;
-        const fd = c.g_unix_fd_list_get(fds, c.g_variant_get_handle(arg), null);
+        // The handle carries the descriptor number; the message owns it, so work on a duplicate.
+        const passed = c.g_variant_get_handle(arg);
+        if (std.mem.indexOfScalar(i32, message.fds, passed) == null) return error.InvalidFileDescriptor;
+        const fd = std.c.fcntl(passed, std.c.F.DUPFD_CLOEXEC, @as(c_int, 0));
         if (fd < 0) return error.InvalidFileDescriptor;
         defer _ = libc.close(fd);
         const proc_path = try std.fmt.allocPrintSentinel(request.arena.allocator(), "/proc/self/fd/{d}", .{fd}, 0);
@@ -611,22 +600,22 @@ fn openUri(server: *Server, client_info: *Client, method: []const u8, params: ?*
         defer c.g_free(file_uri);
         uri = try request.arena.allocator().dupeSentinel(u8, std.mem.span(file_uri), 0);
     }
-    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
+    replyHandle(server, message, request.handle);
     c.g_app_info_launch_default_for_uri_async(uri, null, request.cancel, &Request.uriFinished, request);
 }
-fn composeEmail(server: *Server, client_info: *Client, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+fn composeEmail(server: *Server, client_info: *Client, params: ?*c.GVariant, message: *const dbus.Message) !void {
     const options = child(params, 1);
     defer c.g_variant_unref(options);
     const request = try Request.create(server, client_info, "Email", "ComposeEmail", options, .uri);
     errdefer request.destroy();
-    const descriptors = c.g_dbus_message_get_unix_fd_list(c.g_dbus_method_invocation_get_message(invocation));
+    const descriptors = message.fds;
     const uri = try Email.composeUri(request.arena.allocator(), options.?, descriptors);
     const context = try Email.launchContext(options.?);
     defer c.g_object_unref(context);
-    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
+    replyHandle(server, message, request.handle);
     c.g_app_info_launch_default_for_uri_async(uri, context, request.cancel, &Request.uriFinished, request);
 }
-fn inhibit(server: *Server, client_info: *Client, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+fn inhibit(server: *Server, client_info: *Client, params: ?*c.GVariant, message: *const dbus.Message) !void {
     const flags_value = child(params, 1);
     defer c.g_variant_unref(flags_value);
     const flags = c.g_variant_get_uint32(flags_value);
@@ -635,8 +624,6 @@ fn inhibit(server: *Server, client_info: *Client, params: ?*c.GVariant, invocati
     defer c.g_variant_unref(options);
     const request = try Request.create(server, client_info, "Inhibit", "Inhibit", options, .inhibit);
     errdefer request.destroy();
-    const connection = c.g_bus_get_sync(c.G_BUS_TYPE_SYSTEM, null, null) orelse return error.SystemBusUnavailable;
-    defer c.g_object_unref(connection);
     var buffer: [64]u8 = undefined;
     var used: usize = 0;
     for ([_]u32{ 1, 4, 8 }, [_][]const u8{ "shutdown", "sleep", "idle" }) |flag, name| if (flags & flag != 0) {
@@ -647,16 +634,15 @@ fn inhibit(server: *Server, client_info: *Client, params: ?*c.GVariant, invocati
         @memcpy(buffer[used..][0..name.len], name);
         used += name.len;
     };
-    buffer[used] = 0;
     const reason = c.g_variant_lookup_value(options, "reason", @ptrCast(@as([*:0]const u8, "s")));
     defer if (reason != null) c.g_variant_unref(reason);
-    const why: [*c]const u8 = if (reason != null) c.g_variant_get_string(reason, null) else "Application requested inhibition";
+    const why: []const u8 = if (reason != null) std.mem.span(c.g_variant_get_string(reason, null)) else "Application requested inhibition";
     request.inhibit_idle = flags & 8 != 0;
-    c.g_dbus_method_invocation_return_value(invocation, tuple(&.{object(request.handle)}));
+    replyHandle(server, message, request.handle);
     server.updateIdleInhibition();
-    c.g_dbus_connection_call_with_unix_fd_list(connection, "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", "Inhibit", c.g_variant_new("(ssss)", @as([*:0]const u8, @ptrCast(&buffer)), request.app.ptr, why, @as([*:0]const u8, "block")), @ptrCast(@as([*:0]const u8, "(h)")), 0, 10000, null, request.cancel, &Request.inhibitorFinished, request);
+    loop.request(.system, .{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1", .interface = "org.freedesktop.login1.Manager", .member = "Inhibit" }, .{ buffer[0..used], @as([]const u8, request.app), why, "block" }, 10000, request.cancel, &Request.inhibitorFinished, request);
 }
-fn network(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+fn network(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
     if (eq(method, "CanReach")) {
         const host = child(params, 0);
         defer c.g_variant_unref(host);
@@ -667,31 +653,43 @@ fn network(server: *Server, client_info: *Client, method: []const u8, params: ?*
         const address = c.g_network_address_new(c.g_variant_get_string(host, null), @intCast(number)) orelse return error.InvalidAddress;
         defer c.g_object_unref(address);
         const request = try Request.create(server, client_info, "NetworkMonitor", method, null, .direct);
-        request.invocation = @ptrCast(c.g_object_ref(invocation));
+        request.invocation = server.connection.hold(message) catch |err| {
+            request.destroy();
+            return err;
+        };
         c.g_network_monitor_can_reach_async(c.g_network_monitor_get_default(), address, request.cancel, &Request.networkFinished, request);
         return;
     }
     const monitor = c.g_network_monitor_get_default();
-    const available = c.g_network_monitor_get_network_available(monitor);
-    const metered = c.g_network_monitor_get_network_metered(monitor);
-    const connectivity = c.g_network_monitor_get_connectivity(monitor);
-    var answer: ?*c.GVariant = null;
-    if (eq(method, "GetAvailable")) answer = c.g_variant_new("(b)", available) else if (eq(method, "GetMetered")) answer = c.g_variant_new("(b)", metered) else if (eq(method, "GetConnectivity")) answer = c.g_variant_new("(u)", connectivity) else if (eq(method, "GetStatus")) {
-        const builder = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
-        defer c.g_variant_builder_unref(builder);
-        c.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "available"), c.g_variant_new("b", available));
-        c.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "metered"), c.g_variant_new("b", metered));
-        c.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "connectivity"), c.g_variant_new("u", connectivity));
-        answer = tuple(&.{c.g_variant_builder_end(builder)});
-    } else return error.NotSupported;
-    c.g_dbus_method_invocation_return_value(invocation, answer);
+    const available = c.g_network_monitor_get_network_available(monitor) != 0;
+    const metered = c.g_network_monitor_get_network_metered(monitor) != 0;
+    const connectivity: u32 = @intCast(c.g_network_monitor_get_connectivity(monitor));
+    const connection = server.connection;
+    if (eq(method, "GetAvailable")) return connection.reply(message, .{available});
+    if (eq(method, "GetMetered")) return connection.reply(message, .{metered});
+    if (eq(method, "GetConnectivity")) return connection.reply(message, .{connectivity});
+    if (eq(method, "GetStatus")) {
+        const entries = [_]bridge.Dict.Entry{ .{ .key = "available", .value = .{ .boolean = available } }, .{ .key = "metered", .value = .{ .boolean = metered } }, .{ .key = "connectivity", .value = .{ .uint32 = connectivity } } };
+        return connection.reply(message, .{bridge.Dict{ .entries = &entries }});
+    }
+    return error.NotSupported;
 }
-fn methodCall(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, interface_name: [*c]const u8, method_name: [*c]const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: ?*anyopaque) callconv(.c) void {
-    dispatch(cast(Server, data), sender, std.mem.span(interface_name), std.mem.span(method_name), params, invocation) catch |err| {
-        c.g_dbus_method_invocation_return_dbus_error(invocation, if (err == error.SandboxedClientUnsupported) "org.freedesktop.portal.Error.NotAllowed" else if (err == error.NotSupported) "org.freedesktop.portal.Error.NotSupported" else "org.freedesktop.portal.Error.InvalidArgument", @errorName(err));
+fn replyHandle(server: *Server, message: *const dbus.Message, handle: []const u8) void {
+    server.connection.reply(message, .{dbus.ObjectPath{ .value = handle }}) catch {};
+}
+fn methodCall(data: ?*anyopaque, message: *const dbus.Message) void {
+    // Handlers read arguments as a GVariant tuple, the form the dialogs consume.
+    const params: ?*c.GVariant = blk: {
+        if (message.signature.len == 0) break :blk null;
+        break :blk bridge.argumentsVariant(message) orelse return cast(Server, data).connection.replyError(message, "org.freedesktop.portal.Error.InvalidArgument", "InvalidArguments") catch {};
+    };
+    const server = cast(Server, data);
+    defer if (params) |value| c.g_variant_unref(value);
+    dispatch(server, message.sender orelse "", message.interface orelse "", message.member orelse "", params, message) catch |err| {
+        server.connection.replyError(message, if (err == error.SandboxedClientUnsupported) "org.freedesktop.portal.Error.NotAllowed" else if (err == error.NotSupported) "org.freedesktop.portal.Error.NotSupported" else "org.freedesktop.portal.Error.InvalidArgument", @errorName(err)) catch {};
     };
 }
-fn dispatch(server: *Server, sender: [*:0]const u8, interface: []const u8, method: []const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation) !void {
+fn dispatch(server: *Server, sender: []const u8, interface: []const u8, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
     if (server.quitting) return error.PortalStopping;
     const client_info = try server.getClient(sender);
     if (eq(interface, "org.freedesktop.host.portal.Registry")) {
@@ -703,16 +701,13 @@ fn dispatch(server: *Server, sender: [*:0]const u8, interface: []const u8, metho
         for (id) |ch| if (!std.ascii.isAlphanumeric(ch) and ch != '.' and ch != '_' and ch != '-') return error.InvalidAppId;
         client_info.app = try client_info.arena.allocator().dupeSentinel(u8, id, 0);
         client_info.registered = true;
-        c.g_dbus_method_invocation_return_value(invocation, null);
-        return;
+        return server.connection.reply(message, .{});
     }
+    if (!std.mem.startsWith(u8, interface, public)) return error.NotSupported;
     const short = interface[public.len..];
-    if (eq(short, "Account")) return userInformation(server, client_info, params, invocation);
-    if (eq(short, "FileChooser")) return chooseFile(server, client_info, method, params, invocation);
-    if (eq(short, "Settings")) {
-        server.settings.?.call(method, params, invocation);
-        return;
-    }
+    if (eq(short, "Account")) return userInformation(server, client_info, params, message);
+    if (eq(short, "FileChooser")) return chooseFile(server, client_info, method, params, message);
+    if (eq(short, "Settings")) return server.settings.?.call(method, message);
     if (eq(short, "Notification")) {
         const id_value = child(params, 0);
         defer c.g_variant_unref(id_value);
@@ -722,59 +717,47 @@ fn dispatch(server: *Server, sender: [*:0]const u8, interface: []const u8, metho
             defer c.g_variant_unref(contents);
             try server.notifications.?.add(client_info.sender, client_info.app, id, contents.?);
         } else server.notifications.?.remove(client_info.sender, id);
-        c.g_dbus_method_invocation_return_value(invocation, null);
-        return;
+        return server.connection.reply(message, .{});
     }
-    if (eq(short, "Email")) return composeEmail(server, client_info, params, invocation);
-    if (eq(short, "Inhibit")) return inhibit(server, client_info, params, invocation);
-    if (eq(short, "OpenURI")) return openUri(server, client_info, method, params, invocation);
-    if (eq(short, "NetworkMonitor")) return network(server, client_info, method, params, invocation);
-    if (eq(short, "ScreenCast") and eq(method, "OpenPipeWireRemote")) return openRemote(server, client_info, params, invocation);
-    if (eq(short, "Screenshot")) return screenshot(server, client_info, method, params, invocation);
-    if (eq(short, "ScreenCast")) return screencast(server, client_info, method, params, invocation);
+    if (eq(short, "Email")) return composeEmail(server, client_info, params, message);
+    if (eq(short, "Inhibit")) return inhibit(server, client_info, params, message);
+    if (eq(short, "OpenURI")) return openUri(server, client_info, method, params, message);
+    if (eq(short, "NetworkMonitor")) return network(server, client_info, method, params, message);
+    if (eq(short, "ScreenCast") and eq(method, "OpenPipeWireRemote")) return openRemote(server, client_info, params, message);
+    if (eq(short, "Screenshot")) return screenshot(server, client_info, method, params, message);
+    if (eq(short, "ScreenCast")) return screencast(server, client_info, method, params, message);
     return error.NotSupported;
 }
-fn getProperty(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, interface_name: [*c]const u8, property: [*c]const u8, _: [*c][*c]c.GError, _: ?*anyopaque) callconv(.c) ?*c.GVariant {
-    const short = std.mem.span(interface_name)[public.len..];
-    if (eq(std.mem.span(property), "version")) {
-        const version: c_uint = if (eq(short, "Settings") or eq(short, "Screenshot")) 2 else if (eq(short, "ScreenCast") or eq(short, "FileChooser") or eq(short, "NetworkMonitor")) 3 else if (eq(short, "OpenURI")) 5 else if (eq(short, "Email")) 4 else 1;
-        return c.g_variant_new("u", version);
+fn getProperty(_: ?*anyopaque, _: []const u8, interface: []const u8, property: []const u8, _: std.mem.Allocator) ?dbus.Value {
+    if (!std.mem.startsWith(u8, interface, public)) return null;
+    const short = interface[public.len..];
+    if (eq(property, "version")) {
+        const version: u32 = if (eq(short, "Settings") or eq(short, "Screenshot")) 2 else if (eq(short, "ScreenCast") or eq(short, "FileChooser") or eq(short, "NetworkMonitor")) 3 else if (eq(short, "OpenURI")) 5 else if (eq(short, "Email")) 4 else 1;
+        return .{ .uint32 = version };
     }
-    if (eq(short, "Notification")) return dict();
-    if (eq(short, "ScreenCast")) return c.g_variant_new("u", @as(c_uint, if (eq(std.mem.span(property), "AvailableSourceTypes")) 1 else 3));
+    if (eq(short, "Notification")) return .{ .array = .{ .element = "{sv}", .items = &.{} } };
+    if (eq(short, "ScreenCast")) return .{ .uint32 = if (eq(property, "AvailableSourceTypes")) 1 else 3 };
     return null;
 }
-fn closeRequest(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: ?*anyopaque) callconv(.c) void {
+fn closeRequest(data: ?*anyopaque, message: *const dbus.Message) void {
     const request = cast(Request, data);
-    if (!eq(request.owner, std.mem.span(sender))) {
-        errorReply(invocation, "Request belongs to another client");
-        return;
-    }
+    const connection = request.server.connection;
+    if (!eq(request.owner, message.sender orelse "")) return errorReply(connection, message, "Request belongs to another client");
     request.close();
-    c.g_dbus_method_invocation_return_value(invocation, null);
+    connection.reply(message, .{}) catch {};
 }
-fn closeSession(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: ?*anyopaque) callconv(.c) void {
+fn closeSessionCall(data: ?*anyopaque, message: *const dbus.Message) void {
     const session_info = cast(Session, data);
-    if (!eq(session_info.owner, std.mem.span(sender))) {
-        errorReply(invocation, "Session belongs to another client");
-        return;
-    }
     const server = session_info.server;
+    if (!eq(session_info.owner, message.sender orelse "")) return errorReply(server.connection, message, "Session belongs to another client");
     server.closeSession(session_info);
-    c.g_dbus_method_invocation_return_value(invocation, null);
+    server.connection.reply(message, .{}) catch {};
 }
-fn idlePortalCall(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, method_name: [*c]const u8, _: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: ?*anyopaque) callconv(.c) void {
+fn idlePortalCall(data: ?*anyopaque, message: *const dbus.Message) void {
     const server = cast(Server, data);
-    if (eq(std.mem.span(method_name), "IdleInhibited")) {
-        c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(b)", @as(c.gboolean, @intFromBool(server.idle_inhibited))));
-        return;
-    }
-    c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.DBus.Error.UnknownMethod", "Unknown method");
+    if (eq(message.member orelse "", "IdleInhibited")) return server.connection.reply(message, .{server.idle_inhibited}) catch {};
+    server.connection.replyError(message, "org.freedesktop.DBus.Error.UnknownMethod", "Unknown method") catch {};
 }
-const idle_portal_vtable = c.GDBusInterfaceVTable{ .method_call = &idlePortalCall };
-const main_vtable = c.GDBusInterfaceVTable{ .method_call = &methodCall, .get_property = &getProperty };
-const request_vtable = c.GDBusInterfaceVTable{ .method_call = &closeRequest };
-const session_vtable = c.GDBusInterfaceVTable{ .method_call = &closeSession };
 fn quit(data: ?*anyopaque) callconv(.c) c_int {
     cast(Server, data).quitting = true;
     return 1;
@@ -788,23 +771,19 @@ pub fn runWithAllocator(allocator: std.mem.Allocator) !void {
     _ = c.g_setenv("GIO_USE_NETWORK_MONITOR", "netlink", 1);
     _ = c.g_setenv("GIO_USE_PORTALS", "0", 1);
     _ = c.g_setenv("GTK_USE_PORTAL", "0", 1);
-    const connection = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return error.SessionBusUnavailable;
-    defer c.g_object_unref(connection);
-    const node = c.g_dbus_node_info_new_for_xml(@embedFile("desktop-portal.xml"), null) orelse return error.InvalidPortalXml;
-    defer c.g_dbus_node_info_unref(node);
-    var server = Server{ .connection = connection, .node = node };
+    const source = loop.acquire(.session) catch return error.SessionBusUnavailable;
+    defer loop.release(source);
+    const connection = source.connection;
+    var server = Server{ .connection = connection, .introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-portal.xml")) };
+    defer server.introspection.deinit();
     defer server.deinit();
     try server.start();
-    const reply = c.g_dbus_connection_call_sync(connection, bus, bus_path, bus, "RequestName", c.g_variant_new("(su)", @as([*:0]const u8, "org.freedesktop.portal.Desktop"), @as(c_uint, 4)), @ptrCast(@as([*:0]const u8, "(u)")), 0, 1000, null, null) orelse return error.PortalNameUnavailable;
-    defer c.g_variant_unref(reply);
-    const status = child(reply, 0);
-    defer c.g_variant_unref(status);
-    if (c.g_variant_get_uint32(status) != 1) return error.PortalNameUnavailable;
+    if ((connection.requestName("org.freedesktop.portal.Desktop", 4) catch return error.PortalNameUnavailable) != 1) return error.PortalNameUnavailable;
     const term = c.g_unix_signal_add(c.SIGTERM, &quit, &server);
     const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, &server);
     defer {
         _ = c.g_source_remove(term);
         _ = c.g_source_remove(interrupt);
     }
-    while (!server.quitting and c.g_dbus_connection_is_closed(connection) == 0) _ = c.g_main_context_iteration(null, 1);
+    while (!server.quitting and !connection.closed) _ = c.g_main_context_iteration(null, 1);
 }

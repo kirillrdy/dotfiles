@@ -55,10 +55,11 @@ fn fileStat(fd: c_int) !std.os.linux.Statx {
     return result;
 }
 
-fn attachmentUri(allocator: std.mem.Allocator, descriptors: ?*c.GUnixFDList, handle: c_int) ![:0]const u8 {
-    const list = descriptors orelse return error.MissingFileDescriptor;
-    if (handle < 0 or handle >= c.g_unix_fd_list_get_length(list)) return error.InvalidFileDescriptor;
-    const fd = c.g_unix_fd_list_get(list, handle, null);
+/// `handle` is a descriptor number that must be one of the message's `descriptors`.
+fn attachmentUri(allocator: std.mem.Allocator, descriptors: []const i32, handle: c_int) ![:0]const u8 {
+    if (descriptors.len == 0) return error.MissingFileDescriptor;
+    if (std.mem.indexOfScalar(i32, descriptors, handle) == null) return error.InvalidFileDescriptor;
+    const fd = std.c.fcntl(handle, std.c.F.DUPFD_CLOEXEC, @as(c_int, 0));
     if (fd < 0) return error.InvalidFileDescriptor;
     defer _ = libc.close(fd);
     const original = try fileStat(fd);
@@ -82,7 +83,7 @@ fn attachmentUri(allocator: std.mem.Allocator, descriptors: ?*c.GUnixFDList, han
     return allocator.dupeSentinel(u8, std.mem.span(uri), 0);
 }
 
-pub fn composeUri(allocator: std.mem.Allocator, options: *c.GVariant, descriptors: ?*c.GUnixFDList) ![:0]const u8 {
+pub fn composeUri(allocator: std.mem.Allocator, options: *c.GVariant, descriptors: []const i32) ![:0]const u8 {
     var uri = Uri{ .allocator = allocator };
     defer uri.bytes.deinit(allocator);
     try uri.append("mailto:");
@@ -161,7 +162,7 @@ fn parse(value: [*:0]const u8) *c.GVariant {
 test "email URI escapes recipients and Unicode headers independently" {
     const options = parse("{'address': <'a+b@example.org'>, 'addresses': <['local@host']>, 'cc': <['c&d@example.org']>, 'bcc': <['hidden@example.org']>, 'subject': <'日本語 &bcc=extra'>, 'body': <'first\\nsecond?body=other'>}");
     defer c.g_variant_unref(options);
-    const uri = try composeUri(std.testing.allocator, options, null);
+    const uri = try composeUri(std.testing.allocator, options, &.{});
     defer std.testing.allocator.free(uri);
     try std.testing.expectEqualStrings("mailto:a%2Bb@example.org,local@host?cc=c%26d@example.org&bcc=hidden@example.org&subject=%E6%97%A5%E6%9C%AC%E8%AA%9E%20%26bcc%3Dextra&body=first%0Asecond%3Fbody%3Dother", uri);
 }
@@ -169,17 +170,17 @@ test "email rejects invalid recipients, subjects and typed options" {
     for ([_][*:0]const u8{ "{'address': <'Name <a@b>'>}", "{'cc': <['a@b', 'bad@-host']>}", "{'bcc': <['a@host..org']>}" }) |value| {
         const options = parse(value);
         defer c.g_variant_unref(options);
-        try std.testing.expectError(error.InvalidEmailAddress, composeUri(std.testing.allocator, options, null));
+        try std.testing.expectError(error.InvalidEmailAddress, composeUri(std.testing.allocator, options, &.{}));
     }
     for ([_][*:0]const u8{ "{'subject': <'first\\nsecond'>}", "{'subject': <'first\\rsecond'>}" }) |value| {
         const options = parse(value);
         defer c.g_variant_unref(options);
-        try std.testing.expectError(error.InvalidEmailSubject, composeUri(std.testing.allocator, options, null));
+        try std.testing.expectError(error.InvalidEmailSubject, composeUri(std.testing.allocator, options, &.{}));
     }
     const invalid = parse("{'addresses': <'a@b'>}");
     defer c.g_variant_unref(invalid);
-    try std.testing.expectError(error.InvalidEmailOption, composeUri(std.testing.allocator, invalid, null));
+    try std.testing.expectError(error.InvalidEmailOption, composeUri(std.testing.allocator, invalid, &.{}));
     const missing = parse("{'attachment_fds': <[handle 0]>}");
     defer c.g_variant_unref(missing);
-    try std.testing.expectError(error.MissingFileDescriptor, composeUri(std.testing.allocator, missing, null));
+    try std.testing.expectError(error.MissingFileDescriptor, composeUri(std.testing.allocator, missing, &.{}));
 }

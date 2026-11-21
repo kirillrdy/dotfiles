@@ -4,12 +4,14 @@ const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
+const dbus = @import("dbus");
+const loop = @import("desktop-dbus-loop.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const login_name = "org.freedesktop.login1";
 const login_path = "/org/freedesktop/login1";
 const login_interface = "org.freedesktop.login1.Manager";
 const screensaver_name = "org.freedesktop.ScreenSaver";
-const screensaver_paths = [_][*:0]const u8{ "/org/freedesktop/ScreenSaver", "/ScreenSaver" };
+const screensaver_paths = [_][]const u8{ "/org/freedesktop/ScreenSaver", "/ScreenSaver" };
 const screensaver_xml =
     "<node><interface name=\"org.freedesktop.ScreenSaver\">" ++
     "<method name=\"Inhibit\"><arg type=\"s\" name=\"application_name\" direction=\"in\"/><arg type=\"s\" name=\"reason_for_inhibit\" direction=\"in\"/><arg type=\"u\" name=\"cookie\" direction=\"out\"/></method>" ++
@@ -73,6 +75,9 @@ const Call = struct {
     epoch: u64,
     sleep_serial: u64,
     portal_epoch: u64,
+    /// The connection carrying the call and its serial, so a disconnect can cancel it.
+    source: ?*loop.Source = null,
+    serial: u32 = 0,
     fn create(self: *Service) *Call {
         const call = a.create(Call) catch @panic("out of memory");
         self.refs += 1;
@@ -105,24 +110,23 @@ pub const Service = struct {
     notifier_name: u32 = 0,
     seats: ?*Seat = null,
     wayland_source: c.guint = 0,
-    bus: ?*c.GDBusConnection = null,
-    bus_pending: bool = false,
-    bus_watch: c.guint = 0,
-    sleep_signal: c.guint = 0,
+    bus: ?*loop.Source = null,
+    login_watch: ?*dbus.NameWatcher = null,
+    sleep_signal: u32 = 0,
     owner: ?[:0]u8 = null,
     epoch: u64 = 0,
     sleep_serial: u64 = 0,
     sleeping: bool = false,
     inhibitor: c_int = -1,
     inhibit_pending: bool = false,
-    session_bus: ?*c.GDBusConnection = null,
-    session_pending: bool = false,
-    screensaver_owner: c.guint = 0,
-    screensaver_node: ?*c.GDBusNodeInfo = null,
-    screensaver_regs: [screensaver_paths.len]c.guint = @splat(0),
-    name_signal: c.guint = 0,
-    portal_watch: c.guint = 0,
-    portal_signal: c.guint = 0,
+    session_bus: ?*loop.Source = null,
+    /// Calls awaiting replies; each holds a reference on the service.
+    calls: std.ArrayList(*Call) = .empty,
+    screensaver_introspection: ?dbus.Introspection = null,
+    screensaver_regs: [screensaver_paths.len]u32 = @splat(0),
+    name_signal: u32 = 0,
+    portal_watch: ?*dbus.NameWatcher = null,
+    portal_signal: u32 = 0,
     portal_owner: ?[:0]u8 = null,
     portal_epoch: u64 = 0,
     screensaver_inhibitors: std.ArrayList(ScreenSaverInhibitor) = .empty,
@@ -170,6 +174,7 @@ pub const Service = struct {
         if (self.refs == 0) {
             c.g_object_unref(self.cancel);
             self.screensaver_inhibitors.deinit(a);
+            self.calls.deinit(a);
             a.free(self.executable);
             if (self.wallpaper) |value| a.free(value);
             a.destroy(self);
@@ -178,10 +183,10 @@ pub const Service = struct {
     fn maintain(data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Service, data);
         if (self.connection == null) self.connectWayland();
-        if (self.bus) |bus| if (c.g_dbus_connection_is_closed(bus) != 0) self.disconnectBus();
+        if (self.bus) |bus| if (bus.connection.closed) self.disconnectBus();
         if (self.bus == null) self.connectBus();
         if (self.session_inhibit) {
-            if (self.session_bus) |bus| if (c.g_dbus_connection_is_closed(bus) != 0) self.disconnectSessionBus();
+            if (self.session_bus) |bus| if (bus.connection.closed) self.disconnectSessionBus();
             if (self.session_bus == null) self.connectSessionBus();
         }
         self.acquire();
@@ -315,83 +320,111 @@ pub const Service = struct {
         }
         return 1;
     }
-    fn connectBus(self: *Service) void {
-        if (self.bus_pending) return;
-        self.bus_pending = true;
-        self.refs += 1;
-        c.g_bus_get(c.G_BUS_TYPE_SYSTEM, self.cancel, &busConnected, self);
+    /// Sends a call that holds a reference on the service until it is answered or cancelled.
+    fn send(self: *Service, source: *loop.Source, target: dbus.Connection.Call, args: anytype, handler: dbus.ReplyHandler) bool {
+        const call = Call.create(self);
+        call.source = source;
+        self.calls.ensureUnusedCapacity(a, 1) catch {
+            call.deinit();
+            return false;
+        };
+        call.serial = source.connection.call(target, args, 3000, handler, call) catch {
+            call.deinit();
+            return false;
+        };
+        self.calls.appendAssumeCapacity(call);
+        return true;
     }
-    fn busConnected(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
-        const self = cast(Service, data);
-        defer self.unref();
-        self.bus_pending = false;
-        const bus = c.g_bus_get_finish(result, null) orelse {
-            if (!self.stopped) std.log.warn("idle: system bus unavailable; will retry", .{});
+    /// Forgets an answered call; the caller still owns it and must deinit it.
+    fn answered(call: *Call) void {
+        const calls = &call.service.calls;
+        for (calls.items, 0..) |item, i| if (item == call) {
+            _ = calls.swapRemove(i);
+            break;
+        };
+    }
+    fn cancelCalls(self: *Service, source: *loop.Source) void {
+        var i: usize = 0;
+        while (i < self.calls.items.len) {
+            const call = self.calls.items[i];
+            if (call.source != source) {
+                i += 1;
+                continue;
+            }
+            _ = self.calls.swapRemove(i);
+            source.connection.cancel(call.serial);
+            call.deinit();
+        }
+    }
+    fn connectBus(self: *Service) void {
+        if (self.stopped) return;
+        const source = loop.acquire(.system) catch {
+            std.log.warn("idle: system bus unavailable; will retry", .{});
             return;
         };
-        if (self.stopped) {
-            c.g_object_unref(bus);
+        self.bus = source;
+        self.login_watch = dbus.NameWatcher.create(source.connection, login_name, &appeared, &vanished, self) catch {
+            self.disconnectBus();
             return;
-        }
-        self.bus = bus;
-        c.g_dbus_connection_set_exit_on_close(bus, 0);
-        self.bus_watch = c.g_bus_watch_name_on_connection(bus, login_name, 0, &appeared, &vanished, self, null);
+        };
     }
     fn resetOwner(self: *Service) void {
         self.epoch +%= 1;
         self.release();
         self.inhibit_pending = false;
         self.sleeping = false;
-        if (self.sleep_signal != 0) c.g_dbus_connection_signal_unsubscribe(self.bus, self.sleep_signal);
+        if (self.sleep_signal != 0) if (self.bus) |bus| bus.connection.unsubscribe(self.sleep_signal);
         self.sleep_signal = 0;
         if (self.owner) |owner| a.free(owner);
         self.owner = null;
     }
     fn disconnectBus(self: *Service) void {
-        if (self.bus_watch != 0) c.g_bus_unwatch_name(self.bus_watch);
-        self.bus_watch = 0;
+        if (self.login_watch) |watch| watch.destroy();
+        self.login_watch = null;
         self.resetOwner();
-        if (self.bus) |bus| c.g_object_unref(bus);
+        if (self.bus) |bus| {
+            self.cancelCalls(bus);
+            loop.release(bus);
+        }
         self.bus = null;
     }
-    fn appeared(_: ?*c.GDBusConnection, _: [*c]const u8, owner: [*c]const u8, data: ?*anyopaque) callconv(.c) void {
+    fn appeared(data: ?*anyopaque, owner: []const u8) void {
         const self = cast(Service, data);
         self.resetOwner();
-        self.owner = a.dupeSentinel(u8, std.mem.span(owner), 0) catch @panic("out of memory");
-        self.sleep_signal = c.g_dbus_connection_signal_subscribe(self.bus, self.owner.?.ptr, login_interface, "PrepareForSleep", login_path, null, 0, &prepare, self, null);
+        self.owner = a.dupeSentinel(u8, owner, 0) catch @panic("out of memory");
+        const connection = self.bus.?.connection;
+        self.sleep_signal = connection.subscribe(self.owner.?, login_interface, "PrepareForSleep", login_path, &prepare, self) catch 0;
         self.acquire();
-        c.g_dbus_connection_call(self.bus, self.owner.?.ptr, login_path, "org.freedesktop.DBus.Properties", "Get", c.g_variant_new("(ss)", @as([*:0]const u8, login_interface), @as([*:0]const u8, "PreparingForSleep")), null, c.G_DBUS_CALL_FLAGS_NONE, 3000, self.cancel, &preparingRead, Call.create(self));
+        _ = self.send(self.bus.?, .{ .destination = self.owner.?, .path = login_path, .interface = "org.freedesktop.DBus.Properties", .member = "Get" }, .{ login_interface, "PreparingForSleep" }, &preparingRead);
     }
-    fn vanished(_: ?*c.GDBusConnection, _: [*c]const u8, data: ?*anyopaque) callconv(.c) void {
+    fn vanished(data: ?*anyopaque) void {
         cast(Service, data).resetOwner();
     }
     fn acquire(self: *Service) void {
         if (self.stopped or self.owner == null or self.inhibitor >= 0 or self.inhibit_pending or self.sleeping) return;
-        self.inhibit_pending = true;
-        c.g_dbus_connection_call_with_unix_fd_list(self.bus, self.owner.?.ptr, login_path, login_interface, "Inhibit", c.g_variant_new("(ssss)", @as([*:0]const u8, "sleep"), @as([*:0]const u8, "desktop-zig"), @as([*:0]const u8, "Lock the session before sleep"), @as([*:0]const u8, "delay")), null, c.G_DBUS_CALL_FLAGS_NONE, 3000, null, self.cancel, &inhibited, Call.create(self));
+        self.inhibit_pending = self.send(self.bus.?, .{ .destination = self.owner.?, .path = login_path, .interface = login_interface, .member = "Inhibit" }, .{ "sleep", "desktop-zig", "Lock the session before sleep", "delay" }, &inhibited);
     }
-    fn inhibited(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+    fn inhibited(data: ?*anyopaque, reply: dbus.Reply) void {
         const call = cast(Call, data);
+        Service.answered(call);
         defer call.deinit();
         const self = call.service;
-        var list: [*c]c.GUnixFDList = null;
-        const reply = c.g_dbus_connection_call_with_unix_fd_list_finish(@ptrCast(source), &list, result, null);
-        defer {
-            if (list != null) c.g_object_unref(list);
-        }
-        if (reply == null) {
-            if (call.current()) {
-                self.inhibit_pending = false;
-                std.log.warn("idle: sleep delay inhibitor unavailable; will retry", .{});
-            }
-            return;
-        }
-        defer c.g_variant_unref(reply);
+        const message = switch (reply) {
+            .ok => |message| message,
+            .failed => {
+                if (call.current()) {
+                    self.inhibit_pending = false;
+                    std.log.warn("idle: sleep delay inhibitor unavailable; will retry", .{});
+                }
+                return;
+            },
+        };
         if (!call.current()) return;
         self.inhibit_pending = false;
-        const handle = c.g_variant_get_child_value(reply, 0);
-        defer c.g_variant_unref(handle);
-        if (list != null) self.inhibitor = c.g_unix_fd_list_get(list, c.g_variant_get_handle(handle), null);
+        // The reply owns its descriptor; keep a duplicate.
+        if (message.read(struct { dbus.Fd })) |args| {
+            self.inhibitor = std.c.fcntl(args[0].value, std.c.F.DUPFD_CLOEXEC, @as(c_int, 0));
+        } else |_| {}
         if (self.inhibitor < 0) {
             std.log.warn("idle: invalid sleep inhibitor fd", .{});
             return;
@@ -403,102 +436,98 @@ pub const Service = struct {
         if (self.inhibitor >= 0) _ = libc.close(self.inhibitor);
         self.inhibitor = -1;
     }
-    fn preparingRead(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+    fn preparingRead(data: ?*anyopaque, reply: dbus.Reply) void {
         const call = cast(Call, data);
+        Service.answered(call);
         defer call.deinit();
-        const reply = c.g_dbus_connection_call_finish(@ptrCast(source), result, null) orelse return;
-        defer c.g_variant_unref(reply);
+        const message = switch (reply) {
+            .ok => |message| message,
+            .failed => return,
+        };
         if (!call.current() or call.sleep_serial != call.service.sleep_serial) return;
-        const child = c.g_variant_get_child_value(reply, 0);
-        defer c.g_variant_unref(child);
-        const value = c.g_variant_get_variant(child);
-        defer c.g_variant_unref(value);
-        call.service.setPreparing(c.g_variant_get_boolean(value) != 0);
+        const value = (message.read(struct { dbus.Value }) catch return)[0];
+        switch (value) {
+            .boolean => |sleeping| call.service.setPreparing(sleeping),
+            else => {},
+        }
     }
     fn connectSessionBus(self: *Service) void {
-        if (!self.session_inhibit or self.session_pending) return;
-        self.session_pending = true;
-        self.refs += 1;
-        c.g_bus_get(c.G_BUS_TYPE_SESSION, self.cancel, &sessionBusConnected, self);
-    }
-    fn sessionBusConnected(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
-        const self = cast(Service, data);
-        defer self.unref();
-        self.session_pending = false;
-        const bus = c.g_bus_get_finish(result, null) orelse {
-            if (!self.stopped) std.log.warn("idle: session bus unavailable; will retry", .{});
+        if (!self.session_inhibit or self.stopped) return;
+        const source = loop.acquire(.session) catch {
+            std.log.warn("idle: session bus unavailable; will retry", .{});
             return;
         };
-        if (self.stopped) {
-            c.g_object_unref(bus);
-            return;
-        }
-        self.session_bus = bus;
-        c.g_dbus_connection_set_exit_on_close(bus, 0);
-        const node = c.g_dbus_node_info_new_for_xml(screensaver_xml, null) orelse @panic("invalid ScreenSaver XML");
-        self.screensaver_node = node;
+        self.session_bus = source;
+        const connection = source.connection;
+        self.screensaver_introspection = dbus.Introspection.parse(a, screensaver_xml) catch @panic("invalid ScreenSaver XML");
         for (screensaver_paths, 0..) |object_path, i| {
-            self.screensaver_regs[i] = c.g_dbus_connection_register_object(bus, object_path, node.*.interfaces[0], &screensaver_vtable, self, null, null);
+            self.screensaver_regs[i] = connection.exportObject(object_path, &self.screensaver_introspection.?.interfaces[0], &screensaverCall, null, self) catch 0;
             if (self.screensaver_regs[i] == 0) std.log.warn("idle: failed to register ScreenSaver at {s}", .{object_path});
         }
-        self.screensaver_owner = c.g_bus_own_name_on_connection(bus, screensaver_name, c.G_BUS_NAME_OWNER_FLAGS_NONE, null, null, null, null);
-        self.name_signal = c.g_dbus_connection_signal_subscribe(bus, "org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", null, 0, &sessionOwnerChanged, self, null);
-        self.portal_watch = c.g_bus_watch_name_on_connection(bus, portal_name, 0, &portalAppeared, &portalVanished, self, null);
+        // Like g_bus_own_name without flags: queue behind any current owner.
+        connection.send(.{ .destination = "org.freedesktop.DBus", .path = "/org/freedesktop/DBus", .interface = "org.freedesktop.DBus", .member = "RequestName" }, .{ screensaver_name, @as(u32, 0) }) catch {};
+        self.name_signal = connection.subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", &sessionOwnerChanged, self) catch 0;
+        self.portal_watch = dbus.NameWatcher.create(connection, portal_name, &portalAppeared, &portalVanished, self) catch null;
     }
     fn disconnectSessionBus(self: *Service) void {
-        if (self.portal_watch != 0) c.g_bus_unwatch_name(self.portal_watch);
-        self.portal_watch = 0;
+        if (self.portal_watch) |watch| watch.destroy();
+        self.portal_watch = null;
         self.resetPortal();
-        if (self.name_signal != 0 and self.session_bus != null) c.g_dbus_connection_signal_unsubscribe(self.session_bus, self.name_signal);
+        const source = self.session_bus orelse {
+            self.clearScreenSaverInhibitors();
+            return;
+        };
+        const connection = source.connection;
+        if (self.name_signal != 0) connection.unsubscribe(self.name_signal);
         self.name_signal = 0;
-        if (self.screensaver_owner != 0) c.g_bus_unown_name(self.screensaver_owner);
-        self.screensaver_owner = 0;
+        connection.send(.{ .destination = "org.freedesktop.DBus", .path = "/org/freedesktop/DBus", .interface = "org.freedesktop.DBus", .member = "ReleaseName" }, .{screensaver_name}) catch {};
         for (&self.screensaver_regs) |*reg| {
-            if (reg.* != 0 and self.session_bus != null) _ = c.g_dbus_connection_unregister_object(self.session_bus, reg.*);
+            if (reg.* != 0) connection.unregister(reg.*);
             reg.* = 0;
         }
-        if (self.screensaver_node) |node| c.g_dbus_node_info_unref(node);
-        self.screensaver_node = null;
+        if (self.screensaver_introspection) |*introspection| introspection.deinit();
+        self.screensaver_introspection = null;
         self.clearScreenSaverInhibitors();
-        if (self.session_bus) |bus| c.g_object_unref(bus);
+        self.cancelCalls(source);
+        loop.release(source);
         self.session_bus = null;
     }
     fn resetPortal(self: *Service) void {
         self.portal_epoch +%= 1;
-        if (self.portal_signal != 0 and self.session_bus != null) c.g_dbus_connection_signal_unsubscribe(self.session_bus, self.portal_signal);
+        if (self.portal_signal != 0) if (self.session_bus) |bus| bus.connection.unsubscribe(self.portal_signal);
         self.portal_signal = 0;
         if (self.portal_owner) |owner| a.free(owner);
         self.portal_owner = null;
         self.portal_inhibited = false;
         self.syncInhibition();
     }
-    fn portalAppeared(_: ?*c.GDBusConnection, _: [*c]const u8, owner: [*c]const u8, data: ?*anyopaque) callconv(.c) void {
+    fn portalAppeared(data: ?*anyopaque, owner: []const u8) void {
         const self = cast(Service, data);
         self.resetPortal();
-        self.portal_owner = a.dupeSentinel(u8, std.mem.span(owner), 0) catch @panic("out of memory");
-        self.portal_signal = c.g_dbus_connection_signal_subscribe(self.session_bus, self.portal_owner.?.ptr, portal_interface, "IdleInhibitedChanged", portal_path, null, 0, &portalChanged, self, null);
-        c.g_dbus_connection_call(self.session_bus, self.portal_owner.?.ptr, portal_path, portal_interface, "IdleInhibited", null, @ptrCast(@as([*:0]const u8, "(b)")), c.G_DBUS_CALL_FLAGS_NONE, 3000, self.cancel, &portalRead, Call.create(self));
+        self.portal_owner = a.dupeSentinel(u8, owner, 0) catch @panic("out of memory");
+        const source = self.session_bus.?;
+        self.portal_signal = source.connection.subscribe(self.portal_owner.?, portal_interface, "IdleInhibitedChanged", portal_path, &portalChanged, self) catch 0;
+        _ = self.send(source, .{ .destination = self.portal_owner.?, .path = portal_path, .interface = portal_interface, .member = "IdleInhibited" }, .{}, &portalRead);
     }
-    fn portalVanished(_: ?*c.GDBusConnection, _: [*c]const u8, data: ?*anyopaque) callconv(.c) void {
+    fn portalVanished(data: ?*anyopaque) void {
         cast(Service, data).resetPortal();
     }
-    fn portalRead(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+    fn portalRead(data: ?*anyopaque, reply: dbus.Reply) void {
         const call = cast(Call, data);
+        Service.answered(call);
         defer call.deinit();
-        const reply = c.g_dbus_connection_call_finish(@ptrCast(source), result, null) orelse return;
-        defer c.g_variant_unref(reply);
+        const message = switch (reply) {
+            .ok => |message| message,
+            .failed => return,
+        };
         if (!call.currentPortal()) return;
-        const value = c.g_variant_get_child_value(reply, 0);
-        defer c.g_variant_unref(value);
-        call.service.portal_inhibited = c.g_variant_get_boolean(value) != 0;
+        call.service.portal_inhibited = (message.read(struct { bool }) catch return)[0];
         call.service.syncInhibition();
     }
-    fn portalChanged(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, parameters: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
+    fn portalChanged(data: ?*anyopaque, message: *const dbus.Message) void {
         const self = cast(Service, data);
-        if (self.portal_owner == null or !std.mem.eql(u8, std.mem.span(sender), self.portal_owner.?)) return;
-        const value = c.g_variant_get_child_value(parameters, 0);
-        defer c.g_variant_unref(value);
-        self.portal_inhibited = c.g_variant_get_boolean(value) != 0;
+        if (self.portal_owner == null or !std.mem.eql(u8, message.sender orelse "", self.portal_owner.?)) return;
+        self.portal_inhibited = (message.read(struct { bool }) catch return)[0];
         self.syncInhibition();
     }
     fn clearScreenSaverInhibitors(self: *Service) void {
@@ -553,48 +582,37 @@ pub const Service = struct {
         }
         if (changed) self.syncInhibition();
     }
-    fn sessionOwnerChanged(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, parameters: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
+    fn sessionOwnerChanged(data: ?*anyopaque, message: *const dbus.Message) void {
         const self = cast(Service, data);
-        const name_val = c.g_variant_get_child_value(parameters, 0);
-        defer c.g_variant_unref(name_val);
-        const owner_val = c.g_variant_get_child_value(parameters, 2);
-        defer c.g_variant_unref(owner_val);
-        const name = std.mem.span(c.g_variant_get_string(name_val, null));
-        const new_owner = std.mem.span(c.g_variant_get_string(owner_val, null));
-        if (new_owner.len == 0 and std.mem.startsWith(u8, name, ":")) self.removeScreenSaverSender(name);
+        const args = message.read(struct { []const u8, []const u8, []const u8 }) catch return;
+        if (args[2].len == 0 and std.mem.startsWith(u8, args[0], ":")) self.removeScreenSaverSender(args[0]);
     }
-    fn screensaverCall(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, _: [*c]const u8, method_name: [*c]const u8, parameters: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: ?*anyopaque) callconv(.c) void {
+    fn screensaverCall(data: ?*anyopaque, message: *const dbus.Message) void {
         const self = cast(Service, data);
-        const caller = std.mem.span(sender);
-        const method = std.mem.span(method_name);
+        const connection = self.session_bus.?.connection;
+        const caller = message.sender orelse "";
+        const method = message.member orelse "";
         if (std.mem.eql(u8, method, "Inhibit")) {
-            const cookie = self.addScreenSaverInhibitor(caller) catch {
-                c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.DBus.Error.LimitsExceeded", "Too many idle inhibitors");
-                return;
-            };
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(u)", cookie));
+            const cookie = self.addScreenSaverInhibitor(caller) catch return connection.replyError(message, "org.freedesktop.DBus.Error.LimitsExceeded", "Too many idle inhibitors") catch {};
+            connection.reply(message, .{cookie}) catch {};
         } else if (std.mem.eql(u8, method, "UnInhibit")) {
-            const cookie_val = c.g_variant_get_child_value(parameters, 0);
-            defer c.g_variant_unref(cookie_val);
-            self.removeScreenSaverInhibitor(caller, c.g_variant_get_uint32(cookie_val)) catch |err| {
-                const err_name: [*:0]const u8 = if (err == error.AccessDenied) "org.freedesktop.DBus.Error.AccessDenied" else "org.freedesktop.DBus.Error.InvalidArgs";
-                c.g_dbus_method_invocation_return_dbus_error(invocation, err_name, @errorName(err));
-                return;
+            const cookie = (message.read(struct { u32 }) catch return)[0];
+            self.removeScreenSaverInhibitor(caller, cookie) catch |err| {
+                const err_name = if (err == error.AccessDenied) "org.freedesktop.DBus.Error.AccessDenied" else "org.freedesktop.DBus.Error.InvalidArgs";
+                return connection.replyError(message, err_name, @errorName(err)) catch {};
             };
-            c.g_dbus_method_invocation_return_value(invocation, null);
+            connection.reply(message, .{}) catch {};
         } else if (std.mem.eql(u8, method, "SimulateUserActivity")) {
             self.resetIdleTimer();
-            c.g_dbus_method_invocation_return_value(invocation, null);
+            connection.reply(message, .{}) catch {};
         } else {
-            c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.DBus.Error.UnknownMethod", "Unknown method");
+            connection.replyError(message, "org.freedesktop.DBus.Error.UnknownMethod", "Unknown method") catch {};
         }
     }
-    fn prepare(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, parameters: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
+    fn prepare(data: ?*anyopaque, message: *const dbus.Message) void {
         const self = cast(Service, data);
         self.sleep_serial +%= 1;
-        const value = c.g_variant_get_child_value(parameters, 0);
-        defer c.g_variant_unref(value);
-        self.setPreparing(c.g_variant_get_boolean(value) != 0);
+        self.setPreparing((message.read(struct { bool }) catch return)[0]);
     }
     fn setPreparing(self: *Service, sleeping: bool) void {
         self.sleeping = sleeping;
@@ -669,7 +687,6 @@ pub const Service = struct {
         if (!self.stopped and self.sleeping and successful) self.ensureLocked();
     }
 };
-const screensaver_vtable = c.GDBusInterfaceVTable{ .method_call = &Service.screensaverCall };
 
 test "ScreenSaver inhibitors track senders and enforce ownership" {
     var service = Service{ .timeout_ms = 600_000, .executable = try a.dupeSentinel(u8, "/bin/false", 0), .session_inhibit = true, .cancel = c.g_cancellable_new() };

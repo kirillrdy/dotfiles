@@ -265,17 +265,7 @@ pub extern fn g_object_get_data(object: [*c]GObject, key: [*c]const gchar) gpoin
 pub extern fn g_object_set_data_full(object: [*c]GObject, key: [*c]const gchar, data: gpointer, destroy: GDestroyNotify) void;
 pub extern fn g_object_weak_ref(object: ?*GObject, notify: ?*const fn (?*anyopaque, ?*GObject) callconv(.c) void, data: ?*anyopaque) void;
 pub const GAppInfoCreateFlags = c_uint;
-pub const G_BUS_TYPE_SESSION: c_int = 2;
-pub const GBusType = c_int;
-pub const G_BUS_NAME_OWNER_FLAGS_NONE: c_int = 0;
-pub const GBusNameOwnerFlags = c_uint;
-pub const G_DBUS_CALL_FLAGS_NONE: c_int = 0;
-pub const GDBusCallFlags = c_uint;
-pub const GDBusPropertyInfoFlags = c_uint;
-pub const G_DBUS_SIGNAL_FLAGS_NONE: c_int = 0;
-pub const GDBusSignalFlags = c_uint;
 pub const G_APPLICATION_HANDLES_COMMAND_LINE: c_int = 8;
-pub const GApplicationFlags = c_uint;
 pub const G_SUBPROCESS_FLAGS_NONE: c_int = 0;
 pub const G_SUBPROCESS_FLAGS_STDOUT_SILENCE: c_int = 8;
 pub const G_SUBPROCESS_FLAGS_STDERR_PIPE: c_int = 16;
@@ -316,26 +306,12 @@ pub const struct__GCancellable = extern struct {
 };
 
 pub const GCancellable = struct__GCancellable;
-pub const struct__GApplicationPrivate = opaque {};
 
-pub const GApplicationPrivate = struct__GApplicationPrivate;
 
-pub const struct__GApplication = extern struct {
-    parent_instance: GObject = @import("std").mem.zeroes(GObject),
-    priv: ?*GApplicationPrivate = null,
-};
 
-pub const GApplication = struct__GApplication;
-pub const struct__GApplicationCommandLinePrivate = opaque {};
 
-pub const GApplicationCommandLinePrivate = struct__GApplicationCommandLinePrivate;
 
-pub const struct__GApplicationCommandLine = extern struct {
-    parent_instance: GObject = @import("std").mem.zeroes(GObject),
-    priv: ?*GApplicationCommandLinePrivate = null,
-};
 
-pub const GApplicationCommandLine = struct__GApplicationCommandLine;
 pub const struct__GSettingsBackend = opaque {};
 
 pub const GSettingsBackend = struct__GSettingsBackend;
@@ -359,91 +335,23 @@ pub const struct__GTask = opaque {};
 
 pub const GTask = struct__GTask;
 pub const GAsyncReadyCallback = ?*const fn (source_object: [*c]GObject, res: ?*GAsyncResult, data: gpointer) callconv(.c) void;
-pub const struct__GDBusConnection = opaque {};
 
-pub const GDBusConnection = struct__GDBusConnection;
-pub const struct__GDBusMethodInvocation = opaque {};
 
-pub const GDBusMethodInvocation = struct__GDBusMethodInvocation;
-pub const GDBusInterfaceMethodCallFunc = ?*const fn (connection: ?*GDBusConnection, sender: [*c]const gchar, object_path: [*c]const gchar, interface_name: [*c]const gchar, method_name: [*c]const gchar, parameters: ?*GVariant, invocation: ?*GDBusMethodInvocation, user_data: gpointer) callconv(.c) void;
-pub const GDBusInterfaceGetPropertyFunc = ?*const fn (connection: ?*GDBusConnection, sender: [*c]const gchar, object_path: [*c]const gchar, interface_name: [*c]const gchar, property_name: [*c]const gchar, @"error": [*c][*c]GError, user_data: gpointer) callconv(.c) ?*GVariant;
-pub const GDBusInterfaceSetPropertyFunc = ?*const fn (connection: ?*GDBusConnection, sender: [*c]const gchar, object_path: [*c]const gchar, interface_name: [*c]const gchar, property_name: [*c]const gchar, value: ?*GVariant, @"error": [*c][*c]GError, user_data: gpointer) callconv(.c) gboolean;
 
-pub const struct__GDBusInterfaceVTable = extern struct {
-    method_call: GDBusInterfaceMethodCallFunc = null,
-    get_property: GDBusInterfaceGetPropertyFunc = null,
-    set_property: GDBusInterfaceSetPropertyFunc = null,
-    padding: [8]gpointer = @import("std").mem.zeroes([8]gpointer),
-};
 
-pub const GDBusInterfaceVTable = struct__GDBusInterfaceVTable;
 
-pub const struct__GDBusAnnotationInfo = extern struct {
-    ref_count: gint = 0,
-    key: [*c]gchar = null,
-    value: [*c]gchar = null,
-    annotations: [*c][*c]GDBusAnnotationInfo = null,
-};
 
-pub const GDBusAnnotationInfo = struct__GDBusAnnotationInfo;
 
-pub const struct__GDBusArgInfo = extern struct {
-    ref_count: gint = 0,
-    name: [*c]gchar = null,
-    signature: [*c]gchar = null,
-    annotations: [*c][*c]GDBusAnnotationInfo = null,
-};
 
-pub const GDBusArgInfo = struct__GDBusArgInfo;
 
-pub const struct__GDBusMethodInfo = extern struct {
-    ref_count: gint = 0,
-    name: [*c]gchar = null,
-    in_args: [*c][*c]GDBusArgInfo = null,
-    out_args: [*c][*c]GDBusArgInfo = null,
-    annotations: [*c][*c]GDBusAnnotationInfo = null,
-};
 
-pub const GDBusMethodInfo = struct__GDBusMethodInfo;
 
-pub const struct__GDBusSignalInfo = extern struct {
-    ref_count: gint = 0,
-    name: [*c]gchar = null,
-    args: [*c][*c]GDBusArgInfo = null,
-    annotations: [*c][*c]GDBusAnnotationInfo = null,
-};
 
-pub const GDBusSignalInfo = struct__GDBusSignalInfo;
 
-pub const struct__GDBusPropertyInfo = extern struct {
-    ref_count: gint = 0,
-    name: [*c]gchar = null,
-    signature: [*c]gchar = null,
-    flags: GDBusPropertyInfoFlags = @import("std").mem.zeroes(GDBusPropertyInfoFlags),
-    annotations: [*c][*c]GDBusAnnotationInfo = null,
-};
 
-pub const GDBusPropertyInfo = struct__GDBusPropertyInfo;
 
-pub const struct__GDBusInterfaceInfo = extern struct {
-    ref_count: gint = 0,
-    name: [*c]gchar = null,
-    methods: [*c][*c]GDBusMethodInfo = null,
-    signals: [*c][*c]GDBusSignalInfo = null,
-    properties: [*c][*c]GDBusPropertyInfo = null,
-    annotations: [*c][*c]GDBusAnnotationInfo = null,
-};
 
-pub const GDBusInterfaceInfo = struct__GDBusInterfaceInfo;
-pub const GDBusNodeInfo = struct__GDBusNodeInfo;
 
-pub const struct__GDBusNodeInfo = extern struct {
-    ref_count: gint = 0,
-    path: [*c]gchar = null,
-    interfaces: [*c][*c]GDBusInterfaceInfo = null,
-    nodes: [*c][*c]GDBusNodeInfo = null,
-    annotations: [*c][*c]GDBusAnnotationInfo = null,
-};
 
 pub const struct__GSubprocess = opaque {};
 
@@ -460,38 +368,8 @@ pub extern fn g_app_info_get_id(appinfo: ?*GAppInfo) [*c]const gchar;
 pub extern fn g_app_info_launch(appinfo: ?*GAppInfo, files: [*c]GList, context: [*c]GAppLaunchContext, @"error": [*c][*c]GError) gboolean;
 pub extern fn g_app_info_should_show(appinfo: ?*GAppInfo) gboolean;
 pub extern fn g_app_info_get_all() [*c]GList;
-pub extern fn g_application_new(application_id: [*c]const gchar, flags: GApplicationFlags) [*c]GApplication;
-pub extern fn g_application_get_dbus_connection(application: [*c]GApplication) ?*GDBusConnection;
-pub extern fn g_application_hold(application: [*c]GApplication) void;
-pub extern fn g_application_run(application: [*c]GApplication, argc: c_int, argv: [*c][*c]u8) c_int;
-pub extern fn g_application_quit(application: [*c]GApplication) void;
-pub extern fn g_application_get_default() [*c]GApplication;
-pub extern fn g_application_command_line_get_arguments(cmdline: [*c]GApplicationCommandLine, argc: [*c]c_int) [*c][*c]gchar;
-pub extern fn g_application_command_line_printerr(cmdline: [*c]GApplicationCommandLine, format: [*c]const gchar, ...) void;
 pub extern fn g_cancellable_new() [*c]GCancellable;
 pub extern fn g_cancellable_cancel(cancellable: [*c]GCancellable) void;
-pub extern fn g_bus_get(bus_type: GBusType, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
-pub extern fn g_bus_get_finish(res: ?*GAsyncResult, @"error": [*c][*c]GError) ?*GDBusConnection;
-pub extern fn g_bus_get_sync(bus_type: GBusType, cancellable: [*c]GCancellable, @"error": [*c][*c]GError) ?*GDBusConnection;
-pub extern fn g_dbus_connection_emit_signal(connection: ?*GDBusConnection, destination_bus_name: [*c]const gchar, object_path: [*c]const gchar, interface_name: [*c]const gchar, signal_name: [*c]const gchar, parameters: ?*GVariant, @"error": [*c][*c]GError) gboolean;
-pub extern fn g_dbus_connection_call(connection: ?*GDBusConnection, bus_name: [*c]const gchar, object_path: [*c]const gchar, interface_name: [*c]const gchar, method_name: [*c]const gchar, parameters: ?*GVariant, reply_type: ?*const GVariantType, flags: GDBusCallFlags, timeout_msec: gint, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
-pub extern fn g_dbus_connection_call_finish(connection: ?*GDBusConnection, res: ?*GAsyncResult, @"error": [*c][*c]GError) ?*GVariant;
-pub extern fn g_dbus_connection_call_sync(connection: ?*GDBusConnection, bus_name: [*c]const gchar, object_path: [*c]const gchar, interface_name: [*c]const gchar, method_name: [*c]const gchar, parameters: ?*GVariant, reply_type: ?*const GVariantType, flags: GDBusCallFlags, timeout_msec: gint, cancellable: [*c]GCancellable, @"error": [*c][*c]GError) ?*GVariant;
-pub extern fn g_dbus_connection_register_object(connection: ?*GDBusConnection, object_path: [*c]const gchar, interface_info: [*c]GDBusInterfaceInfo, vtable: [*c]const GDBusInterfaceVTable, user_data: gpointer, user_data_free_func: GDestroyNotify, @"error": [*c][*c]GError) guint;
-pub extern fn g_dbus_connection_unregister_object(connection: ?*GDBusConnection, registration_id: guint) gboolean;
-pub const GDBusSignalCallback = ?*const fn (connection: ?*GDBusConnection, sender_name: [*c]const gchar, object_path: [*c]const gchar, interface_name: [*c]const gchar, signal_name: [*c]const gchar, parameters: ?*GVariant, user_data: gpointer) callconv(.c) void;
-pub extern fn g_dbus_connection_signal_subscribe(connection: ?*GDBusConnection, sender: [*c]const gchar, interface_name: [*c]const gchar, member: [*c]const gchar, object_path: [*c]const gchar, arg0: [*c]const gchar, flags: GDBusSignalFlags, callback: GDBusSignalCallback, user_data: gpointer, user_data_free_func: GDestroyNotify) guint;
-pub extern fn g_dbus_connection_signal_unsubscribe(connection: ?*GDBusConnection, subscription_id: guint) void;
-pub extern fn g_dbus_node_info_new_for_xml(xml_data: [*c]const gchar, @"error": [*c][*c]GError) [*c]GDBusNodeInfo;
-pub extern fn g_dbus_node_info_unref(info: [*c]GDBusNodeInfo) void;
-pub extern fn g_dbus_method_invocation_return_value(invocation: ?*GDBusMethodInvocation, parameters: ?*GVariant) void;
-pub extern fn g_dbus_method_invocation_return_dbus_error(invocation: ?*GDBusMethodInvocation, error_name: [*c]const gchar, error_message: [*c]const gchar) void;
-pub const GBusAcquiredCallback = ?*const fn (connection: ?*GDBusConnection, name: [*c]const gchar, user_data: gpointer) callconv(.c) void;
-pub const GBusNameAcquiredCallback = ?*const fn (connection: ?*GDBusConnection, name: [*c]const gchar, user_data: gpointer) callconv(.c) void;
-pub const GBusNameLostCallback = ?*const fn (connection: ?*GDBusConnection, name: [*c]const gchar, user_data: gpointer) callconv(.c) void;
-pub extern fn g_bus_own_name(bus_type: GBusType, name: [*c]const gchar, flags: GBusNameOwnerFlags, bus_acquired_handler: GBusAcquiredCallback, name_acquired_handler: GBusNameAcquiredCallback, name_lost_handler: GBusNameLostCallback, user_data: gpointer, user_data_free_func: GDestroyNotify) guint;
-pub extern fn g_bus_own_name_on_connection(connection: ?*GDBusConnection, name: [*c]const gchar, flags: GBusNameOwnerFlags, name_acquired_handler: GBusNameAcquiredCallback, name_lost_handler: GBusNameLostCallback, user_data: gpointer, user_data_free_func: GDestroyNotify) guint;
-pub extern fn g_bus_unown_name(owner_id: guint) void;
 pub extern fn g_file_new_for_path(path: [*c]const u8) ?*GFile;
 pub const struct__GSettingsSchemaSource = opaque {};
 
@@ -552,18 +430,6 @@ pub extern fn g_filename_to_uri([*c]const u8, [*c]const u8, [*c][*c]GError) [*c]
 pub extern fn g_get_user_runtime_dir() [*:0]const u8;
 pub const SIGINT = @as(c_int, 2);
 pub const SIGTERM = @as(c_int, 15);
-pub const GUnixFDList = extern struct { parent_instance: GObject, priv: ?*anyopaque };
-pub const G_BUS_TYPE_SYSTEM: c_int = 1;
-pub const GBusNameWatcherFlags = c_uint;
-pub const GBusNameAppearedCallback = ?*const fn (?*GDBusConnection, [*c]const gchar, [*c]const gchar, gpointer) callconv(.c) void;
-pub const GBusNameVanishedCallback = ?*const fn (?*GDBusConnection, [*c]const gchar, gpointer) callconv(.c) void;
-pub extern fn g_bus_watch_name_on_connection(?*GDBusConnection, [*c]const gchar, GBusNameWatcherFlags, GBusNameAppearedCallback, GBusNameVanishedCallback, gpointer, GDestroyNotify) guint;
-pub extern fn g_bus_unwatch_name(guint) void;
-pub extern fn g_dbus_connection_is_closed(?*GDBusConnection) gboolean;
-pub extern fn g_dbus_connection_set_exit_on_close(?*GDBusConnection, gboolean) void;
-pub extern fn g_dbus_connection_call_with_unix_fd_list(?*GDBusConnection, [*c]const gchar, [*c]const gchar, [*c]const gchar, [*c]const gchar, ?*GVariant, ?*const GVariantType, GDBusCallFlags, gint, [*c]GUnixFDList, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
-pub extern fn g_dbus_connection_call_with_unix_fd_list_finish(?*GDBusConnection, [*c][*c]GUnixFDList, ?*GAsyncResult, [*c][*c]GError) ?*GVariant;
-pub extern fn g_unix_fd_list_get([*c]GUnixFDList, gint, [*c][*c]GError) gint;
 pub extern fn g_variant_get_handle(?*GVariant) gint32;
 pub extern fn g_variant_get_variant(?*GVariant) ?*GVariant;
 pub extern fn g_file_read_link([*c]const gchar, [*c][*c]GError) [*c]gchar;
@@ -573,8 +439,6 @@ pub extern fn g_cancellable_connect([*c]GCancellable, GCallback, gpointer, GDest
 pub extern fn g_cancellable_disconnect([*c]GCancellable, gulong) void;
 
 // GIO proxy properties and variant helpers.
-pub const GDBusProxy = extern struct {};
-pub extern fn g_dbus_proxy_get_cached_property([*c]GDBusProxy, [*c]const gchar) ?*GVariant;
 pub extern fn g_variant_get_type_string(?*GVariant) [*c]const gchar;
 pub extern fn g_variant_get_double(?*GVariant) f64;
 pub extern fn g_variant_get_uint64(?*GVariant) u64;
@@ -582,17 +446,10 @@ pub extern fn g_variant_print(?*GVariant, gboolean) [*c]gchar;
 pub extern fn g_variant_parse(?*const GVariantType, [*c]const gchar, [*c]const gchar, [*c][*c]const gchar, [*c][*c]GError) ?*GVariant;
 pub extern fn g_variant_type_string_is_valid([*c]const gchar) gboolean;
 pub extern fn g_uuid_string_random() [*c]gchar;
-pub extern fn g_dbus_error_get_remote_error([*c]const GError) [*c]gchar;
 pub extern fn g_variant_type_is_definite(?*const GVariantType) gboolean;
 
 // Native portal broker: tuples and Unix file descriptor forwarding.
-pub const GDBusMessage = opaque {};
 pub extern fn g_variant_new_tuple([*c]const ?*GVariant, gsize) ?*GVariant;
-pub extern fn g_dbus_method_invocation_get_message(?*GDBusMethodInvocation) ?*GDBusMessage;
-pub extern fn g_dbus_message_get_unix_fd_list(?*GDBusMessage) [*c]GUnixFDList;
-pub extern fn g_dbus_method_invocation_return_value_with_unix_fd_list(?*GDBusMethodInvocation, ?*GVariant, [*c]GUnixFDList) void;
-pub extern fn g_unix_fd_list_new() [*c]GUnixFDList;
-pub extern fn g_unix_fd_list_append([*c]GUnixFDList, gint, [*c][*c]GError) gint;
 pub extern fn g_app_info_launch_default_for_uri_async([*c]const gchar, ?*GAppLaunchContext, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
 pub extern fn g_app_info_launch_default_for_uri_finish(?*GAsyncResult, [*c][*c]GError) gboolean;
 pub extern fn g_app_info_get_default_for_uri_scheme([*c]const gchar) ?*GAppInfo;
@@ -642,7 +499,6 @@ pub extern fn g_get_real_name() [*c]const gchar;
 pub extern fn g_strcompress([*c]const gchar) [*c]gchar;
 pub extern fn g_app_launch_context_setenv(?*GAppLaunchContext, [*c]const gchar, [*c]const gchar) void;
 pub extern fn g_app_launch_context_get_type() GType;
-pub extern fn g_unix_fd_list_get_length(?*GUnixFDList) gint;
 pub const GAppLaunchContextClass = extern struct {
     parent_class: GObjectClass,
     get_display: ?*const fn (?*GAppLaunchContext, ?*GAppInfo, [*c]GList) callconv(.c) [*c]gchar,
@@ -656,8 +512,6 @@ pub const GAppLaunchContextClass = extern struct {
 };
 
 pub extern fn g_variant_builder_add_value(?*GVariantBuilder, ?*GVariant) void;
-pub extern fn g_dbus_error_set_dbus_error([*c][*c]GError, [*c]const gchar, [*c]const gchar, [*c]const gchar, ...) void;
-pub const G_DBUS_CALL_FLAGS_NO_AUTO_START = 1;
 
 pub const __icons = struct {
     pub const load = @import("desktop-icons.zig").load;

@@ -1,8 +1,10 @@
 //! Shared, event-driven NetworkManager state and asynchronous actions on the system bus.
 const std = @import("std");
 const c = @import("desktop-glib.zig");
-const g = @import("desktop-network-api.zig");
-pub const api = g;
+const dbus = @import("dbus");
+const loop = @import("desktop-dbus-loop.zig");
+const bridge = @import("desktop-dbus-gvariant.zig");
+const objects = @import("desktop-dbus-objects.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const name = "org.freedesktop.NetworkManager";
 const root = "/org/freedesktop/NetworkManager";
@@ -17,20 +19,22 @@ fn z(value: []const u8) [:0]u8 {
 }
 const eq = c.__zig.eq;
 const string = c.__zig.variant.slice;
-fn prop(proxy: *c.GDBusProxy, key: [*:0]const u8) ?*c.GVariant {
-    return c.g_dbus_proxy_get_cached_property(proxy, key);
+/// An interface's cached properties, as mirrored from NetworkManager's ObjectManager.
+const Proxy = objects.Interface;
+fn prop(proxy: *const Proxy, key: [*:0]const u8) ?*c.GVariant {
+    return proxy.property(key);
 }
-fn text(proxy: *c.GDBusProxy, key: [*:0]const u8) [:0]u8 {
+fn text(proxy: *const Proxy, key: [*:0]const u8) [:0]u8 {
     const v = prop(proxy, key);
     defer if (v) |p| c.g_variant_unref(p);
     return z(string(v));
 }
-fn number(proxy: *c.GDBusProxy, key: [*:0]const u8) u32 {
+fn number(proxy: *const Proxy, key: [*:0]const u8) u32 {
     const v = prop(proxy, key) orelse return 0;
     defer c.g_variant_unref(v);
     return if (eq(std.mem.span(c.g_variant_get_type_string(v)), "y")) c.g_variant_get_byte(v) else c.g_variant_get_uint32(v);
 }
-fn boolean(proxy: *c.GDBusProxy, key: [*:0]const u8) bool {
+fn boolean(proxy: *const Proxy, key: [*:0]const u8) bool {
     const v = prop(proxy, key) orelse return false;
     defer c.g_variant_unref(v);
     return c.g_variant_get_boolean(v) != 0;
@@ -167,10 +171,13 @@ pub fn deviceState(state: u32) [:0]const u8 {
     };
 }
 const Record = struct { path: [:0]u8, settings: ?*c.GVariant = null, dirty: bool = true, loading: bool = false, seen: bool = false, version: u64 = 0 };
-const Fetch = struct { service: *Service, path: [:0]u8, epoch: u64, version: u64 };
+const Fetch = struct { service: *Service, path: [:0]u8, epoch: u64, version: u64, serial: u32 = 0 };
 var shared: ?*Service = null;
 pub const Service = struct {
-    manager: ?*g.GDBusObjectManager = null,
+    source: ?*loop.Source = null,
+    manager: ?*objects.Manager = null,
+    /// GetSettings calls awaiting replies; each holds a reference on the service.
+    fetches: std.ArrayList(*Fetch) = .empty,
     cancel: *c.GCancellable,
     clients: std.ArrayList(*Client) = .empty,
     records: std.ArrayList(*Record) = .empty,
@@ -192,6 +199,7 @@ pub const Service = struct {
         self.clearRecords();
         self.records.deinit(a);
         self.waiting.deinit(a);
+        self.fetches.deinit(a);
         self.clients.deinit(a);
         c.g_object_unref(self.cancel);
         a.destroy(self);
@@ -209,41 +217,33 @@ pub const Service = struct {
         self.timer = c.g_timeout_add_seconds(5, &maintain, self);
     }
     fn connectBus(self: *Service) void {
-        if (self.stopped or self.connecting) return;
-        self.connecting = true;
-        self.ref();
-        g.g_dbus_object_manager_client_new_for_bus(c.G_BUS_TYPE_SYSTEM, 0, name, "/org/freedesktop", null, null, null, self.cancel, &connected, self);
-    }
-    fn connected(_: [*c]c.GObject, result: ?*c.GAsyncResult, ptr: c.gpointer) callconv(.c) void {
-        const self = cast(Service, ptr);
-        defer self.unref();
-        self.connecting = false;
-        const manager = g.g_dbus_object_manager_client_new_for_bus_finish(result, null);
-        if (self.stopped) {
-            if (manager) |m| c.g_object_unref(m);
+        if (self.stopped or self.manager != null) return;
+        const source = loop.acquire(.system) catch return;
+        self.source = source;
+        self.manager = objects.Manager.create(a, source.connection, name, "/org/freedesktop", &event, self) catch {
+            self.dropManager();
             return;
-        }
-        self.manager = manager;
-        if (manager) |m| {
-            c.g_dbus_connection_set_exit_on_close(g.g_dbus_object_manager_client_get_connection(@ptrCast(m)), 0);
-            _ = c.g_signal_connect_data(m, "object-added", @ptrCast(&objectsChanged), self, null, 0);
-            _ = c.g_signal_connect_data(m, "object-removed", @ptrCast(&objectsChanged), self, null, 0);
-            _ = c.g_signal_connect_data(m, "interface-added", @ptrCast(&interfacesChanged), self, null, 0);
-            _ = c.g_signal_connect_data(m, "interface-removed", @ptrCast(&interfacesChanged), self, null, 0);
-            _ = c.g_signal_connect_data(m, "interface-proxy-properties-changed", @ptrCast(&propertiesChanged), self, null, 0);
-            _ = c.g_signal_connect_data(m, "interface-proxy-signal", @ptrCast(&proxySignal), self, null, 0);
-            _ = c.g_signal_connect_data(m, "notify::name-owner", @ptrCast(&ownerChanged), self, null, 0);
-        }
+        };
+        // Profiles announce edits with Updated; their settings are fetched again.
+        self.manager.?.forward(profile_iface) catch {};
         self.schedule();
     }
     fn dropManager(self: *Service) void {
-        if (self.manager) |m| {
-            _ = c.g_signal_handlers_disconnect_matched(m, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-            c.g_object_unref(m);
-        }
+        if (self.manager) |m| m.destroy();
         self.manager = null;
+        self.cancelFetches();
+        if (self.source) |source| loop.release(source);
+        self.source = null;
         self.epoch += 1;
         self.clearRecords();
+    }
+    fn cancelFetches(self: *Service) void {
+        while (self.fetches.pop()) |task| {
+            if (self.source) |source| source.connection.cancel(task.serial);
+            a.free(task.path);
+            a.destroy(task);
+            self.unref();
+        }
     }
     fn stop(self: *Service) void {
         self.stopped = true;
@@ -253,37 +253,31 @@ pub const Service = struct {
         self.idle = 0;
         self.timer = 0;
         c.g_cancellable_cancel(self.cancel);
+        self.ref();
+        defer self.unref();
         self.dropManager();
     }
     fn maintain(ptr: c.gpointer) callconv(.c) c_int {
         const self = cast(Service, ptr);
-        if (self.manager) |m| if (c.g_dbus_connection_is_closed(g.g_dbus_object_manager_client_get_connection(@ptrCast(m))) != 0) {
+        if (self.source) |source| if (source.connection.closed) {
             self.dropManager();
             self.schedule();
         };
         if (self.manager == null) self.connectBus();
         return 1;
     }
-    fn objectsChanged(_: ?*anyopaque, _: ?*anyopaque, ptr: c.gpointer) callconv(.c) void {
-        cast(Service, ptr).schedule();
-    }
-    fn interfacesChanged(_: ?*anyopaque, _: ?*anyopaque, _: ?*anyopaque, ptr: c.gpointer) callconv(.c) void {
-        cast(Service, ptr).schedule();
-    }
-    fn propertiesChanged(_: ?*anyopaque, _: ?*anyopaque, _: ?*anyopaque, _: ?*c.GVariant, _: ?*anyopaque, ptr: c.gpointer) callconv(.c) void {
-        cast(Service, ptr).schedule();
-    }
-    fn ownerChanged(_: ?*anyopaque, _: ?*anyopaque, ptr: c.gpointer) callconv(.c) void {
+    fn event(ptr: ?*anyopaque, change: objects.Event) void {
         const self = cast(Service, ptr);
-        self.epoch += 1;
-        self.clearRecords();
-        self.schedule();
-    }
-    fn proxySignal(_: ?*anyopaque, object: *g.GDBusObject, _: ?*anyopaque, _: ?*anyopaque, signal_name: [*:0]const u8, _: ?*c.GVariant, ptr: c.gpointer) callconv(.c) void {
-        const self = cast(Service, ptr);
-        if (eq(std.mem.span(signal_name), "Updated")) if (self.record(std.mem.span(g.g_dbus_object_get_object_path(object)))) |r| {
-            r.dirty = true;
-        };
+        switch (change) {
+            .owner => {
+                self.epoch += 1;
+                self.clearRecords();
+            },
+            .objects, .properties => {},
+            .signal => |signal| if (eq(signal.member, "Updated")) if (self.record(signal.path)) |r| {
+                r.dirty = true;
+            },
+        }
         self.schedule();
     }
     fn schedule(self: *Service) void {
@@ -311,91 +305,88 @@ pub const Service = struct {
         }
         return 0;
     }
-    fn interface(self: *Service, path: [*:0]const u8, iface: [*:0]const u8) ?*c.GDBusProxy {
-        const object = g.g_dbus_object_manager_get_object(self.manager orelse return null, path) orelse return null;
-        defer c.g_object_unref(object);
-        return @ptrCast(g.g_dbus_object_get_interface(object, iface));
+    fn interface(self: *Service, path: []const u8, iface: []const u8) ?*const Proxy {
+        return (self.manager orelse return null).interface(path, iface);
     }
     fn record(self: *Service, path: []const u8) ?*Record {
         for (self.records.items) |r| if (eq(r.path, path)) return r;
         return null;
     }
-    fn fetch(self: *Service, r: *Record, proxy: *c.GDBusProxy) void {
+    fn fetch(self: *Service, r: *Record, proxy: *const Proxy) void {
         if (r.loading or !r.dirty) return;
+        const source = self.source orelse return;
         r.dirty = false;
         r.loading = true;
         const fetch_data = a.create(Fetch) catch @panic("out of memory");
         const version = prop(proxy, "VersionId");
         defer if (version) |v| c.g_variant_unref(v);
         fetch_data.* = .{ .service = self, .path = z(r.path), .epoch = self.epoch, .version = if (version) |v| c.g_variant_get_uint64(v) else 0 };
+        self.fetches.append(a, fetch_data) catch @panic("out of memory");
         self.ref();
-        g.g_dbus_proxy_call(proxy, "GetSettings", null, c.G_DBUS_CALL_FLAGS_NONE, 10000, self.cancel, &fetched, fetch_data);
+        fetch_data.serial = source.connection.call(.{ .destination = name, .path = r.path, .interface = profile_iface, .member = "GetSettings" }, .{}, 10000, &fetched, fetch_data) catch {
+            _ = self.fetches.pop();
+            a.free(fetch_data.path);
+            a.destroy(fetch_data);
+            r.loading = false;
+            self.unref();
+            return;
+        };
     }
-    fn fetched(source: [*c]c.GObject, result: ?*c.GAsyncResult, ptr: c.gpointer) callconv(.c) void {
+    fn fetched(ptr: ?*anyopaque, reply: dbus.Reply) void {
         const task = cast(Fetch, ptr);
         const self = task.service;
+        for (self.fetches.items, 0..) |item, i| if (item == task) {
+            _ = self.fetches.swapRemove(i);
+            break;
+        };
         defer {
             a.free(task.path);
             a.destroy(task);
             self.unref();
         }
-        const reply = g.g_dbus_proxy_call_finish(@ptrCast(source), result, null);
-        defer if (reply) |v| c.g_variant_unref(v);
         if (self.stopped or task.epoch != self.epoch) return;
         const r = self.record(task.path) orelse return;
         r.loading = false;
-        if (reply) |v| {
-            if (r.settings) |old| c.g_variant_unref(old);
-            r.settings = c.g_variant_get_child_value(v, 0);
-            r.version = task.version;
+        switch (reply) {
+            .ok => |message| if (bridge.argumentsVariant(message)) |v| {
+                defer c.g_variant_unref(v);
+                if (r.settings) |old| c.g_variant_unref(old);
+                r.settings = c.g_variant_get_child_value(v, 0);
+                r.version = task.version;
+            },
+            .failed => {},
         }
         self.schedule();
     }
     fn rebuild(self: *Service) void {
         self.state.clear();
         const m = self.manager orelse return;
-        const owner = g.g_dbus_object_manager_client_get_name_owner(@ptrCast(m));
-        if (owner == null) return;
-        c.g_free(owner);
+        if (m.owner == null) return;
         const main = self.interface(root, name) orelse return;
-        defer c.g_object_unref(main);
         self.state.available = true;
         self.state.primary = text(main, "PrimaryConnection");
         self.state.wifi_enabled = boolean(main, "WirelessEnabled");
         self.state.hardware_enabled = boolean(main, "WirelessHardwareEnabled");
         for (self.records.items) |r| r.seen = false;
-        const objects = g.g_dbus_object_manager_get_objects(m);
-        defer {
-            var node = objects;
-            while (node != null) : (node = node.*.next) c.g_object_unref(node.*.data);
-            c.g_list_free(objects);
-        }
-        var node = objects;
-        while (node != null) : (node = node.*.next) {
-            const object = cast(g.GDBusObject, node.*.data);
-            const path = g.g_dbus_object_get_object_path(object);
-            if (g.g_dbus_object_get_interface(object, device_iface)) |iface| {
-                defer c.g_object_unref(iface);
-                const proxy: *c.GDBusProxy = @ptrCast(iface);
-                const d = Device{ .path = z(std.mem.span(path)), .interface = text(proxy, "Interface"), .kind = number(proxy, "DeviceType"), .state = number(proxy, "State"), .managed = boolean(proxy, "Managed"), .active = text(proxy, "ActiveConnection") };
+        for (m.objects.items) |object| {
+            const path = object.path;
+            if (object.interface(device_iface)) |proxy| {
+                const d = Device{ .path = z(path), .interface = text(proxy, "Interface"), .kind = number(proxy, "DeviceType"), .state = number(proxy, "State"), .managed = boolean(proxy, "Managed"), .active = text(proxy, "ActiveConnection") };
                 self.state.devices.append(a, d) catch @panic("out of memory");
                 if (d.kind == 2) self.readAccessPoints(d);
             }
-            if (g.g_dbus_object_get_interface(object, active_iface)) |iface| {
-                defer c.g_object_unref(iface);
-                const proxy: *c.GDBusProxy = @ptrCast(iface);
-                self.state.active.append(a, .{ .path = z(std.mem.span(path)), .profile = text(proxy, "Connection"), .title = text(proxy, "Id"), .kind = text(proxy, "Type"), .state = number(proxy, "State") }) catch @panic("out of memory");
+            if (object.interface(active_iface)) |proxy| {
+                self.state.active.append(a, .{ .path = z(path), .profile = text(proxy, "Connection"), .title = text(proxy, "Id"), .kind = text(proxy, "Type"), .state = number(proxy, "State") }) catch @panic("out of memory");
             }
-            if (g.g_dbus_object_get_interface(object, profile_iface)) |iface| {
-                defer c.g_object_unref(iface);
-                const r = self.record(std.mem.span(path)) orelse blk: {
+            if (object.interface(profile_iface)) |proxy| {
+                const r = self.record(path) orelse blk: {
                     const item = a.create(Record) catch @panic("out of memory");
-                    item.* = .{ .path = z(std.mem.span(path)) };
+                    item.* = .{ .path = z(path) };
                     self.records.append(a, item) catch @panic("out of memory");
                     break :blk item;
                 };
                 r.seen = true;
-                self.fetch(r, @ptrCast(iface));
+                self.fetch(r, proxy);
             }
         }
         var index: usize = 0;
@@ -429,7 +420,6 @@ pub const Service = struct {
     }
     fn readAccessPoints(self: *Service, device: Device) void {
         const wireless = self.interface(device.path, wireless_iface) orelse return;
-        defer c.g_object_unref(wireless);
         const current = text(wireless, "ActiveAccessPoint");
         defer a.free(current);
         const paths = prop(wireless, "AccessPoints") orelse return;
@@ -437,13 +427,12 @@ pub const Service = struct {
         for (0..c.g_variant_n_children(paths)) |i| {
             const child = c.g_variant_get_child_value(paths, i).?;
             defer c.g_variant_unref(child);
-            const path = c.g_variant_get_string(child, null);
+            const path = std.mem.span(c.g_variant_get_string(child, null));
             const proxy = self.interface(path, ap_iface) orelse continue;
-            defer c.g_object_unref(proxy);
             const ssid = prop(proxy, "Ssid");
             defer if (ssid) |v| c.g_variant_unref(v);
             const raw = a.dupe(u8, bytes(ssid)) catch @panic("out of memory");
-            self.state.access_points.append(a, .{ .path = z(std.mem.span(path)), .device = z(device.path), .ssid = raw, .title = ssidTitle(a, raw) catch @panic("out of memory"), .strength = @intCast(@min(100, number(proxy, "Strength"))), .security = security(number(proxy, "Flags"), number(proxy, "WpaFlags"), number(proxy, "RsnFlags")), .connected = device.state == 100 and eq(current, std.mem.span(path)) }) catch @panic("out of memory");
+            self.state.access_points.append(a, .{ .path = z(path), .device = z(device.path), .ssid = raw, .title = ssidTitle(a, raw) catch @panic("out of memory"), .strength = @intCast(@min(100, number(proxy, "Strength"))), .security = security(number(proxy, "Flags"), number(proxy, "WpaFlags"), number(proxy, "RsnFlags")), .connected = device.state == 100 and eq(current, path) }) catch @panic("out of memory");
         }
     }
 };
@@ -690,34 +679,33 @@ const Call = struct {
         c.g_cancellable_cancel(self.cancel);
         if (self.active != null) self.finish(.{ .failure = "Cancelled" });
     }
+    /// Calls NetworkManager on a request connection, so cancelling still completes the call once.
     fn send(self: *Call, path: [*:0]const u8, iface: [*:0]const u8, method: [*:0]const u8, params: ?*c.GVariant) void {
         self.pending += 1;
-        const manager = self.client.service.manager.?;
-        c.g_dbus_connection_call(g.g_dbus_object_manager_client_get_connection(@ptrCast(manager)), name, path, iface, method, params, null, c.G_DBUS_CALL_FLAGS_NONE, 30000, self.cancel, &done, self);
+        var arena = std.heap.ArenaAllocator.init(a);
+        defer arena.deinit();
+        const body = if (params) |value| bridge.bodyFromVariant(arena.allocator(), value) catch dbus.Body{ .values = &.{} } else dbus.Body{ .values = &.{} };
+        loop.request(.system, .{ .destination = name, .path = std.mem.span(path), .interface = std.mem.span(iface), .member = std.mem.span(method) }, body, 30000, self.cancel, &done, self);
     }
-    fn done(source: [*c]c.GObject, result: ?*c.GAsyncResult, ptr: c.gpointer) callconv(.c) void {
+    fn done(ptr: ?*anyopaque, result: dbus.Reply) void {
         const self = cast(Call, ptr);
         self.pending -= 1;
-        var err: [*c]c.GError = null;
-        const reply = c.g_dbus_connection_call_finish(@ptrCast(source), result, &err);
-        defer if (reply) |v| c.g_variant_unref(v);
-        defer c.g_clear_error(&err);
-        if (reply == null and self.reading_secrets and err != null) {
-            const remote = c.g_dbus_error_get_remote_error(err);
-            defer c.g_free(remote);
-            if (remote != null and std.mem.endsWith(u8, std.mem.span(remote), ".NoSecrets")) {
-                self.nextSecret();
-                return;
-            }
-        }
-        if (reply == null) {
-            self.failed = true;
-            if (err != null) {
-                const msg = std.mem.span(err.*.message);
+        const reply: ?*c.GVariant = switch (result) {
+            .ok => |message| bridge.argumentsVariant(message),
+            .failed => |failure| blk: {
+                if (self.reading_secrets and std.mem.endsWith(u8, failure.name, ".NoSecrets")) {
+                    self.nextSecret();
+                    return;
+                }
                 @memset(&self.message, 0);
-                @memcpy(self.message[0..@min(msg.len, self.message.len - 1)], msg[0..@min(msg.len, self.message.len - 1)]);
-            }
-        }
+                const text_value = if (failure.text.len > 0) failure.text else failure.name;
+                const count = @min(text_value.len, self.message.len - 1);
+                @memcpy(self.message[0..count], text_value[0..count]);
+                break :blk null;
+            },
+        };
+        defer if (reply) |v| c.g_variant_unref(v);
+        if (reply == null) self.failed = true;
         if (self.pending != 0) return;
         if (self.failed) {
             self.finish(.{ .failure = std.mem.sliceTo(&self.message, 0) });

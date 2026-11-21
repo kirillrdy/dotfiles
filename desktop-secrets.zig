@@ -2,6 +2,9 @@
 const std = @import("std");
 const c = @import("desktop-glib.zig");
 const p = @import("posix");
+const dbus = @import("dbus");
+const loop = @import("desktop-dbus-loop.zig");
+const bridge = @import("desktop-dbus-gvariant.zig");
 pub const store = @import("desktop-secrets-store.zig");
 const transport = @import("desktop-secrets-transport.zig");
 pub const Dialog = @import("desktop-auth-dialog.zig").Dialog;
@@ -60,7 +63,7 @@ const Object = struct {
     id: u64 = 0,
     path: [:0]const u8,
     owner: [:0]const u8 = "",
-    registration: c_uint = 0,
+    registration: u32 = 0,
     key: ?[16]u8 = null,
     dialog: ?*Dialog = null,
     started: bool = false,
@@ -73,8 +76,8 @@ const Server = struct {
     a: std.mem.Allocator,
     options: Options = .{},
     vault: store.Vault,
-    bus: *c.GDBusConnection,
-    node: *c.GDBusNodeInfo,
+    bus: *dbus.Connection,
+    introspection: dbus.Introspection,
     objects: std.ArrayList(*Object) = .empty,
     serial: u64 = 1,
     stopping: bool = false,
@@ -113,9 +116,9 @@ const Server = struct {
         const who = try self.a.dupeSentinel(u8, owner, 0);
         errdefer self.a.free(who);
         o.* = .{ .server = self, .kind = kind, .id = id, .path = copy, .owner = who };
-        o.registration = c.g_dbus_connection_register_object(self.bus, o.path, self.node.*.interfaces[@backingInt(kind)], &vtable, o, null, null);
+        o.registration = self.bus.exportWritable(o.path, self.introspection.find(iface(kind)).?, &methodCall, &getProperty, &setProperty, o) catch 0;
         if (o.registration == 0) return error.RegistrationFailed;
-        errdefer _ = c.g_dbus_connection_unregister_object(self.bus, o.registration);
+        errdefer self.bus.unregister(o.registration);
         try self.objects.append(self.a, o);
         return o;
     }
@@ -123,7 +126,7 @@ const Server = struct {
         if (o.dialog) |dialog| {
             dialog.destroy();
         }
-        _ = c.g_dbus_connection_unregister_object(self.bus, o.registration);
+        self.bus.unregister(o.registration);
         for (self.objects.items, 0..) |other, i| {
             if (other == o) {
                 _ = self.objects.swapRemove(i);
@@ -170,24 +173,27 @@ const Server = struct {
         }
     }
     fn signal(self: *Server, path: [:0]const u8, kind: Kind, member: [:0]const u8, target: [:0]const u8) void {
-        _ = c.g_dbus_connection_emit_signal(self.bus, null, path, iface(kind), member, c.g_variant_new("(o)", target.ptr), null);
+        self.bus.emit(path, iface(kind), member, .{dbus.ObjectPath{ .value = target }}) catch {};
     }
     fn changed(self: *Server) void {
+        var arena = std.heap.ArenaAllocator.init(self.a);
+        defer arena.deinit();
         for (self.objects.items) |o| {
             if (o.kind != .collection and o.kind != .item and o.kind != .service) continue;
-            const dict = build("a{sv}");
-            defer c.g_variant_builder_unref(dict);
+            _ = arena.reset(.retain_capacity);
             const names: []const [:0]const u8 = switch (o.kind) {
                 .service => &.{"Collections"},
                 .collection => &.{ "Items", "Label", "Locked", "Modified" },
                 else => &.{ "Attributes", "Label", "Locked", "Modified" },
             };
+            var entries: [4]bridge.Dict.Entry = undefined;
+            var count: usize = 0;
             for (names) |prop| {
-                if (self.property(o, prop)) |v| c.g_variant_builder_add(dict, "{sv}", prop.ptr, v);
+                const value = self.property(o, prop) orelse continue;
+                entries[count] = .{ .key = prop, .value = bridge.fromVariant(arena.allocator(), value) catch continue };
+                count += 1;
             }
-            const invalidated = build("as");
-            defer c.g_variant_builder_unref(invalidated);
-            _ = c.g_dbus_connection_emit_signal(self.bus, null, o.path, "org.freedesktop.DBus.Properties", "PropertiesChanged", c.g_variant_new("(s@a{sv}@as)", iface(o.kind).ptr, c.g_variant_builder_end(dict), c.g_variant_builder_end(invalidated)), null);
+            self.bus.emit(o.path, "org.freedesktop.DBus.Properties", "PropertiesChanged", .{ iface(o.kind), bridge.Dict{ .entries = entries[0..count] }, @as([]const []const u8, &.{}) }) catch {};
         }
     }
     fn lock(self: *Server) void {
@@ -342,8 +348,17 @@ const Server = struct {
         return o;
     }
     fn complete(self: *Server, o: *Object, dismissed: bool, result: *c.GVariant) void {
-        _ = c.g_dbus_connection_emit_signal(self.bus, o.owner, o.path, iface(.prompt), "Completed", c.g_variant_new("(bv)", @as(c_int, @intFromBool(dismissed)), result), null);
+        var arena = std.heap.ArenaAllocator.init(self.a);
+        defer arena.deinit();
+        if (bridge.fromVariant(arena.allocator(), result)) |value| {
+            self.bus.emitTo(o.owner, o.path, iface(.prompt), "Completed", .{ dismissed, value }) catch {};
+        } else |_| {}
         self.remove(o);
+    }
+    /// Replies with the children of `tuple`, or with no arguments when it is null.
+    fn ret(self: *Server, message: *const dbus.Message, a: std.mem.Allocator, tuple: ?*c.GVariant) !void {
+        const body = if (tuple) |value| try bridge.bodyFromVariant(a, value) else dbus.Body{ .values = &.{} };
+        try self.bus.reply(message, body);
     }
     fn showPrompt(self: *Server, o: *Object) !void {
         if (o.started) return error.InvalidArgs;
@@ -362,7 +377,7 @@ const Server = struct {
         dialog.response_context = o;
         if (self.options.prompt_ready) |ready| ready(dialog);
     }
-    fn method(self: *Server, o: *Object, owner: [:0]const u8, verb: []const u8, args: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, a: std.mem.Allocator) !void {
+    fn method(self: *Server, o: *Object, owner: [:0]const u8, verb: []const u8, args: ?*c.GVariant, message: *const dbus.Message, a: std.mem.Allocator) !void {
         if (o.owner.len != 0 and !eq(o.owner, owner)) return error.AccessDenied;
         if (o.kind == .login) {
             if (eq(verb, "SetScreenLocked")) {
@@ -370,7 +385,7 @@ const Server = struct {
                 defer c.g_variant_unref(value);
                 self.screen_locked = c.g_variant_get_boolean(value) != 0;
                 if (self.screen_locked) self.lock();
-                c.g_dbus_method_invocation_return_value(invocation, null);
+                try self.ret(message, a, null);
                 return;
             }
             if (self.screen_locked or self.sleeping) return error.IsLocked;
@@ -379,26 +394,26 @@ const Server = struct {
             try self.vault.unlock(bytes(password));
             if (self.vault.index.collections.len == 0) _ = try self.createCollection("Login", "default");
             self.changed();
-            c.g_dbus_method_invocation_return_value(invocation, null);
+            try self.ret(message, a, null);
             return;
         }
         if (o.kind == .session) {
-            c.g_dbus_method_invocation_return_value(invocation, null);
+            try self.ret(message, a, null);
             self.remove(o);
             return;
         }
         if (o.kind == .prompt) {
             if (eq(verb, "Dismiss")) {
-                c.g_dbus_method_invocation_return_value(invocation, null);
+                try self.ret(message, a, null);
                 self.complete(o, true, variantString("").?);
                 return;
             }
             self.showPrompt(o) catch {
-                c.g_dbus_method_invocation_return_value(invocation, null);
+                try self.ret(message, a, null);
                 self.complete(o, true, variantString("").?);
                 return;
             };
-            c.g_dbus_method_invocation_return_value(invocation, null);
+            try self.ret(message, a, null);
             return;
         }
         if (eq(verb, "OpenSession")) {
@@ -431,11 +446,11 @@ const Server = struct {
             self.serial += 1;
             const s = try self.register(.session, 0, path, owner);
             s.key = key;
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(vo)", output, s.path.ptr));
+            try self.ret(message, a, c.g_variant_new("(vo)", output, s.path.ptr));
             return;
         }
         if (eq(verb, "ReadAlias")) {
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(o)", self.objectPath(.collection, self.aliasId(text(args, 0))).ptr));
+            try self.ret(message, a, c.g_variant_new("(o)", self.objectPath(.collection, self.aliasId(text(args, 0))).ptr));
             return;
         }
         if (eq(verb, "SetAlias")) {
@@ -446,7 +461,7 @@ const Server = struct {
             try self.vault.save();
             try self.reconcile();
             self.changed();
-            c.g_dbus_method_invocation_return_value(invocation, null);
+            try self.ret(message, a, null);
             return;
         }
         if (eq(verb, "CreateCollection")) {
@@ -459,11 +474,11 @@ const Server = struct {
             if (label.len > 4096) return error.LimitsExceeded;
             if (self.vault.key == null) {
                 const prompt = try self.newPrompt(owner, true, label, alias, &.{});
-                c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(oo)", @as([*:0]const u8, "/"), prompt.path.ptr));
+                try self.ret(message, a, c.g_variant_new("(oo)", @as([*:0]const u8, "/"), prompt.path.ptr));
                 return;
             }
             const id = try self.createCollection(label, alias);
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(oo)", self.objectPath(.collection, id).ptr, @as([*:0]const u8, "/")));
+            try self.ret(message, a, c.g_variant_new("(oo)", self.objectPath(.collection, id).ptr, @as([*:0]const u8, "/")));
             return;
         }
         if (eq(verb, "SearchItems")) {
@@ -478,9 +493,9 @@ const Server = struct {
                 if ((o.kind == .service or item.collection == o.id) and matches(item, query)) c.g_variant_builder_add(found, "o", self.objectPath(.item, item.id).ptr);
             }
             const result = c.g_variant_builder_end(found);
-            if (o.kind == .collection) c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(@ao)", result)) else {
+            if (o.kind == .collection) try self.ret(message, a, c.g_variant_new("(@ao)", result)) else {
                 const other = c.g_variant_builder_end(empty);
-                c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(@ao@ao)", if (self.vault.key == null) other else result, if (self.vault.key == null) result else other));
+                try self.ret(message, a, c.g_variant_new("(@ao@ao)", if (self.vault.key == null) other else result, if (self.vault.key == null) result else other));
             }
             return;
         }
@@ -503,7 +518,7 @@ const Server = struct {
             } else if (ids.items.len != 0 and self.vault.key == null) {
                 prompt_path = (try self.newPrompt(owner, false, "", "", ids.items)).path;
             }
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(@aoo)", c.g_variant_builder_end(found), prompt_path.ptr));
+            try self.ret(message, a, c.g_variant_new("(@aoo)", c.g_variant_builder_end(found), prompt_path.ptr));
             return;
         }
         if (eq(verb, "GetSecrets")) {
@@ -518,7 +533,7 @@ const Server = struct {
                 const item = self.object(str(v), .item) orelse continue;
                 c.g_variant_builder_add(dict, "{o@(oayays)}", item.path.ptr, try self.encode(item.id, s, a));
             };
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(@a{o(oayays)})", c.g_variant_builder_end(dict)));
+            try self.ret(message, a, c.g_variant_new("(@a{o(oayays)})", c.g_variant_builder_end(dict)));
             return;
         }
         if (self.vault.key == null) return error.IsLocked;
@@ -557,12 +572,12 @@ const Server = struct {
             try self.reconcile();
             self.signal(self.objectPath(.collection, o.id), .collection, if (replacing) "ItemChanged" else "ItemCreated", self.objectPath(.item, id));
             self.changed();
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(oo)", self.objectPath(.item, id).ptr, @as([*:0]const u8, "/")));
+            try self.ret(message, a, c.g_variant_new("(oo)", self.objectPath(.item, id).ptr, @as([*:0]const u8, "/")));
             return;
         }
         if (eq(verb, "GetSecret")) {
             const s = try self.session(text(args, 0), owner);
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(@(oayays))", try self.encode(o.id, s, a)));
+            try self.ret(message, a, c.g_variant_new("(@(oayays))", try self.encode(o.id, s, a)));
             return;
         }
         if (eq(verb, "SetSecret")) {
@@ -574,7 +589,7 @@ const Server = struct {
             try self.vault.save();
             self.changed();
             self.signal(self.objectPath(.collection, self.findItem(o.id).?.collection), .collection, "ItemChanged", o.path);
-            c.g_dbus_method_invocation_return_value(invocation, null);
+            try self.ret(message, a, null);
             return;
         }
         if (eq(verb, "Delete")) {
@@ -603,7 +618,7 @@ const Server = struct {
             }
             try self.reconcile();
             self.changed();
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(o)", @as([*:0]const u8, "/")));
+            try self.ret(message, a, c.g_variant_new("(o)", @as([*:0]const u8, "/")));
             return;
         }
         return error.NotSupported;
@@ -621,12 +636,15 @@ fn errorName(err: anyerror) [:0]const u8 {
         else => "org.freedesktop.DBus.Error.Failed",
     };
 }
-fn methodCall(_: ?*c.GDBusConnection, owner: [*c]const u8, _: [*c]const u8, _: [*c]const u8, method: [*c]const u8, args: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: ?*anyopaque) callconv(.c) void {
+fn methodCall(data: ?*anyopaque, message: *const dbus.Message) void {
     const o = cast(Object, data);
     const self = o.server;
     var arena = std.heap.ArenaAllocator.init(self.a);
     defer arena.deinit();
-    self.method(o, std.mem.span(owner), std.mem.span(method), args, invocation, arena.allocator()) catch |err| {
+    const args: ?*c.GVariant = if (message.signature.len == 0) null else bridge.argumentsVariant(message) orelse return self.bus.replyError(message, "org.freedesktop.DBus.Error.InvalidArgs", "InvalidArgs") catch {};
+    defer if (args) |value| c.g_variant_unref(value);
+    const owner = arena.allocator().dupeSentinel(u8, message.sender orelse "", 0) catch return;
+    self.method(o, owner, message.member orelse "", args, message, arena.allocator()) catch |err| {
         // Restore the last committed version after any rejected mutation.
         self.vault.restore() catch {
             self.lock();
@@ -635,27 +653,28 @@ fn methodCall(_: ?*c.GDBusConnection, owner: [*c]const u8, _: [*c]const u8, _: [
         self.reconcile() catch {
             self.stopping = true;
         };
-        c.g_dbus_method_invocation_return_dbus_error(invocation, errorName(err), @errorName(err));
+        self.bus.replyError(message, errorName(err), @errorName(err)) catch {};
     };
 }
-fn getProperty(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, prop: [*c]const u8, _: [*c][*c]c.GError, data: ?*anyopaque) callconv(.c) ?*c.GVariant {
+fn getProperty(data: ?*anyopaque, _: []const u8, _: []const u8, prop: []const u8, arena: std.mem.Allocator) ?dbus.Value {
     const o = cast(Object, data);
-    return o.server.property(o, std.mem.span(prop));
+    return bridge.fromVariant(arena, o.server.property(o, prop) orelse return null) catch null;
 }
-fn setProperty(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, prop: [*c]const u8, value: ?*c.GVariant, err: [*c][*c]c.GError, data: ?*anyopaque) callconv(.c) c_int {
+fn setProperty(data: ?*anyopaque, _: []const u8, _: []const u8, prop: []const u8, value: dbus.Value) ?dbus.Failure {
     const o = cast(Object, data);
     const self = o.server;
-    setPropertyValue(o, std.mem.span(prop), value) catch |failure| {
+    const variant = c.g_variant_take_ref(bridge.toVariant(value) orelse return .{ .name = "org.freedesktop.DBus.Error.InvalidArgs", .text = "InvalidArgs" });
+    defer c.g_variant_unref(variant);
+    setPropertyValue(o, prop, variant) catch |failure| {
         self.vault.restore() catch {
             self.lock();
             self.stopping = true;
         };
-        c.g_dbus_error_set_dbus_error(err, errorName(failure), @errorName(failure), null);
-        return 0;
+        return .{ .name = errorName(failure), .text = @errorName(failure) };
     };
     self.changed();
     if (o.kind == .item) self.signal(self.objectPath(.collection, self.findItem(o.id).?.collection), .collection, "ItemChanged", o.path) else self.signal(root, .service, "CollectionChanged", o.path);
-    return 1;
+    return null;
 }
 fn setPropertyValue(o: *Object, prop: []const u8, value: ?*c.GVariant) !void {
     const self = o.server;
@@ -676,7 +695,6 @@ fn setPropertyValue(o: *Object, prop: []const u8, value: ?*c.GVariant) !void {
     } else return error.InvalidArgs;
     try self.vault.save();
 }
-const vtable = c.GDBusInterfaceVTable{ .method_call = &methodCall, .get_property = &getProperty, .set_property = &setProperty };
 fn promptResponse(data: ?*anyopaque, accepted: bool) void {
     const o = cast(Object, data);
     const self = o.server;
@@ -717,36 +735,39 @@ fn promptResponse(data: ?*anyopaque, accepted: bool) void {
         self.complete(o, false, c.g_variant_builder_end(result).?);
     }
 }
-fn ownerChanged(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, args: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
-    if (text(args, 2).len != 0) return;
+fn ownerChanged(data: ?*anyopaque, message: *const dbus.Message) void {
+    const args = message.read(struct { []const u8, []const u8, []const u8 }) catch return;
+    if (args[2].len != 0) return;
     const self = cast(Server, data);
-    const owner = text(args, 0);
     var i: usize = 0;
     while (i < self.objects.items.len) {
         const o = self.objects.items[i];
-        if (o.owner.len != 0 and eq(o.owner, owner)) self.remove(o) else i += 1;
+        if (o.owner.len != 0 and eq(o.owner, args[0])) self.remove(o) else i += 1;
     }
 }
-fn sessionSignal(_: ?*c.GDBusConnection, _: [*c]const u8, path: [*c]const u8, _: [*c]const u8, member: [*c]const u8, args: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
+fn sessionSignal(data: ?*anyopaque, message: *const dbus.Message) void {
     const self = cast(Server, data);
-    if (eq(std.mem.span(member), "PrepareForSleep")) {
-        const sleeping = child(args, 0);
-        defer c.g_variant_unref(sleeping);
-        self.sleeping = c.g_variant_get_boolean(sleeping) != 0;
+    const member = message.member orelse "";
+    const path = message.path orelse "";
+    if (eq(member, "PrepareForSleep")) {
+        self.sleeping = (message.read(struct { bool }) catch return)[0];
         if (self.sleeping) self.lock();
-    } else if (self.logind != null and eq(self.logind.?, std.mem.span(path))) {
-        if (eq(std.mem.span(member), "Lock")) {
+    } else if (self.logind != null and eq(self.logind.?, path)) {
+        if (eq(member, "Lock")) {
             self.screen_locked = true;
             self.lock();
         }
-        if (eq(std.mem.span(member), "Unlock")) self.screen_locked = false;
-        if (eq(std.mem.span(member), "PropertiesChanged") and eq(text(args, 0), "org.freedesktop.login1.Session")) {
-            const properties = child(args, 1);
-            defer c.g_variant_unref(properties);
-            const locked = c.g_variant_lookup_value(properties, "LockedHint", @ptrCast(@as([*:0]const u8, "b"))) orelse return;
-            defer c.g_variant_unref(locked);
-            self.screen_locked = c.g_variant_get_boolean(locked) != 0;
-            if (self.screen_locked) self.lock();
+        if (eq(member, "Unlock")) self.screen_locked = false;
+        if (eq(member, "PropertiesChanged")) {
+            const args = message.read(struct { []const u8, bridge.Dict, []const []const u8 }) catch return;
+            if (!eq(args[0], "org.freedesktop.login1.Session")) return;
+            for (args[1].entries) |entry| if (eq(entry.key, "LockedHint")) switch (entry.value) {
+                .boolean => |locked| {
+                    self.screen_locked = locked;
+                    if (self.screen_locked) self.lock();
+                },
+                else => {},
+            };
         }
     }
 }
@@ -768,11 +789,12 @@ pub fn runAtWithOptions(directory: [:0]const u8, options: Options) !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
     var wa = store.WipingAllocator{ .parent = std.heap.page_allocator };
     const a = wa.allocator();
-    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return error.NoSessionBus;
-    defer c.g_object_unref(bus);
-    const node = c.g_dbus_node_info_new_for_xml(@embedFile("desktop-secrets.xml"), null) orelse return error.InvalidXml;
-    defer c.g_dbus_node_info_unref(node);
-    var server = Server{ .a = a, .options = options, .vault = try store.Vault.init(a, directory), .bus = bus, .node = node };
+    const source = loop.acquire(.session) catch return error.NoSessionBus;
+    defer loop.release(source);
+    const bus = source.connection;
+    var introspection = try dbus.Introspection.parse(a, @embedFile("desktop-secrets.xml"));
+    defer introspection.deinit();
+    var server = Server{ .a = a, .options = options, .vault = try store.Vault.init(a, directory), .bus = bus, .introspection = introspection };
     defer {
         while (server.objects.items.len != 0) server.remove(server.objects.items[server.objects.items.len - 1]);
         server.objects.deinit(a);
@@ -784,32 +806,24 @@ pub fn runAtWithOptions(directory: [:0]const u8, options: Options) !void {
     try server.reconcile();
     // Activation releases queued client calls as soon as the name is owned.
     // Register the complete object tree first.
-    const reply = c.g_dbus_connection_call_sync(bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName", c.g_variant_new("(su)", @as([*:0]const u8, name), @as(c_uint, 4)), @ptrCast(@as([*:0]const u8, "(u)")), 0, 3000, null, null) orelse return error.NameUnavailable;
-    defer c.g_variant_unref(reply);
-    const status = child(reply, 0);
-    defer c.g_variant_unref(status);
-    if (c.g_variant_get_uint32(status) != 1) return error.NameUnavailable;
-    const owners = c.g_dbus_connection_signal_subscribe(bus, "org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", null, 0, &ownerChanged, &server, null);
-    defer c.g_dbus_connection_signal_unsubscribe(bus, owners);
-    const system = c.g_bus_get_sync(c.G_BUS_TYPE_SYSTEM, null, null);
-    var locks: c_uint = 0;
-    var sleep: c_uint = 0;
-    var hints: c_uint = 0;
-    defer if (system) |connection| {
-        c.g_dbus_connection_signal_unsubscribe(connection, locks);
-        c.g_dbus_connection_signal_unsubscribe(connection, sleep);
-        c.g_dbus_connection_signal_unsubscribe(connection, hints);
-        c.g_object_unref(connection);
+    if ((bus.requestName(name, 4) catch return error.NameUnavailable) != 1) return error.NameUnavailable;
+    const owners = try bus.subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", &ownerChanged, &server);
+    defer bus.unsubscribe(owners);
+    const system: ?*loop.Source = loop.acquire(.system) catch null;
+    var subscriptions: [3]u32 = .{ 0, 0, 0 };
+    defer if (system) |held| {
+        for (subscriptions) |id| if (id != 0) held.connection.unsubscribe(id);
+        loop.release(held);
     };
-    if (system) |connection| {
-        const session = c.g_dbus_connection_call_sync(connection, "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", "GetSessionByPID", c.g_variant_new("(u)", @as(c_uint, @intCast(p.getpid()))), @ptrCast(@as([*:0]const u8, "(o)")), 0, 3000, null, null);
-        if (session) |v| {
-            defer c.g_variant_unref(v);
-            server.logind = try a.dupeSentinel(u8, text(v, 0), 0);
-        }
-        locks = c.g_dbus_connection_signal_subscribe(connection, "org.freedesktop.login1", "org.freedesktop.login1.Session", null, null, null, 0, &sessionSignal, &server, null);
-        hints = c.g_dbus_connection_signal_subscribe(connection, "org.freedesktop.login1", "org.freedesktop.DBus.Properties", "PropertiesChanged", null, null, 0, &sessionSignal, &server, null);
-        sleep = c.g_dbus_connection_signal_subscribe(connection, "org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep", "/org/freedesktop/login1", null, 0, &sessionSignal, &server, null);
+    if (system) |held| {
+        const connection = held.connection;
+        if (connection.callBlocking(.{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1", .interface = "org.freedesktop.login1.Manager", .member = "GetSessionByPID" }, .{@as(u32, @intCast(p.getpid()))}, 3000)) |reply| {
+            defer reply.deinit();
+            if (reply.message().read(struct { dbus.ObjectPath })) |args| server.logind = try a.dupeSentinel(u8, args[0].value, 0) else |_| {}
+        } else |_| {}
+        subscriptions[0] = try connection.subscribe("org.freedesktop.login1", "org.freedesktop.login1.Session", null, null, &sessionSignal, &server);
+        subscriptions[1] = try connection.subscribe("org.freedesktop.login1", "org.freedesktop.DBus.Properties", "PropertiesChanged", null, &sessionSignal, &server);
+        subscriptions[2] = try connection.subscribe("org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep", "/org/freedesktop/login1", &sessionSignal, &server);
     }
     const term = c.g_unix_signal_add(c.SIGTERM, &quit, &server);
     const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, &server);
@@ -817,14 +831,14 @@ pub fn runAtWithOptions(directory: [:0]const u8, options: Options) !void {
         _ = c.g_source_remove(term);
         _ = c.g_source_remove(interrupt);
     }
-    while (!server.stopping and c.g_dbus_connection_is_closed(bus) == 0) _ = c.g_main_context_iteration(null, 1);
+    while (!server.stopping and !bus.closed) _ = c.g_main_context_iteration(null, 1);
 }
 /// Called by PAM's dropped-privilege helper. Passwords travel through stdin, never argv or environment.
 pub fn loginUnlock(password: []const u8) !void {
-    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return error.NoSessionBus;
-    defer c.g_object_unref(bus);
-    const reply = c.g_dbus_connection_call_sync(bus, name, root, "org.dotfiles.Desktop.Secrets", "LoginUnlock", c.g_variant_new("(@ay)", byteVariant(password)), null, 0, 30000, null, null) orelse return error.UnlockFailed;
-    c.g_variant_unref(reply);
+    const bus = dbus.Connection.open(std.heap.page_allocator, .session) catch return error.NoSessionBus;
+    defer bus.close();
+    const reply = bus.callBlocking(.{ .destination = name, .path = root, .interface = "org.dotfiles.Desktop.Secrets", .member = "LoginUnlock" }, .{dbus.Bytes{ .value = password }}, 30000) catch return error.UnlockFailed;
+    reply.deinit();
 }
 test {
     _ = transport;
@@ -844,10 +858,16 @@ fn variantPath(v: [*:0]const u8) ?*c.GVariant {
     return c.g_variant_new("o", v);
 }
 
-fn sourceCall(bus: *c.GDBusConnection, owner: [:0]const u8, path: [:0]const u8, interface: [:0]const u8, verb: [:0]const u8, args: ?*c.GVariant) !*c.GVariant {
-    return c.g_dbus_connection_call_sync(bus, owner, path, interface, verb, args, null, c.G_DBUS_CALL_FLAGS_NO_AUTO_START, 30000, null, null) orelse error.SourceUnavailable;
+/// Calls the source service and returns its reply as an owned GVariant tuple.
+fn sourceCall(bus: *dbus.Connection, owner: [:0]const u8, path: [:0]const u8, interface: [:0]const u8, verb: [:0]const u8, args: ?*c.GVariant) !*c.GVariant {
+    var arena = std.heap.ArenaAllocator.init(bus.allocator);
+    defer arena.deinit();
+    const body = if (args) |value| try bridge.bodyFromVariant(arena.allocator(), value) else dbus.Body{ .values = &.{} };
+    const reply = bus.callBlocking(.{ .destination = owner, .path = path, .interface = interface, .member = verb, .no_auto_start = true }, body, 30000) catch return error.SourceUnavailable;
+    defer reply.deinit();
+    return bridge.argumentsVariant(reply.message()) orelse error.SourceUnavailable;
 }
-fn sourceProperty(bus: *c.GDBusConnection, owner: [:0]const u8, path: [:0]const u8, kind: Kind, prop: [:0]const u8) !*c.GVariant {
+fn sourceProperty(bus: *dbus.Connection, owner: [:0]const u8, path: [:0]const u8, kind: Kind, prop: [:0]const u8) !*c.GVariant {
     const reply = try sourceCall(bus, owner, path, "org.freedesktop.DBus.Properties", "Get", c.g_variant_new("(ss)", iface(kind).ptr, prop.ptr));
     defer c.g_variant_unref(reply);
     const boxed = child(reply, 0);
@@ -862,9 +882,9 @@ pub fn importAt(directory: [:0]const u8, password: []const u8) !void {
     var vault = try store.Vault.init(a, directory);
     defer vault.deinit();
     if (vault.envelope != null and vault.index.collections.len != 0) return error.DestinationNotEmpty;
-    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return error.NoSessionBus;
-    defer c.g_object_unref(bus);
-    const owned = c.g_dbus_connection_call_sync(bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", c.g_variant_new("(s)", @as([*:0]const u8, name)), null, 0, 3000, null, null) orelse return error.NoSourceService;
+    const bus = dbus.Connection.open(std.heap.page_allocator, .session) catch return error.NoSessionBus;
+    defer bus.close();
+    const owned = sourceCall(bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", c.g_variant_new("(s)", @as([*:0]const u8, name))) catch return error.NoSourceService;
     defer c.g_variant_unref(owned);
     const owner = try a.dupeSentinel(u8, text(owned, 0), 0);
     defer a.free(owner);

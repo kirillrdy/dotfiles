@@ -15,30 +15,32 @@ fn added(_: ?*anyopaque, output: *wire.Output) void {
     surface.show() catch @panic("background surface");
 }
 fn removed(_: ?*anyopaque, _: *wire.Output) void {}
-fn method(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, _: ?*anyopaque) callconv(.c) void {
-    for (0..3) |i| {
-        const value = c.g_variant_get_child_value(params, i);
-        color[i] = c.g_variant_get_double(value);
-        c.g_variant_unref(value);
-    }
+const dbus = desktop.dbus;
+const loop = desktop.dbus_loop;
+var bus: ?*loop.Source = null;
+fn method(_: ?*anyopaque, message: *const dbus.Message) void {
+    const connection = bus.?.connection;
+    const args = message.read(struct { f64, f64, f64 }) catch return connection.replyError(message, "org.freedesktop.DBus.Error.InvalidArgs", "Expected (ddd)") catch {};
+    color = .{ args[0], args[1], args[2] };
     if (background == null) {
         background = wire.Client.create(.{ .added = &added, .removed = &removed }, null) catch @panic("background client");
         background.?.start() catch @panic("background dispatch");
     }
     for (background.?.surfaces.items) |surface| surface.redraw();
-    c.g_dbus_method_invocation_return_value(invocation, null);
+    connection.reply(message, .{}) catch {};
 }
-const vtable = c.GDBusInterfaceVTable{ .method_call = &method };
 pub fn main() !void {
     var allocator: std.heap.DebugAllocator(.{}) = .init;
     defer if (allocator.deinit() == .leak) @panic("portal allocation leak");
-    const connection = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return error.NoBus;
-    defer c.g_object_unref(connection);
-    const node = c.g_dbus_node_info_new_for_xml("<node><interface name='org.dotfiles.CaptureFixture'><method name='Color'><arg type='d' direction='in'/><arg type='d' direction='in'/><arg type='d' direction='in'/></method></interface></node>", null) orelse return error.InvalidXml;
-    defer c.g_dbus_node_info_unref(node);
-    const registration = if (c.__zig.getenv("DESKTOP_PORTAL_FIXTURE_CAPTURE") != null) c.g_dbus_connection_register_object(connection, "/org/dotfiles/CaptureFixture", node.*.interfaces[0], &vtable, null, null, null) else 0;
+    // The portal shares this connection, so tests reach the fixture at the portal's unique name.
+    const source = try loop.acquire(.session);
+    bus = source;
+    defer loop.release(source);
+    var introspection = try dbus.Introspection.parse(std.heap.page_allocator, "<node><interface name='org.dotfiles.CaptureFixture'><method name='Color'><arg type='d' direction='in'/><arg type='d' direction='in'/><arg type='d' direction='in'/></method></interface></node>");
+    defer introspection.deinit();
+    const registration = if (c.__zig.getenv("DESKTOP_PORTAL_FIXTURE_CAPTURE") != null) try source.connection.exportObject("/org/dotfiles/CaptureFixture", &introspection.interfaces[0], &method, null, null) else 0;
     defer {
-        if (registration != 0) _ = c.g_dbus_connection_unregister_object(connection, registration);
+        if (registration != 0) source.connection.unregister(registration);
     }
     defer if (background) |client| client.destroy();
     try desktop.portal.runWithAllocator(allocator.allocator());

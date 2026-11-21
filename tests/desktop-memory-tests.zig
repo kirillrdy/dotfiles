@@ -106,7 +106,7 @@ fn networkLifetime(settle: bool) !void {
         const deadline = c.__zig.monotonicTime() + 15_000_000;
         while ((!client.state().available or client.state().profiles.items.len == 0) and c.__zig.monotonicTime() < deadline) pump();
         try std.testing.expect(client.state().available and client.state().profiles.items.len != 0);
-        if (client.service.manager) |manager| objects.watch(manager);
+        // The ObjectManager client is native now; its memory is checked by the allocator, not GObject refs.
         const cancel = c.g_cancellable_new().?;
         defer c.g_object_unref(cancel);
         objects.watch(cancel);

@@ -5,7 +5,6 @@ const native = @import("desktop-form.zig");
 const network = @import("desktop-network.zig");
 const presentation = @import("desktop-network-editor-view.zig");
 const raster = @import("desktop-raster.zig");
-const g = network.api;
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 fn z(s: []const u8) [:0]u8 {
