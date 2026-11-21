@@ -188,15 +188,6 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) Error![]u8 {
     try write(allocator, &out, value);
     return out.toOwnedSlice(allocator);
 }
-/// A maybe value (`m*`), which D-Bus values cannot express: null is nothing.
-pub fn encodeMaybe(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: ?Value) Error!void {
-    const inner = value orelse return;
-    var buffer: [256]u8 = undefined;
-    const signature = inner.signatureInto(&buffer) catch return error.UnsupportedType;
-    try write(allocator, out, inner);
-    // A variable-size child is followed by a zero byte.
-    if (fixedSize(signature) == null) try out.append(allocator, 0);
-}
 pub const Change = struct { key: []const u8, value: ?Value };
 /// A dconf changeset, `a{smv}`: keys with new values, or null to reset them.
 pub fn encodeChangeset(allocator: std.mem.Allocator, changes: []const Change) Error![]u8 {

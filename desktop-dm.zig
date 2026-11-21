@@ -22,7 +22,6 @@ const VT_ACTIVATE: c_ulong = 0x5606;
 const VT_WAITACTIVE: c_ulong = 0x5607;
 const SIGTERM: c_int = 15;
 const SIGINT: c_int = 2;
-const SIGKILL: c_int = 9;
 const SIGHUP: c_int = 1;
 const SIGPIPE: c_int = 13;
 
@@ -152,24 +151,6 @@ fn openPamSession(handle: PamHandle, tty_path: [*:0]const u8, class: []const u8,
         return false;
     }
     return true;
-}
-
-fn applyPamEnv(handle: PamHandle) void {
-    const list = posix.pam_getenvlist(handle) orelse return;
-    var i: usize = 0;
-    while (list[i] != null) : (i += 1) {
-        const entry = std.mem.span(list[i]);
-        if (std.mem.indexOfScalar(u8, entry, '=')) |eq| {
-            var key_buf: [256:0]u8 = undefined;
-            if (eq < key_buf.len) {
-                @memcpy(key_buf[0..eq], entry[0..eq]);
-                key_buf[eq] = 0;
-                _ = setenv(key_buf[0..eq :0].ptr, list[i] + eq + 1, 1);
-            }
-        }
-        posix.free(list[i]);
-    }
-    posix.free(@ptrCast(list));
 }
 
 fn performPower(a: std.mem.Allocator, action_byte: u8) bool {

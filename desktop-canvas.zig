@@ -632,18 +632,6 @@ fn rowTaps(taps: *Taps, y: u32, scale: f64, offset: f64, size: u32, filter: Filt
     @memcpy(taps.weights[0..computed.count[0]], computed.weights[0..computed.count[0]]);
 }
 
-const V16 = @Vector(4, u16);
-
-inline fn unpack16(pixel: u32) V16 {
-    const bytes: @Vector(4, u8) = @bitCast(pixel);
-    return bytes;
-}
-
-inline fn pack16(value: V16) u32 {
-    const bytes: @Vector(4, u8) = @intCast(@min(value, @as(V16, @splat(255))));
-    return @bitCast(bytes);
-}
-
 test "canvas fills, strokes, clips and paints with Cairo operator semantics" {
     const a = std.testing.allocator;
     var target = try vec.Target.init(a, 20, 20);

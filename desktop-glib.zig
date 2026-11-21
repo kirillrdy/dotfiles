@@ -135,14 +135,6 @@ pub const struct__GVariant = opaque {};
 
 pub const GVariant = struct__GVariant;
 pub extern fn g_variant_unref(value: ?*GVariant) void;
-pub extern fn g_variant_get_boolean(value: ?*GVariant) gboolean;
-pub extern fn g_variant_get_byte(value: ?*GVariant) guint8;
-pub extern fn g_variant_get_int32(value: ?*GVariant) gint32;
-pub extern fn g_variant_get_uint32(value: ?*GVariant) guint32;
-pub extern fn g_variant_get_string(value: ?*GVariant, length: [*c]gsize) [*c]const gchar;
-pub extern fn g_variant_n_children(value: ?*GVariant) gsize;
-pub extern fn g_variant_get_child_value(value: ?*GVariant, index_: gsize) ?*GVariant;
-pub extern fn g_variant_get_fixed_array(value: ?*GVariant, n_elements: [*c]gsize, element_size: gsize) gconstpointer;
 pub extern fn g_print(format: [*c]const gchar, ...) void;
 pub extern fn g_shell_quote(unquoted_string: [*c]const gchar) [*c]gchar;
 pub extern fn g_shell_parse_argv(command_line: [*c]const gchar, argcp: [*c]gint, argvp: [*c][*c][*c]gchar, @"error": [*c][*c]GError) gboolean;
@@ -399,8 +391,6 @@ pub extern fn g_filename_to_uri([*c]const u8, [*c]const u8, [*c][*c]GError) [*c]
 pub extern fn g_get_user_runtime_dir() [*:0]const u8;
 pub const SIGINT = @as(c_int, 2);
 pub const SIGTERM = @as(c_int, 15);
-pub extern fn g_variant_get_handle(?*GVariant) gint32;
-pub extern fn g_variant_get_variant(?*GVariant) ?*GVariant;
 pub extern fn g_file_read_link([*c]const gchar, [*c][*c]GError) [*c]gchar;
 pub extern fn g_subprocess_launcher_take_fd(?*GSubprocessLauncher, gint, gint) void;
 pub extern fn g_cancellable_is_cancelled([*c]GCancellable) gboolean;
@@ -409,11 +399,8 @@ pub extern fn g_cancellable_disconnect([*c]GCancellable, gulong) void;
 
 // GIO proxy properties and variant helpers.
 pub extern fn g_variant_get_type_string(?*GVariant) [*c]const gchar;
-pub extern fn g_variant_get_double(?*GVariant) f64;
-pub extern fn g_variant_get_uint64(?*GVariant) u64;
 pub extern fn g_variant_print(?*GVariant, gboolean) [*c]gchar;
 pub extern fn g_variant_parse(?*const GVariantType, [*c]const gchar, [*c]const gchar, [*c][*c]const gchar, [*c][*c]GError) ?*GVariant;
-pub extern fn g_uuid_string_random() [*c]gchar;
 
 // Native portal broker: tuples and Unix file descriptor forwarding.
 pub extern fn g_app_info_launch_default_for_uri_async([*c]const gchar, ?*GAppLaunchContext, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
@@ -435,12 +422,6 @@ pub const GFileMonitor = opaque {};
 pub extern fn g_file_monitor_directory(?*GFile, c_uint, [*c]GCancellable, [*c][*c]GError) ?*GFileMonitor;
 pub extern fn g_file_monitor_cancel(?*GFileMonitor) gboolean;
 pub extern fn g_get_user_data_dir() [*c]const gchar;
-pub extern fn g_icon_deserialize(?*GVariant) ?*GIcon;
-pub extern fn g_icon_to_string(?*GIcon) [*c]gchar;
-pub const GBytes = opaque {};
-pub extern fn g_bytes_icon_get_type() GType;
-pub extern fn g_bytes_icon_get_bytes(?*GIcon) ?*GBytes;
-pub extern fn g_memory_input_stream_new_from_bytes(?*GBytes) ?*GInputStream;
 pub extern fn g_markup_escape_text([*c]const gchar, gssize) [*c]gchar;
 // File chooser dialogs run in the native portal process.
 pub extern fn g_variant_equal(gconstpointer, gconstpointer) gboolean;
