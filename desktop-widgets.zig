@@ -321,7 +321,7 @@ fn history_ready(data: ?*anyopaque, reply: dbus.Reply) void {
 }
 pub fn usage_refresh(m: *Module) void {
     const source = std.mem.span(m.source);
-    if (m.dead != 0 or !m.usage.enabled or !(std.mem.eql(u8, source, "codex") or std.mem.eql(u8, source, "claude"))) return;
+    if (m.dead != 0 or !m.usage.enabled or !panel_data.isUsage(source)) return;
     m.usage.enabled = false;
     m.usage.checked.set(m.allocator, "Refreshing…");
     if (m.usage_menu) |menu| menu.redraw();
@@ -449,10 +449,9 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
     if (m.monitors != 0) {
         resize(m);
     } else if (m.view.usage) {
-        const claude = std.mem.eql(u8, options.source, "claude");
         const icon = panel_data.usageIcon(options.source);
         update_items(m, &.{.{ .icon = icon, .text = if (icon.len == 0) "Codex…" else "…" }});
-        m.tooltip = c.g_strdup(if (claude) "Loading Claude usage…" else "Loading Codex usage…");
+        m.tooltip = c.g_strdup_printf("Loading %s usage…", panel_data.usageName(options.source).ptr);
         m.usage.checked.set(m.allocator, "Loading…");
         make_usage_menu(m);
     } else if (m.status != 0) {
@@ -479,7 +478,7 @@ pub fn init(allocator: std.mem.Allocator, options: Options, devices: ?*@import("
         .cancel = c.g_cancellable_new(),
         .monitors = @intFromBool(std.mem.eql(u8, options.kind, "monitors")),
         .status = @intFromBool(std.mem.eql(u8, options.name, "gnome-status")),
-        .view = .{ .monitors = std.mem.eql(u8, options.kind, "monitors"), .status = std.mem.eql(u8, options.name, "gnome-status"), .activities = std.mem.eql(u8, options.kind, "activities"), .usage = std.mem.eql(u8, options.name, "gnome-codex") or std.mem.eql(u8, options.name, "gnome-claude"), .disk = std.mem.eql(u8, options.name, "gnome-disk") },
+        .view = .{ .monitors = std.mem.eql(u8, options.kind, "monitors"), .status = std.mem.eql(u8, options.name, "gnome-status"), .activities = std.mem.eql(u8, options.kind, "activities"), .usage = std.mem.eql(u8, options.name, "gnome-codex") or std.mem.eql(u8, options.name, "gnome-claude") or std.mem.eql(u8, options.name, "gnome-antigravity"), .disk = std.mem.eql(u8, options.name, "gnome-disk") },
         .on_redraw = on_redraw,
         .redraw_context = redraw_context,
     };

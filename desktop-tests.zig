@@ -3,6 +3,7 @@ const u = @import("desktop-util.zig");
 const panel = @import("desktop-panel-data.zig");
 const codex = @import("desktop-codex.zig");
 const claude = @import("desktop-claude.zig");
+const antigravity = @import("desktop-antigravity.zig");
 const usage = @import("desktop-usage.zig");
 const expect = std.testing.expect;
 const equal = std.testing.expectEqual;
@@ -249,4 +250,46 @@ test "Claude backs off after 429 like Claude Code and keeps the last usage" {
     const empty = try usage.update(a, try claude.rateLimited(a, null, 1300), "", 1100);
     try equal(@as(usize, 0), empty.windows.len);
     try expect(std.mem.indexOf(u8, empty.@"error", "rate limited") != null);
+}
+
+test "Antigravity takes the tightest bucket of each quota window" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const windows = antigravity.parseUsage(try u.parse(a,
+        \\{"groups":[{"displayName":"Gemini","buckets":[
+        \\  {"window":"18000s","remainingFraction":0.8,"resetTime":"1970-01-01T00:16:40Z"},
+        \\  {"window":"604800s","remainingFraction":0.95,"resetTime":"1970-01-03T03:16:40Z"}]},
+        \\ {"displayName":"Claude","buckets":[
+        \\  {"window":"18000s","remainingFraction":0.54,"resetTime":"1970-01-01T00:16:40Z"},
+        \\  {"window":"604800s","remainingFraction":0.1,"disabled":true}]}]}
+    ));
+    const out = try usage.update(a, .{ .name = "Antigravity", .windows = windows }, "", 1000);
+    try strings("54%", out.items.?[0].text);
+    try expect(std.mem.indexOf(u8, out.tooltip, "Antigravity allowance remaining") != null);
+    try strings("Resets in 2d 3h", out.windows[1].reset);
+    try expect(@abs(out.windows[1].percent.? - 95) < 1e-9);
+    // The live service labels windows "5h" and "weekly".
+    const live = antigravity.parseUsage(try u.parse(a, "{\"groups\":[{\"buckets\":[{\"bucketId\":\"3p-weekly\",\"window\":\"weekly\",\"resetTime\":\"1970-01-03T03:16:40Z\",\"remainingFraction\":0.9},{\"bucketId\":\"3p-5h\",\"window\":\"5h\",\"resetTime\":\"1970-01-01T00:16:40Z\",\"remainingFraction\":0.25}]}]}"));
+    try expect(@abs(live[0].?.used - 75) < 1e-9 and @abs(live[1].?.used - 10) < 1e-9);
+    // Unlabelled buckets are placed by reset time.
+    const ordered = antigravity.parseUsage(try u.parse(a, "{\"buckets\":[{\"remainingFraction\":0.5,\"resetTime\":\"1970-01-03T00:00:00Z\"},{\"remainingFraction\":0.25,\"resetTime\":\"1970-01-01T01:00:00Z\"}]}"));
+    try expect(@abs(ordered[0].?.used - 75) < 1e-9 and @abs(ordered[1].?.used - 50) < 1e-9);
+    for ([_][]const u8{ "{}", "{\"buckets\":[]}", "{\"groups\":[{\"buckets\":[{\"window\":\"18000s\"}]}]}" }) |value| {
+        const none = antigravity.parseUsage(try u.parse(a, value));
+        try expect(none[0] == null and none[1] == null);
+    }
+}
+
+test "Antigravity reads agy's stored OAuth token and notices expiry" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const json = "{\"access_token\":\"ya29.fixture\",\"token_type\":\"Bearer\",\"refresh_token\":\"r\",\"expiry\":\"1970-01-01T00:16:40.123456789+11:00\"}";
+    try strings("ya29.fixture", (try antigravity.parseToken(a, json, -40000)).token);
+    try expect(try antigravity.parseToken(a, json, 1000) == .expired);
+    const encoded = try std.fmt.allocPrint(a, "go-keyring-base64:{b64}", .{json});
+    try strings("ya29.fixture", (try antigravity.parseToken(a, encoded, -40000)).token);
+    try strings("ya29.nested", (try antigravity.parseToken(a, "{\"token\":{\"access_token\":\"ya29.nested\"}}", 0)).token);
+    try std.testing.expectError(error.NoToken, antigravity.parseToken(a, "{\"token_type\":\"Bearer\"}", 0));
 }

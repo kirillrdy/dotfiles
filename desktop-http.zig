@@ -14,6 +14,8 @@ pub const Options = struct {
     max_bytes: usize = 1024 * 1024,
     use_proxy: bool = true,
     user_agent: []const u8 = "codex-cli",
+    /// Sent as a POST body when set; otherwise the request is a bodiless GET.
+    body: ?[]const u8 = null,
 };
 
 pub fn get(a: std.mem.Allocator, io: std.Io, options: Options) !Response {
@@ -50,7 +52,7 @@ fn request(a: std.mem.Allocator, io: std.Io, options: Options) !Response {
     var proxy_arena = std.heap.ArenaAllocator.init(a);
     defer proxy_arena.deinit();
     if (options.use_proxy) try client.initDefaultProxies(proxy_arena.allocator(), &env);
-    var req = try client.request(.GET, try std.Uri.parse(options.url), .{
+    var req = try client.request(if (options.body == null) .GET else .POST, try std.Uri.parse(options.url), .{
         .redirect_behavior = .unhandled,
         .keep_alive = false,
         .headers = .{
@@ -61,7 +63,12 @@ fn request(a: std.mem.Allocator, io: std.Io, options: Options) !Response {
         .extra_headers = options.headers,
     });
     defer req.deinit();
-    try req.sendBodiless();
+    if (options.body) |body| {
+        // sendBodyComplete uses the body as its write buffer, so it must be mutable.
+        const copy = try a.dupe(u8, body);
+        defer a.free(copy);
+        try req.sendBodyComplete(copy);
+    } else try req.sendBodiless();
     var response = try req.receiveHead(&.{});
     if (response.head.content_encoding != .identity) return error.UnsupportedEncoding;
     // Head bytes are only valid until the body reader takes over the buffer.

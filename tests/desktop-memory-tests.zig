@@ -241,6 +241,7 @@ test "memory: repeated asynchronous service and widget teardown releases ownersh
         try widgetLifetime("gnome-status", "indicator", "status");
         try widgetLifetime("gnome-codex", "indicator", "codex");
         try widgetLifetime("gnome-claude", "indicator", "claude");
+        try widgetLifetime("gnome-antigravity", "indicator", "antigravity");
         try widgetLifetime("gnome-clock", "clock", "");
     }
 }

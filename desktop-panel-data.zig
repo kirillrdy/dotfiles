@@ -6,6 +6,7 @@ const audio = @import("desktop-audio.zig");
 const battery = @import("desktop-battery.zig");
 const codex = @import("desktop-codex.zig");
 const claude = @import("desktop-claude.zig");
+const antigravity = @import("desktop-antigravity.zig");
 const usage = @import("desktop-usage.zig");
 const A = u.Allocator;
 pub const Item = struct {
@@ -209,8 +210,18 @@ pub fn diskUsageText(a: A, stats: u.libc.struct_statvfs) ![]const u8 {
     return u.fmt(a, "{s}/{s}", .{ try diskSize(a, used), try diskSize(a, total) });
 }
 
+/// Sources shown as allowance usage indicators.
+pub fn isUsage(kind: []const u8) bool {
+    return u.eq(kind, "codex") or u.eq(kind, "claude") or u.eq(kind, "antigravity");
+}
+/// The usage indicator's display name, as used in its loading tooltip.
+pub fn usageName(kind: []const u8) [:0]const u8 {
+    return if (u.eq(kind, "claude")) "Claude" else if (u.eq(kind, "antigravity")) "Antigravity" else "Codex";
+}
+
 pub fn usageIcon(kind: []const u8) []const u8 {
     if (u.eq(kind, "claude")) return "claude-usage-symbolic";
+    if (u.eq(kind, "antigravity")) return "antigravity-usage-symbolic";
     return u.env("DESKTOP_CODEX_ICON") orelse "";
 }
 
@@ -228,6 +239,6 @@ pub fn sample(a: A, kind: []const u8, demo: bool) !Update {
         return .{ .items = items };
     }
     const now = u.timestamp();
-    const report = if (demo) usage.demo(now) else if (u.eq(kind, "claude")) claude.read(a) else codex.read(a);
+    const report = if (demo) usage.demo(now) else if (u.eq(kind, "claude")) claude.read(a) else if (u.eq(kind, "antigravity")) antigravity.read(a) else codex.read(a);
     return usage.update(a, report, usageIcon(kind), now);
 }

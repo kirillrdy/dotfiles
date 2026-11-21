@@ -32,7 +32,11 @@ let
     export DESKTOP_CODEX_ICON=${codexIcon}
     export DESKTOP_SESSION_MANAGED=1
     ${lib.optionalString enableNvidia "export WLR_RENDERER=vulkan"}
-    exec ${shell} compositor ${gnomeWallpaper}
+    # The compositor's stderr would otherwise go to tty1 and be lost when getty restarts.
+    ${pkgs.systemd}/bin/systemd-cat -t desktop-compositor ${shell} compositor ${gnomeWallpaper}
+    status=$?
+    echo "compositor exited with status $status" | ${pkgs.systemd}/bin/systemd-cat -t desktop-compositor -p err
+    exit $status
   '';
 
 in
@@ -200,6 +204,10 @@ lib.mkIf enableLightDesktop {
         {
           name = "gnome-claude";
           source = "claude";
+        }
+        {
+          name = "gnome-antigravity";
+          source = "antigravity";
         }
         {
           name = "gnome-monitors";
