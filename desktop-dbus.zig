@@ -268,7 +268,10 @@ pub const Writer = struct {
         if (T == u8) return self.bytes.append(self.allocator, value);
         if (T == i16 or T == u16 or T == i32 or T == u32 or T == i64 or T == u64) return self.int(T, value);
         if (T == f64) return self.int(u64, @bitCast(value));
-        if (T == ObjectPath) return self.string(value.value);
+        if (T == ObjectPath) {
+            if (!isObjectPath(value.value)) return error.InvalidMessage;
+            return self.string(value.value);
+        }
         if (T == Signature) return self.signature(value.value);
         if (T == Fd) {
             try self.int(u32, @intCast(self.fds.items.len));
@@ -318,7 +321,7 @@ pub const Writer = struct {
             .uint64 => |v| try self.put(v),
             .double => |v| try self.put(v),
             .string => |v| try self.string(v),
-            .object_path => |v| try self.string(v),
+            .object_path => |v| try self.put(ObjectPath{ .value = v }),
             .signature => |v| try self.signature(v),
             .fd => |v| try self.put(Fd{ .value = v }),
             .bytes => |v| try self.put(Bytes{ .value = v }),
@@ -510,6 +513,26 @@ pub const Reader = struct {
     }
 };
 
+/// Whether `path` is a valid object path: `/` or `/`-separated non-empty [A-Za-z0-9_] elements.
+pub fn isObjectPath(path: []const u8) bool {
+    if (path.len == 0 or path[0] != '/') return false;
+    if (path.len == 1) return true;
+    if (path[path.len - 1] == '/') return false;
+    var previous: u8 = '/';
+    for (path[1..]) |ch| {
+        if (ch == '/') {
+            if (previous == '/') return false;
+        } else if (!std.ascii.isAlphanumeric(ch) and ch != '_') return false;
+        previous = ch;
+    }
+    return true;
+}
+
+test "object paths follow the D-Bus rules" {
+    for ([_][]const u8{ "/", "/a", "/ca/desrt/dconf/Writer/user", "/a_b/C9" }) |valid| try std.testing.expect(isObjectPath(valid));
+    for ([_][]const u8{ "", "a", "/a/", "//a", "/a//b", "/desktop-zig", "/a.b" }) |invalid| try std.testing.expect(!isObjectPath(invalid));
+}
+
 /// Whether `signature` is exactly one complete type, such as `a{sv}`.
 pub fn isSingleType(signature: []const u8) bool {
     if (signature.len == 0 or signature.len > 255 or signature[0] == '{') return false;
@@ -616,7 +639,11 @@ pub fn encode(allocator: std.mem.Allocator, header: Message, args: anytype) !Wri
     const Field = struct { code: u8, value: Value };
     var fields: [9]Field = undefined;
     var count: usize = 0;
-    if (header.path) |v| addField(&fields, &count, 1, .{ .object_path = v });
+    if (header.path) |v| {
+        // The bus disconnects senders of invalid messages, so refuse them here.
+        if (!isObjectPath(v)) return error.InvalidMessage;
+        addField(&fields, &count, 1, .{ .object_path = v });
+    }
     if (header.interface) |v| addField(&fields, &count, 2, .{ .string = v });
     if (header.member) |v| addField(&fields, &count, 3, .{ .string = v });
     if (header.error_name) |v| addField(&fields, &count, 4, .{ .string = v });

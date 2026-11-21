@@ -511,7 +511,13 @@ fn writeDconf(arena: std.mem.Allocator, path: []const u8, value: Value) !void {
     const loop = @import("desktop-dbus-loop.zig");
     const changeset = try gvariant.encodeChangeset(arena, &.{.{ .key = path, .value = value }});
     const object = try std.fmt.allocPrint(arena, "/ca/desrt/dconf/Writer/{s}", .{database});
-    loop.request(.session, .{ .destination = writer_name, .path = object, .interface = writer_interface, .member = "Change" }, .{dbus.Bytes{ .value = changeset }}, 25000, null, &loop.ignore, null);
+    loop.request(.session, .{ .destination = writer_name, .path = object, .interface = writer_interface, .member = "Change" }, .{dbus.Bytes{ .value = changeset }}, 25000, null, &writeFinished, null);
+}
+fn writeFinished(_: ?*anyopaque, reply: dbus.Reply) void {
+    switch (reply) {
+        .ok => {},
+        .failed => |failure| std.log.warn("gsettings: dconf write failed: {s}: {s}", .{ failure.name, failure.text }),
+    }
 }
 fn subscribe() void {
     const loop = @import("desktop-dbus-loop.zig");
@@ -616,6 +622,8 @@ const Mutex = struct {
 
 test "dconf values match GLib" {
     // Runs against the real dconf databases when GLib would use them.
+    // The write test below loads a throwaway profile; the store loads only once.
+    if (getenv("DESKTOP_GSETTINGS_DCONF_TEST_PROFILE") != null) return error.SkipZigTest;
     if (getenv("GSETTINGS_BACKEND") != null) return error.SkipZigTest;
     const c = @import("desktop-glib.zig");
     const g = struct {
@@ -671,4 +679,41 @@ test "small result buffers only need to hold the value" {
     var buffer: [64]u8 = undefined;
     var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
     try std.testing.expect(settings.string(fixed.allocator(), "color-scheme").len > 0);
+}
+
+test "dconf writes reach the database and notify watchers" {
+    // Opt-in: needs a running dconf service. Point DCONF_PROFILE at a profile
+    // whose user database is a throwaway one, never the real `user` database.
+    const profile = getenv("DESKTOP_GSETTINGS_DCONF_TEST_PROFILE") orelse return error.SkipZigTest;
+    if (getenv("GSETTINGS_BACKEND") != null) return error.SkipZigTest;
+    _ = profile;
+    const c = @import("desktop-glib.zig");
+    const settings = Settings.open("org.gnome.desktop.interface", "color-scheme") orelse return error.SkipZigTest;
+    defer settings.close();
+    try std.testing.expect(store.writable != null and !std.mem.eql(u8, store.writable.?, "user"));
+    const Seen = struct {
+        var count: usize = 0;
+        fn changed(_: ?*anyopaque, key: []const u8) void {
+            if (std.mem.eql(u8, key, "color-scheme")) count += 1;
+        }
+    };
+    try settings.watch(&Seen.changed, null);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const next = if (std.mem.eql(u8, settings.string(arena.allocator(), "color-scheme"), "prefer-dark")) "prefer-light" else "prefer-dark";
+    try settings.setString("color-scheme", next);
+    // Once immediately, again when dconf's Notify arrives.
+    var tries: usize = 0;
+    while (Seen.count < 2 and tries < 300) : (tries += 1) {
+        _ = c.g_main_context_iteration(null, 0);
+        std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+    }
+    try std.testing.expect(Seen.count >= 2);
+    // The value now comes from the database file, not this process's pending write.
+    {
+        store.mutex.lock();
+        defer store.mutex.unlock();
+        try std.testing.expect(store.values.count() == 0);
+    }
+    try std.testing.expectEqualStrings(next, settings.string(arena.allocator(), "color-scheme"));
 }
