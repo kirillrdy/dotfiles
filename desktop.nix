@@ -207,13 +207,21 @@ lib.mkIf enableLightDesktop {
         XCURSOR_SIZE = toString cursorSize;
         DESKTOP_CODEX_ICON = "${codexIcon}";
         DESKTOP_SESSION_MANAGED = "1";
+        # NixOS gives units a coreutils-only PATH; the compositor imports PATH into
+        # the user manager, which hides every app whose Exec= is not absolute.
+        PATH = lib.mkForce null;
       }
       // lib.optionalAttrs enableNvidia {
         WLR_RENDERER = "vulkan";
       };
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${shell} compositor ${gnomeWallpaper}";
+        # Match the former tty1 login session: environment.variables (GIO_EXTRA_MODULES,
+        # XCURSOR_PATH, GTK_PATH, ...) and the full user PATH only come from /etc/profile.
+        ExecStart = "${pkgs.writeShellScript "desktop-zig-session" ''
+          . /etc/profile
+          exec ${shell} compositor ${gnomeWallpaper}
+        ''}";
         Slice = "session.slice";
         Restart = "no";
       };
