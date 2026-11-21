@@ -1,6 +1,8 @@
 //! System battery policy and core read-only UPower status compatibility.
 const std = @import("std");
 const c = @import("desktop-glib.zig");
+const dbus = @import("dbus");
+const loop = @import("desktop-dbus-loop.zig");
 const libc = @import("desktop-libc.zig");
 const battery = @import("desktop-battery.zig");
 const name = "org.freedesktop.UPower";
@@ -62,67 +64,73 @@ fn lidState(directory: [:0]const u8) Lid {
 const Server = struct {
     allocator: std.mem.Allocator,
     options: Options,
-    bus: *c.GDBusConnection,
-    node: *c.GDBusNodeInfo,
-    registrations: [3]c.guint = .{ 0, 0, 0 },
+    connection: *dbus.Connection,
     service: ?*battery.Service = null,
     cancel: *c.GCancellable,
     state: battery.State = .{},
     lid: Lid = .{},
     policy: Policy = .{},
     update_time: u64 = 0,
-    jobs: usize = 0,
+    jobs: std.ArrayList(*Job) = .empty,
     stopping: bool = false,
     tick_count: u32 = 0,
 
-    fn property(self: *Server, object: []const u8, key: []const u8) ?*c.GVariant {
+    fn property(self: *Server, object: []const u8, key: []const u8, arena: std.mem.Allocator) ?dbus.Value {
         const value = self.state;
         if (eq(object, root)) {
-            if (eq(key, "DaemonVersion")) return c.g_variant_new("s", @as([*:0]const u8, "desktop-zig-0.1.0"));
-            if (eq(key, "OnBattery")) return c.g_variant_new("b", @as(c_int, @intFromBool(value.on_battery)));
-            if (eq(key, "LidIsPresent")) return c.g_variant_new("b", @as(c_int, @intFromBool(self.lid.present)));
-            if (eq(key, "LidIsClosed")) return c.g_variant_new("b", @as(c_int, @intFromBool(self.lid.closed)));
+            if (eq(key, "DaemonVersion")) return .{ .string = "desktop-zig-0.1.0" };
+            if (eq(key, "OnBattery")) return .{ .boolean = value.on_battery };
+            if (eq(key, "LidIsPresent")) return .{ .boolean = self.lid.present };
+            if (eq(key, "LidIsClosed")) return .{ .boolean = self.lid.closed };
             return null;
         }
-        if (eq(key, "NativePath")) return c.g_variant_new("s", self.options.source.backend.root.ptr);
-        if (eq(key, "Vendor") or eq(key, "Serial")) return c.g_variant_new("s", @as([*:0]const u8, ""));
-        if (eq(key, "Model")) return c.g_variant_new("s", @as([*:0]const u8, "System batteries"));
-        if (eq(key, "UpdateTime")) return c.g_variant_new("t", self.update_time);
-        if (eq(key, "Type")) return c.g_variant_new("u", @as(c_uint, 2));
-        if (eq(key, "State")) return c.g_variant_new("u", value.state);
-        if (eq(key, "Technology")) return c.g_variant_new("u", @as(c_uint, 0));
-        if (eq(key, "WarningLevel")) return c.g_variant_new("u", @as(c_uint, @backingInt(value.warning())));
-        if (eq(key, "PowerSupply") or eq(key, "IsRechargeable")) return c.g_variant_new("b", @as(c_int, 1));
-        if (eq(key, "HasHistory") or eq(key, "HasStatistics") or eq(key, "Online")) return c.g_variant_new("b", @as(c_int, 0));
-        if (eq(key, "IsPresent")) return c.g_variant_new("b", @as(c_int, @intFromBool(if (eq(object, display)) value.visible() else value.present)));
-        if (eq(key, "ChargeThresholdEnabled")) return c.g_variant_new("b", @as(c_int, @intFromBool(value.charge_threshold)));
-        if (eq(key, "TimeToEmpty")) return c.g_variant_new("x", value.time_to_empty);
-        if (eq(key, "TimeToFull")) return c.g_variant_new("x", value.time_to_full);
-        if (eq(key, "Energy")) return c.g_variant_new("d", value.energy);
-        if (eq(key, "EnergyFull")) return c.g_variant_new("d", value.energy_full);
-        if (eq(key, "EnergyFullDesign")) return c.g_variant_new("d", value.energy_full_design);
-        if (eq(key, "Capacity")) return c.g_variant_new("d", value.capacity);
-        if (eq(key, "EnergyRate")) return c.g_variant_new("d", value.energy_rate);
-        if (eq(key, "Percentage")) return c.g_variant_new("d", if (value.visible()) value.percent else @as(f64, 0));
-        if (eq(key, "EnergyEmpty") or eq(key, "Voltage") or eq(key, "Temperature") or eq(key, "Luminosity")) return c.g_variant_new("d", @as(f64, 0));
-        if (eq(key, "ChargeCycles")) return c.g_variant_new("i", @as(c_int, -1));
+        if (eq(key, "NativePath")) return .{ .string = self.options.source.backend.root };
+        if (eq(key, "Vendor") or eq(key, "Serial")) return .{ .string = "" };
+        if (eq(key, "Model")) return .{ .string = "System batteries" };
+        if (eq(key, "UpdateTime")) return .{ .uint64 = self.update_time };
+        if (eq(key, "Type")) return .{ .uint32 = 2 };
+        if (eq(key, "State")) return .{ .uint32 = value.state };
+        if (eq(key, "Technology")) return .{ .uint32 = 0 };
+        if (eq(key, "WarningLevel")) return .{ .uint32 = @backingInt(value.warning()) };
+        if (eq(key, "PowerSupply") or eq(key, "IsRechargeable")) return .{ .boolean = true };
+        if (eq(key, "HasHistory") or eq(key, "HasStatistics") or eq(key, "Online")) return .{ .boolean = false };
+        if (eq(key, "IsPresent")) return .{ .boolean = if (eq(object, display)) value.visible() else value.present };
+        if (eq(key, "ChargeThresholdEnabled")) return .{ .boolean = value.charge_threshold };
+        if (eq(key, "TimeToEmpty")) return .{ .int64 = value.time_to_empty };
+        if (eq(key, "TimeToFull")) return .{ .int64 = value.time_to_full };
+        if (eq(key, "Energy")) return .{ .double = value.energy };
+        if (eq(key, "EnergyFull")) return .{ .double = value.energy_full };
+        if (eq(key, "EnergyFullDesign")) return .{ .double = value.energy_full_design };
+        if (eq(key, "Capacity")) return .{ .double = value.capacity };
+        if (eq(key, "EnergyRate")) return .{ .double = value.energy_rate };
+        if (eq(key, "Percentage")) return .{ .double = if (value.visible()) value.percent else 0 };
+        if (eq(key, "EnergyEmpty") or eq(key, "Voltage") or eq(key, "Temperature") or eq(key, "Luminosity")) return .{ .double = 0 };
+        if (eq(key, "ChargeCycles")) return .{ .int32 = -1 };
         if (eq(key, "IconName")) {
             var buffer: [100]u8 = undefined;
             const icon = value.icon(&buffer) catch return null;
-            return c.g_variant_new("s", icon.ptr);
+            return .{ .string = arena.dupe(u8, icon) catch return null };
         }
         return null;
     }
-    fn propertiesChanged(self: *Server, object: [:0]const u8, index: usize) void {
-        const info: *c.GDBusInterfaceInfo = self.node.interfaces[index];
-        const values = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
-        defer c.g_variant_builder_unref(values);
-        var i: usize = 0;
-        while (info.properties[i] != null) : (i += 1) {
-            const key = info.properties[i].*.name;
-            if (self.property(object, std.mem.span(key))) |value| c.g_variant_builder_add(values, "{sv}", key, value);
+    fn getProperty(context: ?*anyopaque, path: []const u8, _: []const u8, key: []const u8, arena: std.mem.Allocator) ?dbus.Value {
+        return cast(Server, context).property(path, key, arena);
+    }
+    fn methodCall(context: ?*anyopaque, message: *const dbus.Message) void {
+        const self = cast(Server, context);
+        const member = message.member orelse "";
+        const connection = self.connection;
+        if (eq(member, "Refresh")) {
+            self.service.?.refresh();
+            connection.reply(message, .{}) catch {};
+        } else if (eq(member, "GetDisplayDevice")) {
+            connection.reply(message, .{dbus.ObjectPath{ .value = display }}) catch {};
+        } else if (eq(member, "GetCriticalAction")) {
+            Job.start(self, message) catch connection.replyError(message, "org.freedesktop.UPower.Error.LimitsExceeded", "Too many requests") catch {};
+        } else {
+            const devices: []const dbus.ObjectPath = if (eq(member, "EnumerateDevices") and self.state.present) &.{.{ .value = device }} else &.{};
+            connection.reply(message, .{devices}) catch {};
         }
-        _ = c.g_dbus_connection_emit_signal(self.bus, null, object, "org.freedesktop.DBus.Properties", "PropertiesChanged", c.g_variant_new("(s@a{sv}@as)", info.name, c.g_variant_builder_end(values), c.g_variant_new_strv(null, 0)), null);
     }
     fn changed(data: ?*anyopaque, value: battery.State) void {
         const self = cast(Server, data);
@@ -131,10 +139,10 @@ const Server = struct {
         self.state = value;
         self.update_time = @intCast(@divTrunc(c.__zig.realTime(), 1000000));
         _ = self.policy.update(value, c.__zig.monotonicTime(), self.options.action_delay_us);
-        self.propertiesChanged(root, 0);
-        self.propertiesChanged(display, 1);
-        self.propertiesChanged(device, 1);
-        if (was_present != value.present) _ = c.g_dbus_connection_emit_signal(self.bus, null, root, name, if (value.present) "DeviceAdded" else "DeviceRemoved", c.g_variant_new("(o)", @as([*:0]const u8, device)), null);
+        self.connection.emitPropertiesChanged(root, name) catch {};
+        self.connection.emitPropertiesChanged(display, iface) catch {};
+        self.connection.emitPropertiesChanged(device, iface) catch {};
+        if (was_present != value.present) self.connection.emit(root, name, if (value.present) "DeviceAdded" else "DeviceRemoved", .{dbus.ObjectPath{ .value = device }}) catch {};
     }
     fn tick(data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Server, data);
@@ -143,7 +151,7 @@ const Server = struct {
             const lid = lidState(self.options.lid_root);
             if (!std.meta.eql(lid, self.lid)) {
                 self.lid = lid;
-                self.propertiesChanged(root, 0);
+                self.connection.emitPropertiesChanged(root, name) catch {};
             }
         }
         if (self.policy.update(self.state, c.__zig.monotonicTime(), self.options.action_delay_us)) {
@@ -158,33 +166,47 @@ const Server = struct {
     fn deinit(self: *Server) void {
         self.stopping = true;
         c.g_cancellable_cancel(self.cancel);
+        // Calls still waiting on logind are dropped; jobs re-reading sysfs finish on cancellation.
+        var index: usize = 0;
+        while (index < self.jobs.items.len) {
+            const job = self.jobs.items[index];
+            if (job.serial == 0) {
+                index += 1;
+                continue;
+            }
+            self.connection.cancel(job.serial);
+            job.serial = 0;
+            job.finish(false);
+            index = 0;
+        }
         if (self.service) |service| {
             service.stop();
-            while (service.pending or self.jobs > 0) _ = c.g_main_context_iteration(null, 1);
+            while (service.pending or self.jobs.items.len > 0) _ = c.g_main_context_iteration(null, 1);
             service.destroy();
-        } else while (self.jobs > 0) _ = c.g_main_context_iteration(null, 1);
-        for (self.registrations) |id| if (id != 0) {
-            _ = c.g_dbus_connection_unregister_object(self.bus, id);
-        };
+        } else while (self.jobs.items.len > 0) _ = c.g_main_context_iteration(null, 1);
+        self.jobs.deinit(self.allocator);
         c.g_object_unref(self.cancel);
     }
 };
 
 const Job = struct {
     server: *Server,
-    invocation: ?*c.GDBusMethodInvocation = null,
+    invocation: ?dbus.Invocation = null,
     generation: u64,
     index: usize = 0,
     stage: enum { capability, action } = .capability,
+    serial: u32 = 0,
     fresh: battery.State = .{},
-    const capabilities = [_][*:0]const u8{ "CanHybridSleep", "CanHibernate", "CanPowerOff" };
-    const actions = [_][*:0]const u8{ "HybridSleep", "Hibernate", "PowerOff" };
-    fn start(server: *Server, invocation: ?*c.GDBusMethodInvocation) !void {
-        if (invocation != null and server.jobs >= 32) return error.TooManyRequests;
+    const capabilities = [_][]const u8{ "CanHybridSleep", "CanHibernate", "CanPowerOff" };
+    const actions = [_][]const u8{ "HybridSleep", "Hibernate", "PowerOff" };
+    fn start(server: *Server, message: ?*const dbus.Message) !void {
+        if (message != null and server.jobs.items.len >= 32) return error.TooManyRequests;
         const self = try server.allocator.create(Job);
-        self.* = .{ .server = server, .invocation = invocation, .generation = server.policy.generation };
-        if (invocation) |value| _ = c.g_object_ref(value);
-        server.jobs += 1;
+        errdefer server.allocator.destroy(self);
+        self.* = .{ .server = server, .generation = server.policy.generation };
+        if (message) |value| self.invocation = try server.connection.hold(value);
+        errdefer if (self.invocation) |*invocation| invocation.release(server.allocator);
+        try server.jobs.append(server.allocator, self);
         self.next();
     }
     fn current(self: *Job) bool {
@@ -192,40 +214,49 @@ const Job = struct {
     }
     fn finish(self: *Job, success: bool) void {
         const server = self.server;
-        if (self.invocation) |invocation| {
-            if (success) c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(s)", actions[self.index])) else c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.UPower.Error.NotSupported", "No critical power action is available");
-            c.g_object_unref(invocation);
+        if (self.invocation) |*invocation| {
+            if (success) server.connection.answer(invocation, .{actions[self.index]}) catch {} else server.connection.answerError(invocation, "org.freedesktop.UPower.Error.NotSupported", "No critical power action is available") catch {};
         } else if (!success and self.current()) {
             server.policy.done = false;
             server.policy.retry_at = c.__zig.monotonicTime() + 60 * 1000000;
             std.log.warn("battery: critical power action unavailable; retrying in one minute", .{});
         }
-        server.jobs -= 1;
+        for (server.jobs.items, 0..) |job, i| if (job == self) {
+            _ = server.jobs.orderedRemove(i);
+            break;
+        };
         server.allocator.destroy(self);
+    }
+    fn call(self: *Job, member: []const u8, args: anytype, timeout: u32) void {
+        self.serial = self.server.connection.call(.{ .destination = login, .path = login_path, .interface = login_iface, .member = member }, args, timeout, &completed, self) catch return self.finish(false);
     }
     fn next(self: *Job) void {
         if (!self.current() or self.index >= capabilities.len) return self.finish(false);
         self.stage = .capability;
-        c.g_dbus_connection_call(self.server.bus, login, login_path, login_iface, capabilities[self.index], null, @ptrCast(@as([*:0]const u8, "(s)")), 0, 3000, self.server.cancel, &completed, self);
+        self.call(capabilities[self.index], .{}, 3000);
     }
-    fn completed(_: ?*c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+    fn completed(data: ?*anyopaque, reply: dbus.Reply) void {
         const self = cast(Job, data);
-        const reply = c.g_dbus_connection_call_finish(self.server.bus, result, null);
-        defer if (reply != null) c.g_variant_unref(reply);
+        self.serial = 0;
         if (!self.current()) return self.finish(false);
-        if (reply != null and self.stage == .action) return self.finish(true);
-        if (reply != null) {
-            const status = c.g_variant_get_child_value(reply, 0);
-            defer c.g_variant_unref(status);
-            if (eq(std.mem.span(c.g_variant_get_string(status, null)), "yes")) {
-                if (self.invocation != null) return self.finish(true);
-                // Re-read AC and every battery after capability negotiation, before acting.
-                const task = c.g_task_new(null, self.server.cancel, &validated, self);
-                c.g_task_set_task_data(task, self, null);
-                c.g_task_run_in_thread(task, &validateWork);
-                c.g_object_unref(task);
-                return;
-            }
+        const message = switch (reply) {
+            .ok => |value| value,
+            // A refused capability or a failed action falls back to the next action.
+            .failed => {
+                self.index += 1;
+                return self.next();
+            },
+        };
+        if (self.stage == .action) return self.finish(true);
+        const status = message.read(struct { []const u8 }) catch .{""};
+        if (eq(status[0], "yes")) {
+            if (self.invocation != null) return self.finish(true);
+            // Re-read AC and every battery after capability negotiation, before acting.
+            const task = c.g_task_new(null, self.server.cancel, &validated, self);
+            c.g_task_set_task_data(task, self, null);
+            c.g_task_run_in_thread(task, &validateWork);
+            c.g_object_unref(task);
+            return;
         }
         self.index += 1;
         self.next();
@@ -242,27 +273,9 @@ const Job = struct {
         if (!self.current() or self.fresh.warning() != .action) return self.finish(false);
         self.stage = .action;
         std.log.warn("battery: critical battery level; requesting {s}", .{actions[self.index]});
-        c.g_dbus_connection_call(self.server.bus, login, login_path, login_iface, actions[self.index], c.g_variant_new("(b)", @as(c_int, 0)), @ptrCast(@as([*:0]const u8, "()")), 0, 60000, self.server.cancel, &completed, self);
+        self.call(actions[self.index], .{false}, 60000);
     }
 };
-fn getProperty(_: ?*c.GDBusConnection, _: [*c]const u8, path: [*c]const u8, _: [*c]const u8, property: [*c]const u8, _: [*c][*c]c.GError, data: ?*anyopaque) callconv(.c) ?*c.GVariant {
-    return cast(Server, data).property(std.mem.span(path), std.mem.span(property));
-}
-fn methodCall(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, interface: [*c]const u8, method: [*c]const u8, _: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: ?*anyopaque) callconv(.c) void {
-    const self = cast(Server, data);
-    if (eq(std.mem.span(interface), iface)) {
-        self.service.?.refresh();
-        c.g_dbus_method_invocation_return_value(invocation, null);
-    } else if (eq(std.mem.span(method), "GetDisplayDevice")) c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(o)", @as([*:0]const u8, display))) else if (eq(std.mem.span(method), "GetCriticalAction")) {
-        Job.start(self, invocation) catch c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.UPower.Error.LimitsExceeded", "Too many requests");
-    } else {
-        const objects = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "ao")));
-        defer c.g_variant_builder_unref(objects);
-        if (eq(std.mem.span(method), "EnumerateDevices") and self.state.present) c.g_variant_builder_add(objects, "o", @as([*:0]const u8, device));
-        c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(@ao)", c.g_variant_builder_end(objects)));
-    }
-}
-const vtable = c.GDBusInterfaceVTable{ .method_call = &methodCall, .get_property = &getProperty };
 fn quit(data: ?*anyopaque) callconv(.c) c_int {
     cast(Server, data).stopping = true;
     return 1;
@@ -272,22 +285,20 @@ pub fn run() !void {
     return runWithOptions(.{}, std.heap.page_allocator);
 }
 pub fn runWithOptions(options: Options, allocator: std.mem.Allocator) !void {
-    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SYSTEM, null, null) orelse return error.NoSystemBus;
-    defer c.g_object_unref(bus);
-    const node = c.g_dbus_node_info_new_for_xml(@embedFile("desktop-battery.xml"), null) orelse return error.InvalidXml;
-    defer c.g_dbus_node_info_unref(node);
-    var server = Server{ .allocator = allocator, .options = options, .bus = bus, .node = node, .cancel = c.g_cancellable_new().?, .lid = lidState(options.lid_root) };
+    var introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-battery.xml"));
+    defer introspection.deinit();
+    const source = loop.Source.open(allocator, .system) catch return error.NoSystemBus;
+    defer source.destroy();
+    const connection = source.connection;
+    var server = Server{ .allocator = allocator, .options = options, .connection = connection, .cancel = c.g_cancellable_new().?, .lid = lidState(options.lid_root) };
     defer server.deinit();
-    for ([_][*:0]const u8{ root, display, device }, 0..) |path, i| {
-        server.registrations[i] = c.g_dbus_connection_register_object(bus, path, node.*.interfaces[if (i == 0) @as(usize, 0) else 1], &vtable, &server, null, null);
-        if (server.registrations[i] == 0) return error.RegistrationFailed;
-    }
+    const manager = introspection.find(name) orelse return error.InvalidXml;
+    const device_info = introspection.find(iface) orelse return error.InvalidXml;
+    _ = try connection.exportObject(root, manager, &Server.methodCall, &Server.getProperty, &server);
+    _ = try connection.exportObject(display, device_info, &Server.methodCall, &Server.getProperty, &server);
+    _ = try connection.exportObject(device, device_info, &Server.methodCall, &Server.getProperty, &server);
     server.service = try battery.Service.createWithOptions(options.source, &Server.changed, &server);
-    const reply = c.g_dbus_connection_call_sync(bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName", c.g_variant_new("(su)", @as([*:0]const u8, name), @as(c_uint, 4)), @ptrCast(@as([*:0]const u8, "(u)")), 0, 3000, null, null) orelse return error.NameUnavailable;
-    defer c.g_variant_unref(reply);
-    const status = c.g_variant_get_child_value(reply, 0);
-    defer c.g_variant_unref(status);
-    if (c.g_variant_get_uint32(status) != 1) return error.NameUnavailable;
+    if ((connection.requestName(name, 4) catch return error.NameUnavailable) != 1) return error.NameUnavailable;
     const timer = c.g_timeout_add(250, &Server.tick, &server);
     const term = c.g_unix_signal_add(c.SIGTERM, &quit, &server);
     const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, &server);
@@ -296,7 +307,7 @@ pub fn runWithOptions(options: Options, allocator: std.mem.Allocator) !void {
         _ = c.g_source_remove(term);
         _ = c.g_source_remove(interrupt);
     }
-    while (!server.stopping and c.g_dbus_connection_is_closed(bus) == 0) _ = c.g_main_context_iteration(null, 1);
+    while (!server.stopping and !connection.closed) _ = c.g_main_context_iteration(null, 1);
     if (!server.stopping) return error.SystemBusDisconnected;
 }
 

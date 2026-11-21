@@ -650,7 +650,34 @@ pub const MessageHandler = *const fn (context: ?*anyopaque, message: *const Mess
 
 const Pending = struct { serial: u32, deadline: i64, handler: ReplyHandler, context: ?*anyopaque };
 const Subscription = struct { id: u32, handler: MessageHandler, context: ?*anyopaque, sender: ?[]u8, interface: ?[]u8, member: ?[]u8, path: ?[]u8, rule: []u8 };
-const Export = struct { id: u32, path: []u8, interface: []u8, handler: MessageHandler, context: ?*anyopaque };
+/// A method call held for a later answer (see `Connection.hold`).
+pub const Invocation = struct {
+    serial: u32,
+    flags: u8,
+    sender: ?[]u8,
+
+    fn message(self: *const Invocation) Message {
+        return .{ .kind = .method_call, .serial = self.serial, .flags = self.flags, .sender = self.sender, .arena = undefined };
+    }
+    /// Frees the invocation without answering, e.g. when the connection is closing.
+    pub fn release(self: *Invocation, allocator: std.mem.Allocator) void {
+        if (self.sender) |sender| allocator.free(sender);
+        self.sender = null;
+    }
+};
+
+/// Reads a property for `Properties.Get`/`GetAll`; values may use `arena`. Null means unavailable.
+pub const PropertyGetter = *const fn (context: ?*anyopaque, path: []const u8, interface: []const u8, property: []const u8, arena: std.mem.Allocator) ?Value;
+const Export = struct {
+    id: u32,
+    path: []u8,
+    interface: []u8,
+    handler: ?MessageHandler,
+    context: ?*anyopaque,
+    /// From introspection XML: enables argument checks, introspection and properties.
+    info: ?*const InterfaceInfo = null,
+    get: ?PropertyGetter = null,
+};
 /// The current unique owner of a well-known name used as a signal sender filter.
 /// Signals carry unique sender names, so filters on well-known names compare against the owner.
 const NameWatch = struct {
@@ -992,6 +1019,67 @@ pub const Connection = struct {
         try self.exports.append(self.allocator, .{ .id = self.next_id, .path = owned_path, .interface = owned_interface, .handler = handler, .context = context });
         return self.next_id;
     }
+    /// Exports `info` at `path`: calls are checked against its method signatures before
+    /// reaching `handler`, and introspection and properties (through `get`) are answered here.
+    /// `info` must outlive the export.
+    pub fn exportObject(self: *Connection, path: []const u8, info: *const InterfaceInfo, handler: ?MessageHandler, get: ?PropertyGetter, context: ?*anyopaque) Error!u32 {
+        const id = try self.register(path, info.name, handler orelse &ignoreCall, context);
+        const item = &self.exports.items[self.exports.items.len - 1];
+        item.info = info;
+        item.get = get;
+        if (handler == null) item.handler = null;
+        return id;
+    }
+    fn ignoreCall(_: ?*anyopaque, _: *const Message) void {}
+
+    /// Keeps what is needed to answer `message` after its handler returns.
+    pub fn hold(self: *Connection, message: *const Message) Error!Invocation {
+        return .{ .serial = message.serial, .flags = message.flags, .sender = if (message.sender) |sender| try self.allocator.dupe(u8, sender) else null };
+    }
+    /// Answers a held call and releases it.
+    pub fn answer(self: *Connection, invocation: *Invocation, args: anytype) Error!void {
+        defer invocation.release(self.allocator);
+        return self.reply(&invocation.message(), args);
+    }
+    pub fn answerError(self: *Connection, invocation: *Invocation, name: []const u8, text: []const u8) Error!void {
+        defer invocation.release(self.allocator);
+        return self.replyError(&invocation.message(), name, text);
+    }
+
+    /// Requests a well-known name and waits for the bus; returns RequestName's reply code (1 = primary owner).
+    pub fn requestName(self: *Connection, name: []const u8, flags: u32) (Error || error{CallFailed})!u32 {
+        const result = try self.callBlocking(.{ .destination = bus_name, .path = bus_path, .interface = bus_name, .member = "RequestName" }, .{ name, flags }, 25000);
+        defer result.deinit();
+        const code = result.message().read(struct { u32 }) catch return error.InvalidMessage;
+        return code[0];
+    }
+
+    /// Emits PropertiesChanged with the current value of every readable property of an export.
+    pub fn emitPropertiesChanged(self: *Connection, path: []const u8, interface: []const u8) Error!void {
+        const item = self.findExport(path, interface) orelse return;
+        var arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer arena.deinit();
+        const values = try self.collectProperties(item, arena.allocator());
+        try self.emit(path, "org.freedesktop.DBus.Properties", "PropertiesChanged", .{ interface, values, @as([]const []const u8, &.{}) });
+    }
+    fn findExport(self: *Connection, path: []const u8, interface: []const u8) ?*const Export {
+        for (self.exports.items) |*item| {
+            if (std.mem.eql(u8, item.path, path) and std.mem.eql(u8, item.interface, interface)) return item;
+        }
+        return null;
+    }
+    fn collectProperties(self: *Connection, item: *const Export, arena: std.mem.Allocator) Error!Dict([]const u8, Value) {
+        _ = self;
+        const info = item.info orelse return .{ .entries = &.{} };
+        const get = item.get orelse return .{ .entries = &.{} };
+        var entries: std.ArrayList(Dict([]const u8, Value).Entry) = .empty;
+        for (info.properties) |property| {
+            if (!property.readable) continue;
+            const value = get(item.context, item.path, item.interface, property.name, arena) orelse continue;
+            try entries.append(arena, .{ .key = property.name, .value = value });
+        }
+        return .{ .entries = entries.items };
+    }
     pub fn unregister(self: *Connection, id: u32) void {
         for (self.exports.items, 0..) |item, i| if (item.id == id) {
             self.allocator.free(item.path);
@@ -1197,18 +1285,98 @@ pub const Connection = struct {
         return value != null and std.mem.eql(u8, expected, value.?);
     }
     fn handleCall(self: *Connection, message: *const Message) void {
-        const path = message.path orelse "";
-        if (message.interface) |interface| if (std.mem.eql(u8, interface, "org.freedesktop.DBus.Peer") and std.mem.eql(u8, message.member orelse "", "Ping")) {
-            self.reply(message, .{}) catch {};
-            return;
+        self.routeCall(message) catch |err| switch (err) {
+            error.OutOfMemory => self.replyError(message, "org.freedesktop.DBus.Error.NoMemory", "Out of memory") catch {},
+            else => {},
         };
-        for (self.exports.items) |item| {
+    }
+    fn routeCall(self: *Connection, message: *const Message) Error!void {
+        const path = message.path orelse "";
+        const member = message.member orelse "";
+        const interface = message.interface;
+        if (interface) |name| {
+            if (std.mem.eql(u8, name, "org.freedesktop.DBus.Peer") and std.mem.eql(u8, member, "Ping")) return self.reply(message, .{});
+            if (std.mem.eql(u8, name, "org.freedesktop.DBus.Introspectable") and std.mem.eql(u8, member, "Introspect")) return self.introspect(message, path);
+            if (std.mem.eql(u8, name, "org.freedesktop.DBus.Properties")) return self.properties(message, path, member);
+        }
+        var object_exists = false;
+        for (self.exports.items) |*item| {
             if (!std.mem.eql(u8, item.path, path)) continue;
-            if (message.interface) |interface| if (!std.mem.eql(u8, interface, item.interface)) continue;
-            item.handler(item.context, message);
+            object_exists = true;
+            if (interface) |name| if (!std.mem.eql(u8, name, item.interface)) continue;
+            if (item.info) |info| {
+                const method = info.method(member) orelse {
+                    // Without an interface, another export at this path may have the method.
+                    if (interface == null) continue;
+                    return self.replyErrorFormat(message, "org.freedesktop.DBus.Error.UnknownMethod", "No such method “{s}”", .{member});
+                };
+                if (!std.mem.eql(u8, message.signature, method.in)) return self.replyErrorFormat(message, "org.freedesktop.DBus.Error.InvalidArgs", "Type of message, “({s})”, does not match expected type “({s})”", .{ message.signature, method.in });
+            }
+            const handler = item.handler orelse return self.replyError(message, "org.freedesktop.DBus.Error.UnknownMethod", "No such method");
+            handler(item.context, message);
             return;
         }
-        self.replyError(message, "org.freedesktop.DBus.Error.UnknownMethod", "No such interface or object") catch {};
+        if (object_exists) return self.replyErrorFormat(message, "org.freedesktop.DBus.Error.UnknownMethod", "No such interface “{s}” on object at path {s}", .{ interface orelse "", path });
+        return self.replyErrorFormat(message, "org.freedesktop.DBus.Error.UnknownObject", "No such object path “{s}”", .{path});
+    }
+    fn replyErrorFormat(self: *Connection, to: *const Message, name: []const u8, comptime format: []const u8, args: anytype) Error!void {
+        var buffer: [512]u8 = undefined;
+        const text = std.fmt.bufPrint(&buffer, format, args) catch buffer[0..];
+        return self.replyError(to, name, text);
+    }
+
+    fn properties(self: *Connection, message: *const Message, path: []const u8, member: []const u8) Error!void {
+        const invalid = "org.freedesktop.DBus.Error.InvalidArgs";
+        if (std.mem.eql(u8, member, "GetAll")) {
+            const args = message.read(struct { []const u8 }) catch return self.replyError(message, invalid, "Expected (s)");
+            const item = self.findExport(path, args[0]) orelse return self.replyErrorFormat(message, invalid, "No such interface “{s}”", .{args[0]});
+            return self.reply(message, .{try self.collectProperties(item, message.arena)});
+        }
+        if (std.mem.eql(u8, member, "Get")) {
+            const args = message.read(struct { []const u8, []const u8 }) catch return self.replyError(message, invalid, "Expected (ss)");
+            const item = self.findExport(path, args[0]) orelse return self.replyErrorFormat(message, invalid, "No such interface “{s}”", .{args[0]});
+            const info = item.info orelse return self.replyErrorFormat(message, invalid, "No such property “{s}”", .{args[1]});
+            const property = info.property(args[1]) orelse return self.replyErrorFormat(message, invalid, "No such property “{s}”", .{args[1]});
+            if (!property.readable) return self.replyErrorFormat(message, invalid, "Property “{s}” is not readable", .{args[1]});
+            const get = item.get orelse return self.replyError(message, "org.freedesktop.DBus.Error.Failed", "Property unavailable");
+            const value = get(item.context, item.path, item.interface, property.name, message.arena) orelse return self.replyError(message, "org.freedesktop.DBus.Error.Failed", "Property unavailable");
+            return self.reply(message, .{value});
+        }
+        if (std.mem.eql(u8, member, "Set")) return self.replyError(message, "org.freedesktop.DBus.Error.PropertyReadOnly", "Properties are read-only");
+        return self.replyErrorFormat(message, "org.freedesktop.DBus.Error.UnknownMethod", "No such method “{s}”", .{member});
+    }
+
+    /// Describes the interfaces exported at `path` and its immediate children.
+    fn introspect(self: *Connection, message: *const Message, path: []const u8) Error!void {
+        var xml: std.Io.Writer.Allocating = .init(message.arena);
+        const w = &xml.writer;
+        w.writeAll(introspection_header) catch return error.OutOfMemory;
+        var found = false;
+        for (self.exports.items) |item| {
+            if (!std.mem.eql(u8, item.path, path)) continue;
+            found = true;
+            if (item.info) |info| {
+                w.print("  {s}\n", .{info.xml}) catch return error.OutOfMemory;
+            } else w.print("  <interface name=\"{s}\"/>\n", .{item.interface}) catch return error.OutOfMemory;
+        }
+        if (found) w.writeAll(standard_interfaces) catch return error.OutOfMemory;
+        // Child nodes, each named once.
+        const prefix_len = if (std.mem.eql(u8, path, "/")) 1 else path.len + 1;
+        var children: std.ArrayList([]const u8) = .empty;
+        for (self.exports.items) |item| {
+            if (item.path.len <= prefix_len or !std.mem.startsWith(u8, item.path, path)) continue;
+            if (!std.mem.eql(u8, path, "/") and item.path[path.len] != '/') continue;
+            const rest = item.path[prefix_len..];
+            const child = rest[0 .. std.mem.indexOfScalar(u8, rest, '/') orelse rest.len];
+            for (children.items) |seen| {
+                if (std.mem.eql(u8, seen, child)) break;
+            } else {
+                try children.append(message.arena, child);
+                w.print("  <node name=\"{s}\"/>\n", .{child}) catch return error.OutOfMemory;
+            }
+        }
+        w.writeAll("</node>\n") catch return error.OutOfMemory;
+        return self.reply(message, .{xml.written()});
     }
 
     /// Fails calls whose timeout has passed; returns milliseconds until the next deadline, if any.
@@ -1299,6 +1467,151 @@ fn unescape(value: []const u8, out: []u8) !usize {
     return len;
 }
 
+// ---------------------------------------------------------------- Introspection
+
+const introspection_header =
+    \\<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+    \\ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+    \\<node>
+    \\
+;
+const standard_interfaces =
+    \\  <interface name="org.freedesktop.DBus.Properties">
+    \\    <method name="Get"><arg type="s" name="interface_name" direction="in"/><arg type="s" name="property_name" direction="in"/><arg type="v" name="value" direction="out"/></method>
+    \\    <method name="GetAll"><arg type="s" name="interface_name" direction="in"/><arg type="a{sv}" name="properties" direction="out"/></method>
+    \\    <method name="Set"><arg type="s" name="interface_name" direction="in"/><arg type="s" name="property_name" direction="in"/><arg type="v" name="value" direction="in"/></method>
+    \\    <signal name="PropertiesChanged"><arg type="s" name="interface_name"/><arg type="a{sv}" name="changed_properties"/><arg type="as" name="invalidated_properties"/></signal>
+    \\  </interface>
+    \\  <interface name="org.freedesktop.DBus.Introspectable">
+    \\    <method name="Introspect"><arg type="s" name="xml_data" direction="out"/></method>
+    \\  </interface>
+    \\  <interface name="org.freedesktop.DBus.Peer">
+    \\    <method name="Ping"/>
+    \\    <method name="GetMachineId"><arg type="s" name="machine_uuid" direction="out"/></method>
+    \\  </interface>
+    \\
+;
+
+pub const MethodInfo = struct { name: []const u8, in: []const u8, out: []const u8 };
+pub const PropertyInfo = struct { name: []const u8, signature: []const u8, readable: bool, writable: bool };
+pub const InterfaceInfo = struct {
+    name: []const u8,
+    /// The interface's original element, served verbatim by Introspect.
+    xml: []const u8,
+    methods: []const MethodInfo,
+    properties: []const PropertyInfo,
+
+    pub fn method(self: *const InterfaceInfo, name: []const u8) ?*const MethodInfo {
+        for (self.methods) |*item| if (std.mem.eql(u8, item.name, name)) return item;
+        return null;
+    }
+    pub fn property(self: *const InterfaceInfo, name: []const u8) ?*const PropertyInfo {
+        for (self.properties) |*item| if (std.mem.eql(u8, item.name, name)) return item;
+        return null;
+    }
+};
+
+/// Interfaces parsed from introspection XML. Names point into the XML, which must outlive this.
+pub const Introspection = struct {
+    arena: std.heap.ArenaAllocator,
+    interfaces: []const InterfaceInfo,
+
+    /// Parses the subset of introspection XML used by interface definitions:
+    /// node, interface, method, signal, property, arg and annotation elements.
+    pub fn parse(allocator: std.mem.Allocator, xml: []const u8) !Introspection {
+        var arena: std.heap.ArenaAllocator = .init(allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        var interfaces: std.ArrayList(InterfaceInfo) = .empty;
+        var methods: std.ArrayList(MethodInfo) = .empty;
+        var properties: std.ArrayList(PropertyInfo) = .empty;
+        var in: std.ArrayList(u8) = .empty;
+        var out: std.ArrayList(u8) = .empty;
+        var interface_name: ?[]const u8 = null;
+        var interface_start: usize = 0;
+        var method_name: ?[]const u8 = null;
+        var position: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, xml, position, '<')) |start| {
+            if (std.mem.startsWith(u8, xml[start..], "<!--")) {
+                position = (std.mem.indexOfPos(u8, xml, start, "-->") orelse return error.InvalidXml) + 3;
+                continue;
+            }
+            const end = std.mem.indexOfScalarPos(u8, xml, start, '>') orelse return error.InvalidXml;
+            position = end + 1;
+            if (xml[start + 1] == '?' or xml[start + 1] == '!') continue;
+            const closing = xml[start + 1] == '/';
+            var tag = std.mem.trim(u8, xml[start + 1 + @intFromBool(closing) .. end], " \t\r\n");
+            const self_closing = tag.len > 0 and tag[tag.len - 1] == '/';
+            if (self_closing) tag = std.mem.trimEnd(u8, tag[0 .. tag.len - 1], " \t\r\n");
+            const name_end = std.mem.indexOfAny(u8, tag, " \t\r\n") orelse tag.len;
+            const element = tag[0..name_end];
+            const attributes = tag[name_end..];
+            if (std.mem.eql(u8, element, "interface")) {
+                if (closing) {
+                    try interfaces.append(a, .{ .name = interface_name orelse return error.InvalidXml, .xml = xml[interface_start..position], .methods = try methods.toOwnedSlice(a), .properties = try properties.toOwnedSlice(a) });
+                    interface_name = null;
+                } else {
+                    interface_name = attribute(attributes, "name") orelse return error.InvalidXml;
+                    interface_start = start;
+                    if (self_closing) {
+                        try interfaces.append(a, .{ .name = interface_name.?, .xml = xml[start..position], .methods = &.{}, .properties = &.{} });
+                        interface_name = null;
+                    }
+                }
+            } else if (std.mem.eql(u8, element, "method") and interface_name != null) {
+                if (!closing) {
+                    // A new method, possibly self-closing with no arguments.
+                    method_name = attribute(attributes, "name") orelse return error.InvalidXml;
+                    in.clearRetainingCapacity();
+                    out.clearRetainingCapacity();
+                }
+                if (closing or self_closing) {
+                    try methods.append(a, .{ .name = method_name orelse return error.InvalidXml, .in = try a.dupe(u8, in.items), .out = try a.dupe(u8, out.items) });
+                    method_name = null;
+                }
+            } else if (std.mem.eql(u8, element, "arg") and method_name != null and !closing) {
+                const signature = attribute(attributes, "type") orelse return error.InvalidXml;
+                const direction = attribute(attributes, "direction") orelse "in";
+                try (if (std.mem.eql(u8, direction, "out")) &out else &in).appendSlice(a, signature);
+            } else if (std.mem.eql(u8, element, "property") and interface_name != null and !closing) {
+                const access = attribute(attributes, "access") orelse "read";
+                try properties.append(a, .{
+                    .name = attribute(attributes, "name") orelse return error.InvalidXml,
+                    .signature = attribute(attributes, "type") orelse return error.InvalidXml,
+                    .readable = std.mem.indexOf(u8, access, "read") != null,
+                    .writable = std.mem.indexOf(u8, access, "write") != null,
+                });
+            }
+        }
+        if (interface_name != null or method_name != null) return error.InvalidXml;
+        return .{ .arena = arena, .interfaces = interfaces.items };
+    }
+    pub fn deinit(self: *Introspection) void {
+        self.arena.deinit();
+    }
+    pub fn find(self: *const Introspection, name: []const u8) ?*const InterfaceInfo {
+        for (self.interfaces) |*item| if (std.mem.eql(u8, item.name, name)) return item;
+        return null;
+    }
+};
+
+/// The value of `key="value"` (or single-quoted) within an element's attributes.
+fn attribute(attributes: []const u8, key: []const u8) ?[]const u8 {
+    var rest = attributes;
+    while (true) {
+        rest = std.mem.trimStart(u8, rest, " \t\r\n");
+        const eq = std.mem.indexOfScalar(u8, rest, '=') orelse return null;
+        const name = std.mem.trim(u8, rest[0..eq], " \t\r\n");
+        var after = std.mem.trimStart(u8, rest[eq + 1 ..], " \t\r\n");
+        if (after.len == 0 or (after[0] != '"' and after[0] != '\'')) return null;
+        const quote = after[0];
+        const close = std.mem.indexOfScalarPos(u8, after, 1, quote) orelse return null;
+        if (std.mem.eql(u8, name, key)) return after[1..close];
+        after = after[close + 1 ..];
+        rest = after;
+    }
+}
+
 // ---------------------------------------------------------------- Tests
 
 test "signatures follow D-Bus type codes for Zig types" {
@@ -1381,4 +1694,35 @@ test "addresses decode escapes and reject overlong paths" {
     try std.testing.expectEqualStrings("/run/a b", out[0..try unescape("/run/a%20b", &out)]);
     try std.testing.expectError(error.Unsupported, unescape("%2", &out));
     try std.testing.expectError(error.Unsupported, unescape("/a/very/long/path/name", &out));
+}
+
+test "introspection XML yields methods, signatures and property access" {
+    const xml =
+        \\<!-- comment with <tags> -->
+        \\<node>
+        \\  <interface name="org.example.A">
+        \\    <method name="Get"><arg type="s" direction="in"/><arg type="u" name="n"/><arg type="a{sv}" direction="out"/></method>
+        \\    <method name="Ping"/>
+        \\    <signal name="Changed"><arg type="o"/></signal>
+        \\    <property name="Level" type="d" access="read"/>
+        \\    <property name='Mode' type='s' access='readwrite'/>
+        \\    <annotation name="org.freedesktop.DBus.Deprecated" value="false"/>
+        \\  </interface>
+        \\  <interface name="org.example.Empty"/>
+        \\</node>
+    ;
+    var parsed = try Introspection.parse(std.testing.allocator, xml);
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.interfaces.len);
+    const info = parsed.find("org.example.A").?;
+    try std.testing.expectEqualStrings("su", info.method("Get").?.in);
+    try std.testing.expectEqualStrings("a{sv}", info.method("Get").?.out);
+    try std.testing.expectEqualStrings("", info.method("Ping").?.in);
+    try std.testing.expect(info.method("Changed") == null);
+    try std.testing.expect(info.property("Level").?.readable and !info.property("Level").?.writable);
+    try std.testing.expect(info.property("Mode").?.writable);
+    try std.testing.expect(std.mem.startsWith(u8, info.xml, "<interface name=\"org.example.A\">"));
+    try std.testing.expect(std.mem.endsWith(u8, info.xml, "</interface>"));
+    try std.testing.expectEqual(@as(usize, 0), parsed.find("org.example.Empty").?.methods.len);
+    try std.testing.expectError(error.InvalidXml, Introspection.parse(std.testing.allocator, "<node><interface name=\"x\"><method name=\"m\"></interface></node>"));
 }
