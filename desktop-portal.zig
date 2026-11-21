@@ -4,7 +4,6 @@ const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
-const bridge = @import("desktop-dbus-gvariant.zig");
 var a: std.mem.Allocator = std.heap.page_allocator;
 const path = "/org/freedesktop/portal/desktop";
 const public = "org.freedesktop.portal.";
@@ -26,19 +25,19 @@ const idle_portal_xml =
     "</interface></node>";
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
-const text = c.__zig.variant.text;
-fn string(value: [*:0]const u8) ?*c.GVariant {
-    return c.g_variant_new("s", value);
+const portal_options = @import("desktop-portal-options.zig");
+const Dict = portal_options.Dict;
+/// Options (`a{sv}`) from a method argument; entries borrow from the message.
+fn dictionary(arena: std.mem.Allocator, value: dbus.Value) !Dict {
+    const items = value.array.items;
+    const entries = try arena.alloc(Dict.Entry, items.len);
+    for (entries, items) |*entry, item| entry.* = .{ .key = item.dict_entry[0].string, .value = item.dict_entry[1].variant.* };
+    return .{ .entries = entries };
 }
-// Consume owned or floating children, returning a floating tuple.
-fn tuple(values: []const ?*c.GVariant) ?*c.GVariant {
-    for (values) |value| _ = c.g_variant_take_ref(value);
-    const result = c.g_variant_new_tuple(@constCast(values.ptr), values.len);
-    for (values) |value| c.g_variant_unref(value);
-    return result;
+fn option(options: Dict, key: []const u8) ?dbus.Value {
+    for (options.entries) |entry| if (eq(entry.key, key)) return entry.value;
+    return null;
 }
-const dict = c.__zig.variant.emptyDict;
-const child = c.g_variant_get_child_value;
 fn errorReply(connection: *dbus.Connection, message: *const dbus.Message, text_value: []const u8) void {
     connection.replyError(message, "org.freedesktop.portal.Error.Failed", text_value) catch {};
 }
@@ -180,7 +179,7 @@ const Server = struct {
             request.session_handle = null;
             request.close();
         }
-        self.connection.emitTo(item.owner, item.handle, public ++ "Session", "Closed", .{bridge.Dict{ .entries = &.{} }}) catch {};
+        self.connection.emitTo(item.owner, item.handle, public ++ "Session", "Closed", .{Dict{ .entries = &.{} }}) catch {};
         for (self.sessions.items, 0..) |current, i| if (current == item) {
             _ = self.sessions.swapRemove(i);
             break;
@@ -200,15 +199,14 @@ const Server = struct {
         self.idle_inhibited = next;
         self.connection.emit(idle_portal_path, idle_portal_interface, "IdleInhibitedChanged", .{next}) catch {};
     }
-    fn createSession(self: *Server, client_info: *Client, options: ?*c.GVariant) !*Session {
+    fn createSession(self: *Server, client_info: *Client, options: Dict) !*Session {
         if (self.sessions.items.len >= 64) return error.TooManySessions;
-        const token = c.g_variant_lookup_value(options, "session_handle_token", null);
-        defer if (token != null) c.g_variant_unref(token);
+        const token = option(options, "session_handle_token");
         self.serial +%= 1;
         var buffer: [64]u8 = undefined;
         const suffix = if (token) |value| blk: {
-            if (!eq(std.mem.span(c.g_variant_get_type_string(value)), "s") or !validToken(text(value))) return error.InvalidSessionToken;
-            break :blk text(value);
+            if (value != .string or !validToken(value.string)) return error.InvalidSessionToken;
+            break :blk value.string;
         } else try std.fmt.bufPrint(&buffer, "session{d}", .{self.serial});
         const item = try a.create(Session);
         errdefer a.destroy(item);
@@ -271,7 +269,7 @@ const Request = struct {
     picker: ?*Capture.Picker = null,
     idle: c.guint = 0,
 
-    fn create(server: *Server, client_info: *Client, interface: []const u8, method: []const u8, options: ?*c.GVariant, kind: Kind) !*Request {
+    fn create(server: *Server, client_info: *Client, interface: []const u8, method: []const u8, options: Dict, kind: Kind) !*Request {
         if (server.requests.items.len >= 128) return error.TooManyRequests;
         var count: usize = 0;
         for (server.requests.items) |item| if (eq(item.owner, client_info.sender)) {
@@ -290,11 +288,10 @@ const Request = struct {
         item.app = try alloc.dupeSentinel(u8, client_info.app, 0);
         item.interface = try alloc.dupeSentinel(u8, interface, 0);
         item.method = try alloc.dupeSentinel(u8, method, 0);
-        const token = if (kind != .direct) c.g_variant_lookup_value(options, "handle_token", null) else null;
-        defer if (token != null) c.g_variant_unref(token);
-        if (token) |value| if (!eq(std.mem.span(c.g_variant_get_type_string(value)), "s")) return error.InvalidHandleToken;
+        const token = if (kind != .direct) option(options, "handle_token") else null;
+        if (token) |value| if (value != .string) return error.InvalidHandleToken;
         server.serial +%= 1;
-        const suffix = if (token) |value| text(value) else try std.fmt.allocPrint(alloc, "request{d}", .{server.serial});
+        const suffix = if (token) |value| value.string else try std.fmt.allocPrint(alloc, "request{d}", .{server.serial});
         if (!validToken(suffix)) return error.InvalidHandleToken;
         item.handle = try std.fmt.allocPrintSentinel(alloc, "/org/freedesktop/portal/desktop/request/{s}/{s}", .{ client_info.component, suffix }, 0);
         for (server.requests.items) |existing| if (eq(existing.handle, item.handle)) return error.DuplicateHandle;
@@ -357,25 +354,22 @@ const Request = struct {
         a.destroy(self);
         if (had_idle) server.updateIdleInhibition();
     }
-    fn respond(self: *Request, code: u32, results: ?*c.GVariant) void {
-        var arena: std.heap.ArenaAllocator = .init(a);
-        defer arena.deinit();
-        // Converting also releases a floating `results`.
-        const values = bridge.dictFromVariant(arena.allocator(), results) catch bridge.Dict{ .entries = &.{} };
-        if (!self.closed and !self.server.quitting) self.server.connection.emitTo(self.owner, self.handle, public ++ "Request", "Response", .{ code, values }) catch {};
+    fn respond(self: *Request, code: u32, results: Dict) void {
+        if (!self.closed and !self.server.quitting) self.server.connection.emitTo(self.owner, self.handle, public ++ "Request", "Response", .{ code, results }) catch {};
     }
     fn nativeFinished(data: ?*anyopaque) callconv(.c) c_int {
         const self = cast(Request, data);
         self.idle = 0;
         defer self.destroy();
         const session_info = self.server.session(self.session_handle.?, self.owner) orelse return 0;
-        const values = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
-        defer c.g_variant_builder_unref(values);
+        const handle = [_]Dict.Entry{.{ .key = "session_handle", .value = .{ .string = session_info.handle } }};
         if (eq(self.method, "CreateSession")) {
             session_info.state = .created;
-            c.g_variant_builder_add(values, "{sv}", @as([*:0]const u8, "session_handle"), string(session_info.handle));
-        } else session_info.state = .selected;
-        self.respond(0, c.g_variant_builder_end(values));
+            self.respond(0, .{ .entries = &handle });
+        } else {
+            session_info.state = .selected;
+            self.respond(0, portal_options.empty);
+        }
         return 0;
     }
     fn picked(data: ?*anyopaque, chosen: ?Capture.Picked, _: bool) void {
@@ -389,7 +383,7 @@ const Request = struct {
                 return;
             };
         } else {
-            self.respond(1, dict());
+            self.respond(1, portal_options.empty);
             self.destroy();
             session_info.server.closeSession(session_info);
         }
@@ -401,27 +395,31 @@ const Request = struct {
             const request = session_info.pending orelse return;
             session_info.state = .started;
             server.updateIdleInhibition();
-            const properties = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
-            defer c.g_variant_builder_unref(properties);
-            c.g_variant_builder_add(properties, "{sv}", @as([*:0]const u8, "source_type"), c.g_variant_new("u", @as(c_uint, 1)));
-            c.g_variant_builder_add(properties, "{sv}", @as([*:0]const u8, "size"), c.g_variant_new("(ii)", session_info.width, session_info.height));
-            const streams = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a(ua{sv})")));
-            defer c.g_variant_builder_unref(streams);
-            c.g_variant_builder_add_value(streams, tuple(&.{ c.g_variant_new("u", id), c.g_variant_builder_end(properties) }));
-            const results = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
-            defer c.g_variant_builder_unref(results);
-            c.g_variant_builder_add(results, "{sv}", @as([*:0]const u8, "streams"), c.g_variant_builder_end(streams));
-            request.respond(0, c.g_variant_builder_end(results));
+            // streams: a(ua{sv}) of the PipeWire node and its properties.
+            const size = [_]dbus.Value{ .{ .int32 = session_info.width }, .{ .int32 = session_info.height } };
+            const properties = [_]Dict.Entry{ .{ .key = "source_type", .value = .{ .uint32 = 1 } }, .{ .key = "size", .value = .{ .structure = &size } } };
+            // Results are a{sv}, so the stream's own dictionary is built as a dynamic value.
+            var property_items: [2]dbus.Value = undefined;
+            var property_pairs: [2][2]dbus.Value = undefined;
+            var boxed: [2]dbus.Value = .{ properties[0].value, properties[1].value };
+            for (&property_items, &property_pairs, properties, &boxed) |*item, *pair, entry, *value| {
+                pair.* = .{ .{ .string = entry.key }, .{ .variant = value } };
+                item.* = .{ .dict_entry = pair };
+            }
+            const stream = [_]dbus.Value{ .{ .uint32 = id }, .{ .array = .{ .element = "{sv}", .items = &property_items } } };
+            const stream_list = [_]dbus.Value{.{ .structure = &stream }};
+            const results = [_]Dict.Entry{.{ .key = "streams", .value = .{ .array = .{ .element = "(ua{sv})", .items = &stream_list } } }};
+            request.respond(0, .{ .entries = &results });
             request.destroy();
         } else {
             if (session_info.pending) |request| {
-                request.respond(2, dict());
+                request.respond(2, portal_options.empty);
                 request.destroy();
             }
             server.closeSession(session_info);
         }
     }
-    fn dialogFinished(data: ?*anyopaque, code: u32, results: ?*c.GVariant) void {
+    fn dialogFinished(data: ?*anyopaque, code: u32, results: Dict) void {
         const self = cast(Request, data);
         self.respond(code, results);
         self.destroy();
@@ -436,7 +434,7 @@ const Request = struct {
             } else |_| {},
             .failed => {},
         };
-        self.respond(2, dict());
+        self.respond(2, portal_options.empty);
         self.destroy();
     }
     fn networkFinished(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
@@ -457,48 +455,37 @@ const Request = struct {
         var err: ?*c.GError = null;
         const ok = c.g_app_info_launch_default_for_uri_finish(result, &err) != 0;
         defer if (err != null) c.g_error_free(err);
-        self.respond(if (ok) 0 else 2, dict());
+        self.respond(if (ok) 0 else 2, portal_options.empty);
     }
 };
 
-fn screencast(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
-    const count = c.g_variant_n_children(params);
-    const options = child(params, count - 1);
-    defer c.g_variant_unref(options);
-    const session_info = if (eq(method, "CreateSession")) try server.createSession(client_info, options) else blk: {
-        const handle = child(params, 0);
-        defer c.g_variant_unref(handle);
-        break :blk server.session(text(handle), client_info.sender) orelse return error.InvalidSession;
-    };
+/// A string argument as a C string for GLib, allocated from the message's arena.
+fn cstring(message: *const dbus.Message, value: dbus.Value) ![:0]const u8 {
+    return message.arena.dupeSentinel(u8, value.string, 0);
+}
+fn screencast(server: *Server, client_info: *Client, method: []const u8, args: []const dbus.Value, message: *const dbus.Message) !void {
+    const options = try dictionary(message.arena, args[args.len - 1]);
+    const session_info = if (eq(method, "CreateSession")) try server.createSession(client_info, options) else server.session(args[0].object_path, client_info.sender) orelse return error.InvalidSession;
     errdefer if (eq(method, "CreateSession")) server.closeSession(session_info);
     if (!eq(method, "CreateSession")) {
         const needed: State = if (eq(method, "SelectSources")) .created else .selected;
         if (session_info.state != needed) return error.InvalidSessionState;
     }
     if (eq(method, "SelectSources")) {
-        const types = c.g_variant_lookup_value(options, "types", null);
-        defer if (types != null) c.g_variant_unref(types);
-        if (types != null and (!eq(std.mem.span(c.g_variant_get_type_string(types)), "u") or c.g_variant_get_uint32(types) & 1 == 0)) return error.UnsupportedSourceTypes;
-        const cursor = c.g_variant_lookup_value(options, "cursor_mode", null);
-        defer if (cursor != null) c.g_variant_unref(cursor);
-        if (cursor != null) {
-            if (!eq(std.mem.span(c.g_variant_get_type_string(cursor)), "u")) return error.InvalidCursorMode;
-            const mode = c.g_variant_get_uint32(cursor);
-            if (mode != 1 and mode != 2) return error.UnsupportedCursorMode;
-            session_info.cursor = mode == 2;
+        if (option(options, "types")) |types| if (types != .uint32 or types.uint32 & 1 == 0) return error.UnsupportedSourceTypes;
+        if (option(options, "cursor_mode")) |cursor| {
+            if (cursor != .uint32) return error.InvalidCursorMode;
+            if (cursor.uint32 != 1 and cursor.uint32 != 2) return error.UnsupportedCursorMode;
+            session_info.cursor = cursor.uint32 == 2;
         }
-        const multiple = c.g_variant_lookup_value(options, "multiple", null);
-        defer if (multiple != null) c.g_variant_unref(multiple);
-        if (multiple != null and !eq(std.mem.span(c.g_variant_get_type_string(multiple)), "b")) return error.InvalidMultipleOption;
+        if (option(options, "multiple")) |multiple| if (multiple != .boolean) return error.InvalidMultipleOption;
     }
     const request = try Request.create(server, client_info, "ScreenCast", method, options, .dialog);
     errdefer request.destroy();
     request.session_handle = try request.arena.allocator().dupeSentinel(u8, session_info.handle, 0);
     session_info.pending = request;
     if (eq(method, "Start")) {
-        const parent = child(params, 1);
-        defer c.g_variant_unref(parent);
-        request.picker = try Capture.Picker.create(a, client_info.app, std.mem.span(c.g_variant_get_string(parent, null)), "Share your screen", false, &Request.picked, request);
+        request.picker = try Capture.Picker.create(a, client_info.app, try cstring(message, args[1]), "Share your screen", false, &Request.picked, request);
         session_info.state = .starting;
     } else {
         session_info.state = if (eq(method, "CreateSession")) .creating else .selecting;
@@ -506,42 +493,29 @@ fn screencast(server: *Server, client_info: *Client, method: []const u8, params:
     }
     replyHandle(server, message, request.handle);
 }
-fn screenshot(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
-    const parent = child(params, 0);
-    defer c.g_variant_unref(parent);
-    const options = child(params, 1);
-    defer c.g_variant_unref(options);
+fn screenshot(server: *Server, client_info: *Client, method: []const u8, args: []const dbus.Value, message: *const dbus.Message) !void {
+    const options = try dictionary(message.arena, args[1]);
     const request = try Request.create(server, client_info, "Screenshot", method, options, .dialog);
     errdefer request.destroy();
-    request.screenshot = try Capture.Operation.create(a, client_info.app, std.mem.span(c.g_variant_get_string(parent, null)), method, options.?, &Request.dialogFinished, request);
+    request.screenshot = try Capture.Operation.create(a, client_info.app, try cstring(message, args[0]), method, options, &Request.dialogFinished, request);
     replyHandle(server, message, request.handle);
 }
-fn chooseFile(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
-    const parent = child(params, 0);
-    defer c.g_variant_unref(parent);
-    const title = child(params, 1);
-    defer c.g_variant_unref(title);
-    const options = child(params, 2);
-    defer c.g_variant_unref(options);
+fn chooseFile(server: *Server, client_info: *Client, method: []const u8, args: []const dbus.Value, message: *const dbus.Message) !void {
+    const options = try dictionary(message.arena, args[2]);
     const request = try Request.create(server, client_info, "FileChooser", method, options, .dialog);
     errdefer request.destroy();
-    request.dialog = try FileChooser.create(a, method, std.mem.span(c.g_variant_get_string(parent, null)), std.mem.span(c.g_variant_get_string(title, null)), options.?, &Request.dialogFinished, request);
+    request.dialog = try FileChooser.create(a, method, try cstring(message, args[0]), try cstring(message, args[1]), options, &Request.dialogFinished, request);
     replyHandle(server, message, request.handle);
 }
-fn userInformation(server: *Server, client_info: *Client, params: ?*c.GVariant, message: *const dbus.Message) !void {
-    const parent = child(params, 0);
-    defer c.g_variant_unref(parent);
-    const options = child(params, 1);
-    defer c.g_variant_unref(options);
+fn userInformation(server: *Server, client_info: *Client, args: []const dbus.Value, message: *const dbus.Message) !void {
+    const options = try dictionary(message.arena, args[1]);
     const request = try Request.create(server, client_info, "Account", "GetUserInformation", options, .dialog);
     errdefer request.destroy();
-    request.account = try Account.create(a, client_info.app, std.mem.span(c.g_variant_get_string(parent, null)), options.?, &Request.dialogFinished, request);
+    request.account = try Account.create(a, client_info.app, try cstring(message, args[0]), options, &Request.dialogFinished, request);
     replyHandle(server, message, request.handle);
 }
-fn openRemote(server: *Server, client_info: *Client, params: ?*c.GVariant, message: *const dbus.Message) !void {
-    const handle = child(params, 0);
-    defer c.g_variant_unref(handle);
-    const session_info = server.session(text(handle), client_info.sender) orelse return error.InvalidSession;
+fn openRemote(server: *Server, client_info: *Client, args: []const dbus.Value, message: *const dbus.Message) !void {
+    const session_info = server.session(args[0].object_path, client_info.sender) orelse return error.InvalidSession;
     if (session_info.state != .started) return error.InvalidSessionState;
     // Host clients already have access to this socket. Sandboxed callers are
     // rejected before dispatch rather than receiving an unrestricted remote.
@@ -557,26 +531,23 @@ fn openRemote(server: *Server, client_info: *Client, params: ?*c.GVariant, messa
     if (libc.connect(fd, @ptrCast(&address), @intCast(@offsetOf(libc.struct_sockaddr_un, "sun_path") + socket_path.len + 1)) != 0) return error.PipeWireUnavailable;
     server.connection.reply(message, .{dbus.Fd{ .value = fd }}) catch {};
 }
-fn openUri(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
-    const arg = child(params, if (eq(method, "SchemeSupported")) 0 else 1);
-    defer c.g_variant_unref(arg);
+fn openUri(server: *Server, client_info: *Client, method: []const u8, args: []const dbus.Value, message: *const dbus.Message) !void {
     if (eq(method, "SchemeSupported")) {
-        const app_info = c.g_app_info_get_default_for_uri_scheme(c.g_variant_get_string(arg, null));
+        const app_info = c.g_app_info_get_default_for_uri_scheme(try cstring(message, args[0]));
         defer if (app_info != null) c.g_object_unref(app_info);
         server.connection.reply(message, .{app_info != null}) catch {};
         return;
     }
-    const options = child(params, 2);
-    defer c.g_variant_unref(options);
+    const options = try dictionary(message.arena, args[2]);
     const request = try Request.create(server, client_info, "OpenURI", method, options, .uri);
     errdefer request.destroy();
     var uri: [*:0]const u8 = undefined;
     if (eq(method, "OpenURI")) {
-        uri = c.g_variant_get_string(arg, null);
+        uri = try request.arena.allocator().dupeSentinel(u8, args[1].string, 0);
         if (std.mem.indexOfScalar(u8, std.mem.span(uri), ':') == null) return error.InvalidUri;
     } else {
         // The handle carries the descriptor number; the message owns it, so work on a duplicate.
-        const passed = c.g_variant_get_handle(arg);
+        const passed = args[1].fd;
         if (std.mem.indexOfScalar(i32, message.fds, passed) == null) return error.InvalidFileDescriptor;
         const fd = std.c.fcntl(passed, std.c.F.DUPFD_CLOEXEC, @as(c_int, 0));
         if (fd < 0) return error.InvalidFileDescriptor;
@@ -600,25 +571,20 @@ fn openUri(server: *Server, client_info: *Client, method: []const u8, params: ?*
     replyHandle(server, message, request.handle);
     c.g_app_info_launch_default_for_uri_async(uri, null, request.cancel, &Request.uriFinished, request);
 }
-fn composeEmail(server: *Server, client_info: *Client, params: ?*c.GVariant, message: *const dbus.Message) !void {
-    const options = child(params, 1);
-    defer c.g_variant_unref(options);
+fn composeEmail(server: *Server, client_info: *Client, args: []const dbus.Value, message: *const dbus.Message) !void {
+    const options = try dictionary(message.arena, args[1]);
     const request = try Request.create(server, client_info, "Email", "ComposeEmail", options, .uri);
     errdefer request.destroy();
-    const descriptors = message.fds;
-    const uri = try Email.composeUri(request.arena.allocator(), options.?, descriptors);
-    const context = try Email.launchContext(options.?);
+    const uri = try Email.composeUri(request.arena.allocator(), options, message.fds);
+    const context = try Email.launchContext(options);
     defer c.g_object_unref(context);
     replyHandle(server, message, request.handle);
     c.g_app_info_launch_default_for_uri_async(uri, context, request.cancel, &Request.uriFinished, request);
 }
-fn inhibit(server: *Server, client_info: *Client, params: ?*c.GVariant, message: *const dbus.Message) !void {
-    const flags_value = child(params, 1);
-    defer c.g_variant_unref(flags_value);
-    const flags = c.g_variant_get_uint32(flags_value);
+fn inhibit(server: *Server, client_info: *Client, args: []const dbus.Value, message: *const dbus.Message) !void {
+    const flags = args[1].uint32;
     if (flags == 0 or flags & ~@as(u32, 15) != 0 or flags & 2 != 0) return error.NotSupported;
-    const options = child(params, 2);
-    defer c.g_variant_unref(options);
+    const options = try dictionary(message.arena, args[2]);
     const request = try Request.create(server, client_info, "Inhibit", "Inhibit", options, .inhibit);
     errdefer request.destroy();
     var buffer: [64]u8 = undefined;
@@ -631,25 +597,20 @@ fn inhibit(server: *Server, client_info: *Client, params: ?*c.GVariant, message:
         @memcpy(buffer[used..][0..name.len], name);
         used += name.len;
     };
-    const reason = c.g_variant_lookup_value(options, "reason", @ptrCast(@as([*:0]const u8, "s")));
-    defer if (reason != null) c.g_variant_unref(reason);
-    const why: []const u8 = if (reason != null) std.mem.span(c.g_variant_get_string(reason, null)) else "Application requested inhibition";
+    const why: []const u8 = if (option(options, "reason")) |reason| (if (reason == .string) reason.string else "Application requested inhibition") else "Application requested inhibition";
     request.inhibit_idle = flags & 8 != 0;
     replyHandle(server, message, request.handle);
     server.updateIdleInhibition();
     loop.request(.system, .{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1", .interface = "org.freedesktop.login1.Manager", .member = "Inhibit" }, .{ buffer[0..used], @as([]const u8, request.app), why, "block" }, 10000, request.cancel, &Request.inhibitorFinished, request);
 }
-fn network(server: *Server, client_info: *Client, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
+fn network(server: *Server, client_info: *Client, method: []const u8, args: []const dbus.Value, message: *const dbus.Message) !void {
     if (eq(method, "CanReach")) {
-        const host = child(params, 0);
-        defer c.g_variant_unref(host);
-        const port = child(params, 1);
-        defer c.g_variant_unref(port);
-        const number = c.g_variant_get_uint32(port);
-        if (number > 65535 or text(host).len == 0 or text(host).len > 255) return error.InvalidAddress;
-        const address = c.g_network_address_new(c.g_variant_get_string(host, null), @intCast(number)) orelse return error.InvalidAddress;
+        const host = args[0].string;
+        const number = args[1].uint32;
+        if (number > 65535 or host.len == 0 or host.len > 255) return error.InvalidAddress;
+        const address = c.g_network_address_new(try cstring(message, args[0]), @intCast(number)) orelse return error.InvalidAddress;
         defer c.g_object_unref(address);
-        const request = try Request.create(server, client_info, "NetworkMonitor", method, null, .direct);
+        const request = try Request.create(server, client_info, "NetworkMonitor", method, portal_options.empty, .direct);
         request.invocation = server.connection.hold(message) catch |err| {
             request.destroy();
             return err;
@@ -666,8 +627,8 @@ fn network(server: *Server, client_info: *Client, method: []const u8, params: ?*
     if (eq(method, "GetMetered")) return connection.reply(message, .{metered});
     if (eq(method, "GetConnectivity")) return connection.reply(message, .{connectivity});
     if (eq(method, "GetStatus")) {
-        const entries = [_]bridge.Dict.Entry{ .{ .key = "available", .value = .{ .boolean = available } }, .{ .key = "metered", .value = .{ .boolean = metered } }, .{ .key = "connectivity", .value = .{ .uint32 = connectivity } } };
-        return connection.reply(message, .{bridge.Dict{ .entries = &entries }});
+        const entries = [_]Dict.Entry{ .{ .key = "available", .value = .{ .boolean = available } }, .{ .key = "metered", .value = .{ .boolean = metered } }, .{ .key = "connectivity", .value = .{ .uint32 = connectivity } } };
+        return connection.reply(message, .{Dict{ .entries = &entries }});
     }
     return error.NotSupported;
 }
@@ -675,25 +636,19 @@ fn replyHandle(server: *Server, message: *const dbus.Message, handle: []const u8
     server.connection.reply(message, .{dbus.ObjectPath{ .value = handle }}) catch {};
 }
 fn methodCall(data: ?*anyopaque, message: *const dbus.Message) void {
-    // Handlers read arguments as a GVariant tuple, the form the dialogs consume.
-    const params: ?*c.GVariant = blk: {
-        if (message.signature.len == 0) break :blk null;
-        break :blk bridge.argumentsVariant(message) orelse return cast(Server, data).connection.replyError(message, "org.freedesktop.portal.Error.InvalidArgument", "InvalidArguments") catch {};
-    };
     const server = cast(Server, data);
-    defer if (params) |value| c.g_variant_unref(value);
-    dispatch(server, message.sender orelse "", message.interface orelse "", message.member orelse "", params, message) catch |err| {
+    // Exported methods only receive arguments matching their introspected signature.
+    const args = message.values() catch return server.connection.replyError(message, "org.freedesktop.portal.Error.InvalidArgument", "InvalidArguments") catch {};
+    dispatch(server, message.sender orelse "", message.interface orelse "", message.member orelse "", args, message) catch |err| {
         server.connection.replyError(message, if (err == error.SandboxedClientUnsupported) "org.freedesktop.portal.Error.NotAllowed" else if (err == error.NotSupported) "org.freedesktop.portal.Error.NotSupported" else "org.freedesktop.portal.Error.InvalidArgument", @errorName(err)) catch {};
     };
 }
-fn dispatch(server: *Server, sender: []const u8, interface: []const u8, method: []const u8, params: ?*c.GVariant, message: *const dbus.Message) !void {
+fn dispatch(server: *Server, sender: []const u8, interface: []const u8, method: []const u8, args: []const dbus.Value, message: *const dbus.Message) !void {
     if (server.quitting) return error.PortalStopping;
     const client_info = try server.getClient(sender);
     if (eq(interface, "org.freedesktop.host.portal.Registry")) {
         if (client_info.registered) return error.AlreadyRegistered;
-        const app = child(params, 0);
-        defer c.g_variant_unref(app);
-        const id = text(app);
+        const id = args[0].string;
         if (id.len == 0 or id.len > 255 or std.mem.indexOfScalar(u8, id, '.') == null) return error.InvalidAppId;
         for (id) |ch| if (!std.ascii.isAlphanumeric(ch) and ch != '.' and ch != '_' and ch != '-') return error.InvalidAppId;
         client_info.app = try client_info.arena.allocator().dupeSentinel(u8, id, 0);
@@ -702,27 +657,23 @@ fn dispatch(server: *Server, sender: []const u8, interface: []const u8, method: 
     }
     if (!std.mem.startsWith(u8, interface, public)) return error.NotSupported;
     const short = interface[public.len..];
-    if (eq(short, "Account")) return userInformation(server, client_info, params, message);
-    if (eq(short, "FileChooser")) return chooseFile(server, client_info, method, params, message);
+    if (eq(short, "Account")) return userInformation(server, client_info, args, message);
+    if (eq(short, "FileChooser")) return chooseFile(server, client_info, method, args, message);
     if (eq(short, "Settings")) return server.settings.?.call(method, message);
     if (eq(short, "Notification")) {
-        const id_value = child(params, 0);
-        defer c.g_variant_unref(id_value);
-        const id: [:0]const u8 = std.mem.span(c.g_variant_get_string(id_value, null));
+        const id = try cstring(message, args[0]);
         if (eq(method, "AddNotification")) {
-            const contents = child(params, 1);
-            defer c.g_variant_unref(contents);
-            try server.notifications.?.add(client_info.sender, client_info.app, id, contents.?);
+            try server.notifications.?.add(client_info.sender, client_info.app, id, try dictionary(message.arena, args[1]));
         } else server.notifications.?.remove(client_info.sender, id);
         return server.connection.reply(message, .{});
     }
-    if (eq(short, "Email")) return composeEmail(server, client_info, params, message);
-    if (eq(short, "Inhibit")) return inhibit(server, client_info, params, message);
-    if (eq(short, "OpenURI")) return openUri(server, client_info, method, params, message);
-    if (eq(short, "NetworkMonitor")) return network(server, client_info, method, params, message);
-    if (eq(short, "ScreenCast") and eq(method, "OpenPipeWireRemote")) return openRemote(server, client_info, params, message);
-    if (eq(short, "Screenshot")) return screenshot(server, client_info, method, params, message);
-    if (eq(short, "ScreenCast")) return screencast(server, client_info, method, params, message);
+    if (eq(short, "Email")) return composeEmail(server, client_info, args, message);
+    if (eq(short, "Inhibit")) return inhibit(server, client_info, args, message);
+    if (eq(short, "OpenURI")) return openUri(server, client_info, method, args, message);
+    if (eq(short, "NetworkMonitor")) return network(server, client_info, method, args, message);
+    if (eq(short, "ScreenCast") and eq(method, "OpenPipeWireRemote")) return openRemote(server, client_info, args, message);
+    if (eq(short, "Screenshot")) return screenshot(server, client_info, method, args, message);
+    if (eq(short, "ScreenCast")) return screencast(server, client_info, method, args, message);
     return error.NotSupported;
 }
 fn getProperty(_: ?*anyopaque, _: []const u8, interface: []const u8, property: []const u8, _: std.mem.Allocator) ?dbus.Value {

@@ -10,6 +10,7 @@ const sc = @import("desktop-screenshot.zig");
 pub const Image = @import("desktop-image.zig").Image;
 const cast = c.__zig.cast;
 const portal_options = @import("desktop-portal-options.zig");
+const dbus = @import("dbus");
 const Options = portal_options.Options(error.InvalidScreenshotOptions);
 pub const Completion = portal_options.Completion;
 
@@ -219,7 +220,7 @@ pub const Operation = struct {
     callback: Completion,
     data: ?*anyopaque,
 
-    pub fn create(allocator: std.mem.Allocator, app: [:0]const u8, parent: [:0]const u8, method: []const u8, options: *c.GVariant, callback: Completion, data: ?*anyopaque) !*Operation {
+    pub fn create(allocator: std.mem.Allocator, app: [:0]const u8, parent: [:0]const u8, method: []const u8, options: portal_options.Dict, callback: Completion, data: ?*anyopaque) !*Operation {
         const interactive = try Options.boolean(options, "interactive", false);
         _ = try Options.boolean(options, "modal", true);
         const self = try allocator.create(Operation);
@@ -388,13 +389,19 @@ pub const Operation = struct {
             w = std.math.clamp(w, 1, width - x);
             h = std.math.clamp(h, 1, height - y);
         }
-        const results = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
-        defer c.g_variant_builder_unref(results);
+        var color: [3]dbus.Value = undefined;
+        var entry: portal_options.Dict.Entry = undefined;
         if (self.point) {
             const pixels = surface.pixels;
             const stride = surface.stride;
             const pixel = std.mem.readInt(u32, pixels[@as(usize, @intCast(y)) * stride + @as(usize, @intCast(x)) * 4 ..][0..4], @import("builtin").cpu.arch.endian());
-            c.g_variant_builder_add(results, "{sv}", @as([*:0]const u8, "color"), c.g_variant_new("(ddd)", @as(f64, @floatFromInt((pixel >> 16) & 255)) / 255, @as(f64, @floatFromInt((pixel >> 8) & 255)) / 255, @as(f64, @floatFromInt(pixel & 255)) / 255));
+            const channel = struct {
+                fn value(bits: u32) dbus.Value {
+                    return .{ .double = @as(f64, @floatFromInt(bits & 255)) / 255 };
+                }
+            }.value;
+            color = .{ channel(pixel >> 16), channel(pixel >> 8), channel(pixel) };
+            entry = .{ .key = "color", .value = .{ .structure = &color } };
         } else {
             const stride = surface.stride;
             const pixels = surface.pixels;
@@ -422,12 +429,13 @@ pub const Operation = struct {
                 return self.finish(2, null);
             }
             defer c.g_free(uri);
-            c.g_variant_builder_add(results, "{sv}", @as([*:0]const u8, "uri"), c.g_variant_new("s", uri));
+            entry = .{ .key = "uri", .value = .{ .string = std.mem.span(uri) } };
+            return self.finish(0, .{ .entries = (&entry)[0..1] });
         }
-        self.finish(0, c.g_variant_builder_end(results));
+        self.finish(0, .{ .entries = (&entry)[0..1] });
     }
-    fn finish(self: *Operation, code: u32, results: ?*c.GVariant) void {
-        self.callback(self.data, code, results orelse c.__zig.variant.emptyDict());
+    fn finish(self: *Operation, code: u32, results: ?portal_options.Dict) void {
+        self.callback(self.data, code, results orelse portal_options.empty);
     }
 };
 
@@ -465,7 +473,7 @@ test "capture images normalize inverted rows and preserve padding and RGB channe
 
 test "portal selection clips reverse drags and ignores input queued after cancellation" {
     const Callback = struct {
-        fn complete(_: ?*anyopaque, _: u32, _: ?*c.GVariant) void {}
+        fn complete(_: ?*anyopaque, _: u32, _: portal_options.Dict) void {}
     };
     var operation: Operation = .{
         .allocator = std.testing.allocator,

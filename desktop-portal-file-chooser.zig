@@ -3,9 +3,7 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
-const child = c.g_variant_get_child_value;
-const text = c.__zig.variant.text;
-const builder = c.__zig.variant.builder;
+const dbus = @import("dbus");
 const portal_options = @import("desktop-portal-options.zig");
 const Options = portal_options.Options(error.InvalidFileChooserOption);
 const option = Options.get;
@@ -16,14 +14,14 @@ const browser = @import("desktop-file-chooser-view.zig");
 extern fn g_get_user_config_dir() [*:0]const u8;
 pub const Completion = portal_options.Completion;
 pub const Choice = struct { id: [:0]const u8, item: usize, boolean: bool };
-pub const Filter = struct { value: *c.GVariant, id: [:0]const u8, name: [:0]const u8, rules: []const files.Rule };
+pub const Filter = struct { value: dbus.Value, id: [:0]const u8, name: [:0]const u8, rules: []const files.Rule };
 const Row = browser.Row;
 pub const Dialog = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     window: *form.host.Window,
     ui: *form.Form,
-    options: *c.GVariant,
+    options: portal_options.Dict,
     method: enum { open, save, save_files },
     directory: bool,
     multiple: bool,
@@ -61,21 +59,23 @@ pub const Dialog = struct {
     finished: bool = false,
     finish_idle: c.guint = 0,
     finish_code: u32 = 1,
-    finish_result: ?*c.GVariant = null,
+    finish_result: portal_options.Dict = portal_options.empty,
     dead: bool = false,
     // Only visible rows and a small look-ahead window own form controls.
     const window_items = 512;
 
-    pub fn create(allocator: std.mem.Allocator, method: []const u8, parent: [:0]const u8, title: [:0]const u8, options: *c.GVariant, callback: Completion, data: ?*anyopaque) !*Dialog {
+    pub fn create(allocator: std.mem.Allocator, method: []const u8, parent: [:0]const u8, title: [:0]const u8, options: portal_options.Dict, callback: Completion, data: ?*anyopaque) !*Dialog {
         const kind: @FieldType(Dialog, "method") = if (eq(method, "OpenFile")) .open else if (eq(method, "SaveFile")) .save else if (eq(method, "SaveFiles")) .save_files else return error.InvalidFileChooserMethod;
         const self = try allocator.create(Dialog);
         errdefer allocator.destroy(self);
         const ui = try form.Form.create(title, self, &action, &changed);
-        self.* = .{ .allocator = allocator, .arena = .init(allocator), .window = ui.window, .ui = ui, .options = c.g_variant_ref(options).?, .method = kind, .directory = kind == .save_files, .multiple = false, .callback = callback, .data = data };
+        self.* = .{ .allocator = allocator, .arena = .init(allocator), .window = ui.window, .ui = ui, .options = portal_options.empty, .method = kind, .directory = kind == .save_files, .multiple = false, .callback = callback, .data = data };
         errdefer {
             ui.deinit();
             self.freeResources();
         }
+        // The message's options are borrowed; filters and names outlive it.
+        self.options = try portal_options.clone(self.arena.allocator(), options);
         self.directory = kind == .save_files or (kind == .open and try boolean(options, "directory", false));
         self.multiple = kind == .open and try boolean(options, "multiple", false);
         _ = try boolean(options, "modal", true);
@@ -86,17 +86,14 @@ pub const Dialog = struct {
         self.hidden_item = try ui.add(.toggle, "Show hidden files", "", false);
         if (kind == .save) {
             self.name_item = try ui.add(.entry, "File name", "", false);
-            const name = try option(options, "current_name", "s");
-            defer if (name != null) c.g_variant_unref(name);
-            if (name != null) try ui.setText(self.name_item.?, text(name));
+            if (try Options.string(options, "current_name")) |name| try ui.setText(self.name_item.?, try self.arena.allocator().dupeSentinel(u8, name, 0));
         }
         try self.configureFilters();
         try self.configureChoices(kind == .open and !self.directory);
         self.message_item = try ui.addPinned(.label, "Loading folder…");
         self.cancel_item = try ui.addPinned(.button, "Cancel");
-        const accept_label = try option(options, "accept_label", "s");
-        defer if (accept_label != null) c.g_variant_unref(accept_label);
-        self.accept_item = try ui.addPinned(.button, if (accept_label != null) text(accept_label) else if (kind == .open) "Open" else "Save");
+        const accept_label = if (try Options.string(options, "accept_label")) |label| try self.arena.allocator().dupeSentinel(u8, label, 0) else null;
+        self.accept_item = try ui.addPinned(.button, if (accept_label) |label| label else if (kind == .open) "Open" else "Save");
         self.view = .{
             .path = self.path_item,
             .up = self.up_item,
@@ -143,26 +140,21 @@ pub const Dialog = struct {
         ui.scrolled = &scrolled;
         ui.double_clicked = &activated;
         const folder = try option(options, "current_folder", "ay");
-        defer if (folder != null) c.g_variant_unref(folder);
-        var initial: [:0]const u8 = if (folder != null) std.mem.span(try self.bytes(folder.?, false)) else std.mem.span(c.g_get_home_dir());
+        var initial: [:0]const u8 = if (folder) |value| std.mem.span(try self.bytes(value, false)) else std.mem.span(c.g_get_home_dir());
         if (kind == .save) {
             const file = try option(options, "current_file", "ay");
-            defer if (file != null) c.g_variant_unref(file);
-            if (file != null) {
-                const path = std.mem.span(try self.bytes(file.?, false));
+            if (file) |value| {
+                const path = std.mem.span(try self.bytes(value, false));
                 initial = try self.arena.allocator().dupeSentinel(u8, std.fs.path.dirname(path) orelse "/", 0);
                 try ui.setText(self.name_item.?, try self.arena.allocator().dupeSentinel(u8, std.fs.path.basename(path), 0));
             }
         }
         if (kind == .save_files) {
             const names = try option(options, "files", "aay");
-            defer if (names != null) c.g_variant_unref(names);
-            if (names != null) {
-                if (c.g_variant_n_children(names) > 256) return error.TooManyFiles;
-                for (0..c.g_variant_n_children(names)) |index| {
-                    const name = child(names, index);
-                    defer c.g_variant_unref(name);
-                    try self.names.append(self.arena.allocator(), std.mem.span(try self.bytes(name.?, true)));
+            if (names) |list| {
+                if (list.array.items.len > 256) return error.TooManyFiles;
+                for (list.array.items) |name| {
+                    try self.names.append(self.arena.allocator(), std.mem.span(try self.bytes(name, true)));
                 }
             }
         }
@@ -178,8 +170,6 @@ pub const Dialog = struct {
         self.view.deinit();
         self.visible_entries.deinit(self.allocator);
         if (self.listing) |listing| listing.destroy();
-        for (self.filters.items) |filter| c.g_variant_unref(filter.value);
-        c.g_variant_unref(self.options);
         self.arena.deinit();
     }
     fn addPlace(self: *Dialog, label: [:0]const u8, path: [:0]const u8, icon: [:0]const u8) !void {
@@ -244,7 +234,6 @@ pub const Dialog = struct {
         if (self.dead) return;
         self.dead = true;
         if (self.finish_idle != 0) _ = c.g_source_remove(self.finish_idle);
-        if (self.finish_result) |value| c.g_variant_unref(value);
         if (self.pending) |pending| pending.cancel();
         self.ui.deinit();
         if (self.pending_count == 0) self.release();
@@ -253,9 +242,9 @@ pub const Dialog = struct {
         self.freeResources();
         self.allocator.destroy(self);
     }
-    fn bytes(self: *Dialog, value: *c.GVariant, basename: bool) ![*:0]const u8 {
-        var count: usize = 0;
-        const ptr: [*]const u8 = @ptrCast(c.g_variant_get_fixed_array(value, &count, 1) orelse return error.InvalidFileName);
+    fn bytes(self: *Dialog, value: dbus.Value, basename: bool) ![*:0]const u8 {
+        const ptr = value.bytes;
+        const count = ptr.len;
         if (count == 0 or count > 4096 or ptr[count - 1] != 0 or std.mem.indexOfScalar(u8, ptr[0 .. count - 1], 0) != null) return error.InvalidFileName;
         const path = ptr[0 .. count - 1];
         if (path.len == 0) return error.InvalidFileName;
@@ -264,65 +253,37 @@ pub const Dialog = struct {
         } else if (!std.fs.path.isAbsolute(path)) return error.InvalidFileName;
         return (try self.arena.allocator().dupeSentinel(u8, path, 0)).ptr;
     }
-    fn validateFilter(value: *c.GVariant) !void {
-        const name = child(value, 0);
-        defer c.g_variant_unref(name);
-        if (text(name).len > 1024) return error.InvalidFileFilter;
-        const rules = child(value, 1);
-        defer c.g_variant_unref(rules);
-        if (c.g_variant_n_children(rules) > 128) return error.InvalidFileFilter;
-        for (0..c.g_variant_n_children(rules)) |index| {
-            const rule = child(rules, index);
-            defer c.g_variant_unref(rule);
-            const kind = child(rule, 0);
-            defer c.g_variant_unref(kind);
-            const pattern = child(rule, 1);
-            defer c.g_variant_unref(pattern);
-            if (c.g_variant_get_uint32(kind) > 1 or text(pattern).len > 4096) return error.InvalidFileFilter;
+    /// A filter is `(sa(us))`: a name and rules of kind (0 glob, 1 MIME type) and pattern.
+    fn validateFilter(value: dbus.Value) !void {
+        const fields = value.structure;
+        if (fields[0].string.len > 1024) return error.InvalidFileFilter;
+        const rules = fields[1].array.items;
+        if (rules.len > 128) return error.InvalidFileFilter;
+        for (rules) |rule| {
+            if (rule.structure[0].uint32 > 1 or rule.structure[1].string.len > 4096) return error.InvalidFileFilter;
         }
     }
-    fn addFilter(self: *Dialog, value: *c.GVariant) !void {
+    fn addFilter(self: *Dialog, value: dbus.Value) !void {
         try validateFilter(value);
         const a = self.arena.allocator();
-        const name = child(value, 0);
-        defer c.g_variant_unref(name);
-        const rules = child(value, 1);
-        defer c.g_variant_unref(rules);
         var parsed: std.ArrayList(files.Rule) = .empty;
-        for (0..c.g_variant_n_children(rules)) |index| {
-            const rule = child(rules, index);
-            defer c.g_variant_unref(rule);
-            const kind = child(rule, 0);
-            defer c.g_variant_unref(kind);
-            const pattern = child(rule, 1);
-            defer c.g_variant_unref(pattern);
-            try parsed.append(a, .{ .mime = c.g_variant_get_uint32(kind) == 1, .pattern = try a.dupeSentinel(u8, text(pattern), 0) });
+        for (value.structure[1].array.items) |rule| {
+            try parsed.append(a, .{ .mime = rule.structure[0].uint32 == 1, .pattern = try a.dupeSentinel(u8, rule.structure[1].string, 0) });
         }
-        const filter: Filter = .{ .value = value, .id = try std.fmt.allocPrintSentinel(a, "{d}", .{self.filters.items.len}, 0), .name = try a.dupeSentinel(u8, text(name), 0), .rules = parsed.items };
+        const filter: Filter = .{ .value = value, .id = try std.fmt.allocPrintSentinel(a, "{d}", .{self.filters.items.len}, 0), .name = try a.dupeSentinel(u8, value.structure[0].string, 0), .rules = parsed.items };
         try self.filters.append(a, filter);
-        _ = c.g_variant_ref(value);
     }
     fn configureFilters(self: *Dialog) !void {
-        const filters = try option(self.options, "filters", "a(sa(us))");
-        defer if (filters != null) c.g_variant_unref(filters);
-        if (filters != null) {
-            if (c.g_variant_n_children(filters) > 64) return error.TooManyFileFilters;
-            for (0..c.g_variant_n_children(filters)) |index| {
-                const value = child(filters, index);
-                defer c.g_variant_unref(value);
-                try self.addFilter(value.?);
-            }
+        if (try option(self.options, "filters", "a(sa(us))")) |filters| {
+            if (filters.array.items.len > 64) return error.TooManyFileFilters;
+            for (filters.array.items) |value| try self.addFilter(value);
         }
-        const current = try option(self.options, "current_filter", "(sa(us))");
-        defer if (current != null) c.g_variant_unref(current);
         var selected: usize = 0;
-        if (current) |value| {
+        if (try option(self.options, "current_filter", "(sa(us))")) |value| {
             try validateFilter(value);
             if (self.filters.items.len == 0) try self.addFilter(value) else {
-                const name = child(value, 0);
-                defer c.g_variant_unref(name);
                 var found = false;
-                for (self.filters.items, 0..) |filter, index| if (eq(filter.name, text(name))) {
+                for (self.filters.items, 0..) |filter, index| if (eq(filter.name, value.structure[0].string)) {
                     selected = index;
                     found = true;
                     break;
@@ -344,46 +305,35 @@ pub const Dialog = struct {
         return self.filters.items[self.ui.get(item).selected.?];
     }
     fn configureChoices(self: *Dialog, readonly: bool) !void {
-        const choices = try option(self.options, "choices", "a(ssa(ss)s)");
-        defer if (choices != null) c.g_variant_unref(choices);
-        if (choices != null) {
-            if (c.g_variant_n_children(choices) > 32) return error.TooManyFileChoices;
-            for (0..c.g_variant_n_children(choices)) |index| {
-                const value = child(choices, index);
-                defer c.g_variant_unref(value);
-                const id = child(value, 0);
-                defer c.g_variant_unref(id);
-                const label = child(value, 1);
-                defer c.g_variant_unref(label);
-                const items = child(value, 2);
-                defer c.g_variant_unref(items);
-                const selected = child(value, 3);
-                defer c.g_variant_unref(selected);
-                if (text(id).len == 0 or text(id).len > 128 or text(label).len > 4096 or c.g_variant_n_children(items) > 64) return error.InvalidFileChoice;
-                for (self.choices.items) |choice| if (eq(choice.id, text(id))) return error.InvalidFileChoice;
-                const is_boolean = c.g_variant_n_children(items) == 0;
-                const item = try self.ui.add(if (is_boolean) .toggle else .choice, text(label), "", false);
+        // Each choice is `(ssa(ss)s)`: id, label, options (none for a toggle) and the initial selection.
+        if (try option(self.options, "choices", "a(ssa(ss)s)")) |choices| {
+            if (choices.array.items.len > 32) return error.TooManyFileChoices;
+            for (choices.array.items) |value| {
+                const id = value.structure[0].string;
+                const label = value.structure[1].string;
+                const items = value.structure[2].array.items;
+                const selected = value.structure[3].string;
+                if (id.len == 0 or id.len > 128 or label.len > 4096 or items.len > 64) return error.InvalidFileChoice;
+                for (self.choices.items) |choice| if (eq(choice.id, id)) return error.InvalidFileChoice;
+                const is_boolean = items.len == 0;
+                const item = try self.ui.add(if (is_boolean) .toggle else .choice, try self.arena.allocator().dupeSentinel(u8, label, 0), "", false);
                 if (is_boolean) {
-                    if (text(selected).len != 0 and !eq(text(selected), "true") and !eq(text(selected), "false")) return error.InvalidFileChoice;
-                    self.ui.setChecked(item, eq(text(selected), "true"));
+                    if (selected.len != 0 and !eq(selected, "true") and !eq(selected, "false")) return error.InvalidFileChoice;
+                    self.ui.setChecked(item, eq(selected, "true"));
                 } else {
                     var options: std.ArrayList(form.Option) = .empty;
-                    for (0..c.g_variant_n_children(items)) |i| {
-                        const entry = child(items, i);
-                        defer c.g_variant_unref(entry);
-                        const option_id = child(entry, 0);
-                        defer c.g_variant_unref(option_id);
-                        const option_label = child(entry, 1);
-                        defer c.g_variant_unref(option_label);
-                        if (text(option_id).len == 0 or text(option_id).len > 128 or text(option_label).len > 4096) return error.InvalidFileChoice;
-                        const owned_id = try self.arena.allocator().dupeSentinel(u8, text(option_id), 0);
+                    for (items) |entry| {
+                        const option_id = entry.structure[0].string;
+                        const option_label = entry.structure[1].string;
+                        if (option_id.len == 0 or option_id.len > 128 or option_label.len > 4096) return error.InvalidFileChoice;
+                        const owned_id = try self.arena.allocator().dupeSentinel(u8, option_id, 0);
                         for (options.items) |previous| if (eq(previous.id, owned_id)) return error.InvalidFileChoice;
-                        try options.append(self.arena.allocator(), .{ .id = owned_id, .label = try self.arena.allocator().dupeSentinel(u8, text(option_label), 0) });
+                        try options.append(self.arena.allocator(), .{ .id = owned_id, .label = try self.arena.allocator().dupeSentinel(u8, option_label, 0) });
                     }
                     try self.ui.setOptions(item, options.items, true);
-                    if (text(selected).len != 0 and !self.ui.select(item, text(selected))) return error.InvalidFileChoice;
+                    if (selected.len != 0 and !self.ui.select(item, selected)) return error.InvalidFileChoice;
                 }
-                try self.choices.append(self.arena.allocator(), .{ .id = try self.arena.allocator().dupeSentinel(u8, text(id), 0), .item = item, .boolean = is_boolean });
+                try self.choices.append(self.arena.allocator(), .{ .id = try self.arena.allocator().dupeSentinel(u8, id, 0), .item = item, .boolean = is_boolean });
             }
         }
         if (readonly) self.read_only = try self.ui.add(.toggle, "Open files read-only", "", false);
@@ -842,30 +792,27 @@ pub const Dialog = struct {
     fn closed(ptr: ?*anyopaque) void {
         cast(Dialog, ptr).cancel();
     }
-    fn finish(self: *Dialog, code: u32, result: ?*c.GVariant) void {
+    /// `result` lives in the dialog's arena, which outlasts the callback.
+    fn finish(self: *Dialog, code: u32, result: ?portal_options.Dict) void {
         if (self.finished) return;
         self.finished = true;
         self.window.hide();
         if (self.ui.dispatching) {
             self.finish_code = code;
-            // Own the floating reply until it is transferred to the callback.
-            self.finish_result = result orelse c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0);
+            self.finish_result = result orelse portal_options.empty;
             self.finish_idle = c.g_idle_add(&deliverFinish, self);
-        } else self.callback(self.data, code, result orelse c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0));
+        } else self.callback(self.data, code, result orelse portal_options.empty);
     }
     fn deliverFinish(ptr: ?*anyopaque) callconv(.c) c.gboolean {
         const self = cast(Dialog, ptr);
         self.finish_idle = 0;
-        const result = self.finish_result;
-        self.finish_result = null;
-        self.callback(self.data, self.finish_code, result);
+        self.callback(self.data, self.finish_code, self.finish_result);
         return 0;
     }
-    fn results(self: *Dialog) !?*c.GVariant {
-        const out = builder("a{sv}");
-        defer c.g_variant_builder_unref(out);
-        const uris = builder("as");
-        defer c.g_variant_builder_unref(uris);
+    fn results(self: *Dialog) !portal_options.Dict {
+        const a = self.arena.allocator();
+        var out: portal_options.Results = .{ .arena = a };
+        var uris: std.ArrayList(dbus.Value) = .empty;
         const selected = try self.selectedPaths();
         defer {
             for (selected.items) |path| self.allocator.free(path);
@@ -893,7 +840,7 @@ pub const Dialog = struct {
                     if (c.g_file_query_exists(file, null) == 0 and !duplicate) {
                         const owned = try self.arena.allocator().dupeSentinel(u8, std.mem.span(uri), 0);
                         try generated.append(self.arena.allocator(), owned);
-                        c.g_variant_builder_add(uris, "s", uri);
+                        try uris.append(a, .{ .string = owned });
                         break;
                     }
                     suffix += 1;
@@ -909,20 +856,20 @@ pub const Dialog = struct {
                 defer c.g_object_unref(file);
                 const uri = c.g_file_get_uri(file);
                 defer c.g_free(uri);
-                c.g_variant_builder_add(uris, "s", uri);
+                try uris.append(a, .{ .string = try a.dupe(u8, std.mem.span(uri)) });
             }
         }
-        c.g_variant_builder_add(out, "{sv}", @as([*:0]const u8, "uris"), c.g_variant_builder_end(uris));
-        if (self.currentFilter()) |filter| c.g_variant_builder_add(out, "{sv}", @as([*:0]const u8, "current_filter"), filter.value);
-        const choices = builder("a(ss)");
-        defer c.g_variant_builder_unref(choices);
+        try out.put("uris", .{ .array = .{ .element = "s", .items = uris.items } });
+        if (self.currentFilter()) |filter| try out.put("current_filter", filter.value);
+        var choices: std.ArrayList(dbus.Value) = .empty;
         for (self.choices.items) |choice| {
-            const value: [*:0]const u8 = if (choice.boolean) (if (self.ui.get(choice.item).checked) "true" else "false") else self.ui.get(choice.item).selectedId().?.ptr;
-            c.g_variant_builder_add(choices, "(ss)", choice.id.ptr, value);
+            const value: []const u8 = if (choice.boolean) (if (self.ui.get(choice.item).checked) "true" else "false") else self.ui.get(choice.item).selectedId().?;
+            const pair = try a.dupe(dbus.Value, &.{ .{ .string = choice.id }, .{ .string = try a.dupe(u8, value) } });
+            try choices.append(a, .{ .structure = pair });
         }
-        c.g_variant_builder_add(out, "{sv}", @as([*:0]const u8, "choices"), c.g_variant_builder_end(choices));
+        try out.put("choices", .{ .array = .{ .element = "(ss)", .items = choices.items } });
         const writable = if (self.read_only) |id| !self.ui.get(id).checked else true;
-        c.g_variant_builder_add(out, "{sv}", @as([*:0]const u8, "writable"), c.g_variant_new("b", @as(c_int, @intFromBool(writable))));
-        return c.g_variant_builder_end(out);
+        try out.put("writable", .{ .boolean = writable });
+        return out.dict();
     }
 };

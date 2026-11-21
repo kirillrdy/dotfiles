@@ -1,34 +1,65 @@
 //! Native file controls under the headless compositor; portal result contracts.
 const std = @import("std");
 const c = @import("desktop").glib;
+const dbus = @import("desktop").dbus;
+const variant_text = @import("desktop").dbus_text;
 const Dialog = @import("desktop").chooser.Dialog;
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectStrings = std.testing.expectEqualStrings;
 var io: std.Io = undefined;
 const cast = c.__zig.cast;
+const Dict = dbus.Dict([]const u8, dbus.Value);
 fn pump() void {
     while (c.g_main_context_iteration(null, 0) != 0) {}
     io.sleep(.fromMilliseconds(5), .awake) catch {};
 }
-fn parse(value: [*:0]const u8) *c.GVariant {
-    return c.g_variant_take_ref(c.g_variant_parse(null, value, null, null, null)).?;
+/// Test values live until the fixture exits.
+var data_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+/// A value from its GVariant text form.
+fn parse(signature: []const u8, value: []const u8) dbus.Value {
+    return variant_text.parse(data_arena.allocator(), signature, value) catch @panic("invalid fixture value");
 }
-fn optionBuilder(root: [:0]const u8) *c.GVariantBuilder {
-    const value = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}"))).?;
-    c.g_variant_builder_add(value, "{sv}", @as([*:0]const u8, "current_folder"), c.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), root.ptr, root.len + 1, 1));
-    return value;
+fn print(value: dbus.Value) []const u8 {
+    return variant_text.print(data_arena.allocator(), value) catch @panic("out of memory");
+}
+/// Options with `current_folder` set to `root` as a nul-terminated byte string.
+const Builder = struct {
+    entries: std.ArrayList(Dict.Entry) = .empty,
+    fn init(root: [:0]const u8) Builder {
+        var self: Builder = .{};
+        self.put("current_folder", .{ .bytes = root[0 .. root.len + 1] });
+        return self;
+    }
+    fn put(self: *Builder, key: []const u8, value: dbus.Value) void {
+        self.entries.append(data_arena.allocator(), .{ .key = key, .value = value }) catch @panic("out of memory");
+    }
+    fn dict(self: *const Builder) Dict {
+        return .{ .entries = self.entries.items };
+    }
+};
+/// Options from their `a{sv}` text form.
+fn options(value: []const u8) Dict {
+    const items = parse("a{sv}", value).array.items;
+    const entries = data_arena.allocator().alloc(Dict.Entry, items.len) catch @panic("out of memory");
+    for (entries, items) |*entry, item| entry.* = .{ .key = item.dict_entry[0].string, .value = item.dict_entry[1].variant.* };
+    return .{ .entries = entries };
+}
+fn lookup(result: Dict, key: []const u8) ?dbus.Value {
+    for (result.entries) |entry| if (std.mem.eql(u8, entry.key, key)) return entry.value;
+    return null;
 }
 const Done = struct {
     code: ?u32 = null,
-    result: ?*c.GVariant = null,
-    fn completed(data: ?*anyopaque, code: u32, result: ?*c.GVariant) void {
+    result: Dict = .{ .entries = &.{} },
+    fn completed(data: ?*anyopaque, code: u32, result: Dict) void {
         const self = cast(Done, data);
         self.code = code;
-        self.result = c.g_variant_take_ref(result);
-    }
-    fn deinit(self: *Done) void {
-        if (self.result != null) c.g_variant_unref(self.result);
+        // Results are only borrowed for the call.
+        const a = data_arena.allocator();
+        const entries = a.alloc(Dict.Entry, result.entries.len) catch @panic("out of memory");
+        for (entries, result.entries) |*entry, item| entry.* = .{ .key = a.dupe(u8, item.key) catch @panic("out of memory"), .value = item.value.clone(a) catch @panic("out of memory") };
+        self.result = .{ .entries = entries };
     }
     fn accept(self: *Done, dialog: *Dialog) !void {
         const deadline = c.__zig.monotonicTime() + 5_000_000;
@@ -48,27 +79,19 @@ fn select(dialog: *Dialog, paths: []const [:0]const u8) !void {
     try loaded(dialog);
     for (paths) |path| try dialog.selectPath(path);
 }
-fn uris(result: ?*c.GVariant) *c.GVariant {
-    return c.g_variant_lookup_value(result, "uris", @ptrCast(@as([*:0]const u8, "as"))).?;
+fn uris(result: Dict) []const dbus.Value {
+    return lookup(result, "uris").?.array.items;
 }
-fn checkUri(result: ?*c.GVariant, expected: [:0]const u8) !void {
-    const values = uris(result);
-    defer c.g_variant_unref(values);
+fn checkUri(result: Dict, expected: [:0]const u8) !void {
     const file = c.g_file_new_for_path(expected);
     defer c.g_object_unref(file);
     const uri = c.g_file_get_uri(file);
     defer c.g_free(uri);
     var found = false;
-    for (0..c.g_variant_n_children(values)) |i| {
-        const item = c.g_variant_get_child_value(values, i);
-        defer c.g_variant_unref(item);
-        if (std.mem.eql(u8, std.mem.span(uri), std.mem.span(c.g_variant_get_string(item, null)))) found = true;
+    for (uris(result)) |item| {
+        if (std.mem.eql(u8, std.mem.span(uri), item.string)) found = true;
     }
-    if (!found) {
-        const actual = c.g_variant_print(values, 1);
-        defer c.g_free(actual);
-        std.debug.print("expected URI {s}, got {s}\n", .{ std.mem.span(uri), std.mem.span(actual) });
-    }
+    if (!found) std.debug.print("expected URI {s}, got {s}\n", .{ std.mem.span(uri), print(lookup(result, "uris").?) });
     try expect(found);
 }
 pub fn main(init: std.process.Init) !void {
@@ -90,23 +113,14 @@ pub fn main(init: std.process.Init) !void {
     _ = c.g_setenv("GTK_USE_PORTAL", "0", 1);
     _ = c.g_setenv("GIO_USE_VFS", "local", 1);
     {
-        const b = optionBuilder(root);
-        defer c.g_variant_builder_unref(b);
-        const filters = parse("[('Text', [(uint32 0, '*.txt')]), ('Images', [(uint32 1, 'image/png')])]");
-        defer c.g_variant_unref(filters);
-        const current = parse("('Text', [(uint32 0, '*.txt')])");
-        defer c.g_variant_unref(current);
-        const choices = parse("[('encoding', 'Encoding', [('utf8', 'UTF-8'), ('raw', 'Raw')], 'raw'), ('remember', 'Remember', [], 'true')]");
-        defer c.g_variant_unref(choices);
-        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "multiple"), c.g_variant_new("b", @as(c_int, 1)));
-        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "filters"), filters);
-        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "current_filter"), current);
-        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "choices"), choices);
-        const options = c.g_variant_take_ref(c.g_variant_builder_end(b)).?;
-        defer c.g_variant_unref(options);
+        var b = Builder.init(root);
+        const current = parse("(sa(us))", "('Text', [(uint32 0, '*.txt')])");
+        b.put("multiple", .{ .boolean = true });
+        b.put("filters", parse("a(sa(us))", "[('Text', [(uint32 0, '*.txt')]), ('Images', [(uint32 1, 'image/png')])]"));
+        b.put("current_filter", current);
+        b.put("choices", parse("a(ssa(ss)s)", "[('encoding', 'Encoding', [('utf8', 'UTF-8'), ('raw', 'Raw')], 'raw'), ('remember', 'Remember', [], 'true')]"));
         var done: Done = .{};
-        defer done.deinit();
-        const dialog = try Dialog.create(a, "OpenFile", "", "Open fixture", options, &Done.completed, &done);
+        const dialog = try Dialog.create(a, "OpenFile", "", "Open fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.multiple);
         try expectStrings("Text", dialog.currentFilter().?.name);
@@ -118,32 +132,19 @@ pub fn main(init: std.process.Init) !void {
         dialog.ui.setChecked(dialog.read_only.?, true);
         try select(dialog, &.{ first, unicode, report });
         try done.accept(dialog);
-        const values = uris(done.result);
-        defer c.g_variant_unref(values);
-        try expectEqual(@as(usize, 3), c.g_variant_n_children(values));
+        try expectEqual(@as(usize, 3), uris(done.result).len);
         try checkUri(done.result, first);
         try checkUri(done.result, unicode);
-        const returned_filter = c.g_variant_lookup_value(done.result, "current_filter", null);
-        defer c.g_variant_unref(returned_filter);
-        try expect(c.g_variant_equal(returned_filter, current) != 0);
-        const writable = c.g_variant_lookup_value(done.result, "writable", null);
-        defer c.g_variant_unref(writable);
-        try expect(c.g_variant_get_boolean(writable) == 0);
-        const returned = c.g_variant_lookup_value(done.result, "choices", null);
-        defer c.g_variant_unref(returned);
-        const expected = parse("[('encoding', 'utf8'), ('remember', 'false')]");
-        defer c.g_variant_unref(expected);
-        try expect(c.g_variant_equal(returned, expected) != 0);
+        // Values are compared through their text form, as g_variant_equal compared them.
+        try expectStrings(print(current), print(lookup(done.result, "current_filter").?));
+        try expect(!lookup(done.result, "writable").?.boolean);
+        try expectStrings(print(parse("a(ss)", "[('encoding', 'utf8'), ('remember', 'false')]")), print(lookup(done.result, "choices").?));
     }
     {
-        const b = optionBuilder(root);
-        defer c.g_variant_builder_unref(b);
-        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "current_name"), c.g_variant_new("s", @as([*:0]const u8, "native-save.txt")));
-        const options = c.g_variant_take_ref(c.g_variant_builder_end(b)).?;
-        defer c.g_variant_unref(options);
+        var b = Builder.init(root);
+        b.put("current_name", .{ .string = "native-save.txt" });
         var done: Done = .{};
-        defer done.deinit();
-        const dialog = try Dialog.create(a, "SaveFile", "", "Save fixture", options, &Done.completed, &done);
+        const dialog = try Dialog.create(a, "SaveFile", "", "Save fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.method == .save);
         try done.accept(dialog);
@@ -152,16 +153,10 @@ pub fn main(init: std.process.Init) !void {
         try checkUri(done.result, target);
     }
     {
-        const b = optionBuilder(root);
-        defer c.g_variant_builder_unref(b);
-        const files = parse("[b'report.txt', b'report.txt']");
-        defer c.g_variant_unref(files);
-        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "files"), files);
-        const options = c.g_variant_take_ref(c.g_variant_builder_end(b)).?;
-        defer c.g_variant_unref(options);
+        var b = Builder.init(root);
+        b.put("files", parse("aay", "[b'report.txt', b'report.txt']"));
         var done: Done = .{};
-        defer done.deinit();
-        const dialog = try Dialog.create(a, "SaveFiles", "", "Save files fixture", options, &Done.completed, &done);
+        const dialog = try Dialog.create(a, "SaveFiles", "", "Save files fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.directory);
         try loaded(dialog);
@@ -174,11 +169,8 @@ pub fn main(init: std.process.Init) !void {
         try checkUri(done.result, two);
     }
     {
-        const options = parse("{'directory': <true>}");
-        defer c.g_variant_unref(options);
         var done: Done = .{};
-        defer done.deinit();
-        const dialog = try Dialog.create(a, "OpenFile", "", "Cancel fixture", options, &Done.completed, &done);
+        const dialog = try Dialog.create(a, "OpenFile", "", "Cancel fixture", options("{'directory': <true>}"), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.directory);
         dialog.cancel();
@@ -187,14 +179,10 @@ pub fn main(init: std.process.Init) !void {
     {
         // An existing output requires a second, explicit acceptance. Editing
         // the name after the warning must not retain overwrite consent.
-        const b = optionBuilder(root);
-        defer c.g_variant_builder_unref(b);
-        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "current_name"), c.g_variant_new("s", @as([*:0]const u8, "report.txt")));
-        const options = c.g_variant_take_ref(c.g_variant_builder_end(b)).?;
-        defer c.g_variant_unref(options);
+        var b = Builder.init(root);
+        b.put("current_name", .{ .string = "report.txt" });
         var done: Done = .{};
-        defer done.deinit();
-        const dialog = try Dialog.create(a, "SaveFile", "", "Overwrite fixture", options, &Done.completed, &done);
+        const dialog = try Dialog.create(a, "SaveFile", "", "Overwrite fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try loaded(dialog);
         dialog.accept();
@@ -217,23 +205,17 @@ pub fn main(init: std.process.Init) !void {
         defer a.free(right);
         try std.Io.Dir.cwd().createDirPath(io, left);
         try std.Io.Dir.cwd().createDirPath(io, right);
-        const b = optionBuilder(root);
-        defer c.g_variant_builder_unref(b);
-        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "directory"), c.g_variant_new("b", @as(c_int, 1)));
-        c.g_variant_builder_add(b, "{sv}", @as([*:0]const u8, "multiple"), c.g_variant_new("b", @as(c_int, 1)));
-        const options = c.g_variant_take_ref(c.g_variant_builder_end(b)).?;
-        defer c.g_variant_unref(options);
+        var b = Builder.init(root);
+        b.put("directory", .{ .boolean = true });
+        b.put("multiple", .{ .boolean = true });
         var done: Done = .{};
-        defer done.deinit();
-        const dialog = try Dialog.create(a, "OpenFile", "", "Multiple folders fixture", options, &Done.completed, &done);
+        const dialog = try Dialog.create(a, "OpenFile", "", "Multiple folders fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try loaded(dialog);
         try dialog.selectPath(left);
         try dialog.selectPath(right);
         try done.accept(dialog);
-        const values = uris(done.result);
-        defer c.g_variant_unref(values);
-        try expectEqual(@as(usize, 2), c.g_variant_n_children(values));
+        try expectEqual(@as(usize, 2), uris(done.result).len);
         try checkUri(done.result, left);
         try checkUri(done.result, right);
     }
@@ -246,13 +228,9 @@ pub fn main(init: std.process.Init) !void {
             defer a.free(path);
             try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "page" });
         }
-        const b = optionBuilder(root);
-        defer c.g_variant_builder_unref(b);
-        const options = c.g_variant_take_ref(c.g_variant_builder_end(b)).?;
-        defer c.g_variant_unref(options);
+        const b = Builder.init(root);
         var done: Done = .{};
-        defer done.deinit();
-        const dialog = try Dialog.create(a, "OpenFile", "", "Scrolling fixture", options, &Done.completed, &done);
+        const dialog = try Dialog.create(a, "OpenFile", "", "Scrolling fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try loaded(dialog);
         try expect(dialog.view.count > 600);
@@ -287,36 +265,25 @@ pub fn main(init: std.process.Init) !void {
         try dialog.selectPath(first);
         try dialog.selectPath(hidden);
         try done.accept(dialog);
-        const values = uris(done.result);
-        defer c.g_variant_unref(values);
-        try expectEqual(@as(usize, 1), c.g_variant_n_children(values));
+        try expectEqual(@as(usize, 1), uris(done.result).len);
         try checkUri(done.result, hidden);
     }
     {
-        const b = optionBuilder(root);
-        defer c.g_variant_builder_unref(b);
-        const options = c.g_variant_take_ref(c.g_variant_builder_end(b)).?;
-        defer c.g_variant_unref(options);
+        const b = Builder.init(root);
         var done: Done = .{};
         // Both scans may finish after the dialog has been destroyed. Neither
         // may touch its controls or deliver a portal response.
-        const dialog = try Dialog.create(a, "OpenFile", "", "Cancelled scan fixture", options, &Done.completed, &done);
+        const dialog = try Dialog.create(a, "OpenFile", "", "Cancelled scan fixture", b.dict(), &Done.completed, &done);
         try dialog.navigate(root);
         dialog.destroy();
         for (0..100) |_| pump();
         try expect(done.code == null);
     }
     {
-        const invalid = parse("{'current_folder': <[byte 47, 116, 109, 112]>}");
-        defer c.g_variant_unref(invalid);
         var done: Done = .{};
-        try std.testing.expectError(error.InvalidFileName, Dialog.create(a, "OpenFile", "", "Invalid", invalid, &Done.completed, &done));
-        const filter = parse("{'filters': <[('Invalid', [(uint32 2, '*')])]>}");
-        defer c.g_variant_unref(filter);
-        try std.testing.expectError(error.InvalidFileFilter, Dialog.create(a, "OpenFile", "", "Invalid", filter, &Done.completed, &done));
-        const choice = parse("{'choices': <[('same', 'First', @a(ss) [], 'true'), ('same', 'Second', @a(ss) [], 'false')]>}");
-        defer c.g_variant_unref(choice);
-        try std.testing.expectError(error.InvalidFileChoice, Dialog.create(a, "OpenFile", "", "Invalid", choice, &Done.completed, &done));
+        try std.testing.expectError(error.InvalidFileName, Dialog.create(a, "OpenFile", "", "Invalid", options("{'current_folder': <[byte 47, 116, 109, 112]>}"), &Done.completed, &done));
+        try std.testing.expectError(error.InvalidFileFilter, Dialog.create(a, "OpenFile", "", "Invalid", options("{'filters': <[('Invalid', [(uint32 2, '*')])]>}"), &Done.completed, &done));
+        try std.testing.expectError(error.InvalidFileChoice, Dialog.create(a, "OpenFile", "", "Invalid", options("{'choices': <[('same', 'First', @a(ss) [], 'true'), ('same', 'Second', @a(ss) [], 'false')]>}"), &Done.completed, &done));
     }
     // Drain cancelled asynchronous enumeration before the leak assertion.
     for (0..30) |_| pump();

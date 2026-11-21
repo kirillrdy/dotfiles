@@ -312,3 +312,4 @@ pub const network_editor = @import("desktop-network-editor.zig");
 pub const session_actions = @import("desktop-session.zig");
 pub const commands = @import("desktop-command.zig");
 pub const dbus_loop = @import("desktop-dbus-loop.zig");
+pub const dbus_text = @import("desktop-dbus-text.zig");

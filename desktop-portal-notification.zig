@@ -2,14 +2,58 @@
 const std = @import("std");
 const c = @import("desktop-glib.zig");
 const dbus = @import("dbus");
-const bridge = @import("desktop-dbus-gvariant.zig");
 const fdo = "org.freedesktop.Notifications";
 const object_path = "/org/freedesktop/Notifications";
 const eq = c.__zig.eq;
-const lookup = c.__zig.variant.lookup;
-const child = c.g_variant_get_child_value;
-fn text(value: ?*c.GVariant) [*:0]const u8 {
-    return if (value == null) "" else c.g_variant_get_string(value, null);
+const Dict = dbus.Dict([]const u8, dbus.Value);
+/// An owned copy of a notification's `a{sv}` contents.
+const Contents = struct {
+    arena: std.heap.ArenaAllocator,
+    dict: Dict,
+    fn create(allocator: std.mem.Allocator, dict: Dict) !*Contents {
+        const self = try allocator.create(Contents);
+        self.* = .{ .arena = .init(allocator), .dict = undefined };
+        errdefer {
+            self.arena.deinit();
+            allocator.destroy(self);
+        }
+        self.dict = try @import("desktop-portal-options.zig").clone(self.arena.allocator(), dict);
+        return self;
+    }
+    fn destroy(self: *Contents) void {
+        const allocator = self.arena.child_allocator;
+        self.arena.deinit();
+        allocator.destroy(self);
+    }
+    fn get(self: *const Contents, key: []const u8, signature: []const u8) ?dbus.Value {
+        return lookup(self.dict.entries, key, signature);
+    }
+};
+/// A dictionary value of the given type, or null when missing or of another type.
+fn lookup(entries: []const Dict.Entry, key: []const u8, signature: []const u8) ?dbus.Value {
+    for (entries) |entry| if (eq(entry.key, key)) {
+        var buffer: [256]u8 = undefined;
+        const actual = entry.value.signatureInto(&buffer) catch return null;
+        return if (eq(actual, signature)) entry.value else null;
+    };
+    return null;
+}
+/// A value from an `a{sv}` given as a Value.
+fn lookupValue(dict: dbus.Value, key: []const u8, signature: []const u8) ?dbus.Value {
+    const items = switch (dict) {
+        .array => |array| array.items,
+        else => return null,
+    };
+    for (items) |item| if (eq(item.dict_entry[0].string, key)) {
+        const value = item.dict_entry[1].variant.*;
+        var buffer: [256]u8 = undefined;
+        const actual = value.signatureInto(&buffer) catch return null;
+        return if (eq(actual, signature)) value else null;
+    };
+    return null;
+}
+fn string(value: ?dbus.Value) []const u8 {
+    return if (value) |v| v.string else "";
 }
 const Notice = struct {
     service: *Service,
@@ -19,11 +63,11 @@ const Notice = struct {
     id: u32 = 0,
     pending: bool = false,
     removed: bool = false,
-    current: ?*c.GVariant = null,
-    next: ?*c.GVariant = null,
+    current: ?*Contents = null,
+    next: ?*Contents = null,
     fn destroy(self: *Notice) void {
-        if (self.current != null) c.g_variant_unref(self.current);
-        if (self.next != null) c.g_variant_unref(self.next);
+        if (self.current) |value| value.destroy();
+        if (self.next) |value| value.destroy();
         const allocator = self.service.allocator;
         allocator.free(self.owner);
         allocator.free(self.app);
@@ -31,8 +75,8 @@ const Notice = struct {
         allocator.destroy(self);
     }
 };
-const Send = struct { notice: *Notice, contents: *c.GVariant, generation: u64, serial: u32 = 0 };
-const Hints = bridge.Dict;
+const Send = struct { notice: *Notice, contents: *Contents, generation: u64, serial: u32 = 0 };
+const Hints = Dict;
 pub const Service = struct {
     allocator: std.mem.Allocator,
     connection: *dbus.Connection,
@@ -59,7 +103,7 @@ pub const Service = struct {
         for (self.sends.items) |send| {
             self.connection.cancel(send.serial);
             send.notice.pending = false;
-            c.g_variant_unref(send.contents);
+            send.contents.destroy();
             self.allocator.destroy(send);
         }
         self.sends.deinit(self.allocator);
@@ -81,7 +125,7 @@ pub const Service = struct {
         };
         notice.destroy();
     }
-    pub fn add(self: *Service, owner: [:0]const u8, app: [:0]const u8, key: [:0]const u8, contents: *c.GVariant) !void {
+    pub fn add(self: *Service, owner: [:0]const u8, app: [:0]const u8, key: [:0]const u8, contents: Dict) !void {
         if (key.len > 512) return error.InvalidNotificationId;
         var record: ?*Notice = null;
         for (self.notices.items) |notice| if (eq(notice.owner, owner) and eq(notice.key, key)) {
@@ -103,44 +147,57 @@ pub const Service = struct {
             record = notice;
         }
         const notice = record.?;
+        const copy = try Contents.create(self.allocator, contents);
         notice.removed = false;
-        if (notice.next != null) c.g_variant_unref(notice.next);
-        notice.next = c.g_variant_ref(contents);
+        if (notice.next) |old| old.destroy();
+        notice.next = copy;
         try self.sendNext(notice);
     }
     pub fn remove(self: *Service, owner: []const u8, key: []const u8) void {
         for (self.notices.items) |notice| if (eq(notice.owner, owner) and eq(notice.key, key)) {
             notice.removed = true;
-            if (notice.next != null) c.g_variant_unref(notice.next);
+            if (notice.next) |old| old.destroy();
             notice.next = null;
             self.closeId(notice.id);
             self.collect(notice);
             return;
         };
     }
-    /// Adds an `image-data` hint for a bytes icon, or returns a themed icon name.
-    fn icon(arena: std.mem.Allocator, contents: ?*c.GVariant, hints: *std.ArrayList(Hints.Entry)) ![]const u8 {
-        const value = lookup(contents, "icon", "(sv)");
-        defer if (value != null) c.g_variant_unref(value);
-        const serialized = value orelse return "";
-        const gicon = c.g_icon_deserialize(serialized);
-        defer if (gicon != null) c.g_object_unref(gicon);
-        if (gicon != null and c.g_type_check_instance_is_a(@ptrCast(@alignCast(gicon)), c.g_bytes_icon_get_type()) != 0) {
-            const stream = c.g_memory_input_stream_new_from_bytes(c.g_bytes_icon_get_bytes(gicon));
-            defer if (stream != null) c.g_object_unref(stream);
+    /// Adds an `image-data` hint for a bytes icon, or returns an icon name or file path.
+    /// Icons are serialized GIcons: `('themed', <as>)`, `('file', <s>)` or `('bytes', <ay>)`.
+    fn icon(arena: std.mem.Allocator, contents: *const Contents, hints: *std.ArrayList(Hints.Entry)) ![]const u8 {
+        const value = contents.get("icon", "(sv)") orelse return "";
+        const kind = value.structure[0].string;
+        const data = value.structure[1].variant.*;
+        if (eq(kind, "themed")) {
+            const names = switch (data) {
+                .array => |array| if (eq(array.element, "s")) array.items else return "",
+                else => return "",
+            };
+            return if (names.len > 0) arena.dupe(u8, names[0].string) else "";
+        }
+        if (eq(kind, "file")) {
+            const uri = switch (data) {
+                .string => |text| text,
+                else => return "",
+            };
+            if (!std.mem.startsWith(u8, uri, "file://")) return "";
+            const path = try arena.dupe(u8, uri["file://".len..]);
+            return std.Uri.percentDecodeInPlace(path);
+        }
+        if (eq(kind, "bytes")) {
+            const encoded = switch (data) {
+                .bytes => |bytes| bytes,
+                else => return "",
+            };
             const decode = @import("desktop-decode.zig");
-            if (if (stream) |input| decode.stream(input, 128) else null) |image| {
-                defer decode.free(image);
-                const rgba = try image.straightRgba(arena);
-                const width: i32 = @intCast(image.width);
-                // (iiibiiay): width, height, stride, alpha, bits per sample, channels, pixels.
-                const fields = try arena.dupe(dbus.Value, &.{ .{ .int32 = width }, .{ .int32 = @intCast(image.height) }, .{ .int32 = width * 4 }, .{ .boolean = true }, .{ .int32 = 8 }, .{ .int32 = 4 }, .{ .bytes = rgba } });
-                try hints.append(arena, .{ .key = "image-data", .value = .{ .structure = fields } });
-            }
-        } else if (gicon != null) {
-            const string = c.g_icon_to_string(gicon);
-            defer if (string != null) c.g_free(string);
-            if (string != null) return arena.dupe(u8, std.mem.span(string));
+            const image = decode.bytes(encoded, 128) orelse return "";
+            defer decode.free(image);
+            const rgba = try image.straightRgba(arena);
+            const width: i32 = @intCast(image.width);
+            // (iiibiiay): width, height, stride, alpha, bits per sample, channels, pixels.
+            const fields = try arena.dupe(dbus.Value, &.{ .{ .int32 = width }, .{ .int32 = @intCast(image.height) }, .{ .int32 = width * 4 }, .{ .boolean = true }, .{ .int32 = 8 }, .{ .int32 = 4 }, .{ .bytes = rgba } });
+            try hints.append(arena, .{ .key = "image-data", .value = .{ .structure = fields } });
         }
         return "";
     }
@@ -150,13 +207,7 @@ pub const Service = struct {
         defer arena.deinit();
         const temporary = arena.allocator();
         const contents = notice.next.?;
-        const title = lookup(contents, "title", "s");
-        defer if (title != null) c.g_variant_unref(title);
-        const body = lookup(contents, "body", "s");
-        defer if (body != null) c.g_variant_unref(body);
-        const priority = lookup(contents, "priority", "s");
-        defer if (priority != null) c.g_variant_unref(priority);
-        const level = std.mem.span(text(priority));
+        const level = string(contents.get("priority", "s"));
         const urgency: u8 = if (eq(level, "urgent") or eq(level, "high")) 2 else if (eq(level, "low")) 0 else 1;
         var hints: std.ArrayList(Hints.Entry) = .empty;
         try hints.append(temporary, .{ .key = "urgency", .value = .{ .byte = urgency } });
@@ -164,23 +215,18 @@ pub const Service = struct {
         const icon_name = try icon(temporary, contents, &hints);
         var actions: std.ArrayList([]const u8) = .empty;
         try actions.appendSlice(temporary, &.{ "default", "" });
-        const buttons = lookup(contents, "buttons", "aa{sv}");
-        defer if (buttons != null) c.g_variant_unref(buttons);
-        if (buttons != null) for (0..@min(c.g_variant_n_children(buttons), 16)) |index| {
-            const button = child(buttons, index);
-            defer c.g_variant_unref(button);
-            const label = lookup(button, "label", "s");
-            defer if (label != null) c.g_variant_unref(label);
+        if (contents.get("buttons", "aa{sv}")) |buttons| for (buttons.array.items[0..@min(buttons.array.items.len, 16)], 0..) |button, index| {
             try actions.append(temporary, try std.fmt.allocPrint(temporary, "button{d}", .{index}));
-            try actions.append(temporary, try temporary.dupe(u8, std.mem.span(text(label))));
+            try actions.append(temporary, string(lookupValue(button, "label", "s")));
         };
-        const escaped = c.g_markup_escape_text(text(body), -1);
+        const body = try temporary.dupeSentinel(u8, string(contents.get("body", "s")), 0);
+        const escaped = c.g_markup_escape_text(body.ptr, -1);
         defer c.g_free(escaped);
         const send = try self.allocator.create(Send);
         errdefer self.allocator.destroy(send);
         send.* = .{ .notice = notice, .contents = contents, .generation = self.generation };
         try self.sends.ensureUnusedCapacity(self.allocator, 1);
-        send.serial = try self.connection.call(.{ .destination = fdo, .path = object_path, .interface = fdo, .member = "Notify" }, .{ @as([]const u8, notice.app), notice.id, icon_name, std.mem.span(text(title)), std.mem.span(@as([*:0]const u8, escaped)), @as([]const []const u8, actions.items), Hints{ .entries = hints.items }, @as(i32, -1) }, 10000, &sent, send);
+        send.serial = try self.connection.call(.{ .destination = fdo, .path = object_path, .interface = fdo, .member = "Notify" }, .{ @as([]const u8, notice.app), notice.id, icon_name, string(contents.get("title", "s")), std.mem.span(@as([*:0]const u8, escaped)), @as([]const []const u8, actions.items), Hints{ .entries = hints.items }, @as(i32, -1) }, 10000, &sent, send);
         self.sends.appendAssumeCapacity(send);
         notice.next = null;
         notice.pending = true;
@@ -199,15 +245,15 @@ pub const Service = struct {
             .failed => null,
         };
         if (send.generation != self.generation) {
-            c.g_variant_unref(send.contents);
+            send.contents.destroy();
             notice.removed = true;
             notice.id = 0;
         } else if (id) |value| {
             notice.id = value;
-            if (notice.current != null) c.g_variant_unref(notice.current);
+            if (notice.current) |old| old.destroy();
             notice.current = send.contents;
         } else {
-            c.g_variant_unref(send.contents);
+            send.contents.destroy();
             notice.removed = true;
         }
         self.allocator.destroy(send);
@@ -246,34 +292,33 @@ pub const Service = struct {
         const id = args[0];
         const action_key = args[1];
         for (self.notices.items) |notice| if (!notice.removed and notice.current != null and notice.id == id) {
-            var button: ?*c.GVariant = null;
-            var action: ?*c.GVariant = null;
-            var target: ?*c.GVariant = null;
-            defer if (button != null) c.g_variant_unref(button);
-            defer if (action != null) c.g_variant_unref(action);
-            defer if (target != null) c.g_variant_unref(target);
+            const current = notice.current.?;
+            var action: ?dbus.Value = null;
+            var target: ?dbus.Value = null;
             if (eq(action_key, "default")) {
-                action = lookup(notice.current, "default-action", "s");
-                target = c.g_variant_lookup_value(notice.current, "default-action-target", null);
+                action = current.get("default-action", "s");
+                for (current.dict.entries) |entry| if (eq(entry.key, "default-action-target")) {
+                    target = entry.value;
+                };
             } else if (std.mem.startsWith(u8, action_key, "button")) {
                 const index = std.fmt.parseInt(usize, action_key[6..], 10) catch return;
-                const buttons = lookup(notice.current, "buttons", "aa{sv}");
-                defer if (buttons != null) c.g_variant_unref(buttons);
-                if (buttons == null or index >= @min(c.g_variant_n_children(buttons), 16)) return;
-                button = child(buttons, index);
-                action = lookup(button, "action", "s");
-                target = c.g_variant_lookup_value(button, "target", null);
-                if (action == null) return;
+                const buttons = (current.get("buttons", "aa{sv}") orelse return).array.items;
+                if (index >= @min(buttons.len, 16)) return;
+                const button = buttons[index];
+                action = lookupValue(button, "action", "s") orelse return;
+                for (button.array.items) |item| if (eq(item.dict_entry[0].string, "target")) {
+                    target = item.dict_entry[1].variant.*;
+                };
             } else return;
             var arena: std.heap.ArenaAllocator = .init(self.allocator);
             defer arena.deinit();
             var parameter: [1]dbus.Value = undefined;
             var arguments: []const dbus.Value = &.{};
             if (target) |value| {
-                parameter[0] = bridge.fromVariant(arena.allocator(), c.g_variant_ref(value).?) catch return;
+                parameter[0] = value;
                 arguments = &parameter;
             }
-            const name = if (action != null) std.mem.span(text(action)) else "default";
+            const name = if (action) |value| value.string else "default";
             const app_path = std.fmt.allocPrint(arena.allocator(), "/{s}", .{notice.app}) catch return;
             for (app_path) |*ch| {
                 if (ch.* == '.') ch.* = '/';

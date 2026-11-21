@@ -5,6 +5,7 @@ const cast = c.__zig.cast;
 const auth = @import("desktop-auth-dialog.zig");
 const portal_options = @import("desktop-portal-options.zig");
 const Options = portal_options.Options(error.InvalidAccountReason);
+const dbus = @import("dbus");
 pub const Completion = portal_options.Completion;
 pub const Dialog = struct {
     allocator: std.mem.Allocator,
@@ -17,9 +18,8 @@ pub const Dialog = struct {
     data: ?*anyopaque,
     finished: bool = false,
 
-    pub fn create(allocator: std.mem.Allocator, app: [:0]const u8, parent: [:0]const u8, options: *c.GVariant, callback: Completion, data: ?*anyopaque) !*Dialog {
-        const reason = try Options.get(options, "reason", "s");
-        defer if (reason != null) c.g_variant_unref(reason);
+    pub fn create(allocator: std.mem.Allocator, app: [:0]const u8, parent: [:0]const u8, options: portal_options.Dict, callback: Completion, data: ?*anyopaque) !*Dialog {
+        const reason = try Options.string(options, "reason") orelse "";
         const self = try allocator.create(Dialog);
         self.* = .{
             .allocator = allocator,
@@ -43,7 +43,7 @@ pub const Dialog = struct {
             defer c.g_free(uri);
             self.image = try a.dupeSentinel(u8, std.mem.span(uri), 0);
         }
-        const prompt = try std.fmt.allocPrintSentinel(a, "{s} wants to access your account information.\n{s}\nName: {s}\nUser name: {s}\n{s}", .{ app, if (reason != null) c.g_variant_get_string(reason, null) else @as([*:0]const u8, ""), self.name, self.id, if (self.image.len > 0) "Your account picture will also be shared." else "" }, 0);
+        const prompt = try std.fmt.allocPrintSentinel(a, "{s} wants to access your account information.\n{s}\nName: {s}\nUser name: {s}\n{s}", .{ app, reason, self.name, self.id, if (self.image.len > 0) "Your account picture will also be shared." else "" }, 0);
         self.host = try auth.Dialog.createWithOptions(.confirm, prompt, .{ .allocator = allocator, .title = "Share account information", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .parent = parent, .response_context = self, .responded = &responded });
         return self;
     }
@@ -56,13 +56,11 @@ pub const Dialog = struct {
         const self = cast(Dialog, data);
         if (self.finished) return;
         self.finished = true;
-        const values = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
-        defer c.g_variant_builder_unref(values);
-        if (accepted) {
-            c.g_variant_builder_add(values, "{sv}", @as([*:0]const u8, "id"), c.g_variant_new("s", self.id.ptr));
-            c.g_variant_builder_add(values, "{sv}", @as([*:0]const u8, "name"), c.g_variant_new("s", self.name.ptr));
-            c.g_variant_builder_add(values, "{sv}", @as([*:0]const u8, "image"), c.g_variant_new("s", self.image.ptr));
-        }
-        self.callback(self.data, if (accepted) 0 else 1, c.g_variant_builder_end(values));
+        const entries = [_]portal_options.Dict.Entry{
+            .{ .key = "id", .value = .{ .string = self.id } },
+            .{ .key = "name", .value = .{ .string = self.name } },
+            .{ .key = "image", .value = .{ .string = self.image } },
+        };
+        self.callback(self.data, if (accepted) 0 else 1, .{ .entries = if (accepted) &entries else &.{} });
     }
 };
