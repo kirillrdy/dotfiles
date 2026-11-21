@@ -77,6 +77,9 @@ pub const Keyboard = struct {
         }
         return result;
     }
+    pub fn capsLock(self: *const Keyboard) bool {
+        return if (self.state) |state| xkb_state_mod_name_is_active(state, "Lock", 1 << 3) > 0 else false;
+    }
     pub fn symbol(self: *const Keyboard, code: u32) u32 {
         return if (self.state) |state| xkb_state_key_get_one_sym(state, code + 8) else 0;
     }

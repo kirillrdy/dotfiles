@@ -6,10 +6,10 @@ const std = @import("std");
 const posix = @import("posix");
 const dbus = @import("dbus");
 const greeter = @import("desktop-greeter.zig");
+const pam_auth = @import("desktop-lock-auth.zig");
 
 const PamHandle = ?*posix.pam_handle_t;
 extern "c" fn ioctl(c_int, c_ulong, ...) c_int;
-extern "c" fn strdup([*:0]const u8) [*c]u8;
 extern "c" fn clearenv() c_int;
 extern "c" fn setenv([*:0]const u8, [*:0]const u8, c_int) c_int;
 extern "c" fn chdir([*:0]const u8) c_int;
@@ -32,62 +32,6 @@ fn handleSignal(_: c_int) callconv(.c) void {
     dm_running.store(false, .release);
     const pid = active_child.load(.acquire);
     if (pid > 0) _ = kill(pid, SIGTERM);
-}
-
-const Attempt = struct {
-    user: [*:0]const u8,
-    password: [*:0]const u8,
-    prompted: bool = false,
-};
-
-fn pamConverse(count: c_int, messages: [*c]const [*c]const posix.struct_pam_message, responses: [*c][*c]posix.struct_pam_response, data: ?*anyopaque) callconv(.c) c_int {
-    if (count <= 0 or count > 32 or messages == null or responses == null or data == null) return posix.PAM_CONV_ERR;
-    responses.* = null;
-    const attempt: *Attempt = @ptrCast(@alignCast(data));
-    const result: [*]posix.struct_pam_response = @ptrCast(@alignCast(posix.calloc(@intCast(count), @sizeOf(posix.struct_pam_response)) orelse return posix.PAM_BUF_ERR));
-    var valid = true;
-    for (0..@intCast(count)) |i| {
-        if (messages[i] == null) {
-            valid = false;
-            break;
-        }
-        switch (messages[i].*.msg_style) {
-            posix.PAM_PROMPT_ECHO_OFF => {
-                if (attempt.prompted) {
-                    valid = false;
-                    break;
-                }
-                attempt.prompted = true;
-                result[i].resp = strdup(attempt.password);
-                if (result[i].resp == null) {
-                    valid = false;
-                    break;
-                }
-            },
-            posix.PAM_PROMPT_ECHO_ON => {
-                result[i].resp = strdup(attempt.user);
-                if (result[i].resp == null) {
-                    valid = false;
-                    break;
-                }
-            },
-            posix.PAM_ERROR_MSG, posix.PAM_TEXT_INFO => {},
-            else => {
-                valid = false;
-                break;
-            },
-        }
-    }
-    if (!valid) {
-        for (0..@intCast(count)) |i| if (result[i].resp != null) {
-            std.crypto.secureZero(u8, std.mem.span(result[i].resp));
-            posix.free(result[i].resp);
-        };
-        posix.free(result);
-        return posix.PAM_CONV_ERR;
-    }
-    responses.* = result;
-    return posix.PAM_SUCCESS;
 }
 
 fn nullConverse(count: c_int, _: [*c]const [*c]const posix.struct_pam_message, responses: [*c][*c]posix.struct_pam_response, _: ?*anyopaque) callconv(.c) c_int {
@@ -328,8 +272,8 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
             user_buf[user_len] = 0;
             pass_buf[pass_len] = 0;
 
-            var attempt: Attempt = .{ .user = &user_buf, .password = &pass_buf };
-            var user_conv: posix.struct_pam_conv = .{ .conv = &pamConverse, .appdata_ptr = &attempt };
+            var attempt: pam_auth.Attempt = .{ .user = &user_buf, .password = &pass_buf };
+            var user_conv: posix.struct_pam_conv = .{ .conv = &pam_auth.converse, .appdata_ptr = &attempt };
             var user_pam: PamHandle = null;
             var status = posix.pam_start("desktop-login", &user_buf, &user_conv, &user_pam);
             if (status == posix.PAM_SUCCESS) {

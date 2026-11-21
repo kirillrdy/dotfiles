@@ -15,6 +15,45 @@ pub const ShmBuffer = struct {
     }
 };
 
+/// One shared-memory frame linked into a caller-owned list and freed when the
+/// compositor releases it.
+pub const FrameBuffer = struct {
+    allocator: std.mem.Allocator,
+    head: *?*FrameBuffer,
+    shm: ShmBuffer,
+    next: ?*FrameBuffer,
+
+    pub fn create(allocator: std.mem.Allocator, head: *?*FrameBuffer, shm: protocol.wl_shm, name: [*:0]const u8, width: u32, height: u32, format: u32) !*FrameBuffer {
+        const frame = try shmBuffer(shm, name, width, height, format);
+        errdefer {
+            frame.buffer.destroy();
+            frame.unmap();
+        }
+        const self = try allocator.create(FrameBuffer);
+        self.* = .{ .allocator = allocator, .head = head, .shm = frame, .next = head.* };
+        head.* = self;
+        frame.buffer.listen(FrameBuffer, self, released);
+        return self;
+    }
+
+    fn released(self: *FrameBuffer, _: protocol.wl_buffer, _: protocol.wl_buffer.Event) void {
+        self.destroy();
+    }
+
+    pub fn destroy(self: *FrameBuffer) void {
+        var link = self.head;
+        while (link.* != self) link = &link.*.?.next;
+        link.* = self.next;
+        self.shm.buffer.destroy();
+        self.shm.unmap();
+        self.allocator.destroy(self);
+    }
+
+    pub fn destroyAll(head: *?*FrameBuffer) void {
+        while (head.*) |buf| buf.destroy();
+    }
+};
+
 /// A memfd-backed buffer of `width` x `height` 32-bit pixels in `format`.
 pub fn shmBuffer(shm: protocol.wl_shm, name: [*:0]const u8, width: u32, height: u32, format: u32) !ShmBuffer {
     return shmBufferLayout(shm, name, @as(usize, width) * height * 4, width, height, width * 4, format);

@@ -8,39 +8,15 @@ const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const posix = @import("posix");
 const view = @import("desktop-greeter-view.zig");
+const login = @import("desktop-login-ui.zig");
 const raster = @import("desktop-raster.zig");
 const kb = @import("desktop-keyboard.zig");
-const u = @import("desktop-util.zig");
 
 const cast = c.__zig.cast;
+const SecretBuffer = login.SecretBuffer;
 
 pub const Op = enum(u8) { auth = 1, power = 2 };
 pub const Reply = enum(u8) { ok = 0, failed = 1 };
-
-const SecretBuffer = struct {
-    bytes: [1024:0]u8 = @splat(0),
-    len: usize = 0,
-
-    fn clear(self: *SecretBuffer) void {
-        std.crypto.secureZero(u8, &self.bytes);
-        self.len = 0;
-    }
-    fn backspace(self: *SecretBuffer) void {
-        if (self.len == 0) return;
-        self.len -= 1;
-        while (self.len > 0 and self.bytes[self.len] & 0xc0 == 0x80) self.len -= 1;
-        std.crypto.secureZero(u8, self.bytes[self.len..]);
-    }
-    fn append(self: *SecretBuffer, value: []const u8) void {
-        if (value.len > self.bytes.len - self.len - 1) return;
-        @memcpy(self.bytes[self.len..][0..value.len], value);
-        self.len += value.len;
-        self.bytes[self.len] = 0;
-    }
-    fn slice(self: *const SecretBuffer) []const u8 {
-        return self.bytes[0..self.len];
-    }
-};
 
 const DiscoveredUser = struct {
     username: [:0]u8,
@@ -101,36 +77,6 @@ fn discoverUsers(a: std.mem.Allocator) ![]DiscoveredUser {
     return list.toOwnedSlice(a);
 }
 
-const Buffer = struct {
-    state: *State,
-    shm: helpers.ShmBuffer,
-    next: ?*Buffer,
-
-    fn create(state: *State, width: u32, height: u32) !*Buffer {
-        const frame = try helpers.shmBuffer(state.shm.?, "desktop-greeter", width, height, wl.wl_shm.Format.xrgb8888);
-        errdefer {
-            frame.buffer.destroy();
-            frame.unmap();
-        }
-        const self = try state.allocator.create(Buffer);
-        self.* = .{ .state = state, .shm = frame, .next = state.buffers };
-        state.buffers = self;
-        frame.buffer.listen(Buffer, self, released);
-        return self;
-    }
-    fn released(self: *Buffer, _: wl.wl_buffer, _: wl.wl_buffer.Event) void {
-        self.destroy();
-    }
-    fn destroy(self: *Buffer) void {
-        var link = &self.state.buffers;
-        while (link.* != self) link = &link.*.?.next;
-        link.* = self.next;
-        self.shm.buffer.destroy();
-        self.shm.unmap();
-        self.state.allocator.destroy(self);
-    }
-};
-
 const Output = struct {
     state: *State,
     name: u32,
@@ -174,7 +120,7 @@ const Output = struct {
         const width = self.width * scale;
         const height = self.height * scale;
         if (width > 16384 or height > 16384 or @as(u64, width) * height > 64 * 1024 * 1024) return;
-        const frame = Buffer.create(s, width, height) catch return;
+        const frame = helpers.FrameBuffer.create(s.allocator, &s.buffers, s.shm.?, "desktop-greeter", width, height, wl.wl_shm.Format.xrgb8888) catch return;
         const pixels: [*]u32 = @ptrCast(@alignCast(frame.shm.memory));
         const target: raster.Buffer = .{ .pixels = pixels[0 .. frame.shm.size / 4], .width = width, .height = height };
         if (self.isPrimary()) {
@@ -230,7 +176,7 @@ const Seat = struct {
     pointer: ?wl.wl_pointer = null,
     cursor_shape: ?wl.wp_cursor_shape_device_v1 = null,
     last_pointer_serial: u32 = 0,
-    xkb: ?*kb.State = null,
+    keyboard_state: kb.Keyboard = .{},
     next: ?*Seat = null,
 
     fn seatEvent(self: *Seat, seat: wl.wl_seat, event: wl.wl_seat.Event) void {
@@ -245,8 +191,7 @@ const Seat = struct {
         } else if (flags & wl.wl_seat.Capability.keyboard == 0) if (self.keyboard) |keyboard| {
             keyboard.destroy();
             self.keyboard = null;
-            kb.xkb_state_unref(self.xkb);
-            self.xkb = null;
+            self.keyboard_state.deinit();
         };
         if (flags & wl.wl_seat.Capability.pointer != 0 and self.pointer == null) {
             const pointer = seat.get_pointer();
@@ -312,34 +257,17 @@ const Seat = struct {
 
     fn keyboardEvent(self: *Seat, _: wl.wl_keyboard, event: wl.wl_keyboard.Event) void {
         switch (event) {
-            .keymap => |value| self.keymap(value.format, value.fd, value.size),
+            .keymap => |value| self.keyboard_state.load(value.fd, value.format, value.size),
             .key => |value| self.key(value.key, value.state),
             .modifiers => |value| self.modifiers(value.mods_depressed, value.mods_latched, value.mods_locked, value.group),
             else => {},
         }
     }
 
-    fn keymap(self: *Seat, format: u32, fd: wire.Fd, size: u32) void {
-        defer _ = libc.close(fd);
-        kb.xkb_state_unref(self.xkb);
-        self.xkb = null;
-        if (format != wl.wl_keyboard.KeymapFormat.xkb_v1 or size == 0 or size > 16 * 1024 * 1024) return;
-        const memory = libc.mmap(null, size, libc.PROT_READ, libc.MAP_SHARED, fd, 0);
-        if (memory == libc.MAP_FAILED or memory == null) return;
-        defer _ = libc.munmap(memory, size);
-        const bytes: [*]const u8 = @ptrCast(memory);
-        if (bytes[size - 1] != 0) return;
-        const context = kb.xkb_context_new(0) orelse return;
-        defer kb.xkb_context_unref(context);
-        const map = kb.xkb_keymap_new_from_string(context, @ptrCast(bytes), 1, 0) orelse return;
-        defer kb.xkb_keymap_unref(map);
-        self.xkb = kb.xkb_state_new(map);
-    }
-
     fn key(self: *Seat, code: u32, pressed: u32) void {
         const s = self.state;
-        if (pressed != wl.wl_keyboard.KeyState.pressed or self.xkb == null or s.busy or s.done) return;
-        const symbol = kb.xkb_state_key_get_one_sym(self.xkb.?, code + 8);
+        if (pressed != wl.wl_keyboard.KeyState.pressed or self.keyboard_state.state == null or s.busy or s.done) return;
+        const symbol = self.keyboard_state.symbol(code);
         if (symbol >= 0xffe1 and symbol <= 0xffee) return;
 
         if (s.power_menu_open) {
@@ -396,17 +324,16 @@ const Seat = struct {
     }
 
     fn typeInto(self: *Seat, target: *SecretBuffer, code: u32) void {
-        var bytes: [64]u8 = @splat(0);
+        var bytes: [128]u8 = @splat(0);
         defer std.crypto.secureZero(u8, &bytes);
-        const len = kb.xkb_state_key_get_utf8(self.xkb.?, code + 8, &bytes, bytes.len);
-        if (len > 0 and len < bytes.len and bytes[0] >= 32 and bytes[0] != 127) target.append(bytes[0..@intCast(len)]);
+        const value = self.keyboard_state.text(code, &bytes);
+        if (value.len > 0) target.append(value);
     }
 
     fn modifiers(self: *Seat, depressed: u32, latched: u32, locked: u32, group: u32) void {
-        const state = self.xkb orelse return;
-        _ = kb.xkb_state_update_mask(state, depressed, latched, locked, 0, 0, group);
+        self.keyboard_state.update(depressed, latched, locked, group);
         const s = self.state;
-        const caps = kb.xkb_state_mod_name_is_active(state, "Lock", 1 << 3) > 0;
+        const caps = self.keyboard_state.capsLock();
         if (caps == s.caps_lock) return;
         s.caps_lock = caps;
         if (s.stage == .password) s.render();
@@ -416,7 +343,7 @@ const Seat = struct {
         if (self.cursor_shape) |cs| cs.destroy();
         if (self.keyboard) |keyboard| keyboard.destroy();
         if (self.pointer) |pointer| pointer.destroy();
-        kb.xkb_state_unref(self.xkb);
+        self.keyboard_state.deinit();
         if (self.seat.version() >= 5) self.seat.release() else self.seat.destroy();
         self.state.allocator.destroy(self);
     }
@@ -432,7 +359,7 @@ const State = struct {
     outputs: ?*Output = null,
     primary_output: ?*Output = null,
     seats: ?*Seat = null,
-    buffers: ?*Buffer = null,
+    buffers: ?*helpers.FrameBuffer = null,
     view: *view.View,
     users: []const DiscoveredUser,
     password: *SecretBuffer,
@@ -460,8 +387,6 @@ const State = struct {
     }
 
     fn frame(self: *const State) view.Frame {
-        const period = 800 * std.time.us_per_ms;
-        const phase: f64 = @floatFromInt(@mod(u.monotonicTime(), period));
         return .{
             .stage = self.stage,
             .status = if (self.failed) .failed else if (self.busy) .authenticating else .ready,
@@ -470,7 +395,7 @@ const State = struct {
             .username_text = self.custom_username.slice(),
             .typed = self.typed,
             .caps_lock = self.caps_lock,
-            .spin = phase / period * 2 * std.math.pi,
+            .spin = login.spinPhase(),
             .power_menu_open = self.power_menu_open,
             .hover = self.hover,
         };
@@ -554,8 +479,7 @@ const State = struct {
     }
 
     fn changedPassword(self: *State) void {
-        var count: usize = 0;
-        for (self.password.slice()) |byte| count += @intFromBool(byte & 0xc0 != 0x80);
+        const count = self.password.charCount();
         if (count == self.typed) return;
         self.typed = count;
         if (count > 0) self.failed = false;
@@ -792,14 +716,8 @@ pub fn run(a: std.mem.Allocator) !void {
     }
     defer if (compositor) |handle| handle.stop();
 
-    const password = try std.heap.page_allocator.create(SecretBuffer);
-    password.* = .{};
-    defer std.heap.page_allocator.destroy(password);
-    if (libc.mlock(password, @sizeOf(SecretBuffer)) != 0) return error.SecretMemoryLockFailed;
-    defer {
-        password.clear();
-        _ = libc.munlock(password, @sizeOf(SecretBuffer));
-    }
+    const password = try SecretBuffer.createLocked();
+    defer password.destroyLocked();
 
     const users = try discoverUsers(a);
     defer {
@@ -844,7 +762,7 @@ pub fn run(a: std.mem.Allocator) !void {
             state.seats = seat.next;
             seat.deinit();
         }
-        while (state.buffers) |buffer| buffer.destroy();
+        helpers.FrameBuffer.destroyAll(&state.buffers);
     }
 
     const display: wl.wl_display = .{ .proxy = connection.display() };

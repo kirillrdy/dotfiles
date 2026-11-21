@@ -6,8 +6,9 @@ const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const decode = @import("desktop-decode.zig");
 const c = @import("desktop-glib.zig");
+const login = @import("desktop-login-ui.zig");
 
-pub const Status = enum { ready, authenticating, failed };
+pub const Status = login.Status;
 pub const Stage = enum { clock, prompt };
 
 pub const Frame = struct {
@@ -29,17 +30,13 @@ pub const Options = struct {
 // GNOME Shell unlockDialog.js dims the blurred wallpaper to BLUR_BRIGHTNESS.
 const brightness = 0.65;
 pub const fallback_background: u32 = 0xff1d1d20;
-const warning = 0xfff8e45c;
-const accent = 0x3584e4;
+const warning = login.warning;
 
 const avatar_size = 128;
-const entry_width = 280;
-const entry_height = 36;
-const button_size = 36;
-const row_spacing = 12;
-const dot_radius = 3.5;
-const dot_spacing = 11;
-const max_dots: usize = (entry_width - 24) / dot_spacing;
+const entry_width = login.entry_width;
+const entry_height = login.entry_height;
+const button_size = login.button_size;
+const row_spacing = login.row_spacing;
 
 const Label = enum { time, date, hint, name, placeholder, failed, caps };
 const label_count = @typeInfo(Label).@"enum".field_names.len;
@@ -191,17 +188,11 @@ pub const View = struct {
 
     /// Logical width and height of a label.
     fn extent(self: *const View, label: Label) [2]f64 {
-        const value = self.labelMask(label) orelse return .{ 0, 0 };
-        const factor: f64 = @floatFromInt(self.scale);
-        const w = if (value.logical_width != 0) value.logical_width else value.width;
-        const h = if (value.logical_height != 0) value.logical_height else value.height;
-        return .{ @as(f64, @floatFromInt(w)) / factor, @as(f64, @floatFromInt(h)) / factor };
+        return login.maskExtent(self.labelMask(label), self.scale);
     }
 
     fn centered(self: *const View, canvas: raster.Canvas, label: Label, width: f64, y: f64, color: raster.Color) f64 {
-        const size = self.extent(label);
-        if (self.labelMask(label)) |value| value.paint(canvas, @round((width - size[0]) / 2), @round(y), color);
-        return size[1];
+        return login.paintCenteredMask(canvas, self.labelMask(label), self.scale, width, y, color);
     }
 
     fn paintClock(self: *const View, canvas: raster.Canvas, width: f64, height: f64) void {
@@ -217,73 +208,27 @@ pub const View = struct {
         const white = raster.hex(0xffffff);
         const busy = frame.status == .authenticating;
         const top = promptTop(height);
-        self.paintAvatar(canvas, width / 2, top + avatar_size / 2);
+        login.paintAvatar(canvas, self.avatar, width / 2, top + avatar_size / 2, avatar_size);
         _ = self.centered(canvas, .name, width, top + avatar_size + 15, white);
 
         const layout = Layout.compute(width, height);
         const row_y = layout.back.y;
         const center_y = row_y + entry_height / 2;
         // Back button, as GNOME's circular cancel button returns to the clock.
-        const back = layout.back;
-        const bx = back.x + button_size / 2;
-        canvas.draw(&.{back.shape(button_size / 2)}, raster.Color.rgb(0xffffff, if (busy) 0.05 else 0.1));
-        const chevron = [_]raster.Shape{
-            .{ .line = .{ .start = .{ .x = bx + 2.5, .y = center_y - 5 }, .end = .{ .x = bx - 2.5, .y = center_y }, .radius = 1 } },
-            .{ .line = .{ .start = .{ .x = bx - 2.5, .y = center_y }, .end = .{ .x = bx + 2.5, .y = center_y + 5 }, .radius = 1 } },
-        };
-        canvas.draw(&chevron, raster.Color.rgb(0xffffff, if (busy) 0.4 else 0.9));
+        login.paintBackButton(canvas, layout.back, busy, false);
 
         // Pill-shaped entry with GNOME's focus ring.
         const entry: raster.Rect = .{ .x = @round((width - entry_width) / 2), .y = row_y, .width = entry_width, .height = entry_height };
-        canvas.draw(&.{entry.shape(entry_height / 2)}, raster.Color.rgb(0xffffff, if (busy) 0.05 else 0.1));
-        if (!busy) {
-            const ring: raster.Rect = .{ .x = entry.x + 1, .y = entry.y + 1, .width = entry.width - 2, .height = entry.height - 2 };
-            canvas.draw(&.{ring.stroke(entry_height / 2 - 1, 2)}, raster.Color.rgb(accent, 0.6));
-        }
-        const content = raster.Color.rgb(0xffffff, if (busy) 0.5 else 1);
-        const dots: usize = @min(frame.typed, max_dots);
-        if (dots == 0 and !busy) {
-            if (self.labelMask(.placeholder)) |value| value.paint(canvas, entry.x + 16, @round(center_y - self.extent(.placeholder)[1] / 2), raster.Color.rgb(0xffffff, 0.5));
-        }
-        var shapes: [max_dots + 1]raster.Shape = undefined;
-        for (0..dots) |i| shapes[i] = .{ .circle = .{ .center = .{ .x = entry.x + 18 + @as(f64, @floatFromInt(i * dot_spacing)), .y = center_y }, .radius = dot_radius } };
-        var count = dots;
-        if (!busy) {
-            const caret_x = entry.x + 13 + @as(f64, @floatFromInt(dots * dot_spacing));
-            shapes[count] = .{ .line = .{ .start = .{ .x = caret_x, .y = center_y - 9 }, .end = .{ .x = caret_x, .y = center_y + 9 }, .radius = 0.5 } };
-            count += 1;
-        }
-        canvas.draw(shapes[0..count], content);
+        login.paintEntryFrame(canvas, entry, busy);
+        login.paintPasswordDots(canvas, entry, frame.typed, busy, self.labelMask(.placeholder), self.scale);
 
         // The right well holds GNOME's spinner while PAM runs.
         if (busy) {
-            const sx = entry.x + entry_width + row_spacing + button_size / 2;
-            const track: raster.Rect = .{ .x = sx - 8, .y = center_y - 8, .width = 16, .height = 16 };
-            canvas.draw(&.{track.stroke(8, 2)}, raster.Color.rgb(0xffffff, 0.15));
-            canvas.draw(&.{.{ .arc = .{ .center = .{ .x = sx, .y = center_y }, .radius = 8, .start = frame.spin, .end = frame.spin + std.math.pi * 0.75, .stroke = 2 } }}, raster.Color.rgb(0xffffff, 0.9));
+            login.paintSpinner(canvas, entry.x + entry_width + row_spacing + button_size / 2, center_y, frame.spin);
         }
 
         const message: ?Label = if (frame.status == .failed) .failed else if (frame.caps_lock) .caps else null;
         if (message) |label| _ = self.centered(canvas, label, width, row_y + entry_height + 12, raster.hex(warning));
-    }
-
-    fn paintAvatar(self: *const View, canvas: raster.Canvas, cx: f64, cy: f64) void {
-        const radius: f64 = avatar_size / 2;
-        if (self.avatar) |image| {
-            const s = canvas.scale;
-            const rect: raster.Rect = .{ .x = (cx - radius) * s, .y = (cy - radius) * s, .width = avatar_size * s, .height = avatar_size * s };
-            const clip: raster.Shape = .{ .circle = .{ .center = .{ .x = cx * s, .y = cy * s }, .radius = radius * s } };
-            if (raster.blitWithOptions(canvas.target, image.view(), rect, .{ .shape = clip })) return else |_| {}
-        }
-        // GNOME's avatar-default-symbolic on a translucent disc.
-        canvas.draw(&.{.{ .circle = .{ .center = .{ .x = cx, .y = cy }, .radius = radius } }}, raster.Color.rgb(0xffffff, 0.1));
-        var body: [25]raster.Point = undefined;
-        for (&body, 0..) |*point, i| {
-            const angle = std.math.pi * @as(f64, @floatFromInt(i)) / 24;
-            point.* = .{ .x = cx - 34 * @cos(angle), .y = cy + 38 - 30 * @sin(angle) };
-        }
-        canvas.draw(&.{.{ .polygon = &body }}, raster.Color.rgb(0xffffff, 0.8));
-        canvas.draw(&.{.{ .circle = .{ .center = .{ .x = cx, .y = cy - 12 }, .radius = 17 } }}, raster.Color.rgb(0xffffff, 0.8));
     }
 };
 

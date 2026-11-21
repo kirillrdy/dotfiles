@@ -6,9 +6,10 @@ const text = @import("desktop-text.zig");
 const decode = @import("desktop-decode.zig");
 const icons = @import("desktop-icons.zig");
 const c = @import("desktop-glib.zig");
+const login = @import("desktop-login-ui.zig");
 
 pub const Stage = enum { user_list, username, password };
-pub const Status = enum { ready, authenticating, failed };
+pub const Status = login.Status;
 pub const PowerAction = enum { @"suspend", reboot, poweroff };
 
 pub const UserEntry = struct {
@@ -48,8 +49,8 @@ pub const Frame = struct {
 // GNOME Shell / GDM Adwaita dark palette.
 pub const background_pixel: u32 = 0xff222226;
 const popover_bg: u32 = 0x2e2e32;
-const warning: u32 = 0xf8e45c;
-const accent: u32 = 0x3584e4;
+const warning = login.warning;
+const accent = login.accent;
 
 const top_bar_height: f64 = 32;
 const list_width: f64 = 340;
@@ -61,13 +62,10 @@ const not_listed_height: f64 = 32;
 const not_listed_gap: f64 = 16;
 
 const prompt_avatar_size: f64 = 96;
-const entry_width: f64 = 280;
-const entry_height: f64 = 36;
-const button_size: f64 = 36;
-const row_spacing: f64 = 12;
-const dot_radius: f64 = 3.5;
-const dot_spacing: usize = 11;
-const max_dots: usize = (280 - 24) / dot_spacing;
+const entry_width = login.entry_width;
+const entry_height = login.entry_height;
+const button_size = login.button_size;
+const row_spacing = login.row_spacing;
 
 const power_pill_width: f64 = 40;
 const power_pill_height: f64 = 24;
@@ -368,17 +366,11 @@ pub const View = struct {
     }
 
     fn maskExtent(self: *const View, mask: ?text.Mask) [2]f64 {
-        const value = mask orelse return .{ 0, 0 };
-        const factor: f64 = @floatFromInt(self.scale);
-        const w = if (value.logical_width != 0) value.logical_width else value.width;
-        const h = if (value.logical_height != 0) value.logical_height else value.height;
-        return .{ @as(f64, @floatFromInt(w)) / factor, @as(f64, @floatFromInt(h)) / factor };
+        return login.maskExtent(mask, self.scale);
     }
 
     fn paintCenteredMask(self: *const View, canvas: raster.Canvas, mask: ?text.Mask, width: f64, y: f64, color: raster.Color) f64 {
-        const size = self.maskExtent(mask);
-        if (mask) |m| m.paint(canvas, @round((width - size[0]) / 2), @round(y), color);
-        return size[1];
+        return login.paintCenteredMask(canvas, mask, self.scale, width, y, color);
     }
 
     pub fn paintSecondary(target: raster.Buffer) void {
@@ -463,7 +455,7 @@ pub const View = struct {
                 const ring: raster.Rect = .{ .x = row.x + 1, .y = row.y + 1, .width = row.width - 2, .height = row.height - 2 };
                 canvas.draw(&.{ring.stroke(user_row_radius - 1, 2)}, raster.Color.rgb(accent, 0.7));
             }
-            paintAvatar(canvas, user.avatar, row.x + 12 + list_avatar_size / 2, row.y + user_row_height / 2, list_avatar_size);
+            login.paintAvatar(canvas, user.avatar, row.x + 12 + list_avatar_size / 2, row.y + user_row_height / 2, list_avatar_size);
             const size = self.maskExtent(user.list_mask);
             if (user.list_mask) |m| m.paint(canvas, row.x + 12 + list_avatar_size + 14, @round(row.y + (row.height - size[1]) / 2), white);
         }
@@ -491,7 +483,7 @@ pub const View = struct {
         else
             null;
 
-        paintAvatar(canvas, if (active_user) |u| u.avatar else null, layout.width / 2, layout.prompt_top + prompt_avatar_size / 2, prompt_avatar_size);
+        login.paintAvatar(canvas, if (active_user) |u| u.avatar else null, layout.width / 2, layout.prompt_top + prompt_avatar_size / 2, prompt_avatar_size);
 
         const title_mask: ?text.Mask = if (frame.stage == .username)
             self.masks[@intFromEnum(StaticLabel.username_title)]
@@ -505,23 +497,11 @@ pub const View = struct {
         const center_y = row_y + entry_height / 2;
 
         // Back button (left of entry).
-        const back = layout.back;
-        const bx = back.x + button_size / 2;
-        const back_alpha: f64 = if (busy) 0.05 else if (frame.hover == .back) 0.18 else 0.10;
-        canvas.draw(&.{back.shape(button_size / 2)}, raster.Color.rgb(0xffffff, back_alpha));
-        const chevron = [_]raster.Shape{
-            .{ .line = .{ .start = .{ .x = bx + 2.5, .y = center_y - 5 }, .end = .{ .x = bx - 2.5, .y = center_y }, .radius = 1 } },
-            .{ .line = .{ .start = .{ .x = bx - 2.5, .y = center_y }, .end = .{ .x = bx + 2.5, .y = center_y + 5 }, .radius = 1 } },
-        };
-        canvas.draw(&chevron, raster.Color.rgb(0xffffff, if (busy) 0.4 else 0.9));
+        login.paintBackButton(canvas, layout.back, busy, frame.hover == .back);
 
         // Pill entry with GNOME's focus ring.
         const entry = layout.entry;
-        canvas.draw(&.{entry.shape(entry_height / 2)}, raster.Color.rgb(0xffffff, if (busy) 0.05 else 0.10));
-        if (!busy) {
-            const ring: raster.Rect = .{ .x = entry.x + 1, .y = entry.y + 1, .width = entry.width - 2, .height = entry.height - 2 };
-            canvas.draw(&.{ring.stroke(entry_height / 2 - 1, 2)}, raster.Color.rgb(accent, 0.65));
-        }
+        login.paintEntryFrame(canvas, entry, busy);
 
         const content = raster.Color.rgb(0xffffff, if (busy) 0.5 else 1.0);
         if (frame.stage == .username) {
@@ -535,29 +515,14 @@ pub const View = struct {
             const caret_x = @min(entry.x + entry.width - 14, entry.x + 16 + self.maskExtent(self.custom_entry_mask)[0] + 1);
             canvas.draw(&.{.{ .line = .{ .start = .{ .x = caret_x, .y = center_y - 9 }, .end = .{ .x = caret_x, .y = center_y + 9 }, .radius = 0.5 } }}, content);
         } else {
-            const dots: usize = @min(frame.typed, max_dots);
-            if (dots == 0 and !busy) {
-                const ph = self.masks[@intFromEnum(StaticLabel.password_placeholder)];
-                if (ph) |m| m.paint(canvas, entry.x + 16, @round(center_y - self.maskExtent(ph)[1] / 2), raster.Color.rgb(0xffffff, 0.5));
-            }
-            var shapes: [max_dots + 1]raster.Shape = undefined;
-            for (0..dots) |i| shapes[i] = .{ .circle = .{ .center = .{ .x = entry.x + 18 + @as(f64, @floatFromInt(i * dot_spacing)), .y = center_y }, .radius = dot_radius } };
-            var count = dots;
-            if (!busy) {
-                const caret_x = entry.x + 13 + @as(f64, @floatFromInt(dots * dot_spacing));
-                shapes[count] = .{ .line = .{ .start = .{ .x = caret_x, .y = center_y - 9 }, .end = .{ .x = caret_x, .y = center_y + 9 }, .radius = 0.5 } };
-                count += 1;
-            }
-            canvas.draw(shapes[0..count], content);
+            login.paintPasswordDots(canvas, entry, frame.typed, busy, self.masks[@intFromEnum(StaticLabel.password_placeholder)], self.scale);
         }
 
         // Right well: spinner while authenticating, or circular submit button.
         const submit = layout.submit;
         const sx = submit.x + button_size / 2;
         if (busy) {
-            const track: raster.Rect = .{ .x = sx - 8, .y = center_y - 8, .width = 16, .height = 16 };
-            canvas.draw(&.{track.stroke(8, 2)}, raster.Color.rgb(0xffffff, 0.15));
-            canvas.draw(&.{.{ .arc = .{ .center = .{ .x = sx, .y = center_y }, .radius = 8, .start = frame.spin, .end = frame.spin + std.math.pi * 0.75, .stroke = 2 } }}, raster.Color.rgb(0xffffff, 0.9));
+            login.paintSpinner(canvas, sx, center_y, frame.spin);
         } else {
             const can_submit = if (frame.stage == .username) self.custom_text_len > 0 else frame.typed > 0;
             const sub_alpha: f64 = if (!can_submit) 0.05 else if (frame.hover == .submit) 0.20 else 0.12;
@@ -581,25 +546,6 @@ pub const View = struct {
         }
     }
 };
-
-fn paintAvatar(canvas: raster.Canvas, avatar: ?decode.Image, cx: f64, cy: f64, size: f64) void {
-    const radius = size / 2;
-    if (avatar) |image| {
-        const s = canvas.scale;
-        const rect: raster.Rect = .{ .x = (cx - radius) * s, .y = (cy - radius) * s, .width = size * s, .height = size * s };
-        const clip: raster.Shape = .{ .circle = .{ .center = .{ .x = cx * s, .y = cy * s }, .radius = radius * s } };
-        if (raster.blitWithOptions(canvas.target, image.view(), rect, .{ .shape = clip })) return else |_| {}
-    }
-    const k = size / 128.0;
-    canvas.draw(&.{.{ .circle = .{ .center = .{ .x = cx, .y = cy }, .radius = radius } }}, raster.Color.rgb(0xffffff, 0.12));
-    var body: [25]raster.Point = undefined;
-    for (&body, 0..) |*point, i| {
-        const angle = std.math.pi * @as(f64, @floatFromInt(i)) / 24;
-        point.* = .{ .x = cx - 34 * k * @cos(angle), .y = cy + 38 * k - 30 * k * @sin(angle) };
-    }
-    canvas.draw(&.{.{ .polygon = &body }}, raster.Color.rgb(0xffffff, 0.8));
-    canvas.draw(&.{.{ .circle = .{ .center = .{ .x = cx, .y = cy - 12 * k }, .radius = 17 * k } }}, raster.Color.rgb(0xffffff, 0.8));
-}
 
 test "greeter view renders every stage, status, scale, and power menu safely" {
     const allocator = std.testing.allocator;

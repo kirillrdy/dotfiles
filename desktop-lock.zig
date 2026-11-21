@@ -8,11 +8,13 @@ const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const auth = @import("desktop-lock-auth.zig");
 const view = @import("desktop-lock-view.zig");
+const login = @import("desktop-login-ui.zig");
 const raster = @import("desktop-raster.zig");
 const kb = @import("desktop-keyboard.zig");
 const u = @import("desktop-util.zig");
 
 const cast = c.__zig.cast;
+const SecretBuffer = login.SecretBuffer;
 
 /// Calls the session's secrets service and waits; used outside the GLib loop,
 /// including from the authentication thread, so it uses a private connection.
@@ -28,55 +30,6 @@ fn screenLocked(a: std.mem.Allocator, locked: bool) void {
 fn unlockSecrets(password: []const u8) void {
     secretsCall(std.heap.page_allocator, "LoginUnlock", .{dbus.Bytes{ .value = password }}, 30000);
 }
-const Password = struct {
-    bytes: [1024:0]u8 = @splat(0),
-    len: usize = 0,
-    fn clear(self: *Password) void {
-        std.crypto.secureZero(u8, &self.bytes);
-        self.len = 0;
-    }
-    fn backspace(self: *Password) void {
-        if (self.len == 0) return;
-        self.len -= 1;
-        while (self.len > 0 and self.bytes[self.len] & 0xc0 == 0x80) self.len -= 1;
-        std.crypto.secureZero(u8, self.bytes[self.len..]);
-    }
-    fn append(self: *Password, value: []const u8) void {
-        if (value.len > self.bytes.len - self.len - 1) return;
-        @memcpy(self.bytes[self.len..][0..value.len], value);
-        self.len += value.len;
-        self.bytes[self.len] = 0;
-    }
-};
-/// One shared-memory frame, freed when the compositor releases it.
-const Buffer = struct {
-    state: *State,
-    shm: helpers.ShmBuffer,
-    next: ?*Buffer,
-    fn create(state: *State, width: u32, height: u32) !*Buffer {
-        const frame = try helpers.shmBuffer(state.shm.?, "desktop-lock", width, height, wl.wl_shm.Format.xrgb8888);
-        errdefer {
-            frame.buffer.destroy();
-            frame.unmap();
-        }
-        const self = try state.allocator.create(Buffer);
-        self.* = .{ .state = state, .shm = frame, .next = state.buffers };
-        state.buffers = self;
-        frame.buffer.listen(Buffer, self, released);
-        return self;
-    }
-    fn released(self: *Buffer, _: wl.wl_buffer, _: wl.wl_buffer.Event) void {
-        self.destroy();
-    }
-    fn destroy(self: *Buffer) void {
-        var link = &self.state.buffers;
-        while (link.* != self) link = &link.*.?.next;
-        link.* = self.next;
-        self.shm.buffer.destroy();
-        self.shm.unmap();
-        self.state.allocator.destroy(self);
-    }
-};
 const Output = struct {
     state: *State,
     name: u32,
@@ -110,7 +63,7 @@ const Output = struct {
         const width = self.width * scale;
         const height = self.height * scale;
         if (width > 16384 or height > 16384 or @as(u64, width) * height > 64 * 1024 * 1024) std.process.exit(1);
-        const frame = Buffer.create(s, width, height) catch std.process.exit(1);
+        const frame = helpers.FrameBuffer.create(s.allocator, &s.buffers, s.shm.?, "desktop-lock", width, height, wl.wl_shm.Format.xrgb8888) catch std.process.exit(1);
         const pixels: [*]u32 = @ptrCast(@alignCast(frame.shm.memory));
         const target: raster.Buffer = .{ .pixels = pixels[0 .. frame.shm.size / 4], .width = width, .height = height };
         if (self.backdrop_width != width or self.backdrop_height != height) {
@@ -165,7 +118,7 @@ const Seat = struct {
     seat: wl.wl_seat,
     keyboard: ?wl.wl_keyboard = null,
     pointer: ?wl.wl_pointer = null,
-    xkb: ?*kb.State = null,
+    keyboard_state: kb.Keyboard = .{},
     next: ?*Seat = null,
     fn seatEvent(self: *Seat, seat: wl.wl_seat, event: wl.wl_seat.Event) void {
         const flags = switch (event) {
@@ -179,8 +132,7 @@ const Seat = struct {
         } else if (flags & wl.wl_seat.Capability.keyboard == 0) if (self.keyboard) |keyboard| {
             keyboard.destroy();
             self.keyboard = null;
-            kb.xkb_state_unref(self.xkb);
-            self.xkb = null;
+            self.keyboard_state.deinit();
         };
         if (flags & wl.wl_seat.Capability.pointer != 0 and self.pointer == null) {
             const pointer = seat.get_pointer();
@@ -216,7 +168,7 @@ const Seat = struct {
     }
     fn keyboardEvent(self: *Seat, _: wl.wl_keyboard, event: wl.wl_keyboard.Event) void {
         switch (event) {
-            .keymap => |value| self.keymap(value.format, value.fd, value.size),
+            .keymap => |value| self.keyboard_state.load(value.fd, value.format, value.size),
             .leave => if (!self.state.busy) {
                 self.state.password.clear();
                 self.state.changed();
@@ -226,26 +178,10 @@ const Seat = struct {
             else => {},
         }
     }
-    fn keymap(self: *Seat, format: u32, fd: wire.Fd, size: u32) void {
-        defer _ = libc.close(fd);
-        kb.xkb_state_unref(self.xkb);
-        self.xkb = null;
-        if (format != wl.wl_keyboard.KeymapFormat.xkb_v1 or size == 0 or size > 16 * 1024 * 1024) return;
-        const memory = libc.mmap(null, size, libc.PROT_READ, libc.MAP_SHARED, fd, 0);
-        if (memory == libc.MAP_FAILED or memory == null) return;
-        defer _ = libc.munmap(memory, size);
-        const bytes: [*]const u8 = @ptrCast(memory);
-        if (bytes[size - 1] != 0) return;
-        const context = kb.xkb_context_new(0) orelse return;
-        defer kb.xkb_context_unref(context);
-        const map = kb.xkb_keymap_new_from_string(context, @ptrCast(bytes), 1, 0) orelse return;
-        defer kb.xkb_keymap_unref(map);
-        self.xkb = kb.xkb_state_new(map);
-    }
     fn key(self: *Seat, code: u32, pressed: u32) void {
         const s = self.state;
-        if (pressed != wl.wl_keyboard.KeyState.pressed or self.xkb == null or s.busy or !s.locked or s.done) return;
-        const symbol = kb.xkb_state_key_get_one_sym(self.xkb.?, code + 8);
+        if (pressed != wl.wl_keyboard.KeyState.pressed or self.keyboard_state.state == null or s.busy or !s.locked or s.done) return;
+        const symbol = self.keyboard_state.symbol(code);
         // Modifiers alone, including Caps Lock, neither reveal nor edit the prompt.
         if (symbol >= 0xffe1 and symbol <= 0xffee) return;
         s.last_activity = u.monotonicTime();
@@ -271,16 +207,15 @@ const Seat = struct {
         }
     }
     fn typeKey(self: *Seat, code: u32) void {
-        var bytes: [64]u8 = @splat(0);
+        var bytes: [128]u8 = @splat(0);
         defer std.crypto.secureZero(u8, &bytes);
-        const len = kb.xkb_state_key_get_utf8(self.xkb.?, code + 8, &bytes, bytes.len);
-        if (len > 0 and len < bytes.len and bytes[0] >= 32 and bytes[0] != 127) self.state.password.append(bytes[0..@intCast(len)]);
+        const value = self.keyboard_state.text(code, &bytes);
+        if (value.len > 0) self.state.password.append(value);
     }
     fn modifiers(self: *Seat, depressed: u32, latched: u32, locked: u32, group: u32) void {
-        const state = self.xkb orelse return;
-        _ = kb.xkb_state_update_mask(state, depressed, latched, locked, 0, 0, group);
+        self.keyboard_state.update(depressed, latched, locked, group);
         const s = self.state;
-        const caps = kb.xkb_state_mod_name_is_active(state, "Lock", 1 << 3) > 0;
+        const caps = self.keyboard_state.capsLock();
         if (caps == s.caps_lock) return;
         s.caps_lock = caps;
         if (s.stage == .prompt) s.render();
@@ -288,7 +223,7 @@ const Seat = struct {
     fn deinit(self: *Seat) void {
         if (self.keyboard) |keyboard| keyboard.destroy();
         if (self.pointer) |pointer| pointer.destroy();
-        kb.xkb_state_unref(self.xkb);
+        self.keyboard_state.deinit();
         if (self.seat.version() >= 5) self.seat.release() else self.seat.destroy();
         self.state.allocator.destroy(self);
     }
@@ -304,9 +239,9 @@ const State = struct {
     lock: ?wl.ext_session_lock_v1 = null,
     outputs: ?*Output = null,
     seats: ?*Seat = null,
-    buffers: ?*Buffer = null,
+    buffers: ?*helpers.FrameBuffer = null,
     view: *view.View,
-    password: *Password,
+    password: *SecretBuffer,
     stage: view.Stage = .clock,
     caps_lock: bool = false,
     last_activity: i64 = 0,
@@ -331,20 +266,17 @@ const State = struct {
         while (output) |o| : (output = o.next) o.render();
     }
     fn frame(self: *const State) view.Frame {
-        const period = 800 * std.time.us_per_ms;
-        const phase: f64 = @floatFromInt(@mod(u.monotonicTime(), period));
         return .{
             .stage = self.stage,
             .status = if (self.failed) .failed else if (self.busy) .authenticating else .ready,
             .typed = self.typed,
             .caps_lock = self.caps_lock,
-            .spin = phase / period * 2 * std.math.pi,
+            .spin = login.spinPhase(),
         };
     }
     /// Recounts typed characters; returns whether the count changed.
     fn recount(self: *State) bool {
-        var count: usize = 0;
-        for (self.password.bytes[0..self.password.len]) |byte| count += @intFromBool(byte & 0xc0 != 0x80);
+        const count = self.password.charCount();
         if (count == self.typed) return false;
         self.typed = count;
         // Typing again after a rejection returns to the normal prompt.
@@ -576,15 +508,8 @@ pub fn runWithAuthenticator(a: std.mem.Allocator, args: []const []const u8, auth
     _ = libc.signal(libc.SIGHUP, @ptrFromInt(1));
     _ = libc.signal(@intCast(@backingInt(std.posix.SIG.PIPE)), @ptrFromInt(1));
     _ = libc.signal(@intCast(@backingInt(std.posix.SIG.INT)), @ptrFromInt(1));
-    // Keep the password on dedicated pages so munlock cannot unlock other allocations.
-    const password = try std.heap.page_allocator.create(Password);
-    password.* = .{};
-    defer std.heap.page_allocator.destroy(password);
-    if (libc.mlock(password, @sizeOf(Password)) != 0) return error.SecretMemoryLockFailed;
-    defer {
-        password.clear();
-        _ = libc.munlock(password, @sizeOf(Password));
-    }
+    const password = try SecretBuffer.createLocked();
+    defer password.destroyLocked();
     const user = libc.getpwuid(libc.getuid());
     if (user == null) return error.UnknownUser;
     const username = try a.dupeSentinel(u8, std.mem.span(user.*.pw_name), 0);
@@ -614,7 +539,7 @@ pub fn runWithAuthenticator(a: std.mem.Allocator, args: []const []const u8, auth
             state.seats = seat.next;
             seat.deinit();
         }
-        while (state.buffers) |buffer| buffer.destroy();
+        helpers.FrameBuffer.destroyAll(&state.buffers);
     }
     const display: wl.wl_display = .{ .proxy = connection.display() };
     const registry = display.get_registry();
@@ -641,21 +566,4 @@ pub fn runWithAuthenticator(a: std.mem.Allocator, args: []const []const u8, auth
     while (state.busy) _ = c.g_main_context_iteration(null, 1);
     ready_fd = state.ready_fd;
     if (!state.unlocked) return error.LockNotAcquired;
-}
-
-test "password handles Unicode backspace, capacity, and complete erasure" {
-    var password = Password{};
-    password.append("a日本");
-    password.backspace();
-    try std.testing.expectEqualStrings("a日", password.bytes[0..password.len]);
-    password.backspace();
-    password.backspace();
-    password.backspace();
-    try std.testing.expectEqual(@as(usize, 0), password.len);
-    var too_long: [1024]u8 = @splat('a');
-    password.append(&too_long);
-    try std.testing.expectEqual(@as(usize, 0), password.len);
-    password.append("secret");
-    password.clear();
-    for (password.bytes) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
 }
