@@ -145,7 +145,8 @@ helper.chmod(0o755)
 def unlock(log, count):
     sp.run([args.wtype, "-k", "Shift_L"], env=env, check=True, capture_output=True, timeout=10)
     wait_until(lambda: ".modifiers(" in text(log).rsplit(".locked()", 1)[-1], "Lock keyboard focus")
-    sp.run([args.wtype, "-d", "10", "fixture-password", "-k", "Return"], env=env,
+    # Each wtype run adds a new virtual keyboard; let its keymap reach the locker first.
+    sp.run([args.wtype, "-s", "200", "-d", "10", "fixture-password", "-k", "Return"], env=env,
            check=True, capture_output=True, timeout=10)
     wait_until(lambda: text(log).count("unlock_and_destroy()") >= count, "Lock authentication")
     time.sleep(0.1)  # Reap the locker before starting the next cycle.
