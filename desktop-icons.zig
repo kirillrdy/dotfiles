@@ -245,14 +245,15 @@ fn read(path: [:0]const u8) ?[]u8 {
 // Callers own each returned image and release it with decode.free. Lookup metadata
 // is shared on the UI thread, while views retain their existing image caches.
 var shared: ?Resolver = null;
-var theme_settings: ?*c.GSettings = null;
+var theme_settings: ?*@import("desktop-gsettings.zig").Settings = null;
 pub fn deinit() void {
     if (shared) |*value| value.deinit();
     shared = null;
-    if (theme_settings) |settings| c.g_object_unref(settings);
+    if (theme_settings) |settings| settings.close();
     theme_settings = null;
 }
-fn themeChanged(_: ?*c.GSettings, _: [*c]const u8, _: ?*anyopaque) callconv(.c) void {
+fn themeChanged(_: ?*anyopaque, key: []const u8) void {
+    if (!std.mem.eql(u8, key, "icon-theme")) return;
     if (shared) |*value| value.deinit();
     shared = null;
 }
@@ -275,12 +276,11 @@ fn resolver() !*Resolver {
     var theme: []const u8 = "Adwaita";
     if (theme_settings == null) if (c.__zig.settings("org.gnome.desktop.interface", null)) |settings| {
         theme_settings = settings;
-        _ = c.g_signal_connect_data(settings, "changed::icon-theme", @ptrCast(&themeChanged), null, null, 0);
+        settings.watch(&themeChanged, null) catch {};
     };
     if (theme_settings) |settings| {
-        const name = c.g_settings_get_string(settings, "icon-theme");
-        defer c.g_free(name);
-        if (validName(std.mem.span(name))) theme = try alloc.dupe(u8, std.mem.span(name));
+        const name = settings.string(alloc, "icon-theme");
+        if (validName(name)) theme = name;
     }
     shared = try Resolver.init(a, roots.items, theme);
     return &shared.?;

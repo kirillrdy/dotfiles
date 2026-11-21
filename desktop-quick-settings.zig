@@ -18,13 +18,14 @@ const power_backend = @import("desktop-power.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 const connect = c.__zig.connect;
-fn settings(schema: [*:0]const u8) ?*c.GSettings {
+const Settings = @import("desktop-gsettings.zig").Settings;
+fn settings(schema: []const u8) ?*Settings {
     return c.__zig.settings(schema, null);
 }
 pub fn bannersEnabled() bool {
     const prefs = settings("org.gnome.desktop.notifications") orelse return true;
-    defer c.g_object_unref(prefs);
-    return c.g_settings_get_boolean(prefs, "show-banners") != 0;
+    defer prefs.close();
+    return prefs.boolean("show-banners");
 }
 pub const Controls = struct {
     popup: popup.Host = undefined,
@@ -39,8 +40,8 @@ pub const Controls = struct {
     subscription: devices.Subscriber = undefined,
     network_settings: [:0]u8,
     sound_settings: [:0]u8,
-    interface: ?*c.GSettings,
-    notifications: ?*c.GSettings,
+    interface: ?*Settings,
+    notifications: ?*Settings,
     timer: c.guint = 0,
     volume_timer: c.guint = 0,
     brightness_timer: c.guint = 0,
@@ -91,11 +92,11 @@ pub const Controls = struct {
             .profile_toggle => self.selectProfile(if (self.view.model.power_state.active == .balanced) 2 else 1),
             .profile0, .profile1, .profile2 => self.selectProfile(@backingInt(target) - @backingInt(native.Target.profile0)),
             .dark => if (self.interface) |prefs| {
-                _ = c.g_settings_set_string(prefs, "color-scheme", if (self.view.model.dark) "default" else "prefer-dark");
+                prefs.setString("color-scheme", if (self.view.model.dark) "default" else "prefer-dark") catch {};
                 self.syncPreferences();
             },
             .dnd => if (self.notifications) |prefs| {
-                _ = c.g_settings_set_boolean(prefs, "show-banners", @intFromBool(self.view.model.dnd));
+                prefs.setBoolean("show-banners", self.view.model.dnd) catch {};
                 self.syncPreferences();
             },
             .mute => self.audioAction(.toggle),
@@ -291,8 +292,8 @@ pub const Controls = struct {
             .resized = &resized,
             .dismiss = &dismiss,
         };
-        if (self.interface) |prefs| connect(prefs, "changed", &preferencesChanged, self);
-        if (self.notifications) |prefs| connect(prefs, "changed", &preferencesChanged, self);
+        if (self.interface) |prefs| prefs.watch(&preferencesChanged, self) catch {};
+        if (self.notifications) |prefs| prefs.watch(&preferencesChanged, self) catch {};
         self.syncPreferences();
         self.subscription = .{ .context = self, .changed = &deviceChanged };
         self.devices.subscribe(&self.subscription);
@@ -302,16 +303,16 @@ pub const Controls = struct {
     }
     fn syncPreferences(self: *Controls) void {
         if (self.interface) |prefs| {
-            const value = c.g_settings_get_string(prefs, "color-scheme");
-            defer c.g_free(value);
-            self.view.model.dark = c.g_strcmp0(value, "prefer-dark") == 0;
+            var buffer: [256]u8 = undefined;
+            var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
+            self.view.model.dark = std.mem.eql(u8, prefs.string(fixed.allocator(), "color-scheme"), "prefer-dark");
         }
-        if (self.notifications) |prefs| self.view.model.dnd = c.g_settings_get_boolean(prefs, "show-banners") == 0;
+        if (self.notifications) |prefs| self.view.model.dnd = !prefs.boolean("show-banners");
         self.view.model.dark_sensitive = self.interface != null;
         self.view.model.dnd_sensitive = self.notifications != null;
         self.redraw();
     }
-    fn preferencesChanged(_: ?*c.GSettings, _: [*c]const u8, ptr: c.gpointer) callconv(.c) void {
+    fn preferencesChanged(ptr: ?*anyopaque, _: []const u8) void {
         const self = cast(Controls, ptr);
         if (!self.dead) self.syncPreferences();
     }
@@ -680,14 +681,8 @@ pub const Controls = struct {
         if (self.volume_timer != 0) _ = c.g_source_remove(self.volume_timer);
         if (self.brightness_timer != 0) _ = c.g_source_remove(self.brightness_timer);
         c.g_cancellable_cancel(self.cancel);
-        if (self.interface) |prefs| {
-            _ = c.g_signal_handlers_disconnect_matched(prefs, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-            c.g_object_unref(prefs);
-        }
-        if (self.notifications) |prefs| {
-            _ = c.g_signal_handlers_disconnect_matched(prefs, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-            c.g_object_unref(prefs);
-        }
+        if (self.interface) |prefs| prefs.close();
+        if (self.notifications) |prefs| prefs.close();
         self.release();
     }
     fn release(self: *Controls) void {

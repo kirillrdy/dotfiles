@@ -168,8 +168,6 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
     objects.watch(module.cancel);
     if (module.quick) |controls| {
         objects.watch(controls.cancel);
-        if (controls.interface) |prefs| objects.watch(prefs);
-        if (controls.notifications) |prefs| objects.watch(prefs);
         if (controls.devices.network_client) |client| {
             objects.watch(client.cancel);
         }

@@ -157,8 +157,10 @@ test {
     _ = @import("desktop-sound-view.zig");
     _ = @import("desktop-panel-view.zig");
     _ = @import("desktop-widgets.zig");
-    _ = @import("desktop-dbus-gvariant.zig");
     _ = @import("desktop-dbus-text.zig");
+    _ = @import("desktop-gvariant.zig");
+    _ = @import("desktop-gvdb.zig");
+    _ = @import("desktop-gsettings.zig");
     _ = @import("desktop-icons.zig");
     _ = @import("desktop-decode.zig");
     _ = @import("desktop-form.zig");

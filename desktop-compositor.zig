@@ -153,7 +153,7 @@ const Server = struct {
     resize_edges: u32 = 0,
     drag_icon: ?*c.wlr_scene_tree = null,
     inhibitors: std.ArrayList(*Inhibitor) = .empty,
-    corner_settings: ?*g.GSettings = null,
+    corner_settings: ?*@import("desktop-gsettings.zig").Settings = null,
 
     fn init(self: *Server, handle: *Handle) !void {
         c.wlr_log_init(c.WLR_INFO, null);
@@ -259,7 +259,7 @@ const Server = struct {
     fn deinit(self: *Server) void {
         if (self.lock_blank_timer) |timer| _ = c.wl_event_source_remove(timer);
         self.lock_blank_timer = null;
-        if (self.corner_settings) |settings| g.g_object_unref(settings);
+        if (self.corner_settings) |settings| settings.close();
         self.shutting_down = true;
         c.wl_display_destroy_clients(self.display);
         self.ime.deinit();
@@ -617,7 +617,7 @@ const Server = struct {
         var next_x = x + dx;
         var next_y = y + dy;
         var blocked = false;
-        const enabled = if (self.corner_settings) |settings| g.g_settings_get_boolean(settings, "enable-hot-corners") != 0 else true;
+        const enabled = if (self.corner_settings) |settings| settings.boolean("enable-hot-corners") else true;
         var allowed = enabled and !self.locked and !self.cycling and self.grabbed == null;
         var in_overview = false;
         for (self.layers.items) |layer| {

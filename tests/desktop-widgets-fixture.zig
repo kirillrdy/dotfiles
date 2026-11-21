@@ -19,7 +19,7 @@ fn refresh(kind: []const u8) void {
     refresh_count += 1;
 }
 fn clickControl(controls: *@import("desktop").quick.Controls, target: @import("desktop").quick.Target) void {
-    const rect = controls.view.item(target).?.rect;
+    const rect = (controls.view.item(target) orelse std.debug.panic("quick settings control {s} is not shown", .{@tagName(target)})).rect;
     controls.pointerButton(true, rect.x + rect.width / 2, rect.y + rect.height / 2);
     controls.pointerButton(false, rect.x + rect.width / 2, rect.y + rect.height / 2);
 }
@@ -112,15 +112,15 @@ pub fn main(process_init: std.process.Init) !void {
         const before = controls.view.model.dark;
         clickControl(controls, .dark);
         assert(controls.view.model.dark != before);
-        const color_scheme = c.g_settings_get_string(prefs, "color-scheme");
-        eq(color_scheme, if (!before) "prefer-dark" else "default");
-        c.g_free(color_scheme);
+        var buffer: [256]u8 = undefined;
+        var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
+        assert(std.mem.eql(u8, prefs.string(fixed.allocator(), "color-scheme"), if (!before) "prefer-dark" else "default"));
     }
     if (controls.notifications) |prefs| {
-        const before = c.g_settings_get_boolean(prefs, "show-banners");
+        const before = prefs.boolean("show-banners");
         clickControl(controls, .dnd);
-        assert(c.g_settings_get_boolean(prefs, "show-banners") != before);
-        _ = c.g_settings_set_boolean(prefs, "show-banners", before);
+        assert(prefs.boolean("show-banners") != before);
+        prefs.setBoolean("show-banners", before) catch unreachable;
     }
     clickControl(controls, .profiles);
     assert(controls.view.submenu == .profiles);

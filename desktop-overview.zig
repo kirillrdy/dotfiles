@@ -222,33 +222,34 @@ const Overview = struct {
     fn rebuildDash(self: *Overview) void {
         self.hideTooltip();
         self.dash_view.clear();
-        var favorites: [*c][*c]u8 = null;
+        var favorites_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer favorites_arena.deinit();
+        var favorites: []const [:0]const u8 = &.{};
         if (c.__zig.settings("org.gnome.shell", "favorite-apps")) |settings| {
-            defer c.g_object_unref(settings);
-            favorites = c.g_settings_get_strv(settings, "favorite-apps");
+            defer settings.close();
+            const names = settings.strings(favorites_arena.allocator(), "favorite-apps");
+            const owned: [][:0]const u8 = favorites_arena.allocator().alloc([:0]const u8, names.len) catch &.{};
+            for (owned, names) |*out, name| out.* = favorites_arena.allocator().dupeSentinel(u8, name, 0) catch "";
+            favorites = owned;
         }
-        defer c.g_strfreev(favorites);
-        var favorite_index: usize = 0;
-        while (favorites != null and favorites[favorite_index] != null) : (favorite_index += 1) {
-            const id = favorites[favorite_index];
-            const info = c.g_desktop_app_info_new(id) orelse continue;
+        for (favorites) |id| {
+            const info = c.g_desktop_app_info_new(id.ptr) orelse continue;
             defer c.g_object_unref(info);
             var running: ?*capture.Window = null;
-            if (self.client) |client| for (client.windows.items) |window| if (matchesApp(window.app_id, id)) {
+            if (self.client) |client| for (client.windows.items) |window| if (matchesApp(window.app_id, id.ptr)) {
                 running = window;
                 break;
             };
             self.appendDash(@ptrCast(info), running);
         }
-        var separated = favorites == null or favorites[0] == null;
+        var separated = favorites.len == 0;
         if (self.client) |client| for (client.windows.items, 0..) |window, i| {
             var duplicate = false;
             for (client.windows.items[0..i]) |previous| if (c.g_strcmp0(previous.app_id, window.app_id) == 0) {
                 duplicate = true;
                 break;
             };
-            favorite_index = 0;
-            while (favorites != null and favorites[favorite_index] != null) : (favorite_index += 1) if (matchesApp(window.app_id, favorites[favorite_index])) {
+            for (favorites) |id| if (matchesApp(window.app_id, id.ptr)) {
                 duplicate = true;
                 break;
             };

@@ -304,19 +304,10 @@ pub const GCancellable = struct__GCancellable;
 
 
 
-pub const struct__GSettingsBackend = opaque {};
 
-pub const GSettingsBackend = struct__GSettingsBackend;
-pub const struct__GSettingsPrivate = opaque {};
 
-pub const GSettingsPrivate = struct__GSettingsPrivate;
 
-pub const struct__GSettings = extern struct {
-    parent_instance: GObject = @import("std").mem.zeroes(GObject),
-    priv: ?*GSettingsPrivate = null,
-};
 
-pub const GSettings = struct__GSettings;
 pub const struct__GFile = opaque {};
 
 pub const GFile = struct__GFile;
@@ -363,22 +354,8 @@ pub extern fn g_app_info_get_all() [*c]GList;
 pub extern fn g_cancellable_new() [*c]GCancellable;
 pub extern fn g_cancellable_cancel(cancellable: [*c]GCancellable) void;
 pub extern fn g_file_new_for_path(path: [*c]const u8) ?*GFile;
-pub const struct__GSettingsSchemaSource = opaque {};
 
-pub const GSettingsSchemaSource = struct__GSettingsSchemaSource;
-pub const struct__GSettingsSchema = opaque {};
 
-pub const GSettingsSchema = struct__GSettingsSchema;
-pub extern fn g_settings_schema_source_get_default() ?*GSettingsSchemaSource;
-pub extern fn g_settings_schema_source_lookup(source: ?*GSettingsSchemaSource, schema_id: [*c]const gchar, recursive: gboolean) ?*GSettingsSchema;
-pub extern fn g_settings_schema_unref(schema: ?*GSettingsSchema) void;
-pub extern fn g_settings_schema_has_key(schema: ?*GSettingsSchema, name: [*c]const gchar) gboolean;
-pub extern fn g_settings_new_full(schema: ?*GSettingsSchema, backend: ?*GSettingsBackend, path: [*c]const gchar) [*c]GSettings;
-pub extern fn g_settings_get_string(settings: [*c]GSettings, key: [*c]const gchar) [*c]gchar;
-pub extern fn g_settings_set_string(settings: [*c]GSettings, key: [*c]const gchar, value: [*c]const gchar) gboolean;
-pub extern fn g_settings_get_boolean(settings: [*c]GSettings, key: [*c]const gchar) gboolean;
-pub extern fn g_settings_set_boolean(settings: [*c]GSettings, key: [*c]const gchar, value: gboolean) gboolean;
-pub extern fn g_settings_get_strv(settings: [*c]GSettings, key: [*c]const gchar) [*c][*c]gchar;
 pub extern fn g_subprocess_newv(argv: [*c]const [*c]const gchar, flags: GSubprocessFlags, @"error": [*c][*c]GError) ?*GSubprocess;
 pub extern fn g_subprocess_wait_async(subprocess: ?*GSubprocess, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
 pub extern fn g_subprocess_wait_finish(subprocess: ?*GSubprocess, result: ?*GAsyncResult, @"error": [*c][*c]GError) gboolean;
@@ -454,9 +431,6 @@ pub const GSocketConnectable = opaque {};
 pub extern fn g_network_address_new([*c]const gchar, u16) ?*GSocketConnectable;
 pub extern fn g_network_monitor_can_reach_async(?*GNetworkMonitor, ?*GSocketConnectable, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
 pub extern fn g_network_monitor_can_reach_finish(?*GNetworkMonitor, ?*GAsyncResult, [*c][*c]GError) gboolean;
-pub extern fn g_settings_schema_list_keys(?*GSettingsSchema) [*c][*c]gchar;
-pub extern fn g_settings_get_value([*c]GSettings, [*c]const gchar) ?*GVariant;
-pub extern fn g_settings_get_enum([*c]GSettings, [*c]const gchar) gint;
 pub const GFileMonitor = opaque {};
 pub extern fn g_file_monitor_directory(?*GFile, c_uint, [*c]GCancellable, [*c][*c]GError) ?*GFileMonitor;
 pub extern fn g_file_monitor_cancel(?*GFileMonitor) gboolean;

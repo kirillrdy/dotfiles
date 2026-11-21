@@ -35,7 +35,8 @@ fn checkDialog() !void {
     try std.testing.expectEqualStrings("Incorrect <&> password — try again", dialog.native.view.status.?);
     // Status and buttons remain below the entry at both scale factors.
     for ([_]u32{ 1, 2 }) |scale| {
-        try dialog.native.view.prepare(std.heap.page_allocator, dialog.native.prompt, scale);
+        // The view frees masks it rendered earlier, so it must get the dialog's own allocator.
+        try dialog.native.view.prepare(dialog.native.allocator, dialog.native.prompt, scale);
         try std.testing.expect(dialog.native.view.buttonRect(.accept).y >= dialog.native.view.entryRect().y + 62 + @as(f64, @floatFromInt(dialog.native.view.status_height)));
     }
     // A new MFA challenge erases the previous response and can request echo.

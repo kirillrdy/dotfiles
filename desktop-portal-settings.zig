@@ -2,7 +2,7 @@
 const std = @import("std");
 const c = @import("desktop-glib.zig");
 const dbus = @import("dbus");
-const bridge = @import("desktop-dbus-gvariant.zig");
+const Settings = @import("desktop-gsettings.zig").Settings;
 const schemas = [_][:0]const u8{
     "org.gnome.desktop.a11y",           "org.gnome.desktop.a11y.interface",
     "org.gnome.desktop.calendar",       "org.gnome.desktop.input-sources",
@@ -17,8 +17,7 @@ const cast = c.__zig.cast;
 const Bundle = struct {
     service: *Service,
     name: [:0]const u8,
-    schema: *c.GSettingsSchema,
-    settings: *c.GSettings,
+    settings: *Settings,
 };
 pub const Service = struct {
     allocator: std.mem.Allocator,
@@ -32,22 +31,20 @@ pub const Service = struct {
         const self = try allocator.create(Service);
         self.* = .{ .allocator = allocator, .connection = connection };
         errdefer self.destroy();
-        const source = c.g_settings_schema_source_get_default();
-        if (source != null) for (schemas) |name| {
-            const schema = c.g_settings_schema_source_lookup(source, name, 1) orelse continue;
+        for (schemas) |name| {
+            const settings = Settings.open(name, null) orelse continue;
             const bundle = allocator.create(Bundle) catch |err| {
-                c.g_settings_schema_unref(schema);
+                settings.close();
                 return err;
             };
-            bundle.* = .{ .service = self, .name = name, .schema = schema, .settings = c.g_settings_new_full(schema, null, null) };
+            bundle.* = .{ .service = self, .name = name, .settings = settings };
             self.bundles.append(allocator, bundle) catch |err| {
-                c.g_object_unref(bundle.settings);
-                c.g_settings_schema_unref(schema);
+                settings.close();
                 allocator.destroy(bundle);
                 return err;
             };
-            _ = c.g_signal_connect_data(bundle.settings, "changed", @ptrCast(&changed), bundle, null, 0);
-        };
+            try settings.watch(&changed, bundle);
+        }
         try self.watch("/etc/fonts");
         if (c.__zig.getenv("HOME")) |home| {
             const directory = try std.fmt.allocPrintSentinel(allocator, "{s}/.fonts", .{home}, 0);
@@ -68,9 +65,7 @@ pub const Service = struct {
             c.g_object_unref(monitor);
         }
         for (self.bundles.items) |bundle| {
-            _ = c.g_signal_handlers_disconnect_matched(bundle.settings, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, bundle);
-            c.g_object_unref(bundle.settings);
-            c.g_settings_schema_unref(bundle.schema);
+            bundle.settings.close();
             self.allocator.destroy(bundle);
         }
         self.bundles.deinit(self.allocator);
@@ -88,15 +83,14 @@ pub const Service = struct {
     fn emit(self: *Service, namespace: []const u8, key: []const u8) void {
         var arena: std.heap.ArenaAllocator = .init(self.allocator);
         defer arena.deinit();
-        const key_z = arena.allocator().dupeSentinel(u8, key, 0) catch return;
-        const value = (self.read(arena.allocator(), namespace, key_z) catch return) orelse return;
+        const value = (self.read(arena.allocator(), namespace, key) catch return) orelse return;
         self.connection.emit("/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "SettingChanged", .{ namespace, key, value }) catch {};
     }
-    fn changed(_: *c.GSettings, key: [*:0]const u8, data: ?*anyopaque) callconv(.c) void {
+    fn changed(data: ?*anyopaque, key: []const u8) void {
         const bundle = cast(Bundle, data);
-        bundle.service.emit(bundle.name, std.mem.span(key));
-        if (eq(bundle.name, "org.gnome.desktop.interface") and eq(std.mem.span(key), "color-scheme")) bundle.service.emit(appearance, "color-scheme");
-        if (eq(bundle.name, "org.gnome.desktop.a11y.interface") and eq(std.mem.span(key), "high-contrast")) bundle.service.emit(appearance, "contrast");
+        bundle.service.emit(bundle.name, key);
+        if (eq(bundle.name, "org.gnome.desktop.interface") and eq(key, "color-scheme")) bundle.service.emit(appearance, "color-scheme");
+        if (eq(bundle.name, "org.gnome.desktop.a11y.interface") and eq(key, "high-contrast")) bundle.service.emit(appearance, "contrast");
     }
     fn fontsChanged(_: *c.GFileMonitor, _: ?*c.GFile, _: ?*c.GFile, _: c_uint, data: ?*anyopaque) callconv(.c) void {
         const self = cast(Service, data);
@@ -110,21 +104,20 @@ pub const Service = struct {
         return 0;
     }
     /// A setting's value, allocated from `arena`; null for unknown settings.
-    pub fn read(self: *Service, arena: std.mem.Allocator, namespace: []const u8, key: [*:0]const u8) !?dbus.Value {
-        if (eq(namespace, fontconfig)) return if (eq(std.mem.span(key), "serial")) .{ .int32 = self.serial } else null;
+    pub fn read(self: *Service, arena: std.mem.Allocator, namespace: []const u8, key: []const u8) !?dbus.Value {
+        if (eq(namespace, fontconfig)) return if (eq(key, "serial")) .{ .int32 = self.serial } else null;
         if (eq(namespace, appearance)) {
-            if (eq(std.mem.span(key), "color-scheme")) {
-                for (self.bundles.items) |bundle| if (eq(bundle.name, "org.gnome.desktop.interface") and c.g_settings_schema_has_key(bundle.schema, "color-scheme") != 0) return .{ .uint32 = @intCast(c.g_settings_get_enum(bundle.settings, "color-scheme")) };
+            if (eq(key, "color-scheme")) {
+                for (self.bundles.items) |bundle| if (eq(bundle.name, "org.gnome.desktop.interface") and bundle.settings.hasKey("color-scheme")) return .{ .uint32 = @intCast(bundle.settings.enumeration("color-scheme")) };
                 return .{ .uint32 = 0 };
             }
-            if (eq(std.mem.span(key), "contrast")) {
-                for (self.bundles.items) |bundle| if (eq(bundle.name, "org.gnome.desktop.a11y.interface") and c.g_settings_schema_has_key(bundle.schema, "high-contrast") != 0) return .{ .uint32 = @intFromBool(c.g_settings_get_boolean(bundle.settings, "high-contrast") != 0) };
+            if (eq(key, "contrast")) {
+                for (self.bundles.items) |bundle| if (eq(bundle.name, "org.gnome.desktop.a11y.interface") and bundle.settings.hasKey("high-contrast")) return .{ .uint32 = @intFromBool(bundle.settings.boolean("high-contrast")) };
                 return .{ .uint32 = 0 };
             }
             return null;
         }
-        // GSettings hands out GVariants; this is where they become D-Bus values.
-        for (self.bundles.items) |bundle| if (eq(bundle.name, namespace) and c.g_settings_schema_has_key(bundle.schema, key) != 0) return try bridge.fromVariant(arena, c.g_settings_get_value(bundle.settings, key).?);
+        for (self.bundles.items) |bundle| if (eq(bundle.name, namespace)) return bundle.settings.get(arena, key);
         return null;
     }
     fn matches(namespace: []const u8, patterns: []const []const u8) bool {
@@ -143,12 +136,9 @@ pub const Service = struct {
         for (self.bundles.items) |bundle| {
             if (!matches(bundle.name, patterns)) continue;
             var values: std.ArrayList(Values.Entry) = .empty;
-            const keys = c.g_settings_schema_list_keys(bundle.schema);
-            defer c.g_strfreev(keys);
-            var i: usize = 0;
-            while (keys[i] != null) : (i += 1) {
-                const value = try self.read(arena, bundle.name, keys[i]) orelse continue;
-                try values.append(arena, .{ .key = try arena.dupe(u8, std.mem.span(keys[i])), .value = value });
+            for (try bundle.settings.keys(arena)) |key| {
+                const value = try self.read(arena, bundle.name, key) orelse continue;
+                try values.append(arena, .{ .key = key, .value = value });
             }
             try namespaces.append(arena, .{ .key = bundle.name, .value = .{ .entries = values.items } });
         }
@@ -173,7 +163,7 @@ pub const Service = struct {
             return connection.reply(message, .{try self.readAll(arena.allocator(), patterns)});
         }
         const args = try message.read(struct { []const u8, []const u8 });
-        const key = try arena.allocator().dupeSentinel(u8, args[1], 0);
+        const key = args[1];
         const value = try self.read(arena.allocator(), args[0], key) orelse return connection.replyError(message, "org.freedesktop.portal.Error.NotFound", "Requested setting not found");
         // The deprecated Read wraps the value in a second variant.
         if (eq(method, "Read")) return connection.reply(message, .{dbus.Value{ .variant = &value }});

@@ -18,12 +18,8 @@ pub fn connect(widget: anytype, signal: [*:0]const u8, callback: anytype, data: 
     _ = c.g_signal_connect_data(widget, signal, @ptrCast(callback), data, null, 0);
 }
 /// Opens an installed GSettings schema, optionally requiring `key` to exist.
-pub fn settings(schema: [*:0]const u8, key: ?[*:0]const u8) ?*c.GSettings {
-    const source = c.g_settings_schema_source_get_default() orelse return null;
-    const found = c.g_settings_schema_source_lookup(source, schema, 1) orelse return null;
-    defer c.g_settings_schema_unref(found);
-    if (key) |name| if (c.g_settings_schema_has_key(found, name) == 0) return null;
-    return c.g_settings_new_full(found, null, null);
+pub fn settings(schema: []const u8, key: ?[]const u8) ?*@import("desktop-gsettings.zig").Settings {
+    return @import("desktop-gsettings.zig").Settings.open(schema, key);
 }
 /// X keysyms and modifier bits used by the native key handlers.
 pub const keys = struct {
