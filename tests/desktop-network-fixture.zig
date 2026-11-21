@@ -125,8 +125,8 @@ pub fn main(init: std.process.Init) !void {
         properties.ui.changed(properties.ui.context, properties.view.security);
         try std.testing.expect(properties.row("802-11-wireless-security", "key-mgmt").?.remove.checked);
         const values = try properties.values();
-        defer c.g_variant_unref(values);
-        try std.testing.expect(c.g_variant_lookup_value(values, "802-11-wireless-security", null) == null);
+        defer values.unref();
+        try std.testing.expect(values.group("802-11-wireless-security") == null);
         properties.ui.close();
         window.ui.close();
         while (!window.closed) pump();
@@ -189,7 +189,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         const values = try ui.values();
-        defer c.g_variant_unref(values);
+        defer values.unref();
         const cancel = c.g_cancellable_new().?;
         defer c.g_object_unref(cancel);
         client.perform(.{ .save = .{ .path = ui.path, .settings = values, .version = ui.version } }, cancel, &done, null);

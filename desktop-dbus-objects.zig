@@ -1,11 +1,8 @@
 //! A client for `org.freedesktop.DBus.ObjectManager`, like GDBusObjectManagerClient:
 //! it follows the service's owner, mirrors its objects and their properties, and
-//! reports changes. Properties are kept as GVariant dictionaries for code that
-//! reads them with GLib.
+//! reports changes.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
 const dbus = @import("dbus");
-const bridge = @import("desktop-dbus-gvariant.zig");
 
 pub const Event = union(enum) {
     /// The service gained or lost its owner; all objects were dropped.
@@ -20,12 +17,13 @@ pub const Handler = *const fn (context: ?*anyopaque, event: Event) void;
 
 pub const Interface = struct {
     name: []u8,
-    /// An owned `a{sv}` GVariant.
-    properties: *c.GVariant,
+    /// Holds the property values; replaced whole when properties change.
+    arena: *std.heap.ArenaAllocator,
+    properties: []const Values.Entry = &.{},
 
-    /// A new reference to a property's value, or null.
-    pub fn property(self: *const Interface, key: [*:0]const u8) ?*c.GVariant {
-        return c.g_variant_lookup_value(self.properties, key, null);
+    pub fn property(self: *const Interface, key: []const u8) ?dbus.Value {
+        for (self.properties) |entry| if (std.mem.eql(u8, entry.key, key)) return entry.value;
+        return null;
     }
 };
 pub const Object = struct {
@@ -38,7 +36,7 @@ pub const Object = struct {
     }
 };
 
-const Values = bridge.Dict;
+const Values = dbus.Dict([]const u8, dbus.Value);
 const Interfaces = dbus.Dict([]const u8, Values);
 const Managed = dbus.Dict(dbus.ObjectPath, Interfaces);
 
@@ -105,7 +103,8 @@ pub const Manager = struct {
         self.allocator.destroy(item);
     }
     fn freeInterface(self: *Manager, entry: Interface) void {
-        c.g_variant_unref(entry.properties);
+        entry.arena.deinit();
+        self.allocator.destroy(entry.arena);
         self.allocator.free(entry.name);
     }
 
@@ -156,22 +155,38 @@ pub const Manager = struct {
             break :blk created;
         };
         for (interfaces.entries) |entry| {
-            const properties = c.g_variant_take_ref(bridge.dictToVariant(entry.value) orelse continue).?;
+            const fresh = try self.copy(entry.value.entries);
             if (item.interface(entry.key)) |existing| {
-                c.g_variant_unref(existing.properties);
-                existing.properties = properties;
+                existing.arena.deinit();
+                self.allocator.destroy(existing.arena);
+                existing.arena = fresh.arena;
+                existing.properties = fresh.properties;
                 continue;
             }
-            const copy = self.allocator.dupe(u8, entry.key) catch {
-                c.g_variant_unref(properties);
+            const name = self.allocator.dupe(u8, entry.key) catch {
+                fresh.arena.deinit();
+                self.allocator.destroy(fresh.arena);
                 return error.OutOfMemory;
             };
-            item.interfaces.append(self.allocator, .{ .name = copy, .properties = properties }) catch {
-                self.allocator.free(copy);
-                c.g_variant_unref(properties);
+            item.interfaces.append(self.allocator, .{ .name = name, .arena = fresh.arena, .properties = fresh.properties }) catch {
+                self.allocator.free(name);
+                fresh.arena.deinit();
+                self.allocator.destroy(fresh.arena);
                 return error.OutOfMemory;
             };
         }
+    }
+    /// Deep-copies properties into a new arena, as message storage is short-lived.
+    fn copy(self: *Manager, entries: []const Values.Entry) !struct { arena: *std.heap.ArenaAllocator, properties: []const Values.Entry } {
+        const arena = try self.allocator.create(std.heap.ArenaAllocator);
+        arena.* = .init(self.allocator);
+        errdefer {
+            arena.deinit();
+            self.allocator.destroy(arena);
+        }
+        const properties = try arena.allocator().alloc(Values.Entry, entries.len);
+        for (properties, entries) |*out, entry| out.* = .{ .key = try arena.allocator().dupe(u8, entry.key), .value = try entry.value.clone(arena.allocator()) };
+        return .{ .arena = arena, .properties = properties };
     }
     fn removed(context: ?*anyopaque, message: *const dbus.Message) void {
         const self: *Manager = @ptrCast(@alignCast(context));
@@ -199,7 +214,7 @@ pub const Manager = struct {
         const entry = self.interface(message.path orelse return, args[0]) orelse return;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
-        const old = bridge.dictFromVariant(arena.allocator(), c.g_variant_ref(entry.properties).?) catch return;
+        const old = Values{ .entries = entry.properties };
         var merged: std.ArrayList(Values.Entry) = .empty;
         for (old.entries) |value| {
             const replaced = for (args[1].entries) |update| {
@@ -210,9 +225,11 @@ pub const Manager = struct {
             if (!replaced) merged.append(arena.allocator(), value) catch return;
         }
         merged.appendSlice(arena.allocator(), args[1].entries) catch return;
-        const properties = c.g_variant_take_ref(bridge.dictToVariant(.{ .entries = merged.items }) orelse return).?;
-        c.g_variant_unref(entry.properties);
-        entry.properties = properties;
+        const fresh = self.copy(merged.items) catch return;
+        entry.arena.deinit();
+        self.allocator.destroy(entry.arena);
+        entry.arena = fresh.arena;
+        entry.properties = fresh.properties;
         self.handler(self.context, .properties);
     }
     fn signalled(context: ?*anyopaque, message: *const dbus.Message) void {

@@ -1,8 +1,11 @@
 //! Native connection properties. Unknown settings round-trip without libnm.
 const std = @import("std");
 const c = @import("desktop-glib.zig");
+const dbus = @import("dbus");
+const variant_text = @import("desktop-dbus-text.zig");
 const native = @import("desktop-form.zig");
 const network = @import("desktop-network.zig");
+const Settings = network.Settings;
 const presentation = @import("desktop-network-editor-view.zig");
 const raster = @import("desktop-raster.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
@@ -14,11 +17,6 @@ const eq = c.__zig.eq;
 fn text(w: *native.Item) [:0]const u8 {
     return w.value();
 }
-const builder = c.__zig.variant.builder;
-fn add(b: *c.GVariantBuilder, key: [:0]const u8, value: *c.GVariant) void {
-    c.g_variant_builder_add(b, "{sv}", key.ptr, value);
-}
-const lookup = c.__zig.variant.nested;
 const Field = struct { group: [:0]const u8, key: [:0]const u8, title: [:0]const u8, kind: [:0]const u8, hint: [:0]const u8 = "" };
 const fields = [_]Field{
     .{ .group = "connection", .key = "id", .title = "Connection name", .kind = "s" },
@@ -67,7 +65,8 @@ pub const Row = struct {
     kind: [:0]u8,
     widget: *native.Item,
     remove: *native.Item,
-    original: ?*c.GVariant,
+    /// The loaded value, borrowed from the editor's base settings.
+    original: ?dbus.Value,
     initial: [:0]u8,
     preserve_original: bool = false,
     bytes_as_text: bool = false,
@@ -77,44 +76,37 @@ pub const Row = struct {
         a.free(self.key);
         a.free(self.kind);
         a.free(self.initial);
-        if (self.original) |v| c.g_variant_unref(v);
     }
-    fn value(self: *Row) !?*c.GVariant {
+    /// The row's value, allocated from `arena`; null leaves the property at its default.
+    fn value(self: *Row, arena: std.mem.Allocator) !?dbus.Value {
         if (self.remove.checked) return null;
-        if (self.preserve_original) return c.g_variant_ref(self.original.?);
-        if (eq(self.kind, "b")) {
-            const enabled: c_int = @intFromBool(self.widget.checked);
-            return c.g_variant_ref_sink(c.g_variant_new("b", enabled));
-        }
+        if (self.preserve_original) return self.original.?;
+        if (eq(self.kind, "b")) return .{ .boolean = self.widget.checked };
         const entered = text(self.widget);
         // Preserve the original representation, including unrecognised address attributes.
-        if (self.original) |v| if (eq(entered, self.initial)) return c.g_variant_ref(v);
+        if (self.original) |v| if (eq(entered, self.initial)) return v;
         if (entered.len == 0) return null;
-        if (eq(self.kind, "s")) return c.g_variant_ref_sink(c.g_variant_new("s", entered.ptr));
+        if (eq(self.kind, "s")) return .{ .string = try arena.dupe(u8, entered) };
         if (self.bytes_as_text) {
             if (entered.len > 32) return error.InvalidSSIDLength;
-            return c.g_variant_ref_sink(c.__zig.variant.byteArray(entered));
+            return .{ .bytes = try arena.dupe(u8, entered) };
         }
-        if (self.addresses_as_text) return parseAddresses(entered, eq(self.group, "ipv6"));
+        if (self.addresses_as_text) return try parseAddresses(arena, entered, eq(self.group, "ipv6"));
         if (eq(self.kind, "as")) {
-            const out = builder("as");
-            defer c.g_variant_builder_unref(out);
+            var items: std.ArrayList(dbus.Value) = .empty;
             var parts = std.mem.tokenizeAny(u8, entered, ", \t\n");
-            while (parts.next()) |part| {
-                const part_z = z(part);
-                defer a.free(part_z);
-                c.g_variant_builder_add(out, "s", part_z.ptr);
-            }
-            return c.g_variant_ref_sink(c.g_variant_builder_end(out));
+            while (parts.next()) |part| try items.append(arena, .{ .string = try arena.dupe(u8, part) });
+            return .{ .array = .{ .element = "s", .items = items.items } };
         }
-        var err: [*c]c.GError = null;
-        defer c.g_clear_error(&err);
-        return c.g_variant_parse(@ptrCast(self.kind.ptr), entered.ptr, null, null, &err) orelse error.InvalidPropertyValue;
+        return variant_text.parse(arena, self.kind, entered) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.InvalidText => error.InvalidPropertyValue,
+        };
     }
 };
-pub fn parseAddresses(input: []const u8, ipv6: bool) !*c.GVariant {
-    const out = builder("aa{sv}");
-    defer c.g_variant_builder_unref(out);
+/// Parses "address/prefix, ..." into NetworkManager's `aa{sv}` address data.
+pub fn parseAddresses(arena: std.mem.Allocator, input: []const u8, ipv6: bool) !dbus.Value {
+    var items: std.ArrayList(dbus.Value) = .empty;
     var addresses = std.mem.tokenizeAny(u8, input, ", \t\n");
     while (addresses.next()) |cidr| {
         const slash = std.mem.lastIndexOfScalar(u8, cidr, '/') orelse return error.AddressNeedsPrefix;
@@ -123,15 +115,34 @@ pub fn parseAddresses(input: []const u8, ipv6: bool) !*c.GVariant {
         if ((parsed == .ip6) != ipv6) return error.WrongAddressFamily;
         const prefix = std.fmt.parseInt(u32, cidr[slash + 1 ..], 10) catch return error.InvalidPrefix;
         if (prefix > @as(u32, if (ipv6) 128 else 32)) return error.InvalidPrefix;
-        const inner = builder("a{sv}");
-        defer c.g_variant_builder_unref(inner);
-        const address_z = z(address);
-        defer a.free(address_z);
-        add(inner, "address", c.g_variant_new("s", address_z.ptr).?);
-        add(inner, "prefix", c.g_variant_new("u", prefix).?);
-        c.g_variant_builder_add(out, "@a{sv}", c.g_variant_builder_end(inner));
+        try items.append(arena, try dictionary(arena, &.{ .{ "address", .{ .string = try arena.dupe(u8, address) } }, .{ "prefix", .{ .uint32 = prefix } } }));
     }
-    return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
+    return .{ .array = .{ .element = "a{sv}", .items = items.items } };
+}
+/// An `a{sv}` value from key/value pairs.
+fn dictionary(arena: std.mem.Allocator, pairs: []const struct { []const u8, dbus.Value }) !dbus.Value {
+    const items = try arena.alloc(dbus.Value, pairs.len);
+    for (items, pairs) |*item, pair| {
+        const entry = try arena.create([2]dbus.Value);
+        const boxed = try arena.create(dbus.Value);
+        boxed.* = pair[1];
+        entry.* = .{ .{ .string = pair[0] }, .{ .variant = boxed } };
+        item.* = .{ .dict_entry = entry };
+    }
+    return .{ .array = .{ .element = "{sv}", .items = items } };
+}
+/// A dictionary entry's value with any variant wrapper removed.
+fn lookupString(dict: dbus.Value, key: []const u8) ?[]const u8 {
+    return switch (dict.lookup(key) orelse return null) {
+        .string => |v| v,
+        else => null,
+    };
+}
+fn lookupUint(dict: dbus.Value, key: []const u8) ?u32 {
+    return switch (dict.lookup(key) orelse return null) {
+        .uint32 => |v| v,
+        else => null,
+    };
 }
 pub const Editor = struct {
     window: *native.host.Window,
@@ -139,6 +150,7 @@ pub const Editor = struct {
     message: *native.Item,
     save_button: *native.Item,
     client: *network.Client,
+    base: *Settings,
     cancel: *c.GCancellable,
     path: ?[:0]u8,
     version: u64,
@@ -155,8 +167,8 @@ pub const Editor = struct {
         return createWithBase(parent, profile, null);
     }
     pub fn createWireless(parent: *native.host.Window, ap: network.AccessPoint) *Editor {
-        const base = template(ap);
-        defer c.g_variant_unref(base);
+        const base = template(ap) catch @panic("out of memory");
+        defer base.unref();
         const self = createWithBase(parent, null, base);
         self.view.strength = ap.strength;
         if (ap.security == .enterprise) self.view.page = .security;
@@ -166,42 +178,31 @@ pub const Editor = struct {
         self.ui.relayout();
         return self;
     }
-    fn createWithBase(parent: *native.host.Window, profile: ?network.Profile, initial: ?*c.GVariant) *Editor {
+    fn createWithBase(parent: *native.host.Window, profile: ?network.Profile, initial: ?*Settings) *Editor {
         const self = a.create(Editor) catch @panic("out of memory");
         const ui = native.Form.create(if (profile) |p| p.title else "New Connection", self, &action, &fieldChanged) catch @panic("out of memory");
         const window = ui.window;
         window.parent = parent;
-        self.* = .{ .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = c.g_cancellable_new().?, .path = if (profile) |p| z(p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(&changed, self) catch @panic("out of memory"), .property_group = undefined, .property_key = undefined, .property_type = undefined };
-        const base = if (initial) |value| c.g_variant_ref(value).? else if (profile) |p| c.g_variant_ref(p.base).? else template(null);
-        defer c.g_variant_unref(base);
+        // Rows borrow their original values from these settings for the editor's lifetime.
+        const base = if (initial) |value| value.ref() else if (profile) |p| p.base.ref() else template(null) catch @panic("out of memory");
+        self.* = .{ .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = c.g_cancellable_new().?, .path = if (profile) |p| z(p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(&changed, self) catch @panic("out of memory"), .base = base, .property_group = undefined, .property_key = undefined, .property_type = undefined };
         // Known fields first; every other property remains editable below them.
         for (fields) |field| {
-            const section = c.g_variant_lookup_value(base, field.group, null);
-            defer if (section) |v| c.g_variant_unref(v);
-            if (section != null or eq(field.group, "connection")) self.addRow(field, lookup(base, field.group, field.key));
+            if (base.group(field.group) != null or eq(field.group, "connection")) self.addRow(field, base.get(field.group, field.key));
         }
-        for ([_][:0]const u8{ "ipv4", "ipv6" }) |section| for (ip_fields) |field| self.addRow(.{ .group = section, .key = field.key, .title = field.title, .kind = field.kind, .hint = field.hint }, lookup(base, section, field.key));
-        for (0..c.g_variant_n_children(base)) |i| {
-            const pair = c.g_variant_get_child_value(base, i).?;
-            defer c.g_variant_unref(pair);
-            const key = c.g_variant_get_child_value(pair, 0).?;
-            defer c.g_variant_unref(key);
-            const group_name = std.mem.span(c.g_variant_get_string(key, null));
-            const dict = c.g_variant_get_child_value(pair, 1).?;
-            defer c.g_variant_unref(dict);
-            for (0..c.g_variant_n_children(dict)) |j| {
-                const property = c.g_variant_get_child_value(dict, j).?;
-                defer c.g_variant_unref(property);
-                const k = c.g_variant_get_child_value(property, 0).?;
-                defer c.g_variant_unref(k);
-                const key_name = std.mem.span(c.g_variant_get_string(k, null));
-                if (self.row(group_name, key_name) != null) continue;
-                const wrapped = c.g_variant_get_child_value(property, 1).?;
-                defer c.g_variant_unref(wrapped);
-                const value = c.g_variant_get_variant(wrapped).?;
-                self.addRow(.{ .group = group_name, .key = key_name, .title = key_name, .kind = std.mem.span(c.g_variant_get_type_string(value)) }, value);
-            }
-        }
+        for ([_][:0]const u8{ "ipv4", "ipv6" }) |section| for (ip_fields) |field| self.addRow(.{ .group = section, .key = field.key, .title = field.title, .kind = field.kind, .hint = field.hint }, base.get(section, field.key));
+        for (base.groups.items) |group| for (group.properties.items) |property| {
+            if (self.row(group.name, property.key) != null) continue;
+            var buffer: [256]u8 = undefined;
+            const kind = property.value.signatureInto(&buffer) catch continue;
+            const group_name = z(group.name);
+            defer a.free(group_name);
+            const key_name = z(property.key);
+            defer a.free(key_name);
+            const kind_name = z(kind);
+            defer a.free(kind_name);
+            self.addRow(.{ .group = group_name, .key = key_name, .title = key_name, .kind = kind_name }, property.value);
+        };
         _ = ui.add(.heading, "Additional connection properties", "", false) catch @panic("out of memory");
         self.property_group = ui.get(ui.add(.entry, "Section", "e.g. ipv4, vlan, 802-1x", false) catch @panic("out of memory"));
         self.property_key = ui.get(ui.add(.entry, "Property", "e.g. mtu, parent, identity", false) catch @panic("out of memory"));
@@ -300,8 +301,9 @@ pub const Editor = struct {
             _ = self.ui.select(control.id, if (self.row(control.group, control.key)) |r| r.widget.value() else "");
         }
     }
-    fn addRow(self: *Editor, field: Field, original: ?*c.GVariant) void {
-        const kind = if (original) |v| std.mem.span(c.g_variant_get_type_string(v)) else field.kind;
+    fn addRow(self: *Editor, field: Field, original: ?dbus.Value) void {
+        var kind_buffer: [256]u8 = undefined;
+        const kind: []const u8 = if (original) |v| v.signatureInto(&kind_buffer) catch field.kind else field.kind;
         const widget = self.ui.get(self.ui.add(if (eq(kind, "b")) .toggle else .entry, field.title, field.hint, network.secretProperty(field.key) and !std.mem.endsWith(u8, field.key, "-flags")) catch @panic("out of memory"));
         const default_label = std.fmt.allocPrintSentinel(a, "Use default · {s}", .{field.key}, 0) catch @panic("out of memory");
         defer a.free(default_label);
@@ -312,66 +314,11 @@ pub const Editor = struct {
         var byte_text = eq(field.key, "ssid");
         var address_text = eq(field.key, "address-data");
         if (original) |v| {
-            if (eq(kind, "b")) widget.checked = c.g_variant_get_boolean(v) != 0 else {
+            if (eq(kind, "b")) widget.checked = v.boolean else {
                 a.free(initial);
-                if (eq(kind, "s")) initial = z(std.mem.span(c.g_variant_get_string(v, null))) else if (byte_text) blk: {
-                    var len: usize = 0;
-                    const raw = c.g_variant_get_fixed_array(v, &len, 1);
-                    const bytes = if (raw) |p| @as([*]const u8, @ptrCast(p))[0..len] else "";
-                    if (std.unicode.utf8ValidateSlice(bytes) and std.mem.indexOfScalar(u8, bytes, 0) == null) {
-                        initial = z(bytes);
-                        break :blk;
-                    }
-                    byte_text = false;
-                    const printed = c.g_variant_print(v, 1);
-                    defer c.g_free(printed);
-                    initial = z(std.mem.span(printed));
-                } else if (eq(kind, "as")) {
-                    var list: std.ArrayList(u8) = .empty;
-                    defer list.deinit(a);
-                    for (0..c.g_variant_n_children(v)) |i| {
-                        const value = c.g_variant_get_child_value(v, i).?;
-                        defer c.g_variant_unref(value);
-                        if (i != 0) list.appendSlice(a, ", ") catch @panic("out of memory");
-                        list.appendSlice(a, std.mem.span(c.g_variant_get_string(value, null))) catch @panic("out of memory");
-                    }
-                    initial = z(list.items);
-                } else if (address_text) {
-                    var list: std.ArrayList(u8) = .empty;
-                    defer list.deinit(a);
-                    for (0..c.g_variant_n_children(v)) |i| {
-                        const address = c.g_variant_get_child_value(v, i).?;
-                        defer c.g_variant_unref(address);
-                        const ip = c.g_variant_lookup_value(address, "address", @ptrCast(@as([*:0]const u8, "s"))) orelse {
-                            address_text = false;
-                            break;
-                        };
-                        defer c.g_variant_unref(ip);
-                        const prefix = c.g_variant_lookup_value(address, "prefix", @ptrCast(@as([*:0]const u8, "u"))) orelse {
-                            address_text = false;
-                            break;
-                        };
-                        defer c.g_variant_unref(prefix);
-                        const cidr = std.fmt.allocPrint(a, "{s}{s}/{d}", .{ if (i == 0) "" else ", ", std.mem.span(c.g_variant_get_string(ip, null)), c.g_variant_get_uint32(prefix) }) catch @panic("out of memory");
-                        defer a.free(cidr);
-                        list.appendSlice(a, cidr) catch @panic("out of memory");
-                        if (c.g_variant_n_children(address) != 2) {
-                            address_text = false;
-                            break;
-                        }
-                    }
-                    if (address_text) initial = z(list.items) else {
-                        const printed = c.g_variant_print(v, 1);
-                        defer c.g_free(printed);
-                        initial = z(std.mem.span(printed));
-                    }
-                } else {
-                    const printed = c.g_variant_print(v, 1);
-                    defer c.g_free(printed);
-                    initial = z(std.mem.span(printed));
-                }
+                initial = self.initialText(v, kind, &byte_text, &address_text);
                 self.ui.setText(widget.id, initial) catch {
-                    // Arbitrary GVariant data must still round-trip losslessly.
+                    // Arbitrary values must still round-trip losslessly.
                     preserve_original = true;
                     self.ui.setText(widget.id, "[Original value preserved; too large or multiline to edit]") catch {};
                     widget.enabled = false;
@@ -379,6 +326,42 @@ pub const Editor = struct {
             }
         }
         self.rows.append(a, .{ .group = z(field.group), .key = z(field.key), .kind = z(kind), .widget = widget, .remove = remove, .original = original, .initial = initial, .preserve_original = preserve_original, .bytes_as_text = byte_text, .addresses_as_text = address_text }) catch @panic("out of memory");
+    }
+    /// How a loaded value is shown: plain text for common forms, the GVariant text format otherwise.
+    fn initialText(_: *Editor, v: dbus.Value, kind: []const u8, byte_text: *bool, address_text: *bool) [:0]u8 {
+        if (eq(kind, "s")) return z(v.string);
+        if (byte_text.* and !eq(kind, "ay")) byte_text.* = false;
+        if (address_text.* and !eq(kind, "aa{sv}")) address_text.* = false;
+        if (byte_text.*) {
+            const bytes = v.bytes;
+            if (std.unicode.utf8ValidateSlice(bytes) and std.mem.indexOfScalar(u8, bytes, 0) == null) return z(bytes);
+            byte_text.* = false;
+        } else if (eq(kind, "as")) {
+            var list: std.ArrayList(u8) = .empty;
+            defer list.deinit(a);
+            for (v.array.items, 0..) |item, i| {
+                if (i != 0) list.appendSlice(a, ", ") catch @panic("out of memory");
+                list.appendSlice(a, item.string) catch @panic("out of memory");
+            }
+            return z(list.items);
+        } else if (address_text.*) {
+            var list: std.ArrayList(u8) = .empty;
+            defer list.deinit(a);
+            for (v.array.items, 0..) |address, i| {
+                // Only plain address/prefix pairs are shown as text; anything else stays exact.
+                const ip = lookupString(address, "address");
+                const prefix = lookupUint(address, "prefix");
+                if (ip == null or prefix == null or address.array.items.len != 2) {
+                    address_text.* = false;
+                    break;
+                }
+                list.print(a, "{s}{s}/{d}", .{ if (i == 0) "" else ", ", ip.?, prefix.? }) catch @panic("out of memory");
+            }
+            if (address_text.*) return z(list.items);
+        }
+        const printed = variant_text.print(a, v) catch @panic("out of memory");
+        defer a.free(printed);
+        return z(printed);
     }
     fn fieldChanged(ptr: ?*anyopaque, id: usize) void {
         const self = cast(Editor, ptr);
@@ -468,7 +451,7 @@ pub const Editor = struct {
         const group = text(self.property_group);
         const key = text(self.property_key);
         const kind = text(self.property_type);
-        if (group.len == 0 or key.len == 0 or c.g_variant_type_string_is_valid(kind) == 0 or c.g_variant_type_is_definite(@ptrCast(kind.ptr)) == 0 or self.row(group, key) != null) {
+        if (group.len == 0 or key.len == 0 or !dbus.isSingleType(kind) or self.row(group, key) != null) {
             self.setMessage("Enter a new section, property and valid value type.");
             return;
         }
@@ -476,56 +459,37 @@ pub const Editor = struct {
         self.rebuildPresentation();
         self.ui.relayout();
     }
-    pub fn values(self: *Editor) !*c.GVariant {
-        const Group = struct { name: [:0]const u8, value: *c.GVariantBuilder };
-        var groups: std.ArrayList(Group) = .empty;
-        defer {
-            for (groups.items) |group| c.g_variant_builder_unref(group.value);
-            groups.deinit(a);
-        }
+    /// The edited settings; the caller owns the returned reference.
+    pub fn values(self: *Editor) !*Settings {
+        const out = try Settings.create(a);
+        errdefer out.unref();
+        var scratch = std.heap.ArenaAllocator.init(a);
+        defer scratch.deinit();
         for (self.rows.items) |*r| {
             const modern: ?[]const u8 = if (eq(r.key, "dns")) "dns-data" else if (eq(r.key, "addresses")) "address-data" else if (eq(r.key, "routes")) "route-data" else null;
             if (modern) |key| if (self.row(r.group, key)) |replacement| {
                 if (text(replacement.widget).len != 0 and !replacement.remove.checked) continue;
             };
-            const value = r.value() catch |err| {
+            const value = r.value(scratch.allocator()) catch |err| {
                 const message = std.fmt.allocPrintSentinel(a, "{s} · {s}: {s}", .{ r.group, r.key, @errorName(err) }, 0) catch @panic("out of memory");
                 defer a.free(message);
                 self.setMessage(message);
                 return err;
             } orelse continue;
-            defer c.g_variant_unref(value);
-            var group_builder: ?*c.GVariantBuilder = null;
-            for (groups.items) |group| if (eq(group.name, r.group)) {
-                group_builder = group.value;
-                break;
-            };
-            if (group_builder == null) {
-                group_builder = builder("a{sv}");
-                try groups.append(a, .{ .name = r.group, .value = group_builder.? });
-            }
-            add(group_builder.?, r.key, value);
+            try out.put(r.group, r.key, value);
         }
+        // The group named by the connection type must exist, even when empty.
         if (self.row("connection", "type")) |kind_row| {
             const kind = text(kind_row.widget);
-            var found = false;
-            for (groups.items) |group| {
-                if (eq(group.name, kind)) found = true;
-            }
-            if (!found and kind.len > 0) try groups.append(a, .{ .name = kind, .value = builder("a{sv}") });
+            if (kind.len > 0) _ = try out.ensureGroup(kind);
         }
-        const out = builder("a{sa{sv}}");
-        defer c.g_variant_builder_unref(out);
-        for (groups.items) |group| c.g_variant_builder_add(out, "{s@a{sv}}", group.name.ptr, c.g_variant_builder_end(group.value));
-        return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
+        return out;
     }
     pub fn save(self: *Editor) void {
         if (self.saving or self.closed) return;
         const settings = self.values() catch return;
-        defer c.g_variant_unref(settings);
-        const id = lookup(settings, "connection", "id");
-        defer if (id) |v| c.g_variant_unref(v);
-        if (id == null or std.mem.span(c.g_variant_get_string(id, null)).len == 0) {
+        defer settings.unref();
+        if (settings.text("connection", "id").len == 0) {
             self.setMessage("Enter a connection name.");
             return;
         }
@@ -558,6 +522,7 @@ pub const Editor = struct {
         self.refs -= 1;
         if (self.refs != 0) return;
         self.client.destroy();
+        self.base.unref();
         c.g_object_unref(self.cancel);
         if (self.path) |path| a.free(path);
         for (self.rows.items) |*r| r.deinit();
@@ -570,53 +535,38 @@ pub const Editor = struct {
         self.ui.setText(self.message.id, message) catch {};
     }
 };
-fn template(ap: ?network.AccessPoint) *c.GVariant {
-    const uuid = c.g_uuid_string_random();
-    defer c.g_free(uuid);
-    const out = builder("a{sa{sv}}");
-    defer c.g_variant_builder_unref(out);
-    const connection = builder("a{sv}");
-    defer c.g_variant_builder_unref(connection);
-    add(connection, "id", c.g_variant_new("s", if (ap) |point| point.title.ptr else @as([*:0]const u8, "New connection")).?);
-    add(connection, "uuid", c.g_variant_new("s", uuid).?);
-    add(connection, "type", c.g_variant_new("s", @as([*:0]const u8, if (ap != null) "802-11-wireless" else "802-3-ethernet")).?);
-    add(connection, "autoconnect", c.g_variant_new("b", @as(c_int, 1)).?);
-    c.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "connection"), c.g_variant_builder_end(connection));
-    for ([_][:0]const u8{ "ipv4", "ipv6" }) |group| {
-        const inner = builder("a{sv}");
-        defer c.g_variant_builder_unref(inner);
-        add(inner, "method", c.g_variant_new("s", @as([*:0]const u8, "auto")).?);
-        c.g_variant_builder_add(out, "{s@a{sv}}", group.ptr, c.g_variant_builder_end(inner));
-    }
-    const device = builder("a{sv}");
-    defer c.g_variant_builder_unref(device);
+fn template(ap: ?network.AccessPoint) !*Settings {
+    const out = try Settings.create(a);
+    errdefer out.unref();
+    try out.put("connection", "id", .{ .string = if (ap) |point| point.title else "New connection" });
+    try out.put("connection", "uuid", .{ .string = &uuid() });
+    try out.put("connection", "type", .{ .string = if (ap != null) "802-11-wireless" else "802-3-ethernet" });
+    try out.put("connection", "autoconnect", .{ .boolean = true });
+    for ([_][]const u8{ "ipv4", "ipv6" }) |group| try out.put(group, "method", .{ .string = "auto" });
+    const device = if (ap != null) "802-11-wireless" else "802-3-ethernet";
+    _ = try out.ensureGroup(device);
     if (ap) |point| {
-        add(device, "ssid", c.__zig.variant.byteArray(point.ssid));
-        add(device, "mode", c.g_variant_new("s", @as([*:0]const u8, "infrastructure")).?);
-        if (point.security != .open) {
-            const auth = builder("a{sv}");
-            defer c.g_variant_builder_unref(auth);
-            const key: [*:0]const u8 = switch (point.security) {
-                .open => "",
-                .wep => "none",
-                .personal => "wpa-psk",
-                .sae => "sae",
-                .enterprise => "wpa-eap",
-                .owe => "owe",
-            };
-            add(auth, "key-mgmt", c.g_variant_new("s", key).?);
-            c.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "802-11-wireless-security"), c.g_variant_builder_end(auth));
-        }
-        if (point.security == .enterprise) {
-            const enterprise = builder("a{sv}");
-            defer c.g_variant_builder_unref(enterprise);
-            const methods = builder("as");
-            defer c.g_variant_builder_unref(methods);
-            c.g_variant_builder_add(methods, "s", @as([*:0]const u8, "peap"));
-            add(enterprise, "eap", c.g_variant_builder_end(methods).?);
-            c.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, "802-1x"), c.g_variant_builder_end(enterprise));
-        }
+        try out.put(device, "ssid", .{ .bytes = point.ssid });
+        try out.put(device, "mode", .{ .string = "infrastructure" });
+        if (point.security != .open) try out.put("802-11-wireless-security", "key-mgmt", .{ .string = switch (point.security) {
+            .open => "",
+            .wep => "none",
+            .personal => "wpa-psk",
+            .sae => "sae",
+            .enterprise => "wpa-eap",
+            .owe => "owe",
+        } });
+        if (point.security == .enterprise) try out.put("802-1x", "eap", .{ .array = .{ .element = "s", .items = &.{.{ .string = "peap" }} } });
     }
-    c.g_variant_builder_add(out, "{s@a{sv}}", @as([*:0]const u8, if (ap != null) "802-11-wireless" else "802-3-ethernet"), c.g_variant_builder_end(device));
-    return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
+    return out;
+}
+/// A random (version 4) UUID in its usual text form.
+fn uuid() [36]u8 {
+    var raw: [16]u8 = undefined;
+    @import("desktop-secrets-store.zig").random(&raw) catch @panic("no randomness available");
+    raw[6] = (raw[6] & 0x0f) | 0x40;
+    raw[8] = (raw[8] & 0x3f) | 0x80;
+    var out: [36]u8 = undefined;
+    _ = std.fmt.bufPrint(&out, "{x}-{x}-{x}-{x}-{x}", .{ raw[0..4], raw[4..6], raw[6..8], raw[8..10], raw[10..16] }) catch unreachable;
+    return out;
 }

@@ -88,6 +88,37 @@ pub const Value = union(enum) {
         }
     }
 
+    /// A deep copy whose storage comes from `allocator` (an arena is the intended use).
+    pub fn clone(self: Value, allocator: std.mem.Allocator) error{OutOfMemory}!Value {
+        return switch (self) {
+            .string => |v| .{ .string = try allocator.dupe(u8, v) },
+            .object_path => |v| .{ .object_path = try allocator.dupe(u8, v) },
+            .signature => |v| .{ .signature = try allocator.dupe(u8, v) },
+            .bytes => |v| .{ .bytes = try allocator.dupe(u8, v) },
+            .array => |array| blk: {
+                const items = try allocator.alloc(Value, array.items.len);
+                for (items, array.items) |*out, item| out.* = try item.clone(allocator);
+                break :blk .{ .array = .{ .element = try allocator.dupe(u8, array.element), .items = items } };
+            },
+            .structure => |fields| blk: {
+                const items = try allocator.alloc(Value, fields.len);
+                for (items, fields) |*out, item| out.* = try item.clone(allocator);
+                break :blk .{ .structure = items };
+            },
+            .dict_entry => |entry| blk: {
+                const copy = try allocator.create([2]Value);
+                copy.* = .{ try entry[0].clone(allocator), try entry[1].clone(allocator) };
+                break :blk .{ .dict_entry = copy };
+            },
+            .variant => |inner| blk: {
+                const copy = try allocator.create(Value);
+                copy.* = try inner.clone(allocator);
+                break :blk .{ .variant = copy };
+            },
+            else => self,
+        };
+    }
+
     /// Looks up `key` in an `a{sv}`-style dictionary, unwrapping the variant.
     pub fn lookup(self: Value, key: []const u8) ?Value {
         const array = switch (self) {
@@ -478,6 +509,12 @@ pub const Reader = struct {
         };
     }
 };
+
+/// Whether `signature` is exactly one complete type, such as `a{sv}`.
+pub fn isSingleType(signature: []const u8) bool {
+    if (signature.len == 0 or signature.len > 255 or signature[0] == '{') return false;
+    return (completeType(signature, 0) catch return false) == signature.len;
+}
 
 /// The end index of the single complete type starting at `start` in `code`.
 fn completeType(code: []const u8, start: usize) !usize {

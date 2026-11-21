@@ -3,7 +3,6 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
-const bridge = @import("desktop-dbus-gvariant.zig");
 const objects = @import("desktop-dbus-objects.zig");
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const name = "org.freedesktop.NetworkManager";
@@ -18,37 +17,29 @@ fn z(value: []const u8) [:0]u8 {
     return c.__zig.dupeZ(a, value);
 }
 const eq = c.__zig.eq;
-const string = c.__zig.variant.slice;
 /// An interface's cached properties, as mirrored from NetworkManager's ObjectManager.
 const Proxy = objects.Interface;
-fn prop(proxy: *const Proxy, key: [*:0]const u8) ?*c.GVariant {
-    return proxy.property(key);
+fn text(proxy: *const Proxy, key: []const u8) [:0]u8 {
+    return z(switch (proxy.property(key) orelse return z("")) {
+        .string, .object_path => |value| value,
+        else => "",
+    });
 }
-fn text(proxy: *const Proxy, key: [*:0]const u8) [:0]u8 {
-    const v = prop(proxy, key);
-    defer if (v) |p| c.g_variant_unref(p);
-    return z(string(v));
+fn number(proxy: *const Proxy, key: []const u8) u32 {
+    return switch (proxy.property(key) orelse return 0) {
+        .byte => |value| value,
+        .uint32 => |value| value,
+        else => 0,
+    };
 }
-fn number(proxy: *const Proxy, key: [*:0]const u8) u32 {
-    const v = prop(proxy, key) orelse return 0;
-    defer c.g_variant_unref(v);
-    return if (eq(std.mem.span(c.g_variant_get_type_string(v)), "y")) c.g_variant_get_byte(v) else c.g_variant_get_uint32(v);
+fn boolean(proxy: *const Proxy, key: []const u8) bool {
+    return switch (proxy.property(key) orelse return false) {
+        .boolean => |value| value,
+        else => false,
+    };
 }
-fn boolean(proxy: *const Proxy, key: [*:0]const u8) bool {
-    const v = prop(proxy, key) orelse return false;
-    defer c.g_variant_unref(v);
-    return c.g_variant_get_boolean(v) != 0;
-}
-const bytes = c.__zig.variant.bytes;
-fn section(value: *c.GVariant, key: [*:0]const u8) ?*c.GVariant {
-    return c.g_variant_lookup_value(value, key, null);
-}
-const setting = c.__zig.variant.nested;
-fn settingText(value: *c.GVariant, group_key: [*:0]const u8, key: [*:0]const u8) [:0]u8 {
-    const v = setting(value, group_key, key);
-    defer if (v) |p| c.g_variant_unref(p);
-    return z(string(v));
-}
+pub const Settings = @import("desktop-network-settings.zig").Settings;
+const Wire = @import("desktop-network-settings.zig").Wire;
 pub fn ssidTitle(allocator: std.mem.Allocator, ssid: []const u8) ![:0]u8 {
     if (std.unicode.utf8ValidateSlice(ssid) and std.mem.indexOfScalar(u8, ssid, 0) == null) return allocator.dupeSentinel(u8, ssid, 0);
     var out: std.ArrayList(u8) = .empty;
@@ -83,7 +74,7 @@ pub const AccessPoint = struct {
     }
 };
 pub const Device = struct { path: [:0]u8, interface: [:0]u8, kind: u32, state: u32, managed: bool, active: [:0]u8 };
-pub const Profile = struct { path: [:0]u8, uuid: [:0]u8, title: [:0]u8, kind: [:0]u8, ssid: []u8, active: bool, base: *c.GVariant, version: u64 = 0 };
+pub const Profile = struct { path: [:0]u8, uuid: [:0]u8, title: [:0]u8, kind: [:0]u8, ssid: []u8, active: bool, base: *Settings, version: u64 = 0 };
 const Active = struct { path: [:0]u8, profile: [:0]u8, title: [:0]u8, kind: [:0]u8, state: u32 };
 pub const Indicator = struct { icon: [:0]const u8, title: []const u8, strength: ?u8 = null };
 pub const State = struct {
@@ -114,7 +105,7 @@ pub const State = struct {
             a.free(p.title);
             a.free(p.kind);
             a.free(p.ssid);
-            c.g_variant_unref(p.base);
+            p.base.unref();
         }
         for (self.active.items) |v| {
             a.free(v.path);
@@ -170,7 +161,7 @@ pub fn deviceState(state: u32) [:0]const u8 {
         else => "unknown",
     };
 }
-const Record = struct { path: [:0]u8, settings: ?*c.GVariant = null, dirty: bool = true, loading: bool = false, seen: bool = false, version: u64 = 0 };
+const Record = struct { path: [:0]u8, settings: ?*Settings = null, dirty: bool = true, loading: bool = false, seen: bool = false, version: u64 = 0 };
 const Fetch = struct { service: *Service, path: [:0]u8, epoch: u64, version: u64, serial: u32 = 0 };
 var shared: ?*Service = null;
 /// Services not yet freed, so lifetime tests can wait for teardown.
@@ -207,7 +198,7 @@ pub const Service = struct {
     }
     fn clearRecords(self: *Service) void {
         for (self.records.items) |r| {
-            if (r.settings) |s| c.g_variant_unref(s);
+            if (r.settings) |s| s.unref();
             a.free(r.path);
             a.destroy(r);
         }
@@ -318,9 +309,11 @@ pub const Service = struct {
         r.dirty = false;
         r.loading = true;
         const fetch_data = a.create(Fetch) catch @panic("out of memory");
-        const version = prop(proxy, "VersionId");
-        defer if (version) |v| c.g_variant_unref(v);
-        fetch_data.* = .{ .service = self, .path = z(r.path), .epoch = self.epoch, .version = if (version) |v| c.g_variant_get_uint64(v) else 0 };
+        const version: u64 = switch (proxy.property("VersionId") orelse dbus.Value{ .uint64 = 0 }) {
+            .uint64 => |value| value,
+            else => 0,
+        };
+        fetch_data.* = .{ .service = self, .path = z(r.path), .epoch = self.epoch, .version = version };
         self.fetches.append(a, fetch_data) catch @panic("out of memory");
         self.ref();
         fetch_data.serial = source.connection.call(.{ .destination = name, .path = r.path, .interface = profile_iface, .member = "GetSettings" }, .{}, 10000, &fetched, fetch_data) catch {
@@ -348,12 +341,13 @@ pub const Service = struct {
         const r = self.record(task.path) orelse return;
         r.loading = false;
         switch (reply) {
-            .ok => |message| if (bridge.argumentsVariant(message)) |v| {
-                defer c.g_variant_unref(v);
-                if (r.settings) |old| c.g_variant_unref(old);
-                r.settings = c.g_variant_get_child_value(v, 0);
-                r.version = task.version;
-            },
+            .ok => |message| if (message.read(struct { Wire })) |args| {
+                if (Settings.fromWire(a, args[0])) |fresh| {
+                    if (r.settings) |old| old.unref();
+                    r.settings = fresh;
+                    r.version = task.version;
+                } else |_| {}
+            } else |_| {},
             .failed => {},
         }
         self.schedule();
@@ -393,20 +387,18 @@ pub const Service = struct {
         while (index < self.records.items.len) {
             const r = self.records.items[index];
             if (!r.seen) {
-                if (r.settings) |v| c.g_variant_unref(v);
+                if (r.settings) |v| v.unref();
                 a.free(r.path);
                 a.destroy(r);
                 _ = self.records.swapRemove(index);
                 continue;
             }
             if (r.settings) |base| {
-                const ssid = setting(base, "802-11-wireless", "ssid");
-                defer if (ssid) |v| c.g_variant_unref(v);
                 var active = false;
                 for (self.state.active.items) |v| {
                     if (eq(v.profile, r.path)) active = true;
                 }
-                self.state.profiles.append(a, .{ .path = z(r.path), .uuid = settingText(base, "connection", "uuid"), .title = settingText(base, "connection", "id"), .kind = settingText(base, "connection", "type"), .ssid = a.dupe(u8, bytes(ssid)) catch @panic("out of memory"), .active = active, .base = c.g_variant_ref(base).?, .version = r.version }) catch @panic("out of memory");
+                self.state.profiles.append(a, .{ .path = z(r.path), .uuid = z(base.text("connection", "uuid")), .title = z(base.text("connection", "id")), .kind = z(base.text("connection", "type")), .ssid = a.dupe(u8, base.bytes("802-11-wireless", "ssid")) catch @panic("out of memory"), .active = active, .base = base.ref(), .version = r.version }) catch @panic("out of memory");
             }
             index += 1;
         }
@@ -422,22 +414,27 @@ pub const Service = struct {
         const wireless = self.interface(device.path, wireless_iface) orelse return;
         const current = text(wireless, "ActiveAccessPoint");
         defer a.free(current);
-        const paths = prop(wireless, "AccessPoints") orelse return;
-        defer c.g_variant_unref(paths);
-        for (0..c.g_variant_n_children(paths)) |i| {
-            const child = c.g_variant_get_child_value(paths, i).?;
-            defer c.g_variant_unref(child);
-            const path = std.mem.span(c.g_variant_get_string(child, null));
+        const paths = switch (wireless.property("AccessPoints") orelse return) {
+            .array => |array| array.items,
+            else => return,
+        };
+        for (paths) |item| {
+            const path = switch (item) {
+                .object_path => |value| value,
+                else => continue,
+            };
             const proxy = self.interface(path, ap_iface) orelse continue;
-            const ssid = prop(proxy, "Ssid");
-            defer if (ssid) |v| c.g_variant_unref(v);
-            const raw = a.dupe(u8, bytes(ssid)) catch @panic("out of memory");
+            const ssid: []const u8 = switch (proxy.property("Ssid") orelse dbus.Value{ .bytes = "" }) {
+                .bytes => |value| value,
+                else => "",
+            };
+            const raw = a.dupe(u8, ssid) catch @panic("out of memory");
             self.state.access_points.append(a, .{ .path = z(path), .device = z(device.path), .ssid = raw, .title = ssidTitle(a, raw) catch @panic("out of memory"), .strength = @intCast(@min(100, number(proxy, "Strength"))), .security = security(number(proxy, "Flags"), number(proxy, "WpaFlags"), number(proxy, "RsnFlags")), .connected = device.state == 100 and eq(current, path) }) catch @panic("out of memory");
         }
     }
 };
 pub const Connect = struct { ssid: []const u8, password: []const u8 = "", hidden: bool = false, access_point: ?[]const u8 = null };
-pub const Save = struct { path: ?[]const u8, settings: *c.GVariant, version: u64 = 0 };
+pub const Save = struct { path: ?[]const u8, settings: *Settings, version: u64 = 0 };
 pub const Action = union(enum) { save: Save, wifi: bool, scan, connect: Connect, activate: []const u8, deactivate: []const u8, forget: []const u8, disconnect: []const u8 };
 pub const Result = union(enum) { success, failure: [:0]const u8 };
 pub const Completion = *const fn (?*anyopaque, Result) void;
@@ -516,140 +513,95 @@ pub const Client = struct {
         if (call.pending == 0) call.finish(.success);
     }
 };
-const builder = c.__zig.variant.builder;
-fn add(b: *c.GVariantBuilder, key: [*:0]const u8, value: ?*c.GVariant) void {
-    c.g_variant_builder_add(b, "{sv}", key, value);
-}
-fn group(b: *c.GVariantBuilder, key: [*:0]const u8, inner: *c.GVariantBuilder) void {
-    c.g_variant_builder_add(b, "{s@a{sv}}", key, c.g_variant_builder_end(inner));
-    c.g_variant_builder_unref(inner);
-}
 pub const secret_groups = [_][:0]const u8{ "802-11-wireless-security", "802-1x", "vpn", "gsm", "cdma", "pppoe", "wireguard", "macsec" };
 pub fn secretProperty(key: []const u8) bool {
     return std.mem.indexOf(u8, key, "password") != null or std.mem.indexOf(u8, key, "private-key") != null or eq(key, "psk") or std.mem.startsWith(u8, key, "wep-key") or eq(key, "secrets") or eq(key, "pin") or eq(key, "peers") or eq(key, "mka-cak");
 }
-fn hasSecrets(settings: *c.GVariant) bool {
+fn hasSecrets(settings: *Settings) bool {
     for (secret_groups) |group_key| {
-        const dict = section(settings, group_key) orelse continue;
-        defer c.g_variant_unref(dict);
-        for (0..c.g_variant_n_children(dict)) |i| {
-            const pair = c.g_variant_get_child_value(dict, i).?;
-            defer c.g_variant_unref(pair);
-            const key = c.g_variant_get_child_value(pair, 0).?;
-            defer c.g_variant_unref(key);
-            const key_text = string(key);
-            if (secretProperty(key_text) and !std.mem.endsWith(u8, key_text, "-flags")) return true;
+        const entries = settings.group(group_key) orelse continue;
+        for (entries.properties.items) |property| {
+            if (secretProperty(property.key) and !std.mem.endsWith(u8, property.key, "-flags")) return true;
         }
     }
     return false;
 }
-fn overlayDictionary(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
-    const out = builder(c.g_variant_get_type_string(patch));
-    defer c.g_variant_builder_unref(out);
-    for ([_]*c.GVariant{ base, patch }, 0..) |source, pass| for (0..c.g_variant_n_children(source)) |i| {
-        const pair = c.g_variant_get_child_value(source, i).?;
-        defer c.g_variant_unref(pair);
-        if (pass == 0) {
-            const key = c.g_variant_get_child_value(pair, 0).?;
-            defer c.g_variant_unref(key);
-            if (section(patch, c.g_variant_get_string(key, null))) |replacement| {
-                c.g_variant_unref(replacement);
-                continue;
-            }
-        }
-        c.g_variant_builder_add_value(out, pair);
+/// The string key of a dictionary entry, if it has one.
+fn entryKey(item: dbus.Value) ?[]const u8 {
+    return switch (item) {
+        .dict_entry => |entry| switch (entry[0]) {
+            .string => |key| key,
+            else => null,
+        },
+        else => null,
     };
-    return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
 }
-fn mergePeers(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
-    const out = builder("aa{sv}");
-    defer c.g_variant_builder_unref(out);
-    for (0..c.g_variant_n_children(patch)) |i| {
-        const peer = c.g_variant_get_child_value(patch, i).?;
-        defer c.g_variant_unref(peer);
-        var combined = c.g_variant_ref(peer).?;
-        defer c.g_variant_unref(combined);
-        const key = section(peer, "public-key");
-        defer if (key) |v| c.g_variant_unref(v);
-        if (key) |public_key| {
-            for (0..c.g_variant_n_children(base)) |j| {
-                const old = c.g_variant_get_child_value(base, j).?;
-                defer c.g_variant_unref(old);
-                const old_key = section(old, "public-key") orelse continue;
-                defer c.g_variant_unref(old_key);
-                if (eq(std.mem.span(c.g_variant_get_type_string(old_key)), "s") and eq(std.mem.span(c.g_variant_get_type_string(public_key)), "s") and eq(string(old_key), string(public_key))) {
-                    c.g_variant_unref(combined);
-                    combined = overlayDictionary(old, peer);
-                    break;
-                }
-            }
-        }
-        c.g_variant_builder_add_value(out, combined);
+fn dictionaryHas(items: []const dbus.Value, key: []const u8) bool {
+    for (items) |item| if (entryKey(item)) |found| if (eq(found, key)) return true;
+    return false;
+}
+/// `patch`'s entries over `base`'s, for dictionaries with string keys.
+fn overlayDictionary(arena: std.mem.Allocator, base: dbus.Value, patch: dbus.Value) !dbus.Value {
+    var items: std.ArrayList(dbus.Value) = .empty;
+    for (base.array.items) |item| {
+        if (!dictionaryHas(patch.array.items, entryKey(item) orelse "")) try items.append(arena, item);
     }
-    return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
+    try items.appendSlice(arena, patch.array.items);
+    return .{ .array = .{ .element = patch.array.element, .items = items.items } };
+}
+fn publicKey(peer: dbus.Value) ?[]const u8 {
+    return switch (peer.lookup("public-key") orelse return null) {
+        .string => |key| key,
+        else => null,
+    };
+}
+/// WireGuard peers from `patch`, each keeping the secrets of the `base` peer with its key.
+fn mergePeers(arena: std.mem.Allocator, base: dbus.Value, patch: dbus.Value) !dbus.Value {
+    const items = try arena.alloc(dbus.Value, patch.array.items.len);
+    for (items, patch.array.items) |*out, peer| {
+        out.* = peer;
+        const key = publicKey(peer) orelse continue;
+        for (base.array.items) |old| if (publicKey(old)) |old_key| if (eq(old_key, key)) {
+            out.* = try overlayDictionary(arena, old, peer);
+            break;
+        };
+    }
+    return .{ .array = .{ .element = patch.array.element, .items = items } };
+}
+fn sameType(x: dbus.Value, y: dbus.Value, signature: []const u8) bool {
+    var x_buffer: [256]u8 = undefined;
+    var y_buffer: [256]u8 = undefined;
+    const x_signature = x.signatureInto(&x_buffer) catch return false;
+    const y_signature = y.signatureInto(&y_buffer) catch return false;
+    return eq(x_signature, y_signature) and eq(x_signature, signature);
 }
 /// Overlay complete setting groups without losing unedited or unknown keys.
-pub fn mergeSettings(base: *c.GVariant, patch: *c.GVariant) *c.GVariant {
-    const out = builder("a{sa{sv}}");
-    defer c.g_variant_builder_unref(out);
-    for ([_]*c.GVariant{ base, patch }, 0..) |source, pass| {
-        for (0..c.g_variant_n_children(source)) |i| {
-            const pair = c.g_variant_get_child_value(source, i).?;
-            defer c.g_variant_unref(pair);
-            const key = c.g_variant_get_child_value(pair, 0).?;
-            defer c.g_variant_unref(key);
-            const key_text = c.g_variant_get_string(key, null);
-            const old = section(base, key_text);
-            defer if (old) |v| c.g_variant_unref(v);
-            const fresh = section(patch, key_text);
-            defer if (fresh) |v| c.g_variant_unref(v);
-            if (pass == 1 and old != null) continue;
-            const inner = builder("a{sv}");
-            if (old) |dict| for (0..c.g_variant_n_children(dict)) |j| {
-                const property = c.g_variant_get_child_value(dict, j).?;
-                defer c.g_variant_unref(property);
-                const property_key = c.g_variant_get_child_value(property, 0).?;
-                defer c.g_variant_unref(property_key);
-                const replacement = if (fresh) |f| section(f, c.g_variant_get_string(property_key, null)) else null;
-                if (replacement) |v| {
-                    c.g_variant_unref(v);
-                    continue;
-                }
-                c.g_variant_builder_add(inner, "@{sv}", property);
-            };
-            if (fresh) |dict| for (0..c.g_variant_n_children(dict)) |j| {
-                const property = c.g_variant_get_child_value(dict, j).?;
-                defer c.g_variant_unref(property);
-                const property_key = c.g_variant_get_child_value(property, 0).?;
-                defer c.g_variant_unref(property_key);
-                const key_name = c.g_variant_get_string(property_key, null);
-                const previous = if (old) |v| section(v, key_name) else null;
-                defer if (previous) |v| c.g_variant_unref(v);
-                const next = section(dict, key_name).?;
-                defer c.g_variant_unref(next);
-                if (previous) |v| {
-                    const kind = std.mem.span(c.g_variant_get_type_string(next));
-                    if (eq(kind, std.mem.span(c.g_variant_get_type_string(v)))) {
-                        if (eq(std.mem.span(key_name), "secrets") and eq(kind, "a{ss}")) {
-                            const merged = overlayDictionary(v, next);
-                            defer c.g_variant_unref(merged);
-                            add(inner, key_name, merged);
-                            continue;
-                        }
-                        if (eq(std.mem.span(key_text), "wireguard") and eq(std.mem.span(key_name), "peers") and eq(kind, "aa{sv}")) {
-                            const merged = mergePeers(v, next);
-                            defer c.g_variant_unref(merged);
-                            add(inner, key_name, merged);
-                            continue;
-                        }
-                    }
-                }
-                c.g_variant_builder_add(inner, "@{sv}", property);
-            };
-            group(out, key_text, inner);
+pub fn mergeSettings(base: *Settings, patch: *Settings) !*Settings {
+    const out = try Settings.create(a);
+    errdefer out.unref();
+    var scratch = std.heap.ArenaAllocator.init(a);
+    defer scratch.deinit();
+    for (base.groups.items) |old| {
+        _ = try out.ensureGroup(old.name);
+        const fresh = patch.group(old.name);
+        for (old.properties.items) |property| {
+            if (fresh) |f| if (f.get(property.key) != null) continue;
+            try out.put(old.name, property.key, property.value);
         }
     }
-    return c.g_variant_ref_sink(c.g_variant_builder_end(out)).?;
+    for (patch.groups.items) |fresh| {
+        _ = try out.ensureGroup(fresh.name);
+        const old = base.group(fresh.name);
+        for (fresh.properties.items) |property| {
+            var value = property.value;
+            if (old) |o| if (o.get(property.key)) |previous| {
+                if (eq(property.key, "secrets") and sameType(previous, value, "a{ss}")) value = try overlayDictionary(scratch.allocator(), previous, value);
+                if (eq(fresh.name, "wireguard") and eq(property.key, "peers") and sameType(previous, value, "aa{sv}")) value = try mergePeers(scratch.allocator(), previous, value);
+            };
+            try out.put(fresh.name, property.key, value);
+        }
+    }
+    return out;
 }
 const Call = struct {
     client: *Client,
@@ -670,7 +622,7 @@ const Call = struct {
     next_profile: ?[:0]u8 = null,
     next_device: ?[:0]u8 = null,
     next_ap: ?[:0]u8 = null,
-    save_settings: ?*c.GVariant = null,
+    save_settings: ?*Settings = null,
     save_path: ?[:0]u8 = null,
     save_version: u64 = 0,
     secret_next: usize = 0,
@@ -681,19 +633,26 @@ const Call = struct {
         if (self.active != null) self.finish(.{ .failure = "Cancelled" });
     }
     /// Calls NetworkManager on a request connection, so cancelling still completes the call once.
-    fn send(self: *Call, path: [*:0]const u8, iface: [*:0]const u8, method: [*:0]const u8, params: ?*c.GVariant) void {
+    fn send(self: *Call, path: []const u8, iface: []const u8, method: []const u8, args: anytype) void {
         self.pending += 1;
+        loop.request(.system, .{ .destination = name, .path = path, .interface = iface, .member = method }, args, 30000, self.cancel, &done, self);
+    }
+    /// Sends settings, which are encoded before this returns.
+    fn sendSettings(self: *Call, path: []const u8, iface: []const u8, method: []const u8, settings: *Settings, rest: anytype) void {
         var arena = std.heap.ArenaAllocator.init(a);
         defer arena.deinit();
-        const body = if (params) |value| bridge.bodyFromVariant(arena.allocator(), value) catch dbus.Body{ .values = &.{} } else dbus.Body{ .values = &.{} };
-        loop.request(.system, .{ .destination = name, .path = std.mem.span(path), .interface = std.mem.span(iface), .member = std.mem.span(method) }, body, 30000, self.cancel, &done, self);
+        const wire = settings.wire(arena.allocator()) catch {
+            self.pending += 1;
+            return done(self, .{ .failed = .{ .name = "org.freedesktop.DBus.Error.NoMemory", .text = "Out of memory" } });
+        };
+        self.send(path, iface, method, .{wire} ++ rest);
     }
     fn done(ptr: ?*anyopaque, result: dbus.Reply) void {
         const self = cast(Call, ptr);
         self.pending -= 1;
-        const reply: ?*c.GVariant = switch (result) {
-            .ok => |message| bridge.argumentsVariant(message),
-            .failed => |failure| blk: {
+        const message = switch (result) {
+            .ok => |message| message,
+            .failed => |failure| {
                 if (self.reading_secrets and std.mem.endsWith(u8, failure.name, ".NoSecrets")) {
                     self.nextSecret();
                     return;
@@ -702,21 +661,22 @@ const Call = struct {
                 const text_value = if (failure.text.len > 0) failure.text else failure.name;
                 const count = @min(text_value.len, self.message.len - 1);
                 @memcpy(self.message[0..count], text_value[0..count]);
-                break :blk null;
+                self.failed = true;
+                if (self.pending == 0) self.finish(.{ .failure = std.mem.sliceTo(&self.message, 0) });
+                return;
             },
         };
-        defer if (reply) |v| c.g_variant_unref(v);
-        if (reply == null) self.failed = true;
         if (self.pending != 0) return;
         if (self.failed) {
             self.finish(.{ .failure = std.mem.sliceTo(&self.message, 0) });
             return;
         }
         if (self.reading_secrets) {
-            const secrets = c.g_variant_get_child_value(reply.?, 0).?;
-            defer c.g_variant_unref(secrets);
-            const combined = mergeSettings(secrets, self.save_settings.?);
-            c.g_variant_unref(self.save_settings.?);
+            const wire = (message.read(struct { Wire }) catch return self.finish(.{ .failure = "InvalidSecrets" }))[0];
+            const secrets = Settings.fromWire(a, wire) catch return self.finish(.{ .failure = "OutOfMemory" });
+            defer secrets.unref();
+            const combined = mergeSettings(secrets, self.save_settings.?) catch return self.finish(.{ .failure = "OutOfMemory" });
+            self.save_settings.?.unref();
             self.save_settings = combined;
             self.nextSecret();
             return;
@@ -727,7 +687,7 @@ const Call = struct {
                 return;
             }
             self.activation = true;
-            self.send(root, name, "ActivateConnection", c.g_variant_new("(ooo)", profile.ptr, self.next_device.?.ptr, self.next_ap.?.ptr));
+            self.send(root, name, "ActivateConnection", .{ dbus.ObjectPath{ .value = profile }, dbus.ObjectPath{ .value = self.next_device.? }, dbus.ObjectPath{ .value = self.next_ap.? } });
             a.free(profile);
             self.next_profile = null;
             a.free(self.next_device.?);
@@ -741,9 +701,12 @@ const Call = struct {
                 self.finish(.{ .failure = "Cancelled" });
                 return;
             }
-            const value = c.g_variant_get_child_value(reply.?, self.active_index).?;
-            defer c.g_variant_unref(value);
-            self.active = z(string(value));
+            const values = message.values() catch return self.finish(.{ .failure = "InvalidReply" });
+            if (self.active_index >= values.len) return self.finish(.{ .failure = "InvalidReply" });
+            self.active = z(switch (values[self.active_index]) {
+                .object_path => |path| path,
+                else => return self.finish(.{ .failure = "InvalidReply" }),
+            });
             self.client.service.waiting.append(a, self) catch @panic("out of memory");
             self.activation_timer = c.g_timeout_add(30000, &activationTimeout, self);
             self.client.service.schedule();
@@ -787,7 +750,7 @@ const Call = struct {
         if (self.next_profile) |s| a.free(s);
         if (self.next_device) |s| a.free(s);
         if (self.next_ap) |s| a.free(s);
-        if (self.save_settings) |v| c.g_variant_unref(v);
+        if (self.save_settings) |v| v.unref();
         if (self.save_path) |v| a.free(v);
         a.destroy(self);
         client.unref();
@@ -804,12 +767,9 @@ const Call = struct {
         while (self.secret_next < secret_groups.len) {
             const key = secret_groups[self.secret_next];
             self.secret_next += 1;
-            const dict = section(profile.base, key) orelse continue;
-            c.g_variant_unref(dict);
-            const retained = section(self.save_settings.?, key) orelse continue;
-            c.g_variant_unref(retained);
+            if (profile.base.group(key) == null or self.save_settings.?.group(key) == null) continue;
             self.reading_secrets = true;
-            self.send(self.save_path.?, profile_iface, "GetSecrets", c.g_variant_new("(s)", key.ptr));
+            self.send(self.save_path.?, profile_iface, "GetSecrets", .{@as([]const u8, key)});
             return;
         }
         self.reading_secrets = false;
@@ -817,11 +777,9 @@ const Call = struct {
     }
     fn writeSettings(self: *Call) void {
         if (self.save_path) |path| {
-            const options = builder("a{sv}");
-            defer c.g_variant_builder_unref(options);
-            add(options, "version-id", c.g_variant_new("t", self.save_version));
-            self.send(path, profile_iface, "Update2", c.g_variant_new("(@a{sa{sv}}u@a{sv})", self.save_settings.?, @as(c_uint, 1), c.g_variant_builder_end(options)));
-        } else self.send(root ++ "/Settings", name ++ ".Settings", "AddConnection", c.g_variant_new("(@a{sa{sv}})", self.save_settings.?));
+            const options = [_]dbus.Dict([]const u8, dbus.Value).Entry{.{ .key = "version-id", .value = .{ .uint64 = self.save_version } }};
+            self.sendSettings(path, profile_iface, "Update2", self.save_settings.?, .{ @as(u32, 1), dbus.Dict([]const u8, dbus.Value){ .entries = &options } });
+        } else self.sendSettings(root ++ "/Settings", name ++ ".Settings", "AddConnection", self.save_settings.?, .{});
     }
     fn device(self: *Call, kind: u32, wanted: ?[]const u8) !Device {
         for (self.client.state().devices.items) |d| if (d.kind == kind and d.managed and (wanted == null or eq(d.path, wanted.?))) return d;
@@ -831,24 +789,21 @@ const Call = struct {
         const state = self.client.state();
         switch (action) {
             .save => |request| {
-                if (!eq(std.mem.span(c.g_variant_get_type_string(request.settings)), "a{sa{sv}}")) return error.InvalidConnectionSettings;
                 if (request.path) |path| {
                     const p = state.profile(path) orelse return error.NetworkProfileUnavailable;
                     if (request.version == 0 or p.version != request.version) return error.NetworkProfileChanged;
                 }
                 self.save_path = if (request.path) |path| z(path) else null;
                 self.save_version = request.version;
-                self.save_settings = c.g_variant_ref(request.settings);
+                self.save_settings = request.settings.ref();
                 if (request.path != null and hasSecrets(request.settings)) self.nextSecret() else self.writeSettings();
             },
-            .wifi => |enabled| self.send(root, "org.freedesktop.DBus.Properties", "Set", c.g_variant_new("(ssv)", @as([*:0]const u8, name), @as([*:0]const u8, "WirelessEnabled"), c.g_variant_new("b", @as(c_int, @intFromBool(enabled))))),
+            .wifi => |enabled| self.send(root, "org.freedesktop.DBus.Properties", "Set", .{ @as([]const u8, name), "WirelessEnabled", dbus.Value{ .boolean = enabled } }),
             .scan => {
                 self.client.refresh();
                 var count: usize = 0;
                 for (state.devices.items) |d| if (d.kind == 2 and d.managed) {
-                    const options = builder("a{sv}");
-                    self.send(d.path, wireless_iface, "RequestScan", c.g_variant_new("(@a{sv})", c.g_variant_builder_end(options)));
-                    c.g_variant_builder_unref(options);
+                    self.send(d.path, wireless_iface, "RequestScan", .{dbus.Dict([]const u8, dbus.Value){ .entries = &.{} }});
                     count += 1;
                 };
                 if (count == 0) return error.NoCompatibleNetworkDevice;
@@ -856,20 +811,20 @@ const Call = struct {
             .disconnect => |path| {
                 const p = z(path);
                 defer a.free(p);
-                self.send(p, device_iface, "Disconnect", null);
+                self.send(p, device_iface, "Disconnect", .{});
             },
             .forget => |path| {
                 const p = state.profile(path) orelse return error.NetworkProfileUnavailable;
-                self.send(p.path, profile_iface, "Delete", null);
+                self.send(p.path, profile_iface, "Delete", .{});
             },
             .deactivate => |path| {
-                for (state.active.items) |v| if (eq(v.profile, path)) self.send(root, name, "DeactivateConnection", c.g_variant_new("(o)", v.path.ptr));
+                for (state.active.items) |v| if (eq(v.profile, path)) self.send(root, name, "DeactivateConnection", .{dbus.ObjectPath{ .value = v.path }});
             },
             .activate => |path| {
                 const p = state.profile(path) orelse return error.NetworkProfileUnavailable;
-                const device_path: [*:0]const u8 = if (eq(p.kind, "802-11-wireless")) (try self.device(2, null)).path else if (eq(p.kind, "802-3-ethernet")) (try self.device(1, null)).path else "/";
+                const device_path: []const u8 = if (eq(p.kind, "802-11-wireless")) (try self.device(2, null)).path else if (eq(p.kind, "802-3-ethernet")) (try self.device(1, null)).path else "/";
                 self.activation = true;
-                self.send(root, name, "ActivateConnection", c.g_variant_new("(ooo)", p.path.ptr, device_path, @as([*:0]const u8, "/")));
+                self.send(root, name, "ActivateConnection", .{ dbus.ObjectPath{ .value = p.path }, dbus.ObjectPath{ .value = device_path }, dbus.ObjectPath{ .value = "/" } });
             },
             .connect => |request| {
                 if (request.ssid.len == 0 or request.ssid.len > 32) return error.InvalidSSIDLength;
@@ -879,7 +834,7 @@ const Call = struct {
                     break;
                 };
                 const d = try self.device(2, if (ap) |p| p.device else null);
-                const specific: [*:0]const u8 = if (ap) |p| p.path else "/";
+                const specific: []const u8 = if (ap) |p| p.path else "/";
                 var profile: ?Profile = null;
                 for (state.profiles.items) |p| if (eq(p.kind, "802-11-wireless") and eq(p.ssid, request.ssid)) {
                     profile = p;
@@ -887,102 +842,69 @@ const Call = struct {
                 };
                 if (profile != null and request.password.len == 0) {
                     self.activation = true;
-                    self.send(root, name, "ActivateConnection", c.g_variant_new("(ooo)", profile.?.path.ptr, d.path.ptr, specific));
+                    self.send(root, name, "ActivateConnection", .{ dbus.ObjectPath{ .value = profile.?.path }, dbus.ObjectPath{ .value = d.path }, dbus.ObjectPath{ .value = specific } });
                     return;
                 }
                 const mode = if (ap) |p| p.security else if (request.password.len != 0) Security.personal else Security.open;
                 if (profile == null and mode == .enterprise) return error.CreateEnterpriseProfileInConnectionEditor;
                 if (profile == null and mode != .open and mode != .owe and request.password.len == 0) return error.PasswordRequired;
                 const values = try connectionSettings(request, mode, profile);
+                defer values.unref();
                 if (profile) |p| {
                     self.next_profile = z(p.path);
                     self.next_device = z(d.path);
-                    self.next_ap = z(std.mem.span(specific));
-                    self.send(p.path, profile_iface, "Update", c.g_variant_new("(@a{sa{sv}})", values));
+                    self.next_ap = z(specific);
+                    self.sendSettings(p.path, profile_iface, "Update", values, .{});
                 } else {
                     self.activation = true;
                     self.active_index = 1;
-                    self.send(root, name, "AddAndActivateConnection", c.g_variant_new("(@a{sa{sv}}oo)", values, d.path.ptr, specific));
+                    self.sendSettings(root, name, "AddAndActivateConnection", values, .{ dbus.ObjectPath{ .value = d.path }, dbus.ObjectPath{ .value = specific } });
                 }
             },
         }
     }
 };
-fn connectionSettings(request: Connect, mode: Security, profile: ?Profile) !*c.GVariant {
-    const out = builder("a{sa{sv}}");
-    defer c.g_variant_builder_unref(out);
-    const pass = z(request.password);
-    defer {
-        @memset(pass, 0);
-        a.free(pass);
-    }
+fn connectionSettings(request: Connect, mode: Security, profile: ?Profile) !*Settings {
+    const out = try Settings.create(a);
+    errdefer out.unref();
     if (profile) |p| {
-        const km = settingText(p.base, "802-11-wireless-security", "key-mgmt");
-        defer a.free(km);
+        const km = p.base.text("802-11-wireless-security", "key-mgmt");
         const enterprise = eq(km, "wpa-eap") or eq(km, "wpa-eap-suite-b-192") or eq(km, "ieee8021x");
-        const target: [:0]const u8 = if (enterprise) "802-1x" else "802-11-wireless-security";
-        var found = false;
-        for (0..c.g_variant_n_children(p.base)) |i| {
-            const entry = c.g_variant_get_child_value(p.base, i).?;
-            defer c.g_variant_unref(entry);
-            const key = c.g_variant_get_child_value(entry, 0).?;
-            defer c.g_variant_unref(key);
-            const dict = c.g_variant_get_child_value(entry, 1).?;
-            defer c.g_variant_unref(dict);
-            const group_name = c.g_variant_get_string(key, null);
-            if (!eq(std.mem.span(group_name), target)) {
-                c.g_variant_builder_add(out, "{s@a{sv}}", group_name, dict);
-                continue;
+        const target = if (enterprise) "802-1x" else "802-11-wireless-security";
+        if (p.base.group(target) == null) return error.NetworkProfileSecurityUnavailable;
+        const secret = if (enterprise) "password" else if (eq(km, "none")) "wep-key0" else "psk";
+        // The profile's own settings, with the entered secret replacing the stored one.
+        for (p.base.groups.items) |item| {
+            _ = try out.ensureGroup(item.name);
+            for (item.properties.items) |property| {
+                if (eq(item.name, target) and eq(property.key, secret)) continue;
+                try out.put(item.name, property.key, property.value);
             }
-            found = true;
-            const inner = builder("a{sv}");
-            const secret: [*:0]const u8 = if (enterprise) "password" else if (eq(km, "none")) "wep-key0" else "psk";
-            for (0..c.g_variant_n_children(dict)) |j| {
-                const pair = c.g_variant_get_child_value(dict, j).?;
-                defer c.g_variant_unref(pair);
-                const k = c.g_variant_get_child_value(pair, 0).?;
-                defer c.g_variant_unref(k);
-                const k_text = c.g_variant_get_string(k, null);
-                if (eq(std.mem.span(k_text), std.mem.span(secret))) continue;
-                c.g_variant_builder_add(inner, "@{sv}", pair);
-            }
-            add(inner, secret, c.g_variant_new("s", pass.ptr));
-            group(out, group_name, inner);
         }
-        if (!found) return error.NetworkProfileSecurityUnavailable;
+        try out.put(target, secret, .{ .string = request.password });
     } else {
-        const conn = builder("a{sv}");
         const title = try ssidTitle(a, request.ssid);
         defer a.free(title);
-        add(conn, "id", c.g_variant_new("s", title.ptr));
-        add(conn, "type", c.g_variant_new("s", @as([*:0]const u8, "802-11-wireless")));
-        group(out, "connection", conn);
-        const wifi = builder("a{sv}");
-        add(wifi, "ssid", c.__zig.variant.byteArray(request.ssid));
-        add(wifi, "mode", c.g_variant_new("s", @as([*:0]const u8, "infrastructure")));
-        add(wifi, "hidden", c.g_variant_new("b", @as(c_int, @intFromBool(request.hidden))));
-        if (mode != .open) add(wifi, "security", c.g_variant_new("s", @as([*:0]const u8, "802-11-wireless-security")));
-        group(out, "802-11-wireless", wifi);
+        try out.put("connection", "id", .{ .string = title });
+        try out.put("connection", "type", .{ .string = "802-11-wireless" });
+        try out.put("802-11-wireless", "ssid", .{ .bytes = request.ssid });
+        try out.put("802-11-wireless", "mode", .{ .string = "infrastructure" });
+        try out.put("802-11-wireless", "hidden", .{ .boolean = request.hidden });
+        if (mode != .open) try out.put("802-11-wireless", "security", .{ .string = "802-11-wireless-security" });
         if (mode != .open) {
-            const auth = builder("a{sv}");
-            const key: [*:0]const u8 = switch (mode) {
+            const key = switch (mode) {
                 .wep => "none",
                 .personal => "wpa-psk",
                 .sae => "sae",
                 .owe => "owe",
                 else => unreachable,
             };
-            add(auth, "key-mgmt", c.g_variant_new("s", key));
-            if (mode != .owe) add(auth, if (mode == .wep) "wep-key0" else "psk", c.g_variant_new("s", pass.ptr));
-            group(out, "802-11-wireless-security", auth);
+            try out.put("802-11-wireless-security", "key-mgmt", .{ .string = key });
+            if (mode != .owe) try out.put("802-11-wireless-security", if (mode == .wep) "wep-key0" else "psk", .{ .string = request.password });
         }
-        for ([_][*:0]const u8{ "ipv4", "ipv6" }) |key| {
-            const ip = builder("a{sv}");
-            add(ip, "method", c.g_variant_new("s", @as([*:0]const u8, "auto")));
-            group(out, key, ip);
-        }
+        for ([_][]const u8{ "ipv4", "ipv6" }) |key| try out.put(key, "method", .{ .string = "auto" });
     }
-    return c.g_variant_builder_end(out).?;
+    return out;
 }
 
 test "network security and byte-exact SSID display" {
@@ -1002,16 +924,10 @@ test "network profiles retain binary SSIDs and select security settings" {
     for (modes, keys) |mode, key| {
         const raw = "\xff\x00Cafe";
         const values = try connectionSettings(.{ .ssid = raw, .password = "secret:$()\\", .hidden = true }, mode, null);
-        defer c.g_variant_unref(values);
-        const ssid = setting(values, "802-11-wireless", "ssid").?;
-        defer c.g_variant_unref(ssid);
-        try std.testing.expectEqualSlices(u8, raw, bytes(ssid));
-        const hidden = setting(values, "802-11-wireless", "hidden").?;
-        defer c.g_variant_unref(hidden);
-        try std.testing.expect(c.g_variant_get_boolean(hidden) != 0);
-        const auth = settingText(values, "802-11-wireless-security", "key-mgmt");
-        defer a.free(auth);
-        try std.testing.expectEqualStrings(key, auth);
+        defer values.unref();
+        try std.testing.expectEqualSlices(u8, raw, values.bytes("802-11-wireless", "ssid"));
+        try std.testing.expect(values.get("802-11-wireless", "hidden").?.boolean);
+        try std.testing.expectEqualStrings(key, values.text("802-11-wireless-security", "key-mgmt"));
     }
 }
 
@@ -1033,27 +949,38 @@ test "network snapshot cleanup and connected presentation" {
 }
 
 test "connection edits preserve VPN credentials and WireGuard peer secrets" {
-    const signature: [*:0]const u8 = "a{sa{sv}}";
-    const original = c.g_variant_parse(@ptrCast(signature), "{'vpn': {'secrets': <@a{ss} {'password': 'old', 'otp': 'keep'}>}, 'wireguard': {'peers': <@aa{sv} [{'public-key': <'peer-a'>, 'preshared-key': <'keep-peer-key'>}, {'public-key': <'removed-peer'>, 'preshared-key': <'discard'>}]>}}", null, null, null).?;
-    defer c.g_variant_unref(original);
-    const patch = c.g_variant_parse(@ptrCast(signature), "{'vpn': {'secrets': <@a{ss} {'password': 'new'}>}, 'wireguard': {'peers': <@aa{sv} [{'public-key': <'peer-a'>, 'endpoint': <'host:51820'>}]>}}", null, null, null).?;
-    defer c.g_variant_unref(patch);
-    const combined = mergeSettings(original, patch);
-    defer c.g_variant_unref(combined);
-    const secrets = setting(combined, "vpn", "secrets").?;
-    defer c.g_variant_unref(secrets);
-    const password = section(secrets, "password").?;
-    defer c.g_variant_unref(password);
-    const otp = section(secrets, "otp").?;
-    defer c.g_variant_unref(otp);
-    try std.testing.expectEqualStrings("new", string(password));
-    try std.testing.expectEqualStrings("keep", string(otp));
-    const peers = setting(combined, "wireguard", "peers").?;
-    defer c.g_variant_unref(peers);
-    try std.testing.expectEqual(@as(usize, 1), c.g_variant_n_children(peers));
-    const peer = c.g_variant_get_child_value(peers, 0).?;
-    defer c.g_variant_unref(peer);
-    const secret = section(peer, "preshared-key").?;
-    defer c.g_variant_unref(secret);
-    try std.testing.expectEqualStrings("keep-peer-key", string(secret));
+    const text_format = @import("desktop-dbus-text.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const parse = struct {
+        fn settings(allocator: std.mem.Allocator, text_value: []const u8) !*Settings {
+            const value = try text_format.parse(allocator, "a{sa{sv}}", text_value);
+            const out = try Settings.create(a);
+            errdefer out.unref();
+            for (value.array.items) |group_entry| {
+                const group_name = group_entry.dict_entry[0].string;
+                _ = try out.ensureGroup(group_name);
+                for (group_entry.dict_entry[1].array.items) |property| try out.put(group_name, property.dict_entry[0].string, property.dict_entry[1].variant.*);
+            }
+            return out;
+        }
+    };
+    const original = try parse.settings(arena.allocator(), "{'vpn': {'secrets': <@a{ss} {'password': 'old', 'otp': 'keep'}>}, 'wireguard': {'peers': <@aa{sv} [{'public-key': <'peer-a'>, 'preshared-key': <'keep-peer-key'>}, {'public-key': <'removed-peer'>, 'preshared-key': <'discard'>}]>}}");
+    defer original.unref();
+    const patch = try parse.settings(arena.allocator(), "{'vpn': {'secrets': <@a{ss} {'password': 'new'}>}, 'wireguard': {'peers': <@aa{sv} [{'public-key': <'peer-a'>, 'endpoint': <'host:51820'>}]>}}");
+    defer patch.unref();
+    const combined = try mergeSettings(original, patch);
+    defer combined.unref();
+    const secrets = combined.get("vpn", "secrets").?;
+    const lookup = struct {
+        fn string(dictionary: dbus.Value, key: []const u8) []const u8 {
+            for (dictionary.array.items) |item| if (eq(item.dict_entry[0].string, key)) return item.dict_entry[1].string;
+            return "";
+        }
+    };
+    try std.testing.expectEqualStrings("new", lookup.string(secrets, "password"));
+    try std.testing.expectEqualStrings("keep", lookup.string(secrets, "otp"));
+    const peers = combined.get("wireguard", "peers").?;
+    try std.testing.expectEqual(@as(usize, 1), peers.array.items.len);
+    try std.testing.expectEqualStrings("keep-peer-key", peers.array.items[0].lookup("preshared-key").?.string);
 }

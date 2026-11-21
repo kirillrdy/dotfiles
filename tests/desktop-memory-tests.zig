@@ -122,7 +122,7 @@ fn networkLifetime(settle: bool) !void {
         connection_editor.ui.close();
         const new_connection = editor.Editor.create(ui.window, null);
         const new_settings = try new_connection.values();
-        c.g_variant_unref(new_settings);
+        new_settings.unref();
         new_connection.ui.close();
         // Start a real asynchronous action, then cancel it during window teardown.
         ui.refresh();
