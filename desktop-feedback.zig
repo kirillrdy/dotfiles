@@ -3,7 +3,6 @@ const std = @import("std");
 const p = @import("pipewire");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
-const a = std.heap.page_allocator;
 var initialized = false;
 
 const Wave = struct {
@@ -40,6 +39,7 @@ const Wave = struct {
 };
 
 pub const Feedback = struct {
+    allocator: std.mem.Allocator,
     loop: ?*p.pw_thread_loop = null,
     stream: ?*p.pw_stream = null,
     bytes: ?[]u8 = null,
@@ -62,8 +62,8 @@ pub const Feedback = struct {
         const fd = libc.open(path, libc.O_RDONLY | libc.O_CLOEXEC | libc.O_NONBLOCK);
         if (fd < 0) return;
         defer _ = libc.close(fd);
-        const scratch = a.alloc(u8, 4 * 1024 * 1024 + 1) catch return;
-        defer a.free(scratch);
+        const scratch = self.allocator.alloc(u8, 4 * 1024 * 1024 + 1) catch return;
+        defer self.allocator.free(scratch);
         var length: usize = 0;
         while (length < scratch.len) {
             const count = libc.read(fd, scratch[length..].ptr, scratch.len - length);
@@ -72,9 +72,9 @@ pub const Feedback = struct {
             length += @intCast(count);
         }
         if (length == scratch.len) return;
-        const bytes = a.dupe(u8, scratch[0..length]) catch return;
+        const bytes = self.allocator.dupe(u8, scratch[0..length]) catch return;
         self.wave = Wave.parse(bytes) catch {
-            a.free(bytes);
+            self.allocator.free(bytes);
             return;
         };
         self.bytes = bytes;
@@ -111,8 +111,8 @@ pub const Feedback = struct {
         if (self.loop) |loop| p.pw_thread_loop_stop(loop);
         if (self.stream) |stream| p.pw_stream_destroy(stream);
         if (self.loop) |loop| p.pw_thread_loop_destroy(loop);
-        if (self.bytes) |bytes| a.free(bytes);
-        self.* = .{};
+        if (self.bytes) |bytes| self.allocator.free(bytes);
+        self.* = .{ .allocator = self.allocator };
     }
 
     fn process(data: ?*anyopaque) callconv(.c) void {

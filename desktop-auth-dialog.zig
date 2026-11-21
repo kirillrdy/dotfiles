@@ -6,7 +6,6 @@ pub const password = @import("desktop-password-entry.zig");
 pub const Mode = native.Mode;
 pub const host = @import("desktop-window.zig");
 const wire = host.wire;
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 pub const Dialog = struct {
     allocator: std.mem.Allocator,
@@ -30,11 +29,10 @@ pub const Dialog = struct {
     choice_context: ?*anyopaque = null,
     choice_selected: ?*const fn (?*anyopaque, usize) void = null,
 
-    pub fn create(mode: Mode, prompt_text: [:0]const u8) !*Dialog {
-        return createWithOptions(mode, prompt_text, .{});
+    pub fn create(alloc: std.mem.Allocator, mode: Mode, prompt_text: [:0]const u8) !*Dialog {
+        return createWithOptions(alloc, mode, prompt_text, .{});
     }
     pub const Options = struct {
-        allocator: std.mem.Allocator = a,
         title: [:0]const u8 = "SSH Authentication",
         role: [:0]const u8 = "desktop-askpass",
         parent: [:0]const u8 = "",
@@ -46,10 +44,9 @@ pub const Dialog = struct {
         response_context: ?*anyopaque = null,
         responded: ?*const fn (?*anyopaque, bool) void = null,
     };
-    pub fn createWithOptions(mode: Mode, prompt_text: [:0]const u8, options: Options) !*Dialog {
+    pub fn createWithOptions(alloc: std.mem.Allocator, mode: Mode, prompt_text: [:0]const u8, options: Options) !*Dialog {
         if (options.choices.len > 3 or (options.choices.len != 0 and mode != .information)) return error.InvalidChoices;
         if (options.confirmation and mode != .password) return error.InvalidConfirmationMode;
-        const alloc = options.allocator;
         const self = try alloc.create(Dialog);
         errdefer alloc.destroy(self);
         const prompt = try alloc.dupeSentinel(u8, prompt_text, 0);
@@ -64,7 +61,7 @@ pub const Dialog = struct {
         view.title = options.title;
         view.accept_label = options.accept;
         try view.prepare(alloc, prompt, 1);
-        const window = try host.Window.create(options.title, options.role, view.width, view.height, &draw, self);
+        const window = try host.Window.create(alloc, options.title, options.role, view.width, view.height, &draw, self);
         errdefer window.destroy();
         if (parent) |value| if (window.surface) |surface| {
             surface.options.parent = value;
@@ -73,9 +70,9 @@ pub const Dialog = struct {
         window.closed = &closed;
         window.surface.?.close = &closeRequested;
         window.surface.?.input = .{ .button = &button, .motion = &motion, .leave = &leave, .scroll = &scroll, .symbol = &key, .text = &commit, .commit = &commit, .preedit = &preedit, .surrounding = &surrounding, .focus = &focusChanged };
-        if (mode == .password) self.entry = try password.Entry.create(&changed, self);
+        if (mode == .password) self.entry = try password.Entry.create(alloc, &changed, self);
         errdefer if (self.entry) |entry| entry.destroy();
-        if (options.confirmation) self.confirmation = try password.Entry.create(&changed, self);
+        if (options.confirmation) self.confirmation = try password.Entry.create(alloc, &changed, self);
         errdefer if (self.confirmation) |entry| entry.destroy();
         if (self.entry) |entry| entry.client = window.surface.?.client;
         if (self.confirmation) |entry| entry.client = window.surface.?.client;

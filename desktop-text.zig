@@ -113,7 +113,7 @@ pub const Renderer = struct {
     config: ?*t.FcConfig = null,
     families: std.StringHashMapUnmanaged(*Family) = .empty,
     glyphs: std.AutoHashMapUnmanaged(GlyphKey, Bitmap) = .empty,
-    arena: std.heap.ArenaAllocator = .init(std.heap.c_allocator),
+    arena: ?std.heap.ArenaAllocator = null,
 
     pub fn deinit(self: *Renderer) void {
         var families = self.families.valueIterator();
@@ -126,7 +126,7 @@ pub const Renderer = struct {
         }
         if (self.library) |library| _ = t.FT_Done_FreeType(library);
         if (self.config) |config| t.FcConfigDestroy(config);
-        self.arena.deinit();
+        if (self.arena) |*arena| arena.deinit();
         self.* = .{};
     }
 
@@ -158,7 +158,7 @@ pub const Renderer = struct {
     }
 
     fn family(self: *Renderer, description: Description) !*Family {
-        const a = self.arena.allocator();
+        const a = self.arena.?.allocator();
         const key = try std.fmt.allocPrint(a, "{s}|{d}|{}", .{ description.family, description.weight, description.italic });
         if (self.families.get(key)) |existing| return existing;
         const pattern = t.FcPatternCreate() orelse return error.FontMap;
@@ -226,7 +226,7 @@ pub const Renderer = struct {
             flags |= load_target_light;
         }
         if (autohint != 0) flags |= load_force_autohint;
-        const value = self.arena.allocator().create(Face) catch return null;
+        const value = self.arena.?.allocator().create(Face) catch return null;
         value.* = .{ .face = ft_face, .hb = hb, .charset = charset, .load_flags = flags, .embolden = embolden != 0, .named = (face_index >> 16) != 0 };
         if ((ft_face.*.face_flags & (@as(c_long, 1) << 8)) != 0) {
             var mm: [*c]t.FT_MM_Var = null;
@@ -267,7 +267,7 @@ pub const Renderer = struct {
         const bitmap = slot.*.bitmap;
         const width = bitmap.width;
         const height = bitmap.rows;
-        const a = self.arena.allocator();
+        const a = self.arena.?.allocator();
         const pixels = a.alloc(u8, @as(usize, width) * height) catch return null;
         for (0..height) |row| {
             const pitch: isize = bitmap.pitch;
@@ -289,12 +289,15 @@ pub const Renderer = struct {
         return value;
     }
 
+    /// The first allocator must outlive the renderer's font cache.
+    /// Each returned mask belongs to the allocator passed to its call.
     pub fn renderLayout(self: *Renderer, allocator: std.mem.Allocator, value: [:0]const u8, options: Options) !Mask {
         if (!std.math.isFinite(options.size) or options.size <= 0 or options.size > 1024 or !std.math.isFinite(options.dpi) or options.dpi <= 0 or options.dpi > 1536 or value.len > 4096 or !std.unicode.utf8ValidateSlice(value)) return error.InvalidText;
         if (options.width) |limit| if (limit == 0 or limit > 32768) return error.InvalidText;
         if (options.lines) |lines| if (lines == 0 or lines > 64) return error.InvalidText;
         if (options.line_height) |height| if (height == 0 or height > 4096) return error.InvalidText;
         try self.init();
+        if (self.arena == null) self.arena = .init(allocator);
         var arena: std.heap.ArenaAllocator = .init(allocator);
         defer arena.deinit();
         const a = arena.allocator();

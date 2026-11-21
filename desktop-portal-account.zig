@@ -44,7 +44,7 @@ pub const Dialog = struct {
             self.image = try a.dupeSentinel(u8, std.mem.span(uri), 0);
         }
         const prompt = try std.fmt.allocPrintSentinel(a, "{s} wants to access your account information.\n{s}\nName: {s}\nUser name: {s}\n{s}", .{ app, reason, self.name, self.id, if (self.image.len > 0) "Your account picture will also be shared." else "" }, 0);
-        self.host = try auth.Dialog.createWithOptions(.confirm, prompt, .{ .allocator = allocator, .title = "Share account information", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .parent = parent, .response_context = self, .responded = &responded });
+        self.host = try auth.Dialog.createWithOptions(allocator, .confirm, prompt, .{ .title = "Share account information", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .parent = parent, .response_context = self, .responded = &responded });
         return self;
     }
     pub fn destroy(self: *Dialog) void {

@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     if (args.len < 2) return error.ExpectedOperation;
     var changes: usize = 0;
-    const client = try capture.Client.create(&changes, &changed);
+    const client = try capture.Client.create(init.gpa, &changes, &changed);
     defer client.destroy();
     client.refresh();
     client.connection.roundtrip() catch return error.Disconnected;

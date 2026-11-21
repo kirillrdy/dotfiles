@@ -47,8 +47,8 @@ pub const View = struct {
     extent: f64 = 0,
     frame: p.Frame = .{ .width = 900, .height = 700, .sidebar = 280, .x = 320, .content_width = 540 },
     icons: p.Icons = .{},
-    pub fn deinit(self: *View) void {
-        self.icons.deinit();
+    pub fn deinit(self: *View, a: std.mem.Allocator) void {
+        self.icons.deinit(a);
     }
     pub fn maxOffset(self: *const View) f64 {
         return @max(0, self.extent - self.frame.height + 24);
@@ -102,7 +102,7 @@ pub const View = struct {
         const field = ui.get(id);
         if (!field.visible) return;
         if (ui.hover == id) p.fill(canvas, field.bounds, 0x414145, 6);
-        try self.icons.paint(canvas, icon, field.bounds.x + (field.bounds.width - 16) / 2, field.bounds.y + (field.bounds.height - 16) / 2, 16);
+        try self.icons.paint(ui.allocator, canvas, icon, field.bounds.x + (field.bounds.width - 16) / 2, field.bounds.y + (field.bounds.height - 16) / 2, 16);
         if (ui.focus == id) p.focus(canvas, field.bounds);
     }
     pub fn paint(self: *View, ui: *form.Form, target: raster.Buffer, scale: u32) !void {
@@ -118,7 +118,7 @@ pub const View = struct {
                 const field = ui.get(id);
                 if (ui.hover == id and ui.active(id)) p.fill(canvas, field.bounds, 0x3b3b3f, 0);
                 try p.title(ui, canvas, id, .{ .x = field.bounds.x + 14, .y = field.bounds.y, .width = field.bounds.width - 60, .height = 55 }, false, if (ui.active(id)) @as(u32, 0xffffff) else p.secondary);
-                try self.icons.paint(canvas, "go-next-symbolic", field.bounds.x + field.bounds.width - 30, field.bounds.y + 20, 16);
+                try self.icons.paint(ui.allocator, canvas, "go-next-symbolic", field.bounds.x + field.bounds.width - 30, field.bounds.y + 20, 16);
                 p.line(canvas, f.x, field.bounds.y, f.content_width);
             }
             if (self.available and self.has_wifi and self.radio and self.hardware) try p.text(ui, canvas, "Visible Networks", .{ .x = f.x, .y = y + 242, .width = f.content_width, .height = 24 }, 14.666, true, false, 0xffffff);
@@ -141,8 +141,8 @@ pub const View = struct {
                 if (r.y + r.height < 46 or r.y > f.height) continue;
                 if (ui.hover == row.item and ui.active(row.item)) p.fill(canvas, r, 0x3b3b3f, 6);
                 if (ui.focus == row.item) p.focus(canvas, r);
-                try self.icons.paint(canvas, row.icon, r.x + 14, r.y + 20, 16);
-                if (row.secure) try self.icons.paint(canvas, "network-wireless-encrypted-symbolic", r.x + 28, r.y + 28, 8);
+                try self.icons.paint(ui.allocator, canvas, row.icon, r.x + 14, r.y + 20, 16);
+                if (row.secure) try self.icons.paint(ui.allocator, canvas, "network-wireless-encrypted-symbolic", r.x + 28, r.y + 28, 8);
                 try p.title(ui, canvas, row.item, .{ .x = r.x + 50, .y = r.y + (if (row.subtitle.len > 0) @as(f64, 5) else 0), .width = f.content_width - 150, .height = if (row.subtitle.len > 0) 26 else 55 }, false, 0xffffff);
                 if (row.subtitle.len > 0) try p.text(ui, canvas, row.subtitle, .{ .x = r.x + 50, .y = r.y + 28, .width = f.content_width - 150, .height = 20 }, 12.666, false, false, p.secondary);
                 try self.iconButton(ui, canvas, row.details, "emblem-system-symbolic");
@@ -155,7 +155,7 @@ pub const View = struct {
             const missing = self.page == .wifi and !self.has_wifi;
             const status: [:0]const u8 = if (unavailable) "Network Unavailable" else if (missing) "No Wi-Fi Adapter Found" else if (disabled) (if (!self.hardware) "Wi-Fi Unavailable" else "Wi-Fi Off") else if (self.page == .saved) "No Saved Networks" else if (self.page == .network) "No Network Connections" else "No Networks Found";
             const top: f64 = if (self.page == .wifi) @max(y + 340, f.height / 2) else f.height / 2 - 80;
-            try self.icons.paint(canvas, if (disabled) "network-wireless-disabled-symbolic" else "network-wireless-no-route-symbolic", f.sidebar + (f.width - f.sidebar) / 2 - 32, top, 64);
+            try self.icons.paint(ui.allocator, canvas, if (disabled) "network-wireless-disabled-symbolic" else "network-wireless-no-route-symbolic", f.sidebar + (f.width - f.sidebar) / 2 - 32, top, 64);
             try p.text(ui, canvas, status, .{ .x = f.x, .y = top + 80, .width = f.content_width, .height = 36 }, 22, true, true, 0xffffff);
             try p.text(ui, canvas, if (unavailable) "NetworkManager is not running" else if (disabled) "Turn on to use Wi-Fi" else if (missing) "Make sure you have a Wi-Fi adapter connected" else if (self.page == .network) "Add a connection to get started" else "", .{ .x = f.x, .y = top + 120, .width = f.content_width, .height = 28 }, 14.666, false, true, p.secondary);
         }
@@ -168,7 +168,7 @@ pub const View = struct {
             const r = ui.get(id).bounds;
             const selected = if (self.page == .network) i == 1 else i == 0;
             if (selected or ui.hover == id) p.fill(canvas, r, if (selected) 0x414145 else 0x38383c, 9);
-            try self.icons.paint(canvas, icon, r.x + 14, r.y + 14, 16);
+            try self.icons.paint(ui.allocator, canvas, icon, r.x + 14, r.y + 14, 16);
             try p.title(ui, canvas, id, .{ .x = r.x + 42, .y = r.y, .width = r.width - 56, .height = r.height }, false, 0xffffff);
         }
         if (self.searching) try ui.get(self.query).entry.?.paint(target, scale) else {

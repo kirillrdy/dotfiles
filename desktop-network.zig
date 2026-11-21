@@ -4,7 +4,6 @@ const c = @import("desktop-glib.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
 const objects = @import("desktop-dbus-objects.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const name = "org.freedesktop.NetworkManager";
 const root = "/org/freedesktop/NetworkManager";
 const device_iface = name ++ ".Device";
@@ -13,14 +12,14 @@ const ap_iface = name ++ ".AccessPoint";
 const profile_iface = name ++ ".Settings.Connection";
 const active_iface = name ++ ".Connection.Active";
 const cast = c.__zig.cast;
-fn z(value: []const u8) [:0]u8 {
+fn z(a: std.mem.Allocator, value: []const u8) [:0]u8 {
     return c.__zig.dupeZ(a, value);
 }
 const eq = c.__zig.eq;
 /// An interface's cached properties, as mirrored from NetworkManager's ObjectManager.
 const Proxy = objects.Interface;
-fn text(proxy: *const Proxy, key: []const u8) [:0]u8 {
-    return z(switch (proxy.property(key) orelse return z("")) {
+fn text(a: std.mem.Allocator, proxy: *const Proxy, key: []const u8) [:0]u8 {
+    return z(a, switch (proxy.property(key) orelse return z(a, "")) {
         .string, .object_path => |value| value,
         else => "",
     });
@@ -86,7 +85,7 @@ pub const State = struct {
     access_points: std.ArrayList(AccessPoint) = .empty,
     profiles: std.ArrayList(Profile) = .empty,
     active: std.ArrayList(Active) = .empty,
-    fn clear(self: *State) void {
+    fn clear(self: *State, a: std.mem.Allocator) void {
         if (self.available) a.free(self.primary);
         for (self.devices.items) |d| {
             a.free(d.path);
@@ -119,8 +118,8 @@ pub const State = struct {
         self.active.clearRetainingCapacity();
         self.available = false;
     }
-    fn deinit(self: *State) void {
-        self.clear();
+    fn deinit(self: *State, a: std.mem.Allocator) void {
+        self.clear(a);
         self.devices.deinit(a);
         self.access_points.deinit(a);
         self.profiles.deinit(a);
@@ -167,6 +166,7 @@ var shared: ?*Service = null;
 /// Services not yet freed, so lifetime tests can wait for teardown.
 pub var live_services: usize = 0;
 pub const Service = struct {
+    allocator: std.mem.Allocator,
     source: ?*loop.Source = null,
     manager: ?*objects.Manager = null,
     /// GetSettings calls awaiting replies; each holds a reference on the service.
@@ -187,20 +187,20 @@ pub const Service = struct {
     fn unref(self: *Service) void {
         self.refs -= 1;
         if (self.refs != 0) return;
-        self.state.deinit();
+        self.state.deinit(self.allocator);
         self.clearRecords();
-        self.records.deinit(a);
-        self.waiting.deinit(a);
-        self.fetches.deinit(a);
-        self.clients.deinit(a);
-        a.destroy(self);
+        self.records.deinit(self.allocator);
+        self.waiting.deinit(self.allocator);
+        self.fetches.deinit(self.allocator);
+        self.clients.deinit(self.allocator);
+        self.allocator.destroy(self);
         live_services -= 1;
     }
     fn clearRecords(self: *Service) void {
         for (self.records.items) |r| {
             if (r.settings) |s| s.unref();
-            a.free(r.path);
-            a.destroy(r);
+            self.allocator.free(r.path);
+            self.allocator.destroy(r);
         }
         self.records.clearRetainingCapacity();
     }
@@ -210,9 +210,9 @@ pub const Service = struct {
     }
     fn connectBus(self: *Service) void {
         if (self.stopped or self.manager != null) return;
-        const source = loop.acquire(.system) catch return;
+        const source = loop.acquire(self.allocator, .system) catch return;
         self.source = source;
-        self.manager = objects.Manager.create(a, source.connection, name, "/org/freedesktop", &event, self) catch {
+        self.manager = objects.Manager.create(self.allocator, source.connection, name, "/org/freedesktop", &event, self) catch {
             self.dropManager();
             return;
         };
@@ -232,8 +232,8 @@ pub const Service = struct {
     fn cancelFetches(self: *Service) void {
         while (self.fetches.pop()) |task| {
             if (self.source) |source| source.connection.cancel(task.serial);
-            a.free(task.path);
-            a.destroy(task);
+            self.allocator.free(task.path);
+            self.allocator.destroy(task);
             self.unref();
         }
     }
@@ -308,18 +308,18 @@ pub const Service = struct {
         const source = self.source orelse return;
         r.dirty = false;
         r.loading = true;
-        const fetch_data = a.create(Fetch) catch @panic("out of memory");
+        const fetch_data = self.allocator.create(Fetch) catch @panic("out of memory");
         const version: u64 = switch (proxy.property("VersionId") orelse dbus.Value{ .uint64 = 0 }) {
             .uint64 => |value| value,
             else => 0,
         };
-        fetch_data.* = .{ .service = self, .path = z(r.path), .epoch = self.epoch, .version = version };
-        self.fetches.append(a, fetch_data) catch @panic("out of memory");
+        fetch_data.* = .{ .service = self, .path = z(self.allocator, r.path), .epoch = self.epoch, .version = version };
+        self.fetches.append(self.allocator, fetch_data) catch @panic("out of memory");
         self.ref();
         fetch_data.serial = source.connection.call(.{ .destination = name, .path = r.path, .interface = profile_iface, .member = "GetSettings" }, .{}, 10000, &fetched, fetch_data) catch {
             _ = self.fetches.pop();
-            a.free(fetch_data.path);
-            a.destroy(fetch_data);
+            self.allocator.free(fetch_data.path);
+            self.allocator.destroy(fetch_data);
             r.loading = false;
             self.unref();
             return;
@@ -333,8 +333,8 @@ pub const Service = struct {
             break;
         };
         defer {
-            a.free(task.path);
-            a.destroy(task);
+            self.allocator.free(task.path);
+            self.allocator.destroy(task);
             self.unref();
         }
         if (self.stopped or task.epoch != self.epoch) return;
@@ -342,7 +342,7 @@ pub const Service = struct {
         r.loading = false;
         switch (reply) {
             .ok => |message| if (message.read(struct { Wire })) |args| {
-                if (Settings.fromWire(a, args[0])) |fresh| {
+                if (Settings.fromWire(self.allocator, args[0])) |fresh| {
                     if (r.settings) |old| old.unref();
                     r.settings = fresh;
                     r.version = task.version;
@@ -353,30 +353,30 @@ pub const Service = struct {
         self.schedule();
     }
     fn rebuild(self: *Service) void {
-        self.state.clear();
+        self.state.clear(self.allocator);
         const m = self.manager orelse return;
         if (m.owner == null) return;
         const main = self.interface(root, name) orelse return;
         self.state.available = true;
-        self.state.primary = text(main, "PrimaryConnection");
+        self.state.primary = text(self.allocator, main, "PrimaryConnection");
         self.state.wifi_enabled = boolean(main, "WirelessEnabled");
         self.state.hardware_enabled = boolean(main, "WirelessHardwareEnabled");
         for (self.records.items) |r| r.seen = false;
         for (m.objects.items) |object| {
             const path = object.path;
             if (object.interface(device_iface)) |proxy| {
-                const d = Device{ .path = z(path), .interface = text(proxy, "Interface"), .kind = number(proxy, "DeviceType"), .state = number(proxy, "State"), .managed = boolean(proxy, "Managed"), .active = text(proxy, "ActiveConnection") };
-                self.state.devices.append(a, d) catch @panic("out of memory");
+                const d = Device{ .path = z(self.allocator, path), .interface = text(self.allocator, proxy, "Interface"), .kind = number(proxy, "DeviceType"), .state = number(proxy, "State"), .managed = boolean(proxy, "Managed"), .active = text(self.allocator, proxy, "ActiveConnection") };
+                self.state.devices.append(self.allocator, d) catch @panic("out of memory");
                 if (d.kind == 2) self.readAccessPoints(d);
             }
             if (object.interface(active_iface)) |proxy| {
-                self.state.active.append(a, .{ .path = z(path), .profile = text(proxy, "Connection"), .title = text(proxy, "Id"), .kind = text(proxy, "Type"), .state = number(proxy, "State") }) catch @panic("out of memory");
+                self.state.active.append(self.allocator, .{ .path = z(self.allocator, path), .profile = text(self.allocator, proxy, "Connection"), .title = text(self.allocator, proxy, "Id"), .kind = text(self.allocator, proxy, "Type"), .state = number(proxy, "State") }) catch @panic("out of memory");
             }
             if (object.interface(profile_iface)) |proxy| {
                 const r = self.record(path) orelse blk: {
-                    const item = a.create(Record) catch @panic("out of memory");
-                    item.* = .{ .path = z(path) };
-                    self.records.append(a, item) catch @panic("out of memory");
+                    const item = self.allocator.create(Record) catch @panic("out of memory");
+                    item.* = .{ .path = z(self.allocator, path) };
+                    self.records.append(self.allocator, item) catch @panic("out of memory");
                     break :blk item;
                 };
                 r.seen = true;
@@ -388,8 +388,8 @@ pub const Service = struct {
             const r = self.records.items[index];
             if (!r.seen) {
                 if (r.settings) |v| v.unref();
-                a.free(r.path);
-                a.destroy(r);
+                self.allocator.free(r.path);
+                self.allocator.destroy(r);
                 _ = self.records.swapRemove(index);
                 continue;
             }
@@ -398,7 +398,7 @@ pub const Service = struct {
                 for (self.state.active.items) |v| {
                     if (eq(v.profile, r.path)) active = true;
                 }
-                self.state.profiles.append(a, .{ .path = z(r.path), .uuid = z(base.text("connection", "uuid")), .title = z(base.text("connection", "id")), .kind = z(base.text("connection", "type")), .ssid = a.dupe(u8, base.bytes("802-11-wireless", "ssid")) catch @panic("out of memory"), .active = active, .base = base.ref(), .version = r.version }) catch @panic("out of memory");
+                self.state.profiles.append(self.allocator, .{ .path = z(self.allocator, r.path), .uuid = z(self.allocator, base.text("connection", "uuid")), .title = z(self.allocator, base.text("connection", "id")), .kind = z(self.allocator, base.text("connection", "type")), .ssid = self.allocator.dupe(u8, base.bytes("802-11-wireless", "ssid")) catch @panic("out of memory"), .active = active, .base = base.ref(), .version = r.version }) catch @panic("out of memory");
             }
             index += 1;
         }
@@ -412,8 +412,8 @@ pub const Service = struct {
     }
     fn readAccessPoints(self: *Service, device: Device) void {
         const wireless = self.interface(device.path, wireless_iface) orelse return;
-        const current = text(wireless, "ActiveAccessPoint");
-        defer a.free(current);
+        const current = text(self.allocator, wireless, "ActiveAccessPoint");
+        defer self.allocator.free(current);
         const paths = switch (wireless.property("AccessPoints") orelse return) {
             .array => |array| array.items,
             else => return,
@@ -428,8 +428,8 @@ pub const Service = struct {
                 .bytes => |value| value,
                 else => "",
             };
-            const raw = a.dupe(u8, ssid) catch @panic("out of memory");
-            self.state.access_points.append(a, .{ .path = z(path), .device = z(device.path), .ssid = raw, .title = ssidTitle(a, raw) catch @panic("out of memory"), .strength = @intCast(@min(100, number(proxy, "Strength"))), .security = security(number(proxy, "Flags"), number(proxy, "WpaFlags"), number(proxy, "RsnFlags")), .connected = device.state == 100 and eq(current, path) }) catch @panic("out of memory");
+            const raw = self.allocator.dupe(u8, ssid) catch @panic("out of memory");
+            self.state.access_points.append(self.allocator, .{ .path = z(self.allocator, path), .device = z(self.allocator, device.path), .ssid = raw, .title = ssidTitle(self.allocator, raw) catch @panic("out of memory"), .strength = @intCast(@min(100, number(proxy, "Strength"))), .security = security(number(proxy, "Flags"), number(proxy, "WpaFlags"), number(proxy, "RsnFlags")), .connected = device.state == 100 and eq(current, path) }) catch @panic("out of memory");
         }
     }
 };
@@ -439,26 +439,27 @@ pub const Action = union(enum) { save: Save, wifi: bool, scan, connect: Connect,
 pub const Result = union(enum) { success, failure: [:0]const u8 };
 pub const Completion = *const fn (?*anyopaque, Result) void;
 pub const Client = struct {
+    allocator: std.mem.Allocator,
     service: *Service,
     callback: *const fn (?*anyopaque, *Client) void,
     data: ?*anyopaque,
     cancel: *c.GCancellable,
     refs: usize = 1,
     dead: bool = false,
-    pub fn create(callback: *const fn (?*anyopaque, *Client) void, data: ?*anyopaque) !*Client {
+    pub fn create(a: std.mem.Allocator, callback: *const fn (?*anyopaque, *Client) void, data: ?*anyopaque) !*Client {
         const self = try a.create(Client);
         errdefer a.destroy(self);
         const service = shared orelse blk: {
             const value = try a.create(Service);
-            value.* = .{};
+            value.* = .{ .allocator = a };
             live_services += 1;
             break :blk value;
         };
         service.ref();
         errdefer service.unref();
-        self.* = .{ .service = service, .callback = callback, .data = data, .cancel = c.g_cancellable_new().? };
+        self.* = .{ .allocator = a, .service = service, .callback = callback, .data = data, .cancel = c.g_cancellable_new().? };
         errdefer c.g_object_unref(self.cancel);
-        try service.clients.append(a, self);
+        try service.clients.append(service.allocator, self);
         if (shared == null) {
             shared = service;
             service.start();
@@ -488,7 +489,7 @@ pub const Client = struct {
         if (self.refs == 0) {
             const service = self.service;
             c.g_object_unref(self.cancel);
-            a.destroy(self);
+            self.allocator.destroy(self);
             service.unref();
         }
     }
@@ -501,7 +502,7 @@ pub const Client = struct {
             callback(data, .{ .failure = "Cancelled" });
             return;
         }
-        const call = a.create(Call) catch @panic("out of memory");
+        const call = self.allocator.create(Call) catch @panic("out of memory");
         self.refs += 1;
         call.* = .{ .client = self, .callback = callback, .data = data, .cancel = c.g_cancellable_new().?, .parent = cast(c.GCancellable, c.g_object_ref(cancel)) };
         call.parent_signal = c.g_signal_connect_data(cancel, "cancelled", @ptrCast(&Call.cancelled), call, null, 0);
@@ -576,7 +577,7 @@ fn sameType(x: dbus.Value, y: dbus.Value, signature: []const u8) bool {
     return eq(x_signature, y_signature) and eq(x_signature, signature);
 }
 /// Overlay complete setting groups without losing unedited or unknown keys.
-pub fn mergeSettings(base: *Settings, patch: *Settings) !*Settings {
+pub fn mergeSettings(a: std.mem.Allocator, base: *Settings, patch: *Settings) !*Settings {
     const out = try Settings.create(a);
     errdefer out.unref();
     var scratch = std.heap.ArenaAllocator.init(a);
@@ -635,11 +636,11 @@ const Call = struct {
     /// Calls NetworkManager on a request connection, so cancelling still completes the call once.
     fn send(self: *Call, path: []const u8, iface: []const u8, method: []const u8, args: anytype) void {
         self.pending += 1;
-        loop.request(.system, .{ .destination = name, .path = path, .interface = iface, .member = method }, args, 30000, self.cancel, &done, self);
+        loop.request(self.client.allocator, .system, .{ .destination = name, .path = path, .interface = iface, .member = method }, args, 30000, self.cancel, &done, self);
     }
     /// Sends settings, which are encoded before this returns.
     fn sendSettings(self: *Call, path: []const u8, iface: []const u8, method: []const u8, settings: *Settings, rest: anytype) void {
-        var arena = std.heap.ArenaAllocator.init(a);
+        var arena = std.heap.ArenaAllocator.init(self.client.allocator);
         defer arena.deinit();
         const wire = settings.wire(arena.allocator()) catch {
             self.pending += 1;
@@ -673,9 +674,9 @@ const Call = struct {
         }
         if (self.reading_secrets) {
             const wire = (message.read(struct { Wire }) catch return self.finish(.{ .failure = "InvalidSecrets" }))[0];
-            const secrets = Settings.fromWire(a, wire) catch return self.finish(.{ .failure = "OutOfMemory" });
+            const secrets = Settings.fromWire(self.client.allocator, wire) catch return self.finish(.{ .failure = "OutOfMemory" });
             defer secrets.unref();
-            const combined = mergeSettings(secrets, self.save_settings.?) catch return self.finish(.{ .failure = "OutOfMemory" });
+            const combined = mergeSettings(self.client.allocator, secrets, self.save_settings.?) catch return self.finish(.{ .failure = "OutOfMemory" });
             self.save_settings.?.unref();
             self.save_settings = combined;
             self.nextSecret();
@@ -688,11 +689,11 @@ const Call = struct {
             }
             self.activation = true;
             self.send(root, name, "ActivateConnection", .{ dbus.ObjectPath{ .value = profile }, dbus.ObjectPath{ .value = self.next_device.? }, dbus.ObjectPath{ .value = self.next_ap.? } });
-            a.free(profile);
+            self.client.allocator.free(profile);
             self.next_profile = null;
-            a.free(self.next_device.?);
+            self.client.allocator.free(self.next_device.?);
             self.next_device = null;
-            a.free(self.next_ap.?);
+            self.client.allocator.free(self.next_ap.?);
             self.next_ap = null;
             return;
         }
@@ -703,11 +704,11 @@ const Call = struct {
             }
             const values = message.values() catch return self.finish(.{ .failure = "InvalidReply" });
             if (self.active_index >= values.len) return self.finish(.{ .failure = "InvalidReply" });
-            self.active = z(switch (values[self.active_index]) {
+            self.active = z(self.client.allocator, switch (values[self.active_index]) {
                 .object_path => |path| path,
                 else => return self.finish(.{ .failure = "InvalidReply" }),
             });
-            self.client.service.waiting.append(a, self) catch @panic("out of memory");
+            self.client.service.waiting.append(self.client.service.allocator, self) catch @panic("out of memory");
             self.activation_timer = c.g_timeout_add(30000, &activationTimeout, self);
             self.client.service.schedule();
             return;
@@ -740,19 +741,19 @@ const Call = struct {
                 _ = client.service.waiting.orderedRemove(i);
                 break;
             };
-            a.free(path);
+            self.client.allocator.free(path);
         }
         c.g_signal_handler_disconnect(self.parent, self.parent_signal);
         c.g_signal_handler_disconnect(client.cancel, self.client_signal);
         self.callback(self.data, result);
         c.g_object_unref(self.cancel);
         c.g_object_unref(self.parent);
-        if (self.next_profile) |s| a.free(s);
-        if (self.next_device) |s| a.free(s);
-        if (self.next_ap) |s| a.free(s);
+        if (self.next_profile) |s| self.client.allocator.free(s);
+        if (self.next_device) |s| self.client.allocator.free(s);
+        if (self.next_ap) |s| self.client.allocator.free(s);
         if (self.save_settings) |v| v.unref();
-        if (self.save_path) |v| a.free(v);
-        a.destroy(self);
+        if (self.save_path) |v| self.client.allocator.free(v);
+        self.client.allocator.destroy(self);
         client.unref();
     }
     fn nextSecret(self: *Call) void {
@@ -793,7 +794,7 @@ const Call = struct {
                     const p = state.profile(path) orelse return error.NetworkProfileUnavailable;
                     if (request.version == 0 or p.version != request.version) return error.NetworkProfileChanged;
                 }
-                self.save_path = if (request.path) |path| z(path) else null;
+                self.save_path = if (request.path) |path| z(self.client.allocator, path) else null;
                 self.save_version = request.version;
                 self.save_settings = request.settings.ref();
                 if (request.path != null and hasSecrets(request.settings)) self.nextSecret() else self.writeSettings();
@@ -809,8 +810,8 @@ const Call = struct {
                 if (count == 0) return error.NoCompatibleNetworkDevice;
             },
             .disconnect => |path| {
-                const p = z(path);
-                defer a.free(p);
+                const p = z(self.client.allocator, path);
+                defer self.client.allocator.free(p);
                 self.send(p, device_iface, "Disconnect", .{});
             },
             .forget => |path| {
@@ -848,12 +849,12 @@ const Call = struct {
                 const mode = if (ap) |p| p.security else if (request.password.len != 0) Security.personal else Security.open;
                 if (profile == null and mode == .enterprise) return error.CreateEnterpriseProfileInConnectionEditor;
                 if (profile == null and mode != .open and mode != .owe and request.password.len == 0) return error.PasswordRequired;
-                const values = try connectionSettings(request, mode, profile);
+                const values = try connectionSettings(self.client.allocator, request, mode, profile);
                 defer values.unref();
                 if (profile) |p| {
-                    self.next_profile = z(p.path);
-                    self.next_device = z(d.path);
-                    self.next_ap = z(specific);
+                    self.next_profile = z(self.client.allocator, p.path);
+                    self.next_device = z(self.client.allocator, d.path);
+                    self.next_ap = z(self.client.allocator, specific);
                     self.sendSettings(p.path, profile_iface, "Update", values, .{});
                 } else {
                     self.activation = true;
@@ -864,7 +865,7 @@ const Call = struct {
         }
     }
 };
-fn connectionSettings(request: Connect, mode: Security, profile: ?Profile) !*Settings {
+fn connectionSettings(a: std.mem.Allocator, request: Connect, mode: Security, profile: ?Profile) !*Settings {
     const out = try Settings.create(a);
     errdefer out.unref();
     if (profile) |p| {
@@ -923,7 +924,7 @@ test "network profiles retain binary SSIDs and select security settings" {
     const keys = [_][]const u8{ "", "wpa-psk", "sae", "none", "owe" };
     for (modes, keys) |mode, key| {
         const raw = "\xff\x00Cafe";
-        const values = try connectionSettings(.{ .ssid = raw, .password = "secret:$()\\", .hidden = true }, mode, null);
+        const values = try connectionSettings(std.testing.allocator, .{ .ssid = raw, .password = "secret:$()\\", .hidden = true }, mode, null);
         defer values.unref();
         try std.testing.expectEqualSlices(u8, raw, values.bytes("802-11-wireless", "ssid"));
         try std.testing.expect(values.get("802-11-wireless", "hidden").?.boolean);
@@ -932,19 +933,20 @@ test "network profiles retain binary SSIDs and select security settings" {
 }
 
 test "network snapshot cleanup and connected presentation" {
+    const a = std.testing.allocator;
     var state = State{};
-    defer state.deinit();
+    defer state.deinit(a);
     state.available = true;
     state.wifi_enabled = true;
     state.hardware_enabled = true;
-    state.primary = z("/");
-    try state.access_points.append(a, .{ .path = z("/ap"), .device = z("/device"), .ssid = try a.dupe(u8, "Cafe"), .title = z("Cafe"), .strength = 72, .security = .personal, .connected = true });
+    state.primary = z(a, "/");
+    try state.access_points.append(a, .{ .path = z(a, "/ap"), .device = z(a, "/device"), .ssid = try a.dupe(u8, "Cafe"), .title = z(a, "Cafe"), .strength = 72, .security = .personal, .connected = true });
     try std.testing.expectEqualStrings("network-wireless-signal-good-symbolic", state.indicator().icon);
     try std.testing.expectEqualStrings("Cafe", state.indicator().title);
     state.access_points.items[0].connected = false;
     state.hardware_enabled = false;
     try std.testing.expectEqualStrings("Wi-Fi blocked by hardware switch", state.indicator().title);
-    state.clear();
+    state.clear(a);
     try std.testing.expectEqualStrings("NetworkManager unavailable", state.indicator().title);
 }
 
@@ -955,7 +957,7 @@ test "connection edits preserve VPN credentials and WireGuard peer secrets" {
     const parse = struct {
         fn settings(allocator: std.mem.Allocator, text_value: []const u8) !*Settings {
             const value = try text_format.parse(allocator, "a{sa{sv}}", text_value);
-            const out = try Settings.create(a);
+            const out = try Settings.create(std.testing.allocator);
             errdefer out.unref();
             for (value.array.items) |group_entry| {
                 const group_name = group_entry.dict_entry[0].string;
@@ -969,7 +971,7 @@ test "connection edits preserve VPN credentials and WireGuard peer secrets" {
     defer original.unref();
     const patch = try parse.settings(arena.allocator(), "{'vpn': {'secrets': <@a{ss} {'password': 'new'}>}, 'wireguard': {'peers': <@aa{sv} [{'public-key': <'peer-a'>, 'endpoint': <'host:51820'>}]>}}");
     defer patch.unref();
-    const combined = try mergeSettings(original, patch);
+    const combined = try mergeSettings(std.testing.allocator, original, patch);
     defer combined.unref();
     const secrets = combined.get("vpn", "secrets").?;
     const lookup = struct {

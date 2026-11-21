@@ -6,7 +6,6 @@ const view = banner;
 const c = @import("desktop-glib.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
-const allocator = std.heap.page_allocator;
 const cast = c.__zig.cast;
 const path = "/org/freedesktop/Notifications";
 const name = "org.freedesktop.Notifications";
@@ -29,6 +28,7 @@ const xml =
     \\</interface></node>
 ;
 const Notice = struct {
+    allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     id: u32,
     app: [:0]const u8,
@@ -45,15 +45,16 @@ const Notice = struct {
     pending: bool = true,
 
     fn destroy(self: *Notice) void {
-        if (self.image) |image| c.__icons.free(image);
+        if (self.image) |image| c.__icons.free(self.allocator, image);
         self.arena.deinit();
-        allocator.destroy(self);
+        self.allocator.destroy(self);
     }
     fn data(self: *Notice) view.Data {
         return .{ .id = self.id, .app = self.app, .title = self.title, .body = self.body, .icon = self.icon, .image = self.image, .actions = self.actions, .created = self.created };
     }
 };
 const Server = struct {
+    allocator: std.mem.Allocator,
     /// The shared session connection, once the service has registered its objects.
     connection: ?*dbus.Connection = null,
     registrations: [2]u32 = .{ 0, 0 },
@@ -70,7 +71,7 @@ const Server = struct {
     calendar_open: bool = false,
 
     fn start(self: *Server) !void {
-        self.client = try native.Client.createInteractive(.{ .added = &outputAdded, .removed = &outputRemoved, .changed = &outputChanged }, self);
+        self.client = try native.Client.createInteractive(self.allocator, .{ .added = &outputAdded, .removed = &outputRemoved, .changed = &outputChanged }, self);
         errdefer {
             self.client.?.destroy();
             self.client = null;
@@ -105,7 +106,7 @@ const Server = struct {
     }
     fn map(self: *Server, output: *native.Output) !void {
         const notice = self.active orelse return;
-        if (self.card == null) self.card = banner.View.init(notice.data(), self.theme, 529);
+        if (self.card == null) self.card = banner.View.init(self.allocator, notice.data(), self.theme, 529);
         const surface = try native.Surface.createPixels(output, .{
             .namespace = "desktop-notifications",
             .layer = 3,
@@ -264,7 +265,7 @@ const Server = struct {
         self.hide();
         if (self.client) |client| client.destroy();
         for (self.notices.items) |notice| notice.destroy();
-        self.notices.deinit(allocator);
+        self.notices.deinit(self.allocator);
         if (self.connection) |connection| {
             for (self.registrations) |id| {
                 if (id != 0) connection.unregister(id);
@@ -272,8 +273,8 @@ const Server = struct {
         }
     }
     fn notify(self: *Server, sender: []const u8, args: NotifyArgs) !u32 {
-        const notice = try allocator.create(Notice);
-        notice.* = .{ .arena = std.heap.ArenaAllocator.init(allocator), .id = 0, .app = "", .title = "", .body = "", .icon = "", .sender = "", .actions = &.{}, .created = @divTrunc(c.__zig.realTime(), 1000000) };
+        const notice = try self.allocator.create(Notice);
+        notice.* = .{ .allocator = self.allocator, .arena = std.heap.ArenaAllocator.init(self.allocator), .id = 0, .app = "", .title = "", .body = "", .icon = "", .sender = "", .actions = &.{}, .created = @divTrunc(c.__zig.realTime(), 1000000) };
         errdefer notice.destroy();
         const a = notice.arena.allocator();
         notice.app = try clip(a, args[0], 150);
@@ -298,7 +299,7 @@ const Server = struct {
                 }
             }
         }
-        notice.image = imageHint(a, hints);
+        notice.image = imageHint(self.allocator, hints);
         const actions = args[5][0..@min(args[5].len, 64)];
         notice.actions = try a.alloc(view.Action, actions.len / 2);
         for (notice.actions, 0..) |*action, i| action.* = .{ .key = try clip(a, actions[i * 2], 128), .label = try clip(a, actions[i * 2 + 1], 150) };
@@ -311,7 +312,7 @@ const Server = struct {
                 break;
             };
             old.destroy();
-            if (self.calendar_open or (!notice.critical and !@import("desktop-quick-settings.zig").bannersEnabled())) notice.pending = false;
+            if (self.calendar_open or (!notice.critical and !@import("desktop-quick-settings.zig").bannersEnabled(self.allocator))) notice.pending = false;
             self.changed();
             self.showNext();
             return notice.id;
@@ -320,8 +321,8 @@ const Server = struct {
         notice.id = self.next_id;
         self.next_id +%= 1;
         if (self.notices.items.len >= 100) self.close(self.notices.items[0].id, 1);
-        try self.notices.append(allocator, notice);
-        if (self.calendar_open or (!notice.critical and !@import("desktop-quick-settings.zig").bannersEnabled())) notice.pending = false;
+        try self.notices.append(self.allocator, notice);
+        if (self.calendar_open or (!notice.critical and !@import("desktop-quick-settings.zig").bannersEnabled(self.allocator))) notice.pending = false;
         if (notice.critical and self.active != null and !self.active.?.critical) self.hide();
         self.changed();
         self.showNext();
@@ -329,12 +330,12 @@ const Server = struct {
     }
     fn list(self: *Server) ![:0]u8 {
         const Record = struct { id: u32, app: []const u8, title: []const u8, body: []const u8, icon: []const u8, created: i64, actions: []view.Action };
-        const records = try allocator.alloc(Record, self.notices.items.len);
-        defer allocator.free(records);
+        const records = try self.allocator.alloc(Record, self.notices.items.len);
+        defer self.allocator.free(records);
         for (records, self.notices.items) |*record, notice| record.* = .{ .id = notice.id, .app = notice.app, .title = notice.title, .body = notice.body, .icon = notice.icon, .created = notice.created, .actions = notice.actions };
-        const json = try std.json.Stringify.valueAlloc(allocator, records, .{});
-        defer allocator.free(json);
-        return allocator.dupeSentinel(u8, json, 0);
+        const json = try std.json.Stringify.valueAlloc(self.allocator, records, .{});
+        defer self.allocator.free(json);
+        return self.allocator.dupeSentinel(u8, json, 0);
     }
 };
 const Hints = dbus.Dict([]const u8, dbus.Value);
@@ -392,13 +393,14 @@ fn imageHint(a: std.mem.Allocator, hints: Hints) ?c.__icons.Image {
         const row: usize = @intCast(width * channels);
         if (bytes.len < @as(usize, @intCast(stride)) * @as(usize, @intCast(height - 1)) + row) return null;
         const decode = @import("desktop-decode.zig");
-        return decode.Image.normalize(decode.allocator, .{ .pixels = bytes, .width = @intCast(width), .height = @intCast(height), .stride = @intCast(stride), .format = if (alpha) .rgba else .rgb }) catch null;
+        return decode.Image.normalize(a, .{ .pixels = bytes, .width = @intCast(width), .height = @intCast(height), .stride = @intCast(stride), .format = if (alpha) .rgba else .rgb }) catch null;
     }
     const value = hintString(hints, "image-path") orelse return null;
     const text = a.dupeSentinel(u8, value, 0) catch return null;
+    defer a.free(text);
     const file = if (c.g_str_has_prefix(text, "file://") != 0) c.g_filename_from_uri(text, null, null) else c.g_strdup(text);
     defer c.g_free(file);
-    if (file != null and c.g_path_is_absolute(file) != 0) return @import("desktop-decode.zig").file(file, 48);
+    if (file != null and c.g_path_is_absolute(file) != 0) return @import("desktop-decode.zig").file(a, file, 48);
     return null;
 }
 fn method(data: ?*anyopaque, message: *const dbus.Message) void {
@@ -411,7 +413,7 @@ fn method(data: ?*anyopaque, message: *const dbus.Message) void {
     if (eq(u8, interface, control)) {
         if (eq(u8, member, "List")) {
             const json = self.list() catch return connection.replyError(message, "org.freedesktop.DBus.Error.NoMemory", "Cannot serialize notifications") catch {};
-            defer allocator.free(json);
+            defer self.allocator.free(json);
             return connection.reply(message, .{@as([]const u8, json)}) catch {};
         } else if (eq(u8, member, "Clear")) {
             while (self.notices.items.len > 0) self.close(self.notices.items[0].id, 2);
@@ -425,8 +427,8 @@ fn method(data: ?*anyopaque, message: *const dbus.Message) void {
             self.close((message.read(struct { u32 }) catch return)[0], 2);
         } else if (eq(u8, member, "Activate")) {
             const args = message.read(struct { u32, []const u8 }) catch return;
-            const key = allocator.dupeSentinel(u8, args[1], 0) catch return;
-            defer allocator.free(key);
+            const key = self.allocator.dupeSentinel(u8, args[1], 0) catch return;
+            defer self.allocator.free(key);
             Server.activate(self, args[0], key);
         }
         return connection.reply(message, .{}) catch {};
@@ -454,14 +456,18 @@ pub const Service = struct {
     source: ?*loop.Source = null,
     lost_subscription: u32 = 0,
 
-    pub fn create() !*Service {
+    pub fn create(allocator: std.mem.Allocator) !*Service {
         const self = try allocator.create(Service);
         errdefer allocator.destroy(self);
         var introspection = try dbus.Introspection.parse(allocator, xml);
         errdefer introspection.deinit();
-        self.* = .{ .server = .{}, .introspection = introspection };
+        self.* = .{ .server = .{ .allocator = allocator }, .introspection = introspection };
+        errdefer {
+            self.server.deinit();
+            if (self.source) |source| loop.release(source);
+        }
         try self.server.start();
-        const source = loop.acquire(.session) catch return error.NoSessionBus;
+        const source = loop.acquire(allocator, .session) catch return error.NoSessionBus;
         self.source = source;
         const connection = source.connection;
         self.server.connection = connection;
@@ -487,7 +493,7 @@ pub const Service = struct {
         self.server.deinit();
         if (self.source) |source| loop.release(source);
         self.introspection.deinit();
-        allocator.destroy(self);
+        self.server.allocator.destroy(self);
     }
     fn lost(data: ?*anyopaque, _: *const dbus.Message) void {
         const self: *Service = @ptrCast(@alignCast(data));

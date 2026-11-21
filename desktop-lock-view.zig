@@ -76,12 +76,12 @@ pub const View = struct {
         var self: View = .{ .allocator = allocator, .name = try allocator.dupeSentinel(u8, options.name, 0) };
         if (options.wallpaper) |path| {
             // A small decode is enough: the blur removes all detail anyway.
-            if (decode.file(path, 256)) |image| {
+            if (decode.file(allocator, path, 256)) |image| {
                 blur(image);
                 self.backdrop = image;
             } else std.log.warn("lock: could not load wallpaper", .{});
         }
-        if (options.avatar) |path| self.avatar = decode.file(path, avatar_size * 4);
+        if (options.avatar) |path| self.avatar = decode.file(allocator, path, avatar_size * 4);
         _ = self.tick();
         try self.prepare(1);
         return self;
@@ -90,8 +90,8 @@ pub const View = struct {
     pub fn deinit(self: *View) void {
         self.release();
         self.renderer.deinit();
-        if (self.backdrop) |image| decode.free(image);
-        if (self.avatar) |image| decode.free(image);
+        if (self.backdrop) |image| decode.free(self.allocator, image);
+        if (self.avatar) |image| decode.free(self.allocator, image);
         self.allocator.free(self.name);
         self.* = undefined;
     }
@@ -336,16 +336,16 @@ fn boxPass(line: []u32, step: usize, len: usize, radius: usize, scratch: []u32) 
 }
 
 test "blur keeps flat colours flat and dims them like GNOME" {
-    const image = try decode.create(40, 30);
-    defer decode.free(image);
+    const image = try decode.create(std.testing.allocator, 40, 30);
+    defer decode.free(std.testing.allocator, image);
     @memset(std.mem.bytesAsSlice(u32, image.pixels), 0xff6496c8);
     blur(image);
     for (std.mem.bytesAsSlice(u32, image.pixels)) |pixel| try std.testing.expectEqual(@as(u32, 0xff416282), pixel);
 }
 
 test "blur spreads a bright point without overflowing channels" {
-    const image = try decode.create(32, 32);
-    defer decode.free(image);
+    const image = try decode.create(std.testing.allocator, 32, 32);
+    defer decode.free(std.testing.allocator, image);
     const pixels = std.mem.bytesAsSlice(u32, image.pixels);
     @memset(pixels, 0xff000000);
     pixels[16 * 32 + 16] = 0xffffffff;

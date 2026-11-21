@@ -22,8 +22,8 @@ test "GPU preview corner masks match rounded content over the cached background"
         @memset(foreground, 0);
         @memset(expected, 0xff222226);
         const bounds: raster.Rect = .{ .x = 10, .y = 12, .width = 80, .height = 55 };
-        view.roundedMask(.{ .target = .{ .pixels = foreground, .width = width, .height = height }, .scale = @floatFromInt(scale) }, bounds, 12);
-        view.miniatureRounded(.{ .target = .{ .pixels = expected, .width = width, .height = height }, .scale = @floatFromInt(scale) }, .{
+        view.roundedMask(std.testing.allocator, .{ .target = .{ .pixels = foreground, .width = width, .height = height }, .scale = @floatFromInt(scale) }, bounds, 12);
+        view.miniatureRounded(std.testing.allocator, .{ .target = .{ .pixels = expected, .width = width, .height = height }, .scale = @floatFromInt(scale) }, .{
             .pixels = std.mem.sliceAsBytes(&color),
             .width = 1,
             .height = 1,
@@ -42,8 +42,8 @@ test "GPU preview corner masks match rounded content over the cached background"
         }
         @memset(foreground, 0);
         @memset(expected, 0xff222226);
-        view.workspaceCard(.{ .target = .{ .pixels = expected, .width = width, .height = height }, .scale = @floatFromInt(scale) }, bounds, null, 12, true, false);
-        view.roundedMaskShadow(.{ .target = .{ .pixels = foreground, .width = width, .height = height }, .scale = @floatFromInt(scale) }, bounds, 12);
+        view.workspaceCard(std.testing.allocator, .{ .target = .{ .pixels = expected, .width = width, .height = height }, .scale = @floatFromInt(scale) }, bounds, null, 12, true, false);
+        view.roundedMaskShadow(std.testing.allocator, .{ .target = .{ .pixels = foreground, .width = width, .height = height }, .scale = @floatFromInt(scale) }, bounds, 12);
         const corner_pixel = (12 * scale) * width + 10 * scale;
         try std.testing.expectEqual(expected[corner_pixel], foreground[corner_pixel]);
     }
@@ -146,8 +146,8 @@ test "native buffer overview preserves wallpaper crops and workspace clipping" {
         defer a.free(pixels);
         @memset(pixels, 0xff222226);
         const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) };
-        view.workspaceCard(canvas, rect(workspace), if (available) image.view() else null, 30, false, false);
-        view.miniatureRounded(canvas, if (available) image.view() else null, rect(miniature), rect(clip), 0, false);
+        view.workspaceCard(std.testing.allocator, canvas, rect(workspace), if (available) image.view() else null, 30, false, false);
+        view.miniatureRounded(std.testing.allocator, canvas, if (available) image.view() else null, rect(miniature), rect(clip), 0, false);
         const surface = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
         defer cairo.cairo_surface_destroy(surface);
         const cr = cairo.cairo_create(surface).?;
@@ -178,7 +178,7 @@ test "workspace corners grow with overview progress from an unrounded desktop" {
         const bounds: raster.Rect = .{ .width = 90, .height = 60 };
         for ([_]f64{ 0, 0.5, 1 }) |progress| {
             @memset(pixels, 0);
-            view.workspaceProgress(canvas, bounds, null, progress, true);
+            view.workspaceProgress(std.testing.allocator, canvas, bounds, null, progress, true);
             try std.testing.expectEqual(@as(u32, 255), pixels[(30 * scale) * width + 45 * scale] >> 24);
             // Outside rounded corners, only translucent black drop shadow may remain; never the blue card fill.
             if (progress == 0) {
@@ -235,7 +235,7 @@ test "hovered window expands without white border and paints close states, capti
     const close_sample_y: usize = @intFromFloat(close_r.y + view.close_button_radius);
     for (states) |entry| {
         @memset(pixels, 0xff222226);
-        view.window(canvas, win, null, icon, entry.state);
+        view.window(std.testing.allocator, canvas, win, null, icon, entry.state);
         // No white hover border stroke along bottom/left edges of preview.
         try std.testing.expect(pixels[@as(usize, @intFromFloat(expanded.y + expanded.height - 2)) * width + @as(usize, @intFromFloat(expanded.x + 20))] != 0xffffffff);
         try std.testing.expect(pixels[@as(usize, @intFromFloat(expanded.y + 40)) * width + @as(usize, @intFromFloat(expanded.x))] != 0xffffffff);
@@ -253,13 +253,13 @@ test "hovered window expands without white border and paints close states, capti
 
     // Active workspace thumbnail indicator draws border only (center remains transparent).
     @memset(pixels, 0);
-    view.thumbnailIndicator(canvas, .{ .x = 20, .y = 20, .width = 86, .height = 52 }, 1);
+    view.thumbnailIndicator(std.testing.allocator, canvas, .{ .x = 20, .y = 20, .width = 86, .height = 52 }, 1);
     try std.testing.expectEqual(@as(u32, 0), pixels[46 * width + 63]);
     try std.testing.expectEqual(@as(u32, 0xff3584e4), pixels[19 * width + 63]);
 
     // Workspace card paints soft outer drop shadow beyond card rect.
     @memset(pixels, 0xff222226);
-    view.workspaceCard(canvas, .{ .x = 40, .y = 30, .width = 160, .height = 100 }, null, 12, true, false);
+    view.workspaceCard(std.testing.allocator, canvas, .{ .x = 40, .y = 30, .width = 160, .height = 100 }, null, 12, true, false);
     const card_shadow = pixels[134 * width + 120];
     try std.testing.expect(((card_shadow >> 16) & 255) < 34);
 }
@@ -273,7 +273,7 @@ test "tiny wallpaper stays opaque and uniformly colored when enlarged" {
     defer a.free(pixels);
     @memset(pixels, 0);
     const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = 200, .height = 120 }, .scale = 1 };
-    view.workspaceCard(canvas, .{ .width = 200, .height = 120 }, .{ .pixels = std.mem.sliceAsBytes(&source), .width = 2, .height = 2, .stride = 8, .format = .argb }, 30, false, false);
+    view.workspaceCard(std.testing.allocator, canvas, .{ .width = 200, .height = 120 }, .{ .pixels = std.mem.sliceAsBytes(&source), .width = 2, .height = 2, .stride = 8, .format = .argb }, 30, false, false);
     for ([_]usize{ 2 * 200 + 100, 60 * 200 + 2, 60 * 200 + 100, 60 * 200 + 197, 117 * 200 + 100 }) |i| try std.testing.expectEqual(@as(u32, 0xff142850), pixels[i]);
 }
 
@@ -286,7 +286,7 @@ test "window previews retain client corners and do not add a second frame" {
         @memset(pixels, 0);
         var source: [4]u32 = @splat(0xffaabbcc);
         const captured: raster.Image = .{ .pixels = std.mem.sliceAsBytes(&source), .width = 2, .height = 2, .stride = 8, .format = .argb };
-        view.window(.{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) }, .{ .x = 40, .y = 40, .width = 120, .height = 80 }, captured, null, .{});
+        view.window(std.testing.allocator, .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) }, .{ .x = 40, .y = 40, .width = 120, .height = 80 }, captured, null, .{});
         try std.testing.expectEqual(@as(u32, 0), pixels[39 * scale * width + 40 * scale]);
         try std.testing.expectEqual(@as(u32, 255), pixels[40 * scale * width + 40 * scale] >> 24);
         try std.testing.expectEqual(@as(u32, 0), pixels[80 * scale * width + 170 * scale]);
@@ -314,7 +314,7 @@ test "large wallpapers downscale into workspace cards like Cairo while animating
         const pixels = try a.alloc(u32, width * height);
         defer a.free(pixels);
         @memset(pixels, 0xff222226);
-        view.workspaceCard(.{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) }, rect(card), image, 30, false, animated);
+        view.workspaceCard(std.testing.allocator, .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) }, rect(card), image, 30, false, animated);
         const surface = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
         defer cairo.cairo_surface_destroy(surface);
         const cr = cairo.cairo_create(surface).?;

@@ -3,7 +3,6 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
-const a = std.heap.page_allocator;
 
 pub const Action = struct { key: [:0]const u8, label: [:0]const u8 };
 pub const Data = struct {
@@ -31,6 +30,7 @@ pub const Target = enum { none, card, close, expand, action0, action1, action2 }
 pub const Rect = raster.Rect;
 
 pub const View = struct {
+    allocator: std.mem.Allocator,
     notice: data.Data,
     theme: Theme,
     width: u32 = 529,
@@ -52,8 +52,8 @@ pub const View = struct {
     body_height: u32 = 19,
     age_x: f64 = 0,
 
-    pub fn init(notice: data.Data, theme: Theme, width: u32) View {
-        var self: View = .{ .notice = notice, .theme = theme, .width = @max(160, width) };
+    pub fn init(a: std.mem.Allocator, notice: data.Data, theme: Theme, width: u32) View {
+        var self: View = .{ .allocator = a, .notice = notice, .theme = theme, .width = @max(160, width) };
         for (notice.actions) |action| {
             if (std.mem.eql(u8, action.key, "default") or self.action_count == 3) continue;
             self.action_keys[self.action_count] = action.key;
@@ -70,13 +70,13 @@ pub const View = struct {
         self.clear();
     }
     fn clear(self: *View) void {
-        if (self.shadow) |pixels| a.free(pixels);
+        if (self.shadow) |pixels| self.allocator.free(pixels);
         self.shadow = null;
         for (&self.masks) |*slot| {
-            if (slot.*) |mask| mask.deinit(a);
+            if (slot.*) |mask| mask.deinit(self.allocator);
             slot.* = null;
         }
-        if (self.icon) |icon| c.__icons.free(icon);
+        if (self.icon) |icon| c.__icons.free(self.allocator, icon);
         self.icon = null;
         self.scale = 0;
     }
@@ -131,7 +131,7 @@ pub const View = struct {
         self.clear();
     }
     fn label(self: *View, value: [:0]const u8, width: u32, bold: bool, body: bool, scale: u32) !text.Mask {
-        return self.renderer.renderLayout(a, value, .{
+        return self.renderer.renderLayout(self.allocator, value, .{
             .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans",
             .size = 14.666 * @as(f64, @floatFromInt(scale)),
             .dpi = 96 * @as(f64, @floatFromInt(scale)),
@@ -153,7 +153,7 @@ pub const View = struct {
         const age = @max(0, @divTrunc(c.__zig.realTime(), 1000000) - self.notice.created);
         var buffer: [64]u8 = undefined;
         const age_text: [:0]const u8 = if (age < 60) "Just now" else if (age < 3600) std.fmt.bufPrintSentinel(&buffer, "{d}m ago", .{@divTrunc(age, 60)}, 0) catch unreachable else std.fmt.bufPrintSentinel(&buffer, "{d}h ago", .{@divTrunc(age, 3600)}, 0) catch unreachable;
-        self.masks[6] = try self.renderer.renderLayout(a, age_text, .{ .size = 12 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = 65 * scale, .ellipsize = true, .origin = .top });
+        self.masks[6] = try self.renderer.renderLayout(self.allocator, age_text, .{ .size = 12 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = 65 * scale, .ellipsize = true, .origin = .top });
         self.expandable = self.expanded or self.masks[2].?.ellipsized or self.action_count > 0;
         const age_width = std.math.divCeil(u32, self.masks[6].?.logical_width, scale) catch unreachable;
         const header_end: u32 = @intFromFloat((if (self.expandable) self.expandRect() else self.closeRect()).x - 9);
@@ -171,15 +171,15 @@ pub const View = struct {
         for (0..self.action_count) |index| {
             const limit: u32 = @intFromFloat(@max(1, self.actionRect(index).width - 24));
             if (self.masks[3 + index].?.logical_width > limit * scale) {
-                self.masks[3 + index].?.deinit(a);
+                self.masks[3 + index].?.deinit(self.allocator);
                 self.masks[3 + index] = null;
                 self.masks[3 + index] = try self.label(self.action_labels[index].?, limit, true, false, scale);
             }
         }
         const foreground: raster.Color = self.theme.secondary;
-        self.icon = @import("desktop-icons.zig").load(self.notice.icon, 16, scale, foreground);
+        self.icon = @import("desktop-icons.zig").load(self.allocator, self.notice.icon, 16, scale, foreground);
         self.scale = scale;
-        if (!self.history) self.shadow = try shadowMask(self.width, self.height, scale);
+        if (!self.history) self.shadow = try shadowMask(self.allocator, self.width, self.height, scale);
     }
     pub fn paint(self: *const View, buffer: raster.Buffer) void {
         const canvas: raster.Canvas = .{ .target = buffer, .scale = @floatFromInt(self.scale) };
@@ -226,7 +226,7 @@ pub const View = struct {
 
 // GNOME's 0 2px 4px 2px shadow: spread the rounded outline, then blur it.
 // Cache the mask alongside text so pointer motion only composites pixels.
-fn shadowMask(width: u32, height: u32, scale: u32) ![]u8 {
+fn shadowMask(a: std.mem.Allocator, width: u32, height: u32, scale: u32) ![]u8 {
     const w = width * scale;
     const h = height * scale;
     const pixels = try a.alloc(u32, w * h);
@@ -272,7 +272,7 @@ test "integration: native notification expansion wraps markup and keeps action h
     if (!@import("options").integration_tests) return error.SkipZigTest;
     const actions = [_]data.Action{ .{ .key = "default", .label = "Open" }, .{ .key = "reply", .label = "Reply" }, .{ .key = "archive", .label = "Archive" } };
     for ([_]u32{ 1, 2 }) |scale| {
-        var card = View.init(.{ .id = 1, .app = "Messages", .title = "東京 — مرحبا", .body = "<b>A long notification</b> with wrapping text. This message includes enough words to occupy several lines when expanded. It should wrap naturally and preserve bold markup, while the collapsed card displays just one line. More text ensures the action row moves down with the expanded body.", .created = 0, .actions = &actions }, .{}, 529);
+        var card = View.init(std.testing.allocator, .{ .id = 1, .app = "Messages", .title = "東京 — مرحبا", .body = "<b>A long notification</b> with wrapping text. This message includes enough words to occupy several lines when expanded. It should wrap naturally and preserve bold markup, while the collapsed card displays just one line. More text ensures the action row moves down with the expanded body.", .created = 0, .actions = &actions }, .{}, 529);
         defer card.deinit();
         try card.prepare(scale);
         const collapsed_height = card.height;
@@ -310,7 +310,7 @@ test "integration: native notification expansion wraps markup and keeps action h
 test "integration: GNOME header keeps the age beside the source and reserves button space" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
     for ([_]u32{ 1, 2 }) |scale| {
-        var card = View.init(.{ .id = 1, .app = "Terminal", .title = "Build complete", .body = "All checks passed. Your desktop is ready.", .created = @divTrunc(c.__zig.realTime(), 1000000) }, .{}, 529);
+        var card = View.init(std.testing.allocator, .{ .id = 1, .app = "Terminal", .title = "Build complete", .body = "All checks passed. Your desktop is ready.", .created = @divTrunc(c.__zig.realTime(), 1000000) }, .{}, 529);
         defer card.deinit();
         try card.prepare(scale);
         try std.testing.expectEqual(@as(u32, 118), card.height);
@@ -330,7 +330,7 @@ test "integration: expanded banner matches GNOME's measured line and action geom
     if (!@import("options").integration_tests) return error.SkipZigTest;
     const actions = [_]data.Action{ .{ .key = "open", .label = "Open Settings" }, .{ .key = "later", .label = "Later" } };
     for ([_]u32{ 1, 2 }) |scale| {
-        var card = View.init(.{ .id = 1, .app = "Terminal", .title = "A longer notification title that should fit on one line", .body = "This notification contains a longer message that wraps onto multiple lines. Expand it to read the complete notification and choose an action.", .created = @divTrunc(c.__zig.realTime(), 1000000), .actions = &actions }, .{}, 529);
+        var card = View.init(std.testing.allocator, .{ .id = 1, .app = "Terminal", .title = "A longer notification title that should fit on one line", .body = "This notification contains a longer message that wraps onto multiple lines. Expand it to read the complete notification and choose an action.", .created = @divTrunc(c.__zig.realTime(), 1000000), .actions = &actions }, .{}, 529);
         defer card.deinit();
         try card.prepare(scale);
         card.toggle();

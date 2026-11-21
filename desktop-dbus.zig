@@ -1337,7 +1337,7 @@ pub const Connection = struct {
                 const rest = self.in.items[scanned..];
                 const length = (messageLength(rest) catch return error.InvalidMessage) orelse break;
                 if (rest.len < length) break;
-                if (try isReplyTo(rest[0..length], serial)) {
+                if (try isReplyTo(self.allocator, rest[0..length], serial)) {
                     const owned = (try self.take(scanned)).?;
                     return owned;
                 }
@@ -1560,9 +1560,9 @@ fn firstString(message: *const Message) ?[]const u8 {
     return reader.string() catch null;
 }
 
-fn isReplyTo(bytes: []const u8, serial: u32) !bool {
+fn isReplyTo(allocator: std.mem.Allocator, bytes: []const u8, serial: u32) !bool {
     if (bytes[1] != 2 and bytes[1] != 3) return false;
-    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    var arena: std.heap.ArenaAllocator = .init(allocator);
     defer arena.deinit();
     const message = parse(arena.allocator(), bytes, null) catch return error.InvalidMessage;
     return message.reply_serial == serial;

@@ -23,8 +23,8 @@ pub const Options = struct {
 };
 pub const Service = struct {
     state: *State,
-    pub fn init() !Service {
-        return initWithOptions(std.heap.page_allocator, .{});
+    pub fn init(a: std.mem.Allocator) !Service {
+        return initWithOptions(a, .{});
     }
     pub fn initWithOptions(a: std.mem.Allocator, options: Options) !Service {
         const source = loop.Source.open(a, .system) catch return error.PolicyKitUnavailable;
@@ -260,7 +260,7 @@ const Auth = struct {
         return self;
     }
     fn start(self: *Auth) void {
-        self.dialog = Dialog.create(self.action, self.message, self.username) catch {
+        self.dialog = Dialog.create(self.state.allocator, self.action, self.message, self.username) catch {
             self.complete(false, false, "Could not create authentication dialog");
             return;
         };

@@ -9,8 +9,8 @@ fn pump() void {
     while (c.g_main_context_iteration(null, 0) != 0) {}
     c.g_usleep(1000);
 }
-fn checkEditing() !void {
-    const dialog = try askpass.Dialog.create(.password, "Synthetic clipboard and editing checks");
+fn checkEditing(allocator: std.mem.Allocator) !void {
+    const dialog = try askpass.Dialog.create(allocator, .password, "Synthetic clipboard and editing checks");
     const entry = dialog.entry.?;
     entry.focus(true);
     const clipboard = entry.clipboard().?;
@@ -79,7 +79,7 @@ const Response = struct {
 };
 fn check(init: std.process.Init, root: []const u8, mode: askpass.Mode, accepted: bool, expected: []const u8, status: u8, trigger: Trigger) !void {
     const prompt = "Enter passphrase for <test-key> at 100%: 東京";
-    const dialog = try askpass.Dialog.create(mode, prompt);
+    const dialog = try askpass.Dialog.create(init.gpa, mode, prompt);
     defer dialog.destroy();
     try std.testing.expectEqualStrings(prompt, dialog.prompt);
     if (dialog.entry) |entry| {
@@ -107,7 +107,7 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
-    try checkEditing();
+    try checkEditing(init.gpa);
     const root = c.g_dir_make_tmp("desktop-askpass-XXXXXX", null).?;
     defer c.g_free(root);
     defer std.Io.Dir.cwd().deleteTree(init.io, std.mem.span(root)) catch {};

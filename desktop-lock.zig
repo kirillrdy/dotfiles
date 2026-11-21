@@ -9,7 +9,6 @@ const libc = @import("desktop-libc.zig");
 const auth = @import("desktop-lock-auth.zig");
 const view = @import("desktop-lock-view.zig");
 const raster = @import("desktop-raster.zig");
-const a = std.heap.page_allocator;
 const kb = @import("desktop-keyboard.zig");
 const u = @import("desktop-util.zig");
 
@@ -17,17 +16,17 @@ const cast = c.__zig.cast;
 
 /// Calls the session's secrets service and waits; used outside the GLib loop,
 /// including from the authentication thread, so it uses a private connection.
-fn secretsCall(member: []const u8, args: anytype, timeout_ms: u32) void {
+fn secretsCall(a: std.mem.Allocator, member: []const u8, args: anytype, timeout_ms: u32) void {
     const connection = dbus.Connection.open(a, .session) catch return;
     defer connection.close();
     const reply = connection.callBlocking(.{ .destination = "org.freedesktop.secrets", .path = "/org/freedesktop/secrets", .interface = "org.dotfiles.Desktop.Secrets", .member = member, .no_auto_start = true }, args, timeout_ms) catch return;
     reply.deinit();
 }
-fn screenLocked(locked: bool) void {
-    secretsCall("SetScreenLocked", .{locked}, 3000);
+fn screenLocked(a: std.mem.Allocator, locked: bool) void {
+    secretsCall(a, "SetScreenLocked", .{locked}, 3000);
 }
 fn unlockSecrets(password: []const u8) void {
-    secretsCall("LoginUnlock", .{dbus.Bytes{ .value = password }}, 30000);
+    secretsCall(std.heap.page_allocator, "LoginUnlock", .{dbus.Bytes{ .value = password }}, 30000);
 }
 const Password = struct {
     bytes: [1024:0]u8 = @splat(0),
@@ -51,22 +50,31 @@ const Password = struct {
 };
 /// One shared-memory frame, freed when the compositor releases it.
 const Buffer = struct {
+    state: *State,
     shm: helpers.ShmBuffer,
-    fn create(shm: wl.wl_shm, width: u32, height: u32) !*Buffer {
-        const frame = try helpers.shmBuffer(shm, "desktop-lock", width, height, wl.wl_shm.Format.xrgb8888);
+    next: ?*Buffer,
+    fn create(state: *State, width: u32, height: u32) !*Buffer {
+        const frame = try helpers.shmBuffer(state.shm.?, "desktop-lock", width, height, wl.wl_shm.Format.xrgb8888);
         errdefer {
             frame.buffer.destroy();
             frame.unmap();
         }
-        const self = try a.create(Buffer);
-        self.* = .{ .shm = frame };
+        const self = try state.allocator.create(Buffer);
+        self.* = .{ .state = state, .shm = frame, .next = state.buffers };
+        state.buffers = self;
         frame.buffer.listen(Buffer, self, released);
         return self;
     }
-    fn released(self: *Buffer, buffer: wl.wl_buffer, _: wl.wl_buffer.Event) void {
-        buffer.destroy();
+    fn released(self: *Buffer, _: wl.wl_buffer, _: wl.wl_buffer.Event) void {
+        self.destroy();
+    }
+    fn destroy(self: *Buffer) void {
+        var link = &self.state.buffers;
+        while (link.* != self) link = &link.*.?.next;
+        link.* = self.next;
+        self.shm.buffer.destroy();
         self.shm.unmap();
-        a.destroy(self);
+        self.state.allocator.destroy(self);
     }
 };
 const Output = struct {
@@ -102,15 +110,15 @@ const Output = struct {
         const width = self.width * scale;
         const height = self.height * scale;
         if (width > 16384 or height > 16384 or @as(u64, width) * height > 64 * 1024 * 1024) std.process.exit(1);
-        const frame = Buffer.create(s.shm.?, width, height) catch std.process.exit(1);
+        const frame = Buffer.create(s, width, height) catch std.process.exit(1);
         const pixels: [*]u32 = @ptrCast(@alignCast(frame.shm.memory));
         const target: raster.Buffer = .{ .pixels = pixels[0 .. frame.shm.size / 4], .width = width, .height = height };
         if (self.backdrop_width != width or self.backdrop_height != height) {
-            a.free(self.backdrop);
+            s.allocator.free(self.backdrop);
             self.backdrop = &.{};
             self.backdrop_width = 0;
             self.backdrop_height = 0;
-            if (a.alloc(u32, frame.shm.size / 4)) |memory| {
+            if (s.allocator.alloc(u32, frame.shm.size / 4)) |memory| {
                 s.view.background(.{ .pixels = memory, .width = width, .height = height });
                 self.backdrop = memory;
                 self.backdrop_width = width;
@@ -147,8 +155,8 @@ const Output = struct {
         if (self.surface) |value| value.destroy();
         if (self.state.pointer_output == self) self.state.pointer_output = null;
         if (self.output.version() >= 3) self.output.release() else self.output.destroy();
-        a.free(self.backdrop);
-        a.destroy(self);
+        self.state.allocator.free(self.backdrop);
+        self.state.allocator.destroy(self);
     }
 };
 const Seat = struct {
@@ -282,12 +290,13 @@ const Seat = struct {
         if (self.pointer) |pointer| pointer.destroy();
         kb.xkb_state_unref(self.xkb);
         if (self.seat.version() >= 5) self.seat.release() else self.seat.destroy();
-        a.destroy(self);
+        self.state.allocator.destroy(self);
     }
 };
 /// GNOME returns an unattended prompt to the clock after two minutes.
 const prompt_timeout_us = 120 * std.time.us_per_s;
 const State = struct {
+    allocator: std.mem.Allocator,
     connection: *wire.Connection,
     compositor: ?wl.wl_compositor = null,
     shm: ?wl.wl_shm = null,
@@ -295,6 +304,7 @@ const State = struct {
     lock: ?wl.ext_session_lock_v1 = null,
     outputs: ?*Output = null,
     seats: ?*Seat = null,
+    buffers: ?*Buffer = null,
     view: *view.View,
     password: *Password,
     stage: view.Stage = .clock,
@@ -398,7 +408,7 @@ const State = struct {
         const self = cast(State, data);
         const success = self.authenticator(self.user, &self.password.bytes);
         if (success) {
-            screenLocked(false);
+            screenLocked(self.allocator, false);
             unlockSecrets(self.password.bytes[0..self.password.len]);
         }
         self.password.clear();
@@ -437,7 +447,7 @@ const State = struct {
         switch (event) {
             .locked => {
                 self.locked = true;
-                screenLocked(true);
+                screenLocked(self.allocator, true);
                 if (self.ready_fd >= 0) {
                     // Keep protecting the session if the requesting shell has exited.
                     if (libc.write(self.ready_fd, "1", 1) != 1) std.log.warn("lock readiness receiver disconnected", .{});
@@ -465,13 +475,13 @@ const State = struct {
         } else if (std.mem.eql(u8, interface, "ext_session_lock_manager_v1")) {
             self.manager = registry.bind(name, wl.ext_session_lock_manager_v1, 1);
         } else if (std.mem.eql(u8, interface, "wl_output")) {
-            const output = a.create(Output) catch std.process.exit(1);
+            const output = self.allocator.create(Output) catch std.process.exit(1);
             output.* = .{ .state = self, .name = name, .output = registry.bind(name, wl.wl_output, @min(version, 3)), .next = self.outputs };
             output.output.listen(Output, output, Output.outputEvent);
             self.outputs = output;
             if (self.lock != null) output.lock();
         } else if (std.mem.eql(u8, interface, "wl_seat")) {
-            const seat = a.create(Seat) catch std.process.exit(1);
+            const seat = self.allocator.create(Seat) catch std.process.exit(1);
             seat.* = .{ .state = self, .name = name, .seat = registry.bind(name, wl.wl_seat, @min(version, 5)), .next = self.seats };
             self.seats = seat;
             seat.seat.listen(Seat, seat, Seat.seatEvent);
@@ -505,12 +515,12 @@ const State = struct {
     }
 };
 
-pub fn run(args: []const []const u8) !void {
-    return runWithAuthenticator(args, auth.authenticate);
+pub fn run(a: std.mem.Allocator, args: []const []const u8) !void {
+    return runWithAuthenticator(a, args, auth.authenticate);
 }
 
 /// Isolated protocol tests supply an authenticator without changing the module graph.
-pub fn runWithAuthenticator(args: []const []const u8, authenticator: *const fn ([*:0]const u8, [*:0]const u8) bool) !void {
+pub fn runWithAuthenticator(a: std.mem.Allocator, args: []const []const u8, authenticator: *const fn ([*:0]const u8, [*:0]const u8) bool) !void {
     var daemonize = false;
     var ready_fd: c_int = -1;
     var wallpaper: ?[]const u8 = null;
@@ -566,9 +576,10 @@ pub fn runWithAuthenticator(args: []const []const u8, authenticator: *const fn (
     _ = libc.signal(libc.SIGHUP, @ptrFromInt(1));
     _ = libc.signal(@intCast(@backingInt(std.posix.SIG.PIPE)), @ptrFromInt(1));
     _ = libc.signal(@intCast(@backingInt(std.posix.SIG.INT)), @ptrFromInt(1));
-    const password = try a.create(Password);
+    // Keep the password on dedicated pages so munlock cannot unlock other allocations.
+    const password = try std.heap.page_allocator.create(Password);
     password.* = .{};
-    defer a.destroy(password);
+    defer std.heap.page_allocator.destroy(password);
     if (libc.mlock(password, @sizeOf(Password)) != 0) return error.SecretMemoryLockFailed;
     defer {
         password.clear();
@@ -593,7 +604,18 @@ pub fn runWithAuthenticator(args: []const []const u8, authenticator: *const fn (
         .name = if (gecos.len > 0 and std.unicode.utf8ValidateSlice(gecos)) gecos else username,
     });
     defer lock_view.deinit();
-    var state = State{ .view = &lock_view, .connection = connection, .password = password, .user = username.ptr, .authenticator = authenticator, .ready_fd = ready_fd, .managed_readiness = !daemonize and ready_fd >= 0 };
+    var state = State{ .allocator = a, .view = &lock_view, .connection = connection, .password = password, .user = username.ptr, .authenticator = authenticator, .ready_fd = ready_fd, .managed_readiness = !daemonize and ready_fd >= 0 };
+    defer {
+        while (state.outputs) |output| {
+            state.outputs = output.next;
+            output.deinit();
+        }
+        while (state.seats) |seat| {
+            state.seats = seat.next;
+            seat.deinit();
+        }
+        while (state.buffers) |buffer| buffer.destroy();
+    }
     const display: wl.wl_display = .{ .proxy = connection.display() };
     const registry = display.get_registry();
     registry.listen(State, &state, State.registryEvent);

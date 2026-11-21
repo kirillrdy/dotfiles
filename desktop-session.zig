@@ -3,7 +3,6 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const name = "org.freedesktop.login1";
 const path = "/org/freedesktop/login1";
 const manager = name ++ ".Manager";
@@ -12,10 +11,10 @@ pub const Action = enum { @"suspend", reboot, poweroff, logout };
 pub const Result = union(enum) { success, cancelled, failure: [:0]const u8 };
 pub const Callback = *const fn (?*anyopaque, Result) void;
 
-pub fn perform(action: Action, cancel: *c.GCancellable, callback: Callback, data: ?*anyopaque) void {
+pub fn perform(a: std.mem.Allocator, action: Action, cancel: *c.GCancellable, callback: Callback, data: ?*anyopaque) void {
     if (c.g_cancellable_is_cancelled(cancel) != 0) return callback(data, .cancelled);
     const job = a.create(Job) catch return callback(data, .{ .failure = "Could not allocate session action" });
-    job.* = .{ .action = action, .cancel = cancel, .callback = callback, .data = data };
+    job.* = .{ .allocator = a, .action = action, .cancel = cancel, .callback = callback, .data = data };
     if (action == .logout) {
         if (c.__zig.getenv("XDG_SESSION_ID")) |id| {
             if (id[0] != 0) job.session_id = a.dupeSentinel(u8, std.mem.span(id), 0) catch {
@@ -31,6 +30,7 @@ pub fn perform(action: Action, cancel: *c.GCancellable, callback: Callback, data
 }
 
 const Job = struct {
+    allocator: std.mem.Allocator,
     action: Action,
     cancel: *c.GCancellable,
     cancel_handler: c.gulong = 0,
@@ -52,8 +52,8 @@ const Job = struct {
         }
         self.callback(self.data, result);
         c.g_object_unref(self.cancel);
-        if (self.session_id) |id| a.free(id);
-        a.destroy(self);
+        if (self.session_id) |id| self.allocator.free(id);
+        self.allocator.destroy(self);
     }
     fn fail(self: *Job, comptime format: []const u8, args: anytype) void {
         const text = std.fmt.bufPrintSentinel(&self.message, format, args, 0) catch "Session action failed";
@@ -74,7 +74,7 @@ const Job = struct {
     fn start(ptr: c.gpointer) callconv(.c) c.gboolean {
         const self: *Job = @ptrCast(@alignCast(ptr));
         self.idle = 0;
-        self.source = loop.Source.open(a, .system) catch |err| {
+        self.source = loop.Source.open(self.allocator, .system) catch |err| {
             self.fail("Could not connect to the system bus: {s}", .{@errorName(err)});
             return 0;
         };

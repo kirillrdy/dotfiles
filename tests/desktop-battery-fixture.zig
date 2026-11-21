@@ -4,21 +4,23 @@ const c = @import("desktop").glib;
 const battery = @import("desktop").battery;
 const quick = @import("desktop").quick;
 const data = @import("desktop").panel_data;
-const a = std.heap.page_allocator;
 var stopping = false;
 var latest: battery.State = .{};
 var controls: ?*quick.Controls = null;
 var last: ?[]u8 = null;
 var alerts = battery.Alerts{};
-fn changed(_: ?*anyopaque, state: battery.State) void {
+fn changed(data_ptr: ?*anyopaque, state: battery.State) void {
+    const allocator: *const std.mem.Allocator = @ptrCast(@alignCast(data_ptr));
     latest = state;
-    if (alerts.update(state)) |level| battery.notifyWarning(level);
+    if (alerts.update(state)) |level| battery.notifyWarning(allocator.*, level);
 }
 fn stop(_: ?*anyopaque) callconv(.c) c_int {
     stopping = true;
     return 1;
 }
-fn report(_: ?*anyopaque) callconv(.c) c_int {
+fn report(data_ptr: ?*anyopaque) callconv(.c) c_int {
+    const allocator: *const std.mem.Allocator = @ptrCast(@alignCast(data_ptr));
+    const a = allocator.*;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -51,6 +53,8 @@ fn report(_: ?*anyopaque) callconv(.c) c_int {
     return 1;
 }
 pub fn main(init: std.process.Init) !void {
+    var allocator = init.gpa;
+    const a = allocator;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     defer if (last) |old| a.free(old);
@@ -60,7 +64,7 @@ pub fn main(init: std.process.Init) !void {
     const options = battery.Options{ .backend = .{ .root = root }, .poll_ms = 100, .events = false };
     if (std.mem.eql(u8, args[1], "--read")) {
         latest = options.backend.read();
-        _ = report(null);
+        _ = report(&allocator);
         return;
     }
     if (std.mem.eql(u8, args[1], "--monitor")) {
@@ -70,9 +74,9 @@ pub fn main(init: std.process.Init) !void {
         try @import("desktop").battery_monitor.runWithOptions(.{ .source = options, .lid_root = lid, .action_delay_us = 750000 }, checked.allocator());
         return;
     }
-    controls = quick.Controls.create("true", "true");
+    controls = quick.Controls.create(init.gpa, "true", "true");
     controls.?.monitorBattery(options);
-    const service = try battery.Service.createWithOptions(options, &changed, null);
+    const service = try battery.Service.createWithOptions(allocator, options, &changed, &allocator);
     if (std.mem.eql(u8, args[1], "--dispose")) {
         controls.?.deinit();
         service.destroy();
@@ -83,7 +87,7 @@ pub fn main(init: std.process.Init) !void {
         }
         return;
     }
-    const timer = c.g_timeout_add(20, &report, null);
+    const timer = c.g_timeout_add(20, &report, &allocator);
     const term = c.g_unix_signal_add(c.SIGTERM, &stop, null);
     while (!stopping) _ = c.g_main_context_iteration(null, 1);
     _ = c.g_source_remove(timer);

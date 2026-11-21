@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(a);
     if (args.len != 3) return error.InvalidArguments;
     var state: State = .{ .title = args[2] };
-    const client = try wire.Client.createInteractive(.{ .added = &State.output, .removed = &State.output }, &state);
+    const client = try wire.Client.createInteractive(init.gpa, .{ .added = &State.output, .removed = &State.output }, &state);
     defer client.destroy();
     if (client.outputs.items.len == 0) return error.NoOutputs;
     const surface = try wire.Surface.createPixels(client.outputs.items[0], .{ .namespace = args[1], .title = args[2], .role = .toplevel, .width = 640, .height = 420, .interactive = true, .cursor = .arrow }, &State.paint, &state);

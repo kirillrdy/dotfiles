@@ -4,7 +4,6 @@ const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const wl = @import("wayland-client");
 const input = @import("desktop-input.zig");
-const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
 const capacity = 4096;
 const utf8: [:0]const u8 = "text/plain;charset=utf-8";
@@ -18,26 +17,26 @@ pub const Device = struct {
     requests: std.ArrayList(*Request) = .empty,
     stopped: bool = false,
     pub fn create(seat: *input.Seat, manager: wl.zwlr_data_control_manager_v1) !*Device {
-        const self = try a.create(Device);
+        const self = try seat.client.allocator.create(Device);
         self.* = .{ .seat = seat, .proxy = manager.get_data_device(seat.proxy) };
         self.proxy.listen(Device, self, deviceEvent);
         return self;
     }
     pub fn destroy(self: *Device) void {
         while (self.requests.items.len != 0) self.requests.items[0].finish(null);
-        self.requests.deinit(a);
+        self.requests.deinit(self.seat.client.allocator);
         for (self.offers.items) |offer| offer.destroy();
-        self.offers.deinit(a);
+        self.offers.deinit(self.seat.client.allocator);
         if (self.source) |source| source.destroy();
         self.proxy.destroy();
-        a.destroy(self);
+        self.seat.client.allocator.destroy(self);
     }
     pub fn copy(self: *Device, value: []const u8) void {
         if (self.stopped or value.len > capacity) return;
         const manager = self.seat.client.clipboard_manager orelse return;
-        const source = a.create(Source) catch return;
-        const text = a.dupe(u8, value) catch {
-            a.destroy(source);
+        const source = self.seat.client.allocator.create(Source) catch return;
+        const text = self.seat.client.allocator.dupe(u8, value) catch {
+            self.seat.client.allocator.destroy(source);
             return;
         };
         source.* = .{ .device = self, .proxy = manager.create_data_source(), .text = text };
@@ -71,17 +70,17 @@ pub const Device = struct {
             callback(context, null);
             return;
         }
-        const request = a.create(Request) catch {
+        const request = self.seat.client.allocator.create(Request) catch {
             _ = libc.close(fds[0]);
             _ = libc.close(fds[1]);
             callback(context, null);
             return;
         };
         request.* = .{ .device = self, .fd = fds[0], .callback = callback, .context = context };
-        self.requests.append(a, request) catch {
+        self.requests.append(self.seat.client.allocator, request) catch {
             _ = libc.close(fds[0]);
             _ = libc.close(fds[1]);
-            a.destroy(request);
+            self.seat.client.allocator.destroy(request);
             callback(context, null);
             return;
         };
@@ -94,9 +93,9 @@ pub const Device = struct {
     fn deviceEvent(self: *Device, _: wl.zwlr_data_control_device_v1, event: wl.zwlr_data_control_device_v1.Event) void {
         switch (event) {
             .data_offer => |value| {
-                const offer = a.create(Offer) catch @panic("clipboard offer");
-                offer.* = .{ .proxy = value.id };
-                self.offers.append(a, offer) catch @panic("clipboard offer");
+                const offer = self.seat.client.allocator.create(Offer) catch @panic("clipboard offer");
+                offer.* = .{ .allocator = self.seat.client.allocator, .proxy = value.id };
+                self.offers.append(self.seat.client.allocator, offer) catch @panic("clipboard offer");
                 value.id.listen(Offer, offer, Offer.offerEvent);
             },
             .selection => |value| {
@@ -129,6 +128,7 @@ pub const Device = struct {
     }
 };
 const Offer = struct {
+    allocator: std.mem.Allocator,
     proxy: wl.zwlr_data_control_offer_v1,
     mime: ?[:0]const u8 = null,
     fn offerEvent(self: *Offer, _: wl.zwlr_data_control_offer_v1, event: wl.zwlr_data_control_offer_v1.Event) void {
@@ -137,7 +137,7 @@ const Offer = struct {
     }
     fn destroy(self: *Offer) void {
         self.proxy.destroy();
-        a.destroy(self);
+        self.allocator.destroy(self);
     }
 };
 const Source = struct {
@@ -169,8 +169,8 @@ const Source = struct {
     }
     fn destroy(self: *Source) void {
         self.proxy.destroy();
-        a.free(self.text);
-        a.destroy(self);
+        self.device.seat.client.allocator.free(self.text);
+        self.device.seat.client.allocator.destroy(self);
     }
 };
 const Request = struct {
@@ -214,6 +214,7 @@ const Request = struct {
         return 0;
     }
     fn finish(self: *Request, value: ?[]const u8) void {
+        const a = self.device.seat.client.allocator;
         if (self.source != 0) _ = c.g_source_remove(self.source);
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         _ = libc.close(self.fd);

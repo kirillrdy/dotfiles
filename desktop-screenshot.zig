@@ -352,7 +352,6 @@ pub const FrameCapture = struct {
 };
 
 pub const SelectionOverlay = struct {
-    const allocator = std.heap.page_allocator;
     pub const Result = struct {
         rect: Rect,
         output_name: [64:0]u8,
@@ -373,6 +372,7 @@ pub const SelectionOverlay = struct {
         label_size: [2]i32 = .{ 0, 0 },
         label_scale: u32 = 0,
         fn create(owner: *SelectionOverlay, output: *native.Output) !*Layer {
+            const allocator = owner.allocator;
             const self = try allocator.create(Layer);
             errdefer allocator.destroy(self);
             self.* = .{ .owner = owner, .surface = try native.Surface.createPixels(output, .{
@@ -388,10 +388,10 @@ pub const SelectionOverlay = struct {
             return self;
         }
         fn destroy(self: *Layer) void {
-            if (self.label) |label| label.deinit(allocator);
+            if (self.label) |label| label.deinit(self.owner.allocator);
             self.renderer.deinit();
             self.surface.destroy();
-            allocator.destroy(self);
+            self.owner.allocator.destroy(self);
         }
         fn paint(data: ?*anyopaque, buffer: native.Pixels) void {
             const self = cast(Layer, data);
@@ -403,11 +403,11 @@ pub const SelectionOverlay = struct {
             if (std.mem.eql(i32, &self.label_size, &size) and self.label_scale == scale) return;
             var buffer: [64:0]u8 = undefined;
             const value = std.fmt.bufPrintSentinel(&buffer, "{d} × {d}", .{ rect.w, rect.h }, 0) catch return;
-            const next = self.renderer.render(allocator, "Adwaita Sans Bold", 11 * scale, value) catch |err| {
+            const next = self.renderer.render(self.owner.allocator, "Adwaita Sans Bold", 11 * scale, value) catch |err| {
                 std.log.warn("selection label: {s}", .{@errorName(err)});
                 return;
             };
-            if (self.label) |old| old.deinit(allocator);
+            if (self.label) |old| old.deinit(self.owner.allocator);
             self.label = next;
             self.label_size = size;
             self.label_scale = scale;
@@ -456,6 +456,7 @@ pub const SelectionOverlay = struct {
             owner.done = true;
         }
     };
+    allocator: std.mem.Allocator = undefined,
     layers: std.ArrayList(*Layer) = .empty,
     requested: ?[]const u8 = null,
     active: ?*Layer = null,
@@ -467,13 +468,13 @@ pub const SelectionOverlay = struct {
     selected: ?Result = null,
     done: bool = false,
 
-    pub fn run() ?Rect {
-        const result = runForOutput(null) orelse return null;
+    pub fn run(allocator: std.mem.Allocator) ?Rect {
+        const result = runForOutput(allocator, null) orelse return null;
         return result.globalRect();
     }
-    pub fn runForOutput(requested: ?[]const u8) ?Result {
-        var self: SelectionOverlay = .{ .requested = requested };
-        const client = native.Client.createInteractive(.{ .added = &added, .removed = &removed }, &self) catch |err| {
+    pub fn runForOutput(allocator: std.mem.Allocator, requested: ?[]const u8) ?Result {
+        var self: SelectionOverlay = .{ .allocator = allocator, .requested = requested };
+        const client = native.Client.createInteractive(allocator, .{ .added = &added, .removed = &removed }, &self) catch |err| {
             std.log.err("screenshot selection: {s}", .{@errorName(err)});
             return null;
         };
@@ -503,7 +504,7 @@ pub const SelectionOverlay = struct {
             self.done = true;
             return;
         };
-        self.layers.append(allocator, layer) catch @panic("out of memory");
+        self.layers.append(self.allocator, layer) catch @panic("out of memory");
     }
     fn removed(data: ?*anyopaque, output: *native.Output) void {
         const self = cast(SelectionOverlay, data);
@@ -681,19 +682,17 @@ pub fn main(init: std.process.Init) void {
 }
 
 fn run(init: std.process.Init) !u8 {
-    var arguments = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arguments.deinit();
-    return runArgs(init, try init.minimal.args.toSlice(arguments.allocator()));
+    return runArgs(init, try init.minimal.args.toSlice(init.arena.allocator()));
 }
 pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
-    _ = init;
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var opt = Options.parse(args);
+    // Clipboard mode keeps dispatching in the forked child. Its allocator
+    // must work without locks inherited from other threads.
+    var arena = std.heap.ArenaAllocator.init(if (opt.clipboard) std.heap.page_allocator else init.gpa);
     defer arena.deinit();
 
-    var opt = Options.parse(args);
-
     if (opt.slurp_mode) {
-        if (SelectionOverlay.runForOutput(opt.output_name)) |selection| {
+        if (SelectionOverlay.runForOutput(init.gpa, opt.output_name)) |selection| {
             const rect = selection.globalRect() orelse return 1;
             var buf: [64]u8 = undefined;
             const text = std.fmt.bufPrint(&buf, "{d},{d} {d}x{d}\n", .{ rect.x, rect.y, rect.w, rect.h }) catch return 1;
@@ -705,7 +704,7 @@ pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
     }
 
     if (opt.interactive) {
-        const selection = SelectionOverlay.runForOutput(opt.output_name) orelse return 0; // Cancelled.
+        const selection = SelectionOverlay.runForOutput(init.gpa, opt.output_name) orelse return 0; // Cancelled.
         opt.geometry = selection.rect;
         opt.output_name = try arena.allocator().dupe(u8, std.mem.sliceTo(&selection.output_name, 0));
     }

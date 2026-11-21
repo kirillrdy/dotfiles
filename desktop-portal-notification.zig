@@ -191,8 +191,8 @@ pub const Service = struct {
                 else => return "",
             };
             const decode = @import("desktop-decode.zig");
-            const image = decode.bytes(encoded, 128) orelse return "";
-            defer decode.free(image);
+            const image = decode.bytes(arena, encoded, 128) orelse return "";
+            defer decode.free(arena, image);
             const rgba = try image.straightRgba(arena);
             const width: i32 = @intCast(image.width);
             // (iiibiiay): width, height, stride, alpha, bits per sample, channels, pixels.

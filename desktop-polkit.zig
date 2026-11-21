@@ -2,9 +2,9 @@
 const std = @import("std");
 pub const c = @import("desktop-glib.zig");
 const auth = @import("desktop-auth-dialog.zig");
-const a = std.heap.page_allocator;
 
 pub const Dialog = struct {
+    allocator: std.mem.Allocator,
     native: *auth.Dialog,
     window: *auth.host.Window,
     action: ?[:0]const u8,
@@ -12,30 +12,30 @@ pub const Dialog = struct {
     user: ?[:0]const u8,
     prompt: ?[:0]u8 = null,
 
-    pub fn create(action: ?[:0]const u8, message: [:0]const u8, user: ?[:0]const u8) !Dialog {
-        const native = try auth.Dialog.createWithOptions(.password, message, .{
+    pub fn create(a: std.mem.Allocator, action: ?[:0]const u8, message: [:0]const u8, user: ?[:0]const u8) !Dialog {
+        const native = try auth.Dialog.createWithOptions(a, .password, message, .{
             .title = "Authentication Required",
             .role = "desktop-polkit",
             .accept = "Authenticate",
         });
         errdefer native.destroy();
-        var self: Dialog = .{ .native = native, .window = native.window, .action = action, .message = message, .user = user };
+        var self: Dialog = .{ .allocator = a, .native = native, .window = native.window, .action = action, .message = message, .user = user };
         try self.refresh();
         self.setEnabled(false);
         return self;
     }
     fn refresh(self: *Dialog) !void {
-        const value = try std.fmt.allocPrintSentinel(a, "{s}\n\nAction: {s}\n{s} ({s})", .{
+        const value = try std.fmt.allocPrintSentinel(self.allocator, "{s}\n\nAction: {s}\n{s} ({s})", .{
             self.message, self.action orelse "", self.prompt orelse "Password:", self.user orelse "",
         }, 0);
-        defer a.free(value);
+        defer self.allocator.free(value);
         try self.native.setPrompt(value);
     }
     pub fn setPrompt(self: *Dialog, prompt: [:0]const u8, echo: bool) !void {
-        const value = try a.dupeSentinel(u8, prompt, 0);
+        const value = try self.allocator.dupeSentinel(u8, prompt, 0);
         const old = self.prompt;
         self.prompt = value;
-        defer if (old) |v| a.free(v);
+        defer if (old) |v| self.allocator.free(v);
         self.clear();
         self.native.entry.?.echo = echo;
         try self.refresh();
@@ -61,7 +61,7 @@ pub const Dialog = struct {
     }
     pub fn destroy(self: *Dialog) void {
         self.native.destroy();
-        if (self.prompt) |v| a.free(v);
+        if (self.prompt) |v| self.allocator.free(v);
     }
 };
 

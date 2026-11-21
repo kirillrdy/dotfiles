@@ -4,10 +4,10 @@ const c = @import("desktop-glib.zig");
 const wire = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const input = @import("desktop-input.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 
 pub const Host = struct {
+    allocator: std.mem.Allocator,
     context: ?*anyopaque,
     namespace: [:0]const u8,
     paint: wire.PixelPaint,
@@ -31,12 +31,12 @@ pub const Host = struct {
         if (self.client) |client| client.destroy();
         self.client = null;
         self.surface = null;
-        self.pixels.deinit(a);
+        self.pixels.deinit(self.allocator);
         self.pixels = .empty;
     }
     pub fn prepare(self: *Host, global_x: i32, global_y: i32) !void {
         if (self.client == null) {
-            self.client = try wire.Client.createInteractive(.{ .added = &added, .removed = &removed, .changed = &changed }, self);
+            self.client = try wire.Client.createInteractive(self.allocator, .{ .added = &added, .removed = &removed, .changed = &changed }, self);
             errdefer {
                 self.client.?.destroy();
                 self.client = null;
@@ -105,7 +105,7 @@ pub const Host = struct {
         self.place(width, height);
         const physical_width = width * factor;
         const physical_height = height * factor;
-        try self.pixels.resize(a, @as(usize, physical_width) * physical_height);
+        try self.pixels.resize(self.allocator, @as(usize, physical_width) * physical_height);
         return .{ .pixels = self.pixels.items, .width = physical_width, .height = physical_height };
     }
     pub fn blit(self: *const Host, target: wire.Pixels) !void {
@@ -175,7 +175,7 @@ test "popup dismissal coalesces and hide or destruction cancels queued callbacks
         }
     };
     var owner: Owner = .{};
-    var host: Host = .{ .context = &owner, .namespace = "test-popup", .paint = &Owner.paint, .input = .{}, .resized = &Owner.resized, .dismiss = &Owner.dismiss };
+    var host: Host = .{ .allocator = std.testing.allocator, .context = &owner, .namespace = "test-popup", .paint = &Owner.paint, .input = .{}, .resized = &Owner.resized, .dismiss = &Owner.dismiss };
     defer host.deinit();
     host.visible = true;
     host.requestHide();
@@ -211,7 +211,7 @@ test "popup dismissal callback can destroy its owner" {
         }
     };
     const owner = try std.testing.allocator.create(Owner);
-    owner.* = .{ .host = .{ .context = owner, .namespace = "test-popup", .paint = &Owner.paint, .input = .{}, .resized = &Owner.resized, .dismiss = &Owner.dismiss } };
+    owner.* = .{ .host = .{ .allocator = std.testing.allocator, .context = owner, .namespace = "test-popup", .paint = &Owner.paint, .input = .{}, .resized = &Owner.resized, .dismiss = &Owner.dismiss } };
     owner.host.requestHide();
     // The callback frees owner; dispatch must never read its host afterward.
     _ = c.g_main_context_iteration(null, 0);

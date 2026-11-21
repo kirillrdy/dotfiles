@@ -5,7 +5,6 @@ const form = @import("desktop-form.zig");
 const prefs = @import("desktop-preferences-view.zig");
 const raster = @import("desktop-raster.zig");
 extern fn g_date_time_new_from_unix_local(i64) ?*c.GDateTime;
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 pub const Rect = form.Rect;
 pub const Row = struct { item: usize, entry: usize, ordinal: usize, icon: [:0]const u8, size: u64, modified: u64, directory: bool };
 pub const Place = struct { item: usize, path: [:0]const u8, icon: [:0]const u8 };
@@ -57,8 +56,8 @@ pub const View = struct {
     pub const cell_width = 168;
     pub const cell_height = 138;
 
-    pub fn deinit(self: *View) void {
-        self.icons.deinit();
+    pub fn deinit(self: *View, a: std.mem.Allocator) void {
+        self.icons.deinit(a);
     }
     pub fn rowHeight(self: *const View) f64 {
         return if (self.grid) cell_height else 52;
@@ -135,8 +134,8 @@ pub const View = struct {
     fn label(ui: *form.Form, canvas: raster.Canvas, value: [:0]const u8, rect: Rect, bold: bool, centered: bool, tint: u32) !void {
         try prefs.text(ui, canvas, value, rect, 14.666, bold, centered, tint);
     }
-    fn icon(self: *View, canvas: raster.Canvas, name: [:0]const u8, x: f64, y: f64, size: u32) !void {
-        try self.icons.paint(canvas, name, x, y, size);
+    fn icon(self: *View, a: std.mem.Allocator, canvas: raster.Canvas, name: [:0]const u8, x: f64, y: f64, size: u32) !void {
+        try self.icons.paint(a, canvas, name, x, y, size);
     }
     fn button(self: *View, ui: *form.Form, canvas: raster.Canvas, id: usize, name: [:0]const u8) !void {
         const item = ui.get(id);
@@ -144,7 +143,7 @@ pub const View = struct {
         if (ui.hover == id or ui.pressed == id) fill(canvas, item.bounds, if (ui.pressed == id) 0x47474b else 0x333336, 6);
         const x = item.bounds.x + (item.bounds.width - 16) / 2;
         const y = item.bounds.y + (item.bounds.height - 16) / 2;
-        try self.icon(canvas, name, x, y, 16);
+        try self.icon(ui.allocator, canvas, name, x, y, 16);
         if (!item.enabled) canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = item.bounds.x, .y = item.bounds.y, .width = item.bounds.width, .height = item.bounds.height }, .radius = 6 } }}, raster.Color.rgb(0x1d1d20, 0.7));
     }
     fn dropdown(self: *View, ui: *form.Form, canvas: raster.Canvas, id: usize) !void {
@@ -153,11 +152,11 @@ pub const View = struct {
         if (ui.hover == id or ui.expanded == id) fill(canvas, field.bounds, 0x333336, 6);
         const value = if (field.selected) |index| field.options.items[index].label else "All Files";
         try label(ui, canvas, value, .{ .x = field.bounds.x + 10, .y = field.bounds.y, .width = field.bounds.width - 36, .height = field.bounds.height }, false, false, 0xffffff);
-        try self.icon(canvas, "pan-down-symbolic", field.bounds.x + field.bounds.width - 26, field.bounds.y + 10, 16);
+        try self.icon(ui.allocator, canvas, "pan-down-symbolic", field.bounds.x + field.bounds.width - 26, field.bounds.y + 10, 16);
     }
     pub fn paint(self: *View, ui: *form.Form, target: raster.Buffer, scale: u32) !void {
         if (self.icon_scale != scale) {
-            self.icons.clear();
+            self.icons.clear(ui.allocator);
             self.icon_scale = scale;
         }
         self.layout(ui);
@@ -170,9 +169,9 @@ pub const View = struct {
             const inset: f64 = if (self.grid) 12 else 8;
             if (field.checked or ui.hover == row.item) fill(canvas, .{ .x = r.x + inset, .y = r.y + (if (self.grid) @as(f64, 2) else 4), .width = r.width - inset * 2, .height = r.height - (if (self.grid) @as(f64, 6) else 8) }, if (field.checked) 0x3d3d3f else 0x303034, if (self.grid) @as(f64, 12) else 8);
             const icon_size: u32 = if (self.grid) 96 else 32;
-            try self.icon(canvas, row.icon, r.x + (if (self.grid) (r.width - 96) / 2 else 14), r.y + (if (self.grid) @as(f64, 8) else 10), icon_size);
+            try self.icon(ui.allocator, canvas, row.icon, r.x + (if (self.grid) (r.width - 96) / 2 else 14), r.y + (if (self.grid) @as(f64, 8) else 10), icon_size);
             const text_rect = Rect{ .x = r.x + (if (self.grid) @as(f64, 12) else 52), .y = r.y + (if (self.grid) @as(f64, 104) else 0), .width = if (self.grid) r.width - 24 else @max(1, r.width - 270), .height = if (self.grid) 30 else 52 };
-            if (field.title_mask == null) field.title_mask = try ui.renderer.renderLayout(a, field.title, .{ .font = "Adwaita Sans", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(text_rect.width * canvas.scale), .ellipsize = true, .lines = 1, .alignment = if (self.grid) .center else .left, .origin = .top });
+            if (field.title_mask == null) field.title_mask = try ui.renderer.renderLayout(ui.allocator, field.title, .{ .font = "Adwaita Sans", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(text_rect.width * canvas.scale), .ellipsize = true, .lines = 1, .alignment = if (self.grid) .center else .left, .origin = .top });
             const mask = field.title_mask.?;
             mask.paint(canvas, text_rect.x, text_rect.y + (text_rect.height - @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale) / 2, raster.Color.rgb(0xffffff, 1));
             if (!self.grid) {
@@ -210,7 +209,7 @@ pub const View = struct {
         for (self.places) |p| {
             const field = ui.get(p.item);
             if (std.mem.eql(u8, self.folder, p.path) or ui.hover == p.item) fill(canvas, field.bounds, if (std.mem.eql(u8, self.folder, p.path)) 0x47474b else 0x3b3b3f, 6);
-            try self.icon(canvas, p.icon, 20, field.bounds.y + 10, 16);
+            try self.icon(ui.allocator, canvas, p.icon, 20, field.bounds.y + 10, 16);
             try label(ui, canvas, field.title, .{ .x = 44, .y = field.bounds.y, .width = self.sidebar - 56, .height = field.bounds.height }, false, false, 0xffffff);
         }
         try self.button(ui, canvas, self.search, "edit-find-symbolic");
@@ -228,7 +227,7 @@ pub const View = struct {
         } else {
             const r = ui.get(self.location).bounds;
             fill(canvas, r, 0x333336, 9);
-            try self.icon(canvas, "drive-harddisk-symbolic", r.x + 12, r.y + 9, 16);
+            try self.icon(ui.allocator, canvas, "drive-harddisk-symbolic", r.x + 12, r.y + 9, 16);
             const home = std.mem.span(c.g_get_home_dir());
             var path = std.mem.tokenizeScalar(u8, self.folder, '/');
             var x = r.x + 34;
@@ -240,14 +239,14 @@ pub const View = struct {
                 if (x + 50 > r.x + r.width - 24) break;
                 try label(ui, canvas, "/", .{ .x = x, .y = r.y, .width = 16, .height = r.height }, false, false, 0x9a9a9e);
                 x += 20;
-                const segment = try a.dupeSentinel(u8, part, 0);
-                defer a.free(segment);
-                const mask = try ui.renderer.renderLayout(a, segment, .{ .font = "Adwaita Sans Bold", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(@max(1, r.x + r.width - 24 - x) * canvas.scale), .ellipsize = true, .origin = .top });
-                defer mask.deinit(a);
+                const segment = try ui.allocator.dupeSentinel(u8, part, 0);
+                defer ui.allocator.free(segment);
+                const mask = try ui.renderer.renderLayout(ui.allocator, segment, .{ .font = "Adwaita Sans Bold", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(@max(1, r.x + r.width - 24 - x) * canvas.scale), .ellipsize = true, .origin = .top });
+                defer mask.deinit(ui.allocator);
                 mask.paint(canvas, x, r.y + (r.height - @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale) / 2, raster.Color.rgb(if (path.index >= self.folder.len) @as(u32, 0xffffff) else 0xb4b4b7, 1));
                 x += @as(f64, @floatFromInt(mask.logical_width)) / canvas.scale + 20;
             }
-            try self.icon(canvas, "view-more-symbolic", r.x + r.width - 24, r.y + 9, 16);
+            try self.icon(ui.allocator, canvas, "view-more-symbolic", r.x + r.width - 24, r.y + 9, 16);
         }
         const accept = ui.get(self.accept);
         fill(canvas, accept.bounds, if (accept.enabled) (if (ui.hover == self.accept) @as(u32, 0x4b91e6) else 0x3584e4) else 0x295082, 22);
@@ -257,7 +256,7 @@ pub const View = struct {
         if (self.name) |id| try ui.get(id).entry.?.paint(target, scale);
         if (self.loading or self.count == 0) {
             const value: [:0]const u8 = if (self.loading) "Loading…" else "Folder is Empty";
-            try self.icon(canvas, "folder-symbolic", self.sidebar + (self.width - self.sidebar) / 2 - 32, self.height / 2 - 72, 64);
+            try self.icon(ui.allocator, canvas, "folder-symbolic", self.sidebar + (self.width - self.sidebar) / 2 - 32, self.height / 2 - 72, 64);
             try label(ui, canvas, value, .{ .x = self.sidebar + 24, .y = self.height / 2 + 8, .width = self.width - self.sidebar - 48, .height = 30 }, true, true, 0x9a9a9e);
         }
         if (self.maxOffset() > 0) {
@@ -267,12 +266,12 @@ pub const View = struct {
         }
         if (self.selected_count > 0) {
             const value = if (self.selected_count == 1)
-                if (self.selected_directory) try std.fmt.allocPrintSentinel(a, "“{s}” selected", .{self.selected_name}, 0) else try std.fmt.allocPrintSentinel(a, "“{s}” selected ({d} bytes)", .{ self.selected_name, self.selected_size }, 0)
+                if (self.selected_directory) try std.fmt.allocPrintSentinel(ui.allocator, "“{s}” selected", .{self.selected_name}, 0) else try std.fmt.allocPrintSentinel(ui.allocator, "“{s}” selected ({d} bytes)", .{ self.selected_name, self.selected_size }, 0)
             else
-                try std.fmt.allocPrintSentinel(a, "{d} items selected ({d} bytes)", .{ self.selected_count, self.selected_size }, 0);
-            defer a.free(value);
-            const mask = try ui.renderer.renderLayout(a, value, .{ .font = "Adwaita Sans", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(@max(1, self.width - self.sidebar - 48) * canvas.scale), .ellipsize = true, .lines = 1, .origin = .top });
-            defer mask.deinit(a);
+                try std.fmt.allocPrintSentinel(ui.allocator, "{d} items selected ({d} bytes)", .{ self.selected_count, self.selected_size }, 0);
+            defer ui.allocator.free(value);
+            const mask = try ui.renderer.renderLayout(ui.allocator, value, .{ .font = "Adwaita Sans", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(@max(1, self.width - self.sidebar - 48) * canvas.scale), .ellipsize = true, .lines = 1, .origin = .top });
+            defer mask.deinit(ui.allocator);
             const width = @min(self.width - self.sidebar - 24, @as(f64, @floatFromInt(mask.logical_width)) / canvas.scale + 20);
             const rect = Rect{ .x = self.width - width - 4, .y = self.height - footer_height - 36, .width = width, .height = 28 };
             fill(canvas, rect, 0x333336, 14);
@@ -301,6 +300,6 @@ pub const View = struct {
         if (ui.hover == id) fill(canvas, field.bounds, 0x4b4b50, 6);
         if (field.kind == .choice) return self.dropdown(ui, canvas, id);
         try label(ui, canvas, field.title, .{ .x = field.bounds.x + 12, .y = field.bounds.y, .width = field.bounds.width - 44, .height = field.bounds.height }, false, false, 0xffffff);
-        if (field.checked) try self.icon(canvas, "object-select-symbolic", field.bounds.x + field.bounds.width - 28, field.bounds.y + 12, 16);
+        if (field.checked) try self.icon(ui.allocator, canvas, "object-select-symbolic", field.bounds.x + field.bounds.width - 28, field.bounds.y + 12, 16);
     }
 };

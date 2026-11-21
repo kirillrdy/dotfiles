@@ -13,8 +13,8 @@ const Reply = struct {
         self.accepted = accepted;
     }
 };
-fn checkDialog() !void {
-    var dialog = try polkit.Dialog.create("org.dotfiles.test<&>", "Authentication is required: 東京", "test<&>");
+fn checkDialog(allocator: std.mem.Allocator) !void {
+    var dialog = try polkit.Dialog.create(allocator, "org.dotfiles.test<&>", "Authentication is required: 東京", "test<&>");
     defer dialog.destroy();
     var reply: Reply = .{};
     dialog.native.responded = &Reply.response;
@@ -58,7 +58,6 @@ fn checkDialog() !void {
     try std.testing.expectEqual(@as(usize, 2), reply.count);
 }
 pub fn main(init: std.process.Init) !void {
-    _ = init;
-    try checkDialog();
+    try checkDialog(init.gpa);
     std.debug.print("desktop-polkit: native labels, locked entry, helper wait, status, MFA clearing and cancellation passed\n", .{});
 }

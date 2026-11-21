@@ -11,10 +11,9 @@ const network_view = @import("desktop-network-view.zig");
 const wire = native.host.wire;
 const input = @import("desktop-input.zig");
 const raster = @import("desktop-raster.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 const eq = c.__zig.eq;
-fn z(value: []const u8) [:0]u8 {
+fn z(a: std.mem.Allocator, value: []const u8) [:0]u8 {
     return c.__zig.dupeZ(a, value);
 }
 pub const Mode = enum { sound, network };
@@ -26,6 +25,7 @@ const Page = struct {
     deactivate: ?*const fn (?*anyopaque) void = null,
 };
 pub const Settings = struct {
+    allocator: std.mem.Allocator,
     mode: Mode = .network,
     sound: ?*Sound = null,
     form_input: input.Events = .{},
@@ -41,13 +41,13 @@ pub const Settings = struct {
     password: *native.Item,
     view: network_view.View = .{},
     rows: std.ArrayList(network_view.Row) = .empty,
-    row_arena: std.heap.ArenaAllocator = .init(a),
+    row_arena: std.heap.ArenaAllocator,
     dynamic_start: usize = 0,
     initial_page: bool = true,
-    pub fn create(mode: Mode) *Settings {
+    pub fn create(a: std.mem.Allocator, mode: Mode) *Settings {
         const self = a.create(Settings) catch @panic("out of memory");
-        const ui = native.Form.create("Settings", self, &action, &fieldChanged) catch @panic("out of memory");
-        self.* = .{ .window = ui.window, .ui = ui, .audio_cancel = c.g_cancellable_new().?, .message = undefined, .manual = undefined, .password = undefined };
+        const ui = native.Form.create(a, "Settings", self, &action, &fieldChanged) catch @panic("out of memory");
+        self.* = .{ .allocator = a, .row_arena = .init(a), .window = ui.window, .ui = ui, .audio_cancel = c.g_cancellable_new().?, .message = undefined, .manual = undefined, .password = undefined };
         self.manual = self.add(.entry, "Wi-Fi network name", "Enter the hidden network’s name", false);
         self.password = self.add(.entry, "Password", "Leave empty for a saved or open network", true);
         self.message = ui.get(ui.addPinned(.label, "") catch @panic("out of memory"));
@@ -80,7 +80,7 @@ pub const Settings = struct {
         ui.scrolled = &scroll;
         ui.shortcut = &shortcut;
         ui.reveal = &reveal;
-        self.network_client = network.Client.create(&networkChanged, self) catch null;
+        self.network_client = network.Client.create(a, &networkChanged, self) catch null;
         ui.close_callback = &destroyed;
         self.form_input = ui.window.surface.?.input;
         self.page = self.networkPage();
@@ -130,7 +130,7 @@ pub const Settings = struct {
         self.page = switch (mode) {
             .network => self.networkPage(),
             .sound => blk: {
-                if (self.sound == null) self.sound = Sound.create(self.window, self, &navigateSound) catch @panic("out of memory");
+                if (self.sound == null) self.sound = Sound.create(self.allocator, self.window, self, &navigateSound) catch @panic("out of memory");
                 break :blk .{
                     .context = self.sound.?,
                     .events = .{ .button = &Sound.button, .motion = &Sound.motion, .leave = &Sound.leave, .focus = &Sound.focusChanged, .scroll = &Sound.scrolled, .symbol = &Sound.key },
@@ -254,10 +254,10 @@ pub const Settings = struct {
         c.g_object_unref(self.audio_cancel);
         if (self.sound) |sound| sound.destroy();
         self.ui.deinit();
-        self.view.deinit();
-        self.rows.deinit(a);
+        self.view.deinit(self.allocator);
+        self.rows.deinit(self.allocator);
         self.row_arena.deinit();
-        a.destroy(self);
+        self.allocator.destroy(self);
     }
     fn destroyed(ptr: ?*anyopaque) void {
         const self = cast(Settings, ptr);
@@ -305,11 +305,11 @@ pub const Settings = struct {
         var focused_part: enum { row, details, remove } = .row;
         if (self.ui.focus) |id| for (self.rows.items) |row| {
             if (id != row.item and id != row.details and row.remove != id) continue;
-            focused_path = z(row.key);
+            focused_path = z(self.allocator, row.key);
             focused_part = if (id == row.details) .details else if (row.remove == id) .remove else .row;
             break;
         };
-        defer if (focused_path) |path| a.free(path);
+        defer if (focused_path) |path| self.allocator.free(path);
         self.view.rows = &.{};
         self.rows.clearRetainingCapacity();
         _ = self.row_arena.reset(.retain_capacity);
@@ -353,7 +353,7 @@ pub const Settings = struct {
         next.item = self.ui.add(.button, title, "", false) catch @panic("out of memory");
         next.details = self.ui.add(.button, "Network Options", "", false) catch @panic("out of memory");
         if (self.view.page == .saved) next.remove = self.ui.add(.button, "Forget", "", false) catch @panic("out of memory");
-        self.rows.append(a, next) catch @panic("out of memory");
+        self.rows.append(self.allocator, next) catch @panic("out of memory");
     }
     fn rebuildRows(self: *Settings, state: *const network.State) void {
         const query = self.ui.get(self.view.query).value();
@@ -424,9 +424,9 @@ pub const Settings = struct {
         self.password.entry.?.clear();
     }
     fn forget(self: *Settings, key: [:0]const u8) void {
-        const owned_key = z(key);
-        defer a.free(owned_key);
-        const dialog = auth.Dialog.createWithOptions(.confirm, "Forget the selected connection and its saved credentials?", .{ .title = "Forget Connection", .role = "desktop-network-forget", .accept = "Forget", .cancel = "Cancel" }) catch return;
+        const owned_key = z(self.allocator, key);
+        defer self.allocator.free(owned_key);
+        const dialog = auth.Dialog.createWithOptions(self.allocator, .confirm, "Forget the selected connection and its saved credentials?", .{ .title = "Forget Connection", .role = "desktop-network-forget", .accept = "Forget", .cancel = "Cancel" }) catch return;
         defer dialog.destroy();
         dialog.window.parent = self.window;
         // Hold the controller across the nested dialog loop, even if its parent closes.
@@ -525,9 +525,9 @@ pub const Settings = struct {
             self.networkAction(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path } });
             return;
         }
-        const owned_path = z(path);
-        defer a.free(owned_path);
-        const dialog = auth.Dialog.createWithOptions(.password, ap.title, .{ .title = "Authentication Required", .role = "desktop-network-auth", .accept = "Connect", .cancel = "Cancel" }) catch return;
+        const owned_path = z(self.allocator, path);
+        defer self.allocator.free(owned_path);
+        const dialog = auth.Dialog.createWithOptions(self.allocator, .password, ap.title, .{ .title = "Authentication Required", .role = "desktop-network-auth", .accept = "Connect", .cancel = "Cancel" }) catch return;
         defer dialog.destroy();
         dialog.window.parent = self.window;
         self.network_operations += 1;
@@ -546,6 +546,7 @@ pub const Settings = struct {
 };
 
 pub const Service = struct {
+    allocator: std.mem.Allocator,
     windows: std.ArrayList(*Settings) = .empty,
     pub fn show(self: *Service, mode: Mode) !void {
         self.reap();
@@ -556,8 +557,8 @@ pub const Service = struct {
                 return;
             }
         }
-        try self.windows.ensureUnusedCapacity(a, 1);
-        const settings = Settings.create(mode);
+        try self.windows.ensureUnusedCapacity(self.allocator, 1);
+        const settings = Settings.create(self.allocator, mode);
         self.windows.appendAssumeCapacity(settings);
     }
 
@@ -578,6 +579,6 @@ pub const Service = struct {
             self.reap();
             if (self.windows.items.len > 0) _ = c.g_main_context_iteration(null, 1);
         }
-        self.windows.deinit(a);
+        self.windows.deinit(self.allocator);
     }
 };

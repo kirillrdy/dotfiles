@@ -280,9 +280,9 @@ fn quit(data: ?*anyopaque) callconv(.c) c_int {
     cast(Server, data).stopping = true;
     return 1;
 }
-pub fn run() !void {
+pub fn run(allocator: std.mem.Allocator) !void {
     if (libc.geteuid() != 0) return error.RequiresRoot;
-    return runWithOptions(.{}, std.heap.page_allocator);
+    return runWithOptions(.{}, allocator);
 }
 pub fn runWithOptions(options: Options, allocator: std.mem.Allocator) !void {
     var introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-battery.xml"));
@@ -297,7 +297,7 @@ pub fn runWithOptions(options: Options, allocator: std.mem.Allocator) !void {
     _ = try connection.exportObject(root, manager, &Server.methodCall, &Server.getProperty, &server);
     _ = try connection.exportObject(display, device_info, &Server.methodCall, &Server.getProperty, &server);
     _ = try connection.exportObject(device, device_info, &Server.methodCall, &Server.getProperty, &server);
-    server.service = try battery.Service.createWithOptions(options.source, &Server.changed, &server);
+    server.service = try battery.Service.createWithOptions(allocator, options.source, &Server.changed, &server);
     if ((connection.requestName(name, 4) catch return error.NameUnavailable) != 1) return error.NameUnavailable;
     const timer = c.g_timeout_add(250, &Server.tick, &server);
     const term = c.g_unix_signal_add(c.SIGTERM, &quit, &server);

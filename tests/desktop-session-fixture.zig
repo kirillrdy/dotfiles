@@ -88,12 +88,14 @@ fn checkPowerDialog(controls: *quick.Controls) !void {
 }
 
 test "session: private logind actions and quick-settings lifecycle" {
+    defer @import("desktop").gsettings.deinit();
+    defer @import("desktop").window.deinit();
     try std.testing.expectEqualStrings("1", env("DESKTOP_SESSION_TEST_RUN"));
     try std.testing.expect(env("DBUS_SYSTEM_BUS_ADDRESS").len != 0);
     const scenario = env("SESSION_CASE");
     const deadline = c.__zig.monotonicTime() + 8_000_000;
     if (std.mem.startsWith(u8, scenario, "ui-")) {
-        const controls = quick.Controls.create("true", "true");
+        const controls = quick.Controls.create(std.testing.allocator, "true", "true");
         var live = true;
         c.g_object_weak_ref(@ptrCast(controls.cancel), &finalized, &live);
         var battery_live = controls.battery_service != null;
@@ -141,7 +143,7 @@ test "session: private logind actions and quick-settings lifecycle" {
     const cancel = c.g_cancellable_new().?;
     defer c.g_object_unref(cancel);
     var completion: Completion = .{};
-    session.perform(action, cancel, &Completion.done, &completion);
+    session.perform(std.testing.allocator, action, cancel, &Completion.done, &completion);
     if (std.mem.eql(u8, scenario, "cancel-immediate")) c.g_cancellable_cancel(cancel);
     if (std.mem.startsWith(u8, scenario, "cancel-delayed")) _ = c.g_timeout_add(100, &cancelLater, cancel);
     while (completion.count == 0 and c.__zig.monotonicTime() < deadline) pump();

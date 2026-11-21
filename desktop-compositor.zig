@@ -7,9 +7,9 @@ const c = @import("compositor-abi");
 extern const dotfiles_overview_v1_interface: c.wl_interface;
 const hot_corner = @import("desktop-hot-corner.zig");
 const g = @import("desktop-glib.zig");
-const heap = std.heap.page_allocator;
 
 pub const Handle = struct {
+    allocator: std.mem.Allocator,
     thread: c.pthread_t = undefined,
     ready: [2]c_int = undefined,
     stop_pipe: [2]c_int = undefined,
@@ -17,10 +17,10 @@ pub const Handle = struct {
     stopping: std.atomic.Value(bool) = .init(false),
     socket: [108:0]u8 = @splat(0),
 
-    pub fn start(show_ui: bool) !*Handle {
-        const self = try heap.create(Handle);
-        self.* = .{ .show_ui = show_ui };
-        errdefer heap.destroy(self);
+    pub fn start(allocator: std.mem.Allocator, show_ui: bool) !*Handle {
+        const self = try allocator.create(Handle);
+        self.* = .{ .allocator = allocator, .show_ui = show_ui };
+        errdefer allocator.destroy(self);
         if (c.pipe2(&self.ready, c.O_CLOEXEC) != 0) return error.CompositorPipe;
         defer {
             _ = c.close(self.ready[0]);
@@ -51,14 +51,17 @@ pub const Handle = struct {
         _ = c.pthread_join(self.thread, null);
         _ = c.close(self.stop_pipe[0]);
         _ = c.close(self.stop_pipe[1]);
-        heap.destroy(self);
+        self.allocator.destroy(self);
     }
     pub fn wait(self: *Handle) void {
         _ = c.pthread_join(self.thread, null);
+        _ = c.close(self.stop_pipe[0]);
+        _ = c.close(self.stop_pipe[1]);
+        self.allocator.destroy(self);
     }
     fn worker(ptr: ?*anyopaque) callconv(.c) ?*anyopaque {
         const self: *Handle = cast(Handle, ptr);
-        var state: Server = .{ .a = heap, .show_ui = self.show_ui };
+        var state: Server = .{ .a = self.allocator, .show_ui = self.show_ui };
         state.init(self) catch |err| {
             std.log.err("compositor startup: {s}", .{@errorName(err)});
             _ = c.write(self.ready[1], "\x00", 1);
@@ -207,7 +210,7 @@ const Server = struct {
         self.foreign_list = c.wlr_ext_foreign_toplevel_list_v1_create(self.display, 1).?;
         self.idle = c.wlr_idle_notifier_v1_create(self.display).?;
         self.seat = c.wlr_seat_create(self.display, "seat0").?;
-        self.ime.init(self.display, self.seat, self.roots[3], self, &textPosition);
+        self.ime.init(self.a, self.display, self.seat, self.roots[3], self, &textPosition);
         self.cursor = c.wlr_cursor_create().?;
         c.wlr_cursor_attach_output_layout(self.cursor, self.layout);
         self.cursors = c.wlr_xcursor_manager_create("Adwaita", 24).?;
@@ -253,7 +256,7 @@ const Server = struct {
         const name = std.mem.span(socket);
         @memcpy(handle.socket[0..name.len], name);
         if (!c.wlr_backend_start(self.backend)) return error.StartBackend;
-        self.corner_settings = g.__zig.settings("org.gnome.desktop.interface", "enable-hot-corners");
+        self.corner_settings = g.__zig.settings(self.a, "org.gnome.desktop.interface", "enable-hot-corners");
         std.log.info("desktop compositor ready on {s}", .{name});
     }
     fn deinit(self: *Server) void {
@@ -484,7 +487,7 @@ const Server = struct {
             item.selected = v == self.cycle_selected;
             snapshot.len += 1;
         }
-        if (self.show_ui) ui.publish(snapshot);
+        if (self.show_ui) ui.publish(self.a, snapshot);
     }
     fn finishCycle(self: *Server, cancel: bool) void {
         const selected = if (cancel) self.cycle_origin else self.cycle_selected;
@@ -492,7 +495,7 @@ const Server = struct {
         self.cycle_origin = null;
         self.cycle_selected = null;
         if (selected) |v| if (v.alive and v.mapped) self.focus(v);
-        if (self.show_ui) @import("desktop-switcher.zig").publish(.{});
+        if (self.show_ui) @import("desktop-switcher.zig").publish(self.a, .{});
     }
     fn pointer(self: *Server, time: u32) void {
         if (self.drag_icon) |icon| c.wlr_scene_node_set_position(&icon.node, @intFromFloat(self.cursor.x), @intFromFloat(self.cursor.y));
@@ -662,12 +665,12 @@ const Server = struct {
             if (vertical) {
                 next_x = left;
                 blocked = true;
-                triggered = output.pressure.hit(true, dx, dy, time) or triggered;
+                triggered = output.pressure.hit(self.a, true, dx, dy, time) or triggered;
             }
             if (horizontal) {
                 next_y = top;
                 blocked = true;
-                triggered = output.pressure.hit(false, dx, dy, time) or triggered;
+                triggered = output.pressure.hit(self.a, false, dx, dy, time) or triggered;
             }
             // Preserve the barrier latch when gliding around the corner, but
             // release it as soon as the pointer has left both barrier hitboxes.
@@ -678,7 +681,7 @@ const Server = struct {
             };
             if (triggered and (!fullscreen or in_overview)) toggle = true;
         }
-        if (toggle) launch("overview-corner");
+        if (toggle) launch(self.a, "overview-corner");
         return .{ .x = next_x, .y = next_y, .blocked = blocked };
     }
     fn button(ptr: *anyopaque, data: ?*anyopaque) void {
@@ -751,8 +754,8 @@ const Server = struct {
         const e = cast(c.wlr_seat_request_set_primary_selection_event, data);
         c.wlr_seat_set_primary_selection(cast(Server, ptr).seat, e.source, e.serial);
     }
-    fn decoration(_: *anyopaque, data: ?*anyopaque) void {
-        Decoration.create(cast(c.wlr_xdg_toplevel_decoration_v1, data));
+    fn decoration(ptr: *anyopaque, data: ?*anyopaque) void {
+        Decoration.create(cast(Server, ptr).a, cast(c.wlr_xdg_toplevel_decoration_v1, data));
     }
     fn activate(ptr: *anyopaque, data: ?*anyopaque) void {
         const self = cast(Server, ptr);
@@ -919,7 +922,7 @@ const Output = struct {
     fn destroy(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Output, ptr);
         defer self.s.a.destroy(self);
-        self.pressure.deinit();
+        self.pressure.deinit(self.s.a);
         self.hooks.clear();
         remove(*Output, &self.s.outputs, self);
         for (self.s.views.items) |v| if (v.output == self) {
@@ -1363,12 +1366,13 @@ const Layer = struct {
     }
 };
 const Decoration = struct {
+    allocator: std.mem.Allocator,
     wlr: *c.wlr_xdg_toplevel_decoration_v1,
     hooks: Hooks = .{},
 
-    fn create(wlr: *c.wlr_xdg_toplevel_decoration_v1) void {
-        const self = heap.create(Decoration) catch @panic("decoration allocation");
-        self.* = .{ .wlr = wlr };
+    fn create(allocator: std.mem.Allocator, wlr: *c.wlr_xdg_toplevel_decoration_v1) void {
+        const self = allocator.create(Decoration) catch @panic("decoration allocation");
+        self.* = .{ .allocator = allocator, .wlr = wlr };
         self.hooks.add(&wlr.events.destroy, self, &destroy);
         self.hooks.add(&wlr.events.request_mode, self, &configure);
         self.hooks.add(&wlr.toplevel.*.base.*.surface.*.events.commit, self, &commit);
@@ -1388,7 +1392,7 @@ const Decoration = struct {
     fn destroy(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(Decoration, ptr);
         self.hooks.clear();
-        heap.destroy(self);
+        self.allocator.destroy(self);
     }
 };
 
@@ -1502,7 +1506,7 @@ const Keyboard = struct {
             const mods = c.wlr_keyboard_get_modifiers(self.wlr);
             if (sym == c.XKB_KEY_Super_L) {
                 if (pressed) self.s.super_alone = true else {
-                    if (self.s.super_alone) launch("overview");
+                    if (self.s.super_alone) launch(self.s.a, "overview");
                     self.s.super_alone = false;
                 }
                 handled = true;
@@ -1558,9 +1562,9 @@ const Keyboard = struct {
         }
         if (logo) {
             switch (sym) {
-                c.XKB_KEY_Return => launchTerminal(),
-                c.XKB_KEY_d, c.XKB_KEY_a => launch("overview"),
-                c.XKB_KEY_l => launch("lock --daemonize"),
+                c.XKB_KEY_Return => launchTerminal(s.a),
+                c.XKB_KEY_d, c.XKB_KEY_a => launch(s.a, "overview"),
+                c.XKB_KEY_l => launch(s.a, "lock --daemonize"),
                 c.XKB_KEY_e, c.XKB_KEY_E => {
                     if (!shift) return false;
                     if (s.show_ui) {
@@ -1577,13 +1581,13 @@ const Keyboard = struct {
             return true;
         }
         switch (sym) {
-            c.XKB_KEY_XF86AudioRaiseVolume => launch("volume up"),
-            c.XKB_KEY_XF86AudioLowerVolume => launch("volume down"),
-            c.XKB_KEY_XF86AudioMute => launch("volume mute"),
-            c.XKB_KEY_XF86AudioMicMute => launch("microphone mute"),
-            c.XKB_KEY_XF86MonBrightnessUp => launch("brightness up"),
-            c.XKB_KEY_XF86MonBrightnessDown => launch("brightness down"),
-            c.XKB_KEY_Print => launch("screenshot"),
+            c.XKB_KEY_XF86AudioRaiseVolume => launch(s.a, "volume up"),
+            c.XKB_KEY_XF86AudioLowerVolume => launch(s.a, "volume down"),
+            c.XKB_KEY_XF86AudioMute => launch(s.a, "volume mute"),
+            c.XKB_KEY_XF86AudioMicMute => launch(s.a, "microphone mute"),
+            c.XKB_KEY_XF86MonBrightnessUp => launch(s.a, "brightness up"),
+            c.XKB_KEY_XF86MonBrightnessDown => launch(s.a, "brightness down"),
+            c.XKB_KEY_Print => launch(s.a, "screenshot"),
             else => return false,
         }
         return true;
@@ -1598,11 +1602,11 @@ const Keyboard = struct {
     }
 };
 // GIO launches and observes helpers without blocking the compositor thread.
-fn launch(comptime command: [:0]const u8) void {
-    @import("desktop-command.zig").commandLine(command, "/proc/self/exe " ++ command);
+fn launch(a: std.mem.Allocator, comptime command: [:0]const u8) void {
+    @import("desktop-command.zig").commandLine(a, command, "/proc/self/exe " ++ command);
 }
-fn launchTerminal() void {
-    @import("desktop-command.zig").commandLine("Terminal", "ghostty");
+fn launchTerminal(a: std.mem.Allocator) void {
+    @import("desktop-command.zig").commandLine(a, "Terminal", "ghostty");
 }
 
 const Lock = struct {
@@ -1628,7 +1632,7 @@ const Lock = struct {
         s.lock_serial +%= 1;
         s.grabbed = null;
         s.updateInhibition();
-        if (s.show_ui) @import("desktop-switcher.zig").publish(.{});
+        if (s.show_ui) @import("desktop-switcher.zig").publish(s.a, .{});
         s.cycling = false;
         s.cycle_origin = null;
         s.cycle_selected = null;

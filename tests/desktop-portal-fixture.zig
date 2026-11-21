@@ -23,7 +23,7 @@ fn method(_: ?*anyopaque, message: *const dbus.Message) void {
     const args = message.read(struct { f64, f64, f64 }) catch return connection.replyError(message, "org.freedesktop.DBus.Error.InvalidArgs", "Expected (ddd)") catch {};
     color = .{ args[0], args[1], args[2] };
     if (background == null) {
-        background = wire.Client.create(.{ .added = &added, .removed = &removed }, null) catch @panic("background client");
+        background = wire.Client.create(bus.?.allocator, .{ .added = &added, .removed = &removed }, null) catch @panic("background client");
         background.?.start() catch @panic("background dispatch");
     }
     for (background.?.surfaces.items) |surface| surface.redraw();
@@ -33,10 +33,14 @@ pub fn main() !void {
     var allocator: std.heap.DebugAllocator(.{}) = .init;
     defer if (allocator.deinit() == .leak) @panic("portal allocation leak");
     // The portal shares this connection, so tests reach the fixture at the portal's unique name.
-    const source = try loop.acquire(.session);
+    desktop.icons.init(allocator.allocator());
+    defer desktop.gsettings.deinit();
+    defer desktop.icons.deinit();
+    defer desktop.window.deinit();
+    const source = try loop.acquire(allocator.allocator(), .session);
     bus = source;
     defer loop.release(source);
-    var introspection = try dbus.Introspection.parse(std.heap.page_allocator, "<node><interface name='org.dotfiles.CaptureFixture'><method name='Color'><arg type='d' direction='in'/><arg type='d' direction='in'/><arg type='d' direction='in'/></method></interface></node>");
+    var introspection = try dbus.Introspection.parse(allocator.allocator(), "<node><interface name='org.dotfiles.CaptureFixture'><method name='Color'><arg type='d' direction='in'/><arg type='d' direction='in'/><arg type='d' direction='in'/></method></interface></node>");
     defer introspection.deinit();
     const registration = if (c.__zig.getenv("DESKTOP_PORTAL_FIXTURE_CAPTURE") != null) try source.connection.exportObject("/org/dotfiles/CaptureFixture", &introspection.interfaces[0], &method, null, null) else 0;
     defer {

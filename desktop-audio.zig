@@ -3,7 +3,6 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const Registry = @import("desktop-audio-registry.zig").Registry;
 // Test builds account for service state and asynchronous callback allocations.
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 pub const Class = enum { output, input, playback, recording };
 pub const State = struct { percent: f64, muted: bool = false };
@@ -47,6 +46,7 @@ fn isActiveRecording(item: Node) bool {
 }
 const Mixer = @import("desktop-audio-mixer.zig");
 pub const Service = struct {
+    allocator: std.mem.Allocator,
     callback: *const fn (?*anyopaque, *Service) void,
     data: ?*anyopaque,
     registry: ?*Registry = null,
@@ -59,9 +59,9 @@ pub const Service = struct {
     ready: bool = false,
     stopped: bool = false,
 
-    pub fn create(callback: *const fn (?*anyopaque, *Service) void, data: ?*anyopaque) !*Service {
+    pub fn create(a: std.mem.Allocator, callback: *const fn (?*anyopaque, *Service) void, data: ?*anyopaque) !*Service {
         const self = try a.create(Service);
-        self.* = .{ .callback = callback, .data = data };
+        self.* = .{ .allocator = a, .callback = callback, .data = data };
         self.connect();
         self.timer = c.g_timeout_add_seconds(5, &maintain, self);
         return self;
@@ -75,9 +75,9 @@ pub const Service = struct {
     fn unref(self: *Service) void {
         self.refs -= 1;
         if (self.refs == 0) {
-            self.nodes.deinit(a);
-            self.calls.deinit(a);
-            a.destroy(self);
+            self.nodes.deinit(self.allocator);
+            self.calls.deinit(self.allocator);
+            self.allocator.destroy(self);
         }
     }
     fn reset(self: *Service) void {
@@ -96,7 +96,7 @@ pub const Service = struct {
         return 1;
     }
     fn connect(self: *Service) void {
-        self.registry = Registry.create(&changed, self) catch null;
+        self.registry = Registry.create(self.allocator, &changed, self) catch null;
     }
     fn changed(data: ?*anyopaque) void {
         cast(Service, data).schedule();
@@ -154,7 +154,7 @@ pub const Service = struct {
                     break;
                 }
             }
-            self.nodes.append(a, entry) catch @panic("out of memory");
+            self.nodes.append(self.allocator, entry) catch @panic("out of memory");
         }
     }
     pub fn activeRecording(self: *const Service) bool {
@@ -234,10 +234,10 @@ pub const Service = struct {
             callback(data, .{ .failure = error.AudioWriteRejected });
             return;
         };
-        const call = a.create(Call) catch @panic("out of memory");
+        const call = self.allocator.create(Call) catch @panic("out of memory");
         call.* = .{ .service = self, .epoch = self.epoch, .target = .{ .id = item.id }, .ticket = ticket, .expected = expected, .default_class = if (change == .default) item.class else null, .callback = callback, .data = data, .parent = cast(c.GCancellable, c.g_object_ref(cancel)), .deadline = c.__zig.monotonicTime() + 4_000_000 };
         self.refs += 1;
-        self.calls.append(a, call) catch @panic("out of memory");
+        self.calls.append(self.allocator, call) catch @panic("out of memory");
         call.wake();
     }
 };
@@ -303,7 +303,7 @@ const Call = struct {
         };
         self.callback(self.data, answer);
         c.g_object_unref(self.parent);
-        a.destroy(self);
+        service.allocator.destroy(self);
         service.unref();
     }
 };

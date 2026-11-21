@@ -53,7 +53,7 @@ const Completion = struct {
 };
 fn audioLifetime(settle: bool) !void {
     var objects = Objects{};
-    const service = try audio.Service.create(&audioChanged, null);
+    const service = try audio.Service.create(std.testing.allocator, &audioChanged, null);
     if (settle) try ready(service);
     if (settle) {
         const cancel = c.g_cancellable_new().?;
@@ -73,7 +73,7 @@ fn audioLifetime(settle: bool) !void {
 }
 fn batteryLifetime(settle: bool) !void {
     var objects = Objects{};
-    const service = try battery.Service.create(&batteryChanged, null);
+    const service = try battery.Service.create(std.testing.allocator, &batteryChanged, null);
     if (settle) {
         const deadline = c.__zig.monotonicTime() + 15_000_000;
         while (service.pending and c.__zig.monotonicTime() < deadline) pump();
@@ -95,8 +95,8 @@ const NetworkCompletion = struct {
 };
 fn networkLifetime(settle: bool) !void {
     var objects = Objects{};
-    const client = try network.Client.create(&networkChanged, null);
-    const second = try network.Client.create(&networkChanged, null);
+    const client = try network.Client.create(std.testing.allocator, &networkChanged, null);
+    const second = try network.Client.create(std.testing.allocator, &networkChanged, null);
     try std.testing.expect(client.service == second.service);
     objects.watch(client.cancel);
     objects.watch(second.cancel);
@@ -113,7 +113,7 @@ fn networkLifetime(settle: bool) !void {
         client.perform(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = "memory-secret" } }, cancel, &NetworkCompletion.done, &connected);
         while (!connected.finished and c.__zig.monotonicTime() < deadline) pump();
         try std.testing.expect(connected.finished and connected.succeeded);
-        const ui = settings.Settings.create(.network);
+        const ui = settings.Settings.create(std.testing.allocator, .network);
         objects.watch(ui.audio_cancel);
         const connection_editor = editor.Editor.create(ui.window, client.state().profiles.items[0]);
         objects.watch(connection_editor.cancel);
@@ -141,7 +141,7 @@ fn networkLifetime(settle: bool) !void {
 }
 fn soundLifetime(settle: bool) !void {
     var objects = Objects{};
-    const shell = settings.Settings.create(.sound);
+    const shell = settings.Settings.create(std.testing.allocator, .sound);
     const sound = shell.sound.?;
     objects.watch(shell.audio_cancel);
     objects.watch(sound.cancel);
@@ -164,7 +164,7 @@ fn soundLifetime(settle: bool) !void {
 }
 fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) !void {
     var objects = Objects{};
-    const module = widgets.init(.{ .name = name, .kind = kind, .source = source }, null, null, null);
+    const module = widgets.init(std.testing.allocator, .{ .name = name, .kind = kind, .source = source }, null, null, null);
     objects.watch(module.cancel);
     if (module.quick) |controls| {
         objects.watch(controls.cancel);
@@ -224,6 +224,8 @@ test "memory: detector controls" {
 }
 
 test "memory: repeated asynchronous service and widget teardown releases ownership" {
+    defer @import("desktop").gsettings.deinit();
+    defer @import("desktop").window.deinit();
     try fixture();
     if (env("DESKTOP_MEMORY_LEAK_PROBE") != null) return error.SkipZigTest;
     const iterations = std.fmt.parseInt(usize, env("DESKTOP_MEMORY_ITERATIONS") orelse "4", 10) catch 4;

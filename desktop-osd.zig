@@ -6,7 +6,6 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const audio = @import("desktop-audio.zig");
 const backlight = @import("desktop-backlight.zig");
-const allocator = std.heap.page_allocator;
 const cast = c.__zig.cast;
 
 pub const Kind = view.Kind;
@@ -41,6 +40,7 @@ const Overlay = struct {
     state: State = .{ .percent = 0 },
 
     fn create(output: *native.Output, theme: *const view.Theme) !*Overlay {
+        const allocator = output.client.allocator;
         const self = try allocator.create(Overlay);
         errdefer allocator.destroy(self);
         self.* = .{ .theme = theme, .surface = try native.Surface.createPixels(output, .{
@@ -64,12 +64,14 @@ const Overlay = struct {
         self.surface.show() catch |err| std.log.err("desktop-osd: {s}", .{@errorName(err)});
     }
     fn destroy(self: *Overlay) void {
+        const allocator = self.surface.client.allocator;
         self.surface.destroy();
         allocator.destroy(self);
     }
 };
 
 pub const Server = struct {
+    allocator: std.mem.Allocator,
     /// The shell's session connection, for DeviceChanged.
     connection: ?*@import("dbus").Connection = null,
     backlight_backend: backlight.Backend = .{},
@@ -88,11 +90,15 @@ pub const Server = struct {
     audio_busy: bool = false,
     cancel: ?*c.GCancellable = null,
     hide_timer: c.guint = 0,
-    feedback_player: audio.Feedback = .{},
+    feedback_player: audio.Feedback,
+
+    pub fn init(allocator: std.mem.Allocator) Server {
+        return .{ .allocator = allocator, .feedback_player = .{ .allocator = allocator } };
+    }
 
     pub fn start(self: *Server) !void {
         self.theme = .{};
-        self.client = try native.Client.create(.{ .added = &added, .removed = &removed, .changed = &changed }, self);
+        self.client = try native.Client.create(self.allocator, .{ .added = &added, .removed = &removed, .changed = &changed }, self);
         errdefer {
             for (self.overlays.items) |overlay| overlay.destroy();
             self.overlays.clearRetainingCapacity();
@@ -100,7 +106,7 @@ pub const Server = struct {
             self.client = null;
         }
         try self.client.?.start();
-        self.audio_service = try audio.Service.create(&audioChanged, self);
+        self.audio_service = try audio.Service.create(self.allocator, &audioChanged, self);
         self.ready = true;
     }
 
@@ -111,7 +117,7 @@ pub const Server = struct {
             std.log.err("desktop-osd: {s}", .{@errorName(err)});
             return;
         };
-        self.overlays.append(allocator, overlay) catch @panic("out of memory");
+        self.overlays.append(self.allocator, overlay) catch @panic("out of memory");
         if (self.hide_timer != 0) overlay.show(self.last_kind, self.last_state);
     }
     fn changed(data: ?*anyopaque, output: *native.Output) void {
@@ -138,7 +144,7 @@ pub const Server = struct {
             }
         }
         if (self.queue.items.len == 64) return false;
-        self.queue.append(allocator, work) catch @panic("out of memory");
+        self.queue.append(self.allocator, work) catch @panic("out of memory");
         self.next();
         return true;
     }
@@ -149,7 +155,7 @@ pub const Server = struct {
         if (self.active.?.kind == .brightness) {
             self.brightness_busy = true;
             self.cancel = c.g_cancellable_new();
-            self.backlight_backend.start(.{ .step = self.active.?.delta }, self.cancel.?, &brightnessDone, self);
+            self.backlight_backend.start(self.allocator, .{ .step = self.active.?.delta }, self.cancel.?, &brightnessDone, self);
             return;
         }
         const service = self.audio_service orelse {
@@ -223,10 +229,10 @@ pub const Server = struct {
         self.feedback_player.deinit();
         while (self.audio_busy or self.brightness_busy) _ = c.g_main_context_iteration(null, 1);
         for (self.overlays.items) |overlay| overlay.destroy();
-        self.overlays.deinit(allocator);
+        self.overlays.deinit(self.allocator);
         if (self.client) |client| client.destroy();
         self.client = null;
-        self.queue.deinit(allocator);
+        self.queue.deinit(self.allocator);
     }
 };
 
@@ -246,7 +252,7 @@ test "integration: native OSD paints on the output, coalesces buffers, and resto
     const Callbacks = struct {
         fn nothing(_: ?*anyopaque, _: *native.Output) void {}
     };
-    const client = try native.Client.create(.{ .added = &Callbacks.nothing, .removed = &Callbacks.nothing }, null);
+    const client = try native.Client.create(std.testing.allocator, .{ .added = &Callbacks.nothing, .removed = &Callbacks.nothing }, null);
     defer client.destroy();
     try client.start();
     const theme: view.Theme = .{};

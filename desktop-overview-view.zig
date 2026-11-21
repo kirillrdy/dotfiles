@@ -34,8 +34,8 @@ const window_active_size_inc: f64 = 5;
 const Context = struct {
     cr: draw.Context,
 
-    fn init(canvas: Canvas) ?Context {
-        var cr = draw.Context.init(std.heap.c_allocator, .{ .pixels = canvas.target.pixels, .width = canvas.target.width, .height = canvas.target.height, .stride = canvas.target.width });
+    fn init(allocator: std.mem.Allocator, canvas: Canvas) ?Context {
+        var cr = draw.Context.init(allocator, .{ .pixels = canvas.target.pixels, .width = canvas.target.width, .height = canvas.target.height, .stride = canvas.target.width });
         cr.scale(canvas.scale, canvas.scale);
         cr.translate(canvas.origin.x, canvas.origin.y);
         return .{ .cr = cr };
@@ -45,8 +45,8 @@ const Context = struct {
     }
 };
 
-pub fn miniatureRounded(canvas: Canvas, source: ?raster.Image, rect: Rect, clip: Rect, radius: f64, animated: bool) void {
-    var context = Context.init(canvas) orelse return;
+pub fn miniatureRounded(allocator: std.mem.Allocator, canvas: Canvas, source: ?raster.Image, rect: Rect, clip: Rect, radius: f64, animated: bool) void {
+    var context = Context.init(allocator, canvas) orelse return;
     defer context.deinit();
     if (radius > 0) rounded(&context.cr, clip, radius) else context.cr.rectangle(clip.x, clip.y, clip.width, clip.height);
     context.cr.clip();
@@ -54,16 +54,16 @@ pub fn miniatureRounded(canvas: Canvas, source: ?raster.Image, rect: Rect, clip:
 }
 
 /// Cover the corners of GPU previews without repainting their content.
-pub fn roundedMask(canvas: Canvas, rect: Rect, radius: f64) void {
-    roundedMaskOptions(canvas, rect, radius, false);
+pub fn roundedMask(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, radius: f64) void {
+    roundedMaskOptions(allocator, canvas, rect, radius, false);
 }
 
-pub fn roundedMaskShadow(canvas: Canvas, rect: Rect, radius: f64) void {
-    roundedMaskOptions(canvas, rect, radius, true);
+pub fn roundedMaskShadow(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, radius: f64) void {
+    roundedMaskOptions(allocator, canvas, rect, radius, true);
 }
 
-fn roundedMaskOptions(canvas: Canvas, rect: Rect, radius: f64, shadow: bool) void {
-    var context = Context.init(canvas) orelse return;
+fn roundedMaskOptions(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, radius: f64, shadow: bool) void {
+    var context = Context.init(allocator, canvas) orelse return;
     defer context.deinit();
     context.cr.rectangle(rect.x, rect.y, rect.width, rect.height);
     rounded(&context.cr, rect, radius);
@@ -260,8 +260,8 @@ pub fn closeButtonRect(preview: Rect) Rect {
     };
 }
 
-pub fn thumbnailIndicator(canvas: Canvas, thumbnail: Rect, opacity: f64) void {
-    var context = Context.init(canvas) orelse return;
+pub fn thumbnailIndicator(allocator: std.mem.Allocator, canvas: Canvas, thumbnail: Rect, opacity: f64) void {
+    var context = Context.init(allocator, canvas) orelse return;
     defer context.deinit();
     const cr = &context.cr;
     rounded(cr, .{ .x = thumbnail.x - 1.5, .y = thumbnail.y - 1.5, .width = thumbnail.width + 3, .height = thumbnail.height + 3 }, 6.5);
@@ -270,17 +270,17 @@ pub fn thumbnailIndicator(canvas: Canvas, thumbnail: Rect, opacity: f64) void {
     cr.stroke();
 }
 
-pub fn workspace(canvas: Canvas, r: Rect, wallpaper: ?raster.Image, animated: bool) void {
-    workspaceProgress(canvas, r, wallpaper, 1, animated);
+pub fn workspace(allocator: std.mem.Allocator, canvas: Canvas, r: Rect, wallpaper: ?raster.Image, animated: bool) void {
+    workspaceProgress(allocator, canvas, r, wallpaper, 1, animated);
 }
 
-pub fn workspaceProgress(canvas: Canvas, r: Rect, wallpaper: ?raster.Image, progress: f64, animated: bool) void {
+pub fn workspaceProgress(allocator: std.mem.Allocator, canvas: Canvas, r: Rect, wallpaper: ?raster.Image, progress: f64, animated: bool) void {
     const clamped = std.math.clamp(progress, 0, 1);
-    workspaceCard(canvas, r, wallpaper, 30 * clamped, clamped > 0, animated);
+    workspaceCard(allocator, canvas, r, wallpaper, 30 * clamped, clamped > 0, animated);
 }
 
-pub fn workspaceCard(canvas: Canvas, r: Rect, wallpaper: ?raster.Image, corner_radius: f64, shadow: bool, animated: bool) void {
-    var context = Context.init(canvas) orelse return;
+pub fn workspaceCard(allocator: std.mem.Allocator, canvas: Canvas, r: Rect, wallpaper: ?raster.Image, corner_radius: f64, shadow: bool, animated: bool) void {
+    var context = Context.init(allocator, canvas) orelse return;
     defer context.deinit();
     const cr = &context.cr;
     if (shadow) drawShadowRect(cr, r, corner_radius, 4, 4, 16, 0.2);
@@ -303,10 +303,10 @@ pub fn workspaceCard(canvas: Canvas, r: Rect, wallpaper: ?raster.Image, corner_r
     }
 }
 
-pub fn window(canvas: Canvas, r: Rect, captured: ?raster.Image, icon_image: ?Image, state: WindowState) void {
+pub fn window(allocator: std.mem.Allocator, canvas: Canvas, r: Rect, captured: ?raster.Image, icon_image: ?Image, state: WindowState) void {
     const preview = previewRect(r, state.hovered, state.ease);
     {
-        var context = Context.init(canvas) orelse return;
+        var context = Context.init(allocator, canvas) orelse return;
         defer context.deinit();
         const cr = &context.cr;
         // Captures already contain client decoration and corner transparency.

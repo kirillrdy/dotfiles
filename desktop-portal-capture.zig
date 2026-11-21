@@ -124,7 +124,7 @@ pub const Picker = struct {
         errdefer allocator.destroy(self);
         const owned_parent = try allocator.dupeSentinel(u8, parent, 0);
         errdefer allocator.free(owned_parent);
-        const ui = try form.Form.create(title, self, &action, &changed);
+        const ui = try form.Form.create(allocator, title, self, &action, &changed);
         errdefer ui.deinit();
         _ = try ui.add(.label, app, "", false);
         const output = try ui.add(.choice, "Screen", "", false);
@@ -246,7 +246,7 @@ pub const Operation = struct {
         self.width = chosen.width;
         self.height = chosen.height;
         if (area or self.point) {
-            self.overlay_client = native.Client.createInteractive(.{ .added = &outputAdded, .removed = &outputRemoved }, self) catch return self.finish(2, null);
+            self.overlay_client = native.Client.createInteractive(self.allocator, .{ .added = &outputAdded, .removed = &outputRemoved }, self) catch return self.finish(2, null);
             self.overlay_client.?.start() catch return self.finish(2, null);
             if (self.overlay == null) return self.finish(2, null);
             // Completion runs outside Wayland dispatch: callbacks can destroy

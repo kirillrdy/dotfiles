@@ -35,9 +35,9 @@ test "integration: power profiles apply, persist, restore and roll back in priva
     const state = try f.file("state");
     try std.Io.Dir.cwd().createDirPath(std.testing.io, state);
     const backend = power.Backend{ .root = f.root, .state = state };
-    assert(backend.inspect().active == null);
-    assert(!backend.inspect().available[1]);
-    if (backend.restore()) |_| return error.ExpectedUnsupported else |err| assert(err == error.NoSupportedControls);
+    assert(backend.inspect(std.testing.allocator).active == null);
+    assert(!backend.inspect(std.testing.allocator).available[1]);
+    if (backend.restore(std.testing.allocator)) |_| return error.ExpectedUnsupported else |err| assert(err == error.NoSupportedControls);
     if (power.Profile.parse("../../etc/passwd")) |_| return error.ExpectedInvalid else |err| assert(err == error.InvalidProfile);
 
     try f.write("firmware/acpi/platform_profile_choices", "low-power balanced performance\n");
@@ -48,37 +48,37 @@ test "integration: power profiles apply, persist, restore and roll back in priva
         try f.policy(policy, "scaling_driver", "intel_pstate\n");
         try f.policy(policy, "scaling_governor", "powersave\n");
     }
-    assert(backend.inspect().active == .balanced);
-    for (backend.inspect().available) |available| assert(available);
+    assert(backend.inspect(std.testing.allocator).active == .balanced);
+    for (backend.inspect(std.testing.allocator).available) |available| assert(available);
     // With no saved selection, boot defaults to balanced.
-    try backend.restore();
+    try backend.restore(std.testing.allocator);
     try f.expect("state/profile", "balanced");
-    try backend.apply(.performance);
+    try backend.apply(std.testing.allocator, .performance);
     try f.expect("firmware/acpi/platform_profile", "performance");
     try f.expect("devices/system/cpu/cpufreq/policy0/energy_performance_preference", "performance");
     try f.expect("devices/system/cpu/cpufreq/policy2/energy_performance_preference", "performance");
     try f.expect("state/profile", "performance");
-    assert(backend.inspect().active == .performance);
-    try backend.apply(.@"power-saver");
+    assert(backend.inspect(std.testing.allocator).active == .performance);
+    try backend.apply(std.testing.allocator, .@"power-saver");
     try f.expect("firmware/acpi/platform_profile", "low-power");
     try f.expect("devices/system/cpu/cpufreq/policy2/energy_performance_preference", "power");
     try f.expect("state/profile", "power-saver");
     try f.write("firmware/acpi/platform_profile", "balanced");
-    assert(backend.inspect().active == null); // Mixed/external settings are not mislabelled.
-    try backend.restore();
-    assert(backend.inspect().active == .@"power-saver");
+    assert(backend.inspect(std.testing.allocator).active == null); // Mixed/external settings are not mislabelled.
+    try backend.restore(std.testing.allocator);
+    assert(backend.inspect(std.testing.allocator).active == .@"power-saver");
 
     // An unsupported platform profile must fail before changing any CPU settings.
     try f.write("firmware/acpi/platform_profile_choices", "quiet balanced\n");
-    assert(!backend.inspect().available[0]);
-    if (backend.apply(.performance)) |_| return error.ExpectedUnsupported else |err| assert(err == error.UnsupportedProfile);
+    assert(!backend.inspect(std.testing.allocator).available[0]);
+    if (backend.apply(std.testing.allocator, .performance)) |_| return error.ExpectedUnsupported else |err| assert(err == error.UnsupportedProfile);
     try f.expect("devices/system/cpu/cpufreq/policy0/energy_performance_preference", "power");
-    try backend.apply(.@"power-saver");
+    try backend.apply(std.testing.allocator, .@"power-saver");
     try f.expect("firmware/acpi/platform_profile", "quiet");
 
     // Persistence failure rolls back every applied control and preserves saved state.
     const broken = power.Backend{ .root = f.root, .state = try f.file("missing-state") };
-    if (broken.apply(.balanced)) |_| return error.ExpectedSaveFailure else |err| assert(err == error.SaveFailed);
+    if (broken.apply(std.testing.allocator, .balanced)) |_| return error.ExpectedSaveFailure else |err| assert(err == error.SaveFailed);
     try f.expect("firmware/acpi/platform_profile", "quiet");
     try f.expect("devices/system/cpu/cpufreq/policy0/energy_performance_preference", "power");
     try f.expect("devices/system/cpu/cpufreq/policy2/energy_performance_preference", "power");
@@ -87,15 +87,15 @@ test "integration: power profiles apply, persist, restore and roll back in priva
     // EPP-only systems work too, and a performance governor is changed first.
     try std.Io.Dir.cwd().deleteFile(std.testing.io, try f.file("firmware/acpi/platform_profile_choices"));
     try f.policy("policy0", "scaling_governor", "performance");
-    try backend.apply(.balanced);
+    try backend.apply(std.testing.allocator, .balanced);
     try f.expect("devices/system/cpu/cpufreq/policy0/scaling_governor", "powersave");
-    assert(backend.inspect().active == .balanced);
+    assert(backend.inspect(std.testing.allocator).active == .balanced);
     try f.policy("policy2", "energy_performance_available_preferences", "balance_performance balance_power\n");
-    assert(!backend.inspect().available[0]);
-    try backend.apply(.@"power-saver");
+    assert(!backend.inspect(std.testing.allocator).available[0]);
+    try backend.apply(std.testing.allocator, .@"power-saver");
     try f.expect("devices/system/cpu/cpufreq/policy2/energy_performance_preference", "balance_power");
     // Unsupported/corrupt persistent state is rejected, never interpreted as a path.
     try f.write("state/profile", "../performance");
-    if (backend.restore()) |_| return error.ExpectedInvalid else |err| assert(err == error.InvalidProfile);
+    if (backend.restore(std.testing.allocator)) |_| return error.ExpectedInvalid else |err| assert(err == error.InvalidProfile);
     std.debug.print("desktop-power: platform and EPP profiles, all policies, capability detection, persistence, restore and rollback passed\n", .{});
 }

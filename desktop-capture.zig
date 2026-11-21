@@ -6,7 +6,6 @@ const helpers = @import("desktop-wayland-client.zig");
 pub const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 pub const Image = @import("desktop-image.zig").Image;
-const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
 const formats = wl.wl_shm.Format;
 pub const Rect = struct { x: f64 = 0, y: f64 = 0, w: f64 = 1, h: f64 = 1 };
@@ -70,13 +69,13 @@ pub const Window = struct {
     }
     fn destroy(self: *Window) void {
         self.stop();
-        if (self.image) |image| image.deinit(a);
-        if (self.icon) |icon| c.__icons.free(icon);
+        if (self.image) |image| image.deinit(self.client.allocator);
+        if (self.icon) |icon| c.__icons.free(self.client.allocator, icon);
         c.g_free(self.id);
         c.g_free(self.title);
         c.g_free(self.app_id);
         self.handle.destroy();
-        a.destroy(self);
+        self.client.allocator.destroy(self);
     }
     fn capture(self: *Window) void {
         const client = self.client;
@@ -161,6 +160,7 @@ pub const Window = struct {
 };
 
 pub const Client = struct {
+    allocator: std.mem.Allocator,
     connection: *wire.Connection,
     registry: wl.wl_registry,
     shm: ?wl.wl_shm = null,
@@ -169,6 +169,7 @@ pub const Client = struct {
     captures: ?wl.ext_image_copy_capture_manager_v1 = null,
     control: ?wl.dotfiles_overview_v1 = null,
     windows: std.ArrayList(*Window) = .empty,
+    thumbnails: usize = 0,
     workspaces: [32]Workspace = @splat(.{}),
     count: u32 = 0,
     current: u32 = 0,
@@ -183,14 +184,14 @@ pub const Client = struct {
     context: ?*anyopaque,
     changed: *const fn (?*anyopaque) void,
 
-    pub fn create(context: ?*anyopaque, changed: *const fn (?*anyopaque) void) !*Client {
+    pub fn create(a: std.mem.Allocator, context: ?*anyopaque, changed: *const fn (?*anyopaque) void) !*Client {
         const connection = wire.Connection.connect(a) catch return error.NoWaylandDisplay;
         const self = a.create(Client) catch |err| {
             connection.deinit();
             return err;
         };
         const display: wl.wl_display = .{ .proxy = connection.display() };
-        self.* = .{ .connection = connection, .registry = display.get_registry(), .context = context, .changed = changed };
+        self.* = .{ .allocator = a, .connection = connection, .registry = display.get_registry(), .context = context, .changed = changed };
         errdefer self.destroy();
         self.registry.listen(Client, self, registryEvent);
         connection.roundtrip() catch return error.WaylandDisconnected;
@@ -201,8 +202,11 @@ pub const Client = struct {
     }
     pub fn destroy(self: *Client) void {
         if (self.fd_source != 0) _ = c.g_source_remove(self.fd_source);
+        self.connected = false;
+        for (self.windows.items) |window| window.stop();
+        self.drainThumbnails();
         for (self.windows.items) |window| window.destroy();
-        self.windows.deinit(a);
+        self.windows.deinit(self.allocator);
         if (self.control) |control| control.destroy();
         if (self.captures) |manager| manager.destroy();
         if (self.sources) |manager| manager.destroy();
@@ -210,7 +214,10 @@ pub const Client = struct {
         if (self.shm) |shm| shm.destroy();
         self.registry.destroy();
         self.connection.deinit();
-        a.destroy(self);
+        self.allocator.destroy(self);
+    }
+    fn drainThumbnails(self: *Client) void {
+        while (self.thumbnails != 0) _ = c.g_main_context_iteration(null, 1);
     }
     pub fn visible(self: *Client, active: bool) void {
         self.active = active;
@@ -302,9 +309,9 @@ pub const Client = struct {
     fn listEvent(self: *Client, _: wl.ext_foreign_toplevel_list_v1, event: wl.ext_foreign_toplevel_list_v1.Event) void {
         switch (event) {
             .toplevel => |value| {
-                const window = a.create(Window) catch @panic("out of memory");
+                const window = self.allocator.create(Window) catch @panic("out of memory");
                 window.* = .{ .client = self, .handle = value.toplevel };
-                self.windows.append(a, window) catch @panic("out of memory");
+                self.windows.append(self.allocator, window) catch @panic("out of memory");
                 value.toplevel.listen(Window, window, Window.handleEvent);
             },
             .finished => {},
@@ -343,7 +350,7 @@ fn closed(window: *Window) void {
 fn appId(w: *Window, value: [:0]const u8) void {
     c.g_free(w.app_id);
     w.app_id = c.g_strdup(value.ptr);
-    if (w.icon) |icon| c.__icons.free(icon);
+    if (w.icon) |icon| c.__icons.free(w.client.allocator, icon);
     w.icon = null;
     var filename: [1024]u8 = undefined;
     const path = std.fmt.bufPrintSentinel(&filename, "{s}.desktop", .{value}, 0) catch return;
@@ -351,7 +358,7 @@ fn appId(w: *Window, value: [:0]const u8) void {
     if (info == null) info = c.g_desktop_app_info_new(value.ptr);
     defer if (info != null) c.g_object_unref(info);
     const icon = if (info != null) c.g_app_info_get_icon(@ptrCast(info)) else null;
-    w.icon = c.__icons.loadThemed(icon, 128, null, "application-x-executable");
+    w.icon = c.__icons.loadThemed(w.client.allocator, icon, 128, null, "application-x-executable");
 }
 fn workspace(self: *Client, index: u32, name: [:0]const u8, active: u32) void {
     if (index >= self.workspaces.len) return;
@@ -412,27 +419,31 @@ fn captureStride(width: u32, format_value: u32) u32 {
 // window state stay on the main context. Until completion, capture() cannot
 // submit another frame into the borrowed mapping.
 const Thumbnail = struct {
+    client: *Client,
     owner: ?*Window,
     source: @import("desktop-raster.zig").Image,
     result: ?Image = null,
     owns_mapping: bool = false,
 
     fn start(window: *Window, source: @import("desktop-raster.zig").Image) void {
+        const client = window.client;
+        const a = client.allocator;
         const self = a.create(Thumbnail) catch return;
-        self.* = .{ .owner = window, .source = source };
+        self.* = .{ .client = client, .owner = window, .source = source };
         const task = c.g_task_new(null, null, &completed, self) orelse {
             a.destroy(self);
             return;
         };
         defer c.g_object_unref(task);
         window.thumbnail = self;
-        c.g_task_set_task_data(task, self, &destroy);
+        client.thumbnails += 1;
+        c.g_task_set_task_data(task, self, null);
         c.g_task_run_in_thread(task, &work);
     }
 
     fn work(task: ?*c.GTask, _: ?*anyopaque, data: ?*anyopaque, _: [*c]c.GCancellable) callconv(.c) void {
         const self = cast(Thumbnail, data);
-        self.result = makeImage(a, self.source) catch null;
+        self.result = makeImage(self.client.allocator, self.source) catch null;
         c.g_task_return_boolean(task, @intFromBool(self.result != null));
     }
     fn makeImage(allocator: std.mem.Allocator, source: @import("desktop-raster.zig").Image) !Image {
@@ -448,29 +459,30 @@ const Thumbnail = struct {
     fn completed(_: ?*c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
         const self = cast(Thumbnail, data);
         _ = c.g_task_propagate_boolean(@ptrCast(result), null);
-        const window = self.owner orelse return;
-        self.owner = null;
+        const window = self.owner orelse return self.destroy();
         window.thumbnail = null;
-        const image = self.result orelse return;
+        const image = self.result orelse return self.destroy();
         self.result = null;
-        if (window.image) |old| old.deinit(a);
+        const client = self.client;
+        self.destroy();
+        if (window.image) |old| old.deinit(client.allocator);
         window.image = image;
         // Re-arm as soon as filtering releases the shared buffer. Waiting for
         // the overview's housekeeping timer caps video at 30 Hz and adds an
         // extra timer interval whenever filtering misses a tick. The capture
         // protocol waits for source damage; static windows stay idle.
-        const client = window.client;
         if (client.streaming and client.active and client.connected and (window.workspace == client.current or window.sticky)) {
             window.capture();
             client.flush();
         }
         window.client.changed(window.client.context);
     }
-    fn destroy(data: ?*anyopaque) callconv(.c) void {
-        const self = cast(Thumbnail, data);
-        if (self.result) |image| image.deinit(a);
+    fn destroy(self: *Thumbnail) void {
+        const client = self.client;
+        if (self.result) |image| image.deinit(client.allocator);
         if (self.owns_mapping) _ = libc.munmap(@constCast(self.source.pixels.ptr), self.source.pixels.len);
-        a.destroy(self);
+        client.allocator.destroy(self);
+        client.thumbnails -= 1;
     }
 };
 
@@ -540,13 +552,13 @@ test "overview snapshots track focus stacking changes without changing picker or
         }
     };
     var state: State = .{};
-    var client: Client = .{ .connection = undefined, .registry = undefined, .context = &state, .changed = &State.change };
+    var client: Client = .{ .allocator = std.testing.allocator, .connection = undefined, .registry = undefined, .context = &state, .changed = &State.change };
     var older: Window = .{ .client = &client, .handle = undefined, .id = c.g_strdup("older") };
     defer c.g_free(older.id);
     var newer: Window = .{ .client = &client, .handle = undefined, .id = c.g_strdup("newer") };
     defer c.g_free(newer.id);
-    defer client.windows.deinit(a);
-    try client.windows.appendSlice(a, &.{ &older, &newer });
+    defer client.windows.deinit(std.testing.allocator);
+    try client.windows.appendSlice(std.testing.allocator, &.{ &older, &newer });
 
     workspace(&client, 0, "1", 1);
     placement(&client, "older", 0, 0, 32, 800, 600, 0);
@@ -574,11 +586,12 @@ test "thumbnail workers publish owned pixels and discard captures detached on hi
         }
     };
     var state: State = .{};
-    var client: Client = .{ .connection = undefined, .registry = undefined, .context = &state, .changed = &State.change };
+    var client: Client = .{ .allocator = std.testing.allocator, .connection = undefined, .registry = undefined, .context = &state, .changed = &State.change };
     var window: Window = .{ .client = &client, .handle = undefined };
     defer {
         window.stop();
-        if (window.image) |image| image.deinit(a);
+        client.drainThumbnails();
+        if (window.image) |image| image.deinit(std.testing.allocator);
     }
     const fd = libc.memfd_create("thumbnail-test", libc.MFD_CLOEXEC);
     try std.testing.expect(fd >= 0);
@@ -606,7 +619,7 @@ test "thumbnail workers publish owned pixels and discard captures detached on hi
     try std.testing.expect(window.thumbnail != null);
     window.stop();
     try std.testing.expect(window.mapped == null and window.thumbnail == null);
-    @import("tests/desktop-surface-capture.zig").pump();
+    client.drainThumbnails();
     try std.testing.expect(!state.changed);
     try std.testing.expectEqual(@as(u32, 0xff604020), std.mem.bytesAsSlice(u32, window.image.?.pixels)[0]);
 }

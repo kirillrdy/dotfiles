@@ -3,11 +3,19 @@
 const std = @import("std");
 const c = @import("desktop-glib.zig");
 pub const wire = @import("desktop-surface.zig");
-const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
 var connection: ?*wire.Client = null;
 var windows: std.ArrayList(*Window) = .empty;
+
+/// Releases the connection retained for clipboard ownership after the last window closes.
+pub fn deinit() void {
+    std.debug.assert(windows.items.len == 0);
+    if (connection) |client| client.destroy();
+    connection = null;
+}
+
 pub const Window = struct {
+    allocator: std.mem.Allocator,
     surface: ?*wire.Surface,
     context: ?*anyopaque,
     closed: ?*const fn (?*anyopaque) void = null,
@@ -15,11 +23,11 @@ pub const Window = struct {
     closing: bool = false,
     idle: c.guint = 0,
 
-    pub fn create(title: [:0]const u8, namespace: [:0]const u8, width: u32, height: u32, paint: wire.PixelPaint, context: ?*anyopaque) !*Window {
+    pub fn create(a: std.mem.Allocator, title: [:0]const u8, namespace: [:0]const u8, width: u32, height: u32, paint: wire.PixelPaint, context: ?*anyopaque) !*Window {
         const self = try a.create(Window);
         errdefer a.destroy(self);
         const fresh = connection == null;
-        if (fresh) connection = try wire.Client.createInteractive(.{ .added = &added, .removed = &removed }, null);
+        if (fresh) connection = try wire.Client.createInteractive(a, .{ .added = &added, .removed = &removed }, null);
         const client = connection.?;
         errdefer if (fresh) {
             client.destroy();
@@ -29,9 +37,15 @@ pub const Window = struct {
         const output = client.outputs.items[0];
         const surface = try wire.Surface.createPixels(output, .{ .namespace = namespace, .title = title, .role = .toplevel, .width = width, .height = @min(height, @as(u32, @intCast(@max(120, output.height() - 60)))), .interactive = true, .cursor = .arrow }, paint, context);
         errdefer surface.destroy();
-        self.* = .{ .surface = surface, .context = context };
-        try windows.append(a, self);
-        errdefer _ = windows.pop();
+        self.* = .{ .allocator = a, .surface = surface, .context = context };
+        try windows.append(client.allocator, self);
+        errdefer {
+            _ = windows.pop();
+            if (fresh) {
+                windows.deinit(client.allocator);
+                windows = .empty;
+            }
+        }
         if (fresh) try client.start();
         return self;
     }
@@ -111,7 +125,7 @@ pub const Window = struct {
             _ = windows.orderedRemove(index);
             break;
         };
-        a.destroy(self);
+        self.allocator.destroy(self);
         if (windows.items.len == 0) {
             // Clipboard ownership survives closing the last form, just as it
             // does for a toolkit display. Reuse that connection for later UI.
@@ -119,12 +133,12 @@ pub const Window = struct {
             for (connection.?.seats.items) |seat| if (seat.clipboard) |device| {
                 serving_clipboard = serving_clipboard or device.source != null;
             };
+            windows.deinit(connection.?.allocator);
+            windows = .empty;
             if (!serving_clipboard) {
                 connection.?.destroy();
                 connection = null;
             }
-            windows.deinit(a);
-            windows = .empty;
         }
     }
 };

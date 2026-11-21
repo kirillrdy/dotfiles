@@ -1,7 +1,6 @@
 //! Icon theme lookup in Zig. Images decode through desktop-decode.zig.
 const std = @import("std");
 const c = @import("desktop-glib.zig");
-const a = std.heap.page_allocator;
 const decode = @import("desktop-decode.zig");
 const Image = decode.Image;
 const Color = @import("desktop-raster.zig").Color;
@@ -242,23 +241,36 @@ fn read(path: [:0]const u8) ?[]u8 {
     return data[0..len];
 }
 
-// Callers own each returned image and release it with decode.free. Lookup metadata
-// is shared on the UI thread, while views retain their existing image caches.
-var shared: ?Resolver = null;
-var theme_settings: ?*@import("desktop-gsettings.zig").Settings = null;
-pub fn deinit() void {
-    if (shared) |*value| value.deinit();
-    shared = null;
-    if (theme_settings) |settings| settings.close();
-    theme_settings = null;
+// The desktop shares icon lookup metadata for the lifetime of the UI.
+const Cache = struct {
+    allocator: std.mem.Allocator,
+    resolver: ?Resolver = null,
+    settings: ?*@import("desktop-gsettings.zig").Settings = null,
+};
+var cache: ?Cache = null;
+
+pub fn init(allocator: std.mem.Allocator) void {
+    std.debug.assert(cache == null);
+    cache = .{ .allocator = allocator };
 }
+
+pub fn deinit() void {
+    if (cache) |*value| {
+        if (value.resolver) |*resolver| resolver.deinit();
+        if (value.settings) |settings| settings.close();
+    }
+    cache = null;
+}
+
 fn themeChanged(_: ?*anyopaque, key: []const u8) void {
     if (!std.mem.eql(u8, key, "icon-theme")) return;
-    if (shared) |*value| value.deinit();
-    shared = null;
+    if (cache) |*value| {
+        if (value.resolver) |*resolver| resolver.deinit();
+        value.resolver = null;
+    }
 }
-fn resolver() !*Resolver {
-    if (shared) |*value| return value;
+
+fn makeResolver(a: std.mem.Allocator, settings: ?*@import("desktop-gsettings.zig").Settings) !Resolver {
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -274,73 +286,83 @@ fn resolver() !*Resolver {
     };
     try roots.append(alloc, "/usr/share/pixmaps");
     var theme: []const u8 = "Adwaita";
-    if (theme_settings == null) if (c.__zig.settings("org.gnome.desktop.interface", null)) |settings| {
-        theme_settings = settings;
-        settings.watch(&themeChanged, null) catch {};
-    };
-    if (theme_settings) |settings| {
-        const name = settings.string(alloc, "icon-theme");
+    if (settings) |prefs| {
+        const name = prefs.string(alloc, "icon-theme");
         if (validName(name)) theme = name;
     }
-    shared = try Resolver.init(a, roots.items, theme);
-    return &shared.?;
+    return Resolver.init(a, roots.items, theme);
 }
 
-pub fn load(name: [:0]const u8, size: u32, scale: u32, tint: ?Color) ?Image {
+pub fn load(a: std.mem.Allocator, name: [:0]const u8, size: u32, scale: u32, tint: ?Color) ?Image {
     if (size == 0 or size > 4096 or scale == 0 or scale > 8) return null;
-    const path = if (std.fs.path.isAbsolute(name)) name else ((resolver() catch return null).lookup(name, size, scale) catch return null) orelse return null;
-    const physical = size * scale;
+    if (std.fs.path.isAbsolute(name)) return loadPath(a, name, size * scale, tint);
+    if (cache) |*value| {
+        if (value.settings == null) if (c.__zig.settings(value.allocator, "org.gnome.desktop.interface", null)) |settings| {
+            value.settings = settings;
+            settings.watch(&themeChanged, null) catch {};
+        };
+        if (value.resolver == null) value.resolver = makeResolver(value.allocator, value.settings) catch return null;
+        const path = (value.resolver.?.lookup(name, size, scale) catch return null) orelse return null;
+        return loadPath(a, path, size * scale, tint);
+    }
+    var resolver = makeResolver(a, null) catch return null;
+    defer resolver.deinit();
+    const path = (resolver.lookup(name, size, scale) catch return null) orelse return null;
+    return loadPath(a, path, size * scale, tint);
+}
+
+fn loadPath(a: std.mem.Allocator, path: [:0]const u8, physical: u32, tint: ?Color) ?Image {
     if (tint) |rgba| {
-        if (std.mem.endsWith(u8, path, ".symbolic.png")) return symbolicPng(path, physical, rgba);
+        if (std.mem.endsWith(u8, path, ".symbolic.png")) return symbolicPng(a, path, physical, rgba);
         for ([_][]const u8{ "-symbolic.svg", "-symbolic-ltr.svg", "-symbolic-rtl.svg" }) |suffix| {
-            if (std.mem.endsWith(u8, path, suffix)) return symbolic(path, physical, rgba);
+            if (std.mem.endsWith(u8, path, suffix)) return symbolic(a, path, physical, rgba);
         }
     }
-    return decode.file(path, physical);
+    return decode.file(a, path, physical);
 }
 
 /// Loads a GIcon, falling back to a copy of `fallback` or then a named icon.
-pub fn loadThemed(icon: ?*c.GIcon, size: u32, fallback: ?Image, fallback_name: ?[:0]const u8) ?Image {
+pub fn loadThemed(a: std.mem.Allocator, icon: ?*c.GIcon, size: u32, fallback: ?Image, fallback_name: ?[:0]const u8) ?Image {
     if (size == 0) return null;
     if (icon) |value| {
         if (c.g_type_check_instance_is_a(@ptrCast(@alignCast(value)), g_themed_icon_get_type()) != 0) {
             const names = g_themed_icon_get_names(value);
             var i: usize = 0;
-            while (names[i]) |name| : (i += 1) if (load(std.mem.span(name), size, 1, foreground)) |image| return image;
+            while (names[i]) |name| : (i += 1) if (load(a, std.mem.span(name), size, 1, foreground)) |image| return image;
         } else if (c.g_type_check_instance_is_a(@ptrCast(@alignCast(value)), g_file_icon_get_type()) != 0) {
             if (g_file_get_path(g_file_icon_get_file(value))) |path| {
                 defer c.g_free(path);
-                if (load(std.mem.span(path), size, 1, foreground)) |image| return image;
+                if (load(a, std.mem.span(path), size, 1, foreground)) |image| return image;
             }
         }
         if (c.g_type_check_instance_is_a(@ptrCast(@alignCast(value)), g_loadable_icon_get_type()) != 0) {
             if (g_loadable_icon_load(value, @intCast(size), null, null, null)) |stream| {
                 defer c.g_object_unref(stream);
-                if (decode.stream(stream, size)) |image| return image;
+                if (decode.stream(a, stream, size)) |image| return image;
             }
         }
     }
-    if (fallback) |image| return decode.clone(image);
-    if (fallback_name) |name| return load(name, size, 1, null);
+    if (fallback) |image| return decode.clone(a, image);
+    if (fallback_name) |name| return load(a, name, size, 1, null);
     return null;
 }
 
-fn symbolic(path: [:0]const u8, size: u32, tint: Color) ?Image {
-    const data = decode.read(path) orelse return null;
-    defer decode.allocator.free(data);
+fn symbolic(a: std.mem.Allocator, path: [:0]const u8, size: u32, tint: Color) ?Image {
+    const data = decode.read(a, path) orelse return null;
+    defer a.free(data);
     const channel = struct {
         fn f(value: f64) u32 {
             return @intFromFloat(@round(std.math.clamp(value, 0, 1) * 255));
         }
     }.f;
     const color: decode.Color = .{ .rgb = channel(tint.red) << 16 | channel(tint.green) << 8 | channel(tint.blue) };
-    return decode.symbolic(data, size, .{ .foreground = color }, tint.alpha);
+    return decode.symbolic(a, data, size, .{ .foreground = color }, tint.alpha);
 }
 
 /// Recolors GTK's symbolic PNG palette: black takes the tint, while pure red,
 /// green and blue select the success, warning and error colors.
-fn symbolicPng(path: [:0]const u8, size: u32, tint: Color) ?Image {
-    const image = decode.file(path, size) orelse return null;
+fn symbolicPng(a: std.mem.Allocator, path: [:0]const u8, size: u32, tint: Color) ?Image {
+    const image = decode.file(a, path, size) orelse return null;
     const colors = [_][3]u32{
         .{ @intFromFloat(std.math.clamp(tint.red, 0, 1) * 255), @intFromFloat(std.math.clamp(tint.green, 0, 1) * 255), @intFromFloat(std.math.clamp(tint.blue, 0, 1) * 255) },
         .{ 77, 153, 5 },
@@ -466,8 +488,8 @@ test "symbolic SVG icons use the GTK palette, opacity and scale" {
     defer lookup.deinit();
     const tint: Color = .{ .red = 0.3, .green = 0.6, .blue = 0.9, .alpha = 0.7 };
     for ([_]u32{ 1, 2 }) |scale| {
-        const image = symbolic((try lookup.lookup("probe-symbolic", 16, scale)).?, 16 * scale, tint) orelse return error.IconDecode;
-        defer decode.free(image);
+        const image = symbolic(std.testing.allocator, (try lookup.lookup("probe-symbolic", 16, scale)).?, 16 * scale, tint) orelse return error.IconDecode;
+        defer decode.free(std.testing.allocator, image);
         try std.testing.expectEqual(16 * scale, image.width);
         try std.testing.expectEqual(16 * scale, image.height);
         // Sample each stripe's center: the tint, then success, warning and error.
@@ -491,25 +513,26 @@ test "symbolic PNG palettes and file GIcons decode to premultiplied images" {
     try fixture.put("palette-symbolic.symbolic.png", data);
     const path = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/palette-symbolic.symbolic.png", .{fixture.root}, 0);
     defer std.testing.allocator.free(path);
-    const tinted = load(path, 4, 1, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.5 }) orelse return error.IconDecode;
-    defer decode.free(tinted);
+    const tinted = load(std.testing.allocator, path, 4, 1, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.5 }) orelse return error.IconDecode;
+    defer decode.free(std.testing.allocator, tinted);
     try std.testing.expectEqualSlices(u32, &.{ premultiplied(0xffffff, 127), premultiplied(0x4d9905, 127), premultiplied(0xf4783d, 127), premultiplied(0xcb0000, 63) }, std.mem.bytesAsSlice(u32, tinted.pixels));
     const icon = g_icon_new_for_string(path, null) orelse return error.InvalidIcon;
     defer c.g_object_unref(icon);
-    const loaded = loadThemed(icon, 8, null, null) orelse return error.IconDecode;
-    defer decode.free(loaded);
+    const loaded = loadThemed(std.testing.allocator, icon, 8, null, null) orelse return error.IconDecode;
+    defer decode.free(std.testing.allocator, loaded);
     try std.testing.expectEqual(@as(u32, 8), loaded.width);
     try std.testing.expectEqual(@as(u32, 2), loaded.height);
 }
 
 test "native icon lookup renders installed Adwaita symbols at both output scales" {
     try @import("desktop-runtime.zig").setup(std.testing.allocator);
-    deinit();
+    init(std.testing.allocator);
+    defer @import("desktop-gsettings.zig").deinit();
     defer deinit();
     for ([_][:0]const u8{ "view-app-grid-symbolic", "view-refresh-symbolic", "audio-volume-high-symbolic", "battery-level-50-symbolic", "dark-mode-symbolic" }) |name| {
         for ([_]u32{ 1, 2 }) |scale| {
-            const image = load(name, 16, scale, white) orelse return error.InstalledIconMissing;
-            defer decode.free(image);
+            const image = load(std.testing.allocator, name, 16, scale, white) orelse return error.InstalledIconMissing;
+            defer decode.free(std.testing.allocator, image);
             try std.testing.expectEqual(16 * scale, image.width);
             var visible = false;
             for (std.mem.bytesAsSlice(u32, image.pixels)) |pixel| visible = visible or pixel >> 24 != 0;

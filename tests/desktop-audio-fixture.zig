@@ -5,7 +5,6 @@ const audio = @import("desktop").audio;
 const quick = @import("desktop").quick;
 const settings = @import("desktop").settings;
 const assert = std.debug.assert;
-const a = std.heap.page_allocator;
 var stopping = false;
 var watch = false;
 const cast = c.__zig.cast;
@@ -21,7 +20,7 @@ fn changed(_: ?*anyopaque, service: *audio.Service) void {
     if (watch) dump(service) catch @panic("dump failed");
 }
 fn dump(service: *audio.Service) !void {
-    var arena = std.heap.ArenaAllocator.init(a);
+    var arena = std.heap.ArenaAllocator.init(service.allocator);
     defer arena.deinit();
     const View = struct { id: u32, class: audio.Class, name: []const u8, state: ?audio.State, is_default: bool };
     const nodes = try arena.allocator().alloc(View, service.nodes.items.len);
@@ -60,8 +59,8 @@ fn click(sound: *settings.Sound, row: usize, control: @import("desktop").setting
     sound.pointerButton(false, rect.x + rect.width / 2, rect.y + rect.height / 2);
 }
 fn ui(service: *audio.Service) !void {
-    const controls = quick.Controls.create("true", "true");
-    var dialogs: settings.Service = .{};
+    const controls = quick.Controls.create(service.allocator, "true", "true");
+    var dialogs: settings.Service = .{ .allocator = service.allocator };
     defer {
         controls.deinit();
         dialogs.deinit();
@@ -177,12 +176,12 @@ fn ui(service: *audio.Service) !void {
     c.g_print("PASS native sound pointer, keyboard, volume, mute, defaults and pending-close controls\n");
 }
 pub fn main(init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(a);
+    var arena = std.heap.ArenaAllocator.init(init.gpa);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
     if (args.len < 2) return error.ExpectedCommand;
     watch = std.mem.eql(u8, args[1], "watch");
-    const service = try audio.Service.create(&changed, null);
+    const service = try audio.Service.create(init.gpa, &changed, null);
     defer {
         service.destroy();
         audio.dispatch();
@@ -197,7 +196,7 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "dispose")) return;
     try ready(service);
     if (std.mem.startsWith(u8, args[1], "preview")) {
-        const shell = settings.Settings.create(.sound);
+        const shell = settings.Settings.create(init.gpa, .sound);
         const sound = shell.sound.?;
         defer {
             shell.ui.close();
@@ -213,7 +212,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, args[1], "feedback") and args.len == 3) {
-        var player = audio.Feedback{};
+        var player = audio.Feedback{ .allocator = init.gpa };
         defer player.deinit();
         const path = try arena.allocator().dupeSentinel(u8, args[2], 0);
         player.play(path);

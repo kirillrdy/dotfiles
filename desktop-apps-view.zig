@@ -4,7 +4,6 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.c_allocator;
 pub const Rect = raster.Rect;
 pub const color = raster.hex;
 const rounded = raster.rounded;
@@ -117,16 +116,16 @@ pub const Tile = struct {
     image: ?c.__icons.Image = null,
     scale: u32 = 0,
     size: u32 = 0,
-    pub fn deinit(self: *Tile) void {
+    pub fn deinit(self: *Tile, a: std.mem.Allocator) void {
         if (self.mask) |mask| mask.deinit(a);
-        if (self.image) |image| c.__icons.free(image);
+        if (self.image) |image| c.__icons.free(a, image);
         self.* = .{};
     }
-    pub fn paint(self: *Tile, canvas: raster.Canvas, scale: u32, renderer: *text.Renderer, name: [*c]const u8, icon: ?*c.GIcon, rect: Rect, size: u32, hover: bool, focused: bool, selected: bool, pressed: bool) !void {
+    pub fn paint(self: *Tile, a: std.mem.Allocator, canvas: raster.Canvas, scale: u32, renderer: *text.Renderer, name: [*c]const u8, icon: ?*c.GIcon, rect: Rect, size: u32, hover: bool, focused: bool, selected: bool, pressed: bool) !void {
         if (self.scale != scale or self.size != size) {
-            self.deinit();
+            self.deinit(a);
             self.mask = try renderer.renderLayout(a, std.mem.span(name), .{ .size = 14.6666666667 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat((rect.width - 24) * canvas.scale), .alignment = .center, .ellipsize = true, .origin = .top });
-            self.image = c.__icons.loadThemed(icon, size * scale, null, "application-x-executable");
+            self.image = c.__icons.loadThemed(a, icon, size * scale, null, "application-x-executable");
             self.scale = scale;
             self.size = size;
         }
@@ -150,21 +149,21 @@ pub const Search = struct {
     find: ?c.__icons.Image = null,
     clear: ?c.__icons.Image = null,
     scale: u32 = 0,
-    pub fn deinit(self: *Search) void {
-        if (self.find) |image| c.__icons.free(image);
-        if (self.clear) |image| c.__icons.free(image);
+    pub fn deinit(self: *Search, a: std.mem.Allocator) void {
+        if (self.find) |image| c.__icons.free(a, image);
+        if (self.clear) |image| c.__icons.free(a, image);
         self.* = .{};
     }
-    fn prepare(self: *Search, scale: u32) void {
+    fn prepare(self: *Search, a: std.mem.Allocator, scale: u32) void {
         if (self.scale == scale) return;
-        self.deinit();
-        self.find = symbol("edit-find-symbolic", scale);
-        self.clear = symbol("edit-clear-symbolic", scale);
+        self.deinit(a);
+        self.find = symbol(a, "edit-find-symbolic", scale);
+        self.clear = symbol(a, "edit-clear-symbolic", scale);
         self.scale = scale;
     }
-    fn symbol(name: [:0]const u8, scale: u32) ?c.__icons.Image {
+    fn symbol(a: std.mem.Allocator, name: [:0]const u8, scale: u32) ?c.__icons.Image {
         const tint: raster.Color = .{ .red = 0.98, .green = 0.98, .blue = 0.984, .alpha = 0.7 };
-        return @import("desktop-icons.zig").load(name, 16, scale, tint);
+        return @import("desktop-icons.zig").load(a, name, 16, scale, tint);
     }
     fn paintIcon(image: ?c.__icons.Image, canvas: raster.Canvas, x: f64, y: f64) !void {
         const icon = image orelse return;
@@ -205,7 +204,7 @@ pub fn paintPages(canvas: raster.Canvas, grid: Grid, page: usize, count: usize, 
         canvas.draw(&.{ .{ .line = .{ .start = .{ .x = x - 4 * sign, .y = y - 7 }, .end = .{ .x = x + 3 * sign, .y = y }, .radius = 1.5 } }, .{ .line = .{ .start = .{ .x = x + 3 * sign, .y = y }, .end = .{ .x = x - 4 * sign, .y = y + 7 }, .radius = 1.5 } } }, color(0xfafafb));
     }
 }
-pub fn measure(renderer: *text.Renderer, value: []const u8, scale: u32) !f64 {
+pub fn measure(a: std.mem.Allocator, renderer: *text.Renderer, value: []const u8, scale: u32) !f64 {
     const z = try a.dupeSentinel(u8, value, 0);
     defer a.free(z);
     const factor: f64 = @floatFromInt(scale);
@@ -213,32 +212,32 @@ pub fn measure(renderer: *text.Renderer, value: []const u8, scale: u32) !f64 {
     defer mask.deinit(a);
     return @as(f64, @floatFromInt(mask.logical_width)) / factor;
 }
-fn drawCenteredText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8, font: [:0]const u8, size: f64, tint: raster.Color, offset_y: f64) !void {
+fn drawCenteredText(a: std.mem.Allocator, target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8, font: [:0]const u8, size: f64, tint: raster.Color, offset_y: f64) !void {
     const factor: f64 = @floatFromInt(scale);
     const mask = try renderer.renderLayout(a, value, .{ .font = font, .size = size * factor, .dpi = 96 * factor, .width = @max(1, target.width - @min(target.width - 1, 48 * scale)), .alignment = .center, .lines = 2, .ellipsize = true, .origin = .top });
     defer mask.deinit(a);
     drawMaskColor(.{ .target = target, .scale = factor }, mask, 24, (@as(f64, @floatFromInt(target.height)) - @as(f64, @floatFromInt(mask.logical_height))) / (2 * factor) + offset_y, tint);
 }
-pub fn centerText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8, rgb: u32) !void {
-    try drawCenteredText(target, scale, renderer, value, "Adwaita Sans", 14.6666666667, color(rgb), 0);
+pub fn centerText(a: std.mem.Allocator, target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8, rgb: u32) !void {
+    try drawCenteredText(a, target, scale, renderer, value, "Adwaita Sans", 14.6666666667, color(rgb), 0);
 }
-pub fn statusText(target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8) !void {
+pub fn statusText(a: std.mem.Allocator, target: raster.Buffer, scale: u32, renderer: *text.Renderer, value: [:0]const u8) !void {
     // GNOME centers a 64px spinner, 24px spacing and label as one box.
     // The stopped spinner keeps its allocation, placing the label 44px below center.
-    try drawCenteredText(target, scale, renderer, value, "Adwaita Sans Extra-Bold", 26.6666666667, raster.Color.rgb(0xfafafb, 0.8), 44);
+    try drawCenteredText(a, target, scale, renderer, value, "Adwaita Sans Extra-Bold", 26.6666666667, raster.Color.rgb(0xfafafb, 0.8), 44);
 }
-pub fn paintSearch(target: raster.Buffer, scale: u32, renderer: *text.Renderer, icons: *Search, entry: anytype, hover: bool, offset: *f64) !void {
+pub fn paintSearch(a: std.mem.Allocator, target: raster.Buffer, scale: u32, renderer: *text.Renderer, icons: *Search, entry: anytype, hover: bool, offset: *f64) !void {
     const factor: f64 = @floatFromInt(scale);
     const canvas: raster.Canvas = .{ .target = target, .scale = factor };
     const w = @as(f64, @floatFromInt(target.width)) / factor;
     const h = @as(f64, @floatFromInt(target.height)) / factor;
     rounded(canvas, .{ .x = 0, .y = 0, .width = w, .height = h }, h / 2, if (entry.focused) 0x43464c else if (hover) 0x4a4a50 else 0x404045);
     if (entry.focused) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = 1, .y = 1, .width = w - 2, .height = h - 2 }, .radius = h / 2 - 1, .width = 2 } }}, color(0x719ed2));
-    icons.prepare(scale);
+    icons.prepare(a, scale);
     try Search.paintIcon(icons.find, canvas, 13, @floor((h - 16) / 2) + 1);
     const value = entry.buffer.valueZ();
-    const cursor = try measure(renderer, value[0..entry.buffer.cursor], scale);
-    const anchor = try measure(renderer, value[0..entry.buffer.anchor], scale);
+    const cursor = try measure(a, renderer, value[0..entry.buffer.cursor], scale);
+    const anchor = try measure(a, renderer, value[0..entry.buffer.anchor], scale);
     const available = @max(1, w - 82);
     if (cursor - offset.* > available) offset.* = cursor - available;
     if (cursor < offset.*) offset.* = cursor;

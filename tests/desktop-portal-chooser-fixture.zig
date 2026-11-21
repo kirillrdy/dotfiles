@@ -14,34 +14,33 @@ fn pump() void {
     while (c.g_main_context_iteration(null, 0) != 0) {}
     io.sleep(.fromMilliseconds(5), .awake) catch {};
 }
-/// Test values live until the fixture exits.
-var data_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
 /// A value from its GVariant text form.
-fn parse(signature: []const u8, value: []const u8) dbus.Value {
-    return variant_text.parse(data_arena.allocator(), signature, value) catch @panic("invalid fixture value");
+fn parse(data_allocator: std.mem.Allocator, signature: []const u8, value: []const u8) dbus.Value {
+    return variant_text.parse(data_allocator, signature, value) catch @panic("invalid fixture value");
 }
-fn print(value: dbus.Value) []const u8 {
-    return variant_text.print(data_arena.allocator(), value) catch @panic("out of memory");
+fn print(data_allocator: std.mem.Allocator, value: dbus.Value) []const u8 {
+    return variant_text.print(data_allocator, value) catch @panic("out of memory");
 }
 /// Options with `current_folder` set to `root` as a nul-terminated byte string.
 const Builder = struct {
+    allocator: std.mem.Allocator,
     entries: std.ArrayList(Dict.Entry) = .empty,
-    fn init(root: [:0]const u8) Builder {
-        var self: Builder = .{};
+    fn init(data_allocator: std.mem.Allocator, root: [:0]const u8) Builder {
+        var self: Builder = .{ .allocator = data_allocator };
         self.put("current_folder", .{ .bytes = root[0 .. root.len + 1] });
         return self;
     }
     fn put(self: *Builder, key: []const u8, value: dbus.Value) void {
-        self.entries.append(data_arena.allocator(), .{ .key = key, .value = value }) catch @panic("out of memory");
+        self.entries.append(self.allocator, .{ .key = key, .value = value }) catch @panic("out of memory");
     }
     fn dict(self: *const Builder) Dict {
         return .{ .entries = self.entries.items };
     }
 };
 /// Options from their `a{sv}` text form.
-fn options(value: []const u8) Dict {
-    const items = parse("a{sv}", value).array.items;
-    const entries = data_arena.allocator().alloc(Dict.Entry, items.len) catch @panic("out of memory");
+fn options(data_allocator: std.mem.Allocator, value: []const u8) Dict {
+    const items = parse(data_allocator, "a{sv}", value).array.items;
+    const entries = data_allocator.alloc(Dict.Entry, items.len) catch @panic("out of memory");
     for (entries, items) |*entry, item| entry.* = .{ .key = item.dict_entry[0].string, .value = item.dict_entry[1].variant.* };
     return .{ .entries = entries };
 }
@@ -50,13 +49,14 @@ fn lookup(result: Dict, key: []const u8) ?dbus.Value {
     return null;
 }
 const Done = struct {
+    allocator: std.mem.Allocator,
     code: ?u32 = null,
     result: Dict = .{ .entries = &.{} },
     fn completed(data: ?*anyopaque, code: u32, result: Dict) void {
         const self = cast(Done, data);
         self.code = code;
         // Results are only borrowed for the call.
-        const a = data_arena.allocator();
+        const a = self.allocator;
         const entries = a.alloc(Dict.Entry, result.entries.len) catch @panic("out of memory");
         for (entries, result.entries) |*entry, item| entry.* = .{ .key = a.dupe(u8, item.key) catch @panic("out of memory"), .value = item.value.clone(a) catch @panic("out of memory") };
         self.result = .{ .entries = entries };
@@ -82,7 +82,7 @@ fn select(dialog: *Dialog, paths: []const [:0]const u8) !void {
 fn uris(result: Dict) []const dbus.Value {
     return lookup(result, "uris").?.array.items;
 }
-fn checkUri(result: Dict, expected: [:0]const u8) !void {
+fn checkUri(data_allocator: std.mem.Allocator, result: Dict, expected: [:0]const u8) !void {
     const file = c.g_file_new_for_path(expected);
     defer c.g_object_unref(file);
     const uri = c.g_file_get_uri(file);
@@ -91,7 +91,7 @@ fn checkUri(result: Dict, expected: [:0]const u8) !void {
     for (uris(result)) |item| {
         if (std.mem.eql(u8, std.mem.span(uri), item.string)) found = true;
     }
-    if (!found) std.debug.print("expected URI {s}, got {s}\n", .{ std.mem.span(uri), print(lookup(result, "uris").?) });
+    if (!found) std.debug.print("expected URI {s}, got {s}\n", .{ std.mem.span(uri), print(data_allocator, lookup(result, "uris").?) });
     try expect(found);
 }
 pub fn main(init: std.process.Init) !void {
@@ -99,6 +99,10 @@ pub fn main(init: std.process.Init) !void {
     var allocator: std.heap.DebugAllocator(.{}) = .init;
     defer if (allocator.deinit() == .leak) @panic("file chooser allocation leak");
     const a = allocator.allocator();
+    var fixture_data = std.heap.ArenaAllocator.init(a);
+    defer fixture_data.deinit();
+    const data_allocator = fixture_data.allocator();
+    defer @import("desktop").window.deinit();
     const args = try init.minimal.args.toSlice(a);
     defer a.free(args);
     if (args.len != 2) return error.ExpectedFixtureDirectory;
@@ -113,13 +117,13 @@ pub fn main(init: std.process.Init) !void {
     _ = c.g_setenv("GTK_USE_PORTAL", "0", 1);
     _ = c.g_setenv("GIO_USE_VFS", "local", 1);
     {
-        var b = Builder.init(root);
-        const current = parse("(sa(us))", "('Text', [(uint32 0, '*.txt')])");
+        var b = Builder.init(data_allocator, root);
+        const current = parse(data_allocator, "(sa(us))", "('Text', [(uint32 0, '*.txt')])");
         b.put("multiple", .{ .boolean = true });
-        b.put("filters", parse("a(sa(us))", "[('Text', [(uint32 0, '*.txt')]), ('Images', [(uint32 1, 'image/png')])]"));
+        b.put("filters", parse(data_allocator, "a(sa(us))", "[('Text', [(uint32 0, '*.txt')]), ('Images', [(uint32 1, 'image/png')])]"));
         b.put("current_filter", current);
-        b.put("choices", parse("a(ssa(ss)s)", "[('encoding', 'Encoding', [('utf8', 'UTF-8'), ('raw', 'Raw')], 'raw'), ('remember', 'Remember', [], 'true')]"));
-        var done: Done = .{};
+        b.put("choices", parse(data_allocator, "a(ssa(ss)s)", "[('encoding', 'Encoding', [('utf8', 'UTF-8'), ('raw', 'Raw')], 'raw'), ('remember', 'Remember', [], 'true')]"));
+        var done: Done = .{ .allocator = data_allocator };
         const dialog = try Dialog.create(a, "OpenFile", "", "Open fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.multiple);
@@ -133,29 +137,29 @@ pub fn main(init: std.process.Init) !void {
         try select(dialog, &.{ first, unicode, report });
         try done.accept(dialog);
         try expectEqual(@as(usize, 3), uris(done.result).len);
-        try checkUri(done.result, first);
-        try checkUri(done.result, unicode);
+        try checkUri(data_allocator, done.result, first);
+        try checkUri(data_allocator, done.result, unicode);
         // Values are compared through their text form, as g_variant_equal compared them.
-        try expectStrings(print(current), print(lookup(done.result, "current_filter").?));
+        try expectStrings(print(data_allocator, current), print(data_allocator, lookup(done.result, "current_filter").?));
         try expect(!lookup(done.result, "writable").?.boolean);
-        try expectStrings(print(parse("a(ss)", "[('encoding', 'utf8'), ('remember', 'false')]")), print(lookup(done.result, "choices").?));
+        try expectStrings(print(data_allocator, parse(data_allocator, "a(ss)", "[('encoding', 'utf8'), ('remember', 'false')]")), print(data_allocator, lookup(done.result, "choices").?));
     }
     {
-        var b = Builder.init(root);
+        var b = Builder.init(data_allocator, root);
         b.put("current_name", .{ .string = "native-save.txt" });
-        var done: Done = .{};
+        var done: Done = .{ .allocator = data_allocator };
         const dialog = try Dialog.create(a, "SaveFile", "", "Save fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.method == .save);
         try done.accept(dialog);
         const target = try std.fmt.allocPrintSentinel(a, "{s}/native-save.txt", .{root}, 0);
         defer a.free(target);
-        try checkUri(done.result, target);
+        try checkUri(data_allocator, done.result, target);
     }
     {
-        var b = Builder.init(root);
-        b.put("files", parse("aay", "[b'report.txt', b'report.txt']"));
-        var done: Done = .{};
+        var b = Builder.init(data_allocator, root);
+        b.put("files", parse(data_allocator, "aay", "[b'report.txt', b'report.txt']"));
+        var done: Done = .{ .allocator = data_allocator };
         const dialog = try Dialog.create(a, "SaveFiles", "", "Save files fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.directory);
@@ -165,12 +169,12 @@ pub fn main(init: std.process.Init) !void {
         defer a.free(one);
         const two = try std.fmt.allocPrintSentinel(a, "{s}/report(2).txt", .{root}, 0);
         defer a.free(two);
-        try checkUri(done.result, one);
-        try checkUri(done.result, two);
+        try checkUri(data_allocator, done.result, one);
+        try checkUri(data_allocator, done.result, two);
     }
     {
-        var done: Done = .{};
-        const dialog = try Dialog.create(a, "OpenFile", "", "Cancel fixture", options("{'directory': <true>}"), &Done.completed, &done);
+        var done: Done = .{ .allocator = data_allocator };
+        const dialog = try Dialog.create(a, "OpenFile", "", "Cancel fixture", options(data_allocator, "{'directory': <true>}"), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.directory);
         dialog.cancel();
@@ -179,9 +183,9 @@ pub fn main(init: std.process.Init) !void {
     {
         // An existing output requires a second, explicit acceptance. Editing
         // the name after the warning must not retain overwrite consent.
-        var b = Builder.init(root);
+        var b = Builder.init(data_allocator, root);
         b.put("current_name", .{ .string = "report.txt" });
-        var done: Done = .{};
+        var done: Done = .{ .allocator = data_allocator };
         const dialog = try Dialog.create(a, "SaveFile", "", "Overwrite fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try loaded(dialog);
@@ -196,7 +200,7 @@ pub fn main(init: std.process.Init) !void {
         dialog.accept();
         try expect(done.code == null);
         try done.accept(dialog);
-        try checkUri(done.result, report);
+        try checkUri(data_allocator, done.result, report);
     }
     {
         const left = try std.fmt.allocPrintSentinel(a, "{s}/folder-a", .{root}, 0);
@@ -205,10 +209,10 @@ pub fn main(init: std.process.Init) !void {
         defer a.free(right);
         try std.Io.Dir.cwd().createDirPath(io, left);
         try std.Io.Dir.cwd().createDirPath(io, right);
-        var b = Builder.init(root);
+        var b = Builder.init(data_allocator, root);
         b.put("directory", .{ .boolean = true });
         b.put("multiple", .{ .boolean = true });
-        var done: Done = .{};
+        var done: Done = .{ .allocator = data_allocator };
         const dialog = try Dialog.create(a, "OpenFile", "", "Multiple folders fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try loaded(dialog);
@@ -216,8 +220,8 @@ pub fn main(init: std.process.Init) !void {
         try dialog.selectPath(right);
         try done.accept(dialog);
         try expectEqual(@as(usize, 2), uris(done.result).len);
-        try checkUri(done.result, left);
-        try checkUri(done.result, right);
+        try checkUri(data_allocator, done.result, left);
+        try checkUri(data_allocator, done.result, right);
     }
     {
         const hidden = try std.fmt.allocPrintSentinel(a, "{s}/.hidden.txt", .{root}, 0);
@@ -228,8 +232,8 @@ pub fn main(init: std.process.Init) !void {
             defer a.free(path);
             try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "page" });
         }
-        const b = Builder.init(root);
-        var done: Done = .{};
+        const b = Builder.init(data_allocator, root);
+        var done: Done = .{ .allocator = data_allocator };
         const dialog = try Dialog.create(a, "OpenFile", "", "Scrolling fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try loaded(dialog);
@@ -266,11 +270,11 @@ pub fn main(init: std.process.Init) !void {
         try dialog.selectPath(hidden);
         try done.accept(dialog);
         try expectEqual(@as(usize, 1), uris(done.result).len);
-        try checkUri(done.result, hidden);
+        try checkUri(data_allocator, done.result, hidden);
     }
     {
-        const b = Builder.init(root);
-        var done: Done = .{};
+        const b = Builder.init(data_allocator, root);
+        var done: Done = .{ .allocator = data_allocator };
         // Both scans may finish after the dialog has been destroyed. Neither
         // may touch its controls or deliver a portal response.
         const dialog = try Dialog.create(a, "OpenFile", "", "Cancelled scan fixture", b.dict(), &Done.completed, &done);
@@ -280,10 +284,10 @@ pub fn main(init: std.process.Init) !void {
         try expect(done.code == null);
     }
     {
-        var done: Done = .{};
-        try std.testing.expectError(error.InvalidFileName, Dialog.create(a, "OpenFile", "", "Invalid", options("{'current_folder': <[byte 47, 116, 109, 112]>}"), &Done.completed, &done));
-        try std.testing.expectError(error.InvalidFileFilter, Dialog.create(a, "OpenFile", "", "Invalid", options("{'filters': <[('Invalid', [(uint32 2, '*')])]>}"), &Done.completed, &done));
-        try std.testing.expectError(error.InvalidFileChoice, Dialog.create(a, "OpenFile", "", "Invalid", options("{'choices': <[('same', 'First', @a(ss) [], 'true'), ('same', 'Second', @a(ss) [], 'false')]>}"), &Done.completed, &done));
+        var done: Done = .{ .allocator = data_allocator };
+        try std.testing.expectError(error.InvalidFileName, Dialog.create(a, "OpenFile", "", "Invalid", options(data_allocator, "{'current_folder': <[byte 47, 116, 109, 112]>}"), &Done.completed, &done));
+        try std.testing.expectError(error.InvalidFileFilter, Dialog.create(a, "OpenFile", "", "Invalid", options(data_allocator, "{'filters': <[('Invalid', [(uint32 2, '*')])]>}"), &Done.completed, &done));
+        try std.testing.expectError(error.InvalidFileChoice, Dialog.create(a, "OpenFile", "", "Invalid", options(data_allocator, "{'choices': <[('same', 'First', @a(ss) [], 'true'), ('same', 'Second', @a(ss) [], 'false')]>}"), &Done.completed, &done));
     }
     // Drain cancelled asynchronous enumeration before the leak assertion.
     for (0..30) |_| pump();

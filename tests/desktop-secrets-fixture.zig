@@ -26,8 +26,8 @@ fn checkPrompt(dialog: *secrets.Dialog) !void {
     // The successful response is delivered after this callback returns.
     _ = dialog.handleKey(0xff0d, 0);
 }
-fn checkDialogs() !void {
-    const dialog = try secrets.createImportDialog();
+fn checkDialogs(allocator: std.mem.Allocator) !void {
+    const dialog = try secrets.createImportDialog(allocator);
     defer dialog.destroy();
     try dialog.entry.?.insert("private-surrounding-text");
     dialog.focus(.entry);
@@ -76,13 +76,13 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
-    if (args.len == 2 and std.mem.eql(u8, args[1], "dialogs")) return checkDialogs();
+    if (args.len == 2 and std.mem.eql(u8, args[1], "dialogs")) return checkDialogs(init.gpa);
     if (args.len == 3 and std.mem.eql(u8, args[1], "import")) {
         return secrets.importAt(try arena.allocator().dupeSentinel(u8, args[2], 0), "integration-vault-password");
     }
     if (args.len != 2) return error.ExpectedDirectory;
     const mode = c.__zig.getenv("DESKTOP_SECRETS_FIXTURE_PROMPTS");
-    try secrets.runAtWithOptions(try arena.allocator().dupeSentinel(u8, args[1], 0), .{
+    try secrets.runAtWithOptions(init.gpa, try arena.allocator().dupeSentinel(u8, args[1], 0), .{
         .prompt_ready = if (mode != null and std.mem.eql(u8, std.mem.span(mode.?), "accept")) &ready else null,
     });
 }

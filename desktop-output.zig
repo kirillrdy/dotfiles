@@ -2,7 +2,6 @@
 const std = @import("std");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
-const a = std.heap.page_allocator;
 fn milliseconds() i64 {
     return @divTrunc(@import("desktop-util.zig").monotonicTime(), 1000);
 }
@@ -17,6 +16,7 @@ pub fn parse(args: []const []const u8) !Options {
     return .{ .name = args[1], .scale = @intFromFloat(fixed) };
 }
 const Head = struct {
+    allocator: std.mem.Allocator,
     proxy: wl.zwlr_output_head_v1,
     name: ?[]u8 = null,
     modes: std.ArrayList(wl.zwlr_output_mode_v1) = .empty,
@@ -24,8 +24,8 @@ const Head = struct {
     alive: bool = true,
     fn headEvent(self: *Head, _: wl.zwlr_output_head_v1, event: wl.zwlr_output_head_v1.Event) void {
         switch (event) {
-            .name => |value| self.name = a.dupe(u8, value.name) catch @panic("out of memory"),
-            .mode => |value| self.modes.append(a, value.mode) catch @panic("out of memory"),
+            .name => |value| self.name = self.allocator.dupe(u8, value.name) catch @panic("out of memory"),
+            .mode => |value| self.modes.append(self.allocator, value.mode) catch @panic("out of memory"),
             .enabled => |value| self.enabled = value.enabled != 0,
             .finished => self.alive = false,
             else => {},
@@ -34,6 +34,7 @@ const Head = struct {
 };
 const Result = enum { pending, succeeded, failed, cancelled };
 const Client = struct {
+    allocator: std.mem.Allocator,
     manager: ?wl.zwlr_output_manager_v1 = null,
     manager_name: u32 = 0,
     heads: std.ArrayList(*Head) = .empty,
@@ -60,9 +61,9 @@ const Client = struct {
     fn managerEvent(self: *Client, _: wl.zwlr_output_manager_v1, event: wl.zwlr_output_manager_v1.Event) void {
         switch (event) {
             .head => |value| {
-                const item = a.create(Head) catch @panic("out of memory");
-                item.* = .{ .proxy = value.head };
-                self.heads.append(a, item) catch @panic("out of memory");
+                const item = self.allocator.create(Head) catch @panic("out of memory");
+                item.* = .{ .allocator = self.allocator, .proxy = value.head };
+                self.heads.append(self.allocator, item) catch @panic("out of memory");
                 value.head.listen(Head, item, Head.headEvent);
             },
             .done => |value| self.serial = value.serial,
@@ -92,11 +93,11 @@ const Client = struct {
     }
 };
 
-pub fn run(args: []const []const u8) !void {
+pub fn run(a: std.mem.Allocator, args: []const []const u8) !void {
     const options = try parse(args);
     const connection = wire.Connection.connect(a) catch return error.WaylandUnavailable;
     defer connection.deinit();
-    var client = Client{};
+    var client = Client{ .allocator = a };
     defer {
         for (client.heads.items) |item| {
             for (item.modes.items) |mode| mode.destroy();

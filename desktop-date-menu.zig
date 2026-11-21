@@ -4,7 +4,6 @@ const c = @import("desktop-glib.zig");
 const wire = @import("desktop-surface.zig");
 const popup = @import("desktop-popup.zig");
 pub const native = @import("desktop-date-menu-view.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 pub const Callbacks = struct {
     context: ?*anyopaque,
@@ -15,6 +14,7 @@ pub const Callbacks = struct {
 };
 
 pub const Controls = struct {
+    allocator: std.mem.Allocator,
     popup: popup.Host = undefined,
     view: native.View,
     callbacks: Callbacks,
@@ -22,14 +22,15 @@ pub const Controls = struct {
     pointer_y: f64 = 0,
     scroll_grab: ?f64 = null,
 
-    pub fn create(callbacks: Callbacks) !*Controls {
+    pub fn create(a: std.mem.Allocator, callbacks: Callbacks) !*Controls {
         const self = try a.create(Controls);
         errdefer a.destroy(self);
         var view = try native.View.init(a);
         errdefer view.deinit();
         try view.prepare(1);
-        self.* = .{ .view = view, .callbacks = callbacks };
+        self.* = .{ .allocator = a, .view = view, .callbacks = callbacks };
         self.popup = .{
+            .allocator = a,
             .context = self,
             .namespace = "desktop-date-menu",
             .paint = &draw,
@@ -42,7 +43,7 @@ pub const Controls = struct {
     pub fn destroy(self: *Controls) void {
         self.popup.deinit();
         self.view.deinit();
-        a.destroy(self);
+        self.allocator.destroy(self);
     }
     pub fn show(self: *Controls, global_x: i32, global_y: i32) !void {
         try self.popup.prepare(global_x, global_y);

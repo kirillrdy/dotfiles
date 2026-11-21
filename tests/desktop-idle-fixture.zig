@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
     const session = args.len == 4 and std.mem.eql(u8, args[3], "--session");
     if (args.len != 3 and !session) return error.ExpectedTimeoutAndLocker;
     const locker = try arena.allocator().dupeSentinel(u8, args[2], 0);
-    const service = try idle.Service.create(.{
+    const service = try idle.Service.create(init.gpa, .{
         .timeout_ms = try std.fmt.parseInt(u32, args[1], 10),
         .lock_executable = locker,
         .session_inhibit = session,

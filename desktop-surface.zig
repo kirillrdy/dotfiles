@@ -8,7 +8,6 @@ const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
 const input = @import("desktop-input.zig");
 const raster = @import("desktop-raster.zig");
-const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
 
 pub const top = 1;
@@ -37,6 +36,7 @@ pub const Callbacks = struct {
 };
 
 pub const Client = struct {
+    allocator: std.mem.Allocator,
     connection: *wire.Connection,
     registry: wl.wl_registry,
     compositor: ?wl.wl_compositor = null,
@@ -62,18 +62,18 @@ pub const Client = struct {
     running: bool = false,
     failed: bool = false,
 
-    pub fn create(callbacks: Callbacks, data: ?*anyopaque) !*Client {
-        return createWithInput(callbacks, data, false);
+    pub fn create(a: std.mem.Allocator, callbacks: Callbacks, data: ?*anyopaque) !*Client {
+        return createWithInput(a, callbacks, data, false);
     }
-    pub fn createInteractive(callbacks: Callbacks, data: ?*anyopaque) !*Client {
-        return createWithInput(callbacks, data, true);
+    pub fn createInteractive(a: std.mem.Allocator, callbacks: Callbacks, data: ?*anyopaque) !*Client {
+        return createWithInput(a, callbacks, data, true);
     }
-    fn createWithInput(callbacks: Callbacks, data: ?*anyopaque, enabled: bool) !*Client {
+    fn createWithInput(a: std.mem.Allocator, callbacks: Callbacks, data: ?*anyopaque, enabled: bool) !*Client {
         const self = try a.create(Client);
         errdefer a.destroy(self);
         const connection = wire.Connection.connect(a) catch return error.WaylandConnection;
         const display: wl.wl_display = .{ .proxy = connection.display() };
-        self.* = .{ .connection = connection, .registry = display.get_registry(), .callbacks = callbacks, .data = data, .input_enabled = enabled };
+        self.* = .{ .allocator = a, .connection = connection, .registry = display.get_registry(), .callbacks = callbacks, .data = data, .input_enabled = enabled };
         errdefer self.clear();
         self.registry.listen(Client, self, registryEvent);
         connection.roundtrip() catch return error.WaylandDispatch;
@@ -97,7 +97,7 @@ pub const Client = struct {
     }
     pub fn destroy(self: *Client) void {
         self.clear();
-        a.destroy(self);
+        self.allocator.destroy(self);
     }
     fn clear(self: *Client) void {
         self.running = false;
@@ -105,12 +105,12 @@ pub const Client = struct {
         if (self.source != 0) _ = c.g_source_remove(self.source);
         while (self.surfaces.items.len > 0) self.surfaces.items[0].destroy();
         for (self.seats.items) |seat| seat.destroy();
-        self.seats.deinit(a);
+        self.seats.deinit(self.allocator);
         while (self.buffers.items.len > 0) self.buffers.items[0].destroy();
         for (self.outputs.items) |output| output.destroy();
-        self.outputs.deinit(a);
-        self.surfaces.deinit(a);
-        self.buffers.deinit(a);
+        self.outputs.deinit(self.allocator);
+        self.surfaces.deinit(self.allocator);
+        self.buffers.deinit(self.allocator);
         if (self.output_manager) |value| value.destroy();
         if (self.text_manager) |value| value.destroy();
         if (self.cursor_manager) |value| value.destroy();
@@ -194,7 +194,7 @@ pub const Client = struct {
             for (self.seats.items) |seat| seat.bindCursorShape();
         } else if (self.input_enabled and std.mem.eql(u8, kind, "wl_seat")) {
             const seat = input.Seat.create(self, registry, name, version) catch @panic("Wayland seat allocation");
-            self.seats.append(a, seat) catch @panic("out of memory");
+            self.seats.append(self.allocator, seat) catch @panic("out of memory");
             seat.bindTextInput();
             seat.bindCursorShape();
             seat.bindClipboard();
@@ -202,9 +202,9 @@ pub const Client = struct {
             if (version >= 3) self.overview_global = name;
         } else if (std.mem.eql(u8, kind, "wl_output")) {
             if (version < 2) return; // Buffer scale requires wl_output version 2.
-            const output = a.create(Output) catch @panic("out of memory");
+            const output = self.allocator.create(Output) catch @panic("out of memory");
             output.* = .{ .client = self, .name = name, .proxy = registry.bind(name, wl.wl_output, @min(version, 4)) };
-            self.outputs.append(a, output) catch @panic("out of memory");
+            self.outputs.append(self.allocator, output) catch @panic("out of memory");
             output.proxy.listen(Output, output, Output.outputEvent);
             output.bindLogical();
         }
@@ -272,7 +272,7 @@ pub const Output = struct {
     fn destroy(self: *Output) void {
         if (self.logical) |value| value.destroy();
         if (self.proxy.version() >= 3) self.proxy.release() else self.proxy.destroy();
-        a.destroy(self);
+        self.client.allocator.destroy(self);
     }
     fn changed(self: *Output) void {
         if (!self.client.running) return;
@@ -330,6 +330,7 @@ const Buffer = struct {
     busy: bool = false,
 
     fn create(owner: *Surface, width: u32, height: u32) !*Buffer {
+        const a = owner.client.allocator;
         _ = try bufferSize(width, height);
         const shm = try client_helpers.shmBuffer(owner.client.shm.?, "desktop-surface", width, height, wl.wl_shm.Format.argb8888);
         errdefer {
@@ -357,7 +358,7 @@ const Buffer = struct {
         erase(*Buffer, &self.client.buffers, self);
         self.shm.buffer.destroy();
         self.shm.unmap();
-        a.destroy(self);
+        self.client.allocator.destroy(self);
     }
 };
 
@@ -454,6 +455,7 @@ pub const Surface = struct {
     buffers: [2]?*Buffer = .{ null, null },
 
     pub fn createPixels(output: *Output, options: Options, paint: PixelPaint, data: ?*anyopaque) !*Surface {
+        const a = output.client.allocator;
         const self = try a.create(Surface);
         errdefer a.destroy(self);
         self.* = .{ .client = output.client, .output = output, .options = options, .paint = paint, .data = data };
@@ -569,7 +571,7 @@ pub const Surface = struct {
     pub fn destroy(self: *Surface) void {
         self.hide();
         erase(*Surface, &self.client.surfaces, self);
-        a.destroy(self);
+        self.client.allocator.destroy(self);
     }
     pub fn setBottomMargin(self: *Surface, margin: i32) void {
         std.debug.assert(self.options.role == .layer);
@@ -712,7 +714,7 @@ test "integration: passive clients do not bind input seats or accept interactive
         fn output(_: ?*anyopaque, _: *Output) void {}
         fn paint(_: ?*anyopaque, _: Pixels) void {}
     };
-    const client = try Client.create(.{ .added = &Noop.output, .removed = &Noop.output }, null);
+    const client = try Client.create(std.testing.allocator, .{ .added = &Noop.output, .removed = &Noop.output }, null);
     defer client.destroy();
     try std.testing.expectEqual(@as(usize, 0), client.seats.items.len);
     try std.testing.expect(!client.hasInput());
@@ -745,7 +747,7 @@ test "integration: frame callbacks coalesce redraws, finish animation and cancel
         }
     };
     var state: State = .{};
-    const client = try Client.create(.{ .added = &State.output, .removed = &State.output }, &state);
+    const client = try Client.create(std.testing.allocator, .{ .added = &State.output, .removed = &State.output }, &state);
     defer client.destroy();
     const surface = try Surface.createPixels(client.outputs.items[0], .{ .namespace = "frame-pacing-test", .layer = 3, .width = 32, .height = 32 }, &State.paint, &state);
     surface.next_frame = &State.next;

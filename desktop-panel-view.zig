@@ -3,7 +3,6 @@ const std = @import("std");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const c = @import("desktop-glib.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 pub const Rect = @import("desktop-askpass-view.zig").Rect;
 const white: raster.Color = .{ .red = 1, .green = 1, .blue = 1 };
 const overview_foreground: raster.Color = .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0 };
@@ -18,18 +17,18 @@ pub const Label = struct {
     limit: ?u32 = null,
     bold: bool = false,
     markup: bool = false,
-    pub fn set(self: *Label, value: []const u8) void {
+    pub fn set(self: *Label, a: std.mem.Allocator, value: []const u8) void {
         if (std.mem.eql(u8, self.value, value)) return;
         const copy = a.dupeSentinel(u8, value, 0) catch @panic("out of memory");
-        self.deinit();
+        self.deinit(a);
         self.* = .{ .value = copy, .owned = true };
     }
-    pub fn deinit(self: *Label) void {
+    pub fn deinit(self: *Label, a: std.mem.Allocator) void {
         if (self.mask) |mask| mask.deinit(a);
         if (self.owned) a.free(self.value);
         self.* = .{};
     }
-    pub fn prepare(self: *Label, renderer: *text.Renderer, scale: u32, size: f64, bold: bool, limit: ?u32, markup: bool) !void {
+    pub fn prepare(self: *Label, a: std.mem.Allocator, renderer: *text.Renderer, scale: u32, size: f64, bold: bool, limit: ?u32, markup: bool) !void {
         if (self.scale == scale and self.size == size and self.limit == limit and self.bold == bold and self.markup == markup) return;
         if (self.mask) |mask| mask.deinit(a);
         self.mask = null;
@@ -58,31 +57,31 @@ pub const Tooltip = struct {
     x: f64 = 0,
     y: f64 = 0,
 
-    pub fn deinit(self: *Tooltip) void {
+    pub fn deinit(self: *Tooltip, a: std.mem.Allocator) void {
         self.hide();
-        self.label.deinit();
+        self.label.deinit(a);
     }
     pub fn hide(self: *Tooltip) void {
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
         self.timer = 0;
         self.visible = false;
     }
-    pub fn update(self: *Tooltip, x: f64, y: f64, value: ?[:0]const u8, active: bool, callback: c.GSourceFunc, data: ?*anyopaque) void {
+    pub fn update(self: *Tooltip, a: std.mem.Allocator, x: f64, y: f64, value: ?[:0]const u8, active: bool, callback: c.GSourceFunc, data: ?*anyopaque) void {
         self.x = x;
         self.y = y;
         self.hide();
-        self.label.set(value orelse "");
+        self.label.set(a, value orelse "");
         if (active and value != null) self.timer = c.g_timeout_add(500, callback, data);
     }
     pub fn show(self: *Tooltip) void {
         self.timer = 0;
         self.visible = true;
     }
-    pub fn paint(self: *Tooltip, target: raster.Buffer, renderer: *text.Renderer, scale: u32) !void {
+    pub fn paint(self: *Tooltip, a: std.mem.Allocator, target: raster.Buffer, renderer: *text.Renderer, scale: u32) !void {
         if (!self.visible or self.label.value.len == 0) return;
         const logical_width = target.width / scale;
         const logical_height = target.height / scale;
-        try self.label.prepare(renderer, scale, 12, false, logical_width -| 32, false);
+        try self.label.prepare(a, renderer, scale, 12, false, logical_width -| 32, false);
         const w = @min(@as(f64, @floatFromInt(logical_width)), self.label.width() + 16);
         const h = self.label.height() + 12;
         const x = std.math.clamp(self.x + 12, 0, @max(0, @as(f64, @floatFromInt(logical_width)) - w));
@@ -100,28 +99,28 @@ pub const Item = struct {
     icon_scale: u32 = 0,
     visible: bool = false,
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-    pub fn deinit(self: *Item) void {
-        self.label.deinit();
-        self.icon.deinit();
-        self.tooltip.deinit();
-        self.command.deinit();
-        if (self.image) |image| c.__icons.free(image);
+    pub fn deinit(self: *Item, a: std.mem.Allocator) void {
+        self.label.deinit(a);
+        self.icon.deinit(a);
+        self.tooltip.deinit(a);
+        self.command.deinit(a);
+        if (self.image) |image| c.__icons.free(a, image);
         self.image = null;
     }
-    pub fn setIcon(self: *Item, value: []const u8) void {
+    pub fn setIcon(self: *Item, a: std.mem.Allocator, value: []const u8) void {
         if (std.mem.eql(u8, self.icon.value, value)) return;
-        self.icon.set(value);
-        if (self.image) |image| c.__icons.free(image);
+        self.icon.set(a, value);
+        if (self.image) |image| c.__icons.free(a, image);
         self.image = null;
         self.icon_scale = 0;
     }
-    fn prepare(self: *Item, renderer: *text.Renderer, scale: u32, small: bool) !void {
-        try self.label.prepare(renderer, scale, if (small) 12 else 14.666, true, null, false);
+    fn prepare(self: *Item, a: std.mem.Allocator, renderer: *text.Renderer, scale: u32, small: bool) !void {
+        try self.label.prepare(a, renderer, scale, if (small) 12 else 14.666, true, null, false);
         if (self.icon_scale == scale) return;
-        if (self.image) |image| c.__icons.free(image);
+        if (self.image) |image| c.__icons.free(a, image);
         self.image = null;
         if (self.icon.value.len != 0) {
-            self.image = @import("desktop-icons.zig").load(self.icon.value, 16, scale, @import("desktop-icons.zig").white);
+            self.image = @import("desktop-icons.zig").load(a, self.icon.value, 16, scale, @import("desktop-icons.zig").white);
         }
         self.icon_scale = scale;
     }
@@ -144,9 +143,9 @@ pub const Graph = struct {
     autoscale: c.gboolean = 0,
     tooltip: Label = .{},
     name: Label = .{},
-    pub fn deinit(self: *Graph) void {
-        self.tooltip.deinit();
-        self.name.deinit();
+    pub fn deinit(self: *Graph, a: std.mem.Allocator) void {
+        self.tooltip.deinit(a);
+        self.name.deinit(a);
     }
     pub fn paint(self: *const Graph, canvas: raster.Canvas, x: f64, width: f64, height: f64) void {
         if (width <= 0 or height <= 0) return;
@@ -218,13 +217,13 @@ pub const View = struct {
     workspace_active: u8 = 0,
     scale: u32 = 1,
     width: u32 = 1,
-    pub fn deinit(self: *View) void {
-        for (&self.items) |*item| item.deinit();
-        for (&self.graphs) |*graph| graph.deinit();
-        self.clock.deinit();
+    pub fn deinit(self: *View, a: std.mem.Allocator) void {
+        for (&self.items) |*item| item.deinit(a);
+        for (&self.graphs) |*graph| graph.deinit(a);
+        self.clock.deinit(a);
         self.renderer.deinit();
     }
-    pub fn prepare(self: *View, scale: u32, height: f64) !void {
+    pub fn prepare(self: *View, a: std.mem.Allocator, scale: u32, height: f64) !void {
         self.scale = scale;
         const padding: f64 = if (self.disk) 0 else if (self.usage) 15 else 18;
         var x = padding;
@@ -233,16 +232,16 @@ pub const View = struct {
             x += 26 + @as(f64, @floatFromInt(count - 1)) * 13;
         } else if (self.monitors) {
             for (&self.graphs, [_][:0]const u8{ "cpu", "mem", "net" }) |*graph, name| {
-                graph.name.set(name);
-                try graph.name.prepare(&self.renderer, scale, 9.166, true, null, false);
+                graph.name.set(a, name);
+                try graph.name.prepare(a, &self.renderer, scale, 9.166, true, null, false);
             }
             x += 354;
         } else if (self.clock.value.len != 0) {
-            try self.clock.prepare(&self.renderer, scale, 14.666, true, null, false);
+            try self.clock.prepare(a, &self.renderer, scale, 14.666, true, null, false);
             x += self.clock.width();
         } else for (&self.items) |*item| {
             if (!item.visible) continue;
-            try item.prepare(&self.renderer, scale, self.usage);
+            try item.prepare(a, &self.renderer, scale, self.usage);
             const gap: f64 = if (self.status) 8 else 0;
             x += gap / 2;
             const width = (if (item.icon.value.len != 0) @as(f64, 16) else 0) + (if (item.icon.value.len != 0 and item.label.value.len != 0) @as(f64, 6) else 0) + item.label.width();
@@ -325,31 +324,31 @@ pub const Usage = struct {
     scale: u32 = 1,
     width: u32 = 340,
     height: u32 = 280,
-    pub fn deinit(self: *Usage) void {
-        for (&self.titles) |*label| label.deinit();
-        for (&self.percent) |*label| label.deinit();
-        for (&self.reset) |*label| label.deinit();
-        self.checked.deinit();
-        self.error_label.deinit();
-        self.refresh.deinit();
+    pub fn deinit(self: *Usage, a: std.mem.Allocator) void {
+        for (&self.titles) |*label| label.deinit(a);
+        for (&self.percent) |*label| label.deinit(a);
+        for (&self.reset) |*label| label.deinit(a);
+        self.checked.deinit(a);
+        self.error_label.deinit(a);
+        self.refresh.deinit(a);
         if (self.refresh_icon) |mask| mask.deinit(a);
         self.renderer.deinit();
     }
-    pub fn prepare(self: *Usage, scale: u32) !void {
+    pub fn prepare(self: *Usage, a: std.mem.Allocator, scale: u32) !void {
         self.scale = scale;
-        for (&self.titles) |*label| try label.prepare(&self.renderer, scale, 13, true, null, false);
-        for (&self.percent) |*label| try label.prepare(&self.renderer, scale, 13, true, null, false);
-        for (&self.reset) |*label| try label.prepare(&self.renderer, scale, 11, false, 300, false);
-        try self.refresh.prepare(&self.renderer, scale, 12, true, null, false);
-        try self.prepareRefreshIcon(scale);
-        try self.checked.prepare(&self.renderer, scale, 10, false, 174, false);
-        try self.error_label.prepare(&self.renderer, scale, 11, false, 300, false);
+        for (&self.titles) |*label| try label.prepare(a, &self.renderer, scale, 13, true, null, false);
+        for (&self.percent) |*label| try label.prepare(a, &self.renderer, scale, 13, true, null, false);
+        for (&self.reset) |*label| try label.prepare(a, &self.renderer, scale, 11, false, 300, false);
+        try self.refresh.prepare(a, &self.renderer, scale, 12, true, null, false);
+        try self.prepareRefreshIcon(a, scale);
+        try self.checked.prepare(a, &self.renderer, scale, 10, false, 174, false);
+        try self.error_label.prepare(a, &self.renderer, scale, 11, false, 300, false);
         self.height = @intFromFloat(280 + (if (self.error_label.value.len == 0) @as(f64, 0) else self.error_label.height() + 12));
     }
-    fn prepareRefreshIcon(self: *Usage, scale: u32) !void {
+    fn prepareRefreshIcon(self: *Usage, a: std.mem.Allocator, scale: u32) !void {
         if (self.refresh_icon_scale == scale) return;
-        const image = @import("desktop-icons.zig").load("view-refresh-symbolic", 14, scale, @import("desktop-icons.zig").white) orelse return;
-        defer c.__icons.free(image);
+        const image = @import("desktop-icons.zig").load(a, "view-refresh-symbolic", 14, scale, @import("desktop-icons.zig").white) orelse return;
+        defer c.__icons.free(a, image);
         var width: u32 = 0;
         var height: u32 = 0;
         const coverage = try c.__zig.alphaMask(a, image, &width, &height);
@@ -403,22 +402,23 @@ pub fn usageColor(value: f64) raster.Color {
 }
 
 test "panel labels retain masks across hover, refresh at output scale, and drop hidden hit targets" {
+    const a = std.testing.allocator;
     var view: View = .{};
-    defer view.deinit();
+    defer view.deinit(a);
     view.items[0].visible = true;
-    view.items[0].label.set("54%");
+    view.items[0].label.set(a, "54%");
     view.items[1].visible = true;
-    view.items[1].label.set("Disk");
-    try view.prepare(1, 32);
+    view.items[1].label.set(a, "Disk");
+    try view.prepare(a, 1, 32);
     const mask = view.items[0].label.mask.?.pixels.ptr;
     const width = view.width;
     view.hovered = true;
-    try view.prepare(1, 32);
+    try view.prepare(a, 1, 32);
     try std.testing.expectEqual(mask, view.items[0].label.mask.?.pixels.ptr);
     const rect = view.items[1].rect;
     try std.testing.expectEqual(@as(?usize, 1), view.hit(rect.x + 1, 16));
     view.items[1].visible = false;
-    try view.prepare(2, 32);
+    try view.prepare(a, 2, 32);
     try std.testing.expect(view.width < width);
     try std.testing.expectEqual(@as(u32, 2), view.items[0].label.scale);
     try std.testing.expectEqual(@as(?usize, null), view.hit(rect.x + 1, 16));
@@ -431,15 +431,16 @@ test "panel labels retain masks across hover, refresh at output scale, and drop 
 }
 
 test "integration: Usage wraps errors, scales pixels, and retains remaining-budget colors" {
+    const a = std.testing.allocator;
     if (!@import("options").integration_tests) return error.SkipZigTest;
     var view: Usage = .{};
-    defer view.deinit();
-    try view.prepare(1);
+    defer view.deinit(a);
+    try view.prepare(a, 1);
     const height = view.height;
-    view.error_label.set("Cannot refresh usage. Sign in with codex login and try again.");
+    view.error_label.set(a, "Cannot refresh usage. Sign in with codex login and try again.");
     view.values = .{ 54, 0 };
     view.enabled = true;
-    try view.prepare(2);
+    try view.prepare(a, 2);
     try std.testing.expect(view.height > height);
     try std.testing.expect(usageColor(10).red > usageColor(100).red);
     const pixels = try a.alloc(u32, view.width * view.height * 4);
@@ -450,15 +451,16 @@ test "integration: Usage wraps errors, scales pixels, and retains remaining-budg
 }
 
 test "native tooltips preserve explicit line breaks without forcing a fixed width" {
+    const a = std.testing.allocator;
     var renderer: text.Renderer = .{};
     defer renderer.deinit();
     var label: Label = .{};
-    defer label.deinit();
-    label.set("5h: 54% remaining");
-    try label.prepare(&renderer, 1, 13.333, false, null, false);
+    defer label.deinit(a);
+    label.set(a, "5h: 54% remaining");
+    try label.prepare(a, &renderer, 1, 13.333, false, null, false);
     const height = label.height();
-    label.set("5h: 54% remaining\n7d: 93% remaining");
-    try label.prepare(&renderer, 1, 13.333, false, null, false);
+    label.set(a, "5h: 54% remaining\n7d: 93% remaining");
+    try label.prepare(a, &renderer, 1, 13.333, false, null, false);
     try std.testing.expect(label.height() > height * 1.5);
     try std.testing.expect(label.width() < 300);
 }

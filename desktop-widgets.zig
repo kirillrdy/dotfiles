@@ -12,7 +12,6 @@ pub const native = @import("desktop-panel-view.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
 const notifications: dbus.Connection.Call = .{ .destination = "org.freedesktop.Notifications", .path = "/org/freedesktop/Notifications", .interface = "org.dotfiles.Notifications", .member = "" };
-const module_allocator = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 pub const Options = struct {
     name: [:0]const u8 = "",
@@ -23,6 +22,7 @@ pub const Options = struct {
     sound_settings_command: [:0]const u8 = "desktop-zig settings sound",
 };
 pub const Module = struct {
+    allocator: std.mem.Allocator,
     refs: c.gint = 1,
     dead: c.gboolean = 0,
     monitors: c.gboolean = 0,
@@ -56,9 +56,10 @@ pub const UsagePopup = struct {
     popup: popup.Host = undefined,
 
     fn create(module: *Module) !*UsagePopup {
-        const self = try module_allocator.create(UsagePopup);
+        const self = try module.allocator.create(UsagePopup);
         self.* = .{ .module = module };
         self.popup = .{
+            .allocator = module.allocator,
             .context = self,
             .namespace = "desktop-usage",
             .paint = &draw,
@@ -70,12 +71,12 @@ pub const UsagePopup = struct {
     }
     fn destroy(self: *UsagePopup) void {
         self.popup.deinit();
-        module_allocator.destroy(self);
+        self.module.allocator.destroy(self);
     }
     pub fn show(self: *UsagePopup, global_x: i32, global_y: i32) !void {
         try self.popup.prepare(global_x, global_y);
         const view = &self.module.usage;
-        try view.prepare(self.popup.surface.?.output.scale);
+        try view.prepare(self.module.allocator, self.popup.surface.?.output.scale);
         view.pressed = false;
         view.hovered = false;
         view.keyboard_focus = true;
@@ -106,7 +107,7 @@ pub const UsagePopup = struct {
     }
     fn paint(self: *UsagePopup, target: wire.Pixels) !void {
         const view = &self.module.usage;
-        try view.prepare(self.popup.surface.?.buffer_scale);
+        try view.prepare(self.module.allocator, self.popup.surface.?.buffer_scale);
         view.paint(try self.popup.canvas(view.width, view.height));
         try self.popup.blit(target);
     }
@@ -168,9 +169,9 @@ pub fn unref_module(m: *Module) callconv(.c) void {
     if (m.refs != 0) return;
     if (m.cancel != null) c.g_object_unref(m.cancel);
     c.g_free(m.tooltip);
-    m.view.deinit();
-    m.usage.deinit();
-    module_allocator.destroy(m);
+    m.view.deinit(m.allocator);
+    m.usage.deinit(m.allocator);
+    m.allocator.destroy(m);
 }
 pub var power_ids: [3][*c]const u8 = [3][*c]const u8{
     "performance",
@@ -186,7 +187,7 @@ pub fn apply_power_state(m: *Module, state: power_backend.State) void {
     }
 }
 pub fn update_power(m: *Module) callconv(.c) void {
-    apply_power_state(m, (power_backend.Backend{}).inspect());
+    apply_power_state(m, (power_backend.Backend{}).inspect(m.allocator));
 }
 fn refresh_power(data: c.gpointer) callconv(.c) c.gboolean {
     const m: *Module = @ptrCast(@alignCast(data));
@@ -245,7 +246,7 @@ pub fn update_clock(data: c.gpointer) callconv(.c) c.gboolean {
     const time_1: [*c]u8 = c.g_date_time_format(now, "%H:%M");
     const label: [*c]u8 = c.g_strdup_printf("%s %d %s", month, c.g_date_time_get_day_of_month(now), time_1);
     if (!std.mem.eql(u8, m.view.clock.value, std.mem.span(label))) {
-        m.view.clock.set(std.mem.span(label));
+        m.view.clock.set(m.allocator, std.mem.span(label));
         resize(m);
     }
     c.g_free(@as(c.gpointer, @ptrCast(label)));
@@ -256,7 +257,7 @@ pub fn update_clock(data: c.gpointer) callconv(.c) c.gboolean {
     return 1;
 }
 pub fn make_calendar(m: *Module) callconv(.c) void {
-    m.date_controls = date_menu.Controls.create(.{
+    m.date_controls = date_menu.Controls.create(m.allocator, .{
         .context = m,
         .clear = &history_clear,
         .dismiss = &history_dismiss,
@@ -322,7 +323,7 @@ pub fn usage_refresh(m: *Module) void {
     const source = std.mem.span(m.source);
     if (m.dead != 0 or !m.usage.enabled or !(std.mem.eql(u8, source, "codex") or std.mem.eql(u8, source, "claude"))) return;
     m.usage.enabled = false;
-    m.usage.checked.set("Refreshing…");
+    m.usage.checked.set(m.allocator, "Refreshing…");
     if (m.usage_menu) |menu| menu.redraw();
     if (m.on_redraw) |cb| cb(m.redraw_context);
     if (refresh_source) |refresh| refresh(source);
@@ -336,14 +337,14 @@ pub fn update_usage(m: *Module, content: panel_data.Update) void {
         const valid = if (window.percent) |p| std.math.isFinite(p) else false;
         const value = if (valid) std.math.clamp(window.percent.?, 0, 100) else 0;
         const label = if (valid) c.g_strdup_printf("%.1f%% remaining", value) else c.g_strdup("—");
-        m.usage.percent[i].set(std.mem.span(label));
+        m.usage.percent[i].set(m.allocator, std.mem.span(label));
         c.g_free(@as(c.gpointer, @ptrCast(label)));
         m.usage.values[i] = value;
         m.usage.pace[i] = if (valid) window.pace else null;
-        m.usage.reset[i].set(window.reset);
+        m.usage.reset[i].set(m.allocator, window.reset);
     }
-    m.usage.checked.set(if (content.checked.len != 0) content.checked else "Checked: —");
-    m.usage.error_label.set(content.@"error");
+    m.usage.checked.set(m.allocator, if (content.checked.len != 0) content.checked else "Checked: —");
+    m.usage.error_label.set(m.allocator, content.@"error");
     m.usage.enabled = true;
     if (m.usage_menu) |menu| menu.redraw();
 }
@@ -352,15 +353,15 @@ fn update_items(m: *Module, items: []const panel_data.Item) void {
         item.visible = i < items.len;
         if (!item.visible) continue;
         const value = items[i];
-        item.setIcon(value.icon);
-        item.label.set(value.text);
-        item.tooltip.set(value.tooltip);
-        item.command.set(value.command);
+        item.setIcon(m.allocator, value.icon);
+        item.label.set(m.allocator, value.text);
+        item.tooltip.set(m.allocator, value.tooltip);
+        item.command.set(m.allocator, value.command);
     }
 }
 
-fn update_graph(g: *native.Graph, graph: panel_data.Graph) bool {
-    g.tooltip.set(graph.tooltip);
+fn update_graph(a: std.mem.Allocator, g: *native.Graph, graph: panel_data.Graph) bool {
+    g.tooltip.set(a, graph.tooltip);
     if (graph.sequence == g.sequence) return false;
     g.sequence = graph.sequence;
     g.series = @intCast(@min(graph.values.len, 5));
@@ -388,7 +389,7 @@ pub fn update(m: *Module, value: panel_data.Update) void {
     var changed = m.monitors == 0;
     if (m.monitors != 0) {
         if (value.monitors) |graphs| for (graphs[0..@min(3, graphs.len)], 0..) |graph, i| {
-            if (update_graph(&m.view.graphs[i], graph)) changed = true;
+            if (update_graph(m.allocator, &m.view.graphs[i], graph)) changed = true;
         };
     } else if (value.items) |items| update_items(m, items);
     c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
@@ -405,8 +406,8 @@ test "monitor polling updates tooltips without repainting unchanged graph sample
         }
     };
     var redraws: usize = 0;
-    var module: Module = .{ .monitors = 1, .view = .{ .monitors = true }, .on_redraw = &Counter.redraw, .redraw_context = &redraws };
-    defer module.view.deinit();
+    var module: Module = .{ .allocator = std.testing.allocator, .monitors = 1, .view = .{ .monitors = true }, .on_redraw = &Counter.redraw, .redraw_context = &redraws };
+    defer module.view.deinit(std.testing.allocator);
     defer c.g_free(module.tooltip);
     var graph: panel_data.Graph = .{ .values = &.{10}, .sequence = 1, .maximum = 100, .tooltip = "first" };
     update(&module, .{ .monitors = &.{graph} });
@@ -429,7 +430,7 @@ fn device_changed(data: ?*anyopaque, _: *const dbus.Message) void {
 }
 /// Joins the shared session bus; without one the module works, minus live history and device updates.
 fn connect_session(m: *Module) void {
-    const bus = loop.acquire(.session) catch |err| {
+    const bus = loop.acquire(m.allocator, .session) catch |err| {
         std.log.warn("panel: session bus unavailable: {s}", .{@errorName(err)});
         return;
     };
@@ -452,10 +453,10 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
         const icon = panel_data.usageIcon(options.source);
         update_items(m, &.{.{ .icon = icon, .text = if (icon.len == 0) "Codex…" else "…" }});
         m.tooltip = c.g_strdup(if (claude) "Loading Claude usage…" else "Loading Codex usage…");
-        m.usage.checked.set("Loading…");
+        m.usage.checked.set(m.allocator, "Loading…");
         make_usage_menu(m);
     } else if (m.status != 0) {
-        m.quick = quick.Controls.createWithDevices(if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
+        m.quick = quick.Controls.createWithDevices(m.allocator, if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
         const controls = m.quick.?;
         controls.profile_context = m;
         controls.profile_selected = &native_profile_selected;
@@ -471,9 +472,10 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
     resize(m);
     m.source = options.source.ptr;
 }
-pub fn init(options: Options, devices: ?*@import("desktop-devices.zig").Service, on_redraw: ?*const fn (?*anyopaque) void, redraw_context: ?*anyopaque) *Module {
-    const m = module_allocator.create(Module) catch @panic("out of memory");
+pub fn init(allocator: std.mem.Allocator, options: Options, devices: ?*@import("desktop-devices.zig").Service, on_redraw: ?*const fn (?*anyopaque) void, redraw_context: ?*anyopaque) *Module {
+    const m = allocator.create(Module) catch @panic("out of memory");
     m.* = .{
+        .allocator = allocator,
         .cancel = c.g_cancellable_new(),
         .monitors = @intFromBool(std.mem.eql(u8, options.kind, "monitors")),
         .status = @intFromBool(std.mem.eql(u8, options.name, "gnome-status")),
@@ -486,9 +488,9 @@ pub fn init(options: Options, devices: ?*@import("desktop-devices.zig").Service,
 }
 
 test "usage indicators are visible before either collector returns" {
-    const codex = init(.{ .name = "gnome-codex", .source = "codex" }, null, null, null);
+    const codex = init(std.testing.allocator, .{ .name = "gnome-codex", .source = "codex" }, null, null, null);
     defer deinit(codex);
-    const claude = init(.{ .name = "gnome-claude", .source = "claude" }, null, null, null);
+    const claude = init(std.testing.allocator, .{ .name = "gnome-claude", .source = "claude" }, null, null, null);
     defer deinit(claude);
 
     update(claude, .{ .items = &.{.{ .text = "72%" }} });
@@ -535,7 +537,7 @@ pub fn deinit(m: *Module) void {
 pub var refresh_source: ?*const fn ([]const u8) void = null;
 
 fn resize(m: *Module) void {
-    m.view.prepare(@max(1, m.view.scale), 32) catch |err| {
+    m.view.prepare(m.allocator, @max(1, m.view.scale), 32) catch |err| {
         std.log.err("panel layout: {s}", .{@errorName(err)});
         return;
     };

@@ -3,7 +3,6 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 pub const Rect = @import("desktop-askpass-view.zig").Rect;
 pub const Buffer = raster.Buffer;
 const color = raster.hex;
@@ -50,22 +49,22 @@ pub const Item = struct {
     scale: u32 = 0,
     size: u32 = 0,
     show_apps: bool = false,
-    pub fn deinit(self: *Item) void {
+    pub fn deinit(self: *Item, a: std.mem.Allocator) void {
         a.free(self.title);
         if (self.window_id) |id| a.free(id);
         if (self.app) |app| c.g_object_unref(app);
         if (self.icon) |icon| c.g_object_unref(icon);
-        if (self.fallback) |image| c.__icons.free(image);
-        if (self.pixels) |image| c.__icons.free(image);
+        if (self.fallback) |image| c.__icons.free(a, image);
+        if (self.pixels) |image| c.__icons.free(a, image);
     }
-    fn prepare(self: *Item, scale: u32, size: u32) void {
+    fn prepare(self: *Item, a: std.mem.Allocator, scale: u32, size: u32) void {
         if (self.scale == scale and self.size == size) return;
-        if (self.pixels) |image| c.__icons.free(image);
+        if (self.pixels) |image| c.__icons.free(a, image);
         self.pixels = null;
         if (self.show_apps) {
-            self.pixels = @import("desktop-icons.zig").load("view-app-grid-symbolic", size, scale, @import("desktop-icons.zig").foreground);
+            self.pixels = @import("desktop-icons.zig").load(a, "view-app-grid-symbolic", size, scale, @import("desktop-icons.zig").foreground);
         } else {
-            self.pixels = c.__icons.loadThemed(self.icon, size * scale, self.fallback, "application-x-executable");
+            self.pixels = c.__icons.loadThemed(a, self.icon, size * scale, self.fallback, "application-x-executable");
         }
         self.scale = scale;
         self.size = size;
@@ -73,6 +72,7 @@ pub const Item = struct {
 };
 
 pub const View = struct {
+    allocator: std.mem.Allocator,
     items: std.ArrayList(Item) = .empty,
     layout: Layout = Layout.init(1728, 1080, 1, null),
     separator: ?usize = null,
@@ -87,11 +87,11 @@ pub const View = struct {
     tooltip_scale: u32 = 0,
     pub fn deinit(self: *View) void {
         self.clear();
-        self.items.deinit(a);
+        self.items.deinit(self.allocator);
         self.renderer.deinit();
     }
     pub fn clear(self: *View) void {
-        for (self.items.items) |*item| item.deinit();
+        for (self.items.items) |*item| item.deinit(self.allocator);
         self.items.clearRetainingCapacity();
         self.separator = null;
         self.hover = null;
@@ -99,11 +99,12 @@ pub const View = struct {
         self.invalidateTooltip();
     }
     pub fn add(self: *View, title: [:0]const u8, app: ?*c.GAppInfo, window_id: ?[*:0]const u8, fallback: ?c.__icons.Image) !void {
-        const owned = try a.dupeSentinel(u8, title, 0);
-        errdefer a.free(owned);
-        const id = if (window_id) |value| try a.dupeSentinel(u8, std.mem.span(value), 0) else null;
-        errdefer if (id) |value| a.free(value);
-        try self.items.append(a, .{ .title = owned, .window_id = id, .app = app, .fallback = if (fallback) |image| @import("desktop-decode.zig").clone(image) else null, .icon = if (app) |info| c.g_app_info_get_icon(info) else null });
+        const owned = try self.allocator.dupeSentinel(u8, title, 0);
+        errdefer self.allocator.free(owned);
+        const id = if (window_id) |value| try self.allocator.dupeSentinel(u8, std.mem.span(value), 0) else null;
+        errdefer if (id) |value| self.allocator.free(value);
+        try self.items.ensureUnusedCapacity(self.allocator, 1);
+        self.items.appendAssumeCapacity(.{ .title = owned, .window_id = id, .app = app, .fallback = if (fallback) |image| @import("desktop-decode.zig").clone(self.allocator, image) else null, .icon = if (app) |info| c.g_app_info_get_icon(info) else null });
         const item = &self.items.items[self.items.items.len - 1];
         if (item.app) |info| _ = c.g_object_ref(info);
         if (item.icon) |icon| _ = c.g_object_ref(icon);
@@ -121,7 +122,7 @@ pub const View = struct {
         self.pressed = null;
     }
     pub fn invalidateTooltip(self: *View) void {
-        if (self.tooltip_mask) |mask| mask.deinit(a);
+        if (self.tooltip_mask) |mask| mask.deinit(self.allocator);
         self.tooltip_mask = null;
         self.tooltip_index = null;
         self.tooltip_scale = 0;
@@ -130,11 +131,11 @@ pub const View = struct {
         if (self.tooltip_index == index and self.tooltip_scale == scale) return;
         self.invalidateTooltip();
         const factor: f64 = @floatFromInt(scale);
-        self.tooltip_mask = try self.renderer.renderLayout(a, self.items.items[index].title, .{ .size = 14.6666666667 * factor, .dpi = 96 * factor, .line_height = 19 * scale, .origin = .top });
+        self.tooltip_mask = try self.renderer.renderLayout(self.allocator, self.items.items[index].title, .{ .size = 14.6666666667 * factor, .dpi = 96 * factor, .line_height = 19 * scale, .origin = .top });
         if (self.tooltip_mask.?.logical_width > 360 * scale) {
-            self.tooltip_mask.?.deinit(a);
+            self.tooltip_mask.?.deinit(self.allocator);
             self.tooltip_mask = null;
-            self.tooltip_mask = try self.renderer.renderLayout(a, self.items.items[index].title, .{ .size = 14.6666666667 * factor, .dpi = 96 * factor, .line_height = 19 * scale, .width = 360 * scale, .lines = 1, .ellipsize = true, .origin = .top });
+            self.tooltip_mask = try self.renderer.renderLayout(self.allocator, self.items.items[index].title, .{ .size = 14.6666666667 * factor, .dpi = 96 * factor, .line_height = 19 * scale, .width = 360 * scale, .lines = 1, .ellipsize = true, .origin = .top });
         }
         self.tooltip_index = index;
         self.tooltip_scale = scale;
@@ -158,7 +159,7 @@ pub const View = struct {
             canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = x, .y = 18, .width = 1, .height = @floatFromInt(self.layout.icon_size) }, .radius = 0 } }}, .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0, .alpha = 0.1 });
         }
         for (self.items.items, 0..) |*item, i| {
-            item.prepare(scale, self.layout.icon_size);
+            item.prepare(self.allocator, scale, self.layout.icon_size);
             const rect = self.layout.item(i);
             const hover = self.hover == i;
             const pressed = self.pressed == i;

@@ -15,19 +15,19 @@ const native = @import("desktop-quick-settings-view.zig");
 pub const Target = native.Target;
 const power_backend = @import("desktop-power.zig");
 // Test builds account for service state and asynchronous callback allocations.
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 const connect = c.__zig.connect;
 const Settings = @import("desktop-gsettings.zig").Settings;
-fn settings(schema: []const u8) ?*Settings {
-    return c.__zig.settings(schema, null);
+fn settings(a: std.mem.Allocator, schema: []const u8) ?*Settings {
+    return c.__zig.settings(a, schema, null);
 }
-pub fn bannersEnabled() bool {
-    const prefs = settings("org.gnome.desktop.notifications") orelse return true;
+pub fn bannersEnabled(a: std.mem.Allocator) bool {
+    const prefs = settings(a, "org.gnome.desktop.notifications") orelse return true;
     defer prefs.close();
     return prefs.boolean("show-banners");
 }
 pub const Controls = struct {
+    allocator: std.mem.Allocator,
     popup: popup.Host = undefined,
     tooltip: Tooltip = .{},
     view: native.View = .{},
@@ -158,9 +158,9 @@ pub const Controls = struct {
     fn paint(self: *Controls, target: wire.Pixels) !void {
         const factor = self.popup.surface.?.buffer_scale;
         self.view.layout();
-        try self.view.paint(a, try self.popup.canvas(self.view.width, self.view.height), factor);
+        try self.view.paint(self.allocator, try self.popup.canvas(self.view.width, self.view.height), factor);
         try self.popup.blit(target);
-        try self.tooltip.paint(target, &self.view.renderer, factor);
+        try self.tooltip.paint(self.allocator, target, &self.view.renderer, factor);
     }
     pub fn pointerButton(self: *Controls, pressed: bool, x: f64, y: f64) void {
         if (self.dead) return;
@@ -229,7 +229,7 @@ pub const Controls = struct {
             .dnd => "Do Not Disturb",
             else => null,
         };
-        self.tooltip.update(x, y, tooltip, !native.View.slider(self.view.pressed), &showTooltip, self);
+        self.tooltip.update(self.allocator, x, y, tooltip, !native.View.slider(self.view.pressed), &showTooltip, self);
         if (tooltip_was_visible and previous_hover == self.view.hover) self.redraw();
     }
     fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
@@ -278,13 +278,14 @@ pub const Controls = struct {
         self.setSlider(target, value - (amount / 12) * 5);
     }
 
-    pub fn create(network_command: [*:0]const u8, sound_command: [*:0]const u8) *Controls {
-        return createWithDevices(network_command, sound_command, null);
+    pub fn create(a: std.mem.Allocator, network_command: [*:0]const u8, sound_command: [*:0]const u8) *Controls {
+        return createWithDevices(a, network_command, sound_command, null);
     }
-    pub fn createWithDevices(network_command: [*:0]const u8, sound_command: [*:0]const u8, shared: ?*devices.Service) *Controls {
+    pub fn createWithDevices(a: std.mem.Allocator, network_command: [*:0]const u8, sound_command: [*:0]const u8, shared: ?*devices.Service) *Controls {
         const self = a.create(Controls) catch @panic("out of memory");
-        self.* = .{ .devices = shared orelse (devices.Service.create() catch @panic("out of memory")), .owns_devices = shared == null, .network_settings = a.dupeSentinel(u8, std.mem.span(network_command), 0) catch @panic("out of memory"), .sound_settings = a.dupeSentinel(u8, std.mem.span(sound_command), 0) catch @panic("out of memory"), .interface = settings("org.gnome.desktop.interface"), .notifications = settings("org.gnome.desktop.notifications"), .cancel = c.g_cancellable_new().? };
+        self.* = .{ .allocator = a, .devices = shared orelse (devices.Service.create(a) catch @panic("out of memory")), .owns_devices = shared == null, .network_settings = a.dupeSentinel(u8, std.mem.span(network_command), 0) catch @panic("out of memory"), .sound_settings = a.dupeSentinel(u8, std.mem.span(sound_command), 0) catch @panic("out of memory"), .interface = settings(a, "org.gnome.desktop.interface"), .notifications = settings(a, "org.gnome.desktop.notifications"), .cancel = c.g_cancellable_new().? };
         self.popup = .{
+            .allocator = a,
             .context = self,
             .namespace = "desktop-quick-settings",
             .paint = &draw,
@@ -338,7 +339,7 @@ pub const Controls = struct {
         }
         self.syncPowerDialog();
         self.hide();
-        const dialog = auth.Dialog.createWithOptions(.information, "Choose a power mode.", .{
+        const dialog = auth.Dialog.createWithOptions(self.allocator, .information, "Choose a power mode.", .{
             .title = "Power Mode",
             .role = "desktop-power-settings",
             .choices = &self.power_choices,
@@ -363,7 +364,7 @@ pub const Controls = struct {
         self.dialog = null;
         self.dialog_power = false;
         dialog.destroy();
-        if (self.dialog_value) |value| a.free(value);
+        if (self.dialog_value) |value| self.allocator.free(value);
         self.dialog_value = null;
         self.release();
     }
@@ -439,7 +440,7 @@ pub const Controls = struct {
         self.brightness_busy = true;
         self.brightness_writing = wanted != null;
         self.refs += 1;
-        self.backlight_backend.start(if (wanted) |value| .{ .set = value } else .read, self.cancel, &brightnessDone, self);
+        self.backlight_backend.start(self.allocator, if (wanted) |value| .{ .set = value } else .read, self.cancel, &brightnessDone, self);
     }
     fn brightnessDone(ptr: ?*anyopaque, result: backlight.Result) void {
         const self = cast(Controls, ptr);
@@ -470,7 +471,7 @@ pub const Controls = struct {
         self.view.model.session_busy = true;
         self.redraw();
         self.refs += 1;
-        session.perform(action, self.cancel, &sessionDone, self);
+        session.perform(self.allocator, action, self.cancel, &sessionDone, self);
     }
     fn sessionDone(ptr: ?*anyopaque, result: session.Result) void {
         const self = cast(Controls, ptr);
@@ -511,8 +512,8 @@ pub const Controls = struct {
     }
     pub fn renderNetwork(self: *Controls, state: *const network_backend.State) void {
         const focused_path = if (@backingInt(self.view.focus) >= @backingInt(Target.network0) and @backingInt(self.view.focus) <= @backingInt(Target.network7)) self.network_paths[@backingInt(self.view.focus) - @backingInt(Target.network0)] else null;
-        const restore_focus = if (focused_path) |path| a.dupeSentinel(u8, path, 0) catch @panic("out of memory") else null;
-        defer if (restore_focus) |path| a.free(path);
+        const restore_focus = if (focused_path) |path| self.allocator.dupeSentinel(u8, path, 0) catch @panic("out of memory") else null;
+        defer if (restore_focus) |path| self.allocator.free(path);
         if (restore_focus != null) self.view.focus = .none;
         const model = &self.view.model;
         model.wifi_enabled = state.wifi_enabled;
@@ -530,7 +531,7 @@ pub const Controls = struct {
             };
             if (duplicate) continue;
             const i = model.network_count;
-            self.network_paths[i] = a.dupeSentinel(u8, ap.path, 0) catch @panic("out of memory");
+            self.network_paths[i] = self.allocator.dupeSentinel(u8, ap.path, 0) catch @panic("out of memory");
             if (restore_focus) |path| if (std.mem.eql(u8, path, ap.path)) {
                 self.view.focus = @fromBackingInt(@intCast(@backingInt(Target.network0) + i));
             };
@@ -542,7 +543,7 @@ pub const Controls = struct {
     }
     fn clearNetworks(self: *Controls) void {
         for (&self.network_paths) |*path| {
-            if (path.*) |value| a.free(value);
+            if (path.*) |value| self.allocator.free(value);
             path.* = null;
         }
         self.view.model.network_count = 0;
@@ -573,7 +574,7 @@ pub const Controls = struct {
     }
     pub fn monitorBattery(self: *Controls, options: battery_backend.Options) void {
         if (self.battery_service) |service| service.destroy();
-        self.battery_service = battery_backend.Service.createWithOptions(options, &batteryChanged, self) catch null;
+        self.battery_service = battery_backend.Service.createWithOptions(self.allocator, options, &batteryChanged, self) catch null;
     }
     fn batteryChanged(ptr: ?*anyopaque, state: battery_backend.State) void {
         const self = cast(Controls, ptr);
@@ -599,7 +600,7 @@ pub const Controls = struct {
             return;
         }
         self.hide();
-        const dialog = auth.Dialog.createWithOptions(.password, ap.title, .{
+        const dialog = auth.Dialog.createWithOptions(self.allocator, .password, ap.title, .{
             .title = "Authentication Required",
             .role = "desktop-network-auth",
             .accept = "Connect",
@@ -608,7 +609,7 @@ pub const Controls = struct {
             return;
         };
         self.dialog = dialog;
-        self.dialog_value = a.dupeSentinel(u8, std.mem.span(ssid), 0) catch @panic("out of memory");
+        self.dialog_value = self.allocator.dupeSentinel(u8, std.mem.span(ssid), 0) catch @panic("out of memory");
         self.refs += 1;
         dialog.responded = &networkConfirmed;
         dialog.response_context = self;
@@ -634,7 +635,7 @@ pub const Controls = struct {
         if (!self.dead) {
             const executable: [*:0]const u8 = if (c.__zig.getenv("DESKTOP_POWER_HELPER")) |value| @ptrCast(value) else "desktop-zig";
             const argv = [_:null]?[*:0]const u8{ executable, "screenshot" };
-            @import("desktop-command.zig").launch("Screenshot", @ptrCast(&argv));
+            @import("desktop-command.zig").launch(self.allocator, "Screenshot", @ptrCast(&argv));
         }
         self.release();
         return 0;
@@ -646,7 +647,7 @@ pub const Controls = struct {
             return;
         }
         self.hide();
-        const dialog = auth.Dialog.createWithOptions(.confirm, title, .{
+        const dialog = auth.Dialog.createWithOptions(self.allocator, .confirm, title, .{
             .title = "Confirm Session Action",
             .role = "desktop-session-confirm",
             .accept = "Confirm",
@@ -656,7 +657,7 @@ pub const Controls = struct {
             return;
         };
         self.dialog = dialog;
-        self.dialog_value = a.dupeSentinel(u8, action, 0) catch @panic("out of memory");
+        self.dialog_value = self.allocator.dupeSentinel(u8, action, 0) catch @panic("out of memory");
         self.refs += 1;
         dialog.responded = &confirmed;
         dialog.response_context = self;
@@ -689,12 +690,12 @@ pub const Controls = struct {
         self.refs -= 1;
         if (self.refs == 0) {
             self.clearNetworks();
-            self.tooltip.deinit();
-            self.view.deinit(a);
+            self.tooltip.deinit(self.allocator);
+            self.view.deinit(self.allocator);
             c.g_object_unref(self.cancel);
-            a.free(self.network_settings);
-            a.free(self.sound_settings);
-            a.destroy(self);
+            self.allocator.free(self.network_settings);
+            self.allocator.free(self.sound_settings);
+            self.allocator.destroy(self);
         }
     }
 };

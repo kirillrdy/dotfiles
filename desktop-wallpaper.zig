@@ -4,7 +4,6 @@ const raster = @import("desktop-raster.zig");
 const std = @import("std");
 const cairo = @import("tests/desktop-cairo.zig");
 const c = @import("desktop-glib.zig");
-const allocator = std.heap.page_allocator;
 const decode = @import("desktop-decode.zig");
 const Image = decode.Image;
 
@@ -19,6 +18,7 @@ const Background = struct {
     image: Image, // Owned by App; shared across outputs.
 
     fn create(output: *native.Output, image: Image) !*Background {
+        const allocator = output.client.allocator;
         const self = try allocator.create(Background);
         errdefer allocator.destroy(self);
         self.* = .{ .surface = try native.Surface.createPixels(output, .{
@@ -34,12 +34,14 @@ const Background = struct {
         paint(target, cast(Background, data).image);
     }
     fn destroy(self: *Background) void {
+        const allocator = self.surface.client.allocator;
         self.surface.destroy();
         allocator.destroy(self);
     }
 };
 
 const App = struct {
+    allocator: std.mem.Allocator,
     image: Image,
     backgrounds: std.ArrayList(*Background) = .empty,
 
@@ -49,7 +51,7 @@ const App = struct {
             std.log.err("wallpaper: {s}", .{@errorName(err)});
             return;
         };
-        self.backgrounds.append(allocator, background) catch @panic("out of memory");
+        self.backgrounds.append(self.allocator, background) catch @panic("out of memory");
     }
     fn remove(data: ?*anyopaque, output: *native.Output) void {
         const self = cast(App, data);
@@ -63,8 +65,8 @@ const App = struct {
 
 test "fill crops the center of wide and tall images at both buffer scales" {
     for ([_]bool{ false, true }) |vertical| {
-        const image = try decode.create(if (vertical) 4 else 12, if (vertical) 12 else 4);
-        defer decode.free(image);
+        const image = try decode.create(std.testing.allocator, if (vertical) 4 else 12, if (vertical) 12 else 4);
+        defer decode.free(std.testing.allocator, image);
         const pixels = std.mem.bytesAsSlice(u32, image.pixels);
         const iw: usize = image.width;
         const ih: usize = image.height;
@@ -88,15 +90,15 @@ test "fill crops the center of wide and tall images at both buffer scales" {
 test "integration: background layer paints wallpaper pixels on the desktop" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
     const capture = @import("tests/desktop-surface-capture.zig");
-    const image = try decode.create(2, 2);
-    defer decode.free(image);
+    const image = try decode.create(std.testing.allocator, 2, 2);
+    defer decode.free(std.testing.allocator, image);
     @memset(std.mem.bytesAsSlice(u32, image.pixels), 0xff142850);
-    var app: App = .{ .image = image };
-    const native_client = try native.Client.create(.{ .added = &App.add, .removed = &App.remove }, &app);
+    var app: App = .{ .allocator = std.testing.allocator, .image = image };
+    const native_client = try native.Client.create(std.testing.allocator, .{ .added = &App.add, .removed = &App.remove }, &app);
     defer native_client.destroy();
     defer {
         for (app.backgrounds.items) |background| background.destroy();
-        app.backgrounds.deinit(allocator);
+        app.backgrounds.deinit(app.allocator);
     }
     try native_client.start();
     const Probe = struct {
@@ -124,13 +126,13 @@ pub const Service = struct {
     app: App,
     client: *native.Client,
 
-    pub fn create(path: [:0]const u8) !*Service {
-        const image = decode.file(path, null) orelse return error.InvalidImage;
-        errdefer decode.free(image);
+    pub fn create(allocator: std.mem.Allocator, path: [:0]const u8) !*Service {
+        const image = decode.file(allocator, path, null) orelse return error.InvalidImage;
+        errdefer decode.free(allocator, image);
         const self = try allocator.create(Service);
-        self.* = .{ .app = .{ .image = image }, .client = undefined };
+        self.* = .{ .app = .{ .allocator = allocator, .image = image }, .client = undefined };
         errdefer allocator.destroy(self);
-        self.client = try native.Client.create(.{ .added = &App.add, .removed = &App.remove }, &self.app);
+        self.client = try native.Client.create(allocator, .{ .added = &App.add, .removed = &App.remove }, &self.app);
         errdefer self.client.destroy();
         if (self.client.shell == null) return error.LayerShellUnavailable;
         try self.client.start();
@@ -139,10 +141,10 @@ pub const Service = struct {
 
     pub fn destroy(self: *Service) void {
         for (self.app.backgrounds.items) |background| background.destroy();
-        self.app.backgrounds.deinit(allocator);
+        self.app.backgrounds.deinit(self.app.allocator);
         self.client.destroy();
-        decode.free(self.app.image);
-        allocator.destroy(self);
+        decode.free(self.app.allocator, self.app.image);
+        self.app.allocator.destroy(self);
     }
 };
 
@@ -171,8 +173,8 @@ test "Zig wallpaper sampling agrees with Cairo for opaque, alpha and fractional 
         }
     };
     for ([_]bool{ false, true }) |alpha| {
-        const image = try decode.create(7, 5);
-        defer decode.free(image);
+        const image = try decode.create(std.testing.allocator, 7, 5);
+        defer decode.free(std.testing.allocator, image);
         const source = image.view();
         var random: std.Random.DefaultPrng = .init(12345);
         for (std.mem.bytesAsSlice(u32, image.pixels)) |*pixel| {

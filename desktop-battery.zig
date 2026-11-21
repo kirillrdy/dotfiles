@@ -3,7 +3,6 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 // Test builds account for service state and asynchronous callback allocations.
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 
 pub const State = struct {
     present: bool = false,
@@ -303,6 +302,7 @@ pub fn powerSupplyEvent(payload: []const u8, sender_pid: u32) bool {
 }
 
 pub const Service = struct {
+    allocator: std.mem.Allocator,
     callback: *const fn (?*anyopaque, State) void,
     data: ?*anyopaque,
     backend: Backend,
@@ -321,15 +321,15 @@ pub const Service = struct {
     next: State = .{},
     sent: bool = false,
 
-    pub fn create(callback: *const fn (?*anyopaque, State) void, data: ?*anyopaque) !*Service {
-        return createWithOptions(.{}, callback, data);
+    pub fn create(a: std.mem.Allocator, callback: *const fn (?*anyopaque, State) void, data: ?*anyopaque) !*Service {
+        return createWithOptions(a, .{}, callback, data);
     }
-    pub fn createWithOptions(options: Options, callback: *const fn (?*anyopaque, State) void, data: ?*anyopaque) !*Service {
+    pub fn createWithOptions(a: std.mem.Allocator, options: Options, callback: *const fn (?*anyopaque, State) void, data: ?*anyopaque) !*Service {
         if (options.poll_ms == 0) return error.InvalidPollInterval;
         const self = try a.create(Service);
         errdefer a.destroy(self);
         const root = try a.dupeSentinel(u8, options.backend.root, 0);
-        self.* = .{ .callback = callback, .data = data, .backend = .{ .root = root }, .root = root, .cancel = c.g_cancellable_new().?, .events = options.events };
+        self.* = .{ .allocator = a, .callback = callback, .data = data, .backend = .{ .root = root }, .root = root, .cancel = c.g_cancellable_new().?, .events = options.events };
         if (self.events) self.connectEvents();
         self.timer = c.g_timeout_add(options.poll_ms, &poll, self);
         self.refresh();
@@ -352,8 +352,8 @@ pub const Service = struct {
         self.refs -= 1;
         if (self.refs == 0) {
             c.g_object_unref(self.cancel);
-            a.free(self.root);
-            a.destroy(self);
+            self.allocator.free(self.root);
+            self.allocator.destroy(self);
         }
     }
     pub fn refresh(self: *Service) void {
@@ -496,14 +496,14 @@ test "only complete kernel power-supply events trigger a scan" {
 }
 
 /// Session-only warnings; the system monitor never connects to a user bus.
-pub fn notifyWarning(level: Warning) void {
+pub fn notifyWarning(a: std.mem.Allocator, level: Warning) void {
     const title: []const u8 = switch (level) {
         .low => "Battery Low",
         .critical => "Battery Critically Low",
         .action => "Battery Almost Empty",
         else => return,
     };
-    @import("desktop-dbus-loop.zig").notify("desktop-zig", "battery-caution-symbolic", title, "Connect a power source.", if (level == .low) 1 else 2);
+    @import("desktop-dbus-loop.zig").notify(a, "desktop-zig", "battery-caution-symbolic", title, "Connect a power source.", if (level == .low) 1 else 2);
 }
 
 test "disposing an in-flight sysfs scan releases ownership without publishing after destruction" {
@@ -513,7 +513,7 @@ test "disposing an in-flight sysfs scan releases ownership without publishing af
         }
     };
     var delivered = false;
-    const service = try Service.createWithOptions(.{ .backend = .{ .root = "/nonexistent/desktop-battery-test" }, .events = false }, &Callback.changed, &delivered);
+    const service = try Service.createWithOptions(std.testing.allocator, .{ .backend = .{ .root = "/nonexistent/desktop-battery-test" }, .events = false }, &Callback.changed, &delivered);
     // Retain one observer reference while the worker's cancellation callback drains.
     service.refs += 1;
     service.refresh();

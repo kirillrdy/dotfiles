@@ -32,7 +32,7 @@ pub const Service = struct {
         self.* = .{ .allocator = allocator, .connection = connection };
         errdefer self.destroy();
         for (schemas) |name| {
-            const settings = Settings.open(name, null) orelse continue;
+            const settings = Settings.open(allocator, name, null) orelse continue;
             const bundle = allocator.create(Bundle) catch |err| {
                 settings.close();
                 return err;

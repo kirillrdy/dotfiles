@@ -133,8 +133,8 @@ const Icon = struct {
         self.name = try allocator.dupeSentinel(u8, name, 0);
         self.scale = scale;
         if (name.len == 0) return;
-        const image = @import("desktop-icons.zig").load(name, 16, scale, @import("desktop-icons.zig").white) orelse return;
-        defer c.__icons.free(image);
+        const image = @import("desktop-icons.zig").load(allocator, name, 16, scale, @import("desktop-icons.zig").white) orelse return;
+        defer c.__icons.free(allocator, image);
         self.pixels = try c.__zig.alphaMask(allocator, image, &self.width, &self.height);
     }
 };

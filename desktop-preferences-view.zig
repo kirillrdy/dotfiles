@@ -3,7 +3,6 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const form = @import("desktop-form.zig");
 const raster = @import("desktop-raster.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 pub const Rect = form.Rect;
 pub const Canvas = raster.Canvas;
 pub const background = 0x222226;
@@ -47,13 +46,13 @@ pub fn focus(canvas: Canvas, rect: Rect) void {
 }
 pub fn text(ui: *form.Form, canvas: Canvas, value: [:0]const u8, rect: Rect, size: f64, bold: bool, centered: bool, tint: u32) !void {
     if (value.len == 0) return;
-    const mask = try ui.renderer.renderLayout(a, value, .{ .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans", .size = size * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(@max(1, rect.width) * canvas.scale), .ellipsize = true, .lines = 1, .alignment = if (centered) .center else .left, .origin = .top });
-    defer mask.deinit(a);
+    const mask = try ui.renderer.renderLayout(ui.allocator, value, .{ .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans", .size = size * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(@max(1, rect.width) * canvas.scale), .ellipsize = true, .lines = 1, .alignment = if (centered) .center else .left, .origin = .top });
+    defer mask.deinit(ui.allocator);
     mask.paint(canvas, rect.x, rect.y + (rect.height - @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale) / 2, raster.Color.rgb(tint, 1));
 }
 pub fn title(ui: *form.Form, canvas: Canvas, id: usize, rect: Rect, bold: bool, tint: u32) !void {
     const item = ui.get(id);
-    if (item.title_mask == null) item.title_mask = try ui.renderer.renderLayout(a, item.title, .{ .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(@max(1, rect.width) * canvas.scale), .ellipsize = true, .lines = 1, .origin = .top });
+    if (item.title_mask == null) item.title_mask = try ui.renderer.renderLayout(ui.allocator, item.title, .{ .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(@max(1, rect.width) * canvas.scale), .ellipsize = true, .lines = 1, .origin = .top });
     const mask = item.title_mask.?;
     mask.paint(canvas, rect.x, rect.y + (rect.height - @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale) / 2, raster.Color.rgb(tint, 1));
 }
@@ -119,15 +118,15 @@ pub fn toast(ui: *form.Form, canvas: Canvas, id: usize, frame: Frame) !void {
 pub const Icons = struct {
     const Icon = struct { name: [:0]const u8, size: u32, image: c.__icons.Image };
     entries: std.ArrayList(Icon) = .empty,
-    pub fn deinit(self: *Icons) void {
-        self.clear();
+    pub fn deinit(self: *Icons, a: std.mem.Allocator) void {
+        self.clear(a);
         self.entries.deinit(a);
     }
-    pub fn clear(self: *Icons) void {
-        for (self.entries.items) |entry| c.__icons.free(entry.image);
+    pub fn clear(self: *Icons, a: std.mem.Allocator) void {
+        for (self.entries.items) |entry| c.__icons.free(a, entry.image);
         self.entries.clearRetainingCapacity();
     }
-    pub fn paint(self: *Icons, canvas: Canvas, name: [:0]const u8, x: f64, y: f64, size: u32) !void {
+    pub fn paint(self: *Icons, a: std.mem.Allocator, canvas: Canvas, name: [:0]const u8, x: f64, y: f64, size: u32) !void {
         const physical: u32 = @intFromFloat(@as(f64, @floatFromInt(size)) * canvas.scale);
         var image: ?c.__icons.Image = null;
         for (self.entries.items) |entry| if (entry.size == physical and std.mem.eql(u8, name, entry.name)) {
@@ -137,13 +136,13 @@ pub const Icons = struct {
         if (image == null) {
             const asset: ?[]const u8 = if (std.mem.eql(u8, name, "file-chooser-options-symbolic")) @embedFile("desktop-icons/file-chooser-options-symbolic.svg") else if (std.mem.eql(u8, name, "file-chooser-folder-search-symbolic")) @embedFile("desktop-icons/file-chooser-folder-search-symbolic.svg") else null;
             if (asset) |svg| {
-                image = @import("desktop-decode.zig").bytes(svg, physical);
+                image = @import("desktop-decode.zig").bytes(a, svg, physical);
             } else {
                 const symbolic = std.mem.endsWith(u8, name, "-symbolic");
-                image = @import("desktop-icons.zig").load(name, physical, 1, if (symbolic) @import("desktop-icons.zig").white else null);
+                image = @import("desktop-icons.zig").load(a, name, physical, 1, if (symbolic) @import("desktop-icons.zig").white else null);
             }
             if (image) |decoded| self.entries.append(a, .{ .name = name, .size = physical, .image = decoded }) catch |err| {
-                c.__icons.free(decoded);
+                c.__icons.free(a, decoded);
                 return err;
             };
         }

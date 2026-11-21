@@ -73,10 +73,10 @@ pub fn main(init: std.process.Init) !void {
             .data = try std.fmt.allocPrint(a, "[Desktop Entry]\nType=Application\nExec=/proc/self/exe\nComment=unrelated description\n{s}", .{fixture.text}),
         });
     }
-    const svg = c.__icons.load("desktop-apps-fixture-icon", 96, 1, null).?;
-    defer c.__icons.free(svg);
+    const svg = c.__icons.load(init.gpa, "desktop-apps-fixture-icon", 96, 1, null).?;
+    defer c.__icons.free(init.gpa, svg);
     assert(svg.width == 96 and svg.height == 96);
-    var launcher = apps.Launcher.init();
+    var launcher = apps.Launcher.init(init.gpa);
     defer launcher.deinit();
     launcher.bind();
     try launcher.load();
@@ -176,13 +176,13 @@ pub fn main(init: std.process.Init) !void {
     assert(!launcher.visible_window);
     var state: ?apps.Launcher = null;
     defer if (state) |*instance| instance.deinit();
-    apps.activate(&state);
+    apps.activate(init.gpa, &state);
     const window = state.?.host.?.surface.?;
     assert(state.?.visible_window);
     try state.?.setSearch("stale");
-    apps.activate(&state);
+    apps.activate(init.gpa, &state);
     assert(!state.?.visible_window);
-    apps.activate(&state);
+    apps.activate(init.gpa, &state);
     assert(state.?.host.?.surface.? == window and state.?.visible_window);
     eq(state.?.searchText(), "");
     state.?.hide();

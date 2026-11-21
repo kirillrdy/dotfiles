@@ -1,7 +1,6 @@
 //! Text-input-v3 / input-method-v2 relay owned by the compositor thread.
 const std = @import("std");
 const c = @import("compositor-abi");
-const a = std.heap.page_allocator;
 fn cast(comptime T: type, ptr: ?*anyopaque) *T {
     return @ptrCast(@alignCast(ptr.?));
 }
@@ -9,6 +8,7 @@ fn cast(comptime T: type, ptr: ?*anyopaque) *T {
 pub fn Relay(comptime Hooks: type) type {
     return struct {
         const Self = @This();
+        allocator: std.mem.Allocator,
         seat: *c.wlr_seat,
         root: *c.wlr_scene_tree,
         owner: *anyopaque,
@@ -21,8 +21,8 @@ pub fn Relay(comptime Hooks: type) type {
         hooks: Hooks = .{},
         method_hooks: Hooks = .{},
 
-        pub fn init(self: *Self, display: *c.wl_display, seat: *c.wlr_seat, root: *c.wlr_scene_tree, owner: *anyopaque, position: *const fn (*anyopaque, *c.wlr_surface) c.wlr_box) void {
-            self.* = .{ .seat = seat, .root = root, .owner = owner, .position = position };
+        pub fn init(self: *Self, allocator: std.mem.Allocator, display: *c.wl_display, seat: *c.wlr_seat, root: *c.wlr_scene_tree, owner: *anyopaque, position: *const fn (*anyopaque, *c.wlr_surface) c.wlr_box) void {
+            self.* = .{ .allocator = allocator, .seat = seat, .root = root, .owner = owner, .position = position };
             const texts: *c.wlr_text_input_manager_v3 = c.wlr_text_input_manager_v3_create(display).?;
             const methods: *c.wlr_input_method_manager_v2 = c.wlr_input_method_manager_v2_create(display).?;
             self.hooks.add(&texts.events.new_text_input, self, &newText);
@@ -32,16 +32,16 @@ pub fn Relay(comptime Hooks: type) type {
         pub fn deinit(self: *Self) void {
             self.hooks.clear();
             self.method_hooks.clear();
-            self.texts.deinit(a);
-            self.popups.deinit(a);
+            self.texts.deinit(self.allocator);
+            self.popups.deinit(self.allocator);
         }
         fn newText(ptr: *anyopaque, data: ?*anyopaque) void {
             const self = cast(Self, ptr);
             const input = cast(c.wlr_text_input_v3, data);
             if (input.seat != self.seat) return;
-            const text = a.create(Text) catch @panic("text input");
+            const text = self.allocator.create(Text) catch @panic("text input");
             text.* = .{ .relay = self, .input = input };
-            self.texts.append(a, text) catch @panic("text input");
+            self.texts.append(self.allocator, text) catch @panic("text input");
             text.hooks.add(&input.events.enable, text, &Text.changed);
             text.hooks.add(&input.events.disable, text, &Text.changed);
             text.hooks.add(&input.events.commit, text, &Text.changed);
@@ -156,15 +156,15 @@ pub fn Relay(comptime Hooks: type) type {
                     break;
                 };
                 relay.sync();
-                a.destroy(self);
+                self.relay.allocator.destroy(self);
             }
         };
         fn newPopup(ptr: *anyopaque, data: ?*anyopaque) void {
             const self = cast(Self, ptr);
-            const popup = a.create(Popup) catch @panic("input popup");
+            const popup = self.allocator.create(Popup) catch @panic("input popup");
             const input = cast(c.wlr_input_popup_surface_v2, data);
             popup.* = .{ .relay = self, .input = input, .tree = c.wlr_scene_subsurface_tree_create(self.root, input.surface).? };
-            self.popups.append(a, popup) catch @panic("input popup");
+            self.popups.append(self.allocator, popup) catch @panic("input popup");
             popup.hooks.add(&input.events.destroy, popup, &Popup.destroy);
             popup.hooks.add(&input.surface.*.events.commit, popup, &Popup.commit);
             popup.update();
@@ -201,7 +201,7 @@ pub fn Relay(comptime Hooks: type) type {
                     break;
                 };
                 c.wlr_scene_node_destroy(&self.tree.node);
-                a.destroy(self);
+                self.relay.allocator.destroy(self);
             }
         };
     };

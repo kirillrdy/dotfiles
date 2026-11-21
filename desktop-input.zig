@@ -4,7 +4,6 @@ const c = @import("desktop-glib.zig");
 const wl = @import("wayland-client");
 const native = @import("desktop-surface.zig");
 const keyboard = @import("desktop-keyboard.zig");
-const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
 
 pub const TextState = struct { text: [:0]const u8, cursor: u32, anchor: u32, rect: @import("desktop-raster.zig").IntRect, private: bool = false };
@@ -63,8 +62,8 @@ pub const Seat = struct {
     }
 
     pub fn create(client: *native.Client, registry: wl.wl_registry, name: u32, version: u32) !*Seat {
-        const self = try a.create(Seat);
-        errdefer a.destroy(self);
+        const self = try client.allocator.create(Seat);
+        errdefer client.allocator.destroy(self);
         self.* = .{ .client = client, .name = name, .proxy = registry.bind(name, wl.wl_seat, @min(version, 5)) };
         self.proxy.listen(Seat, self, seatEvent);
         return self;
@@ -80,7 +79,7 @@ pub const Seat = struct {
         if (self.pointer) |value| releasePointer(value);
         if (self.keyboard) |value| releaseKeyboard(value);
         if (self.proxy.version() >= 5) self.proxy.release() else self.proxy.destroy();
-        a.destroy(self);
+        self.client.allocator.destroy(self);
     }
     fn releasePointer(pointer: wl.wl_pointer) void {
         if (pointer.version() >= 3) pointer.release() else pointer.destroy();
@@ -265,7 +264,7 @@ pub const TextInput = struct {
     before: u32 = 0,
     after: u32 = 0,
     fn create(seat: *Seat, manager: wl.zwp_text_input_manager_v3) !*TextInput {
-        const self = try a.create(TextInput);
+        const self = try seat.client.allocator.create(TextInput);
         self.* = .{ .seat = seat, .proxy = manager.get_text_input(seat.proxy) };
         self.proxy.listen(TextInput, self, textEvent);
         return self;
@@ -290,7 +289,7 @@ pub const TextInput = struct {
     }
     fn destroy(self: *TextInput) void {
         self.proxy.destroy();
-        a.destroy(self);
+        self.seat.client.allocator.destroy(self);
     }
     pub fn update(self: *TextInput) void {
         if (self.applying) return;

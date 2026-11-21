@@ -3,25 +3,25 @@ const std = @import("std");
 const audio = @import("desktop-audio.zig");
 const battery = @import("desktop-battery.zig");
 const network = @import("desktop-network.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 pub const Event = enum { audio, battery, network };
 pub const Subscriber = struct {
     context: ?*anyopaque,
     changed: *const fn (?*anyopaque, *Service, Event) void,
 };
 pub const Service = struct {
+    allocator: std.mem.Allocator,
     audio_service: ?*audio.Service = null,
     battery_service: ?*battery.Service = null,
     network_client: ?*network.Client = null,
     battery_state: battery.State = .{},
     subscribers: std.ArrayList(*Subscriber) = .empty,
 
-    pub fn create() !*Service {
+    pub fn create(a: std.mem.Allocator) !*Service {
         const self = try a.create(Service);
-        self.* = .{};
-        self.audio_service = audio.Service.create(&audioChanged, self) catch null;
-        self.battery_service = battery.Service.create(&batteryChanged, self) catch null;
-        self.network_client = network.Client.create(&networkChanged, self) catch null;
+        self.* = .{ .allocator = a };
+        self.audio_service = audio.Service.create(a, &audioChanged, self) catch null;
+        self.battery_service = battery.Service.create(a, &batteryChanged, self) catch null;
+        self.network_client = network.Client.create(a, &networkChanged, self) catch null;
         return self;
     }
     pub fn destroy(self: *Service) void {
@@ -29,11 +29,11 @@ pub const Service = struct {
         if (self.audio_service) |service| service.destroy();
         if (self.battery_service) |service| service.destroy();
         if (self.network_client) |client| client.destroy();
-        self.subscribers.deinit(a);
-        a.destroy(self);
+        self.subscribers.deinit(self.allocator);
+        self.allocator.destroy(self);
     }
     pub fn subscribe(self: *Service, subscriber: *Subscriber) void {
-        self.subscribers.append(a, subscriber) catch @panic("out of memory");
+        self.subscribers.append(self.allocator, subscriber) catch @panic("out of memory");
         for (std.enums.values(Event)) |event| subscriber.changed(subscriber.context, self, event);
     }
     pub fn unsubscribe(self: *Service, subscriber: *Subscriber) void {
@@ -66,6 +66,7 @@ pub const Service = struct {
 };
 
 test "device subscribers receive initial state and detach before destruction" {
+    const a = std.testing.allocator;
     const Observer = struct {
         events: [3]usize = @splat(0),
         detach: bool = false,
@@ -77,7 +78,7 @@ test "device subscribers receive initial state and detach before destruction" {
         }
     };
     const service = try a.create(Service);
-    service.* = .{};
+    service.* = .{ .allocator = a };
     defer service.destroy();
     var first: Observer = .{};
     var second: Observer = .{};

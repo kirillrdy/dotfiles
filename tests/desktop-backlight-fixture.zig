@@ -15,8 +15,8 @@ fn waitControls(controls: *quick.Controls) void {
     while ((controls.brightness_busy or controls.brightness_timer != 0) and c.__zig.monotonicTime() < deadline) pump();
     assert(!controls.brightness_busy and controls.brightness_timer == 0);
 }
-fn controlsTest(backend: backlight.Backend, empty: bool, denied: bool) !void {
-    const controls = quick.Controls.create("true", "true");
+fn controlsTest(allocator: std.mem.Allocator, backend: backlight.Backend, empty: bool, denied: bool) !void {
+    const controls = quick.Controls.create(allocator, "true", "true");
     controls.backlight_backend = backend;
     controls.refresh();
     waitControls(controls);
@@ -59,12 +59,12 @@ pub fn main(init: std.process.Init) !void {
     const backend = backlight.Backend{ .root = std.mem.span(root) };
     if (args.len < 2) return error.ExpectedMode;
     if (std.mem.eql(u8, args[1], "serve") or osd.parseCommand(args[1..]) != null) return runOsd(init, backend);
-    if (std.mem.startsWith(u8, args[1], "controls")) return controlsTest(backend, std.mem.eql(u8, args[1], "controls-empty"), std.mem.eql(u8, args[1], "controls-denied"));
+    if (std.mem.startsWith(u8, args[1], "controls")) return controlsTest(init.gpa, backend, std.mem.eql(u8, args[1], "controls-empty"), std.mem.eql(u8, args[1], "controls-denied"));
     const action: backlight.Action = if (std.mem.eql(u8, args[1], "read")) .read else if (std.mem.eql(u8, args[1], "set") and args.len == 3) .{ .set = try std.fmt.parseFloat(f64, args[2]) } else if (std.mem.eql(u8, args[1], "step") and args.len == 3) .{ .step = try std.fmt.parseInt(i16, args[2], 10) } else return error.InvalidMode;
     const cancel = c.g_cancellable_new().?;
     defer c.g_object_unref(cancel);
     var completion = Completion{};
-    backend.start(action, cancel, &Completion.done, &completion);
+    backend.start(init.gpa, action, cancel, &Completion.done, &completion);
     while (completion.result == null) _ = c.g_main_context_iteration(null, 1);
     switch (completion.result.?) {
         .failure => |err| return err,
@@ -119,13 +119,15 @@ fn runOsd(init: std.process.Init, backend: backlight.Backend) !void {
     }
     const forwarded = try arena.allocator().alloc([]const u8, args.len - 1);
     for (forwarded, args[1..]) |*out, arg| out.* = arg;
-    if (!serve) return loop.forwardCommand("desktop-osd", osd_name, osd_path, forwarded);
-    const bus = try loop.acquire(.session);
+    if (!serve) return loop.forwardCommand(init.gpa, "desktop-osd", osd_name, osd_path, forwarded);
+    const bus = try loop.acquire(init.gpa, .session);
     defer loop.release(bus);
-    if (try bus.connection.requestName(osd_name, 4) != 1) return loop.forwardCommand("desktop-osd", osd_name, osd_path, forwarded);
+    if (try bus.connection.requestName(osd_name, 4) != 1) return loop.forwardCommand(init.gpa, "desktop-osd", osd_name, osd_path, forwarded);
     var introspection = try dbus.Introspection.parse(std.heap.page_allocator, loop.commandXml(osd_name));
     defer introspection.deinit();
-    var server = osd.Server{ .backlight_backend = backend, .connection = bus.connection };
+    var server = osd.Server.init(init.gpa);
+    server.backlight_backend = backend;
+    server.connection = bus.connection;
     defer server.deinit();
     var instance: Instance = .{ .server = &server, .connection = bus.connection };
     const exported = try bus.connection.exportObject(osd_path, &introspection.interfaces[0], &Instance.command, null, &instance);

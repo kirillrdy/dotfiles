@@ -83,6 +83,7 @@ const Object = struct {
     targets: []const Target = &.{},
 };
 const Server = struct {
+    ui_allocator: std.mem.Allocator,
     a: std.mem.Allocator,
     options: Options = .{},
     vault: store.Vault,
@@ -366,7 +367,7 @@ const Server = struct {
         o.started = true;
         // The service can start before Wayland; only prompts open a connection.
         const creating = self.vault.envelope == null;
-        const dialog = try Dialog.createWithOptions(.password, if (creating) "Choose a password for your new password vault." else "Enter your password to unlock saved passwords.", .{
+        const dialog = try Dialog.createWithOptions(self.ui_allocator, .password, if (creating) "Choose a password for your new password vault." else "Enter your password to unlock saved passwords.", .{
             .title = if (creating) "Create Password Vault" else "Unlock Passwords",
             .role = "desktop-secrets",
             .accept = if (creating) "Create" else "Unlock",
@@ -742,26 +743,26 @@ fn quit(data: ?*anyopaque) callconv(.c) c_int {
     cast(Server, data).stopping = true;
     return 1;
 }
-pub fn run() !void {
+pub fn run(allocator: std.mem.Allocator) !void {
     const base = std.mem.span(c.g_get_user_data_dir());
     if (c.g_mkdir_with_parents(base.ptr, 0o700) != 0) return error.CreateDirectory;
-    const directory = try std.fmt.allocPrintSentinel(std.heap.page_allocator, "{s}/desktop-secrets", .{base}, 0);
-    defer std.heap.page_allocator.free(directory);
-    return runAt(directory);
+    const directory = try std.fmt.allocPrintSentinel(allocator, "{s}/desktop-secrets", .{base}, 0);
+    defer allocator.free(directory);
+    return runAt(allocator, directory);
 }
-pub fn runAt(directory: [:0]const u8) !void {
-    return runAtWithOptions(directory, .{});
+pub fn runAt(allocator: std.mem.Allocator, directory: [:0]const u8) !void {
+    return runAtWithOptions(allocator, directory, .{});
 }
-pub fn runAtWithOptions(directory: [:0]const u8, options: Options) !void {
+pub fn runAtWithOptions(allocator: std.mem.Allocator, directory: [:0]const u8, options: Options) !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
     var wa = store.WipingAllocator{ .parent = std.heap.page_allocator };
     const a = wa.allocator();
-    const source = loop.acquire(.session) catch return error.NoSessionBus;
+    const source = loop.acquire(a, .session) catch return error.NoSessionBus;
     defer loop.release(source);
     const bus = source.connection;
     var introspection = try dbus.Introspection.parse(a, @embedFile("desktop-secrets.xml"));
     defer introspection.deinit();
-    var server = Server{ .a = a, .options = options, .vault = try store.Vault.init(a, directory), .bus = bus, .introspection = introspection };
+    var server = Server{ .ui_allocator = allocator, .a = a, .options = options, .vault = try store.Vault.init(a, directory), .bus = bus, .introspection = introspection };
     defer {
         while (server.objects.items.len != 0) server.remove(server.objects.items[server.objects.items.len - 1]);
         server.objects.deinit(a);
@@ -776,7 +777,7 @@ pub fn runAtWithOptions(directory: [:0]const u8, options: Options) !void {
     if ((bus.requestName(name, 4) catch return error.NameUnavailable) != 1) return error.NameUnavailable;
     const owners = try bus.subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", &ownerChanged, &server);
     defer bus.unsubscribe(owners);
-    const system: ?*loop.Source = loop.acquire(.system) catch null;
+    const system: ?*loop.Source = loop.acquire(allocator, .system) catch null;
     var subscriptions: [3]u32 = .{ 0, 0, 0 };
     defer if (system) |held| {
         for (subscriptions) |id| if (id != 0) held.connection.unsubscribe(id);
@@ -901,10 +902,10 @@ pub fn importAt(directory: [:0]const u8, password: []const u8) !void {
     if (vault.index.collections.len != 0 and vault.index.aliases.len == 0) vault.index.aliases = try append(store.Alias, ma, vault.index.aliases, .{ .name = "default", .collection = vault.index.collections[0].id });
     try vault.save();
 }
-pub fn runImport() !void {
+pub fn runImport(allocator: std.mem.Allocator) !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
-    const a = std.heap.page_allocator;
-    const dialog = try createImportDialog();
+    const a = allocator;
+    const dialog = try createImportDialog(a);
     defer dialog.destroy();
     while (true) {
         dialog.run();
@@ -918,8 +919,8 @@ pub fn runImport() !void {
     try importAt(directory, dialog.entry.?.buffer.value());
     std.debug.print("Imported Secret Service collections. The source keyring is unchanged.\n", .{});
 }
-pub fn createImportDialog() !*Dialog {
-    return Dialog.createWithOptions(.password, "Choose the destination vault password. Use your login password for automatic unlock.", .{
+pub fn createImportDialog(allocator: std.mem.Allocator) !*Dialog {
+    return Dialog.createWithOptions(allocator, .password, "Choose the destination vault password. Use your login password for automatic unlock.", .{
         .title = "Import Saved Passwords",
         .role = "desktop-secrets-import",
         .accept = "Continue",

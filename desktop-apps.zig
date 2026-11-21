@@ -8,7 +8,6 @@ const raster = @import("desktop-raster.zig");
 const shaping = @import("desktop-text.zig");
 const input = @import("desktop-password-entry.zig");
 const view = @import("desktop-apps-view.zig");
-const allocator = std.heap.c_allocator;
 // Normalize before matching so composed/decomposed names and Unicode casing agree.
 pub fn fold(text: [*c]const u8) [*c]u8 {
     const lower = c.g_utf8_casefold(text, -1);
@@ -77,6 +76,7 @@ pub const Entry = struct {
 };
 
 pub const Launcher = struct {
+    allocator: std.mem.Allocator,
     host: ?*Host = null,
     visible_window: bool = false,
     owner: ?*anyopaque = null,
@@ -108,12 +108,12 @@ pub const Launcher = struct {
     wheel: f64 = 0,
     wheel_time: u32 = 0,
 
-    pub fn init() Launcher {
-        return .{ .entries = .init(allocator), .visible = .init(allocator), .query = fold(""), .status = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory") };
+    pub fn init(allocator: std.mem.Allocator) Launcher {
+        return .{ .allocator = allocator, .entries = .init(allocator), .visible = .init(allocator), .query = fold(""), .status = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory") };
     }
     pub fn bind(self: *Launcher) void {
         if (self.search_input == null) {
-            self.search_input = input.Entry.create(&inputChanged, self) catch @panic("out of memory");
+            self.search_input = input.Entry.create(self.allocator, &inputChanged, self) catch @panic("out of memory");
             self.search_input.?.makePublic();
         }
     }
@@ -145,17 +145,17 @@ pub const Launcher = struct {
         self.entries.deinit();
         self.visible.deinit();
         self.renderer.deinit();
-        self.search_view.deinit();
-        allocator.free(self.status);
+        self.search_view.deinit(self.allocator);
+        self.allocator.free(self.status);
         c.g_free(self.query);
     }
     fn freeEntries(self: *Launcher) void {
         self.visible.clearRetainingCapacity();
         for (self.entries.items) |item| {
-            item.tile.deinit();
+            item.tile.deinit(self.allocator);
             c.g_object_unref(item.info);
             c.g_free(item.folded);
-            allocator.destroy(item);
+            self.allocator.destroy(item);
         }
         self.entries.clearRetainingCapacity();
     }
@@ -165,8 +165,8 @@ pub const Launcher = struct {
     }
     pub fn add(self: *Launcher, info: *c.GAppInfo) !void {
         if (c.g_app_info_should_show(info) == 0) return;
-        const item = try allocator.create(Entry);
-        errdefer allocator.destroy(item);
+        const item = try self.allocator.create(Entry);
+        errdefer self.allocator.destroy(item);
         item.* = .{ .info = @ptrCast(c.g_object_ref(info)), .name = c.g_app_info_get_display_name(info), .folded = fold(c.g_app_info_get_display_name(info)) };
         errdefer {
             c.g_object_unref(item.info);
@@ -196,8 +196,8 @@ pub const Launcher = struct {
         try entry_input.insert(value);
     }
     pub fn setMessage(self: *Launcher, value: []const u8) void {
-        const owned = allocator.dupeSentinel(u8, value, 0) catch return;
-        allocator.free(self.status);
+        const owned = self.allocator.dupeSentinel(u8, value, 0) catch return;
+        self.allocator.free(self.status);
         self.status = owned;
         self.redraw();
     }
@@ -278,7 +278,7 @@ pub const Launcher = struct {
     }
     pub fn launch(self: *Launcher, info: *c.GAppInfo) bool {
         var err: [*c]c.GError = null;
-        var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         var ok = false;
         const desktop = cast(c.GDesktopAppInfo, info);
@@ -499,7 +499,7 @@ fn searchPoint(self: *Launcher, x: f64) usize {
     var offset: usize = 0;
     while (offset < value.len) {
         const next = offset + (std.unicode.utf8ByteSequenceLength(value[offset]) catch 1);
-        const advance = view.measure(&self.renderer, value[0..next], 1) catch previous;
+        const advance = view.measure(self.allocator, &self.renderer, value[0..next], 1) catch previous;
         if (x - 41 + self.search_offset < (previous + advance) / 2) return offset;
         previous = advance;
         offset = next;
@@ -511,25 +511,25 @@ pub fn paint(l: *Launcher, part: Part, target: raster.Buffer, scale: u32) void {
     if (part == .search) {
         var buffer = l.search_input.?.presentation();
         const state = .{ .buffer = &buffer, .focused = l.search_input.?.focused, .caret = l.search_input.?.caret and (l.search_input.?.composition.len == 0 or l.search_input.?.composition_caret) };
-        view.paintSearch(target, scale, &l.renderer, &l.search_view, &state, l.search_hover, &l.search_offset) catch {};
+        view.paintSearch(l.allocator, target, scale, &l.renderer, &l.search_view, &state, l.search_hover, &l.search_offset) catch {};
     } else if (part == .message) {
-        view.centerText(target, scale, &l.renderer, l.status, 0xb6b6b9) catch {};
+        view.centerText(l.allocator, target, scale, &l.renderer, l.status, 0xb6b6b9) catch {};
     } else {
         const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(scale) };
         if (l.searchMode()) {
             if (l.visible.items.len == 0) {
-                view.statusText(target, scale, &l.renderer, "No results") catch {};
+                view.statusText(l.allocator, target, scale, &l.renderer, "No results") catch {};
             } else {
                 const sg = l.searchGrid();
                 for (0..sg.shown) |i| {
                     const item = l.visible.items[i];
                     const focused = !l.search_focus and @min(l.selected, sg.shown - 1) == i;
                     const selected = l.search_focus and i == 0;
-                    item.tile.paint(canvas, scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), sg.tile(i), sg.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
+                    item.tile.paint(l.allocator, canvas, scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), sg.tile(i), sg.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
                 }
             }
         } else {
-            if (l.visible.items.len == 0) view.centerText(target, scale, &l.renderer, "No applications found", 0xb6b6b9) catch {};
+            if (l.visible.items.len == 0) view.centerText(l.allocator, target, scale, &l.renderer, "No applications found", 0xb6b6b9) catch {};
             const start = l.page * l.geometry.capacity();
             const end = @min(l.visible.items.len, start + l.geometry.capacity());
             for (start..@max(start, end)) |i| {
@@ -538,15 +538,15 @@ pub fn paint(l: *Launcher, part: Part, target: raster.Buffer, scale: u32) void {
                 // GNOME marks the default search result selected while the entry
                 // retains focus; the keyboard focus ring belongs to the grid only.
                 const selected = l.search_focus and l.query[0] != 0 and l.selected == i;
-                item.tile.paint(canvas, scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), l.geometry.tile(i - start), l.geometry.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
+                item.tile.paint(l.allocator, canvas, scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), l.geometry.tile(i - start), l.geometry.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
             }
             view.paintPages(canvas, l.geometry, l.page, l.pageCount(), l.arrow_hover, l.arrow_pressed);
         }
     }
 }
-pub fn activate(state: *?Launcher) void {
+pub fn activate(allocator: std.mem.Allocator, state: *?Launcher) void {
     if (state.* == null) {
-        state.* = Launcher.init();
+        state.* = Launcher.init(allocator);
         state.*.?.bind();
     }
     const self = &state.*.?;
@@ -568,7 +568,7 @@ pub const Region = struct {
 
 /// Paint over existing pixels when the region occupies complete destination
 /// rows. The painter must preserve the backdrop in transparent areas.
-pub fn paintRegionInPlace(target: raster.Buffer, scale: u32, region: Region, context: anytype, comptime painter: anytype) void {
+pub fn paintRegionInPlace(allocator: std.mem.Allocator, target: raster.Buffer, scale: u32, region: Region, context: anytype, comptime painter: anytype) void {
     if (region.width == 0 or region.height == 0) return;
     const width = region.width * scale;
     const height = region.height * scale;
@@ -579,14 +579,14 @@ pub fn paintRegionInPlace(target: raster.Buffer, scale: u32, region: Region, con
         painter(context, .{ .pixels = target.pixels[first * target.width .. (first + height) * target.width], .width = width, .height = height }, scale);
         return;
     }
-    paintRegion(target, scale, region, context, painter);
+    paintRegion(allocator, target, scale, region, context, painter);
 }
 
-pub fn paintRegion(target: raster.Buffer, scale: u32, region: Region, context: anytype, comptime painter: anytype) void {
-    paintRegionOpacity(target, scale, region, context, painter, 1);
+pub fn paintRegion(allocator: std.mem.Allocator, target: raster.Buffer, scale: u32, region: Region, context: anytype, comptime painter: anytype) void {
+    paintRegionOpacity(allocator, target, scale, region, context, painter, 1);
 }
 
-pub fn paintRegionOpacity(target: raster.Buffer, scale: u32, region: Region, context: anytype, comptime painter: anytype, opacity: f64) void {
+pub fn paintRegionOpacity(allocator: std.mem.Allocator, target: raster.Buffer, scale: u32, region: Region, context: anytype, comptime painter: anytype, opacity: f64) void {
     if (opacity <= 0) return;
     if (region.width == 0 or region.height == 0) return;
     const width = region.width * scale;
@@ -636,9 +636,10 @@ pub const Host = struct {
     grid: Region = .{ .width = 1040, .height = 600 },
     message: Region = .{ .width = 1040, .height = 64 },
     fn create(launcher: *Launcher) !*Host {
+        const allocator = launcher.allocator;
         const self = try allocator.create(Host);
         errdefer allocator.destroy(self);
-        const client = try wire.Client.createInteractive(.{ .added = &added, .removed = &removed }, self);
+        const client = try wire.Client.createInteractive(allocator, .{ .added = &added, .removed = &removed }, self);
         errdefer client.destroy();
         if (client.outputs.items.len == 0) return error.DisplayUnavailable;
         self.* = .{ .launcher = launcher, .client = client, .surface = null };
@@ -649,7 +650,7 @@ pub const Host = struct {
     }
     fn destroy(self: *Host) void {
         self.client.destroy();
-        allocator.destroy(self);
+        self.launcher.allocator.destroy(self);
     }
     fn added(data: ?*anyopaque, output: *wire.Output) void {
         const self = cast(Host, data);
@@ -684,9 +685,9 @@ pub const Host = struct {
         self.launcher.geometry = view.Grid.init(@max(1, self.grid.width), @max(1, self.grid.height));
         if (previous.width != self.launcher.geometry.width or previous.height != self.launcher.geometry.height) self.launcher.page = self.launcher.selected / self.launcher.geometry.capacity();
         @memset(target.pixels, 0xff222226);
-        paintRegion(target, scale, self.search, .{ self.launcher, Part.search }, paintPart);
-        paintRegion(target, scale, self.grid, .{ self.launcher, Part.grid }, paintPart);
-        if (self.launcher.status.len > 0) paintRegion(target, scale, self.message, .{ self.launcher, Part.message }, paintPart);
+        paintRegion(self.launcher.allocator, target, scale, self.search, .{ self.launcher, Part.search }, paintPart);
+        paintRegion(self.launcher.allocator, target, scale, self.grid, .{ self.launcher, Part.grid }, paintPart);
+        if (self.launcher.status.len > 0) paintRegion(self.launcher.allocator, target, scale, self.message, .{ self.launcher, Part.message }, paintPart);
     }
     fn symbol(data: ?*anyopaque, _: *wire.Surface, key: u32, modifiers: u32, pressed: bool) bool {
         if (!pressed) return false;
@@ -746,7 +747,7 @@ pub fn textState(launcher: *Launcher, region: Region) ?@import("desktop-input.zi
     const entry = launcher.search_input orelse return null;
     if (!entry.focused) return null;
     const display = entry.presentation();
-    const advance = view.measure(&launcher.renderer, display.value()[0..display.cursor], 1) catch 0;
+    const advance = view.measure(launcher.allocator, &launcher.renderer, display.value()[0..display.cursor], 1) catch 0;
     const caret = std.math.clamp(advance - launcher.search_offset, 0, @as(f64, @floatFromInt(region.width -| 82)));
     return .{ .text = entry.buffer.valueZ(), .cursor = @intCast(entry.buffer.cursor), .anchor = @intCast(entry.buffer.anchor), .rect = .{ .x = @intFromFloat(region.x + 41 + caret), .y = @intFromFloat(region.y), .width = 1, .height = @intCast(region.height) } };
 }
@@ -759,14 +760,14 @@ test "native layout compositing clips regions and preserves transparent pixels" 
     };
     var pixels: [18]u32 = @splat(0xff0000ff);
     const target: raster.Buffer = .{ .pixels = pixels[1..17], .width = 4, .height = 4 };
-    paintRegion(target, 1, .{ .x = -1, .y = -1, .width = 3, .height = 3 }, {}, Painter.paint);
+    paintRegion(std.testing.allocator, target, 1, .{ .x = -1, .y = -1, .width = 3, .height = 3 }, {}, Painter.paint);
     try std.testing.expectEqual(@as(u32, 0xff0000ff), pixels[0]);
     try std.testing.expectEqual(@as(u32, 0xff80007f), pixels[1]);
     try std.testing.expectEqual(@as(u32, 0xff80007f), pixels[6]);
     try std.testing.expectEqual(@as(u32, 0xff0000ff), pixels[3]);
     try std.testing.expectEqual(@as(u32, 0xff0000ff), pixels[17]);
     const before = pixels;
-    paintRegion(target, 1, .{ .x = 10, .y = 10, .width = 3, .height = 3 }, {}, Painter.paint);
+    paintRegion(std.testing.allocator, target, 1, .{ .x = 10, .y = 10, .width = 3, .height = 3 }, {}, Painter.paint);
     try std.testing.expectEqualSlices(u32, &before, &pixels);
 }
 
@@ -779,9 +780,9 @@ test "region opacity fades premultiplied controls over the desktop" {
     var pixels: [4]u32 = @splat(0xff0000ff);
     const target: raster.Buffer = .{ .pixels = &pixels, .width = 2, .height = 2 };
     const region: Region = .{ .width = 1, .height = 1 };
-    paintRegionOpacity(target, 1, region, {}, Painter.paint, 0);
+    paintRegionOpacity(std.testing.allocator, target, 1, region, {}, Painter.paint, 0);
     try std.testing.expectEqual(@as(u32, 0xff0000ff), pixels[0]);
-    paintRegionOpacity(target, 1, region, {}, Painter.paint, 0.5);
+    paintRegionOpacity(std.testing.allocator, target, 1, region, {}, Painter.paint, 0.5);
     try std.testing.expectEqual(@as(u32, 0xff4000bf), pixels[0]);
     try std.testing.expectEqual(@as(u32, 0xff0000ff), pixels[1]);
 }
@@ -793,7 +794,7 @@ test "in-place layout painting preserves the backdrop and adjacent rows" {
         }
     };
     var pixels: [16]u32 = @splat(0xff0000ff);
-    paintRegionInPlace(.{ .pixels = &pixels, .width = 4, .height = 4 }, 1, .{ .y = 1, .width = 4, .height = 2 }, {}, Painter.paint);
+    paintRegionInPlace(std.testing.allocator, .{ .pixels = &pixels, .width = 4, .height = 4 }, 1, .{ .y = 1, .width = 4, .height = 2 }, {}, Painter.paint);
     for (pixels, 0..) |pixel, index| try std.testing.expectEqual(if (index >= 4 and index < 12) @as(u32, 0xff80007f) else @as(u32, 0xff0000ff), pixel);
 }
 
@@ -809,7 +810,7 @@ test "launcher owners can defer hiding until an exit animation completes" {
         }
     };
     var state: State = .{};
-    var launcher = Launcher.init();
+    var launcher = Launcher.init(std.testing.allocator);
     defer launcher.deinit();
     launcher.bind();
     launcher.owner = &state;
@@ -824,7 +825,7 @@ test "launcher owners can defer hiding until an exit animation completes" {
 }
 
 test "overview search navigates results from the end of the query" {
-    var launcher = Launcher.init();
+    var launcher = Launcher.init(std.testing.allocator);
     defer launcher.deinit();
     launcher.bind();
     launcher.overview_search = true;

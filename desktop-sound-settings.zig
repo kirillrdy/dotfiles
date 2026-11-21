@@ -3,12 +3,12 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const audio = @import("desktop-audio.zig");
 pub const native = @import("desktop-sound-view.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 const host = @import("desktop-window.zig");
 const wire = host.wire;
 const Tooltip = @import("desktop-panel-view.zig").Tooltip;
 pub const Sound = struct {
+    allocator: std.mem.Allocator,
     window: *host.Window,
     navigation_context: ?*anyopaque,
     navigate: *const fn (?*anyopaque, native.Control) void,
@@ -24,13 +24,13 @@ pub const Sound = struct {
     failed: bool = false,
     refreshing: bool = false,
     flushing: bool = false,
-    feedback: audio.Feedback = .{},
+    feedback: audio.Feedback,
     // The settings shell owns window lifetime, drawing, and input dispatch.
-    pub fn create(window: *host.Window, context: ?*anyopaque, navigate: *const fn (?*anyopaque, native.Control) void) !*Sound {
+    pub fn create(a: std.mem.Allocator, window: *host.Window, context: ?*anyopaque, navigate: *const fn (?*anyopaque, native.Control) void) !*Sound {
         const self = try a.create(Sound);
-        self.* = .{ .window = window, .navigation_context = context, .navigate = navigate, .cancel = c.g_cancellable_new().? };
+        self.* = .{ .allocator = a, .feedback = .{ .allocator = a }, .window = window, .navigation_context = context, .navigate = navigate, .cancel = c.g_cancellable_new().? };
         self.view.test_enabled = c.__zig.getenv("DESKTOP_OSD_SOUND_FILE") != null;
-        self.service = audio.Service.create(&changed, self) catch null;
+        self.service = audio.Service.create(a, &changed, self) catch null;
         self.refresh() catch self.renderFailure();
         return self;
     }
@@ -44,11 +44,11 @@ pub const Sound = struct {
     }
     pub fn destroy(self: *Sound) void {
         std.debug.assert(self.closed and self.operations == 0);
-        self.tooltip.deinit();
+        self.tooltip.deinit(self.allocator);
         c.g_object_unref(self.cancel);
-        self.view.deinit(a);
-        if (self.message) |message| a.free(message);
-        a.destroy(self);
+        self.view.deinit(self.allocator);
+        if (self.message) |message| self.allocator.free(message);
+        self.allocator.destroy(self);
     }
     pub fn close(self: *Sound) void {
         self.window.close();
@@ -66,11 +66,11 @@ pub const Sound = struct {
     }
     fn setMessage(self: *Sound, message: [:0]const u8) !void {
         if (std.mem.eql(u8, self.view.message, message)) return;
-        const copy = try a.dupeSentinel(u8, message, 0);
-        if (self.message) |old| a.free(old);
+        const copy = try self.allocator.dupeSentinel(u8, message, 0);
+        if (self.message) |old| self.allocator.free(old);
         self.message = copy;
         self.view.message = copy;
-        if (self.view.message_mask) |mask| mask.deinit(a);
+        if (self.view.message_mask) |mask| mask.deinit(self.allocator);
         self.view.message_mask = null;
     }
     fn changed(ptr: ?*anyopaque, _: *audio.Service) void {
@@ -83,9 +83,9 @@ pub const Sound = struct {
         self.window.redraw();
     }
     fn append(self: *Sound, target: audio.Target, title: [:0]const u8, class: ?audio.Class, device: bool) !void {
-        const copy = try a.dupeSentinel(u8, if (std.unicode.utf8ValidateSlice(title)) title else "Unnamed audio device", 0);
-        errdefer a.free(copy);
-        try self.view.rows.append(a, .{ .target = target, .title = copy, .class = class, .device = device });
+        const copy = try self.allocator.dupeSentinel(u8, if (std.unicode.utf8ValidateSlice(title)) title else "Unnamed audio device", 0);
+        errdefer self.allocator.free(copy);
+        try self.view.rows.append(self.allocator, .{ .target = target, .title = copy, .class = class, .device = device });
     }
     pub fn refresh(self: *Sound) !void {
         if (self.closed or self.refreshing or self.flushing) return;
@@ -107,8 +107,8 @@ pub const Sound = struct {
         if (self.layout == null or self.layout.? != layout) {
             // Keep debounced writes attached to their old IDs before rebuilding.
             self.flushVolumes();
-            self.view.invalidate(a);
-            for (self.view.rows.items) |row| a.free(row.title);
+            self.view.invalidate(self.allocator);
+            for (self.view.rows.items) |row| self.allocator.free(row.title);
             self.view.rows.clearRetainingCapacity();
             self.layout = null;
             self.view.focus = null;
@@ -238,7 +238,7 @@ pub const Sound = struct {
             .value => {
                 // Panels refresh their device menus from this signal.
                 const loop = @import("desktop-dbus-loop.zig");
-                if (loop.acquire(.session)) |bus| {
+                if (loop.acquire(self.allocator, .session)) |bus| {
                     defer loop.release(bus);
                     bus.connection.emit("/org/dotfiles/DesktopSettings", "org.dotfiles.DesktopSettings", "DeviceChanged", .{}) catch {};
                 } else |_| {}
@@ -252,14 +252,14 @@ pub const Sound = struct {
         const width = target.width / scale;
         const height = target.height / scale;
         if (self.view.width != width) {
-            self.view.invalidate(a);
+            self.view.invalidate(self.allocator);
             self.view.width = width;
         }
         self.view.viewport_height = height;
         self.view.offset = std.math.clamp(self.view.offset, 0, self.view.maxOffset());
-        try self.view.prepare(a, scale);
-        self.view.paint(target);
-        try self.tooltip.paint(target, &self.view.renderer, scale);
+        try self.view.prepare(self.allocator, scale);
+        self.view.paint(self.allocator, target);
+        try self.tooltip.paint(self.allocator, target, &self.view.renderer, scale);
     }
     fn focus(self: *Sound) void {
         if (self.view.focus) |target| {
@@ -328,7 +328,7 @@ pub const Sound = struct {
             .network_nav => "Network",
             .sound_nav => "Sound",
         } else null;
-        self.tooltip.update(x, y, tooltip, self.view.pressed == null, &showTooltip, self);
+        self.tooltip.update(self.allocator, x, y, tooltip, self.view.pressed == null, &showTooltip, self);
         if (self.view.pressed) |target| if (target.control == .volume) self.setVolume(target.row, self.view.percent(target, x));
         self.window.redraw();
     }

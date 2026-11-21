@@ -132,48 +132,51 @@ fn contextClassInit(klass: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     const value: *c.GAppLaunchContextClass = @ptrCast(@alignCast(klass));
     value.get_startup_notify_id = &startupId;
 }
-pub fn launchContext(options: portal_options.Dict) !*c.GAppLaunchContext {
-    const token: ?[*:0]u8 = if (try Options.string(options, "activation_token")) |value| (std.heap.c_allocator.dupeSentinel(u8, value, 0) catch return error.OutOfMemory).ptr else null;
-    defer if (token) |value| std.heap.c_allocator.free(std.mem.span(value));
+pub fn launchContext(allocator: std.mem.Allocator, options: portal_options.Dict) !*c.GAppLaunchContext {
+    const token = if (try Options.string(options, "activation_token")) |value| try allocator.dupeSentinel(u8, value, 0) else null;
+    defer if (token) |value| allocator.free(value);
     const Type = struct {
         var id: c.GType = 0;
     };
     if (Type.id == 0) Type.id = c.g_type_register_static_simple(c.g_app_launch_context_get_type(), "DesktopEmailLaunchContext", @sizeOf(c.GAppLaunchContextClass), &contextClassInit, @sizeOf(c.GAppLaunchContext), null, 0);
     const context: *c.GAppLaunchContext = @ptrCast(@alignCast(c.g_object_new(Type.id, null)));
     if (token) |value| {
-        c.g_object_set_data_full(@ptrCast(context), "desktop-email-token", c.g_strdup(value), &c.g_free);
-        c.g_app_launch_context_setenv(context, "XDG_ACTIVATION_TOKEN", value);
-        c.g_app_launch_context_setenv(context, "DESKTOP_STARTUP_ID", value);
+        c.g_object_set_data_full(@ptrCast(context), "desktop-email-token", c.g_strdup(value.ptr), &c.g_free);
+        c.g_app_launch_context_setenv(context, "XDG_ACTIVATION_TOKEN", value.ptr);
+        c.g_app_launch_context_setenv(context, "DESKTOP_STARTUP_ID", value.ptr);
     }
     return context;
 }
 
-var test_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
 /// Options from their GVariant text form.
-fn parse(value: []const u8) portal_options.Dict {
-    const a = test_arena.allocator();
+fn parse(a: std.mem.Allocator, value: []const u8) portal_options.Dict {
     const items = (@import("desktop-dbus-text.zig").parse(a, "a{sv}", value) catch unreachable).array.items;
     const entries = a.alloc(portal_options.Dict.Entry, items.len) catch unreachable;
     for (entries, items) |*entry, item| entry.* = .{ .key = item.dict_entry[0].string, .value = item.dict_entry[1].variant.* };
     return .{ .entries = entries };
 }
 test "email URI escapes recipients and Unicode headers independently" {
-    const options = parse("{'address': <'a+b@example.org'>, 'addresses': <['local@host']>, 'cc': <['c&d@example.org']>, 'bcc': <['hidden@example.org']>, 'subject': <'日本語 &bcc=extra'>, 'body': <'first\\nsecond?body=other'>}");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const options = parse(arena.allocator(), "{'address': <'a+b@example.org'>, 'addresses': <['local@host']>, 'cc': <['c&d@example.org']>, 'bcc': <['hidden@example.org']>, 'subject': <'日本語 &bcc=extra'>, 'body': <'first\\nsecond?body=other'>}");
     const uri = try composeUri(std.testing.allocator, options, &.{});
     defer std.testing.allocator.free(uri);
     try std.testing.expectEqualStrings("mailto:a%2Bb@example.org,local@host?cc=c%26d@example.org&bcc=hidden@example.org&subject=%E6%97%A5%E6%9C%AC%E8%AA%9E%20%26bcc%3Dextra&body=first%0Asecond%3Fbody%3Dother", uri);
 }
 test "email rejects invalid recipients, subjects and typed options" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
     for ([_][]const u8{ "{'address': <'Name <a@b>'>}", "{'cc': <['a@b', 'bad@-host']>}", "{'bcc': <['a@host..org']>}" }) |value| {
-        const options = parse(value);
+        const options = parse(a, value);
             try std.testing.expectError(error.InvalidEmailAddress, composeUri(std.testing.allocator, options, &.{}));
     }
     for ([_][]const u8{ "{'subject': <'first\\nsecond'>}", "{'subject': <'first\\rsecond'>}" }) |value| {
-        const options = parse(value);
+        const options = parse(a, value);
             try std.testing.expectError(error.InvalidEmailSubject, composeUri(std.testing.allocator, options, &.{}));
     }
-    const invalid = parse("{'addresses': <'a@b'>}");
+    const invalid = parse(a, "{'addresses': <'a@b'>}");
     try std.testing.expectError(error.InvalidEmailOption, composeUri(std.testing.allocator, invalid, &.{}));
-    const missing = parse("{'attachment_fds': <[handle 0]>}");
+    const missing = parse(a, "{'attachment_fds': <[handle 0]>}");
     try std.testing.expectError(error.MissingFileDescriptor, composeUri(std.testing.allocator, missing, &.{}));
 }

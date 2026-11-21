@@ -118,14 +118,15 @@ var shared: [2]?*Source = .{ null, null };
 
 /// Returns the shared connection to `bus`, connecting on first use. Pair with `release`.
 /// Holders must cancel their pending calls and unsubscribe before releasing.
-pub fn acquire(bus: dbus.Bus) !*Source {
+/// The allocator used to create the connection must remain valid until its last release.
+pub fn acquire(allocator: std.mem.Allocator, bus: dbus.Bus) !*Source {
     const slot = &shared[@intFromEnum(bus)];
     if (slot.*) |source| if (!source.connection.closed) {
         source.refs += 1;
         return source;
     };
     // A broken connection stays with its current holders; new callers get a fresh one.
-    const source = try Source.open(std.heap.page_allocator, bus);
+    const source = try Source.open(allocator, bus);
     slot.* = source;
     return source;
 }
@@ -141,13 +142,12 @@ pub fn release(source: *Source) void {
 /// A single method call on a private connection that closes once the reply arrives.
 /// The handler always runs later from the main loop, exactly once, unless the
 /// request was cancelled, in which case it receives a failure named `Cancelled`.
-pub fn request(bus: dbus.Bus, target: dbus.Connection.Call, args: anytype, timeout_ms: u32, cancel: ?*c.GCancellable, handler: dbus.ReplyHandler, context: ?*anyopaque) void {
-    const allocator = std.heap.page_allocator;
+pub fn request(allocator: std.mem.Allocator, bus: dbus.Bus, target: dbus.Connection.Call, args: anytype, timeout_ms: u32, cancel: ?*c.GCancellable, handler: dbus.ReplyHandler, context: ?*anyopaque) void {
     const self = allocator.create(Request) catch {
         // Without memory there is no way to defer; failing synchronously is the only option.
         return handler(context, .{ .failed = .{ .name = "org.freedesktop.DBus.Error.NoMemory", .text = "Out of memory" } });
     };
-    self.* = .{ .handler = handler, .context = context, .cancel = cancel };
+    self.* = .{ .allocator = allocator, .handler = handler, .context = context, .cancel = cancel };
     if (cancel) |value| {
         _ = c.g_object_ref(value);
         if (c.g_cancellable_is_cancelled(value) != 0) return self.later(.cancelled);
@@ -159,6 +159,7 @@ pub fn request(bus: dbus.Bus, target: dbus.Connection.Call, args: anytype, timeo
 }
 
 const Request = struct {
+    allocator: std.mem.Allocator,
     handler: dbus.ReplyHandler,
     context: ?*anyopaque,
     cancel: ?*c.GCancellable,
@@ -206,7 +207,7 @@ const Request = struct {
         }
         self.handler(self.context, reply);
         if (self.cancel) |value| c.g_object_unref(value);
-        std.heap.page_allocator.destroy(self);
+        self.allocator.destroy(self);
     }
 };
 
@@ -215,11 +216,11 @@ pub fn ignore(_: ?*anyopaque, _: dbus.Reply) void {}
 
 /// Sends a desktop notification and ignores the outcome: a missing
 /// notification daemon must never affect the caller.
-pub fn notify(app_name: []const u8, icon: []const u8, summary: []const u8, body: []const u8, urgency: ?u8) void {
+pub fn notify(allocator: std.mem.Allocator, app_name: []const u8, icon: []const u8, summary: []const u8, body: []const u8, urgency: ?u8) void {
     const Hints = dbus.Dict([]const u8, dbus.Value);
     const entries = [_]Hints.Entry{.{ .key = "urgency", .value = .{ .byte = urgency orelse 1 } }};
     const hints: Hints = .{ .entries = if (urgency != null) &entries else &.{} };
-    request(.session, .{ .destination = "org.freedesktop.Notifications", .path = "/org/freedesktop/Notifications", .interface = "org.freedesktop.Notifications", .member = "Notify" }, .{ app_name, @as(u32, 0), icon, summary, body, @as([]const []const u8, &.{}), hints, @as(i32, -1) }, 3000, null, &ignore, null);
+    request(allocator, .session, .{ .destination = "org.freedesktop.Notifications", .path = "/org/freedesktop/Notifications", .interface = "org.freedesktop.Notifications", .member = "Notify" }, .{ app_name, @as(u32, 0), icon, summary, body, @as([]const []const u8, &.{}), hints, @as(i32, -1) }, 3000, null, &ignore, null);
 }
 
 /// Introspection XML for a single-instance service's `Command(as)` method.
@@ -228,8 +229,8 @@ pub fn commandXml(comptime name: []const u8) []const u8 {
 }
 /// Sends `args` to the process owning `name` and waits. A failure is printed as
 /// `program: reason` and exits with status 1; with no owner, nothing is started.
-pub fn forwardCommand(program: []const u8, name: []const u8, path: []const u8, args: []const []const u8) error{ NoSessionBus, SessionNotRunning }!void {
-    const connection = dbus.Connection.open(std.heap.page_allocator, .session) catch return error.NoSessionBus;
+pub fn forwardCommand(allocator: std.mem.Allocator, program: []const u8, name: []const u8, path: []const u8, args: []const []const u8) error{ NoSessionBus, SessionNotRunning }!void {
+    const connection = dbus.Connection.open(allocator, .session) catch return error.NoSessionBus;
     defer connection.close();
     const result = connection.callBlockingRaw(.{ .destination = name, .path = path, .interface = name, .member = "Command", .no_auto_start = true }, .{args}, 120000) catch return error.NoSessionBus;
     defer result.deinit();

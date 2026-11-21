@@ -1,7 +1,6 @@
 //! Direct Linux power controls. Only main() runs privileged; the panel uses inspect().
 const std = @import("std");
 const c = @import("desktop-libc.zig");
-const a = std.heap.page_allocator;
 
 pub const Profile = enum {
     performance,
@@ -54,21 +53,22 @@ const Change = struct {
     value: []const u8,
 };
 const Plan = struct {
+    allocator: std.mem.Allocator,
     changes: std.ArrayList(Change) = .empty,
     fn deinit(self: *Plan) void {
         for (self.changes.items) |change| {
-            a.free(change.file);
-            a.free(change.previous);
+            self.allocator.free(change.file);
+            self.allocator.free(change.previous);
         }
-        self.changes.deinit(a);
+        self.changes.deinit(self.allocator);
     }
     fn add(self: *Plan, file: [:0]const u8, value: []const u8) !void {
         var buffer: [256]u8 = undefined;
-        const old = try a.dupe(u8, try read(file, &buffer));
-        errdefer a.free(old);
-        const name = try a.dupeSentinel(u8, file, 0);
-        errdefer a.free(name);
-        try self.changes.append(a, .{ .file = name, .previous = old, .value = value });
+        const old = try self.allocator.dupe(u8, try read(file, &buffer));
+        errdefer self.allocator.free(old);
+        const name = try self.allocator.dupeSentinel(u8, file, 0);
+        errdefer self.allocator.free(name);
+        try self.changes.append(self.allocator, .{ .file = name, .previous = old, .value = value });
     }
     fn matches(self: Plan) bool {
         for (self.changes.items) |change| if (!std.mem.eql(u8, change.previous, change.value)) return false;
@@ -81,8 +81,8 @@ pub const Backend = struct {
     root: []const u8 = "/sys",
     state: []const u8 = "/var/lib/desktop-power",
 
-    fn plan(self: Backend, profile: Profile) !Plan {
-        var result = Plan{};
+    fn plan(self: Backend, a: std.mem.Allocator, profile: Profile) !Plan {
+        var result = Plan{ .allocator = a };
         errdefer result.deinit();
         var name: Path = undefined;
         var buffer: [1024]u8 = undefined;
@@ -128,10 +128,10 @@ pub const Backend = struct {
         return result;
     }
 
-    pub fn inspect(self: Backend) State {
+    pub fn inspect(self: Backend, a: std.mem.Allocator) State {
         var state = State{};
         inline for (std.meta.tags(Profile), 0..) |profile, i| {
-            if (self.plan(profile)) |value| {
+            if (self.plan(a, profile)) |value| {
                 var candidate = value;
                 defer candidate.deinit();
                 state.available[i] = true;
@@ -141,8 +141,8 @@ pub const Backend = struct {
         return state;
     }
 
-    pub fn apply(self: Backend, profile: Profile) !void {
-        var changes = try self.plan(profile);
+    pub fn apply(self: Backend, a: std.mem.Allocator, profile: Profile) !void {
+        var changes = try self.plan(a, profile);
         defer changes.deinit();
         var failure: ?anyerror = null;
         for (changes.changes.items) |change| {
@@ -180,20 +180,19 @@ pub const Backend = struct {
         if (c.rename(staging.ptr, destination.ptr) != 0) return error.SaveFailed;
     }
 
-    pub fn restore(self: Backend) !void {
+    pub fn restore(self: Backend, a: std.mem.Allocator) !void {
         var name: Path = undefined;
         var buffer: [64]u8 = undefined;
         const value = read(try path(&name, "{s}/profile", .{self.state}), &buffer) catch |err| switch (err) {
             error.FileNotFound => "balanced",
             else => return err,
         };
-        try self.apply(try Profile.parse(value));
+        try self.apply(a, try Profile.parse(value));
     }
 };
 
 pub fn runArgs(init: std.process.Init, args: []const []const u8) !void {
-    _ = init;
-    var arena = std.heap.ArenaAllocator.init(a);
+    var arena = std.heap.ArenaAllocator.init(init.gpa);
     defer arena.deinit();
     // Validate before opening files. No arbitrary paths or commands are accepted.
     const restore = args.len == 2 and std.mem.eql(u8, args[1], "restore");
@@ -205,8 +204,8 @@ pub fn runArgs(init: std.process.Init, args: []const []const u8) !void {
     if (c.flock(fd, c.LOCK_EX) != 0) return error.LockFailed;
     const backend = Backend{};
     if (profile) |selected| {
-        try backend.apply(selected);
-    } else backend.restore() catch |err| switch (err) {
+        try backend.apply(init.gpa, selected);
+    } else backend.restore(init.gpa) catch |err| switch (err) {
         error.NoSupportedControls => {},
         else => return err,
     };

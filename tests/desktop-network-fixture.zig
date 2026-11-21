@@ -33,7 +33,7 @@ fn settle() void {
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     defer std.heap.page_allocator.free(args);
-    const client = try network.Client.create(&changed, null);
+    const client = try network.Client.create(init.gpa, &changed, null);
     defer {
         client.destroy();
         settle();
@@ -58,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, args[1], "ui-parity")) {
-        const window = settings.Settings.create(.network);
+        const window = settings.Settings.create(init.gpa, .network);
         settle();
         try std.testing.expect(window.rows.items.len > 0);
         for (window.ui.items.items) |item| try std.testing.expect(item.kind != .choice);
@@ -136,7 +136,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.startsWith(u8, args[1], "preview")) {
-        const window = settings.Settings.create(.network);
+        const window = settings.Settings.create(init.gpa, .network);
         if (std.mem.eql(u8, args[1], "preview-network")) window.showPage(.network);
         if (std.mem.eql(u8, args[1], "preview-search")) {
             window.ui.activate(window.view.search);
@@ -158,7 +158,7 @@ pub fn main(init: std.process.Init) !void {
         const Noop = struct {
             fn paint(_: ?*anyopaque, _: @import("desktop").window.wire.Pixels) void {}
         };
-        const parent = try @import("desktop").window.Window.create("Fixture parent", "fixture-parent", 620, 700, &Noop.paint, null);
+        const parent = try @import("desktop").window.Window.create(init.gpa, "Fixture parent", "fixture-parent", 620, 700, &Noop.paint, null);
         defer parent.destroy();
         const is_new = std.mem.eql(u8, args[1], "new");
         const ui = editor.Editor.create(parent, if (is_new) null else state.profiles.items[0]);
@@ -202,8 +202,8 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, args[1], "ui")) {
-        const controls = quick.Controls.create("true", "true");
-        const ui = settings.Settings.create(.network);
+        const controls = quick.Controls.create(init.gpa, "true", "true");
+        const ui = settings.Settings.create(init.gpa, .network);
         try std.testing.expect(ui.network_client.?.service == client.service);
         try std.testing.expect(controls.devices.network_client.?.service == client.service);
         settle();

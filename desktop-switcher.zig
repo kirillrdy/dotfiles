@@ -7,7 +7,6 @@ const capture = @import("desktop-capture.zig");
 const raster = @import("desktop-raster.zig");
 const fonts = @import("desktop-text.zig");
 const cast = c.__zig.cast;
-const a = std.heap.page_allocator;
 pub const Item = struct {
     id: [256:0]u8 = @splat(0),
     app_id: [256:0]u8 = @splat(0),
@@ -41,13 +40,13 @@ var preview_width: i32 = 0;
 var preview_height: i32 = 0;
 
 // GLib's idle queue is thread safe; presentation stays on the main thread.
-pub fn publish(snapshot: Snapshot) void {
-    const copy = a.create(Snapshot) catch return;
-    copy.* = snapshot;
-    _ = c.g_idle_add(&update, copy);
+pub fn publish(a: std.mem.Allocator, snapshot: Snapshot) void {
+    const pending = a.create(Update) catch return;
+    pending.* = .{ .allocator = a, .snapshot = snapshot };
+    _ = c.g_idle_add(&update, pending);
 }
-pub fn deinit() void {
-    stopPreviews();
+pub fn deinit(a: std.mem.Allocator) void {
+    stopPreviews(a);
     if (client) |value| value.destroy();
     client = null;
     if (connection) |value| value.destroy();
@@ -55,15 +54,15 @@ pub fn deinit() void {
     window = null;
     preview_window = null;
     monitor = null;
-    clearAssets();
+    clearAssets(a);
     renderer.deinit();
     displayed = .{};
     latest = .{};
     previews = .{};
 }
-fn clearAssets() void {
+fn clearAssets(a: std.mem.Allocator) void {
     for (&icons, &labels, &label_masks) |*icon, *label, *mask| {
-        if (icon.*) |value| c.__icons.free(value);
+        if (icon.*) |value| c.__icons.free(a, value);
         if (label.*) |value| a.free(value);
         if (mask.*) |value| value.deinit(a);
         icon.* = null;
@@ -75,7 +74,7 @@ fn clearAssets() void {
 fn outputAdded(_: ?*anyopaque, _: *native.Output) void {}
 fn outputRemoved(_: ?*anyopaque, output: *native.Output) void {
     if (monitor != output) return;
-    stopPreviews();
+    stopPreviews(output.client.allocator);
     if (window) |value| value.destroy();
     if (preview_window) |value| value.destroy();
     window = null;
@@ -83,23 +82,25 @@ fn outputRemoved(_: ?*anyopaque, output: *native.Output) void {
     monitor = null;
 }
 fn outputChanged(_: ?*anyopaque, output: *native.Output) void {
-    if (monitor == output and latest.visible) present(&latest) catch |err| std.log.warn("switcher layout: {s}", .{@errorName(err)});
+    if (monitor == output and latest.visible) present(output.client.allocator, &latest) catch |err| std.log.warn("switcher layout: {s}", .{@errorName(err)});
 }
+const Update = struct { allocator: std.mem.Allocator, snapshot: Snapshot };
 fn update(data: c.gpointer) callconv(.c) c.gboolean {
-    const snapshot = cast(Snapshot, data);
-    defer a.destroy(snapshot);
-    present(snapshot) catch |err| std.log.warn("switcher: {s}", .{@errorName(err)});
+    const pending = cast(Update, data);
+    defer pending.allocator.destroy(pending);
+    present(pending.allocator, &pending.snapshot) catch |err| std.log.warn("switcher: {s}", .{@errorName(err)});
     return 0;
 }
-fn present(snapshot: *const Snapshot) !void {
+fn present(allocator: std.mem.Allocator, snapshot: *const Snapshot) !void {
+    const a = if (connection) |existing| existing.allocator else allocator;
     if (!snapshot.visible or snapshot.len == 0) {
-        stopPreviews();
+        stopPreviews(a);
         latest = .{};
         if (window) |value| value.hide();
         return;
     }
     if (connection == null) {
-        const value = try native.Client.create(.{ .added = &outputAdded, .removed = &outputRemoved, .changed = &outputChanged }, null);
+        const value = try native.Client.create(a, .{ .added = &outputAdded, .removed = &outputRemoved, .changed = &outputChanged }, null);
         errdefer value.destroy();
         try value.start();
         connection = value;
@@ -115,7 +116,7 @@ fn present(snapshot: *const Snapshot) !void {
     const target = output orelse return error.NoOutputs;
     const moved = monitor != target;
     if (moved) {
-        stopPreviews();
+        stopPreviews(a);
         if (window) |value| value.destroy();
         if (preview_window) |value| value.destroy();
         window = null;
@@ -136,7 +137,7 @@ fn present(snapshot: *const Snapshot) !void {
         }
     };
     icon_size = next_size;
-    if (!same_items) loadAssets(&apps, target.scale);
+    if (!same_items) loadAssets(a, &apps, target.scale);
     const old_selected = selected(&latest);
     const new_selected = selected(snapshot);
     const changed_app = moved or old_selected == null or new_selected == null or !sameApp(old_selected.?, new_selected.?);
@@ -149,14 +150,14 @@ fn present(snapshot: *const Snapshot) !void {
     window.?.setLayout(width, height, 0, 0);
     try window.?.show();
     if (changed_app or leaving_windows) {
-        stopPreviews();
+        stopPreviews(a);
         if (changed_app) delay = c.g_timeout_add(500, &reveal, null);
     }
     if (snapshot.window_selection) showing_previews = true;
     if (showing_previews) try showPreviews();
 }
-fn loadAssets(snapshot: *const Snapshot, scale: u32) void {
-    clearAssets();
+fn loadAssets(a: std.mem.Allocator, snapshot: *const Snapshot, scale: u32) void {
+    clearAssets(a);
     for (snapshot.items[0..snapshot.len], 0..) |*item, i| {
         const id = std.fmt.allocPrintSentinel(a, "{s}.desktop", .{std.mem.sliceTo(&item.app_id, 0)}, 0) catch @panic("switcher desktop id");
         defer a.free(id);
@@ -164,14 +165,14 @@ fn loadAssets(snapshot: *const Snapshot, scale: u32) void {
         defer if (info) |value| c.g_object_unref(value);
         const name: [*:0]const u8 = if (info) |value| c.g_app_info_get_display_name(@ptrCast(value)) else &item.title;
         labels[i] = a.dupeSentinel(u8, std.mem.span(name), 0) catch @panic("switcher label");
-        label_masks[i] = makeLabel(labels[i].?, icon_size + 19, scale) catch null;
+        label_masks[i] = makeLabel(a, labels[i].?, icon_size + 19, scale) catch null;
         const gicon = if (info) |value| c.g_app_info_get_icon(@ptrCast(value)) else null;
         const size = @as(u32, @intCast(icon_size)) * scale;
-        icons[i] = @import("desktop-icons.zig").loadThemed(gicon, size, null, "application-x-executable");
+        icons[i] = @import("desktop-icons.zig").loadThemed(a, gicon, size, null, "application-x-executable");
     }
     asset_scale = scale;
 }
-fn makeLabel(value: [:0]const u8, width: i32, scale: u32) !fonts.Mask {
+fn makeLabel(a: std.mem.Allocator, value: [:0]const u8, width: i32, scale: u32) !fonts.Mask {
     return renderer.renderLayout(a, value, .{
         .size = 11.0 * 96.0 / 72.0 * @as(f64, @floatFromInt(scale)),
         .width = @as(u32, @intCast(@max(1, width))) * scale,
@@ -180,7 +181,7 @@ fn makeLabel(value: [:0]const u8, width: i32, scale: u32) !fonts.Mask {
         .origin = .top,
     });
 }
-fn clearPreviewLabels() void {
+fn clearPreviewLabels(a: std.mem.Allocator) void {
     for (&preview_masks) |*mask| {
         if (mask.*) |value| value.deinit(a);
         mask.* = null;
@@ -189,7 +190,7 @@ fn clearPreviewLabels() void {
     preview_mask_width = 0;
     preview_mask_scale = 0;
 }
-fn preparePreviewLabels(items: *const Snapshot, scale: u32) void {
+fn preparePreviewLabels(a: std.mem.Allocator, items: *const Snapshot, scale: u32) void {
     var same = preview_mask_items.len == items.len and preview_mask_width == preview_width + 4 and preview_mask_scale == scale;
     if (same) for (items.items[0..items.len], preview_mask_items.items[0..items.len]) |current, cached| {
         if (!std.mem.eql(u8, &current.title, &cached.title)) {
@@ -198,8 +199,8 @@ fn preparePreviewLabels(items: *const Snapshot, scale: u32) void {
         }
     };
     if (same) return;
-    clearPreviewLabels();
-    for (items.items[0..items.len], 0..) |*item, i| preview_masks[i] = makeLabel(std.mem.sliceTo(&item.title, 0), preview_width + 4, scale) catch null;
+    clearPreviewLabels(a);
+    for (items.items[0..items.len], 0..) |*item, i| preview_masks[i] = makeLabel(a, std.mem.sliceTo(&item.title, 0), preview_width + 4, scale) catch null;
     preview_mask_items = items.*;
     preview_mask_width = preview_width + 4;
     preview_mask_scale = scale;
@@ -239,8 +240,8 @@ fn draw(_: ?*anyopaque, buffer: native.Pixels) void {
         arrow(canvas, x + (item_width - 8) / 2, 17 + item_width, item);
     }
 }
-fn stopPreviews() void {
-    clearPreviewLabels();
+fn stopPreviews(a: std.mem.Allocator) void {
+    clearPreviewLabels(a);
     if (delay != 0) _ = c.g_source_remove(delay);
     if (ticker != 0) _ = c.g_source_remove(ticker);
     delay = 0;
@@ -258,9 +259,10 @@ fn reveal(_: c.gpointer) callconv(.c) c.gboolean {
     return 0;
 }
 fn showPreviews() !void {
+    const a = if (connection) |value| value.allocator else return;
     const items = previewItems(&latest);
     if (items.len == 0 or (items.len == 1 and !latest.window_selection)) {
-        stopPreviews();
+        stopPreviews(a);
         return;
     }
     const output = monitor orelse return;
@@ -271,7 +273,7 @@ fn showPreviews() !void {
     const app_height = icon_size + 57;
     const panel_y = @divTrunc(screen_height - app_height, 2) + app_height + 24;
     preview_height = @min(256, @max(48, screen_height - panel_y - 26 - 16 - 6 - 19));
-    preparePreviewLabels(&items, output.scale);
+    preparePreviewLabels(a, &items, output.scale);
     previews = items;
     var active_index: i32 = 0;
     for (displayed.items[0..displayed.len], 0..) |item, i| if (item.selected) {
@@ -285,7 +287,7 @@ fn showPreviews() !void {
     if (preview_window == null) preview_window = try native.Surface.createPixels(output, .{ .namespace = "desktop-switcher-windows", .layer = 3, .anchors = native.top | native.left, .width = @intCast(panel_width), .height = @intCast(panel_height) }, &drawPreviews, null);
     preview_window.?.setLayout(@intCast(panel_width), @intCast(panel_height), @max(0, @min(panel_y, screen_height - panel_height)), @max(0, @min(x, screen_width - panel_width)));
     try preview_window.?.show();
-    if (client == null) client = capture.Client.create(null, &captureChanged) catch null;
+    if (client == null) client = capture.Client.create(a, null, &captureChanged) catch null;
     if (client) |value| {
         value.refresh();
         value.visible(true);
@@ -377,14 +379,14 @@ test "application grouping counts windows without merging missing app IDs" {
 test "integration: native switcher preserves its role and icons across selection changes" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
     const probe = @import("tests/desktop-surface-capture.zig");
-    defer deinit();
+    defer deinit(std.testing.allocator);
     var snapshot: Snapshot = .{ .len = 3, .visible = true };
     @memcpy(snapshot.items[0].title[0..5], "First");
     @memcpy(snapshot.items[1].title[0..6], "Second");
     @memcpy(snapshot.items[1].app_id[0..7], "Browser");
     @memcpy(snapshot.items[2].app_id[0..7], "Browser");
     snapshot.items[0].selected = true;
-    try present(&snapshot);
+    try present(std.testing.allocator, &snapshot);
     probe.pump();
     const original_window = window.?;
     const original_role = original_window.role;
@@ -398,7 +400,7 @@ test "integration: native switcher preserves its role and icons across selection
     try std.testing.expectEqual(@as(u32, 153), original_window.height);
     snapshot.items[0].selected = false;
     snapshot.items[1].selected = true;
-    try present(&snapshot);
+    try present(std.testing.allocator, &snapshot);
     probe.pump();
     try std.testing.expectEqual(original_window, window.?);
     try std.testing.expectEqual(original_role, window.?.role);
@@ -415,34 +417,34 @@ test "integration: native switcher preserves its role and icons across selection
     try std.testing.expectEqual(@as(u32, 0x2e2e33), frame.pixel(x + 145, y + 10));
 
     snapshot.window_selection = true;
-    try present(&snapshot);
+    try present(std.testing.allocator, &snapshot);
     probe.pump();
     try std.testing.expect(showing_previews and preview_window.?.configured);
     try std.testing.expectEqual(@as(usize, 2), previews.len);
     const preview_role = preview_window.?.role;
     snapshot.items[1].selected = false;
     snapshot.items[2].selected = true;
-    try present(&snapshot);
+    try present(std.testing.allocator, &snapshot);
     probe.pump();
     try std.testing.expectEqual(preview_role, preview_window.?.role);
     try std.testing.expect(!previews.items[0].selected and previews.items[1].selected);
     try std.testing.expectEqual(original_proxy, window.?.proxy);
     const output_name = std.mem.sliceTo(&monitor.?.label, 0);
     const outputs = @import("desktop-output.zig");
-    defer outputs.run(&.{ "--output", output_name, "--scale", "1" }) catch {};
-    try outputs.run(&.{ "--output", output_name, "--scale", "2" });
+    defer outputs.run(std.testing.allocator, &.{ "--output", output_name, "--scale", "1" }) catch {};
+    try outputs.run(std.testing.allocator, &.{ "--output", output_name, "--scale", "2" });
     probe.pump();
     try std.testing.expectEqual(@as(u32, 2), asset_scale);
     try std.testing.expectEqual(original_proxy, window.?.proxy);
     try std.testing.expect(window.?.buffers[0].?.width == window.?.width * 2 or (window.?.buffers[1] != null and window.?.buffers[1].?.width == window.?.width * 2));
-    try outputs.run(&.{ "--output", output_name, "--scale", "1" });
+    try outputs.run(std.testing.allocator, &.{ "--output", output_name, "--scale", "1" });
     probe.pump();
     try std.testing.expectEqual(@as(u32, 1), asset_scale);
     const restored_icon = if (icons[0]) |icon| icon.pixels.ptr else null;
-    try present(&.{});
+    try present(std.testing.allocator, &.{});
     try std.testing.expect(window.?.role == null and preview_window.?.role == null);
     try std.testing.expectEqual(@as(c.guint, 0), ticker);
-    try present(&snapshot);
+    try present(std.testing.allocator, &snapshot);
     probe.pump();
     try std.testing.expectEqual(original_window, window.?);
     try std.testing.expectEqual(restored_icon, if (icons[0]) |icon| icon.pixels.ptr else null);
@@ -477,7 +479,7 @@ test "window preview rendering fits the captured image without stretching" {
     defer image.deinit(std.testing.allocator);
     var source: capture.Window = .{ .client = undefined, .handle = undefined, .id = @constCast("test-window"), .image = image };
     var sources = [_]*capture.Window{&source};
-    var fake: capture.Client = .{ .connection = undefined, .registry = undefined, .context = null, .changed = &captureChanged };
+    var fake: capture.Client = .{ .allocator = std.testing.allocator, .connection = undefined, .registry = undefined, .context = null, .changed = &captureChanged };
     fake.windows.items = &sources;
     fake.windows.capacity = 1;
     client = &fake;
@@ -487,8 +489,9 @@ test "window preview rendering fits the captured image without stretching" {
     preview_width = 128;
     preview_height = 128;
     var pixels: [170 * 195]u32 = @splat(0);
-    preparePreviewLabels(&previews, 1);
-    defer clearPreviewLabels();
+    defer renderer.deinit();
+    preparePreviewLabels(std.testing.allocator, &previews, 1);
+    defer clearPreviewLabels(std.testing.allocator);
     try std.testing.expect(preview_masks[0] != null);
     drawPreviews(null, .{ .pixels = &pixels, .width = 170, .height = 195 });
     try std.testing.expectEqual(@as(u32, 0xff00ff00), pixels[85 * 170 + 85]);
@@ -560,8 +563,8 @@ test "Zig switcher panels and highlights agree with Cairo at multiple scales" {
 
 test "native icon scaling preserves Cairo colors and alpha" {
     const decode = @import("desktop-decode.zig");
-    const icon = try decode.create(7, 5);
-    defer decode.free(icon);
+    const icon = try decode.create(std.testing.allocator, 7, 5);
+    defer decode.free(std.testing.allocator, icon);
     const source = icon.view();
     var random: std.Random.DefaultPrng = .init(42);
     for (std.mem.bytesAsSlice(u32, icon.pixels)) |*pixel| {

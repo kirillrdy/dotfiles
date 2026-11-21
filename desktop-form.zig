@@ -6,7 +6,6 @@ const text = @import("desktop-text.zig");
 const input = @import("desktop-password-entry.zig");
 pub const host = @import("desktop-window.zig");
 const wire = host.wire;
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 pub const Rect = @import("desktop-askpass-view.zig").Rect;
 pub const Kind = enum { heading, label, entry, toggle, button, choice };
@@ -34,18 +33,18 @@ pub const Item = struct {
     option_masks: std.ArrayList(text.Mask) = .empty,
     bounds: Rect = .{ .x = 24, .y = 0, .width = 512, .height = 40 },
     fn invalidate(self: *Item) void {
-        for ([_]?text.Mask{ self.title_mask, self.hint_mask, self.choice_mask }) |mask| if (mask) |m| m.deinit(a);
+        for ([_]?text.Mask{ self.title_mask, self.hint_mask, self.choice_mask }) |mask| if (mask) |m| m.deinit(self.owner.allocator);
         self.title_mask = null;
         self.hint_mask = null;
         self.choice_mask = null;
-        for (self.option_masks.items) |mask| mask.deinit(a);
+        for (self.option_masks.items) |mask| mask.deinit(self.owner.allocator);
         self.option_masks.clearRetainingCapacity();
     }
     fn clearOptions(self: *Item) void {
         self.invalidate();
         for (self.options.items) |option| {
-            a.free(option.id);
-            a.free(option.label);
+            self.owner.allocator.free(option.id);
+            self.owner.allocator.free(option.label);
         }
         self.options.clearRetainingCapacity();
     }
@@ -58,6 +57,7 @@ pub const Item = struct {
 };
 
 pub const Form = struct {
+    allocator: std.mem.Allocator,
     window: *host.Window,
     viewport_height: u32 = 700,
     offset: f64 = 0,
@@ -98,13 +98,13 @@ pub const Form = struct {
     closed: bool = false,
     renderer: text.Renderer = .{},
     title_mask: ?text.Mask = null,
-    pub fn create(title: [:0]const u8, context: ?*anyopaque, action: *const fn (?*anyopaque, usize) void, changed: *const fn (?*anyopaque, usize) void) !*Form {
+    pub fn create(a: std.mem.Allocator, title: [:0]const u8, context: ?*anyopaque, action: *const fn (?*anyopaque, usize) void, changed: *const fn (?*anyopaque, usize) void) !*Form {
         const self = try a.create(Form);
         errdefer a.destroy(self);
         const owned_title = try a.dupeSentinel(u8, title, 0);
         errdefer a.free(owned_title);
-        const window = try host.Window.create(owned_title, "desktop-form", 620, 700, &draw, self);
-        self.* = .{ .window = window, .title = owned_title, .context = context, .action = action, .changed = changed };
+        const window = try host.Window.create(a, owned_title, "desktop-form", 620, 700, &draw, self);
+        self.* = .{ .allocator = a, .window = window, .title = owned_title, .context = context, .action = action, .changed = changed };
         window.context = self;
         window.closed = &destroyed;
         window.surface.?.options.min_width = 480;
@@ -116,36 +116,36 @@ pub const Form = struct {
     pub fn deinit(self: *Form) void {
         self.closed = true;
         if (self.action_idle != 0) _ = c.g_source_remove(self.action_idle);
-        self.actions.deinit(a);
+        self.actions.deinit(self.allocator);
         for (self.items.items) |item| {
             if (item.entry) |entry| entry.destroy();
             item.clearOptions();
-            item.options.deinit(a);
-            item.option_masks.deinit(a);
-            a.free(item.title);
-            a.free(item.hint);
-            a.destroy(item);
+            item.options.deinit(self.allocator);
+            item.option_masks.deinit(self.allocator);
+            self.allocator.free(item.title);
+            self.allocator.free(item.hint);
+            self.allocator.destroy(item);
         }
-        self.items.deinit(a);
-        if (self.title_mask) |mask| mask.deinit(a);
+        self.items.deinit(self.allocator);
+        if (self.title_mask) |mask| mask.deinit(self.allocator);
         self.renderer.deinit();
         self.window.destroy();
-        a.free(self.image);
-        a.free(self.footer_image);
-        a.free(self.title);
-        a.destroy(self);
+        self.allocator.free(self.image);
+        self.allocator.free(self.footer_image);
+        self.allocator.free(self.title);
+        self.allocator.destroy(self);
     }
     pub fn add(self: *Form, kind: Kind, title: [:0]const u8, hint: [:0]const u8, secret: bool) !usize {
-        try self.items.ensureUnusedCapacity(a, 1);
-        const item = try a.create(Item);
-        errdefer a.destroy(item);
-        const owned_title = try a.dupeSentinel(u8, title, 0);
-        errdefer a.free(owned_title);
-        const owned_hint = try a.dupeSentinel(u8, hint, 0);
-        errdefer a.free(owned_hint);
+        try self.items.ensureUnusedCapacity(self.allocator, 1);
+        const item = try self.allocator.create(Item);
+        errdefer self.allocator.destroy(item);
+        const owned_title = try self.allocator.dupeSentinel(u8, title, 0);
+        errdefer self.allocator.free(owned_title);
+        const owned_hint = try self.allocator.dupeSentinel(u8, hint, 0);
+        errdefer self.allocator.free(owned_hint);
         item.* = .{ .owner = self, .id = self.items.items.len, .kind = kind, .title = owned_title, .hint = owned_hint };
         if (kind == .entry) {
-            item.entry = try input.Entry.create(&entryChanged, item);
+            item.entry = try input.Entry.create(self.allocator, &entryChanged, item);
             item.entry.?.client = self.window.surface.?.client;
             if (!secret) item.entry.?.makePublic();
         }
@@ -190,11 +190,11 @@ pub const Form = struct {
         for (self.items.items[count..]) |item| {
             if (item.entry) |entry| entry.destroy();
             item.clearOptions();
-            item.options.deinit(a);
-            item.option_masks.deinit(a);
-            a.free(item.title);
-            a.free(item.hint);
-            a.destroy(item);
+            item.options.deinit(self.allocator);
+            item.option_masks.deinit(self.allocator);
+            self.allocator.free(item.title);
+            self.allocator.free(item.hint);
+            self.allocator.destroy(item);
         }
         self.items.shrinkRetainingCapacity(count);
         self.relayout();
@@ -210,8 +210,8 @@ pub const Form = struct {
             entry.clear();
             try entry.insert(value);
         } else {
-            const copy = try a.dupeSentinel(u8, value, 0);
-            a.free(field.title);
+            const copy = try self.allocator.dupeSentinel(u8, value, 0);
+            self.allocator.free(field.title);
             field.title = copy;
             field.invalidate();
         }
@@ -232,25 +232,25 @@ pub const Form = struct {
         var next: std.ArrayList(Option) = .empty;
         errdefer {
             for (next.items) |option| {
-                a.free(option.id);
-                a.free(option.label);
+                self.allocator.free(option.id);
+                self.allocator.free(option.label);
             }
-            next.deinit(a);
+            next.deinit(self.allocator);
         }
-        try next.ensureTotalCapacity(a, options.len);
+        try next.ensureTotalCapacity(self.allocator, options.len);
         var selected: ?usize = null;
         const previous = field.selectedId();
         for (options, 0..) |option, index| {
-            const key_copy = try a.dupeSentinel(u8, option.id, 0);
-            errdefer a.free(key_copy);
-            const label_copy = try a.dupeSentinel(u8, option.label, 0);
+            const key_copy = try self.allocator.dupeSentinel(u8, option.id, 0);
+            errdefer self.allocator.free(key_copy);
+            const label_copy = try self.allocator.dupeSentinel(u8, option.label, 0);
             next.appendAssumeCapacity(.{ .id = key_copy, .label = label_copy });
             if (previous) |key_value| if (std.mem.eql(u8, key_value, option.id)) {
                 selected = index;
             };
         }
         field.clearOptions();
-        field.options.deinit(a);
+        field.options.deinit(self.allocator);
         field.options = next;
         field.selected = selected orelse if (default_first and options.len != 0) @as(?usize, 0) else null;
         if (self.expanded == id) self.option_cursor = @min(self.option_cursor, options.len -| 1);
@@ -265,7 +265,7 @@ pub const Form = struct {
                 break;
             }
         };
-        if (field.choice_mask) |mask| mask.deinit(a);
+        if (field.choice_mask) |mask| mask.deinit(self.allocator);
         field.choice_mask = null;
         self.redraw();
         return field.selected != null;
@@ -392,7 +392,7 @@ pub const Form = struct {
         switch (field.kind) {
             .button => {
                 if (self.dispatching) {
-                    self.actions.append(a, id) catch {
+                    self.actions.append(self.allocator, id) catch {
                         self.close();
                         return;
                     };
@@ -650,7 +650,7 @@ pub const Form = struct {
         const self = cast(Form, ptr);
         self.paintWindow(target) catch self.close();
     }
-    fn resizeImage(storage: *[]u32, width: u32, height: u32) !raster.Buffer {
+    fn resizeImage(a: std.mem.Allocator, storage: *[]u32, width: u32, height: u32) !raster.Buffer {
         const bytes = try wire.bufferSize(width, height);
         if (storage.len != bytes / 4) {
             const pixels = try a.alloc(u32, bytes / 4);
@@ -672,23 +672,23 @@ pub const Form = struct {
         }
         self.clampOffset();
         const body = self.bodyHeight() * scale;
-        const image = try resizeImage(&self.image, target.width, @max(self.height * scale, body));
+        const image = try resizeImage(self.allocator, &self.image, target.width, @max(self.height * scale, body));
         try self.paintPixels(image, scale, false);
         const start: usize = @intFromFloat(self.offset * @as(f64, @floatFromInt(scale)));
         for (0..body) |row| @memcpy(target.pixels[row * target.width ..][0..target.width], image.pixels[(start + row) * target.width ..][0..target.width]);
         if (body < target.height) {
-            const footer = try resizeImage(&self.footer_image, target.width, self.footer_height * scale);
+            const footer = try resizeImage(self.allocator, &self.footer_image, target.width, self.footer_height * scale);
             try self.paintPixels(footer, scale, true);
             @memcpy(target.pixels[@as(usize, body) * target.width ..], footer.pixels[0 .. @as(usize, target.height - body) * target.width]);
         }
     }
     fn makeMask(self: *Form, value: [:0]const u8, width: u32, bold: bool) !text.Mask {
         const scale: f64 = @floatFromInt(self.scale);
-        return self.renderer.renderLayout(a, value, .{ .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans", .size = (if (bold) @as(f64, 15) else 14) * scale, .dpi = 96 * scale, .width = width * self.scale, .lines = 2, .ellipsize = true, .origin = .top });
+        return self.renderer.renderLayout(self.allocator, value, .{ .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans", .size = (if (bold) @as(f64, 15) else 14) * scale, .dpi = 96 * scale, .width = width * self.scale, .lines = 2, .ellipsize = true, .origin = .top });
     }
     fn prepareLayout(self: *Form, width: u32, scale: u32) void {
         if (self.scale != scale or self.width != width) {
-            if (self.title_mask) |old| old.deinit(a);
+            if (self.title_mask) |old| old.deinit(self.allocator);
             self.title_mask = null;
             for (self.items.items) |field| field.invalidate();
             self.scale = scale;
@@ -705,7 +705,7 @@ pub const Form = struct {
         }
         @memset(target.pixels, 0xff242428);
         const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(scale) };
-        if (self.title_mask == null) self.title_mask = try self.renderer.renderLayout(a, self.title, .{ .font = "Adwaita Sans Bold", .size = 22 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = (width - 48) * scale, .ellipsize = true, .origin = .top });
+        if (self.title_mask == null) self.title_mask = try self.renderer.renderLayout(self.allocator, self.title, .{ .font = "Adwaita Sans Bold", .size = 22 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = (width - 48) * scale, .ellipsize = true, .origin = .top });
         if (!footer) drawText(canvas, self.title_mask.?, 24, 24, 0xffffff);
         for (self.items.items) |field| {
             if (field.pinned != footer) continue;
@@ -746,8 +746,8 @@ pub const Form = struct {
                 for (field.options.items, 0..) |option, index| {
                     if (field.option_masks.items.len <= index) {
                         const label_mask = try self.makeMask(option.label, width - 80, false);
-                        field.option_masks.append(a, label_mask) catch |err| {
-                            label_mask.deinit(a);
+                        field.option_masks.append(self.allocator, label_mask) catch |err| {
+                            label_mask.deinit(self.allocator);
                             return err;
                         };
                     }
@@ -766,6 +766,7 @@ fn drawText(canvas: raster.Canvas, mask_value: text.Mask, x: f64, y: f64, tint: 
 
 test "integration: native forms preserve selections, isolate passwords and navigate controls" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
+    defer host.deinit();
     const Callbacks = struct {
         edits: usize = 0,
         actions: usize = 0,
@@ -777,7 +778,7 @@ test "integration: native forms preserve selections, isolate passwords and navig
         }
     };
     var callbacks: Callbacks = .{};
-    const form = try Form.create("Native form", &callbacks, &Callbacks.action, &Callbacks.changed);
+    const form = try Form.create(std.testing.allocator, "Native form", &callbacks, &Callbacks.action, &Callbacks.changed);
     defer form.deinit();
     const name = try form.add(.entry, "Network name", "", false);
     const secret = try form.add(.entry, "Password", "", true);
@@ -863,6 +864,7 @@ test "integration: native forms preserve selections, isolate passwords and navig
 
 test "integration: native form children share their parent connection and close before parent teardown" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
+    defer host.deinit();
     const Owner = struct {
         closes: usize = 0,
         fn action(_: ?*anyopaque, _: usize) void {}
@@ -872,9 +874,9 @@ test "integration: native form children share their parent connection and close 
         }
     };
     var owner: Owner = .{};
-    const parent = try Form.create("Parent form", &owner, &Owner.action, &Owner.changed);
+    const parent = try Form.create(std.testing.allocator, "Parent form", &owner, &Owner.action, &Owner.changed);
     defer parent.deinit();
-    const child = try Form.create("Child form", &owner, &Owner.action, &Owner.changed);
+    const child = try Form.create(std.testing.allocator, "Child form", &owner, &Owner.action, &Owner.changed);
     defer child.deinit();
     parent.close_callback = &Owner.closed;
     child.close_callback = &Owner.closed;

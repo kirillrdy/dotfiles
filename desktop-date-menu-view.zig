@@ -162,7 +162,7 @@ pub const View = struct {
                     try actions.append(a, .{ .key = try jsonString(a, action.object.get("key")), .label = try jsonString(a, action.object.get("label")) });
                 }
             };
-            var view = banner.View.init(.{
+            var view = banner.View.init(self.allocator, .{
                 .id = id,
                 .created = created.integer,
                 .app = try jsonString(a, item.object.get("app")),

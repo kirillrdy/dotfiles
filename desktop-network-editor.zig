@@ -8,9 +8,8 @@ const network = @import("desktop-network.zig");
 const Settings = network.Settings;
 const presentation = @import("desktop-network-editor-view.zig");
 const raster = @import("desktop-raster.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
-fn z(s: []const u8) [:0]u8 {
+fn z(a: std.mem.Allocator, s: []const u8) [:0]u8 {
     return c.__zig.dupeZ(a, s);
 }
 const eq = c.__zig.eq;
@@ -71,7 +70,7 @@ pub const Row = struct {
     preserve_original: bool = false,
     bytes_as_text: bool = false,
     addresses_as_text: bool = false,
-    fn deinit(self: *Row) void {
+    fn deinit(self: *Row, a: std.mem.Allocator) void {
         a.free(self.group);
         a.free(self.key);
         a.free(self.kind);
@@ -145,6 +144,7 @@ fn lookupUint(dict: dbus.Value, key: []const u8) ?u32 {
     };
 }
 pub const Editor = struct {
+    allocator: std.mem.Allocator,
     window: *native.host.Window,
     ui: *native.Form,
     message: *native.Item,
@@ -167,25 +167,27 @@ pub const Editor = struct {
         return createWithBase(parent, profile, null);
     }
     pub fn createWireless(parent: *native.host.Window, ap: network.AccessPoint) *Editor {
-        const base = template(ap) catch @panic("out of memory");
+        const a = parent.allocator;
+        const base = template(a, ap) catch @panic("out of memory");
         defer base.unref();
         const self = createWithBase(parent, null, base);
         self.view.strength = ap.strength;
         if (ap.security == .enterprise) self.view.page = .security;
         a.free(self.ui.title);
-        self.ui.title = z(ap.title);
+        self.ui.title = z(a, ap.title);
         self.window.setTitle(self.ui.title);
         self.ui.relayout();
         return self;
     }
     fn createWithBase(parent: *native.host.Window, profile: ?network.Profile, initial: ?*Settings) *Editor {
+        const a = parent.allocator;
         const self = a.create(Editor) catch @panic("out of memory");
-        const ui = native.Form.create(if (profile) |p| p.title else "New Connection", self, &action, &fieldChanged) catch @panic("out of memory");
+        const ui = native.Form.create(a, if (profile) |p| p.title else "New Connection", self, &action, &fieldChanged) catch @panic("out of memory");
         const window = ui.window;
         window.parent = parent;
         // Rows borrow their original values from these settings for the editor's lifetime.
-        const base = if (initial) |value| value.ref() else if (profile) |p| p.base.ref() else template(null) catch @panic("out of memory");
-        self.* = .{ .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = c.g_cancellable_new().?, .path = if (profile) |p| z(p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(&changed, self) catch @panic("out of memory"), .base = base, .property_group = undefined, .property_key = undefined, .property_type = undefined };
+        const base = if (initial) |value| value.ref() else if (profile) |p| p.base.ref() else template(a, null) catch @panic("out of memory");
+        self.* = .{ .allocator = a, .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = c.g_cancellable_new().?, .path = if (profile) |p| z(a, p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(a, &changed, self) catch @panic("out of memory"), .base = base, .property_group = undefined, .property_key = undefined, .property_type = undefined };
         // Known fields first; every other property remains editable below them.
         for (fields) |field| {
             if (base.group(field.group) != null or eq(field.group, "connection")) self.addRow(field, base.get(field.group, field.key));
@@ -195,11 +197,11 @@ pub const Editor = struct {
             if (self.row(group.name, property.key) != null) continue;
             var buffer: [256]u8 = undefined;
             const kind = property.value.signatureInto(&buffer) catch continue;
-            const group_name = z(group.name);
+            const group_name = z(a, group.name);
             defer a.free(group_name);
-            const key_name = z(property.key);
+            const key_name = z(a, property.key);
             defer a.free(key_name);
-            const kind_name = z(kind);
+            const kind_name = z(a, kind);
             defer a.free(kind_name);
             self.addRow(.{ .group = group_name, .key = key_name, .title = key_name, .kind = kind_name }, property.value);
         };
@@ -286,7 +288,7 @@ pub const Editor = struct {
     fn rebuildPresentation(self: *Editor) void {
         self.view.fields = &.{};
         self.presented_fields.clearRetainingCapacity();
-        for (self.rows.items) |r| self.presented_fields.append(a, .{ .id = r.widget.id, .remove = r.remove.id, .group = r.group, .key = r.key, .page = presentation.section(r.group, r.key) }) catch @panic("out of memory");
+        for (self.rows.items) |r| self.presented_fields.append(self.allocator, .{ .id = r.widget.id, .remove = r.remove.id, .group = r.group, .key = r.key, .page = presentation.section(r.group, r.key) }) catch @panic("out of memory");
         self.view.fields = self.presented_fields.items;
         self.ui.get(self.view.dot1x).checked = false;
         for (self.rows.items) |r| if (eq(r.group, "802-1x") and !r.remove.checked and (r.original != null or r.widget.value().len > 0)) {
@@ -305,17 +307,17 @@ pub const Editor = struct {
         var kind_buffer: [256]u8 = undefined;
         const kind: []const u8 = if (original) |v| v.signatureInto(&kind_buffer) catch field.kind else field.kind;
         const widget = self.ui.get(self.ui.add(if (eq(kind, "b")) .toggle else .entry, field.title, field.hint, network.secretProperty(field.key) and !std.mem.endsWith(u8, field.key, "-flags")) catch @panic("out of memory"));
-        const default_label = std.fmt.allocPrintSentinel(a, "Use default · {s}", .{field.key}, 0) catch @panic("out of memory");
-        defer a.free(default_label);
+        const default_label = std.fmt.allocPrintSentinel(self.allocator, "Use default · {s}", .{field.key}, 0) catch @panic("out of memory");
+        defer self.allocator.free(default_label);
         const remove = self.ui.get(self.ui.add(.toggle, default_label, "", false) catch @panic("out of memory"));
         remove.checked = original == null and eq(kind, "b");
-        var initial: [:0]u8 = z("");
+        var initial: [:0]u8 = z(self.allocator, "");
         var preserve_original = false;
         var byte_text = eq(field.key, "ssid");
         var address_text = eq(field.key, "address-data");
         if (original) |v| {
             if (eq(kind, "b")) widget.checked = v.boolean else {
-                a.free(initial);
+                self.allocator.free(initial);
                 initial = self.initialText(v, kind, &byte_text, &address_text);
                 self.ui.setText(widget.id, initial) catch {
                     // Arbitrary values must still round-trip losslessly.
@@ -325,28 +327,28 @@ pub const Editor = struct {
                 };
             }
         }
-        self.rows.append(a, .{ .group = z(field.group), .key = z(field.key), .kind = z(kind), .widget = widget, .remove = remove, .original = original, .initial = initial, .preserve_original = preserve_original, .bytes_as_text = byte_text, .addresses_as_text = address_text }) catch @panic("out of memory");
+        self.rows.append(self.allocator, .{ .group = z(self.allocator, field.group), .key = z(self.allocator, field.key), .kind = z(self.allocator, kind), .widget = widget, .remove = remove, .original = original, .initial = initial, .preserve_original = preserve_original, .bytes_as_text = byte_text, .addresses_as_text = address_text }) catch @panic("out of memory");
     }
     /// How a loaded value is shown: plain text for common forms, the GVariant text format otherwise.
-    fn initialText(_: *Editor, v: dbus.Value, kind: []const u8, byte_text: *bool, address_text: *bool) [:0]u8 {
-        if (eq(kind, "s")) return z(v.string);
+    fn initialText(self: *Editor, v: dbus.Value, kind: []const u8, byte_text: *bool, address_text: *bool) [:0]u8 {
+        if (eq(kind, "s")) return z(self.allocator, v.string);
         if (byte_text.* and !eq(kind, "ay")) byte_text.* = false;
         if (address_text.* and !eq(kind, "aa{sv}")) address_text.* = false;
         if (byte_text.*) {
             const bytes = v.bytes;
-            if (std.unicode.utf8ValidateSlice(bytes) and std.mem.indexOfScalar(u8, bytes, 0) == null) return z(bytes);
+            if (std.unicode.utf8ValidateSlice(bytes) and std.mem.indexOfScalar(u8, bytes, 0) == null) return z(self.allocator, bytes);
             byte_text.* = false;
         } else if (eq(kind, "as")) {
             var list: std.ArrayList(u8) = .empty;
-            defer list.deinit(a);
+            defer list.deinit(self.allocator);
             for (v.array.items, 0..) |item, i| {
-                if (i != 0) list.appendSlice(a, ", ") catch @panic("out of memory");
-                list.appendSlice(a, item.string) catch @panic("out of memory");
+                if (i != 0) list.appendSlice(self.allocator, ", ") catch @panic("out of memory");
+                list.appendSlice(self.allocator, item.string) catch @panic("out of memory");
             }
-            return z(list.items);
+            return z(self.allocator, list.items);
         } else if (address_text.*) {
             var list: std.ArrayList(u8) = .empty;
-            defer list.deinit(a);
+            defer list.deinit(self.allocator);
             for (v.array.items, 0..) |address, i| {
                 // Only plain address/prefix pairs are shown as text; anything else stays exact.
                 const ip = lookupString(address, "address");
@@ -355,13 +357,13 @@ pub const Editor = struct {
                     address_text.* = false;
                     break;
                 }
-                list.print(a, "{s}{s}/{d}", .{ if (i == 0) "" else ", ", ip.?, prefix.? }) catch @panic("out of memory");
+                list.print(self.allocator, "{s}{s}/{d}", .{ if (i == 0) "" else ", ", ip.?, prefix.? }) catch @panic("out of memory");
             }
-            if (address_text.*) return z(list.items);
+            if (address_text.*) return z(self.allocator, list.items);
         }
-        const printed = variant_text.print(a, v) catch @panic("out of memory");
-        defer a.free(printed);
-        return z(printed);
+        const printed = variant_text.print(self.allocator, v) catch @panic("out of memory");
+        defer self.allocator.free(printed);
+        return z(self.allocator, printed);
     }
     fn fieldChanged(ptr: ?*anyopaque, id: usize) void {
         const self = cast(Editor, ptr);
@@ -461,9 +463,9 @@ pub const Editor = struct {
     }
     /// The edited settings; the caller owns the returned reference.
     pub fn values(self: *Editor) !*Settings {
-        const out = try Settings.create(a);
+        const out = try Settings.create(self.allocator);
         errdefer out.unref();
-        var scratch = std.heap.ArenaAllocator.init(a);
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         for (self.rows.items) |*r| {
             const modern: ?[]const u8 = if (eq(r.key, "dns")) "dns-data" else if (eq(r.key, "addresses")) "address-data" else if (eq(r.key, "routes")) "route-data" else null;
@@ -471,8 +473,8 @@ pub const Editor = struct {
                 if (text(replacement.widget).len != 0 and !replacement.remove.checked) continue;
             };
             const value = r.value(scratch.allocator()) catch |err| {
-                const message = std.fmt.allocPrintSentinel(a, "{s} · {s}: {s}", .{ r.group, r.key, @errorName(err) }, 0) catch @panic("out of memory");
-                defer a.free(message);
+                const message = std.fmt.allocPrintSentinel(self.allocator, "{s} · {s}: {s}", .{ r.group, r.key, @errorName(err) }, 0) catch @panic("out of memory");
+                defer self.allocator.free(message);
                 self.setMessage(message);
                 return err;
             } orelse continue;
@@ -524,18 +526,18 @@ pub const Editor = struct {
         self.client.destroy();
         self.base.unref();
         c.g_object_unref(self.cancel);
-        if (self.path) |path| a.free(path);
-        for (self.rows.items) |*r| r.deinit();
-        self.rows.deinit(a);
-        self.presented_fields.deinit(a);
+        if (self.path) |path| self.allocator.free(path);
+        for (self.rows.items) |*r| r.deinit(self.allocator);
+        self.rows.deinit(self.allocator);
+        self.presented_fields.deinit(self.allocator);
         self.ui.deinit();
-        a.destroy(self);
+        self.allocator.destroy(self);
     }
     fn setMessage(self: *Editor, message: [:0]const u8) void {
         self.ui.setText(self.message.id, message) catch {};
     }
 };
-fn template(ap: ?network.AccessPoint) !*Settings {
+fn template(a: std.mem.Allocator, ap: ?network.AccessPoint) !*Settings {
     const out = try Settings.create(a);
     errdefer out.unref();
     try out.put("connection", "id", .{ .string = if (ap) |point| point.title else "New connection" });

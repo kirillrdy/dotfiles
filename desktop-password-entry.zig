@@ -5,7 +5,6 @@ const libc = @import("desktop-libc.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const cast = c.__zig.cast;
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 
 pub const Buffer = struct {
     pub const capacity = 4096;
@@ -107,6 +106,7 @@ pub const Buffer = struct {
 
 pub const Rect = struct { x: f64, y: f64, width: f64, height: f64 };
 pub const Entry = struct {
+    allocator: std.mem.Allocator,
     buffer: *Buffer,
     client: ?*@import("desktop-surface.zig").Client = null,
     changed: *const fn (?*anyopaque) void,
@@ -136,10 +136,10 @@ pub const Entry = struct {
     revision: u64 = 0,
     dead: bool = false,
 
-    pub fn create(changed: *const fn (?*anyopaque) void, data: ?*anyopaque) !*Entry {
+    pub fn create(a: std.mem.Allocator, changed: *const fn (?*anyopaque) void, data: ?*anyopaque) !*Entry {
         const self = try a.create(Entry);
         errdefer a.destroy(self);
-        self.* = .{ .buffer = try Buffer.create(), .changed = changed, .data = data };
+        self.* = .{ .allocator = a, .buffer = try Buffer.create(), .changed = changed, .data = data };
         return self;
     }
     pub fn makePublic(self: *Entry) void {
@@ -296,7 +296,7 @@ pub const Entry = struct {
     pub fn paste(self: *Entry) void {
         self.resetComposition();
         const device = self.clipboard() orelse return;
-        const request = a.create(Paste) catch return;
+        const request = self.allocator.create(Paste) catch return;
         request.* = .{ .entry = self, .revision = self.revision };
         self.refs += 1;
         device.paste(&pasted, request);
@@ -305,7 +305,7 @@ pub const Entry = struct {
         const request = cast(Paste, data);
         const self = request.entry;
         defer self.release();
-        defer a.destroy(request);
+        defer self.allocator.destroy(request);
         if (!self.dead and self.focused and self.revision == request.revision and value_to_insert != null) self.insert(value_to_insert.?) catch {};
     }
     pub fn point(self: *Entry, x: f64, extend: bool) void {
@@ -335,10 +335,10 @@ pub const Entry = struct {
         self.paintFrame(canvas);
         if (self.public_text) return self.paintPublic(target, scale);
         if (self.scale != scale) {
-            if (self.bullet) |mask| mask.deinit(a);
+            if (self.bullet) |mask| mask.deinit(self.allocator);
             self.bullet = null;
             self.scale = 0;
-            self.bullet = try self.renderer.renderLayout(a, "●", .{ .size = 12 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .origin = .top });
+            self.bullet = try self.renderer.renderLayout(self.allocator, "●", .{ .size = 12 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .origin = .top });
             self.scale = scale;
             self.advance = @as(f64, @floatFromInt(self.bullet.?.logical_width)) / @as(f64, @floatFromInt(scale)) + 2;
         }
@@ -355,7 +355,7 @@ pub const Entry = struct {
             const x = rect.x + 12 + @as(f64, @floatFromInt(index - self.first)) * self.advance;
             if (index >= @min(cursor, anchor) and index < @max(cursor, anchor)) canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = x, .y = rect.y + 9, .width = self.advance, .height = rect.height - 18 }, .radius = 0 } }}, color(0x3584e4));
             var glyph: ?text.Mask = null;
-            defer if (glyph) |mask| mask.deinit(a);
+            defer if (glyph) |mask| mask.deinit(self.allocator);
             if (self.echo and index < self.buffer.characters(self.buffer.len)) {
                 const start = self.buffer.byteOffset(index);
                 const end = self.buffer.byteOffset(index + 1);
@@ -363,7 +363,7 @@ pub const Entry = struct {
                 defer std.crypto.secureZero(u8, &bytes);
                 const len = end - start;
                 @memcpy(bytes[0..len], self.buffer.bytes[start..end]);
-                glyph = try self.renderer.renderLayout(a, bytes[0..len :0], .{ .font = "monospace", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(self.advance * canvas.scale), .lines = 1, .origin = .top });
+                glyph = try self.renderer.renderLayout(self.allocator, bytes[0..len :0], .{ .font = "monospace", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(self.advance * canvas.scale), .lines = 1, .origin = .top });
             }
             const mask = glyph orelse self.bullet.?;
             raster.mask(target, .{ .x = @as(i32, @intFromFloat(x * canvas.scale)) + mask.left, .y = @as(i32, @intFromFloat((rect.y + (rect.height - @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale) / 2) * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(0xffffff));
@@ -382,8 +382,8 @@ pub const Entry = struct {
         const factor: f64 = @floatFromInt(scale);
         var prefix: [Buffer.capacity:0]u8 = @splat(0);
         @memcpy(prefix[0..offset], self.buffer.bytes[0..offset]);
-        const mask = try self.renderer.renderLayout(a, prefix[0..offset :0], .{ .font = "Adwaita Sans", .size = 14.6666666667 * factor, .dpi = 96 * factor, .origin = .top });
-        defer mask.deinit(a);
+        const mask = try self.renderer.renderLayout(self.allocator, prefix[0..offset :0], .{ .font = "Adwaita Sans", .size = 14.6666666667 * factor, .dpi = 96 * factor, .origin = .top });
+        defer mask.deinit(self.allocator);
         return @as(f64, @floatFromInt(mask.logical_width)) / factor;
     }
     fn paintPublic(self: *Entry, target: raster.Buffer, scale: u32) !void {
@@ -396,12 +396,12 @@ pub const Entry = struct {
         if (cursor - self.text_offset > available - 1) self.text_offset = @max(0, cursor - available + 1);
         if (cursor < self.text_offset) self.text_offset = cursor;
         if (self.buffer.len == 0) self.text_offset = 0;
-        const mask = try self.renderer.renderLayout(a, self.buffer.valueZ(), .{ .font = "Adwaita Sans", .size = 14.6666666667 * factor, .dpi = 96 * factor, .origin = .top });
-        defer mask.deinit(a);
+        const mask = try self.renderer.renderLayout(self.allocator, self.buffer.valueZ(), .{ .font = "Adwaita Sans", .size = 14.6666666667 * factor, .dpi = 96 * factor, .origin = .top });
+        defer mask.deinit(self.allocator);
         const width: u32 = @intFromFloat(available * factor);
         const height: u32 = @intFromFloat(@max(1, rect.height) * factor);
-        const pixels = try a.alloc(u32, @as(usize, width) * height);
-        defer a.free(pixels);
+        const pixels = try self.allocator.alloc(u32, @as(usize, width) * height);
+        defer self.allocator.free(pixels);
         @memset(pixels, 0);
         const strip: raster.Buffer = .{ .pixels = pixels, .width = width, .height = height };
         const canvas: raster.Canvas = .{ .target = strip, .scale = factor };
@@ -423,9 +423,9 @@ pub const Entry = struct {
         self.refs -= 1;
         if (self.refs != 0) return;
         self.buffer.destroy();
-        if (self.bullet) |mask| mask.deinit(a);
+        if (self.bullet) |mask| mask.deinit(self.allocator);
         self.renderer.deinit();
-        a.destroy(self);
+        self.allocator.destroy(self);
     }
 };
 const color = raster.hex;
@@ -459,7 +459,7 @@ test "native password pixels depend on character count rather than plaintext" {
     const Callback = struct {
         fn changed(_: ?*anyopaque) void {}
     };
-    const entry = try Entry.create(&Callback.changed, null);
+    const entry = try Entry.create(std.testing.allocator, &Callback.changed, null);
     defer entry.destroy();
     entry.focus(true);
     for ([_]u32{ 1, 2 }) |scale| {
@@ -506,7 +506,7 @@ test "public entries shape Adwaita text and place the caret using proportional a
     const Callback = struct {
         fn changed(_: ?*anyopaque) void {}
     };
-    const entry = try Entry.create(&Callback.changed, null);
+    const entry = try Entry.create(std.testing.allocator, &Callback.changed, null);
     defer entry.destroy();
     entry.makePublic();
     entry.rect = .{ .x = 20, .y = 10, .width = 360, .height = 42 };
@@ -558,7 +558,7 @@ test "native search composes without changing the committed query and validates 
     const Observer = struct {
         fn changed(_: ?*anyopaque) void {}
     };
-    const entry = try Entry.create(&Observer.changed, null);
+    const entry = try Entry.create(std.testing.allocator, &Observer.changed, null);
     defer entry.destroy();
     entry.makePublic();
     try entry.insert("日本語");

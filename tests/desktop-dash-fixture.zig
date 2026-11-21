@@ -4,8 +4,8 @@ const desktop = @import("desktop");
 const native = desktop.dash_view;
 const c = desktop.glib;
 
-pub fn main() !void {
-    var view: native.View = .{};
+pub fn main(init: std.process.Init) !void {
+    var view: native.View = .{ .allocator = init.gpa };
     defer view.deinit();
     for ([_]struct { title: [:0]const u8, icon: [:0]const u8 }{
         .{ .title = "Terminal", .icon = "utilities-terminal" },

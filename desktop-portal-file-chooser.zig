@@ -68,7 +68,7 @@ pub const Dialog = struct {
         const kind: @FieldType(Dialog, "method") = if (eq(method, "OpenFile")) .open else if (eq(method, "SaveFile")) .save else if (eq(method, "SaveFiles")) .save_files else return error.InvalidFileChooserMethod;
         const self = try allocator.create(Dialog);
         errdefer allocator.destroy(self);
-        const ui = try form.Form.create(title, self, &action, &changed);
+        const ui = try form.Form.create(allocator, title, self, &action, &changed);
         self.* = .{ .allocator = allocator, .arena = .init(allocator), .window = ui.window, .ui = ui, .options = portal_options.empty, .method = kind, .directory = kind == .save_files, .multiple = false, .callback = callback, .data = data };
         errdefer {
             ui.deinit();
@@ -167,7 +167,7 @@ pub const Dialog = struct {
         return self;
     }
     fn freeResources(self: *Dialog) void {
-        self.view.deinit();
+        self.view.deinit(self.allocator);
         self.visible_entries.deinit(self.allocator);
         if (self.listing) |listing| listing.destroy();
         self.arena.deinit();

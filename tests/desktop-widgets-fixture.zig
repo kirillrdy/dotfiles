@@ -50,16 +50,16 @@ pub fn main(process_init: std.process.Init) !void {
             "display-brightness-symbolic",
         }) |name| {
             for ([_]u32{ 1, 2 }) |scale| {
-                const image = c.__icons.load(name, 16, scale, null).?;
+                const image = c.__icons.load(process_init.gpa, name, 16, scale, null).?;
                 assert(image.width > 0 and image.height > 0);
-                c.__icons.free(image);
+                c.__icons.free(process_init.gpa, image);
             }
         }
     }
     const executable = try process_init.arena.allocator().dupeSentinel(u8, args[0], 0);
     _ = c.g_setenv("DESKTOP_POWER_PKEXEC", executable.ptr, 1);
     _ = c.g_setenv("DESKTOP_POWER_HELPER", "--power-fixture", 1);
-    const status = p.init(.{ .name = "gnome-status" }, null, null, null);
+    const status = p.init(process_init.gpa, .{ .name = "gnome-status" }, null, null, null);
     assert(status.quick != null);
     const initial_network_title = status.quick.?.view.model.network_title;
     p.update(status, .{ .items = &.{ .{ .icon = "audio-volume-high-symbolic" }, .{ .icon = "battery-level-80-symbolic" } } });
@@ -70,7 +70,7 @@ pub fn main(process_init: std.process.Init) !void {
     assert(status.quick.?.view.item(.wifi).?.rect.height == 48);
     const controls = status.quick.?;
     // A second panel borrows the same services and detaches independently.
-    const peer = p.init(.{ .name = "gnome-status" }, controls.devices, null, null);
+    const peer = p.init(process_init.gpa, .{ .name = "gnome-status" }, controls.devices, null, null);
     assert(peer.quick.?.devices == controls.devices);
     assert(controls.devices.subscribers.items.len == 2);
     p.deinit(peer);
@@ -155,7 +155,7 @@ pub fn main(process_init: std.process.Init) !void {
     p.deinit(status);
     pumpEvents(500);
 
-    const usage = p.init(.{ .name = "gnome-codex", .source = "codex" }, null, null, null);
+    const usage = p.init(process_init.gpa, .{ .name = "gnome-codex", .source = "codex" }, null, null, null);
     p.refresh_source = &refresh;
     defer p.refresh_source = null;
     const usage_menu = usage.usage_menu.?;
@@ -204,7 +204,7 @@ pub fn main(process_init: std.process.Init) !void {
     p.deinit(usage);
     pumpEvents(50);
 
-    const clock = p.init(.{ .kind = "clock" }, null, null, null);
+    const clock = p.init(process_init.gpa, .{ .kind = "clock" }, null, null, null);
     const date = &clock.date_controls.?.view;
     date.setDate(c.g_date_time_new_local(2024, 2, 29, 12, 0, 0).?);
     try date.prepare(1);
@@ -219,7 +219,7 @@ pub fn main(process_init: std.process.Init) !void {
     c.g_date_time_unref(now);
     p.deinit(clock);
     // Exercise graph history rollover and the native draw callback after migration.
-    const monitors = p.init(.{ .kind = "monitors" }, null, null, null);
+    const monitors = p.init(process_init.gpa, .{ .kind = "monitors" }, null, null, null);
     for (0..130) |i| {
         p.update(monitors, .{ .monitors = &.{.{ .sequence = @intCast(i), .values = &.{@floatFromInt(i)}, .colors = &.{0x0072b3}, .maximum = 100 }} });
     }
@@ -229,7 +229,7 @@ pub fn main(process_init: std.process.Init) !void {
     monitors.view.graphs[0].paint(.{ .target = .{ .pixels = &pixels, .width = 100, .height = 32 }, .scale = 1 }, 0, 100, 32);
     assert(pixels[pixels.len - 1] != 0);
     // Verify #ffffff16 background and clipped polygon bounds on a step graph.
-    const empty_graph = p.init(.{ .kind = "monitors" }, null, null, null);
+    const empty_graph = p.init(process_init.gpa, .{ .kind = "monitors" }, null, null, null);
     var step_pixels: [110 * 32]u32 = @splat(0);
     empty_graph.view.graphs[0].paint(.{ .target = .{ .pixels = &step_pixels, .width = 110, .height = 32 }, .scale = 1 }, 5, 100, 32);
     assert(step_pixels[4] == 0 and step_pixels[5] == 0x16161616 and step_pixels[104] == 0x16161616 and step_pixels[105] == 0);

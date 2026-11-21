@@ -4,7 +4,6 @@ const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
-var a: std.mem.Allocator = std.heap.page_allocator;
 const path = "/org/freedesktop/portal/desktop";
 const public = "org.freedesktop.portal.";
 const Account = @import("desktop-portal-account.zig").Dialog;
@@ -47,6 +46,7 @@ fn validToken(value: []const u8) bool {
     return true;
 }
 const Client = struct {
+    allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     sender: [:0]const u8,
     component: [:0]const u8,
@@ -54,7 +54,7 @@ const Client = struct {
     registered: bool = false,
     fn destroy(self: *Client) void {
         self.arena.deinit();
-        a.destroy(self);
+        self.allocator.destroy(self);
     }
 };
 const State = enum { creating, created, selecting, selected, starting, started };
@@ -74,10 +74,11 @@ const Session = struct {
         if (self.stream) |stream| stream.destroy();
         self.server.connection.unregister(self.registration);
         self.arena.deinit();
-        a.destroy(self);
+        self.server.allocator.destroy(self);
     }
 };
 const Server = struct {
+    allocator: std.mem.Allocator,
     connection: *dbus.Connection,
     introspection: dbus.Introspection,
     idle_introspection: ?dbus.Introspection = null,
@@ -98,13 +99,13 @@ const Server = struct {
     fn start(self: *Server) !void {
         for (self.introspection.interfaces) |*item| {
             if (eq(item.name, public ++ "Request") or eq(item.name, public ++ "Session")) continue;
-            try self.registrations.append(a, try self.connection.exportObject(path, item, &methodCall, &getProperty, self));
+            try self.registrations.append(self.allocator, try self.connection.exportObject(path, item, &methodCall, &getProperty, self));
         }
-        self.idle_introspection = try dbus.Introspection.parse(a, idle_portal_xml);
-        try self.registrations.append(a, try self.connection.exportObject(idle_portal_path, &self.idle_introspection.?.interfaces[0], &idlePortalCall, null, self));
-        try self.subscriptions.append(a, try self.connection.subscribe(bus, bus, "NameOwnerChanged", bus_path, &ownerChanged, self));
-        self.settings = try Settings.create(a, self.connection);
-        self.notifications = try Notifications.create(a, self.connection);
+        self.idle_introspection = try dbus.Introspection.parse(self.allocator, idle_portal_xml);
+        try self.registrations.append(self.allocator, try self.connection.exportObject(idle_portal_path, &self.idle_introspection.?.interfaces[0], &idlePortalCall, null, self));
+        try self.subscriptions.append(self.allocator, try self.connection.subscribe(bus, bus, "NameOwnerChanged", bus_path, &ownerChanged, self));
+        self.settings = try Settings.create(self.allocator, self.connection);
+        self.notifications = try Notifications.create(self.allocator, self.connection);
         if (c.g_network_monitor_get_default()) |monitor| _ = c.g_signal_connect_data(monitor, "network-changed", @ptrCast(&networkChanged), self, null, 0);
     }
     fn deinit(self: *Server) void {
@@ -119,11 +120,11 @@ const Server = struct {
         for (self.registrations.items) |id| self.connection.unregister(id);
         if (self.idle_introspection) |*idle| idle.deinit();
         for (self.clients.items) |client| client.destroy();
-        self.registrations.deinit(a);
-        self.subscriptions.deinit(a);
-        self.requests.deinit(a);
-        self.sessions.deinit(a);
-        self.clients.deinit(a);
+        self.registrations.deinit(self.allocator);
+        self.subscriptions.deinit(self.allocator);
+        self.requests.deinit(self.allocator);
+        self.sessions.deinit(self.allocator);
+        self.clients.deinit(self.allocator);
     }
     fn cancelRequests(self: *Server, owner: ?[]const u8) void {
         var index: usize = 0;
@@ -154,10 +155,11 @@ const Server = struct {
         defer c.g_free(contents);
         var entries = std.mem.splitScalar(u8, contents[0..size], 0);
         while (entries.next()) |entry| if (std.mem.startsWith(u8, entry, "SNAP=")) return error.SandboxedClientUnsupported;
-        const item = try a.create(Client);
-        errdefer a.destroy(item);
+        const item = try self.allocator.create(Client);
+        errdefer self.allocator.destroy(item);
         item.registered = false;
-        item.arena = std.heap.ArenaAllocator.init(a);
+        item.allocator = self.allocator;
+        item.arena = std.heap.ArenaAllocator.init(self.allocator);
         errdefer item.arena.deinit();
         const alloc = item.arena.allocator();
         item.sender = try alloc.dupeSentinel(u8, sender, 0);
@@ -166,7 +168,7 @@ const Server = struct {
             ch.* = '_';
         };
         item.app = try std.fmt.allocPrintSentinel(alloc, "org.dotfiles.portal.client{s}", .{item.component}, 0);
-        try self.clients.append(a, item);
+        try self.clients.append(self.allocator, item);
         return item;
     }
     fn session(self: *Server, handle: []const u8, sender: []const u8) ?*Session {
@@ -208,9 +210,9 @@ const Server = struct {
             if (value != .string or !validToken(value.string)) return error.InvalidSessionToken;
             break :blk value.string;
         } else try std.fmt.bufPrint(&buffer, "session{d}", .{self.serial});
-        const item = try a.create(Session);
-        errdefer a.destroy(item);
-        item.* = .{ .server = self, .arena = std.heap.ArenaAllocator.init(a), .owner = undefined, .handle = undefined };
+        const item = try self.allocator.create(Session);
+        errdefer self.allocator.destroy(item);
+        item.* = .{ .server = self, .arena = std.heap.ArenaAllocator.init(self.allocator), .owner = undefined, .handle = undefined };
         errdefer item.arena.deinit();
         const alloc = item.arena.allocator();
         item.owner = try alloc.dupeSentinel(u8, client_info.sender, 0);
@@ -219,7 +221,7 @@ const Server = struct {
         item.registration = self.connection.exportObject(item.handle, self.info(public ++ "Session"), &closeSessionCall, null, item) catch 0;
         if (item.registration == 0) return error.SessionRegistrationFailed;
         errdefer self.connection.unregister(item.registration);
-        try self.sessions.append(a, item);
+        try self.sessions.append(self.allocator, item);
         return item;
     }
     fn ownerChanged(data: ?*anyopaque, message: *const dbus.Message) void {
@@ -276,9 +278,9 @@ const Request = struct {
             count += 1;
         };
         if (count >= 32) return error.TooManyClientRequests;
-        const item = try a.create(Request);
-        errdefer a.destroy(item);
-        item.* = .{ .server = server, .arena = std.heap.ArenaAllocator.init(a), .owner = undefined, .app = undefined, .handle = undefined, .interface = undefined, .method = undefined, .cancel = c.g_cancellable_new().?, .kind = kind };
+        const item = try server.allocator.create(Request);
+        errdefer server.allocator.destroy(item);
+        item.* = .{ .server = server, .arena = std.heap.ArenaAllocator.init(server.allocator), .owner = undefined, .app = undefined, .handle = undefined, .interface = undefined, .method = undefined, .cancel = c.g_cancellable_new().?, .kind = kind };
         errdefer {
             item.arena.deinit();
             c.g_object_unref(item.cancel);
@@ -302,7 +304,7 @@ const Request = struct {
         errdefer if (item.registration != 0) {
             server.connection.unregister(item.registration);
         };
-        try server.requests.append(a, item);
+        try server.requests.append(server.allocator, item);
         return item;
     }
     fn close(self: *Request) void {
@@ -351,7 +353,7 @@ const Request = struct {
             break;
         };
         self.arena.deinit();
-        a.destroy(self);
+        server.allocator.destroy(self);
         if (had_idle) server.updateIdleInhibition();
     }
     fn respond(self: *Request, code: u32, results: Dict) void {
@@ -378,7 +380,7 @@ const Request = struct {
         if (chosen) |output| {
             session_info.width = output.width;
             session_info.height = output.height;
-            session_info.stream = Video.Stream.create(a, output.name, session_info.cursor, &streamReady, session_info) catch {
+            session_info.stream = Video.Stream.create(self.server.allocator, output.name, session_info.cursor, &streamReady, session_info) catch {
                 streamReady(session_info, null);
                 return;
             };
@@ -485,7 +487,7 @@ fn screencast(server: *Server, client_info: *Client, method: []const u8, args: [
     request.session_handle = try request.arena.allocator().dupeSentinel(u8, session_info.handle, 0);
     session_info.pending = request;
     if (eq(method, "Start")) {
-        request.picker = try Capture.Picker.create(a, client_info.app, try cstring(message, args[1]), "Share your screen", false, &Request.picked, request);
+        request.picker = try Capture.Picker.create(server.allocator, client_info.app, try cstring(message, args[1]), "Share your screen", false, &Request.picked, request);
         session_info.state = .starting;
     } else {
         session_info.state = if (eq(method, "CreateSession")) .creating else .selecting;
@@ -497,21 +499,21 @@ fn screenshot(server: *Server, client_info: *Client, method: []const u8, args: [
     const options = try dictionary(message.arena, args[1]);
     const request = try Request.create(server, client_info, "Screenshot", method, options, .dialog);
     errdefer request.destroy();
-    request.screenshot = try Capture.Operation.create(a, client_info.app, try cstring(message, args[0]), method, options, &Request.dialogFinished, request);
+    request.screenshot = try Capture.Operation.create(server.allocator, client_info.app, try cstring(message, args[0]), method, options, &Request.dialogFinished, request);
     replyHandle(server, message, request.handle);
 }
 fn chooseFile(server: *Server, client_info: *Client, method: []const u8, args: []const dbus.Value, message: *const dbus.Message) !void {
     const options = try dictionary(message.arena, args[2]);
     const request = try Request.create(server, client_info, "FileChooser", method, options, .dialog);
     errdefer request.destroy();
-    request.dialog = try FileChooser.create(a, method, try cstring(message, args[0]), try cstring(message, args[1]), options, &Request.dialogFinished, request);
+    request.dialog = try FileChooser.create(server.allocator, method, try cstring(message, args[0]), try cstring(message, args[1]), options, &Request.dialogFinished, request);
     replyHandle(server, message, request.handle);
 }
 fn userInformation(server: *Server, client_info: *Client, args: []const dbus.Value, message: *const dbus.Message) !void {
     const options = try dictionary(message.arena, args[1]);
     const request = try Request.create(server, client_info, "Account", "GetUserInformation", options, .dialog);
     errdefer request.destroy();
-    request.account = try Account.create(a, client_info.app, try cstring(message, args[0]), options, &Request.dialogFinished, request);
+    request.account = try Account.create(server.allocator, client_info.app, try cstring(message, args[0]), options, &Request.dialogFinished, request);
     replyHandle(server, message, request.handle);
 }
 fn openRemote(server: *Server, client_info: *Client, args: []const dbus.Value, message: *const dbus.Message) !void {
@@ -576,7 +578,7 @@ fn composeEmail(server: *Server, client_info: *Client, args: []const dbus.Value,
     const request = try Request.create(server, client_info, "Email", "ComposeEmail", options, .uri);
     errdefer request.destroy();
     const uri = try Email.composeUri(request.arena.allocator(), options, message.fds);
-    const context = try Email.launchContext(options);
+    const context = try Email.launchContext(server.allocator, options);
     defer c.g_object_unref(context);
     replyHandle(server, message, request.handle);
     c.g_app_info_launch_default_for_uri_async(uri, context, request.cancel, &Request.uriFinished, request);
@@ -601,7 +603,7 @@ fn inhibit(server: *Server, client_info: *Client, args: []const dbus.Value, mess
     request.inhibit_idle = flags & 8 != 0;
     replyHandle(server, message, request.handle);
     server.updateIdleInhibition();
-    loop.request(.system, .{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1", .interface = "org.freedesktop.login1.Manager", .member = "Inhibit" }, .{ buffer[0..used], @as([]const u8, request.app), why, "block" }, 10000, request.cancel, &Request.inhibitorFinished, request);
+    loop.request(server.allocator, .system, .{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1", .interface = "org.freedesktop.login1.Manager", .member = "Inhibit" }, .{ buffer[0..used], @as([]const u8, request.app), why, "block" }, 10000, request.cancel, &Request.inhibitorFinished, request);
 }
 fn network(server: *Server, client_info: *Client, method: []const u8, args: []const dbus.Value, message: *const dbus.Message) !void {
     if (eq(method, "CanReach")) {
@@ -710,19 +712,18 @@ fn quit(data: ?*anyopaque) callconv(.c) c_int {
     cast(Server, data).quitting = true;
     return 1;
 }
-pub fn run() !void {
-    return runWithAllocator(std.heap.page_allocator);
+pub fn run(allocator: std.mem.Allocator) !void {
+    return runWithAllocator(allocator);
 }
 /// The broker owns a single GLib main context; fixtures supply a checked allocator.
 pub fn runWithAllocator(allocator: std.mem.Allocator) !void {
-    a = allocator;
     _ = c.g_setenv("GIO_USE_NETWORK_MONITOR", "netlink", 1);
     _ = c.g_setenv("GIO_USE_PORTALS", "0", 1);
     _ = c.g_setenv("GTK_USE_PORTAL", "0", 1);
-    const source = loop.acquire(.session) catch return error.SessionBusUnavailable;
+    const source = loop.acquire(allocator, .session) catch return error.SessionBusUnavailable;
     defer loop.release(source);
     const connection = source.connection;
-    var server = Server{ .connection = connection, .introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-portal.xml")) };
+    var server = Server{ .allocator = allocator, .connection = connection, .introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-portal.xml")) };
     defer server.introspection.deinit();
     defer server.deinit();
     try server.start();

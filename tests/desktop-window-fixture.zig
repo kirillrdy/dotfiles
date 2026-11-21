@@ -42,14 +42,15 @@ const State = struct {
     }
 };
 pub fn main(init: std.process.Init) !void {
+    defer native.form.host.deinit();
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     defer std.heap.page_allocator.free(args);
-    if (args.len == 2 and std.mem.eql(u8, args[1], "forms")) return forms();
+    if (args.len == 2 and std.mem.eql(u8, args[1], "forms")) return forms(init.gpa);
     if (args.len == 2 and std.mem.eql(u8, args[1], "consent")) return consent(init);
     if (args.len == 2 and std.mem.eql(u8, args[1], "frames")) return frames(init);
     if (args.len == 2 and std.mem.eql(u8, args[1], "idle")) return idle(init);
     var state: State = .{};
-    const client = try wire.Client.createInteractive(.{ .added = &State.output, .removed = &State.output }, &state);
+    const client = try wire.Client.createInteractive(init.gpa, .{ .added = &State.output, .removed = &State.output }, &state);
     defer client.destroy();
     if (client.outputs.items.len == 0) return error.NoOutputs;
     const surface = try wire.Surface.createPixels(client.outputs.items[0], .{ .namespace = "desktop-native-fixture", .title = "Native Wayland fixture", .role = .toplevel, .width = 480, .height = 320, .interactive = true, .cursor = .arrow }, &State.paint, &state);
@@ -87,7 +88,7 @@ fn idle(init: std.process.Init) !void {
         }
     };
     var probe: Probe = .{};
-    const client = try wire.Client.create(.{ .added = &Probe.output, .removed = &Probe.output }, null);
+    const client = try wire.Client.create(init.gpa, .{ .added = &Probe.output, .removed = &Probe.output }, null);
     defer client.destroy();
     try client.start();
     const output = client.outputs.items[0];
@@ -131,7 +132,7 @@ fn frames(init: std.process.Init) !void {
         }
     };
     var animation: Animation = .{};
-    const client = try wire.Client.create(.{ .added = &Animation.output, .removed = &Animation.output }, &animation);
+    const client = try wire.Client.create(init.gpa, .{ .added = &Animation.output, .removed = &Animation.output }, &animation);
     defer client.destroy();
     const surface = try wire.Surface.createPixels(client.outputs.items[0], .{ .namespace = "desktop-frame-fixture", .layer = 3, .width = 32, .height = 32 }, &Animation.paint, &animation);
     surface.next_frame = &Animation.next;
@@ -156,7 +157,7 @@ fn consent(init: std.process.Init) !void {
     var done: Done = .{};
     var allocator: std.heap.DebugAllocator(.{}) = .init;
     defer if (allocator.deinit() == .leak) @panic("native consent allocation leak");
-    const dialog = try native.auth.Dialog.createWithOptions(.confirm, "An application requests your account information.\nName: 日本語", .{ .allocator = allocator.allocator(), .title = "Native consent fixture", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .response_context = &done, .responded = &Done.completed });
+    const dialog = try native.auth.Dialog.createWithOptions(allocator.allocator(), .confirm, "An application requests your account information.\nName: 日本語", .{ .title = "Native consent fixture", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .response_context = &done, .responded = &Done.completed });
     defer dialog.destroy();
     const deadline = c.__zig.monotonicTime() + 8_000_000;
     while (done.accepted == null and c.__zig.monotonicTime() < deadline) {
@@ -167,19 +168,19 @@ fn consent(init: std.process.Init) !void {
     std.debug.print("PASS GTK-free consent accepted={}\n", .{done.accepted.?});
 }
 
-fn forms() !void {
+fn forms(allocator: std.mem.Allocator) !void {
     const Owner = struct {
         fn action(_: ?*anyopaque, _: usize) void {}
         fn changed(_: ?*anyopaque, _: usize) void {}
     };
-    const previous = try native.form.Form.create("Clipboard owner", null, &Owner.action, &Owner.changed);
+    const previous = try native.form.Form.create(allocator, "Clipboard owner", null, &Owner.action, &Owner.changed);
     const previous_field = try previous.add(.entry, "Name", "", false);
     try previous.setText(previous_field, "Clipboard after window close");
     previous.focusItem(previous_field);
     try std.testing.expect(previous.handleKey('a', 4));
     try std.testing.expect(previous.handleKey('c', 4));
     previous.deinit();
-    const form = try native.form.Form.create("Native form fixture", null, &Owner.action, &Owner.changed);
+    const form = try native.form.Form.create(allocator, "Native form fixture", null, &Owner.action, &Owner.changed);
     defer form.deinit();
     const field = try form.add(.entry, "Name", "", false);
     form.focusItem(field);
@@ -192,7 +193,7 @@ fn forms() !void {
     try form.setText(field, "");
     try std.testing.expect(form.handleKey('v', 4));
     try std.testing.expectEqualStrings("日本語 clipboard", form.get(field).value());
-    const external = try wire.Client.createInteractive(.{ .added = &State.output, .removed = &State.output }, null);
+    const external = try wire.Client.createInteractive(allocator, .{ .added = &State.output, .removed = &State.output }, null);
     defer external.destroy();
     try external.start();
     const device = form.get(field).entry.?.clipboard().?;
@@ -209,7 +210,7 @@ fn forms() !void {
         c.g_usleep(1000);
     }
     try std.testing.expectEqualStrings("Text from another client", form.get(field).value());
-    const dialog = try native.auth.Dialog.create(.password, "Native authentication fixture");
+    const dialog = try native.auth.Dialog.create(allocator, .password, "Native authentication fixture");
     defer dialog.destroy();
     try dialog.entry.?.insert("synthetic-password");
     try std.testing.expect(dialog.handleKey(0xff1b, 0));

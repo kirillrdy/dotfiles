@@ -6,7 +6,6 @@ const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const login_name = "org.freedesktop.login1";
 const login_path = "/org/freedesktop/login1";
 const login_interface = "org.freedesktop.login1.Manager";
@@ -65,7 +64,7 @@ const Seat = struct {
     fn deinit(self: *Seat) void {
         self.unwatch();
         self.proxy.destroy();
-        a.destroy(self);
+        self.service.allocator.destroy(self);
     }
 };
 
@@ -79,7 +78,7 @@ const Call = struct {
     source: ?*loop.Source = null,
     serial: u32 = 0,
     fn create(self: *Service) *Call {
-        const call = a.create(Call) catch @panic("out of memory");
+        const call = self.allocator.create(Call) catch @panic("out of memory");
         self.refs += 1;
         call.* = .{ .service = self, .epoch = self.epoch, .sleep_serial = self.sleep_serial, .portal_epoch = self.portal_epoch };
         return call;
@@ -91,12 +90,14 @@ const Call = struct {
         return !self.service.stopped and self.portal_epoch == self.service.portal_epoch;
     }
     fn deinit(self: *Call) void {
-        self.service.unref();
-        a.destroy(self);
+        const service = self.service;
+        service.allocator.destroy(self);
+        service.unref();
     }
 };
 
 pub const Service = struct {
+    allocator: std.mem.Allocator,
     timeout_ms: u32,
     executable: [:0]u8,
     wallpaper: ?[:0]u8 = null,
@@ -140,7 +141,7 @@ pub const Service = struct {
     ready_source: c.guint = 0,
     lock_ready: bool = false,
 
-    pub fn create(options: Options) !*Service {
+    pub fn create(a: std.mem.Allocator, options: Options) !*Service {
         const path = if (options.lock_executable) |path| try a.dupeSentinel(u8, path, 0) else blk: {
             const resolved = c.g_file_read_link("/proc/self/exe", null);
             if (resolved == null) return error.ExecutablePathUnavailable;
@@ -151,7 +152,7 @@ pub const Service = struct {
         const wallpaper = if (options.wallpaper) |value| try a.dupeSentinel(u8, value, 0) else null;
         errdefer if (wallpaper) |value| a.free(value);
         const self = try a.create(Service);
-        self.* = .{ .timeout_ms = options.timeout_ms, .executable = path, .wallpaper = wallpaper, .session_inhibit = options.session_inhibit, .cancel = c.g_cancellable_new() };
+        self.* = .{ .allocator = a, .timeout_ms = options.timeout_ms, .executable = path, .wallpaper = wallpaper, .session_inhibit = options.session_inhibit, .cancel = c.g_cancellable_new() };
         self.connectWayland();
         self.connectBus();
         self.connectSessionBus();
@@ -173,11 +174,11 @@ pub const Service = struct {
         self.refs -= 1;
         if (self.refs == 0) {
             c.g_object_unref(self.cancel);
-            self.screensaver_inhibitors.deinit(a);
-            self.calls.deinit(a);
-            a.free(self.executable);
-            if (self.wallpaper) |value| a.free(value);
-            a.destroy(self);
+            self.screensaver_inhibitors.deinit(self.allocator);
+            self.calls.deinit(self.allocator);
+            self.allocator.free(self.executable);
+            if (self.wallpaper) |value| self.allocator.free(value);
+            self.allocator.destroy(self);
         }
     }
     fn maintain(data: ?*anyopaque) callconv(.c) c_int {
@@ -240,7 +241,7 @@ pub const Service = struct {
         }
     }
     fn connectWayland(self: *Service) void {
-        const connection = wire.Connection.connect(a) catch {
+        const connection = wire.Connection.connect(self.allocator) catch {
             std.log.warn("idle: Wayland connection unavailable; will retry", .{});
             return;
         };
@@ -283,7 +284,7 @@ pub const Service = struct {
             var seat = self.seats;
             while (seat) |s| : (seat = s.next) s.watch();
         } else if (std.mem.eql(u8, kind, "wl_seat")) {
-            const seat = a.create(Seat) catch @panic("out of memory");
+            const seat = self.allocator.create(Seat) catch @panic("out of memory");
             seat.* = .{ .service = self, .name = name, .proxy = registry.bind(name, wl.wl_seat, 1), .next = self.seats };
             self.seats = seat;
             seat.watch();
@@ -324,7 +325,7 @@ pub const Service = struct {
     fn send(self: *Service, source: *loop.Source, target: dbus.Connection.Call, args: anytype, handler: dbus.ReplyHandler) bool {
         const call = Call.create(self);
         call.source = source;
-        self.calls.ensureUnusedCapacity(a, 1) catch {
+        self.calls.ensureUnusedCapacity(self.allocator, 1) catch {
             call.deinit();
             return false;
         };
@@ -358,7 +359,7 @@ pub const Service = struct {
     }
     fn connectBus(self: *Service) void {
         if (self.stopped) return;
-        const source = loop.acquire(.system) catch {
+        const source = loop.acquire(self.allocator, .system) catch {
             std.log.warn("idle: system bus unavailable; will retry", .{});
             return;
         };
@@ -375,7 +376,7 @@ pub const Service = struct {
         self.sleeping = false;
         if (self.sleep_signal != 0) if (self.bus) |bus| bus.connection.unsubscribe(self.sleep_signal);
         self.sleep_signal = 0;
-        if (self.owner) |owner| a.free(owner);
+        if (self.owner) |owner| self.allocator.free(owner);
         self.owner = null;
     }
     fn disconnectBus(self: *Service) void {
@@ -391,7 +392,7 @@ pub const Service = struct {
     fn appeared(data: ?*anyopaque, owner: []const u8) void {
         const self = cast(Service, data);
         self.resetOwner();
-        self.owner = a.dupeSentinel(u8, owner, 0) catch @panic("out of memory");
+        self.owner = self.allocator.dupeSentinel(u8, owner, 0) catch @panic("out of memory");
         const connection = self.bus.?.connection;
         self.sleep_signal = connection.subscribe(self.owner.?, login_interface, "PrepareForSleep", login_path, &prepare, self) catch 0;
         self.acquire();
@@ -453,13 +454,13 @@ pub const Service = struct {
     }
     fn connectSessionBus(self: *Service) void {
         if (!self.session_inhibit or self.stopped) return;
-        const source = loop.acquire(.session) catch {
+        const source = loop.acquire(self.allocator, .session) catch {
             std.log.warn("idle: session bus unavailable; will retry", .{});
             return;
         };
         self.session_bus = source;
         const connection = source.connection;
-        self.screensaver_introspection = dbus.Introspection.parse(a, screensaver_xml) catch @panic("invalid ScreenSaver XML");
+        self.screensaver_introspection = dbus.Introspection.parse(self.allocator, screensaver_xml) catch @panic("invalid ScreenSaver XML");
         for (screensaver_paths, 0..) |object_path, i| {
             self.screensaver_regs[i] = connection.exportObject(object_path, &self.screensaver_introspection.?.interfaces[0], &screensaverCall, null, self) catch 0;
             if (self.screensaver_regs[i] == 0) std.log.warn("idle: failed to register ScreenSaver at {s}", .{object_path});
@@ -496,7 +497,7 @@ pub const Service = struct {
         self.portal_epoch +%= 1;
         if (self.portal_signal != 0) if (self.session_bus) |bus| bus.connection.unsubscribe(self.portal_signal);
         self.portal_signal = 0;
-        if (self.portal_owner) |owner| a.free(owner);
+        if (self.portal_owner) |owner| self.allocator.free(owner);
         self.portal_owner = null;
         self.portal_inhibited = false;
         self.syncInhibition();
@@ -504,7 +505,7 @@ pub const Service = struct {
     fn portalAppeared(data: ?*anyopaque, owner: []const u8) void {
         const self = cast(Service, data);
         self.resetPortal();
-        self.portal_owner = a.dupeSentinel(u8, owner, 0) catch @panic("out of memory");
+        self.portal_owner = self.allocator.dupeSentinel(u8, owner, 0) catch @panic("out of memory");
         const source = self.session_bus.?;
         self.portal_signal = source.connection.subscribe(self.portal_owner.?, portal_interface, "IdleInhibitedChanged", portal_path, &portalChanged, self) catch 0;
         _ = self.send(source, .{ .destination = self.portal_owner.?, .path = portal_path, .interface = portal_interface, .member = "IdleInhibited" }, .{}, &portalRead);
@@ -531,7 +532,7 @@ pub const Service = struct {
         self.syncInhibition();
     }
     fn clearScreenSaverInhibitors(self: *Service) void {
-        for (self.screensaver_inhibitors.items) |item| a.free(item.sender);
+        for (self.screensaver_inhibitors.items) |item| self.allocator.free(item.sender);
         self.screensaver_inhibitors.clearRetainingCapacity();
         self.syncInhibition();
     }
@@ -554,16 +555,16 @@ pub const Service = struct {
             if (self.screensaver_serial == 0) self.screensaver_serial = 1;
             cookie = self.screensaver_serial;
         }
-        const owned_sender = try a.dupeSentinel(u8, sender, 0);
-        errdefer a.free(owned_sender);
-        try self.screensaver_inhibitors.append(a, .{ .cookie = cookie, .sender = owned_sender });
+        const owned_sender = try self.allocator.dupeSentinel(u8, sender, 0);
+        errdefer self.allocator.free(owned_sender);
+        try self.screensaver_inhibitors.append(self.allocator, .{ .cookie = cookie, .sender = owned_sender });
         self.syncInhibition();
         return cookie;
     }
     fn removeScreenSaverInhibitor(self: *Service, sender: []const u8, cookie: u32) !void {
         for (self.screensaver_inhibitors.items, 0..) |item, i| if (item.cookie == cookie) {
             if (!std.mem.eql(u8, item.sender, sender)) return error.AccessDenied;
-            a.free(item.sender);
+            self.allocator.free(item.sender);
             _ = self.screensaver_inhibitors.swapRemove(i);
             self.syncInhibition();
             return;
@@ -575,7 +576,7 @@ pub const Service = struct {
         var i: usize = 0;
         while (i < self.screensaver_inhibitors.items.len) {
             if (std.mem.eql(u8, self.screensaver_inhibitors.items[i].sender, sender)) {
-                a.free(self.screensaver_inhibitors.items[i].sender);
+                self.allocator.free(self.screensaver_inhibitors.items[i].sender);
                 _ = self.screensaver_inhibitors.swapRemove(i);
                 changed = true;
             } else i += 1;
@@ -689,7 +690,8 @@ pub const Service = struct {
 };
 
 test "ScreenSaver inhibitors track senders and enforce ownership" {
-    var service = Service{ .timeout_ms = 600_000, .executable = try a.dupeSentinel(u8, "/bin/false", 0), .session_inhibit = true, .cancel = c.g_cancellable_new() };
+    const a = std.testing.allocator;
+    var service = Service{ .allocator = a, .timeout_ms = 600_000, .executable = try a.dupeSentinel(u8, "/bin/false", 0), .session_inhibit = true, .cancel = c.g_cancellable_new() };
     defer {
         service.stopped = true;
         service.clearScreenSaverInhibitors();

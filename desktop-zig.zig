@@ -21,10 +21,10 @@ const shell_path = "/org/dotfiles/Desktop";
 const shell_xml = loop.commandXml(shell_name);
 /// Cleared to leave the main loop: on SIGTERM/SIGINT, or when the notification name is lost.
 var running = true;
-const a = std.heap.page_allocator;
 var current: ?*Session = null;
 
 const Session = struct {
+    allocator: std.mem.Allocator,
     /// The shared session connection that owns org.dotfiles.Desktop.
     bus: *loop.Source,
     devices: ?*device_service.Service = null,
@@ -35,9 +35,9 @@ const Session = struct {
     notices: ?*notifications.Service = null,
     agent: ?polkit.Service = null,
     inactivity: ?*idle.Service = null,
-    media: osd.Server = .{},
+    media: osd.Server,
     activities: overview.State = .{ .wallpaper = "" },
-    dialogs: settings.Service = .{},
+    dialogs: settings.Service,
     data: collectors.Service = undefined,
     data_started: bool = false,
     image: ?[:0]u8 = null,
@@ -50,26 +50,26 @@ const Session = struct {
         if (self.serving) return error.AlreadyRunning;
         if (args.len != 1 and args.len != 2 and args.len != 5) return error.InvalidServeArguments;
         if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
-        self.image = try a.dupeSentinel(u8, args[0], 0);
+        self.image = try self.allocator.dupeSentinel(u8, args[0], 0);
         self.activities.wallpaper = self.image.?.ptr;
-        var temporary = std.heap.ArenaAllocator.init(a);
+        var temporary = std.heap.ArenaAllocator.init(self.allocator);
         defer temporary.deinit();
         const alloc = temporary.allocator();
         const config = try alloc.dupeSentinel(u8, if (args.len > 1) args[1] else "/etc/xdg/desktop-panel/config.json", 0);
-        self.background = try wallpaper.Service.create(self.image.?);
-        self.devices = try device_service.Service.create();
-        self.panels = try panel.Service.create(config, self.devices.?);
-        self.notices = try notifications.Service.create();
+        self.background = try wallpaper.Service.create(self.allocator, self.image.?);
+        self.devices = try device_service.Service.create(self.allocator);
+        self.panels = try panel.Service.create(self.allocator, config, self.devices.?);
+        self.notices = try notifications.Service.create(self.allocator);
         try self.media.start();
         self.media.connection = self.bus.connection;
-        self.agent = polkit.Service.init() catch |err| blk: {
+        self.agent = polkit.Service.init(self.allocator) catch |err| blk: {
             std.log.warn("PolicyKit agent: {s}; will retry", .{@errorName(err)});
             break :blk null;
         };
-        self.data = .{ .devices = self.devices.?, .panel = self.panels.? };
+        self.data = .{ .allocator = self.allocator, .devices = self.devices.?, .panel = self.panels.? };
         self.data.start();
         self.data_started = true;
-        self.inactivity = try idle.Service.create(.{ .session_inhibit = true, .wallpaper = self.image.? });
+        self.inactivity = try idle.Service.create(self.allocator, .{ .session_inhibit = true, .wallpaper = self.image.? });
         self.device_subscription = .{ .context = self, .changed = &devicesChanged };
         self.devices.?.subscribe(&self.device_subscription);
         self.device_subscribed = true;
@@ -94,7 +94,7 @@ const Session = struct {
     fn maintain(ptr: c.gpointer) callconv(.c) c.gboolean {
         const self: *Session = @ptrCast(@alignCast(ptr));
         self.dialogs.reap();
-        if (self.agent == null) self.agent = polkit.Service.init() catch null;
+        if (self.agent == null) self.agent = polkit.Service.init(self.allocator) catch null;
         return 1;
     }
 
@@ -117,7 +117,7 @@ const Session = struct {
         if (self.background) |background| background.destroy();
         // Drain cancelled widget reads while their reference-counted states survive.
         while (c.g_main_context_iteration(null, 0) != 0) {}
-        if (self.image) |image| a.free(image);
+        if (self.image) |image| self.allocator.free(image);
     }
 };
 fn refresh(kind: []const u8) void {
@@ -138,8 +138,8 @@ fn command(ptr: ?*anyopaque, message: *const dbus.Message) void {
     dispatch(self, args[0]) catch |err| return connection.replyError(message, shell_name ++ ".Error.Failed", @errorName(err)) catch {};
     connection.reply(message, .{}) catch {};
 }
-fn forward(args: []const []const u8) !void {
-    return loop.forwardCommand("desktop-zig", shell_name, shell_path, args);
+fn forward(a: std.mem.Allocator, args: []const []const u8) !void {
+    return loop.forwardCommand(a, "desktop-zig", shell_name, shell_path, args);
 }
 fn dispatch(self: *Session, args: []const []const u8) !void {
     if (self.stopping) return error.SessionStopping;
@@ -148,9 +148,9 @@ fn dispatch(self: *Session, args: []const []const u8) !void {
     if (std.mem.eql(u8, verb, "serve")) return self.start(args[1..]);
     if (!self.serving) return error.SessionNotRunning;
     if (std.mem.eql(u8, verb, "overview") and args.len == 1) {
-        overview.activate(&self.activities);
+        overview.activate(self.allocator, &self.activities);
     } else if (std.mem.eql(u8, verb, "overview-corner") and args.len == 1) {
-        overview.activateCorner(&self.activities);
+        overview.activateCorner(self.allocator, &self.activities);
     } else if (std.mem.eql(u8, verb, "settings") and (args.len == 1 or args.len == 2)) {
         const mode: settings.Mode = if (args.len == 1)
             .network
@@ -172,37 +172,45 @@ fn dispatch(self: *Session, args: []const []const u8) !void {
 }
 
 pub fn main(init: std.process.Init) !void {
+    const a = init.gpa;
     try @import("desktop-runtime.zig").setup(a);
     @import("desktop-util.zig").io = init.io;
-    var arena = std.heap.ArenaAllocator.init(a);
-    defer arena.deinit();
-    var args = try init.minimal.args.toSlice(arena.allocator());
+    const arguments = init.arena.allocator();
+    var args = try init.minimal.args.toSlice(arguments);
     var managed_session = false;
     var compositor: ?*@import("desktop-compositor.zig").Handle = null;
-    defer if (compositor) |handle| handle.stop();
-    defer if (managed_session) sessionControl(init.io, &.{ "systemctl", "--user", "stop", "desktop-session.target" }) catch {};
+    @import("desktop-icons.zig").init(a);
+    defer {
+        if (compositor) |handle| handle.stop();
+        while (c.g_main_context_iteration(null, 0) != 0) {}
+        @import("desktop-switcher.zig").deinit(a);
+        window.deinit();
+        @import("desktop-icons.zig").deinit();
+        @import("desktop-gsettings.zig").deinit();
+    }
+    defer if (managed_session) sessionControl(a, init.io, &.{ "systemctl", "--user", "stop", "desktop-session.target" }) catch {};
     if (args.len >= 2 and (std.mem.eql(u8, args[1], "compositor") or std.mem.eql(u8, args[1], "compositor-only"))) {
-        compositor = try @import("desktop-compositor.zig").Handle.start(std.mem.eql(u8, args[1], "compositor"));
+        compositor = try @import("desktop-compositor.zig").Handle.start(a, std.mem.eql(u8, args[1], "compositor"));
         if (std.mem.eql(u8, args[1], "compositor-only")) {
             compositor.?.wait();
             compositor = null;
             return;
         }
         if (libc.getenv("DESKTOP_SESSION_MANAGED") != null) {
-            try sessionControl(init.io, &.{ "systemctl", "--user", "import-environment", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "XDG_SESSION_TYPE", "XDG_SESSION_ID", "PATH", "DISPLAY", "XCURSOR_THEME", "XCURSOR_SIZE" });
-            try sessionControl(init.io, &.{ "systemctl", "--user", "start", "desktop-session.target" });
+            try sessionControl(a, init.io, &.{ "systemctl", "--user", "import-environment", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "XDG_SESSION_TYPE", "XDG_SESSION_ID", "PATH", "DISPLAY", "XCURSOR_THEME", "XCURSOR_SIZE" });
+            try sessionControl(a, init.io, &.{ "systemctl", "--user", "start", "desktop-session.target" });
             managed_session = true;
         }
-        const forwarded = try arena.allocator().dupe([:0]const u8, args);
+        const forwarded = try arguments.dupe([:0]const u8, args);
         forwarded[1] = "serve";
         args = forwarded;
     }
     const name = std.fs.path.basename(args[0]);
     // Executable aliases implement the portal and SSH askpass protocols.
-    if (std.mem.eql(u8, name, "xdg-desktop-portal")) return @import("desktop-portal.zig").run();
+    if (std.mem.eql(u8, name, "xdg-desktop-portal")) return @import("desktop-portal.zig").run(a);
     if (std.mem.eql(u8, name, "desktop-askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args));
     if (std.mem.eql(u8, name, "grim") or std.mem.eql(u8, name, "slurp")) {
-        const forwarded = try arena.allocator().dupe([]const u8, args);
+        const forwarded = try arguments.dupe([]const u8, args);
         forwarded[0] = name;
         return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
     }
@@ -213,11 +221,11 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "secrets-import")) {
         if (args.len != 2) return error.InvalidSecretsArguments;
-        return @import("desktop-secrets.zig").runImport();
+        return @import("desktop-secrets.zig").runImport(a);
     }
     if (std.mem.eql(u8, args[1], "secrets")) {
         if (args.len != 2) return error.InvalidSecretsArguments;
-        return @import("desktop-secrets.zig").run();
+        return @import("desktop-secrets.zig").run(a);
     }
     if (std.mem.eql(u8, args[1], "secrets-login")) {
         if (args.len != 2) return error.InvalidSecretsArguments;
@@ -237,26 +245,24 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "battery-monitor")) {
         if (args.len != 2) return error.InvalidBatteryMonitorArguments;
-        return @import("desktop-battery-monitor.zig").run();
+        return @import("desktop-battery-monitor.zig").run(a);
     }
-    if (std.mem.eql(u8, args[1], "portal")) return @import("desktop-portal.zig").run();
+    if (std.mem.eql(u8, args[1], "portal")) return @import("desktop-portal.zig").run(a);
     if (std.mem.eql(u8, args[1], "power")) return @import("desktop-power.zig").runArgs(init, args[1..]);
     if (std.mem.eql(u8, args[1], "askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args[1..]));
     if (std.mem.eql(u8, args[1], "screenshot")) return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, args[1..]));
-    if (std.mem.eql(u8, args[1], "output")) return @import("desktop-output.zig").run(args[2..]);
-    if (std.mem.eql(u8, args[1], "lock")) return @import("desktop-lock.zig").run(args[2..]);
+    if (std.mem.eql(u8, args[1], "output")) return @import("desktop-output.zig").run(a, args[2..]);
+    if (std.mem.eql(u8, args[1], "lock")) return @import("desktop-lock.zig").run(a, args[2..]);
     // Every command but serve goes to the running shell.
-    if (!std.mem.eql(u8, args[1], "serve")) return forward(args[1..]);
-    const bus = loop.acquire(.session) catch return error.NoSessionBus;
+    if (!std.mem.eql(u8, args[1], "serve")) return forward(a, args[1..]);
+    const bus = loop.acquire(a, .session) catch return error.NoSessionBus;
     defer loop.release(bus);
     // A second serve must not create another shell: forwarded, the running one rejects it.
-    if ((bus.connection.requestName(shell_name, 4) catch return error.NoSessionBus) != 1) return forward(args[1..]);
-    defer @import("desktop-icons.zig").deinit();
+    if ((bus.connection.requestName(shell_name, 4) catch return error.NoSessionBus) != 1) return forward(a, args[1..]);
     var introspection = try dbus.Introspection.parse(a, shell_xml);
     defer introspection.deinit();
-    var session = Session{ .bus = bus };
+    var session = Session{ .allocator = a, .bus = bus, .media = .init(a), .dialogs = .{ .allocator = a } };
     defer session.deinit();
-    defer @import("desktop-switcher.zig").deinit();
     const exported = try bus.connection.exportObject(shell_path, &introspection.interfaces[0], &command, null, &session);
     defer bus.connection.unregister(exported);
     notifications.on_lost = &stop;
@@ -269,7 +275,7 @@ pub fn main(init: std.process.Init) !void {
     if (running) return error.SessionBusDisconnected;
     if (session.serving and !session.notices.?.isOwned()) return error.NotificationNameUnavailable;
 }
-fn sessionControl(io: std.Io, argv: []const []const u8) !void {
+fn sessionControl(a: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
     const current_environment: std.process.Environ = .{ .block = .{ .slice = std.mem.span(std.c.environ) } };
     var environment = try current_environment.createMap(a);
     defer environment.deinit();
@@ -306,6 +312,8 @@ pub const apps = @import("desktop-apps.zig");
 pub const dash_view = @import("desktop-dash-view.zig");
 pub const chooser = @import("desktop-portal-file-chooser.zig");
 pub const util = @import("desktop-util.zig");
+pub const icons = @import("desktop-icons.zig");
+pub const gsettings = @import("desktop-gsettings.zig");
 pub const posix = @import("posix");
 pub const pipewire = @import("pipewire");
 pub const network_editor = @import("desktop-network-editor.zig");

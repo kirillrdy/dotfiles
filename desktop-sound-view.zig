@@ -67,7 +67,7 @@ pub const View = struct {
         self.invalidate(allocator);
         for (self.rows.items) |row| allocator.free(row.title);
         self.rows.deinit(allocator);
-        self.icons.deinit();
+        self.icons.deinit(allocator);
         self.renderer.deinit();
     }
     pub fn sidebar(self: *const View) f64 {
@@ -275,13 +275,13 @@ pub const View = struct {
         const h: f64 = @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale;
         mask.paint(canvas, bounds.x + (if (centered) (bounds.width - w) / 2 else 0), bounds.y + (bounds.height - h) / 2, color(tint));
     }
-    fn icon(self: *View, canvas: raster.Canvas, name: [:0]const u8, bounds: Rect, size: u32) void {
-        self.icons.paint(canvas, name, bounds.x + (bounds.width - @as(f64, @floatFromInt(size))) / 2, bounds.y + (bounds.height - @as(f64, @floatFromInt(size))) / 2, size) catch {};
+    fn icon(self: *View, allocator: std.mem.Allocator, canvas: raster.Canvas, name: [:0]const u8, bounds: Rect, size: u32) void {
+        self.icons.paint(allocator, canvas, name, bounds.x + (bounds.width - @as(f64, @floatFromInt(size))) / 2, bounds.y + (bounds.height - @as(f64, @floatFromInt(size))) / 2, size) catch {};
     }
     fn controlFocus(self: *const View, canvas: raster.Canvas, t: Target) void {
         if (self.keyboard_focus) if (self.focus) |f| if (f.eql(t) and self.active(t)) p.focus(canvas, self.rect(t));
     }
-    fn slider(self: *View, canvas: raster.Canvas, i: usize) void {
+    fn slider(self: *View, allocator: std.mem.Allocator, canvas: raster.Canvas, i: usize) void {
         const row = self.rows.items[i];
         const t: Target = .{ .row = i };
         const r = self.rect(t);
@@ -295,11 +295,11 @@ pub const View = struct {
         const mr = self.rect(mute);
         if (self.hover) |h| if (h.eql(mute)) p.fill(canvas, mr, 0x47474b, 6);
         const input = i == 1 or row.class == .recording;
-        self.icon(canvas, if (input) (if (muted) "microphone-sensitivity-muted-symbolic" else "audio-input-microphone-symbolic") else if (muted) "audio-volume-muted-symbolic" else if (value < 34) "audio-volume-low-symbolic" else if (value < 67) "audio-volume-medium-symbolic" else "audio-volume-high-symbolic", mr, 16);
+        self.icon(allocator, canvas, if (input) (if (muted) "microphone-sensitivity-muted-symbolic" else "audio-input-microphone-symbolic") else if (muted) "audio-volume-muted-symbolic" else if (value < 34) "audio-volume-low-symbolic" else if (value < 67) "audio-volume-medium-symbolic" else "audio-volume-high-symbolic", mr, 16);
         self.controlFocus(canvas, t);
         self.controlFocus(canvas, mute);
     }
-    pub fn paint(self: *View, target: raster.Buffer) void {
+    pub fn paint(self: *View, allocator: std.mem.Allocator, target: raster.Buffer) void {
         @memset(target.pixels, 0xff222226);
         const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(self.scale) };
         const x = self.contentX();
@@ -321,15 +321,15 @@ pub const View = struct {
                         const label_width = @as(f64, @floatFromInt(mask.logical_width)) / canvas.scale;
                         const label_x = x + w - (if (self.deviceCount(i) > 1) @as(f64, 36) else 14) - label_width;
                         self.drawMask(canvas, mask, .{ .x = label_x, .y = r.y, .width = label_width, .height = 55 }, false, 0xffffff);
-                        self.icon(canvas, if (input) "audio-input-microphone-symbolic" else "audio-speakers-symbolic", .{ .x = label_x - 24, .y = r.y, .width = 20, .height = 55 }, 16);
+                        self.icon(allocator, canvas, if (input) "audio-input-microphone-symbolic" else "audio-speakers-symbolic", .{ .x = label_x - 24, .y = r.y, .width = 20, .height = 55 }, 16);
                     }
-                    if (self.active(.{ .row = i, .control = .device })) self.icon(canvas, "pan-down-symbolic", .{ .x = x + w - 36, .y = r.y, .width = 28, .height = 55 }, 16);
+                    if (self.active(.{ .row = i, .control = .device })) self.icon(allocator, canvas, "pan-down-symbolic", .{ .x = x + w - 36, .y = r.y, .width = 28, .height = 55 }, 16);
                 } else self.caption(canvas, if (input) .no_input else .no_output, .{ .x = x + 160, .y = r.y, .width = w - 174, .height = 55 }, false, p.secondary);
                 self.controlFocus(canvas, .{ .row = i, .control = .device });
                 if (i < self.rows.items.len and self.rows.items[i].state != null) {
                     p.line(canvas, x, r.y + 55, w);
                     self.caption(canvas, if (input) .input_volume else .output_volume, .{ .x = x + 14, .y = r.y + 55, .width = 114, .height = 63 }, false, 0xffffff);
-                    self.slider(canvas, i);
+                    self.slider(allocator, canvas, i);
                 }
             }
             const test_target: Target = .{ .control = .test_sound };
@@ -341,7 +341,7 @@ pub const View = struct {
             const lr = self.rect(.{ .control = .levels });
             p.fill(canvas, lr, p.card, 12);
             self.caption(canvas, .levels, .{ .x = x + 14, .y = lr.y, .width = w - 56, .height = 55 }, false, 0xffffff);
-            self.icon(canvas, "go-next-symbolic", .{ .x = x + w - 36, .y = lr.y, .width = 28, .height = 55 }, 16);
+            self.icon(allocator, canvas, "go-next-symbolic", .{ .x = x + w - 36, .y = lr.y, .width = 28, .height = 55 }, 16);
             self.controlFocus(canvas, .{ .control = .levels });
         } else {
             var count: usize = 0;
@@ -361,16 +361,16 @@ pub const View = struct {
                 for (self.rows.items, 0..) |row, i| if (row.class == class and self.stream(i)) {
                     const y = self.rowY(i);
                     if (ordinal > 0) p.line(canvas, x, y, w);
-                    self.icon(canvas, if (class == .playback) "audio-x-generic-symbolic" else "audio-input-microphone-symbolic", .{ .x = x + 12, .y = y, .width = 24, .height = 63 }, 24);
+                    self.icon(allocator, canvas, if (class == .playback) "audio-x-generic-symbolic" else "audio-input-microphone-symbolic", .{ .x = x + 12, .y = y, .width = 24, .height = 63 }, 24);
                     if (row.summary_mask) |mask| self.drawMask(canvas, mask, .{ .x = x + 44, .y = y, .width = 126, .height = 63 }, false, 0xffffff);
-                    self.slider(canvas, i);
+                    self.slider(allocator, canvas, i);
                     ordinal += 1;
                     count += 1;
                 };
             }
             if (count == 0) {
                 const y = @max(140, @as(f64, @floatFromInt(self.viewport_height)) / 2 - 70);
-                self.icon(canvas, "audio-volume-high-symbolic", .{ .x = x, .y = y, .width = w, .height = 64 }, 64);
+                self.icon(allocator, canvas, "audio-volume-high-symbolic", .{ .x = x, .y = y, .width = w, .height = 64 }, 64);
                 self.caption(canvas, .no_streams, .{ .x = x, .y = y + 88, .width = w, .height = 36 }, true, 0xffffff);
             }
         }
@@ -384,16 +384,16 @@ pub const View = struct {
             const r = self.rect(t);
             const selected = control == .sound_nav;
             if (selected or (self.hover != null and self.hover.?.eql(t))) p.fill(canvas, r, if (selected) 0x414145 else 0x38383c, 9);
-            self.icon(canvas, icon_name, .{ .x = r.x + 14, .y = r.y, .width = 16, .height = r.height }, 16);
+            self.icon(allocator, canvas, icon_name, .{ .x = r.x + 14, .y = r.y, .width = 16, .height = r.height }, 16);
             self.caption(canvas, label, .{ .x = r.x + 42, .y = r.y, .width = r.width - 56, .height = r.height }, false, 0xffffff);
             self.controlFocus(canvas, t);
         }
         const close_target: Target = .{ .control = .close };
         p.fill(canvas, self.rect(close_target), 0x38383c, 12);
-        self.icon(canvas, "window-close-symbolic", self.rect(close_target), 12);
+        self.icon(allocator, canvas, "window-close-symbolic", self.rect(close_target), 12);
         self.controlFocus(canvas, close_target);
         if (self.page == .levels) {
-            self.icon(canvas, "go-previous-symbolic", self.rect(.{ .control = .back }), 16);
+            self.icon(allocator, canvas, "go-previous-symbolic", self.rect(.{ .control = .back }), 16);
             self.controlFocus(canvas, .{ .control = .back });
         }
         if (self.expanded != null) {
@@ -407,7 +407,7 @@ pub const View = struct {
                 const r = self.rect(t);
                 if (n == self.option_cursor or (self.hover != null and self.hover.?.eql(t))) p.fill(canvas, r, 0x4b4b50, 6);
                 self.drawMask(canvas, self.rows.items[i].title_mask.?, .{ .x = r.x + 12, .y = r.y, .width = r.width - 56, .height = r.height }, false, 0xffffff);
-                if (self.rows.items[i].is_default) self.icon(canvas, "object-select-symbolic", .{ .x = r.x + r.width - 36, .y = r.y, .width = 24, .height = 44 }, 16);
+                if (self.rows.items[i].is_default) self.icon(allocator, canvas, "object-select-symbolic", .{ .x = r.x + r.width - 36, .y = r.y, .width = 24, .height = 44 }, 16);
             }
         }
         if (self.message_mask) |mask| {
@@ -471,7 +471,7 @@ test "integration: sound view renders long labels and empty stream page at both 
         defer allocator.free(pixels);
         for ([_]Page{ .sound, .levels }) |page| {
             view.page = page;
-            view.paint(.{ .pixels = pixels, .width = view.width * scale, .height = view.viewport_height * scale });
+            view.paint(allocator, .{ .pixels = pixels, .width = view.width * scale, .height = view.viewport_height * scale });
             try std.testing.expect(std.mem.count(u32, pixels, &.{0xff222226}) < pixels.len);
         }
     }

@@ -4,7 +4,6 @@ const c = @import("desktop-glib.zig");
 const dbus = @import("dbus");
 const libc = @import("desktop-libc.zig");
 // Test builds account for service state and asynchronous callback allocations.
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 
 pub const Device = struct {
     name: [256:0]u8 = @splat(0),
@@ -66,9 +65,9 @@ pub const Backend = struct {
         }
         return selected orelse error.NoBacklight;
     }
-    pub fn start(self: Backend, action: Action, cancel: *c.GCancellable, callback: Callback, context: ?*anyopaque) void {
+    pub fn start(self: Backend, a: std.mem.Allocator, action: Action, cancel: *c.GCancellable, callback: Callback, context: ?*anyopaque) void {
         const job = a.create(Job) catch @panic("out of memory");
-        job.* = .{ .backend = self, .action = action, .cancel = cancel, .callback = callback, .context = context };
+        job.* = .{ .allocator = a, .backend = self, .action = action, .cancel = cancel, .callback = callback, .context = context };
         _ = c.g_object_ref(cancel);
         job.read();
     }
@@ -77,6 +76,7 @@ fn validName(name: []const u8) bool {
     return name.len > 0 and name.len < 256 and name[0] != '.' and std.mem.indexOfScalar(u8, name, '/') == null and std.mem.indexOfScalar(u8, name, 0) == null and std.unicode.utf8ValidateSlice(name);
 }
 const Job = struct {
+    allocator: std.mem.Allocator,
     backend: Backend,
     action: Action,
     cancel: *c.GCancellable,
@@ -112,7 +112,7 @@ const Job = struct {
         };
         const level = self.device.level(percent) catch |err| return self.finish(.{ .failure = err });
         const name: []const u8 = std.mem.sliceTo(&self.device.name, 0);
-        @import("desktop-dbus-loop.zig").request(.system, .{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1/session/auto", .interface = "org.freedesktop.login1.Session", .member = "SetBrightness" }, .{ "backlight", name, level }, 2000, self.cancel, &writeDone, self);
+        @import("desktop-dbus-loop.zig").request(self.allocator, .system, .{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1/session/auto", .interface = "org.freedesktop.login1.Session", .member = "SetBrightness" }, .{ "backlight", name, level }, 2000, self.cancel, &writeDone, self);
     }
     fn writeDone(data: ?*anyopaque, reply: dbus.Reply) void {
         const self: *Job = @ptrCast(@alignCast(data));
@@ -131,7 +131,7 @@ const Job = struct {
     fn finish(self: *Job, result: Result) void {
         self.callback(self.context, result);
         c.g_object_unref(self.cancel);
-        a.destroy(self);
+        self.allocator.destroy(self);
     }
 };
 

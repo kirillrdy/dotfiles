@@ -5,7 +5,6 @@ const wl = @import("wayland-client");
 const raster = @import("desktop-raster.zig");
 const wire = @import("desktop-surface.zig");
 const widgets = @import("desktop-widgets.zig");
-const allocator = std.heap.page_allocator;
 
 pub const Config = struct {
     height: u16 = 32,
@@ -48,15 +47,15 @@ const Panel = struct {
 
     fn appendGroup(self: *Panel, options: []const widgets.Options) usize {
         for (options) |option| {
-            const module = widgets.init(option, self.app.devices, &onModuleRedraw, self);
-            self.slots.append(allocator, .{ .module = module, .on_click = option.on_click }) catch @panic("out of memory");
+            const module = widgets.init(self.app.allocator, option, self.app.devices, &onModuleRedraw, self);
+            self.slots.append(self.app.allocator, .{ .module = module, .on_click = option.on_click }) catch @panic("out of memory");
         }
         return options.len;
     }
 
     fn create(app: *App, output: *wire.Output) !*Panel {
-        const self = try allocator.create(Panel);
-        errdefer allocator.destroy(self);
+        const self = try app.allocator.create(Panel);
+        errdefer app.allocator.destroy(self);
         self.* = .{ .app = app, .output = output, .surface = undefined };
         const surface = try wire.Surface.createPixels(output, .{
             .namespace = "desktop-panel",
@@ -89,7 +88,7 @@ const Panel = struct {
     fn layout(self: *Panel, scale: u32) void {
         const height: f64 = @floatFromInt(self.app.config.height);
         for (self.slots.items) |*slot| {
-            slot.module.view.prepare(scale, height) catch |err| std.log.err("panel layout: {s}", .{@errorName(err)});
+            slot.module.view.prepare(self.app.allocator, scale, height) catch |err| std.log.err("panel layout: {s}", .{@errorName(err)});
             slot.width = @floatFromInt(slot.module.view.width);
         }
         const panel_width: f64 = @floatFromInt(self.surface.width);
@@ -125,7 +124,7 @@ const Panel = struct {
             const mod_h = target.height;
             const needed = mod_w * mod_h;
             if (needed == 0) continue;
-            if (self.pixels.items.len < needed) self.pixels.resize(allocator, needed) catch continue;
+            if (self.pixels.items.len < needed) self.pixels.resize(self.app.allocator, needed) catch continue;
             const buf = self.pixels.items[0..needed];
             slot.module.view.paint(.{ .pixels = buf, .width = mod_w, .height = mod_h });
             const dest_x: i32 = @intFromFloat(@round(slot.x * @as(f64, @floatFromInt(factor))));
@@ -151,7 +150,7 @@ const Panel = struct {
     }
 
     fn clearTooltipText(self: *Panel) void {
-        if (self.tooltip_owned) allocator.free(self.tooltip_text);
+        if (self.tooltip_owned) self.app.allocator.free(self.tooltip_text);
         self.tooltip_text = "";
         self.tooltip_owned = false;
     }
@@ -189,9 +188,9 @@ const Panel = struct {
     fn showTooltip(self: *Panel) !void {
         if (self.tooltip_text.len == 0 or self.usageVisible()) return;
         const scale = self.output.scale;
-        self.tooltip_label.set(self.tooltip_text);
-        try self.tooltip_label.prepare(&self.slots.items[0].module.view.renderer, scale, 13.333, false, null, false);
-        if (self.tooltip_label.width() > 480) try self.tooltip_label.prepare(&self.slots.items[0].module.view.renderer, scale, 13.333, false, 480, false);
+        self.tooltip_label.set(self.app.allocator, self.tooltip_text);
+        try self.tooltip_label.prepare(self.app.allocator, &self.slots.items[0].module.view.renderer, scale, 13.333, false, null, false);
+        if (self.tooltip_label.width() > 480) try self.tooltip_label.prepare(self.app.allocator, &self.slots.items[0].module.view.renderer, scale, 13.333, false, 480, false);
         const w: u32 = @max(1, @as(u32, @intFromFloat(@ceil(self.tooltip_label.width() + 16))));
         const h: u32 = @max(1, @as(u32, @intFromFloat(@ceil(self.tooltip_label.height() + 16))));
         self.tooltip_width = w;
@@ -218,7 +217,7 @@ const Panel = struct {
     fn drawTooltip(data: ?*anyopaque, target: wire.Pixels) void {
         const self: *Panel = @ptrCast(@alignCast(data));
         const factor = self.tooltip_surface.?.buffer_scale;
-        self.tooltip_label.prepare(&self.slots.items[0].module.view.renderer, factor, 13.333, false, self.tooltip_label.limit, false) catch return;
+        self.tooltip_label.prepare(self.app.allocator, &self.slots.items[0].module.view.renderer, factor, 13.333, false, self.tooltip_label.limit, false) catch return;
         const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(factor) };
         const w: f64 = @as(f64, @floatFromInt(target.width)) / canvas.scale;
         const h: f64 = @as(f64, @floatFromInt(target.height)) / canvas.scale;
@@ -243,7 +242,7 @@ const Panel = struct {
                 self.hideTooltip();
             } else if (!std.mem.eql(u8, self.tooltip_text, text)) {
                 self.hideTooltip();
-                self.tooltip_text = allocator.dupeSentinel(u8, text, 0) catch return;
+                self.tooltip_text = self.app.allocator.dupeSentinel(u8, text, 0) catch return;
                 self.tooltip_owned = true;
                 self.tooltip_x = @intFromFloat(@round(x));
                 self.tooltip_timer = c.g_timeout_add(500, &onTooltipTimer, self);
@@ -331,16 +330,17 @@ const Panel = struct {
         self.hideTooltip();
         self.hideUsage();
         if (self.tooltip_surface) |surface| surface.destroy();
-        self.tooltip_label.deinit();
+        self.tooltip_label.deinit(self.app.allocator);
         for (self.slots.items) |slot| widgets.deinit(slot.module);
-        self.slots.deinit(allocator);
-        self.pixels.deinit(allocator);
+        self.slots.deinit(self.app.allocator);
+        self.pixels.deinit(self.app.allocator);
         self.surface.destroy();
-        allocator.destroy(self);
+        self.app.allocator.destroy(self);
     }
 };
 
 const App = struct {
+    allocator: std.mem.Allocator,
     devices: *@import("desktop-devices.zig").Service,
     config: Config,
     client: *wire.Client = undefined,
@@ -415,7 +415,7 @@ const App = struct {
             std.log.err("panel create: {s}", .{@errorName(err)});
             return;
         };
-        self.panels.append(allocator, panel) catch @panic("out of memory");
+        self.panels.append(self.allocator, panel) catch @panic("out of memory");
         self.revision +%= 1;
     }
 
@@ -444,7 +444,7 @@ pub const Service = struct {
     arena: std.heap.ArenaAllocator,
     app: App,
 
-    pub fn create(config_path: [:0]const u8, devices: *@import("desktop-devices.zig").Service) !*Service {
+    pub fn create(allocator: std.mem.Allocator, config_path: [:0]const u8, devices: *@import("desktop-devices.zig").Service) !*Service {
         const self = try allocator.create(Service);
         errdefer allocator.destroy(self);
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -455,8 +455,8 @@ pub const Service = struct {
         defer c.g_free(contents);
         const parsed = try std.json.parseFromSlice(Config, arena.allocator(), contents[0..length], .{});
         if (parsed.value.height == 0) return error.InvalidConfig;
-        self.* = .{ .arena = arena, .app = .{ .config = parsed.value, .devices = devices } };
-        const client = try wire.Client.createInteractive(.{
+        self.* = .{ .arena = arena, .app = .{ .allocator = allocator, .config = parsed.value, .devices = devices } };
+        const client = try wire.Client.createInteractive(allocator, .{
             .added = &App.onOutputAdded,
             .removed = &App.onOutputRemoved,
             .changed = &App.onOutputChanged,
@@ -485,9 +485,9 @@ pub const Service = struct {
             const panel = self.app.panels.pop().?;
             panel.destroy();
         }
-        self.app.panels.deinit(allocator);
+        self.app.panels.deinit(self.app.allocator);
         self.app.client.destroy();
         self.arena.deinit();
-        allocator.destroy(self);
+        self.app.allocator.destroy(self);
     }
 };

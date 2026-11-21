@@ -12,7 +12,6 @@ const view = @import("desktop-overview-view.zig");
 const picker = @import("desktop-overview-layout.zig");
 const animation = @import("desktop-overview-animation.zig");
 const c = capture.c;
-const a = std.heap.page_allocator;
 const cast = c.__zig.cast;
 const Rect = capture.Rect;
 const Part = enum { search, grid, stage, strip, dash, tooltip };
@@ -28,6 +27,7 @@ const WindowPaint = struct {
     }
 };
 const Overview = struct {
+    allocator: std.mem.Allocator,
     launcher: apps.Launcher,
     client: ?*capture.Client = null,
     native: *wire.Client,
@@ -49,7 +49,7 @@ const Overview = struct {
     painting: bool = false,
     animating: bool = false,
     repaint_source: c.guint = 0,
-    dash_view: native_dash.View = .{},
+    dash_view: native_dash.View,
     tooltip_timer: c.guint = 0,
     wallpaper: ?Image,
     timer: c.guint = 0,
@@ -79,12 +79,12 @@ const Overview = struct {
     workspace_rect: Rect = .{},
     monitor: raster.IntRect = .{ .x = 0, .y = 0, .width = 1728, .height = 1080 },
 
-    fn create(path: [*:0]const u8) *Overview {
+    fn create(a: std.mem.Allocator, path: [*:0]const u8) *Overview {
         const self = a.create(Overview) catch @panic("out of memory");
-        const native = wire.Client.createInteractive(.{ .added = &outputAdded, .removed = &outputRemoved }, self) catch @panic("native overview connection");
+        const native = wire.Client.createInteractive(a, .{ .added = &outputAdded, .removed = &outputRemoved }, self) catch @panic("native overview connection");
         if (native.outputs.items.len == 0) @panic("overview needs an output");
-        const wallpaper = decode.file(path, null);
-        self.* = .{ .launcher = apps.Launcher.init(), .native = native, .surface = null, .wallpaper = wallpaper };
+        const wallpaper = decode.file(a, path, null);
+        self.* = .{ .allocator = a, .dash_view = .{ .allocator = a }, .launcher = apps.Launcher.init(a), .native = native, .surface = null, .wallpaper = wallpaper };
         self.gpu_previews = native.enablePreviews();
         self.surface = self.createSurface(native.outputs.items[0]) catch @panic("native overview surface");
         if (self.gpu_previews) self.background = self.createBackground(native.outputs.items[0]) catch @panic("overview background");
@@ -97,7 +97,7 @@ const Overview = struct {
         self.launcher.on_search = &searchChanged;
         self.launcher.search_context = self;
         self.launcher.overview_search = true;
-        self.client = capture.Client.create(self, &changed) catch null;
+        self.client = capture.Client.create(self.allocator, self, &changed) catch null;
         native.start() catch @panic("native overview input");
         return self;
     }
@@ -112,16 +112,16 @@ const Overview = struct {
         self.native.destroy();
         self.launcher.deinit();
         self.dash_view.deinit();
-        self.window_paints.deinit(a);
-        self.picker_layout.deinit(a);
+        self.window_paints.deinit(self.allocator);
+        self.picker_layout.deinit(self.allocator);
         self.clearCaption();
-        if (self.wallpaper) |image| decode.free(image);
-        a.destroy(self);
+        if (self.wallpaper) |image| decode.free(self.allocator, image);
+        self.allocator.destroy(self);
     }
     fn clearCaption(self: *Overview) void {
-        if (self.caption_mask) |mask| mask.deinit(a);
+        if (self.caption_mask) |mask| mask.deinit(self.allocator);
         self.caption_mask = null;
-        if (self.caption_title.len != 0) a.free(self.caption_title);
+        if (self.caption_title.len != 0) self.allocator.free(self.caption_title);
         self.caption_title = &.{};
         self.caption_width = 0;
         self.caption_scale = 0;
@@ -132,21 +132,21 @@ const Overview = struct {
             return .{ .mask = self.caption_mask.?, .scale = scale };
         }
         self.clearCaption();
-        const copy = a.dupeSentinel(u8, value, 0) catch return null;
+        const copy = self.allocator.dupeSentinel(u8, value, 0) catch return null;
         const factor: f64 = @floatFromInt(@max(1, scale));
-        var mask = self.launcher.renderer.renderLayout(a, copy, .{
+        var mask = self.launcher.renderer.renderLayout(self.allocator, copy, .{
             .font = "Adwaita Sans Bold",
             .size = 14.6666666667 * factor,
             .dpi = 96 * factor,
             .line_height = 19 * scale,
             .origin = .top,
         }) catch {
-            a.free(copy);
+            self.allocator.free(copy);
             return null;
         };
         if (mask.logical_width > max_width * scale) {
-            mask.deinit(a);
-            mask = self.launcher.renderer.renderLayout(a, copy, .{
+            mask.deinit(self.allocator);
+            mask = self.launcher.renderer.renderLayout(self.allocator, copy, .{
                 .font = "Adwaita Sans Bold",
                 .size = 14.6666666667 * factor,
                 .dpi = 96 * factor,
@@ -156,7 +156,7 @@ const Overview = struct {
                 .ellipsize = true,
                 .origin = .top,
             }) catch {
-                a.free(copy);
+                self.allocator.free(copy);
                 return null;
             };
         }
@@ -178,7 +178,7 @@ const Overview = struct {
             return;
         }
         if (self.timer == 0) self.timer = c.g_timeout_add(33, &tick, self);
-        if (self.client == null) self.client = capture.Client.create(self, &changed) catch null;
+        if (self.client == null) self.client = capture.Client.create(self.allocator, self, &changed) catch null;
         const output = self.surface.?.output;
         self.monitor = .{ .x = output.x, .y = output.y, .width = output.width(), .height = output.height() };
         self.apps_mode = false;
@@ -222,10 +222,10 @@ const Overview = struct {
     fn rebuildDash(self: *Overview) void {
         self.hideTooltip();
         self.dash_view.clear();
-        var favorites_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var favorites_arena = std.heap.ArenaAllocator.init(self.allocator);
         defer favorites_arena.deinit();
         var favorites: []const [:0]const u8 = &.{};
-        if (c.__zig.settings("org.gnome.shell", "favorite-apps")) |settings| {
+        if (c.__zig.settings(self.allocator, "org.gnome.shell", "favorite-apps")) |settings| {
             defer settings.close();
             const names = settings.strings(favorites_arena.allocator(), "favorite-apps");
             const owned: [][:0]const u8 = favorites_arena.allocator().alloc([:0]const u8, names.len) catch &.{};
@@ -977,20 +977,20 @@ const Overview = struct {
             self.paintStage(.{ .target = target, .scale = @floatFromInt(scale), .origin = .{ .x = 0, .y = self.stage.y } }, @floatFromInt(width), @floatFromInt(self.stage.height));
         }
         const opacity = animation.controlsOpacity(self.progress);
-        apps.paintRegionOpacity(target, scale, self.search, .{ &self.launcher, apps.Part.search }, apps.paintPart, opacity);
+        apps.paintRegionOpacity(self.allocator, target, scale, self.search, .{ &self.launcher, apps.Part.search }, apps.paintPart, opacity);
         if (self.strip.width > 0 and self.strip.height > 0) {
             if (opacity == 1 or self.gpu_previews) {
-                apps.paintRegionInPlace(target, scale, self.strip, .{ self, Part.strip }, paintPart);
+                apps.paintRegionInPlace(self.allocator, target, scale, self.strip, .{ self, Part.strip }, paintPart);
             } else {
-                apps.paintRegionOpacity(target, scale, self.strip, .{ self, Part.strip }, paintPart, opacity);
+                apps.paintRegionOpacity(self.allocator, target, scale, self.strip, .{ self, Part.strip }, paintPart, opacity);
             }
         }
-        apps.paintRegionOpacity(target, scale, self.dash, .{ self, Part.dash }, paintPart, opacity);
+        apps.paintRegionOpacity(self.allocator, target, scale, self.dash, .{ self, Part.dash }, paintPart, opacity);
         if (self.apps_mode or self.launcher.searchText().len != 0) {
-            apps.paintRegionOpacity(target, scale, self.grid, .{ &self.launcher, apps.Part.grid }, apps.paintPart, opacity);
+            apps.paintRegionOpacity(self.allocator, target, scale, self.grid, .{ &self.launcher, apps.Part.grid }, apps.paintPart, opacity);
         }
-        if (self.tooltip_visible) apps.paintRegionOpacity(target, scale, self.tooltip, .{ self, Part.tooltip }, paintPart, opacity);
-        if (status > 0) apps.paintRegionOpacity(target, scale, .{ .y = @floatFromInt(height -| (footer + status)), .width = width, .height = status }, .{ &self.launcher, apps.Part.message }, apps.paintPart, opacity);
+        if (self.tooltip_visible) apps.paintRegionOpacity(self.allocator, target, scale, self.tooltip, .{ self, Part.tooltip }, paintPart, opacity);
+        if (status > 0) apps.paintRegionOpacity(self.allocator, target, scale, .{ .y = @floatFromInt(height -| (footer + status)), .width = width, .height = status }, .{ &self.launcher, apps.Part.message }, apps.paintPart, opacity);
     }
     fn paintBackground(data: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(Overview, data);
@@ -1002,7 +1002,7 @@ const Overview = struct {
         self.layoutRegions(width, height);
         @memset(target.pixels, 0xff222226);
         if (self.launcher.searchText().len == 0) self.paintStage(.{ .target = target, .scale = @floatFromInt(scale), .origin = .{ .x = 0, .y = self.stage.y } }, @floatFromInt(width), @floatFromInt(self.stage.height));
-        apps.paintRegionOpacity(target, scale, self.strip, .{ self, Part.strip }, paintPart, animation.controlsOpacity(self.progress));
+        apps.paintRegionOpacity(self.allocator, target, scale, self.strip, .{ self, Part.strip }, paintPart, animation.controlsOpacity(self.progress));
     }
     fn emitPreview(self: *Overview, window: *capture.Window, rect: Rect, clip: Rect, origin_x: f64, origin_y: f64, opacity: f64) void {
         if (window.id == null) return;
@@ -1041,7 +1041,7 @@ const Overview = struct {
             self.window_paints.clearRetainingCapacity();
             for (client.windows.items) |window| {
                 if (window.workspace != i and !window.sticky) continue;
-                self.window_paints.append(a, .{ .window = window, .rect = .{}, .hovered = false }) catch @panic("out of memory");
+                self.window_paints.append(self.allocator, .{ .window = window, .rect = .{}, .hovered = false }) catch @panic("out of memory");
             }
             std.mem.sort(WindowPaint, self.window_paints.items, {}, WindowPaint.below);
             for (self.window_paints.items) |item| {
@@ -1050,13 +1050,13 @@ const Overview = struct {
                 const sx = geom.thumb_w / work_w;
                 const sy = geom.thumb_h / work_h;
                 const r = Rect{ .x = x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = 6 + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
-                if (self.gpu_previews) self.emitPreview(window, r, rect, self.strip.x, self.strip.y, animation.controlsOpacity(self.progress)) else view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect), 4, animated);
+                if (self.gpu_previews) self.emitPreview(window, r, rect, self.strip.x, self.strip.y, animation.controlsOpacity(self.progress)) else view.miniatureRounded(self.allocator, canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect), 4, animated);
             }
-            if (self.gpu_previews) view.roundedMask(canvas, pixelRect(rect), 4);
+            if (self.gpu_previews) view.roundedMask(self.allocator, canvas, pixelRect(rect), 4);
         }
         if (client.count > 0 and !self.painting_background) {
             const ind_x = geom.left + self.workspacePosition() * geom.step;
-            view.thumbnailIndicator(canvas, pixelRect(.{ .x = ind_x, .y = 6, .w = geom.thumb_w, .h = geom.thumb_h }), if (self.gpu_previews) animation.controlsOpacity(self.progress) else 1);
+            view.thumbnailIndicator(self.allocator, canvas, pixelRect(.{ .x = ind_x, .y = 6, .w = geom.thumb_w, .h = geom.thumb_h }), if (self.gpu_previews) animation.controlsOpacity(self.progress) else 1);
         }
     }
     const FitAllLayout = struct {
@@ -1115,12 +1115,12 @@ const Overview = struct {
                 const bg = layout.cardRect(i, position);
                 if (bg.x > width or bg.x + bg.w < 0) continue;
                 const radius = @max(10.0, 30.0 * (bg.h / @max(1.0, work_h * 0.74)));
-                if (!self.gpu_previews or self.painting_background) view.workspaceCard(canvas, pixelRect(bg), if (self.wallpaper) |image| image.view() else null, radius, true, animated);
+                if (!self.gpu_previews or self.painting_background) view.workspaceCard(self.allocator, canvas, pixelRect(bg), if (self.wallpaper) |image| image.view() else null, radius, true, animated);
                 if (self.painting_background) continue;
                 self.window_paints.clearRetainingCapacity();
                 for (client.windows.items) |window| {
                     if (window.workspace != i and !window.sticky) continue;
-                    self.window_paints.append(a, .{ .window = window, .rect = .{}, .hovered = false }) catch @panic("out of memory");
+                    self.window_paints.append(self.allocator, .{ .window = window, .rect = .{}, .hovered = false }) catch @panic("out of memory");
                 }
                 std.mem.sort(WindowPaint, self.window_paints.items, {}, WindowPaint.below);
                 const sx = bg.w / work_w;
@@ -1129,9 +1129,9 @@ const Overview = struct {
                     const window = item.window;
                     const g = window.geometry;
                     const r = Rect{ .x = bg.x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = bg.y + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
-                    if (self.gpu_previews) self.emitPreview(window, r, bg, 0, self.stage.y, animation.controlsOpacity(self.progress)) else view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(bg), radius, animated);
+                    if (self.gpu_previews) self.emitPreview(window, r, bg, 0, self.stage.y, animation.controlsOpacity(self.progress)) else view.miniatureRounded(self.allocator, canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(bg), radius, animated);
                 }
-                if (self.gpu_previews) view.roundedMaskShadow(canvas, pixelRect(bg), radius);
+                if (self.gpu_previews) view.roundedMaskShadow(self.allocator, canvas, pixelRect(bg), radius);
             }
             return;
         }
@@ -1152,7 +1152,7 @@ const Overview = struct {
                 .h = start.h + (base.h * ratio - start.h) * ease,
             };
             if (background.x > width or background.x + background.w < 0) continue;
-            if (!self.gpu_previews or self.painting_background) view.workspaceProgress(canvas, pixelRect(background), if (self.wallpaper) |image| image.view() else null, ease, animated);
+            if (!self.gpu_previews or self.painting_background) view.workspaceProgress(self.allocator, canvas, pixelRect(background), if (self.wallpaper) |image| image.view() else null, ease, animated);
             if (self.painting_background) continue;
             self.drawWindows(canvas, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1, animated, width);
         }
@@ -1170,9 +1170,9 @@ const Overview = struct {
         self.picker_layout.items.clearRetainingCapacity();
         for (client.windows.items, 0..) |window, index| {
             if (window.workspace != workspace_index and !window.sticky) continue;
-            self.picker_layout.items.append(a, .{ .geometry = window.geometry, .index = index }) catch @panic("out of memory");
+            self.picker_layout.items.append(self.allocator, .{ .geometry = window.geometry, .index = index }) catch @panic("out of memory");
         }
-        self.picker_layout.compute(a, @floatFromInt(self.monitor.height), .{ .w = @floatFromInt(self.monitor.width), .h = @floatFromInt(self.monitor.height - 32) }, .{ .w = container_width, .h = height }) catch @panic("out of memory");
+        self.picker_layout.compute(self.allocator, @floatFromInt(self.monitor.height), .{ .w = @floatFromInt(self.monitor.width), .h = @floatFromInt(self.monitor.height - 32) }, .{ .w = container_width, .h = height }) catch @panic("out of memory");
         self.window_paints.clearRetainingCapacity();
         for (self.picker_layout.items.items) |item| {
             const index = item.index;
@@ -1194,7 +1194,7 @@ const Overview = struct {
                 .h = window.geometry.h * sy,
             };
             const r = Rect{ .x = start.x + (x - start.x) * ease, .y = start.y + (y - start.y) * ease, .w = start.w + (w - start.w) * ease, .h = start.h + (h - start.h) * ease };
-            self.window_paints.append(a, .{ .window = window, .rect = r, .hovered = workspace_index == client.current and self.hover == index }) catch @panic("out of memory");
+            self.window_paints.append(self.allocator, .{ .window = window, .rect = r, .hovered = workspace_index == client.current and self.hover == index }) catch @panic("out of memory");
         }
         // Keep picker positions stable while painting overlapping clones in the
         // same order as the desktop, including a newly activated older window.
@@ -1216,7 +1216,7 @@ const Overview = struct {
                 const max_w: u32 = @intFromFloat(@round(@max(140, item.rect.w + 40)));
                 caption = self.prepareCaption(title_str, max_w, @intFromFloat(@round(canvas.scale)));
             }
-            view.window(canvas, pixelRect(item.rect), if (window.image) |image| image.view() else null, window.icon, .{
+            view.window(self.allocator, canvas, pixelRect(item.rect), if (window.image) |image| image.view() else null, window.icon, .{
                 .hovered = item.hovered,
                 .close_hovered = item.hovered and self.close_hover,
                 .close_pressed = item.hovered and self.close_pressed,
@@ -1240,8 +1240,8 @@ fn pixelRect(rect: Rect) raster.Rect {
 }
 
 pub const State = struct { overview: ?*Overview = null, wallpaper: [*:0]const u8 };
-pub fn activate(state: *State) void {
-    if (state.overview == null) state.overview = Overview.create(state.wallpaper);
+pub fn activate(a: std.mem.Allocator, state: *State) void {
+    if (state.overview == null) state.overview = Overview.create(a, state.wallpaper);
     const self = state.overview.?;
     if (self.launcher.visible_window and self.transition.shown) self.launcher.hide() else self.present();
 }
@@ -1250,7 +1250,7 @@ pub fn deinit(state: *State) void {
     state.overview = null;
 }
 
-pub fn activateCorner(state: *State) void {
+pub fn activateCorner(a: std.mem.Allocator, state: *State) void {
     if (state.overview) |self| {
         const now = c.__zig.monotonicTime();
         // overview.js shouldToggleByCornerOrButton(): don't interrupt an
@@ -1258,5 +1258,5 @@ pub fn activateCorner(state: *State) void {
         if (self.transition.active(now) or self.dragging or self.drag != null) return;
         if (self.activation_time != 0 and now - self.activation_time <= 500_000) return;
     }
-    activate(state);
+    activate(a, state);
 }

@@ -6,11 +6,11 @@ const u = @import("desktop-util.zig");
 const devices = @import("desktop-devices.zig");
 const battery = @import("desktop-battery.zig");
 const panel = @import("desktop-panel.zig");
-const a = std.heap.page_allocator;
 const kinds = [_][]const u8{ "monitors", "status", "disk", "codex", "claude" };
 const intervals = [_]u32{ 1, 10, 10, 240, 240 }; // Half-second ticks.
 
 pub const Service = struct {
+    allocator: std.mem.Allocator,
     panel: *panel.Service,
     sources: [kinds.len]Source = undefined,
     timer: c.guint = 0,
@@ -52,7 +52,7 @@ pub const Service = struct {
     fn deviceChanged(ptr: ?*anyopaque, service: *devices.Service, event: devices.Event) void {
         const self: *Service = @ptrCast(@alignCast(ptr));
         if (self.dead) return;
-        if (event == .battery) if (self.battery_alerts.update(service.battery_state)) |level| battery.notifyWarning(level);
+        if (event == .battery) if (self.battery_alerts.update(service.battery_state)) |level| battery.notifyWarning(self.allocator, level);
         self.sources[1].publish("status");
     }
     pub fn deinit(self: *Service) void {
@@ -76,7 +76,7 @@ const Source = struct {
     fn publish(self: *Source, kind: []const u8) void {
         const output = self.cached orelse return;
         var update = output.value;
-        var arena = std.heap.ArenaAllocator.init(a);
+        var arena = std.heap.ArenaAllocator.init(self.owner.allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
         if (self.index == 1 and !std.mem.eql(u8, u.env("WB_PANEL_DEMO") orelse "", "1")) {
@@ -97,11 +97,11 @@ const Source = struct {
 
     fn work(task: ?*c.GTask, _: c.gpointer, ptr: c.gpointer, _: ?*c.GCancellable) callconv(.c) void {
         const self: *Source = @ptrCast(@alignCast(ptr));
-        const output = a.create(Output) catch {
+        const output = self.owner.allocator.create(Output) catch {
             c.g_task_return_pointer(task, null, null);
             return;
         };
-        output.* = .{ .arena = std.heap.ArenaAllocator.init(a), .value = undefined };
+        output.* = .{ .allocator = self.owner.allocator, .arena = std.heap.ArenaAllocator.init(self.owner.allocator), .value = undefined };
         const alloc = output.arena.allocator();
         const demo = std.mem.eql(u8, u.env("WB_PANEL_DEMO") orelse "", "1");
         const result = blk: {
@@ -133,10 +133,11 @@ const Source = struct {
     }
 };
 const Output = struct {
+    allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     value: data.Update,
     fn destroy(self: *Output) void {
         self.arena.deinit();
-        a.destroy(self);
+        self.allocator.destroy(self);
     }
 };

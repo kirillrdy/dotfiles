@@ -4,7 +4,6 @@ const c = @import("desktop-glib.zig");
 const p = @import("pipewire");
 const Pod = @import("desktop-audio-pod.zig");
 const defaults = @import("desktop-audio-defaults.zig");
-const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 var initialized = false;
 const cast = c.__zig.cast;
 fn iface(object: anytype) *p.spa_interface {
@@ -26,6 +25,7 @@ fn unhook(hook: *p.spa_hook) void {
 pub const Kind = enum { node, device, metadata };
 pub const Param = struct { index: u32, bytes: []u8 };
 pub const Object = struct {
+    allocator: std.mem.Allocator,
     registry: *Registry,
     id: u32,
     kind: Kind,
@@ -41,7 +41,7 @@ pub const Object = struct {
         return p.pw_properties_get(self.properties, key);
     }
     fn clearParams(self: *Object) void {
-        for (self.params.items) |param| a.free(param.bytes);
+        for (self.params.items) |param| self.allocator.free(param.bytes);
         self.params.clearRetainingCapacity();
     }
     fn destroy(self: *Object) void {
@@ -49,9 +49,9 @@ pub const Object = struct {
         p.pw_proxy_destroy(@ptrCast(self.proxy));
         p.pw_properties_free(self.properties);
         self.clearParams();
-        self.params.deinit(a);
-        self.names.deinit();
-        a.destroy(self);
+        self.params.deinit(self.allocator);
+        self.names.deinit(self.allocator);
+        self.allocator.destroy(self);
     }
     pub fn set(self: *Object, value: Pod.View) bool {
         const raw: *const p.spa_pod = @ptrCast(@alignCast(value.bytes.ptr));
@@ -90,26 +90,26 @@ pub const Object = struct {
         const bytes: [*]const u8 = @ptrCast(pod);
         const length = @sizeOf(p.spa_pod) + @as(usize, pod.*.size);
         _ = Pod.View.init(bytes[0..length]) catch return;
-        const copy = a.dupe(u8, bytes[0..length]) catch return;
+        const copy = self.allocator.dupe(u8, bytes[0..length]) catch return;
         for (self.params.items) |*param| if (param.index == index) {
-            a.free(param.bytes);
+            self.allocator.free(param.bytes);
             param.bytes = copy;
             self.registry.changed();
             return;
         };
         if (self.params.items.len >= 256) {
-            a.free(copy);
+            self.allocator.free(copy);
             return;
         }
-        self.params.append(a, .{ .index = index, .bytes = copy }) catch {
-            a.free(copy);
+        self.params.append(self.allocator, .{ .index = index, .bytes = copy }) catch {
+            self.allocator.free(copy);
             return;
         };
         self.registry.changed();
     }
     fn metadata(data: ?*anyopaque, subject: u32, key: [*c]const u8, kind: [*c]const u8, value: [*c]const u8) callconv(.c) c_int {
         const self = cast(Object, data);
-        if (self.names.update(subject, text(key), text(kind), text(value))) self.registry.changed();
+        if (self.names.update(self.allocator, subject, text(key), text(kind), text(value))) self.registry.changed();
         return 0;
     }
 };
@@ -117,6 +117,7 @@ const node_events: p.pw_node_events = .{ .version = p.PW_VERSION_NODE_EVENTS, .i
 const device_events: p.pw_device_events = .{ .version = p.PW_VERSION_DEVICE_EVENTS, .info = &Object.deviceInfo, .param = &Object.parameter };
 const metadata_events: p.pw_metadata_events = .{ .version = p.PW_VERSION_METADATA_EVENTS, .property = &Object.metadata };
 pub const Registry = struct {
+    allocator: std.mem.Allocator,
     callback: *const fn (?*anyopaque) void,
     data: ?*anyopaque,
     loop: *p.pw_loop,
@@ -134,7 +135,7 @@ pub const Registry = struct {
     sequence: c_int = 0,
     ready: bool = false,
     failed: bool = false,
-    pub fn create(callback: *const fn (?*anyopaque) void, data: ?*anyopaque) !*Registry {
+    pub fn create(a: std.mem.Allocator, callback: *const fn (?*anyopaque) void, data: ?*anyopaque) !*Registry {
         if (!initialized) {
             p.pw_init(null, null);
             initialized = true;
@@ -142,7 +143,7 @@ pub const Registry = struct {
         const self = try a.create(Registry);
         errdefer a.destroy(self);
         const loop = p.pw_loop_new(null) orelse return error.AudioLoopUnavailable;
-        self.* = .{ .callback = callback, .data = data, .loop = loop };
+        self.* = .{ .allocator = a, .callback = callback, .data = data, .loop = loop };
         const control = loop.*.control;
         methods(p.spa_loop_control_methods, control).enter.?(iface(control).cb.data);
         errdefer self.deinit();
@@ -160,8 +161,8 @@ pub const Registry = struct {
     fn deinit(self: *Registry) void {
         if (self.source != 0) _ = c.g_source_remove(self.source);
         for (self.objects.items) |object| object.destroy();
-        self.objects.deinit(a);
-        self.barriers.deinit(a);
+        self.objects.deinit(self.allocator);
+        self.barriers.deinit(self.allocator);
         unhook(&self.registry_hook);
         if (self.proxy) |proxy| p.pw_proxy_destroy(@ptrCast(proxy));
         unhook(&self.core_hook);
@@ -173,7 +174,7 @@ pub const Registry = struct {
     }
     pub fn destroy(self: *Registry) void {
         self.deinit();
-        a.destroy(self);
+        self.allocator.destroy(self);
     }
     fn changed(self: *Registry) void {
         self.callback(self.data);
@@ -190,8 +191,8 @@ pub const Registry = struct {
     }
     pub fn setDefault(self: *Registry, output: bool, name: []const u8) bool {
         for (self.objects.items) |object| if (object.kind == .metadata) {
-            const json = defaults.encode(name) catch return false;
-            defer a.free(json);
+            const json = defaults.encode(self.allocator, name) catch return false;
+            defer self.allocator.free(json);
             return methods(p.pw_metadata_methods, object.proxy).set_property.?(iface(object.proxy).cb.data, 0, if (output) "default.configured.audio.sink" else "default.configured.audio.source", "Spa:String:JSON", json) >= 0;
         };
         return false;
@@ -202,7 +203,7 @@ pub const Registry = struct {
         if (sequence < 0) return null;
         self.sequence = sequence;
         self.next_ticket += 1;
-        self.barriers.append(a, .{ .sequence = sequence, .ticket = self.next_ticket }) catch return null;
+        self.barriers.append(self.allocator, .{ .sequence = sequence, .ticket = self.next_ticket }) catch return null;
         return self.next_ticket;
     }
     fn dispatch(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
@@ -255,13 +256,13 @@ pub const Registry = struct {
             p.pw_properties_free(props);
             return;
         };
-        const object = a.create(Object) catch {
+        const object = self.allocator.create(Object) catch {
             p.pw_proxy_destroy(@ptrCast(proxy));
             p.pw_properties_free(props);
             return;
         };
-        object.* = .{ .registry = self, .id = id, .kind = kind, .proxy = proxy, .properties = props };
-        self.objects.append(a, object) catch {
+        object.* = .{ .allocator = self.allocator, .registry = self, .id = id, .kind = kind, .proxy = proxy, .properties = props };
+        self.objects.append(self.allocator, object) catch {
             object.destroy();
             return;
         };
@@ -297,7 +298,8 @@ const core_events: p.pw_core_events = .{ .version = p.PW_VERSION_CORE_EVENTS, .d
 const registry_events: p.pw_registry_events = .{ .version = p.PW_VERSION_REGISTRY_EVENTS, .global = &Registry.global, .global_remove = &Registry.removed };
 
 test "unrelated parameter changes preserve Props while serial changes invalidate it" {
-    var object = Object{ .registry = undefined, .id = 42, .kind = .node, .proxy = undefined, .properties = undefined, .param_flags = p.SPA_PARAM_INFO_READ };
+    const a = std.testing.allocator;
+    var object = Object{ .allocator = a, .registry = undefined, .id = 42, .kind = .node, .proxy = undefined, .properties = undefined, .param_flags = p.SPA_PARAM_INFO_READ };
     defer object.params.deinit(a);
     defer object.clearParams();
     try object.params.append(a, .{ .index = 0, .bytes = try a.dupe(u8, "cached") });
@@ -312,7 +314,8 @@ test "unrelated parameter changes preserve Props while serial changes invalidate
     try std.testing.expectEqual(@as(usize, 0), object.params.items.len);
 }
 test "core barriers complete only matching round trips and release earlier tickets" {
-    var registry = Registry{ .callback = undefined, .data = null, .loop = undefined, .ready = true };
+    const a = std.testing.allocator;
+    var registry = Registry{ .allocator = a, .callback = undefined, .data = null, .loop = undefined, .ready = true };
     defer registry.barriers.deinit(a);
     try registry.barriers.append(a, .{ .sequence = 100, .ticket = 1 });
     try registry.barriers.append(a, .{ .sequence = 101, .ticket = 2 });
