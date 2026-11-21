@@ -8,18 +8,20 @@ extern const dotfiles_overview_v1_interface: c.wl_interface;
 const hot_corner = @import("desktop-hot-corner.zig");
 const g = @import("desktop-glib.zig");
 
+pub const Mode = enum { session, headless, greeter };
+
 pub const Handle = struct {
     allocator: std.mem.Allocator,
     thread: c.pthread_t = undefined,
     ready: [2]c_int = undefined,
     stop_pipe: [2]c_int = undefined,
-    show_ui: bool = false,
+    mode: Mode = .headless,
     stopping: std.atomic.Value(bool) = .init(false),
     socket: [108:0]u8 = @splat(0),
 
-    pub fn start(allocator: std.mem.Allocator, show_ui: bool) !*Handle {
+    pub fn start(allocator: std.mem.Allocator, mode: Mode) !*Handle {
         const self = try allocator.create(Handle);
-        self.* = .{ .allocator = allocator, .show_ui = show_ui };
+        self.* = .{ .allocator = allocator, .mode = mode };
         errdefer allocator.destroy(self);
         if (c.pipe2(&self.ready, c.O_CLOEXEC) != 0) return error.CompositorPipe;
         defer {
@@ -61,7 +63,7 @@ pub const Handle = struct {
     }
     fn worker(ptr: ?*anyopaque) callconv(.c) ?*anyopaque {
         const self: *Handle = cast(Handle, ptr);
-        var state: Server = .{ .a = self.allocator, .show_ui = self.show_ui };
+        var state: Server = .{ .a = self.allocator, .show_ui = self.mode == .session, .greeter = self.mode == .greeter };
         state.init(self) catch |err| {
             std.log.err("compositor startup: {s}", .{@errorName(err)});
             _ = c.write(self.ready[1], "\x00", 1);
@@ -72,7 +74,7 @@ pub const Handle = struct {
         c.wl_display_run(state.display);
         // An exit shortcut or backend shutdown must also end the UI and stop the
         // graphical session target. Normal main-thread shutdown already does so.
-        if (self.show_ui and !self.stopping.load(.acquire)) _ = c.kill(c.getpid(), c.SIGTERM);
+        if (self.mode == .session and !self.stopping.load(.acquire)) _ = c.kill(c.getpid(), c.SIGTERM);
         return null;
     }
 };
@@ -112,6 +114,7 @@ const Target = struct { view: ?*View = null, layer: ?*Layer = null, locked: bool
 const Server = struct {
     a: std.mem.Allocator,
     show_ui: bool,
+    greeter: bool = false,
     display: *c.wl_display = undefined,
     loop: *c.wl_event_loop = undefined,
     backend: *c.wlr_backend = undefined,
@@ -1501,7 +1504,7 @@ const Keyboard = struct {
         self.s.activity();
         const pressed = event.state == c.WL_KEYBOARD_KEY_STATE_PRESSED;
         var handled = false;
-        if (!self.s.locked and self.wlr.xkb_state != null) {
+        if (!self.s.locked and !self.s.greeter and self.wlr.xkb_state != null) {
             const sym = c.xkb_state_key_get_one_sym(self.wlr.xkb_state, event.keycode + 8);
             const mods = c.wlr_keyboard_get_modifiers(self.wlr);
             if (sym == c.XKB_KEY_Super_L) {

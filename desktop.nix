@@ -23,21 +23,6 @@ let
     hash = "sha256-kI1mut3KtZNahi8btZNSdogSrF+Z44yXqaZ4Jxf5L+E=";
   };
   desktopZig = import ./desktop-zig.nix { inherit pkgs; };
-  session = pkgs.writeShellScript "desktop-session" ''
-    export XDG_CURRENT_DESKTOP=desktop:wlroots
-    export XDG_SESSION_DESKTOP=desktop
-    export XDG_SESSION_TYPE=wayland
-    export XCURSOR_THEME=${cursorTheme}
-    export XCURSOR_SIZE=${toString cursorSize}
-    export DESKTOP_CODEX_ICON=${codexIcon}
-    export DESKTOP_SESSION_MANAGED=1
-    ${lib.optionalString enableNvidia "export WLR_RENDERER=vulkan"}
-    # The compositor's stderr would otherwise go to tty1 and be lost when getty restarts.
-    ${pkgs.systemd}/bin/systemd-cat -t desktop-compositor ${shell} compositor ${gnomeWallpaper}
-    status=$?
-    echo "compositor exited with status $status" | ${pkgs.systemd}/bin/systemd-cat -t desktop-compositor -p err
-    exit $status
-  '';
 
 in
 lib.mkIf enableLightDesktop {
@@ -57,10 +42,40 @@ lib.mkIf enableLightDesktop {
   services.graphical-desktop.enable = true;
   xdg.portal.enable = true;
   services.xserver.desktopManager.runXdgAutostartIfNone = lib.mkDefault true;
-  # getty + login own PAM and the logind session; the tty1 login shell becomes the desktop.
-  environment.loginShellInit = ''
-    if [ "$(tty)" = /dev/tty1 ]; then exec ${session}; fi
-  '';
+  systemd.defaultUnit = "graphical.target";
+  users.users.greeter = {
+    isSystemUser = true;
+    group = "greeter";
+    home = "/var/lib/greeter";
+    createHome = true;
+  };
+  users.groups.greeter = { };
+  systemd.services.desktop-display-manager = {
+    description = "Native GDM-like display manager";
+    wantedBy = [ "graphical.target" ];
+    conflicts = [ "getty@tty1.service" ];
+    after = [
+      "systemd-user-sessions.service"
+      "plymouth-quit-wait.service"
+      "systemd-logind.service"
+      "dbus.service"
+    ];
+    environment = lib.optionalAttrs enableNvidia {
+      WLR_RENDERER = "vulkan";
+    };
+    serviceConfig = {
+      ExecStart = "${shell} dm";
+      Restart = "always";
+      RestartSec = 1;
+      TTYPath = "/dev/tty1";
+      StandardInput = "tty";
+      StandardOutput = "journal";
+      StandardError = "journal";
+      TTYReset = true;
+      TTYVHangup = true;
+      TTYVTDisallocate = true;
+    };
+  };
   networking.networkmanager.enable = true;
   services.power-profiles-daemon.enable = false;
   security.pam.services.desktop-lock = { };
@@ -105,6 +120,34 @@ lib.mkIf enableLightDesktop {
     };
   };
   services.gnome.gnome-keyring.enable = false;
+  security.pam.services.desktop-greeter = {
+    startSession = true;
+    enableGnomeKeyring = false;
+  };
+  security.pam.services.desktop-login = {
+    startSession = true;
+    enableGnomeKeyring = false;
+    rules.auth = {
+      desktop-secrets-unix = {
+        order = config.security.pam.services.desktop-login.rules.auth.unix.order - 20;
+        control = "optional";
+        modulePath = config.security.pam.pam_unixModulePath;
+        settings.nullok = config.security.pam.services.desktop-login.allowNullPassword;
+      };
+      desktop-secrets = {
+        order = config.security.pam.services.desktop-login.rules.auth.unix.order - 10;
+        control = "optional";
+        modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
+      };
+    };
+    # After pam_systemd, which provides XDG_SESSION_ID.
+    rules.session.desktop-secrets = {
+      order = config.security.pam.services.desktop-login.rules.session.systemd.order + 1;
+      control = "optional";
+      modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
+      settings.helper = "${shell}";
+    };
+  };
   security.pam.services.login = {
     enableGnomeKeyring = false;
     rules.auth = {
@@ -153,6 +196,28 @@ lib.mkIf enableLightDesktop {
     after = [ "graphical-session-pre.target" ];
   };
   systemd.user.services = {
+    desktop-zig = {
+      description = "Desktop compositor and shell";
+      after = [ "graphical-session-pre.target" ];
+      environment = {
+        XDG_CURRENT_DESKTOP = "desktop:wlroots";
+        XDG_SESSION_DESKTOP = "desktop";
+        XDG_SESSION_TYPE = "wayland";
+        XCURSOR_THEME = cursorTheme;
+        XCURSOR_SIZE = toString cursorSize;
+        DESKTOP_CODEX_ICON = "${codexIcon}";
+        DESKTOP_SESSION_MANAGED = "1";
+      }
+      // lib.optionalAttrs enableNvidia {
+        WLR_RENDERER = "vulkan";
+      };
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${shell} compositor ${gnomeWallpaper}";
+        Slice = "session.slice";
+        Restart = "no";
+      };
+    };
     desktop-secrets = {
       description = "Native desktop Secret Service";
       wantedBy = [ "default.target" ];

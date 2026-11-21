@@ -190,7 +190,7 @@ pub fn main(init: std.process.Init) !void {
     }
     defer if (managed_session) sessionControl(a, init.io, &.{ "systemctl", "--user", "stop", "desktop-session.target" }) catch {};
     if (args.len >= 2 and (std.mem.eql(u8, args[1], "compositor") or std.mem.eql(u8, args[1], "compositor-only"))) {
-        compositor = try @import("desktop-compositor.zig").Handle.start(a, std.mem.eql(u8, args[1], "compositor"));
+        compositor = try @import("desktop-compositor.zig").Handle.start(a, if (std.mem.eql(u8, args[1], "compositor")) .session else .headless);
         if (std.mem.eql(u8, args[1], "compositor-only")) {
             compositor.?.wait();
             compositor = null;
@@ -215,9 +215,17 @@ pub fn main(init: std.process.Init) !void {
         return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig serve WALLPAPER [PANEL_CONFIG]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|claude|antigravity|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | askpass|power|screenshot [ARGS...]\n", .{});
+        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig dm | greeter\n       desktop-zig serve WALLPAPER [PANEL_CONFIG]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|claude|antigravity|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;
         return;
+    }
+    if (std.mem.eql(u8, args[1], "dm")) {
+        if (args.len != 2) return error.InvalidDmArguments;
+        return @import("desktop-dm.zig").run(a);
+    }
+    if (std.mem.eql(u8, args[1], "greeter")) {
+        if (args.len != 2) return error.InvalidGreeterArguments;
+        return @import("desktop-greeter.zig").run(a);
     }
     if (std.mem.eql(u8, args[1], "secrets-import")) {
         if (args.len != 2) return error.InvalidSecretsArguments;

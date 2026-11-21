@@ -33,9 +33,7 @@ pkgs.testers.runNixOSTest {
           "video"
         ];
       };
-      # Log in on tty1 so the production login shell starts the session script,
-      # avoiding manual compositor, D-Bus and systemd environment setup.
-      services.getty.autologinUser = "alice";
+      systemd.services.desktop-display-manager.environment.WLR_RENDERER = "pixman";
       environment.sessionVariables.WLR_RENDERER = "pixman";
       environment.sessionVariables.GI_TYPELIB_PATH =
         lib.makeSearchPathOutput "lib" "lib/girepository-1.0"
@@ -69,11 +67,11 @@ pkgs.testers.runNixOSTest {
         path = [ pkgs.util-linux ];
         before = [
           "desktop-battery.service"
-          "getty@tty1.service"
+          "desktop-display-manager.service"
         ];
         requiredBy = [
           "desktop-battery.service"
-          "getty@tty1.service"
+          "desktop-display-manager.service"
         ];
         serviceConfig.Type = "oneshot";
         serviceConfig.RemainAfterExit = true;
@@ -111,13 +109,28 @@ pkgs.testers.runNixOSTest {
         ).strip()
 
     machine.start()
-    machine.wait_for_unit("getty@tty1.service")
+    machine.wait_for_unit("desktop-display-manager.service")
     machine.wait_for_unit("desktop-battery.service")
-    machine.wait_for_file("/run/user/1000/wayland-0")
-    machine.wait_until_succeeds(user("desktop-zig ping"))
+    machine.wait_until_succeeds("pgrep -u greeter desktop-zig")
+
+    with subtest("GDM-like greeter authenticates and starts desktop-zig.service"):
+        machine.sleep(1)
+        machine.screenshot("desktop-greeter-users")
+        # Select pre-highlighted Alice user and open password prompt.
+        machine.send_key("ret")
+        machine.sleep(1)
+        machine.screenshot("desktop-greeter-password")
+        machine.send_chars("wrong-password\n")
+        machine.wait_until_succeeds("journalctl --no-pager | grep 'pam_unix(desktop-login:auth): authentication failure'")
+        machine.sleep(4)
+        machine.send_chars("vm-password\n")
+        machine.wait_for_file("/run/user/1000/wayland-0")
+        machine.wait_until_succeeds(user("desktop-zig ping"))
+        machine.wait_until_succeeds(user("systemctl --user is-active desktop-zig.service"))
+        machine.wait_until_succeeds("journalctl --no-pager _SYSTEMD_USER_UNIT=desktop-zig.service | grep -q .")
 
     with subtest("production services and D-Bus activation"):
-        for service in ("desktop-session.target", "desktop-secrets.service"):
+        for service in ("desktop-zig.service", "desktop-session.target", "desktop-secrets.service"):
             machine.wait_until_succeeds(user("systemctl --user is-active " + service))
         machine.succeed(user("busctl --user introspect org.freedesktop.Notifications /org/freedesktop/Notifications"))
         machine.succeed(user("busctl --user introspect org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop"))

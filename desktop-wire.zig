@@ -303,6 +303,8 @@ pub const Connection = struct {
         const target = self.object(proxy.id) orelse return error.Protocol;
         if (!target.live) return error.Protocol;
         if (message.since > target.version) return error.Protocol;
+        const target_interface = target.interface;
+        const target_version = target.version;
         var buffer: [max_message]u8 = undefined;
         var len: usize = 8;
         var fds: [max_fds]Fd = undefined;
@@ -327,7 +329,7 @@ pub const Connection = struct {
                 'n' => {
                     if (@TypeOf(value) != NewId) @compileError("new_id arguments take wire.new_id");
                     const interface = new_interface orelse (message.new_id orelse return error.Protocol)();
-                    created = try self.allocate(.{ .interface = interface, .version = bind_version orelse target.version });
+                    created = try self.allocate(.{ .interface = interface, .version = bind_version orelse target_version });
                     try put(&buffer, &len, created);
                 },
                 'h' => {
@@ -343,7 +345,7 @@ pub const Connection = struct {
         comptime std.debug.assert(field == fields.len);
         std.mem.writeInt(u32, buffer[0..4], proxy.id, .little);
         std.mem.writeInt(u32, buffer[4..8], @as(u32, @intCast(len)) << 16 | opcode, .little);
-        if (self.debug) self.trace(" -> ", target.interface.name, proxy.id, message, buffer[8..len]);
+        if (self.debug) self.trace(" -> ", target_interface.name, proxy.id, message, buffer[8..len]);
         if (self.out_len + len > self.out.len or self.out_fd_count + fd_count > max_fds) try self.flush();
         @memcpy(self.out[self.out_len..][0..len], buffer[0..len]);
         self.out_len += len;
