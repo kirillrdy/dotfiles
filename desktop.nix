@@ -262,14 +262,6 @@ lib.mkIf enableLightDesktop {
           kind = "activities";
           on_click = appLauncher;
         }
-      ];
-      center = [
-        {
-          name = "gnome-clock";
-          kind = "clock";
-        }
-      ];
-      right = [
         {
           name = "gnome-codex";
           source = "codex";
@@ -282,6 +274,14 @@ lib.mkIf enableLightDesktop {
           name = "gnome-antigravity";
           source = "antigravity";
         }
+      ];
+      center = [
+        {
+          name = "gnome-clock";
+          kind = "clock";
+        }
+      ];
+      right = [
         {
           name = "gnome-monitors";
           kind = "monitors";
