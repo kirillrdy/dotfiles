@@ -22,7 +22,8 @@ pub const Graph = struct {
     tooltip: []const u8 = "",
     maximum: f64 = 0,
 };
-pub const Window = struct { percent: ?f64 = null, reset: []const u8 = "Resets: —" };
+/// `pace` is the remaining share expected if usage were spread evenly over the period.
+pub const Window = struct { percent: ?f64 = null, reset: []const u8 = "Resets: —", pace: ?f64 = null };
 pub const Update = struct {
     items: ?[]const Item = null,
     monitors: ?[]const Graph = null,

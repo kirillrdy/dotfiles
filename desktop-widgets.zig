@@ -341,6 +341,7 @@ pub fn update_usage(m: *Module, content: panel_data.Update) void {
         m.usage.percent[i].set(std.mem.span(label));
         c.g_free(@as(c.gpointer, @ptrCast(label)));
         m.usage.values[i] = value;
+        m.usage.pace[i] = if (valid) window.pace else null;
         m.usage.reset[i].set(window.reset);
     }
     m.usage.checked.set(if (content.checked.len != 0) content.checked else "Checked: —");

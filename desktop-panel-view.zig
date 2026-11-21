@@ -311,6 +311,8 @@ pub const Usage = struct {
     percent: [2]Label = .{ .{ .value = "—" }, .{ .value = "—" } },
     reset: [2]Label = .{ .{ .value = "Resets: —" }, .{ .value = "Resets: —" } },
     values: [2]f64 = .{ 0, 0 },
+    /// Remaining share expected from even usage; fill beyond the marker is surplus, short of it deficit.
+    pace: [2]?f64 = .{ null, null },
     checked: Label = .{ .value = "Checked: —" },
     error_label: Label = .{},
     refresh: Label = .{ .value = "Refresh" },
@@ -373,6 +375,14 @@ pub const Usage = struct {
             var filled = bar;
             filled.width *= self.values[i] / 100;
             if (filled.width > 0) canvas.draw(&.{.{ .rounded = filled }}, usageColor(self.values[i]));
+            if (self.pace[i]) |expected| {
+                // Even-usage marker: the fill reaching past it is surplus, stopping short is deficit.
+                const x = bar.x + bar.width * std.math.clamp(expected, 0, 100) / 100;
+                const marker: raster.Shape = .{ .line = .{ .start = .{ .x = x, .y = bar.y - 4 }, .end = .{ .x = x, .y = bar.y + bar.height + 4 }, .radius = 1 } };
+                const outline: raster.Shape = .{ .line = .{ .start = marker.line.start, .end = marker.line.end, .radius = 2 } };
+                canvas.draw(&.{outline}, .{ .red = 0, .green = 0, .blue = 0, .alpha = 0.45 });
+                canvas.draw(&.{marker}, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.95 });
+            }
             self.reset[i].paint(buffer, 20, y + 46, secondary);
             canvas.draw(&.{.{ .line = .{ .start = .{ .x = 20, .y = y + 82 }, .end = .{ .x = 320, .y = y + 82 }, .radius = 0.5 } }}, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.1 });
         }

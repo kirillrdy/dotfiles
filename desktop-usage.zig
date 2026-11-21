@@ -32,6 +32,16 @@ pub fn resetText(a: A, reset_at: ?i64, now: i64) ![]const u8 {
     return if (m > 0) u.fmt(a, "Resets in {d}m", .{m}) else "Resets in now";
 }
 
+/// Length of the 5h and 7d windows in seconds.
+const periods = [2]i64{ 5 * 3600, 7 * 86400 };
+
+/// The remaining percentage expected if usage were spread evenly until the reset.
+pub fn pace(reset_at: ?i64, now: i64, period: i64) ?f64 {
+    const reset = reset_at orelse return null;
+    const left: f64 = @floatFromInt(reset - now);
+    return std.math.clamp(left / @as(f64, @floatFromInt(period)) * 100, 0, 100);
+}
+
 pub fn update(a: A, report: Report, icon: []const u8, now: i64) !panel.Update {
     const items = try a.alloc(panel.Item, 1);
     items[0] = .{ .icon = icon, .text = "—" };
@@ -48,10 +58,15 @@ pub fn update(a: A, report: Report, icon: []const u8, now: i64) !panel.Update {
             continue;
         };
         const left = 100 - std.math.clamp(w.used, 0, 100);
-        window.* = .{ .percent = left, .reset = try resetText(a, w.reset_at, now) };
+        const expected = pace(w.reset_at, now, periods[i]);
+        window.* = .{ .percent = left, .reset = try resetText(a, w.reset_at, now), .pace = expected };
         if (i == 0) items[0].text = try u.fmt(a, "{d:.0}%", .{left});
         try tooltip.appendSlice(try u.fmt(a, "\n{s}: {d:.0}% remaining", .{ label, left }));
         if (w.reset_at) |reset| try tooltip.appendSlice(u.localTime(a, reset, ", resets %a %H:%M") catch "");
+        if (expected) |target| {
+            const difference = left - target;
+            try tooltip.appendSlice(if (@round(difference) == 0) "\n    on pace" else try u.fmt(a, "\n    {d:.0} points {s} pace", .{ @abs(difference), if (difference > 0) "ahead of" else "behind" }));
+        }
     }
     var checked = try u.localTime(a, report.checked orelse now, "Checked: %H:%M:%S");
     if (report.retry_at) |retry_at| {
@@ -68,4 +83,20 @@ pub fn demo(now: i64) Report {
         .{ .used = 46, .reset_at = now + 2 * 3600 + 15 * 60 },
         .{ .used = 7, .reset_at = now + 4 * 86400 + 8 * 3600 },
     } };
+}
+
+test "pace marks the remaining share expected from even usage until the reset" {
+    const now: i64 = 1_000_000;
+    // 2h15m left of a 5h window: spending evenly leaves 45%.
+    try std.testing.expectApproxEqAbs(@as(f64, 45), pace(now + 2 * 3600 + 15 * 60, now, periods[0]).?, 1e-9);
+    try std.testing.expectEqual(@as(?f64, null), pace(null, now, periods[0]));
+    // Past resets and clock skew stay within the bar.
+    try std.testing.expectEqual(@as(f64, 0), pace(now - 60, now, periods[1]).?);
+    try std.testing.expectEqual(@as(f64, 100), pace(now + 8 * 86400, now, periods[1]).?);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try update(arena.allocator(), demo(now), "icon", now);
+    // The demo has 54% left with 45% expected (ahead) and 93% left with ~62% expected.
+    try std.testing.expectApproxEqAbs(@as(f64, 45), result.windows[0].pace.?, 1e-9);
+    try std.testing.expect(std.mem.indexOf(u8, result.tooltip, "9 points ahead of pace") != null);
 }
