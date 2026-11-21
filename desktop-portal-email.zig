@@ -169,11 +169,11 @@ test "email rejects invalid recipients, subjects and typed options" {
     const a = arena.allocator();
     for ([_][]const u8{ "{'address': <'Name <a@b>'>}", "{'cc': <['a@b', 'bad@-host']>}", "{'bcc': <['a@host..org']>}" }) |value| {
         const options = parse(a, value);
-            try std.testing.expectError(error.InvalidEmailAddress, composeUri(std.testing.allocator, options, &.{}));
+        try std.testing.expectError(error.InvalidEmailAddress, composeUri(std.testing.allocator, options, &.{}));
     }
     for ([_][]const u8{ "{'subject': <'first\\nsecond'>}", "{'subject': <'first\\rsecond'>}" }) |value| {
         const options = parse(a, value);
-            try std.testing.expectError(error.InvalidEmailSubject, composeUri(std.testing.allocator, options, &.{}));
+        try std.testing.expectError(error.InvalidEmailSubject, composeUri(std.testing.allocator, options, &.{}));
     }
     const invalid = parse(a, "{'addresses': <'a@b'>}");
     try std.testing.expectError(error.InvalidEmailOption, composeUri(std.testing.allocator, invalid, &.{}));

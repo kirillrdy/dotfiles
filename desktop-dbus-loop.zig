@@ -120,7 +120,7 @@ var shared: [2]?*Source = .{ null, null };
 /// Holders must cancel their pending calls and unsubscribe before releasing.
 /// The allocator used to create the connection must remain valid until its last release.
 pub fn acquire(allocator: std.mem.Allocator, bus: dbus.Bus) !*Source {
-    const slot = &shared[@intFromEnum(bus)];
+    const slot = &shared[@backingInt(bus)];
     if (slot.*) |source| if (!source.connection.closed) {
         source.refs += 1;
         return source;

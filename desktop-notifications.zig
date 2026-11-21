@@ -382,13 +382,34 @@ fn imageHint(a: std.mem.Allocator, hints: Hints) ?c.__icons.Image {
             else => continue,
         };
         if (fields.len != 7) continue;
-        const width = switch (fields[0]) { .int32 => |v| v, else => continue };
-        const height = switch (fields[1]) { .int32 => |v| v, else => continue };
-        const stride = switch (fields[2]) { .int32 => |v| v, else => continue };
-        const alpha = switch (fields[3]) { .boolean => |v| v, else => continue };
-        const bits = switch (fields[4]) { .int32 => |v| v, else => continue };
-        const channels = switch (fields[5]) { .int32 => |v| v, else => continue };
-        const bytes = switch (fields[6]) { .bytes => |v| v, else => continue };
+        const width = switch (fields[0]) {
+            .int32 => |v| v,
+            else => continue,
+        };
+        const height = switch (fields[1]) {
+            .int32 => |v| v,
+            else => continue,
+        };
+        const stride = switch (fields[2]) {
+            .int32 => |v| v,
+            else => continue,
+        };
+        const alpha = switch (fields[3]) {
+            .boolean => |v| v,
+            else => continue,
+        };
+        const bits = switch (fields[4]) {
+            .int32 => |v| v,
+            else => continue,
+        };
+        const channels = switch (fields[5]) {
+            .int32 => |v| v,
+            else => continue,
+        };
+        const bytes = switch (fields[6]) {
+            .bytes => |v| v,
+            else => continue,
+        };
         if (width <= 0 or height <= 0 or width > 4096 or height > 4096 or bits != 8 or channels != @as(i32, if (alpha) 4 else 3) or stride < width * channels) return null;
         const row: usize = @intCast(width * channels);
         if (bytes.len < @as(usize, @intCast(stride)) * @as(usize, @intCast(height - 1)) + row) return null;

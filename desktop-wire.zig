@@ -785,13 +785,14 @@ test "events decode into typed payloads with descriptors and server objects" {
     thing.proxy.listen(Thing, Seen, &seen, Seen.onThing);
     const messages = [_]u32{
         // global(9, "wl_seat", 4), then global_remove(4).
-        2, 28 << 16 | 0, 9, 8, std.mem.readInt(u32, "wl_s", .little), std.mem.readInt(u32, "eat\x00", .little), 4,
-        2, 12 << 16 | 1, 4,
+        2,            28 << 16 | 0, 9,                                        8, std.mem.readInt(u32, "wl_s", .little), std.mem.readInt(u32, "eat\x00", .little), 4,
+        2,            12 << 16 | 1, 4,
         // info(-2, 2.25, null, "xyz", fd), then child(0xff000000).
-        3, 28 << 16 | 0, @bitCast(@as(i32, -2)), 576, 0, 3, std.mem.readInt(u32, "xyz\x00", .little),
-        3, 12 << 16 | 1, 0xff000000,
+                                               3, 28 << 16 | 0,                          @bitCast(@as(i32, -2)),                   576,
+        0,            3,            std.mem.readInt(u32, "xyz\x00", .little), 3, 12 << 16 | 1,                          0xff000000,
         // delete_id(3) releases the client id for reuse.
-        1, 12 << 16 | 1, 3,
+                                      1,
+        12 << 16 | 1, 3,
     };
     const bytes = std.mem.asBytes(&messages);
     var control: [cmsgSpace(1)]u8 align(8) = @splat(0);

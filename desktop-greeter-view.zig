@@ -272,8 +272,8 @@ pub const View = struct {
         @memset(&self.clock_text, 0);
         @memcpy(self.clock_text[0..formatted.len], formatted);
         if (self.scale != 0) {
-            if (self.masks[@intFromEnum(StaticLabel.clock)]) |mask| mask.deinit(self.allocator);
-            self.masks[@intFromEnum(StaticLabel.clock)] = null;
+            if (self.masks[@backingInt(StaticLabel.clock)]) |mask| mask.deinit(self.allocator);
+            self.masks[@backingInt(StaticLabel.clock)] = null;
             self.renderStaticLabels(self.scale);
         }
         return true;
@@ -308,7 +308,7 @@ pub const View = struct {
         const factor: f64 = @floatFromInt(scale);
         for (&self.masks, 0..) |*slot, i| {
             if (slot.* != null) continue;
-            const label: StaticLabel = @enumFromInt(i);
+            const label: StaticLabel = @fromBackingInt(@intCast(i));
             const value: [:0]const u8 = switch (label) {
                 .clock => std.mem.sliceTo(&self.clock_text, 0),
                 .not_listed => "Not listed?",
@@ -396,7 +396,7 @@ pub const View = struct {
 
     fn paintTopBar(self: *const View, canvas: raster.Canvas, layout: Layout, frame: Frame) void {
         const white = raster.hex(0xffffff);
-        const clock_mask = self.masks[@intFromEnum(StaticLabel.clock)];
+        const clock_mask = self.masks[@backingInt(StaticLabel.clock)];
         const clock_size = self.maskExtent(clock_mask);
         if (clock_mask) |m| m.paint(canvas, @round((layout.width - clock_size[0]) / 2), @round((top_bar_height - clock_size[1]) / 2), white);
 
@@ -434,7 +434,7 @@ pub const View = struct {
                 else => false,
             };
             if (hovered) canvas.draw(&.{rect.shape(8)}, raster.Color.rgb(0xffffff, 0.10));
-            const mask = self.masks[@intFromEnum(label)];
+            const mask = self.masks[@backingInt(label)];
             const size = self.maskExtent(mask);
             if (mask) |m| m.paint(canvas, rect.x + 12, @round(rect.y + (rect.height - size[1]) / 2), white);
         }
@@ -470,7 +470,7 @@ pub const View = struct {
             const ring: raster.Rect = .{ .x = nl.x + 1, .y = nl.y + 1, .width = nl.width - 2, .height = nl.height - 2 };
             canvas.draw(&.{ring.stroke(not_listed_height / 2 - 1, 2)}, raster.Color.rgb(accent, 0.7));
         }
-        const nl_mask = self.masks[@intFromEnum(StaticLabel.not_listed)];
+        const nl_mask = self.masks[@backingInt(StaticLabel.not_listed)];
         const nl_size = self.maskExtent(nl_mask);
         if (nl_mask) |m| m.paint(canvas, @round(nl.x + (nl.width - nl_size[0]) / 2), @round(nl.y + (nl.height - nl_size[1]) / 2), raster.Color.rgb(0xffffff, if (nl_selected or nl_hovered) 1.0 else 0.7));
     }
@@ -486,7 +486,7 @@ pub const View = struct {
         login.paintAvatar(canvas, if (active_user) |u| u.avatar else null, layout.width / 2, layout.prompt_top + prompt_avatar_size / 2, prompt_avatar_size);
 
         const title_mask: ?text.Mask = if (frame.stage == .username)
-            self.masks[@intFromEnum(StaticLabel.username_title)]
+            self.masks[@backingInt(StaticLabel.username_title)]
         else if (active_user) |u|
             u.prompt_mask
         else
@@ -506,7 +506,7 @@ pub const View = struct {
         const content = raster.Color.rgb(0xffffff, if (busy) 0.5 else 1.0);
         if (frame.stage == .username) {
             if (self.custom_text_len == 0) {
-                const ph = self.masks[@intFromEnum(StaticLabel.username_placeholder)];
+                const ph = self.masks[@backingInt(StaticLabel.username_placeholder)];
                 if (ph) |m| m.paint(canvas, entry.x + 16, @round(center_y - self.maskExtent(ph)[1] / 2), raster.Color.rgb(0xffffff, 0.5));
             } else if (self.custom_entry_mask) |m| {
                 const ext = self.maskExtent(m);
@@ -515,7 +515,7 @@ pub const View = struct {
             const caret_x = @min(entry.x + entry.width - 14, entry.x + 16 + self.maskExtent(self.custom_entry_mask)[0] + 1);
             canvas.draw(&.{.{ .line = .{ .start = .{ .x = caret_x, .y = center_y - 9 }, .end = .{ .x = caret_x, .y = center_y + 9 }, .radius = 0.5 } }}, content);
         } else {
-            login.paintPasswordDots(canvas, entry, frame.typed, busy, self.masks[@intFromEnum(StaticLabel.password_placeholder)], self.scale);
+            login.paintPasswordDots(canvas, entry, frame.typed, busy, self.masks[@backingInt(StaticLabel.password_placeholder)], self.scale);
         }
 
         // Right well: spinner while authenticating, or circular submit button.
@@ -542,7 +542,7 @@ pub const View = struct {
         else
             null;
         if (msg_label) |label| {
-            _ = self.paintCenteredMask(canvas, self.masks[@intFromEnum(label)], layout.width, row_y + entry_height + 14, raster.hex(warning));
+            _ = self.paintCenteredMask(canvas, self.masks[@backingInt(label)], layout.width, row_y + entry_height + 14, raster.hex(warning));
         }
     }
 };

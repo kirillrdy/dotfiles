@@ -118,8 +118,8 @@ pub const View = struct {
         }
         if (changed and self.scale != 0) {
             for ([_]Label{ .time, .date }) |label| {
-                if (self.masks[@intFromEnum(label)]) |mask| mask.deinit(self.allocator);
-                self.masks[@intFromEnum(label)] = null;
+                if (self.masks[@backingInt(label)]) |mask| mask.deinit(self.allocator);
+                self.masks[@backingInt(label)] = null;
             }
             self.renderLabels(self.scale);
         }
@@ -137,7 +137,7 @@ pub const View = struct {
         const factor: f64 = @floatFromInt(scale);
         for (&self.masks, 0..) |*slot, i| {
             if (slot.* != null) continue;
-            const label: Label = @enumFromInt(i);
+            const label: Label = @fromBackingInt(@intCast(i));
             const value: [:0]const u8 = switch (label) {
                 .time => std.mem.sliceTo(&self.time, 0),
                 .date => std.mem.sliceTo(&self.date, 0),
@@ -183,7 +183,7 @@ pub const View = struct {
     }
 
     fn labelMask(self: *const View, label: Label) ?text.Mask {
-        return self.masks[@intFromEnum(label)];
+        return self.masks[@backingInt(label)];
     }
 
     /// Logical width and height of a label.

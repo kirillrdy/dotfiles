@@ -280,4 +280,3 @@ pub fn resample(allocator: std.mem.Allocator, source: Image, width: u32, height:
     };
     return image;
 }
-

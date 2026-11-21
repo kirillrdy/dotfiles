@@ -249,19 +249,19 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
     while (dm_running.load(.acquire)) {
         var op_byte: [1]u8 = undefined;
         if (!greeter.readAll(fds[0], &op_byte)) break;
-        if (op_byte[0] == @intFromEnum(greeter.Op.power)) {
+        if (op_byte[0] == @backingInt(greeter.Op.power)) {
             var action_byte: [1]u8 = undefined;
             if (!greeter.readAll(fds[0], &action_byte)) break;
             const ok = performPower(a, action_byte[0]);
-            const reply = [1]u8{if (ok) @intFromEnum(greeter.Reply.ok) else @intFromEnum(greeter.Reply.failed)};
+            const reply = [1]u8{if (ok) @backingInt(greeter.Reply.ok) else @backingInt(greeter.Reply.failed)};
             _ = greeter.writeAll(fds[0], &reply);
-        } else if (op_byte[0] == @intFromEnum(greeter.Op.auth)) {
+        } else if (op_byte[0] == @backingInt(greeter.Op.auth)) {
             var lengths: [4]u8 = undefined;
             if (!greeter.readAll(fds[0], &lengths)) break;
             const user_len = std.mem.readInt(u16, lengths[0..2], .little);
             const pass_len = std.mem.readInt(u16, lengths[2..4], .little);
             if (user_len == 0 or user_len > 256 or pass_len == 0 or pass_len > 1024) {
-                const reply = [1]u8{@intFromEnum(greeter.Reply.failed)};
+                const reply = [1]u8{@backingInt(greeter.Reply.failed)};
                 _ = greeter.writeAll(fds[0], &reply);
                 break;
             }
@@ -284,7 +284,7 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
                 status = posix.pam_acct_mgmt(user_pam, 0);
             }
             if (status == posix.PAM_SUCCESS) {
-                const reply = [1]u8{@intFromEnum(greeter.Reply.ok)};
+                const reply = [1]u8{@backingInt(greeter.Reply.ok)};
                 _ = greeter.writeAll(fds[0], &reply);
                 var res: AuthResult = .{ .handle = user_pam, .username_len = user_len };
                 @memcpy(res.username[0..user_len], user_buf[0..user_len]);
@@ -292,7 +292,7 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
                 break;
             } else {
                 if (user_pam != null) _ = posix.pam_end(user_pam, status);
-                const reply = [1]u8{@intFromEnum(greeter.Reply.failed)};
+                const reply = [1]u8{@backingInt(greeter.Reply.failed)};
                 if (!greeter.writeAll(fds[0], &reply)) break;
             }
         } else break;

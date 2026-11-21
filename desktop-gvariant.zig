@@ -315,14 +315,14 @@ test "serialized values match GLib in both directions" {
     defer arena.deinit();
     const a = arena.allocator();
     const cases = [_][]const u8{
-        "true",                                                                 "byte 0x7f",
-        "int16 -2",                                                             "uint32 7",
-        "int64 -9",                                                             "1.5",
-        "'text'",                                                               "objectpath '/a/b'",
-        "<'inner'>",                                                            "['a', 'bc', '']",
-        "@as []",                                                               "[1, 2, 3]",
-        "{'a': <1>, 'b': <'x'>}",                                               "(1, 'two', true)",
-        "('first', 'second')",                                                  "(byte 0x01, 2)",
+        "true",                                                               "byte 0x7f",
+        "int16 -2",                                                           "uint32 7",
+        "int64 -9",                                                           "1.5",
+        "'text'",                                                             "objectpath '/a/b'",
+        "<'inner'>",                                                          "['a', 'bc', '']",
+        "@as []",                                                             "[1, 2, 3]",
+        "{'a': <1>, 'b': <'x'>}",                                             "(1, 'two', true)",
+        "('first', 'second')",                                                "(byte 0x01, 2)",
         "[('Text', [(uint32 0, '*.txt')]), ('Images', [(uint32 1, 'png')])]", "[b'one', b'two']",
         "{'org/gnome/desktop/interface': {'clock-format': <'24h'>}}",
     };

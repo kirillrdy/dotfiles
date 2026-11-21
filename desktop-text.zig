@@ -317,12 +317,12 @@ const Description = struct { family: []const u8, weight: f64 = 400, italic: bool
 fn parseDescription(text: []const u8) Description {
     var result: Description = .{ .family = std.mem.trim(u8, text, " ") };
     const styles = [_]struct { word: []const u8, weight: ?f64 = null, italic: bool = false }{
-        .{ .word = "Thin", .weight = 100 },        .{ .word = "Ultra-Light", .weight = 200 }, .{ .word = "Extra-Light", .weight = 200 },
-        .{ .word = "Light", .weight = 300 },       .{ .word = "Semi-Light", .weight = 350 },  .{ .word = "Book", .weight = 380 },
-        .{ .word = "Regular", .weight = 400 },     .{ .word = "Normal", .weight = 400 },      .{ .word = "Medium", .weight = 500 },
-        .{ .word = "Semi-Bold", .weight = 600 },   .{ .word = "Semibold", .weight = 600 },    .{ .word = "Demi-Bold", .weight = 600 },
-        .{ .word = "Bold", .weight = 700 },        .{ .word = "Ultra-Bold", .weight = 800 },  .{ .word = "Extra-Bold", .weight = 800 },
-        .{ .word = "Heavy", .weight = 900 },       .{ .word = "Black", .weight = 900 },       .{ .word = "Italic", .italic = true },
+        .{ .word = "Thin", .weight = 100 },      .{ .word = "Ultra-Light", .weight = 200 }, .{ .word = "Extra-Light", .weight = 200 },
+        .{ .word = "Light", .weight = 300 },     .{ .word = "Semi-Light", .weight = 350 },  .{ .word = "Book", .weight = 380 },
+        .{ .word = "Regular", .weight = 400 },   .{ .word = "Normal", .weight = 400 },      .{ .word = "Medium", .weight = 500 },
+        .{ .word = "Semi-Bold", .weight = 600 }, .{ .word = "Semibold", .weight = 600 },    .{ .word = "Demi-Bold", .weight = 600 },
+        .{ .word = "Bold", .weight = 700 },      .{ .word = "Ultra-Bold", .weight = 800 },  .{ .word = "Extra-Bold", .weight = 800 },
+        .{ .word = "Heavy", .weight = 900 },     .{ .word = "Black", .weight = 900 },       .{ .word = "Italic", .italic = true },
         .{ .word = "Oblique", .italic = true },
     };
     while (true) {

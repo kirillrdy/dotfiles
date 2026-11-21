@@ -633,7 +633,7 @@ pub fn encode(allocator: std.mem.Allocator, header: Message, args: anytype) !Wri
     }
     var message: Writer = .{ .allocator = allocator };
     errdefer message.deinit();
-    try message.bytes.appendSlice(allocator, &.{ 'l', @intFromEnum(header.kind), header.flags, 1 });
+    try message.bytes.appendSlice(allocator, &.{ 'l', @backingInt(header.kind), header.flags, 1 });
     try message.int(u32, @intCast(body.bytes.items.len));
     try message.int(u32, header.serial);
     const Field = struct { code: u8, value: Value };
@@ -675,7 +675,7 @@ pub fn parse(arena: std.mem.Allocator, bytes: []const u8, fds: ?[]const i32) !Me
     if (bytes.len < 16 or bytes[0] != 'l' or bytes[3] != 1) return error.InvalidMessage;
     var reader: Reader = .{ .bytes = bytes, .position = 4, .arena = arena };
     const body_length = try reader.int(u32);
-    var message: Message = .{ .kind = @enumFromInt(bytes[1]), .flags = bytes[2], .serial = try reader.int(u32), .arena = arena };
+    var message: Message = .{ .kind = @fromBackingInt(@intCast(bytes[1])), .flags = bytes[2], .serial = try reader.int(u32), .arena = arena };
     const end = try reader.arrayStart(8);
     var unix_fds: u32 = 0;
     while (reader.position < end) {

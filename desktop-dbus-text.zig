@@ -176,8 +176,8 @@ const Parser = struct {
         }
         const save = self.at;
         const keywords = [_]struct { []const u8, []const u8 }{
-            .{ "boolean", "b" }, .{ "byte", "y" },     .{ "int16", "n" },  .{ "uint16", "q" },     .{ "int32", "i" },
-            .{ "uint32", "u" },  .{ "int64", "x" },    .{ "uint64", "t" }, .{ "double", "d" },     .{ "handle", "h" },
+            .{ "boolean", "b" }, .{ "byte", "y" },       .{ "int16", "n" },     .{ "uint16", "q" }, .{ "int32", "i" },
+            .{ "uint32", "u" },  .{ "int64", "x" },      .{ "uint64", "t" },    .{ "double", "d" }, .{ "handle", "h" },
             .{ "string", "s" },  .{ "objectpath", "o" }, .{ "signature", "g" },
         };
         const name = self.word();

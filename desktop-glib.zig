@@ -291,15 +291,6 @@ pub const struct__GCancellable = extern struct {
 
 pub const GCancellable = struct__GCancellable;
 
-
-
-
-
-
-
-
-
-
 pub const struct__GFile = opaque {};
 
 pub const GFile = struct__GFile;
@@ -310,23 +301,6 @@ pub const struct__GTask = opaque {};
 
 pub const GTask = struct__GTask;
 pub const GAsyncReadyCallback = ?*const fn (source_object: [*c]GObject, res: ?*GAsyncResult, data: gpointer) callconv(.c) void;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 pub const struct__GSubprocess = opaque {};
 
@@ -347,7 +321,6 @@ pub extern fn g_cancellable_new() [*c]GCancellable;
 pub extern fn g_cancellable_cancel(cancellable: [*c]GCancellable) void;
 pub extern fn g_file_new_for_path(path: [*c]const u8) ?*GFile;
 
-
 pub extern fn g_subprocess_newv(argv: [*c]const [*c]const gchar, flags: GSubprocessFlags, @"error": [*c][*c]GError) ?*GSubprocess;
 pub extern fn g_subprocess_wait_async(subprocess: ?*GSubprocess, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
 pub extern fn g_subprocess_wait_finish(subprocess: ?*GSubprocess, result: ?*GAsyncResult, @"error": [*c][*c]GError) gboolean;
@@ -366,12 +339,6 @@ pub extern fn g_task_return_pointer(task: ?*GTask, result: gpointer, result_dest
 pub extern fn g_task_return_boolean(task: ?*GTask, result: gboolean) void;
 pub extern fn g_task_propagate_pointer(task: ?*GTask, @"error": [*c][*c]GError) gpointer;
 pub extern fn g_task_propagate_boolean(task: ?*GTask, @"error": [*c][*c]GError) gboolean;
-
-
-
-
-
-
 
 pub const struct__GDesktopAppInfo = opaque {};
 
@@ -444,7 +411,6 @@ pub const GAppLaunchContextClass = extern struct {
     _g_reserved2: ?*const fn () callconv(.c) void,
     _g_reserved3: ?*const fn () callconv(.c) void,
 };
-
 
 pub const __icons = struct {
     pub const load = @import("desktop-icons.zig").load;

@@ -515,7 +515,7 @@ const State = struct {
 
     fn sendPower(self: *State, action: view.PowerAction) void {
         if (self.dm_fd < 0) return;
-        const payload = [2]u8{ @intFromEnum(Op.power), @intFromEnum(action) };
+        const payload = [2]u8{ @backingInt(Op.power), @backingInt(action) };
         _ = writeAll(self.dm_fd, &payload);
         var reply: [1]u8 = .{1};
         _ = readAll(self.dm_fd, &reply);
@@ -686,15 +686,15 @@ pub fn readAll(fd: c_int, bytes: []u8) bool {
 fn sendAuth(fd: c_int, username: []const u8, password: []const u8) bool {
     if (fd < 0 or username.len == 0 or username.len > 256 or password.len == 0 or password.len > 1024) return false;
     var header: [5]u8 = undefined;
-    header[0] = @intFromEnum(Op.auth);
+    header[0] = @backingInt(Op.auth);
     std.mem.writeInt(u16, header[1..3], @intCast(username.len), .little);
     std.mem.writeInt(u16, header[3..5], @intCast(password.len), .little);
     if (!writeAll(fd, &header)) return false;
     if (!writeAll(fd, username)) return false;
     if (!writeAll(fd, password)) return false;
-    var reply: [1]u8 = .{@intFromEnum(Reply.failed)};
+    var reply: [1]u8 = .{@backingInt(Reply.failed)};
     if (!readAll(fd, &reply)) return false;
-    return reply[0] == @intFromEnum(Reply.ok);
+    return reply[0] == @backingInt(Reply.ok);
 }
 
 var greeter_running = true;
