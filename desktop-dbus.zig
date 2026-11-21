@@ -649,7 +649,7 @@ pub const ReplyHandler = *const fn (context: ?*anyopaque, reply: Reply) void;
 pub const MessageHandler = *const fn (context: ?*anyopaque, message: *const Message) void;
 
 const Pending = struct { serial: u32, deadline: i64, handler: ReplyHandler, context: ?*anyopaque };
-const Subscription = struct { id: u32, handler: MessageHandler, context: ?*anyopaque, sender: ?[]u8, interface: ?[]u8, member: ?[]u8, path: ?[]u8, rule: []u8 };
+const Subscription = struct { id: u32, handler: MessageHandler, context: ?*anyopaque, sender: ?[]u8, interface: ?[]u8, member: ?[]u8, path: ?[]u8, arg0: ?[]u8 = null, rule: []u8 };
 /// A method call held for a later answer (see `Connection.hold`).
 pub const Invocation = struct {
     serial: u32,
@@ -730,6 +730,8 @@ pub const Connection = struct {
     dispatching: bool = false,
     /// Notified when the earliest timeout may have changed, so a loop can reschedule.
     on_schedule: ?*const fn (?*anyopaque) void = null,
+    /// Notified when received messages wait in the buffer, e.g. after a blocking call.
+    on_backlog: ?*const fn (?*anyopaque) void = null,
     schedule_context: ?*anyopaque = null,
 
     pub const Call = struct {
@@ -916,10 +918,14 @@ pub const Connection = struct {
 
     /// Receives matching signals; null filters match anything. Adds a bus match rule.
     pub fn subscribe(self: *Connection, sender: ?[]const u8, interface: ?[]const u8, member: ?[]const u8, path: ?[]const u8, handler: MessageHandler, context: ?*anyopaque) Error!u32 {
+        return self.subscribeArg0(sender, interface, member, path, null, handler, context);
+    }
+    /// Like `subscribe`, also requiring the first argument to be the string `arg0`.
+    pub fn subscribeArg0(self: *Connection, sender: ?[]const u8, interface: ?[]const u8, member: ?[]const u8, path: ?[]const u8, arg0: ?[]const u8, handler: MessageHandler, context: ?*anyopaque) Error!u32 {
         var rule: std.Io.Writer.Allocating = .init(self.allocator);
         defer rule.deinit();
         rule.writer.writeAll("type='signal'") catch return error.OutOfMemory;
-        inline for (.{ .{ "sender", sender }, .{ "interface", interface }, .{ "member", member }, .{ "path", path } }) |pair| {
+        inline for (.{ .{ "sender", sender }, .{ "interface", interface }, .{ "member", member }, .{ "path", path }, .{ "arg0", arg0 } }) |pair| {
             if (pair[1]) |value| rule.writer.print(",{s}='{s}'", .{ pair[0], value }) catch return error.OutOfMemory;
         }
         self.next_id += 1;
@@ -929,6 +935,7 @@ pub const Connection = struct {
         if (interface) |v| item.interface = try self.allocator.dupe(u8, v);
         if (member) |v| item.member = try self.allocator.dupe(u8, v);
         if (path) |v| item.path = try self.allocator.dupe(u8, v);
+        if (arg0) |v| item.arg0 = try self.allocator.dupe(u8, v);
         item.rule = try rule.toOwnedSlice();
         if (sender) |name| if (isWellKnown(name)) try self.watchName(name);
         errdefer if (sender) |name| if (isWellKnown(name)) self.unwatchName(name);
@@ -946,7 +953,7 @@ pub const Connection = struct {
         };
     }
     fn freeSubscription(self: *Connection, item: Subscription) void {
-        inline for (.{ item.sender, item.interface, item.member, item.path }) |value| if (value) |owned| self.allocator.free(owned);
+        inline for (.{ item.sender, item.interface, item.member, item.path, item.arg0 }) |value| if (value) |owned| self.allocator.free(owned);
         self.allocator.free(item.rule);
     }
 
@@ -1197,6 +1204,9 @@ pub const Connection = struct {
     /// Calls and waits for the reply, leaving other messages for later dispatch.
     /// A D-Bus error reply becomes `error.CallFailed`; use `call` to see its details.
     pub fn callBlocking(self: *Connection, target: Call, args: anytype, timeout_ms: u32) (Error || error{CallFailed})!Owned {
+        // Messages read while waiting stay buffered; an event loop must be told to dispatch them,
+        // because the socket will not become readable for data already received.
+        defer if (self.in.items.len > 0) if (self.on_backlog) |notify| notify(self.schedule_context);
         const serial = self.nextSerial();
         try self.queue(callHeader(serial, 0, target), args);
         try self.flush();
@@ -1261,7 +1271,7 @@ pub const Connection = struct {
                 var count: usize = 0;
                 for (self.subscriptions.items) |item| {
                     if (count == ids.len) break;
-                    if (!self.senderMatches(item.sender, message.sender) or !matches(item.interface, message.interface) or !matches(item.member, message.member) or !matches(item.path, message.path)) continue;
+                    if (!self.senderMatches(item.sender, message.sender) or !matches(item.interface, message.interface) or !matches(item.member, message.member) or !matches(item.path, message.path) or !matches(item.arg0, firstString(message))) continue;
                     ids[count] = item.id;
                     count += 1;
                 }
@@ -1415,6 +1425,13 @@ pub const Connection = struct {
         while (self.pending.pop()) |item| item.handler(item.context, .{ .failed = .{ .name = name, .text = text } });
     }
 };
+
+/// The first body argument when it is a string or object path, for arg0 matching.
+fn firstString(message: *const Message) ?[]const u8 {
+    if (message.signature.len == 0 or (message.signature[0] != 's' and message.signature[0] != 'o')) return null;
+    var reader: Reader = .{ .bytes = message.body, .arena = message.arena };
+    return reader.string() catch null;
+}
 
 fn isReplyTo(bytes: []const u8, serial: u32) !bool {
     if (bytes[1] != 2 and bytes[1] != 3) return false;

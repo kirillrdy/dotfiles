@@ -11,6 +11,8 @@ pub const Source = struct {
     connection: *dbus.Connection,
     watch: c.guint = 0,
     timer: c.guint = 0,
+    /// An idle dispatch for messages buffered by a blocking call.
+    backlog: c.guint = 0,
     busy: u32 = 0,
     /// Holders of a shared source (see `acquire`).
     refs: u32 = 1,
@@ -23,6 +25,7 @@ pub const Source = struct {
         const self = try allocator.create(Source);
         self.* = .{ .allocator = allocator, .connection = connection };
         connection.on_schedule = &scheduled;
+        connection.on_backlog = &backlogged;
         connection.schedule_context = self;
         self.watch = c.g_unix_fd_add(connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &readable, self);
         return self;
@@ -38,6 +41,7 @@ pub const Source = struct {
     fn finalize(self: *Source) void {
         if (self.watch != 0) _ = c.g_source_remove(self.watch);
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.backlog != 0) _ = c.g_source_remove(self.backlog);
         self.connection.close();
         self.allocator.destroy(self);
     }
@@ -66,6 +70,23 @@ pub const Source = struct {
         return @intFromBool(keep);
     }
 
+    fn backlogged(data: ?*anyopaque) void {
+        const self: *Source = @ptrCast(@alignCast(data));
+        if (self.backlog == 0 and !self.dying) self.backlog = c.g_idle_add(&drain, self);
+    }
+    fn drain(data: ?*anyopaque) callconv(.c) c.gboolean {
+        const self: *Source = @ptrCast(@alignCast(data));
+        self.backlog = 0;
+        self.busy += 1;
+        self.connection.dispatchPending() catch self.connection.disconnect();
+        self.busy -= 1;
+        if (self.dying) {
+            self.finalize();
+            return 0;
+        }
+        self.arm();
+        return 0;
+    }
     fn scheduled(data: ?*anyopaque) void {
         const self: *Source = @ptrCast(@alignCast(data));
         if (!self.dying) self.arm();

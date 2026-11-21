@@ -2,6 +2,8 @@
 const std = @import("std");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
+const dbus = @import("dbus");
+const loop = @import("desktop-dbus-loop.zig");
 const Dialog = @import("desktop-polkit.zig").Dialog;
 const name = "org.freedesktop.PolicyKit1";
 const authority = name ++ ".Authority";
@@ -10,11 +12,11 @@ const agent = name ++ ".AuthenticationAgent";
 const path = "/org/dotfiles/PolicyKit1/AuthenticationAgent";
 const xml = "<node><interface name='" ++ agent ++ "'><method name='BeginAuthentication'><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='a{ss}' direction='in'/><arg type='s' direction='in'/><arg type='a(sa{sv})' direction='in'/></method><method name='CancelAuthentication'><arg type='s' direction='in'/></method></interface></node>";
 const cast = c.__zig.cast;
-const text = c.__zig.variant.text;
-const child = c.__zig.variant.child;
-fn replyError(invocation: ?*c.GDBusMethodInvocation, cancelled: bool, message: [*:0]const u8) void {
-    c.g_dbus_method_invocation_return_dbus_error(invocation, if (cancelled) name ++ ".Error.Cancelled" else name ++ ".Error.Failed", message);
-}
+const Details = dbus.Dict([]const u8, dbus.Value);
+/// A polkit subject or identity: a kind with typed details, `(sa{sv})`.
+const Identity = struct { []const u8, Details };
+const BeginArgs = struct { []const u8, []const u8, []const u8, dbus.Dict([]const u8, []const u8), []const u8, []const Identity };
+
 pub const Options = struct {
     socket_path: [:0]const u8 = "/run/polkit/agent-helper.socket",
     peer_uid: u32 = 0,
@@ -25,76 +27,62 @@ pub const Service = struct {
         return initWithOptions(std.heap.page_allocator, .{});
     }
     pub fn initWithOptions(a: std.mem.Allocator, options: Options) !Service {
-        const connection = c.g_bus_get_sync(c.G_BUS_TYPE_SYSTEM, null, null) orelse return error.PolicyKitUnavailable;
-        errdefer c.g_object_unref(connection);
-        const node = c.g_dbus_node_info_new_for_xml(xml, null).?;
-        errdefer c.g_dbus_node_info_unref(node);
+        const source = loop.Source.open(a, .system) catch return error.PolicyKitUnavailable;
+        errdefer source.destroy();
+        var introspection = dbus.Introspection.parse(a, xml) catch unreachable;
+        errdefer introspection.deinit();
         const self = try a.create(State);
-        const process_subject = subject(connection) catch |err| {
-            a.destroy(self);
-            return err;
-        };
-        self.* = .{ .allocator = a, .options = options, .connection = connection, .node = node, .subject = process_subject };
-        errdefer {
-            c.g_variant_unref(self.subject);
-            if (self.owner) |owner| a.free(owner);
-            a.destroy(self);
-        }
-        self.registration = c.g_dbus_connection_register_object(connection, path, node.*.interfaces[0], &vtable, self, null, null);
-        if (self.registration == 0) return error.PolicyKitUnavailable;
-        errdefer _ = c.g_dbus_connection_unregister_object(connection, self.registration);
-        self.subscription = c.g_dbus_connection_signal_subscribe(connection, "org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", name, 0, &State.ownerChanged, self, null);
-        errdefer c.g_dbus_connection_signal_unsubscribe(connection, self.subscription);
+        errdefer a.destroy(self);
+        self.* = .{ .allocator = a, .options = options, .source = source, .introspection = introspection };
+        errdefer if (self.owner) |owner| a.free(owner);
+        try self.subject.find(source.connection);
+        const connection = source.connection;
+        self.registration = try connection.exportObject(path, &self.introspection.interfaces[0], &State.method, null, self);
+        errdefer connection.unregister(self.registration);
+        self.subscription = try connection.subscribeArg0("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", name, &State.ownerChanged, self);
+        errdefer connection.unsubscribe(self.subscription);
         try self.register();
         self.timer = c.g_timeout_add_seconds(2, &State.maintain, self);
         return .{ .state = self };
     }
     pub fn deinit(self: *Service) void {
         const state = self.state;
+        const connection = state.source.connection;
         state.stopping = true;
         if (state.advance_source != 0) _ = c.g_source_remove(state.advance_source);
         _ = c.g_source_remove(state.timer);
-        c.g_dbus_connection_signal_unsubscribe(state.connection, state.subscription);
+        connection.unsubscribe(state.subscription);
         state.cancelAll();
         if (state.registered and state.owner != null) {
-            const result = c.g_dbus_connection_call_sync(state.connection, state.owner.?.ptr, authority_path, authority, "UnregisterAuthenticationAgent", c.g_variant_new("(@(sa{sv})o)", c.g_variant_ref(state.subject), @as([*:0]const u8, path)), null, 0, 1000, null, null);
-            if (result != null) c.g_variant_unref(result);
+            if (connection.callBlocking(.{ .destination = state.owner.?, .path = authority_path, .interface = authority, .member = "UnregisterAuthenticationAgent" }, .{ state.subject.identity(), dbus.ObjectPath{ .value = path } }, 1000)) |result| result.deinit() else |_| {}
         }
-        _ = c.g_dbus_connection_unregister_object(state.connection, state.registration);
+        connection.unregister(state.registration);
         state.requests.deinit(state.allocator);
         if (state.owner) |owner| state.allocator.free(owner);
-        c.g_variant_unref(state.subject);
-        c.g_dbus_node_info_unref(state.node);
-        c.g_object_unref(state.connection);
+        state.source.destroy();
+        state.introspection.deinit();
         state.allocator.destroy(state);
     }
 };
-fn subject(connection: *c.GDBusConnection) !*c.GVariant {
-    var session_id: ?[:0]const u8 = null;
-    var owned_id: ?*c.GVariant = null;
-    defer if (owned_id != null) c.g_variant_unref(owned_id);
-    const session = c.g_dbus_connection_call_sync(connection, "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", "GetSessionByPID", c.g_variant_new("(u)", @as(c_uint, @intCast(libc.getpid()))), null, 0, 1000, null, null);
-    if (session != null) {
-        defer c.g_variant_unref(session);
-        const object = child(session, 0);
-        defer c.g_variant_unref(object);
-        const result = c.g_dbus_connection_call_sync(connection, "org.freedesktop.login1", text(object), "org.freedesktop.DBus.Properties", "Get", c.g_variant_new("(ss)", @as([*:0]const u8, "org.freedesktop.login1.Session"), @as([*:0]const u8, "Id")), null, 0, 1000, null, null);
-        if (result != null) {
-            defer c.g_variant_unref(result);
-            const wrapped = child(result, 0);
-            defer c.g_variant_unref(wrapped);
-            owned_id = c.g_variant_get_variant(wrapped);
-            if (std.mem.eql(u8, std.mem.span(c.g_variant_get_type_string(owned_id)), "s")) session_id = text(owned_id);
+
+/// The agent's polkit subject: its login session, or this process when there is none.
+const Subject = struct {
+    session: [64]u8 = undefined,
+    session_len: usize = 0,
+    start_time: u64 = 0,
+    entries: [3]Details.Entry = undefined,
+
+    fn find(self: *Subject, connection: *dbus.Connection) !void {
+        if (sessionId(connection, &self.session)) |len| {
+            self.session_len = len;
+        } else if (c.__zig.getenv("XDG_SESSION_ID")) |id| {
+            const value = std.mem.span(id);
+            if (value.len > 0 and value.len <= self.session.len) {
+                @memcpy(self.session[0..value.len], value);
+                self.session_len = value.len;
+            }
         }
-    }
-    if (session_id == null) if (c.__zig.getenv("XDG_SESSION_ID")) |id| {
-        if (id[0] != 0) session_id = std.mem.span(id);
-    };
-    const builder = c.g_variant_builder_new(@ptrCast(@as([*:0]const u8, "a{sv}")));
-    defer c.g_variant_builder_unref(builder);
-    if (session_id) |id| {
-        c.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "session-id"), c.g_variant_new("s", id.ptr));
-    } else {
+        if (self.session_len > 0) return;
         var contents: [*c]u8 = null;
         var size: usize = 0;
         if (c.g_file_get_contents("/proc/self/stat", &contents, &size, null) == 0) return error.PolicyKitUnavailable;
@@ -103,21 +91,47 @@ fn subject(connection: *c.GDBusConnection) !*c.GVariant {
         const end = std.mem.lastIndexOfScalar(u8, bytes, ')') orelse return error.InvalidProcessStat;
         var fields = std.mem.tokenizeScalar(u8, bytes[end + 1 ..], ' ');
         for (0..19) |_| _ = fields.next() orelse return error.InvalidProcessStat;
-        const start = try std.fmt.parseInt(u64, fields.next() orelse return error.InvalidProcessStat, 10);
-        c.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "pid"), c.g_variant_new("u", @as(c_uint, @intCast(libc.getpid()))));
-        c.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "uid"), c.g_variant_new("i", @as(c_int, @intCast(libc.getuid()))));
-        c.g_variant_builder_add(builder, "{sv}", @as([*:0]const u8, "start-time"), c.g_variant_new("t", start));
+        self.start_time = try std.fmt.parseInt(u64, fields.next() orelse return error.InvalidProcessStat, 10);
     }
-    return c.g_variant_take_ref(c.g_variant_new("(s@a{sv})", @as([*:0]const u8, if (session_id != null) "unix-session" else "unix-process"), c.g_variant_builder_end(builder))).?;
-}
+    /// The logind session ID for this process, through GetSessionByPID and the session's Id property.
+    fn sessionId(connection: *dbus.Connection, out: []u8) ?usize {
+        const session = connection.callBlocking(.{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1", .interface = "org.freedesktop.login1.Manager", .member = "GetSessionByPID" }, .{@as(u32, @intCast(libc.getpid()))}, 1000) catch return null;
+        defer session.deinit();
+        const object = session.message().read(struct { dbus.ObjectPath }) catch return null;
+        const id = connection.callBlocking(.{ .destination = "org.freedesktop.login1", .path = object[0].value, .interface = "org.freedesktop.DBus.Properties", .member = "Get" }, .{ "org.freedesktop.login1.Session", "Id" }, 1000) catch return null;
+        defer id.deinit();
+        const value = id.message().read(struct { dbus.Value }) catch return null;
+        const text = switch (value[0]) {
+            .string => |s| s,
+            else => return null,
+        };
+        if (text.len == 0 or text.len > out.len) return null;
+        @memcpy(out[0..text.len], text);
+        return text.len;
+    }
+    /// The `(sa{sv})` subject; points into `self`, which must stay in place while it is used.
+    fn identity(self: *Subject) Identity {
+        if (self.session_len > 0) {
+            self.entries[0] = .{ .key = "session-id", .value = .{ .string = self.session[0..self.session_len] } };
+            return .{ "unix-session", .{ .entries = self.entries[0..1] } };
+        }
+        self.entries = .{
+            .{ .key = "pid", .value = .{ .uint32 = @intCast(libc.getpid()) } },
+            .{ .key = "uid", .value = .{ .int32 = @intCast(libc.getuid()) } },
+            .{ .key = "start-time", .value = .{ .uint64 = self.start_time } },
+        };
+        return .{ "unix-process", .{ .entries = &self.entries } };
+    }
+};
+
 const State = struct {
     allocator: std.mem.Allocator,
     options: Options,
-    connection: *c.GDBusConnection,
-    node: *c.GDBusNodeInfo,
-    subject: *c.GVariant,
-    registration: c.guint = 0,
-    subscription: c.guint = 0,
+    source: *loop.Source,
+    introspection: dbus.Introspection,
+    subject: Subject = .{},
+    registration: u32 = 0,
+    subscription: u32 = 0,
     timer: c.guint = 0,
     advance_source: c.guint = 0,
     owner: ?[:0]u8 = null,
@@ -126,18 +140,18 @@ const State = struct {
     cancelling: bool = false,
     requests: std.ArrayList(*Auth) = .empty,
     fn register(self: *State) !void {
-        const probe = c.g_dbus_connection_call_sync(self.connection, name, authority_path, "org.freedesktop.DBus.Introspectable", "Introspect", null, null, 0, 1500, null, null) orelse return error.PolicyKitUnavailable;
-        c.g_variant_unref(probe);
-        const result = c.g_dbus_connection_call_sync(self.connection, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", c.g_variant_new("(s)", @as([*:0]const u8, name)), null, 0, 1000, null, null) orelse return error.PolicyKitUnavailable;
-        defer c.g_variant_unref(result);
-        const value = child(result, 0);
-        defer c.g_variant_unref(value);
-        const owner = try self.allocator.dupeSentinel(u8, text(value), 0);
+        const connection = self.source.connection;
+        const probe = connection.callBlocking(.{ .destination = name, .path = authority_path, .interface = "org.freedesktop.DBus.Introspectable", .member = "Introspect" }, .{}, 1500) catch return error.PolicyKitUnavailable;
+        probe.deinit();
+        const result = connection.callBlocking(.{ .destination = "org.freedesktop.DBus", .path = "/org/freedesktop/DBus", .interface = "org.freedesktop.DBus", .member = "GetNameOwner" }, .{name}, 1000) catch return error.PolicyKitUnavailable;
+        defer result.deinit();
+        const owner_name = result.message().read(struct { []const u8 }) catch return error.PolicyKitUnavailable;
+        const owner = try self.allocator.dupeSentinel(u8, owner_name[0], 0);
         if (self.owner) |old| self.allocator.free(old);
         self.owner = owner;
-        const locale = c.__zig.getenv("LANG") orelse @as([*c]const u8, "C");
-        const registered = c.g_dbus_connection_call_sync(self.connection, owner, authority_path, authority, "RegisterAuthenticationAgent", c.g_variant_new("(@(sa{sv})so)", c.g_variant_ref(self.subject), locale, @as([*:0]const u8, path)), null, 0, 1500, null, null) orelse return error.PolicyKitUnavailable;
-        c.g_variant_unref(registered);
+        const locale: []const u8 = if (c.__zig.getenv("LANG")) |value| std.mem.span(value) else "C";
+        const registered = connection.callBlocking(.{ .destination = owner, .path = authority_path, .interface = authority, .member = "RegisterAuthenticationAgent" }, .{ self.subject.identity(), locale, dbus.ObjectPath{ .value = path } }, 1500) catch return error.PolicyKitUnavailable;
+        registered.deinit();
         self.registered = true;
     }
     fn maintain(data: ?*anyopaque) callconv(.c) c_int {
@@ -150,11 +164,10 @@ const State = struct {
         while (self.requests.items.len > 0) self.requests.items[0].complete(false, true, "Authentication cancelled");
         self.cancelling = false;
     }
-    fn ownerChanged(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, params: ?*c.GVariant, data: ?*anyopaque) callconv(.c) void {
+    fn ownerChanged(data: ?*anyopaque, message: *const dbus.Message) void {
         const self = cast(State, data);
-        const owner = child(params, 2);
-        defer c.g_variant_unref(owner);
-        if (self.owner) |current| if (std.mem.eql(u8, current, text(owner))) return;
+        const change = message.read(struct { []const u8, []const u8, []const u8 }) catch return;
+        if (self.owner) |current| if (std.mem.eql(u8, current, change[2])) return;
         self.registered = false;
         self.cancelAll();
         if (self.owner) |old| self.allocator.free(old);
@@ -166,49 +179,40 @@ const State = struct {
         if (!self.stopping and self.requests.items.len > 0 and self.requests.items[0].dialog == null) self.requests.items[0].start();
         return 0;
     }
-    fn method(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, _: [*c]const u8, method_name: [*c]const u8, params: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: ?*anyopaque) callconv(.c) void {
+    fn replyError(self: *State, message: *const dbus.Message, text: []const u8) void {
+        self.source.connection.replyError(message, name ++ ".Error.Failed", text) catch {};
+    }
+    fn method(data: ?*anyopaque, message: *const dbus.Message) void {
         const self = cast(State, data);
-        if (!self.registered or self.owner == null or !std.mem.eql(u8, std.mem.span(sender), self.owner.?)) {
-            replyError(invocation, false, "Only the registered PolicyKit authority may authenticate");
-            return;
-        }
-        if (std.mem.eql(u8, std.mem.span(method_name), "CancelAuthentication")) {
-            const cookie = child(params, 0);
-            defer c.g_variant_unref(cookie);
-            for (self.requests.items) |request| if (std.mem.eql(u8, request.cookie, text(cookie))) {
+        const connection = self.source.connection;
+        const sender = message.sender orelse "";
+        if (!self.registered or self.owner == null or !std.mem.eql(u8, sender, self.owner.?)) return self.replyError(message, "Only the registered PolicyKit authority may authenticate");
+        if (std.mem.eql(u8, message.member orelse "", "CancelAuthentication")) {
+            const cookie = (message.read(struct { []const u8 }) catch return self.replyError(message, "Invalid cancellation"))[0];
+            for (self.requests.items) |request| if (std.mem.eql(u8, request.cookie, cookie)) {
                 request.complete(false, true, "Authentication cancelled by authority");
-                c.g_dbus_method_invocation_return_value(invocation, null);
+                connection.reply(message, .{}) catch {};
                 return;
             };
-            replyError(invocation, false, "Unknown authentication cookie");
-            return;
+            return self.replyError(message, "Unknown authentication cookie");
         }
-        if (self.requests.items.len >= 8) {
-            replyError(invocation, false, "Too many authentication requests");
-            return;
-        }
-        const request = Auth.create(self, params.?, invocation.?) catch {
-            replyError(invocation, false, "Invalid authentication request");
-            return;
-        };
+        if (self.requests.items.len >= 8) return self.replyError(message, "Too many authentication requests");
+        const request = Auth.create(self, message) catch return self.replyError(message, "Invalid authentication request");
         for (self.requests.items) |existing| if (std.mem.eql(u8, existing.cookie, request.cookie)) {
             request.destroy();
-            replyError(invocation, false, "Duplicate authentication cookie");
-            return;
+            return self.replyError(message, "Duplicate authentication cookie");
         };
         self.requests.append(self.allocator, request) catch {
             request.destroy();
-            replyError(invocation, false, "Could not allocate authentication request");
-            return;
+            return self.replyError(message, "Could not allocate authentication request");
         };
         if (self.requests.items.len == 1) request.start();
     }
 };
-const vtable: c.GDBusInterfaceVTable = .{ .method_call = &State.method };
 const Auth = struct {
     state: *State,
     arena: std.heap.ArenaAllocator,
-    invocation: *c.GDBusMethodInvocation,
+    invocation: dbus.Invocation,
     action: [:0]const u8,
     message: [:0]const u8,
     cookie: [:0]const u8,
@@ -224,42 +228,35 @@ const Auth = struct {
     output_offset: usize = 0,
     attempts: u32 = 0,
     waiting: bool = false,
-    fn create(state: *State, params: *c.GVariant, invocation: *c.GDBusMethodInvocation) !*Auth {
+    fn create(state: *State, call: *const dbus.Message) !*Auth {
         const self = try state.allocator.create(Auth);
         errdefer state.allocator.destroy(self);
         var arena = std.heap.ArenaAllocator.init(state.allocator);
         errdefer arena.deinit();
         const a = arena.allocator();
-        const identities = child(params, 5);
-        defer c.g_variant_unref(identities);
+        const args = try call.read(BeginArgs);
         var selected: ?u32 = null;
-        for (0..c.g_variant_n_children(identities)) |index| {
-            const id = child(identities, index);
-            defer c.g_variant_unref(id);
-            const kind = child(id, 0);
-            defer c.g_variant_unref(kind);
-            if (!std.mem.eql(u8, text(kind), "unix-user")) continue;
-            const details = child(id, 1);
-            defer c.g_variant_unref(details);
-            const uid = c.g_variant_lookup_value(details, "uid", null) orelse continue;
-            defer c.g_variant_unref(uid);
-            if (!std.mem.eql(u8, std.mem.span(c.g_variant_get_type_string(uid)), "u")) continue;
-            const value = c.g_variant_get_uint32(uid);
-            if (selected == null or value == libc.getuid()) selected = value;
+        for (args[5]) |identity| {
+            if (!std.mem.eql(u8, identity[0], "unix-user")) continue;
+            for (identity[1].entries) |entry| {
+                if (!std.mem.eql(u8, entry.key, "uid")) continue;
+                const value = switch (entry.value) {
+                    .uint32 => |uid| uid,
+                    else => continue,
+                };
+                if (selected == null or value == libc.getuid()) selected = value;
+            }
         }
         const uid = selected orelse return error.UnsupportedIdentity;
         const passwd = libc.getpwuid(uid);
         if (passwd == null) return error.UnknownUser;
         const username = try a.dupeSentinel(u8, std.mem.span(passwd.*.pw_name), 0);
         if (std.mem.indexOfAny(u8, username, "\r\n") != null) return error.InvalidUser;
-        var strings: [3][:0]const u8 = undefined;
-        for ([_]usize{ 0, 1, 4 }, 0..) |index, dest| {
-            const value = child(params, index);
-            defer c.g_variant_unref(value);
-            strings[dest] = try a.dupeSentinel(u8, text(value), 0);
-        }
-        if (strings[2].len == 0 or strings[2].len > 4096 or std.mem.indexOfAny(u8, strings[2], "\r\n") != null) return error.InvalidCookie;
-        self.* = .{ .state = state, .arena = arena, .invocation = cast(c.GDBusMethodInvocation, c.g_object_ref(invocation)), .action = strings[0], .message = strings[1], .cookie = strings[2], .username = username };
+        const cookie = try a.dupeSentinel(u8, args[4], 0);
+        if (cookie.len == 0 or cookie.len > 4096 or std.mem.indexOfAny(u8, cookie, "\r\n") != null) return error.InvalidCookie;
+        var invocation = try state.source.connection.hold(call);
+        errdefer invocation.release(state.allocator);
+        self.* = .{ .state = state, .arena = arena, .invocation = invocation, .action = try a.dupeSentinel(u8, args[0], 0), .message = try a.dupeSentinel(u8, args[1], 0), .cookie = cookie, .username = username };
         return self;
     }
     fn start(self: *Auth) void {
@@ -454,7 +451,8 @@ const Auth = struct {
             _ = state.requests.orderedRemove(i);
             break;
         };
-        if (success) c.g_dbus_method_invocation_return_value(self.invocation, null) else replyError(self.invocation, cancelled, message);
+        const connection = state.source.connection;
+        if (success) connection.answer(&self.invocation, .{}) catch {} else connection.answerError(&self.invocation, if (cancelled) name ++ ".Error.Cancelled" else name ++ ".Error.Failed", std.mem.span(message)) catch {};
         self.destroy();
         if (!state.stopping and !state.cancelling and state.requests.items.len > 0 and state.advance_source == 0) state.advance_source = c.g_idle_add(&State.advance, state);
     }
@@ -463,7 +461,8 @@ const Auth = struct {
         if (self.dialog) |*dialog| {
             dialog.destroy();
         }
-        c.g_object_unref(self.invocation);
+        // Unanswered requests, such as duplicates, just release the held call.
+        self.invocation.release(self.state.allocator);
         self.arena.deinit();
         self.state.allocator.destroy(self);
     }
