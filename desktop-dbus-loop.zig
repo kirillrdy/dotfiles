@@ -12,6 +12,8 @@ pub const Source = struct {
     watch: c.guint = 0,
     timer: c.guint = 0,
     busy: u32 = 0,
+    /// Holders of a shared source (see `acquire`).
+    refs: u32 = 1,
     dying: bool = false,
 
     /// Connects to `bus` (blocking for authentication and Hello) and attaches to the default context.
@@ -89,6 +91,31 @@ pub const Source = struct {
         return 0;
     }
 };
+
+/// One long-lived connection per bus, shared by the main thread like GLib's bus singletons.
+var shared: [2]?*Source = .{ null, null };
+
+/// Returns the shared connection to `bus`, connecting on first use. Pair with `release`.
+/// Holders must cancel their pending calls and unsubscribe before releasing.
+pub fn acquire(bus: dbus.Bus) !*Source {
+    const slot = &shared[@intFromEnum(bus)];
+    if (slot.*) |source| if (!source.connection.closed) {
+        source.refs += 1;
+        return source;
+    };
+    // A broken connection stays with its current holders; new callers get a fresh one.
+    const source = try Source.open(std.heap.page_allocator, bus);
+    slot.* = source;
+    return source;
+}
+pub fn release(source: *Source) void {
+    source.refs -= 1;
+    if (source.refs > 0) return;
+    for (&shared) |*slot| {
+        if (slot.* == source) slot.* = null;
+    }
+    source.destroy();
+}
 
 /// A single method call on a private connection that closes once the reply arrives.
 /// The handler always runs later from the main loop, exactly once, unless the

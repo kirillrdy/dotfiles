@@ -9,6 +9,9 @@ const quick = @import("desktop-quick-settings.zig");
 pub const date_menu = @import("desktop-date-menu.zig");
 pub const c = @import("desktop-glib.zig");
 pub const native = @import("desktop-panel-view.zig");
+const dbus = @import("dbus");
+const loop = @import("desktop-dbus-loop.zig");
+const notifications: dbus.Connection.Call = .{ .destination = "org.freedesktop.Notifications", .path = "/org/freedesktop/Notifications", .interface = "org.dotfiles.Notifications", .member = "" };
 const module_allocator = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
 const cast = c.__zig.cast;
 pub const Options = struct {
@@ -25,16 +28,18 @@ pub const Module = struct {
     monitors: c.gboolean = 0,
     status: c.gboolean = 0,
     date_controls: ?*date_menu.Controls = null,
-    history_subscription: c.guint = 0,
+    history_subscription: u32 = 0,
+    history_serial: u32 = 0,
     history_busy: bool = false,
     history_dirty: bool = false,
     source: [*:0]const u8 = "",
     cancel: [*c]c.GCancellable = null,
     clock_timer: c.guint = 0,
     power_timer: c.guint = 0,
-    session: ?*c.GDBusConnection = null,
-    device_subscription: c.guint = 0,
-    settings_subscription: c.guint = 0,
+    /// The shared session bus, for notification history and device-change signals.
+    bus: ?*loop.Source = null,
+    device_subscription: u32 = 0,
+    settings_subscription: u32 = 0,
     quick: ?*quick.Controls = null,
     power_pending: c.gboolean = 0,
     usage_menu: ?*UsagePopup = null,
@@ -162,7 +167,6 @@ pub fn unref_module(m: *Module) callconv(.c) void {
     m.refs -= 1;
     if (m.refs != 0) return;
     if (m.cancel != null) c.g_object_unref(m.cancel);
-    if (m.session != null) c.g_object_unref(m.session);
     c.g_free(m.tooltip);
     m.view.deinit();
     m.usage.deinit();
@@ -262,63 +266,57 @@ pub fn make_calendar(m: *Module) callconv(.c) void {
 }
 pub fn historyOpen(m: *Module, open: bool) void {
     if (open) history_reload(m);
-    history_call(m, "CalendarOpen", c.g_variant_new("(b)", @as(c_int, @intFromBool(open))));
+    history_call(m, "CalendarOpen", .{open});
 }
 fn calendar_closed(data: ?*anyopaque) void {
     const m: *Module = @ptrCast(@alignCast(data));
-    history_call(m, "CalendarOpen", c.g_variant_new("(b)", @as(c_int, 0)));
+    history_call(m, "CalendarOpen", .{false});
 }
-fn history_call(m: *Module, member: [*:0]const u8, parameters: ?*c.GVariant) void {
-    if (m.dead != 0 or m.session == null) {
-        // The call would have consumed the floating parameters; release them instead.
-        if (parameters) |value| c.g_variant_unref(c.g_variant_ref_sink(value));
-        return;
-    }
-    c.g_dbus_connection_call(m.session, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.dotfiles.Notifications", member, parameters, null, c.G_DBUS_CALL_FLAGS_NONE, 2000, m.cancel, null, null);
+/// Sends a history request whose reply is not needed.
+fn history_call(m: *Module, member: []const u8, args: anytype) void {
+    if (m.dead != 0) return;
+    const bus = m.bus orelse return;
+    var target = notifications;
+    target.member = member;
+    bus.connection.send(target, args) catch {};
 }
 fn history_clear(data: ?*anyopaque) void {
-    history_call(@ptrCast(@alignCast(data)), "Clear", null);
+    history_call(@ptrCast(@alignCast(data)), "Clear", .{});
 }
 fn history_dismiss(data: ?*anyopaque, id: u32) void {
-    history_call(@ptrCast(@alignCast(data)), "Dismiss", c.g_variant_new("(u)", id));
+    history_call(@ptrCast(@alignCast(data)), "Dismiss", .{id});
 }
 fn history_activate(data: ?*anyopaque, id: u32, key: [:0]const u8) void {
-    history_call(@ptrCast(@alignCast(data)), "Activate", c.g_variant_new("(us)", id, key.ptr));
+    history_call(@ptrCast(@alignCast(data)), "Activate", .{ id, @as([]const u8, key) });
 }
-fn history_changed(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: c.gpointer) callconv(.c) void {
+fn history_changed(data: ?*anyopaque, _: *const dbus.Message) void {
     history_reload(@ptrCast(@alignCast(data)));
 }
 fn history_reload(m: *Module) void {
-    if (m.dead != 0 or m.session == null) return;
+    if (m.dead != 0) return;
+    const bus = m.bus orelse return;
     if (m.history_busy) {
         m.history_dirty = true;
         return;
     }
+    var target = notifications;
+    target.member = "List";
+    m.history_serial = bus.connection.call(target, .{}, 2000, &history_ready, m) catch return;
     m.history_busy = true;
     m.history_dirty = false;
-    m.refs += 1;
-    c.g_dbus_connection_call(m.session, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.dotfiles.Notifications", "List", null, null, c.G_DBUS_CALL_FLAGS_NONE, 2000, m.cancel, &history_ready, m);
 }
-fn history_ready(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
+/// Teardown cancels this call by serial, so the module is alive whenever it runs.
+fn history_ready(data: ?*anyopaque, reply: dbus.Reply) void {
     const m: *Module = @ptrCast(@alignCast(data));
-    defer unref_module(m);
+    m.history_serial = 0;
     m.history_busy = false;
-    var err: [*c]c.GError = null;
-    const reply = c.g_dbus_connection_call_finish(@ptrCast(source), result, &err);
-    defer c.g_clear_error(&err);
-    populate_notifications(m, reply);
+    switch (reply) {
+        .ok => |message| if (message.read(struct { []const u8 })) |value| {
+            if (m.date_controls) |controls| controls.load(value[0]);
+        } else |_| {},
+        .failed => {},
+    }
     if (m.history_dirty) history_reload(m);
-}
-
-fn populate_notifications(m: *Module, reply: ?*c.GVariant) void {
-    if (reply == null) return;
-    defer c.g_variant_unref(reply);
-    if (m.dead != 0) return;
-    const value = c.g_variant_get_child_value(reply, 0);
-    defer c.g_variant_unref(value);
-    const raw = c.g_variant_get_string(value, null);
-    if (raw == null) return;
-    if (m.date_controls) |controls| controls.load(std.mem.span(raw));
 }
 pub fn usage_refresh(m: *Module) void {
     const source = std.mem.span(m.source);
@@ -422,28 +420,29 @@ test "monitor polling updates tooltips without repainting unchanged graph sample
     try std.testing.expectEqual(@as(usize, 2), redraws);
     try std.testing.expectEqual(@as(u32, 2), module.view.graphs[0].count);
 }
-fn device_changed(_: ?*c.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: ?*c.GVariant, data: c.gpointer) callconv(.c) void {
+fn device_changed(data: ?*anyopaque, _: *const dbus.Message) void {
     const m: *Module = @ptrCast(@alignCast(data));
     if (m.dead != 0) return;
     if (m.source[0] != 0) {
         if (refresh_source) |refresh| refresh(std.mem.span(m.source));
     }
 }
-fn session_ready(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
-    const m: *Module = @ptrCast(@alignCast(data));
-    var err: [*c]c.GError = null;
-    const connection = c.g_bus_get_finish(result, &err);
-    c.g_clear_error(&err);
-    if (m.dead == 0) {
-        m.session = connection;
-        if (connection != null and m.status != 0) m.device_subscription = c.g_dbus_connection_signal_subscribe(connection, null, "org.dotfiles.DesktopOsd", "DeviceChanged", "/org/dotfiles/DesktopOsd", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &device_changed, m, null);
-        if (connection != null and m.status != 0) m.settings_subscription = c.g_dbus_connection_signal_subscribe(connection, null, "org.dotfiles.DesktopSettings", "DeviceChanged", "/org/dotfiles/DesktopSettings", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &device_changed, m, null);
-        if (connection != null and m.date_controls != null) {
-            m.history_subscription = c.g_dbus_connection_signal_subscribe(connection, "org.freedesktop.Notifications", "org.dotfiles.Notifications", "Changed", "/org/freedesktop/Notifications", null, c.G_DBUS_SIGNAL_FLAGS_NONE, &history_changed, m, null);
-            history_reload(m);
-        }
-    } else if (connection != null) c.g_object_unref(connection);
-    unref_module(m);
+/// Joins the shared session bus; without one the module works, minus live history and device updates.
+fn connect_session(m: *Module) void {
+    const bus = loop.acquire(.session) catch |err| {
+        std.log.warn("panel: session bus unavailable: {s}", .{@errorName(err)});
+        return;
+    };
+    m.bus = bus;
+    const connection = bus.connection;
+    if (m.status != 0) {
+        m.device_subscription = connection.subscribe(null, "org.dotfiles.DesktopOsd", "DeviceChanged", "/org/dotfiles/DesktopOsd", &device_changed, m) catch 0;
+        m.settings_subscription = connection.subscribe(null, "org.dotfiles.DesktopSettings", "DeviceChanged", "/org/dotfiles/DesktopSettings", &device_changed, m) catch 0;
+    }
+    if (m.date_controls != null) {
+        m.history_subscription = connection.subscribe("org.freedesktop.Notifications", "org.dotfiles.Notifications", "Changed", "/org/freedesktop/Notifications", &history_changed, m) catch 0;
+        history_reload(m);
+    }
 }
 fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.zig").Service) void {
     if (m.monitors != 0) {
@@ -462,12 +461,10 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
         controls.profile_selected = &native_profile_selected;
         update_power(m);
         m.power_timer = c.g_timeout_add_seconds(2, &refresh_power, m);
-        m.refs += 1;
-        c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
+        connect_session(m);
     } else if (c.g_strcmp0(options.kind.ptr, "clock") == 0) {
         make_calendar(m);
-        m.refs += 1;
-        c.g_bus_get(c.G_BUS_TYPE_SESSION, m.cancel, &session_ready, m);
+        connect_session(m);
         _ = update_clock(@as(c.gpointer, @ptrCast(m)));
         m.clock_timer = c.g_timeout_add_seconds(1, &update_clock, @as(c.gpointer, @ptrCast(m)));
     }
@@ -509,13 +506,18 @@ test "usage indicators are visible before either collector returns" {
 pub fn deinit(m: *Module) void {
     // Closing a clock during panel/output teardown must restore banners even
     // though its outstanding history requests are about to be cancelled.
-    if (m.date_controls != null and m.session != null and m.date_controls.?.popup.visible) {
-        c.g_dbus_connection_call(m.session, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.dotfiles.Notifications", "CalendarOpen", c.g_variant_new("(b)", @as(c_int, 0)), null, c.G_DBUS_CALL_FLAGS_NONE, 2000, null, null, null);
-    }
+    if (m.date_controls != null and m.date_controls.?.popup.visible) history_call(m, "CalendarOpen", .{false});
     m.dead = 1;
-    if (m.device_subscription != 0) c.g_dbus_connection_signal_unsubscribe(m.session, m.device_subscription);
-    if (m.settings_subscription != 0) c.g_dbus_connection_signal_unsubscribe(m.session, m.settings_subscription);
-    if (m.history_subscription != 0) c.g_dbus_connection_signal_unsubscribe(m.session, m.history_subscription);
+    if (m.bus) |bus| {
+        // The shared connection outlives this module: drop everything that points back at it.
+        const connection = bus.connection;
+        if (m.history_serial != 0) connection.cancel(m.history_serial);
+        for ([_]u32{ m.device_subscription, m.settings_subscription, m.history_subscription }) |id| {
+            if (id != 0) connection.unsubscribe(id);
+        }
+        m.bus = null;
+        loop.release(bus);
+    }
     if (m.clock_timer != 0) {
         _ = c.g_source_remove(m.clock_timer);
     }

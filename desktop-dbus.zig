@@ -651,6 +651,28 @@ pub const MessageHandler = *const fn (context: ?*anyopaque, message: *const Mess
 const Pending = struct { serial: u32, deadline: i64, handler: ReplyHandler, context: ?*anyopaque };
 const Subscription = struct { id: u32, handler: MessageHandler, context: ?*anyopaque, sender: ?[]u8, interface: ?[]u8, member: ?[]u8, path: ?[]u8, rule: []u8 };
 const Export = struct { id: u32, path: []u8, interface: []u8, handler: MessageHandler, context: ?*anyopaque };
+/// The current unique owner of a well-known name used as a signal sender filter.
+/// Signals carry unique sender names, so filters on well-known names compare against the owner.
+const NameWatch = struct {
+    connection: *Connection,
+    name: []u8,
+    rule: []u8,
+    owner: ?[]u8 = null,
+    refs: u32 = 1,
+    serial: u32 = 0,
+
+    /// Records a new owner; an empty name means the name is no longer owned.
+    fn setOwner(self: *NameWatch, value: []const u8) void {
+        const allocator = self.connection.allocator;
+        if (self.owner) |old| allocator.free(old);
+        self.owner = if (value.len == 0) null else allocator.dupe(u8, value) catch null;
+    }
+};
+
+/// Well-known names need owner tracking; unique names and the bus itself are literal.
+fn isWellKnown(name: []const u8) bool {
+    return name.len > 0 and name[0] != ':' and !std.mem.eql(u8, name, bus_name);
+}
 
 pub const Error = error{ ConnectionFailed, AuthenticationFailed, ConnectionClosed, InvalidMessage, IoFailed, OutOfMemory, Timeout };
 
@@ -675,6 +697,7 @@ pub const Connection = struct {
     pending: std.ArrayList(Pending) = .empty,
     subscriptions: std.ArrayList(Subscription) = .empty,
     exports: std.ArrayList(Export) = .empty,
+    names: std.ArrayList(*NameWatch) = .empty,
     next_id: u32 = 0,
     closed: bool = false,
     dispatching: bool = false,
@@ -695,6 +718,11 @@ pub const Connection = struct {
     pub fn open(allocator: std.mem.Allocator, bus: Bus) Error!*Connection {
         const variable: [*:0]const u8 = if (bus == .session) "DBUS_SESSION_BUS_ADDRESS" else "DBUS_SYSTEM_BUS_ADDRESS";
         const address = if (std.c.getenv(variable)) |value| std.mem.span(value) else if (bus == .system) "unix:path=/run/dbus/system_bus_socket" else return error.ConnectionFailed;
+        return openBus(allocator, address);
+    }
+
+    /// Connects to the message bus at `address`, authenticates and registers with Hello.
+    pub fn openBus(allocator: std.mem.Allocator, address: []const u8) Error!*Connection {
         const self = try openAddress(allocator, address);
         errdefer self.close();
         const hello = self.callBlocking(.{ .destination = bus_name, .path = bus_path, .interface = bus_name, .member = "Hello" }, .{}, 25000) catch |err| return switch (err) {
@@ -733,6 +761,8 @@ pub const Connection = struct {
         self.failAll("org.freedesktop.DBus.Error.Disconnected", "Connection closed");
         for (self.subscriptions.items) |item| self.freeSubscription(item);
         self.subscriptions.deinit(self.allocator);
+        for (self.names.items) |watch| self.freeWatch(watch);
+        self.names.deinit(self.allocator);
         for (self.exports.items) |item| {
             self.allocator.free(item.path);
             self.allocator.free(item.interface);
@@ -873,6 +903,8 @@ pub const Connection = struct {
         if (member) |v| item.member = try self.allocator.dupe(u8, v);
         if (path) |v| item.path = try self.allocator.dupe(u8, v);
         item.rule = try rule.toOwnedSlice();
+        if (sender) |name| if (isWellKnown(name)) try self.watchName(name);
+        errdefer if (sender) |name| if (isWellKnown(name)) self.unwatchName(name);
         try self.subscriptions.append(self.allocator, item);
         if (self.unique_name.len > 0) try self.send(.{ .destination = bus_name, .path = bus_path, .interface = bus_name, .member = "AddMatch" }, .{item.rule});
         return item.id;
@@ -880,6 +912,7 @@ pub const Connection = struct {
     pub fn unsubscribe(self: *Connection, id: u32) void {
         for (self.subscriptions.items, 0..) |item, i| if (item.id == id) {
             if (self.unique_name.len > 0) self.send(.{ .destination = bus_name, .path = bus_path, .interface = bus_name, .member = "RemoveMatch" }, .{item.rule}) catch {};
+            if (item.sender) |name| if (isWellKnown(name)) self.unwatchName(name);
             self.freeSubscription(item);
             _ = self.subscriptions.orderedRemove(i);
             return;
@@ -888,6 +921,65 @@ pub const Connection = struct {
     fn freeSubscription(self: *Connection, item: Subscription) void {
         inline for (.{ item.sender, item.interface, item.member, item.path }) |value| if (value) |owned| self.allocator.free(owned);
         self.allocator.free(item.rule);
+    }
+
+    /// Starts tracking the owner of `name`: a match rule for its NameOwnerChanged and a GetNameOwner query.
+    fn watchName(self: *Connection, name: []const u8) Error!void {
+        for (self.names.items) |watch| if (std.mem.eql(u8, watch.name, name)) {
+            watch.refs += 1;
+            return;
+        };
+        const watch = try self.allocator.create(NameWatch);
+        errdefer self.allocator.destroy(watch);
+        const owned = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned);
+        const rule = std.fmt.allocPrint(self.allocator, "type='signal',sender='" ++ bus_name ++ "',interface='" ++ bus_name ++ "',member='NameOwnerChanged',path='" ++ bus_path ++ "',arg0='{s}'", .{name}) catch return error.OutOfMemory;
+        errdefer self.allocator.free(rule);
+        watch.* = .{ .connection = self, .name = owned, .rule = rule };
+        try self.names.append(self.allocator, watch);
+        if (self.unique_name.len == 0) return;
+        self.send(.{ .destination = bus_name, .path = bus_path, .interface = bus_name, .member = "AddMatch" }, .{rule}) catch {};
+        watch.serial = self.call(.{ .destination = bus_name, .path = bus_path, .interface = bus_name, .member = "GetNameOwner" }, .{name}, 25000, &ownerReply, watch) catch 0;
+    }
+    fn unwatchName(self: *Connection, name: []const u8) void {
+        for (self.names.items, 0..) |watch, i| if (std.mem.eql(u8, watch.name, name)) {
+            watch.refs -= 1;
+            if (watch.refs > 0) return;
+            if (watch.serial != 0) self.cancel(watch.serial);
+            if (self.unique_name.len > 0) self.send(.{ .destination = bus_name, .path = bus_path, .interface = bus_name, .member = "RemoveMatch" }, .{watch.rule}) catch {};
+            _ = self.names.orderedRemove(i);
+            self.freeWatch(watch);
+            return;
+        };
+    }
+    fn freeWatch(self: *Connection, watch: *NameWatch) void {
+        if (watch.owner) |owner| self.allocator.free(owner);
+        self.allocator.free(watch.name);
+        self.allocator.free(watch.rule);
+        self.allocator.destroy(watch);
+    }
+    fn ownerReply(context: ?*anyopaque, result: Reply) void {
+        const watch: *NameWatch = @ptrCast(@alignCast(context));
+        watch.serial = 0;
+        // NameHasNoOwner leaves the name unowned until NameOwnerChanged says otherwise.
+        const message = switch (result) {
+            .ok => |value| value,
+            .failed => return,
+        };
+        const owner = message.read(struct { []const u8 }) catch return;
+        watch.setOwner(owner[0]);
+    }
+    /// The unique name currently owning `name`, if it is being watched and owned.
+    pub fn ownerOf(self: *const Connection, name: []const u8) ?[]const u8 {
+        for (self.names.items) |watch| if (std.mem.eql(u8, watch.name, name)) return watch.owner;
+        return null;
+    }
+    fn senderMatches(self: *const Connection, filter: ?[]const u8, sender: ?[]const u8) bool {
+        const expected = filter orelse return true;
+        const actual = sender orelse return false;
+        if (!isWellKnown(expected)) return std.mem.eql(u8, expected, actual);
+        const owner = self.ownerOf(expected) orelse return false;
+        return std.mem.eql(u8, owner, actual);
     }
 
     /// Routes method calls for `interface` at `path` to `handler`, which must reply.
@@ -1075,17 +1167,30 @@ pub const Connection = struct {
                 };
             },
             .signal => {
-                // Handlers may unsubscribe; stop at the original count so additions wait.
-                var index: usize = 0;
-                while (index < self.subscriptions.items.len) : (index += 1) {
-                    const item = self.subscriptions.items[index];
-                    if (!matches(item.sender, message.sender) or !matches(item.interface, message.interface) or !matches(item.member, message.member) or !matches(item.path, message.path)) continue;
-                    item.handler(item.context, message);
+                self.trackOwner(message);
+                // Collect matches first: handlers may subscribe or unsubscribe while running.
+                var ids: [64]u32 = undefined;
+                var count: usize = 0;
+                for (self.subscriptions.items) |item| {
+                    if (count == ids.len) break;
+                    if (!self.senderMatches(item.sender, message.sender) or !matches(item.interface, message.interface) or !matches(item.member, message.member) or !matches(item.path, message.path)) continue;
+                    ids[count] = item.id;
+                    count += 1;
                 }
+                for (ids[0..count]) |id| for (self.subscriptions.items) |item| if (item.id == id) {
+                    item.handler(item.context, message);
+                    break;
+                };
             },
             .method_call => self.handleCall(message),
             _ => {},
         }
+    }
+    /// Applies NameOwnerChanged from the bus to watched names.
+    fn trackOwner(self: *Connection, message: *const Message) void {
+        if (!matches(bus_name, message.sender) or !matches(bus_name, message.interface) or !matches("NameOwnerChanged", message.member)) return;
+        const change = message.read(struct { []const u8, []const u8, []const u8 }) catch return;
+        for (self.names.items) |watch| if (std.mem.eql(u8, watch.name, change[0])) watch.setOwner(change[2]);
     }
     fn matches(filter: ?[]const u8, value: ?[]const u8) bool {
         const expected = filter orelse return true;
