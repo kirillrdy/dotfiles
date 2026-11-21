@@ -142,9 +142,7 @@ pub extern fn g_variant_get_uint32(value: ?*GVariant) guint32;
 pub extern fn g_variant_get_string(value: ?*GVariant, length: [*c]gsize) [*c]const gchar;
 pub extern fn g_variant_n_children(value: ?*GVariant) gsize;
 pub extern fn g_variant_get_child_value(value: ?*GVariant, index_: gsize) ?*GVariant;
-pub extern fn g_variant_lookup_value(dictionary: ?*GVariant, key: [*c]const gchar, expected_type: ?*const GVariantType) ?*GVariant;
 pub extern fn g_variant_get_fixed_array(value: ?*GVariant, n_elements: [*c]gsize, element_size: gsize) gconstpointer;
-pub extern fn g_variant_new(format_string: [*c]const gchar, ...) ?*GVariant;
 pub extern fn g_print(format: [*c]const gchar, ...) void;
 pub extern fn g_shell_quote(unquoted_string: [*c]const gchar) [*c]gchar;
 pub extern fn g_shell_parse_argv(command_line: [*c]const gchar, argcp: [*c]gint, argvp: [*c][*c][*c]gchar, @"error": [*c][*c]GError) gboolean;
@@ -438,30 +436,19 @@ pub extern fn g_variant_get_double(?*GVariant) f64;
 pub extern fn g_variant_get_uint64(?*GVariant) u64;
 pub extern fn g_variant_print(?*GVariant, gboolean) [*c]gchar;
 pub extern fn g_variant_parse(?*const GVariantType, [*c]const gchar, [*c]const gchar, [*c][*c]const gchar, [*c][*c]GError) ?*GVariant;
-pub extern fn g_variant_type_string_is_valid([*c]const gchar) gboolean;
 pub extern fn g_uuid_string_random() [*c]gchar;
-pub extern fn g_variant_type_is_definite(?*const GVariantType) gboolean;
 
 // Native portal broker: tuples and Unix file descriptor forwarding.
-pub extern fn g_variant_new_tuple([*c]const ?*GVariant, gsize) ?*GVariant;
 pub extern fn g_app_info_launch_default_for_uri_async([*c]const gchar, ?*GAppLaunchContext, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
 pub extern fn g_app_info_launch_default_for_uri_finish(?*GAsyncResult, [*c][*c]GError) gboolean;
 pub extern fn g_app_info_get_default_for_uri_scheme([*c]const gchar) ?*GAppInfo;
 pub extern fn g_file_get_uri(?*GFile) [*c]gchar;
-pub extern fn g_variant_ref(?*GVariant) ?*GVariant;
-pub extern fn g_variant_ref_sink(?*GVariant) ?*GVariant;
 pub extern fn g_variant_take_ref(?*GVariant) ?*GVariant;
-pub const GVariantBuilder = opaque {};
-pub extern fn g_variant_builder_new(?*const GVariantType) ?*GVariantBuilder;
-pub extern fn g_variant_builder_add(?*GVariantBuilder, [*c]const gchar, ...) void;
-pub extern fn g_variant_builder_end(?*GVariantBuilder) ?*GVariant;
-pub extern fn g_variant_builder_unref(?*GVariantBuilder) void;
 pub const GNetworkMonitor = opaque {};
 pub extern fn g_network_monitor_get_default() ?*GNetworkMonitor;
 pub extern fn g_network_monitor_get_network_available(?*GNetworkMonitor) gboolean;
 pub extern fn g_network_monitor_get_network_metered(?*GNetworkMonitor) gboolean;
 pub extern fn g_network_monitor_get_connectivity(?*GNetworkMonitor) c_uint;
-pub extern fn g_variant_new_array(?*const GVariantType, [*c]const ?*GVariant, gsize) ?*GVariant;
 pub extern fn g_file_query_file_type(?*GFile, c_uint, [*c]GCancellable) c_uint;
 pub const GSocketConnectable = opaque {};
 pub extern fn g_network_address_new([*c]const gchar, u16) ?*GSocketConnectable;
@@ -480,7 +467,6 @@ pub const GBytes = opaque {};
 pub extern fn g_bytes_icon_get_type() GType;
 pub extern fn g_bytes_icon_get_bytes(?*GIcon) ?*GBytes;
 pub extern fn g_memory_input_stream_new_from_bytes(?*GBytes) ?*GInputStream;
-pub extern fn g_variant_new_fixed_array(?*const GVariantType, gconstpointer, gsize, gsize) ?*GVariant;
 pub extern fn g_markup_escape_text([*c]const gchar, gssize) [*c]gchar;
 // File chooser dialogs run in the native portal process.
 pub extern fn g_variant_equal(gconstpointer, gconstpointer) gboolean;
@@ -504,7 +490,6 @@ pub const GAppLaunchContextClass = extern struct {
     _g_reserved3: ?*const fn () callconv(.c) void,
 };
 
-pub extern fn g_variant_builder_add_value(?*GVariantBuilder, ?*GVariant) void;
 
 pub const __icons = struct {
     pub const load = @import("desktop-icons.zig").load;

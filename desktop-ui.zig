@@ -25,40 +25,6 @@ pub fn settings(schema: [*:0]const u8, key: ?[*:0]const u8) ?*c.GSettings {
     if (key) |name| if (c.g_settings_schema_has_key(found, name) == 0) return null;
     return c.g_settings_new_full(found, null, null);
 }
-pub const variant = struct {
-    pub fn builder(signature: [*:0]const u8) *c.GVariantBuilder {
-        return c.g_variant_builder_new(@ptrCast(signature)).?;
-    }
-    pub fn emptyDict() ?*c.GVariant {
-        return c.g_variant_new_array(@ptrCast(@as([*:0]const u8, "{sv}")), null, 0);
-    }
-    pub fn child(value: ?*c.GVariant, index: usize) *c.GVariant {
-        return c.g_variant_get_child_value(value, index).?;
-    }
-    pub fn text(value: ?*c.GVariant) [:0]const u8 {
-        return std.mem.span(c.g_variant_get_string(value, null));
-    }
-    pub fn slice(value: ?*c.GVariant) []const u8 {
-        return if (value) |v| std.mem.span(c.g_variant_get_string(v, null)) else "";
-    }
-    pub fn bytes(value: ?*c.GVariant) []const u8 {
-        const v = value orelse return "";
-        var len: usize = 0;
-        const data = c.g_variant_get_fixed_array(v, &len, 1) orelse return "";
-        return @as([*]const u8, @ptrCast(data))[0..len];
-    }
-    pub fn byteArray(value: []const u8) *c.GVariant {
-        return c.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), value.ptr, value.len, 1).?;
-    }
-    pub fn lookup(dict: ?*c.GVariant, key: [*:0]const u8, signature: ?[*:0]const u8) ?*c.GVariant {
-        return c.g_variant_lookup_value(dict, key, if (signature) |s| @ptrCast(s) else null);
-    }
-    pub fn nested(base: *c.GVariant, group: [*:0]const u8, key: [*:0]const u8) ?*c.GVariant {
-        const section = c.g_variant_lookup_value(base, group, null) orelse return null;
-        defer c.g_variant_unref(section);
-        return c.g_variant_lookup_value(section, key, null);
-    }
-};
 /// X keysyms and modifier bits used by the native key handlers.
 pub const keys = struct {
     pub const BackSpace: c_int = 0xff08;
