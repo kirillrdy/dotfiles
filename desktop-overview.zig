@@ -59,7 +59,7 @@ const Overview = struct {
     window_paints: std.ArrayList(WindowPaint) = .empty,
     picker_layout: picker.Layout = .{},
     caption_mask: ?text.Mask = null,
-    caption_title: []u8 = &.{},
+    caption_title: ?[:0]u8 = null,
     caption_width: u32 = 0,
     caption_scale: u32 = 0,
     hover: ?usize = null,
@@ -121,14 +121,14 @@ const Overview = struct {
     fn clearCaption(self: *Overview) void {
         if (self.caption_mask) |mask| mask.deinit(self.allocator);
         self.caption_mask = null;
-        if (self.caption_title.len != 0) self.allocator.free(self.caption_title);
-        self.caption_title = &.{};
+        if (self.caption_title) |title| self.allocator.free(title);
+        self.caption_title = null;
         self.caption_width = 0;
         self.caption_scale = 0;
     }
     fn prepareCaption(self: *Overview, value: []const u8, max_width: u32, scale: u32) ?view.Caption {
         if (value.len == 0) return null;
-        if (self.caption_mask != null and self.caption_width == max_width and self.caption_scale == scale and std.mem.eql(u8, self.caption_title, value)) {
+        if (self.caption_mask != null and self.caption_width == max_width and self.caption_scale == scale and std.mem.eql(u8, self.caption_title orelse "", value)) {
             return .{ .mask = self.caption_mask.?, .scale = scale };
         }
         self.clearCaption();
