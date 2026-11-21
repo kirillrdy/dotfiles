@@ -275,6 +275,22 @@ test "Antigravity takes the tightest bucket of each quota window" {
     // The live service labels windows "5h" and "weekly".
     const live = antigravity.parseUsage(try u.parse(a, "{\"groups\":[{\"buckets\":[{\"bucketId\":\"3p-weekly\",\"window\":\"weekly\",\"resetTime\":\"1970-01-03T03:16:40Z\",\"remainingFraction\":0.9},{\"bucketId\":\"3p-5h\",\"window\":\"5h\",\"resetTime\":\"1970-01-01T00:16:40Z\",\"remainingFraction\":0.25}]}]}"));
     try expect(@abs(live[0].?.used - 75) < 1e-9 and @abs(live[1].?.used - 10) < 1e-9);
+    // Per-model buckets from retrieveUserQuota populate only the 5h slot and
+    // merge with weekly summary groups.
+    const per_model = antigravity.parseUsage(try u.parse(a,
+        \\{"buckets":[
+        \\  {"modelId":"tab_flash_lite_preview","remainingFraction":1},
+        \\  {"modelId":"claude-opus-5-5-high","resetTime":"1970-01-01T05:00:00Z","remainingFraction":1},
+        \\  {"modelId":"gemini-3.8-flash-tiered","resetTime":"1970-01-01T04:00:00Z","remainingFraction":0.76}]}
+    ));
+    try expect(@abs(per_model[0].?.used - 24) < 1e-9 and per_model[0].?.reset_at.? == 4 * 3600);
+    try expect(per_model[1] == null);
+    const merged = antigravity.mergeWindows(per_model, antigravity.parseUsage(try u.parse(a,
+        \\{"groups":[{"buckets":[
+        \\  {"bucketId":"3p-weekly","window":"weekly","resetTime":"1970-01-03T00:00:00Z","remainingFraction":1},
+        \\  {"bucketId":"3p-5h","window":"5h","resetTime":"1970-01-01T05:00:00Z","remainingFraction":1}]}]}
+    )));
+    try expect(@abs(merged[0].?.used - 24) < 1e-9 and @abs(merged[1].?.used - 0) < 1e-9);
     // Unlabelled buckets are placed by reset time.
     const ordered = antigravity.parseUsage(try u.parse(a, "{\"buckets\":[{\"remainingFraction\":0.5,\"resetTime\":\"1970-01-03T00:00:00Z\"},{\"remainingFraction\":0.25,\"resetTime\":\"1970-01-01T01:00:00Z\"}]}"));
     try expect(@abs(ordered[0].?.used - 75) < 1e-9 and @abs(ordered[1].?.used - 50) < 1e-9);

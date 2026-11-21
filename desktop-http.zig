@@ -52,9 +52,12 @@ fn request(a: std.mem.Allocator, io: std.Io, options: Options) !Response {
     var proxy_arena = std.heap.ArenaAllocator.init(a);
     defer proxy_arena.deinit();
     if (options.use_proxy) try client.initDefaultProxies(proxy_arena.allocator(), &env);
-    var req = try client.request(if (options.body == null) .GET else .POST, try std.Uri.parse(options.url), .{
+    const uri = try std.Uri.parse(options.url);
+    const connection = try connectBounded(&client, a, io, uri, options.timeout);
+    var req = try client.request(if (options.body == null) .GET else .POST, uri, .{
         .redirect_behavior = .unhandled,
         .keep_alive = false,
+        .connection = connection,
         .headers = .{
             .user_agent = .{ .override = options.user_agent },
             .accept_encoding = .{ .override = "identity" },
@@ -80,6 +83,152 @@ fn request(a: std.mem.Allocator, io: std.Io, options: Options) !Response {
     var transfer_buffer: [4096]u8 = undefined;
     const body = try response.reader(&transfer_buffer).allocRemaining(a, .limited(options.max_bytes));
     return .{ .status = response.head.status, .body = body, .retry_after = retry_after };
+}
+
+fn isLoopback(addr: std.Io.net.IpAddress) bool {
+    return switch (addr) {
+        .ip4 => |v4| v4.bytes[0] == 127,
+        .ip6 => |v6| std.mem.eql(u8, &v6.bytes, &.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 }),
+    };
+}
+
+/// Probes resolved addresses with non-blocking sockets and `poll()` so a
+/// blackholed IPv6 route or unreachable host fails at `timeout` instead of
+/// stalling inside `HostName.connect` cancellation.
+fn connectBounded(client: *std.http.Client, a: std.mem.Allocator, io: std.Io, uri: std.Uri, timeout: std.Io.Duration) !?*std.http.Client.Connection {
+    const protocol = std.http.Client.Protocol.fromUri(uri) orelse return error.UnsupportedUriScheme;
+    if ((protocol == .plain and client.http_proxy != null) or (protocol == .tls and client.https_proxy != null)) return null;
+    var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
+    const host_name = std.Io.net.HostName.fromUri(uri, &host_buf) catch |err| switch (err) {
+        error.UriMissingHost => return error.UriMissingHost,
+        error.NameTooLong, error.InvalidHostName => return error.InvalidHostName,
+    };
+    const port: u16 = uri.port orelse switch (protocol) {
+        .plain => 80,
+        .tls => 443,
+    };
+
+    var addrs: [16]std.Io.net.IpAddress = undefined;
+    var count: usize = 0;
+    if (std.Io.net.IpAddress.parse(host_name.bytes, port)) |ip| {
+        addrs[0] = ip;
+        count = 1;
+    } else |_| {
+        var canon: [std.Io.net.HostName.max_len]u8 = undefined;
+        var queue_buf: [32]std.Io.net.HostName.LookupResult = undefined;
+        var queue: std.Io.Queue(std.Io.net.HostName.LookupResult) = .init(&queue_buf);
+        try host_name.lookup(io, &queue, .{ .port = port, .canonical_name_buffer = &canon });
+        while (queue.getOne(io)) |entry| switch (entry) {
+            .address => |ip| if (count < addrs.len) {
+                addrs[count] = ip;
+                count += 1;
+            },
+            .canonical_name => {},
+        } else |_| {}
+    }
+    if (count == 0) return error.UnknownHostName;
+    if (count == 1 and isLoopback(addrs[0])) return null;
+
+    const winner = try probeAddresses(io, addrs[0..count], timeout);
+    var ip_buf: [64]u8 = undefined;
+    const ip_text = switch (winner) {
+        .ip4 => |v4| try std.fmt.bufPrint(&ip_buf, "{d}.{d}.{d}.{d}", .{ v4.bytes[0], v4.bytes[1], v4.bytes[2], v4.bytes[3] }),
+        .ip6 => |v6| blk: {
+            var groups: [8]u16 = undefined;
+            for (&groups, 0..) |*g, i| g.* = std.mem.readInt(u16, v6.bytes[i * 2 ..][0..2], .big);
+            break :blk try std.fmt.bufPrint(&ip_buf, "{x}:{x}:{x}:{x}:{x}:{x}:{x}:{x}", .{
+                groups[0], groups[1], groups[2], groups[3], groups[4], groups[5], groups[6], groups[7],
+            });
+        },
+    };
+    if (protocol == .tls) {
+        const now = std.Io.Clock.real.now(io);
+        try client.ca_bundle.rescan(a, io, now);
+        client.now = now;
+    }
+    return try client.connectTcpOptions(.{
+        .host = .{ .bytes = ip_text },
+        .port = port,
+        .protocol = protocol,
+        .proxied_host = host_name,
+        .proxied_port = port,
+    });
+}
+
+fn probeAddresses(io: std.Io, addrs: []const std.Io.net.IpAddress, timeout: std.Io.Duration) !std.Io.net.IpAddress {
+    var pollfds: [16]std.posix.pollfd = undefined;
+    var indices: [16]usize = undefined;
+    var poll_count: usize = 0;
+    defer for (pollfds[0..poll_count]) |pfd| {
+        if (pfd.fd >= 0) _ = std.c.close(pfd.fd);
+    };
+
+    for (addrs, 0..) |addr, idx| {
+        var storage: std.posix.sockaddr.storage = std.mem.zeroes(std.posix.sockaddr.storage);
+        const family: u32, const addr_len: std.posix.socklen_t = switch (addr) {
+            .ip4 => |v4| blk: {
+                const sa: *std.posix.sockaddr.in = @ptrCast(@alignCast(&storage));
+                sa.* = .{
+                    .family = std.posix.AF.INET,
+                    .port = std.mem.nativeToBig(u16, v4.port),
+                    .addr = @bitCast(v4.bytes),
+                };
+                break :blk .{ std.posix.AF.INET, @sizeOf(std.posix.sockaddr.in) };
+            },
+            .ip6 => |v6| blk: {
+                const sa: *std.posix.sockaddr.in6 = @ptrCast(@alignCast(&storage));
+                sa.* = .{
+                    .family = std.posix.AF.INET6,
+                    .port = std.mem.nativeToBig(u16, v6.port),
+                    .flowinfo = v6.flow,
+                    .addr = v6.bytes,
+                    .scope_id = v6.interface.index,
+                };
+                break :blk .{ std.posix.AF.INET6, @sizeOf(std.posix.sockaddr.in6) };
+            },
+        };
+        const fd = std.c.socket(family, std.posix.SOCK.STREAM | std.posix.SOCK.NONBLOCK | std.posix.SOCK.CLOEXEC, 0);
+        if (fd < 0) continue;
+        const rc = std.c.connect(fd, @ptrCast(&storage), addr_len);
+        if (rc == 0) {
+            _ = std.c.close(fd);
+            return addr;
+        }
+        if (std.posix.errno(rc) == .INPROGRESS) {
+            pollfds[poll_count] = .{ .fd = fd, .events = std.posix.POLL.OUT, .revents = 0 };
+            indices[poll_count] = idx;
+            poll_count += 1;
+        } else {
+            _ = std.c.close(fd);
+        }
+    }
+    if (poll_count == 0) return error.ConnectionRefused;
+
+    const started = std.Io.Clock.awake.now(io);
+    const limit_ns = timeout.toNanoseconds();
+    var active = poll_count;
+    while (active > 0) {
+        const elapsed_ns = started.untilNow(io, .awake).toNanoseconds();
+        if (elapsed_ns >= limit_ns) return error.Timeout;
+        const remaining_ms: i32 = @intCast(@min(@as(i64, std.math.maxInt(i32)), @max(@as(i64, 1), @divTrunc(limit_ns - elapsed_ns, std.time.ns_per_ms))));
+        const rc = std.c.poll(&pollfds, @intCast(poll_count), remaining_ms);
+        if (rc == 0) return error.Timeout;
+        if (rc < 0) {
+            if (std.posix.errno(rc) == .INTR) continue;
+            return error.Unexpected;
+        }
+        for (pollfds[0..poll_count], indices[0..poll_count]) |*pfd, idx| {
+            if (pfd.fd < 0 or pfd.revents == 0) continue;
+            var so_err: c_int = 0;
+            var len: std.posix.socklen_t = @sizeOf(c_int);
+            const ok = std.c.getsockopt(pfd.fd, std.posix.SOL.SOCKET, std.posix.SO.ERROR, &so_err, &len) == 0 and so_err == 0;
+            _ = std.c.close(pfd.fd);
+            pfd.fd = -1;
+            active -= 1;
+            if (ok) return addrs[idx];
+        }
+    }
+    return error.ConnectionRefused;
 }
 
 const Fixture = struct {

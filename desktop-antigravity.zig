@@ -36,13 +36,35 @@ fn slot(bucket: V) ?usize {
         for ([_][]const u8{ "week", "7d", "7 d", "seven", "day" }) |word| if (std.mem.indexOf(u8, lower, word) != null) return 1;
         for ([_][]const u8{ "hour", "5h", "5 h", "five", "session" }) |word| if (std.mem.indexOf(u8, lower, word) != null) return 0;
     }
+    // Per-model buckets from `retrieveUserQuota` report the 5-hour quota.
+    if (u.string(u.get(bucket, "modelId")).len > 0) return 0;
     return null;
 }
 
-/// Reads `retrieveUserQuotaSummary`: buckets, directly or in groups, each with
-/// a `remainingFraction` and `resetTime`. The tightest bucket of each window
-/// wins. Buckets without a recognisable window fill the 5h slot by earliest
-/// reset and the 7d slot by latest.
+fn tighter(current: ?usage.Window, candidate: usage.Window) usage.Window {
+    const prev = current orelse return candidate;
+    if (candidate.used > prev.used) return candidate;
+    if (candidate.used < prev.used) return prev;
+    if (candidate.reset_at) |c_reset| {
+        if (prev.reset_at) |p_reset| return if (c_reset < p_reset) candidate else prev;
+        return candidate;
+    }
+    return prev;
+}
+
+/// Combines two window sets, keeping the tightest bucket for each slot.
+pub fn mergeWindows(first: [2]?usage.Window, second: [2]?usage.Window) [2]?usage.Window {
+    var result = first;
+    for (second, 0..) |maybe, i| {
+        if (maybe) |w| result[i] = tighter(result[i], w);
+    }
+    return result;
+}
+
+/// Reads `retrieveUserQuota` and `retrieveUserQuotaSummary`: buckets, directly
+/// or in groups, each with a `remainingFraction` and `resetTime`. The tightest
+/// bucket of each window wins. Buckets without a recognisable window fill the
+/// 5h slot by earliest reset and the 7d slot by latest.
 pub fn parseUsage(data: V) [2]?usage.Window {
     var windows: [2]?usage.Window = .{ null, null };
     var unknown: [2]?usage.Window = .{ null, null };
@@ -63,7 +85,7 @@ pub fn parseUsage(data: V) [2]?usage.Window {
             const fraction = u.number(u.get(bucket, "remainingFraction")) orelse continue;
             const window: usage.Window = .{ .used = (1 - std.math.clamp(fraction, 0, 1)) * 100, .reset_at = claude.parseTimestamp(u.string(u.get(bucket, "resetTime"))) };
             if (slot(bucket)) |i| {
-                if (windows[i] == null or window.used > windows[i].?.used) windows[i] = window;
+                windows[i] = tighter(windows[i], window);
                 continue;
             }
             const reset = window.reset_at orelse std.math.maxInt(i64);
@@ -104,7 +126,7 @@ const root = "/org/freedesktop/secrets";
 const Secret = struct { dbus.ObjectPath, dbus.Bytes, dbus.Bytes, []const u8 };
 
 fn call(bus: *dbus.Connection, path: []const u8, interface: []const u8, member: []const u8, args: anytype) !dbus.Connection.Owned {
-    return bus.callBlocking(.{ .destination = service, .path = path, .interface = interface, .member = member }, args, 10000);
+    return bus.callBlocking(.{ .destination = service, .path = path, .interface = interface, .member = member }, args, 5000);
 }
 
 /// The raw keyring value for service=gemini, username=antigravity.
@@ -162,10 +184,12 @@ fn fetch(a: A) !usage.Report {
         .{ .name = "Content-Type", .value = "application/json" },
     };
     const response = try http.get(a, u.io, .{
-        .url = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+        .url = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
         .headers = &headers,
         .body = body,
-        .user_agent = "antigravity-cli",
+        .timeout = .fromSeconds(10),
+        // Cloud Code gates the Gemini Models summary group on the Hub client family.
+        .user_agent = "antigravity/hub/2.9.1 linux/amd64",
     });
     const status = @backingInt(response.status);
     if (status == 401 or status == 403) return unavailable("Antigravity login needs refreshing; run agy");
