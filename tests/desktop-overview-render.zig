@@ -22,7 +22,7 @@ test "GPU preview corner masks match rounded content over the cached background"
         @memset(foreground, 0);
         @memset(expected, 0xff222226);
         const bounds: raster.Rect = .{ .x = 10, .y = 12, .width = 80, .height = 55 };
-        view.roundedMask(std.testing.allocator, .{ .target = .{ .pixels = foreground, .width = width, .height = height }, .scale = @floatFromInt(scale) }, bounds, 12);
+        view.roundedMask(std.testing.allocator, .{ .target = .{ .pixels = foreground, .width = width, .height = height }, .scale = @floatFromInt(scale) }, bounds, 12, 1);
         view.miniatureRounded(std.testing.allocator, .{ .target = .{ .pixels = expected, .width = width, .height = height }, .scale = @floatFromInt(scale) }, .{
             .pixels = std.mem.sliceAsBytes(&color),
             .width = 1,
@@ -47,6 +47,17 @@ test "GPU preview corner masks match rounded content over the cached background"
         const corner_pixel = (12 * scale) * width + 10 * scale;
         try std.testing.expectEqual(expected[corner_pixel], foreground[corner_pixel]);
     }
+}
+
+test "strip corner masks fade with the overview controls" {
+    var pixels: [40 * 40]u32 = @splat(0);
+    const canvas: raster.Canvas = .{ .target = .{ .pixels = &pixels, .width = 40, .height = 40 }, .scale = 1 };
+    const bounds: raster.Rect = .{ .x = 4, .y = 4, .width = 32, .height = 32 };
+    view.roundedMask(std.testing.allocator, canvas, bounds, 12, 0);
+    for (pixels) |pixel| try std.testing.expectEqual(@as(u32, 0), pixel);
+    view.roundedMask(std.testing.allocator, canvas, bounds, 12, 0.5);
+    const corner = pixels[4 * 40 + 4];
+    try std.testing.expect(corner >> 24 > 0x60 and corner >> 24 < 0xa0);
 }
 
 const reference = struct {

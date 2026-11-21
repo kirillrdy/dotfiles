@@ -1054,7 +1054,7 @@ const Overview = struct {
                 const r = Rect{ .x = x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = 6 + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
                 if (self.gpu_previews) self.emitPreview(window, r, rect, self.strip.x, self.strip.y, animation.controlsOpacity(self.progress)) else view.miniatureRounded(self.allocator, canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect), 4, animated);
             }
-            if (self.gpu_previews) view.roundedMask(self.allocator, canvas, pixelRect(rect), 4);
+            if (self.gpu_previews) view.roundedMask(self.allocator, canvas, pixelRect(rect), 4, animation.controlsOpacity(self.progress));
         }
         if (client.count > 0 and !self.painting_background) {
             const ind_x = geom.left + self.workspacePosition() * geom.step;

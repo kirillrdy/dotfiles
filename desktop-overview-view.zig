@@ -54,15 +54,18 @@ pub fn miniatureRounded(allocator: std.mem.Allocator, canvas: Canvas, source: ?r
 }
 
 /// Cover the corners of GPU previews without repainting their content.
-pub fn roundedMask(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, radius: f64) void {
-    roundedMaskOptions(allocator, canvas, rect, radius, false);
+/// Fades with the strip it masks; at full strength the corners would sit
+/// over the zooming wallpaper while the overview animates in or out.
+pub fn roundedMask(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, radius: f64, opacity: f64) void {
+    roundedMaskOptions(allocator, canvas, rect, radius, false, opacity);
 }
 
 pub fn roundedMaskShadow(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, radius: f64) void {
-    roundedMaskOptions(allocator, canvas, rect, radius, true);
+    roundedMaskOptions(allocator, canvas, rect, radius, true, 1);
 }
 
-fn roundedMaskOptions(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, radius: f64, shadow: bool) void {
+fn roundedMaskOptions(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, radius: f64, shadow: bool, opacity: f64) void {
+    if (opacity <= 0) return;
     var context = Context.init(allocator, canvas) orelse return;
     defer context.deinit();
     context.cr.rectangle(rect.x, rect.y, rect.width, rect.height);
@@ -70,7 +73,7 @@ fn roundedMaskOptions(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, 
     context.cr.setFillRule(.evenodd);
     context.cr.clip();
     context.cr.setSourceRgb(34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
-    context.cr.paint();
+    context.cr.paintWithAlpha(opacity);
     if (shadow) {
         context.cr.setFillRule(.nonzero);
         drawShadowRect(&context.cr, rect, radius, 4, 4, 16, 0.2);
