@@ -14,11 +14,19 @@ const collectors = @import("desktop-collectors.zig");
 pub const widgets = @import("desktop-widgets.zig");
 pub const idle = @import("desktop-idle.zig");
 const device_service = @import("desktop-devices.zig");
+pub const dbus = @import("dbus");
+const loop = @import("desktop-dbus-loop.zig");
+const shell_name = "org.dotfiles.Desktop";
+const shell_path = "/org/dotfiles/Desktop";
+const shell_xml = loop.commandXml(shell_name);
+/// Cleared to leave the main loop: on SIGTERM/SIGINT, or when the notification name is lost.
+var running = true;
 const a = std.heap.page_allocator;
 var current: ?*Session = null;
 
 const Session = struct {
-    app: *c.GApplication,
+    /// The shared session connection that owns org.dotfiles.Desktop.
+    bus: *loop.Source,
     devices: ?*device_service.Service = null,
     device_subscription: device_service.Subscriber = undefined,
     device_subscribed: bool = false,
@@ -53,7 +61,7 @@ const Session = struct {
         self.panels = try panel.Service.create(config, self.devices.?);
         self.notices = try notifications.Service.create();
         try self.media.start();
-        self.media.connection = c.g_application_get_dbus_connection(self.app);
+        self.media.connection = self.bus.connection;
         self.agent = polkit.Service.init() catch |err| blk: {
             std.log.warn("PolicyKit agent: {s}; will retry", .{@errorName(err)});
             break :blk null;
@@ -70,7 +78,6 @@ const Session = struct {
         current = self;
         widgets.refresh_source = &refresh;
         self.timer = c.g_timeout_add_seconds(5, &maintain, self);
-        c.g_application_hold(self.app);
     }
 
     fn devicesChanged(ptr: ?*anyopaque, source: *device_service.Service, event: device_service.Event) void {
@@ -116,24 +123,23 @@ const Session = struct {
 fn refresh(kind: []const u8) void {
     if (current) |session| session.data.refresh(kind);
 }
-fn quit(ptr: c.gpointer) callconv(.c) c.gboolean {
-    c.g_application_quit(@ptrCast(@alignCast(ptr)));
+fn quit(_: c.gpointer) callconv(.c) c.gboolean {
+    running = false;
     return 1;
 }
-fn commandLine(_: *c.GApplication, command: *c.GApplicationCommandLine, ptr: c.gpointer) callconv(.c) c_int {
+fn stop() void {
+    running = false;
+}
+/// Runs a command forwarded by another `desktop-zig` invocation.
+fn command(ptr: ?*anyopaque, message: *const dbus.Message) void {
     const self: *Session = @ptrCast(@alignCast(ptr));
-    var count: c_int = 0;
-    const argv = c.g_application_command_line_get_arguments(command, &count);
-    defer c.g_strfreev(argv);
-    var arena = std.heap.ArenaAllocator.init(a);
-    defer arena.deinit();
-    const args = arena.allocator().alloc([]const u8, @intCast(count)) catch return 1;
-    for (args, 0..) |*arg, i| arg.* = std.mem.span(argv[i]);
-    dispatch(self, args[1..]) catch |err| {
-        c.g_application_command_line_printerr(command, "desktop-zig: %s\n", @as([*:0]const u8, @errorName(err)));
-        return 1;
-    };
-    return 0;
+    const connection = self.bus.connection;
+    const args = message.read(struct { []const []const u8 }) catch return connection.replyError(message, "org.freedesktop.DBus.Error.InvalidArgs", "Expected (as)") catch {};
+    dispatch(self, args[0]) catch |err| return connection.replyError(message, shell_name ++ ".Error.Failed", @errorName(err)) catch {};
+    connection.reply(message, .{}) catch {};
+}
+fn forward(args: []const []const u8) !void {
+    return loop.forwardCommand("desktop-zig", shell_name, shell_path, args);
 }
 fn dispatch(self: *Session, args: []const []const u8) !void {
     if (self.stopping) return error.SessionStopping;
@@ -154,7 +160,7 @@ fn dispatch(self: *Session, args: []const []const u8) !void {
             .network
         else
             return error.InvalidSettingsMode;
-        try self.dialogs.show(self.app, mode);
+        try self.dialogs.show(mode);
     } else if (std.mem.eql(u8, verb, "refresh") and args.len == 2) {
         if (!std.mem.eql(u8, args[1], "codex") and !std.mem.eql(u8, args[1], "claude") and !std.mem.eql(u8, args[1], "status")) return error.InvalidSource;
         self.data.refresh(args[1]);
@@ -239,22 +245,28 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "screenshot")) return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, args[1..]));
     if (std.mem.eql(u8, args[1], "output")) return @import("desktop-output.zig").run(args[2..]);
     if (std.mem.eql(u8, args[1], "lock")) return @import("desktop-lock.zig").run(args[2..]);
-    if (!std.mem.eql(u8, args[1], "serve")) try requireSession();
-    const app = c.g_application_new("org.dotfiles.Desktop", c.G_APPLICATION_HANDLES_COMMAND_LINE).?;
-    defer c.g_object_unref(app);
+    // Every command but serve goes to the running shell.
+    if (!std.mem.eql(u8, args[1], "serve")) return forward(args[1..]);
+    const bus = loop.acquire(.session) catch return error.NoSessionBus;
+    defer loop.release(bus);
+    // A second serve must not create another shell: forwarded, the running one rejects it.
+    if ((bus.connection.requestName(shell_name, 4) catch return error.NoSessionBus) != 1) return forward(args[1..]);
     defer @import("desktop-icons.zig").deinit();
-    var session = Session{ .app = app };
+    var introspection = try dbus.Introspection.parse(a, shell_xml);
+    defer introspection.deinit();
+    var session = Session{ .bus = bus };
     defer session.deinit();
     defer @import("desktop-switcher.zig").deinit();
-    _ = c.g_signal_connect_data(app, "command-line", @ptrCast(&commandLine), &session, null, 0);
-    const term = c.g_unix_signal_add(c.SIGTERM, &quit, app);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, app);
+    const exported = try bus.connection.exportObject(shell_path, &introspection.interfaces[0], &command, null, &session);
+    defer bus.connection.unregister(exported);
+    notifications.on_lost = &stop;
+    const term = c.g_unix_signal_add(c.SIGTERM, &quit, null);
+    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, null);
     defer _ = c.g_source_remove(term);
     defer _ = c.g_source_remove(interrupt);
-    const argv = try arena.allocator().allocSentinel(?[*:0]const u8, args.len, null);
-    for (args, 0..) |arg, i| argv[i] = (try arena.allocator().dupeSentinel(u8, arg, 0)).ptr;
-    const status = c.g_application_run(app, @intCast(args.len), @ptrCast(argv.ptr));
-    if (status != 0) return error.CommandFailed;
+    try dispatch(&session, args[1..]);
+    while (running and !bus.connection.closed) _ = c.g_main_context_iteration(null, 1);
+    if (running) return error.SessionBusDisconnected;
     if (session.serving and !session.notices.?.isOwned()) return error.NotificationNameUnavailable;
 }
 fn sessionControl(io: std.Io, argv: []const []const u8) !void {
@@ -266,17 +278,6 @@ fn sessionControl(io: std.Io, argv: []const []const u8) !void {
 }
 fn helperStatus(status: u8) void {
     if (status != 0) std.process.exit(status);
-}
-
-// A command client must never compete with the daemon for its well-known name.
-fn requireSession() !void {
-    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return error.NoSessionBus;
-    defer c.g_object_unref(bus);
-    const reply = c.g_dbus_connection_call_sync(bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner", c.g_variant_new("(s)", @as([*:0]const u8, "org.dotfiles.Desktop")), null, c.G_DBUS_CALL_FLAGS_NONE, 3000, null, null) orelse return error.NoSessionBus;
-    defer c.g_variant_unref(reply);
-    const owned = c.g_variant_get_child_value(reply, 0);
-    defer c.g_variant_unref(owned);
-    if (c.g_variant_get_boolean(owned) == 0) return error.SessionNotRunning;
 }
 
 // Shared production namespace for isolated protocol and lifecycle clients.
@@ -310,3 +311,4 @@ pub const pipewire = @import("pipewire");
 pub const network_editor = @import("desktop-network-editor.zig");
 pub const session_actions = @import("desktop-session.zig");
 pub const commands = @import("desktop-command.zig");
+pub const dbus_loop = @import("desktop-dbus-loop.zig");

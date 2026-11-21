@@ -39,6 +39,8 @@ pub const Value = union(enum) {
     object_path: []const u8,
     signature: []const u8,
     fd: i32,
+    /// A byte array (`ay`), kept as one slice rather than a Value per byte.
+    bytes: []const u8,
     /// Items share one element signature; dictionaries hold `dict_entry` items.
     array: struct { element: []const u8, items: []const Value },
     structure: []const Value,
@@ -66,6 +68,7 @@ pub const Value = union(enum) {
             .object_path => try writer.writeByte('o'),
             .signature => try writer.writeByte('g'),
             .fd => try writer.writeByte('h'),
+            .bytes => try writer.writeAll("ay"),
             .array => |array| {
                 try writer.writeByte('a');
                 try writer.writeAll(array.element);
@@ -287,6 +290,7 @@ pub const Writer = struct {
             .object_path => |v| try self.string(v),
             .signature => |v| try self.signature(v),
             .fd => |v| try self.put(Fd{ .value = v }),
+            .bytes => |v| try self.put(Bytes{ .value = v }),
             .array => |list| try self.array(alignment(if (list.element.len > 0) list.element[0] else 'y'), list.items, struct {
                 fn body(items: []const Value, w: *Writer) anyerror!void {
                     for (items) |item| try w.putValue(item);
@@ -442,6 +446,7 @@ pub const Reader = struct {
                 break :blk .{ .variant = inner };
             },
             'a' => blk: {
+                if (code.len == 2 and code[1] == 'y') break :blk .{ .bytes = (try self.get(Bytes)).value };
                 const element = code[1..];
                 const end = try self.arrayStart(alignment(element[0]));
                 var items: std.ArrayList(Value) = .empty;
@@ -901,7 +906,11 @@ pub const Connection = struct {
         };
     }
     pub fn emit(self: *Connection, path: []const u8, interface: []const u8, member: []const u8, args: anytype) Error!void {
-        try self.queue(.{ .kind = .signal, .serial = self.nextSerial(), .path = path, .interface = interface, .member = member, .arena = undefined }, args);
+        return self.emitTo(null, path, interface, member, args);
+    }
+    /// Emits a signal; with a destination it is unicast to that connection only.
+    pub fn emitTo(self: *Connection, destination: ?[]const u8, path: []const u8, interface: []const u8, member: []const u8, args: anytype) Error!void {
+        try self.queue(.{ .kind = .signal, .serial = self.nextSerial(), .destination = destination, .path = path, .interface = interface, .member = member, .arena = undefined }, args);
         try self.flush();
     }
     /// Replies to a method call received through `register`.
@@ -1204,6 +1213,15 @@ pub const Connection = struct {
     /// Calls and waits for the reply, leaving other messages for later dispatch.
     /// A D-Bus error reply becomes `error.CallFailed`; use `call` to see its details.
     pub fn callBlocking(self: *Connection, target: Call, args: anytype, timeout_ms: u32) (Error || error{CallFailed})!Owned {
+        const result = try self.callBlockingRaw(target, args, timeout_ms);
+        if (result.value.kind == .@"error") {
+            result.deinit();
+            return error.CallFailed;
+        }
+        return result;
+    }
+    /// Like `callBlocking`, but returns error replies too, for callers that report their details.
+    pub fn callBlockingRaw(self: *Connection, target: Call, args: anytype, timeout_ms: u32) Error!Owned {
         // Messages read while waiting stay buffered; an event loop must be told to dispatch them,
         // because the socket will not become readable for data already received.
         defer if (self.in.items.len > 0) if (self.on_backlog) |notify| notify(self.schedule_context);
@@ -1219,10 +1237,6 @@ pub const Connection = struct {
                 if (rest.len < length) break;
                 if (try isReplyTo(rest[0..length], serial)) {
                     const owned = (try self.take(scanned)).?;
-                    if (owned.value.kind == .@"error") {
-                        owned.deinit();
-                        return error.CallFailed;
-                    }
                     return owned;
                 }
                 scanned += length;

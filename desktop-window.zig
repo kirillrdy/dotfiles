@@ -14,7 +14,6 @@ pub const Window = struct {
     parent: ?*Window = null,
     closing: bool = false,
     idle: c.guint = 0,
-    application: ?*c.GApplication = null,
 
     pub fn create(title: [:0]const u8, namespace: [:0]const u8, width: u32, height: u32, paint: wire.PixelPaint, context: ?*anyopaque) !*Window {
         const self = try a.create(Window);
@@ -98,17 +97,8 @@ pub const Window = struct {
         const self = cast(Window, ptr);
         self.idle = 0;
         self.hide();
-        if (self.application) |app| {
-            self.application = null;
-            g_application_release(app);
-        }
         if (self.closed) |callback| callback(self.context);
         return 0;
-    }
-    pub fn hold(self: *Window, app: *c.GApplication) void {
-        if (self.application != null) return;
-        self.application = app;
-        c.g_application_hold(app);
     }
     pub fn destroy(self: *Window) void {
         if (self.idle != 0) _ = c.g_source_remove(self.idle);
@@ -117,7 +107,6 @@ pub const Window = struct {
             child.close();
         };
         if (self.surface) |surface| surface.destroy();
-        if (self.application) |app| g_application_release(app);
         for (windows.items, 0..) |window, index| if (window == self) {
             _ = windows.orderedRemove(index);
             break;
@@ -139,4 +128,3 @@ pub const Window = struct {
         }
     }
 };
-extern fn g_application_release(*c.GApplication) void;

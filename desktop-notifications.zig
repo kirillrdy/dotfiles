@@ -4,6 +4,8 @@ const banner = @import("desktop-notification-banner.zig");
 const std = @import("std");
 const view = banner;
 const c = @import("desktop-glib.zig");
+const dbus = @import("dbus");
+const loop = @import("desktop-dbus-loop.zig");
 const allocator = std.heap.page_allocator;
 const cast = c.__zig.cast;
 const path = "/org/freedesktop/Notifications";
@@ -52,9 +54,9 @@ const Notice = struct {
     }
 };
 const Server = struct {
-    connection: ?*c.GDBusConnection = null,
-    node: *c.GDBusNodeInfo,
-    registrations: [2]c.guint = .{ 0, 0 },
+    /// The shared session connection, once the service has registered its objects.
+    connection: ?*dbus.Connection = null,
+    registrations: [2]u32 = .{ 0, 0 },
     owned: bool = false,
     notices: std.ArrayList(*Notice) = .empty,
     next_id: u32 = 1,
@@ -181,7 +183,7 @@ const Server = struct {
         return null;
     }
     fn changed(self: *Server) void {
-        _ = c.g_dbus_connection_emit_signal(self.connection, null, path, control, "Changed", null, null);
+        if (self.connection) |connection| connection.emit(path, control, "Changed", .{}) catch {};
     }
     fn hide(self: *Server) void {
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
@@ -210,7 +212,7 @@ const Server = struct {
     fn close(self: *Server, id: u32, reason: u32) void {
         for (self.notices.items, 0..) |notice, i| if (notice.id == id) {
             if (self.active == notice) self.hide();
-            _ = c.g_dbus_connection_emit_signal(self.connection, notice.sender, path, name, "NotificationClosed", c.g_variant_new("(uu)", id, reason), null);
+            if (self.connection) |connection| connection.emitTo(notice.sender, path, name, "NotificationClosed", .{ id, reason }) catch {};
             _ = self.notices.orderedRemove(i);
             notice.destroy();
             self.changed();
@@ -226,7 +228,7 @@ const Server = struct {
             exists = true;
             break;
         };
-        if (exists) _ = c.g_dbus_connection_emit_signal(self.connection, notice.sender, path, name, "ActionInvoked", c.g_variant_new("(us)", id, key.ptr), null);
+        if (exists) if (self.connection) |connection| connection.emitTo(notice.sender, path, name, "ActionInvoked", .{ id, @as([]const u8, key) }) catch {};
         if (!notice.resident) self.close(id, 2);
     }
     fn expired(data: c.gpointer) callconv(.c) c.gboolean {
@@ -263,34 +265,30 @@ const Server = struct {
         if (self.client) |client| client.destroy();
         for (self.notices.items) |notice| notice.destroy();
         self.notices.deinit(allocator);
-        if (self.connection != null) {
+        if (self.connection) |connection| {
             for (self.registrations) |id| {
-                if (id != 0) _ = c.g_dbus_connection_unregister_object(self.connection, id);
+                if (id != 0) connection.unregister(id);
             }
         }
     }
-    fn notify(self: *Server, sender: [*:0]const u8, parameters: *c.GVariant) !u32 {
+    fn notify(self: *Server, sender: []const u8, args: NotifyArgs) !u32 {
         const notice = try allocator.create(Notice);
         notice.* = .{ .arena = std.heap.ArenaAllocator.init(allocator), .id = 0, .app = "", .title = "", .body = "", .icon = "", .sender = "", .actions = &.{}, .created = @divTrunc(c.__zig.realTime(), 1000000) };
         errdefer notice.destroy();
         const a = notice.arena.allocator();
-        notice.app = try stringField(a, parameters, 0, 150);
-        notice.icon = try stringField(a, parameters, 2, 4096);
+        notice.app = try clip(a, args[0], 150);
+        notice.icon = try clip(a, args[2], 4096);
         if (notice.icon.len == 0) notice.icon = "application-x-executable-symbolic";
-        notice.title = try stringField(a, parameters, 3, 150);
-        notice.body = try stringField(a, parameters, 4, 850);
-        notice.sender = try a.dupeSentinel(u8, std.mem.span(sender), 0);
-        const replace = c.g_variant_get_child_value(parameters, 1);
-        defer c.g_variant_unref(replace);
-        const old_id = c.g_variant_get_uint32(replace);
-        const hints = c.g_variant_get_child_value(parameters, 6).?;
-        defer c.g_variant_unref(hints);
+        notice.title = try clip(a, args[3], 150);
+        notice.body = try clip(a, args[4], 850);
+        notice.sender = try a.dupeSentinel(u8, sender, 0);
+        const old_id = args[1];
+        const hints = args[6];
         notice.critical = hintByte(hints, "urgency") == 2;
         notice.transient = hintBool(hints, "transient");
         notice.resident = hintBool(hints, "resident");
-        if (c.g_variant_lookup_value(hints, "desktop-entry", variantType("s"))) |entry| {
-            defer c.g_variant_unref(entry);
-            const id = try std.fmt.allocPrintSentinel(a, "{s}.desktop", .{std.mem.span(c.g_variant_get_string(entry, null))}, 0);
+        if (hintString(hints, "desktop-entry")) |entry| {
+            const id = try std.fmt.allocPrintSentinel(a, "{s}.desktop", .{entry}, 0);
             if (c.g_desktop_app_info_new(id)) |info| {
                 defer c.g_object_unref(info);
                 notice.app = try a.dupeSentinel(u8, std.mem.span(c.g_app_info_get_display_name(@ptrCast(info))), 0);
@@ -300,13 +298,11 @@ const Server = struct {
                 }
             }
         }
-        notice.image = imageHint(hints);
-        const actions = c.g_variant_get_child_value(parameters, 5).?;
-        defer c.g_variant_unref(actions);
-        const count = @min(c.g_variant_n_children(actions), 64);
-        notice.actions = try a.alloc(view.Action, count / 2);
-        for (notice.actions, 0..) |*action, i| action.* = .{ .key = try stringField(a, actions, i * 2, 128), .label = try stringField(a, actions, i * 2 + 1, 150) };
-        if (self.find(old_id)) |old| if (std.mem.eql(u8, old.sender, std.mem.span(sender))) {
+        notice.image = imageHint(a, hints);
+        const actions = args[5][0..@min(args[5].len, 64)];
+        notice.actions = try a.alloc(view.Action, actions.len / 2);
+        for (notice.actions, 0..) |*action, i| action.* = .{ .key = try clip(a, actions[i * 2], 128), .label = try clip(a, actions[i * 2 + 1], 150) };
+        if (self.find(old_id)) |old| if (std.mem.eql(u8, old.sender, sender)) {
             notice.id = old.id;
             const was_active = self.active == old;
             if (was_active) self.hide();
@@ -341,134 +337,140 @@ const Server = struct {
         return allocator.dupeSentinel(u8, json, 0);
     }
 };
-fn stringField(a: std.mem.Allocator, value: *c.GVariant, index: usize, limit: usize) ![:0]const u8 {
-    const child = c.g_variant_get_child_value(value, index);
-    defer c.g_variant_unref(child);
-    const text = c.g_variant_get_string(child, null);
-    const count: usize = @intCast(@max(0, c.g_utf8_strlen(text, -1)));
-    const end = c.g_utf8_offset_to_pointer(text, @intCast(@min(count, limit)));
-    const result = try a.dupeSentinel(u8, text[0..@intCast(@intFromPtr(end) - @intFromPtr(text))], 0);
+const Hints = dbus.Dict([]const u8, dbus.Value);
+/// Notify's arguments: app, replaces, icon, summary, body, actions, hints, timeout.
+const NotifyArgs = struct { []const u8, u32, []const u8, []const u8, []const u8, []const []const u8, Hints, i32 };
+/// Copies at most `limit` characters, with line breaks flattened to spaces.
+fn clip(a: std.mem.Allocator, text: []const u8, limit: usize) ![:0]const u8 {
+    var end: usize = 0;
+    var count: usize = 0;
+    while (end < text.len and count < limit) : (count += 1) end += std.unicode.utf8ByteSequenceLength(text[end]) catch 1;
+    const result = try a.dupeSentinel(u8, text[0..@min(end, text.len)], 0);
     for (result) |*ch| if (ch.* == '\n' or ch.* == '\r') {
         ch.* = ' ';
     };
     return result;
 }
-fn variantType(comptime signature: [:0]const u8) *const c.GVariantType {
-    return @ptrCast(signature.ptr);
-}
-fn hintBool(hints: *c.GVariant, key: [*:0]const u8) bool {
-    const value = c.g_variant_lookup_value(hints, key, variantType("b")) orelse return false;
-    defer c.g_variant_unref(value);
-    return c.g_variant_get_boolean(value) != 0;
-}
-fn hintByte(hints: *c.GVariant, key: [*:0]const u8) u8 {
-    const value = c.g_variant_lookup_value(hints, key, variantType("y")) orelse return 1;
-    defer c.g_variant_unref(value);
-    return c.g_variant_get_byte(value);
-}
-fn imageHint(hints: *c.GVariant) ?c.__icons.Image {
-    for ([_][*:0]const u8{ "image-data", "image_data", "icon_data" }) |key| {
-        const tuple = c.g_variant_lookup_value(hints, key, variantType("(iiibiiay)")) orelse continue;
-        defer c.g_variant_unref(tuple);
-        var values: [7]?*c.GVariant = undefined;
-        for (&values, 0..) |*value, i| value.* = c.g_variant_get_child_value(tuple, i);
-        defer for (values) |value| c.g_variant_unref(value);
-        const width = c.g_variant_get_int32(values[0]);
-        const height = c.g_variant_get_int32(values[1]);
-        const stride = c.g_variant_get_int32(values[2]);
-        const alpha = c.g_variant_get_boolean(values[3]) != 0;
-        const bits = c.g_variant_get_int32(values[4]);
-        const channels = c.g_variant_get_int32(values[5]);
-        if (width <= 0 or height <= 0 or width > 4096 or height > 4096 or bits != 8 or channels != @as(c_int, if (alpha) 4 else 3) or stride < width * channels) return null;
-        var length: c.gsize = 0;
-        const bytes: [*]const u8 = @ptrCast(c.g_variant_get_fixed_array(values[6], &length, 1) orelse return null);
-        const row: usize = @intCast(width * channels);
-        if (length < @as(usize, @intCast(stride)) * @as(usize, @intCast(height - 1)) + row) return null;
-        const decode = @import("desktop-decode.zig");
-        return decode.Image.normalize(decode.allocator, .{ .pixels = bytes[0..length], .width = @intCast(width), .height = @intCast(height), .stride = @intCast(stride), .format = if (alpha) .rgba else .rgb }) catch null;
-    }
-    if (c.g_variant_lookup_value(hints, "image-path", variantType("s"))) |image| {
-        defer c.g_variant_unref(image);
-        const value = c.g_variant_get_string(image, null);
-        const file = if (c.g_str_has_prefix(value, "file://") != 0) c.g_filename_from_uri(value, null, null) else c.g_strdup(value);
-        defer c.g_free(file);
-        if (file != null and c.g_path_is_absolute(file) != 0) return @import("desktop-decode.zig").file(file, 48);
-    }
+fn hint(hints: Hints, key: []const u8) ?dbus.Value {
+    for (hints.entries) |entry| if (std.mem.eql(u8, entry.key, key)) return entry.value;
     return null;
 }
-fn method(_: ?*c.GDBusConnection, sender: [*c]const u8, _: [*c]const u8, interface: [*c]const u8, member: [*c]const u8, parameters: ?*c.GVariant, invocation: ?*c.GDBusMethodInvocation, data: c.gpointer) callconv(.c) void {
+fn hintBool(hints: Hints, key: []const u8) bool {
+    return switch (hint(hints, key) orelse return false) {
+        .boolean => |value| value,
+        else => false,
+    };
+}
+fn hintByte(hints: Hints, key: []const u8) u8 {
+    return switch (hint(hints, key) orelse return 1) {
+        .byte => |value| value,
+        else => 1,
+    };
+}
+fn hintString(hints: Hints, key: []const u8) ?[]const u8 {
+    return switch (hint(hints, key) orelse return null) {
+        .string => |value| value,
+        else => null,
+    };
+}
+fn imageHint(a: std.mem.Allocator, hints: Hints) ?c.__icons.Image {
+    for ([_][]const u8{ "image-data", "image_data", "icon_data" }) |key| {
+        // (iiibiiay): width, height, stride, alpha, bits per sample, channels, pixels.
+        const fields = switch (hint(hints, key) orelse continue) {
+            .structure => |value| value,
+            else => continue,
+        };
+        if (fields.len != 7) continue;
+        const width = switch (fields[0]) { .int32 => |v| v, else => continue };
+        const height = switch (fields[1]) { .int32 => |v| v, else => continue };
+        const stride = switch (fields[2]) { .int32 => |v| v, else => continue };
+        const alpha = switch (fields[3]) { .boolean => |v| v, else => continue };
+        const bits = switch (fields[4]) { .int32 => |v| v, else => continue };
+        const channels = switch (fields[5]) { .int32 => |v| v, else => continue };
+        const bytes = switch (fields[6]) { .bytes => |v| v, else => continue };
+        if (width <= 0 or height <= 0 or width > 4096 or height > 4096 or bits != 8 or channels != @as(i32, if (alpha) 4 else 3) or stride < width * channels) return null;
+        const row: usize = @intCast(width * channels);
+        if (bytes.len < @as(usize, @intCast(stride)) * @as(usize, @intCast(height - 1)) + row) return null;
+        const decode = @import("desktop-decode.zig");
+        return decode.Image.normalize(decode.allocator, .{ .pixels = bytes, .width = @intCast(width), .height = @intCast(height), .stride = @intCast(stride), .format = if (alpha) .rgba else .rgb }) catch null;
+    }
+    const value = hintString(hints, "image-path") orelse return null;
+    const text = a.dupeSentinel(u8, value, 0) catch return null;
+    const file = if (c.g_str_has_prefix(text, "file://") != 0) c.g_filename_from_uri(text, null, null) else c.g_strdup(text);
+    defer c.g_free(file);
+    if (file != null and c.g_path_is_absolute(file) != 0) return @import("desktop-decode.zig").file(file, 48);
+    return null;
+}
+fn method(data: ?*anyopaque, message: *const dbus.Message) void {
     const self = cast(Server, data);
-    if (c.g_strcmp0(interface, control) == 0) {
-        if (c.g_strcmp0(member, "List") == 0) {
-            const json = self.list() catch {
-                c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.DBus.Error.NoMemory", "Cannot serialize notifications");
-                return;
-            };
+    const connection = self.connection.?;
+    const interface = message.interface orelse name;
+    const member = message.member orelse "";
+    const sender = message.sender orelse "";
+    const eq = std.mem.eql;
+    if (eq(u8, interface, control)) {
+        if (eq(u8, member, "List")) {
+            const json = self.list() catch return connection.replyError(message, "org.freedesktop.DBus.Error.NoMemory", "Cannot serialize notifications") catch {};
             defer allocator.free(json);
-            c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(s)", json.ptr));
-            return;
-        } else if (c.g_strcmp0(member, "Clear") == 0) {
+            return connection.reply(message, .{@as([]const u8, json)}) catch {};
+        } else if (eq(u8, member, "Clear")) {
             while (self.notices.items.len > 0) self.close(self.notices.items[0].id, 2);
-        } else if (c.g_strcmp0(member, "CalendarOpen") == 0) {
-            const value = c.g_variant_get_child_value(parameters, 0);
-            defer c.g_variant_unref(value);
-            self.calendar_open = c.g_variant_get_boolean(value) != 0;
+        } else if (eq(u8, member, "CalendarOpen")) {
+            self.calendar_open = (message.read(struct { bool }) catch return)[0];
             if (self.calendar_open) {
                 self.hide();
                 for (self.notices.items) |notice| notice.pending = false;
             }
-        } else {
-            const value = c.g_variant_get_child_value(parameters, 0);
-            defer c.g_variant_unref(value);
-            const id = c.g_variant_get_uint32(value);
-            if (c.g_strcmp0(member, "Dismiss") == 0) self.close(id, 2) else if (c.g_strcmp0(member, "Activate") == 0) {
-                const key = c.g_variant_get_child_value(parameters, 1);
-                defer c.g_variant_unref(key);
-                Server.activate(self, id, std.mem.span(c.g_variant_get_string(key, null)));
-            }
+        } else if (eq(u8, member, "Dismiss")) {
+            self.close((message.read(struct { u32 }) catch return)[0], 2);
+        } else if (eq(u8, member, "Activate")) {
+            const args = message.read(struct { u32, []const u8 }) catch return;
+            const key = allocator.dupeSentinel(u8, args[1], 0) catch return;
+            defer allocator.free(key);
+            Server.activate(self, args[0], key);
         }
-        c.g_dbus_method_invocation_return_value(invocation, null);
-    } else if (c.g_strcmp0(member, "Notify") == 0) {
-        const id = self.notify(std.mem.span(sender), parameters.?) catch {
-            c.g_dbus_method_invocation_return_dbus_error(invocation, "org.freedesktop.DBus.Error.NoMemory", "Cannot create notification");
-            return;
-        };
-        c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(u)", id));
-    } else if (c.g_strcmp0(member, "GetCapabilities") == 0) {
-        const capabilities = [_:null]?[*:0]const u8{ "body", "body-markup", "actions", "icon-static", "persistence" };
-        c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(@as)", c.g_variant_new_strv(@ptrCast(&capabilities), -1)));
-    } else if (c.g_strcmp0(member, "GetServerInformation") == 0) {
-        c.g_dbus_method_invocation_return_value(invocation, c.g_variant_new("(ssss)", @as([*:0]const u8, "Desktop Notifications"), @as([*:0]const u8, "dotfiles"), @as([*:0]const u8, "0.1"), @as([*:0]const u8, "1.2")));
-    } else if (c.g_strcmp0(member, "CloseNotification") == 0) {
-        const value = c.g_variant_get_child_value(parameters, 0);
-        defer c.g_variant_unref(value);
-        const id = c.g_variant_get_uint32(value);
-        if (self.find(id)) |notice| if (c.g_strcmp0(notice.sender, sender) == 0) self.close(id, 3);
-        c.g_dbus_method_invocation_return_value(invocation, null);
+        return connection.reply(message, .{}) catch {};
+    }
+    if (eq(u8, member, "Notify")) {
+        const args = message.read(NotifyArgs) catch return connection.replyError(message, "org.freedesktop.DBus.Error.InvalidArgs", "Invalid notification") catch {};
+        const id = self.notify(sender, args) catch return connection.replyError(message, "org.freedesktop.DBus.Error.NoMemory", "Cannot create notification") catch {};
+        connection.reply(message, .{id}) catch {};
+    } else if (eq(u8, member, "GetCapabilities")) {
+        const capabilities: []const []const u8 = &.{ "body", "body-markup", "actions", "icon-static", "persistence" };
+        connection.reply(message, .{capabilities}) catch {};
+    } else if (eq(u8, member, "GetServerInformation")) {
+        connection.reply(message, .{ "Desktop Notifications", "dotfiles", "0.1", "1.2" }) catch {};
+    } else if (eq(u8, member, "CloseNotification")) {
+        const id = (message.read(struct { u32 }) catch return)[0];
+        if (self.find(id)) |notice| if (eq(u8, notice.sender, sender)) self.close(id, 3);
+        connection.reply(message, .{}) catch {};
     }
 }
-const vtable = c.GDBusInterfaceVTable{ .method_call = &method, .get_property = null, .set_property = null, .padding = @splat(null) };
-fn acquired(connection: ?*c.GDBusConnection, _: [*c]const u8, data: c.gpointer) callconv(.c) void {
-    const self = cast(Server, data);
-    self.connection = connection;
-    for (0..2) |i| self.registrations[i] = c.g_dbus_connection_register_object(connection, path, self.node.interfaces[i], &vtable, self, null, null);
-}
-fn owned(_: ?*c.GDBusConnection, _: [*c]const u8, data: c.gpointer) callconv(.c) void {
-    cast(Server, data).owned = true;
-}
+/// Called when another process takes the notification name; the shell quits, as before.
+pub var on_lost: ?*const fn () void = null;
 pub const Service = struct {
     server: Server,
-    node: *c.GDBusNodeInfo,
-    owner: c.guint = 0,
+    introspection: dbus.Introspection,
+    source: ?*loop.Source = null,
+    lost_subscription: u32 = 0,
 
     pub fn create() !*Service {
         const self = try allocator.create(Service);
         errdefer allocator.destroy(self);
-        const node = c.g_dbus_node_info_new_for_xml(xml, null) orelse return error.InvalidInterface;
-        errdefer c.g_dbus_node_info_unref(node);
-        self.* = .{ .server = .{ .node = node }, .node = node };
+        var introspection = try dbus.Introspection.parse(allocator, xml);
+        errdefer introspection.deinit();
+        self.* = .{ .server = .{}, .introspection = introspection };
         try self.server.start();
-        self.owner = c.g_bus_own_name(c.G_BUS_TYPE_SESSION, name, c.G_BUS_NAME_OWNER_FLAGS_NONE, &acquired, &owned, &serviceLost, &self.server, null);
+        const source = loop.acquire(.session) catch return error.NoSessionBus;
+        self.source = source;
+        const connection = source.connection;
+        self.server.connection = connection;
+        for (self.introspection.interfaces, 0..) |*info, i| self.server.registrations[i] = try connection.exportObject(path, info, &method, null, &self.server);
+        self.lost_subscription = try connection.subscribeArg0("org.freedesktop.DBus", "org.freedesktop.DBus", "NameLost", "/org/freedesktop/DBus", name, &lost, self);
+        // Like g_bus_own_name without flags: wait in the queue if another daemon owns the name.
+        const code = connection.requestName(name, 0) catch 0;
+        self.server.owned = code == 1;
+        if (!self.server.owned) std.log.warn("notifications: {s} is owned by another process", .{name});
         return self;
     }
 
@@ -477,14 +479,19 @@ pub const Service = struct {
     }
 
     pub fn destroy(self: *Service) void {
-        c.g_bus_unown_name(self.owner);
+        if (self.source) |source| {
+            const connection = source.connection;
+            if (self.lost_subscription != 0) connection.unsubscribe(self.lost_subscription);
+            if (self.server.owned) connection.send(.{ .destination = "org.freedesktop.DBus", .path = "/org/freedesktop/DBus", .interface = "org.freedesktop.DBus", .member = "ReleaseName" }, .{name}) catch {};
+        }
         self.server.deinit();
-        c.g_dbus_node_info_unref(self.node);
+        if (self.source) |source| loop.release(source);
+        self.introspection.deinit();
         allocator.destroy(self);
     }
+    fn lost(data: ?*anyopaque, _: *const dbus.Message) void {
+        const self: *Service = @ptrCast(@alignCast(data));
+        self.server.owned = false;
+        if (on_lost) |quit| quit();
+    }
 };
-
-fn serviceLost(_: ?*c.GDBusConnection, _: [*c]const u8, data: c.gpointer) callconv(.c) void {
-    cast(Server, data).owned = false;
-    if (c.g_application_get_default()) |app| c.g_application_quit(app);
-}

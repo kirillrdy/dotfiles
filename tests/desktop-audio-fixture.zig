@@ -9,7 +9,6 @@ const a = std.heap.page_allocator;
 var stopping = false;
 var watch = false;
 const cast = c.__zig.cast;
-extern fn g_application_register(app: *c.GApplication, cancel: ?*c.GCancellable, err: ?*?*c.GError) c.gboolean;
 fn pump() void {
     audio.dispatch();
     c.g_usleep(1000);
@@ -62,25 +61,22 @@ fn click(sound: *settings.Sound, row: usize, control: @import("desktop").setting
 }
 fn ui(service: *audio.Service) !void {
     const controls = quick.Controls.create("true", "true");
-    const app = c.g_application_new("org.dotfiles.SettingsFixture", 0).?;
-    defer c.g_object_unref(app);
-    if (g_application_register(app, null, null) == 0) return error.ApplicationRegistrationFailed;
     var dialogs: settings.Service = .{};
     defer {
         controls.deinit();
         dialogs.deinit();
     }
-    try dialogs.show(app, .sound);
+    try dialogs.show(.sound);
     const shell = dialogs.windows.items[0];
     const sound = shell.sound.?;
     // Both shortcuts must reuse one native window and its audio controller.
-    try dialogs.show(app, .network);
+    try dialogs.show(.network);
     assert(dialogs.windows.items.len == 1 and shell.mode == .network);
     shell.showPage(.wifi);
     shell.ui.activate(shell.view.sound_nav);
     assert(shell.mode == .sound and shell.sound.? == sound);
-    try dialogs.show(app, .network);
-    try dialogs.show(app, .sound);
+    try dialogs.show(.network);
+    try dialogs.show(.sound);
     assert(dialogs.windows.items.len == 1 and shell.window == sound.window);
     var deadline = c.__zig.monotonicTime() + 8_000_000;
     while ((controls.devices.audio_service == null or controls.devices.audio_service.?.state(.output) == null or sound.view.rows.items.len < 5) and c.__zig.monotonicTime() < deadline) pump();

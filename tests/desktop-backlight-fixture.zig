@@ -75,32 +75,36 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn commandLine(app: *c.GApplication, command: *c.GApplicationCommandLine, data: c.gpointer) callconv(.c) c_int {
-    const self = cast(osd.Server, data);
-    self.connection = c.g_application_get_dbus_connection(app);
-    var count: c_int = 0;
-    const argv = c.g_application_command_line_get_arguments(command, &count);
-    defer c.g_strfreev(argv);
-    if ((count == 2 or count == 3) and c.g_strcmp0(argv[1], "serve") == 0) {
-        if (self.ready) return 0;
-        self.start() catch |err| {
-            c.g_application_command_line_printerr(command, "desktop-osd: %s\n", @as([*:0]const u8, @errorName(err)));
-            return 1;
-        };
-        c.g_application_hold(app);
-        return 0;
-    }
-    if (!self.ready) {
-        c.g_application_command_line_printerr(command, "desktop-osd: session service is not running\n");
-        return 1;
-    }
-    if (count != 3) return 1;
-    const work = osd.parseCommand(&.{ std.mem.span(argv[1]), std.mem.span(argv[2]) }) orelse return 1;
-    return if (self.enqueue(work)) 0 else 1;
-}
+const dbus = @import("desktop").dbus;
+const loop = @import("desktop").dbus_loop;
+const osd_name = "org.dotfiles.DesktopOsd";
+const osd_path = "/org/dotfiles/DesktopOsd";
+var running = true;
 
-fn quit(data: c.gpointer) callconv(.c) c.gboolean {
-    c.g_application_quit(cast(c.GApplication, data));
+/// Runs `serve` or a media command forwarded by another invocation.
+fn run(self: *osd.Server, args: []const []const u8) ![]const u8 {
+    if ((args.len == 1 or args.len == 2) and std.mem.eql(u8, args[0], "serve")) {
+        if (self.ready) return "";
+        self.start() catch |err| return @errorName(err);
+        return "";
+    }
+    if (!self.ready) return "session service is not running";
+    const work = osd.parseCommand(args) orelse return "invalid command";
+    return if (self.enqueue(work)) "" else "queue full";
+}
+const Instance = struct {
+    server: *osd.Server,
+    connection: *dbus.Connection,
+    fn command(data: ?*anyopaque, message: *const dbus.Message) void {
+        const self: *Instance = @ptrCast(@alignCast(data));
+        const args = message.read(struct { []const []const u8 }) catch return;
+        const failure = run(self.server, args[0]) catch "failed";
+        if (failure.len > 0) self.connection.replyError(message, osd_name ++ ".Error.Failed", failure) catch {} else self.connection.reply(message, .{}) catch {};
+    }
+};
+
+fn quit(_: c.gpointer) callconv(.c) c.gboolean {
+    running = false;
     return 1;
 }
 
@@ -113,16 +117,27 @@ fn runOsd(init: std.process.Init, backend: backlight.Backend) !void {
         std.debug.print("Usage: desktop-osd serve | volume up|down|mute | microphone mute | brightness up|down\n", .{});
         return error.InvalidArguments;
     }
-    const app = c.g_application_new("org.dotfiles.DesktopOsd", c.G_APPLICATION_HANDLES_COMMAND_LINE).?;
-    defer c.g_object_unref(app);
-    var server = osd.Server{ .backlight_backend = backend };
+    const forwarded = try arena.allocator().alloc([]const u8, args.len - 1);
+    for (forwarded, args[1..]) |*out, arg| out.* = arg;
+    if (!serve) return loop.forwardCommand("desktop-osd", osd_name, osd_path, forwarded);
+    const bus = try loop.acquire(.session);
+    defer loop.release(bus);
+    if (try bus.connection.requestName(osd_name, 4) != 1) return loop.forwardCommand("desktop-osd", osd_name, osd_path, forwarded);
+    var introspection = try dbus.Introspection.parse(std.heap.page_allocator, loop.commandXml(osd_name));
+    defer introspection.deinit();
+    var server = osd.Server{ .backlight_backend = backend, .connection = bus.connection };
     defer server.deinit();
-    _ = c.g_signal_connect_data(app, "command-line", @ptrCast(&commandLine), &server, null, 0);
-    const term = c.g_unix_signal_add(c.SIGTERM, &quit, app);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, app);
+    var instance: Instance = .{ .server = &server, .connection = bus.connection };
+    const exported = try bus.connection.exportObject(osd_path, &introspection.interfaces[0], &Instance.command, null, &instance);
+    defer bus.connection.unregister(exported);
+    const term = c.g_unix_signal_add(c.SIGTERM, &quit, null);
+    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, null);
     defer _ = c.g_source_remove(term);
     defer _ = c.g_source_remove(interrupt);
-    const argv = try arena.allocator().allocSentinel(?[*:0]const u8, args.len, null);
-    for (args, 0..) |arg, i| argv[i] = (try arena.allocator().dupeSentinel(u8, arg, 0)).ptr;
-    if (c.g_application_run(app, @intCast(args.len), @ptrCast(argv.ptr)) != 0) return error.CommandFailed;
+    const failure = try run(&server, forwarded);
+    if (failure.len > 0) {
+        std.debug.print("desktop-osd: {s}\n", .{failure});
+        return error.CommandFailed;
+    }
+    while (running and !bus.connection.closed) _ = c.g_main_context_iteration(null, 1);
 }

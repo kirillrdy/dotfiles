@@ -221,3 +221,22 @@ pub fn notify(app_name: []const u8, icon: []const u8, summary: []const u8, body:
     const hints: Hints = .{ .entries = if (urgency != null) &entries else &.{} };
     request(.session, .{ .destination = "org.freedesktop.Notifications", .path = "/org/freedesktop/Notifications", .interface = "org.freedesktop.Notifications", .member = "Notify" }, .{ app_name, @as(u32, 0), icon, summary, body, @as([]const []const u8, &.{}), hints, @as(i32, -1) }, 3000, null, &ignore, null);
 }
+
+/// Introspection XML for a single-instance service's `Command(as)` method.
+pub fn commandXml(comptime name: []const u8) []const u8 {
+    return "<node><interface name='" ++ name ++ "'><method name='Command'><arg type='as' direction='in'/></method></interface></node>";
+}
+/// Sends `args` to the process owning `name` and waits. A failure is printed as
+/// `program: reason` and exits with status 1; with no owner, nothing is started.
+pub fn forwardCommand(program: []const u8, name: []const u8, path: []const u8, args: []const []const u8) error{ NoSessionBus, SessionNotRunning }!void {
+    const connection = dbus.Connection.open(std.heap.page_allocator, .session) catch return error.NoSessionBus;
+    defer connection.close();
+    const result = connection.callBlockingRaw(.{ .destination = name, .path = path, .interface = name, .member = "Command", .no_auto_start = true }, .{args}, 120000) catch return error.NoSessionBus;
+    defer result.deinit();
+    const reply = result.message();
+    if (reply.kind != .@"error") return;
+    const error_name = reply.error_name orelse "";
+    if (std.mem.eql(u8, error_name, "org.freedesktop.DBus.Error.ServiceUnknown") or std.mem.eql(u8, error_name, "org.freedesktop.DBus.Error.NameHasNoOwner")) return error.SessionNotRunning;
+    std.debug.print("{s}: {s}\n", .{ program, reply.errorText() });
+    std.process.exit(1);
+}

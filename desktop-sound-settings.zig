@@ -236,9 +236,12 @@ pub const Sound = struct {
                 self.setMessage(@errorName(err)) catch {};
             },
             .value => {
-                if (c.g_application_get_default()) |app| if (c.g_application_get_dbus_connection(app)) |bus| {
-                    _ = c.g_dbus_connection_emit_signal(bus, null, "/org/dotfiles/DesktopSettings", "org.dotfiles.DesktopSettings", "DeviceChanged", null, null);
-                };
+                // Panels refresh their device menus from this signal.
+                const loop = @import("desktop-dbus-loop.zig");
+                if (loop.acquire(.session)) |bus| {
+                    defer loop.release(bus);
+                    bus.connection.emit("/org/dotfiles/DesktopSettings", "org.dotfiles.DesktopSettings", "DeviceChanged", .{}) catch {};
+                } else |_| {}
             },
         }
         self.refresh() catch self.renderFailure();

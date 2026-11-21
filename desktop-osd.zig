@@ -70,7 +70,8 @@ const Overlay = struct {
 };
 
 pub const Server = struct {
-    connection: ?*c.GDBusConnection = null,
+    /// The shell's session connection, for DeviceChanged.
+    connection: ?*@import("dbus").Connection = null,
     backlight_backend: backlight.Backend = .{},
     brightness_busy: bool = false,
     ready: bool = false,
@@ -187,7 +188,7 @@ pub const Server = struct {
         self.finish();
     }
     fn present(self: *Server, kind: Kind, state: State) void {
-        if (self.connection != null) _ = c.g_dbus_connection_emit_signal(self.connection, null, "/org/dotfiles/DesktopOsd", "org.dotfiles.DesktopOsd", "DeviceChanged", c.g_variant_new("(s)", @as([*:0]const u8, @tagName(kind))), null);
+        if (self.connection) |connection| connection.emit("/org/dotfiles/DesktopOsd", "org.dotfiles.DesktopOsd", "DeviceChanged", .{@as([]const u8, @tagName(kind))}) catch {};
         self.last_kind = kind;
         self.last_state = state;
         for (self.overlays.items) |overlay| overlay.show(kind, state);
