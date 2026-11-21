@@ -2,6 +2,7 @@
 const std = @import("std");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
+const dbus = @import("dbus");
 const helpers = @import("desktop-wayland-client.zig");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
@@ -14,18 +15,19 @@ const u = @import("desktop-util.zig");
 
 const cast = c.__zig.cast;
 
+/// Calls the session's secrets service and waits; used outside the GLib loop,
+/// including from the authentication thread, so it uses a private connection.
+fn secretsCall(member: []const u8, args: anytype, timeout_ms: u32) void {
+    const connection = dbus.Connection.open(a, .session) catch return;
+    defer connection.close();
+    const reply = connection.callBlocking(.{ .destination = "org.freedesktop.secrets", .path = "/org/freedesktop/secrets", .interface = "org.dotfiles.Desktop.Secrets", .member = member, .no_auto_start = true }, args, timeout_ms) catch return;
+    reply.deinit();
+}
 fn screenLocked(locked: bool) void {
-    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return;
-    defer c.g_object_unref(bus);
-    const reply = c.g_dbus_connection_call_sync(bus, "org.freedesktop.secrets", "/org/freedesktop/secrets", "org.dotfiles.Desktop.Secrets", "SetScreenLocked", c.g_variant_new("(b)", @as(c_int, @intFromBool(locked))), null, c.G_DBUS_CALL_FLAGS_NO_AUTO_START, 3000, null, null) orelse return;
-    c.g_variant_unref(reply);
+    secretsCall("SetScreenLocked", .{locked}, 3000);
 }
 fn unlockSecrets(password: []const u8) void {
-    const bus = c.g_bus_get_sync(c.G_BUS_TYPE_SESSION, null, null) orelse return;
-    defer c.g_object_unref(bus);
-    const bytes = c.g_variant_new_fixed_array(@ptrCast(@as([*:0]const u8, "y")), password.ptr, password.len, 1);
-    const reply = c.g_dbus_connection_call_sync(bus, "org.freedesktop.secrets", "/org/freedesktop/secrets", "org.dotfiles.Desktop.Secrets", "LoginUnlock", c.g_variant_new("(@ay)", bytes), null, c.G_DBUS_CALL_FLAGS_NO_AUTO_START, 30000, null, null) orelse return;
-    c.g_variant_unref(reply);
+    secretsCall("LoginUnlock", .{dbus.Bytes{ .value = password }}, 30000);
 }
 const Password = struct {
     bytes: [1024:0]u8 = @splat(0),

@@ -1,6 +1,7 @@
 //! Shared backlight discovery and asynchronous, session-authorized brightness changes.
 const std = @import("std");
 const c = @import("desktop-glib.zig");
+const dbus = @import("dbus");
 const libc = @import("desktop-libc.zig");
 // Test builds account for service state and asynchronous callback allocations.
 const a = if (@import("builtin").is_test) std.testing.allocator else std.heap.page_allocator;
@@ -84,7 +85,6 @@ const Job = struct {
     device: Device = undefined,
     failure: ?anyerror = null,
     written: bool = false,
-    bus: ?*c.GDBusConnection = null,
     fn read(self: *Job) void {
         const task = c.g_task_new(null, self.cancel, &readDone, self);
         c.g_task_set_task_data(task, self, null);
@@ -105,37 +105,31 @@ const Job = struct {
         if (c.g_task_propagate_boolean(@ptrCast(result), null) == 0) return self.finish(.{ .failure = error.Cancelled });
         if (self.failure) |err| return self.finish(.{ .failure = err });
         if (self.written or self.action == .read) return self.finish(.{ .value = self.device });
-        c.g_bus_get(c.G_BUS_TYPE_SYSTEM, self.cancel, &busConnected, self);
-    }
-    fn busConnected(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
-        const self: *Job = @ptrCast(@alignCast(data));
-        self.bus = c.g_bus_get_finish(result, null) orelse return self.finish(.{ .failure = if (c.g_cancellable_is_cancelled(self.cancel) != 0) error.Cancelled else error.NoSystemBus });
-        c.g_dbus_connection_set_exit_on_close(self.bus, 0);
         const percent = switch (self.action) {
             .read => unreachable,
             .set => |value| value,
             .step => |delta| std.math.clamp(self.device.percent() + @as(f64, @floatFromInt(delta)), 5, 100),
         };
         const level = self.device.level(percent) catch |err| return self.finish(.{ .failure = err });
-        c.g_dbus_connection_call(self.bus, "org.freedesktop.login1", "/org/freedesktop/login1/session/auto", "org.freedesktop.login1.Session", "SetBrightness", c.g_variant_new("(ssu)", @as([*:0]const u8, "backlight"), @as([*:0]const u8, &self.device.name), level), null, c.G_DBUS_CALL_FLAGS_NONE, 2000, self.cancel, &writeDone, self);
+        const name: []const u8 = std.mem.sliceTo(&self.device.name, 0);
+        @import("desktop-dbus-loop.zig").request(.system, .{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1/session/auto", .interface = "org.freedesktop.login1.Session", .member = "SetBrightness" }, .{ "backlight", name, level }, 2000, self.cancel, &writeDone, self);
     }
-    fn writeDone(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+    fn writeDone(data: ?*anyopaque, reply: dbus.Reply) void {
         const self: *Job = @ptrCast(@alignCast(data));
-        var err: [*c]c.GError = null;
-        const reply = c.g_dbus_connection_call_finish(@ptrCast(source), result, &err);
-        if (reply == null) {
-            const cancelled = c.g_cancellable_is_cancelled(self.cancel) != 0;
-            if (!cancelled and err != null) std.log.warn("backlight: {s}", .{err.*.message});
-            c.g_clear_error(&err);
-            return self.finish(.{ .failure = if (cancelled) error.Cancelled else error.SetBrightnessFailed });
+        switch (reply) {
+            .ok => {
+                self.written = true;
+                self.read();
+            },
+            .failed => |failure| {
+                const cancelled = c.g_cancellable_is_cancelled(self.cancel) != 0;
+                if (!cancelled) std.log.warn("backlight: {s}: {s}", .{ failure.name, failure.text });
+                self.finish(.{ .failure = if (cancelled) error.Cancelled else error.SetBrightnessFailed });
+            },
         }
-        c.g_variant_unref(reply);
-        self.written = true;
-        self.read();
     }
     fn finish(self: *Job, result: Result) void {
         self.callback(self.context, result);
-        if (self.bus) |bus| c.g_object_unref(bus);
         c.g_object_unref(self.cancel);
         a.destroy(self);
     }

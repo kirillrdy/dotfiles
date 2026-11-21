@@ -187,7 +187,9 @@ pub const Writer = struct {
     allocator: std.mem.Allocator,
     fds: std.ArrayList(i32) = .empty,
 
+    /// Frees the buffers after zeroing them, since message bodies may carry secrets.
     pub fn deinit(self: *Writer) void {
+        std.crypto.secureZero(u8, self.bytes.allocatedSlice());
         self.bytes.deinit(self.allocator);
         self.fds.deinit(self.allocator);
     }
@@ -685,6 +687,8 @@ pub const Connection = struct {
         path: []const u8,
         interface: ?[]const u8 = null,
         member: []const u8,
+        /// Fail instead of asking the bus to start the destination service.
+        no_auto_start: bool = false,
     };
 
     /// Connects to a message bus, authenticates and registers with Hello.
@@ -736,6 +740,9 @@ pub const Connection = struct {
         self.exports.deinit(self.allocator);
         for (self.in_fds.items) |fd| _ = std.c.close(fd);
         for (self.out_fds.items) |fd| _ = std.c.close(fd);
+        // Sent and received bytes may include secrets such as passwords.
+        std.crypto.secureZero(u8, self.in.allocatedSlice());
+        std.crypto.secureZero(u8, self.out.allocatedSlice());
         self.pending.deinit(self.allocator);
         self.in.deinit(self.allocator);
         self.in_fds.deinit(self.allocator);
@@ -810,7 +817,7 @@ pub const Connection = struct {
         }
     }
     fn callHeader(serial: u32, flags: u8, target: Call) Message {
-        return .{ .kind = .method_call, .flags = flags, .serial = serial, .destination = target.destination, .path = target.path, .interface = target.interface, .member = target.member, .arena = undefined };
+        return .{ .kind = .method_call, .flags = flags | (if (target.no_auto_start) @as(u8, 0x2) else 0), .serial = serial, .destination = target.destination, .path = target.path, .interface = target.interface, .member = target.member, .arena = undefined };
     }
 
     /// Sends a method call; `handler` receives the reply or failure exactly once unless cancelled.
