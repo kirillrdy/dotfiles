@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     // Wayland clients use the native wire runtime; only the compositor links libwayland (server).
-    for ([_][]const u8{ "gio-unix-2.0", "libpipewire-0.3", "pam", "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| desktop.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "libpipewire-0.3", "pam", "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| desktop.linkSystemLibrary(name, .{});
     const text_c = bindings(b, target, optimize, "#include <ft2build.h>\n#include FT_FREETYPE_H\n#include FT_MULTIPLE_MASTERS_H\n#include FT_SYNTHESIS_H\n#include <hb.h>\n#include <hb-ft.h>\n#include <fontconfig/fontconfig.h>\n", &.{ "freetype2", "harfbuzz", "fontconfig" });
     desktop.addImport("text-c", text_c);
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
@@ -149,7 +149,7 @@ pub fn build(b: *std.Build) void {
 
     // Prove the replacement window host has no GTK/GDK link dependency.
     const native = b.createModule(.{ .root_source_file = b.path("desktop-native.zig"), .target = target, .optimize = optimize, .link_libc = true });
-    for ([_][]const u8{ "gio-unix-2.0", "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| native.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| native.linkSystemLibrary(name, .{});
     native.addImport("text-c", text_c);
     native.addImport("wayland-wire", wire);
     native.addImport("wayland-client", wayland_client);
@@ -163,8 +163,10 @@ pub fn build(b: *std.Build) void {
     const test_module = b.createModule(.{ .root_source_file = b.path("desktop-tests.zig"), .target = target, .optimize = optimize, .link_libc = true });
     for (desktop.import_table.keys(), desktop.import_table.values()) |name, dependency| test_module.addImport(name, dependency);
     test_module.link_objects.appendSlice(b.graph.arena, desktop.link_objects.items) catch @panic("OOM");
-    // Cairo renders frozen reference images in unit tests only.
+    // Cairo renders frozen reference images in unit tests only, and GLib is the
+    // oracle that tests compare the desktop's Zig replacements against.
     test_module.linkSystemLibrary("cairo", .{});
+    test_module.linkSystemLibrary("gio-unix-2.0", .{});
     const tests = b.addTest(.{ .name = "desktop-tests", .root_module = test_module, .filters = if (integration_tests) &.{"integration:"} else &.{} });
     b.step("test-binary", "Build tests for execution in a NixOS VM").dependOn(&b.addInstallArtifact(tests, fixture_install).step);
     const test_step = b.step("test", "Run unit, ABI and protocol checks");

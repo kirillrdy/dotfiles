@@ -113,3 +113,14 @@ pub fn localTime(a: Allocator, stamp: i64, comptime format: [:0]const u8) ![]con
     var buffer: [128]u8 = undefined;
     return a.dupe(u8, value.format(&buffer, format) catch return error.InvalidTime);
 }
+/// Formats to standard output, for fixtures whose checks read it.
+pub fn printOut(comptime format: []const u8, args: anytype) void {
+    var buffer: [4096]u8 = undefined;
+    const text = std.fmt.bufPrint(&buffer, format, args) catch buffer[0..];
+    var written: usize = 0;
+    while (written < text.len) {
+        const result = std.os.linux.write(1, text[written..].ptr, text.len - written);
+        if (std.os.linux.errno(result) != .SUCCESS) return;
+        written += result;
+    }
+}

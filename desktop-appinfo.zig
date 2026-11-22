@@ -288,7 +288,7 @@ const Completion = struct {
 };
 
 const idle = struct {
-    extern fn g_idle_add(function: *const fn (?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) c_uint;
+    const g_idle_add = @import("desktop-loop.zig").idle;
 };
 
 /// A desktop file ID without ".desktop", when it is a valid D-Bus name.

@@ -407,14 +407,19 @@ pub const Process = struct {
     }
 };
 
+const loop = @import("desktop-loop.zig");
 const glib = struct {
-    const IN = 1;
-    const ERR = 8;
-    const HUP = 16;
-    extern fn g_unix_fd_add(fd: c_int, condition: c_uint, function: *const fn (c_int, c_uint, ?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) c_uint;
-    extern fn g_idle_add(function: *const fn (?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) c_uint;
-    extern fn g_source_remove(id: c_uint) c_int;
-    extern fn g_main_context_iteration(context: ?*anyopaque, may_block: c_int) c_int;
+    const IN = loop.IN;
+    const ERR = loop.ERR;
+    const HUP = loop.HUP;
+    const g_unix_fd_add = loop.watch;
+    const g_idle_add = loop.idle;
+    fn g_source_remove(id: c_uint) c_int {
+        return @intFromBool(loop.remove(id));
+    }
+    fn g_main_context_iteration(_: ?*anyopaque, may_block: c_int) c_int {
+        return @intFromBool(loop.iteration(may_block != 0));
+    }
 };
 
 test "command lines split and quote like GLib" {

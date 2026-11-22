@@ -196,6 +196,7 @@ test {
     _ = @import("desktop-process.zig");
     _ = @import("desktop-watch.zig");
     _ = @import("desktop-unicode.zig");
+    _ = @import("desktop-loop.zig");
     _ = @import("desktop-greeter-view.zig");
     _ = @import("desktop-greeter.zig");
     _ = @import("desktop-dm.zig");

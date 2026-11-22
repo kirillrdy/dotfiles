@@ -48,7 +48,7 @@ fn report(data_ptr: ?*anyopaque) callconv(.c) c_int {
         if (last) |old| a.free(old);
         last = a.dupe(u8, json) catch unreachable;
         const terminated = alloc.dupeSentinel(u8, json, 0) catch unreachable;
-        c.g_print("%s\n", terminated.ptr);
+        @import("desktop").util.printOut("{s}\n", .{terminated});
     }
     return 1;
 }

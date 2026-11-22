@@ -178,7 +178,7 @@ pub const Vault = struct {
         const next_index = (try std.json.parseFromSlice(Index, next_arena.allocator(), aad, .{ .allocate = .alloc_always })).value;
         const path = try std.fmt.allocPrintSentinel(self.a, "{s}/vault.json", .{self.directory}, 0);
         defer self.a.free(path);
-        if (g_file_set_contents_full(path, bytes.ptr, @intCast(bytes.len), 3, 0o600, null) == 0) return error.WriteVault;
+        @import("desktop-paths.zig").writeFileAtomic(self.a, path, bytes, 0o600) catch return error.WriteVault;
         if (self.envelope) |*old| old.deinit();
         self.envelope = parsed;
         self.arena.deinit();
@@ -246,7 +246,6 @@ pub const Vault = struct {
         if (self.envelope != null) try self.loadKey(key.?);
     }
 };
-extern fn g_file_set_contents_full([*:0]const u8, [*]const u8, isize, c_int, c_int, ?*anyopaque) c_int;
 
 test "vault rejects wrong passwords and tampering; locking erases values; restart restores binary secrets" {
     var wa = WipingAllocator{ .parent = std.testing.allocator };

@@ -68,6 +68,6 @@ pub fn main(init: std.process.Init) !void {
     }
     client.refresh();
     client.connection.roundtrip() catch return error.Disconnected;
-    c.g_print("workspace %u/%u\n", client.current, client.count);
-    for (client.windows.items) |window| c.g_print("window %s workspace %u size %ux%u captured %u\n", window.title, window.workspace, @as(u32, @intFromFloat(window.geometry.w)), @as(u32, @intFromFloat(window.geometry.h)), @as(u32, @intFromBool(window.image != null)));
+    d.util.printOut("workspace {d}/{d}\n", .{ client.current, client.count });
+    for (client.windows.items) |window| d.util.printOut("window {s} workspace {d} size {d}x{d} captured {d}\n", .{ std.mem.span(window.title), window.workspace, @as(u32, @intFromFloat(window.geometry.w)), @as(u32, @intFromFloat(window.geometry.h)), @as(u32, @intFromBool(window.image != null)) });
 }

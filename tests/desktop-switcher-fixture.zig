@@ -21,7 +21,7 @@ const State = struct {
     }
     fn focus(ptr: ?*anyopaque, _: *wire.Surface, active: bool) void {
         const self = cast(State, ptr);
-        if (active) c.g_print("%lld %s\n", @as(c_longlong, c.__zig.monotonicTime()), self.title.ptr);
+        if (active) @import("desktop").util.printOut("{d} {s}\n", .{ c.__zig.monotonicTime(), self.title });
     }
     fn animate(data: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(State, data);

@@ -213,7 +213,7 @@ test "memory: detector controls" {
     if (std.mem.eql(u8, probe, "zig")) {
         _ = try std.testing.allocator.alloc(u8, 37);
     } else if (std.mem.eql(u8, probe, "c")) {
-        _ = c.g_malloc0_n(37, 1);
+        _ = std.c.malloc(37);
     } else if (std.mem.eql(u8, probe, "object")) {
         var objects = Objects{};
         const retained = c.g_cancellable_new().?;

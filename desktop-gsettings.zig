@@ -672,7 +672,7 @@ test "dconf values match GLib" {
     // The write test below loads a throwaway profile; the store loads only once.
     if (getenv("DESKTOP_GSETTINGS_DCONF_TEST_PROFILE") != null) return error.SkipZigTest;
     if (getenv("GSETTINGS_BACKEND") != null) return error.SkipZigTest;
-    const c = @import("desktop-glib.zig");
+    const c = @import("tests/glib-oracle.zig");
     const g = struct {
         extern fn g_variant_print(*c.GVariant, c.gboolean) [*:0]u8;
     };

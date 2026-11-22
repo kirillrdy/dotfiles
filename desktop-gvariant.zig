@@ -300,7 +300,7 @@ fn write(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: Value) Er
 }
 
 test "serialized values match GLib in both directions" {
-    const c = @import("desktop-glib.zig");
+    const c = @import("tests/glib-oracle.zig");
     const g = struct {
         extern fn g_variant_get_data(*c.GVariant) ?*const anyopaque;
         extern fn g_variant_get_size(*c.GVariant) usize;
@@ -357,7 +357,7 @@ test "serialized values match GLib in both directions" {
 }
 
 test "dconf changesets match GLib" {
-    const c = @import("desktop-glib.zig");
+    const c = @import("tests/glib-oracle.zig");
     const g = struct {
         extern fn g_variant_get_data(*c.GVariant) ?*const anyopaque;
         extern fn g_variant_get_size(*c.GVariant) usize;

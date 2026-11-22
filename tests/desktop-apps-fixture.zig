@@ -29,12 +29,10 @@ pub fn main(init: std.process.Init) !void {
     // GLib can cache XDG paths in library constructors, before main. Re-exec
     // with the isolated paths already in the environment.
     if (c.__zig.getenv("DESKTOP_APPS_FIXTURE_ROOT") == null) {
-        const root = c.g_dir_make_tmp("desktop-apps-XXXXXX", null);
-        assert(root != null);
-        defer c.g_free(root);
-        defer std.Io.Dir.cwd().deleteTree(init.io, std.mem.span(root)) catch {};
+        const root = try @import("desktop").paths.createTemporaryDirectory(a, "desktop-apps-");
+        defer std.Io.Dir.cwd().deleteTree(init.io, root) catch {};
         var env = try init.minimal.environ.createMap(a);
-        for ([_][]const u8{ "DESKTOP_APPS_FIXTURE_ROOT", "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_CACHE_HOME" }) |key| try env.put(key, std.mem.span(root));
+        for ([_][]const u8{ "DESKTOP_APPS_FIXTURE_ROOT", "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_CACHE_HOME" }) |key| try env.put(key, root);
         try env.put("XDG_CURRENT_DESKTOP", "wlroots");
         try env.put("LANGUAGE", "C");
         var child = try std.process.spawn(init.io, .{ .argv = &.{try std.process.executablePathAlloc(init.io, a)}, .environ_map = &env });

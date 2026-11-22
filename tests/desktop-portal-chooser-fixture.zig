@@ -112,8 +112,8 @@ pub fn main(init: std.process.Init) !void {
     defer a.free(report);
     const unicode = try std.fmt.allocPrintSentinel(a, "{s}/日本語.txt", .{root}, 0);
     defer a.free(unicode);
-    _ = c.g_setenv("GTK_USE_PORTAL", "0", 1);
-    _ = c.g_setenv("GIO_USE_VFS", "local", 1);
+    _ = @import("desktop").libc.setenv("GTK_USE_PORTAL", "0", 1);
+    _ = @import("desktop").libc.setenv("GIO_USE_VFS", "local", 1);
     {
         var b = Builder.init(data_allocator, root);
         const current = parse(data_allocator, "(sa(us))", "('Text', [(uint32 0, '*.txt')])");

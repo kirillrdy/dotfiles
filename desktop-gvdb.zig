@@ -143,7 +143,7 @@ pub const Table = struct {
 };
 
 test "compiled schemas read the same defaults as GLib" {
-    const c = @import("desktop-glib.zig");
+    const c = @import("tests/glib-oracle.zig");
     const directory = std.c.getenv("GSETTINGS_SCHEMA_DIR") orelse return error.SkipZigTest;
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -189,10 +189,10 @@ pub const reference = struct {
     pub extern fn g_settings_schema_source_lookup(?*Source, [*:0]const u8, c_int) ?*Schema;
     pub extern fn g_settings_schema_unref(*Schema) void;
     pub extern fn g_settings_schema_get_key(*Schema, [*:0]const u8) *anyopaque;
-    pub extern fn g_settings_schema_key_get_default_value(*anyopaque) *@import("desktop-glib.zig").GVariant;
+    pub extern fn g_settings_schema_key_get_default_value(*anyopaque) *@import("tests/glib-oracle.zig").GVariant;
     pub extern fn g_settings_schema_key_unref(*anyopaque) void;
     pub extern fn g_settings_new_full(*Schema, ?*anyopaque, ?[*:0]const u8) *Object;
-    pub extern fn g_settings_get_value(*Object, [*:0]const u8) *@import("desktop-glib.zig").GVariant;
+    pub extern fn g_settings_get_value(*Object, [*:0]const u8) *@import("tests/glib-oracle.zig").GVariant;
     pub extern fn g_settings_get_enum(*Object, [*:0]const u8) c_int;
     pub extern fn g_object_unref(*anyopaque) void;
 };

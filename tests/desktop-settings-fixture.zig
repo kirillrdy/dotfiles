@@ -72,5 +72,5 @@ pub fn main(init: std.process.Init) !void {
             c.g_usleep(1000);
         }
     }
-    c.g_print("desktop-settings: page switching, pointer and keyboard routing, focus, preserved fields and pending-close teardown passed\n");
+    @import("desktop").util.printOut("desktop-settings: page switching, pointer and keyboard routing, focus, preserved fields and pending-close teardown passed\n", .{});
 }

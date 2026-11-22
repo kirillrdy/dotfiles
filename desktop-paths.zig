@@ -325,6 +325,57 @@ pub fn createTemporary(a: std.mem.Allocator, prefix: []const u8) !struct { fd: l
     return error.CreateFileFailed;
 }
 
+/// Replaces a file's contents atomically and durably, as g_file_set_contents_full
+/// with consistent and durable flags: a synced temporary file is renamed over it.
+pub fn writeFileAtomic(a: std.mem.Allocator, path: []const u8, data: []const u8, mode: linux.mode_t) !void {
+    const prefix = try std.fmt.allocPrint(a, "{s}.", .{path});
+    defer a.free(prefix);
+    const temporary = try createTemporary(a, prefix);
+    defer a.free(temporary.path);
+    var renamed = false;
+    defer if (!renamed) {
+        _ = linux.unlinkat(linux.AT.FDCWD, temporary.path, 0);
+    };
+    {
+        defer _ = linux.close(temporary.fd);
+        if (linux.errno(linux.fchmod(temporary.fd, mode)) != .SUCCESS) return error.WriteFailed;
+        var written: usize = 0;
+        while (written < data.len) {
+            const result = linux.write(temporary.fd, data[written..].ptr, data.len - written);
+            switch (linux.errno(result)) {
+                .SUCCESS => written += result,
+                .INTR => {},
+                else => return error.WriteFailed,
+            }
+        }
+        if (linux.errno(linux.fsync(temporary.fd)) != .SUCCESS) return error.WriteFailed;
+    }
+    var name: [std.fs.max_path_bytes:0]u8 = undefined;
+    const target = terminate(path, &name) orelse return error.InvalidPath;
+    if (linux.errno(linux.renameat(linux.AT.FDCWD, temporary.path, linux.AT.FDCWD, target)) != .SUCCESS) return error.WriteFailed;
+    renamed = true;
+}
+
+/// Creates a new private directory named `prefix` plus six random characters
+/// in $TMPDIR or /tmp, like g_dir_make_tmp.
+pub fn createTemporaryDirectory(a: std.mem.Allocator, prefix: []const u8) ![:0]u8 {
+    const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const base = util.env("TMPDIR") orelse "/tmp";
+    const path = try std.fmt.allocPrintSentinel(a, "{s}/{s}XXXXXX", .{ std.mem.trimEnd(u8, if (base.len > 0) base else "/tmp", "/"), prefix }, 0);
+    errdefer a.free(path);
+    for (0..100) |_| {
+        var random: [6]u8 = undefined;
+        if (linux.errno(linux.getrandom(&random, random.len, 0)) != .SUCCESS) return error.CreateDirectoryFailed;
+        for (random, path[path.len - 6 ..]) |byte, *slot| slot.* = alphabet[byte % alphabet.len];
+        switch (linux.errno(linux.mkdirat(linux.AT.FDCWD, path, 0o700))) {
+            .SUCCESS => return path,
+            .EXIST => continue,
+            else => return error.CreateDirectoryFailed,
+        }
+    }
+    return error.CreateDirectoryFailed;
+}
+
 /// Resolves "." and ".." and repeated or trailing slashes without touching the
 /// file system, as GLib does for file paths. Exactly two leading slashes stay,
 /// as POSIX allows them a distinct meaning.

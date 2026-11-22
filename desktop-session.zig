@@ -84,7 +84,7 @@ const Job = struct {
                 self.call(path, manager, "TerminateSession", .{@as([]const u8, id)}, 5000);
             } else {
                 self.stage = .session;
-                self.call(path, manager, "GetSessionByPID", .{@as(u32, @intCast(c.getpid()))}, 5000);
+                self.call(path, manager, "GetSessionByPID", .{@as(u32, @intCast(std.os.linux.getpid()))}, 5000);
             }
         } else {
             self.call(path, manager, switch (self.action) {

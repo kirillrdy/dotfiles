@@ -27,7 +27,7 @@ fn dump(service: *audio.Service) !void {
     for (service.nodes.items, nodes) |*entry, *view| view.* = .{ .id = entry.id, .class = entry.class, .name = std.mem.sliceTo(&entry.name, 0), .state = entry.state, .is_default = entry.is_default };
     const json = try std.json.Stringify.valueAlloc(arena.allocator(), .{ .ready = service.ready, .nodes = nodes }, .{});
     const text = try arena.allocator().dupeSentinel(u8, json, 0);
-    c.g_print("%s\n", text.ptr);
+    @import("desktop").util.printOut("{s}\n", .{text});
 }
 const Completion = struct {
     result: ?audio.Result = null,
@@ -173,7 +173,7 @@ fn ui(service: *audio.Service) !void {
     sound.close();
     while (!sound.closed) pump();
     assert(sound.closed and sound.timer == 0);
-    c.g_print("PASS native sound pointer, keyboard, volume, mute, defaults and pending-close controls\n");
+    @import("desktop").util.printOut("PASS native sound pointer, keyboard, volume, mute, defaults and pending-close controls\n", .{});
 }
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(init.gpa);
@@ -223,7 +223,7 @@ pub fn main(init: std.process.Init) !void {
         player.play(path); // Repeated volume keys keep the existing sound.
         while (c.__zig.monotonicTime() < start_time + 2_300_000) pump();
         assert(!player.playing());
-        c.g_print("PASS native event-sound playback without overlap\n");
+        @import("desktop").util.printOut("PASS native event-sound playback without overlap\n", .{});
         return;
     }
     if (std.mem.eql(u8, args[1], "list")) return dump(service);
@@ -232,7 +232,7 @@ pub fn main(init: std.process.Init) !void {
         _ = try apply(service, .output, .{ .volume = 100 });
         for (0..12) |_| _ = try apply(service, .output, .{ .step = -5 });
         assert(@abs(service.state(.output).?.percent - 40) < 0.01);
-        c.g_print("PASS serialized native volume steps preserve every key press\n");
+        @import("desktop").util.printOut("PASS serialized native volume steps preserve every key press\n", .{});
         return;
     }
     if (std.mem.eql(u8, args[1], "cancel")) {
@@ -244,12 +244,12 @@ pub fn main(init: std.process.Init) !void {
         const deadline = c.__zig.monotonicTime() + 6_000_000;
         while (completion.result == null and c.__zig.monotonicTime() < deadline) pump();
         assert(completion.result != null and completion.result.? == .failure);
-        c.g_print("PASS pending native audio cancellation\n");
+        @import("desktop").util.printOut("PASS pending native audio cancellation\n", .{});
         return;
     }
     if (args.len < 4) return error.ExpectedTargetAndChange;
     const target = try audio.target(args[2]);
     const change: audio.Change = if (std.mem.eql(u8, args[3], "volume") and args.len == 5) .{ .volume = try std.fmt.parseFloat(f64, args[4]) } else if (std.mem.eql(u8, args[3], "step") and args.len == 5) .{ .step = try std.fmt.parseInt(i16, args[4], 10) } else if (std.mem.eql(u8, args[3], "mute") and args.len == 5) .{ .mute = std.mem.eql(u8, args[4], "1") } else if (std.mem.eql(u8, args[3], "toggle")) .toggle else if (std.mem.eql(u8, args[3], "default")) .default else return error.InvalidChange;
     const result = try apply(service, target, change);
-    c.g_print("%.3f %d\n", result.percent, @as(c_int, @intFromBool(result.muted)));
+    @import("desktop").util.printOut("{d:.3} {d}\n", .{ result.percent, @intFromBool(result.muted) });
 }
