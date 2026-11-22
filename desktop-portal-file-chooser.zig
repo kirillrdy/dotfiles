@@ -11,7 +11,7 @@ const boolean = Options.boolean;
 const form = @import("desktop-form.zig");
 const files = @import("desktop-file-list.zig");
 const browser = @import("desktop-file-chooser-view.zig");
-extern fn g_get_user_config_dir() [*:0]const u8;
+const disk = @import("desktop-paths.zig");
 pub const Completion = portal_options.Completion;
 pub const Choice = struct { id: [:0]const u8, item: usize, boolean: bool };
 pub const Filter = struct { value: dbus.Value, id: [:0]const u8, name: [:0]const u8, rules: []const files.Rule };
@@ -117,16 +117,13 @@ pub const Dialog = struct {
         for (self.choices.items) |choice| try extras.append(self.arena.allocator(), choice.item);
         if (self.read_only) |id| try extras.append(self.arena.allocator(), id);
         self.view.extras = extras.items;
-        try self.addPlace("Home", std.mem.span(c.g_get_home_dir()), "user-home-symbolic");
+        try self.addPlace("Home", disk.home(), "user-home-symbolic");
         const labels = [_][:0]const u8{ "Desktop", "Documents", "Downloads", "Music", "Pictures", "Public", "Templates", "Videos" };
         const icons = [_][:0]const u8{ "user-desktop-symbolic", "folder-documents-symbolic", "folder-download-symbolic", "folder-music-symbolic", "folder-pictures-symbolic", "folder-publicshare-symbolic", "folder-templates-symbolic", "folder-videos-symbolic" };
         for (labels, icons, 0..) |label, icon, i| {
             if (i == 0 or i == 5 or i == 6) continue;
-            const path = c.g_get_user_special_dir(@intCast(i));
-            if (path == null) continue;
-            const file = c.g_file_new_for_path(path);
-            defer c.g_object_unref(file);
-            if (c.g_file_query_file_type(file, 0, null) == 2) try self.addPlace(label, std.mem.span(path), icon);
+            const path = disk.special(@fromBackingInt(@intCast(i))) orelse continue;
+            if (disk.isDirectory(path)) try self.addPlace(label, path, icon);
         }
         try self.addBookmarks();
         try self.addPlace("File System", "/", "drive-harddisk-symbolic");
@@ -140,7 +137,7 @@ pub const Dialog = struct {
         ui.scrolled = &scrolled;
         ui.double_clicked = &activated;
         const folder = try option(options, "current_folder", "ay");
-        var initial: [:0]const u8 = if (folder) |value| std.mem.span(try self.bytes(value, false)) else std.mem.span(c.g_get_home_dir());
+        var initial: [:0]const u8 = if (folder) |value| std.mem.span(try self.bytes(value, false)) else disk.home();
         if (kind == .save) {
             const file = try option(options, "current_file", "ay");
             if (file) |value| {
@@ -178,25 +175,18 @@ pub const Dialog = struct {
     }
     fn addBookmarks(self: *Dialog) !void {
         const a = self.arena.allocator();
-        const filename = try std.fmt.allocPrintSentinel(a, "{s}/gtk-3.0/bookmarks", .{g_get_user_config_dir()}, 0);
-        var contents: [*c]u8 = null;
-        var size: usize = 0;
-        if (c.g_file_get_contents(filename, &contents, &size, null) == 0) return;
-        defer c.g_free(contents);
-        var lines = std.mem.splitScalar(u8, contents[0..size], '\n');
+        const filename = try std.fmt.allocPrint(a, "{s}/gtk-3.0/bookmarks", .{disk.configHome()});
+        const contents = disk.readFile(a, filename, 1 << 20) catch return;
+        var lines = std.mem.splitScalar(u8, contents, '\n');
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, "\r");
             const split = std.mem.indexOfScalar(u8, trimmed, ' ') orelse trimmed.len;
             if (!std.mem.startsWith(u8, trimmed, "file://")) continue;
-            const uri = try a.dupeSentinel(u8, trimmed[0..split], 0);
-            const path = c.g_filename_from_uri(uri, null, null) orelse continue;
-            defer c.g_free(path);
-            const file = c.g_file_new_for_path(path);
-            defer c.g_object_unref(file);
-            if (c.g_file_query_file_type(file, 0, null) != 2) continue;
-            const label = if (split < trimmed.len) trimmed[split + 1 ..] else std.fs.path.basename(std.mem.span(path));
+            const path = disk.pathFromUri(a, trimmed[0..split]) orelse continue;
+            if (!disk.isDirectory(path)) continue;
+            const label = if (split < trimmed.len) trimmed[split + 1 ..] else std.fs.path.basename(path);
             if (!std.unicode.utf8ValidateSlice(label)) continue;
-            try self.addPlace(try a.dupeSentinel(u8, label, 0), std.mem.span(path), "folder-symbolic");
+            try self.addPlace(try a.dupeSentinel(u8, label, 0), path, "folder-symbolic");
         }
     }
     fn layout(ui: *form.Form) void {
@@ -647,13 +637,12 @@ pub const Dialog = struct {
                 owned.deinit(self.allocator);
             }
             const path = paths.items[0];
-            const file = c.g_file_new_for_path(path);
-            defer c.g_object_unref(file);
-            if (c.g_file_query_file_type(file, 0, null) == 2) {
+            const found = disk.kind(path);
+            if (found == .directory) {
                 self.navigate(path) catch {};
                 return;
             }
-            if (c.g_file_query_exists(file, null) != 0 and (self.overwrite == null or !eq(self.overwrite.?, path))) {
+            if (found != .missing and (self.overwrite == null or !eq(self.overwrite.?, path))) {
                 self.overwrite = self.arena.allocator().dupeSentinel(u8, path, 0) catch return;
                 self.message("This file exists. Select Save again to replace it, or edit the name.");
                 return;
@@ -773,9 +762,7 @@ pub const Dialog = struct {
             self.message("Enter an absolute folder or file path.");
             return true;
         }
-        const file = c.g_file_new_for_path(path);
-        defer c.g_object_unref(file);
-        if (c.g_file_query_file_type(file, 0, null) == 2) {
+        if (disk.isDirectory(path)) {
             self.navigate(path) catch {};
         } else if (!self.directory) {
             const name = self.arena.allocator().dupeSentinel(u8, std.fs.path.basename(path), 0) catch return true;
@@ -821,26 +808,23 @@ pub const Dialog = struct {
         }
         if (selected.items.len == 0) return error.NoSelection;
         if (self.method == .save_files) {
-            const directory = c.g_file_new_for_path(selected.items[0]);
-            defer c.g_object_unref(directory);
+            const directory = selected.items[0];
             var generated: std.ArrayList([:0]const u8) = .empty;
             for (self.names.items) |name| {
                 var candidate = name;
                 var suffix: usize = 0;
                 while (true) {
-                    const file = c.g_file_get_child(directory, candidate);
-                    defer c.g_object_unref(file);
-                    const uri = c.g_file_get_uri(file);
-                    defer c.g_free(uri);
+                    const child = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ directory, candidate });
+                    defer self.allocator.free(child);
+                    const uri = try disk.fileUri(self.arena.allocator(), child);
                     var duplicate = false;
-                    for (generated.items) |previous| if (eq(previous, std.mem.span(uri))) {
+                    for (generated.items) |previous| if (eq(previous, uri)) {
                         duplicate = true;
                         break;
                     };
-                    if (c.g_file_query_exists(file, null) == 0 and !duplicate) {
-                        const owned = try self.arena.allocator().dupeSentinel(u8, std.mem.span(uri), 0);
-                        try generated.append(self.arena.allocator(), owned);
-                        try uris.append(a, .{ .string = owned });
+                    if (!disk.exists(child) and !duplicate) {
+                        try generated.append(self.arena.allocator(), uri);
+                        try uris.append(a, .{ .string = uri });
                         break;
                     }
                     suffix += 1;
@@ -851,13 +835,7 @@ pub const Dialog = struct {
                 }
             }
         } else {
-            for (selected.items) |path| {
-                const file = c.g_file_new_for_path(path);
-                defer c.g_object_unref(file);
-                const uri = c.g_file_get_uri(file);
-                defer c.g_free(uri);
-                try uris.append(a, .{ .string = try a.dupe(u8, std.mem.span(uri)) });
-            }
+            for (selected.items) |path| try uris.append(a, .{ .string = try disk.fileUri(a, path) });
         }
         try out.put("uris", .{ .array = .{ .element = "s", .items = uris.items } });
         if (self.currentFilter()) |filter| try out.put("current_filter", filter.value);

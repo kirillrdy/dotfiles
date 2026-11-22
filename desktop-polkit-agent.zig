@@ -83,11 +83,9 @@ const Subject = struct {
             }
         }
         if (self.session_len > 0) return;
-        var contents: [*c]u8 = null;
-        var size: usize = 0;
-        if (c.g_file_get_contents("/proc/self/stat", &contents, &size, null) == 0) return error.PolicyKitUnavailable;
-        defer c.g_free(contents);
-        const bytes = contents[0..size];
+        var storage: [16 * 1024]u8 = undefined;
+        var fixed: std.heap.FixedBufferAllocator = .init(&storage);
+        const bytes = @import("desktop-paths.zig").readFile(fixed.allocator(), "/proc/self/stat", 4096) catch return error.PolicyKitUnavailable;
         const end = std.mem.lastIndexOfScalar(u8, bytes, ')') orelse return error.InvalidProcessStat;
         var fields = std.mem.tokenizeScalar(u8, bytes[end + 1 ..], ' ');
         for (0..19) |_| _ = fields.next() orelse return error.InvalidProcessStat;

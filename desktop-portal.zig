@@ -149,11 +149,9 @@ const Server = struct {
         }
         if (libc.__errno_location().* != libc.ENOENT) return error.CannotIdentifyClient;
         const environ = try std.fmt.bufPrintSentinel(&buffer, "/proc/{d}/environ", .{pid}, 0);
-        var contents: [*c]u8 = null;
-        var size: usize = 0;
-        if (c.g_file_get_contents(environ, &contents, &size, null) == 0) return error.CannotIdentifyClient;
-        defer c.g_free(contents);
-        var entries = std.mem.splitScalar(u8, contents[0..size], 0);
+        const contents = @import("desktop-paths.zig").readFile(self.allocator, environ, 1 << 20) catch return error.CannotIdentifyClient;
+        defer self.allocator.free(contents);
+        var entries = std.mem.splitScalar(u8, contents, 0);
         while (entries.next()) |entry| if (std.mem.startsWith(u8, entry, "SNAP=")) return error.SandboxedClientUnsupported;
         const item = try self.allocator.create(Client);
         errdefer self.allocator.destroy(item);
@@ -555,20 +553,13 @@ fn openUri(server: *Server, client_info: *Client, method: []const u8, args: []co
         if (fd < 0) return error.InvalidFileDescriptor;
         defer _ = libc.close(fd);
         const proc_path = try std.fmt.allocPrintSentinel(request.arena.allocator(), "/proc/self/fd/{d}", .{fd}, 0);
-        const target = c.g_file_read_link(proc_path, null) orelse return error.InvalidFileDescriptor;
-        defer c.g_free(target);
-        if (!std.mem.startsWith(u8, std.mem.span(target), "/")) return error.InvalidFileDescriptor;
-        var filename: [*:0]const u8 = target;
-        if (eq(method, "OpenDirectory")) {
-            const file = c.g_file_new_for_path(filename);
-            defer c.g_object_unref(file);
-            if (c.g_file_query_file_type(file, 0, null) != 2) filename = try request.arena.allocator().dupeSentinel(u8, std.fs.path.dirname(std.mem.span(filename)) orelse "/", 0);
-        }
-        const file = c.g_file_new_for_path(filename);
-        defer c.g_object_unref(file);
-        const file_uri = c.g_file_get_uri(file);
-        defer c.g_free(file_uri);
-        uri = try request.arena.allocator().dupeSentinel(u8, std.mem.span(file_uri), 0);
+        const files = @import("desktop-paths.zig");
+        const arena = request.arena.allocator();
+        const target = files.readLink(arena, proc_path) catch return error.InvalidFileDescriptor;
+        if (!std.mem.startsWith(u8, target, "/")) return error.InvalidFileDescriptor;
+        var filename: []const u8 = target;
+        if (eq(method, "OpenDirectory") and !files.isDirectory(filename)) filename = std.fs.path.dirname(filename) orelse "/";
+        uri = try files.fileUri(arena, filename);
     }
     replyHandle(server, message, request.handle);
     c.g_app_info_launch_default_for_uri_async(uri, null, request.cancel, &Request.uriFinished, request);

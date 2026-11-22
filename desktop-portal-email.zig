@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
+const files = @import("desktop-paths.zig");
 
 const portal_options = @import("desktop-portal-options.zig");
 const Options = portal_options.Options(error.InvalidEmailOption);
@@ -65,9 +66,9 @@ fn attachmentUri(allocator: std.mem.Allocator, descriptors: []const i32, handle:
     if (original.mode & std.c.S.IFMT != std.c.S.IFREG) return error.InvalidAttachment;
     var buffer: [64]u8 = undefined;
     const proc_path = try std.fmt.bufPrintSentinel(&buffer, "/proc/self/fd/{d}", .{fd}, 0);
-    const filename = c.g_file_read_link(proc_path, null) orelse return error.InvalidAttachment;
-    defer c.g_free(filename);
-    if (!std.mem.startsWith(u8, std.mem.span(filename), "/")) return error.InvalidAttachment;
+    const filename = files.readLink(allocator, proc_path) catch return error.InvalidAttachment;
+    defer allocator.free(filename);
+    if (!std.mem.startsWith(u8, filename, "/")) return error.InvalidAttachment;
     // The mail client opens this path later. Require an existing readable file
     // referring to the passed descriptor, rather than an anonymous/deleted fd.
     const reopened = libc.open(filename, libc.O_RDONLY | libc.O_CLOEXEC | libc.O_NONBLOCK);
@@ -75,11 +76,7 @@ fn attachmentUri(allocator: std.mem.Allocator, descriptors: []const i32, handle:
     defer _ = libc.close(reopened);
     const current = try fileStat(reopened);
     if (current.dev_major != original.dev_major or current.dev_minor != original.dev_minor or current.ino != original.ino) return error.InvalidAttachment;
-    const file = c.g_file_new_for_path(filename);
-    defer c.g_object_unref(file);
-    const uri = c.g_file_get_uri(file);
-    defer c.g_free(uri);
-    return allocator.dupeSentinel(u8, std.mem.span(uri), 0);
+    return files.fileUri(allocator, filename);
 }
 
 pub fn composeUri(allocator: std.mem.Allocator, options: portal_options.Dict, descriptors: []const i32) ![:0]const u8 {

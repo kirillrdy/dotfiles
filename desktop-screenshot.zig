@@ -654,13 +654,13 @@ pub fn captureAndWrite(options: Options, allocator: std.mem.Allocator) !void {
             try writeFile(zpath, encoded);
         }
     } else if (options.save_default) {
-        const pictures = c.g_get_user_special_dir(c.G_USER_DIRECTORY_PICTURES);
-        const directory = if (pictures != null)
-            try std.fmt.allocPrintSentinel(allocator, "{s}/Screenshots", .{std.mem.span(pictures)}, 0)
+        const files = @import("desktop-paths.zig");
+        const directory = if (files.special(.pictures)) |pictures|
+            try std.fmt.allocPrintSentinel(allocator, "{s}/Screenshots", .{pictures}, 0)
         else
-            try std.fmt.allocPrintSentinel(allocator, "{s}/Pictures/Screenshots", .{std.mem.span(c.g_get_home_dir())}, 0);
+            try std.fmt.allocPrintSentinel(allocator, "{s}/Pictures/Screenshots", .{files.home()}, 0);
         defer allocator.free(directory);
-        if (c.g_mkdir_with_parents(directory, 0o755) != 0) return error.CreateDirectoryFailed;
+        try files.makeDirectories(directory, 0o755);
         const now = try @import("desktop-datetime.zig").DateTime.now();
         var stamp: [64]u8 = undefined;
         const timestamp = try now.format(&stamp, "%Y-%m-%d_%H-%M-%S_%f");

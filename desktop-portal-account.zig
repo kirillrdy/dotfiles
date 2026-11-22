@@ -32,17 +32,12 @@ pub const Dialog = struct {
         };
         errdefer self.destroy();
         const a = self.arena.allocator();
-        self.id = try a.dupeSentinel(u8, std.mem.span(c.g_get_user_name()), 0);
-        const real = std.mem.span(c.g_get_real_name());
-        self.name = try a.dupeSentinel(u8, if (std.mem.eql(u8, real, "Unknown") or real.len == 0) self.id else real, 0);
-        const face = try std.fmt.allocPrintSentinel(a, "{s}/.face", .{c.g_get_home_dir()}, 0);
-        const file = c.g_file_new_for_path(face);
-        defer c.g_object_unref(file);
-        if (c.g_file_query_file_type(file, 0, null) == 1) {
-            const uri = c.g_file_get_uri(file);
-            defer c.g_free(uri);
-            self.image = try a.dupeSentinel(u8, std.mem.span(uri), 0);
-        }
+        const files = @import("desktop-paths.zig");
+        self.id = try a.dupeSentinel(u8, files.userName(), 0);
+        const real = files.realName();
+        self.name = try a.dupeSentinel(u8, if (real.len == 0) self.id else real, 0);
+        const face = try std.fmt.allocPrint(a, "{s}/.face", .{files.home()});
+        if (files.kind(face) == .file) self.image = try files.fileUri(a, face);
         const prompt = try std.fmt.allocPrintSentinel(a, "{s} wants to access your account information.\n{s}\nName: {s}\nUser name: {s}\n{s}", .{ app, reason, self.name, self.id, if (self.image.len > 0) "Your account picture will also be shared." else "" }, 0);
         self.host = try auth.Dialog.createWithOptions(allocator, .confirm, prompt, .{ .title = "Share account information", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .parent = parent, .response_context = self, .responded = &responded });
         return self;

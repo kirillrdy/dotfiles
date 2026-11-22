@@ -449,11 +449,9 @@ pub const Service = struct {
         errdefer allocator.destroy(self);
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
-        var contents: [*c]u8 = null;
-        var length: c.gsize = 0;
-        if (c.g_file_get_contents(config_path, &contents, &length, null) == 0) return error.InvalidConfig;
-        defer c.g_free(contents);
-        const parsed = try std.json.parseFromSlice(Config, arena.allocator(), contents[0..length], .{});
+        // Parsed strings may refer to the file contents, so both live in the arena.
+        const contents = @import("desktop-paths.zig").readFile(arena.allocator(), config_path, 1 << 20) catch return error.InvalidConfig;
+        const parsed = try std.json.parseFromSlice(Config, arena.allocator(), contents, .{});
         if (parsed.value.height == 0) return error.InvalidConfig;
         self.* = .{ .arena = arena, .app = .{ .allocator = allocator, .config = parsed.value, .devices = devices } };
         const client = try wire.Client.createInteractive(allocator, .{

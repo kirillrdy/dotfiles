@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("desktop-glib.zig");
 const decode = @import("desktop-decode.zig");
+const files = @import("desktop-paths.zig");
 const Image = decode.Image;
 const Color = @import("desktop-raster.zig").Color;
 extern "c" fn access([*:0]const u8, c_int) c_int;
@@ -90,8 +91,8 @@ pub const Resolver = struct {
         var theme: Theme = .{ .name = try alloc.dupe(u8, name) };
         for (self.roots) |root| {
             const path = try std.fmt.allocPrintSentinel(alloc, "{s}/{s}/index.theme", .{ root, name }, 0);
-            const data = read(path) orelse continue;
-            defer c.g_free(data.ptr);
+            const data = read(self.arena.child_allocator, path) orelse continue;
+            defer self.arena.child_allocator.free(data);
             var section: []const u8 = "";
             var lines = std.mem.splitScalar(u8, data, '\n');
             while (lines.next()) |raw| {
@@ -234,11 +235,8 @@ fn list(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8), value: []
         if (part.len != 0) try out.append(allocator, try allocator.dupe(u8, part));
     }
 }
-fn read(path: [:0]const u8) ?[]u8 {
-    var data: [*c]u8 = null;
-    var len: usize = 0;
-    if (c.g_file_get_contents(path, &data, &len, null) == 0) return null;
-    return data[0..len];
+fn read(a: std.mem.Allocator, path: []const u8) ?[]u8 {
+    return files.readFile(a, path, 1 << 20) catch null;
 }
 
 // The desktop shares icon lookup metadata for the lifetime of the UI.
@@ -276,9 +274,8 @@ fn makeResolver(a: std.mem.Allocator, settings: ?*@import("desktop-gsettings.zig
     const alloc = arena.allocator();
     var roots: std.ArrayList([]const u8) = .empty;
     for ([_][:0]const u8{ "DESKTOP_PANEL_ICON_PATH", "DESKTOP_APPS_ICON_PATH" }) |name| if (c.__zig.getenv(name)) |path| try roots.append(alloc, std.mem.span(path));
-    const home = std.mem.span(c.g_get_home_dir());
-    try roots.append(alloc, try std.fmt.allocPrint(alloc, "{s}/.icons", .{home}));
-    try roots.append(alloc, try std.fmt.allocPrint(alloc, "{s}/icons", .{std.mem.span(c.g_get_user_data_dir())}));
+    try roots.append(alloc, try std.fmt.allocPrint(alloc, "{s}/.icons", .{files.home()}));
+    try roots.append(alloc, try std.fmt.allocPrint(alloc, "{s}/icons", .{files.dataHome()}));
     const dirs = if (c.__zig.getenv("XDG_DATA_DIRS")) |value| std.mem.span(value) else "/usr/local/share:/usr/share";
     var paths = std.mem.splitScalar(u8, dirs, ':');
     while (paths.next()) |path| if (std.fs.path.isAbsolute(path)) {

@@ -428,20 +428,12 @@ pub const Zone = struct {
     }
 };
 
-var local_zone: Zone = .{};
-var local_state = std.atomic.Value(u8).init(0);
+fn loadLocalZone() Zone {
+    return Zone.load(std.heap.page_allocator);
+}
 
 /// The process's local zone, loaded once like libc's and GLib's.
-fn localZone() *const Zone {
-    if (local_state.load(.acquire) == 2) return &local_zone;
-    if (local_state.cmpxchgStrong(0, 1, .acquire, .monotonic) == null) {
-        local_zone = Zone.load(std.heap.page_allocator);
-        local_state.store(2, .release);
-        return &local_zone;
-    }
-    while (local_state.load(.acquire) != 2) std.atomic.spinLoopHint();
-    return &local_zone;
-}
+const localZone = @import("desktop-util.zig").Lazy(Zone, loadLocalZone).get;
 
 test "calendar arithmetic clamps months and crosses leap days and years" {
     const leap = try DateTime.local(2024, 2, 29, 12, 0, 0);

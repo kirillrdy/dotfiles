@@ -43,10 +43,6 @@ pub const struct__GError = extern struct {
 pub const GError = struct__GError;
 pub extern fn g_error_free(@"error": [*c]GError) void;
 pub extern fn g_clear_error(err: [*c][*c]GError) void;
-pub extern fn g_get_home_dir() [*c]const gchar;
-pub const G_USER_DIRECTORY_PICTURES: c_int = 4;
-pub const GUserDirectory = c_uint;
-pub extern fn g_get_user_special_dir(directory: GUserDirectory) [*c]const gchar;
 pub extern fn close(__fd: c_int) c_int;
 pub extern fn write(__fd: c_int, __buf: ?*const anyopaque, __n: usize) isize;
 pub extern fn getpid() __pid_t;
@@ -54,15 +50,11 @@ pub extern fn getuid() __uid_t;
 pub extern fn fork() __pid_t;
 pub extern fn ftruncate(__fd: c_int, __length: __off_t) c_int;
 
-pub extern fn g_filename_from_uri(uri: [*c]const gchar, hostname: [*c][*c]gchar, @"error": [*c][*c]GError) [*c]gchar;
 pub const struct__GData = opaque {};
 
 pub const GData = struct__GData;
 pub extern fn g_setenv(variable: [*c]const gchar, value: [*c]const gchar, overwrite: gboolean) gboolean;
-pub extern fn g_file_get_contents(filename: [*c]const gchar, contents: [*c][*c]gchar, length: [*c]gsize, @"error": [*c][*c]GError) gboolean;
 pub extern fn g_dir_make_tmp(tmpl: [*c]const gchar, @"error": [*c][*c]GError) [*c]gchar;
-pub extern fn g_mkdir_with_parents(pathname: [*c]const gchar, mode: gint) gint;
-pub extern fn g_path_is_absolute(file_name: [*c]const gchar) gboolean;
 pub extern fn g_free(mem: gpointer) void;
 pub extern fn g_malloc0_n(n_blocks: gsize, n_block_bytes: gsize) gpointer;
 pub const GList = struct__GList;
@@ -101,7 +93,6 @@ pub const GNormalizeMode = c_uint;
 pub extern fn g_utf8_normalize(str: [*c]const gchar, len: gssize, mode: GNormalizeMode) [*c]gchar;
 pub extern fn g_utf8_collate(str1: [*c]const gchar, str2: [*c]const gchar) gint;
 pub extern fn g_strlcpy(dest: [*c]gchar, src: [*c]const gchar, dest_size: gsize) gsize;
-pub extern fn g_str_has_prefix(str: [*c]const gchar, prefix: [*c]const gchar) gboolean;
 pub extern fn g_strdup(str: [*c]const gchar) [*c]gchar;
 pub extern fn g_strndup(str: [*c]const gchar, n: gsize) [*c]gchar;
 pub extern fn g_strdup_printf(format: [*c]const gchar, ...) [*c]gchar;
@@ -338,12 +329,8 @@ pub extern fn g_desktop_app_info_get_boolean(info: ?*GDesktopAppInfo, key: [*c]c
 pub extern fn g_unix_signal_add(signum: gint, handler: GSourceFunc, user_data: gpointer) guint;
 pub const GUnixFDSourceFunc = ?*const fn (fd: gint, condition: GIOCondition, user_data: gpointer) callconv(.c) gboolean;
 pub extern fn g_unix_fd_add(fd: gint, condition: GIOCondition, function: GUnixFDSourceFunc, user_data: gpointer) guint;
-pub extern fn g_mkstemp([*c]u8) c_int;
-pub extern fn g_filename_to_uri([*c]const u8, [*c]const u8, [*c][*c]GError) [*c]u8;
-pub extern fn g_get_user_runtime_dir() [*:0]const u8;
 pub const SIGINT = @as(c_int, 2);
 pub const SIGTERM = @as(c_int, 15);
-pub extern fn g_file_read_link([*c]const gchar, [*c][*c]GError) [*c]gchar;
 pub extern fn g_subprocess_launcher_take_fd(?*GSubprocessLauncher, gint, gint) void;
 pub extern fn g_cancellable_is_cancelled([*c]GCancellable) gboolean;
 pub extern fn g_cancellable_connect([*c]GCancellable, GCallback, gpointer, GDestroyNotify) gulong;
@@ -358,14 +345,12 @@ pub extern fn g_variant_parse(?*const GVariantType, [*c]const gchar, [*c]const g
 pub extern fn g_app_info_launch_default_for_uri_async([*c]const gchar, ?*GAppLaunchContext, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
 pub extern fn g_app_info_launch_default_for_uri_finish(?*GAsyncResult, [*c][*c]GError) gboolean;
 pub extern fn g_app_info_get_default_for_uri_scheme([*c]const gchar) ?*GAppInfo;
-pub extern fn g_file_get_uri(?*GFile) [*c]gchar;
 pub extern fn g_variant_take_ref(?*GVariant) ?*GVariant;
 pub const GNetworkMonitor = opaque {};
 pub extern fn g_network_monitor_get_default() ?*GNetworkMonitor;
 pub extern fn g_network_monitor_get_network_available(?*GNetworkMonitor) gboolean;
 pub extern fn g_network_monitor_get_network_metered(?*GNetworkMonitor) gboolean;
 pub extern fn g_network_monitor_get_connectivity(?*GNetworkMonitor) c_uint;
-pub extern fn g_file_query_file_type(?*GFile, c_uint, [*c]GCancellable) c_uint;
 pub const GSocketConnectable = opaque {};
 pub extern fn g_network_address_new([*c]const gchar, u16) ?*GSocketConnectable;
 pub extern fn g_network_monitor_can_reach_async(?*GNetworkMonitor, ?*GSocketConnectable, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
@@ -373,15 +358,10 @@ pub extern fn g_network_monitor_can_reach_finish(?*GNetworkMonitor, ?*GAsyncResu
 pub const GFileMonitor = opaque {};
 pub extern fn g_file_monitor_directory(?*GFile, c_uint, [*c]GCancellable, [*c][*c]GError) ?*GFileMonitor;
 pub extern fn g_file_monitor_cancel(?*GFileMonitor) gboolean;
-pub extern fn g_get_user_data_dir() [*c]const gchar;
 pub extern fn g_markup_escape_text([*c]const gchar, gssize) [*c]gchar;
 // File chooser dialogs run in the native portal process.
 pub extern fn g_variant_equal(gconstpointer, gconstpointer) gboolean;
-pub extern fn g_file_get_child(?*GFile, [*c]const gchar) ?*GFile;
-pub extern fn g_file_query_exists(?*GFile, [*c]GCancellable) gboolean;
 pub extern fn g_idle_add(GSourceFunc, gpointer) guint;
-pub extern fn g_get_user_name() [*c]const gchar;
-pub extern fn g_get_real_name() [*c]const gchar;
 pub extern fn g_strcompress([*c]const gchar) [*c]gchar;
 pub extern fn g_app_launch_context_setenv(?*GAppLaunchContext, [*c]const gchar, [*c]const gchar) void;
 pub extern fn g_app_launch_context_get_type() GType;

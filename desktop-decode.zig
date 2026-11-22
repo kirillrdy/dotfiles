@@ -84,34 +84,8 @@ pub fn symbolic(allocator: std.mem.Allocator, data: []const u8, size: u32, palet
 }
 
 /// Reads a whole image file, bounded by the decoder's input limit.
-/// Uses libc directly so it works in any thread or test client, without a
-/// process-wide std.Io instance.
 pub fn read(allocator: std.mem.Allocator, path: []const u8) ?[]const u8 {
-    var name: [std.fs.max_path_bytes:0]u8 = undefined;
-    if (path.len >= name.len) return null;
-    @memcpy(name[0..path.len], path);
-    name[path.len] = 0;
-    const handle = std.c.fopen(&name, "rb") orelse return null;
-    defer _ = std.c.fclose(handle);
-    var data: std.ArrayList(u8) = .empty;
-    while (true) {
-        data.ensureUnusedCapacity(allocator, 64 << 10) catch {
-            data.deinit(allocator);
-            return null;
-        };
-        const unused = data.unusedCapacitySlice();
-        const n = std.c.fread(unused.ptr, 1, unused.len, handle);
-        data.items.len += n;
-        if (data.items.len > max_encoded) {
-            data.deinit(allocator);
-            return null;
-        }
-        if (n < unused.len) break;
-    }
-    return data.toOwnedSlice(allocator) catch {
-        data.deinit(allocator);
-        return null;
-    };
+    return @import("desktop-paths.zig").readFile(allocator, path, max_encoded) catch null;
 }
 
 /// Decodes a PNG or SVG file at its natural size, or scaled to fit a `size` square.

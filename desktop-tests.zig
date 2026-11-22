@@ -189,6 +189,7 @@ test {
     _ = @import("desktop-login-ui.zig");
     _ = @import("desktop-login-client.zig");
     _ = @import("desktop-datetime.zig");
+    _ = @import("desktop-paths.zig");
     _ = @import("desktop-greeter-view.zig");
     _ = @import("desktop-greeter.zig");
     _ = @import("desktop-dm.zig");

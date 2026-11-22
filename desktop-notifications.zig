@@ -417,11 +417,10 @@ fn imageHint(a: std.mem.Allocator, hints: Hints) ?c.__icons.Image {
         return decode.Image.normalize(a, .{ .pixels = bytes, .width = @intCast(width), .height = @intCast(height), .stride = @intCast(stride), .format = if (alpha) .rgba else .rgb }) catch null;
     }
     const value = hintString(hints, "image-path") orelse return null;
-    const text = a.dupeSentinel(u8, value, 0) catch return null;
-    defer a.free(text);
-    const file = if (c.g_str_has_prefix(text, "file://") != 0) c.g_filename_from_uri(text, null, null) else c.g_strdup(text);
-    defer c.g_free(file);
-    if (file != null and c.g_path_is_absolute(file) != 0) return @import("desktop-decode.zig").file(a, file, 48);
+    const files = @import("desktop-paths.zig");
+    const file = (if (std.mem.startsWith(u8, value, "file://")) files.pathFromUri(a, value) else a.dupeSentinel(u8, value, 0) catch null) orelse return null;
+    defer a.free(file);
+    if (std.fs.path.isAbsolute(file)) return @import("desktop-decode.zig").file(a, file, 48);
     return null;
 }
 fn method(data: ?*anyopaque, message: *const dbus.Message) void {

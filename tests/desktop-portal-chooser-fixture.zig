@@ -83,15 +83,13 @@ fn uris(result: Dict) []const dbus.Value {
     return lookup(result, "uris").?.array.items;
 }
 fn checkUri(data_allocator: std.mem.Allocator, result: Dict, expected: [:0]const u8) !void {
-    const file = c.g_file_new_for_path(expected);
-    defer c.g_object_unref(file);
-    const uri = c.g_file_get_uri(file);
-    defer c.g_free(uri);
+    const uri = try @import("desktop").paths.fileUri(data_allocator, expected);
+    defer data_allocator.free(uri);
     var found = false;
     for (uris(result)) |item| {
-        if (std.mem.eql(u8, std.mem.span(uri), item.string)) found = true;
+        if (std.mem.eql(u8, uri, item.string)) found = true;
     }
-    if (!found) std.debug.print("expected URI {s}, got {s}\n", .{ std.mem.span(uri), print(data_allocator, lookup(result, "uris").?) });
+    if (!found) std.debug.print("expected URI {s}, got {s}\n", .{ uri, print(data_allocator, lookup(result, "uris").?) });
     try expect(found);
 }
 pub fn main(init: std.process.Init) !void {

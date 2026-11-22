@@ -51,7 +51,7 @@ pub const Service = struct {
             defer allocator.free(directory);
             try self.watch(directory);
         }
-        const data = c.g_get_user_data_dir();
+        const data = @import("desktop-paths.zig").dataHome();
         const fonts = try std.fmt.allocPrintSentinel(allocator, "{s}/fonts", .{data}, 0);
         defer allocator.free(fonts);
         try self.watch(fonts);

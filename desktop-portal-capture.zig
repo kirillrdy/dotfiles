@@ -414,22 +414,24 @@ pub const Operation = struct {
                 .stride = stride,
             }) catch return self.finish(2, null);
             defer allocator.free(encoded);
-            const filename = std.fmt.allocPrintSentinel(allocator, "{s}/desktop-screenshot-XXXXXX", .{c.g_get_user_runtime_dir()}, 0) catch return self.finish(2, null);
+            const files = @import("desktop-paths.zig");
+            const prefix = std.fmt.allocPrint(allocator, "{s}/desktop-screenshot-", .{files.runtimeDir()}) catch return self.finish(2, null);
+            defer allocator.free(prefix);
+            const created = files.createTemporary(allocator, prefix) catch return self.finish(2, null);
+            const filename = created.path;
             defer allocator.free(filename);
-            const fd = c.g_mkstemp(filename);
-            if (fd < 0) return self.finish(2, null);
+            const fd = created.fd;
             defer _ = libc.close(fd);
             sc.writeAll(fd, encoded) catch {
                 _ = libc.unlink(filename);
                 return self.finish(2, null);
             };
-            const uri = c.g_filename_to_uri(filename, null, null);
-            if (uri == null) {
+            const uri = files.fileUri(allocator, filename) catch {
                 _ = libc.unlink(filename);
                 return self.finish(2, null);
-            }
-            defer c.g_free(uri);
-            entry = .{ .key = "uri", .value = .{ .string = std.mem.span(uri) } };
+            };
+            defer allocator.free(uri);
+            entry = .{ .key = "uri", .value = .{ .string = uri } };
             return self.finish(0, .{ .entries = (&entry)[0..1] });
         }
         self.finish(0, .{ .entries = (&entry)[0..1] });

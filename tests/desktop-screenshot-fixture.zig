@@ -74,17 +74,17 @@ fn roundTrip(allocator: std.mem.Allocator, image: screenshot.png.Image) !void {
     const encoded = try screenshot.png.encode(allocator, image);
     defer allocator.free(encoded);
     try std.testing.expectEqualStrings("\x89PNG\r\n\x1a\n", encoded[0..8]);
-    var path = "/tmp/desktop-png-XXXXXX".*;
-    const fd = c.g_mkstemp(&path);
-    defer _ = libc.unlink(&path);
-    try std.testing.expect(fd >= 0);
+    const created = try @import("desktop").paths.createTemporary(allocator, "/tmp/desktop-png-");
+    const path = created.path;
+    defer allocator.free(path);
+    defer _ = libc.unlink(path);
     {
-        defer _ = libc.close(fd);
-        try screenshot.writeAll(fd, encoded);
+        defer _ = libc.close(created.fd);
+        try screenshot.writeAll(created.fd, encoded);
     }
     // Decode with the existing C library as an independent reference.
     const decode = @import("desktop").decode;
-    const decoded = decode.file(allocator, &path, null) orelse return error.PngDecodeFailed;
+    const decoded = decode.file(allocator, path, null) orelse return error.PngDecodeFailed;
     defer decode.free(allocator, decoded);
     try std.testing.expectEqual(image.width, decoded.width);
     try std.testing.expectEqual(image.height, decoded.height);

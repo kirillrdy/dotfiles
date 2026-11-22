@@ -223,7 +223,7 @@ pub const View = struct {
             const r = ui.get(self.location).bounds;
             fill(canvas, r, 0x333336, 9);
             try self.icon(ui.allocator, canvas, "drive-harddisk-symbolic", r.x + 12, r.y + 9, 16);
-            const home = std.mem.span(c.g_get_home_dir());
+            const home = @import("desktop-paths.zig").home();
             var path = std.mem.tokenizeScalar(u8, self.folder, '/');
             var x = r.x + 34;
             const root_label: [:0]const u8 = if (std.mem.startsWith(u8, self.folder, home)) "Home" else "NixOS";

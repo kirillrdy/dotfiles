@@ -78,9 +78,26 @@ pub fn exists(path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
-pub fn env(name: [:0]const u8) ?[]const u8 {
+pub fn env(name: [:0]const u8) ?[:0]const u8 {
     const value = libc.getenv(name);
     return if (value == null) null else std.mem.span(value);
+}
+/// A value computed once on first use, from any thread.
+pub fn Lazy(comptime T: type, comptime compute: fn () T) type {
+    return struct {
+        var value: T = undefined;
+        var state = std.atomic.Value(u8).init(0);
+        pub fn get() *const T {
+            if (state.load(.acquire) == 2) return &value;
+            if (state.cmpxchgStrong(0, 1, .acquire, .monotonic) == null) {
+                value = compute();
+                state.store(2, .release);
+                return &value;
+            }
+            while (state.load(.acquire) != 2) std.atomic.spinLoopHint();
+            return &value;
+        }
+    };
 }
 pub fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);

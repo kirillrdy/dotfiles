@@ -744,8 +744,8 @@ fn quit(data: ?*anyopaque) callconv(.c) c_int {
     return 1;
 }
 pub fn run(allocator: std.mem.Allocator) !void {
-    const base = std.mem.span(c.g_get_user_data_dir());
-    if (c.g_mkdir_with_parents(base.ptr, 0o700) != 0) return error.CreateDirectory;
+    const base = @import("desktop-paths.zig").dataHome();
+    @import("desktop-paths.zig").makeDirectories(base, 0o700) catch return error.CreateDirectory;
     const directory = try std.fmt.allocPrintSentinel(allocator, "{s}/desktop-secrets", .{base}, 0);
     defer allocator.free(directory);
     return runAt(allocator, directory);
@@ -912,8 +912,8 @@ pub fn runImport(allocator: std.mem.Allocator) !void {
         if (!dialog.accepted) return error.Cancelled;
         if (try dialog.validatePassword()) break;
     }
-    const base = std.mem.span(c.g_get_user_data_dir());
-    if (c.g_mkdir_with_parents(base.ptr, 0o700) != 0) return error.CreateDirectory;
+    const base = @import("desktop-paths.zig").dataHome();
+    @import("desktop-paths.zig").makeDirectories(base, 0o700) catch return error.CreateDirectory;
     const directory = try std.fmt.allocPrintSentinel(a, "{s}/desktop-secrets", .{base}, 0);
     defer a.free(directory);
     try importAt(directory, dialog.entry.?.buffer.value());

@@ -143,10 +143,7 @@ pub const Service = struct {
 
     pub fn create(a: std.mem.Allocator, options: Options) !*Service {
         const path = if (options.lock_executable) |path| try a.dupeSentinel(u8, path, 0) else blk: {
-            const resolved = c.g_file_read_link("/proc/self/exe", null);
-            if (resolved == null) return error.ExecutablePathUnavailable;
-            defer c.g_free(resolved);
-            break :blk try a.dupeSentinel(u8, std.mem.span(resolved), 0);
+            break :blk @import("desktop-paths.zig").readLink(a, "/proc/self/exe") catch return error.ExecutablePathUnavailable;
         };
         errdefer a.free(path);
         const wallpaper = if (options.wallpaper) |value| try a.dupeSentinel(u8, value, 0) else null;
