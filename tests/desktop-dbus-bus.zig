@@ -4,37 +4,26 @@ const std = @import("std");
 const dbus = @import("dbus");
 const c = @import("../desktop-glib.zig");
 const a = std.testing.allocator;
-const gio = struct {
-    extern fn g_subprocess_get_stdout_pipe(*c.GSubprocess) *anyopaque;
-    extern fn g_input_stream_read(*anyopaque, [*]u8, usize, ?*anyopaque, ?*anyopaque) isize;
-    extern fn g_subprocess_force_exit(*c.GSubprocess) void;
-    extern fn g_subprocess_wait(*c.GSubprocess, ?*anyopaque, ?*anyopaque) c_int;
-    const stdout_pipe: c_uint = 1 << 2; // G_SUBPROCESS_FLAGS_STDOUT_PIPE
-};
+const io = std.testing.io;
 
 const Daemon = struct {
-    process: *c.GSubprocess,
+    process: std.process.Child,
     address: [:0]u8,
 
     fn start() !Daemon {
-        const argv = [_:null]?[*:0]const u8{ "dbus-daemon", "--session", "--nofork", "--print-address=1", "--address=unix:tmpdir=/tmp" };
-        const process = c.g_subprocess_newv(@ptrCast(&argv), gio.stdout_pipe, null) orelse return error.SkipZigTest;
-        errdefer c.g_object_unref(process);
-        const stream = gio.g_subprocess_get_stdout_pipe(process);
-        var line: [512]u8 = undefined;
-        var len: usize = 0;
-        while (len < line.len) {
-            const n = gio.g_input_stream_read(stream, line[len..].ptr, 1, null, null);
-            if (n <= 0 or line[len] == '\n') break;
-            len += 1;
-        }
+        var process = std.process.spawn(io, .{
+            .argv = &.{ "dbus-daemon", "--session", "--nofork", "--print-address=1", "--address=unix:tmpdir=/tmp" },
+            .stdout = .pipe,
+        }) catch return error.SkipZigTest;
+        errdefer process.kill(io);
+        var buffer: [512]u8 = undefined;
+        var reader = process.stdout.?.readerStreaming(io, &buffer);
         // The printed address may carry a guid; the runtime ignores unknown keys.
-        return .{ .process = process, .address = try a.dupeSentinel(u8, line[0..len], 0) };
+        const line = reader.interface.takeDelimiterExclusive('\n') catch return error.SkipZigTest;
+        return .{ .process = process, .address = try a.dupeSentinel(u8, line, 0) };
     }
-    fn stop(self: Daemon) void {
-        gio.g_subprocess_force_exit(self.process);
-        _ = gio.g_subprocess_wait(self.process, null, null);
-        c.g_object_unref(self.process);
+    fn stop(self: *Daemon) void {
+        self.process.kill(io);
         a.free(self.address);
     }
 };
@@ -103,7 +92,7 @@ fn requestName(connection: *dbus.Connection, name: []const u8) !void {
 
 test "integration: native D-Bus calls, errors, timeouts and owner-filtered signals" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
-    const daemon = try Daemon.start();
+    var daemon = try Daemon.start();
     defer daemon.stop();
     const client = try dbus.Connection.openBus(a, daemon.address);
     defer client.close();

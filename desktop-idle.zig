@@ -21,6 +21,7 @@ const portal_name = "org.freedesktop.portal.Desktop";
 const portal_path = "/org/dotfiles/Portal";
 const portal_interface = "org.dotfiles.Portal";
 const cast = c.__zig.cast;
+const Process = @import("desktop-process.zig").Process;
 
 pub const Options = struct {
     timeout_ms: u32 = 10 * 60 * 1000,
@@ -136,7 +137,7 @@ pub const Service = struct {
     audio_inhibited: bool = false,
     last_inhibited: bool = false,
     cancel: [*c]c.GCancellable,
-    process: ?*c.GSubprocess = null,
+    process: ?*Process = null,
     ready_fd: c_int = -1,
     ready_source: c.guint = 0,
     lock_ready: bool = false,
@@ -165,6 +166,7 @@ pub const Service = struct {
         self.closeReady();
         // A running locker continues independently when the shell exits.
         c.g_cancellable_cancel(self.cancel);
+        if (self.process) |child| child.cancel();
         self.unref();
     }
     fn unref(self: *Service) void {
@@ -627,16 +629,12 @@ pub const Service = struct {
             std.log.warn("idle: lock readiness pipe failed", .{});
             return;
         }
-        const launcher = c.g_subprocess_launcher_new(0);
-        defer c.g_object_unref(launcher);
-        c.g_subprocess_launcher_take_fd(launcher, fds[1], 3);
-        // The first null ends argv when there is no wallpaper.
-        var argv = [_:null]?[*:0]const u8{ self.executable.ptr, "lock", "--ready-fd", "3", null, null };
-        if (self.wallpaper) |path| {
-            argv[4] = "--wallpaper";
-            argv[5] = path.ptr;
-        }
-        self.process = c.g_subprocess_launcher_spawnv(launcher, @ptrCast(&argv), null) orelse {
+        const with_wallpaper = [_][:0]const u8{ self.executable, "lock", "--ready-fd", "3", "--wallpaper", self.wallpaper orelse "" };
+        const argv = if (self.wallpaper != null) with_wallpaper[0..] else with_wallpaper[0..4];
+        // The child receives the pipe's write end as descriptor 3.
+        const spawned = Process.spawn(self.allocator, argv, .{ .fds = &.{.{ .source = fds[1], .target = 3 }} }, &exited, self);
+        _ = libc.close(fds[1]);
+        self.process = spawned catch {
             _ = libc.close(fds[0]);
             std.log.warn("idle: could not start lock client; retaining sleep inhibitor", .{});
             return;
@@ -645,7 +643,6 @@ pub const Service = struct {
         self.ready_fd = fds[0];
         self.ready_source = c.g_unix_fd_add(self.ready_fd, c.G_IO_IN | c.G_IO_HUP | c.G_IO_ERR, &ready, self);
         self.refs += 1;
-        c.g_subprocess_wait_async(self.process, self.cancel, &exited, self);
     }
     fn closeReady(self: *Service) void {
         if (self.ready_source != 0) _ = c.g_source_remove(self.ready_source);
@@ -672,15 +669,14 @@ pub const Service = struct {
         if (!was_ready) std.log.warn("idle: lock readiness failed; retaining sleep inhibitor", .{});
         return 0;
     }
-    fn exited(source: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+    fn exited(data: ?*anyopaque, result: *const @import("desktop-process.zig").Result) void {
         const self = cast(Service, data);
         defer self.unref();
-        const waited = c.g_subprocess_wait_finish(@ptrCast(source), result, null) != 0;
-        const successful = waited and c.g_subprocess_get_successful(@ptrCast(source)) != 0;
+        const waited = !result.cancelled;
+        const successful = result.successful();
         if (!self.stopped and waited and !successful) std.log.warn("idle: lock client failed; retaining sleep inhibitor", .{});
         self.closeReady();
         self.lock_ready = false;
-        c.g_object_unref(self.process);
         self.process = null;
         if (!self.stopped and self.sleeping and successful) self.ensureLocked();
     }

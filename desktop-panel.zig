@@ -22,9 +22,7 @@ const Slot = struct {
 
 fn spawnAsync(command: [:0]const u8) void {
     if (command.len == 0) return;
-    var err: ?*c.GError = null;
-    _ = c.g_spawn_command_line_async(command.ptr, &err);
-    c.g_clear_error(&err);
+    @import("desktop-quick-settings.zig").spawnCommandLine(std.heap.page_allocator, command);
 }
 
 const Panel = struct {

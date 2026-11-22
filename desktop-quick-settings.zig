@@ -374,9 +374,7 @@ pub const Controls = struct {
 
     fn launch(self: *Controls, command: [:0]const u8) void {
         self.hide();
-        var err: [*c]c.GError = null;
-        _ = c.g_spawn_command_line_async(command, &err);
-        c.g_clear_error(&err);
+        spawnCommandLine(self.allocator, command);
     }
     pub fn show(self: *Controls, global_x: i32, global_y: i32) !void {
         if (self.dead) return;
@@ -633,9 +631,8 @@ pub const Controls = struct {
     fn screenshot(ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Controls, ptr);
         if (!self.dead) {
-            const executable: [*:0]const u8 = if (c.__zig.getenv("DESKTOP_POWER_HELPER")) |value| @ptrCast(value) else "desktop-zig";
-            const argv = [_:null]?[*:0]const u8{ executable, "screenshot" };
-            @import("desktop-command.zig").launch(self.allocator, "Screenshot", @ptrCast(&argv));
+            const executable: [:0]const u8 = if (c.__zig.getenv("DESKTOP_POWER_HELPER")) |value| std.mem.span(value) else "desktop-zig";
+            @import("desktop-command.zig").launch(self.allocator, "Screenshot", &.{ executable, "screenshot" });
         }
         self.release();
         return 0;
@@ -699,3 +696,12 @@ pub const Controls = struct {
         }
     }
 };
+
+/// Starts a command line detached, as g_spawn_command_line_async; failures are logged.
+pub fn spawnCommandLine(a: std.mem.Allocator, command: []const u8) void {
+    const process = @import("desktop-process.zig");
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const argv = process.shellParse(arena.allocator(), command) catch |err| return std.log.warn("{s}: {s}", .{ command, @errorName(err) });
+    process.spawnDetached(a, argv, .{}) catch |err| std.log.warn("{s}: {s}", .{ command, @errorName(err) });
+}

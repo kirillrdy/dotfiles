@@ -6,12 +6,9 @@ const c = desktop.screenshot.c;
 const libc = desktop.libc;
 
 fn work(allocator: std.mem.Allocator, binary: [:0]const u8) void {
-    const success = [_:null]?[*:0]const u8{ binary, "success" };
-    commands.launch(allocator, "Successful command", @ptrCast(&success));
-    const failure = [_:null]?[*:0]const u8{ binary, "failure" };
-    commands.launch(allocator, "Nonzero command", @ptrCast(&failure));
-    const signal = [_:null]?[*:0]const u8{ binary, "signal" };
-    commands.launch(allocator, "Signaled command", @ptrCast(&signal));
+    commands.launch(allocator, "Successful command", &.{ binary, "success" });
+    commands.launch(allocator, "Nonzero command", &.{ binary, "failure" });
+    commands.launch(allocator, "Signaled command", &.{ binary, "signal" });
     commands.commandLine(allocator, "Missing command", "/nonexistent/desktop-command-fixture");
     commands.commandLine(allocator, "Invalid command", "'");
 }

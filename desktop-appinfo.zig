@@ -11,6 +11,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const paths = @import("desktop-paths.zig");
 const util = @import("desktop-util.zig");
+const process = @import("desktop-process.zig");
 
 pub const App = struct {
     refs: u32 = 1,
@@ -209,9 +210,14 @@ pub const App = struct {
             try environment.append(a, try std.fmt.allocPrintSentinel(a, "XDG_ACTIVATION_TOKEN={s}", .{token}, 0));
             try environment.append(a, try std.fmt.allocPrintSentinel(a, "DESKTOP_STARTUP_ID={s}", .{token}, 0));
         }
+        if (self.filename) |filename| try environment.append(a, try std.fmt.allocPrintSentinel(a, "GIO_LAUNCHED_DESKTOP_FILE={s}", .{filename}, 0));
         var remaining = options.uris;
         while (true) {
-            try spawn(a, try self.launchArgsFor(a, &remaining), directory, self.filename, environment.items);
+            try process.spawnDetached(a, try self.launchArgsFor(a, &remaining), .{
+                .directory = directory,
+                .environment = environment.items,
+                .pid_variable = if (self.filename != null) "GIO_LAUNCHED_DESKTOP_FILE_PID" else null,
+            });
             if (remaining.len == 0) break;
         }
         if (done) |callback| Completion.later(gpa, callback, context, true);
@@ -498,178 +504,8 @@ pub const KeyFile = struct {
     }
 };
 
-/// Splits a command line as g_shell_parse_argv: blanks separate words, single
-/// quotes are literal, double quotes allow \ before $ ` " \ and newline, a
-/// backslash outside quotes escapes the next byte, and # starts a comment at
-/// the beginning of a word. Nothing is expanded.
-pub fn shellParse(a: std.mem.Allocator, command: []const u8) ![][:0]u8 {
-    var words: std.ArrayList([:0]u8) = .empty;
-    var word: std.ArrayList(u8) = .empty;
-    var in_word = false;
-    var i: usize = 0;
-    while (i < command.len) : (i += 1) {
-        const byte = command[i];
-        switch (byte) {
-            ' ', '\t', '\n' => {
-                if (in_word) {
-                    try words.append(a, try word.toOwnedSliceSentinel(a, 0));
-                    in_word = false;
-                }
-            },
-            '#' => if (in_word) try word.append(a, byte) else {
-                while (i < command.len and command[i] != '\n') i += 1;
-            },
-            '\\' => {
-                in_word = true;
-                if (i + 1 >= command.len) return error.InvalidCommand;
-                i += 1;
-                // A backslash-newline pair joins lines.
-                if (command[i] != '\n') try word.append(a, command[i]);
-            },
-            '\'' => {
-                in_word = true;
-                const close = std.mem.indexOfScalarPos(u8, command, i + 1, '\'') orelse return error.InvalidCommand;
-                try word.appendSlice(a, command[i + 1 .. close]);
-                i = close;
-            },
-            '"' => {
-                in_word = true;
-                i += 1;
-                while (true) : (i += 1) {
-                    if (i >= command.len) return error.InvalidCommand;
-                    switch (command[i]) {
-                        '"' => break,
-                        '\\' => if (i + 1 < command.len and std.mem.indexOfScalar(u8, "$`\"\\\n", command[i + 1]) != null) {
-                            i += 1;
-                            if (command[i] != '\n') try word.append(a, command[i]);
-                        } else try word.append(a, '\\'),
-                        else => |value| try word.append(a, value),
-                    }
-                }
-            },
-            else => {
-                in_word = true;
-                try word.append(a, byte);
-            },
-        }
-    }
-    if (in_word) try words.append(a, try word.toOwnedSliceSentinel(a, 0));
-    if (words.items.len == 0) return error.EmptyCommand;
-    return words.toOwnedSlice(a);
-}
-
-/// Appends `value` single-quoted for a shell, as g_shell_quote.
-pub fn shellQuote(a: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
-    try out.append(a, '\'');
-    for (value) |byte| if (byte == '\'') try out.appendSlice(a, "'\\''") else try out.append(a, byte);
-    try out.append(a, '\'');
-}
-
-/// Runs `args` detached from this process, as g_spawn_async does without
-/// G_SPAWN_DO_NOT_REAP_CHILD: an intermediate child forks the program and
-/// exits, so the program is reparented and needs no reaping. Fails when the
-/// program cannot be executed, which the program's process reports through a
-/// close-on-exec pipe. Descriptors other than standard input, output and error
-/// are not inherited.
-pub fn spawn(a: std.mem.Allocator, args: []const [:0]const u8, directory: ?[]const u8, desktop_file: ?[]const u8, extra_environment: []const [:0]const u8) !void {
-    if (args.len == 0) return error.EmptyCommand;
-    // Everything the children use is prepared first: after fork they only make system calls.
-    const argv = try a.allocSentinel(?[*:0]const u8, args.len, null);
-    for (args, argv) |arg, *slot| slot.* = arg.ptr;
-    var candidates: std.ArrayList([:0]const u8) = .empty;
-    if (std.mem.indexOfScalar(u8, args[0], '/') != null) {
-        try candidates.append(a, args[0]);
-    } else {
-        var search = std.mem.splitScalar(u8, util.env("PATH") orelse "/bin:/usr/bin", ':');
-        while (search.next()) |dir| try candidates.append(a, try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ if (dir.len == 0) "." else dir, args[0] }, 0));
-    }
-    const cwd = if (directory) |value| try a.dupeSentinel(u8, value, 0) else null;
-    var environment: std.ArrayList(?[*:0]const u8) = .empty;
-    var index: usize = 0;
-    while (std.c.environ[index]) |entry| : (index += 1) {
-        const text = std.mem.span(entry);
-        if (std.mem.startsWith(u8, text, "GIO_LAUNCHED_DESKTOP_FILE")) continue;
-        const replaced = for (extra_environment) |extra| {
-            const key = extra[0 .. (std.mem.indexOfScalar(u8, extra, '=') orelse extra.len) + 1];
-            if (std.mem.startsWith(u8, text, key)) break true;
-        } else false;
-        if (!replaced) try environment.append(a, entry);
-    }
-    for (extra_environment) |extra| try environment.append(a, extra.ptr);
-    // GIO tells the program which desktop file launched it and its own process ID.
-    var pid_variable = try a.allocSentinel(u8, "GIO_LAUNCHED_DESKTOP_FILE_PID=".len + 20, 0);
-    @memcpy(pid_variable[0.."GIO_LAUNCHED_DESKTOP_FILE_PID=".len], "GIO_LAUNCHED_DESKTOP_FILE_PID=");
-    if (desktop_file) |file| {
-        try environment.append(a, (try std.fmt.allocPrintSentinel(a, "GIO_LAUNCHED_DESKTOP_FILE={s}", .{file}, 0)).ptr);
-        try environment.append(a, pid_variable.ptr);
-    }
-    try environment.append(a, null);
-    const envp: [*:null]const ?[*:0]const u8 = @ptrCast(environment.items.ptr);
-
-    var report: [2]linux.fd_t = undefined;
-    if (linux.errno(linux.pipe2(&report, .{ .CLOEXEC = true })) != .SUCCESS) return error.SpawnFailed;
-    const forked = linux.fork();
-    if (linux.errno(forked) != .SUCCESS) {
-        _ = linux.close(report[0]);
-        _ = linux.close(report[1]);
-        return error.SpawnFailed;
-    }
-    if (forked == 0) {
-        _ = linux.close(report[0]);
-        const program = linux.fork();
-        if (program != 0) linux.exit_group(if (linux.errno(program) == .SUCCESS) 0 else 1);
-        // Only the report pipe and standard streams survive exec.
-        _ = linux.close_range(3, std.math.maxInt(linux.fd_t), .{ .CLOEXEC = true, .UNSHARE = false });
-        if (desktop_file != null) {
-            var digits: [20]u8 = undefined;
-            var value: usize = @intCast(linux.getpid());
-            var start: usize = digits.len;
-            while (true) {
-                start -= 1;
-                digits[start] = @intCast('0' + value % 10);
-                value /= 10;
-                if (value == 0) break;
-            }
-            const prefix = "GIO_LAUNCHED_DESKTOP_FILE_PID=".len;
-            @memcpy(pid_variable[prefix..][0 .. digits.len - start], digits[start..]);
-            pid_variable[prefix + digits.len - start] = 0;
-        }
-        var failure: linux.E = .NOENT;
-        if (cwd) |path| if (linux.errno(linux.chdir(path)) != .SUCCESS) {
-            failure = linux.errno(linux.chdir(path));
-            _ = linux.write(report[1], std.mem.asBytes(&failure), @sizeOf(linux.E));
-            linux.exit_group(127);
-        };
-        for (candidates.items) |candidate| {
-            const result = linux.errno(linux.execve(candidate, argv, envp));
-            // Like execvp, permission errors are remembered while the search continues.
-            if (result == .ACCES or failure == .NOENT) failure = result;
-        }
-        _ = linux.write(report[1], std.mem.asBytes(&failure), @sizeOf(linux.E));
-        linux.exit_group(127);
-    }
-    _ = linux.close(report[1]);
-    defer _ = linux.close(report[0]);
-    var status: i32 = 0;
-    while (linux.errno(linux.wait4(@intCast(forked), &status, 0, null)) == .INTR) {}
-    if (status != 0) return error.SpawnFailed;
-    var failure: linux.E = .SUCCESS;
-    while (true) {
-        const got = linux.read(report[0], std.mem.asBytes(&failure), @sizeOf(linux.E));
-        switch (linux.errno(got)) {
-            .SUCCESS => {},
-            .INTR => continue,
-            else => return error.SpawnFailed,
-        }
-        // End of file: exec succeeded and closed the pipe.
-        if (got == 0) return;
-        return switch (failure) {
-            .NOENT, .NOTDIR => error.FileNotFound,
-            .ACCES, .PERM => error.AccessDenied,
-            else => error.SpawnFailed,
-        };
-    }
-}
+pub const shellParse = process.shellParse;
+pub const shellQuote = process.shellQuote;
 
 /// The directories searched for desktop files, highest priority first.
 fn applicationDirectories(a: std.mem.Allocator) ![]const []const u8 {
@@ -917,7 +753,7 @@ pub fn launchDefaultForUri(gpa: std.mem.Allocator, uri: []const u8, options: Lau
     try app.launch(gpa, launch_options, done, context);
 }
 
-test "key files, locales and command lines" {
+test "key files and locales" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -947,13 +783,6 @@ test "key files, locales and command lines" {
     try std.testing.expectEqualStrings("de", languages.items[languages.items.len - 1]);
     try std.testing.expectEqualStrings("Dateien (Euro)", file.localeString("Desktop Entry", "Name", languages.items).?);
     try std.testing.expectError(error.InvalidKeyFile, KeyFile.parse(a, "[Desktop Entry]\nno equals\n"));
-
-    const words = try shellParse(a, "env 'a b' \"c \\\"d\\\" \\x\" e\\ f #comment\n g");
-    const expected = [_][]const u8{ "env", "a b", "c \"d\" \\x", "e f", "g" };
-    try std.testing.expectEqual(expected.len, words.len);
-    for (expected, words) |want, got| try std.testing.expectEqualStrings(want, got);
-    try std.testing.expectError(error.InvalidCommand, shellParse(a, "'unterminated"));
-    try std.testing.expectError(error.EmptyCommand, shellParse(a, "  # only a comment"));
 }
 
 test "Exec field codes expand like GIO" {
@@ -973,16 +802,6 @@ test "Exec field codes expand like GIO" {
     const expected = [_][]const u8{ "sh", "-c", "echo %", "--icon", "mine", "It's Mine", "/tmp/mine dir/mine.desktop", "--flag=" };
     try std.testing.expectEqual(expected.len, args.len);
     for (expected, args) |want, got| try std.testing.expectEqualStrings(want, got);
-}
-
-test "spawn reports programs that cannot run" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try spawn(a, &.{ "true", "argument" }, null, null, &.{});
-    try std.testing.expectError(error.FileNotFound, spawn(a, &.{"/nonexistent/desktop-appinfo-test"}, null, null, &.{}));
-    try std.testing.expectError(error.FileNotFound, spawn(a, &.{"desktop-appinfo-test-missing-program"}, null, null, &.{}));
-    try std.testing.expectError(error.FileNotFound, spawn(a, &.{"true"}, "/nonexistent/directory", null, &.{}));
 }
 
 test "installed applications match GIO" {

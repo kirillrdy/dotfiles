@@ -95,7 +95,6 @@ pub extern fn g_strlcpy(dest: [*c]gchar, src: [*c]const gchar, dest_size: gsize)
 pub extern fn g_strdup(str: [*c]const gchar) [*c]gchar;
 pub extern fn g_strndup(str: [*c]const gchar, n: gsize) [*c]gchar;
 pub extern fn g_strdup_printf(format: [*c]const gchar, ...) [*c]gchar;
-pub extern fn g_strfreev(str_array: [*c][*c]gchar) void;
 pub const struct__GKeyFile = opaque {};
 
 pub const GKeyFile = struct__GKeyFile;
@@ -107,12 +106,8 @@ pub const struct__GVariant = opaque {};
 pub const GVariant = struct__GVariant;
 pub extern fn g_variant_unref(value: ?*GVariant) void;
 pub extern fn g_print(format: [*c]const gchar, ...) void;
-pub extern fn g_shell_quote(unquoted_string: [*c]const gchar) [*c]gchar;
-pub extern fn g_shell_parse_argv(command_line: [*c]const gchar, argcp: [*c]gint, argvp: [*c][*c][*c]gchar, @"error": [*c][*c]GError) gboolean;
 pub const GSpawnChildSetupFunc = ?*const fn (data: gpointer) callconv(.c) void;
 pub const GSpawnFlags = c_uint;
-pub extern fn g_spawn_async(working_directory: [*c]const gchar, argv: [*c][*c]gchar, envp: [*c][*c]gchar, flags: GSpawnFlags, child_setup: GSpawnChildSetupFunc, user_data: gpointer, child_pid: [*c]GPid, @"error": [*c][*c]GError) gboolean;
-pub extern fn g_spawn_command_line_async(command_line: [*c]const gchar, @"error": [*c][*c]GError) gboolean;
 pub extern fn g_strcmp0(str1: [*c]const u8, str2: [*c]const u8) c_int;
 pub extern fn g_usleep(microseconds: gulong) void;
 pub const GType = gsize;
@@ -128,8 +123,6 @@ const union_unnamed_51 = extern union {
     v_pointer: gpointer,
 };
 
-
-
 pub const struct__GTypeClass = extern struct {
     g_type: GType = 0,
 };
@@ -141,7 +134,6 @@ pub const struct__GTypeInstance = extern struct {
 };
 
 pub const GTypeInstance = struct__GTypeInstance;
-
 
 pub const struct__GClosure = opaque {};
 
@@ -163,19 +155,10 @@ pub const struct__GObject = extern struct {
 
 pub const GObject = struct__GObject;
 
-
-
-
 pub extern fn g_object_ref(object: gpointer) gpointer;
 pub extern fn g_object_unref(object: gpointer) void;
 pub extern fn g_object_weak_ref(object: ?*GObject, notify: ?*const fn (?*anyopaque, ?*GObject) callconv(.c) void, data: ?*anyopaque) void;
-pub const G_SUBPROCESS_FLAGS_NONE: c_int = 0;
-pub const G_SUBPROCESS_FLAGS_STDOUT_SILENCE: c_int = 8;
-pub const G_SUBPROCESS_FLAGS_STDERR_PIPE: c_int = 16;
 pub const GSubprocessFlags = c_uint;
-
-
-
 
 pub const struct__GAsyncResult = opaque {};
 
@@ -204,23 +187,12 @@ pub const GAsyncReadyCallback = ?*const fn (source_object: [*c]GObject, res: ?*G
 pub const struct__GSubprocess = opaque {};
 
 pub const GSubprocess = struct__GSubprocess;
-pub const struct__GSubprocessLauncher = opaque {};
 
-pub const GSubprocessLauncher = struct__GSubprocessLauncher;
 pub extern fn g_cancellable_new() [*c]GCancellable;
 pub extern fn g_cancellable_cancel(cancellable: [*c]GCancellable) void;
 pub extern fn g_file_new_for_path(path: [*c]const u8) ?*GFile;
 
 pub extern fn g_subprocess_newv(argv: [*c]const [*c]const gchar, flags: GSubprocessFlags, @"error": [*c][*c]GError) ?*GSubprocess;
-pub extern fn g_subprocess_wait_async(subprocess: ?*GSubprocess, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
-pub extern fn g_subprocess_wait_finish(subprocess: ?*GSubprocess, result: ?*GAsyncResult, @"error": [*c][*c]GError) gboolean;
-pub extern fn g_subprocess_wait_check_async(subprocess: ?*GSubprocess, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
-pub extern fn g_subprocess_wait_check_finish(subprocess: ?*GSubprocess, result: ?*GAsyncResult, @"error": [*c][*c]GError) gboolean;
-pub extern fn g_subprocess_get_successful(subprocess: ?*GSubprocess) gboolean;
-pub extern fn g_subprocess_communicate_utf8_async(subprocess: ?*GSubprocess, stdin_buf: [*c]const u8, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, user_data: gpointer) void;
-pub extern fn g_subprocess_communicate_utf8_finish(subprocess: ?*GSubprocess, result: ?*GAsyncResult, stdout_buf: [*c][*c]u8, stderr_buf: [*c][*c]u8, @"error": [*c][*c]GError) gboolean;
-pub extern fn g_subprocess_launcher_new(flags: GSubprocessFlags) ?*GSubprocessLauncher;
-pub extern fn g_subprocess_launcher_spawnv(self: ?*GSubprocessLauncher, argv: [*c]const [*c]const gchar, @"error": [*c][*c]GError) ?*GSubprocess;
 pub extern fn g_task_new(source_object: gpointer, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, callback_data: gpointer) ?*GTask;
 pub extern fn g_task_set_task_data(task: ?*GTask, task_data: gpointer, task_data_destroy: GDestroyNotify) void;
 pub const GTaskThreadFunc = ?*const fn (task: ?*GTask, source_object: gpointer, task_data: gpointer, cancellable: [*c]GCancellable) callconv(.c) void;
@@ -230,14 +202,11 @@ pub extern fn g_task_return_boolean(task: ?*GTask, result: gboolean) void;
 pub extern fn g_task_propagate_pointer(task: ?*GTask, @"error": [*c][*c]GError) gpointer;
 pub extern fn g_task_propagate_boolean(task: ?*GTask, @"error": [*c][*c]GError) gboolean;
 
-
-
 pub extern fn g_unix_signal_add(signum: gint, handler: GSourceFunc, user_data: gpointer) guint;
 pub const GUnixFDSourceFunc = ?*const fn (fd: gint, condition: GIOCondition, user_data: gpointer) callconv(.c) gboolean;
 pub extern fn g_unix_fd_add(fd: gint, condition: GIOCondition, function: GUnixFDSourceFunc, user_data: gpointer) guint;
 pub const SIGINT = @as(c_int, 2);
 pub const SIGTERM = @as(c_int, 15);
-pub extern fn g_subprocess_launcher_take_fd(?*GSubprocessLauncher, gint, gint) void;
 pub extern fn g_cancellable_is_cancelled([*c]GCancellable) gboolean;
 pub extern fn g_cancellable_connect([*c]GCancellable, GCallback, gpointer, GDestroyNotify) gulong;
 pub extern fn g_cancellable_disconnect([*c]GCancellable, gulong) void;

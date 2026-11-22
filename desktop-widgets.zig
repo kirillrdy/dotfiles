@@ -9,6 +9,7 @@ const quick = @import("desktop-quick-settings.zig");
 pub const date_menu = @import("desktop-date-menu.zig");
 pub const c = @import("desktop-glib.zig");
 const DateTime = @import("desktop-datetime.zig").DateTime;
+const Process = @import("desktop-process.zig").Process;
 pub const native = @import("desktop-panel-view.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
@@ -43,6 +44,7 @@ pub const Module = struct {
     settings_subscription: u32 = 0,
     quick: ?*quick.Controls = null,
     power_pending: c.gboolean = 0,
+    power_process: ?*Process = null,
     usage_menu: ?*UsagePopup = null,
     view: native.View = .{},
     usage: native.Usage = .{},
@@ -202,18 +204,24 @@ fn set_power_message(m: *Module, message: [*c]const u8) void {
 fn native_profile_selected(data: ?*anyopaque, index: usize) void {
     if (index < 3) select_power(cast(Module, data), power_ids[index]);
 }
-pub fn power_set_ready(source: ?*c.GObject, result: ?*c.GAsyncResult, data: c.gpointer) callconv(.c) void {
+pub fn power_set_ready(data: ?*anyopaque, result: *const @import("desktop-process.zig").Result) void {
     const m: *Module = @ptrCast(@alignCast(data));
-    var err: [*c]c.GError = null;
-    var errors: [*c]u8 = null;
-    const process: *c.GSubprocess = @ptrCast(@alignCast(source));
-    const communicated = c.g_subprocess_communicate_utf8_finish(process, result, null, &errors, &err) != 0;
-    defer c.g_clear_error(&err);
-    defer c.g_free(errors);
+    m.power_process = null;
     if (m.dead == 0) {
         m.power_pending = 0;
         update_power(m);
-        set_power_message(m, if (err != null) err.*.message else if (!communicated or c.g_subprocess_get_successful(process) == 0) (if (errors != null and errors[0] != 0) errors else "Could not change the power profile") else "");
+        var buffer: [512]u8 = undefined;
+        // The helper's own explanation, made displayable, is the most useful message.
+        const reason = std.unicode.fmtUtf8(std.mem.trimEnd(u8, result.stderr, "\n"));
+        const message: [:0]const u8 = if (result.cancelled)
+            "Operation was cancelled"
+        else if (result.successful())
+            ""
+        else if (result.stderr.len > 0)
+            std.fmt.bufPrintSentinel(&buffer, "{f}", .{reason}, 0) catch "Could not change the power profile"
+        else
+            "Could not change the power profile";
+        set_power_message(m, message.ptr);
     }
     unref_module(m);
 }
@@ -225,20 +233,15 @@ fn select_power(m: *Module, id: [*c]const u8) void {
         set_power_message(m, "Power profile helper unavailable");
         return;
     }
-    var err: [*c]c.GError = null;
-    const argv = [_][*c]const u8{ pkexec, helper, "power", "set", id, null };
-    const process = c.g_subprocess_newv(&argv, c.G_SUBPROCESS_FLAGS_STDERR_PIPE | c.G_SUBPROCESS_FLAGS_STDOUT_SILENCE, &err);
-    if (process == null) {
-        set_power_message(m, if (err != null) err.*.message else "Could not start the power profile helper");
-        c.g_clear_error(&err);
+    const argv = [_][:0]const u8{ std.mem.span(pkexec.?), std.mem.span(helper.?), "power", "set", std.mem.span(id) };
+    m.power_process = Process.spawn(m.allocator, &argv, .{ .capture_stderr = true, .silence_stdout = true }, &power_set_ready, m) catch {
+        set_power_message(m, "Could not start the power profile helper");
         return;
-    }
-    defer c.g_object_unref(process);
+    };
     m.power_pending = 1;
     update_power(m);
     set_power_message(m, "Switching…");
     m.refs += 1;
-    c.g_subprocess_communicate_utf8_async(process, null, m.cancel, &power_set_ready, m);
 }
 pub fn update_clock(data: c.gpointer) callconv(.c) c.gboolean {
     const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
@@ -525,6 +528,7 @@ pub fn deinit(m: *Module) void {
     if (m.quick) |controls| controls.deinit();
     if (m.power_timer != 0) _ = c.g_source_remove(m.power_timer);
     c.g_cancellable_cancel(m.cancel);
+    if (m.power_process) |child| child.cancel();
     unref_module(m);
 }
 
