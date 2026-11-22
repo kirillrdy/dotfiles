@@ -61,7 +61,7 @@ import ./fixture.nix { inherit pkgs; } {
           ],
       }))
       env = dict(os.environ)
-      for name in ("DISPLAY", "WAYLAND_DISPLAY", "DESKTOP_ZIG_INVOKED_AS"):
+      for name in ("DISPLAY", "WAYLAND_DISPLAY"):
           env.pop(name, None)
       env.update(
           XDG_RUNTIME_DIR=str(root / "runtime"),

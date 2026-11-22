@@ -227,13 +227,14 @@ pub fn power_set_ready(data: ?*anyopaque, result: *const @import("desktop-proces
 }
 fn select_power(m: *Module, id: [*c]const u8) void {
     if (m.dead != 0 or m.power_pending != 0) return;
-    const helper = c.__zig.getenv("DESKTOP_POWER_HELPER");
-    const pkexec = c.__zig.getenv("DESKTOP_POWER_PKEXEC");
+    const runtime = @import("desktop-runtime.zig");
+    const helper = runtime.power_helper;
+    const pkexec = runtime.power_pkexec;
     if (helper == null or pkexec == null) {
         set_power_message(m, "Power profile helper unavailable");
         return;
     }
-    const argv = [_][:0]const u8{ std.mem.span(pkexec.?), std.mem.span(helper.?), "power", "set", std.mem.span(id) };
+    const argv = [_][:0]const u8{ pkexec.?, helper.?, "power", "set", std.mem.span(id) };
     m.power_process = Process.spawn(m.allocator, &argv, .{ .capture_stderr = true, .silence_stdout = true }, &power_set_ready, m) catch {
         set_power_message(m, "Could not start the power profile helper");
         return;

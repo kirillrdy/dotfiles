@@ -363,7 +363,7 @@ import ./fixture.nix { inherit pkgs; } {
                  DBUS_SYSTEM_BUS_ADDRESS="unix:path=" + str(root / "no-system-bus"),
                  WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1",
                  GDK_BACKEND="wayland", GSETTINGS_BACKEND="memory")
-      for name in ("DISPLAY", "WAYLAND_DISPLAY", "DESKTOP_ZIG_INVOKED_AS"):
+      for name in ("DISPLAY", "WAYLAND_DISPLAY"):
           env.pop(name, None)
 
 

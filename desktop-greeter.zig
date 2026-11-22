@@ -419,12 +419,9 @@ fn onSignal(data: c.gpointer) callconv(.c) c.gboolean {
     return 0;
 }
 
-pub fn run(a: std.mem.Allocator) !void {
+/// `dm_fd` is the display manager control socket, or -1 when run standalone.
+pub fn run(a: std.mem.Allocator, dm_fd: c_int) !void {
     if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
-    const dm_fd: c_int = if (libc.getenv("DESKTOP_DM_FD")) |raw|
-        std.fmt.parseInt(c_int, std.mem.span(raw), 10) catch -1
-    else
-        -1;
     const own_compositor = libc.getenv("WAYLAND_DISPLAY") == null;
     var compositor: ?*@import("desktop-compositor.zig").Handle = null;
     if (own_compositor) {

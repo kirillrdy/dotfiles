@@ -288,17 +288,10 @@ const Server = struct {
         c.wl_display_terminate(cast(Server, ptr).display);
         return 0;
     }
-    const default_lock_blank_ms: c_int = 10_000;
-    fn lockBlankDelayMs() c_int {
-        if (std.c.getenv("DESKTOP_LOCK_BLANK_MS")) |raw| {
-            const parsed = std.fmt.parseInt(c_int, std.mem.span(raw), 10) catch return default_lock_blank_ms;
-            if (parsed > 0) return parsed;
-        }
-        return default_lock_blank_ms;
-    }
+    const lock_blank_ms: c_int = 10_000;
     fn armLockBlankTimer(self: *Server) void {
         if (self.lock_blank_timer) |timer| {
-            _ = c.wl_event_source_timer_update(timer, lockBlankDelayMs());
+            _ = c.wl_event_source_timer_update(timer, lock_blank_ms);
         }
     }
     fn disarmLockBlankTimer(self: *Server) void {

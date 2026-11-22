@@ -56,7 +56,7 @@ import ./fixture.nix { inherit pkgs; } {
       print(f"Artifacts: {root}", flush=True)
       (root / "runtime").mkdir(mode=0o700)
       env = dict(os.environ)
-      for name in ("DISPLAY", "WAYLAND_DISPLAY", "DESKTOP_ZIG_INVOKED_AS"):
+      for name in ("DISPLAY", "WAYLAND_DISPLAY"):
           env.pop(name, None)
       env.update(
           XDG_RUNTIME_DIR=str(root / "runtime"),

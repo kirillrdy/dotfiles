@@ -11,6 +11,10 @@ let
         mkdir -p $out/share
         cp -r ${pkgs.gnome-settings-daemon}/share/gsettings-schemas/ $out/share/
       '';
+  codexIcon = pkgs.fetchurl {
+    url = "https://raw.githubusercontent.com/kevinpita/codex-usage-extension/b88a5d0b02b37e9a06b8266bd5f29fa6a5f16213/codex-icon-22.png";
+    hash = "sha256-kI1mut3KtZNahi8btZNSdogSrF+Z44yXqaZ4Jxf5L+E=";
+  };
   feedbackSound =
     pkgs.runCommand "desktop-volume-feedback.wav"
       {
@@ -116,6 +120,7 @@ pkgs.stdenv.mkDerivation {
   DESKTOP_RUNTIME_POWER_HELPER = "${placeholder "out"}/bin/desktop-zig";
   DESKTOP_RUNTIME_POWER_PKEXEC = "/run/wrappers/bin/pkexec";
   DESKTOP_RUNTIME_SOUND_FILE = "${feedbackSound}";
+  DESKTOP_RUNTIME_CODEX_ICON = "${codexIcon}";
   DESKTOP_RUNTIME_DATA_DIRS = "${placeholder "out"}/share:${pkgs.adwaita-icon-theme}/share:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${portalSettingsSchemas}/share/gsettings-schemas/gnome-settings-daemon-${pkgs.gnome-settings-daemon.version}";
   buildPhase = ''
     cp -r ${zigGlobalCache} "$TMPDIR/zig-cache"

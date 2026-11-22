@@ -189,14 +189,16 @@ pub fn main(init: std.process.Init) !void {
         @import("desktop-gsettings.zig").deinit();
     }
     defer if (managed_session) sessionControl(a, init.io, &.{ "systemctl", "--user", "stop", "desktop-session.target" }) catch {};
-    if (args.len >= 2 and (std.mem.eql(u8, args[1], "compositor") or std.mem.eql(u8, args[1], "compositor-only"))) {
-        compositor = try @import("desktop-compositor.zig").Handle.start(a, if (std.mem.eql(u8, args[1], "compositor")) .session else .headless);
-        if (std.mem.eql(u8, args[1], "compositor-only")) {
+    const verb: []const u8 = if (args.len >= 2) args[1] else "";
+    // `session` is `compositor` started by the systemd user unit, which owns desktop-session.target.
+    if (std.mem.eql(u8, verb, "compositor") or std.mem.eql(u8, verb, "session") or std.mem.eql(u8, verb, "compositor-only")) {
+        compositor = try @import("desktop-compositor.zig").Handle.start(a, if (std.mem.eql(u8, verb, "compositor-only")) .headless else .session);
+        if (std.mem.eql(u8, verb, "compositor-only")) {
             compositor.?.wait();
             compositor = null;
             return;
         }
-        if (libc.getenv("DESKTOP_SESSION_MANAGED") != null) {
+        if (std.mem.eql(u8, verb, "session")) {
             try sessionControl(a, init.io, &.{ "systemctl", "--user", "import-environment", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "XDG_SESSION_TYPE", "XDG_SESSION_ID", "PATH", "DISPLAY", "XCURSOR_THEME", "XCURSOR_SIZE" });
             try sessionControl(a, init.io, &.{ "systemctl", "--user", "start", "desktop-session.target" });
             managed_session = true;
@@ -215,7 +217,7 @@ pub fn main(init: std.process.Init) !void {
         return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, forwarded));
     }
     if (args.len < 2 or std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: desktop-zig compositor WALLPAPER\n       desktop-zig dm | greeter\n       desktop-zig serve WALLPAPER [PANEL_CONFIG]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|claude|antigravity|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | askpass|power|screenshot [ARGS...]\n", .{});
+        std.debug.print("Usage: desktop-zig compositor|session WALLPAPER\n       desktop-zig dm | greeter [FD]\n       desktop-zig serve WALLPAPER [PANEL_CONFIG]\n       desktop-zig overview | settings sound|network | volume up|down|mute\n       desktop-zig microphone mute | brightness up|down | refresh codex|claude|antigravity|status | ping\n       desktop-zig lock [--daemonize]\n       desktop-zig output --output NAME --scale SCALE\n       desktop-zig secrets | secrets-login | secrets-import\n       desktop-zig battery-monitor | portal | askpass|power|screenshot [ARGS...]\n", .{});
         if (args.len < 2) return error.ExpectedCommand;
         return;
     }
@@ -224,8 +226,10 @@ pub fn main(init: std.process.Init) !void {
         return @import("desktop-dm.zig").run(a);
     }
     if (std.mem.eql(u8, args[1], "greeter")) {
-        if (args.len != 2) return error.InvalidGreeterArguments;
-        return @import("desktop-greeter.zig").run(a);
+        // The display manager passes the descriptor of its control socket.
+        if (args.len > 3) return error.InvalidGreeterArguments;
+        const dm_fd: c_int = if (args.len == 3) std.fmt.parseInt(c_int, args[2], 10) catch return error.InvalidGreeterArguments else -1;
+        return @import("desktop-greeter.zig").run(a, dm_fd);
     }
     if (std.mem.eql(u8, args[1], "secrets-import")) {
         if (args.len != 2) return error.InvalidSecretsArguments;
@@ -322,6 +326,7 @@ pub const apps = @import("desktop-apps.zig");
 pub const dash_view = @import("desktop-dash-view.zig");
 pub const chooser = @import("desktop-portal-file-chooser.zig");
 pub const util = @import("desktop-util.zig");
+pub const runtime = @import("desktop-runtime.zig");
 pub const icons = @import("desktop-icons.zig");
 pub const gsettings = @import("desktop-gsettings.zig");
 pub const posix = @import("posix");

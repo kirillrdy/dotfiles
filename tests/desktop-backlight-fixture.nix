@@ -164,7 +164,6 @@ import ./fixture.nix { inherit pkgs; } {
           NO_AT_BRIDGE="1",
           GIO_USE_VFS="local",
           GTK_USE_PORTAL="0",
-          DESKTOP_OSD_SOUND_FILE=str(root / "feedback.oga"),
       )
       processes = []
       audio = AudioServer(root, env)

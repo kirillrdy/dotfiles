@@ -57,8 +57,8 @@ pub fn main(process_init: std.process.Init) !void {
         }
     }
     const executable = try process_init.arena.allocator().dupeSentinel(u8, args[0], 0);
-    _ = @import("desktop").libc.setenv("DESKTOP_POWER_PKEXEC", executable.ptr, 1);
-    _ = @import("desktop").libc.setenv("DESKTOP_POWER_HELPER", "--power-fixture", 1);
+    @import("desktop").runtime.power_pkexec = executable;
+    @import("desktop").runtime.power_helper = "--power-fixture";
     const status = p.init(process_init.gpa, .{ .name = "gnome-status" }, null, null, null);
     assert(status.quick != null);
     const initial_network_title = status.quick.?.view.model.network_title;

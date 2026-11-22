@@ -640,8 +640,7 @@ pub const Controls = struct {
     fn screenshot(ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Controls, ptr);
         if (!self.dead) {
-            const executable: [:0]const u8 = if (c.__zig.getenv("DESKTOP_POWER_HELPER")) |value| std.mem.span(value) else "desktop-zig";
-            @import("desktop-command.zig").launch(self.allocator, "Screenshot", &.{ executable, "screenshot" });
+            @import("desktop-command.zig").launch(self.allocator, "Screenshot", &.{ @import("desktop-runtime.zig").executable, "screenshot" });
         }
         self.release();
         return 0;

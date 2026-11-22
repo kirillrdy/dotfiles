@@ -38,7 +38,7 @@ import ./fixture.nix { inherit pkgs; } {
       print(f"Artifacts: {root}", flush=True)
       (root / "runtime").mkdir(mode=0o700)
       env = dict(os.environ)
-      for key in ("DISPLAY", "WAYLAND_DISPLAY", "DESKTOP_ZIG_INVOKED_AS"):
+      for key in ("DISPLAY", "WAYLAND_DISPLAY"):
           env.pop(key, None)
       env.update(XDG_RUNTIME_DIR=str(root / "runtime"), XDG_CONFIG_HOME=str(root / "config-home"),
                  WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="2",

@@ -1,21 +1,25 @@
-//! Package paths and environment setup, performed before starting the UI or helpers.
+//! Package paths compiled in at build time, and the environment setup
+//! performed before starting the UI or helpers.
 const std = @import("std");
 const options = @import("options");
 extern "c" fn setenv([*:0]const u8, [*:0]const u8, c_int) c_int;
 
+fn terminated(comptime value: ?[]const u8) ?[:0]const u8 {
+    return if (value) |text| std.fmt.comptimePrint("{s}", .{text}) else null;
+}
+
+/// Values of DESKTOP_RUNTIME_* when the package was built.
+pub const sound_file = terminated(options.SOUND_FILE);
+pub const codex_icon = terminated(options.CODEX_ICON);
+/// This executable, for starting its other commands.
+pub const executable: [:0]const u8 = terminated(options.POWER_HELPER) orelse "desktop-zig";
+/// The power profile helper runs through pkexec; fixtures substitute both.
+pub var power_helper = terminated(options.POWER_HELPER);
+pub var power_pkexec = terminated(options.POWER_PKEXEC);
+
+/// Prepends package data directories to XDG_DATA_DIRS, which launched
+/// applications also read.
 pub fn setup(a: std.mem.Allocator) !void {
-    const settings = .{
-        .{ "DESKTOP_POWER_HELPER", options.POWER_HELPER },
-        .{ "DESKTOP_POWER_PKEXEC", options.POWER_PKEXEC },
-        .{ "DESKTOP_OSD_SOUND_FILE", options.SOUND_FILE },
-    };
-    inline for (settings) |entry| {
-        if (entry[1]) |value| {
-            const terminated = try a.dupeSentinel(u8, value, 0);
-            defer a.free(terminated);
-            if (setenv(entry[0], terminated, 1) != 0) return error.EnvironmentSetupFailed;
-        }
-    }
     if (options.DATA_DIRS) |prefix| {
         const inherited = std.c.getenv("XDG_DATA_DIRS");
         const dirs = try dataDirs(a, prefix, if (inherited) |value| std.mem.span(value) else "");
@@ -55,16 +59,9 @@ test "empty inherited directories do not add the current working directory" {
     try std.testing.expectEqualStrings("/desktop/share", dirs);
 }
 
-test "configured startup exports helper paths and remains idempotent" {
+test "configured startup prepends data directories idempotently" {
     const a = std.testing.allocator;
     try setup(a);
-    inline for (.{
-        .{ "DESKTOP_POWER_HELPER", options.POWER_HELPER },
-        .{ "DESKTOP_POWER_PKEXEC", options.POWER_PKEXEC },
-        .{ "DESKTOP_OSD_SOUND_FILE", options.SOUND_FILE },
-    }) |entry| {
-        if (entry[1]) |expected| try std.testing.expectEqualStrings(expected, std.mem.span(std.c.getenv(entry[0]).?));
-    }
     if (options.DATA_DIRS != null) {
         const first = try a.dupe(u8, std.mem.span(std.c.getenv("XDG_DATA_DIRS").?));
         defer a.free(first);

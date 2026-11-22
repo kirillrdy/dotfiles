@@ -29,7 +29,7 @@ pub const Sound = struct {
     pub fn create(a: std.mem.Allocator, window: *host.Window, context: ?*anyopaque, navigate: *const fn (?*anyopaque, native.Control) void) !*Sound {
         const self = try a.create(Sound);
         self.* = .{ .allocator = a, .feedback = .{ .allocator = a }, .window = window, .navigation_context = context, .navigate = navigate, .cancel = c.g_cancellable_new().? };
-        self.view.test_enabled = c.__zig.getenv("DESKTOP_OSD_SOUND_FILE") != null;
+        self.view.test_enabled = @import("desktop-runtime.zig").sound_file != null;
         self.service = audio.Service.create(a, &changed, self) catch null;
         self.refresh() catch self.renderFailure();
         return self;
@@ -193,7 +193,7 @@ pub const Sound = struct {
                 return;
             },
             .test_sound => {
-                if (c.__zig.getenv("DESKTOP_OSD_SOUND_FILE")) |path| self.feedback.play(@ptrCast(path));
+                if (@import("desktop-runtime.zig").sound_file) |path| self.feedback.play(path.ptr);
                 return;
             },
             else => {},

@@ -216,8 +216,8 @@ pub const Server = struct {
     }
 
     fn feedback(self: *Server) void {
-        const path = c.__zig.getenv("DESKTOP_OSD_SOUND_FILE") orelse return;
-        self.feedback_player.play(@ptrCast(path));
+        const path = @import("desktop-runtime.zig").sound_file orelse return;
+        self.feedback_player.play(path.ptr);
     }
 
     pub fn deinit(self: *Server) void {

@@ -222,7 +222,7 @@ pub fn usageName(kind: []const u8) [:0]const u8 {
 pub fn usageIcon(kind: []const u8) []const u8 {
     if (u.eq(kind, "claude")) return "claude-usage-symbolic";
     if (u.eq(kind, "antigravity")) return "antigravity-usage-symbolic";
-    return u.env("DESKTOP_CODEX_ICON") orelse "";
+    return @import("desktop-runtime.zig").codex_icon orelse "";
 }
 
 /// One bounded update, suitable for a shared session worker.

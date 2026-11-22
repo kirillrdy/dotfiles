@@ -18,10 +18,6 @@ let
     gtk-cursor-theme-name=${cursorTheme}
     gtk-cursor-theme-size=${toString cursorSize}
   '';
-  codexIcon = pkgs.fetchurl {
-    url = "https://raw.githubusercontent.com/kevinpita/codex-usage-extension/b88a5d0b02b37e9a06b8266bd5f29fa6a5f16213/codex-icon-22.png";
-    hash = "sha256-kI1mut3KtZNahi8btZNSdogSrF+Z44yXqaZ4Jxf5L+E=";
-  };
   desktopZig = import ./desktop-zig.nix { inherit pkgs; };
 
 in
@@ -205,8 +201,6 @@ lib.mkIf enableLightDesktop {
         XDG_SESSION_TYPE = "wayland";
         XCURSOR_THEME = cursorTheme;
         XCURSOR_SIZE = toString cursorSize;
-        DESKTOP_CODEX_ICON = "${codexIcon}";
-        DESKTOP_SESSION_MANAGED = "1";
         # NixOS gives units a coreutils-only PATH; the compositor imports PATH into
         # the user manager, which hides every app whose Exec= is not absolute.
         PATH = lib.mkForce null;
@@ -220,7 +214,7 @@ lib.mkIf enableLightDesktop {
         # XCURSOR_PATH, GTK_PATH, ...) and the full user PATH only come from /etc/profile.
         ExecStart = "${pkgs.writeShellScript "desktop-zig-session" ''
           . /etc/profile
-          exec ${shell} compositor ${gnomeWallpaper}
+          exec ${shell} session ${gnomeWallpaper}
         ''}";
         Slice = "session.slice";
         Restart = "no";

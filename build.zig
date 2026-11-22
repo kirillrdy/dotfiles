@@ -124,7 +124,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "integration_tests", integration_tests);
     // Interfaces whose wayland-scanner tables are compiled into tests as reference_*.
     options.addOption([]const []const u8, "reference_interfaces", &protocol_names);
-    for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "SOUND_FILE", "DATA_DIRS" }) |name| {
+    for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "SOUND_FILE", "CODEX_ICON", "DATA_DIRS" }) |name| {
         options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
     }
     desktop.addOptions("options", options);

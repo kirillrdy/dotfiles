@@ -55,7 +55,7 @@ import ./fixture.nix { inherit pkgs; } {
                  PULSE_SERVER="unix:" + str(root / "runtime/pulse/native"), PULSE_RUNTIME_PATH=str(root / "runtime/pulse"))
       if "DBUS_SESSION_BUS_ADDRESS" in env:
           env["DBUS_SYSTEM_BUS_ADDRESS"] = env["DBUS_SESSION_BUS_ADDRESS"]
-      for key in ("PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_CONFIG_DIR", "WIREPLUMBER_CONFIG_DIR", "WIREPLUMBER_DATA_DIR", "DESKTOP_ZIG_INVOKED_AS"):
+      for key in ("PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_CONFIG_DIR", "WIREPLUMBER_CONFIG_DIR", "WIREPLUMBER_DATA_DIR"):
           env.pop(key, None)
       processes = []
       updates = queue.Queue()
@@ -174,7 +174,6 @@ import ./fixture.nix { inherit pkgs; } {
               wav.writeframes(b"\0\0" * 96000)
           native("feedback", str(sound))
           print("PASS native feedback playback without overlap", flush=True)
-          env["DESKTOP_OSD_SOUND_FILE"] = str(sound)
           stream_sound = root / "stream.wav"
           with wave.open(str(stream_sound), "wb") as wav:
               wav.setnchannels(1)

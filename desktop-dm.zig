@@ -218,7 +218,6 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
             _ = setenv("XDG_SESSION_TYPE", "wayland", 1);
             _ = setenv("XCURSOR_THEME", "Adwaita", 1);
             _ = setenv("XCURSOR_SIZE", "24", 1);
-            _ = setenv("DESKTOP_DM_FD", "3", 1);
             if (saved_wlr[0] != 0) _ = setenv("WLR_RENDERER", &saved_wlr, 1);
 
             if (posix.initgroups("greeter", greeter_gid) != 0) posix._exit(1);
@@ -226,7 +225,7 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
             if (posix.setuid(greeter_uid) != 0) posix._exit(1);
             _ = chdir(&saved_home);
 
-            const argv = [_:null]?[*:0]const u8{ "/proc/self/exe", "greeter" };
+            const argv = [_:null]?[*:0]const u8{ "/proc/self/exe", "greeter", "3" };
             _ = posix.execv("/proc/self/exe", @ptrCast(&argv));
             posix._exit(127);
         }
@@ -404,10 +403,10 @@ pub fn run(a: std.mem.Allocator) !void {
     _ = signal(SIGINT, &handleSignal);
     _ = signal(SIGHUP, &handleSignal);
 
-    const vt_str = if (posix.getenv("DESKTOP_DM_VT")) |v| std.mem.span(v) else "1";
-    const vt_num = std.fmt.parseInt(c_int, vt_str, 10) catch 1;
-    var tty_buf: [32:0]u8 = undefined;
-    const tty_path = try std.fmt.bufPrintSentinel(&tty_buf, "/dev/tty{d}", .{vt_num}, 0);
+    // desktop.nix runs the display manager on tty1.
+    const vt_str = "1";
+    const vt_num: c_int = 1;
+    const tty_path: [:0]const u8 = "/dev/tty1";
     const wlr_renderer = posix.getenv("WLR_RENDERER");
 
     while (dm_running.load(.acquire)) {
