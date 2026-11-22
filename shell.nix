@@ -1,8 +1,8 @@
 {
-  pkgs ? (builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem},
+  pkgs ? (import ./default.nix { }).pkgs,
 }:
 let
-  desktop = import ./desktop-zig.nix { inherit pkgs; };
+  desktop = import ./default.nix { inherit pkgs; };
   devPrefix = "${toString ./.}/zig-out";
 in
 pkgs.mkShell {
@@ -16,7 +16,11 @@ pkgs.mkShell {
     DESKTOP_RUNTIME_SOUND_FILE
     ;
   DESKTOP_RUNTIME_POWER_HELPER = "${devPrefix}/bin/desktop-zig";
-  DESKTOP_RUNTIME_DATA_DIRS = builtins.replaceStrings [ (builtins.placeholder "out") ] [
-    devPrefix
-  ] desktop.DESKTOP_RUNTIME_DATA_DIRS;
+  DESKTOP_RUNTIME_DATA_DIRS =
+    builtins.replaceStrings
+      [ (builtins.placeholder "out") ]
+      [
+        devPrefix
+      ]
+      desktop.DESKTOP_RUNTIME_DATA_DIRS;
 }

@@ -88,7 +88,7 @@ pkgs.stdenv.mkDerivation {
     pkgs.removeReferencesTo
   ];
   passthru = {
-    inherit zigGlobalCache;
+    inherit pkgs zigGlobalCache;
   };
   dontStrip = true;
   WAYLAND_PROTOCOLS_DIR = "${pkgs.wayland-protocols}/share/wayland-protocols";
