@@ -431,8 +431,9 @@ let
         while True:
             if step is not None:
                 step()
-            if predicate():
-                return
+            result = predicate()
+            if result:
+                return result
             if on_error is not None:
                 on_error()
             assert time.monotonic() < deadline, message() if callable(message) else message

@@ -654,7 +654,7 @@ import ./fixture.nix { inherit pkgs; } {
       def wait_for(predicate, description):
           def check_service():
               assert service.poll() is None, log.read_text()[-8000:]
-          wait_until(predicate, description, timeout=10, interval=0.05, step=client.pump, on_error=check_service)
+          return wait_until(predicate, description, timeout=10, interval=0.05, step=client.pump, on_error=check_service)
 
 
       def notify(body="Body", actions=(), resident=False, replace=0):
@@ -704,6 +704,15 @@ import ./fixture.nix { inherit pkgs; } {
           return b"".join(row[(left + x) * 3:(left + x + width) * 3] for row in rows[top + y:top + y + height])
 
 
+      def wait_for_scroll(before, label, description):
+          previous = pane(before, 8, 424, 8, 352)
+          def changed():
+              rows = capture(label)[2]
+              if pane(rows, 8, 424, 8, 352) != previous:
+                  return rows
+          return wait_for(changed, description)
+
+
       def card_ready():
           rows = capture("live")[2]
           return rows[top + 108][(left + 100) * 3:(left + 100) * 3 + 3] == bytes([84, 84, 90])
@@ -729,10 +738,7 @@ import ./fixture.nix { inherit pkgs; } {
           width, height, _ = capture("panel")
           pointer_command(f"size {width} {height}")
           pointer.click(width // 2, 8)
-          wait_for(lambda: popup_origin(capture("opening")[2]) is not None, "Native popup mapping")
-          width, height, rows = capture("empty")
-          left, top = popup_origin(rows)
-          pointer_command(f"size {width} {height}")
+          left, top = wait_for(lambda: popup_origin(capture("opening")[2]), "Native popup mapping")
           move(0, height - 1)
           before = capture("calendar-before")[2]
           click(480, 113)
@@ -789,13 +795,11 @@ import ./fixture.nix { inherit pkgs; } {
           pointer_command("button 1")
           move(left + 436, top + 352)
           pointer_command("button 0")
-          wait_for(lambda: pane(unscrolled, 8, 424, 8, 352) != pane(capture("history-dragged")[2], 8, 424, 8, 352), "History scrollbar drag")
-          dragged = capture("history-dragged")[2]
+          dragged = wait_for_scroll(unscrolled, "history-dragged", "History scrollbar drag")
           sp.run(["wtype", "-k", "Page_Up"], check=True, timeout=5)
-          wait_for(lambda: pane(dragged, 8, 424, 8, 352) != pane(capture("history-paged-up")[2], 8, 424, 8, 352), "History keyboard paging")
+          wait_for_scroll(dragged, "history-paged-up", "History keyboard paging")
           sp.run(["wtype", "-k", "Page_Down"], check=True, timeout=5)
-          wait_for(lambda: pane(unscrolled, 8, 424, 8, 352) != pane(capture("history-scrolled")[2], 8, 424, 8, 352), "History did not scroll")
-          scrolled = capture("history-scrolled")[2]
+          scrolled = wait_for_scroll(unscrolled, "history-scrolled", "History did not scroll")
           assert pane(unscrolled, 460, 280) == pane(scrolled, 460, 280), "History scrolling changed calendar pixels"
           click(55, 390)
           wait_for(lambda: not history(), "Clear notification history")
