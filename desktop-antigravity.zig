@@ -61,26 +61,52 @@ pub fn mergeWindows(first: [2]?usage.Window, second: [2]?usage.Window) [2]?usage
     return result;
 }
 
+fn mentionsGemini(text: []const u8) bool {
+    var buffer: [128]u8 = undefined;
+    const lower = std.ascii.lowerString(buffer[0..@min(text.len, buffer.len)], text[0..@min(text.len, buffer.len)]);
+    return std.mem.indexOf(u8, lower, "gemini") != null;
+}
+
+/// Whether a bucket (or the group holding it) belongs to the Gemini models.
+fn isGemini(group: V, bucket: V) bool {
+    if (mentionsGemini(u.string(u.get(group, "displayName")))) return true;
+    for ([_][]const u8{ "bucketId", "modelId" }) |key| if (mentionsGemini(u.string(u.get(bucket, key)))) return true;
+    return false;
+}
+
 /// Reads `retrieveUserQuota` and `retrieveUserQuotaSummary`: buckets, directly
-/// or in groups, each with a `remainingFraction` and `resetTime`. The tightest
-/// bucket of each window wins. Buckets without a recognisable window fill the
-/// 5h slot by earliest reset and the 7d slot by latest.
+/// or in groups, each with a `remainingFraction` and `resetTime`. When any
+/// Gemini bucket is present, only Gemini buckets count, so the separate
+/// Claude/GPT allowance does not hide the Gemini one. The tightest bucket of
+/// each window wins. Buckets without a recognisable window fill the 5h slot
+/// by earliest reset and the 7d slot by latest.
 pub fn parseUsage(data: V) [2]?usage.Window {
     var windows: [2]?usage.Window = .{ null, null };
     var unknown: [2]?usage.Window = .{ null, null };
     var lists: [65]V = undefined;
+    var owners: [65]V = undefined;
     var count: usize = 0;
     lists[count] = u.get(data, "buckets");
+    owners[count] = .null;
     count += 1;
     const groups = u.get(data, "groups");
     if (groups == .array) for (groups.array.items) |group| {
         if (count == lists.len) break;
         lists[count] = u.get(group, "buckets");
+        owners[count] = group;
         count += 1;
     };
-    for (lists[0..count]) |list| {
+    var gemini_only = false;
+    for (lists[0..count], owners[0..count]) |list, group| {
+        if (list != .array) continue;
+        for (list.array.items) |bucket| if (isGemini(group, bucket)) {
+            gemini_only = true;
+        };
+    }
+    for (lists[0..count], owners[0..count]) |list, group| {
         if (list != .array) continue;
         for (list.array.items) |bucket| {
+            if (gemini_only and !isGemini(group, bucket)) continue;
             if (u.get(bucket, "disabled") == .bool and u.get(bucket, "disabled").bool) continue;
             const fraction = u.number(u.get(bucket, "remainingFraction")) orelse continue;
             const window: usage.Window = .{ .used = (1 - std.math.clamp(fraction, 0, 1)) * 100, .reset_at = claude.parseTimestamp(u.string(u.get(bucket, "resetTime"))) };

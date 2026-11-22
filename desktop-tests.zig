@@ -266,7 +266,7 @@ test "Claude backs off after 429 like Claude Code and keeps the last usage" {
     try expect(std.mem.indexOf(u8, empty.@"error", "rate limited") != null);
 }
 
-test "Antigravity takes the tightest bucket of each quota window" {
+test "Antigravity reports the Gemini allowance, not the Claude/GPT one" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -279,10 +279,27 @@ test "Antigravity takes the tightest bucket of each quota window" {
         \\  {"window":"604800s","remainingFraction":0.1,"disabled":true}]}]}
     ));
     const out = try usage.update(a, .{ .name = "Antigravity", .windows = windows }, "", 1000);
-    try strings("54%", out.items.?[0].text);
+    try strings("80%", out.items.?[0].text);
     try expect(std.mem.indexOf(u8, out.tooltip, "Antigravity allowance remaining") != null);
     try strings("Resets in 2d 3h", out.windows[1].reset);
     try expect(@abs(out.windows[1].percent.? - 95) < 1e-9);
+    // The live summary: a Gemini Models group and a Claude and GPT models group.
+    const summary = antigravity.parseUsage(try u.parse(a,
+        \\{"groups":[{"displayName":"Gemini Models","buckets":[
+        \\  {"bucketId":"gemini-weekly","window":"weekly","resetTime":"1970-01-03T00:00:00Z","remainingFraction":0.70},
+        \\  {"bucketId":"gemini-5h","window":"5h","resetTime":"1970-01-01T01:00:00Z","remainingFraction":0.94}]},
+        \\ {"displayName":"Claude and GPT models","buckets":[
+        \\  {"bucketId":"3p-weekly","window":"weekly","resetTime":"1970-01-03T00:00:00Z","remainingFraction":0.58},
+        \\  {"bucketId":"3p-5h","window":"5h","resetTime":"1970-01-01T03:00:00Z","remainingFraction":0.52}]}]}
+    ));
+    try expect(@abs(summary[0].?.used - 6) < 1e-9 and @abs(summary[1].?.used - 30) < 1e-9);
+    // Per-model buckets: Claude models are ignored when Gemini ones exist.
+    const models = antigravity.parseUsage(try u.parse(a,
+        \\{"buckets":[
+        \\  {"modelId":"claude-opus-5-5-high","resetTime":"1970-01-01T03:00:00Z","remainingFraction":0.17},
+        \\  {"modelId":"gemini-3.8-flash-high","resetTime":"1970-01-01T01:00:00Z","remainingFraction":0.93}]}
+    ));
+    try expect(@abs(models[0].?.used - 7) < 1e-6);
     // The live service labels windows "5h" and "weekly".
     const live = antigravity.parseUsage(try u.parse(a, "{\"groups\":[{\"buckets\":[{\"bucketId\":\"3p-weekly\",\"window\":\"weekly\",\"resetTime\":\"1970-01-03T03:16:40Z\",\"remainingFraction\":0.9},{\"bucketId\":\"3p-5h\",\"window\":\"5h\",\"resetTime\":\"1970-01-01T00:16:40Z\",\"remainingFraction\":0.25}]}]}"));
     try expect(@abs(live[0].?.used - 75) < 1e-9 and @abs(live[1].?.used - 10) < 1e-9);
