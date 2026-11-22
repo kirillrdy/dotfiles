@@ -225,7 +225,7 @@ pub const View = struct {
     }
     pub fn prepare(self: *View, a: std.mem.Allocator, scale: u32, height: f64) !void {
         self.scale = scale;
-        const padding: f64 = if (self.disk) 0 else if (self.usage) 15 else 18;
+        const padding: f64 = if (self.disk) 0 else if (self.usage) 8 else 18;
         var x = padding;
         if (self.activities) {
             const count: usize = @max(1, self.workspace_count);
@@ -268,7 +268,7 @@ pub const View = struct {
         else
             null;
         if (pill_color) |color| canvas.draw(&.{.{ .rounded = .{ .x = 3, .y = 3, .width = @max(0, width - 6), .height = @max(0, height - 6) } }}, color);
-        const padding: f64 = if (self.disk) 0 else if (self.usage) 15 else 18;
+        const padding: f64 = if (self.disk) 0 else if (self.usage) 8 else 18;
         if (self.activities) {
             const count: usize = @max(1, self.workspace_count);
             const active = @min(self.workspace_active, count - 1);
