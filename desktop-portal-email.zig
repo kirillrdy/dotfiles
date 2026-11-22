@@ -122,27 +122,9 @@ pub fn composeUri(allocator: std.mem.Allocator, options: portal_options.Dict, de
     return allocator.dupeSentinel(u8, uri.bytes.items, 0);
 }
 
-fn startupId(context: ?*c.GAppLaunchContext, _: ?*c.GAppInfo, _: [*c]c.GList) callconv(.c) [*c]u8 {
-    return c.g_strdup(@ptrCast(c.g_object_get_data(@ptrCast(context), "desktop-email-token")));
-}
-fn contextClassInit(klass: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
-    const value: *c.GAppLaunchContextClass = @ptrCast(@alignCast(klass));
-    value.get_startup_notify_id = &startupId;
-}
-pub fn launchContext(allocator: std.mem.Allocator, options: portal_options.Dict) !*c.GAppLaunchContext {
-    const token = if (try Options.string(options, "activation_token")) |value| try allocator.dupeSentinel(u8, value, 0) else null;
-    defer if (token) |value| allocator.free(value);
-    const Type = struct {
-        var id: c.GType = 0;
-    };
-    if (Type.id == 0) Type.id = c.g_type_register_static_simple(c.g_app_launch_context_get_type(), "DesktopEmailLaunchContext", @sizeOf(c.GAppLaunchContextClass), &contextClassInit, @sizeOf(c.GAppLaunchContext), null, 0);
-    const context: *c.GAppLaunchContext = @ptrCast(@alignCast(c.g_object_new(Type.id, null)));
-    if (token) |value| {
-        c.g_object_set_data_full(@ptrCast(context), "desktop-email-token", c.g_strdup(value.ptr), &c.g_free);
-        c.g_app_launch_context_setenv(context, "XDG_ACTIVATION_TOKEN", value.ptr);
-        c.g_app_launch_context_setenv(context, "DESKTOP_STARTUP_ID", value.ptr);
-    }
-    return context;
+/// The xdg-activation token the mail client should start with, if the caller gave one.
+pub fn activationToken(options: portal_options.Dict) !?[]const u8 {
+    return Options.string(options, "activation_token");
 }
 
 /// Options from their GVariant text form.

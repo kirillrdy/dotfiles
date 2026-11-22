@@ -34,6 +34,8 @@ pub const App = struct {
     only_show_in: ?[]const []const u8 = null,
     not_show_in: ?[]const []const u8 = null,
     startup_wm_class: ?[:0]const u8 = null,
+    /// The MimeType list, as written.
+    mime_types: []const []const u8 = &.{},
 
     pub fn ref(self: *App) *App {
         self.refs += 1;
@@ -92,6 +94,7 @@ pub const App = struct {
         self.only_show_in = file.list(group, "OnlyShowIn");
         self.not_show_in = file.list(group, "NotShowIn");
         self.startup_wm_class = file.string(group, "StartupWMClass");
+        self.mime_types = file.list(group, "MimeType") orelse &.{};
         return self;
     }
 
@@ -119,11 +122,27 @@ pub const App = struct {
         return self.only_show_in == null;
     }
 
+    /// Whether the command accepts URIs (%u or %U) rather than only local files.
+    pub fn supportsUris(self: *const App) bool {
+        const command = self.exec orelse return false;
+        return std.mem.indexOf(u8, command, "%u") != null or std.mem.indexOf(u8, command, "%U") != null;
+    }
+
     /// The command with field codes expanded and no files, split into arguments.
     pub fn argv(self: *const App, a: std.mem.Allocator) ![][:0]u8 {
+        var none: []const []const u8 = &.{};
+        return self.argvFor(a, &none);
+    }
+
+    /// The command for the next of `uris`, consuming those it uses, as GIO's
+    /// expand_application_parameters: %u and %f take one, %U and %F take all,
+    /// and a command without them gets one file appended. %f gives local paths
+    /// and skips URIs without one.
+    pub fn argvFor(self: *const App, a: std.mem.Allocator, uris: *[]const []const u8) ![][:0]u8 {
         const command = self.exec orelse return error.MissingCommand;
         var expanded: std.ArrayList(u8) = .empty;
         defer expanded.deinit(a);
+        const offered = uris.len;
         var i: usize = 0;
         while (i < command.len) : (i += 1) {
             if (command[i] != '%' or i + 1 == command.len) {
@@ -131,35 +150,81 @@ pub const App = struct {
                 continue;
             }
             i += 1;
-            switch (command[i]) {
-                '%' => try expanded.append(a, '%'),
-                'i' => if (self.icon) |icon| {
-                    try expanded.appendSlice(a, "--icon ");
-                    try shellQuote(a, &expanded, icon);
-                },
-                'c' => try shellQuote(a, &expanded, self.name),
-                'k' => if (self.filename) |filename| try shellQuote(a, &expanded, filename),
-                // No files or URIs are passed; deprecated and unknown codes expand to nothing.
-                else => {},
-            }
+            try self.expandCode(a, &expanded, command[i], uris);
+        }
+        // GIO appends a file argument when no field code took one.
+        if (offered > 0 and uris.len == offered) {
+            try expanded.append(a, ' ');
+            try self.expandCode(a, &expanded, 'f', uris);
         }
         return shellParse(a, expanded.items);
     }
 
-    /// Starts the application: D-Bus activation when the entry asks for it,
-    /// otherwise its command, run in a terminal when Terminal is set.
-    pub fn launch(self: *const App, gpa: std.mem.Allocator) !void {
+    fn expandCode(self: *const App, a: std.mem.Allocator, out: *std.ArrayList(u8), code: u8, uris: *[]const []const u8) !void {
+        switch (code) {
+            '%' => try out.append(a, '%'),
+            'i' => if (self.icon) |icon| {
+                try out.appendSlice(a, "--icon ");
+                try shellQuote(a, out, icon);
+            },
+            'c' => try shellQuote(a, out, self.name),
+            'k' => if (self.filename) |filename| try shellQuote(a, out, filename),
+            'u', 'f' => if (uris.len > 0) {
+                try expandUri(a, out, code, uris.*[0]);
+                uris.* = uris.*[1..];
+            },
+            'U', 'F' => {
+                for (uris.*, 0..) |uri, n| {
+                    if (n > 0) try out.append(a, ' ');
+                    try expandUri(a, out, code, uri);
+                }
+                uris.* = uris.*[uris.len..];
+            },
+            // Deprecated and unknown codes expand to nothing.
+            else => {},
+        }
+    }
+
+    fn expandUri(a: std.mem.Allocator, out: *std.ArrayList(u8), code: u8, uri: []const u8) !void {
+        if (code == 'u' or code == 'U') return shellQuote(a, out, uri);
+        // %f and %F want paths; a plain path is already one.
+        if (std.fs.path.isAbsolute(uri)) return shellQuote(a, out, uri);
+        const path = paths.pathFromUri(a, uri) orelse return;
+        try shellQuote(a, out, path);
+    }
+
+    /// Starts the application with `options`: D-Bus activation or Open when the
+    /// entry asks for it, otherwise its command once per URI group, in a
+    /// terminal when Terminal is set. Errors that are known at once are
+    /// returned; otherwise `done`, when given, later receives the outcome on
+    /// the main loop.
+    pub fn launch(self: *const App, gpa: std.mem.Allocator, options: LaunchOptions, done: ?Done, context: ?*anyopaque) !void {
         var arena = std.heap.ArenaAllocator.init(gpa);
         defer arena.deinit();
         const a = arena.allocator();
-        if (self.dbus_activatable) if (busName(self.id)) |name| return activate(a, name);
+        if (self.dbus_activatable) if (busName(self.id)) |name| return activate(gpa, name, options, done, context);
         const directory = if (self.path) |value| (if (value.len > 0) value else null) else null;
-        try spawn(a, try self.launchArgs(a), directory, self.filename);
+        var environment: std.ArrayList([:0]const u8) = .empty;
+        if (options.activation_token) |token| {
+            try environment.append(a, try std.fmt.allocPrintSentinel(a, "XDG_ACTIVATION_TOKEN={s}", .{token}, 0));
+            try environment.append(a, try std.fmt.allocPrintSentinel(a, "DESKTOP_STARTUP_ID={s}", .{token}, 0));
+        }
+        var remaining = options.uris;
+        while (true) {
+            try spawn(a, try self.launchArgsFor(a, &remaining), directory, self.filename, environment.items);
+            if (remaining.len == 0) break;
+        }
+        if (done) |callback| Completion.later(gpa, callback, context, true);
     }
 
-    /// The arguments `launch` executes, wrapped in a terminal when Terminal is set.
+    /// The arguments `launch` executes without URIs.
     pub fn launchArgs(self: *const App, a: std.mem.Allocator) ![][:0]u8 {
-        const args = try self.argv(a);
+        var none: []const []const u8 = &.{};
+        return self.launchArgsFor(a, &none);
+    }
+
+    fn launchArgsFor(self: *const App, a: std.mem.Allocator, uris: *[]const []const u8) ![][:0]u8 {
+        const args = try self.argvFor(a, uris);
         if (!self.terminal) return args;
         // GIO's terminal list does not consistently include Ghostty.
         const wrapped = try a.alloc([:0]u8, args.len + 2);
@@ -168,6 +233,56 @@ pub const App = struct {
         @memcpy(wrapped[2..], args);
         return wrapped;
     }
+};
+
+pub const LaunchOptions = struct {
+    uris: []const []const u8 = &.{},
+    /// An xdg-activation token for the started application.
+    activation_token: ?[]const u8 = null,
+    /// Cancels a pending D-Bus activation, which then completes with failure.
+    cancellable: ?*@import("desktop-glib.zig").GCancellable = null,
+};
+
+pub const Done = *const fn (?*anyopaque, bool) void;
+
+/// Delivers a launch outcome on the main loop.
+const Completion = struct {
+    allocator: std.mem.Allocator,
+    done: Done,
+    context: ?*anyopaque,
+    ok: bool,
+
+    fn later(gpa: std.mem.Allocator, done: Done, context: ?*anyopaque, ok: bool) void {
+        const self = gpa.create(Completion) catch return done(context, ok);
+        self.* = .{ .allocator = gpa, .done = done, .context = context, .ok = ok };
+        _ = idle.g_idle_add(&deliver, self);
+    }
+
+    fn deliver(data: ?*anyopaque) callconv(.c) c_int {
+        const self: *Completion = @ptrCast(@alignCast(data));
+        const done = self.done;
+        const context = self.context;
+        const ok = self.ok;
+        self.allocator.destroy(self);
+        done(context, ok);
+        return 0;
+    }
+
+    fn replied(data: ?*anyopaque, reply: @import("dbus").Reply) void {
+        const self: *Completion = @ptrCast(@alignCast(data));
+        const done = self.done;
+        const context = self.context;
+        self.allocator.destroy(self);
+        done(context, reply == .ok);
+    }
+
+    fn ignored(_: ?*anyopaque, reply: @import("dbus").Reply) void {
+        if (reply != .ok) std.log.warn("D-Bus activation failed: {s}", .{reply.failed.text});
+    }
+};
+
+const idle = struct {
+    extern fn g_idle_add(function: *const fn (?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) c_uint;
 };
 
 /// A desktop file ID without ".desktop", when it is a valid D-Bus name.
@@ -183,9 +298,13 @@ fn busName(id: []const u8) ?[]const u8 {
     return name;
 }
 
-/// org.freedesktop.Application.Activate on the application's well-known name.
-fn activate(a: std.mem.Allocator, name: []const u8) !void {
+/// org.freedesktop.Application Activate, or Open with URIs, on the
+/// application's well-known name, without waiting for the reply.
+fn activate(gpa: std.mem.Allocator, name: []const u8, options: LaunchOptions, done: ?Done, context: ?*anyopaque) !void {
     const dbus = @import("dbus");
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
     const object = try a.alloc(u8, name.len + 1);
     object[0] = '/';
     for (name, object[1..]) |byte, *out| out.* = switch (byte) {
@@ -193,11 +312,26 @@ fn activate(a: std.mem.Allocator, name: []const u8) !void {
         '-' => '_',
         else => byte,
     };
-    const connection = try dbus.Connection.open(a, .session);
-    defer connection.close();
-    const platform_data: dbus.Dict([]const u8, dbus.Value) = .{ .entries = &.{} };
-    const reply = try connection.callBlocking(.{ .destination = name, .path = object, .interface = "org.freedesktop.Application", .member = "Activate" }, .{platform_data}, 25000);
-    reply.deinit();
+    var entries: std.ArrayList(dbus.Dict([]const u8, dbus.Value).Entry) = .empty;
+    if (options.activation_token) |token| {
+        try entries.append(a, .{ .key = "activation-token", .value = .{ .string = token } });
+        try entries.append(a, .{ .key = "desktop-startup-id", .value = .{ .string = token } });
+    }
+    const platform_data: dbus.Dict([]const u8, dbus.Value) = .{ .entries = entries.items };
+    const target: dbus.Connection.Call = .{ .destination = name, .path = object, .interface = "org.freedesktop.Application", .member = if (options.uris.len > 0) "Open" else "Activate" };
+    var handler: dbus.ReplyHandler = &Completion.ignored;
+    var state: ?*anyopaque = null;
+    if (done) |callback| {
+        const completion = try gpa.create(Completion);
+        completion.* = .{ .allocator = gpa, .done = callback, .context = context, .ok = false };
+        handler = &Completion.replied;
+        state = completion;
+    }
+    const loop = @import("desktop-dbus-loop.zig");
+    if (options.uris.len > 0)
+        loop.request(gpa, .session, target, .{ options.uris, platform_data }, 25000, options.cancellable, handler, state)
+    else
+        loop.request(gpa, .session, target, .{platform_data}, 25000, options.cancellable, handler, state);
 }
 
 /// GThemedIcon names drop image suffixes; absolute paths are files.
@@ -437,7 +571,7 @@ pub fn shellQuote(a: std.mem.Allocator, out: *std.ArrayList(u8), value: []const 
 /// program cannot be executed, which the program's process reports through a
 /// close-on-exec pipe. Descriptors other than standard input, output and error
 /// are not inherited.
-pub fn spawn(a: std.mem.Allocator, args: []const [:0]const u8, directory: ?[]const u8, desktop_file: ?[]const u8) !void {
+pub fn spawn(a: std.mem.Allocator, args: []const [:0]const u8, directory: ?[]const u8, desktop_file: ?[]const u8, extra_environment: []const [:0]const u8) !void {
     if (args.len == 0) return error.EmptyCommand;
     // Everything the children use is prepared first: after fork they only make system calls.
     const argv = try a.allocSentinel(?[*:0]const u8, args.len, null);
@@ -455,8 +589,13 @@ pub fn spawn(a: std.mem.Allocator, args: []const [:0]const u8, directory: ?[]con
     while (std.c.environ[index]) |entry| : (index += 1) {
         const text = std.mem.span(entry);
         if (std.mem.startsWith(u8, text, "GIO_LAUNCHED_DESKTOP_FILE")) continue;
-        try environment.append(a, entry);
+        const replaced = for (extra_environment) |extra| {
+            const key = extra[0 .. (std.mem.indexOfScalar(u8, extra, '=') orelse extra.len) + 1];
+            if (std.mem.startsWith(u8, text, key)) break true;
+        } else false;
+        if (!replaced) try environment.append(a, entry);
     }
+    for (extra_environment) |extra| try environment.append(a, extra.ptr);
     // GIO tells the program which desktop file launched it and its own process ID.
     var pid_variable = try a.allocSentinel(u8, "GIO_LAUNCHED_DESKTOP_FILE_PID=".len + 20, 0);
     @memcpy(pid_variable[0.."GIO_LAUNCHED_DESKTOP_FILE_PID=".len], "GIO_LAUNCHED_DESKTOP_FILE_PID=");
@@ -541,6 +680,15 @@ fn applicationDirectories(a: std.mem.Allocator) ![]const []const u8 {
     while (dirs.next()) |dir| if (dir.len > 0) {
         try directories.append(a, try std.fmt.allocPrint(a, "{s}/applications", .{std.mem.trimEnd(u8, dir, "/")}));
     };
+    // Nixpkgs patches GIO to also search the Nix profiles, after the XDG directories.
+    try directories.append(a, "/nix/var/nix/profiles/system/sw/share/applications");
+    const state = util.env("XDG_STATE_HOME") orelse "";
+    if (state.len > 0)
+        try directories.append(a, try std.fmt.allocPrint(a, "{s}/nix/profiles/profile/share/applications", .{state}))
+    else
+        try directories.append(a, try std.fmt.allocPrint(a, "{s}/.local/state/nix/profiles/profile/share/applications", .{paths.home()}));
+    try directories.append(a, try std.fmt.allocPrint(a, "/nix/var/nix/profiles/per-user/{s}/profile/share/applications", .{paths.userName()}));
+    try directories.append(a, try std.fmt.allocPrint(a, "/etc/profiles/per-user/{s}/share/applications", .{paths.userName()}));
     return directories.toOwnedSlice(a);
 }
 
@@ -619,6 +767,156 @@ pub fn lookup(gpa: std.mem.Allocator, id: []const u8) ?*App {
     return null;
 }
 
+/// A directory GIO consults for associations: its mimeapps.list files and,
+/// for application directories, the mimeinfo.cache update-desktop-database
+/// writes there.
+const AssociationDir = struct {
+    lists: []const KeyFile,
+    applications: ?[]const u8,
+    cache: ?KeyFile = null,
+};
+
+/// Configuration directories, then application directories, highest priority
+/// first; each reads the lists for the current desktops, then mimeapps.list.
+fn associationDirs(a: std.mem.Allocator) ![]const AssociationDir {
+    var desktops: std.ArrayList([]const u8) = .empty;
+    var current = std.mem.splitScalar(u8, util.env("XDG_CURRENT_DESKTOP") orelse "", ':');
+    while (current.next()) |desktop| if (desktop.len > 0) try desktops.append(a, try std.ascii.allocLowerString(a, desktop));
+    var bases: std.ArrayList(struct { path: []const u8, applications: bool }) = .empty;
+    try bases.append(a, .{ .path = paths.configHome(), .applications = false });
+    const config = util.env("XDG_CONFIG_DIRS") orelse "";
+    var config_dirs = std.mem.splitScalar(u8, if (config.len > 0) config else "/etc/xdg", ':');
+    while (config_dirs.next()) |dir| if (dir.len > 0) try bases.append(a, .{ .path = std.mem.trimEnd(u8, dir, "/"), .applications = false });
+    for (try applicationDirectories(a)) |dir| try bases.append(a, .{ .path = dir, .applications = true });
+    var result: std.ArrayList(AssociationDir) = .empty;
+    for (bases.items) |base| {
+        var lists: std.ArrayList(KeyFile) = .empty;
+        for (desktops.items) |desktop| if (readKeyFile(a, try std.fmt.allocPrint(a, "{s}/{s}-mimeapps.list", .{ base.path, desktop }))) |file| try lists.append(a, file);
+        if (readKeyFile(a, try std.fmt.allocPrint(a, "{s}/mimeapps.list", .{base.path}))) |file| try lists.append(a, file);
+        try result.append(a, .{
+            .lists = lists.items,
+            .applications = if (base.applications) base.path else null,
+            .cache = if (base.applications) readKeyFile(a, try std.fmt.allocPrint(a, "{s}/mimeinfo.cache", .{base.path})) else null,
+        });
+    }
+    return result.toOwnedSlice(a);
+}
+
+fn readKeyFile(a: std.mem.Allocator, path: []const u8) ?KeyFile {
+    const data = paths.readFile(a, path, 4 << 20) catch return null;
+    return KeyFile.parse(a, data) catch null;
+}
+
+/// The IDs a group gives for `mime`, with keys unaliased as GIO does.
+fn associated(file: *const KeyFile, group: []const u8, mime: []const u8, db: ?*const @import("desktop-mime.zig").Database) []const []const u8 {
+    for (file.entries.items) |entry| {
+        if (!std.mem.eql(u8, entry.group, group)) continue;
+        const key = if (db) |value| value.unalias(entry.key) else entry.key;
+        if (std.mem.eql(u8, key, mime)) return file.list(group, entry.key) orelse &.{};
+    }
+    return &.{};
+}
+
+fn contains(list: []const []const u8, value: []const u8) bool {
+    for (list) |item| if (std.mem.eql(u8, item, value)) return true;
+    return false;
+}
+
+/// Whether an application directory before `dir` provides `id`, hiding it here.
+fn masked(dirs: []const AssociationDir, dir: usize, apps: []const *App, id: []const u8) bool {
+    const app = for (apps) |candidate| {
+        if (std.mem.eql(u8, candidate.id, id)) break candidate;
+    } else return false;
+    const filename = app.filename orelse return false;
+    for (dirs[0..dir]) |earlier| {
+        const directory = earlier.applications orelse continue;
+        if (std.mem.startsWith(u8, filename, directory) and filename.len > directory.len and filename[directory.len] == '/') return true;
+    }
+    return false;
+}
+
+/// The application GIO's g_app_info_get_default_for_type picks: for the type
+/// and then each ancestor, the defaults from every mimeapps.list, then added
+/// associations and each directory's mimeinfo.cache, skipping removed ones.
+pub fn defaultFor(gpa: std.mem.Allocator, content_type: []const u8, must_support_uris: bool) ?*App {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const db = @import("desktop-mime.zig").shared();
+    const types: []const []const u8 = if (db) |value| value.ancestry(a, content_type) catch return null else &.{content_type};
+    const dirs = associationDirs(a) catch return null;
+    const apps = all(gpa) catch return null;
+    defer {
+        for (apps) |app| app.unref();
+        gpa.free(apps);
+    }
+    var blocklist: std.ArrayList([]const u8) = .empty;
+    for (types) |mime| {
+        var results: std.ArrayList([]const u8) = .empty;
+        for (dirs) |dir| for (dir.lists) |*file| {
+            for (associated(file, "Default Applications", mime, db)) |id| if (!contains(results.items, id)) results.append(a, id) catch return null;
+        };
+        for (dirs, 0..) |dir, index| {
+            for (dir.lists) |*file| {
+                for (associated(file, "Added Associations", mime, db)) |id| {
+                    if (!masked(dirs, index, apps, id) and !contains(blocklist.items, id) and !contains(results.items, id)) results.append(a, id) catch return null;
+                }
+                for (associated(file, "Removed Associations", mime, db)) |id| {
+                    if (!masked(dirs, index, apps, id) and !contains(blocklist.items, id) and !contains(results.items, id)) blocklist.append(a, id) catch return null;
+                }
+            }
+            if (dir.cache) |*cache| for (associated(cache, "MIME Cache", mime, db)) |id| {
+                if (!masked(dirs, index, apps, id) and !contains(blocklist.items, id) and !contains(results.items, id)) results.append(a, id) catch return null;
+            };
+        }
+        for (results.items) |id| {
+            const app = for (apps) |candidate| {
+                if (std.mem.eql(u8, candidate.id, id)) break candidate;
+            } else continue;
+            if (must_support_uris and !app.supportsUris()) continue;
+            return app.ref();
+        }
+    }
+    return null;
+}
+
+/// The handler for "x-scheme-handler/<scheme>".
+pub fn defaultForScheme(gpa: std.mem.Allocator, scheme: []const u8) ?*App {
+    const prefix = "x-scheme-handler/";
+    const mime = std.fmt.allocPrint(gpa, prefix ++ "{s}", .{scheme}) catch return null;
+    defer gpa.free(mime);
+    for (mime[prefix.len..]) |*byte| byte.* = std.ascii.toLower(byte.*);
+    return defaultFor(gpa, mime, false);
+}
+
+/// A URI's scheme as RFC 3986 defines it, or null.
+pub fn uriScheme(uri: []const u8) ?[]const u8 {
+    if (uri.len == 0 or !std.ascii.isAlphabetic(uri[0])) return null;
+    for (uri, 0..) |byte, i| {
+        if (byte == ':') return if (i > 0) uri[0..i] else null;
+        if (!(std.ascii.isAlphanumeric(byte) or byte == '+' or byte == '-' or byte == '.')) return null;
+    }
+    return null;
+}
+
+/// Opens a URI with its default handler, as g_app_info_launch_default_for_uri:
+/// the scheme's handler, or for a local file the handler of its content type.
+pub fn launchDefaultForUri(gpa: std.mem.Allocator, uri: []const u8, options: LaunchOptions, done: ?Done, context: ?*anyopaque) !void {
+    const scheme = uriScheme(uri) orelse return error.InvalidUri;
+    const app = defaultForScheme(gpa, scheme) orelse blk: {
+        if (!std.ascii.eqlIgnoreCase(scheme, "file")) return error.NoHandler;
+        const path = paths.pathFromUri(gpa, uri) orelse return error.InvalidUri;
+        defer gpa.free(path);
+        const db = @import("desktop-mime.zig").shared() orelse return error.NoHandler;
+        break :blk defaultFor(gpa, db.forFile(path), false) orelse return error.NoHandler;
+    };
+    defer app.unref();
+    var launch_options = options;
+    const list = [_][]const u8{uri};
+    launch_options.uris = &list;
+    try app.launch(gpa, launch_options, done, context);
+}
+
 test "key files, locales and command lines" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -681,10 +979,10 @@ test "spawn reports programs that cannot run" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    try spawn(a, &.{ "true", "argument" }, null, null);
-    try std.testing.expectError(error.FileNotFound, spawn(a, &.{"/nonexistent/desktop-appinfo-test"}, null, null));
-    try std.testing.expectError(error.FileNotFound, spawn(a, &.{"desktop-appinfo-test-missing-program"}, null, null));
-    try std.testing.expectError(error.FileNotFound, spawn(a, &.{"true"}, "/nonexistent/directory", null));
+    try spawn(a, &.{ "true", "argument" }, null, null, &.{});
+    try std.testing.expectError(error.FileNotFound, spawn(a, &.{"/nonexistent/desktop-appinfo-test"}, null, null, &.{}));
+    try std.testing.expectError(error.FileNotFound, spawn(a, &.{"desktop-appinfo-test-missing-program"}, null, null, &.{}));
+    try std.testing.expectError(error.FileNotFound, spawn(a, &.{"true"}, "/nonexistent/directory", null, &.{}));
 }
 
 test "installed applications match GIO" {
@@ -742,4 +1040,79 @@ test "installed applications match GIO" {
     try std.testing.expectEqual(count, apps.len);
     try std.testing.expect(lookup(a, "desktop-appinfo-test-missing.desktop") == null);
     try std.testing.expect(glib.g_desktop_app_info_new("desktop-appinfo-test-missing.desktop") == null);
+}
+
+test "URIs expand into field codes like GIO" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { exec: []const u8, uris: []const []const u8, expected: []const []const []const u8 }{
+        .{ .exec = "viewer %f", .uris = &.{ "file:///tmp/a%20b", "file:///tmp/c" }, .expected = &.{ &.{ "viewer", "/tmp/a b" }, &.{ "viewer", "/tmp/c" } } },
+        .{ .exec = "viewer %F", .uris = &.{ "file:///tmp/a", "https://x/y", "file:///tmp/c" }, .expected = &.{&.{ "viewer", "/tmp/a", "/tmp/c" }} },
+        .{ .exec = "browser %u", .uris = &.{"https://example.com/?q=1&r=2"}, .expected = &.{&.{ "browser", "https://example.com/?q=1&r=2" }} },
+        .{ .exec = "browser --new %U", .uris = &.{ "https://a", "mailto:b" }, .expected = &.{&.{ "browser", "--new", "https://a", "mailto:b" }} },
+        .{ .exec = "plain", .uris = &.{"file:///tmp/x"}, .expected = &.{&.{ "plain", "/tmp/x" }} },
+    };
+    for (cases) |case| {
+        // The programs need not exist, so the command line is used directly.
+        const app = try App.fromCommandLine(std.testing.allocator, case.exec, "Case");
+        defer app.unref();
+        var remaining = case.uris;
+        for (case.expected) |expected| {
+            const args = try app.argvFor(a, &remaining);
+            try std.testing.expectEqual(expected.len, args.len);
+            for (expected, args) |want, got| try std.testing.expectEqualStrings(want, got);
+        }
+        try std.testing.expectEqual(@as(usize, 0), remaining.len);
+    }
+    try std.testing.expectEqualStrings("https", uriScheme("https://x").?);
+    try std.testing.expect(uriScheme("/tmp/x") == null);
+    try std.testing.expect(uriScheme("1abc:x") == null);
+}
+
+test "default applications match GIO" {
+    const glib = struct {
+        extern fn g_app_info_get_default_for_type(content_type: [*:0]const u8, must_support_uris: c_int) ?*anyopaque;
+        extern fn g_app_info_get_default_for_uri_scheme(scheme: [*:0]const u8) ?*anyopaque;
+        extern fn g_app_info_get_id(info: *anyopaque) ?[*:0]const u8;
+        extern fn g_object_unref(object: ?*anyopaque) void;
+    };
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var types: std.ArrayList([:0]const u8) = .empty;
+    const apps = try all(a);
+    defer {
+        for (apps) |app| app.unref();
+        a.free(apps);
+    }
+    for (apps) |app| for (app.mime_types) |mime| try types.append(scratch, try scratch.dupeSentinel(u8, mime, 0));
+    for ([_][:0]const u8{ "text/plain", "text/html", "image/png", "application/pdf", "inode/directory", "application/octet-stream", "text/x-csrc", "image/svg+xml", "application/x-zerosize" }) |mime| try types.append(scratch, mime);
+    for (types.items) |mime| {
+        for ([_]bool{ false, true }) |must_support_uris| {
+            const expected = glib.g_app_info_get_default_for_type(mime, @intFromBool(must_support_uris));
+            defer if (expected) |info| glib.g_object_unref(info);
+            const ours = defaultFor(a, mime, must_support_uris);
+            defer if (ours) |app| app.unref();
+            const want: []const u8 = if (expected) |info| std.mem.span(glib.g_app_info_get_id(info).?) else "(none)";
+            const got: []const u8 = if (ours) |app| app.id else "(none)";
+            std.testing.expectEqualStrings(want, got) catch |err| {
+                std.debug.print("default for {s} (uris: {})\n", .{ mime, must_support_uris });
+                return err;
+            };
+        }
+    }
+    for ([_][:0]const u8{ "http", "https", "mailto", "file", "ftp", "irc", "magnet", "zoommtg", "HTTPS" }) |scheme| {
+        const expected = glib.g_app_info_get_default_for_uri_scheme(scheme);
+        defer if (expected) |info| glib.g_object_unref(info);
+        const ours = defaultForScheme(a, scheme);
+        defer if (ours) |app| app.unref();
+        const want: []const u8 = if (expected) |info| std.mem.span(glib.g_app_info_get_id(info).?) else "(none)";
+        const got: []const u8 = if (ours) |app| app.id else "(none)";
+        std.testing.expectEqualStrings(want, got) catch |err| {
+            std.debug.print("default for scheme {s}\n", .{scheme});
+            return err;
+        };
+    }
 }

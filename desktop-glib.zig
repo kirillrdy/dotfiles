@@ -65,7 +65,6 @@ pub const struct__GList = extern struct {
     prev: [*c]GList = null,
 };
 
-pub extern fn g_list_free(list: [*c]GList) void;
 pub extern fn g_list_free_full(list: [*c]GList, free_func: GDestroyNotify) void;
 pub const GSList = struct__GSList;
 
@@ -129,12 +128,7 @@ const union_unnamed_51 = extern union {
     v_pointer: gpointer,
 };
 
-pub const struct__GValue = extern struct {
-    g_type: GType = 0,
-    data: [2]union_unnamed_51 = @import("std").mem.zeroes([2]union_unnamed_51),
-};
 
-pub const GValue = struct__GValue;
 
 pub const struct__GTypeClass = extern struct {
     g_type: GType = 0,
@@ -147,26 +141,8 @@ pub const struct__GTypeInstance = extern struct {
 };
 
 pub const GTypeInstance = struct__GTypeInstance;
-pub const GClassInitFunc = ?*const fn (g_class: gpointer, class_data: gpointer) callconv(.c) void;
-pub const GInstanceInitFunc = ?*const fn (instance: [*c]GTypeInstance, g_class: gpointer) callconv(.c) void;
-pub const GTypeFlags = c_uint;
-pub extern fn g_type_register_static_simple(parent_type: GType, type_name: [*c]const gchar, class_size: guint, class_init: GClassInitFunc, instance_size: guint, instance_init: GInstanceInitFunc, flags: GTypeFlags) GType;
-pub const GParamFlags = c_int;
 
-pub const struct__GParamSpec = extern struct {
-    g_type_instance: GTypeInstance = @import("std").mem.zeroes(GTypeInstance),
-    name: [*c]const gchar = null,
-    flags: GParamFlags = @import("std").mem.zeroes(GParamFlags),
-    value_type: GType = 0,
-    owner_type: GType = 0,
-    _nick: [*c]gchar = null,
-    _blurb: [*c]gchar = null,
-    qdata: ?*GData = null,
-    ref_count: guint = 0,
-    param_id: guint = 0,
-};
 
-pub const GParamSpec = struct__GParamSpec;
 pub const struct__GClosure = opaque {};
 
 pub const GClosure = struct__GClosure;
@@ -187,56 +163,20 @@ pub const struct__GObject = extern struct {
 
 pub const GObject = struct__GObject;
 
-pub const struct__GObjectConstructParam = extern struct {
-    pspec: [*c]GParamSpec = null,
-    value: [*c]GValue = null,
-};
 
-pub const GObjectConstructParam = struct__GObjectConstructParam;
 
-pub const struct__GObjectClass = extern struct {
-    g_type_class: GTypeClass = @import("std").mem.zeroes(GTypeClass),
-    construct_properties: [*c]GSList = null,
-    constructor: ?*const fn (@"type": GType, n_construct_properties: guint, construct_properties: [*c]GObjectConstructParam) callconv(.c) [*c]GObject = null,
-    set_property: ?*const fn (object: [*c]GObject, property_id: guint, value: [*c]const GValue, pspec: [*c]GParamSpec) callconv(.c) void = null,
-    get_property: ?*const fn (object: [*c]GObject, property_id: guint, value: [*c]GValue, pspec: [*c]GParamSpec) callconv(.c) void = null,
-    dispose: ?*const fn (object: [*c]GObject) callconv(.c) void = null,
-    finalize: ?*const fn (object: [*c]GObject) callconv(.c) void = null,
-    dispatch_properties_changed: ?*const fn (object: [*c]GObject, n_pspecs: guint, pspecs: [*c][*c]GParamSpec) callconv(.c) void = null,
-    notify: ?*const fn (object: [*c]GObject, pspec: [*c]GParamSpec) callconv(.c) void = null,
-    constructed: ?*const fn (object: [*c]GObject) callconv(.c) void = null,
-    flags: gsize = 0,
-    n_construct_properties: gsize = 0,
-    pspecs: gpointer = null,
-    n_pspecs: gsize = 0,
-    pdummy: [3]gpointer = @import("std").mem.zeroes([3]gpointer),
-};
 
-pub const GObjectClass = struct__GObjectClass;
-pub extern fn g_object_new(object_type: GType, first_property_name: [*c]const gchar, ...) gpointer;
 pub extern fn g_object_ref(object: gpointer) gpointer;
 pub extern fn g_object_unref(object: gpointer) void;
-pub extern fn g_object_get_data(object: [*c]GObject, key: [*c]const gchar) gpointer;
-pub extern fn g_object_set_data_full(object: [*c]GObject, key: [*c]const gchar, data: gpointer, destroy: GDestroyNotify) void;
 pub extern fn g_object_weak_ref(object: ?*GObject, notify: ?*const fn (?*anyopaque, ?*GObject) callconv(.c) void, data: ?*anyopaque) void;
-pub const GAppInfoCreateFlags = c_uint;
 pub const G_SUBPROCESS_FLAGS_NONE: c_int = 0;
 pub const G_SUBPROCESS_FLAGS_STDOUT_SILENCE: c_int = 8;
 pub const G_SUBPROCESS_FLAGS_STDERR_PIPE: c_int = 16;
 pub const GSubprocessFlags = c_uint;
-pub const struct__GAppLaunchContextPrivate = opaque {};
 
-pub const GAppLaunchContextPrivate = struct__GAppLaunchContextPrivate;
 
-pub const struct__GAppLaunchContext = extern struct {
-    parent_instance: GObject = @import("std").mem.zeroes(GObject),
-    priv: ?*GAppLaunchContextPrivate = null,
-};
 
-pub const GAppLaunchContext = struct__GAppLaunchContext;
-pub const struct__GAppInfo = opaque {};
 
-pub const GAppInfo = struct__GAppInfo;
 pub const struct__GAsyncResult = opaque {};
 
 pub const GAsyncResult = struct__GAsyncResult;
@@ -255,9 +195,7 @@ pub const GCancellable = struct__GCancellable;
 pub const struct__GFile = opaque {};
 
 pub const GFile = struct__GFile;
-pub const struct__GIcon = opaque {};
 
-pub const GIcon = struct__GIcon;
 pub const struct__GTask = opaque {};
 
 pub const GTask = struct__GTask;
@@ -269,14 +207,6 @@ pub const GSubprocess = struct__GSubprocess;
 pub const struct__GSubprocessLauncher = opaque {};
 
 pub const GSubprocessLauncher = struct__GSubprocessLauncher;
-pub extern fn g_app_info_create_from_commandline(commandline: [*c]const u8, application_name: [*c]const u8, flags: GAppInfoCreateFlags, @"error": [*c][*c]GError) ?*GAppInfo;
-pub extern fn g_app_info_get_name(appinfo: ?*GAppInfo) [*c]const u8;
-pub extern fn g_app_info_get_display_name(appinfo: ?*GAppInfo) [*c]const u8;
-pub extern fn g_app_info_get_commandline(appinfo: ?*GAppInfo) [*c]const u8;
-pub extern fn g_app_info_get_icon(appinfo: ?*GAppInfo) ?*GIcon;
-pub extern fn g_app_info_get_id(appinfo: ?*GAppInfo) [*c]const gchar;
-pub extern fn g_app_info_should_show(appinfo: ?*GAppInfo) gboolean;
-pub extern fn g_app_info_get_all() [*c]GList;
 pub extern fn g_cancellable_new() [*c]GCancellable;
 pub extern fn g_cancellable_cancel(cancellable: [*c]GCancellable) void;
 pub extern fn g_file_new_for_path(path: [*c]const u8) ?*GFile;
@@ -300,11 +230,7 @@ pub extern fn g_task_return_boolean(task: ?*GTask, result: gboolean) void;
 pub extern fn g_task_propagate_pointer(task: ?*GTask, @"error": [*c][*c]GError) gpointer;
 pub extern fn g_task_propagate_boolean(task: ?*GTask, @"error": [*c][*c]GError) gboolean;
 
-pub const struct__GDesktopAppInfo = opaque {};
 
-pub const GDesktopAppInfo = struct__GDesktopAppInfo;
-pub extern fn g_desktop_app_info_get_filename(info: ?*GDesktopAppInfo) [*c]const u8;
-pub extern fn g_desktop_app_info_new(desktop_id: [*c]const u8) ?*GDesktopAppInfo;
 
 pub extern fn g_unix_signal_add(signum: gint, handler: GSourceFunc, user_data: gpointer) guint;
 pub const GUnixFDSourceFunc = ?*const fn (fd: gint, condition: GIOCondition, user_data: gpointer) callconv(.c) gboolean;
@@ -322,9 +248,6 @@ pub extern fn g_variant_print(?*GVariant, gboolean) [*c]gchar;
 pub extern fn g_variant_parse(?*const GVariantType, [*c]const gchar, [*c]const gchar, [*c][*c]const gchar, [*c][*c]GError) ?*GVariant;
 
 // Native portal broker: tuples and Unix file descriptor forwarding.
-pub extern fn g_app_info_launch_default_for_uri_async([*c]const gchar, ?*GAppLaunchContext, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
-pub extern fn g_app_info_launch_default_for_uri_finish(?*GAsyncResult, [*c][*c]GError) gboolean;
-pub extern fn g_app_info_get_default_for_uri_scheme([*c]const gchar) ?*GAppInfo;
 pub extern fn g_variant_take_ref(?*GVariant) ?*GVariant;
 pub const GFileMonitor = opaque {};
 pub extern fn g_file_monitor_directory(?*GFile, c_uint, [*c]GCancellable, [*c][*c]GError) ?*GFileMonitor;
@@ -334,19 +257,6 @@ pub extern fn g_markup_escape_text([*c]const gchar, gssize) [*c]gchar;
 pub extern fn g_variant_equal(gconstpointer, gconstpointer) gboolean;
 pub extern fn g_idle_add(GSourceFunc, gpointer) guint;
 pub extern fn g_strcompress([*c]const gchar) [*c]gchar;
-pub extern fn g_app_launch_context_setenv(?*GAppLaunchContext, [*c]const gchar, [*c]const gchar) void;
-pub extern fn g_app_launch_context_get_type() GType;
-pub const GAppLaunchContextClass = extern struct {
-    parent_class: GObjectClass,
-    get_display: ?*const fn (?*GAppLaunchContext, ?*GAppInfo, [*c]GList) callconv(.c) [*c]gchar,
-    get_startup_notify_id: ?*const fn (?*GAppLaunchContext, ?*GAppInfo, [*c]GList) callconv(.c) [*c]gchar,
-    launch_failed: ?*const fn (?*GAppLaunchContext, [*c]const gchar) callconv(.c) void,
-    launched: ?*const fn (?*GAppLaunchContext, ?*GAppInfo, ?*GVariant) callconv(.c) void,
-    launch_started: ?*const fn (?*GAppLaunchContext, ?*GAppInfo, ?*GVariant) callconv(.c) void,
-    _g_reserved1: ?*const fn () callconv(.c) void,
-    _g_reserved2: ?*const fn () callconv(.c) void,
-    _g_reserved3: ?*const fn () callconv(.c) void,
-};
 
 pub const __icons = struct {
     pub const load = @import("desktop-icons.zig").load;

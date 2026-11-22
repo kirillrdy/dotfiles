@@ -1,23 +1,12 @@
 //! Local file enumeration and portal filters. No GTK widget or filter objects.
+//! Directories are read on a worker thread with the file information GIO's
+//! local file enumerator reported, and results are delivered on the main loop.
 const std = @import("std");
+const linux = std.os.linux;
 const c = @import("desktop-glib.zig");
+const paths = @import("desktop-paths.zig");
+const mime = @import("desktop-mime.zig");
 const cast = c.__zig.cast;
-const Enumerator = opaque {};
-const Info = opaque {};
-extern fn g_file_enumerate_children_async(?*c.GFile, [*:0]const u8, c_uint, c_int, ?*c.GCancellable, c.GAsyncReadyCallback, ?*anyopaque) void;
-extern fn g_file_enumerate_children_finish(?*c.GFile, ?*c.GAsyncResult, *?*c.GError) ?*Enumerator;
-extern fn g_file_enumerator_next_files_async(*Enumerator, c_int, c_int, ?*c.GCancellable, c.GAsyncReadyCallback, ?*anyopaque) void;
-extern fn g_file_enumerator_next_files_finish(*Enumerator, ?*c.GAsyncResult, *?*c.GError) ?*c.GList;
-extern fn g_file_info_get_name(*Info) [*:0]const u8;
-extern fn g_file_info_get_display_name(*Info) [*:0]const u8;
-extern fn g_file_info_get_file_type(*Info) c_uint;
-extern fn g_file_info_get_content_type(*Info) ?[*:0]const u8;
-extern fn g_file_info_get_is_hidden(*Info) c_int;
-extern fn g_file_info_get_size(*Info) i64;
-extern fn g_file_info_get_attribute_uint64(*Info, [*:0]const u8) u64;
-extern fn g_content_type_is_a([*:0]const u8, [*:0]const u8) c_int;
-extern fn g_content_type_from_mime_type([*:0]const u8) ?[*:0]u8;
-extern fn g_pattern_match_simple([*:0]const u8, [*:0]const u8) c_int;
 extern fn g_utf8_collate_key_for_filename([*:0]const u8, isize) [*:0]u8;
 
 pub const Entry = struct {
@@ -36,14 +25,54 @@ pub fn matches(entry: Entry, rules: []const Rule) bool {
     if (entry.directory or rules.len == 0) return true;
     for (rules) |rule| {
         if (!rule.mime) {
-            if (g_pattern_match_simple(rule.pattern, entry.name) != 0) return true;
+            if (simpleMatch(rule.pattern, entry.name)) return true;
         } else if (entry.content_type) |content_type| {
-            const requested = g_content_type_from_mime_type(rule.pattern) orelse continue;
-            defer c.g_free(requested);
-            if (g_content_type_is_a(content_type, requested) != 0) return true;
+            const db = mime.shared() orelse continue;
+            if (db.isA(content_type, rule.pattern)) return true;
         }
     }
     return false;
+}
+
+/// g_pattern_match_simple: `*` matches any run and `?` any one character.
+fn simpleMatch(pattern: []const u8, name: []const u8) bool {
+    const view = std.unicode.Utf8View.init(name) catch return false;
+    var characters: std.ArrayList(u21) = .empty;
+    var buffer: [1024]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+    var iterator = view.iterator();
+    while (iterator.nextCodepoint()) |point| characters.append(fixed.allocator(), point) catch return false;
+    return matchFrom(pattern, characters.items);
+}
+
+fn matchFrom(pattern: []const u8, name: []const u21) bool {
+    var p: usize = 0;
+    var n: usize = 0;
+    var star_p: ?usize = null;
+    var star_n: usize = 0;
+    while (n < name.len) {
+        if (p < pattern.len and pattern[p] == '*') {
+            star_p = p;
+            star_n = n;
+            p += 1;
+            continue;
+        }
+        if (p < pattern.len) {
+            const length = std.unicode.utf8ByteSequenceLength(pattern[p]) catch 1;
+            const point = if (pattern[p] == '?') name[n] else std.unicode.utf8Decode(pattern[p..@min(pattern.len, p + length)]) catch pattern[p];
+            if (point == name[n]) {
+                p += if (pattern[p] == '?') 1 else length;
+                n += 1;
+                continue;
+            }
+        }
+        const star = star_p orelse return false;
+        p = star + 1;
+        star_n += 1;
+        n = star_n;
+    }
+    while (p < pattern.len and pattern[p] == '*') p += 1;
+    return p == pattern.len;
 }
 
 /// A scan owns its strings and remains alive until its final callback. Cancellation
@@ -52,109 +81,136 @@ pub const Scan = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     entries: std.ArrayList(Entry) = .empty,
-    cancellable: *c.GCancellable,
-    enumerator: ?*Enumerator = null,
+    path: [:0]const u8,
+    cancelled: std.atomic.Value(bool) = .init(false),
+    failure: ?anyerror = null,
     context: ?*anyopaque,
     completed: *const fn (?*anyopaque, *Scan, ?anyerror) void,
+
     pub fn start(allocator: std.mem.Allocator, path: [:0]const u8, context: ?*anyopaque, completed: *const fn (?*anyopaque, *Scan, ?anyerror) void) !*Scan {
         const self = try allocator.create(Scan);
-        self.* = .{ .allocator = allocator, .arena = .init(allocator), .cancellable = c.g_cancellable_new().?, .context = context, .completed = completed };
-        const directory = c.g_file_new_for_path(path).?;
-        defer c.g_object_unref(directory);
-        g_file_enumerate_children_async(directory, "standard::name,standard::display-name,standard::type,standard::content-type,standard::is-hidden,standard::size,time::modified", 0, 0, self.cancellable, &opened, self);
+        errdefer allocator.destroy(self);
+        self.* = .{ .allocator = allocator, .arena = .init(allocator), .path = undefined, .context = context, .completed = completed };
+        errdefer self.arena.deinit();
+        self.path = try self.arena.allocator().dupeSentinel(u8, path, 0);
+        const thread = try std.Thread.spawn(.{}, work, .{self});
+        thread.detach();
         return self;
     }
+
     pub fn cancel(self: *Scan) void {
-        c.g_cancellable_cancel(self.cancellable);
+        self.cancelled.store(true, .release);
     }
+
     pub fn destroy(self: *Scan) void {
-        if (self.enumerator) |enumerator| c.g_object_unref(enumerator);
-        c.g_object_unref(self.cancellable);
         self.arena.deinit();
         self.allocator.destroy(self);
     }
-    fn opened(source: ?*c.GObject, result: ?*c.GAsyncResult, ptr: ?*anyopaque) callconv(.c) void {
-        const self = cast(Scan, ptr);
-        var failure: ?*c.GError = null;
-        self.enumerator = g_file_enumerate_children_finish(@ptrCast(source), result, &failure);
-        if (failure) |err| {
-            c.g_error_free(err);
-            self.completed(self.context, self, error.DirectoryUnavailable);
-            return;
+
+    fn work(self: *Scan) void {
+        self.failure = if (self.read()) |_| null else |err| err;
+        if (self.cancelled.load(.acquire)) self.failure = error.DirectoryUnavailable;
+        if (self.failure == null) std.mem.sort(Entry, self.entries.items, {}, less);
+        _ = c.g_idle_add(&deliver, self);
+    }
+
+    fn deliver(data: ?*anyopaque) callconv(.c) c.gboolean {
+        const self = cast(Scan, data);
+        self.completed(self.context, self, self.failure);
+        return 0;
+    }
+
+    fn read(self: *Scan) !void {
+        const a = self.arena.allocator();
+        const listing = paths.list(a, self.path) catch return error.DirectoryUnavailable;
+        // Names listed in the directory's .hidden file are hidden, as in GIO.
+        const hidden_list = paths.readFile(a, try std.fmt.allocPrint(a, "{s}/.hidden", .{std.mem.trimEnd(u8, self.path, "/")}), 1 << 20) catch "";
+        const db = mime.shared();
+        for (listing) |item| {
+            if (self.cancelled.load(.acquire)) return error.Cancelled;
+            // A bounded model avoids unbounded allocations from huge directories.
+            if (self.entries.items.len >= 65536) return error.DirectoryTooLarge;
+            const full = try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ std.mem.trimEnd(u8, self.path, "/"), item.name }, 0);
+            var info: linux.Statx = undefined;
+            const mask: linux.STATX = .{ .TYPE = true, .SIZE = true, .MTIME = true };
+            if (linux.errno(linux.statx(linux.AT.FDCWD, full, 0, mask, &info)) != .SUCCESS) {
+                // A dangling link is listed as the link itself.
+                if (linux.errno(linux.statx(linux.AT.FDCWD, full, linux.AT.SYMLINK_NOFOLLOW, mask, &info)) != .SUCCESS) continue;
+            }
+            const label = try displayName(a, item.name);
+            const key = g_utf8_collate_key_for_filename(label, -1);
+            defer c.g_free(key);
+            try self.entries.append(a, .{
+                .name = item.name,
+                .label = label,
+                .content_type = if (db) |database| try a.dupeSentinel(u8, database.forFile(full), 0) else null,
+                .directory = linux.S.ISDIR(info.mode),
+                .hidden = item.name[0] == '.' or listed(hidden_list, item.name),
+                .size = info.size,
+                .modified = @intCast(@max(0, info.mtime.sec)),
+                .sort_key = try a.dupeSentinel(u8, std.mem.span(key), 0),
+            });
         }
-        self.next();
     }
-    fn next(self: *Scan) void {
-        g_file_enumerator_next_files_async(self.enumerator.?, 128, 0, self.cancellable, &received, self);
-    }
+
     fn less(_: void, left: Entry, right: Entry) bool {
         if (left.directory != right.directory) return left.directory;
         if (left.sort_key.len > 0 and right.sort_key.len > 0) return std.mem.lessThan(u8, left.sort_key, right.sort_key);
         return std.ascii.lessThanIgnoreCase(left.name, right.name);
     }
-    fn received(source: ?*c.GObject, result: ?*c.GAsyncResult, ptr: ?*anyopaque) callconv(.c) void {
-        const self = cast(Scan, ptr);
-        var failure: ?*c.GError = null;
-        const list = g_file_enumerator_next_files_finish(@ptrCast(source.?), result, &failure);
-        defer {
-            var node = list;
-            while (node) |item| : (node = item.next) c.g_object_unref(item.data);
-            c.g_list_free(list);
-        }
-        if (failure) |err| {
-            c.g_error_free(err);
-            self.completed(self.context, self, error.DirectoryUnavailable);
-            return;
-        }
-        if (list == null) {
-            std.mem.sort(Entry, self.entries.items, {}, less);
-            self.completed(self.context, self, null);
-            return;
-        }
-        var node = list;
-        while (node) |item| : (node = item.next) {
-            const info = cast(Info, item.data);
-            const a = self.arena.allocator();
-            const name = a.dupeSentinel(u8, std.mem.span(g_file_info_get_name(info)), 0) catch {
-                self.completed(self.context, self, error.OutOfMemory);
-                return;
-            };
-            const label = a.dupeSentinel(u8, std.mem.span(g_file_info_get_display_name(info)), 0) catch {
-                self.completed(self.context, self, error.OutOfMemory);
-                return;
-            };
-            const content_type = if (g_file_info_get_content_type(info)) |value| a.dupeSentinel(u8, std.mem.span(value), 0) catch {
-                self.completed(self.context, self, error.OutOfMemory);
-                return;
-            } else null;
-            const key = g_utf8_collate_key_for_filename(label, -1);
-            defer c.g_free(key);
-            const sort_key = a.dupeSentinel(u8, std.mem.span(key), 0) catch {
-                self.completed(self.context, self, error.OutOfMemory);
-                return;
-            };
-            self.entries.append(a, .{ .name = name, .label = label, .content_type = content_type, .directory = g_file_info_get_file_type(info) == 2, .hidden = g_file_info_get_is_hidden(info) != 0, .size = @intCast(@max(0, g_file_info_get_size(info))), .modified = g_file_info_get_attribute_uint64(info, "time::modified"), .sort_key = sort_key }) catch {
-                self.completed(self.context, self, error.OutOfMemory);
-                return;
-            };
-            // A bounded model avoids unbounded allocations from huge directories.
-            if (self.entries.items.len >= 65536) {
-                self.completed(self.context, self, error.DirectoryTooLarge);
-                return;
-            }
-        }
-        self.next();
-    }
 };
+
+fn listed(list: []const u8, name: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, list, '\n');
+    while (lines.next()) |line| if (std.mem.eql(u8, std.mem.trimEnd(u8, line, "\r"), name)) return true;
+    return false;
+}
+
+/// The file name as g_filename_display_name shows it: invalid UTF-8 becomes U+FFFD.
+fn displayName(a: std.mem.Allocator, name: []const u8) ![:0]const u8 {
+    if (std.unicode.utf8ValidateSlice(name)) return a.dupeSentinel(u8, name, 0);
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < name.len) {
+        const length = std.unicode.utf8ByteSequenceLength(name[i]) catch 0;
+        if (length > 0 and i + length <= name.len and std.unicode.utf8ValidateSlice(name[i .. i + length])) {
+            try out.appendSlice(a, name[i .. i + length]);
+            i += length;
+        } else {
+            try out.appendSlice(a, "\u{FFFD}");
+            i += 1;
+        }
+    }
+    return out.toOwnedSliceSentinel(a, 0);
+}
 
 test "file filters preserve directories and combine glob and MIME rules" {
     const expect = std.testing.expect;
     const entry: Entry = .{ .name = "日本語.txt", .label = "日本語.txt", .content_type = "text/plain", .directory = false, .hidden = false };
     try expect(matches(entry, &.{}));
     try expect(matches(entry, &.{.{ .mime = false, .pattern = "*.txt" }}));
+    try expect(matches(entry, &.{.{ .mime = false, .pattern = "???.txt" }}));
     try expect(!matches(entry, &.{.{ .mime = false, .pattern = "*.png" }}));
+    try expect(!matches(entry, &.{.{ .mime = false, .pattern = "[日]*" }}));
     try expect(matches(entry, &.{ .{ .mime = false, .pattern = "*.png" }, .{ .mime = true, .pattern = "text/plain" } }));
     var folder = entry;
     folder.directory = true;
     try expect(matches(folder, &.{.{ .mime = false, .pattern = "*.png" }}));
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("a\u{FFFD}b", try displayName(arena.allocator(), "a\xffb"));
+}
+
+test "simple patterns match GLib" {
+    const glib = struct {
+        extern fn g_pattern_match_simple(pattern: [*:0]const u8, string: [*:0]const u8) c_int;
+    };
+    const patterns = [_][:0]const u8{ "*", "*.txt", "?.txt", "a*b*c", "*.TXT", "[ab]*", "日*", "*語.txt", "**", "?", "" };
+    const names = [_][:0]const u8{ "a.txt", "ab.txt", "abc", "aXbYc", "日本語.txt", "[ab]x", "", "x" };
+    for (patterns) |pattern| for (names) |name| {
+        std.testing.expectEqual(glib.g_pattern_match_simple(pattern, name) != 0, simpleMatch(pattern, name)) catch |err| {
+            std.debug.print("match({s}, {s})\n", .{ pattern, name });
+            return err;
+        };
+    };
 }

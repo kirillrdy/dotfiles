@@ -3,6 +3,7 @@ const std = @import("std");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const netmon = @import("desktop-netmon.zig");
+const appinfo = @import("desktop-appinfo.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
 const path = "/org/freedesktop/portal/desktop";
@@ -454,13 +455,14 @@ const Request = struct {
             self.invocation = null;
         }
     }
-    fn uriFinished(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+    fn uriFinished(data: ?*anyopaque, ok: bool) void {
         const self = cast(Request, data);
         defer self.destroy();
-        var err: ?*c.GError = null;
-        const ok = c.g_app_info_launch_default_for_uri_finish(result, &err) != 0;
-        defer if (err != null) c.g_error_free(err);
         self.respond(if (ok) 0 else 2, portal_options.empty);
+    }
+    /// Opens `uri` with its default handler and answers the request when it has started.
+    fn launchUri(self: *Request, uri: []const u8, activation_token: ?[]const u8) void {
+        appinfo.launchDefaultForUri(self.server.allocator, uri, .{ .activation_token = activation_token, .cancellable = self.cancel }, &uriFinished, self) catch uriFinished(self, false);
     }
 };
 
@@ -538,18 +540,18 @@ fn openRemote(server: *Server, client_info: *Client, args: []const dbus.Value, m
 }
 fn openUri(server: *Server, client_info: *Client, method: []const u8, args: []const dbus.Value, message: *const dbus.Message) !void {
     if (eq(method, "SchemeSupported")) {
-        const app_info = c.g_app_info_get_default_for_uri_scheme(try cstring(message, args[0]));
-        defer if (app_info != null) c.g_object_unref(app_info);
-        server.connection.reply(message, .{app_info != null}) catch {};
+        const app = appinfo.defaultForScheme(server.allocator, args[0].string);
+        defer if (app) |value| value.unref();
+        server.connection.reply(message, .{app != null}) catch {};
         return;
     }
     const options = try dictionary(message.arena, args[2]);
     const request = try Request.create(server, client_info, "OpenURI", method, options, .uri);
     errdefer request.destroy();
-    var uri: [*:0]const u8 = undefined;
+    var uri: []const u8 = undefined;
     if (eq(method, "OpenURI")) {
         uri = try request.arena.allocator().dupeSentinel(u8, args[1].string, 0);
-        if (std.mem.indexOfScalar(u8, std.mem.span(uri), ':') == null) return error.InvalidUri;
+        if (std.mem.indexOfScalar(u8, uri, ':') == null) return error.InvalidUri;
     } else {
         // The handle carries the descriptor number; the message owns it, so work on a duplicate.
         const passed = args[1].fd;
@@ -567,17 +569,16 @@ fn openUri(server: *Server, client_info: *Client, method: []const u8, args: []co
         uri = try files.fileUri(arena, filename);
     }
     replyHandle(server, message, request.handle);
-    c.g_app_info_launch_default_for_uri_async(uri, null, request.cancel, &Request.uriFinished, request);
+    request.launchUri(uri, null);
 }
 fn composeEmail(server: *Server, client_info: *Client, args: []const dbus.Value, message: *const dbus.Message) !void {
     const options = try dictionary(message.arena, args[1]);
     const request = try Request.create(server, client_info, "Email", "ComposeEmail", options, .uri);
     errdefer request.destroy();
     const uri = try Email.composeUri(request.arena.allocator(), options, message.fds);
-    const context = try Email.launchContext(server.allocator, options);
-    defer c.g_object_unref(context);
+    const token = try Email.activationToken(options);
     replyHandle(server, message, request.handle);
-    c.g_app_info_launch_default_for_uri_async(uri, context, request.cancel, &Request.uriFinished, request);
+    request.launchUri(uri, token);
 }
 fn inhibit(server: *Server, client_info: *Client, args: []const dbus.Value, message: *const dbus.Message) !void {
     const flags = args[1].uint32;

@@ -232,7 +232,7 @@ pub const Launcher = struct {
         self.redraw();
     }
     pub fn launch(self: *Launcher, info: *App) bool {
-        info.launch(self.allocator) catch |err| {
+        info.launch(self.allocator, .{}, null, null) catch |err| {
             var buffer: [512]u8 = undefined;
             const reason: []const u8 = switch (err) {
                 error.FileNotFound => "No such file or directory",
