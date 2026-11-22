@@ -3,18 +3,15 @@ const std = @import("std");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
 const dbus = @import("dbus");
-const helpers = @import("desktop-wayland-client.zig");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const auth = @import("desktop-lock-auth.zig");
 const view = @import("desktop-lock-view.zig");
 const login = @import("desktop-login-ui.zig");
-const raster = @import("desktop-raster.zig");
-const kb = @import("desktop-keyboard.zig");
-const u = @import("desktop-util.zig");
-
-const cast = c.__zig.cast;
+const login_client = @import("desktop-login-client.zig");
 const SecretBuffer = login.SecretBuffer;
+const raster = @import("desktop-raster.zig");
+const u = @import("desktop-util.zig");
 
 /// Calls the session's secrets service and waits; used outside the GLib loop,
 /// including from the authentication thread, so it uses a private connection.
@@ -30,356 +27,193 @@ fn screenLocked(a: std.mem.Allocator, locked: bool) void {
 fn unlockSecrets(password: []const u8) void {
     secretsCall(std.heap.page_allocator, "LoginUnlock", .{dbus.Bytes{ .value = password }}, 30000);
 }
-const Output = struct {
-    state: *State,
-    name: u32,
-    output: wl.wl_output,
-    surface: ?wl.wl_surface = null,
-    lock_surface: ?wl.ext_session_lock_surface_v1 = null,
+const LoginClient = login_client.Client(State);
+const Output = LoginClient.Output;
+const Seat = LoginClient.Seat;
+
+/// The blurred wallpaper at an output's current buffer size, painted once per size.
+const Backdrop = struct {
+    pixels: []u32 = &.{},
     width: u32 = 0,
     height: u32 = 0,
-    scale: u32 = 1,
-    /// The blurred wallpaper at the current buffer size, painted once per size.
-    backdrop: []u32 = &.{},
-    backdrop_width: u32 = 0,
-    backdrop_height: u32 = 0,
-    next: ?*Output = null,
-    fn lock(self: *Output) void {
-        if (self.lock_surface != null) return;
-        const s = self.state;
-        const surface = s.compositor.?.create_surface();
-        self.surface = surface;
-        const lock_surface = s.lock.?.get_lock_surface(surface, self.output);
-        self.lock_surface = lock_surface;
-        lock_surface.listen(Output, self, configured);
-    }
-    fn render(self: *Output) void {
-        if (self.width == 0 or self.height == 0) return;
-        const surface = self.surface orelse return;
-        const s = self.state;
-        // Integer buffer scale, as the shell's own surfaces use, needs wl_surface v3.
-        const versioned = surface.version() >= 3;
-        const scale: u32 = if (versioned) self.scale else 1;
-        const width = self.width * scale;
-        const height = self.height * scale;
-        if (width > 16384 or height > 16384 or @as(u64, width) * height > 64 * 1024 * 1024) std.process.exit(1);
-        const frame = helpers.FrameBuffer.create(s.allocator, &s.buffers, s.shm.?, "desktop-lock", width, height, wl.wl_shm.Format.xrgb8888) catch std.process.exit(1);
-        const pixels: [*]u32 = @ptrCast(@alignCast(frame.shm.memory));
-        const target: raster.Buffer = .{ .pixels = pixels[0 .. frame.shm.size / 4], .width = width, .height = height };
-        if (self.backdrop_width != width or self.backdrop_height != height) {
-            s.allocator.free(self.backdrop);
-            self.backdrop = &.{};
-            self.backdrop_width = 0;
-            self.backdrop_height = 0;
-            if (s.allocator.alloc(u32, frame.shm.size / 4)) |memory| {
-                s.view.background(.{ .pixels = memory, .width = width, .height = height });
-                self.backdrop = memory;
-                self.backdrop_width = width;
-                self.backdrop_height = height;
-            } else |_| {}
-        }
-        if (self.backdrop.len == target.pixels.len) @memcpy(target.pixels, self.backdrop) else s.view.background(target);
-        s.view.paint(target, scale, s.frame());
-        if (versioned) surface.set_buffer_scale(@intCast(scale));
-        surface.attach(frame.shm.buffer, 0, 0);
-        surface.damage(0, 0, @intCast(self.width), @intCast(self.height));
-        surface.commit();
-    }
-    fn outputEvent(self: *Output, _: wl.wl_output, event: wl.wl_output.Event) void {
-        switch (event) {
-            .scale => |value| {
-                const scale: u32 = @intCast(std.math.clamp(value.factor, 1, 8));
-                if (scale == self.scale) return;
-                self.scale = scale;
-                self.render();
-            },
-            else => {},
-        }
-    }
-    fn configured(self: *Output, lock_surface: wl.ext_session_lock_surface_v1, event: wl.ext_session_lock_surface_v1.Event) void {
-        const value = event.configure;
-        lock_surface.ack_configure(value.serial);
-        self.width = value.width;
-        self.height = value.height;
-        self.render();
-    }
-    fn deinit(self: *Output) void {
-        if (self.lock_surface) |value| value.destroy();
-        if (self.surface) |value| value.destroy();
-        if (self.state.pointer_output == self) self.state.pointer_output = null;
-        if (self.output.version() >= 3) self.output.release() else self.output.destroy();
-        self.state.allocator.free(self.backdrop);
-        self.state.allocator.destroy(self);
+
+    pub fn deinit(self: *Backdrop, a: std.mem.Allocator) void {
+        a.free(self.pixels);
+        self.* = .{};
     }
 };
-const Seat = struct {
-    state: *State,
-    name: u32,
-    seat: wl.wl_seat,
-    keyboard: ?wl.wl_keyboard = null,
-    pointer: ?wl.wl_pointer = null,
-    keyboard_state: kb.Keyboard = .{},
-    next: ?*Seat = null,
-    fn seatEvent(self: *Seat, seat: wl.wl_seat, event: wl.wl_seat.Event) void {
-        const flags = switch (event) {
-            .capabilities => |value| value.capabilities,
-            else => return,
-        };
-        if (flags & wl.wl_seat.Capability.keyboard != 0 and self.keyboard == null) {
-            const keyboard = seat.get_keyboard();
-            self.keyboard = keyboard;
-            keyboard.listen(Seat, self, keyboardEvent);
-        } else if (flags & wl.wl_seat.Capability.keyboard == 0) if (self.keyboard) |keyboard| {
-            keyboard.destroy();
-            self.keyboard = null;
-            self.keyboard_state.deinit();
-        };
-        if (flags & wl.wl_seat.Capability.pointer != 0 and self.pointer == null) {
-            const pointer = seat.get_pointer();
-            self.pointer = pointer;
-            pointer.listen(Seat, self, pointerEvent);
-        } else if (flags & wl.wl_seat.Capability.pointer == 0) if (self.pointer) |pointer| {
-            pointer.destroy();
-            self.pointer = null;
-        };
-    }
-    fn pointerEvent(self: *Seat, _: wl.wl_pointer, event: wl.wl_pointer.Event) void {
-        const s = self.state;
-        switch (event) {
-            .enter => |value| {
-                s.pointer_output = null;
-                var output = s.outputs;
-                while (output) |o| : (output = o.next) {
-                    if (o.surface) |surface| if (surface.proxy.id == value.surface.proxy.id) {
-                        s.pointer_output = o;
-                    };
-                }
-                s.pointer_x = value.surface_x;
-                s.pointer_y = value.surface_y;
-            },
-            .leave => s.pointer_output = null,
-            .motion => |value| {
-                s.pointer_x = value.surface_x;
-                s.pointer_y = value.surface_y;
-            },
-            .button => |value| if (value.state == wl.wl_pointer.ButtonState.pressed) s.click(),
-            else => {},
-        }
-    }
-    fn keyboardEvent(self: *Seat, _: wl.wl_keyboard, event: wl.wl_keyboard.Event) void {
-        switch (event) {
-            .keymap => |value| self.keyboard_state.load(value.fd, value.format, value.size),
-            .leave => if (!self.state.busy) {
-                self.state.password.clear();
-                self.state.changed();
-            },
-            .key => |value| self.key(value.key, value.state),
-            .modifiers => |value| self.modifiers(value.mods_depressed, value.mods_latched, value.mods_locked, value.group),
-            else => {},
-        }
-    }
-    fn key(self: *Seat, code: u32, pressed: u32) void {
-        const s = self.state;
-        if (pressed != wl.wl_keyboard.KeyState.pressed or self.keyboard_state.state == null or s.busy or !s.locked or s.done) return;
-        const symbol = self.keyboard_state.symbol(code);
-        // Modifiers alone, including Caps Lock, neither reveal nor edit the prompt.
-        if (symbol >= 0xffe1 and symbol <= 0xffee) return;
-        s.last_activity = u.monotonicTime();
-        if (s.stage == .clock) {
-            // Like GNOME, any key raises the prompt and a printable one starts the password.
-            s.stage = .prompt;
-            if (symbol != 0xff0d and symbol != 0xff8d and symbol != 0xff1b and symbol != 0xff08) self.typeKey(code);
-            _ = s.recount();
-            s.render();
-            return;
-        }
-        switch (symbol) {
-            0xff0d, 0xff8d => s.authenticate(),
-            0xff1b => s.showClock(),
-            0xff08 => {
-                s.password.backspace();
-                s.changed();
-            },
-            else => {
-                self.typeKey(code);
-                s.changed();
-            },
-        }
-    }
-    fn typeKey(self: *Seat, code: u32) void {
-        var bytes: [128]u8 = @splat(0);
-        defer std.crypto.secureZero(u8, &bytes);
-        const value = self.keyboard_state.text(code, &bytes);
-        if (value.len > 0) self.state.password.append(value);
-    }
-    fn modifiers(self: *Seat, depressed: u32, latched: u32, locked: u32, group: u32) void {
-        self.keyboard_state.update(depressed, latched, locked, group);
-        const s = self.state;
-        const caps = self.keyboard_state.capsLock();
-        if (caps == s.caps_lock) return;
-        s.caps_lock = caps;
-        if (s.stage == .prompt) s.render();
-    }
-    fn deinit(self: *Seat) void {
-        if (self.keyboard) |keyboard| keyboard.destroy();
-        if (self.pointer) |pointer| pointer.destroy();
-        self.keyboard_state.deinit();
-        if (self.seat.version() >= 5) self.seat.release() else self.seat.destroy();
-        self.state.allocator.destroy(self);
-    }
-};
+
 /// GNOME returns an unattended prompt to the clock after two minutes.
 const prompt_timeout_us = 120 * std.time.us_per_s;
 const State = struct {
-    allocator: std.mem.Allocator,
-    connection: *wire.Connection,
-    compositor: ?wl.wl_compositor = null,
-    shm: ?wl.wl_shm = null,
+    client: LoginClient,
     manager: ?wl.ext_session_lock_manager_v1 = null,
     lock: ?wl.ext_session_lock_v1 = null,
-    outputs: ?*Output = null,
-    seats: ?*Seat = null,
-    buffers: ?*helpers.FrameBuffer = null,
     view: *view.View,
-    password: *SecretBuffer,
     stage: view.Stage = .clock,
-    caps_lock: bool = false,
     last_activity: i64 = 0,
-    spinner: c.guint = 0,
-    pointer_output: ?*Output = null,
-    pointer_x: f64 = 0,
-    pointer_y: f64 = 0,
     user: [*:0]const u8,
     authenticator: *const fn ([*:0]const u8, [*:0]const u8) bool = auth.authenticate,
     ready_fd: c_int = -1,
     managed_readiness: bool = false,
     locked: bool = false,
-    done: bool = false,
     unlocked: bool = false,
-    busy: bool = false,
-    failed: bool = false,
-    /// Characters shown as dots, tracked on the main thread so rendering never
-    /// reads the password while the authentication thread may be clearing it.
-    typed: usize = 0,
-    fn render(self: *State) void {
-        var output = self.outputs;
-        while (output) |o| : (output = o.next) o.render();
+
+    pub const name = "desktop-lock";
+    pub const fail_closed = true;
+    pub const cursor_shapes = false;
+    pub const retry_ms = 1500;
+    pub const Role = wl.ext_session_lock_surface_v1;
+    pub const OutputData = Backdrop;
+
+    pub fn canAttach(self: *State) bool {
+        return self.lock != null;
     }
+
+    pub fn attachRole(self: *State, output: *Output, surface: wl.wl_surface) Role {
+        const lock_surface = self.lock.?.get_lock_surface(surface, output.output);
+        lock_surface.listen(Output, output, configured);
+        return lock_surface;
+    }
+
+    fn configured(output: *Output, lock_surface: wl.ext_session_lock_surface_v1, event: wl.ext_session_lock_surface_v1.Event) void {
+        const value = event.configure;
+        lock_surface.ack_configure(value.serial);
+        output.configure(value.width, value.height);
+    }
+
+    pub fn bindGlobal(self: *State, registry: wl.wl_registry, global: u32, interface: []const u8, _: u32) void {
+        if (std.mem.eql(u8, interface, "ext_session_lock_manager_v1")) {
+            self.manager = registry.bind(global, wl.ext_session_lock_manager_v1, 1);
+        }
+    }
+
+    pub fn paint(self: *State, output: *Output, target: raster.Buffer, scale: u32) void {
+        const backdrop = &output.data;
+        if (backdrop.width != target.width or backdrop.height != target.height) {
+            backdrop.deinit(self.client.allocator);
+            if (self.client.allocator.alloc(u32, target.pixels.len)) |memory| {
+                self.view.background(.{ .pixels = memory, .width = target.width, .height = target.height });
+                backdrop.* = .{ .pixels = memory, .width = target.width, .height = target.height };
+            } else |_| {}
+        }
+        if (backdrop.pixels.len == target.pixels.len) @memcpy(target.pixels, backdrop.pixels) else self.view.background(target);
+        self.view.paint(target, scale, self.frame());
+    }
+
+    pub fn pointer(self: *State, _: *Seat, event: login_client.Pointer) void {
+        if (event == .button) self.click();
+    }
+
+    pub fn keyboardLeave(self: *State) void {
+        if (self.client.busy) return;
+        self.client.password.clear();
+        self.client.changed();
+    }
+
+    pub fn key(self: *State, seat: *Seat, code: u32, symbol: u32) void {
+        if (!self.locked) return;
+        self.last_activity = u.monotonicTime();
+        if (self.stage == .clock) {
+            // Like GNOME, any key raises the prompt and a printable one starts the password.
+            self.stage = .prompt;
+            if (symbol != 0xff0d and symbol != 0xff8d and symbol != 0xff1b and symbol != 0xff08) seat.typeInto(self.client.password, code);
+            _ = self.client.recount();
+            self.render();
+            return;
+        }
+        switch (symbol) {
+            0xff0d, 0xff8d => self.client.authenticate(),
+            0xff1b => self.showClock(),
+            0xff08 => {
+                self.client.password.backspace();
+                self.client.changed();
+            },
+            else => {
+                seat.typeInto(self.client.password, code);
+                self.client.changed();
+            },
+        }
+    }
+
+    pub fn capsLockChanged(self: *State) void {
+        if (self.stage == .prompt) self.render();
+    }
+
+    pub fn verify(self: *State) bool {
+        const password = self.client.password;
+        const success = self.authenticator(self.user, &password.bytes);
+        if (success) {
+            screenLocked(self.client.allocator, false);
+            unlockSecrets(password.slice());
+        }
+        return success;
+    }
+
+    pub fn acceptAuth(self: *State) bool {
+        return self.locked;
+    }
+
+    pub fn authenticated(self: *State) void {
+        // Revoke managed readiness before the compositor processes unlock.
+        if (self.ready_fd >= 0) {
+            _ = libc.close(self.ready_fd);
+            self.ready_fd = -1;
+        }
+        self.lock.?.unlock_and_destroy();
+        self.lock = null;
+        self.client.connection.roundtrip() catch std.process.exit(1);
+        self.unlocked = true;
+    }
+
+    /// Once a second: advance the clock and retire an unattended prompt.
+    pub fn tick(self: *State) void {
+        if (self.stage == .prompt and !self.client.busy and u.monotonicTime() - self.last_activity > prompt_timeout_us) {
+            _ = self.view.tick();
+            self.showClock();
+        } else if (self.view.tick() and self.stage == .clock) self.render();
+    }
+
+    fn render(self: *State) void {
+        self.client.render();
+    }
+
     fn frame(self: *const State) view.Frame {
         return .{
             .stage = self.stage,
-            .status = if (self.failed) .failed else if (self.busy) .authenticating else .ready,
-            .typed = self.typed,
-            .caps_lock = self.caps_lock,
+            .status = self.client.status(),
+            .typed = self.client.typed,
+            .caps_lock = self.client.caps_lock,
             .spin = login.spinPhase(),
         };
     }
-    /// Recounts typed characters; returns whether the count changed.
-    fn recount(self: *State) bool {
-        const count = self.password.charCount();
-        if (count == self.typed) return false;
-        self.typed = count;
-        // Typing again after a rejection returns to the normal prompt.
-        if (count > 0) self.failed = false;
-        return true;
-    }
-    fn changed(self: *State) void {
-        if (self.recount()) self.render();
-    }
+
     fn showClock(self: *State) void {
         // The worker thread owns the password while PAM runs.
-        if (self.busy) return;
-        self.password.clear();
-        self.typed = 0;
-        self.failed = false;
+        if (self.client.busy) return;
+        self.client.resetPassword();
         self.stage = .clock;
         self.render();
     }
+
     fn click(self: *State) void {
-        if (self.busy or !self.locked or self.done) return;
+        if (self.client.busy or !self.locked or self.client.done) return;
         self.last_activity = u.monotonicTime();
         if (self.stage == .clock) {
             self.stage = .prompt;
             self.render();
             return;
         }
-        const output = self.pointer_output orelse return;
+        const output = self.client.pointer_output orelse return;
         const layout = view.Layout.compute(@floatFromInt(output.width), @floatFromInt(output.height));
-        if (layout.back.contains(self.pointer_x, self.pointer_y)) self.showClock();
+        if (layout.back.contains(self.client.pointer_x, self.client.pointer_y)) self.showClock();
     }
-    /// Once a second: advance the clock and retire an unattended prompt.
-    fn tick(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(State, data);
-        if (self.stage == .prompt and !self.busy and u.monotonicTime() - self.last_activity > prompt_timeout_us) {
-            _ = self.view.tick();
-            self.showClock();
-        } else if (self.view.tick() and self.stage == .clock) self.render();
-        return 1;
-    }
-    fn spin(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(State, data);
-        if (!self.busy or self.failed or self.done) {
-            self.spinner = 0;
-            return 0;
-        }
-        self.render();
-        return 1;
-    }
-    fn authenticate(self: *State) void {
-        if (self.password.len == 0) return;
-        self.busy = true;
-        self.failed = false;
-        self.render();
-        if (self.spinner == 0) self.spinner = c.g_timeout_add(50, &spin, self);
-        const task = c.g_task_new(null, null, &authDone, self);
-        c.g_task_set_task_data(task, self, null);
-        c.g_task_run_in_thread(task, &authWork);
-        c.g_object_unref(task);
-    }
-    fn authWork(task: ?*c.GTask, _: ?*anyopaque, data: ?*anyopaque, _: [*c]c.GCancellable) callconv(.c) void {
-        const self = cast(State, data);
-        const success = self.authenticator(self.user, &self.password.bytes);
-        if (success) {
-            screenLocked(self.allocator, false);
-            unlockSecrets(self.password.bytes[0..self.password.len]);
-        }
-        self.password.clear();
-        c.g_task_return_boolean(task, @intFromBool(success));
-    }
-    fn authDone(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
-        const self = cast(State, data);
-        self.busy = false;
-        self.typed = 0;
-        if (c.g_task_propagate_boolean(@ptrCast(result), null) != 0 and self.locked and !self.done) {
-            self.done = true;
-            // Revoke managed readiness before the compositor processes unlock.
-            if (self.ready_fd >= 0) {
-                _ = libc.close(self.ready_fd);
-                self.ready_fd = -1;
-            }
-            self.lock.?.unlock_and_destroy();
-            self.lock = null;
-            self.connection.roundtrip() catch std.process.exit(1);
-            self.unlocked = true;
-            self.done = true;
-        } else {
-            self.failed = true;
-            if (!self.done) {
-                self.busy = true;
-                _ = c.g_timeout_add(1500, &retry, self);
-                self.render();
-            }
-        }
-    }
-    fn retry(data: ?*anyopaque) callconv(.c) c_int {
-        cast(State, data).busy = false;
-        return 0;
-    }
+
     fn lockEvent(self: *State, _: wl.ext_session_lock_v1, event: wl.ext_session_lock_v1.Event) void {
         switch (event) {
             .locked => {
                 self.locked = true;
-                screenLocked(self.allocator, true);
+                screenLocked(self.client.allocator, true);
                 if (self.ready_fd >= 0) {
                     // Keep protecting the session if the requesting shell has exited.
                     if (libc.write(self.ready_fd, "1", 1) != 1) std.log.warn("lock readiness receiver disconnected", .{});
@@ -390,60 +224,8 @@ const State = struct {
                 }
             },
             // Never send unlock on rejection or compositor termination.
-            .finished => self.done = true,
+            .finished => self.client.done = true,
         }
-    }
-    fn registryEvent(self: *State, registry: wl.wl_registry, event: wl.wl_registry.Event) void {
-        switch (event) {
-            .global => |value| self.global(registry, value.name, value.interface, value.version),
-            .global_remove => |removed| self.remove(removed.name),
-        }
-    }
-    fn global(self: *State, registry: wl.wl_registry, name: u32, interface: []const u8, version: u32) void {
-        if (std.mem.eql(u8, interface, "wl_compositor")) {
-            self.compositor = registry.bind(name, wl.wl_compositor, @min(version, 4));
-        } else if (std.mem.eql(u8, interface, "wl_shm")) {
-            self.shm = registry.bind(name, wl.wl_shm, 1);
-        } else if (std.mem.eql(u8, interface, "ext_session_lock_manager_v1")) {
-            self.manager = registry.bind(name, wl.ext_session_lock_manager_v1, 1);
-        } else if (std.mem.eql(u8, interface, "wl_output")) {
-            const output = self.allocator.create(Output) catch std.process.exit(1);
-            output.* = .{ .state = self, .name = name, .output = registry.bind(name, wl.wl_output, @min(version, 3)), .next = self.outputs };
-            output.output.listen(Output, output, Output.outputEvent);
-            self.outputs = output;
-            if (self.lock != null) output.lock();
-        } else if (std.mem.eql(u8, interface, "wl_seat")) {
-            const seat = self.allocator.create(Seat) catch std.process.exit(1);
-            seat.* = .{ .state = self, .name = name, .seat = registry.bind(name, wl.wl_seat, @min(version, 5)), .next = self.seats };
-            self.seats = seat;
-            seat.seat.listen(Seat, seat, Seat.seatEvent);
-        }
-    }
-    fn remove(self: *State, name: u32) void {
-        var output = &self.outputs;
-        while (output.*) |o| {
-            if (o.name == name) {
-                output.* = o.next;
-                o.deinit();
-                break;
-            }
-            output = &o.next;
-        }
-        var seat = &self.seats;
-        while (seat.*) |s| {
-            if (s.name == name) {
-                seat.* = s.next;
-                s.deinit();
-                break;
-            }
-            seat = &s.next;
-        }
-    }
-    fn readable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(State, data);
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) std.process.exit(1);
-        self.connection.readAndDispatch() catch std.process.exit(1);
-        return 1;
     }
 };
 
@@ -529,41 +311,22 @@ pub fn runWithAuthenticator(a: std.mem.Allocator, args: []const []const u8, auth
         .name = if (gecos.len > 0 and std.unicode.utf8ValidateSlice(gecos)) gecos else username,
     });
     defer lock_view.deinit();
-    var state = State{ .allocator = a, .view = &lock_view, .connection = connection, .password = password, .user = username.ptr, .authenticator = authenticator, .ready_fd = ready_fd, .managed_readiness = !daemonize and ready_fd >= 0 };
-    defer {
-        while (state.outputs) |output| {
-            state.outputs = output.next;
-            output.deinit();
-        }
-        while (state.seats) |seat| {
-            state.seats = seat.next;
-            seat.deinit();
-        }
-        helpers.FrameBuffer.destroyAll(&state.buffers);
-    }
-    const display: wl.wl_display = .{ .proxy = connection.display() };
-    const registry = display.get_registry();
-    registry.listen(State, &state, State.registryEvent);
-    connection.roundtrip() catch return error.WaylandDisconnected;
-    if (state.manager == null or state.compositor == null or state.shm == null) return error.SessionLockUnavailable;
+    var state = State{
+        .client = .{ .allocator = a, .connection = connection, .password = password },
+        .view = &lock_view,
+        .user = username.ptr,
+        .authenticator = authenticator,
+        .ready_fd = ready_fd,
+        .managed_readiness = !daemonize and ready_fd >= 0,
+    };
+    defer state.client.deinit();
+    try state.client.connect();
+    if (state.manager == null or state.client.compositor == null or state.client.shm == null) return error.SessionLockUnavailable;
     const lock = state.manager.?.lock();
     state.lock = lock;
     lock.listen(State, &state, State.lockEvent);
-    var output = state.outputs;
-    while (output) |o| : (output = o.next) o.lock();
-    const source = c.g_unix_fd_add(connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &State.readable, &state);
-    defer _ = c.g_source_remove(source);
-    const clock = c.g_timeout_add_seconds(1, &State.tick, &state);
-    defer _ = c.g_source_remove(clock);
-    defer if (state.spinner != 0) {
-        _ = c.g_source_remove(state.spinner);
-    };
-    while (!state.done) {
-        connection.flush() catch std.process.exit(1);
-        _ = c.g_main_context_iteration(null, 1);
-    }
-    // Keep the worker and its secrets alive until its completion callback has run.
-    while (state.busy) _ = c.g_main_context_iteration(null, 1);
+    state.client.attachAll();
+    state.client.run();
     ready_fd = state.ready_fd;
     if (!state.unlocked) return error.LockNotAcquired;
 }

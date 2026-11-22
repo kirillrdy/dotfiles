@@ -187,6 +187,7 @@ test {
     _ = @import("desktop-lock.zig");
     _ = @import("desktop-lock-view.zig");
     _ = @import("desktop-login-ui.zig");
+    _ = @import("desktop-login-client.zig");
     _ = @import("desktop-greeter-view.zig");
     _ = @import("desktop-greeter.zig");
     _ = @import("desktop-dm.zig");
