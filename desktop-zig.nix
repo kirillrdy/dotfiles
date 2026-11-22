@@ -73,7 +73,7 @@ pkgs.stdenv.mkDerivation {
     "tests"
   ];
   meta.mainProgram = "desktop-zig";
-  src = builtins.fetchGit ./.;
+  src = if builtins.pathExists ./.git then builtins.fetchGit ./. else ./.;
   nativeBuildInputs = [
     pkgs.zig_0_17
     pkgs.pkg-config
