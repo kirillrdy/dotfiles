@@ -73,16 +73,7 @@ pkgs.stdenv.mkDerivation {
     "tests"
   ];
   meta.mainProgram = "desktop-zig";
-  src = pkgs.lib.fileset.toSource {
-    root = ./.;
-    fileset = pkgs.lib.fileset.fileFilter (
-      file:
-      file.hasExt "zig"
-      || file.hasExt "h"
-      || file.hasExt "svg"
-      || file.hasExt "xml"
-    ) ./.;
-  };
+  src = builtins.fetchGit ./.;
   nativeBuildInputs = [
     pkgs.zig_0_17
     pkgs.pkg-config
