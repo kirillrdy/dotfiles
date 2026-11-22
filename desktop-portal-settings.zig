@@ -23,7 +23,7 @@ pub const Service = struct {
     allocator: std.mem.Allocator,
     connection: *dbus.Connection,
     bundles: std.ArrayList(*Bundle) = .empty,
-    monitors: std.ArrayList(*c.GFileMonitor) = .empty,
+    fonts: ?*@import("desktop-watch.zig").Watcher = null,
     serial: i32 = 0,
     timer: c.guint = 0,
 
@@ -45,40 +45,30 @@ pub const Service = struct {
             };
             try settings.watch(&changed, bundle);
         }
-        try self.watch("/etc/fonts");
-        if (c.__zig.getenv("HOME")) |home| {
-            const directory = try std.fmt.allocPrintSentinel(allocator, "{s}/.fonts", .{home}, 0);
-            defer allocator.free(directory);
-            try self.watch(directory);
-        }
-        const data = @import("desktop-paths.zig").dataHome();
-        const fonts = try std.fmt.allocPrintSentinel(allocator, "{s}/fonts", .{data}, 0);
-        defer allocator.free(fonts);
-        try self.watch(fonts);
+        // Font changes invalidate fontconfig caches in clients.
+        if (@import("desktop-watch.zig").Watcher.create(allocator, &fontsChanged, self)) |watcher| {
+            self.fonts = watcher;
+            try watcher.watch("/etc/fonts");
+            if (c.__zig.getenv("HOME")) |home| {
+                const directory = try std.fmt.allocPrint(allocator, "{s}/.fonts", .{home});
+                defer allocator.free(directory);
+                try watcher.watch(directory);
+            }
+            const fonts = try std.fmt.allocPrint(allocator, "{s}/fonts", .{@import("desktop-paths.zig").dataHome()});
+            defer allocator.free(fonts);
+            try watcher.watch(fonts);
+        } else |_| {}
         return self;
     }
     pub fn destroy(self: *Service) void {
         if (self.timer != 0) _ = c.g_source_remove(self.timer);
-        for (self.monitors.items) |monitor| {
-            _ = c.g_signal_handlers_disconnect_matched(monitor, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
-            _ = c.g_file_monitor_cancel(monitor);
-            c.g_object_unref(monitor);
-        }
+        if (self.fonts) |watcher| watcher.destroy();
         for (self.bundles.items) |bundle| {
             bundle.settings.close();
             self.allocator.destroy(bundle);
         }
         self.bundles.deinit(self.allocator);
-        self.monitors.deinit(self.allocator);
         self.allocator.destroy(self);
-    }
-    fn watch(self: *Service, directory: [*:0]const u8) !void {
-        const file = c.g_file_new_for_path(directory);
-        defer c.g_object_unref(file);
-        const monitor = c.g_file_monitor_directory(file, 0, null, null) orelse return;
-        errdefer c.g_object_unref(monitor);
-        try self.monitors.append(self.allocator, monitor);
-        _ = c.g_signal_connect_data(monitor, "changed", @ptrCast(&fontsChanged), self, null, 0);
     }
     fn emit(self: *Service, namespace: []const u8, key: []const u8) void {
         var arena: std.heap.ArenaAllocator = .init(self.allocator);
@@ -92,7 +82,7 @@ pub const Service = struct {
         if (eq(bundle.name, "org.gnome.desktop.interface") and eq(key, "color-scheme")) bundle.service.emit(appearance, "color-scheme");
         if (eq(bundle.name, "org.gnome.desktop.a11y.interface") and eq(key, "high-contrast")) bundle.service.emit(appearance, "contrast");
     }
-    fn fontsChanged(_: *c.GFileMonitor, _: ?*c.GFile, _: ?*c.GFile, _: c_uint, data: ?*anyopaque) callconv(.c) void {
+    fn fontsChanged(data: ?*anyopaque) void {
         const self = cast(Service, data);
         if (self.timer == 0) self.timer = c.g_timeout_add(100, &fontsSettled, self);
     }

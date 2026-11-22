@@ -175,10 +175,6 @@ pub const struct__GCancellable = extern struct {
 
 pub const GCancellable = struct__GCancellable;
 
-pub const struct__GFile = opaque {};
-
-pub const GFile = struct__GFile;
-
 pub const struct__GTask = opaque {};
 
 pub const GTask = struct__GTask;
@@ -190,7 +186,6 @@ pub const GSubprocess = struct__GSubprocess;
 
 pub extern fn g_cancellable_new() [*c]GCancellable;
 pub extern fn g_cancellable_cancel(cancellable: [*c]GCancellable) void;
-pub extern fn g_file_new_for_path(path: [*c]const u8) ?*GFile;
 
 pub extern fn g_subprocess_newv(argv: [*c]const [*c]const gchar, flags: GSubprocessFlags, @"error": [*c][*c]GError) ?*GSubprocess;
 pub extern fn g_task_new(source_object: gpointer, cancellable: [*c]GCancellable, callback: GAsyncReadyCallback, callback_data: gpointer) ?*GTask;
@@ -218,9 +213,6 @@ pub extern fn g_variant_parse(?*const GVariantType, [*c]const gchar, [*c]const g
 
 // Native portal broker: tuples and Unix file descriptor forwarding.
 pub extern fn g_variant_take_ref(?*GVariant) ?*GVariant;
-pub const GFileMonitor = opaque {};
-pub extern fn g_file_monitor_directory(?*GFile, c_uint, [*c]GCancellable, [*c][*c]GError) ?*GFileMonitor;
-pub extern fn g_file_monitor_cancel(?*GFileMonitor) gboolean;
 pub extern fn g_markup_escape_text([*c]const gchar, gssize) [*c]gchar;
 // File chooser dialogs run in the native portal process.
 pub extern fn g_variant_equal(gconstpointer, gconstpointer) gboolean;

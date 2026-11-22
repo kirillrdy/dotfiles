@@ -194,6 +194,7 @@ test {
     _ = @import("desktop-appinfo.zig");
     _ = @import("desktop-mime.zig");
     _ = @import("desktop-process.zig");
+    _ = @import("desktop-watch.zig");
     _ = @import("desktop-greeter-view.zig");
     _ = @import("desktop-greeter.zig");
     _ = @import("desktop-dm.zig");
