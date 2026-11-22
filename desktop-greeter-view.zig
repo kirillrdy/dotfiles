@@ -5,7 +5,7 @@ const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const decode = @import("desktop-decode.zig");
 const icons = @import("desktop-icons.zig");
-const c = @import("desktop-glib.zig");
+const DateTime = @import("desktop-datetime.zig").DateTime;
 const login = @import("desktop-login-ui.zig");
 
 pub const Stage = enum { user_list, username, password };
@@ -262,11 +262,9 @@ pub const View = struct {
     }
 
     pub fn tick(self: *View) bool {
-        const now = c.g_date_time_new_now_local() orelse return false;
-        defer c.g_date_time_unref(now);
-        const value = c.g_date_time_format(now, "%a %b %-d %H:%M") orelse return false;
-        defer c.g_free(value);
-        const formatted = std.mem.span(value);
+        const now = DateTime.now() catch return false;
+        var scratch: [64]u8 = undefined;
+        const formatted = now.format(&scratch, "%a %b %-d %H:%M") catch return false;
         if (formatted.len >= self.clock_text.len) return false;
         if (std.mem.eql(u8, std.mem.sliceTo(&self.clock_text, 0), formatted)) return false;
         @memset(&self.clock_text, 0);
@@ -409,7 +407,7 @@ pub const View = struct {
         const ix = pill.x + (pill.width - 16) / 2;
         const iy = pill.y + (pill.height - 16) / 2;
         if (self.power_icon) |icon| {
-            c.__zig.blitImage(canvas, icon, .{ .x = ix, .y = iy, .width = 16, .height = 16 });
+            @import("desktop-ui.zig").blitImage(canvas, icon, .{ .x = ix, .y = iy, .width = 16, .height = 16 });
         } else {
             // Crisp fallback power symbol when icon theme is absent in unit tests.
             const cx = pill.x + pill.width / 2;

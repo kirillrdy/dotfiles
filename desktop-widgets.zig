@@ -8,6 +8,7 @@ const wire = @import("desktop-surface.zig");
 const quick = @import("desktop-quick-settings.zig");
 pub const date_menu = @import("desktop-date-menu.zig");
 pub const c = @import("desktop-glib.zig");
+const DateTime = @import("desktop-datetime.zig").DateTime;
 pub const native = @import("desktop-panel-view.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
@@ -241,18 +242,13 @@ fn select_power(m: *Module, id: [*c]const u8) void {
 }
 pub fn update_clock(data: c.gpointer) callconv(.c) c.gboolean {
     const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
-    const now: ?*c.GDateTime = c.g_date_time_new_now_local();
-    const month: [*c]u8 = c.g_date_time_format(now, "%b");
-    const time_1: [*c]u8 = c.g_date_time_format(now, "%H:%M");
-    const label: [*c]u8 = c.g_strdup_printf("%s %d %s", month, c.g_date_time_get_day_of_month(now), time_1);
-    if (!std.mem.eql(u8, m.view.clock.value, std.mem.span(label))) {
-        m.view.clock.set(m.allocator, std.mem.span(label));
-        resize(m);
-    }
-    c.g_free(@as(c.gpointer, @ptrCast(label)));
-    c.g_free(@as(c.gpointer, @ptrCast(month)));
-    c.g_free(@as(c.gpointer, @ptrCast(time_1)));
-    c.g_date_time_unref(now);
+    var buffer: [64]u8 = undefined;
+    if (DateTime.now()) |now| if (now.format(&buffer, "%b %-d %H:%M")) |label| {
+        if (!std.mem.eql(u8, m.view.clock.value, label)) {
+            m.view.clock.set(m.allocator, label);
+            resize(m);
+        }
+    } else |_| {} else |_| {}
     if (m.date_controls) |controls| controls.tick();
     return 1;
 }

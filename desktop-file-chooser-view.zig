@@ -4,7 +4,7 @@ const c = @import("desktop-glib.zig");
 const form = @import("desktop-form.zig");
 const prefs = @import("desktop-preferences-view.zig");
 const raster = @import("desktop-raster.zig");
-extern fn g_date_time_new_from_unix_local(i64) ?*c.GDateTime;
+const DateTime = @import("desktop-datetime.zig").DateTime;
 pub const Rect = form.Rect;
 pub const Row = struct { item: usize, entry: usize, ordinal: usize, icon: [:0]const u8, size: u64, modified: u64, directory: bool };
 pub const Place = struct { item: usize, path: [:0]const u8, icon: [:0]const u8 };
@@ -179,18 +179,13 @@ pub const View = struct {
                 const size = if (row.directory) @as([:0]const u8, "—") else if (row.size < 1000) try std.fmt.bufPrintSentinel(&size_buffer, "{d} bytes", .{row.size}, 0) else if (row.size < 1000000) try std.fmt.bufPrintSentinel(&size_buffer, "{d:.1} kB", .{@as(f64, @floatFromInt(row.size)) / 1000}, 0) else try std.fmt.bufPrintSentinel(&size_buffer, "{d:.1} MB", .{@as(f64, @floatFromInt(row.size)) / 1000000}, 0);
                 try label(ui, canvas, size, .{ .x = self.width - 198, .y = r.y, .width = 70, .height = r.height }, false, false, 0x9a9a9e);
                 if (row.modified > 0 and row.modified <= std.math.maxInt(i64)) {
-                    const date = g_date_time_new_from_unix_local(@intCast(row.modified));
-                    if (date) |value| {
-                        defer c.g_date_time_unref(value);
-                        const now = c.g_date_time_new_now_local();
-                        defer if (now != null) c.g_date_time_unref(now);
-                        const today = now != null and c.g_date_time_get_year(value) == c.g_date_time_get_year(now) and c.g_date_time_get_day_of_year(value) == c.g_date_time_get_day_of_year(now);
-                        const formatted = c.g_date_time_format(value, if (today) "Today, %H:%M" else "%b %e, %Y");
-                        if (formatted != null) {
-                            defer c.g_free(formatted);
-                            try label(ui, canvas, std.mem.span(formatted), .{ .x = self.width - 123, .y = r.y, .width = 108, .height = r.height }, false, false, 0x9a9a9e);
-                        }
-                    }
+                    if (DateTime.fromUnix(@intCast(row.modified))) |value| {
+                        const today = if (DateTime.now()) |now| value.sameDay(now) else |_| false;
+                        var date_buffer: [64]u8 = undefined;
+                        if (value.format(&date_buffer, if (today) "Today, %H:%M" else "%b %e, %Y")) |formatted| {
+                            try label(ui, canvas, formatted, .{ .x = self.width - 123, .y = r.y, .width = 108, .height = r.height }, false, false, 0x9a9a9e);
+                        } else |_| {}
+                    } else |_| {}
                 }
             }
             if (ui.focus == row.item) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = r.x + inset + 1, .y = r.y + (if (self.grid) @as(f64, 3) else 5), .width = r.width - inset * 2 - 2, .height = r.height - (if (self.grid) @as(f64, 8) else 10) }, .radius = if (self.grid) 11 else 7, .width = 2 } }}, raster.Color.rgb(0x868688, 1));

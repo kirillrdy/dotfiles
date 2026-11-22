@@ -206,17 +206,16 @@ pub fn main(process_init: std.process.Init) !void {
 
     const clock = p.init(process_init.gpa, .{ .kind = "clock" }, null, null, null);
     const date = &clock.date_controls.?.view;
-    date.setDate(c.g_date_time_new_local(2024, 2, 29, 12, 0, 0).?);
+    const DateTime = @TypeOf(date.selected);
+    date.setDate(try DateTime.local(2024, 2, 29, 12, 0, 0));
     try date.prepare(1);
     assert(date.selectedIndex() == 32);
     date.selectDay(33);
-    assert(c.g_date_time_get_month(date.selected) == 3 and c.g_date_time_get_day_of_month(date.selected) == 1);
+    assert(date.selected.month() == 3 and date.selected.day() == 1);
     for (0..3) |_| date.navigate(-1);
-    assert(c.g_date_time_get_year(date.selected) == 2023 and c.g_date_time_get_month(date.selected) == 12);
+    assert(date.selected.year() == 2023 and date.selected.month() == 12);
     clock.date_controls.?.reset();
-    const now = c.g_date_time_new_now_local();
-    assert(c.g_date_time_get_year(date.selected) == c.g_date_time_get_year(now) and c.g_date_time_get_day_of_year(date.selected) == c.g_date_time_get_day_of_year(now));
-    c.g_date_time_unref(now);
+    assert(date.selected.sameDay(try DateTime.now()));
     p.deinit(clock);
     // Exercise graph history rollover and the native draw callback after migration.
     const monitors = p.init(process_init.gpa, .{ .kind = "monitors" }, null, null, null);

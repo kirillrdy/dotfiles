@@ -73,6 +73,7 @@ pub const nfds_t = c_ulong;
 pub const struct_pollfd = std.c.pollfd;
 pub extern fn poll(__fds: [*c]struct_pollfd, __nfds: nfds_t, __timeout: c_int) c_int;
 
+// Only desktop-datetime.zig's test uses libc local time, as an oracle.
 pub const struct_tm = extern struct {
     tm_sec: c_int = 0,
     tm_min: c_int = 0,
@@ -87,8 +88,6 @@ pub const struct_tm = extern struct {
     tm_zone: [*c]const u8 = null,
 };
 
-pub extern fn time(__timer: [*c]time_t) time_t;
-pub extern fn strftime(noalias __s: [*c]u8, __maxsize: usize, noalias __format: [*c]const u8, noalias __tp: [*c]const struct_tm) usize;
 pub extern fn localtime_r(noalias __timer: [*c]const time_t, noalias __tp: [*c]struct_tm) [*c]struct_tm;
 pub const SOCK_STREAM: c_int = @intCast(std.c.SOCK.STREAM);
 pub const SOCK_CLOEXEC: c_int = @intCast(std.c.SOCK.CLOEXEC);

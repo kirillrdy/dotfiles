@@ -661,11 +661,10 @@ pub fn captureAndWrite(options: Options, allocator: std.mem.Allocator) !void {
             try std.fmt.allocPrintSentinel(allocator, "{s}/Pictures/Screenshots", .{std.mem.span(c.g_get_home_dir())}, 0);
         defer allocator.free(directory);
         if (c.g_mkdir_with_parents(directory, 0o755) != 0) return error.CreateDirectoryFailed;
-        const now = c.g_date_time_new_now_local() orelse return error.TimestampFailed;
-        defer c.g_date_time_unref(now);
-        const timestamp = c.g_date_time_format(now, "%Y-%m-%d_%H-%M-%S_%f") orelse return error.TimestampFailed;
-        defer c.g_free(timestamp);
-        const path = try std.fmt.allocPrintSentinel(allocator, "{s}/Screenshot_{s}.png", .{ directory, std.mem.span(timestamp) }, 0);
+        const now = try @import("desktop-datetime.zig").DateTime.now();
+        var stamp: [64]u8 = undefined;
+        const timestamp = try now.format(&stamp, "%Y-%m-%d_%H-%M-%S_%f");
+        const path = try std.fmt.allocPrintSentinel(allocator, "{s}/Screenshot_{s}.png", .{ directory, timestamp }, 0);
         defer allocator.free(path);
         try writeFile(path, encoded);
         std.debug.print("Screenshot saved to {s}\n", .{path});

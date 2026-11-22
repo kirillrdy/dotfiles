@@ -1,6 +1,6 @@
 //! Calendar geometry and native notification history, sharing banner rendering.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const DateTime = @import("desktop-datetime.zig").DateTime;
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 pub const banner = @import("desktop-notification-banner.zig");
@@ -22,8 +22,8 @@ const Snapshot = struct {
 };
 pub const View = struct {
     allocator: std.mem.Allocator,
-    selected: *c.GDateTime,
-    days: [42]?*c.GDateTime = @splat(null),
+    selected: DateTime,
+    days: [42]?DateTime = @splat(null),
     snapshot: Snapshot,
     width: u32 = 752,
     height: u32 = 420,
@@ -41,13 +41,11 @@ pub const View = struct {
     scratch: std.ArrayList(u32) = .empty,
 
     pub fn init(a: std.mem.Allocator) !View {
-        return .{ .allocator = a, .selected = c.g_date_time_new_now_local() orelse return error.DateUnavailable, .snapshot = .{ .arena = std.heap.ArenaAllocator.init(a) } };
+        return .{ .allocator = a, .selected = try DateTime.now(), .snapshot = .{ .arena = std.heap.ArenaAllocator.init(a) } };
     }
     pub fn deinit(self: *View) void {
         self.invalidate();
         self.renderer.deinit();
-        for (self.days) |day| if (day) |value| c.g_date_time_unref(value);
-        c.g_date_time_unref(self.selected);
         self.snapshot.deinit(self.allocator);
         self.targets.deinit(self.allocator);
         self.scratch.deinit(self.allocator);
@@ -59,22 +57,18 @@ pub const View = struct {
         }
         self.scale = 0;
     }
-    pub fn setDate(self: *View, value: *c.GDateTime) void {
-        if (sameDate(self.selected, value)) {
-            c.g_date_time_unref(value);
-            return;
-        }
-        c.g_date_time_unref(self.selected);
+    pub fn setDate(self: *View, value: DateTime) void {
+        if (sameDate(self.selected, value)) return;
         self.selected = value;
         self.invalidate();
     }
     pub fn navigate(self: *View, months: c_int) void {
-        const value = if (months == 0) c.g_date_time_new_now_local() else c.g_date_time_add_months(self.selected, months);
-        if (value) |day| self.setDate(day);
+        const value = if (months == 0) DateTime.now() else self.selected.addMonths(months);
+        if (value) |day| self.setDate(day) else |_| {}
     }
     pub fn selectDay(self: *View, index: usize) void {
         if (index >= self.days.len) return;
-        if (self.days[index]) |day| self.setDate(c.g_date_time_ref(day).?);
+        if (self.days[index]) |day| self.setDate(day);
     }
     pub fn selectedIndex(self: *const View) usize {
         for (self.days, 0..) |day, i| if (day != null and sameDate(day, self.selected)) return i;
@@ -186,7 +180,7 @@ pub const View = struct {
         self.ensureFocusVisible();
     }
     pub fn prepare(self: *View, scale: u32) !void {
-        const minute = @divTrunc(c.__zig.realTime(), 60_000_000);
+        const minute = @divTrunc(@import("desktop-util.zig").realTime(), 60_000_000);
         if (minute != self.minute) {
             self.minute = minute;
             self.invalidate();
@@ -195,27 +189,23 @@ pub const View = struct {
         if (self.scale != scale) {
             self.invalidate();
             errdefer self.invalidate();
-            const now = c.g_date_time_new_now_local() orelse return error.DateUnavailable;
-            defer c.g_date_time_unref(now);
+            const now = try DateTime.now();
             try self.dateLabel(0, now, "%A", 14.666, true, 260, scale);
             try self.dateLabel(1, now, "%B %-d %Y", 20, true, 260, scale);
-            try self.dateLabel(2, self.selected, if (c.g_date_time_get_year(now) == c.g_date_time_get_year(self.selected)) "%B" else "%B %Y", 14.666, true, 192, scale);
-            const first = c.g_date_time_add_days(self.selected, 1 - c.g_date_time_get_day_of_month(self.selected)) orelse return error.DateUnavailable;
-            defer c.g_date_time_unref(first);
-            const start = c.g_date_time_add_days(first, -@mod(c.g_date_time_get_day_of_week(first), 7)) orelse return error.DateUnavailable;
-            defer c.g_date_time_unref(start);
+            try self.dateLabel(2, self.selected, if (now.year() == self.selected.year()) "%B" else "%B %Y", 14.666, true, 192, scale);
+            const first = try self.selected.addDays(1 - self.selected.day());
+            const start = try first.addDays(-@mod(first.dayOfWeek(), 7));
             for (&self.days, 0..) |*slot, i| {
-                if (slot.*) |old| c.g_date_time_unref(old);
-                slot.* = c.g_date_time_add_days(start, @intCast(i));
-                if (slot.* == null) return error.DateUnavailable;
-                try self.dateLabel(10 + i, slot.*, "%d", 12, true, 36, scale);
+                const day = try start.addDays(@intCast(i));
+                slot.* = day;
+                try self.dateLabel(10 + i, day, "%d", 12, true, 36, scale);
                 if (i < 7) {
-                    const name = c.g_date_time_format(slot.*, "%a");
-                    defer c.g_free(name);
-                    const end = c.g_utf8_offset_to_pointer(name, 1);
-                    const letter = try self.allocator.dupeSentinel(u8, name[0 .. @intFromPtr(end) - @intFromPtr(name)], 0);
-                    defer self.allocator.free(letter);
-                    try self.label(3 + i, letter, 12, true, 36, scale);
+                    // The first character of the abbreviated weekday name.
+                    var buffer: [64]u8 = undefined;
+                    const name = day.format(&buffer, "%a") catch return error.DateUnavailable;
+                    const len = @min(std.unicode.utf8ByteSequenceLength(name[0]) catch 1, name.len);
+                    buffer[len] = 0;
+                    try self.label(3 + i, buffer[0..len :0], 12, true, 36, scale);
                 }
             }
             try self.label(52, "Clear", 14.666, true, 80, scale);
@@ -225,11 +215,10 @@ pub const View = struct {
         for (self.snapshot.cards.items) |*card| try card.view.prepare(scale);
         try self.layout();
     }
-    fn dateLabel(self: *View, index: usize, day: ?*c.GDateTime, format: [:0]const u8, size: f64, bold: bool, width: u32, scale: u32) !void {
-        const value = c.g_date_time_format(day, format);
-        if (value == null) return error.DateUnavailable;
-        defer c.g_free(value);
-        try self.label(index, std.mem.span(value), size, bold, width, scale);
+    fn dateLabel(self: *View, index: usize, day: DateTime, format: [:0]const u8, size: f64, bold: bool, width: u32, scale: u32) !void {
+        var buffer: [128]u8 = undefined;
+        const value = day.format(&buffer, format) catch return error.DateUnavailable;
+        try self.label(index, value, size, bold, width, scale);
     }
     fn label(self: *View, index: usize, value: [:0]const u8, size: f64, bold: bool, width: u32, scale: u32) !void {
         self.masks[index] = try self.renderer.renderLayout(self.allocator, value, .{ .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans", .size = size * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = width * scale, .ellipsize = true, .origin = .top });
@@ -348,7 +337,7 @@ pub const View = struct {
                         else => 7,
                     };
                     const origin = self.days[self.focus.day] orelse self.selected;
-                    if (c.g_date_time_add_days(origin, offset)) |day| self.setDate(day);
+                    if (origin.addDays(offset)) |day| self.setDate(day) else |_| {}
                     try self.prepare(factor);
                     self.focus = .{ .day = self.selectedIndex() };
                 } else self.stepFocus(symbol == 0xff51 or symbol == 0xff52);
@@ -366,8 +355,7 @@ pub const View = struct {
         canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = 0, .y = 0, .width = @floatFromInt(self.width), .height = @floatFromInt(self.height) }, .radius = 30 } }}, color(0x36363a));
         canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = 0.5, .y = 0.5, .width = @floatFromInt(self.width - 1), .height = @floatFromInt(self.height - 1) }, .radius = 30, .width = 1 } }}, color(0x545458));
         canvas.draw(&.{.{ .rounded_rect = .{ .rect = .{ .x = 444, .y = 8, .width = 1, .height = 404 }, .radius = 0 } }}, color(0x4a4a4e));
-        const now = c.g_date_time_new_now_local() orelse return error.DateUnavailable;
-        defer c.g_date_time_unref(now);
+        const now = try DateTime.now();
         self.paintButton(canvas, .today, 14, if (sameDate(now, self.selected)) 0x36363a else 0x3e3e42);
         self.paintLabel(canvas, 0, 470, 20, if (sameDate(now, self.selected)) 0x9b9b9d else 0xffffff);
         self.paintLabel(canvas, 1, 470, 42, if (sameDate(now, self.selected)) 0x9b9b9d else 0xffffff);
@@ -384,7 +372,7 @@ pub const View = struct {
         for (self.days, 0..) |day, i| {
             const today = sameDate(day, now);
             self.paintButton(canvas, .{ .day = i }, 18, if (today) 0x3584e4 else if (sameDate(day, self.selected)) 0x4a4a4e else 0x36363a);
-            const other = c.g_date_time_get_month(day) != c.g_date_time_get_month(self.selected);
+            const other = if (day) |value| value.month() != self.selected.month() else false;
             self.center(canvas, 10 + i, self.rect(.{ .day = i }), if (today) 0xffffff else if (other) 0x858589 else if (i % 7 == 0 or i % 7 == 6) 0x9b9b9d else 0xffffff);
         }
         self.paintButton(canvas, .clear, 18, if (self.count() == 0) 0x404044 else 0x505054);
@@ -447,8 +435,10 @@ const zero_rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
 fn focusRing(canvas: raster.Canvas, r: Rect, radius: f64) void {
     canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = r.x + 1, .y = r.y + 1, .width = r.width - 2, .height = r.height - 2 }, .radius = radius, .width = 2 } }}, color(0x99c1f1));
 }
-fn sameDate(first: ?*c.GDateTime, second: ?*c.GDateTime) bool {
-    return first != null and second != null and c.g_date_time_get_year(first) == c.g_date_time_get_year(second) and c.g_date_time_get_day_of_year(first) == c.g_date_time_get_day_of_year(second);
+fn sameDate(first: ?DateTime, second: ?DateTime) bool {
+    const a = first orelse return false;
+    const b = second orelse return false;
+    return a.sameDay(b);
 }
 const color = raster.hex;
 fn jsonString(a: std.mem.Allocator, value: ?std.json.Value) ![:0]const u8 {
@@ -460,40 +450,38 @@ test "native calendar navigates leap days and years with keyboard focus at both 
     var view = try View.init(std.testing.allocator);
     defer view.deinit();
     for ([_]u32{ 1, 2 }) |scale| {
-        view.setDate(c.g_date_time_new_local(2024, 2, 29, 12, 0, 0).?);
+        view.setDate(try DateTime.local(2024, 2, 29, 12, 0, 0));
         try view.prepare(scale);
         try std.testing.expectEqual(@as(usize, 32), view.selectedIndex());
         const march = view.rect(.{ .day = 33 });
         try std.testing.expect(std.meta.eql(Target{ .day = 33 }, view.hit(march.x + 10, march.y + 10)));
         _ = try view.activate(.{ .day = 33 });
-        try std.testing.expectEqual(@as(c_int, 3), c.g_date_time_get_month(view.selected));
-        try std.testing.expectEqual(@as(c_int, 1), c.g_date_time_get_day_of_month(view.selected));
+        try std.testing.expectEqual(@as(c_int, 3), view.selected.month());
+        try std.testing.expectEqual(@as(c_int, 1), view.selected.day());
         _ = try view.key(0xff51, false);
-        try std.testing.expectEqual(@as(c_int, 29), c.g_date_time_get_day_of_month(view.selected));
-        try std.testing.expectEqual(@as(c_int, 2), c.g_date_time_get_month(view.selected));
+        try std.testing.expectEqual(@as(c_int, 29), view.selected.day());
+        try std.testing.expectEqual(@as(c_int, 2), view.selected.month());
         try std.testing.expectEqual(scale, view.scale);
         _ = try view.key(0xff56, false);
-        try std.testing.expectEqual(@as(c_int, 3), c.g_date_time_get_month(view.selected));
+        try std.testing.expectEqual(@as(c_int, 3), view.selected.month());
         try std.testing.expectEqual(view.selectedIndex(), view.focus.day);
         // An arrow moves from the cell reached by Tab, including adjacent months.
         view.focus = .{ .day = 0 };
-        const expected = c.g_date_time_add_days(view.days[0], 1).?;
-        defer c.g_date_time_unref(expected);
+        const expected = try view.days[0].?.addDays(1);
         _ = try view.key(0xff53, false);
         try std.testing.expect(sameDate(expected, view.selected));
-        view.setDate(c.g_date_time_new_local(2023, 12, 31, 12, 0, 0).?);
+        view.setDate(try DateTime.local(2023, 12, 31, 12, 0, 0));
         try view.prepare(scale);
         _ = try view.activate(.next);
-        try std.testing.expectEqual(@as(c_int, 2024), c.g_date_time_get_year(view.selected));
-        try std.testing.expectEqual(@as(c_int, 31), c.g_date_time_get_day_of_month(view.selected));
+        try std.testing.expectEqual(@as(c_int, 2024), view.selected.year());
+        try std.testing.expectEqual(@as(c_int, 31), view.selected.day());
         _ = try view.activate(.next);
-        try std.testing.expectEqual(@as(c_int, 29), c.g_date_time_get_day_of_month(view.selected));
+        try std.testing.expectEqual(@as(c_int, 29), view.selected.day());
         view.navigate(12);
-        try std.testing.expectEqual(@as(c_int, 28), c.g_date_time_get_day_of_month(view.selected));
+        try std.testing.expectEqual(@as(c_int, 28), view.selected.day());
         try view.prepare(scale);
         _ = try view.key(0xff50, false);
-        const now = c.g_date_time_new_now_local();
-        defer c.g_date_time_unref(now);
+        const now = try DateTime.now();
         try std.testing.expect(sameDate(now, view.selected));
         try std.testing.expectEqual(scale, view.scale);
     }

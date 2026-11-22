@@ -5,7 +5,7 @@ const std = @import("std");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const decode = @import("desktop-decode.zig");
-const c = @import("desktop-glib.zig");
+const DateTime = @import("desktop-datetime.zig").DateTime;
 const login = @import("desktop-login-ui.zig");
 
 pub const Status = login.Status;
@@ -102,14 +102,12 @@ pub const View = struct {
 
     /// Reformats the clock; returns whether the visible text changed.
     pub fn tick(self: *View) bool {
-        const now = c.g_date_time_new_now_local() orelse return false;
-        defer c.g_date_time_unref(now);
+        const now = DateTime.now() catch return false;
         var changed = false;
+        var scratch: [64]u8 = undefined;
         // GNOME's unlock dialog formats: 24-hour time and "%A %B %-d".
         for ([_]struct { buffer: []u8, format: [:0]const u8 }{ .{ .buffer = &self.time, .format = "%H:%M" }, .{ .buffer = &self.date, .format = "%A %B %-d" } }) |entry| {
-            const value = c.g_date_time_format(now, entry.format) orelse continue;
-            defer c.g_free(value);
-            const formatted = std.mem.span(value);
+            const formatted = now.format(&scratch, entry.format) catch continue;
             if (formatted.len >= entry.buffer.len) continue;
             if (std.mem.eql(u8, std.mem.sliceTo(entry.buffer, 0), formatted)) continue;
             @memset(entry.buffer, 0);

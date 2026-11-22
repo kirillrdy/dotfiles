@@ -92,11 +92,7 @@ pub fn parse(a: Allocator, s: []const u8) !Value {
     return (try std.json.parseFromSlice(Value, a, s, .{ .allocate = .alloc_always })).value;
 }
 pub fn localTime(a: Allocator, stamp: i64, comptime format: [:0]const u8) ![]const u8 {
-    var t: libc.time_t = @intCast(stamp);
-    var tm: libc.struct_tm = undefined;
-    if (libc.localtime_r(&t, &tm) == null) return error.InvalidTime;
+    const value = @import("desktop-datetime.zig").DateTime.fromUnix(stamp) catch return error.InvalidTime;
     var buffer: [128]u8 = undefined;
-    const len = libc.strftime(&buffer, buffer.len, format, &tm);
-    if (len == 0) return error.InvalidTime;
-    return a.dupe(u8, buffer[0..len]);
+    return a.dupe(u8, value.format(&buffer, format) catch return error.InvalidTime);
 }

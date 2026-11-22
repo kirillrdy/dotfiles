@@ -53,21 +53,7 @@ pub extern fn getpid() __pid_t;
 pub extern fn getuid() __uid_t;
 pub extern fn fork() __pid_t;
 pub extern fn ftruncate(__fd: c_int, __length: __off_t) c_int;
-pub const struct__GDateTime = opaque {};
 
-pub const GDateTime = struct__GDateTime;
-pub extern fn g_date_time_unref(datetime: ?*GDateTime) void;
-pub extern fn g_date_time_ref(datetime: ?*GDateTime) ?*GDateTime;
-pub extern fn g_date_time_new_now_local() ?*GDateTime;
-pub extern fn g_date_time_new_local(year: gint, month: gint, day: gint, hour: gint, minute: gint, seconds: gdouble) ?*GDateTime;
-pub extern fn g_date_time_add_months(datetime: ?*GDateTime, months: gint) ?*GDateTime;
-pub extern fn g_date_time_add_days(datetime: ?*GDateTime, days: gint) ?*GDateTime;
-pub extern fn g_date_time_get_year(datetime: ?*GDateTime) gint;
-pub extern fn g_date_time_get_month(datetime: ?*GDateTime) gint;
-pub extern fn g_date_time_get_day_of_month(datetime: ?*GDateTime) gint;
-pub extern fn g_date_time_get_day_of_week(datetime: ?*GDateTime) gint;
-pub extern fn g_date_time_get_day_of_year(datetime: ?*GDateTime) gint;
-pub extern fn g_date_time_format(datetime: ?*GDateTime, format: [*c]const gchar) [*c]gchar;
 pub extern fn g_filename_from_uri(uri: [*c]const gchar, hostname: [*c][*c]gchar, @"error": [*c][*c]GError) [*c]gchar;
 pub const struct__GData = opaque {};
 
@@ -109,7 +95,6 @@ pub extern fn g_main_context_iteration(context: ?*GMainContext, may_block: gbool
 pub extern fn g_source_remove(tag: guint) gboolean;
 pub extern fn g_timeout_add(interval: guint, function: GSourceFunc, data: gpointer) guint;
 pub extern fn g_timeout_add_seconds(interval: guint, function: GSourceFunc, data: gpointer) guint;
-pub extern fn g_utf8_offset_to_pointer(str: [*c]const gchar, offset: glong) [*c]gchar;
 pub extern fn g_utf8_casefold(str: [*c]const gchar, len: gssize) [*c]gchar;
 pub const G_NORMALIZE_ALL_COMPOSE: c_int = 3;
 pub const GNormalizeMode = c_uint;
