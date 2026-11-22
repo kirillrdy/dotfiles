@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
+const netmon = @import("desktop-netmon.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
 const path = "/org/freedesktop/portal/desktop";
@@ -89,6 +90,8 @@ const Server = struct {
     sessions: std.ArrayList(*Session) = .empty,
     settings: ?*Settings = null,
     notifications: ?*Notifications = null,
+    /// Null when rtnetlink is unavailable; every host then counts as reachable, as with GIO's fallback.
+    network: ?*netmon.Monitor = null,
     idle_inhibited: bool = false,
     serial: u64 = 0,
     quitting: bool = false,
@@ -106,13 +109,14 @@ const Server = struct {
         try self.subscriptions.append(self.allocator, try self.connection.subscribe(bus, bus, "NameOwnerChanged", bus_path, &ownerChanged, self));
         self.settings = try Settings.create(self.allocator, self.connection);
         self.notifications = try Notifications.create(self.allocator, self.connection);
-        if (c.g_network_monitor_get_default()) |monitor| _ = c.g_signal_connect_data(monitor, "network-changed", @ptrCast(&networkChanged), self, null, 0);
+        self.network = netmon.Monitor.create(self.allocator, &networkChanged, self) catch null;
     }
     fn deinit(self: *Server) void {
         self.quitting = true;
         if (self.settings) |settings| settings.destroy();
         if (self.notifications) |notifications| notifications.destroy();
-        if (c.g_network_monitor_get_default()) |monitor| _ = c.g_signal_handlers_disconnect_matched(monitor, c.G_SIGNAL_MATCH_DATA, 0, 0, null, null, self);
+        if (self.network) |monitor| monitor.destroy();
+        self.network = null;
         for (self.subscriptions.items) |id| self.connection.unsubscribe(id);
         self.cancelRequests(null);
         while (self.requests.items.len > 0) _ = c.g_main_context_iteration(null, 1);
@@ -240,7 +244,7 @@ const Server = struct {
             break;
         };
     }
-    fn networkChanged(_: ?*c.GNetworkMonitor, _: c.gboolean, data: ?*anyopaque) callconv(.c) void {
+    fn networkChanged(data: ?*anyopaque) void {
         const self = cast(Server, data);
         self.connection.emit(path, public ++ "NetworkMonitor", "changed", .{}) catch {};
     }
@@ -260,6 +264,7 @@ const Request = struct {
     kind: Kind,
     /// A held NetworkMonitor.CanReach call, answered when the probe finishes.
     invocation: ?dbus.Invocation = null,
+    reach: ?*netmon.Reach = null,
     closed: bool = false,
     inhibit_idle: bool = false,
     inhibitor_fd: c_int = -1,
@@ -313,6 +318,7 @@ const Request = struct {
             self.registration = 0;
         }
         c.g_cancellable_cancel(self.cancel);
+        if (self.reach) |reach| reach.cancel();
         if (self.session_handle) |handle| if (self.server.session(handle, self.owner)) |session_info| {
             session_info.pending = null;
             self.server.closeSession(session_info);
@@ -345,6 +351,7 @@ const Request = struct {
         if (self.screenshot) |operation| operation.destroy();
         if (self.registration != 0) self.server.connection.unregister(self.registration);
         if (self.invocation) |*invocation| invocation.release(self.server.connection.allocator);
+        if (self.reach) |reach| reach.abandon();
         c.g_object_unref(self.cancel);
         for (self.server.requests.items, 0..) |item, index| if (item == self) {
             _ = self.server.requests.swapRemove(index);
@@ -437,12 +444,10 @@ const Request = struct {
         self.respond(2, portal_options.empty);
         self.destroy();
     }
-    fn networkFinished(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
+    fn networkFinished(data: ?*anyopaque, ok: bool) void {
         const self = cast(Request, data);
+        self.reach = null;
         defer self.destroy();
-        var err: ?*c.GError = null;
-        const ok = c.g_network_monitor_can_reach_finish(c.g_network_monitor_get_default(), result, &err) != 0;
-        defer if (err != null) c.g_error_free(err);
         const connection = self.server.connection;
         if (self.invocation) |*invocation| {
             if (!self.closed and !self.server.quitting) connection.answer(invocation, .{ok}) catch {} else connection.answerError(invocation, "org.freedesktop.portal.Error.Failed", "Request cancelled") catch {};
@@ -601,20 +606,22 @@ fn network(server: *Server, client_info: *Client, method: []const u8, args: []co
         const host = args[0].string;
         const number = args[1].uint32;
         if (number > 65535 or host.len == 0 or host.len > 255) return error.InvalidAddress;
-        const address = c.g_network_address_new(try cstring(message, args[0]), @intCast(number)) orelse return error.InvalidAddress;
-        defer c.g_object_unref(address);
+        _ = try cstring(message, args[0]);
         const request = try Request.create(server, client_info, "NetworkMonitor", method, portal_options.empty, .direct);
         request.invocation = server.connection.hold(message) catch |err| {
             request.destroy();
             return err;
         };
-        c.g_network_monitor_can_reach_async(c.g_network_monitor_get_default(), address, request.cancel, &Request.networkFinished, request);
+        request.reach = netmon.Reach.start(server.allocator, server.network, host, @intCast(number), &Request.networkFinished, request) catch |err| {
+            request.destroy();
+            return err;
+        };
         return;
     }
-    const monitor = c.g_network_monitor_get_default();
-    const available = c.g_network_monitor_get_network_available(monitor) != 0;
-    const metered = c.g_network_monitor_get_network_metered(monitor) != 0;
-    const connectivity: u32 = @intCast(c.g_network_monitor_get_connectivity(monitor));
+    const available = if (server.network) |monitor| monitor.available() else true;
+    // Like GIO's netlink monitor, the routing table says nothing about metering.
+    const metered = false;
+    const connectivity: u32 = if (server.network) |monitor| @backingInt(monitor.connectivity()) else @backingInt(netmon.Connectivity.full);
     const connection = server.connection;
     if (eq(method, "GetAvailable")) return connection.reply(message, .{available});
     if (eq(method, "GetMetered")) return connection.reply(message, .{metered});
@@ -708,7 +715,6 @@ pub fn run(allocator: std.mem.Allocator) !void {
 }
 /// The broker owns a single GLib main context; fixtures supply a checked allocator.
 pub fn runWithAllocator(allocator: std.mem.Allocator) !void {
-    _ = c.g_setenv("GIO_USE_NETWORK_MONITOR", "netlink", 1);
     _ = c.g_setenv("GIO_USE_PORTALS", "0", 1);
     _ = c.g_setenv("GTK_USE_PORTAL", "0", 1);
     const source = loop.acquire(allocator, .session) catch return error.SessionBusUnavailable;

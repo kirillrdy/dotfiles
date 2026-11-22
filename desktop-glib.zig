@@ -346,15 +346,6 @@ pub extern fn g_app_info_launch_default_for_uri_async([*c]const gchar, ?*GAppLau
 pub extern fn g_app_info_launch_default_for_uri_finish(?*GAsyncResult, [*c][*c]GError) gboolean;
 pub extern fn g_app_info_get_default_for_uri_scheme([*c]const gchar) ?*GAppInfo;
 pub extern fn g_variant_take_ref(?*GVariant) ?*GVariant;
-pub const GNetworkMonitor = opaque {};
-pub extern fn g_network_monitor_get_default() ?*GNetworkMonitor;
-pub extern fn g_network_monitor_get_network_available(?*GNetworkMonitor) gboolean;
-pub extern fn g_network_monitor_get_network_metered(?*GNetworkMonitor) gboolean;
-pub extern fn g_network_monitor_get_connectivity(?*GNetworkMonitor) c_uint;
-pub const GSocketConnectable = opaque {};
-pub extern fn g_network_address_new([*c]const gchar, u16) ?*GSocketConnectable;
-pub extern fn g_network_monitor_can_reach_async(?*GNetworkMonitor, ?*GSocketConnectable, [*c]GCancellable, GAsyncReadyCallback, gpointer) void;
-pub extern fn g_network_monitor_can_reach_finish(?*GNetworkMonitor, ?*GAsyncResult, [*c][*c]GError) gboolean;
 pub const GFileMonitor = opaque {};
 pub extern fn g_file_monitor_directory(?*GFile, c_uint, [*c]GCancellable, [*c][*c]GError) ?*GFileMonitor;
 pub extern fn g_file_monitor_cancel(?*GFileMonitor) gboolean;
