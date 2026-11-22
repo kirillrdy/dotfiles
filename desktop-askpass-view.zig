@@ -33,6 +33,7 @@ pub const View = struct {
     width: u32 = 460,
     height: u32 = 0,
     prompt_height: u32 = 0,
+    title_height: u32 = 26,
     scale: u32 = 0,
     focus: Target,
     keyboard_focus: bool = true,
@@ -76,8 +77,13 @@ pub const View = struct {
             .confirm => "Allow",
             .information => "Close",
         } }, 0..) |value, i| {
-            self.masks[i] = try self.renderer.renderLayout(allocator, value, .{ .font = "Adwaita Sans Bold", .size = (if (i == 0) @as(f64, 20) else @as(f64, 14.666)) * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .origin = .top });
+            // GNOME Shell's message dialogs centre an extra-bold headline.
+            self.masks[i] = if (i == 0)
+                try self.renderer.renderLayout(allocator, value, .{ .font = "Adwaita Sans Extra-Bold", .size = 20 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = (self.width - 2 * margin) * scale, .line_height = 26 * scale, .lines = 4, .alignment = .center, .origin = .top })
+            else
+                try self.renderer.renderLayout(allocator, value, .{ .font = "Adwaita Sans Bold", .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .origin = .top });
         }
+        self.title_height = @max(26, std.math.divCeil(u32, self.masks[0].?.logical_height, scale) catch unreachable);
         // Cache public text in bounded paragraphs. Long prompts are scrollable
         // and retain every character, including host-key fingerprints.
         var paragraphs = std.mem.splitScalar(u8, prompt, '\n');
@@ -88,7 +94,7 @@ pub const View = struct {
                 while (size < remaining.len and remaining[size] & 0xc0 == 0x80) size -= 1;
                 const value = try allocator.dupeSentinel(u8, remaining[0..size], 0);
                 defer allocator.free(value);
-                const mask = try self.renderer.renderLayout(allocator, value, .{ .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = (self.width - 48) * scale, .line_height = 20 * scale, .lines = 64, .origin = .top });
+                const mask = try self.renderer.renderLayout(allocator, value, .{ .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = (self.width - 2 * margin) * scale, .line_height = 20 * scale, .lines = 64, .alignment = .center, .origin = .top });
                 self.parts.append(allocator, .{ .mask = mask, .y = self.prompt_height }) catch |err| {
                     mask.deinit(allocator);
                     return err;
@@ -108,14 +114,18 @@ pub const View = struct {
             self.masks[i] = try self.renderer.renderLayout(allocator, choice.label, .{ .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .origin = .top });
         }
         if (self.status) |value| {
-            self.masks[3] = try self.renderer.renderLayout(allocator, value, .{ .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = (self.width - 48) * scale, .line_height = 20 * scale, .lines = 64, .origin = .top });
+            self.masks[3] = try self.renderer.renderLayout(allocator, value, .{ .size = 14.666 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = (self.width - 2 * margin) * scale, .line_height = 20 * scale, .lines = 64, .alignment = .center, .origin = .top });
             self.status_height = 12 + (std.math.divCeil(u32, self.masks[3].?.logical_height, scale) catch unreachable);
         }
-        self.height = @intFromFloat(self.buttonRect(.accept).y + 62);
+        self.height = @intFromFloat(self.barY() + bar_height);
         self.scale = scale;
     }
+    /// Top of the description, below the centred headline.
+    fn promptY(self: *const View) f64 {
+        return margin_top + @as(f64, @floatFromInt(self.title_height)) + 12;
+    }
     pub fn entryRect(self: *const View) Rect {
-        return .{ .x = 24, .y = (if (self.confirmation) @as(f64, 112) else 88) + @as(f64, @floatFromInt(self.prompt_height)), .width = @floatFromInt(self.width - 48), .height = 42 };
+        return .{ .x = margin, .y = self.promptY() + @as(f64, @floatFromInt(self.prompt_height)) + (if (self.confirmation) @as(f64, 48) else 24), .width = @floatFromInt(self.width - 2 * margin), .height = 42 };
     }
     pub fn confirmationRect(self: *const View) Rect {
         var rect = self.entryRect();
@@ -126,7 +136,7 @@ pub const View = struct {
         return if (self.confirmation) self.confirmationRect() else self.entryRect();
     }
     pub fn choiceRect(self: *const View, index: usize) Rect {
-        return .{ .x = 24, .y = self.entryRect().y + @as(f64, @floatFromInt(index * 50)), .width = @floatFromInt(self.width - 48), .height = 42 };
+        return .{ .x = margin, .y = self.entryRect().y + @as(f64, @floatFromInt(index * 50)), .width = @floatFromInt(self.width - 2 * margin), .height = 42 };
     }
     pub fn targetRect(self: *const View, target: Target) Rect {
         for (choice_targets, 0..) |choice, i| if (target == choice) return self.choiceRect(i);
@@ -136,8 +146,17 @@ pub const View = struct {
         for (choice_targets, 0..) |choice, i| if (target == choice) return i < self.choices.len and self.enabled and self.choices[i].enabled;
         return false;
     }
+    /// Top of GNOME's button bar, which spans the dialog's full width.
+    fn barY(self: *const View) f64 {
+        const content = self.lastEntryRect().y - 24 + @as(f64, @floatFromInt(self.choices.len * 50)) + @as(f64, @floatFromInt(self.status_height)) + (if (self.mode == .password) @as(f64, 66) else @as(f64, 0));
+        return content + margin_top;
+    }
     pub fn buttonRect(self: *const View, target: Target) Rect {
-        return .{ .x = if (target == .cancel) 24 else @as(f64, @floatFromInt(self.width)) - 148, .y = self.lastEntryRect().y + @as(f64, @floatFromInt(self.choices.len * 50)) + @as(f64, @floatFromInt(self.status_height)) + (if (self.mode == .password) @as(f64, 62) else @as(f64, 0)), .width = 124, .height = 38 };
+        const width: f64 = @floatFromInt(self.width);
+        const y = self.barY() + bar_padding;
+        if (self.mode == .information) return .{ .x = bar_padding, .y = y, .width = width - 2 * bar_padding, .height = button_height };
+        const half = (width - 3 * bar_padding) / 2;
+        return .{ .x = if (target == .cancel) bar_padding else 2 * bar_padding + half, .y = y, .width = half, .height = button_height };
     }
     pub fn hit(self: *const View, x: f64, y: f64) Target {
         for (self.choices, 0..) |_, i| if (self.choiceEnabled(choice_targets[i]) and self.choiceRect(i).contains(x, y)) return choice_targets[i];
@@ -169,16 +188,23 @@ pub const View = struct {
         self.keyboard_focus = true;
     }
     pub fn paint(self: *const View, target: raster.Buffer) void {
-        @memset(target.pixels, 0xff36363a);
+        // Transparent outside the rounded card, as GNOME Shell's modal dialogs.
+        @memset(target.pixels, 0);
         const canvas: raster.Canvas = .{ .target = target, .scale = @floatFromInt(self.scale) };
-        paintMask(canvas, self.masks[0].?, 24, 24);
-        for (self.parts.items) |part| paintMask(canvas, part.mask, 24, 68 + @as(f64, @floatFromInt(part.y)));
+        const width: f64 = @floatFromInt(self.width);
+        const height: f64 = @floatFromInt(self.height);
+        const bar = self.barY();
+        canvas.draw(&.{(Rect{ .x = 0, .y = 0, .width = width, .height = height }).shape(radius)}, color(dialog_color));
+        canvas.draw(&.{ (Rect{ .x = 0, .y = bar, .width = width, .height = height - bar }).shape(radius), (Rect{ .x = 0, .y = bar, .width = width, .height = radius }).shape(0) }, color(bar_color));
+        canvas.draw(&.{(Rect{ .x = 0.5, .y = 0.5, .width = width - 1, .height = height - 1 }).stroke(radius - 0.5, 1)}, raster.Color.rgb(0xffffff, 0.08));
+        paintMask(canvas, self.masks[0].?, margin, margin_top);
+        for (self.parts.items) |part| paintMask(canvas, part.mask, margin, self.promptY() + @as(f64, @floatFromInt(part.y)));
         if (self.confirmation) {
-            paintMask(canvas, self.masks[4].?, 24, self.entryRect().y - 24);
-            paintMask(canvas, self.masks[5].?, 24, self.confirmationRect().y - 24);
+            paintMask(canvas, self.masks[4].?, margin, self.entryRect().y - 24);
+            paintMask(canvas, self.masks[5].?, margin, self.confirmationRect().y - 24);
         }
         if (self.masks[3]) |mask| {
-            raster.mask(target, .{ .x = @intFromFloat(24 * canvas.scale), .y = @as(i32, @intFromFloat((self.lastEntryRect().y + 54) * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(if (self.status_error) 0xff7b83 else 0xffffff));
+            raster.mask(target, .{ .x = @as(i32, @intFromFloat(margin * canvas.scale)) + mask.left, .y = @as(i32, @intFromFloat((self.lastEntryRect().y + 54) * canvas.scale)) + mask.top, .width = mask.width, .height = mask.height }, mask.pixels, color(if (self.status_error) 0xff7b83 else 0xffffff));
         }
         for (self.choices, 0..) |choice, i| {
             const rect = self.choiceRect(i);
@@ -187,19 +213,33 @@ pub const View = struct {
             canvas.draw(&.{rect.shape(10)}, color(if (!active) @as(u32, 0x404044) else if (choice.selected) @as(u32, 0x2265b5) else if (self.hover == button) @as(u32, 0x525256) else @as(u32, 0x48484b)));
             paintMaskTint(canvas, self.masks[6 + i].?, rect.x + 16, rect.y + 12, if (active) 0xffffff else 0x929296);
             if (choice.selected) canvas.draw(&.{.{ .circle = .{ .center = .{ .x = rect.x + rect.width - 20, .y = rect.y + 21 }, .radius = 4 } }}, color(0xffffff));
-            if (self.focus == button and self.keyboard_focus) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = rect.x + 2, .y = rect.y + 2, .width = rect.width - 4, .height = rect.height - 4 }, .radius = 8, .width = 2 } }}, color(0x99c1f1));
+            if (self.focus == button and self.keyboard_focus) paintFocus(canvas, rect, 10);
         }
         for ([_]Target{ .cancel, .accept }, 0..) |button, i| {
             if (button == .cancel and self.mode == .information) continue;
             const rect = self.buttonRect(button);
             const pressed = self.pressed == button and self.hover == button;
-            canvas.draw(&.{rect.shape(10)}, color(if (button == .accept and !self.enabled) @as(u32, 0x48484b) else if (button == .accept) (if (pressed) @as(u32, 0x2265b5) else if (self.hover == button) @as(u32, 0x4390e8) else @as(u32, 0x3584e4)) else (if (pressed) @as(u32, 0x5f5f63) else if (self.hover == button) @as(u32, 0x525256) else @as(u32, 0x48484b))));
+            const disabled = button == .accept and !self.enabled;
+            canvas.draw(&.{rect.shape(button_radius)}, color(if (disabled) @as(u32, 0x404044) else if (pressed) @as(u32, 0x5f5f63) else if (self.hover == button) @as(u32, 0x525256) else @as(u32, 0x48484b)));
             const mask = self.masks[1 + i].?;
-            paintMask(canvas, mask, rect.x + (rect.width - @as(f64, @floatFromInt(mask.logical_width)) / canvas.scale) / 2, rect.y + (rect.height - @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale) / 2);
-            if (self.focus == button and self.keyboard_focus) canvas.draw(&.{.{ .rounded_stroke = .{ .rect = .{ .x = rect.x + 2, .y = rect.y + 2, .width = rect.width - 4, .height = rect.height - 4 }, .radius = 8, .width = 2 } }}, color(0x99c1f1));
+            paintMaskTint(canvas, mask, rect.x + (rect.width - @as(f64, @floatFromInt(mask.logical_width)) / canvas.scale) / 2, rect.y + (rect.height - @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale) / 2, if (disabled) 0x929296 else 0xffffff);
+            if (self.focus == button and self.keyboard_focus) paintFocus(canvas, rect, button_radius);
         }
     }
 };
+// GNOME Shell modal dialog metrics (dark style).
+const margin = 40;
+const margin_top = 32;
+const radius = 18;
+const bar_padding = 12;
+const button_height = 44;
+const button_radius = 12;
+const bar_height = 2 * bar_padding + button_height;
+const dialog_color = 0x36363a;
+const bar_color = 0x2e2e32;
+fn paintFocus(canvas: raster.Canvas, rect: Rect, r: f64) void {
+    canvas.draw(&.{(Rect{ .x = rect.x + 1, .y = rect.y + 1, .width = rect.width - 2, .height = rect.height - 2 }).stroke(r - 1, 2)}, raster.Color.rgb(0x3584e4, 0.5));
+}
 const color = raster.hex;
 fn paintMask(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64) void {
     mask.paint(canvas, x, y, color(0xffffff));

@@ -102,20 +102,23 @@ test "session: private logind actions and quick-settings lifecycle" {
         if (controls.battery_service) |service| c.g_object_weak_ref(@ptrCast(service.cancel), &finalized, &battery_live);
         const network = @import("desktop").network;
         try checkPowerDialog(controls);
-        // Enter defaults to Cancel. Explicit keyboard selection sends one action.
+        // Power Off asks first, as GNOME does, with the action focused and a countdown.
         controls.view.submenu = .power;
         controls.redraw();
-        controls.activate(.suspend_action);
+        controls.activate(.poweroff);
         try std.testing.expect(controls.dialog != null);
         try std.testing.expectEqualStrings("Cancel", controls.dialog.?.view.cancel_label.?);
-        try std.testing.expect(controls.dialog.?.handleKey(0xff0d, 0));
+        try std.testing.expectEqualStrings("Power Off", controls.dialog.?.view.accept_label.?);
+        try std.testing.expectEqual(@import("desktop").askpass.native.Target.accept, controls.dialog.?.view.focus);
+        try std.testing.expect(std.mem.indexOf(u8, controls.dialog.?.prompt, "60 seconds") != null);
+        try std.testing.expect(controls.dialog.?.handleKey(0xff1b, 0));
         pump();
-        try std.testing.expect(controls.dialog == null and !controls.session_busy);
+        try std.testing.expect(controls.dialog == null and !controls.session_busy and controls.end_session_timer == 0);
+        // Suspend has no confirmation in GNOME and sends exactly one action.
         controls.view.submenu = .power;
         controls.redraw();
         controls.activate(.suspend_action);
-        try std.testing.expect(controls.dialog.?.handleKey(0xff09, 0));
-        try std.testing.expect(controls.dialog.?.handleKey(0xff0d, 0));
+        try std.testing.expect(controls.dialog == null);
         pump();
         controls.sessionAction(.reboot); // A pending action must prevent duplicate requests.
         if (std.mem.eql(u8, scenario, "ui-denied")) {

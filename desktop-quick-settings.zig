@@ -56,6 +56,9 @@ pub const Controls = struct {
     dialog: ?*auth.Dialog = null,
     dialog_power: bool = false,
     dialog_value: ?[:0]u8 = null,
+    end_session: ?session.Action = null,
+    end_session_seconds: u32 = 0,
+    end_session_timer: c.guint = 0,
     power_choices: [3]auth.native.Choice = .{
         .{ .label = "Performance" }, .{ .label = "Balanced" }, .{ .label = "Power Saver" },
     },
@@ -110,10 +113,13 @@ pub const Controls = struct {
             },
             .power_settings => self.powerSettings(),
             .network0, .network1, .network2, .network3, .network4, .network5, .network6, .network7 => self.connectNetwork(@backingInt(target) - @backingInt(native.Target.network0)),
-            .suspend_action => self.confirmAction("suspend", "Suspend"),
-            .reboot => self.confirmAction("reboot", "Restart…"),
-            .poweroff => self.confirmAction("poweroff", "Power Off…"),
-            .logout => self.confirmAction("logout", "Log Out…"),
+            .suspend_action => {
+                self.hide();
+                self.sessionAction(.@"suspend");
+            },
+            .reboot => self.confirmAction(.reboot),
+            .poweroff => self.confirmAction(.poweroff),
+            .logout => self.confirmAction(.logout),
             else => {},
         }
         self.redraw();
@@ -363,6 +369,9 @@ pub const Controls = struct {
         const dialog = self.dialog orelse return;
         self.dialog = null;
         self.dialog_power = false;
+        self.end_session = null;
+        if (self.end_session_timer != 0) _ = c.g_source_remove(self.end_session_timer);
+        self.end_session_timer = 0;
         dialog.destroy();
         if (self.dialog_value) |value| self.allocator.free(value);
         self.dialog_value = null;
@@ -637,34 +646,73 @@ pub const Controls = struct {
         self.release();
         return 0;
     }
-    fn confirmAction(self: *Controls, action: [:0]const u8, title: [:0]const u8) void {
+    /// Mirrors GNOME Shell's end-session dialog: the action runs on its own
+    /// when the countdown expires unless it is cancelled.
+    const end_session_timeout = 60;
+    fn endSessionTitle(action: session.Action) [:0]const u8 {
+        return switch (action) {
+            .reboot => "Restart",
+            .poweroff => "Power Off",
+            .logout => "Log Out",
+            .@"suspend" => "Suspend",
+        };
+    }
+    fn endSessionDescription(buffer: []u8, action: session.Action, seconds: u32) [:0]const u8 {
+        const unit = if (seconds == 1) "second" else "seconds";
+        return (switch (action) {
+            .reboot => std.fmt.bufPrintSentinel(buffer, "The system will restart automatically in {d} {s}.", .{ seconds, unit }, 0),
+            .poweroff => std.fmt.bufPrintSentinel(buffer, "The system will power off automatically in {d} {s}.", .{ seconds, unit }, 0),
+            .logout => std.fmt.bufPrintSentinel(buffer, "You will be logged out automatically in {d} {s}.", .{ seconds, unit }, 0),
+            .@"suspend" => std.fmt.bufPrintSentinel(buffer, "The system will suspend automatically in {d} {s}.", .{ seconds, unit }, 0),
+        }) catch unreachable;
+    }
+    fn confirmAction(self: *Controls, action: session.Action) void {
         if (self.session_busy) return;
         if (self.dialog) |dialog| {
             dialog.window.show() catch {};
             return;
         }
         self.hide();
-        const dialog = auth.Dialog.createWithOptions(self.allocator, .confirm, title, .{
-            .title = "Confirm Session Action",
+        var buffer: [96]u8 = undefined;
+        const title = endSessionTitle(action);
+        const dialog = auth.Dialog.createWithOptions(self.allocator, .confirm, endSessionDescription(&buffer, action, end_session_timeout), .{
+            .title = title,
             .role = "desktop-session-confirm",
-            .accept = "Confirm",
+            .accept = title,
             .cancel = "Cancel",
         }) catch |err| {
             self.dialogError(err);
             return;
         };
         self.dialog = dialog;
-        self.dialog_value = self.allocator.dupeSentinel(u8, action, 0) catch @panic("out of memory");
+        self.end_session = action;
+        self.end_session_seconds = end_session_timeout;
+        self.end_session_timer = c.g_timeout_add(1000, &endSessionTick, self);
         self.refs += 1;
+        // GNOME focuses the action button so Enter confirms.
+        dialog.focus(.accept);
         dialog.responded = &confirmed;
         dialog.response_context = self;
     }
+    fn endSessionTick(ptr: c.gpointer) callconv(.c) c.gboolean {
+        const self = cast(Controls, ptr);
+        const dialog = self.dialog orelse {
+            self.end_session_timer = 0;
+            return 0;
+        };
+        self.end_session_seconds -|= 1;
+        if (self.end_session_seconds == 0) {
+            self.end_session_timer = 0;
+            dialog.respond(true);
+            return 0;
+        }
+        var buffer: [96]u8 = undefined;
+        dialog.setPrompt(endSessionDescription(&buffer, self.end_session.?, self.end_session_seconds)) catch {};
+        return 1;
+    }
     fn confirmed(ptr: ?*anyopaque, accepted: bool) void {
         const self = cast(Controls, ptr);
-        const action = self.dialog_value.?;
-        if (accepted and !self.dead) {
-            if (std.meta.stringToEnum(session.Action, action)) |selected| self.sessionAction(selected);
-        }
+        if (accepted and !self.dead) if (self.end_session) |action| self.sessionAction(action);
         self.closeDialog();
     }
     pub fn deinit(self: *Controls) void {
