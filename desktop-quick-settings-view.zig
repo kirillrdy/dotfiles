@@ -39,8 +39,17 @@ pub const Target = enum {
     reboot,
     poweroff,
     logout,
+    dnd_menu,
+    dnd0,
+    dnd1,
+    dnd2,
+    dnd3,
+    dnd_forever,
 };
-pub const Submenu = enum { none, network, profiles, power };
+pub const Submenu = enum { none, network, profiles, power, dnd };
+/// Do Not Disturb durations offered by the tile's menu, in seconds.
+pub const dnd_durations = [_]i64{ 30 * 60, 60 * 60, 4 * 60 * 60, 8 * 60 * 60 };
+pub const dnd_duration_names = [_][:0]const u8{ "For 30 Minutes", "For 1 Hour", "For 4 Hours", "For 8 Hours" };
 pub const Text = struct {
     bytes: [256:0]u8 = @splat(0),
     len: usize = 0,
@@ -73,6 +82,8 @@ pub const Model = struct {
     dark_sensitive: bool = false,
     dnd: bool = false,
     dnd_sensitive: bool = false,
+    /// Shown under the Do Not Disturb title while it ends on its own.
+    dnd_subtitle: Text = .{},
     session_busy: bool = false,
 };
 pub const Rect = raster.Rect;
@@ -233,8 +244,12 @@ pub const View = struct {
         }
         y += 60;
         if (self.submenu == .network or self.submenu == .profiles) y = self.menu(y, content);
-        for ([_]Target{ .dark, .dnd }, [_][:0]const u8{ "Dark Style", "Do Not Disturb" }, [_][:0]const u8{ "dark-mode-symbolic", "notifications-disabled-symbolic" }, 0..) |target, title, icon, i| self.add(.{ .target = target, .rect = .{ .x = 25 + @as(f64, @floatFromInt(i)) * (tile_width + 12), .y = y, .width = tile_width, .height = 48 }, .title = title, .icon = icon, .enabled = if (i == 0) m.dark_sensitive else m.dnd_sensitive, .active = if (i == 0) m.dark else m.dnd });
+        self.add(.{ .target = .dark, .rect = .{ .x = 25, .y = y, .width = tile_width, .height = 48 }, .title = "Dark Style", .icon = "dark-mode-symbolic", .enabled = m.dark_sensitive, .active = m.dark });
+        const dnd_x = 25 + tile_width + 12;
+        self.add(.{ .target = .dnd, .rect = .{ .x = dnd_x, .y = y, .width = tile_width - 36, .height = 48 }, .title = "Do Not Disturb", .subtitle = if (m.dnd) m.dnd_subtitle.slice() else "", .icon = "notifications-disabled-symbolic", .enabled = m.dnd_sensitive, .active = m.dnd });
+        self.add(.{ .target = .dnd_menu, .rect = .{ .x = dnd_x + tile_width - 36, .y = y, .width = 36, .height = 48 }, .icon = "go-next-symbolic", .enabled = m.dnd_sensitive, .active = m.dnd });
         y += 48;
+        if (self.submenu == .dnd) y = self.menu(y + 12, content) - 12;
         if (m.message.len > 0) y += 31;
         self.height = @intFromFloat(y + 25);
         if (!self.enabled(self.hover)) self.hover = .none;
@@ -266,6 +281,15 @@ pub const View = struct {
                     row_y += 36;
                 }
             },
+            .dnd => {
+                const timed = self.model.dnd and self.model.dnd_subtitle.len > 0;
+                for (dnd_duration_names, 0..) |title, i| {
+                    self.add(.{ .target = @fromBackingInt(@intCast(@backingInt(Target.dnd0) + i)), .rect = .{ .x = 37, .y = row_y, .width = width - 24, .height = 36 }, .title = title, .row = true, .enabled = self.model.dnd_sensitive });
+                    row_y += 36;
+                }
+                self.add(.{ .target = .dnd_forever, .rect = .{ .x = 37, .y = row_y, .width = width - 24, .height = 36 }, .title = "Until Turned Off", .row = true, .check = self.model.dnd and !timed, .enabled = self.model.dnd_sensitive });
+                row_y += 36;
+            },
             .none => unreachable,
         }
         self.menu_rect = .{ .x = 25, .y = y, .width = width, .height = row_y - y + 12 };
@@ -290,6 +314,7 @@ pub const View = struct {
                 .network => "Wi-Fi",
                 .profiles => "Power Mode",
                 .power => "Power Off",
+                .dnd => "Do Not Disturb",
                 .none => unreachable,
             };
             const mask = try self.heading.get(allocator, &self.renderer, title, @intFromFloat(rect.width - 48), scale, 20, true);
@@ -320,8 +345,8 @@ pub const View = struct {
                 if (!plain or hovered or pressed) {
                     const color: u32 = if (pressed) 0x5f5f63 else if (hovered) (if (entry.active) 0x4390e8 else 0x525256) else if (entry.active) 0x3584e4 else 0x48484b;
                     const cap: Cap = switch (entry.target) {
-                        .wifi, .profile_toggle => .left,
-                        .network, .profiles => .right,
+                        .wifi, .profile_toggle, .dnd => .left,
+                        .network, .profiles, .dnd_menu => .right,
                         else => .both,
                     };
                     paintButton(canvas, entry.rect, if (entry.row) 12 else entry.rect.height / 2, cap, rgb(color, if (plain) 0.7 else alpha));
@@ -405,7 +430,7 @@ test "quick-settings layout keeps hit regions separate and omits unavailable dev
     try std.testing.expectEqual(@as(f64, 0), view.sliderValue(.volume, slider_rect.x - 100));
     try std.testing.expectEqual(@as(f64, 100), view.sliderValue(.volume, slider_rect.x + slider_rect.width + 100));
     try std.testing.expectApproxEqAbs(@as(f64, 50), view.sliderValue(.volume, slider_rect.x + slider_rect.width / 2), 0.001);
-    for ([_]Submenu{ .none, .profiles, .network, .power }) |submenu| {
+    for ([_]Submenu{ .none, .profiles, .network, .power, .dnd }) |submenu| {
         view.submenu = submenu;
         view.layout();
         for (view.items[0..view.item_count], 0..) |entry, i| {
@@ -415,6 +440,8 @@ test "quick-settings layout keeps hit regions separate and omits unavailable dev
         }
         if (submenu == .profiles) try std.testing.expect(view.item(.profile0) == null and view.item(.profile1) != null);
     }
+    view.submenu = .none;
+    view.layout();
     view.focus = .none;
     view.stepFocus(false);
     try std.testing.expectEqual(Target.battery, view.focus);
@@ -447,7 +474,7 @@ test "integration: quick-settings pixels support Unicode, menu states, scaling a
         network.secure = true;
         network.connected = true;
     }
-    for ([_]u32{ 1, 2 }) |scale| for ([_]Submenu{ .none, .network, .profiles, .power }) |submenu| {
+    for ([_]u32{ 1, 2 }) |scale| for ([_]Submenu{ .none, .network, .profiles, .power, .dnd }) |submenu| {
         view.submenu = submenu;
         view.layout();
         const width = view.width * scale;

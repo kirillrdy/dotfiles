@@ -26,6 +26,37 @@ pub fn bannersEnabled(a: std.mem.Allocator) bool {
     defer prefs.close();
     return prefs.boolean("show-banners");
 }
+/// When a timed Do Not Disturb ends, as Unix seconds in a small state file so
+/// that a restarted shell still turns banners back on.
+fn dndDeadlinePath(buffer: []u8) ?[]const u8 {
+    return std.fmt.bufPrint(buffer, "{s}/desktop/dnd-until", .{@import("desktop-paths.zig").dataHome()}) catch null;
+}
+fn loadDndDeadline(a: std.mem.Allocator) i64 {
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const path = dndDeadlinePath(&buffer) orelse return 0;
+    const bytes = @import("desktop-paths.zig").readFile(a, path, 64) catch return 0;
+    defer a.free(bytes);
+    return @max(0, std.fmt.parseInt(i64, std.mem.trim(u8, bytes, " \t\r\n"), 10) catch 0);
+}
+fn saveDndDeadline(a: std.mem.Allocator, deadline: i64) void {
+    const paths = @import("desktop-paths.zig");
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const path = dndDeadlinePath(&buffer) orelse return;
+    if (deadline == 0 and !paths.exists(path)) return;
+    paths.makeDirectories(std.fs.path.dirname(path).?, 0o700) catch |err| return std.log.warn("do not disturb: {s}", .{@errorName(err)});
+    var digits: [24]u8 = undefined;
+    paths.writeFileAtomic(a, path, std.fmt.bufPrint(&digits, "{d}\n", .{deadline}) catch unreachable, 0o600) catch |err| std.log.warn("do not disturb: {s}", .{@errorName(err)});
+}
+/// "Until 14:30", with the weekday when the deadline is not today.
+fn dndSubtitle(buffer: []u8, deadline: i64, now: i64) []const u8 {
+    const DateTime = @import("desktop-datetime.zig").DateTime;
+    const end = DateTime.fromUnix(deadline) catch return "";
+    const today = DateTime.fromUnix(now) catch return "";
+    return end.format(buffer, if (end.sameDay(today)) "Until %H:%M" else "Until %a %H:%M") catch "";
+}
+fn unixNow() i64 {
+    return @divFloor(c.__zig.realTime(), std.time.us_per_s);
+}
 pub const Controls = struct {
     allocator: std.mem.Allocator,
     popup: popup.Host = undefined,
@@ -42,6 +73,8 @@ pub const Controls = struct {
     sound_settings: [:0]u8,
     interface: ?*Settings,
     notifications: ?*Settings,
+    /// Unix seconds when Do Not Disturb turns itself off; 0 when untimed.
+    dnd_until: i64 = 0,
     timer: c.guint = 0,
     volume_timer: c.guint = 0,
     brightness_timer: c.guint = 0,
@@ -98,9 +131,12 @@ pub const Controls = struct {
                 prefs.setString("color-scheme", if (self.view.model.dark) "default" else "prefer-dark") catch {};
                 self.syncPreferences();
             },
-            .dnd => if (self.notifications) |prefs| {
-                prefs.setBoolean("show-banners", self.view.model.dnd) catch {};
-                self.syncPreferences();
+            .dnd => self.setDnd(!self.view.model.dnd, null),
+            .dnd_menu => self.view.submenu = if (self.view.submenu == .dnd) .none else .dnd,
+            .dnd0, .dnd1, .dnd2, .dnd3, .dnd_forever => {
+                self.setDnd(true, if (target == .dnd_forever) null else native.dnd_durations[@backingInt(target) - @backingInt(native.Target.dnd0)]);
+                self.view.submenu = .none;
+                if (self.view.keyboard_focus) self.view.focus = .dnd_menu;
             },
             .mute => self.audioAction(.toggle),
             .sound => self.launch(self.sound_settings),
@@ -123,7 +159,7 @@ pub const Controls = struct {
             else => {},
         }
         self.redraw();
-        if (self.view.keyboard_focus and (target == .network or target == .profiles or target == .power or target == .battery) and self.view.submenu != .none) {
+        if (self.view.keyboard_focus and (target == .network or target == .profiles or target == .power or target == .battery or target == .dnd_menu) and self.view.submenu != .none) {
             for (self.view.items[0..self.view.item_count]) |entry| if (entry.row and entry.enabled) {
                 self.view.focus = entry.target;
                 break;
@@ -233,6 +269,7 @@ pub const Controls = struct {
             .wifi => "Wi-Fi",
             .dark => "Dark Style",
             .dnd => "Do Not Disturb",
+            .dnd_menu => "Pause Notifications",
             else => null,
         };
         self.tooltip.update(self.allocator, x, y, tooltip, !native.View.slider(self.view.pressed), &showTooltip, self);
@@ -257,6 +294,7 @@ pub const Controls = struct {
                     .network => .network,
                     .profiles => .profiles,
                     .power => .power,
+                    .dnd => .dnd_menu,
                     .none => unreachable,
                 };
                 self.view.submenu = .none;
@@ -301,7 +339,9 @@ pub const Controls = struct {
         };
         if (self.interface) |prefs| prefs.watch(&preferencesChanged, self) catch {};
         if (self.notifications) |prefs| prefs.watch(&preferencesChanged, self) catch {};
+        if (self.notifications != null) self.dnd_until = loadDndDeadline(a);
         self.syncPreferences();
+        self.expireDnd();
         self.subscription = .{ .context = self, .changed = &deviceChanged };
         self.devices.subscribe(&self.subscription);
         self.timer = c.g_timeout_add_seconds(5, &refreshTimer, self);
@@ -315,9 +355,28 @@ pub const Controls = struct {
             self.view.model.dark = std.mem.eql(u8, prefs.string(fixed.allocator(), "color-scheme"), "prefer-dark");
         }
         if (self.notifications) |prefs| self.view.model.dnd = !prefs.boolean("show-banners");
+        // Banners turned back on elsewhere cancel a pending timed pause.
+        if (!self.view.model.dnd and self.dnd_until != 0) {
+            self.dnd_until = 0;
+            saveDndDeadline(self.allocator, 0);
+        }
+        var buffer: [64]u8 = undefined;
+        self.view.model.dnd_subtitle.set(if (self.dnd_until != 0) dndSubtitle(&buffer, self.dnd_until, unixNow()) else "");
         self.view.model.dark_sensitive = self.interface != null;
         self.view.model.dnd_sensitive = self.notifications != null;
         self.redraw();
+    }
+    /// Turns Do Not Disturb on for `duration` seconds (null: until turned off) or off.
+    fn setDnd(self: *Controls, enabled: bool, duration: ?i64) void {
+        const prefs = self.notifications orelse return;
+        self.dnd_until = if (enabled) if (duration) |seconds| unixNow() + seconds else 0 else 0;
+        saveDndDeadline(self.allocator, self.dnd_until);
+        prefs.setBoolean("show-banners", !enabled) catch {};
+        self.syncPreferences();
+    }
+    /// Checked against the wall clock, so time spent suspended counts.
+    fn expireDnd(self: *Controls) void {
+        if (self.dnd_until != 0 and unixNow() >= self.dnd_until) self.setDnd(false, null);
     }
     fn preferencesChanged(ptr: ?*anyopaque, _: []const u8) void {
         const self = cast(Controls, ptr);
@@ -417,6 +476,7 @@ pub const Controls = struct {
     }
     fn refreshTimer(ptr: c.gpointer) callconv(.c) c.gboolean {
         const self = cast(Controls, ptr);
+        if (!self.dead) self.expireDnd();
         if (self.popup.visible) self.refresh();
         return 1;
     }
@@ -751,4 +811,15 @@ pub fn spawnCommandLine(a: std.mem.Allocator, command: []const u8) void {
     defer arena.deinit();
     const argv = process.shellParse(arena.allocator(), command) catch |err| return std.log.warn("{s}: {s}", .{ command, @errorName(err) });
     process.spawnDetached(a, argv, .{}) catch |err| std.log.warn("{s}: {s}", .{ command, @errorName(err) });
+}
+
+test "timed Do Not Disturb subtitles name the weekday only past today" {
+    const DateTime = @import("desktop-datetime.zig").DateTime;
+    var buffer: [64]u8 = undefined;
+    // Local noon keeps both instants on one day in any time zone.
+    const noon = try DateTime.now();
+    const start = unixNow() - @as(i64, noon.second) + 12 * 3600;
+    try std.testing.expectEqualStrings("Until 13:30", dndSubtitle(&buffer, start + 90 * 60, start));
+    const later = dndSubtitle(&buffer, start + 24 * 3600, start);
+    try std.testing.expect(std.mem.startsWith(u8, later, "Until ") and later.len > "Until 12:00".len);
 }

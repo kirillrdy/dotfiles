@@ -121,6 +121,16 @@ pub fn main(process_init: std.process.Init) !void {
         clickControl(controls, .dnd);
         assert(prefs.boolean("show-banners") != before);
         prefs.setBoolean("show-banners", before) catch unreachable;
+        // A timed pause turns banners off and shows when they come back.
+        clickControl(controls, .dnd_menu);
+        assert(controls.view.submenu == .dnd);
+        clickControl(controls, .dnd1);
+        assert(controls.view.submenu == .none and !prefs.boolean("show-banners"));
+        assert(controls.dnd_until != 0 and controls.view.item(.dnd).?.subtitle.len > 0);
+        // Turning it off by hand cancels the pending deadline.
+        clickControl(controls, .dnd);
+        assert(prefs.boolean("show-banners") and controls.dnd_until == 0);
+        prefs.setBoolean("show-banners", before) catch unreachable;
     }
     clickControl(controls, .profiles);
     assert(controls.view.submenu == .profiles);
