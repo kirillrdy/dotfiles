@@ -217,11 +217,6 @@ pub fn list(a: std.mem.Allocator, path: []const u8) ![]Listed {
 /// without types), `kind` is unknown and the caller asks `kind()` for the target.
 pub const Listed = struct { name: [:0]const u8, kind: Kind, resolved: bool };
 
-pub fn freeListing(a: std.mem.Allocator, entries: []Listed) void {
-    for (entries) |entry| a.free(entry.name);
-    a.free(entries);
-}
-
 /// Whether `path` is an executable regular file, following symbolic links.
 pub fn isExecutable(path: []const u8) bool {
     var name: [std.fs.max_path_bytes:0]u8 = undefined;

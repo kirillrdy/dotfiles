@@ -205,48 +205,37 @@ fn writeKeyfile(path: []const u8, value: Value) !void {
         try out.print(store.arena.child_allocator, "[{s}]\n", .{group});
         try out.appendSlice(store.arena.child_allocator, lines.items);
     }
+    const paths = @import("desktop-paths.zig");
     const directory = std.fs.path.dirname(store.keyfile_path) orelse return error.InvalidPath;
-    try makePath(directory);
-    const temporary = try std.fmt.allocPrintSentinel(store.arena.child_allocator, "{s}.XXXXXX", .{store.keyfile_path}, 0);
-    defer store.arena.child_allocator.free(temporary);
-    const fd = mkstemp(temporary);
-    if (fd < 0) return error.WriteFailed;
+    try paths.makeDirectories(directory, 0o700);
+    const prefix = try std.fmt.allocPrint(store.arena.child_allocator, "{s}.", .{store.keyfile_path});
+    defer store.arena.child_allocator.free(prefix);
+    const temporary = try paths.createTemporary(store.arena.child_allocator, prefix);
+    defer store.arena.child_allocator.free(temporary.path);
     var written: usize = 0;
     while (written < out.items.len) {
-        const count = std.c.write(fd, out.items[written..].ptr, out.items.len - written);
+        const count = std.c.write(temporary.fd, out.items[written..].ptr, out.items.len - written);
         if (count <= 0) {
-            _ = std.c.close(fd);
-            _ = std.c.unlink(temporary);
+            _ = std.c.close(temporary.fd);
+            _ = std.c.unlink(temporary.path);
             return error.WriteFailed;
         }
         written += @intCast(count);
     }
-    _ = std.c.fsync(fd);
-    _ = std.c.close(fd);
+    _ = std.c.fsync(temporary.fd);
+    _ = std.c.close(temporary.fd);
     const target = try store.arena.child_allocator.dupeSentinel(u8, store.keyfile_path, 0);
     defer store.arena.child_allocator.free(target);
-    if (std.c.rename(temporary, target) != 0) {
-        _ = std.c.unlink(temporary);
+    if (std.c.rename(temporary.path, target) != 0) {
+        _ = std.c.unlink(temporary.path);
         return error.WriteFailed;
-    }
-}
-extern "c" fn mkstemp(template: [*:0]u8) c_int;
-fn makePath(path: []const u8) !void {
-    var buffer: [std.fs.max_path_bytes:0]u8 = undefined;
-    if (path.len >= buffer.len) return error.NameTooLong;
-    var end: usize = 1;
-    while (end <= path.len) : (end += 1) {
-        if (end != path.len and path[end] != '/') continue;
-        @memcpy(buffer[0..end], path[0..end]);
-        buffer[end] = 0;
-        _ = std.c.mkdir(&buffer, 0o700);
     }
 }
 /// Watches the keyfile's directory and reports keys whose text changed.
 fn watchKeyfile() void {
     const linux = std.os.linux;
     const directory = std.fs.path.dirname(store.keyfile_path) orelse return;
-    makePath(directory) catch return;
+    @import("desktop-paths.zig").makeDirectories(directory, 0o700) catch return;
     const fd: i32 = @intCast(linux.inotify_init1(linux.IN.CLOEXEC | linux.IN.NONBLOCK));
     if (fd < 0) return;
     const name = store.arena.child_allocator.dupeSentinel(u8, directory, 0) catch {

@@ -122,13 +122,27 @@ const AuthResult = struct {
     username_len: usize = 0,
 };
 
-fn waitChild(pid: posix.pid_t) void {
-    active_child.store(pid, .release);
-    defer active_child.store(0, .release);
+fn waitPid(pid: posix.pid_t) void {
     var status: c_int = 0;
     while (posix.waitpid(pid, &status, 0) < 0) {
         if (posix.__errno_location().* != posix.EINTR) break;
     }
+}
+
+fn waitChild(pid: posix.pid_t) void {
+    active_child.store(pid, .release);
+    defer active_child.store(0, .release);
+    waitPid(pid);
+}
+
+fn copyZ(comptime N: usize, value: ?[*:0]const u8) [N:0]u8 {
+    var out: [N:0]u8 = @splat(0);
+    if (value) |v| {
+        const s = std.mem.span(v);
+        const n = @min(s.len, out.len);
+        @memcpy(out[0..n], s[0..n]);
+    }
+    return out;
 }
 
 fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []const u8, wlr_renderer: ?[*:0]const u8) ?AuthResult {
@@ -186,28 +200,10 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
             var runtime_buf: [64:0]u8 = undefined;
             const runtime_fallback = std.fmt.bufPrintSentinel(&runtime_buf, "/run/user/{d}", .{greeter_uid}, 0) catch "/tmp";
 
-            var saved_runtime: [128:0]u8 = @splat(0);
-            if (runtime_dir_val) |v| {
-                const s = std.mem.span(v);
-                @memcpy(saved_runtime[0..@min(s.len, saved_runtime.len)], s[0..@min(s.len, saved_runtime.len)]);
-            } else {
-                @memcpy(saved_runtime[0..runtime_fallback.len], runtime_fallback);
-            }
-            var saved_sid: [128:0]u8 = @splat(0);
-            if (session_id_val) |v| {
-                const s = std.mem.span(v);
-                @memcpy(saved_sid[0..@min(s.len, saved_sid.len)], s[0..@min(s.len, saved_sid.len)]);
-            }
-            var saved_home: [256:0]u8 = @splat(0);
-            {
-                const s = std.mem.span(greeter_home);
-                @memcpy(saved_home[0..@min(s.len, saved_home.len)], s[0..@min(s.len, saved_home.len)]);
-            }
-            var saved_wlr: [64:0]u8 = @splat(0);
-            if (wlr_renderer) |v| {
-                const s = std.mem.span(v);
-                @memcpy(saved_wlr[0..@min(s.len, saved_wlr.len)], s[0..@min(s.len, saved_wlr.len)]);
-            }
+            const saved_runtime = copyZ(128, runtime_dir_val orelse runtime_fallback.ptr);
+            const saved_sid = copyZ(128, session_id_val);
+            const saved_home = copyZ(256, greeter_home);
+            const saved_wlr = copyZ(64, wlr_renderer);
 
             _ = clearenv();
             _ = setenv("HOME", &saved_home, 1);
@@ -236,10 +232,7 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
         }
 
         _ = posix.close(fds[1]);
-        var st: c_int = 0;
-        while (posix.waitpid(child_pid, &st, 0) < 0) {
-            if (posix.__errno_location().* != posix.EINTR) break;
-        }
+        waitPid(child_pid);
         closePamSession(greeter_pam);
         posix._exit(0);
     }
@@ -337,21 +330,9 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
         if (child_pid == 0) {
             _ = posix.close_range(3, std.math.maxInt(c_uint), 0);
 
-            var saved_home: [256:0]u8 = @splat(0);
-            {
-                const s = std.mem.span(home);
-                @memcpy(saved_home[0..@min(s.len, saved_home.len)], s[0..@min(s.len, saved_home.len)]);
-            }
-            var saved_shell: [256:0]u8 = @splat(0);
-            {
-                const s = std.mem.span(shell);
-                @memcpy(saved_shell[0..@min(s.len, saved_shell.len)], s[0..@min(s.len, saved_shell.len)]);
-            }
-            var saved_wlr: [64:0]u8 = @splat(0);
-            if (wlr_renderer) |v| {
-                const s = std.mem.span(v);
-                @memcpy(saved_wlr[0..@min(s.len, saved_wlr.len)], s[0..@min(s.len, saved_wlr.len)]);
-            }
+            const saved_home = copyZ(256, home);
+            const saved_shell = copyZ(256, shell);
+            const saved_wlr = copyZ(64, wlr_renderer);
 
             const pam_env = posix.pam_getenvlist(auth.handle);
             _ = clearenv();
@@ -407,10 +388,7 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
             posix._exit(127);
         }
 
-        var st: c_int = 0;
-        while (posix.waitpid(child_pid, &st, 0) < 0) {
-            if (posix.__errno_location().* != posix.EINTR) break;
-        }
+        waitPid(child_pid);
         closePamSession(auth.handle);
         posix._exit(0);
     }

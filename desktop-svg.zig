@@ -107,12 +107,7 @@ pub const Document = struct {
         self.rules = rules.items;
         self.width = absoluteLength(self.root.get("width"));
         self.height = absoluteLength(self.root.get("height"));
-        if (self.root.get("viewBox")) |value| {
-            var numbers: [4]f64 = undefined;
-            var scanner: Scanner = .{ .text = value };
-            for (&numbers) |*number| number.* = scanner.number() orelse break;
-            if (scanner.failed == false and numbers[2] > 0 and numbers[3] > 0) self.view_box = numbers;
-        }
+        self.view_box = parseViewBox(self.root.get("viewBox"));
         self.aspect = parseAspect(self.root.get("preserveAspectRatio"));
         return self;
     }
@@ -178,6 +173,13 @@ fn viewportTransform(box: [4]f64, viewport: [4]f64, aspect: Align) vec.Transform
     const tx = viewport[0] + (viewport[2] - box[2] * sx) * (if (aspect.none) 0 else aspect.x) - box[0] * sx;
     const ty = viewport[1] + (viewport[3] - box[3] * sy) * (if (aspect.none) 0 else aspect.y) - box[1] * sy;
     return .{ .a = sx, .d = sy, .e = tx, .f = ty };
+}
+
+fn parseViewBox(text: ?[]const u8) ?[4]f64 {
+    var box: [4]f64 = undefined;
+    var scanner: Scanner = .{ .text = text orelse return null };
+    for (&box) |*number| number.* = scanner.number() orelse return null;
+    return if (!scanner.failed and box[2] > 0 and box[3] > 0) box else null;
 }
 
 fn parseAspect(value: ?[]const u8) Align {
@@ -897,8 +899,11 @@ const Renderer = struct {
         return style;
     }
 
-    fn length(self: *const Renderer, node: *const Node, name: []const u8, axis: enum { x, y, other }, default: f64) f64 {
-        const value = parseLength(node.get(name)) orelse return default;
+    const Axis = enum { x, y, other };
+
+    fn resolveLength(self: *const Renderer, raw: ?[]const u8, axis: Axis, default: f64, bbox_units: bool) f64 {
+        const value = parseLength(raw) orelse return default;
+        if (bbox_units) return if (value.percent) value.value / 100 else value.value;
         if (!value.percent) return value.value;
         const basis = switch (axis) {
             .x => self.viewport[0],
@@ -906,6 +911,10 @@ const Renderer = struct {
             .other => @sqrt((self.viewport[0] * self.viewport[0] + self.viewport[1] * self.viewport[1]) / 2),
         };
         return value.value / 100 * basis;
+    }
+
+    fn length(self: *const Renderer, node: *const Node, name: []const u8, axis: Axis, default: f64) f64 {
+        return self.resolveLength(node.get(name), axis, default, false);
     }
 
     fn shape(self: *const Renderer, node: *const Node, path: *vec.Path) !bool {
@@ -969,11 +978,8 @@ const Renderer = struct {
             const x = self.length(node, "x", .x, 0);
             const y = self.length(node, "y", .y, 0);
             local = ctm.mul(.translate(x, y));
-            if (node.get("viewBox")) |value| {
-                var box: [4]f64 = undefined;
-                var scanner: Scanner = .{ .text = value };
-                for (&box) |*number| number.* = scanner.number() orelse 0;
-                if (box[2] > 0 and box[3] > 0) local = local.mul(viewportTransform(box, .{ 0, 0, w, h }, parseAspect(node.get("preserveAspectRatio"))));
+            if (parseViewBox(node.get("viewBox"))) |box| {
+                local = local.mul(viewportTransform(box, .{ 0, 0, w, h }, parseAspect(node.get("preserveAspectRatio"))));
             }
         }
         var path: vec.Path = .{};
@@ -1011,13 +1017,10 @@ const Renderer = struct {
             const moved = local.mul(.translate(self.length(node, "x", .x, 0), self.length(node, "y", .y, 0)));
             if (eql(u8, referenced.name, "symbol")) {
                 var symbol_transform = moved;
-                if (referenced.get("viewBox")) |value| {
-                    var box: [4]f64 = undefined;
-                    var scanner: Scanner = .{ .text = value };
-                    for (&box) |*number| number.* = scanner.number() orelse 0;
+                if (parseViewBox(referenced.get("viewBox"))) |box| {
                     const w = self.length(node, "width", .x, self.viewport[0]);
                     const h = self.length(node, "height", .y, self.viewport[1]);
-                    if (box[2] > 0 and box[3] > 0) symbol_transform = moved.mul(viewportTransform(box, .{ 0, 0, w, h }, parseAspect(referenced.get("preserveAspectRatio"))));
+                    symbol_transform = moved.mul(viewportTransform(box, .{ 0, 0, w, h }, parseAspect(referenced.get("preserveAspectRatio"))));
                 }
                 for (referenced.children) |child| try self.element(dest, child, symbol_transform, style, depth + 1);
             } else {
@@ -1270,13 +1273,12 @@ const Renderer = struct {
             region = .{ self.length(node, "x", .x, -0.1 * self.viewport[0]), self.length(node, "y", .y, -0.1 * self.viewport[1]), self.length(node, "width", .x, 1.2 * self.viewport[0]), self.length(node, "height", .y, 1.2 * self.viewport[1]) };
         } else {
             if (box == null) return coverage;
-            const fraction = struct {
-                fn f(n: *const Node, name: []const u8, default: f64) f64 {
-                    const value = parseLength(n.get(name)) orelse return default;
-                    return if (value.percent) value.value / 100 else value.value;
-                }
-            }.f;
-            region = .{ b[0] + fraction(node, "x", -0.1) * bw, b[1] + fraction(node, "y", -0.1) * bh, fraction(node, "width", 1.2) * bw, fraction(node, "height", 1.2) * bh };
+            region = .{
+                b[0] + self.resolveLength(node.get("x"), .other, -0.1, true) * bw,
+                b[1] + self.resolveLength(node.get("y"), .other, -0.1, true) * bh,
+                self.resolveLength(node.get("width"), .other, 1.2, true) * bw,
+                self.resolveLength(node.get("height"), .other, 1.2, true) * bh,
+            };
         }
         var outline: vec.Path = .{};
         defer outline.deinit(self.gpa);
@@ -1537,26 +1539,10 @@ const Gradient = struct {
     /// Resolves attributes along the `href` chain and builds the color table.
     fn init(self: *Gradient, renderer: *Renderer, start: *const Node, style: Style, box: ?[4]f64, ctm: vec.Transform) bool {
         self.* = .{};
-        const doc = renderer.doc;
         var chain: [16]*const Node = undefined;
-        var count: usize = 0;
-        var node: ?*const Node = start;
-        while (node) |n| {
-            if (count >= chain.len) break;
-            if (!std.mem.eql(u8, n.name, "linearGradient") and !std.mem.eql(u8, n.name, "radialGradient")) break;
-            chain[count] = n;
-            count += 1;
-            const reference = n.href() orelse break;
-            node = if (reference.len > 1 and reference[0] == '#') doc.ids.get(reference[1..]) else null;
-        }
-        if (count == 0) return false;
-        const nodes = chain[0..count];
-        const lookup = struct {
-            fn f(list: []const *const Node, name: []const u8) ?[]const u8 {
-                for (list) |n| if (n.get(name)) |value| return value;
-                return null;
-            }
-        }.f;
+        const nodes = referenceChain(renderer.doc, start, &.{ "linearGradient", "radialGradient" }, &chain);
+        if (nodes.len == 0) return false;
+        const lookup = chainAttribute;
         self.radial = std.mem.eql(u8, nodes[0].name, "radialGradient");
         const bbox_units = !std.mem.eql(u8, lookup(nodes, "gradientUnits") orelse "", "userSpaceOnUse");
         const spread = lookup(nodes, "spreadMethod") orelse "pad";
@@ -1615,27 +1601,14 @@ const Gradient = struct {
             entry.* = vec.premultiply(c[0], c[1], c[2], c[3]);
         }
 
-        const coordinate = struct {
-            fn f(r: *const Renderer, chain_nodes: []const *const Node, name: []const u8, default: f64, bbox: bool, axis: enum { x, y, other }) f64 {
-                const value = parseLength(lookup(chain_nodes, name)) orelse return default;
-                if (bbox) return if (value.percent) value.value / 100 else value.value;
-                if (!value.percent) return value.value;
-                const basis = switch (axis) {
-                    .x => r.viewport[0],
-                    .y => r.viewport[1],
-                    .other => @sqrt((r.viewport[0] * r.viewport[0] + r.viewport[1] * r.viewport[1]) / 2),
-                };
-                return value.value / 100 * basis;
-            }
-        }.f;
         if (self.radial) {
-            const cx = coordinate(renderer, nodes, "cx", if (bbox_units) 0.5 else renderer.viewport[0] / 2, bbox_units, .x);
-            const cy = coordinate(renderer, nodes, "cy", if (bbox_units) 0.5 else renderer.viewport[1] / 2, bbox_units, .y);
-            self.r = coordinate(renderer, nodes, "r", if (bbox_units) 0.5 else renderer.viewport[0] / 2, bbox_units, .other);
+            const cx = renderer.resolveLength(lookup(nodes, "cx"), .x, if (bbox_units) 0.5 else renderer.viewport[0] / 2, bbox_units);
+            const cy = renderer.resolveLength(lookup(nodes, "cy"), .y, if (bbox_units) 0.5 else renderer.viewport[1] / 2, bbox_units);
+            self.r = renderer.resolveLength(lookup(nodes, "r"), .other, if (bbox_units) 0.5 else renderer.viewport[0] / 2, bbox_units);
             self.x1 = cx;
             self.y1 = cy;
-            self.x2 = coordinate(renderer, nodes, "fx", cx, bbox_units, .x);
-            self.y2 = coordinate(renderer, nodes, "fy", cy, bbox_units, .y);
+            self.x2 = renderer.resolveLength(lookup(nodes, "fx"), .x, cx, bbox_units);
+            self.y2 = renderer.resolveLength(lookup(nodes, "fy"), .y, cy, bbox_units);
             // Keep the focus inside the circle.
             const dx = self.x2 - cx;
             const dy = self.y2 - cy;
@@ -1645,10 +1618,10 @@ const Gradient = struct {
                 self.y2 = cy + dy / distance * self.r * 0.999;
             }
         } else {
-            self.x1 = coordinate(renderer, nodes, "x1", 0, bbox_units, .x);
-            self.y1 = coordinate(renderer, nodes, "y1", 0, bbox_units, .y);
-            self.x2 = coordinate(renderer, nodes, "x2", if (bbox_units) 1 else renderer.viewport[0], bbox_units, .x);
-            self.y2 = coordinate(renderer, nodes, "y2", 0, bbox_units, .y);
+            self.x1 = renderer.resolveLength(lookup(nodes, "x1"), .x, 0, bbox_units);
+            self.y1 = renderer.resolveLength(lookup(nodes, "y1"), .y, 0, bbox_units);
+            self.x2 = renderer.resolveLength(lookup(nodes, "x2"), .x, if (bbox_units) 1 else renderer.viewport[0], bbox_units);
+            self.y2 = renderer.resolveLength(lookup(nodes, "y2"), .y, 0, bbox_units);
         }
         var t = ctm;
         if (bbox_units) {

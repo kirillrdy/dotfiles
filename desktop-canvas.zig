@@ -464,58 +464,42 @@ const Taps = struct {
                 continue;
             }
             var raw: [64]f64 = undefined;
-            var first: f64 = undefined;
+            const lo = center - scale / 2;
+            const hi = center + scale / 2;
+            const first = @floor(lo);
             var n: usize = 0;
-            if (box) {
-                const lo = center - scale / 2;
-                const hi = center + scale / 2;
-                first = @floor(lo);
-                var k = first;
-                while (k < hi and n < stride) : (k += 1) {
-                    raw[n] = @max(0, @min(k + 1, hi) - @max(k, lo));
-                    n += 1;
-                }
-            } else {
-                const f = center - 0.5;
-                first = @floor(f);
-                const t = f - first;
-                raw[0] = 1 - t;
-                raw[1] = t;
-                n = 2;
+            var pos = first;
+            while (pos < hi and n < stride) : (pos += 1) {
+                raw[n] = @max(0, @min(pos + 1, hi) - @max(pos, lo));
+                n += 1;
             }
             // Resolve each tap against the edges: pad clamps, none drops.
-            var resolved_first: i32 = std.math.maxInt(i32);
+            var base: ?i32 = null;
+            var last: i32 = 0;
             var resolved: [64]f64 = @splat(0);
             var total: f64 = 0;
-            for (raw[0..n], 0..) |w, k| {
-                var index = first + @as(f64, @floatFromInt(k));
+            for (raw[0..n], 0..) |w, tap_idx| {
+                var index = first + @as(f64, @floatFromInt(tap_idx));
                 if (index < 0 or index >= limit) {
                     if (extend == .none) continue;
                     index = std.math.clamp(index, 0, limit - 1);
                 }
                 const idx: i32 = @intFromFloat(index);
-                resolved_first = @min(resolved_first, idx);
+                const b = base orelse blk: {
+                    base = idx;
+                    break :blk idx;
+                };
+                const slot: usize = @intCast(idx - b);
+                if (slot < stride) resolved[slot] += w;
+                last = idx;
                 total += w;
             }
-            // Second pass, now that the first index is known.
-            const base: i32 = if (resolved_first == std.math.maxInt(i32)) 0 else resolved_first;
-            var last: i32 = base;
-            for (raw[0..n], 0..) |w, k| {
-                var index = first + @as(f64, @floatFromInt(k));
-                if (index < 0 or index >= limit) {
-                    if (extend == .none) continue;
-                    index = std.math.clamp(index, 0, limit - 1);
-                }
-                const idx: i32 = @intFromFloat(index);
-                const slot: usize = @intCast(idx - base);
-                if (slot < stride) resolved[slot] += w;
-                last = @max(last, idx);
-            }
-            const count: usize = @intCast(@min(@as(i32, @intCast(stride)), last - base + 1));
-            taps.first[i] = base;
+            const first_idx = base orelse 0;
+            const count: usize = if (base != null) @intCast(@min(@as(i32, @intCast(stride)), last - first_idx + 1)) else 0;
+            taps.first[i] = first_idx;
             taps.count[i] = @intCast(if (total > 0) count else 0);
             // Edge pixels with `none` keep their partial weight, fading out as Cairo does.
-            const divisor: f64 = if (extend == .none) (if (box) scale else 1) else total;
+            const divisor: f64 = if (extend == .none) scale else total;
             var sum: u32 = 0;
             for (0..count) |k| {
                 const w: u16 = @intFromFloat(@round(resolved[k] / divisor * 256));

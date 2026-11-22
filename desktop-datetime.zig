@@ -402,29 +402,10 @@ pub const Zone = struct {
     }
 
     fn loadFile(allocator: std.mem.Allocator, path: []const u8) ?Zone {
-        var name: [std.fs.max_path_bytes:0]u8 = undefined;
-        if (path.len >= name.len) return null;
-        @memcpy(name[0..path.len], path);
-        name[path.len] = 0;
-        const opened = linux.open(&name, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
-        if (linux.errno(opened) != .SUCCESS) return null;
-        const fd: linux.fd_t = @intCast(opened);
-        defer _ = linux.close(fd);
         // Compiled zones are a few kilobytes; the largest is well under this.
-        const buffer = allocator.alloc(u8, 256 * 1024) catch return null;
+        const buffer = @import("desktop-paths.zig").readFile(allocator, path, 256 * 1024) catch return null;
         defer allocator.free(buffer);
-        var len: usize = 0;
-        while (len < buffer.len) {
-            const got = linux.read(fd, buffer[len..].ptr, buffer.len - len);
-            switch (linux.errno(got)) {
-                .SUCCESS => {},
-                .INTR => continue,
-                else => return null,
-            }
-            if (got == 0) break;
-            len += got;
-        }
-        return parse(allocator, buffer[0..len]) catch null;
+        return parse(allocator, buffer) catch null;
     }
 };
 

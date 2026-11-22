@@ -96,12 +96,6 @@ pub const Settings = struct {
             return;
         };
     }
-    pub fn removeGroup(self: *Settings, name: []const u8) void {
-        for (self.groups.items, 0..) |item, i| if (std.mem.eql(u8, item.name, name)) {
-            _ = self.groups.orderedRemove(i);
-            return;
-        };
-    }
     /// The wire form; it borrows from `self` and allocates its tables from `arena`.
     pub fn wire(self: *Settings, arena: std.mem.Allocator) !Wire {
         const entries = try arena.alloc(Wire.Entry, self.groups.items.len);

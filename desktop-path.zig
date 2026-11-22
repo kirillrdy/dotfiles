@@ -403,42 +403,6 @@ fn offset(p: Point, n: Point, distance: f64) Point {
     return .{ .x = p.x + n.x * distance, .y = p.y + n.y * distance };
 }
 
-fn join(a: std.mem.Allocator, out: *Flat, v: Point, d0: Point, d1: Point, stroke: Stroke, tolerance: f64) !void {
-    const hw = stroke.width / 2;
-    const cross = d0.x * d1.y - d0.y * d1.x;
-    const dot = d0.x * d1.x + d0.y * d1.y;
-    if (@abs(cross) < 1e-9 and dot > 0) return;
-    if (stroke.join == .round) return circle(a, out, v, hw, tolerance);
-    const side: f64 = if (cross > 0) -1 else 1;
-    const n0: Point = .{ .x = -d0.y * side, .y = d0.x * side };
-    const n1: Point = .{ .x = -d1.y * side, .y = d1.x * side };
-    const p0 = offset(v, n0, hw);
-    const p1 = offset(v, n1, hw);
-    const cos = n0.x * n1.x + n0.y * n1.y;
-    if (stroke.join == .miter and cos > -1 + 1e-9) {
-        const ratio = @sqrt(2 / (1 + cos));
-        if (ratio <= stroke.miter_limit) {
-            const mid = unit(.{ .x = 0, .y = 0 }, .{ .x = n0.x + n1.x, .y = n0.y + n1.y }) orelse return;
-            try out.polygon(a, &.{ v, p0, offset(v, mid, hw * ratio), p1 });
-            return;
-        }
-    }
-    try out.polygon(a, &.{ v, p0, p1 });
-}
-
-fn cap(a: std.mem.Allocator, out: *Flat, p: Point, direction: Point, stroke: Stroke, tolerance: f64) !void {
-    const hw = stroke.width / 2;
-    switch (stroke.cap) {
-        .butt => {},
-        .round => try circle(a, out, p, hw, tolerance),
-        .square => {
-            const n: Point = .{ .x = -direction.y, .y = direction.x };
-            const tip = offset(p, direction, hw);
-            try out.polygon(a, &.{ offset(p, n, hw), offset(tip, n, hw), offset(tip, n, -hw), offset(p, n, -hw) });
-        },
-    }
-}
-
 /// Appends points along a circular arc of radius `r` around `center`, from
 /// angle `start` turning by `sweep`, excluding the start point.
 fn arcPoints(a: std.mem.Allocator, list: *std.ArrayList(Point), center: Point, r: f64, start: f64, sweep: f64, tolerance: f64) !void {

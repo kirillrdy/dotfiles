@@ -100,10 +100,13 @@ pub const Builder = struct {
         self.used += length;
         put(self.bytes, @intCast(self.used - 8));
     }
-    pub fn identifier(self: *Builder, key: u32, value: u32) Error!void {
+    fn scalar(self: *Builder, key: u32, kind: u32, value: u32) Error!void {
         var bytes: [4]u8 = undefined;
         put(&bytes, value);
-        try self.add(key, p.SPA_TYPE_Id, &bytes);
+        try self.add(key, kind, &bytes);
+    }
+    pub fn identifier(self: *Builder, key: u32, value: u32) Error!void {
+        try self.scalar(key, p.SPA_TYPE_Id, value);
     }
     pub fn pair(self: *Builder, key: u32, kind: u32, first: u32, second: u32) Error!void {
         var bytes: [8]u8 = undefined;
@@ -112,14 +115,10 @@ pub const Builder = struct {
         try self.add(key, kind, &bytes);
     }
     pub fn boolean(self: *Builder, key: u32, value: bool) Error!void {
-        var bytes: [4]u8 = undefined;
-        put(&bytes, @intFromBool(value));
-        try self.add(key, p.SPA_TYPE_Bool, &bytes);
+        try self.scalar(key, p.SPA_TYPE_Bool, @intFromBool(value));
     }
     pub fn integer(self: *Builder, key: u32, value: i32) Error!void {
-        var bytes: [4]u8 = undefined;
-        put(&bytes, @bitCast(value));
-        try self.add(key, p.SPA_TYPE_Int, &bytes);
+        try self.scalar(key, p.SPA_TYPE_Int, @bitCast(value));
     }
     pub fn flags(self: *Builder, key: u32, value: i32) Error!void {
         var bytes: [20]u8 = undefined;
@@ -131,9 +130,7 @@ pub const Builder = struct {
         try self.add(key, p.SPA_TYPE_Choice, &bytes);
     }
     pub fn float(self: *Builder, key: u32, value: f32) Error!void {
-        var bytes: [4]u8 = undefined;
-        put(&bytes, @bitCast(value));
-        try self.add(key, p.SPA_TYPE_Float, &bytes);
+        try self.scalar(key, p.SPA_TYPE_Float, @bitCast(value));
     }
     pub fn floats(self: *Builder, key: u32, values: []const f32) Error!void {
         var bytes: [8 + 64 * 4]u8 = undefined;
