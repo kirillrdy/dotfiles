@@ -247,7 +247,7 @@ fn select_power(m: *Module, id: [*c]const u8) void {
 pub fn update_clock(data: c.gpointer) callconv(.c) c.gboolean {
     const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
     var buffer: [64]u8 = undefined;
-    if (DateTime.now()) |now| if (now.format(&buffer, "%b %-d %H:%M")) |label| {
+    if (DateTime.now()) |now| if (now.format(&buffer, "%b %-d\u{2002}%H:%M")) |label| {
         if (!std.mem.eql(u8, m.view.clock.value, label)) {
             m.view.clock.set(m.allocator, label);
             resize(m);
