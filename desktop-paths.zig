@@ -170,6 +170,84 @@ fn terminate(path: []const u8, buffer: *[std.fs.max_path_bytes:0]u8) ?[*:0]const
     return buffer;
 }
 
+/// The names in a directory, without "." and "..", in directory order.
+pub fn list(a: std.mem.Allocator, path: []const u8) ![]Listed {
+    var name: [std.fs.max_path_bytes:0]u8 = undefined;
+    const z = terminate(path, &name) orelse return error.InvalidPath;
+    const opened = linux.openat(linux.AT.FDCWD, z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
+    if (linux.errno(opened) != .SUCCESS) return error.FileNotFound;
+    const fd: linux.fd_t = @intCast(opened);
+    defer _ = linux.close(fd);
+    var entries: std.ArrayList(Listed) = .empty;
+    errdefer {
+        for (entries.items) |entry| a.free(entry.name);
+        entries.deinit(a);
+    }
+    var buffer: [16 * 1024]u8 align(8) = undefined;
+    while (true) {
+        const got = linux.getdents64(fd, &buffer, buffer.len);
+        switch (linux.errno(got)) {
+            .SUCCESS => {},
+            .INTR => continue,
+            else => return error.ReadFailed,
+        }
+        if (got == 0) break;
+        var offset: usize = 0;
+        while (offset < got) {
+            const entry: *align(1) const linux.dirent64 = @ptrCast(&buffer[offset]);
+            const raw: [*:0]const u8 = @ptrCast(&buffer[offset + @offsetOf(linux.dirent64, "name")]);
+            const entry_name = std.mem.span(raw);
+            offset += entry.reclen;
+            if (std.mem.eql(u8, entry_name, ".") or std.mem.eql(u8, entry_name, "..")) continue;
+            const kind_value: Kind = switch (entry.type) {
+                linux.DT.DIR => .directory,
+                linux.DT.REG => .file,
+                linux.DT.UNKNOWN, linux.DT.LNK => .missing,
+                else => .other,
+            };
+            const owned = try a.dupeSentinel(u8, entry_name, 0);
+            errdefer a.free(owned);
+            try entries.append(a, .{ .name = owned, .kind = kind_value, .resolved = kind_value != .missing });
+        }
+    }
+    return entries.toOwnedSlice(a);
+}
+
+/// A directory entry. When `resolved` is false (symbolic links and file systems
+/// without types), `kind` is unknown and the caller asks `kind()` for the target.
+pub const Listed = struct { name: [:0]const u8, kind: Kind, resolved: bool };
+
+pub fn freeListing(a: std.mem.Allocator, entries: []Listed) void {
+    for (entries) |entry| a.free(entry.name);
+    a.free(entries);
+}
+
+/// Whether `path` is an executable regular file, following symbolic links.
+pub fn isExecutable(path: []const u8) bool {
+    var name: [std.fs.max_path_bytes:0]u8 = undefined;
+    const z = terminate(path, &name) orelse return false;
+    if (kind(path) != .file) return false;
+    return linux.errno(linux.faccessat(linux.AT.FDCWD, z, linux.X_OK, 0)) == .SUCCESS;
+}
+
+/// Finds a program as g_find_program_for_path does: a path containing a slash
+/// is used as given, otherwise each $PATH directory is searched.
+pub fn findProgram(a: std.mem.Allocator, program: []const u8) ?[:0]u8 {
+    if (program.len == 0) return null;
+    if (std.mem.indexOfScalar(u8, program, '/') != null) {
+        if (!isExecutable(program)) return null;
+        return a.dupeSentinel(u8, program, 0) catch null;
+    }
+    const search = util.env("PATH") orelse "/bin:/usr/bin:.";
+    var directories = std.mem.splitScalar(u8, search, ':');
+    while (directories.next()) |directory| {
+        const candidate = std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ if (directory.len == 0) "." else directory, program }, 0) catch return null;
+        if (isExecutable(candidate)) return candidate;
+        a.free(candidate);
+    }
+    return null;
+}
+
 /// Creates `path` and any missing parents; succeeds if it is already a directory.
 pub fn makeDirectories(path: []const u8, mode: u32) !void {
     if (path.len == 0) return error.InvalidPath;

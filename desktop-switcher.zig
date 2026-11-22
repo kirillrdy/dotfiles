@@ -161,14 +161,14 @@ fn loadAssets(a: std.mem.Allocator, snapshot: *const Snapshot, scale: u32) void 
     for (snapshot.items[0..snapshot.len], 0..) |*item, i| {
         const id = std.fmt.allocPrintSentinel(a, "{s}.desktop", .{std.mem.sliceTo(&item.app_id, 0)}, 0) catch @panic("switcher desktop id");
         defer a.free(id);
-        const info = c.g_desktop_app_info_new(id);
-        defer if (info) |value| c.g_object_unref(value);
-        const name: [*:0]const u8 = if (info) |value| c.g_app_info_get_display_name(@ptrCast(value)) else &item.title;
+        const info = @import("desktop-appinfo.zig").lookup(a, id);
+        defer if (info) |value| value.unref();
+        const name: [*:0]const u8 = if (info) |value| value.display_name.ptr else &item.title;
         labels[i] = a.dupeSentinel(u8, std.mem.span(name), 0) catch @panic("switcher label");
         label_masks[i] = makeLabel(a, labels[i].?, icon_size + 19, scale) catch null;
-        const gicon = if (info) |value| c.g_app_info_get_icon(@ptrCast(value)) else null;
+        const icon = if (info) |value| value.icon else null;
         const size = @as(u32, @intCast(icon_size)) * scale;
-        icons[i] = @import("desktop-icons.zig").loadThemed(a, gicon, size, null, "application-x-executable");
+        icons[i] = @import("desktop-icons.zig").loadApp(a, icon, size, null, "application-x-executable");
     }
     asset_scale = scale;
 }

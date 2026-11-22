@@ -83,8 +83,8 @@ pub fn main(init: std.process.Init) !void {
     // Nix's patched GIO also searches installed profiles outside XDG_DATA_DIRS.
     var fixture_count: usize = 0;
     for (launcher.entries.items) |item| {
-        const filename = c.g_desktop_app_info_get_filename(@ptrCast(item.info));
-        if (std.mem.startsWith(u8, std.mem.span(filename), applications)) fixture_count += 1;
+        const filename = item.info.filename orelse continue;
+        if (std.mem.startsWith(u8, filename, applications)) fixture_count += 1;
     }
     assert(fixture_count == 4);
     launcher.present();
@@ -110,13 +110,10 @@ pub fn main(init: std.process.Init) !void {
     // Paging and keyboard selection must stay on valid results, including the
     // last partial page. Exercise actual native input-method commits as well.
     for (0..30) |index| {
-        const key = c.g_key_file_new();
-        defer c.g_key_file_unref(key);
-        const source = try std.fmt.allocPrintSentinel(a, "[Desktop Entry]\nType=Application\nName=Paged fixture {d:0>2}\nExec=true\n", .{index}, 0);
-        assert(c.g_key_file_load_from_data(key, source, source.len, 0, null) != 0);
-        const info = c.g_desktop_app_info_new_from_keyfile(key).?;
-        try launcher.add(@ptrCast(info));
-        c.g_object_unref(info);
+        const source = try std.fmt.allocPrint(a, "[Desktop Entry]\nType=Application\nName=Paged fixture {d:0>2}\nExec=true\n", .{index});
+        const info = (try apps.App.parse(init.gpa, source, "", null)).?;
+        try launcher.add(info);
+        info.unref();
     }
     try launcher.setSearch("Paged fixture");
     pump();
@@ -152,20 +149,17 @@ pub fn main(init: std.process.Init) !void {
     pump();
 
     // Verify desktop Exec quoting/field expansion for terminal applications.
-    const keyfile = c.g_key_file_new();
-    defer c.g_key_file_unref(keyfile);
     const data = "[Desktop Entry]\nType=Application\nName=Terminal Fixture\nIcon=utilities-terminal\nTerminal=true\nExec=/proc/self/exe \"two words\" %c %i %% %F %u\n";
-    assert(c.g_key_file_load_from_data(keyfile, data, data.len, 0, null) != 0);
-    const terminal = c.g_desktop_app_info_new_from_keyfile(keyfile).?;
-    defer c.g_object_unref(terminal);
-    const argv = try apps.terminalArgs(a, terminal);
+    const terminal = (try apps.App.parse(init.gpa, data, "terminal-fixture.desktop", null)).?;
+    defer terminal.unref();
+    const argv = try terminal.launchArgs(a);
     const expected = [_][]const u8{ "ghostty", "-e", "/proc/self/exe", "two words", "Terminal Fixture", "--icon", "utilities-terminal", "%" };
-    assert(argv.items.len == expected.len + 1 and argv.items[expected.len] == null);
-    for (argv.items[0..expected.len], expected) |actual, want| eq(actual.?, want);
+    assert(argv.len == expected.len);
+    for (argv, expected) |actual, want| eq(actual, want);
 
     // A failed launch must leave the grid visible and show an actionable error.
-    const failing = c.g_app_info_create_from_commandline("/nonexistent-desktop-apps-fixture", "Broken", 0, null).?;
-    defer c.g_object_unref(failing);
+    const failing = try apps.App.fromCommandLine(init.gpa, "/nonexistent-desktop-apps-fixture", "Broken");
+    defer failing.unref();
     assert(!launcher.launch(failing));
     assert(launcher.visible_window);
     assert(launcher.status.len != 0);
@@ -189,13 +183,12 @@ pub fn main(init: std.process.Init) !void {
 
     launcher.present();
     const marker = try std.fmt.allocPrint(a, "{s}/launched", .{base});
-    const executable = c.g_shell_quote((try a.dupeSentinel(u8, try std.process.executablePathAlloc(init.io, a), 0)).ptr);
-    defer c.g_free(executable);
-    const quoted_marker = c.g_shell_quote((try a.dupeSentinel(u8, marker, 0)).ptr);
-    defer c.g_free(quoted_marker);
-    const command = try std.fmt.allocPrintSentinel(a, "{s} --record {s}", .{ executable, quoted_marker }, 0);
-    const success = c.g_app_info_create_from_commandline(command, "Launch fixture", 0, null).?;
-    defer c.g_object_unref(success);
+    var command: std.ArrayList(u8) = .empty;
+    try apps.appinfo.shellQuote(a, &command, try std.process.executablePathAlloc(init.io, a));
+    try command.appendSlice(a, " --record ");
+    try apps.appinfo.shellQuote(a, &command, marker);
+    const success = try apps.App.fromCommandLine(init.gpa, command.items, "Launch fixture");
+    defer success.unref();
     assert(launcher.launch(success));
     assert(!launcher.visible_window);
     const deadline = @divTrunc(c.__zig.monotonicTime(), 1000) + 5000;

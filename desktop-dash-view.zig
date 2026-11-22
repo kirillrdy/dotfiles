@@ -1,6 +1,7 @@
 //! Native Activities dash, following GNOME 50's dash and overview-tile styles.
 const std = @import("std");
 const c = @import("desktop-glib.zig");
+const App = @import("desktop-appinfo.zig").App;
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 pub const Rect = @import("desktop-askpass-view.zig").Rect;
@@ -41,9 +42,10 @@ pub const Layout = struct {
 
 pub const Item = struct {
     title: [:0]u8,
-    app: ?*c.GAppInfo = null,
+    app: ?*App = null,
     window_id: ?[:0]u8 = null,
-    icon: ?*c.GIcon = null,
+    /// The application's icon; the item's reference keeps it alive.
+    icon: ?[:0]const u8 = null,
     fallback: ?c.__icons.Image = null,
     pixels: ?c.__icons.Image = null,
     scale: u32 = 0,
@@ -52,8 +54,7 @@ pub const Item = struct {
     pub fn deinit(self: *Item, a: std.mem.Allocator) void {
         a.free(self.title);
         if (self.window_id) |id| a.free(id);
-        if (self.app) |app| c.g_object_unref(app);
-        if (self.icon) |icon| c.g_object_unref(icon);
+        if (self.app) |app| app.unref();
         if (self.fallback) |image| c.__icons.free(a, image);
         if (self.pixels) |image| c.__icons.free(a, image);
     }
@@ -64,7 +65,7 @@ pub const Item = struct {
         if (self.show_apps) {
             self.pixels = @import("desktop-icons.zig").load(a, "view-app-grid-symbolic", size, scale, @import("desktop-icons.zig").foreground);
         } else {
-            self.pixels = c.__icons.loadThemed(a, self.icon, size * scale, self.fallback, "application-x-executable");
+            self.pixels = c.__icons.loadApp(a, self.icon, size * scale, self.fallback, "application-x-executable");
         }
         self.scale = scale;
         self.size = size;
@@ -98,16 +99,13 @@ pub const View = struct {
         self.pressed = null;
         self.invalidateTooltip();
     }
-    pub fn add(self: *View, title: [:0]const u8, app: ?*c.GAppInfo, window_id: ?[*:0]const u8, fallback: ?c.__icons.Image) !void {
+    pub fn add(self: *View, title: [:0]const u8, app: ?*App, window_id: ?[*:0]const u8, fallback: ?c.__icons.Image) !void {
         const owned = try self.allocator.dupeSentinel(u8, title, 0);
         errdefer self.allocator.free(owned);
         const id = if (window_id) |value| try self.allocator.dupeSentinel(u8, std.mem.span(value), 0) else null;
         errdefer if (id) |value| self.allocator.free(value);
         try self.items.ensureUnusedCapacity(self.allocator, 1);
-        self.items.appendAssumeCapacity(.{ .title = owned, .window_id = id, .app = app, .fallback = if (fallback) |image| @import("desktop-decode.zig").clone(self.allocator, image) else null, .icon = if (app) |info| c.g_app_info_get_icon(info) else null });
-        const item = &self.items.items[self.items.items.len - 1];
-        if (item.app) |info| _ = c.g_object_ref(info);
-        if (item.icon) |icon| _ = c.g_object_ref(icon);
+        self.items.appendAssumeCapacity(.{ .title = owned, .window_id = id, .app = if (app) |info| info.ref() else null, .fallback = if (fallback) |image| @import("desktop-decode.zig").clone(self.allocator, image) else null, .icon = if (app) |info| info.icon else null });
     }
     pub fn relayout(self: *View, width: u32, height: u32) void {
         self.layout = Layout.init(width, height, self.items.items.len, self.separator);

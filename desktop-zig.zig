@@ -297,6 +297,7 @@ fn helperStatus(status: u8) void {
 // Shared production namespace for isolated protocol and lifecycle clients.
 pub const glib = @import("desktop-glib.zig");
 pub const paths = @import("desktop-paths.zig");
+pub const appinfo = @import("desktop-appinfo.zig");
 pub const capture = @import("desktop-capture.zig");
 pub const decode = @import("desktop-decode.zig");
 pub const png = @import("desktop-png.zig");

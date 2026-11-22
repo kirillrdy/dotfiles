@@ -8,6 +8,8 @@ const raster = @import("desktop-raster.zig");
 const shaping = @import("desktop-text.zig");
 const input = @import("desktop-password-entry.zig");
 const view = @import("desktop-apps-view.zig");
+pub const appinfo = @import("desktop-appinfo.zig");
+pub const App = appinfo.App;
 // Normalize before matching so composed/decomposed names and Unicode casing agree.
 pub fn fold(text: [*c]const u8) [*c]u8 {
     const lower = c.g_utf8_casefold(text, -1);
@@ -19,57 +21,8 @@ pub fn rank(name: [*c]const u8, query: [*c]const u8) u8 {
     const q = std.mem.span(query);
     return if (std.mem.startsWith(u8, n, q)) 0 else if (std.mem.indexOf(u8, n, q) != null) 1 else 2;
 }
-// GIO's terminal fallback does not consistently include Ghostty. Expand desktop
-// field codes into argv directly, preserving quoting without invoking a shell.
-pub fn terminalArgs(a: std.mem.Allocator, info: *c.GDesktopAppInfo) !std.array_list.Managed(?[*:0]const u8) {
-    const command = c.g_app_info_get_commandline(@ptrCast(info));
-    if (command == null) return error.MissingCommand;
-    var argc: c_int = 0;
-    var argv: [*c][*c]u8 = null;
-    var err: [*c]c.GError = null;
-    if (c.g_shell_parse_argv(command, &argc, &argv, &err) == 0) {
-        if (err != null) c.g_error_free(err);
-        return error.InvalidCommand;
-    }
-    defer c.g_strfreev(argv);
-    var args = std.array_list.Managed(?[*:0]const u8).init(a);
-    try args.appendSlice(&.{ "ghostty", "-e" });
-    for (argv[0..@intCast(argc)]) |argument| {
-        const text = std.mem.span(argument);
-        if (std.mem.eql(u8, text, "%i")) {
-            const icon = c.g_desktop_app_info_get_string(info, "Icon");
-            defer c.g_free(icon);
-            if (icon != null and icon[0] != 0) try args.appendSlice(&.{ "--icon", (try a.dupeSentinel(u8, std.mem.span(icon), 0)).ptr });
-            continue;
-        }
-        var expanded = std.array_list.Managed(u8).init(a);
-        var i: usize = 0;
-        while (i < text.len) : (i += 1) {
-            if (text[i] != '%') {
-                try expanded.append(text[i]);
-                continue;
-            }
-            i += 1;
-            if (i == text.len) return error.InvalidFieldCode;
-            switch (text[i]) {
-                '%' => try expanded.append('%'),
-                'c' => try expanded.appendSlice(std.mem.span(c.g_app_info_get_name(@ptrCast(info)))),
-                'k' => {
-                    const filename = c.g_desktop_app_info_get_filename(info);
-                    if (filename != null) try expanded.appendSlice(std.mem.span(filename));
-                },
-                // No files/URIs are supplied when launching from the grid.
-                'f', 'F', 'u', 'U', 'd', 'D', 'n', 'N', 'v', 'm' => {},
-                else => return error.InvalidFieldCode,
-            }
-        }
-        if (expanded.items.len > 0 or text.len == 0) try args.append((try a.dupeSentinel(u8, expanded.items, 0)).ptr);
-    }
-    try args.append(null);
-    return args;
-}
 pub const Entry = struct {
-    info: *c.GAppInfo,
+    info: *App,
     name: [*c]const u8,
     folded: [*c]u8,
     tile: view.Tile = .{},
@@ -153,7 +106,7 @@ pub const Launcher = struct {
         self.visible.clearRetainingCapacity();
         for (self.entries.items) |item| {
             item.tile.deinit(self.allocator);
-            c.g_object_unref(item.info);
+            item.info.unref();
             c.g_free(item.folded);
             self.allocator.destroy(item);
         }
@@ -163,22 +116,24 @@ pub const Launcher = struct {
         self.freeEntries();
         try self.load();
     }
-    pub fn add(self: *Launcher, info: *c.GAppInfo) !void {
-        if (c.g_app_info_should_show(info) == 0) return;
+    pub fn add(self: *Launcher, info: *App) !void {
+        if (!info.shouldShow()) return;
         const item = try self.allocator.create(Entry);
         errdefer self.allocator.destroy(item);
-        item.* = .{ .info = @ptrCast(c.g_object_ref(info)), .name = c.g_app_info_get_display_name(info), .folded = fold(c.g_app_info_get_display_name(info)) };
+        item.* = .{ .info = info.ref(), .name = info.display_name.ptr, .folded = fold(info.display_name.ptr) };
         errdefer {
-            c.g_object_unref(item.info);
+            item.info.unref();
             c.g_free(item.folded);
         }
         try self.entries.append(item);
     }
     pub fn load(self: *Launcher) !void {
-        const all = c.g_app_info_get_all();
-        defer c.g_list_free_full(all, c.g_object_unref);
-        var node = all;
-        while (node != null) : (node = node.*.next) try self.add(cast(c.GAppInfo, node.*.data));
+        const all = try appinfo.all(self.allocator);
+        defer {
+            for (all) |info| info.unref();
+            self.allocator.free(all);
+        }
+        for (all) |info| try self.add(info);
         self.refresh();
     }
     pub fn first(self: *Launcher) ?*Entry {
@@ -276,30 +231,20 @@ pub const Launcher = struct {
         self.arrow_pressed = null;
         self.redraw();
     }
-    pub fn launch(self: *Launcher, info: *c.GAppInfo) bool {
-        var err: [*c]c.GError = null;
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        var ok = false;
-        const desktop = cast(c.GDesktopAppInfo, info);
-        if (c.g_type_check_instance_is_a(cast(c.GTypeInstance, info), c.g_desktop_app_info_get_type()) != 0 and
-            c.g_desktop_app_info_get_filename(desktop) != null and c.g_desktop_app_info_get_boolean(desktop, "Terminal") != 0)
-        {
-            if (terminalArgs(arena.allocator(), desktop)) |args| {
-                const directory = c.g_desktop_app_info_get_string(desktop, "Path");
-                defer c.g_free(directory);
-                ok = c.g_spawn_async(if (directory != null and directory[0] != 0) directory else null, @ptrCast(args.items.ptr), null, c.G_SPAWN_SEARCH_PATH, null, null, null, &err) != 0;
-            } else |_| {}
-        } else {
-            ok = c.g_app_info_launch(info, null, null, &err) != 0;
-        }
-        if (ok) {
-            self.hide();
-        } else {
-            self.setMessage(if (err != null) std.mem.span(err.*.message) else "Could not launch application");
-        }
-        if (err != null) c.g_error_free(err);
-        return ok;
+    pub fn launch(self: *Launcher, info: *App) bool {
+        info.launch(self.allocator) catch |err| {
+            var buffer: [512]u8 = undefined;
+            const reason: []const u8 = switch (err) {
+                error.FileNotFound => "No such file or directory",
+                error.AccessDenied => "Permission denied",
+                error.InvalidCommand, error.EmptyCommand, error.MissingCommand => "Invalid command line",
+                else => @errorName(err),
+            };
+            self.setMessage(std.fmt.bufPrint(&buffer, "Could not launch “{s}”: {s}", .{ info.display_name, reason }) catch "Could not launch application");
+            return false;
+        };
+        self.hide();
+        return true;
     }
 };
 fn inputChanged(data: ?*anyopaque) void {
@@ -525,7 +470,7 @@ pub fn paint(l: *Launcher, part: Part, target: raster.Buffer, scale: u32) void {
                     const item = l.visible.items[i];
                     const focused = !l.search_focus and @min(l.selected, sg.shown - 1) == i;
                     const selected = l.search_focus and i == 0;
-                    item.tile.paint(l.allocator, canvas, scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), sg.tile(i), sg.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
+                    item.tile.paint(l.allocator, canvas, scale, &l.renderer, item.name, item.info.icon, sg.tile(i), sg.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
                 }
             }
         } else {
@@ -538,7 +483,7 @@ pub fn paint(l: *Launcher, part: Part, target: raster.Buffer, scale: u32) void {
                 // GNOME marks the default search result selected while the entry
                 // retains focus; the keyboard focus ring belongs to the grid only.
                 const selected = l.search_focus and l.query[0] != 0 and l.selected == i;
-                item.tile.paint(l.allocator, canvas, scale, &l.renderer, item.name, c.g_app_info_get_icon(item.info), l.geometry.tile(i - start), l.geometry.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
+                item.tile.paint(l.allocator, canvas, scale, &l.renderer, item.name, item.info.icon, l.geometry.tile(i - start), l.geometry.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
             }
             view.paintPages(canvas, l.geometry, l.page, l.pageCount(), l.arrow_hover, l.arrow_pressed);
         }
@@ -830,14 +775,11 @@ test "overview search navigates results from the end of the query" {
     launcher.bind();
     launcher.overview_search = true;
     for (0..3) |index| {
-        const keyfile = c.g_key_file_new();
-        defer c.g_key_file_unref(keyfile);
         var buffer: [128]u8 = undefined;
         const source = try std.fmt.bufPrint(&buffer, "[Desktop Entry]\nType=Application\nName=Editor {d}\nExec=true\n", .{index});
-        try std.testing.expect(c.g_key_file_load_from_data(keyfile, source.ptr, source.len, 0, null) != 0);
-        const info = c.g_desktop_app_info_new_from_keyfile(keyfile) orelse return error.AppInfoCreationFailed;
-        defer c.g_object_unref(info);
-        try launcher.add(@ptrCast(info));
+        const info = (try App.parse(std.testing.allocator, source, "", null)) orelse return error.AppInfoCreationFailed;
+        defer info.unref();
+        try launcher.add(info);
     }
     try launcher.setSearch("Editor");
     try std.testing.expectEqual(@as(usize, 3), launcher.visible.items.len);

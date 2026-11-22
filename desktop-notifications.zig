@@ -290,13 +290,10 @@ const Server = struct {
         notice.resident = hintBool(hints, "resident");
         if (hintString(hints, "desktop-entry")) |entry| {
             const id = try std.fmt.allocPrintSentinel(a, "{s}.desktop", .{entry}, 0);
-            if (c.g_desktop_app_info_new(id)) |info| {
-                defer c.g_object_unref(info);
-                notice.app = try a.dupeSentinel(u8, std.mem.span(c.g_app_info_get_display_name(@ptrCast(info))), 0);
-                if (c.g_desktop_app_info_get_string(info, "Icon")) |icon| {
-                    defer c.g_free(icon);
-                    notice.icon = try a.dupeSentinel(u8, std.mem.span(icon), 0);
-                }
+            if (@import("desktop-appinfo.zig").lookup(self.allocator, id)) |info| {
+                defer info.unref();
+                notice.app = try a.dupeSentinel(u8, info.display_name, 0);
+                if (info.icon_value) |icon| notice.icon = try a.dupeSentinel(u8, icon, 0);
             }
         }
         notice.image = imageHint(self.allocator, hints);

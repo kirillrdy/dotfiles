@@ -12,14 +12,11 @@ pub fn main(init: std.process.Init) !void {
         .{ .title = "Files", .icon = "system-file-manager" },
         .{ .title = "Browser", .icon = "web-browser" },
     }, 0..) |fixture, i| {
-        const key = c.g_key_file_new();
-        defer c.g_key_file_unref(key);
-        const source = try std.fmt.allocPrintSentinel(std.heap.page_allocator, "[Desktop Entry]\nType=Application\nName={s}\nExec=true\nIcon={s}\n", .{ fixture.title, fixture.icon }, 0);
+        const source = try std.fmt.allocPrint(std.heap.page_allocator, "[Desktop Entry]\nType=Application\nName={s}\nExec=true\nIcon={s}\n", .{ fixture.title, fixture.icon });
         defer std.heap.page_allocator.free(source);
-        try std.testing.expect(c.g_key_file_load_from_data(key, source, source.len, 0, null) != 0);
-        const app = c.g_desktop_app_info_new_from_keyfile(key).?;
-        defer c.g_object_unref(app);
-        try view.add(fixture.title, @ptrCast(app), if (i == 0) "terminal-id" else null, null);
+        const app = (try @import("desktop").appinfo.App.parse(std.heap.page_allocator, source, "", null)).?;
+        defer app.unref();
+        try view.add(fixture.title, app, if (i == 0) "terminal-id" else null, null);
     }
     try view.add("Show Applications", null, null, null);
     view.items.items[3].show_apps = true;

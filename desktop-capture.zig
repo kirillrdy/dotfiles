@@ -354,11 +354,10 @@ fn appId(w: *Window, value: [:0]const u8) void {
     w.icon = null;
     var filename: [1024]u8 = undefined;
     const path = std.fmt.bufPrintSentinel(&filename, "{s}.desktop", .{value}, 0) catch return;
-    var info = c.g_desktop_app_info_new(path);
-    if (info == null) info = c.g_desktop_app_info_new(value.ptr);
-    defer if (info != null) c.g_object_unref(info);
-    const icon = if (info != null) c.g_app_info_get_icon(@ptrCast(info)) else null;
-    w.icon = c.__icons.loadThemed(w.client.allocator, icon, 128, null, "application-x-executable");
+    const appinfo = @import("desktop-appinfo.zig");
+    const info = appinfo.lookup(w.client.allocator, path) orelse appinfo.lookup(w.client.allocator, value);
+    defer if (info) |app| app.unref();
+    w.icon = c.__icons.loadApp(w.client.allocator, if (info) |app| app.icon else null, 128, null, "application-x-executable");
 }
 fn workspace(self: *Client, index: u32, name: [:0]const u8, active: u32) void {
     if (index >= self.workspaces.len) return;

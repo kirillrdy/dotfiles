@@ -100,10 +100,6 @@ pub extern fn g_strfreev(str_array: [*c][*c]gchar) void;
 pub const struct__GKeyFile = opaque {};
 
 pub const GKeyFile = struct__GKeyFile;
-pub const GKeyFileFlags = c_uint;
-pub extern fn g_key_file_new() ?*GKeyFile;
-pub extern fn g_key_file_unref(key_file: ?*GKeyFile) void;
-pub extern fn g_key_file_load_from_data(key_file: ?*GKeyFile, data: [*c]const gchar, length: gsize, flags: GKeyFileFlags, @"error": [*c][*c]GError) gboolean;
 pub const struct__GVariantType = opaque {};
 
 pub const GVariantType = struct__GVariantType;
@@ -115,7 +111,6 @@ pub extern fn g_print(format: [*c]const gchar, ...) void;
 pub extern fn g_shell_quote(unquoted_string: [*c]const gchar) [*c]gchar;
 pub extern fn g_shell_parse_argv(command_line: [*c]const gchar, argcp: [*c]gint, argvp: [*c][*c][*c]gchar, @"error": [*c][*c]GError) gboolean;
 pub const GSpawnChildSetupFunc = ?*const fn (data: gpointer) callconv(.c) void;
-pub const G_SPAWN_SEARCH_PATH: c_int = 4;
 pub const GSpawnFlags = c_uint;
 pub extern fn g_spawn_async(working_directory: [*c]const gchar, argv: [*c][*c]gchar, envp: [*c][*c]gchar, flags: GSpawnFlags, child_setup: GSpawnChildSetupFunc, user_data: gpointer, child_pid: [*c]GPid, @"error": [*c][*c]GError) gboolean;
 pub extern fn g_spawn_command_line_async(command_line: [*c]const gchar, @"error": [*c][*c]GError) gboolean;
@@ -156,7 +151,6 @@ pub const GClassInitFunc = ?*const fn (g_class: gpointer, class_data: gpointer) 
 pub const GInstanceInitFunc = ?*const fn (instance: [*c]GTypeInstance, g_class: gpointer) callconv(.c) void;
 pub const GTypeFlags = c_uint;
 pub extern fn g_type_register_static_simple(parent_type: GType, type_name: [*c]const gchar, class_size: guint, class_init: GClassInitFunc, instance_size: guint, instance_init: GInstanceInitFunc, flags: GTypeFlags) GType;
-pub extern fn g_type_check_instance_is_a(instance: [*c]GTypeInstance, iface_type: GType) gboolean;
 pub const GParamFlags = c_int;
 
 pub const struct__GParamSpec = extern struct {
@@ -246,16 +240,7 @@ pub const GAppInfo = struct__GAppInfo;
 pub const struct__GAsyncResult = opaque {};
 
 pub const GAsyncResult = struct__GAsyncResult;
-pub const struct__GInputStreamPrivate = opaque {};
 
-pub const GInputStreamPrivate = struct__GInputStreamPrivate;
-
-pub const struct__GInputStream = extern struct {
-    parent_instance: GObject = @import("std").mem.zeroes(GObject),
-    priv: ?*GInputStreamPrivate = null,
-};
-
-pub const GInputStream = struct__GInputStream;
 pub const struct__GCancellablePrivate = opaque {};
 
 pub const GCancellablePrivate = struct__GCancellablePrivate;
@@ -290,7 +275,6 @@ pub extern fn g_app_info_get_display_name(appinfo: ?*GAppInfo) [*c]const u8;
 pub extern fn g_app_info_get_commandline(appinfo: ?*GAppInfo) [*c]const u8;
 pub extern fn g_app_info_get_icon(appinfo: ?*GAppInfo) ?*GIcon;
 pub extern fn g_app_info_get_id(appinfo: ?*GAppInfo) [*c]const gchar;
-pub extern fn g_app_info_launch(appinfo: ?*GAppInfo, files: [*c]GList, context: [*c]GAppLaunchContext, @"error": [*c][*c]GError) gboolean;
 pub extern fn g_app_info_should_show(appinfo: ?*GAppInfo) gboolean;
 pub extern fn g_app_info_get_all() [*c]GList;
 pub extern fn g_cancellable_new() [*c]GCancellable;
@@ -319,12 +303,8 @@ pub extern fn g_task_propagate_boolean(task: ?*GTask, @"error": [*c][*c]GError) 
 pub const struct__GDesktopAppInfo = opaque {};
 
 pub const GDesktopAppInfo = struct__GDesktopAppInfo;
-pub extern fn g_desktop_app_info_get_type() GType;
-pub extern fn g_desktop_app_info_new_from_keyfile(key_file: ?*GKeyFile) ?*GDesktopAppInfo;
 pub extern fn g_desktop_app_info_get_filename(info: ?*GDesktopAppInfo) [*c]const u8;
 pub extern fn g_desktop_app_info_new(desktop_id: [*c]const u8) ?*GDesktopAppInfo;
-pub extern fn g_desktop_app_info_get_string(info: ?*GDesktopAppInfo, key: [*c]const u8) [*c]u8;
-pub extern fn g_desktop_app_info_get_boolean(info: ?*GDesktopAppInfo, key: [*c]const u8) gboolean;
 
 pub extern fn g_unix_signal_add(signum: gint, handler: GSourceFunc, user_data: gpointer) guint;
 pub const GUnixFDSourceFunc = ?*const fn (fd: gint, condition: GIOCondition, user_data: gpointer) callconv(.c) gboolean;
@@ -370,7 +350,7 @@ pub const GAppLaunchContextClass = extern struct {
 
 pub const __icons = struct {
     pub const load = @import("desktop-icons.zig").load;
-    pub const loadThemed = @import("desktop-icons.zig").loadThemed;
+    pub const loadApp = @import("desktop-icons.zig").loadApp;
     pub const Image = @import("desktop-decode.zig").Image;
     pub const free = @import("desktop-decode.zig").free;
 };

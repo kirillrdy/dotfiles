@@ -121,11 +121,11 @@ pub const Tile = struct {
         if (self.image) |image| c.__icons.free(a, image);
         self.* = .{};
     }
-    pub fn paint(self: *Tile, a: std.mem.Allocator, canvas: raster.Canvas, scale: u32, renderer: *text.Renderer, name: [*c]const u8, icon: ?*c.GIcon, rect: Rect, size: u32, hover: bool, focused: bool, selected: bool, pressed: bool) !void {
+    pub fn paint(self: *Tile, a: std.mem.Allocator, canvas: raster.Canvas, scale: u32, renderer: *text.Renderer, name: [*c]const u8, icon: ?[:0]const u8, rect: Rect, size: u32, hover: bool, focused: bool, selected: bool, pressed: bool) !void {
         if (self.scale != scale or self.size != size) {
             self.deinit(a);
             self.mask = try renderer.renderLayout(a, std.mem.span(name), .{ .size = 14.6666666667 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat((rect.width - 24) * canvas.scale), .alignment = .center, .ellipsize = true, .origin = .top });
-            self.image = c.__icons.loadThemed(a, icon, size * scale, null, "application-x-executable");
+            self.image = c.__icons.loadApp(a, icon, size * scale, null, "application-x-executable");
             self.scale = scale;
             self.size = size;
         }

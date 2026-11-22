@@ -6,14 +6,6 @@ const files = @import("desktop-paths.zig");
 const Image = decode.Image;
 const Color = @import("desktop-raster.zig").Color;
 extern "c" fn access([*:0]const u8, c_int) c_int;
-extern "c" fn g_themed_icon_get_type() c.GType;
-extern "c" fn g_themed_icon_get_names(*c.GIcon) [*:null]?[*:0]const u8;
-extern "c" fn g_file_icon_get_type() c.GType;
-extern "c" fn g_file_icon_get_file(*c.GIcon) *c.GFile;
-extern "c" fn g_file_get_path(*c.GFile) ?[*:0]u8;
-extern "c" fn g_loadable_icon_get_type() c.GType;
-extern "c" fn g_loadable_icon_load(*c.GIcon, c_int, ?*?[*:0]u8, ?*c.GCancellable, ?*?*c.GError) ?*c.GInputStream;
-extern "c" fn g_icon_new_for_string([*:0]const u8, ?*?*c.GError) ?*c.GIcon;
 
 pub const white: Color = .{ .red = 1, .green = 1, .blue = 1, .alpha = 1 };
 pub const foreground: Color = .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0, .alpha = 1 };
@@ -318,27 +310,24 @@ fn loadPath(a: std.mem.Allocator, path: [:0]const u8, physical: u32, tint: ?Colo
     return decode.file(a, path, physical);
 }
 
-/// Loads a GIcon, falling back to a copy of `fallback` or then a named icon.
-pub fn loadThemed(a: std.mem.Allocator, icon: ?*c.GIcon, size: u32, fallback: ?Image, fallback_name: ?[:0]const u8) ?Image {
+/// Loads an application icon, given as a desktop entry's Icon names it: an
+/// absolute path or a theme name. Falls back to a copy of `fallback`, then to
+/// a named icon.
+pub fn loadApp(a: std.mem.Allocator, icon: ?[:0]const u8, size: u32, fallback: ?Image, fallback_name: ?[:0]const u8) ?Image {
     if (size == 0) return null;
-    if (icon) |value| {
-        if (c.g_type_check_instance_is_a(@ptrCast(@alignCast(value)), g_themed_icon_get_type()) != 0) {
-            const names = g_themed_icon_get_names(value);
-            var i: usize = 0;
-            while (names[i]) |name| : (i += 1) if (load(a, std.mem.span(name), size, 1, foreground)) |image| return image;
-        } else if (c.g_type_check_instance_is_a(@ptrCast(@alignCast(value)), g_file_icon_get_type()) != 0) {
-            if (g_file_get_path(g_file_icon_get_file(value))) |path| {
-                defer c.g_free(path);
-                if (load(a, std.mem.span(path), size, 1, foreground)) |image| return image;
-            }
+    if (icon) |value| if (value.len > 0) {
+        if (load(a, value, size, 1, foreground)) |image| return image;
+        // Like GThemedIcon, also try the symbolic variant of a name, or the full-color one of a symbolic name.
+        if (!std.fs.path.isAbsolute(value)) {
+            var buffer: [256]u8 = undefined;
+            const suffix = "-symbolic";
+            const variant = if (std.mem.endsWith(u8, value, suffix))
+                std.fmt.bufPrintSentinel(&buffer, "{s}", .{value[0 .. value.len - suffix.len]}, 0) catch null
+            else
+                std.fmt.bufPrintSentinel(&buffer, "{s}{s}", .{ value, suffix }, 0) catch null;
+            if (variant) |name| if (load(a, name, size, 1, foreground)) |image| return image;
         }
-        if (c.g_type_check_instance_is_a(@ptrCast(@alignCast(value)), g_loadable_icon_get_type()) != 0) {
-            if (g_loadable_icon_load(value, @intCast(size), null, null, null)) |stream| {
-                defer c.g_object_unref(stream);
-                if (decode.stream(a, stream, size)) |image| return image;
-            }
-        }
-    }
+    };
     if (fallback) |image| return decode.clone(a, image);
     if (fallback_name) |name| return load(a, name, size, 1, null);
     return null;
@@ -501,7 +490,7 @@ test "symbolic SVG icons use the GTK palette, opacity and scale" {
     }
 }
 
-test "symbolic PNG palettes and file GIcons decode to premultiplied images" {
+test "symbolic PNG palettes and icon files decode to premultiplied images" {
     var fixture = try Fixture.init();
     defer fixture.deinit();
     const palette = [_]u32{ 0xff000000, 0xffff0000, 0xff00ff00, 0x80000080 };
@@ -513,9 +502,7 @@ test "symbolic PNG palettes and file GIcons decode to premultiplied images" {
     const tinted = load(std.testing.allocator, path, 4, 1, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.5 }) orelse return error.IconDecode;
     defer decode.free(std.testing.allocator, tinted);
     try std.testing.expectEqualSlices(u32, &.{ premultiplied(0xffffff, 127), premultiplied(0x4d9905, 127), premultiplied(0xf4783d, 127), premultiplied(0xcb0000, 63) }, std.mem.bytesAsSlice(u32, tinted.pixels));
-    const icon = g_icon_new_for_string(path, null) orelse return error.InvalidIcon;
-    defer c.g_object_unref(icon);
-    const loaded = loadThemed(std.testing.allocator, icon, 8, null, null) orelse return error.IconDecode;
+    const loaded = loadApp(std.testing.allocator, path, 8, null, null) orelse return error.IconDecode;
     defer decode.free(std.testing.allocator, loaded);
     try std.testing.expectEqual(@as(u32, 8), loaded.width);
     try std.testing.expectEqual(@as(u32, 2), loaded.height);

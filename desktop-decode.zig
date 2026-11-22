@@ -1,7 +1,6 @@
 //! The desktop's only image decoder. PNG and SVG are decoded in Zig and
 //! painted into owned premultiplied ARGB images. Release results with `free`.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
 const png = @import("desktop-png.zig");
 const svg = @import("desktop-svg.zig");
 const vec = @import("desktop-path.zig");
@@ -94,25 +93,6 @@ pub fn file(allocator: std.mem.Allocator, path: [*:0]const u8, size: ?u32) ?Imag
     defer allocator.free(data);
     return bytes(allocator, data, size);
 }
-
-/// Decodes a PNG or SVG stream scaled to fit a `size` square.
-pub fn stream(allocator: std.mem.Allocator, input: *c.GInputStream, size: u32) ?Image {
-    var data: std.ArrayList(u8) = .empty;
-    defer data.deinit(allocator);
-    while (true) {
-        data.ensureUnusedCapacity(allocator, 64 << 10) catch return null;
-        const unused = data.unusedCapacitySlice();
-        const read_len = api.g_input_stream_read(input, unused.ptr, unused.len, null, null);
-        if (read_len < 0) return null;
-        if (read_len == 0) break;
-        data.items.len += @intCast(read_len);
-        if (data.items.len > max_encoded) return null;
-    }
-    return bytes(allocator, data.items, size);
-}
-pub const api = struct {
-    pub extern fn g_input_stream_read(?*c.GInputStream, ?*anyopaque, c.gsize, [*c]c.GCancellable, [*c][*c]c.GError) c.gssize;
-};
 
 /// Reads the natural dimensions of encoded PNG or SVG bytes.
 pub fn dimensions(allocator: std.mem.Allocator, data: []const u8) ?[2]u32 {

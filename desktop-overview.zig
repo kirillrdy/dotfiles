@@ -4,6 +4,7 @@ const std = @import("std");
 const decode = @import("desktop-decode.zig");
 const Image = decode.Image;
 const apps = @import("desktop-apps.zig");
+const appinfo = @import("desktop-appinfo.zig");
 const capture = @import("desktop-capture.zig");
 const native_dash = @import("desktop-dash-view.zig");
 const raster = @import("desktop-raster.zig");
@@ -233,14 +234,14 @@ const Overview = struct {
             favorites = owned;
         }
         for (favorites) |id| {
-            const info = c.g_desktop_app_info_new(id.ptr) orelse continue;
-            defer c.g_object_unref(info);
+            const info = appinfo.lookup(self.allocator, id) orelse continue;
+            defer info.unref();
             var running: ?*capture.Window = null;
             if (self.client) |client| for (client.windows.items) |window| if (matchesApp(window.app_id, id.ptr)) {
                 running = window;
                 break;
             };
-            self.appendDash(@ptrCast(info), running);
+            self.appendDash(info, running);
         }
         var separated = favorites.len == 0;
         if (self.client) |client| for (client.windows.items, 0..) |window, i| {
@@ -266,15 +267,15 @@ const Overview = struct {
         self.dash_view.relayout(@intCast(@max(1, self.monitor.width)), @intCast(@max(1, self.monitor.height)));
         self.redrawSelf();
     }
-    fn appendDash(self: *Overview, info: ?*c.GAppInfo, window: ?*capture.Window) void {
+    fn appendDash(self: *Overview, info: ?*appinfo.App, window: ?*capture.Window) void {
         var app = info;
         if (app == null) if (window) |w| {
-            for (self.launcher.entries.items) |candidate| if (matchesApp(w.app_id, c.g_app_info_get_id(candidate.info))) {
+            for (self.launcher.entries.items) |candidate| if (candidate.info.id.len > 0 and matchesApp(w.app_id, candidate.info.id.ptr)) {
                 app = candidate.info;
                 break;
             };
         };
-        const title: [*c]const u8 = if (app) |application| c.g_app_info_get_display_name(application) else if (window) |w| w.title else "Application";
+        const title: [*c]const u8 = if (app) |application| application.display_name.ptr else if (window) |w| w.title else "Application";
         self.dash_view.add(std.mem.span(title), app, if (window) |w| @ptrCast(w.id) else null, if (window) |w| w.icon else null) catch @panic("out of memory");
     }
     fn hideTooltip(self: *Overview) void {
