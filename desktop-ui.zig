@@ -8,6 +8,11 @@ pub fn cast(comptime T: type, ptr: anytype) *T {
 }
 const util = @import("desktop-util.zig");
 pub const eq = util.eq;
+/// Equality of optional C strings, as g_strcmp0 == 0: two nulls are equal.
+pub fn strEql(left: [*c]const u8, right: [*c]const u8) bool {
+    if (left == null or right == null) return left == right;
+    return std.mem.orderZ(u8, left, right) == .eq;
+}
 pub const monotonicTime = util.monotonicTime;
 pub const realTime = util.realTime;
 pub const getenv = std.c.getenv;

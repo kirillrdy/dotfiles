@@ -461,7 +461,7 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
         update_power(m);
         m.power_timer = c.g_timeout_add_seconds(2, &refresh_power, m);
         connect_session(m);
-    } else if (c.g_strcmp0(options.kind.ptr, "clock") == 0) {
+    } else if (c.__zig.strEql(options.kind.ptr, "clock")) {
         make_calendar(m);
         connect_session(m);
         _ = update_clock(@as(c.gpointer, @ptrCast(m)));

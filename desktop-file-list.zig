@@ -7,7 +7,6 @@ const c = @import("desktop-glib.zig");
 const paths = @import("desktop-paths.zig");
 const mime = @import("desktop-mime.zig");
 const cast = c.__zig.cast;
-extern fn g_utf8_collate_key_for_filename([*:0]const u8, isize) [*:0]u8;
 
 pub const Entry = struct {
     name: [:0]const u8,
@@ -138,8 +137,6 @@ pub const Scan = struct {
                 if (linux.errno(linux.statx(linux.AT.FDCWD, full, linux.AT.SYMLINK_NOFOLLOW, mask, &info)) != .SUCCESS) continue;
             }
             const label = try displayName(a, item.name);
-            const key = g_utf8_collate_key_for_filename(label, -1);
-            defer c.g_free(key);
             try self.entries.append(a, .{
                 .name = item.name,
                 .label = label,
@@ -148,7 +145,7 @@ pub const Scan = struct {
                 .hidden = item.name[0] == '.' or listed(hidden_list, item.name),
                 .size = info.size,
                 .modified = @intCast(@max(0, info.mtime.sec)),
-                .sort_key = try a.dupeSentinel(u8, std.mem.span(key), 0),
+                .sort_key = try @import("desktop-unicode.zig").collateKeyForFilename(a, label),
             });
         }
     }

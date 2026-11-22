@@ -409,13 +409,7 @@ pub const Dialog = struct {
         if (entry.hidden and !self.ui.get(self.hidden_item).checked) return false;
         if (self.directory and !entry.directory) return false;
         const query = self.ui.get(self.view.query).value();
-        if (query.len > 0) {
-            const needle = c.g_utf8_casefold(query, -1);
-            defer c.g_free(needle);
-            const name = c.g_utf8_casefold(entry.label, -1);
-            defer c.g_free(name);
-            if (std.mem.indexOf(u8, std.mem.span(name), std.mem.span(needle)) == null) return false;
-        }
+        if (!@import("desktop-unicode.zig").containsCaseless(entry.label, query)) return false;
         return files.matches(entry, if (self.currentFilter()) |filter| filter.rules else &.{});
     }
     fn rebuildRows(self: *Dialog) !void {

@@ -1,0 +1,367 @@
+//! Unicode text operations in Zig with GLib's semantics: case folding
+//! (g_utf8_casefold), NFKC normalization (g_utf8_normalize with
+//! G_NORMALIZE_ALL_COMPOSE), and collation as GLib performs it in the C locale
+//! the desktop runs in (g_utf8_collate, g_utf8_collate_key_for_filename).
+//! Tables come from the Unicode Character Database at build time.
+const std = @import("std");
+const tables = @import("unicode-tables");
+
+fn find(comptime T: type, items: []const T, cp: u21) ?T {
+    var low: usize = 0;
+    var high: usize = items.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        if (items[mid].cp == cp) return items[mid];
+        if (items[mid].cp < cp) low = mid + 1 else high = mid;
+    }
+    return null;
+}
+
+pub fn toLower(cp: u21) u21 {
+    return if (find(tables.Mapping, &tables.lower, cp)) |entry| entry.to else cp;
+}
+
+pub fn combiningClass(cp: u21) u8 {
+    return if (find(tables.Class, &tables.classes, cp)) |entry| entry.class else 0;
+}
+
+/// Decodes UTF-8, replacing invalid sequences with U+FFFD.
+fn decode(a: std.mem.Allocator, text: []const u8) ![]u21 {
+    var out: std.ArrayList(u21) = .empty;
+    var i: usize = 0;
+    while (i < text.len) {
+        const length = std.unicode.utf8ByteSequenceLength(text[i]) catch 0;
+        if (length > 0 and i + length <= text.len) {
+            if (std.unicode.utf8Decode(text[i .. i + length])) |cp| {
+                try out.append(a, cp);
+                i += length;
+                continue;
+            } else |_| {}
+        }
+        try out.append(a, 0xFFFD);
+        i += 1;
+    }
+    return out.toOwnedSlice(a);
+}
+
+fn encode(a: std.mem.Allocator, chars: []const u21) ![:0]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (chars) |cp| {
+        var buffer: [4]u8 = undefined;
+        const length = std.unicode.utf8Encode(cp, &buffer) catch {
+            try out.appendSlice(a, "\u{FFFD}");
+            continue;
+        };
+        try out.appendSlice(a, buffer[0..length]);
+    }
+    return out.toOwnedSliceSentinel(a, 0);
+}
+
+/// Full case folding for caseless matching, as g_utf8_casefold.
+pub fn casefold(a: std.mem.Allocator, text: []const u8) ![:0]u8 {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const chars = try decode(arena.allocator(), text);
+    var out: std.ArrayList(u21) = .empty;
+    for (chars) |cp| {
+        if (find(tables.Expansion, &tables.folds, cp)) |fold| {
+            try out.appendSlice(arena.allocator(), tables.data[fold.start..][0..fold.len]);
+        } else try out.append(arena.allocator(), toLower(cp));
+    }
+    return encode(a, out.items);
+}
+
+const hangul = struct {
+    const s_base = 0xAC00;
+    const l_base = 0x1100;
+    const v_base = 0x1161;
+    const t_base = 0x11A7;
+    const l_count = 19;
+    const v_count = 21;
+    const t_count = 28;
+    const n_count = v_count * t_count;
+    const s_count = l_count * n_count;
+};
+
+fn decomposeInto(a: std.mem.Allocator, out: *std.ArrayList(u21), cp: u21, compat: bool) !void {
+    if (cp >= hangul.s_base and cp < hangul.s_base + hangul.s_count) {
+        const index = cp - hangul.s_base;
+        try out.append(a, hangul.l_base + index / hangul.n_count);
+        try out.append(a, hangul.v_base + (index % hangul.n_count) / hangul.t_count);
+        const t = index % hangul.t_count;
+        if (t != 0) try out.append(a, hangul.t_base + t);
+        return;
+    }
+    if (find(tables.Expansion, &tables.decompositions, cp)) |entry| if (compat or !entry.compat) {
+        for (tables.data[entry.start..][0..entry.len]) |part| try decomposeInto(a, out, part, compat);
+        return;
+    };
+    try out.append(a, cp);
+}
+
+/// Stable reordering of combining marks by class, as the canonical ordering algorithm.
+fn canonicalOrder(chars: []u21) void {
+    var i: usize = 0;
+    while (i < chars.len) {
+        if (combiningClass(chars[i]) == 0) {
+            i += 1;
+            continue;
+        }
+        var end = i;
+        while (end < chars.len and combiningClass(chars[end]) != 0) end += 1;
+        std.sort.insertion(u21, chars[i..end], {}, struct {
+            fn less(_: void, x: u21, y: u21) bool {
+                return combiningClass(x) < combiningClass(y);
+            }
+        }.less);
+        i = end;
+    }
+}
+
+fn compose(first: u21, second: u21) ?u21 {
+    // Hangul LV and LVT syllables compose algorithmically.
+    if (first >= hangul.l_base and first < hangul.l_base + hangul.l_count and second >= hangul.v_base and second < hangul.v_base + hangul.v_count)
+        return hangul.s_base + ((first - hangul.l_base) * hangul.v_count + (second - hangul.v_base)) * hangul.t_count;
+    if (first >= hangul.s_base and first < hangul.s_base + hangul.s_count and (first - hangul.s_base) % hangul.t_count == 0 and second > hangul.t_base and second < hangul.t_base + hangul.t_count)
+        return first + (second - hangul.t_base);
+    var low: usize = 0;
+    var high: usize = tables.compositions.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        const entry = tables.compositions[mid];
+        if (entry.first == first and entry.second == second) return entry.composed;
+        if (entry.first < first or (entry.first == first and entry.second < second)) low = mid + 1 else high = mid;
+    }
+    return null;
+}
+
+/// NFKC, as g_utf8_normalize with G_NORMALIZE_ALL_COMPOSE.
+pub fn normalize(a: std.mem.Allocator, text: []const u8) ![:0]u8 {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    return encode(a, try nfkc(arena.allocator(), try decode(arena.allocator(), text)));
+}
+
+fn nfkc(a: std.mem.Allocator, chars: []const u21) ![]u21 {
+    var decomposed: std.ArrayList(u21) = .empty;
+    for (chars) |cp| try decomposeInto(a, &decomposed, cp, true);
+    const buffer = decomposed.items;
+    canonicalOrder(buffer);
+    // GLib's composition: a character joins the last starter unless a mark
+    // of the same or higher class lies between them.
+    var n = buffer.len;
+    var last_start: usize = 0;
+    var last_class: u8 = 0;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const class = combiningClass(buffer[i]);
+        if (i > 0 and (last_class == 0 or last_class < class)) if (compose(buffer[last_start], buffer[i])) |composed| {
+            buffer[last_start] = composed;
+            std.mem.copyForwards(u21, buffer[i .. n - 1], buffer[i + 1 .. n]);
+            n -= 1;
+            i -= 1;
+            last_class = if (i == last_start) 0 else combiningClass(buffer[i]);
+            continue;
+        };
+        if (class == 0) last_start = i;
+        last_class = class;
+    }
+    return buffer[0..n];
+}
+
+/// Whether `needle` occurs in `haystack` ignoring case, comparing their case foldings.
+pub fn containsCaseless(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    const a = std.heap.smp_allocator;
+    const folded_haystack = casefold(a, haystack) catch return false;
+    defer a.free(folded_haystack);
+    const folded_needle = casefold(a, needle) catch return false;
+    defer a.free(folded_needle);
+    return std.mem.indexOf(u8, folded_haystack, folded_needle) != null;
+}
+
+/// g_utf8_collate in the C locale: NFKC forms compared by code point.
+pub fn collate(a: std.mem.Allocator, left: []const u8, right: []const u8) !std.math.Order {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const x = try nfkc(arena.allocator(), try decode(arena.allocator(), left));
+    const y = try nfkc(arena.allocator(), try decode(arena.allocator(), right));
+    return std.mem.order(u21, x, y);
+}
+
+/// g_utf8_collate_key in the C locale: the NFKC form, whose bytes order as its code points.
+pub fn collateKey(a: std.mem.Allocator, text: []const u8) ![:0]u8 {
+    return normalize(a, text);
+}
+
+/// g_utf8_collate_key_for_filename: dots sort first and digit runs sort by
+/// value, so "file10" follows "file9"; leading zeros break ties at the end.
+pub fn collateKeyForFilename(a: std.mem.Allocator, text: []const u8) ![:0]u8 {
+    const sentinel = "\x01\x01\x01";
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(a);
+    var append: std.ArrayList(u8) = .empty;
+    defer append.deinit(a);
+    var prev: usize = 0;
+    var p: usize = 0;
+    while (p < text.len) : (p += 1) {
+        switch (text[p]) {
+            '.' => {
+                if (prev != p) try appendKey(a, &result, text[prev..p]);
+                try result.appendSlice(a, sentinel ++ "\x01");
+                prev = p + 1;
+            },
+            '0'...'9' => {
+                if (prev != p) try appendKey(a, &result, text[prev..p]);
+                try result.appendSlice(a, sentinel ++ "\x02");
+                prev = p;
+                var leading_zeros: usize = undefined;
+                var digits: usize = undefined;
+                if (text[p] == '0') {
+                    leading_zeros = 1;
+                    digits = 0;
+                } else {
+                    leading_zeros = 0;
+                    digits = 1;
+                }
+                while (true) {
+                    p += 1;
+                    if (p >= text.len) break;
+                    if (text[p] == '0' and digits == 0) {
+                        leading_zeros += 1;
+                    } else if (std.ascii.isDigit(text[p])) {
+                        digits += 1;
+                    } else {
+                        // An all-zero run counts as one digit plus leading zeros.
+                        if (digits == 0) {
+                            digits += 1;
+                            leading_zeros -= 1;
+                        }
+                        break;
+                    }
+                }
+                while (digits > 1) : (digits -= 1) try result.append(a, ':');
+                // The count of leading zeros breaks ties after everything else.
+                if (leading_zeros > 0) {
+                    try append.append(a, @truncate(leading_zeros));
+                    prev += leading_zeros;
+                }
+                try result.appendSlice(a, text[prev..p]);
+                prev = p;
+                p -= 1;
+            },
+            else => {},
+        }
+    }
+    if (prev != p) try appendKey(a, &result, text[prev..p]);
+    try result.appendSlice(a, append.items);
+    return result.toOwnedSliceSentinel(a, 0);
+}
+
+fn appendKey(a: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
+    const key = try collateKey(a, text);
+    defer a.free(key);
+    try out.appendSlice(a, key);
+}
+
+const glib = struct {
+    extern fn g_utf8_casefold(str: [*]const u8, len: isize) [*:0]u8;
+    extern fn g_utf8_normalize(str: [*]const u8, len: isize, mode: c_int) ?[*:0]u8;
+    extern fn g_utf8_collate(str1: [*:0]const u8, str2: [*:0]const u8) c_int;
+    extern fn g_utf8_collate_key_for_filename(str: [*]const u8, len: isize) [*:0]u8;
+    extern fn g_free(mem: ?*anyopaque) void;
+    const normalize_all_compose = 3;
+};
+
+test "case folding and NFKC match GLib for every code point" {
+    const a = std.testing.allocator;
+    var buffer: [4]u8 = undefined;
+    var cp: u21 = 1;
+    while (cp <= 0x10FFFF) : (cp += 1) {
+        if (cp >= 0xD800 and cp <= 0xDFFF) continue;
+        const length = std.unicode.utf8Encode(cp, &buffer) catch continue;
+        const text = buffer[0..length];
+        const expected_fold = glib.g_utf8_casefold(text.ptr, @intCast(text.len));
+        defer glib.g_free(expected_fold);
+        const fold = try casefold(a, text);
+        defer a.free(fold);
+        std.testing.expectEqualStrings(std.mem.span(expected_fold), fold) catch |err| {
+            std.debug.print("casefold U+{X:0>4}\n", .{cp});
+            return err;
+        };
+        const expected_nfkc = glib.g_utf8_normalize(text.ptr, @intCast(text.len), glib.normalize_all_compose).?;
+        defer glib.g_free(expected_nfkc);
+        const normalized = try normalize(a, text);
+        defer a.free(normalized);
+        std.testing.expectEqualStrings(std.mem.span(expected_nfkc), normalized) catch |err| {
+            std.debug.print("normalize U+{X:0>4}\n", .{cp});
+            return err;
+        };
+    }
+}
+
+test "sequences, collation and file name keys match GLib" {
+    const a = std.testing.allocator;
+    const samples = [_][:0]const u8{
+        "Café",
+        "Cafe\u{301}",
+        "ﬁle",
+        "Straße",
+        "STRASSE",
+        "İstanbul",
+        "ǅemal",
+        "한국어",
+        "\u{1100}\u{1161}\u{11A8}",
+        "e\u{301}\u{327}",
+        "e\u{327}\u{301}",
+        "A\u{30A}\u{316}",
+        "file10.txt",
+        "file9.txt",
+        "file009.txt",
+        "file0.txt",
+        "file000",
+        ".hidden",
+        "a.b.c",
+        "2024-01-02 3.png",
+        "１２３",
+        "Ⅻ",
+        "x\u{FFFF}y",
+        "\u{1D400}",
+        "",
+        "Ω\u{345}\u{301}",
+        "ᾳ\u{301}",
+        "Ⅷ.tar.gz",
+        "日本語10",
+        "日本語9",
+        "a0b00c",
+        "x007y08",
+        "0",
+        "00",
+        "a0001",
+        "file0010.tar.gz",
+    };
+    for (samples) |sample| {
+        const expected_fold = glib.g_utf8_casefold(sample.ptr, @intCast(sample.len));
+        defer glib.g_free(expected_fold);
+        const fold = try casefold(a, sample);
+        defer a.free(fold);
+        try std.testing.expectEqualStrings(std.mem.span(expected_fold), fold);
+        const expected_nfkc = glib.g_utf8_normalize(sample.ptr, @intCast(sample.len), glib.normalize_all_compose).?;
+        defer glib.g_free(expected_nfkc);
+        const normalized = try normalize(a, sample);
+        defer a.free(normalized);
+        try std.testing.expectEqualStrings(std.mem.span(expected_nfkc), normalized);
+        const expected_key = glib.g_utf8_collate_key_for_filename(sample.ptr, @intCast(sample.len));
+        defer glib.g_free(expected_key);
+        const key = try collateKeyForFilename(a, sample);
+        defer a.free(key);
+        std.testing.expectEqualSlices(u8, std.mem.span(expected_key), key) catch |err| {
+            std.debug.print("collate key for {s}\n", .{sample});
+            return err;
+        };
+        for (samples) |other| {
+            const expected = std.math.order(glib.g_utf8_collate(sample, other), 0);
+            try std.testing.expectEqual(expected, try collate(a, sample, other));
+        }
+    }
+}

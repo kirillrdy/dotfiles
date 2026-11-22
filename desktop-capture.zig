@@ -365,7 +365,7 @@ fn workspace(self: *Client, index: u32, name: [:0]const u8, active: u32) void {
         self.pending_count = 0;
         self.pending_stacking = 0;
     }
-    if (c.g_strcmp0(&self.workspaces[index].name, name.ptr) != 0) {
+    if (!c.__zig.strEql(&self.workspaces[index].name, name.ptr)) {
         _ = c.g_strlcpy(&self.workspaces[index].name, name.ptr, self.workspaces[index].name.len);
         self.snapshot_dirty = true;
     }
@@ -375,7 +375,7 @@ fn workspace(self: *Client, index: u32, name: [:0]const u8, active: u32) void {
 fn placement(self: *Client, id: [:0]const u8, index: u32, x: i32, y: i32, width: i32, height: i32, sticky: u32) void {
     const stacking = self.pending_stacking;
     self.pending_stacking += 1;
-    for (self.windows.items) |w| if (c.g_strcmp0(w.id, id.ptr) == 0) {
+    for (self.windows.items) |w| if (c.__zig.strEql(w.id, id.ptr)) {
         if (w.stacking != stacking) {
             w.stacking = stacking;
             self.snapshot_dirty = true;

@@ -10,21 +10,22 @@ const input = @import("desktop-password-entry.zig");
 const view = @import("desktop-apps-view.zig");
 pub const appinfo = @import("desktop-appinfo.zig");
 pub const App = appinfo.App;
+const unicode = @import("desktop-unicode.zig");
 // Normalize before matching so composed/decomposed names and Unicode casing agree.
-pub fn fold(text: [*c]const u8) [*c]u8 {
-    const lower = c.g_utf8_casefold(text, -1);
-    defer c.g_free(lower);
-    return c.g_utf8_normalize(lower, -1, c.G_NORMALIZE_ALL_COMPOSE);
+pub fn fold(a: std.mem.Allocator, text: []const u8) ![:0]u8 {
+    const lower = try unicode.casefold(a, text);
+    defer a.free(lower);
+    return unicode.normalize(a, lower);
 }
-pub fn rank(name: [*c]const u8, query: [*c]const u8) u8 {
-    const n = std.mem.span(name);
-    const q = std.mem.span(query);
+pub fn rank(n: []const u8, q: []const u8) u8 {
     return if (std.mem.startsWith(u8, n, q)) 0 else if (std.mem.indexOf(u8, n, q) != null) 1 else 2;
 }
 pub const Entry = struct {
     info: *App,
     name: [*c]const u8,
-    folded: [*c]u8,
+    folded: [:0]u8,
+    /// Orders names as GLib's collation does in the C locale.
+    collation: [:0]u8,
     tile: view.Tile = .{},
 };
 
@@ -40,7 +41,7 @@ pub const Launcher = struct {
     search_input: ?*input.Entry = null,
     entries: std.array_list.Managed(*Entry),
     visible: std.array_list.Managed(*Entry),
-    query: [*c]u8,
+    query: [:0]u8,
     renderer: shaping.Renderer = .{},
     search_view: view.Search = .{},
     geometry: view.Grid = view.Grid.init(1040, 600),
@@ -62,7 +63,7 @@ pub const Launcher = struct {
     wheel_time: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) Launcher {
-        return .{ .allocator = allocator, .entries = .init(allocator), .visible = .init(allocator), .query = fold(""), .status = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory") };
+        return .{ .allocator = allocator, .entries = .init(allocator), .visible = .init(allocator), .query = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory"), .status = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory") };
     }
     pub fn bind(self: *Launcher) void {
         if (self.search_input == null) {
@@ -100,14 +101,15 @@ pub const Launcher = struct {
         self.renderer.deinit();
         self.search_view.deinit(self.allocator);
         self.allocator.free(self.status);
-        c.g_free(self.query);
+        self.allocator.free(self.query);
     }
     fn freeEntries(self: *Launcher) void {
         self.visible.clearRetainingCapacity();
         for (self.entries.items) |item| {
             item.tile.deinit(self.allocator);
             item.info.unref();
-            c.g_free(item.folded);
+            self.allocator.free(item.folded);
+            self.allocator.free(item.collation);
             self.allocator.destroy(item);
         }
         self.entries.clearRetainingCapacity();
@@ -120,11 +122,12 @@ pub const Launcher = struct {
         if (!info.shouldShow()) return;
         const item = try self.allocator.create(Entry);
         errdefer self.allocator.destroy(item);
-        item.* = .{ .info = info.ref(), .name = info.display_name.ptr, .folded = fold(info.display_name.ptr) };
-        errdefer {
-            item.info.unref();
-            c.g_free(item.folded);
-        }
+        const folded = try fold(self.allocator, info.display_name);
+        errdefer self.allocator.free(folded);
+        const collation = try unicode.collateKey(self.allocator, info.display_name);
+        errdefer self.allocator.free(collation);
+        item.* = .{ .info = info.ref(), .name = info.display_name.ptr, .folded = folded, .collation = collation };
+        errdefer item.info.unref();
         try self.entries.append(item);
     }
     pub fn load(self: *Launcher) !void {
@@ -157,17 +160,18 @@ pub const Launcher = struct {
         self.redraw();
     }
     pub fn refresh(self: *Launcher) void {
-        c.g_free(self.query);
-        self.query = fold(self.searchText());
+        const folded = fold(self.allocator, self.searchText()) catch @panic("out of memory");
+        self.allocator.free(self.query);
+        self.query = folded;
         self.visible.clearRetainingCapacity();
         for (self.entries.items) |item| if (rank(item.folded, self.query) < 2) {
             self.visible.append(item) catch @panic("out of memory");
         };
         std.mem.sort(*Entry, self.visible.items, self.query, struct {
-            fn less(query: [*c]u8, left: *Entry, right: *Entry) bool {
+            fn less(query: [:0]u8, left: *Entry, right: *Entry) bool {
                 const l = rank(left.folded, query);
                 const r = rank(right.folded, query);
-                return if (l != r) l < r else c.g_utf8_collate(left.name, right.name) < 0;
+                return if (l != r) l < r else std.mem.order(u8, left.collation, right.collation) == .lt;
             }
         }.less);
         self.page = 0;
@@ -482,7 +486,7 @@ pub fn paint(l: *Launcher, part: Part, target: raster.Buffer, scale: u32) void {
                 const focused = !l.search_focus and l.selected == i;
                 // GNOME marks the default search result selected while the entry
                 // retains focus; the keyboard focus ring belongs to the grid only.
-                const selected = l.search_focus and l.query[0] != 0 and l.selected == i;
+                const selected = l.search_focus and l.query.len != 0 and l.selected == i;
                 item.tile.paint(l.allocator, canvas, scale, &l.renderer, item.name, item.info.icon, l.geometry.tile(i - start), l.geometry.icon_size, l.hover == i, focused, selected, l.pressed == i) catch {};
             }
             view.paintPages(canvas, l.geometry, l.page, l.pageCount(), l.arrow_hover, l.arrow_pressed);

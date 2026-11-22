@@ -394,12 +394,7 @@ pub const Settings = struct {
         if (self.view.page == .wifi or self.view.page == .saved) std.mem.sort(network_view.Row, self.rows.items, self, lessRow);
     }
     fn matches(title: [:0]const u8, query: [:0]const u8) bool {
-        if (query.len == 0) return true;
-        const folded_title = c.g_utf8_casefold(title, -1);
-        defer c.g_free(folded_title);
-        const folded_query = c.g_utf8_casefold(query, -1);
-        defer c.g_free(folded_query);
-        return std.mem.indexOf(u8, std.mem.span(folded_title), std.mem.span(folded_query)) != null;
+        return @import("desktop-unicode.zig").containsCaseless(title, query);
     }
     fn lessRow(self: *Settings, left: network_view.Row, right: network_view.Row) bool {
         if (left.connected != right.connected) return left.connected;

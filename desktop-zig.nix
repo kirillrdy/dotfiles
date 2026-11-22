@@ -94,6 +94,8 @@ pkgs.stdenv.mkDerivation {
   WAYLAND_PROTOCOLS_DIR = "${pkgs.wayland-protocols}/share/wayland-protocols";
   WLR_PROTOCOLS_DIR = "${pkgs.wlr-protocols}/share/wlr-protocols";
   WAYLAND_XML = "${pkgs.wayland-scanner}/share/wayland/wayland.xml";
+  # Case folding and normalization tables are generated from the UCD at build time.
+  UNICODE_DATA_DIR = "${pkgs.unicode-character-database}/share/unicode";
   buildInputs = [
     pkgs.glib
     # Text: fontconfig matching, HarfBuzz shaping and FreeType rasterization.

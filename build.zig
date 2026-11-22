@@ -109,6 +109,13 @@ pub fn build(b: *std.Build) void {
     wayland_client.addImport("wayland-wire", wire);
     desktop.addImport("wayland-wire", wire);
     desktop.addImport("wayland-client", wayland_client);
+    // Unicode case folding and normalization tables, generated from the UCD.
+    const ucd = b.graph.environ_map.get("UNICODE_DATA_DIR") orelse "/usr/share/unicode";
+    const unicode_generator = b.addExecutable(.{ .name = "unicode-tables", .root_module = b.createModule(.{ .root_source_file = b.path("tools/unicode-tables.zig"), .target = b.graph.host, .optimize = .ReleaseSafe }) });
+    const unicode_command = b.addRunArtifact(unicode_generator);
+    for ([_][]const u8{ "UnicodeData.txt", "CaseFolding.txt", "DerivedNormalizationProps.txt" }) |name| unicode_command.addFileArg(.{ .cwd_relative = b.fmt("{s}/{s}", .{ ucd, name }) });
+    const unicode_tables = b.createModule(.{ .root_source_file = unicode_command.addOutputFileArg("unicode-tables.zig"), .target = target, .optimize = optimize });
+    desktop.addImport("unicode-tables", unicode_tables);
     // Native D-Bus client runtime, independent of GLib.
     const dbus = b.createModule(.{ .root_source_file = b.path("desktop-dbus.zig"), .target = target, .optimize = optimize, .link_libc = true });
     desktop.addImport("dbus", dbus);
