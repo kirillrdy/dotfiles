@@ -100,8 +100,8 @@ pub fn build(b: *std.Build) void {
     desktop.addCSourceFile(.{ .file = protocolCode(b, b.path("desktop-overview-v1.xml"), "dotfiles-overview-v1-protocol.c") });
     // Native Wayland client: the wire runtime plus typed bindings for every protocol used.
     const wire = b.createModule(.{ .root_source_file = b.path("desktop-wire.zig"), .target = target, .optimize = optimize, .link_libc = true });
-    const client_command = b.addSystemCommand(&.{"python3"});
-    client_command.addFileArg(b.path("tools/wayland-zig.py"));
+    const wayland_generator = b.addExecutable(.{ .name = "wayland-zig", .root_module = b.createModule(.{ .root_source_file = b.path("tools/wayland-zig.zig"), .target = b.graph.host, .optimize = .ReleaseSafe }) });
+    const client_command = b.addRunArtifact(wayland_generator);
     const client_source = client_command.addOutputFileArg("wayland-client.zig");
     client_command.addFileArg(.{ .cwd_relative = b.graph.environ_map.get("WAYLAND_XML") orelse "/usr/share/wayland/wayland.xml" });
     for (protocol_files) |xml| client_command.addFileArg(xml);

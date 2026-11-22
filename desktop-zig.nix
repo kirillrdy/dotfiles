@@ -77,14 +77,12 @@ pkgs.stdenv.mkDerivation {
       || file.hasExt "h"
       || file.hasExt "svg"
       || file.hasExt "xml"
-      || file.name == "wayland-zig.py"
     ) ./.;
   };
   nativeBuildInputs = [
     pkgs.zig_0_17
     pkgs.pkg-config
     pkgs.wayland-scanner
-    pkgs.python3
     pkgs.removeReferencesTo
   ];
   passthru = {

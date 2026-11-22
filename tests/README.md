@@ -33,10 +33,3 @@ Prefix their names with `integration:` and guard them with
 `options.integration_tests`. The UI VM builds their executable with
 `zig build test-binary -Dintegration-tests=true`; its filter selects only those
 tests, so the unit suite is not repeated in the VM.
-
-`check-firefox-overview.py` also accepts a local 60 fps clip with
-`--video CLIP --min-preview-fps 40 --max-desktop-cpu 80`. It measures combined
-compositor/session CPU (100% is one core), verifies live video and stable
-surroundings, and requires compositor previews to perform no CPU captures or
-continuous UI repaints after the opening animation. Run performance checks
-without other test sessions competing for CPU/GPU resources.

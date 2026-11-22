@@ -9,9 +9,132 @@ import ./fixture.nix { inherit pkgs; } {
   script =
     { desktop, dbusRun, ... }:
     ''
-      ${dbusRun} python3 ${./check-desktop-lock.py} \
+      ${dbusRun} python3 - \
         --binary ${desktop}/bin/desktop-zig \
         --fixture ${desktop.tests}/bin/desktop-lock-fixture \
-        --compositor ${desktop}/bin/desktop-zig
+        --compositor ${desktop}/bin/desktop-zig <<'PY'
+      import argparse
+      import os
+      from pathlib import Path
+      import signal
+      import subprocess as sp
+      import tempfile
+      import time
+
+      def wait_until(predicate, message, timeout=10, interval=0.03):
+          deadline = time.monotonic() + timeout
+          while True:
+              if predicate():
+                  return
+              assert time.monotonic() < deadline, message
+              time.sleep(interval)
+
+      def wait_wayland(runtime_dir, compositor, log_path=None, timeout=10):
+          runtime_dir = Path(runtime_dir)
+          def ready():
+              assert compositor.poll() is None, (Path(log_path).read_text(errors="replace") if log_path else "Compositor exited")
+              for lock in runtime_dir.glob("wayland-*.lock"):
+                  sock = lock.stem
+                  if (runtime_dir / sock).exists():
+                      return sock
+              return "wayland-0" if (runtime_dir / "wayland-0").exists() else None
+          result = [None]
+          def check():
+              result[0] = ready()
+              return result[0] is not None
+          wait_until(check, "Compositor did not create Wayland socket", timeout=timeout, interval=0.05)
+          return result[0]
+
+      parser = argparse.ArgumentParser()
+      parser.add_argument("--fixture", required=True)
+      parser.add_argument("--binary", required=True)
+      parser.add_argument("--compositor", default="desktop-zig")
+      parser.add_argument("--wtype", default="wtype")
+      parser.add_argument("--randr", default="wlr-randr")
+      args = parser.parse_args()
+      root = Path(tempfile.mkdtemp(prefix="desktop-lock-check-", dir="/tmp"))
+      print(f"Artifacts: {root}", flush=True)
+      (root / "runtime").mkdir(mode=0o700)
+      env = dict(os.environ)
+      for name in ("DISPLAY", "WAYLAND_DISPLAY", "DESKTOP_ZIG_INVOKED_AS"):
+          env.pop(name, None)
+      env.update(
+          XDG_RUNTIME_DIR=str(root / "runtime"),
+          XDG_CONFIG_HOME=str(root / "config-home"),
+          XDG_CACHE_HOME=str(root / "cache"),
+          WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="2",
+          WAYLAND_DEBUG="client",
+          DBUS_SYSTEM_BUS_ADDRESS="unix:path=" + str(root / "no-system-bus"),
+      )
+      processes = []
+
+      def start(command, name):
+          with (root / name).open("w") as log:
+              process = sp.Popen(command, env=env, stdout=log, stderr=log)
+          processes.append(process)
+          return process
+
+      def text(name):
+          return (root / name).read_text(errors="replace")
+
+      def run(command):
+          return sp.run(command, env=env, capture_output=True, timeout=10, check=True)
+
+      def type_password(password):
+          run([args.wtype, "-s", "200", "-d", "10", password, "-k", "Return"])
+
+      try:
+          compositor = start([args.compositor, "compositor-only"], "compositor.log")
+          env["WAYLAND_DISPLAY"] = wait_wayland(root / "runtime", compositor, root / "compositor.log")
+          locker = start([args.fixture], "lock.log")
+          wait_until(lambda: "ext_session_lock_v1" in text("lock.log") and ".locked()" in text("lock.log"), "Lock not acquired")
+          wait_until(lambda: text("lock.log").count(".ack_configure(") >= 2, "Both outputs were not configured")
+          run([args.randr, "--output", "HEADLESS-2", "--off"])
+          run([args.randr, "--output", "HEADLESS-2", "--on"])
+          wait_until(lambda: text("lock.log").count(".ack_configure(") >= 3, "Re-enabled output was not locked")
+          type_password("incorrect")
+          wait_until(lambda: "fixture-auth: rejected" in text("lock.log"), "Wrong password did not reach authenticator")
+          assert locker.poll() is None
+          assert "unlock_and_destroy" not in text("lock.log")
+          type_password("fixture-password")
+          time.sleep(0.1)
+          assert locker.poll() is None, "Retry delay accepted input too early"
+          time.sleep(1.7)
+          locker.send_signal(signal.SIGTERM)
+          time.sleep(0.1)
+          assert locker.poll() is None, "SIGTERM terminated the locker"
+          rejected = sp.run([args.fixture, "--daemonize"], env=env, capture_output=True, timeout=10)
+          assert rejected.returncode != 0, rejected.stderr
+          type_password("fixture-password")
+          assert locker.wait(timeout=10) == 0, text("lock.log")
+          assert text("lock.log").count("unlock_and_destroy()") == 1
+          daemon = start([args.fixture, "--daemonize"], "daemon.log")
+          assert daemon.wait(timeout=10) == 0, text("daemon.log")
+          assert ".locked()" in text("daemon.log"), "Daemon returned before compositor lock confirmation"
+          type_password("fixture-password")
+          wait_until(lambda: "unlock_and_destroy()" in text("daemon.log"), "Daemon did not unlock")
+          production = start([args.binary, "lock"], "production.log")
+          wait_until(lambda: ".locked()" in text("production.log"), "Production command did not lock")
+          production.kill()
+          production.wait(timeout=5)
+          assert "unlock_and_destroy" not in text("production.log"), "Crash unlocked the session"
+          recovery = start([args.fixture], "recovery.log")
+          wait_until(lambda: ".locked()" in text("recovery.log"), "Abandoned lock could not be recovered")
+          type_password("fixture-password")
+          assert recovery.wait(timeout=10) == 0, text("recovery.log")
+          print("PASS: multiple outputs, output disable/enable, wrong password, successful unlock, signals, duplicate rejection, daemon readiness, production CLI and crash recovery")
+      finally:
+          if "compositor" in locals() and compositor.poll() is None:
+              compositor.terminate()
+              try:
+                  compositor.wait(timeout=5)
+              except sp.TimeoutExpired:
+                  compositor.kill()
+                  compositor.wait()
+          for process in reversed(processes):
+              if process.poll() is None:
+                  process.kill()
+                  process.wait()
+      PY
     '';
 }
