@@ -37,7 +37,7 @@ pub fn main(process_init: std.process.Init) !void {
         }
         std.process.exit(0);
     }
-    _ = c.g_setenv("GSETTINGS_BACKEND", "memory", 1);
+    _ = @import("desktop").libc.setenv("GSETTINGS_BACKEND", "memory", 1);
     // Resolve and decode the SVGs through the native icon loader.
     if (c.__zig.getenv("DESKTOP_PANEL_ICON_PATH") != null) {
         for ([_][:0]const u8{
@@ -57,8 +57,8 @@ pub fn main(process_init: std.process.Init) !void {
         }
     }
     const executable = try process_init.arena.allocator().dupeSentinel(u8, args[0], 0);
-    _ = c.g_setenv("DESKTOP_POWER_PKEXEC", executable.ptr, 1);
-    _ = c.g_setenv("DESKTOP_POWER_HELPER", "--power-fixture", 1);
+    _ = @import("desktop").libc.setenv("DESKTOP_POWER_PKEXEC", executable.ptr, 1);
+    _ = @import("desktop").libc.setenv("DESKTOP_POWER_HELPER", "--power-fixture", 1);
     const status = p.init(process_init.gpa, .{ .name = "gnome-status" }, null, null, null);
     assert(status.quick != null);
     const initial_network_title = status.quick.?.view.model.network_title;
@@ -183,7 +183,7 @@ pub fn main(process_init: std.process.Init) !void {
     assert(refresh_count == 2 and !usage.usage.enabled);
     p.update(usage, .{ .windows = &.{ .{ .percent = 54, .reset = "Resets in 2h 15m" }, .{ .percent = 93, .reset = "Resets in 4d 8h" } }, .tooltip = "5h: 54% remaining" });
     usage_menu.hide();
-    eq(usage.tooltip, "5h: 54% remaining");
+    eq(usage.tooltip.?, "5h: 54% remaining");
     try usage_menu.show(320, 32);
     p.update(usage, .{ .items = &.{.{ .text = "54%" }}, .tooltip = "5h: 54% remaining", .windows = &.{ .{ .percent = 54, .reset = "Resets in 2h 15m" }, .{ .percent = 93, .reset = "Resets in 4d 8h" } }, .checked = "Checked: 12:00:00" });
     assert(usage_menu.popup.visible);

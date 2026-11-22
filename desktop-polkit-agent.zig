@@ -364,10 +364,9 @@ const Auth = struct {
             self.input_len += @intCast(count);
             while (std.mem.indexOfScalar(u8, self.input[0..self.input_len], '\n')) |end| {
                 self.input[end] = 0;
-                const decoded = c.g_strcompress(@ptrCast(self.input[0..end :0].ptr));
-                const decoded_line = std.mem.span(decoded);
+                // Escapes decode in place: the result is never longer than the line.
+                const decoded_line = unescape(self.input[0..end :0]);
                 const live = self.line(decoded_line);
-                c.g_free(decoded);
                 if (!live) return 0;
                 const remaining = self.input_len - end - 1;
                 std.mem.copyForwards(u8, self.input[0..remaining], self.input[end + 1 .. self.input_len]);
@@ -465,3 +464,56 @@ const Auth = struct {
         self.state.allocator.destroy(self);
     }
 };
+
+/// Decodes C escapes in place, as g_strcompress: \b \f \n \r \t \v, octal
+/// \ooo, and any other escaped byte as itself. A trailing backslash is dropped.
+fn unescape(text: [:0]u8) [:0]u8 {
+    var out: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (text[i] != '\\') {
+            text[out] = text[i];
+            out += 1;
+            continue;
+        }
+        i += 1;
+        if (i == text.len) break;
+        text[out] = switch (text[i]) {
+            'b' => 0x08,
+            'f' => 0x0c,
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            'v' => 0x0b,
+            '0'...'7' => octal: {
+                var value: u8 = 0;
+                var digits: usize = 0;
+                while (digits < 3 and i < text.len and text[i] >= '0' and text[i] <= '7') : (digits += 1) {
+                    value = value *% 8 +% (text[i] - '0');
+                    i += 1;
+                }
+                i -= 1;
+                break :octal value;
+            },
+            else => |byte| byte,
+        };
+        out += 1;
+    }
+    text.ptr[out] = 0;
+    return text[0..out :0];
+}
+
+test "escape decoding matches g_strcompress" {
+    const glib = struct {
+        extern fn g_strcompress(source: [*:0]const u8) [*:0]u8;
+        extern fn g_free(mem: ?*anyopaque) void;
+    };
+    for ([_][:0]const u8{ "plain", "a\\nb\\tc", "\\101\\0610x", "\\\\\\\"q\\'", "\\z\\8\\777", "end\\", "\\b\\f\\r\\v" }) |sample| {
+        const expected = glib.g_strcompress(sample);
+        defer glib.g_free(expected);
+        var copy: [64]u8 = undefined;
+        @memcpy(copy[0..sample.len], sample);
+        copy[sample.len] = 0;
+        try std.testing.expectEqualSlices(u8, std.mem.span(expected), unescape(copy[0..sample.len :0]));
+    }
+}

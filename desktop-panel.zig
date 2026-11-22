@@ -173,7 +173,7 @@ const Panel = struct {
                 if (m.view.items[item_idx].tooltip.value.len != 0) return m.view.items[item_idx].tooltip.value;
             }
         }
-        return if (m.tooltip != null) std.mem.span(m.tooltip) else "";
+        return m.tooltip orelse "";
     }
 
     fn onTooltipTimer(data: c.gpointer) callconv(.c) c.gboolean {

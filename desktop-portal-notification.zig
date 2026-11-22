@@ -219,14 +219,14 @@ pub const Service = struct {
             try actions.append(temporary, try std.fmt.allocPrint(temporary, "button{d}", .{index}));
             try actions.append(temporary, string(lookupValue(button, "label", "s")));
         };
-        const body = try temporary.dupeSentinel(u8, string(contents.get("body", "s")), 0);
-        const escaped = c.g_markup_escape_text(body.ptr, -1);
-        defer c.g_free(escaped);
+        // The body is plain text; the notification server reads markup.
+        var escaped: std.ArrayList(u8) = .empty;
+        try @import("desktop-command.zig").escapeMarkup(temporary, &escaped, std.mem.sliceTo(string(contents.get("body", "s")), 0));
         const send = try self.allocator.create(Send);
         errdefer self.allocator.destroy(send);
         send.* = .{ .notice = notice, .contents = contents, .generation = self.generation };
         try self.sends.ensureUnusedCapacity(self.allocator, 1);
-        send.serial = try self.connection.call(.{ .destination = fdo, .path = object_path, .interface = fdo, .member = "Notify" }, .{ @as([]const u8, notice.app), notice.id, icon_name, string(contents.get("title", "s")), std.mem.span(@as([*:0]const u8, escaped)), @as([]const []const u8, actions.items), Hints{ .entries = hints.items }, @as(i32, -1) }, 10000, &sent, send);
+        send.serial = try self.connection.call(.{ .destination = fdo, .path = object_path, .interface = fdo, .member = "Notify" }, .{ @as([]const u8, notice.app), notice.id, icon_name, string(contents.get("title", "s")), @as([]const u8, escaped.items), @as([]const []const u8, actions.items), Hints{ .entries = hints.items }, @as(i32, -1) }, 10000, &sent, send);
         self.sends.appendAssumeCapacity(send);
         notice.next = null;
         notice.pending = true;

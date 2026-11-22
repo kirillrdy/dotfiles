@@ -48,7 +48,7 @@ pub const Module = struct {
     usage_menu: ?*UsagePopup = null,
     view: native.View = .{},
     usage: native.Usage = .{},
-    tooltip: [*c]u8 = null,
+    tooltip: ?[:0]u8 = null,
     on_redraw: ?*const fn (?*anyopaque) void = null,
     redraw_context: ?*anyopaque = null,
 };
@@ -171,7 +171,7 @@ pub fn unref_module(m: *Module) callconv(.c) void {
     m.refs -= 1;
     if (m.refs != 0) return;
     if (m.cancel != null) c.g_object_unref(m.cancel);
-    c.g_free(m.tooltip);
+    if (m.tooltip) |text| m.allocator.free(text);
     m.view.deinit(m.allocator);
     m.usage.deinit(m.allocator);
     m.allocator.destroy(m);
@@ -335,9 +335,9 @@ pub fn update_usage(m: *Module, content: panel_data.Update) void {
         const window: panel_data.Window = if (i < content.windows.len) content.windows[i] else .{};
         const valid = if (window.percent) |p| std.math.isFinite(p) else false;
         const value = if (valid) std.math.clamp(window.percent.?, 0, 100) else 0;
-        const label = if (valid) c.g_strdup_printf("%.1f%% remaining", value) else c.g_strdup("—");
-        m.usage.percent[i].set(m.allocator, std.mem.span(label));
-        c.g_free(@as(c.gpointer, @ptrCast(label)));
+        var buffer: [64]u8 = undefined;
+        const label = if (valid) std.fmt.bufPrint(&buffer, "{d:.1}% remaining", .{value}) catch "—" else "—";
+        m.usage.percent[i].set(m.allocator, label);
         m.usage.values[i] = value;
         m.usage.pace[i] = if (valid) window.pace else null;
         m.usage.reset[i].set(m.allocator, window.reset);
@@ -391,8 +391,8 @@ pub fn update(m: *Module, value: panel_data.Update) void {
             if (update_graph(m.allocator, &m.view.graphs[i], graph)) changed = true;
         };
     } else if (value.items) |items| update_items(m, items);
-    c.g_free(@as(c.gpointer, @ptrCast(m.tooltip)));
-    m.tooltip = c.g_strndup(value.tooltip.ptr, value.tooltip.len);
+    if (m.tooltip) |text| m.allocator.free(text);
+    m.tooltip = m.allocator.dupeSentinel(u8, value.tooltip, 0) catch null;
     if (m.view.usage) update_usage(m, value);
     if (changed) resize(m);
 }
@@ -407,7 +407,7 @@ test "monitor polling updates tooltips without repainting unchanged graph sample
     var redraws: usize = 0;
     var module: Module = .{ .allocator = std.testing.allocator, .monitors = 1, .view = .{ .monitors = true }, .on_redraw = &Counter.redraw, .redraw_context = &redraws };
     defer module.view.deinit(std.testing.allocator);
-    defer c.g_free(module.tooltip);
+    defer if (module.tooltip) |text| std.testing.allocator.free(text);
     var graph: panel_data.Graph = .{ .values = &.{10}, .sequence = 1, .maximum = 100, .tooltip = "first" };
     update(&module, .{ .monitors = &.{graph} });
     try std.testing.expectEqual(@as(usize, 1), redraws);
@@ -450,7 +450,7 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
     } else if (m.view.usage) {
         const icon = panel_data.usageIcon(options.source);
         update_items(m, &.{.{ .icon = icon, .text = if (icon.len == 0) "Codex…" else "…" }});
-        m.tooltip = c.g_strdup_printf("Loading %s usage…", panel_data.usageName(options.source).ptr);
+        m.tooltip = std.fmt.allocPrintSentinel(m.allocator, "Loading {s} usage…", .{panel_data.usageName(options.source)}, 0) catch null;
         m.usage.checked.set(m.allocator, "Loading…");
         make_usage_menu(m);
     } else if (m.status != 0) {
@@ -494,7 +494,7 @@ test "usage indicators are visible before either collector returns" {
     update(claude, .{ .items = &.{.{ .text = "72%" }} });
     try std.testing.expectEqualStrings("72%", claude.view.items[0].label.value);
     try std.testing.expect(codex.view.items[0].visible);
-    try std.testing.expectEqualStrings("Loading Codex usage…", std.mem.span(codex.tooltip));
+    try std.testing.expectEqualStrings("Loading Codex usage…", codex.tooltip.?);
     try std.testing.expectEqualStrings("Loading…", codex.usage.checked.value);
     try std.testing.expect(!codex.usage.enabled);
 

@@ -36,6 +36,7 @@ pub extern fn unlink(__name: [*c]const u8) c_int;
 pub extern fn fsync(__fd: c_int) c_int;
 pub const time_t = std.c.time_t;
 pub extern fn getenv(__name: [*c]const u8) [*c]u8;
+pub extern fn setenv(__name: [*c]const u8, __value: [*c]const u8, __replace: c_int) c_int;
 pub extern fn mkdtemp(__template: [*c]u8) [*c]u8;
 pub extern fn open(__file: [*c]const u8, __oflag: c_int, ...) c_int;
 

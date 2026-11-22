@@ -716,8 +716,9 @@ pub fn run(allocator: std.mem.Allocator) !void {
 }
 /// The broker owns a single GLib main context; fixtures supply a checked allocator.
 pub fn runWithAllocator(allocator: std.mem.Allocator) !void {
-    _ = c.g_setenv("GIO_USE_PORTALS", "0", 1);
-    _ = c.g_setenv("GTK_USE_PORTAL", "0", 1);
+    // Applications launched for clients must not route back through this portal.
+    _ = libc.setenv("GIO_USE_PORTALS", "0", 1);
+    _ = libc.setenv("GTK_USE_PORTAL", "0", 1);
     const source = loop.acquire(allocator, .session) catch return error.SessionBusUnavailable;
     defer loop.release(source);
     const connection = source.connection;

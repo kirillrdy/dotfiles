@@ -71,9 +71,10 @@ pub const Window = struct {
         self.stop();
         if (self.image) |image| image.deinit(self.client.allocator);
         if (self.icon) |icon| c.__icons.free(self.client.allocator, icon);
-        c.g_free(self.id);
-        c.g_free(self.title);
-        c.g_free(self.app_id);
+        const a = self.client.allocator;
+        freeString(a, self.id);
+        freeString(a, self.title);
+        freeString(a, self.app_id);
         self.handle.destroy();
         self.client.allocator.destroy(self);
     }
@@ -113,15 +114,9 @@ pub const Window = struct {
         switch (event) {
             .closed => closed(self),
             .done => self.client.changed(self.client.context),
-            .title => |value| {
-                c.g_free(self.title);
-                self.title = c.g_strdup(value.title.ptr);
-            },
+            .title => |value| setString(self.client.allocator, &self.title, value.title),
             .app_id => |value| appId(self, value.app_id),
-            .identifier => |value| {
-                c.g_free(self.id);
-                self.id = c.g_strdup(value.identifier.ptr);
-            },
+            .identifier => |value| setString(self.client.allocator, &self.id, value.identifier),
         }
     }
     fn sessionEvent(self: *Window, _: wl.ext_image_copy_capture_session_v1, event: wl.ext_image_copy_capture_session_v1.Event) void {
@@ -348,8 +343,7 @@ fn closed(window: *Window) void {
     client.changed(client.context);
 }
 fn appId(w: *Window, value: [:0]const u8) void {
-    c.g_free(w.app_id);
-    w.app_id = c.g_strdup(value.ptr);
+    setString(w.client.allocator, &w.app_id, value);
     if (w.icon) |icon| c.__icons.free(w.client.allocator, icon);
     w.icon = null;
     var filename: [1024]u8 = undefined;
@@ -366,7 +360,10 @@ fn workspace(self: *Client, index: u32, name: [:0]const u8, active: u32) void {
         self.pending_stacking = 0;
     }
     if (!c.__zig.strEql(&self.workspaces[index].name, name.ptr)) {
-        _ = c.g_strlcpy(&self.workspaces[index].name, name.ptr, self.workspaces[index].name.len);
+        const slot = &self.workspaces[index].name;
+        const len = @min(name.len, slot.len - 1);
+        @memcpy(slot[0..len], name[0..len]);
+        slot[len] = 0;
         self.snapshot_dirty = true;
     }
     self.pending_count = @max(self.pending_count, index + 1);
@@ -552,10 +549,8 @@ test "overview snapshots track focus stacking changes without changing picker or
     };
     var state: State = .{};
     var client: Client = .{ .allocator = std.testing.allocator, .connection = undefined, .registry = undefined, .context = &state, .changed = &State.change };
-    var older: Window = .{ .client = &client, .handle = undefined, .id = c.g_strdup("older") };
-    defer c.g_free(older.id);
-    var newer: Window = .{ .client = &client, .handle = undefined, .id = c.g_strdup("newer") };
-    defer c.g_free(newer.id);
+    var older: Window = .{ .client = &client, .handle = undefined, .id = @constCast("older") };
+    var newer: Window = .{ .client = &client, .handle = undefined, .id = @constCast("newer") };
     defer client.windows.deinit(std.testing.allocator);
     try client.windows.appendSlice(std.testing.allocator, &.{ &older, &newer });
 
@@ -621,4 +616,14 @@ test "thumbnail workers publish owned pixels and discard captures detached on hi
     client.drainThumbnails();
     try std.testing.expect(!state.changed);
     try std.testing.expectEqual(@as(u32, 0xff604020), std.mem.bytesAsSlice(u32, window.image.?.pixels)[0]);
+}
+
+/// Replaces a window string owned by the client's allocator.
+fn setString(a: std.mem.Allocator, slot: *[*c]u8, value: []const u8) void {
+    freeString(a, slot.*);
+    slot.* = if (a.dupeSentinel(u8, std.mem.sliceTo(value, 0), 0)) |copy| copy.ptr else |_| null;
+}
+
+fn freeString(a: std.mem.Allocator, value: [*c]u8) void {
+    if (value != null) a.free(std.mem.span(value));
 }
