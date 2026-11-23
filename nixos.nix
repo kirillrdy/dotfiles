@@ -117,6 +117,12 @@
       "networkmanager"
     ];
   };
+  system.activationScripts.ghosttyConfig = ''
+    install -d -o kirillvr -g users /home/kirillvr/.config/ghostty
+    install -m 644 -o kirillvr -g users ${pkgs.writeText "config.ghostty" ''
+      gtk-titlebar-style = tabs
+    ''} /home/kirillvr/.config/ghostty/config.ghostty
+  '';
   hardware.nvidia-container-toolkit.enable = enableNvidia;
   hardware.graphics.extraPackages = lib.optional (!enableNvidia) pkgs.intel-compute-runtime;
   environment.systemPackages =
