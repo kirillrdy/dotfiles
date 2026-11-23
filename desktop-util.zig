@@ -82,6 +82,16 @@ pub fn env(name: [:0]const u8) ?[:0]const u8 {
     const value = libc.getenv(name);
     return if (value == null) null else std.mem.span(value);
 }
+/// A libc mutex: usable from any thread without a std.Io instance.
+pub const Mutex = struct {
+    inner: std.c.pthread_mutex_t = .{},
+    pub fn lock(self: *Mutex) void {
+        _ = std.c.pthread_mutex_lock(&self.inner);
+    }
+    pub fn unlock(self: *Mutex) void {
+        _ = std.c.pthread_mutex_unlock(&self.inner);
+    }
+};
 /// A value computed once on first use, from any thread.
 pub fn Lazy(comptime T: type, comptime compute: fn () T) type {
     return struct {

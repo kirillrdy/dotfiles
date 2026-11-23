@@ -1,10 +1,6 @@
 { pkgs }:
 import ./fixture.nix { inherit pkgs; } {
   name = "desktop-portal-capture-check";
-  fixture = {
-    name = "desktop-portal-capture-fixtures";
-    steps = "portal-capture-fixtures";
-  };
   pygobject = true;
   withDesktop = true;
   gtkEnv = true;
@@ -18,12 +14,12 @@ import ./fixture.nix { inherit pkgs; } {
   ];
   env.GI_TYPELIB_PATH = "${pkgs.gdk-pixbuf}/lib/girepository-1.0";
   script =
-    { fixture, dbusRun, ... }:
+    { desktop, dbusRun, ... }:
     ''
       ${dbusRun} python3 - \
-        --binary ${fixture}/bin/desktop-portal-fixture \
-        --video-consumer ${fixture}/bin/desktop-portal-video-fixture \
-        --pointer ${fixture}/bin/desktop-pointer-fixture <<'PY'
+        --binary ${desktop.tests}/bin/desktop-portal-fixture \
+        --video-consumer ${desktop.tests}/bin/desktop-portal-video-fixture \
+        --pointer ${desktop.tests}/bin/desktop-pointer-fixture <<'PY'
       import argparse
       import json
       import os

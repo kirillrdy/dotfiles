@@ -160,9 +160,13 @@ pkgs.stdenv.mkDerivation {
     Terminal=false
     EOF_SETTINGS
     # Keep test programs outside the desktop output.
-    mkdir -p "$tests"
+    mkdir -p "$tests/lib"
     mv "$out/libexec/desktop-tests" "$tests/bin"
+    mv "$out/lib/libdesktop_secrets_test_token.so" "$tests/lib/"
     rmdir "$out/libexec"
+    for name in secrets-pam secrets portal portal-chooser portal-video pointer battery audio backlight network idle lock apps dash widgets switcher settings askpass polkit polkit-agent screenshot command notifications; do
+      ln -sf desktop-fixture "$tests/bin/desktop-$name-fixture"
+    done
     mkdir -p "$out/share/dbus-1/services"
     cat > "$out/share/dbus-1/services/org.freedesktop.secrets.service" <<EOF_SECRETS_SERVICE
     [D-BUS Service]

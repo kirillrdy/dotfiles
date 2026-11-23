@@ -3,7 +3,7 @@ const std = @import("std");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const c = @import("desktop-glib.zig");
-pub const Rect = @import("desktop-askpass-view.zig").Rect;
+pub const Rect = raster.Rect;
 const white: raster.Color = .{ .red = 1, .green = 1, .blue = 1 };
 const overview_foreground: raster.Color = .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0 };
 const secondary: raster.Color = .{ .red = 0.63, .green = 0.63, .blue = 0.63 };

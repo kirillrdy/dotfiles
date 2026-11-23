@@ -41,16 +41,7 @@ const Source = struct {
 
 const allocator = std.heap.smp_allocator;
 
-/// A libc mutex: usable from any thread without a std.Io instance.
-const Mutex = struct {
-    inner: std.c.pthread_mutex_t = .{},
-    fn lock(self: *Mutex) void {
-        _ = std.c.pthread_mutex_lock(&self.inner);
-    }
-    fn unlock(self: *Mutex) void {
-        _ = std.c.pthread_mutex_unlock(&self.inner);
-    }
-};
+const Mutex = @import("desktop-util.zig").Mutex;
 
 var mutex: Mutex = .{};
 var sources: std.ArrayList(*Source) = .empty;

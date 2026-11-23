@@ -290,8 +290,8 @@ pub fn runWithAuthenticator(a: std.mem.Allocator, args: []const []const u8, auth
     _ = libc.signal(libc.SIGHUP, @ptrFromInt(1));
     _ = libc.signal(@intCast(@backingInt(std.posix.SIG.PIPE)), @ptrFromInt(1));
     _ = libc.signal(@intCast(@backingInt(std.posix.SIG.INT)), @ptrFromInt(1));
-    const password = try SecretBuffer.createLocked();
-    defer password.destroyLocked();
+    const password = try SecretBuffer.create();
+    defer password.destroy();
     const user = libc.getpwuid(libc.getuid());
     if (user == null) return error.UnknownUser;
     const username = try a.dupeSentinel(u8, std.mem.span(user.*.pw_name), 0);

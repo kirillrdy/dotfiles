@@ -1,10 +1,6 @@
 { pkgs }:
 import ./fixture.nix { inherit pkgs; } {
   name = "desktop-portal-check";
-  fixture = {
-    name = "desktop-portal-fixture";
-    steps = "portal-fixture portal-chooser-fixture";
-  };
   pygobject = true;
   withDesktop = true;
   gtkEnv = true;
@@ -18,7 +14,7 @@ import ./fixture.nix { inherit pkgs; } {
   ];
   script =
     {
-      fixture,
+      desktop,
       dbusRun,
       headlessScript,
       ...
@@ -27,7 +23,7 @@ import ./fixture.nix { inherit pkgs; } {
       export XDG_CONFIG_HOME="$TMPDIR/config"
       export XDG_DATA_HOME="$TMPDIR/data"
       mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
-      ${dbusRun} python3 - --binary ${fixture}/bin/desktop-portal-fixture <<'PY'
+      ${dbusRun} python3 - --binary ${desktop.tests}/bin/desktop-portal-fixture <<'PY'
       import argparse
       import os
       from pathlib import Path
@@ -434,7 +430,7 @@ import ./fixture.nix { inherit pkgs; } {
           for conn in (client, other, backend):
               conn.close_sync(None)
       PY
-      ${dbusRun} python3 - --binary ${fixture}/bin/desktop-portal-fixture <<'PY'
+      ${dbusRun} python3 - --binary ${desktop.tests}/bin/desktop-portal-fixture <<'PY'
       import argparse
       import json
       import os
@@ -659,8 +655,8 @@ import ./fixture.nix { inherit pkgs; } {
       for name in one.txt 日本語.txt report.txt; do
         printf 'fixture\n' > "$chooser_files/$name"
       done
-      GSETTINGS_BACKEND=memory ${dbusRun} ${fixture}/bin/desktop-portal-chooser-fixture "$chooser_files"
-      ${dbusRun} python3 - --binary ${fixture}/bin/desktop-portal-fixture <<'PY'
+      GSETTINGS_BACKEND=memory ${dbusRun} ${desktop.tests}/bin/desktop-portal-chooser-fixture "$chooser_files"
+      ${dbusRun} python3 - --binary ${desktop.tests}/bin/desktop-portal-fixture <<'PY'
       import argparse
       import os
       from pathlib import Path

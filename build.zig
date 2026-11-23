@@ -205,51 +205,57 @@ pub fn build(b: *std.Build) void {
         tests.root_module.addCSourceFile(.{ .file = protocolCode(b, xml, b.fmt("protocol-{d}.c", .{i})), .flags = &reference_flags });
     }
 
-    const Fixture = struct { name: []const u8, source: []const u8, step: []const u8, install: bool = false, library: bool = false, test_runner: bool = false };
-    const fixtures = [_]Fixture{
-        .{ .name = "desktop-compositor-fixture", .source = "tests/desktop-compositor-fixture.zig", .step = "compositor-fixture" },
-        .{ .name = "pam_desktop_secrets", .source = "desktop-secrets-pam.zig", .step = "secrets-pam", .install = true, .library = true },
-        .{ .name = "desktop-secrets-pam-fixture", .source = "tests/desktop-secrets-pam-fixture.zig", .step = "secrets-pam-fixture" },
-        .{ .name = "desktop_secrets_test_token", .source = "tests/desktop-secrets-pam-token.zig", .step = "secrets-pam-fixture", .library = true },
-        .{ .name = "desktop-secrets-fixture", .source = "tests/desktop-secrets-fixture.zig", .step = "secrets-fixture" },
-        .{ .name = "desktop-portal-fixture", .source = "tests/desktop-portal-fixture.zig", .step = "portal-fixture" },
-        .{ .name = "desktop-portal-chooser-fixture", .source = "tests/desktop-portal-chooser-fixture.zig", .step = "portal-chooser-fixture" },
-        .{ .name = "desktop-portal-video-fixture", .source = "tests/desktop-portal-video-fixture.zig", .step = "portal-video-fixture" },
-        .{ .name = "desktop-pointer-fixture", .source = "tests/desktop-pointer-fixture.zig", .step = "pointer-fixture", .install = true },
-        .{ .name = "desktop-battery-fixture", .source = "tests/desktop-battery-fixture.zig", .step = "battery-fixture", .install = true },
-        .{ .name = "desktop-audio-fixture", .source = "tests/desktop-audio-fixture.zig", .step = "audio-fixture", .install = true },
-        .{ .name = "desktop-backlight-fixture", .source = "tests/desktop-backlight-fixture.zig", .step = "backlight-fixture", .install = true },
-        .{ .name = "desktop-network-fixture", .source = "tests/desktop-network-fixture.zig", .step = "network-fixture" },
-        .{ .name = "desktop-idle-fixture", .source = "tests/desktop-idle-fixture.zig", .step = "idle-fixture", .install = true },
-        .{ .name = "desktop-lock-fixture", .source = "tests/desktop-lock-fixture.zig", .step = "lock-fixture", .install = true },
-        .{ .name = "desktop-apps-fixture", .source = "tests/desktop-apps-fixture.zig", .step = "apps-fixture", .install = true },
-        .{ .name = "desktop-dash-fixture", .source = "tests/desktop-dash-fixture.zig", .step = "dash-fixture", .install = true },
-        .{ .name = "desktop-widgets-fixture", .source = "tests/desktop-widgets-fixture.zig", .step = "widgets-fixture", .install = true },
-        .{ .name = "desktop-switcher-fixture", .source = "tests/desktop-switcher-fixture.zig", .step = "switcher-fixture", .install = true },
-        .{ .name = "desktop-settings-fixture", .source = "tests/desktop-settings-fixture.zig", .step = "settings-fixture", .install = true },
-        .{ .name = "desktop-askpass-fixture", .source = "tests/desktop-askpass-fixture.zig", .step = "askpass-fixture", .install = true },
-        .{ .name = "desktop-polkit-fixture", .source = "tests/desktop-polkit-fixture.zig", .step = "polkit-fixture", .install = true },
-        .{ .name = "desktop-polkit-agent-fixture", .source = "tests/desktop-polkit-agent-fixture.zig", .step = "polkit-agent-fixture" },
-        .{ .name = "desktop-screenshot-fixture", .source = "tests/desktop-screenshot-fixture.zig", .step = "screenshot-fixture", .install = true },
-        .{ .name = "desktop-command-fixture", .source = "tests/desktop-command-fixture.zig", .step = "command-fixture", .install = true },
-        .{ .name = "desktop-notifications-fixture", .source = "tests/desktop-notifications-fixture.zig", .step = "notifications-fixture", .install = true },
-        .{ .name = "desktop-session-fixture", .source = "tests/desktop-session-fixture.zig", .step = "session-fixture", .test_runner = true },
-        .{ .name = "desktop-memory-tests", .source = "tests/desktop-memory-tests.zig", .step = "memory-tests", .test_runner = true },
-    };
+    const fixtures_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-fixtures.zig"), .target = target, .optimize = optimize });
+    fixtures_module.addImport("desktop", desktop);
+    const desktop_fixture = b.addExecutable(.{ .name = "desktop-fixture", .root_module = fixtures_module });
+    b.getInstallStep().dependOn(&b.addInstallArtifact(desktop_fixture, fixture_install).step);
     const capture = b.step("portal-capture-fixtures", "Build the capture protocol test clients");
-    for (fixtures) |fixture| {
-        const module = b.createModule(.{ .root_source_file = b.path(fixture.source), .target = target, .optimize = optimize });
-        module.addImport("desktop", desktop);
-        const artifact = if (fixture.library)
-            b.addLibrary(.{ .name = fixture.name, .root_module = module, .linkage = .dynamic })
-        else if (fixture.test_runner)
-            b.addTest(.{ .name = fixture.name, .root_module = module, .filters = if (std.mem.eql(u8, fixture.step, "memory-tests")) &.{"memory:"} else &.{"session:"} })
-        else
-            b.addExecutable(.{ .name = fixture.name, .root_module = module });
-        const install = b.addInstallArtifact(artifact, if (fixture.library) .{} else fixture_install);
-        if (fixture.install) b.getInstallStep().dependOn(&install.step);
+    for ([_]struct { name: []const u8, step: []const u8 }{
+        .{ .name = "desktop-compositor-fixture", .step = "compositor-fixture" },
+        .{ .name = "desktop-secrets-pam-fixture", .step = "secrets-pam-fixture" },
+        .{ .name = "desktop-secrets-fixture", .step = "secrets-fixture" },
+        .{ .name = "desktop-portal-fixture", .step = "portal-fixture" },
+        .{ .name = "desktop-portal-chooser-fixture", .step = "portal-chooser-fixture" },
+        .{ .name = "desktop-portal-video-fixture", .step = "portal-video-fixture" },
+        .{ .name = "desktop-pointer-fixture", .step = "pointer-fixture" },
+        .{ .name = "desktop-battery-fixture", .step = "battery-fixture" },
+        .{ .name = "desktop-audio-fixture", .step = "audio-fixture" },
+        .{ .name = "desktop-backlight-fixture", .step = "backlight-fixture" },
+        .{ .name = "desktop-network-fixture", .step = "network-fixture" },
+        .{ .name = "desktop-idle-fixture", .step = "idle-fixture" },
+        .{ .name = "desktop-lock-fixture", .step = "lock-fixture" },
+        .{ .name = "desktop-apps-fixture", .step = "apps-fixture" },
+        .{ .name = "desktop-dash-fixture", .step = "dash-fixture" },
+        .{ .name = "desktop-widgets-fixture", .step = "widgets-fixture" },
+        .{ .name = "desktop-switcher-fixture", .step = "switcher-fixture" },
+        .{ .name = "desktop-settings-fixture", .step = "settings-fixture" },
+        .{ .name = "desktop-askpass-fixture", .step = "askpass-fixture" },
+        .{ .name = "desktop-polkit-fixture", .step = "polkit-fixture" },
+        .{ .name = "desktop-polkit-agent-fixture", .step = "polkit-agent-fixture" },
+        .{ .name = "desktop-screenshot-fixture", .step = "screenshot-fixture" },
+        .{ .name = "desktop-command-fixture", .step = "command-fixture" },
+        .{ .name = "desktop-notifications-fixture", .step = "notifications-fixture" },
+    }) |fixture| {
+        const install = b.addInstallArtifact(desktop_fixture, .{ .dest_dir = .{ .override = .{ .custom = test_bin } }, .dest_sub_path = fixture.name });
         const step = if (b.top_level_steps.get(fixture.step)) |existing| &existing.step else b.step(fixture.step, "Build isolated test client");
         step.dependOn(&install.step);
         if (std.mem.eql(u8, fixture.step, "portal-fixture") or std.mem.eql(u8, fixture.step, "portal-video-fixture") or std.mem.eql(u8, fixture.step, "pointer-fixture")) capture.dependOn(&install.step);
+    }
+    for ([_]struct { name: []const u8, source: []const u8, step: []const u8, library: bool = false }{
+        .{ .name = "pam_desktop_secrets", .source = "desktop-secrets-pam.zig", .step = "secrets-pam", .library = true },
+        .{ .name = "desktop_secrets_test_token", .source = "tests/desktop-secrets-pam-token.zig", .step = "secrets-pam-fixture", .library = true },
+        .{ .name = "desktop-session-fixture", .source = "tests/desktop-session-fixture.zig", .step = "session-fixture" },
+        .{ .name = "desktop-memory-tests", .source = "tests/desktop-memory-tests.zig", .step = "memory-tests" },
+    }) |target_spec| {
+        const module = b.createModule(.{ .root_source_file = b.path(target_spec.source), .target = target, .optimize = optimize });
+        module.addImport("desktop", desktop);
+        const artifact = if (target_spec.library)
+            b.addLibrary(.{ .name = target_spec.name, .root_module = module, .linkage = .dynamic })
+        else
+            b.addTest(.{ .name = target_spec.name, .root_module = module, .filters = if (std.mem.eql(u8, target_spec.step, "memory-tests")) &.{"memory:"} else &.{"session:"} });
+        const install = b.addInstallArtifact(artifact, if (target_spec.library) .{} else fixture_install);
+        if (target_spec.library) b.getInstallStep().dependOn(&install.step);
+        const step = if (b.top_level_steps.get(target_spec.step)) |existing| &existing.step else b.step(target_spec.step, "Build isolated test client");
+        step.dependOn(&install.step);
     }
 }

@@ -644,16 +644,7 @@ test "settings read schema defaults and keep memory-backend writes" {
     try std.testing.expect((try settings.keys(arena.allocator())).len > 20);
 }
 
-/// A libc mutex: usable from any thread without a std.Io instance.
-const Mutex = struct {
-    inner: std.c.pthread_mutex_t = .{},
-    fn lock(self: *Mutex) void {
-        _ = std.c.pthread_mutex_lock(&self.inner);
-    }
-    fn unlock(self: *Mutex) void {
-        _ = std.c.pthread_mutex_unlock(&self.inner);
-    }
-};
+const Mutex = @import("desktop-util.zig").Mutex;
 
 test "dconf values match GLib" {
     defer deinit();

@@ -86,19 +86,6 @@
               git commit -m "flake.lock: update inputs" -m "$(cat "$work_dir/diff")" --only -- flake.lock
             '';
           };
-
-          iso =
-            (lib.nixosSystem {
-              system = "x86_64-linux";
-              modules = [
-                "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-graphical-gnome.nix"
-                {
-                  environment.systemPackages = [
-                    (pkgs.writers.writeGoBin "nixos-installer" { } ./nixos-installer.go)
-                  ];
-                }
-              ];
-            }).config.system.build.isoImage;
         }
       );
 

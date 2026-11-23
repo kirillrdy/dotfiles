@@ -1,32 +1,21 @@
 { pkgs, ... }:
 {
-  environment.systemPackages =
-    (import ./common.nix pkgs)
-    ++ (with pkgs; [
-      stats
-      codexbar
-      btop
-    ]);
+  imports = [ ./common.nix ];
+
+  environment.systemPackages = with pkgs; [
+    stats
+    codexbar
+    btop
+  ];
 
   networking.hostName = "shirahama";
 
   nix.settings = {
     experimental-features = "nix-command flakes";
     sandbox = "relaxed";
-    trusted-users = [ "kirillvr" ];
   };
 
-  environment.variables = {
-    EDITOR = "nvim";
-    NEOVIDE_FORK = "1";
-    GIT_CONFIG_SYSTEM = "/etc/gitconfig";
-  };
-
-  programs.git.enable = true;
-  programs.git.config = {
-    user.name = "Kirill Radzikhovskyy";
-    user.email = "kirillrdy@gmail.com";
-  };
+  environment.variables.GIT_CONFIG_SYSTEM = "/etc/gitconfig";
 
   programs.bash.completion.enable = true;
   programs.bash.interactiveShellInit = ''PS1='\[\e[32m\]\u@\h:\w> \[\e[0m\]' '';
@@ -66,6 +55,4 @@
 
   # The platform the configuration will be used on.
   nixpkgs.hostPlatform = "aarch64-darwin";
-  nixpkgs.config.allowUnfree = true;
-  nixpkgs.overlays = [ (import ./overlays.nix) ];
 }

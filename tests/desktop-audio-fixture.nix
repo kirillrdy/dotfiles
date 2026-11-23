@@ -1,10 +1,6 @@
 { pkgs }:
 import ./fixture.nix { inherit pkgs; } {
   name = "desktop-audio-check";
-  fixture = {
-    name = "desktop-audio-fixture";
-    steps = "audio-fixture";
-  };
   nativeBuildInputs = [
     pkgs.dbus
     pkgs.pipewire
@@ -16,13 +12,12 @@ import ./fixture.nix { inherit pkgs; } {
   headless = true;
   script =
     {
-      fixture,
       desktop,
       dbusRun,
       ...
     }:
     ''
-      ${dbusRun} python3 - --fixture ${fixture}/bin/desktop-audio-fixture \
+      ${dbusRun} python3 - --fixture ${desktop.tests}/bin/desktop-audio-fixture \
         --desktop ${desktop}/bin/desktop-zig --pointer ${desktop.tests}/bin/desktop-pointer-fixture <<'PY'
       import argparse
       import json

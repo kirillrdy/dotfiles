@@ -35,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
         for ([_][]const u8{ "DESKTOP_APPS_FIXTURE_ROOT", "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_CACHE_HOME" }) |key| try env.put(key, root);
         try env.put("XDG_CURRENT_DESKTOP", "wlroots");
         try env.put("LANGUAGE", "C");
-        var child = try std.process.spawn(init.io, .{ .argv = &.{try std.process.executablePathAlloc(init.io, a)}, .environ_map = &env });
+        var child = try std.process.spawn(init.io, .{ .argv = &.{args[0]}, .environ_map = &env });
         const term = try child.wait(init.io);
         if (term != .exited or term.exited != 0) return error.FixtureFailed;
         return;
@@ -182,7 +182,7 @@ pub fn main(init: std.process.Init) !void {
     launcher.present();
     const marker = try std.fmt.allocPrint(a, "{s}/launched", .{base});
     var command: std.ArrayList(u8) = .empty;
-    try apps.appinfo.shellQuote(a, &command, try std.process.executablePathAlloc(init.io, a));
+    try apps.appinfo.shellQuote(a, &command, args[0]);
     try command.appendSlice(a, " --record ");
     try apps.appinfo.shellQuote(a, &command, marker);
     const success = try apps.App.fromCommandLine(init.gpa, command.items, "Launch fixture");

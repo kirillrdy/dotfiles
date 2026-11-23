@@ -1,11 +1,6 @@
 { pkgs }:
 import ./fixture.nix { inherit pkgs; } {
   name = "desktop-secrets-check";
-  fixture = {
-    name = "desktop-secrets-fixture";
-    steps = "secrets-fixture secrets-pam secrets-pam-fixture";
-    stripZigRef = true;
-  };
   pygobject = true;
   withDesktop = true;
   runtimeDir = true;
@@ -23,7 +18,6 @@ import ./fixture.nix { inherit pkgs; } {
   script =
     {
       desktop,
-      fixture,
       dbusRun,
       ...
     }:
@@ -31,7 +25,7 @@ import ./fixture.nix { inherit pkgs; } {
       export DBUS_SYSTEM_BUS_ADDRESS=unix:path="$TMPDIR/nonexistent-system-bus"
       export G_DEBUG=fatal-criticals
       ${dbusRun} python3 - \
-        --fixture ${fixture}/bin/desktop-secrets-fixture \
+        --fixture ${desktop.tests}/bin/desktop-secrets-fixture \
         --secret-tool ${pkgs.libsecret}/bin/secret-tool \
         --compositor ${desktop}/bin/desktop-zig <<'PY'
       import argparse
@@ -332,9 +326,9 @@ import ./fixture.nix { inherit pkgs; } {
               compositor.wait(timeout=10)
       PY
       python3 - \
-        --fixture ${fixture}/bin/desktop-secrets-pam-fixture \
-        --bridge ${fixture}/lib/libpam_desktop_secrets.so \
-        --token ${fixture}/lib/libdesktop_secrets_test_token.so \
+        --fixture ${desktop.tests}/bin/desktop-secrets-pam-fixture \
+        --bridge ${desktop}/lib/libpam_desktop_secrets.so \
+        --token ${desktop.tests}/lib/libdesktop_secrets_test_token.so \
         --permit ${pkgs.pam}/lib/security/pam_permit.so <<'PY'
       import argparse
       import os

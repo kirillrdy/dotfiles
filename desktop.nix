@@ -19,6 +19,31 @@ let
     gtk-cursor-theme-size=${toString cursorSize}
   '';
   desktopZig = import ./desktop-zig.nix { inherit pkgs; };
+  secretsPam = service: {
+    enableGnomeKeyring = false;
+    rules.auth = {
+      # The final pam_unix is "sufficient" and ends the stack, so prompt with an
+      # optional pam_unix first, capture the token, and let try_first_pass reuse it.
+      desktop-secrets-unix = {
+        order = service.rules.auth.unix.order - 20;
+        control = "optional";
+        modulePath = config.security.pam.pam_unixModulePath;
+        settings.nullok = service.allowNullPassword;
+      };
+      desktop-secrets = {
+        order = service.rules.auth.unix.order - 10;
+        control = "optional";
+        modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
+      };
+    };
+    # After pam_systemd, which provides XDG_SESSION_ID.
+    rules.session.desktop-secrets = {
+      order = service.rules.session.systemd.order + 1;
+      control = "optional";
+      modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
+      settings.helper = "${shell}";
+    };
+  };
 
 in
 lib.mkIf enableLightDesktop {
@@ -120,55 +145,10 @@ lib.mkIf enableLightDesktop {
     startSession = true;
     enableGnomeKeyring = false;
   };
-  security.pam.services.desktop-login = {
+  security.pam.services.desktop-login = secretsPam config.security.pam.services.desktop-login // {
     startSession = true;
-    enableGnomeKeyring = false;
-    rules.auth = {
-      desktop-secrets-unix = {
-        order = config.security.pam.services.desktop-login.rules.auth.unix.order - 20;
-        control = "optional";
-        modulePath = config.security.pam.pam_unixModulePath;
-        settings.nullok = config.security.pam.services.desktop-login.allowNullPassword;
-      };
-      desktop-secrets = {
-        order = config.security.pam.services.desktop-login.rules.auth.unix.order - 10;
-        control = "optional";
-        modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
-      };
-    };
-    # After pam_systemd, which provides XDG_SESSION_ID.
-    rules.session.desktop-secrets = {
-      order = config.security.pam.services.desktop-login.rules.session.systemd.order + 1;
-      control = "optional";
-      modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
-      settings.helper = "${shell}";
-    };
   };
-  security.pam.services.login = {
-    enableGnomeKeyring = false;
-    rules.auth = {
-      # The final pam_unix is "sufficient" and ends the stack, so prompt with an
-      # optional pam_unix first, capture the token, and let try_first_pass reuse it.
-      desktop-secrets-unix = {
-        order = config.security.pam.services.login.rules.auth.unix.order - 20;
-        control = "optional";
-        modulePath = config.security.pam.pam_unixModulePath;
-        settings.nullok = config.security.pam.services.login.allowNullPassword;
-      };
-      desktop-secrets = {
-        order = config.security.pam.services.login.rules.auth.unix.order - 10;
-        control = "optional";
-        modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
-      };
-    };
-    # After pam_systemd, which provides XDG_SESSION_ID.
-    rules.session.desktop-secrets = {
-      order = config.security.pam.services.login.rules.session.systemd.order + 1;
-      control = "optional";
-      modulePath = "${desktopZig}/lib/libpam_desktop_secrets.so";
-      settings.helper = "${shell}";
-    };
-  };
+  security.pam.services.login = secretsPam config.security.pam.services.login;
   services.gnome.gcr-ssh-agent.enable = false;
   programs.ssh = {
     startAgent = true;

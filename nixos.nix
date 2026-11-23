@@ -7,15 +7,14 @@
   ...
 }:
 {
-  imports = [ ./desktop.nix ];
+  imports = [
+    ./common.nix
+    ./desktop.nix
+  ];
   #boot.kernelPackages = pkgs.linuxPackages_7_2;
   boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
   boot.loader.efi.canTouchEfiVariables = true;
   boot.loader.systemd-boot.enable = true;
-  environment.variables = {
-    EDITOR = "nvim";
-    NEOVIDE_FORK = 1;
-  };
   fileSystems."/" = {
     device = "zroot/root";
     fsType = "zfs";
@@ -50,13 +49,6 @@
       "silverpond:DvvEdyKZvc86cR1o/a+iJxnb7JxMCBzvSTjjEQIY8+g="
       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
     ];
-    trusted-users = [ "kirillvr" ];
-  };
-  nixpkgs.config.allowUnfree = true;
-  nixpkgs.overlays = [ (import ./overlays.nix) ];
-  programs.git.config = {
-    user.name = "Kirill Radzikhovskyy";
-    user.email = "kirillrdy@gmail.com";
   };
   services.desktopManager.gnome.enable = !enableLightDesktop;
   environment.gnome.excludePackages = with pkgs; [
@@ -79,7 +71,6 @@
   hardware.enableRedistributableFirmware = true;
   hardware.firmwareCompression = "xz";
   hardware.bluetooth.enable = false;
-  programs.git.enable = true;
   programs.bash.interactiveShellInit = ''
     # tss            -> toggle to the other logged-in tailscale account
     # tss <name|id>  -> switch to a specific account
@@ -129,8 +120,7 @@
   hardware.nvidia-container-toolkit.enable = enableNvidia;
   hardware.graphics.extraPackages = lib.optional (!enableNvidia) pkgs.intel-compute-runtime;
   environment.systemPackages =
-    (import ./common.nix pkgs)
-    ++ (with pkgs; [
+    (with pkgs; [
       (if enableNvidia then btop-cuda else btop)
       (if enableNvidia then nvtopPackages.nvidia else nvtopPackages.intel)
       file

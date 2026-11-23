@@ -199,46 +199,6 @@ test "capture normalization handles padded byte formats and rejects incomplete r
         .format = .rgb,
     }));
 }
-/// Per-axis filter taps: box averaging when shrinking, bilinear when growing,
-/// with edges padded from the nearest source pixel.
-const Taps = struct {
-    first: []u32,
-    weights: [][]f32,
-
-    fn init(a: std.mem.Allocator, source: u32, target: u32) !Taps {
-        const first = try a.alloc(u32, target);
-        const weights = try a.alloc([]f32, target);
-        const scale = @as(f64, @floatFromInt(source)) / @as(f64, @floatFromInt(target));
-        const last: f64 = @floatFromInt(source - 1);
-        for (0..target) |i| {
-            const fi: f64 = @floatFromInt(i);
-            if (scale > 1) {
-                const lo = fi * scale;
-                const hi = @min((fi + 1) * scale, @as(f64, @floatFromInt(source)));
-                const start: u32 = @intFromFloat(@floor(lo));
-                const end: u32 = @intFromFloat(@min(@ceil(hi), @as(f64, @floatFromInt(source))));
-                first[i] = start;
-                weights[i] = try a.alloc(f32, end - start);
-                for (weights[i], start..) |*w, k| {
-                    const fk: f64 = @floatFromInt(k);
-                    w.* = @floatCast((@min(fk + 1, hi) - @max(fk, lo)) / scale);
-                }
-            } else {
-                const center = std.math.clamp((fi + 0.5) * scale - 0.5, 0, last);
-                const start: u32 = @intFromFloat(@floor(center));
-                const t: f32 = @floatCast(center - @floor(center));
-                first[i] = start;
-                if (start + 1 < source and t > 0) {
-                    weights[i] = try a.dupe(f32, &.{ 1 - t, t });
-                } else {
-                    weights[i] = try a.dupe(f32, &.{1});
-                }
-            }
-        }
-        return .{ .first = first, .weights = weights };
-    }
-};
-
 /// Area-averages when shrinking and interpolates bilinearly when growing,
 /// padding edges from the nearest pixel, like Cairo's GOOD filter.
 pub fn resample(allocator: std.mem.Allocator, source: Image, width: u32, height: u32) !Image {
@@ -253,30 +213,15 @@ pub fn resample(allocator: std.mem.Allocator, source: Image, width: u32, height:
         for (0..height) |y| @memcpy(output[y * width ..][0..width], input[y * in_stride ..][0..width]);
         return image;
     }
-    var arena: std.heap.ArenaAllocator = .init(allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const horizontal = try Taps.init(a, source.width, width);
-    const vertical = try Taps.init(a, source.height, height);
-    // Horizontal pass into premultiplied float channels.
-    const rows = try a.alloc([4]f32, @as(usize, width) * source.height);
-    for (0..source.height) |y| for (0..width) |x| {
-        var sum: [4]f32 = @splat(0);
-        for (horizontal.weights[x], horizontal.first[x]..) |w, k| {
-            const pixel = input[y * in_stride + k];
-            inline for (0..4) |channel| sum[channel] += w * @as(f32, @floatFromInt((pixel >> (24 - 8 * channel)) & 255));
-        }
-        rows[y * width + x] = sum;
-    };
-    for (0..height) |y| for (0..width) |x| {
-        var sum: [4]f32 = @splat(0);
-        for (vertical.weights[y], vertical.first[y]..) |w, k| {
-            const value = rows[k * width + x];
-            inline for (0..4) |channel| sum[channel] += w * value[channel];
-        }
-        var pixel: u32 = 0;
-        inline for (0..4) |channel| pixel |= @as(u32, @intFromFloat(@round(std.math.clamp(sum[channel], 0, 255)))) << (24 - 8 * channel);
-        output[y * width + x] = pixel;
-    };
+    @memset(output, 0);
+    const canvas = @import("desktop-canvas.zig");
+    var cr = canvas.Context.init(allocator, .{ .pixels = output, .width = width, .height = height, .stride = width });
+    defer cr.deinit();
+    cr.scale(@as(f64, @floatFromInt(width)) / @as(f64, @floatFromInt(source.width)), @as(f64, @floatFromInt(height)) / @as(f64, @floatFromInt(source.height)));
+    cr.setSourceImage(canvas.Image.fromRaster(source.view()), 0, 0);
+    cr.setExtend(.pad);
+    cr.setFilter(.good);
+    cr.setOperator(.source);
+    cr.paint();
     return image;
 }

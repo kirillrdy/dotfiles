@@ -35,8 +35,20 @@ pub const Buffer = struct {
     pub fn value(self: *const Buffer) []const u8 {
         return self.bytes[0..self.len];
     }
+    pub const slice = value;
     pub fn valueZ(self: *const Buffer) [:0]const u8 {
         return self.bytes[0..self.len :0];
+    }
+    pub fn charCount(self: *const Buffer) usize {
+        return self.characters(self.len);
+    }
+    pub fn append(self: *Buffer, value_to_append: []const u8) void {
+        self.end(true, false);
+        self.insert(value_to_append) catch {};
+    }
+    pub fn backspace(self: *Buffer) void {
+        self.end(true, false);
+        self.erase(false, false);
     }
     pub fn selectAll(self: *Buffer) void {
         self.anchor = 0;
@@ -104,7 +116,7 @@ pub const Buffer = struct {
     }
 };
 
-pub const Rect = struct { x: f64, y: f64, width: f64, height: f64 };
+pub const Rect = raster.Rect;
 pub const Entry = struct {
     allocator: std.mem.Allocator,
     buffer: *Buffer,
@@ -450,6 +462,10 @@ test "password buffer edits Unicode selections, rejects invalid input atomically
     buffer.selectAll();
     try buffer.insert("x");
     for (buffer.bytes[1..]) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
+    buffer.append("日本");
+    try std.testing.expectEqual(@as(usize, 3), buffer.charCount());
+    buffer.backspace();
+    try std.testing.expectEqualStrings("x日", buffer.slice());
     buffer.clear();
     try std.testing.expectEqual(@as(usize, 0), buffer.len);
     for (buffer.bytes) |byte| try std.testing.expectEqual(@as(u8, 0), byte);

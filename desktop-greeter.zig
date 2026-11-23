@@ -429,8 +429,8 @@ pub fn run(a: std.mem.Allocator, dm_fd: c_int) !void {
     }
     defer if (compositor) |handle| handle.stop();
 
-    const password = try SecretBuffer.createLocked();
-    defer password.destroyLocked();
+    const password = try SecretBuffer.create();
+    defer password.destroy();
 
     const users = try discoverUsers(a);
     defer {

@@ -1,11 +1,11 @@
-//! Shared UI primitives and locked secret buffer for the display manager greeter
-//! and the session lock screen. No credentials ever enter the drawing helpers.
+//! Shared UI primitives for the display manager greeter and the session lock
+//! screen. No credentials ever enter the drawing helpers.
 const std = @import("std");
-const libc = @import("desktop-libc.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const decode = @import("desktop-decode.zig");
 const u = @import("desktop-util.zig");
+pub const SecretBuffer = @import("desktop-password-entry.zig").Buffer;
 
 pub const Status = enum { ready, authenticating, failed };
 
@@ -19,57 +19,6 @@ pub const row_spacing: f64 = 12;
 pub const dot_radius: f64 = 3.5;
 pub const dot_spacing: usize = 11;
 pub const max_dots: usize = (@as(usize, @intFromFloat(entry_width)) - 24) / dot_spacing;
-
-/// Fixed-size UTF-8 secret buffer with secure erasure and optional mlock-backed allocation.
-pub const SecretBuffer = struct {
-    bytes: [1024:0]u8 = @splat(0),
-    len: usize = 0,
-
-    /// Allocates on dedicated pages and locks them into RAM so munlock never
-    /// unlocks unrelated allocations.
-    pub fn createLocked() !*SecretBuffer {
-        const self = try std.heap.page_allocator.create(SecretBuffer);
-        errdefer std.heap.page_allocator.destroy(self);
-        self.* = .{};
-        if (libc.mlock(self, @sizeOf(SecretBuffer)) != 0) return error.SecretMemoryLockFailed;
-        return self;
-    }
-
-    pub fn destroyLocked(self: *SecretBuffer) void {
-        self.clear();
-        _ = libc.munlock(self, @sizeOf(SecretBuffer));
-        std.heap.page_allocator.destroy(self);
-    }
-
-    pub fn clear(self: *SecretBuffer) void {
-        std.crypto.secureZero(u8, &self.bytes);
-        self.len = 0;
-    }
-
-    pub fn backspace(self: *SecretBuffer) void {
-        if (self.len == 0) return;
-        self.len -= 1;
-        while (self.len > 0 and self.bytes[self.len] & 0xc0 == 0x80) self.len -= 1;
-        std.crypto.secureZero(u8, self.bytes[self.len..]);
-    }
-
-    pub fn append(self: *SecretBuffer, value: []const u8) void {
-        if (value.len > self.bytes.len - self.len - 1) return;
-        @memcpy(self.bytes[self.len..][0..value.len], value);
-        self.len += value.len;
-        self.bytes[self.len] = 0;
-    }
-
-    pub fn slice(self: *const SecretBuffer) []const u8 {
-        return self.bytes[0..self.len];
-    }
-
-    pub fn charCount(self: *const SecretBuffer) usize {
-        var count: usize = 0;
-        for (self.slice()) |byte| count += @intFromBool(byte & 0xc0 != 0x80);
-        return count;
-    }
-};
 
 /// Monotonic spinner rotation in radians (800 ms period).
 pub fn spinPhase() f64 {
@@ -160,23 +109,4 @@ pub fn paintSpinner(canvas: raster.Canvas, cx: f64, cy: f64, spin: f64) void {
     const track: raster.Rect = .{ .x = cx - 8, .y = cy - 8, .width = 16, .height = 16 };
     canvas.draw(&.{track.stroke(8, 2)}, raster.Color.rgb(0xffffff, 0.15));
     canvas.draw(&.{.{ .arc = .{ .center = .{ .x = cx, .y = cy }, .radius = 8, .start = spin, .end = spin + std.math.pi * 0.75, .stroke = 2 } }}, raster.Color.rgb(0xffffff, 0.9));
-}
-
-test "secret buffer handles Unicode backspace, char count, capacity, and complete erasure" {
-    var password: SecretBuffer = .{};
-    password.append("a日本");
-    try std.testing.expectEqual(@as(usize, 3), password.charCount());
-    password.backspace();
-    try std.testing.expectEqualStrings("a日", password.slice());
-    try std.testing.expectEqual(@as(usize, 2), password.charCount());
-    password.backspace();
-    password.backspace();
-    password.backspace();
-    try std.testing.expectEqual(@as(usize, 0), password.len);
-    var too_long: [1024]u8 = @splat('a');
-    password.append(&too_long);
-    try std.testing.expectEqual(@as(usize, 0), password.len);
-    password.append("secret");
-    password.clear();
-    for (password.bytes) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
 }
