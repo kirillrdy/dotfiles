@@ -392,6 +392,7 @@ const Server = struct {
                 self.views.insert(self.a, 0, v) catch @panic("view ordering");
             }
         } else self.keyboardFocus(null);
+        self.updatePanels();
     }
     fn refocus(self: *Server) void {
         if (self.locked) return;
@@ -426,11 +427,16 @@ const Server = struct {
             }
         }
     }
+    fn updatePanels(self: *Server) void {
+        const overview = self.overviewActive();
+        for (self.outputs.items) |output| output.updatePanel(overview);
+    }
     fn switchWorkspace(self: *Server, index: u32) void {
         if (self.locked or index >= 4) return;
         self.workspace = index;
         self.updateInhibition();
         for (self.views.items) |v| c.wlr_scene_node_set_enabled(&v.tree.node, v.mapped and v.workspace == index);
+        self.updatePanels();
         Overview.broadcastWorkspaces(self);
     }
     fn representative(self: *Server, view: *View) *View {
@@ -849,6 +855,26 @@ const Output = struct {
     usable: c.wlr_box = std.mem.zeroes(c.wlr_box),
     hooks: Hooks = .{},
     pressure: hot_corner.Pressure = .{},
+    fn frontView(self: *Output) ?*View {
+        const children = &self.s.windows.children;
+        var link = children.prev;
+        while (link != children) : (link = link.*.prev) {
+            const node: *c.wlr_scene_node = @fieldParentPtr("link", @as(*c.wl_list, link));
+            const target = cast(Target, node.data orelse continue);
+            const view = target.view orelse continue;
+            if (view.mapped and view.workspace == self.s.workspace and view.output == self) return view;
+        }
+        return null;
+    }
+    fn updatePanel(self: *Output, overview: bool) void {
+        const fullscreen = if (self.frontView()) |view| view.fullscreen else false;
+        // Keep the panel's reserved space so windows behind fullscreen stay in place.
+        for (self.s.layers.items) |layer| {
+            if (layer.wlr.output == self.wlr and same(layer.wlr.namespace, "desktop-panel")) {
+                c.wlr_scene_node_set_enabled(&layer.scene.tree.*.node, overview or !fullscreen);
+            }
+        }
+    }
     fn barrierSize(self: *Output) f64 {
         for (self.s.layers.items) |layer| {
             if (layer.wlr.output == self.wlr and same(layer.wlr.namespace, "desktop-panel") and layer.wlr.current.exclusive_zone > 0)
@@ -893,6 +919,7 @@ const Output = struct {
             }
         }
         for (self.s.views.items) |v| if (v.output == self and v.alive) v.configure();
+        self.updatePanel(self.s.overviewActive());
         if (self.s.locked) if (self.s.lock) |lock| lock.resize(self);
     }
     fn frame(ptr: *anyopaque, _: ?*anyopaque) void {
@@ -925,6 +952,7 @@ const Output = struct {
             v.output = if (self.s.outputs.items.len > 0) self.s.outputs.items[0] else null;
             v.configure();
         };
+        self.s.updatePanels();
         if (self.s.lock) |lock| {
             var i: usize = 0;
             while (i < lock.blanks.items.len) {
@@ -1040,6 +1068,7 @@ const View = struct {
             self.s.focused = null;
             self.s.refocus();
         }
+        self.s.updatePanels();
         if (self.s.cycling) self.s.showSwitcher();
     }
     fn commit(ptr: *anyopaque, _: ?*anyopaque) void {
@@ -1050,6 +1079,7 @@ const View = struct {
     fn destroy(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(View, ptr);
         defer self.s.a.destroy(self);
+        self.tree.node.data = null;
         self.removePreviews();
         self.alive = false;
         if (self.s.cycle_origin == self) self.s.cycle_origin = null;
@@ -1112,6 +1142,7 @@ const View = struct {
         const self = cast(View, ptr);
         self.fullscreen = self.xdg.requested.fullscreen;
         self.configure();
+        if (self.output) |output| output.updatePanel(self.s.overviewActive());
     }
     fn foreignActivate(ptr: *anyopaque, _: ?*anyopaque) void {
         const self = cast(View, ptr);
@@ -1336,7 +1367,10 @@ const Layer = struct {
         for (self.s.outputs.items) |o| if (o.wlr == self.wlr.output) o.arrange();
         self.applyPreviews();
         self.s.raisePanel();
-        if (same(self.wlr.namespace, "desktop-overview")) Overview.broadcastOverview(self.s);
+        if (same(self.wlr.namespace, "desktop-overview")) {
+            self.s.updatePanels();
+            Overview.broadcastOverview(self.s);
+        }
         if (!self.s.locked and self.wlr.current.keyboard_interactive != c.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) self.s.keyboardFocus(self.wlr.surface);
     }
     fn unmap(ptr: *anyopaque, _: ?*anyopaque) void {
@@ -1344,7 +1378,10 @@ const Layer = struct {
         const was_mapped = self.mapped;
         self.mapped = false;
         self.clearPreviews();
-        if (was_mapped and same(self.wlr.namespace, "desktop-overview")) Overview.broadcastOverview(self.s);
+        if (was_mapped and same(self.wlr.namespace, "desktop-overview")) {
+            self.s.updatePanels();
+            Overview.broadcastOverview(self.s);
+        }
         if (self.s.seat.keyboard_state.focused_surface == self.wlr.surface) self.s.refocus();
     }
     fn destroy(ptr: *anyopaque, _: ?*anyopaque) void {
@@ -1357,7 +1394,10 @@ const Layer = struct {
         self.previews.deinit(self.s.a);
         self.hooks.clear();
         remove(*Layer, &self.s.layers, self);
-        if (was_mapped and same(self.wlr.namespace, "desktop-overview")) Overview.broadcastOverview(self.s);
+        if (was_mapped and same(self.wlr.namespace, "desktop-overview")) {
+            self.s.updatePanels();
+            Overview.broadcastOverview(self.s);
+        }
         for (self.s.outputs.items) |o| if (o.wlr == self.wlr.output) o.arrange();
     }
 };
@@ -1876,6 +1916,7 @@ const Overview = struct {
             v.workspace = index;
             c.wlr_scene_node_set_enabled(&v.tree.node, v.mapped and index == s.workspace);
             if (s.focused == v and index != s.workspace) s.refocus();
+            if (v.output) |output| output.updatePanel(s.overviewActive());
         }
     }
 };
