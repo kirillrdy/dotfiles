@@ -61,27 +61,36 @@ pub const Object = struct {
         else
             methods(p.pw_node_methods, self.proxy).set_param.?(iface(self.proxy).cb.data, id, 0, raw) >= 0;
     }
+    fn enumParams(self: *Object) void {
+        const id: u32 = if (self.kind == .device) p.SPA_PARAM_Route else p.SPA_PARAM_Props;
+        if (self.kind == .device)
+            _ = methods(p.pw_device_methods, self.proxy).enum_params.?(iface(self.proxy).cb.data, 0, id, 0, std.math.maxInt(u32), null)
+        else
+            _ = methods(p.pw_node_methods, self.proxy).enum_params.?(iface(self.proxy).cb.data, 0, id, 0, std.math.maxInt(u32), null);
+    }
     fn nodeInfo(data: ?*anyopaque, info: [*c]const p.pw_node_info) callconv(.c) void {
         const self = cast(Object, data);
         if (info.*.change_mask & p.PW_NODE_CHANGE_MASK_STATE != 0) self.running = info.*.state == p.PW_NODE_STATE_RUNNING;
         if (info.*.props != null) _ = p.pw_properties_update(self.properties, info.*.props);
-        if (info.*.change_mask & p.PW_NODE_CHANGE_MASK_PARAMS != 0) self.changedParams(info.*.params, info.*.n_params);
+        if (info.*.change_mask & p.PW_NODE_CHANGE_MASK_PARAMS != 0 and self.changedParams(info.*.params, info.*.n_params)) self.enumParams();
         self.registry.changed();
     }
     fn deviceInfo(data: ?*anyopaque, info: [*c]const p.pw_device_info) callconv(.c) void {
         const self = cast(Object, data);
         if (info.*.props != null) _ = p.pw_properties_update(self.properties, info.*.props);
-        if (info.*.change_mask & p.PW_DEVICE_CHANGE_MASK_PARAMS != 0) self.changedParams(info.*.params, info.*.n_params);
+        if (info.*.change_mask & p.PW_DEVICE_CHANGE_MASK_PARAMS != 0 and self.changedParams(info.*.params, info.*.n_params)) self.enumParams();
         self.registry.changed();
     }
-    fn changedParams(self: *Object, params: [*c]const p.spa_param_info, count: u32) void {
+    fn changedParams(self: *Object, params: [*c]const p.spa_param_info, count: u32) bool {
         var flags: ?u32 = null;
         for (0..count) |i| if (params[i].id == @as(u32, if (self.kind == .device) p.SPA_PARAM_Route else p.SPA_PARAM_Props)) {
             flags = params[i].flags;
             break;
         };
-        if (self.param_flags != flags) self.clearParams();
+        const changed = self.param_flags != flags;
+        if (changed) self.clearParams();
         self.param_flags = flags;
+        return changed and flags != null and (flags.? & p.SPA_PARAM_INFO_READ) != 0;
     }
     fn parameter(data: ?*anyopaque, _: c_int, id: u32, index: u32, _: u32, pod: [*c]const p.spa_pod) callconv(.c) void {
         const self = cast(Object, data);
@@ -307,10 +316,10 @@ test "unrelated parameter changes preserve Props while serial changes invalidate
         .{ .id = p.SPA_PARAM_Props, .flags = p.SPA_PARAM_INFO_READ },
         .{ .id = p.SPA_PARAM_Format, .flags = p.SPA_PARAM_INFO_READ | p.SPA_PARAM_INFO_SERIAL },
     };
-    object.changedParams(&params, params.len);
+    try std.testing.expect(!object.changedParams(&params, params.len));
     try std.testing.expectEqual(@as(usize, 1), object.params.items.len);
     params[0].flags |= p.SPA_PARAM_INFO_SERIAL;
-    object.changedParams(&params, params.len);
+    try std.testing.expect(object.changedParams(&params, params.len));
     try std.testing.expectEqual(@as(usize, 0), object.params.items.len);
 }
 test "core barriers complete only matching round trips and release earlier tickets" {
