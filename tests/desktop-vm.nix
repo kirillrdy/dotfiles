@@ -125,7 +125,7 @@ pkgs.testers.runNixOSTest {
     with subtest("full battery below 100 percent resolves to a real rendered icon"):
         assert power_property("State") == "u 4"
         assert power_property("IconName") == 's "battery-level-100-charged-symbolic"'
-        machine.succeed("test -s ${pkgs.adwaita-icon-theme}/share/icons/Adwaita/scalable/status/battery-level-100-charged-symbolic.svg")
+        machine.succeed("test -s ${pkgs.adwaita-icon-theme}/share/icons/Adwaita/symbolic/status/battery-level-100-charged-symbolic.svg")
         machine.screenshot("desktop-charged-battery")
         machine.succeed("echo Discharging > /run/test-power/BAT0/status; echo 0 > /run/test-power/AC/online; echo 72000000 > /run/test-power/BAT0/energy_now")
         machine.wait_until_succeeds(

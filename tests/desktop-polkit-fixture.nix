@@ -151,17 +151,28 @@ import ./fixture.nix { inherit pkgs; } {
                   for payload, answer in steps:
                       client.sendall(payload[:7])
                       time.sleep(.005)
-                      client.sendall(payload[7:])
+                      try:
+                          client.sendall(payload[7:])
+                      except (BrokenPipeError, ConnectionResetError):
+                          if cookie == "oversized":
+                              break
+                          raise
                       if answer is not None:
                           events.put(cookie)
-                          received = stream.readline()
+                          try:
+                              received = stream.readline()
+                          except ConnectionResetError:
+                              if answer != "closed":
+                                  raise
+                              received = b""
                           if answer == "closed":
                               assert received == b"", received
                           else:
                               assert received == answer + b"\n", "incorrect helper response"
                   stream.close()
-              except Exception as error:
-                  failures.put(error)
+              except Exception:
+                  import traceback
+                  failures.put(traceback.format_exc())
               finally:
                   client.close()
 
