@@ -42,6 +42,7 @@ const entries = [_]Entry{
 };
 
 pub fn main(init: std.process.Init) !void {
+    @import("desktop").util.io = init.io;
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     const prog = if (args.len > 0) std.fs.path.basename(args[0]) else "";
     inline for (entries) |entry| {
