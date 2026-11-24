@@ -233,10 +233,9 @@ import ./fixture.nix { inherit pkgs; } {
           baseline = pixels("hidden")
           baseline_second = pixels("hidden-second", "HEADLESS-2")
           send("volume", "up")
+          wait_for(lambda: pixels("volume") != baseline)
+          wait_for(lambda: pixels("volume-second", "HEADLESS-2") != baseline_second)
           wait_for(lambda: state()["volume"] == 55 and not state()["muted"])
-          time.sleep(0.2)
-          assert pixels("volume") != baseline
-          assert pixels("volume-second", "HEADLESS-2") != baseline_second
           assert log().count('"desktop-osd")') == 2
           assert "set_exclusive_zone(-1)" in log()
           assert "set_keyboard_interactivity(0)" in log()
