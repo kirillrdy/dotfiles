@@ -1,5 +1,6 @@
 //! Native-endian ARGB shared-memory drawing, independent of Cairo and GTK.
 const std = @import("std");
+const vec = @import("desktop-path.zig");
 
 pub const Buffer = struct {
     pixels: []u32,
@@ -40,7 +41,7 @@ pub fn over(destination: u32, source: u32) u32 {
     }
     return result;
 }
-fn colorPixel(color: Color, coverage: f64) u32 {
+pub fn colorPixel(color: Color, coverage: f64) u32 {
     const alpha: u32 = @intFromFloat(@round(std.math.clamp(color.alpha, 0, 1) * coverage * 255));
     var result = alpha << 24;
     inline for (.{ 0, 8, 16 }, .{ color.blue, color.green, color.red }) |shift, channel| {
@@ -134,7 +135,7 @@ pub const Shape = union(enum) {
             },
         };
     }
-    fn distance(self: Shape, p: Point) f64 {
+    pub fn distance(self: Shape, p: Point) f64 {
         return switch (self) {
             .rounded => |v| roundedDistance(v, @min(v.width, v.height) / 2, p),
             .rounded_rect => |v| roundedDistance(v.rect, v.radius, p),
@@ -171,6 +172,37 @@ fn roundedDistance(rect: Rect, requested: f64, p: Point) f64 {
     const x = @abs(p.x - rect.x - rect.width / 2) - rect.width / 2 + radius;
     const y = @abs(p.y - rect.y - rect.height / 2) - rect.height / 2 + radius;
     return (if (x > 0 and y > 0) length(x, y) else @max(x, y)) - radius;
+}
+
+const ScanlineSpan = struct {
+    outer_x0: usize,
+    inner_x0: usize,
+    inner_x1: usize,
+    outer_x1: usize,
+};
+
+/// Exact outer (coverage > 0) and inner (coverage == 1) pixel column ranges for a rounded rect on scanline `py`.
+fn roundedScanlineSpan(cx: f64, cy: f64, half_w: f64, half_h: f64, rad: f64, margin: f64, py: f64, origin_x: f64, scale: f64, clip_x0: usize, clip_x1: usize) ?ScanlineSpan {
+    const dy = @abs(py - cy) - half_h + rad;
+    const outer_r = rad + margin;
+    if (dy >= outer_r) return null;
+    const outer_half = if (dy <= 0) half_w + margin else half_w - rad + @sqrt(@max(0, outer_r * outer_r - dy * dy));
+    const max_f: f64 = @floatFromInt(clip_x1);
+    const outer_x0: usize = @max(clip_x0, @as(usize, @intFromFloat(std.math.clamp(@floor((cx - outer_half + origin_x) * scale), 0, max_f))));
+    const outer_x1: usize = @min(clip_x1, @as(usize, @intFromFloat(std.math.clamp(@ceil((cx + outer_half + origin_x) * scale), 0, max_f))));
+    if (outer_x1 <= outer_x0) return null;
+    const inner_r = rad - margin;
+    const inner_half: f64 = if (dy <= -margin)
+        half_w - margin
+    else if (inner_r > 0 and dy < inner_r)
+        half_w - rad + (if (dy <= 0) inner_r else @sqrt(@max(0, inner_r * inner_r - dy * dy)))
+    else
+        -1;
+    if (inner_half <= 0) return .{ .outer_x0 = outer_x0, .inner_x0 = outer_x1, .inner_x1 = outer_x1, .outer_x1 = outer_x1 };
+    // Pixel x has center (x + 0.5) / scale - origin_x; require center strictly inside [cx - inner_half, cx + inner_half].
+    const inner_x0: usize = @min(outer_x1, @max(outer_x0, @as(usize, @intFromFloat(std.math.clamp(@ceil((cx - inner_half + origin_x) * scale - 0.5), 0, max_f)))));
+    const inner_x1: usize = @min(outer_x1, @max(inner_x0, @as(usize, @intFromFloat(std.math.clamp(@floor((cx + inner_half + origin_x) * scale - 0.5) + 1, 0, max_f)))));
+    return .{ .outer_x0 = outer_x0, .inner_x0 = inner_x0, .inner_x1 = inner_x1, .outer_x1 = outer_x1 };
 }
 
 fn length(x: f64, y: f64) f64 {
@@ -210,10 +242,29 @@ pub const Canvas = struct {
         const y0: usize = @intFromFloat(std.math.clamp(@floor((bounds.y + self.origin.y) * self.scale - 1), 0, height));
         const x1: usize = @intFromFloat(std.math.clamp(@ceil((bounds.x + bounds.width + self.origin.x) * self.scale + 1), 0, width));
         const y1: usize = @intFromFloat(std.math.clamp(@ceil((bounds.y + bounds.height + self.origin.y) * self.scale + 1), 0, height));
-        if (shapes.len == 1 and shapes[0] == .polygon and shapes[0].polygon.len <= 256) {
-            self.drawPolygon(shapes[0].polygon, color, solid, x0, y0, x1, y1);
-            return;
-        }
+        if (shapes.len == 1) switch (shapes[0]) {
+            .polygon => |pts| if (pts.len <= 256) {
+                self.drawPolygon(pts, color, solid, x0, y0, x1, y1);
+                return;
+            },
+            .rounded => |r| {
+                self.drawRoundedRect(r, @min(r.width, r.height) / 2, color, solid, x0, y0, x1, y1, null);
+                return;
+            },
+            .rounded_rect => |v| {
+                self.drawRoundedRect(v.rect, v.radius, color, solid, x0, y0, x1, y1, null);
+                return;
+            },
+            .circle => |v| {
+                self.drawRoundedRect(.{ .x = v.center.x - v.radius, .y = v.center.y - v.radius, .width = 2 * v.radius, .height = 2 * v.radius }, v.radius, color, solid, x0, y0, x1, y1, null);
+                return;
+            },
+            .rounded_stroke => |v| {
+                self.drawRoundedStroke(v.rect, v.radius, v.width, color, solid, x0, y0, x1, y1);
+                return;
+            },
+            else => {},
+        };
         for (y0..y1) |y| for (x0..x1) |x| {
             const p: Point = .{ .x = (@as(f64, @floatFromInt(x)) + 0.5) / self.scale - self.origin.x, .y = (@as(f64, @floatFromInt(y)) + 0.5) / self.scale - self.origin.y };
             var distance = std.math.inf(f64);
@@ -223,6 +274,105 @@ pub const Canvas = struct {
             const dest = &self.target.pixels[y * self.target.width + x];
             dest.* = if (coverage >= 1) (if (solid >> 24 == 255) solid else over(dest.*, solid)) else over(dest.*, colorPixel(color, coverage));
         };
+    }
+
+    /// Draw a rounded rectangle, optionally skipping pixels strictly inside `occlude`
+    /// (for shadows painted beneath an opaque rounded card).
+    pub fn drawRoundedExcluded(self: Canvas, rect: Rect, requested_radius: f64, color: Color, occlude: struct { rect: Rect, radius: f64 }) void {
+        if (color.alpha <= 0 or rect.width <= 0 or rect.height <= 0) return;
+        const solid = colorPixel(color, 1);
+        if (solid == 0) return;
+        const width: f64 = @floatFromInt(self.target.width);
+        const height: f64 = @floatFromInt(self.target.height);
+        const x0: usize = @intFromFloat(std.math.clamp(@floor((rect.x + self.origin.x) * self.scale - 1), 0, width));
+        const y0: usize = @intFromFloat(std.math.clamp(@floor((rect.y + self.origin.y) * self.scale - 1), 0, height));
+        const x1: usize = @intFromFloat(std.math.clamp(@ceil((rect.x + rect.width + self.origin.x) * self.scale + 1), 0, width));
+        const y1: usize = @intFromFloat(std.math.clamp(@ceil((rect.y + rect.height + self.origin.y) * self.scale + 1), 0, height));
+        self.drawRoundedRect(rect, requested_radius, color, solid, x0, y0, x1, y1, .{ .rect = occlude.rect, .radius = occlude.radius });
+    }
+
+    fn drawRoundedRect(self: Canvas, rect: Rect, requested_radius: f64, color: Color, solid: u32, x0: usize, y0: usize, x1: usize, y1: usize, occlude: ?struct { rect: Rect, radius: f64 }) void {
+        const rad = @max(0, @min(requested_radius, @min(rect.width, rect.height) / 2));
+        const margin = 0.5 / self.scale;
+        const cx = rect.x + rect.width / 2;
+        const cy = rect.y + rect.height / 2;
+        const half_w = rect.width / 2;
+        const half_h = rect.height / 2;
+        const occ_rad = if (occlude) |o| @max(0, @min(o.radius, @min(o.rect.width, o.rect.height) / 2)) else 0;
+        for (y0..y1) |y| {
+            const py = (@as(f64, @floatFromInt(y)) + 0.5) / self.scale - self.origin.y;
+            const span = roundedScanlineSpan(cx, cy, half_w, half_h, rad, margin, py, self.origin.x, self.scale, x0, x1) orelse continue;
+            const row = self.target.pixels[y * self.target.width ..];
+            // Left antialiased fringe
+            for (span.outer_x0..span.inner_x0) |x| {
+                const px = (@as(f64, @floatFromInt(x)) + 0.5) / self.scale - self.origin.x;
+                const cov = std.math.clamp(0.5 - roundedDistance(rect, rad, .{ .x = px, .y = py }) * self.scale, 0, 1);
+                if (cov > 0) row[x] = if (cov >= 1) (if (solid >> 24 == 255) solid else over(row[x], solid)) else over(row[x], colorPixel(color, cov));
+            }
+            // Full-coverage interior, optionally split around an opaque occluder
+            if (span.inner_x1 > span.inner_x0) {
+                if (occlude) |o| {
+                    if (roundedScanlineSpan(o.rect.x + o.rect.width / 2, o.rect.y + o.rect.height / 2, o.rect.width / 2, o.rect.height / 2, occ_rad, margin, py, self.origin.x, self.scale, span.inner_x0, span.inner_x1)) |hole| {
+                        if (hole.inner_x1 > hole.inner_x0) {
+                            if (hole.inner_x0 > span.inner_x0) vec.overSolid(row[span.inner_x0..hole.inner_x0], solid);
+                            if (span.inner_x1 > hole.inner_x1) vec.overSolid(row[hole.inner_x1..span.inner_x1], solid);
+                        } else {
+                            vec.overSolid(row[span.inner_x0..span.inner_x1], solid);
+                        }
+                    } else {
+                        vec.overSolid(row[span.inner_x0..span.inner_x1], solid);
+                    }
+                } else {
+                    vec.overSolid(row[span.inner_x0..span.inner_x1], solid);
+                }
+            }
+            // Right antialiased fringe
+            for (span.inner_x1..span.outer_x1) |x| {
+                const px = (@as(f64, @floatFromInt(x)) + 0.5) / self.scale - self.origin.x;
+                const cov = std.math.clamp(0.5 - roundedDistance(rect, rad, .{ .x = px, .y = py }) * self.scale, 0, 1);
+                if (cov > 0) row[x] = if (cov >= 1) (if (solid >> 24 == 255) solid else over(row[x], solid)) else over(row[x], colorPixel(color, cov));
+            }
+        }
+    }
+
+    fn drawRoundedStroke(self: Canvas, rect: Rect, requested_radius: f64, stroke_width: f64, color: Color, solid: u32, x0: usize, y0: usize, x1: usize, y1: usize) void {
+        const rad = @max(0, @min(requested_radius, @min(rect.width, rect.height) / 2));
+        const half_stroke = stroke_width / 2;
+        const margin = 0.5 / self.scale;
+        const cx = rect.x + rect.width / 2;
+        const cy = rect.y + rect.height / 2;
+        const half_w = rect.width / 2;
+        const half_h = rect.height / 2;
+        for (y0..y1) |y| {
+            const py = (@as(f64, @floatFromInt(y)) + 0.5) / self.scale - self.origin.y;
+            const dy = @abs(py - cy) - half_h + rad;
+            const outer_r = rad + half_stroke + margin;
+            if (dy >= outer_r) continue;
+            const outer_half = if (dy <= 0) half_w + half_stroke + margin else half_w - rad + @sqrt(@max(0, outer_r * outer_r - dy * dy));
+            const row_x0: usize = @max(x0, @as(usize, @intFromFloat(std.math.clamp(@floor((cx - outer_half + self.origin.x) * self.scale), 0, @as(f64, @floatFromInt(x1))))));
+            const row_x1: usize = @min(x1, @as(usize, @intFromFloat(std.math.clamp(@ceil((cx + outer_half + self.origin.x) * self.scale), 0, @as(f64, @floatFromInt(x1))))));
+            if (row_x1 <= row_x0) continue;
+            const row = self.target.pixels[y * self.target.width ..];
+            // Skip the empty interior when the stroke doesn't reach it.
+            const inner_r = rad - half_stroke - margin;
+            const hole_half: f64 = if (dy <= -half_stroke - margin)
+                half_w - half_stroke - margin
+            else if (inner_r > 0 and dy < inner_r)
+                half_w - rad + (if (dy <= 0) inner_r else @sqrt(@max(0, inner_r * inner_r - dy * dy)))
+            else
+                -1;
+            const ranges = if (hole_half > 0) blk: {
+                const hole_x0: usize = @min(row_x1, @max(row_x0, @as(usize, @intFromFloat(std.math.clamp(@ceil((cx - hole_half + self.origin.x) * self.scale), 0, @as(f64, @floatFromInt(row_x1)))))));
+                const hole_x1: usize = @min(row_x1, @max(hole_x0, @as(usize, @intFromFloat(std.math.clamp(@floor((cx + hole_half + self.origin.x) * self.scale), 0, @as(f64, @floatFromInt(row_x1)))))));
+                break :blk [2][2]usize{ .{ row_x0, hole_x0 }, .{ hole_x1, row_x1 } };
+            } else [2][2]usize{ .{ row_x0, row_x1 }, .{ 0, 0 } };
+            for (ranges) |seg| for (seg[0]..seg[1]) |x| {
+                const px = (@as(f64, @floatFromInt(x)) + 0.5) / self.scale - self.origin.x;
+                const dist = @abs(roundedDistance(rect, rad, .{ .x = px, .y = py })) - half_stroke;
+                const cov = std.math.clamp(0.5 - dist * self.scale, 0, 1);
+                if (cov > 0) row[x] = if (cov >= 1) (if (solid >> 24 == 255) solid else over(row[x], solid)) else over(row[x], colorPixel(color, cov));
+            };
+        }
     }
 
     /// Resolve polygon interiors once per scanline and evaluate antialiasing
@@ -416,23 +566,31 @@ fn pixel(image: Image, x: usize, y: usize) [4]u32 {
     return .{ (@as(u32, rgb[0]) * alpha + 127) / 255, (@as(u32, rgb[1]) * alpha + 127) / 255, (@as(u32, rgb[2]) * alpha + 127) / 255, alpha };
 }
 
-fn transparentPixel(image: Image, x: i64, y: i64) [4]u32 {
-    if (x < 0 or y < 0 or x >= image.width or y >= image.height) return @splat(0);
-    return pixel(image, @intCast(x), @intCast(y));
+pub const Filter = enum { good, bilinear };
+pub const Extend = enum { none, pad };
+
+fn edgePixel(image: Image, x: i64, y: i64, extend: Extend) [4]u32 {
+    if (extend == .none) {
+        if (x < 0 or y < 0 or x >= image.width or y >= image.height) return @splat(0);
+        return pixel(image, @intCast(x), @intCast(y));
+    }
+    const cx: usize = @intCast(std.math.clamp(x, 0, @as(i64, image.width) - 1));
+    const cy: usize = @intCast(std.math.clamp(y, 0, @as(i64, image.height) - 1));
+    return pixel(image, cx, cy);
 }
 
-fn sampleImage(image: Image, x: f64, y: f64) u32 {
-    if (x < -1 or y < -1 or x >= @as(f64, @floatFromInt(image.width)) or y >= @as(f64, @floatFromInt(image.height))) return 0;
+fn sampleImage(image: Image, x: f64, y: f64, extend: Extend) u32 {
+    if (extend == .none and (x < -1 or y < -1 or x >= @as(f64, @floatFromInt(image.width)) or y >= @as(f64, @floatFromInt(image.height)))) return 0;
     const sx = @floor(x);
     const sy = @floor(y);
     const ix: i64 = @intFromFloat(sx);
     const iy: i64 = @intFromFloat(sy);
     const fx: u32 = @intFromFloat((x - sx) * 256);
     const fy: u32 = @intFromFloat((y - sy) * 256);
-    const a = transparentPixel(image, ix, iy);
-    const b = transparentPixel(image, ix + 1, iy);
-    const c = transparentPixel(image, ix, iy + 1);
-    const d = transparentPixel(image, ix + 1, iy + 1);
+    const a = edgePixel(image, ix, iy, extend);
+    const b = edgePixel(image, ix + 1, iy, extend);
+    const c = edgePixel(image, ix, iy + 1, extend);
+    const d = edgePixel(image, ix + 1, iy + 1, extend);
     var result: u32 = 0;
     inline for (.{ 16, 8, 0, 24 }, 0..) |shift, i| {
         const top = a[i] * (256 - fx) + b[i] * fx;
@@ -457,7 +615,7 @@ const FilterAxis = struct {
         const end = if (area) center + 0.5 + step / 2 else start + 2;
         return .{ .center = center, .step = step, .area = area, .first = @intFromFloat(@floor(start)), .last = @intFromFloat(@ceil(end)) };
     }
-    fn weight(self: FilterAxis, position: usize) f64 {
+    fn weight(self: FilterAxis, position: i64) f64 {
         const index: f64 = @floatFromInt(position);
         if (!self.area) return @max(0, 1 - @abs(index - self.center));
         const start = self.center + 0.5 - self.step / 2;
@@ -466,20 +624,24 @@ const FilterAxis = struct {
     }
 };
 
-fn filteredImage(image: Image, x: f64, y: f64, step_x: f64, step_y: f64) u32 {
-    if (step_x <= 4.0 / 3.0 and step_y <= 4.0 / 3.0) return sampleImage(image, x, y);
+fn filteredImage(image: Image, x: f64, y: f64, step_x: f64, step_y: f64, filter: Filter, extend: Extend) u32 {
+    if (filter == .bilinear or (step_x <= 4.0 / 3.0 and step_y <= 4.0 / 3.0)) return sampleImage(image, x, y, extend);
     const horizontal = FilterAxis.init(x, step_x);
     const vertical = FilterAxis.init(y, step_y);
-    const x0: usize = @intCast(std.math.clamp(horizontal.first, 0, image.width));
-    const x1: usize = @intCast(std.math.clamp(horizontal.last, 0, image.width));
-    const y0: usize = @intCast(std.math.clamp(vertical.first, 0, image.height));
-    const y1: usize = @intCast(std.math.clamp(vertical.last, 0, image.height));
+    const x0 = if (extend == .none) std.math.clamp(horizontal.first, 0, @as(i64, image.width)) else horizontal.first;
+    const x1 = if (extend == .none) std.math.clamp(horizontal.last, 0, @as(i64, image.width)) else horizontal.last;
+    const y0 = if (extend == .none) std.math.clamp(vertical.first, 0, @as(i64, image.height)) else vertical.first;
+    const y1 = if (extend == .none) std.math.clamp(vertical.last, 0, @as(i64, image.height)) else vertical.last;
     var sum: [4]f64 = @splat(0);
-    for (y0..y1) |sy| {
+    var sy = y0;
+    while (sy < y1) : (sy += 1) {
         const wy = vertical.weight(sy);
-        for (x0..x1) |sx| {
+        if (wy <= 0) continue;
+        var sx = x0;
+        while (sx < x1) : (sx += 1) {
             const weight = wy * horizontal.weight(sx);
-            const value = pixel(image, sx, sy);
+            if (weight <= 0) continue;
+            const value = edgePixel(image, sx, sy, extend);
             for (&sum, value) |*channel, sample| channel.* += @as(f64, @floatFromInt(sample)) * weight;
         }
     }
@@ -492,7 +654,7 @@ fn filteredImage(image: Image, x: f64, y: f64, step_x: f64, step_y: f64) u32 {
 }
 
 /// Scale and composite with bilinear magnification and area minification.
-/// Source edges are transparent, including under partially covered filters.
+/// Source edges are transparent by default, or clamped with `.extend = .pad`.
 /// Destination coordinates and the optional clip are in physical pixels.
 pub fn blit(target: Buffer, image: Image, destination: Rect, clip: ?Region) !void {
     return blitWithOptions(target, image, destination, .{ .clip = clip });
@@ -503,6 +665,8 @@ pub const BlitOptions = struct {
     /// Antialiased clipping shape in physical pixel coordinates.
     shape: ?Shape = null,
     opacity: f64 = 1,
+    filter: Filter = .good,
+    extend: Extend = .none,
 };
 
 test "image opacity and rounded clipping preserve premultiplication and adjacent pixels" {
@@ -517,6 +681,15 @@ test "image opacity and rounded clipping preserve premultiplication and adjacent
     try std.testing.expectEqual(@as(u32, 0xff800000), pixels[5]);
     try std.testing.expectEqual(@as(u32, 0xff000000), pixels[0]);
     try std.testing.expectError(error.InvalidImage, blitWithOptions(target, image, destination, .{ .opacity = std.math.nan(f64) }));
+    // Pad extend keeps edges opaque under both bilinear and area downscaling.
+    var small: [4]u32 = @splat(0);
+    const big: [64]u32 = @splat(0xff112233);
+    const big_img: Image = .{ .pixels = std.mem.sliceAsBytes(&big), .width = 8, .height = 8, .stride = 32, .format = .argb };
+    for ([_]Filter{ .bilinear, .good }) |filter| {
+        @memset(&small, 0);
+        try blitWithOptions(.{ .pixels = &small, .width = 2, .height = 2 }, big_img, .{ .width = 2, .height = 2 }, .{ .filter = filter, .extend = .pad });
+        for (small) |p| try std.testing.expectEqual(@as(u32, 0xff112233), p);
+    }
 }
 
 pub fn blitWithOptions(target: Buffer, image: Image, destination: Rect, options: BlitOptions) !void {
@@ -524,12 +697,13 @@ pub fn blitWithOptions(target: Buffer, image: Image, destination: Rect, options:
     if (!std.math.isFinite(options.opacity) or options.opacity < 0 or options.opacity > 1) return error.InvalidImage;
     if (!std.math.isFinite(destination.x) or !std.math.isFinite(destination.y) or !std.math.isFinite(destination.width) or !std.math.isFinite(destination.height) or destination.width < 0.001 or destination.height < 0.001) return error.InvalidImage;
     if (target.pixels.len < try std.math.mul(usize, target.width, target.height)) return error.InvalidImage;
+    if (options.opacity == 0) return;
     const width: f64 = @floatFromInt(target.width);
     const height: f64 = @floatFromInt(target.height);
-    var x0: usize = @intFromFloat(std.math.clamp(@floor(destination.x), 0, width));
-    var y0: usize = @intFromFloat(std.math.clamp(@floor(destination.y), 0, height));
-    var x1: usize = @intFromFloat(std.math.clamp(@ceil(destination.x + destination.width), 0, width));
-    var y1: usize = @intFromFloat(std.math.clamp(@ceil(destination.y + destination.height), 0, height));
+    var x0: usize = @intFromFloat(std.math.clamp(if (options.extend == .pad) @ceil(destination.x - 0.5) else @floor(destination.x), 0, width));
+    var y0: usize = @intFromFloat(std.math.clamp(if (options.extend == .pad) @ceil(destination.y - 0.5) else @floor(destination.y), 0, height));
+    var x1: usize = @intFromFloat(std.math.clamp(if (options.extend == .pad) @ceil(destination.x + destination.width - 0.5) else @ceil(destination.x + destination.width), 0, width));
+    var y1: usize = @intFromFloat(std.math.clamp(if (options.extend == .pad) @ceil(destination.y + destination.height - 0.5) else @ceil(destination.y + destination.height), 0, height));
     if (options.clip) |rect| {
         x0 = @max(x0, @as(usize, @intCast(std.math.clamp(@as(i64, rect.x), 0, target.width))));
         y0 = @max(y0, @as(usize, @intCast(std.math.clamp(@as(i64, rect.y), 0, target.height))));
@@ -539,13 +713,24 @@ pub fn blitWithOptions(target: Buffer, image: Image, destination: Rect, options:
     if (x1 <= x0 or y1 <= y0) return;
     const step_x = @as(f64, @floatFromInt(image.width)) / destination.width;
     const step_y = @as(f64, @floatFromInt(image.height)) / destination.height;
+    if (image.format == .argb and image.stride % 4 == 0 and @intFromPtr(image.pixels.ptr) % 4 == 0) {
+        const use_bilinear = options.filter == .bilinear or (step_x <= 4.0 / 3.0 and step_y <= 4.0 / 3.0);
+        if (use_bilinear) {
+            blitArgbBilinear(target, image, destination, x0, y0, x1, y1, step_x, step_y, options);
+            return;
+        }
+        if (step_x <= 32 and step_y <= 32) {
+            blitArgbArea(target, image, destination, x0, y0, x1, y1, step_x, step_y, options);
+            return;
+        }
+    }
     for (y0..y1) |y| for (x0..x1) |x| {
         const sx = (@as(f64, @floatFromInt(x)) + 0.5 - destination.x) * step_x - 0.5;
         const sy = (@as(f64, @floatFromInt(y)) + 0.5 - destination.y) * step_y - 0.5;
         const coverage = options.opacity * if (options.shape) |shape| std.math.clamp(0.5 - shape.distance(.{ .x = @as(f64, @floatFromInt(x)) + 0.5, .y = @as(f64, @floatFromInt(y)) + 0.5 }), 0, 1) else @as(f64, 1);
         if (coverage == 0) continue;
         const dest = &target.pixels[y * target.width + x];
-        const sample = filteredImage(image, sx, sy, step_x, step_y);
+        const sample = filteredImage(image, sx, sy, step_x, step_y, options.filter, options.extend);
         if (coverage >= 1) {
             dest.* = over(dest.*, sample);
             continue;
@@ -557,6 +742,347 @@ pub fn blitWithOptions(target: Buffer, image: Image, destination: Rect, options:
         }
         dest.* = over(dest.*, source);
     };
+}
+
+const BilinearTap = struct { first: u32, w0: u16, w1: u16, count: u8 };
+
+fn bilinearTap(center: f64, size: u32, extend: Extend) BilinearTap {
+    const f = center - 0.5;
+    const fl = @floor(f);
+    const w1: u16 = @intFromFloat(@round((f - fl) * 256));
+    const limit: f64 = @floatFromInt(size);
+    const size_i: i64 = size;
+    var x0: i64 = @intFromFloat(std.math.clamp(fl, -2, limit + 1));
+    var x1: i64 = x0 + 1;
+    var weight0: u16 = 256 - w1;
+    var weight1: u16 = w1;
+    if (extend == .none) {
+        if (x0 < 0 or x0 >= size_i) weight0 = 0;
+        if (x1 < 0 or x1 >= size_i) weight1 = 0;
+    }
+    x0 = std.math.clamp(x0, 0, size_i - 1);
+    x1 = std.math.clamp(x1, 0, size_i - 1);
+    if (x0 == x1) return .{ .first = @intCast(x0), .count = if (weight0 + weight1 > 0) 1 else 0, .w0 = weight0 + weight1, .w1 = 0 };
+    return .{ .first = @intCast(x0), .count = 2, .w0 = weight0, .w1 = weight1 };
+}
+
+inline fn mixPair(a: u32, b: u32, wa: u32, wb: u32) u32 {
+    const rb = (((a & 0x00ff00ff) *% wa +% (b & 0x00ff00ff) *% wb +% 0x00800080) >> 8) & 0x00ff00ff;
+    const ag = ((((a >> 8) & 0x00ff00ff) *% wa +% ((b >> 8) & 0x00ff00ff) *% wb +% 0x00800080) >> 8) & 0x00ff00ff;
+    return rb | (ag << 8);
+}
+
+fn blendRows(out: []u32, top: []const u32, bottom: []const u32, w0: u32, w1: u32) void {
+    @setRuntimeSafety(false);
+    if (w1 == 0 and w0 == 256) return @memcpy(out, top);
+    const Lanes = @Vector(16, u16);
+    const Bytes = @Vector(16, u8);
+    const a: Lanes = @splat(@intCast(w0));
+    const b: Lanes = @splat(@intCast(w1));
+    const half: Lanes = @splat(128);
+    var i: usize = 0;
+    while (i + 4 <= out.len) : (i += 4) {
+        const t: Lanes = @as(Bytes, @bitCast(top[i..][0..4].*));
+        const u: Lanes = @as(Bytes, @bitCast(bottom[i..][0..4].*));
+        const v = (t *% a +% u *% b +% half) >> @splat(8);
+        out[i..][0..4].* = @bitCast(@as(Bytes, @truncate(v)));
+    }
+    while (i < out.len) : (i += 1) out[i] = mixPair(top[i], bottom[i], w0, w1);
+}
+
+fn blendRowsMulti(out: []u32, src_pixels: [*]const u32, src_stride: usize, first_y: usize, row_count: usize, weights: []const u16, src_x0: usize) void {
+    @setRuntimeSafety(false);
+    if (row_count == 1 and weights[0] == 256) {
+        @memcpy(out, src_pixels[first_y * src_stride + src_x0 ..][0..out.len]);
+        return;
+    }
+    const Lanes = @Vector(16, u16);
+    const Bytes = @Vector(16, u8);
+    const half: Lanes = @splat(128);
+    var i: usize = 0;
+    while (i + 4 <= out.len) : (i += 4) {
+        var acc: Lanes = half;
+        for (0..row_count) |ry| {
+            const w: Lanes = @splat(weights[ry]);
+            const row = src_pixels[(first_y + ry) * src_stride + src_x0 + i ..];
+            const t: Lanes = @as(Bytes, @bitCast(row[0..4].*));
+            acc +%= t *% w;
+        }
+        out[i..][0..4].* = @bitCast(@as(Bytes, @truncate(acc >> @splat(8))));
+    }
+    while (i < out.len) : (i += 1) {
+        var acc: [4]u32 = .{ 128, 128, 128, 128 };
+        for (0..row_count) |ry| {
+            const w: u32 = weights[ry];
+            const px = src_pixels[(first_y + ry) * src_stride + src_x0 + i];
+            inline for (0..4) |ch| acc[ch] += ((px >> (8 * ch)) & 255) * w;
+        }
+        var res: u32 = 0;
+        inline for (0..4) |ch| res |= @as(u32, @min(255, acc[ch] >> 8)) << @as(u5, 8 * ch);
+        out[i] = res;
+    }
+}
+
+fn shapeRoundedRect(shape: Shape) ?struct { rect: Rect, rad: f64 } {
+    return switch (shape) {
+        .rounded => |r| .{ .rect = r, .rad = @max(0, @min(r.width, r.height) / 2) },
+        .rounded_rect => |v| .{ .rect = v.rect, .rad = @max(0, @min(v.radius, @min(v.rect.width, v.rect.height) / 2)) },
+        .circle => |v| .{ .rect = .{ .x = v.center.x - v.radius, .y = v.center.y - v.radius, .width = 2 * v.radius, .height = 2 * v.radius }, .rad = @max(0, v.radius) },
+        else => null,
+    };
+}
+
+fn compositeBlitRow(dest_row: []u32, out_row: []const u32, tx0: usize, tx1: usize, y: usize, options: BlitOptions, opacity_255: u32) void {
+    const shape = options.shape orelse {
+        vec.overSpan(dest_row[tx0..tx1], out_row[0 .. tx1 - tx0], opacity_255);
+        return;
+    };
+    const py = @as(f64, @floatFromInt(y)) + 0.5;
+    if (shapeRoundedRect(shape)) |rr| {
+        const span = roundedScanlineSpan(rr.rect.x + rr.rect.width / 2, rr.rect.y + rr.rect.height / 2, rr.rect.width / 2, rr.rect.height / 2, rr.rad, 0.5, py, 0, 1, tx0, tx1) orelse return;
+        for (span.outer_x0..span.inner_x0) |x| {
+            const cov = options.opacity * std.math.clamp(0.5 - roundedDistance(rr.rect, rr.rad, .{ .x = @as(f64, @floatFromInt(x)) + 0.5, .y = py }), 0, 1);
+            if (cov > 0) {
+                const f: u32 = @intFromFloat(@round(cov * 255));
+                if (f > 0) dest_row[x] = vec.over(dest_row[x], if (f == 255) out_row[x - tx0] else vec.fade(out_row[x - tx0], f));
+            }
+        }
+        if (span.inner_x1 > span.inner_x0) {
+            vec.overSpan(dest_row[span.inner_x0..span.inner_x1], out_row[span.inner_x0 - tx0 .. span.inner_x1 - tx0], opacity_255);
+        }
+        for (span.inner_x1..span.outer_x1) |x| {
+            const cov = options.opacity * std.math.clamp(0.5 - roundedDistance(rr.rect, rr.rad, .{ .x = @as(f64, @floatFromInt(x)) + 0.5, .y = py }), 0, 1);
+            if (cov > 0) {
+                const f: u32 = @intFromFloat(@round(cov * 255));
+                if (f > 0) dest_row[x] = vec.over(dest_row[x], if (f == 255) out_row[x - tx0] else vec.fade(out_row[x - tx0], f));
+            }
+        }
+        return;
+    }
+    for (tx0..tx1) |x| {
+        const cov = options.opacity * std.math.clamp(0.5 - shape.distance(.{ .x = @as(f64, @floatFromInt(x)) + 0.5, .y = py }), 0, 1);
+        if (cov > 0) {
+            const f: u32 = @intFromFloat(@round(cov * 255));
+            if (f > 0) dest_row[x] = vec.over(dest_row[x], if (f == 255) out_row[x - tx0] else vec.fade(out_row[x - tx0], f));
+        }
+    }
+}
+
+fn blitArgbBilinear(target: Buffer, image: Image, destination: Rect, x0: usize, y0: usize, x1: usize, y1: usize, step_x: f64, step_y: f64, options: BlitOptions) void {
+    @setRuntimeSafety(false);
+    const src_pixels: [*]const u32 = @ptrCast(@alignCast(image.pixels.ptr));
+    const src_stride = image.stride / 4;
+    const opacity_255: u32 = @intFromFloat(@round(options.opacity * 255));
+    if (opacity_255 == 0) return;
+
+    const tile_max = 512;
+    const scratch_max = 2048;
+    var col_first: [tile_max]u32 = undefined;
+    var col_w0: [tile_max]u16 = undefined;
+    var col_w1: [tile_max]u16 = undefined;
+    var row_scratch: [scratch_max]u32 = undefined;
+    var out_row: [tile_max]u32 = undefined;
+
+    const Lanes = @Vector(16, u16);
+    const Bytes = @Vector(16, u8);
+    const spread: @Vector(16, i32) = .{ 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3 };
+    const half: Lanes = @splat(128);
+    const last_x = image.width - 1;
+
+    // Limit tile width so its source X span fits inside row_scratch.
+    const max_tile_by_step: usize = if (step_x > 1) @max(1, @as(usize, @intFromFloat(@floor(@as(f64, scratch_max - 4) / step_x)))) else tile_max;
+    const tile_step = @min(tile_max, max_tile_by_step);
+
+    var tx0 = x0;
+    while (tx0 < x1) {
+        const tx1 = @min(tx0 + tile_step, x1);
+        const tile_len = tx1 - tx0;
+        var min_src_x: u32 = last_x;
+        var max_src_x: u32 = 0;
+        for (0..tile_len) |i| {
+            const center = (@as(f64, @floatFromInt(tx0 + i)) + 0.5 - destination.x) * step_x;
+            const tap = bilinearTap(center, image.width, options.extend);
+            col_first[i] = tap.first;
+            col_w0[i] = tap.w0;
+            col_w1[i] = tap.w1;
+            min_src_x = @min(min_src_x, tap.first);
+            max_src_x = @max(max_src_x, @min(tap.first + 1, last_x));
+        }
+        const src_len = max_src_x - min_src_x + 1;
+        const last_rel = src_len - 1;
+
+        for (y0..y1) |y| {
+            const cy = (@as(f64, @floatFromInt(y)) + 0.5 - destination.y) * step_y;
+            const ytap = bilinearTap(cy, image.height, options.extend);
+            if (ytap.count == 0) continue;
+            const r0 = src_pixels[@as(usize, ytap.first) * src_stride + min_src_x ..];
+            const r1 = if (ytap.count == 2) src_pixels[(@as(usize, ytap.first) + 1) * src_stride + min_src_x ..] else r0;
+            blendRows(row_scratch[0..src_len], r0[0..src_len], r1[0..src_len], ytap.w0, if (ytap.count == 2) ytap.w1 else 0);
+
+            var k: usize = 0;
+            while (k + 4 <= tile_len) : (k += 4) {
+                var left: [4]u32 = undefined;
+                var right: [4]u32 = undefined;
+                var wl: @Vector(4, u16) = undefined;
+                var wr: @Vector(4, u16) = undefined;
+                inline for (0..4) |j| {
+                    const rx = col_first[k + j] - min_src_x;
+                    left[j] = row_scratch[rx];
+                    right[j] = row_scratch[@min(rx + 1, last_rel)];
+                    wl[j] = col_w0[k + j];
+                    wr[j] = col_w1[k + j];
+                }
+                const a: Lanes = @as(Bytes, @bitCast(left));
+                const b: Lanes = @as(Bytes, @bitCast(right));
+                const v = (a *% @shuffle(u16, wl, undefined, spread) +% b *% @shuffle(u16, wr, undefined, spread) +% half) >> @splat(8);
+                out_row[k..][0..4].* = @bitCast(@as(Bytes, @truncate(v)));
+            }
+            while (k < tile_len) : (k += 1) {
+                const rx = col_first[k] - min_src_x;
+                out_row[k] = mixPair(row_scratch[rx], row_scratch[@min(rx + 1, last_rel)], col_w0[k], col_w1[k]);
+            }
+
+            compositeBlitRow(target.pixels[y * target.width ..], out_row[0..tile_len], tx0, tx1, y, options, opacity_255);
+        }
+        tx0 = tx1;
+    }
+}
+
+const AreaTap = struct {
+    first: u32,
+    count: u8,
+    weights: [36]u16,
+
+    fn init(center: f64, step: f64, size: u32, extend: Extend) AreaTap {
+        if (step <= 4.0 / 3.0) {
+            const bt = bilinearTap(center, size, extend);
+            var w: [36]u16 = @splat(0);
+            w[0] = bt.w0;
+            w[1] = bt.w1;
+            return .{ .first = bt.first, .count = bt.count, .weights = w };
+        }
+        const limit: f64 = @floatFromInt(size);
+        const lo = center - step / 2;
+        const hi = center + step / 2;
+        const first_f = @floor(lo);
+        var raw: [36]f64 = undefined;
+        var n: usize = 0;
+        var pos = first_f;
+        while (pos < hi and n < 36) : (pos += 1) {
+            raw[n] = @max(0, @min(pos + 1, hi) - @max(pos, lo));
+            n += 1;
+        }
+        var base: ?i32 = null;
+        var last: i32 = 0;
+        var resolved: [36]f64 = @splat(0);
+        var total: f64 = 0;
+        for (raw[0..n], 0..) |w, tap_idx| {
+            var index = first_f + @as(f64, @floatFromInt(tap_idx));
+            if (index < 0 or index >= limit) {
+                if (extend == .none) continue;
+                index = std.math.clamp(index, 0, limit - 1);
+            }
+            const idx: i32 = @intFromFloat(index);
+            const b = base orelse blk: {
+                base = idx;
+                break :blk idx;
+            };
+            const slot: usize = @intCast(idx - b);
+            if (slot < 36) resolved[slot] += w;
+            last = idx;
+            total += w;
+        }
+        var out: AreaTap = .{ .first = @intCast(base orelse 0), .count = 0, .weights = @splat(0) };
+        if (base == null or total <= 0) return out;
+        const count: usize = @intCast(@min(@as(i32, 36), last - base.? + 1));
+        out.count = @intCast(count);
+        const divisor: f64 = if (extend == .none) step else total;
+        var sum: u32 = 0;
+        for (0..count) |k| {
+            const w: u16 = @intFromFloat(@round(resolved[k] / divisor * 256));
+            out.weights[k] = w;
+            sum += w;
+        }
+        if (count > 0 and (extend == .pad or sum > 256)) {
+            var heaviest: usize = 0;
+            for (1..count) |k| if (out.weights[k] > out.weights[heaviest]) {
+                heaviest = k;
+            };
+            const target_sum: u32 = if (extend == .pad) 256 else @min(sum, 256);
+            out.weights[heaviest] = @intCast(@as(i32, out.weights[heaviest]) + @as(i32, @intCast(target_sum)) - @as(i32, @intCast(sum)));
+        }
+        return out;
+    }
+};
+
+fn blitArgbArea(target: Buffer, image: Image, destination: Rect, x0: usize, y0: usize, x1: usize, y1: usize, step_x: f64, step_y: f64, options: BlitOptions) void {
+    @setRuntimeSafety(false);
+    const src_pixels: [*]const u32 = @ptrCast(@alignCast(image.pixels.ptr));
+    const src_stride = image.stride / 4;
+    const opacity_255: u32 = @intFromFloat(@round(options.opacity * 255));
+    if (opacity_255 == 0) return;
+
+    const tile_max = 256;
+    const scratch_max = 2048;
+    var col_taps: [tile_max]AreaTap = undefined;
+    var row_scratch: [scratch_max]u32 = undefined;
+    var out_row: [tile_max]u32 = undefined;
+
+    const max_tile_by_step: usize = @max(1, @as(usize, @intFromFloat(@floor(@as(f64, scratch_max - 40) / @max(1.0, step_x)))));
+    const tile_step = @min(tile_max, max_tile_by_step);
+
+    var tx0 = x0;
+    while (tx0 < x1) {
+        const tx1 = @min(tx0 + tile_step, x1);
+        const tile_len = tx1 - tx0;
+        var min_src_x: u32 = image.width - 1;
+        var max_src_x: u32 = 0;
+        for (0..tile_len) |i| {
+            const center = (@as(f64, @floatFromInt(tx0 + i)) + 0.5 - destination.x) * step_x;
+            col_taps[i] = AreaTap.init(center, step_x, image.width, options.extend);
+            if (col_taps[i].count > 0) {
+                min_src_x = @min(min_src_x, col_taps[i].first);
+                max_src_x = @max(max_src_x, col_taps[i].first + col_taps[i].count - 1);
+            }
+        }
+        const src_len: usize = if (max_src_x >= min_src_x) max_src_x - min_src_x + 1 else 0;
+        if (src_len == 0) {
+            tx0 = tx1;
+            continue;
+        }
+
+        for (y0..y1) |y| {
+            const cy = (@as(f64, @floatFromInt(y)) + 0.5 - destination.y) * step_y;
+            const ytap = AreaTap.init(cy, step_y, image.height, options.extend);
+            if (ytap.count == 0) continue;
+            blendRowsMulti(row_scratch[0..src_len], src_pixels, src_stride, ytap.first, ytap.count, ytap.weights[0..ytap.count], min_src_x);
+
+            for (0..tile_len) |i| {
+                const ct = &col_taps[i];
+                if (ct.count == 0) {
+                    out_row[i] = 0;
+                    continue;
+                }
+                const rx = ct.first - min_src_x;
+                if (ct.count == 2) {
+                    out_row[i] = mixPair(row_scratch[rx], row_scratch[rx + 1], ct.weights[0], ct.weights[1]);
+                } else {
+                    var acc: [4]u32 = .{ 128, 128, 128, 128 };
+                    for (0..ct.count) |k| {
+                        const w: u32 = ct.weights[k];
+                        const px = row_scratch[rx + k];
+                        inline for (0..4) |ch| acc[ch] += ((px >> (8 * ch)) & 255) * w;
+                    }
+                    var res: u32 = 0;
+                    inline for (0..4) |ch| res |= @as(u32, @min(255, acc[ch] >> 8)) << @as(u5, 8 * ch);
+                    out_row[i] = res;
+                }
+            }
+
+            compositeBlitRow(target.pixels[y * target.width ..], out_row[0..tile_len], tx0, tx1, y, options, opacity_255);
+        }
+        tx0 = tx1;
+    }
 }
 
 test "image compositing preserves premultiplied alpha and ignores unused XRGB bits" {

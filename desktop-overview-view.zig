@@ -1,7 +1,6 @@
-//! Activities compositing into native Wayland buffers, using the native canvas
-//! for filtered image scaling and path rasterization in the animations.
+//! Activities compositing into native Wayland buffers, using desktop-raster
+//! for filtered image scaling and antialiased shapes.
 const std = @import("std");
-const draw = @import("desktop-canvas.zig");
 const raster = @import("desktop-raster.zig");
 const Image = @import("desktop-image.zig").Image;
 const text = @import("desktop-text.zig");
@@ -29,87 +28,178 @@ pub const icon_size: f64 = 64;
 pub const icon_overlap: f64 = 0.7;
 const window_active_size_inc: f64 = 5;
 
-// Borrow the destination only for this draw. Native Wayland retains ownership
-// of the shared-memory buffer; no GTK window or persistent drawing storage is used.
-const Context = struct {
-    cr: draw.Context,
+fn physRect(canvas: Canvas, r: Rect) Rect {
+    return .{
+        .x = (r.x + canvas.origin.x) * canvas.scale,
+        .y = (r.y + canvas.origin.y) * canvas.scale,
+        .width = r.width * canvas.scale,
+        .height = r.height * canvas.scale,
+    };
+}
 
-    fn init(allocator: std.mem.Allocator, canvas: Canvas) ?Context {
-        var cr = draw.Context.init(allocator, .{ .pixels = canvas.target.pixels, .width = canvas.target.width, .height = canvas.target.height, .stride = canvas.target.width });
-        cr.scale(canvas.scale, canvas.scale);
-        cr.translate(canvas.origin.x, canvas.origin.y);
-        return .{ .cr = cr };
-    }
-    fn deinit(self: *Context) void {
-        self.cr.deinit();
-    }
-};
+fn physRegion(r: Rect) raster.Region {
+    const x0: i32 = @intFromFloat(@floor(r.x));
+    const y0: i32 = @intFromFloat(@floor(r.y));
+    const x1: i32 = @intFromFloat(@ceil(r.x + r.width));
+    const y1: i32 = @intFromFloat(@ceil(r.y + r.height));
+    return .{ .x = x0, .y = y0, .width = @intCast(@max(0, x1 - x0)), .height = @intCast(@max(0, y1 - y0)) };
+}
 
-pub fn miniatureRounded(allocator: std.mem.Allocator, canvas: Canvas, source: ?raster.Image, rect: Rect, clip: Rect, radius: f64, animated: bool) void {
-    var context = Context.init(allocator, canvas) orelse return;
-    defer context.deinit();
-    if (radius > 0) rounded(&context.cr, clip, radius) else context.cr.rectangle(clip.x, clip.y, clip.width, clip.height);
-    context.cr.clip();
-    drawImage(&context.cr, source, rect, 1, animated);
+fn drawImage(canvas: Canvas, image: ?raster.Image, r: Rect, clip: ?Rect, clip_radius: f64, opacity: f64, animated: bool) void {
+    if (opacity <= 0 or r.width <= 0 or r.height <= 0) return;
+    const pr = physRect(canvas, r);
+    const clip_rect = clip orelse r;
+    const pc = physRect(canvas, clip_rect);
+    if (image) |pixels| {
+        std.debug.assert(pixels.format == .argb);
+        raster.blitWithOptions(canvas.target, pixels, pr, .{
+            .clip = physRegion(pc),
+            .shape = if (clip_radius > 0) pc.shape(clip_radius * canvas.scale) else null,
+            .opacity = opacity,
+            .filter = if (animated) .bilinear else .good,
+            .extend = .pad,
+        }) catch {};
+    } else {
+        const gray: raster.Color = .{ .red = 0.3, .green = 0.3, .blue = 0.33, .alpha = opacity };
+        const x0 = @max(r.x, clip_rect.x);
+        const y0 = @max(r.y, clip_rect.y);
+        const x1 = @min(r.x + r.width, clip_rect.x + clip_rect.width);
+        const y1 = @min(r.y + r.height, clip_rect.y + clip_rect.height);
+        if (x1 <= x0 or y1 <= y0) return;
+        const inter: Rect = .{ .x = x0, .y = y0, .width = x1 - x0, .height = y1 - y0 };
+        if (clip_radius <= 0) {
+            canvas.draw(&.{inter.shape(0)}, gray);
+        } else if (inter.x == clip_rect.x and inter.y == clip_rect.y and inter.width == clip_rect.width and inter.height == clip_rect.height) {
+            canvas.draw(&.{clip_rect.shape(clip_radius)}, gray);
+        } else {
+            const rad = @max(0, @min(clip_radius, @min(clip_rect.width, clip_rect.height) / 2));
+            const shape = clip_rect.shape(rad);
+            const width_f: f64 = @floatFromInt(canvas.target.width);
+            const height_f: f64 = @floatFromInt(canvas.target.height);
+            const px0: usize = @intFromFloat(std.math.clamp(@floor((inter.x + canvas.origin.x) * canvas.scale - 1), 0, width_f));
+            const py0: usize = @intFromFloat(std.math.clamp(@floor((inter.y + canvas.origin.y) * canvas.scale - 1), 0, height_f));
+            const px1: usize = @intFromFloat(std.math.clamp(@ceil((inter.x + inter.width + canvas.origin.x) * canvas.scale + 1), 0, width_f));
+            const py1: usize = @intFromFloat(std.math.clamp(@ceil((inter.y + inter.height + canvas.origin.y) * canvas.scale + 1), 0, height_f));
+            const solid = raster.colorPixel(gray, 1);
+            for (py0..py1) |y| {
+                const py = (@as(f64, @floatFromInt(y)) + 0.5) / canvas.scale - canvas.origin.y;
+                for (px0..px1) |x| {
+                    const px = (@as(f64, @floatFromInt(x)) + 0.5) / canvas.scale - canvas.origin.x;
+                    const d = @max(inter.shape(0).distance(.{ .x = px, .y = py }), shape.distance(.{ .x = px, .y = py }));
+                    const cov = std.math.clamp(0.5 - d * canvas.scale, 0, 1);
+                    if (cov == 0) continue;
+                    const dest = &canvas.target.pixels[y * canvas.target.width + x];
+                    dest.* = if (cov >= 1) (if (solid >> 24 == 255) solid else raster.over(dest.*, solid)) else raster.over(dest.*, raster.colorPixel(gray, cov));
+                }
+            }
+        }
+    }
+}
+
+pub fn miniatureRounded(canvas: Canvas, source: ?raster.Image, rect: Rect, clip: Rect, radius: f64, animated: bool) void {
+    drawImage(canvas, source, rect, clip, radius, 1, animated);
 }
 
 /// Cover the corners of GPU previews without repainting their content.
 /// Fades with the strip it masks; at full strength the corners would sit
 /// over the zooming wallpaper while the overview animates in or out.
-pub fn roundedMask(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, radius: f64, opacity: f64) void {
-    roundedMaskOptions(allocator, canvas, rect, radius, false, opacity);
+pub fn roundedMask(canvas: Canvas, rect: Rect, radius: f64, opacity: f64) void {
+    roundedMaskOptions(canvas, rect, radius, false, opacity);
 }
 
-pub fn roundedMaskShadow(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, radius: f64) void {
-    roundedMaskOptions(allocator, canvas, rect, radius, true, 1);
+pub fn roundedMaskShadow(canvas: Canvas, rect: Rect, radius: f64) void {
+    roundedMaskOptions(canvas, rect, radius, true, 1);
 }
 
-fn roundedMaskOptions(allocator: std.mem.Allocator, canvas: Canvas, rect: Rect, radius: f64, shadow: bool, opacity: f64) void {
-    if (opacity <= 0) return;
-    var context = Context.init(allocator, canvas) orelse return;
-    defer context.deinit();
-    context.cr.rectangle(rect.x, rect.y, rect.width, rect.height);
-    rounded(&context.cr, rect, radius);
-    context.cr.setFillRule(.evenodd);
-    context.cr.clip();
-    context.cr.setSourceRgb(34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
-    context.cr.paintWithAlpha(opacity);
+fn roundedMaskOptions(canvas: Canvas, rect: Rect, radius: f64, shadow: bool, opacity: f64) void {
+    const rad = @max(0, @min(radius, @min(rect.width, rect.height) / 2));
+    if (opacity <= 0 or rad <= 0 or rect.width <= 0 or rect.height <= 0) return;
+
+    const bg: raster.Color = .{ .red = 34.0 / 255.0, .green = 34.0 / 255.0, .blue = 38.0 / 255.0, .alpha = opacity };
+    const bg_solid = raster.colorPixel(bg, 1);
+    const rect_shape = rect.shape(0);
+    const round_shape = rect.shape(rad);
+
+    // Precompute the 8 shadow steps if needed.
+    const ShadowStep = struct { shape: raster.Shape, alpha: f64, solid: u32 };
+    var shadow_steps: [8]ShadowStep = undefined;
+    var shadow_count: usize = 0;
     if (shadow) {
-        context.cr.setFillRule(.nonzero);
-        drawShadowRect(&context.cr, rect, radius, 4, 4, 16, 0.2);
+        const steps: usize = 8;
+        const offset_y: f64 = 4;
+        const spread: f64 = 4;
+        const blur: f64 = 16;
+        const alpha: f64 = 0.2;
+        const outer = spread + blur;
+        const inner = spread - blur * 0.4;
+        var cum: f64 = 0;
+        for (0..steps) |step| {
+            const t = @as(f64, @floatFromInt(step + 1)) / @as(f64, @floatFromInt(steps));
+            const expand = outer + (inner - outer) * t;
+            const target = alpha * (t * t * (3 - 2 * t));
+            if (target <= cum or cum >= 0.999) continue;
+            const step_alpha = std.math.clamp((target - cum) / (1 - cum), 0, 1);
+            cum = target;
+            const sr: Rect = .{
+                .x = rect.x - expand,
+                .y = rect.y + offset_y - expand,
+                .width = rect.width + 2 * expand,
+                .height = rect.height + 2 * expand,
+            };
+            if (sr.width <= 0 or sr.height <= 0) continue;
+            shadow_steps[shadow_count] = .{
+                .shape = sr.shape(@max(0, rad + expand)),
+                .alpha = step_alpha,
+                .solid = raster.colorPixel(.{ .red = 0, .green = 0, .blue = 0, .alpha = step_alpha }, 1),
+            };
+            shadow_count += 1;
+        }
     }
+
+    // Only the four corner squares can have nonzero (rect \ rounded_rect) coverage.
+    const w_f: f64 = @floatFromInt(canvas.target.width);
+    const h_f: f64 = @floatFromInt(canvas.target.height);
+    const left_x0: usize = @intFromFloat(std.math.clamp(@floor((rect.x + canvas.origin.x) * canvas.scale - 1), 0, w_f));
+    const left_x1: usize = @intFromFloat(std.math.clamp(@ceil((rect.x + rad + canvas.origin.x) * canvas.scale + 1), 0, w_f));
+    const right_x0: usize = @max(left_x1, @as(usize, @intFromFloat(std.math.clamp(@floor((rect.x + rect.width - rad + canvas.origin.x) * canvas.scale - 1), 0, w_f))));
+    const right_x1: usize = @intFromFloat(std.math.clamp(@ceil((rect.x + rect.width + canvas.origin.x) * canvas.scale + 1), 0, w_f));
+
+    const top_y0: usize = @intFromFloat(std.math.clamp(@floor((rect.y + canvas.origin.y) * canvas.scale - 1), 0, h_f));
+    const top_y1: usize = @intFromFloat(std.math.clamp(@ceil((rect.y + rad + canvas.origin.y) * canvas.scale + 1), 0, h_f));
+    const bot_y0: usize = @max(top_y1, @as(usize, @intFromFloat(std.math.clamp(@floor((rect.y + rect.height - rad + canvas.origin.y) * canvas.scale - 1), 0, h_f))));
+    const bot_y1: usize = @intFromFloat(std.math.clamp(@ceil((rect.y + rect.height + canvas.origin.y) * canvas.scale + 1), 0, h_f));
+
+    const y_bands = [2][2]usize{ .{ top_y0, top_y1 }, .{ bot_y0, bot_y1 } };
+    const x_bands = [2][2]usize{ .{ left_x0, left_x1 }, .{ right_x0, right_x1 } };
+
+    for (y_bands) |yb| for (yb[0]..yb[1]) |y| {
+        const py = (@as(f64, @floatFromInt(y)) + 0.5) / canvas.scale - canvas.origin.y;
+        const row = canvas.target.pixels[y * canvas.target.width ..];
+        for (x_bands) |xb| for (xb[0]..xb[1]) |x| {
+            const px = (@as(f64, @floatFromInt(x)) + 0.5) / canvas.scale - canvas.origin.x;
+            const p: raster.Point = .{ .x = px, .y = py };
+            const rect_cov = std.math.clamp(0.5 - rect_shape.distance(p) * canvas.scale, 0, 1);
+            if (rect_cov == 0) continue;
+            const round_cov = std.math.clamp(0.5 - round_shape.distance(p) * canvas.scale, 0, 1);
+            const mask_cov = @max(0, rect_cov - round_cov);
+            if (mask_cov == 0) continue;
+            row[x] = if (mask_cov >= 1)
+                (if (bg_solid >> 24 == 255) bg_solid else raster.over(row[x], bg_solid))
+            else
+                raster.over(row[x], raster.colorPixel(bg, mask_cov));
+            for (shadow_steps[0..shadow_count]) |step| {
+                const s_cov = std.math.clamp(0.5 - step.shape.distance(p) * canvas.scale, 0, 1) * mask_cov;
+                if (s_cov == 0) continue;
+                row[x] = if (s_cov >= 1)
+                    raster.over(row[x], step.solid)
+                else
+                    raster.over(row[x], raster.colorPixel(.{ .red = 0, .green = 0, .blue = 0, .alpha = step.alpha }, s_cov));
+            }
+        };
+    };
 }
 
-fn rounded(cr: *draw.Context, r: Rect, radius: f64) void {
-    const rad = @max(0, @min(radius, @min(r.width, r.height) / 2));
-    cr.newSubPath();
-    cr.arc(r.x + r.width - rad, r.y + rad, rad, -std.math.pi / 2.0, 0);
-    cr.arc(r.x + r.width - rad, r.y + r.height - rad, rad, 0, std.math.pi / 2.0);
-    cr.arc(r.x + rad, r.y + r.height - rad, rad, std.math.pi / 2.0, std.math.pi);
-    cr.arc(r.x + rad, r.y + rad, rad, std.math.pi, 1.5 * std.math.pi);
-    cr.closePath();
-}
-fn drawImage(cr: *draw.Context, image: ?raster.Image, r: Rect, opacity: f64, animated: bool) void {
-    cr.save();
-    defer cr.restore();
-    cr.translate(r.x, r.y);
-    cr.rectangle(0, 0, r.width, r.height);
-    cr.clip();
-    if (image) |pixels| {
-        std.debug.assert(pixels.format == .argb);
-        // Borrow capture storage only for this draw.
-        cr.scale(r.width / @as(f64, @floatFromInt(pixels.width)), r.height / @as(f64, @floatFromInt(pixels.height)));
-        cr.setSourceImage(.fromRaster(pixels), 0, 0);
-        cr.setExtend(.pad);
-        if (animated) cr.setFilter(.bilinear);
-        cr.paintWithAlpha(opacity);
-    } else {
-        cr.rectangle(0, 0, r.width, r.height);
-        cr.setSourceRgb(0.3, 0.3, 0.33);
-        cr.fill();
-    }
-}
-fn drawShadowRect(cr: *draw.Context, r: Rect, corner_radius: f64, offset_y: f64, spread: f64, blur: f64, alpha: f64) void {
+fn drawShadowRect(canvas: Canvas, r: Rect, corner_radius: f64, offset_y: f64, spread: f64, blur: f64, alpha: f64, occlude_inner: bool) void {
     if (alpha <= 0 or r.width <= 0 or r.height <= 0) return;
     const steps: usize = 8;
     const outer = spread + blur;
@@ -130,13 +220,16 @@ fn drawShadowRect(cr: *draw.Context, r: Rect, corner_radius: f64, offset_y: f64,
             .height = r.height + 2 * expand,
         };
         if (sr.width <= 0 or sr.height <= 0) continue;
-        rounded(cr, sr, @max(0, corner_radius + expand));
-        cr.setSourceRgba(0, 0, 0, step_alpha);
-        cr.fill();
+        const shadow_color: raster.Color = .{ .red = 0, .green = 0, .blue = 0, .alpha = step_alpha };
+        if (occlude_inner) {
+            canvas.drawRoundedExcluded(sr, @max(0, corner_radius + expand), shadow_color, .{ .rect = r, .radius = corner_radius });
+        } else {
+            canvas.draw(&.{sr.shape(@max(0, corner_radius + expand))}, shadow_color);
+        }
     }
 }
 
-fn drawIconShadow(cr: *draw.Context, icon: Image, x: f64, y: f64, size: f64, offset_y: f64, alpha: f64) void {
+fn drawIconShadow(canvas: Canvas, icon: Image, x: f64, y: f64, size: f64, offset_y: f64, alpha: f64) void {
     if (alpha <= 0) return;
     const iw = icon.width;
     const ih = icon.height;
@@ -217,13 +310,19 @@ fn drawIconShadow(cr: *draw.Context, icon: Image, x: f64, y: f64, size: f64, off
     }
 
     const icon_scale = size / @as(f64, @floatFromInt(grid));
-    cr.save();
-    defer cr.restore();
-    cr.translate(x - @as(f64, @floatFromInt(pad)) * icon_scale, y + offset_y - @as(f64, @floatFromInt(pad)) * icon_scale);
-    cr.scale(icon_scale, icon_scale);
-    cr.setSourceImage(.{ .pixels = &shadow, .width = dim, .height = dim, .stride = dim }, 0, 0);
-    cr.setFilter(.bilinear);
-    cr.paint();
+    const dest = physRect(canvas, .{
+        .x = x - @as(f64, @floatFromInt(pad)) * icon_scale,
+        .y = y + offset_y - @as(f64, @floatFromInt(pad)) * icon_scale,
+        .width = @as(f64, @floatFromInt(dim)) * icon_scale,
+        .height = @as(f64, @floatFromInt(dim)) * icon_scale,
+    });
+    raster.blitWithOptions(canvas.target, .{
+        .pixels = std.mem.sliceAsBytes(&shadow),
+        .width = dim,
+        .height = dim,
+        .stride = dim * 4,
+        .format = .argb,
+    }, dest, .{ .filter = .bilinear, .extend = .none }) catch {};
 }
 
 pub fn pill(canvas: Canvas, rect: Rect) void {
@@ -263,86 +362,64 @@ pub fn closeButtonRect(preview: Rect) Rect {
     };
 }
 
-pub fn thumbnailIndicator(allocator: std.mem.Allocator, canvas: Canvas, thumbnail: Rect, opacity: f64) void {
-    var context = Context.init(allocator, canvas) orelse return;
-    defer context.deinit();
-    const cr = &context.cr;
-    rounded(cr, .{ .x = thumbnail.x - 1.5, .y = thumbnail.y - 1.5, .width = thumbnail.width + 3, .height = thumbnail.height + 3 }, 6.5);
-    cr.setSourceRgba(0.208, 0.518, 0.894, opacity);
-    cr.setLineWidth(3);
-    cr.stroke();
+pub fn thumbnailIndicator(canvas: Canvas, thumbnail: Rect, opacity: f64) void {
+    const r: Rect = .{ .x = thumbnail.x - 1.5, .y = thumbnail.y - 1.5, .width = thumbnail.width + 3, .height = thumbnail.height + 3 };
+    canvas.draw(&.{r.stroke(6.5, 3)}, .{ .red = 0.208, .green = 0.518, .blue = 0.894, .alpha = opacity });
 }
 
-pub fn workspace(allocator: std.mem.Allocator, canvas: Canvas, r: Rect, wallpaper: ?raster.Image, animated: bool) void {
-    workspaceProgress(allocator, canvas, r, wallpaper, 1, animated);
+pub fn workspace(canvas: Canvas, r: Rect, wallpaper: ?raster.Image, animated: bool) void {
+    workspaceProgress(canvas, r, wallpaper, 1, animated);
 }
 
-pub fn workspaceProgress(allocator: std.mem.Allocator, canvas: Canvas, r: Rect, wallpaper: ?raster.Image, progress: f64, animated: bool) void {
+pub fn workspaceProgress(canvas: Canvas, r: Rect, wallpaper: ?raster.Image, progress: f64, animated: bool) void {
     const clamped = std.math.clamp(progress, 0, 1);
-    workspaceCard(allocator, canvas, r, wallpaper, 30 * clamped, clamped > 0, animated);
+    workspaceCard(canvas, r, wallpaper, 30 * clamped, clamped > 0, animated);
 }
 
-pub fn workspaceCard(allocator: std.mem.Allocator, canvas: Canvas, r: Rect, wallpaper: ?raster.Image, corner_radius: f64, shadow: bool, animated: bool) void {
-    var context = Context.init(allocator, canvas) orelse return;
-    defer context.deinit();
-    const cr = &context.cr;
-    if (shadow) drawShadowRect(cr, r, corner_radius, 4, 4, 16, 0.2);
-    cr.save();
-    defer cr.restore();
-    rounded(cr, r, corner_radius);
-    cr.clip();
-    cr.setSourceRgb(0.015, 0.235, 0.53);
-    cr.paint();
+pub fn workspaceCard(canvas: Canvas, r: Rect, wallpaper: ?raster.Image, corner_radius: f64, shadow: bool, animated: bool) void {
+    if (shadow) drawShadowRect(canvas, r, corner_radius, 4, 4, 16, 0.2, true);
+    canvas.draw(&.{r.shape(corner_radius)}, .{ .red = 0.015, .green = 0.235, .blue = 0.53 });
     if (wallpaper) |image| {
         const iw: f64 = @floatFromInt(image.width);
         const ih: f64 = @floatFromInt(image.height);
         const scale = @max(r.width / iw, r.height / ih);
-        cr.translate(r.x + (r.width - iw * scale) / 2, r.y + (r.height - ih * scale) / 2);
-        cr.scale(scale, scale);
-        cr.setSourceImage(.fromRaster(image), 0, 0);
-        cr.setExtend(.pad);
-        if (animated) cr.setFilter(.bilinear);
-        cr.paint();
+        const wp_rect: Rect = .{
+            .x = r.x + (r.width - iw * scale) / 2,
+            .y = r.y + (r.height - ih * scale) / 2,
+            .width = iw * scale,
+            .height = ih * scale,
+        };
+        drawImage(canvas, image, wp_rect, r, corner_radius, 1, animated);
     }
 }
 
-pub fn window(allocator: std.mem.Allocator, canvas: Canvas, r: Rect, captured: ?raster.Image, icon_image: ?Image, state: WindowState) void {
+pub fn window(canvas: Canvas, r: Rect, captured: ?raster.Image, icon_image: ?Image, state: WindowState) void {
     const preview = previewRect(r, state.hovered, state.ease);
-    {
-        var context = Context.init(allocator, canvas) orelse return;
-        defer context.deinit();
-        const cr = &context.cr;
-        // Captures already contain client decoration and corner transparency.
-        if (!state.external_content) drawImage(cr, captured, preview, 1, state.animated);
-        if (icon_image) |icon| {
-            const icon_x = preview.x + preview.width / 2 - icon_size / 2;
-            const icon_y = preview.y + preview.height - icon_size * icon_overlap;
-            drawIconShadow(cr, icon, icon_x, icon_y, icon_size, 2, 0.4 * state.ease);
-            drawImage(cr, icon.view(), .{ .x = icon_x, .y = icon_y, .width = icon_size, .height = icon_size }, state.ease, false);
-        }
-        if (state.hovered) {
-            const close_r = closeButtonRect(preview);
-            const close_cx = close_r.x + close_button_radius;
-            const close_cy = close_r.y + close_button_radius;
-            drawShadowRect(cr, close_r, close_button_radius, 2, 0, 4, 0.2 * state.ease);
-            cr.arc(close_cx, close_cy, close_button_radius, 0, 2 * std.math.pi);
-            if (state.close_pressed) {
-                cr.setSourceRgba(94.0 / 255.0, 94.0 / 255.0, 105.0 / 255.0, 0.98 * state.ease);
-            } else if (state.close_hovered) {
-                cr.setSourceRgba(80.0 / 255.0, 80.0 / 255.0, 89.0 / 255.0, 0.98 * state.ease);
-            } else {
-                cr.setSourceRgba(63.0 / 255.0, 63.0 / 255.0, 70.0 / 255.0, 0.98 * state.ease);
-            }
-            cr.fill();
-            cr.setSourceRgba(1, 1, 1, state.ease);
-            cr.setLineWidth(2);
-            cr.setLineCap(.round);
-            cr.moveTo(close_cx - 5, close_cy - 5);
-            cr.lineTo(close_cx + 5, close_cy + 5);
-            cr.moveTo(close_cx + 5, close_cy - 5);
-            cr.lineTo(close_cx - 5, close_cy + 5);
-            cr.stroke();
-        }
+    // Captures already contain client decoration and corner transparency.
+    if (!state.external_content) drawImage(canvas, captured, preview, preview, 0, 1, state.animated);
+    if (icon_image) |icon| {
+        const icon_x = preview.x + preview.width / 2 - icon_size / 2;
+        const icon_y = preview.y + preview.height - icon_size * icon_overlap;
+        drawIconShadow(canvas, icon, icon_x, icon_y, icon_size, 2, 0.4 * state.ease);
+        const icon_rect: Rect = .{ .x = icon_x, .y = icon_y, .width = icon_size, .height = icon_size };
+        drawImage(canvas, icon.view(), icon_rect, icon_rect, 0, state.ease, false);
+    }
+    if (state.hovered) {
+        const close_r = closeButtonRect(preview);
+        const close_cx = close_r.x + close_button_radius;
+        const close_cy = close_r.y + close_button_radius;
+        drawShadowRect(canvas, close_r, close_button_radius, 2, 0, 4, 0.2 * state.ease, false);
+        const fill_color: raster.Color = if (state.close_pressed)
+            .{ .red = 94.0 / 255.0, .green = 94.0 / 255.0, .blue = 105.0 / 255.0, .alpha = 0.98 * state.ease }
+        else if (state.close_hovered)
+            .{ .red = 80.0 / 255.0, .green = 80.0 / 255.0, .blue = 89.0 / 255.0, .alpha = 0.98 * state.ease }
+        else
+            .{ .red = 63.0 / 255.0, .green = 63.0 / 255.0, .blue = 70.0 / 255.0, .alpha = 0.98 * state.ease };
+        canvas.draw(&.{.{ .circle = .{ .center = .{ .x = close_cx, .y = close_cy }, .radius = close_button_radius } }}, fill_color);
+        canvas.draw(&.{
+            .{ .line = .{ .start = .{ .x = close_cx - 5, .y = close_cy - 5 }, .end = .{ .x = close_cx + 5, .y = close_cy + 5 }, .radius = 1 } },
+            .{ .line = .{ .start = .{ .x = close_cx + 5, .y = close_cy - 5 }, .end = .{ .x = close_cx - 5, .y = close_cy + 5 }, .radius = 1 } },
+        }, .{ .red = 1, .green = 1, .blue = 1, .alpha = state.ease });
     }
     if (state.hovered and state.ease > 0.01) if (state.caption) |caption| {
         const factor: f64 = @floatFromInt(@max(1, caption.scale));

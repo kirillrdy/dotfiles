@@ -145,7 +145,6 @@ test {
     _ = @import("desktop-raster.zig");
     _ = @import("desktop-path.zig");
     _ = @import("desktop-svg.zig");
-    _ = @import("desktop-canvas.zig");
     _ = @import("desktop-text.zig");
     _ = @import("desktop-notification-banner.zig");
     _ = @import("desktop-quick-settings-view.zig");

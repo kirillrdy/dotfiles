@@ -1053,13 +1053,13 @@ const Overview = struct {
                 const sx = geom.thumb_w / work_w;
                 const sy = geom.thumb_h / work_h;
                 const r = Rect{ .x = x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = 6 + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
-                if (self.gpu_previews) self.emitPreview(window, r, rect, self.strip.x, self.strip.y, animation.controlsOpacity(self.progress)) else view.miniatureRounded(self.allocator, canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect), 4, animated);
+                if (self.gpu_previews) self.emitPreview(window, r, rect, self.strip.x, self.strip.y, animation.controlsOpacity(self.progress)) else view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(rect), 4, animated);
             }
-            if (self.gpu_previews) view.roundedMask(self.allocator, canvas, pixelRect(rect), 4, animation.controlsOpacity(self.progress));
+            if (self.gpu_previews) view.roundedMask(canvas, pixelRect(rect), 4, animation.controlsOpacity(self.progress));
         }
         if (client.count > 0 and !self.painting_background) {
             const ind_x = geom.left + self.workspacePosition() * geom.step;
-            view.thumbnailIndicator(self.allocator, canvas, pixelRect(.{ .x = ind_x, .y = 6, .w = geom.thumb_w, .h = geom.thumb_h }), if (self.gpu_previews) animation.controlsOpacity(self.progress) else 1);
+            view.thumbnailIndicator(canvas, pixelRect(.{ .x = ind_x, .y = 6, .w = geom.thumb_w, .h = geom.thumb_h }), if (self.gpu_previews) animation.controlsOpacity(self.progress) else 1);
         }
     }
     const FitAllLayout = struct {
@@ -1118,7 +1118,7 @@ const Overview = struct {
                 const bg = layout.cardRect(i, position);
                 if (bg.x > width or bg.x + bg.w < 0) continue;
                 const radius = @max(10.0, 30.0 * (bg.h / @max(1.0, work_h * 0.74)));
-                if (!self.gpu_previews or self.painting_background) view.workspaceCard(self.allocator, canvas, pixelRect(bg), if (self.wallpaper) |image| image.view() else null, radius, true, animated);
+                if (!self.gpu_previews or self.painting_background) view.workspaceCard(canvas, pixelRect(bg), if (self.wallpaper) |image| image.view() else null, radius, true, animated);
                 if (self.painting_background) continue;
                 self.window_paints.clearRetainingCapacity();
                 for (client.windows.items) |window| {
@@ -1132,9 +1132,9 @@ const Overview = struct {
                     const window = item.window;
                     const g = window.geometry;
                     const r = Rect{ .x = bg.x + (g.x - @as(f64, @floatFromInt(self.monitor.x))) * sx, .y = bg.y + (g.y - @as(f64, @floatFromInt(self.monitor.y + 32))) * sy, .w = g.w * sx, .h = g.h * sy };
-                    if (self.gpu_previews) self.emitPreview(window, r, bg, 0, self.stage.y, animation.controlsOpacity(self.progress)) else view.miniatureRounded(self.allocator, canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(bg), radius, animated);
+                    if (self.gpu_previews) self.emitPreview(window, r, bg, 0, self.stage.y, animation.controlsOpacity(self.progress)) else view.miniatureRounded(canvas, if (window.image) |image| image.view() else null, pixelRect(r), pixelRect(bg), radius, animated);
                 }
-                if (self.gpu_previews) view.roundedMaskShadow(self.allocator, canvas, pixelRect(bg), radius);
+                if (self.gpu_previews) view.roundedMaskShadow(canvas, pixelRect(bg), radius);
             }
             return;
         }
@@ -1155,7 +1155,7 @@ const Overview = struct {
                 .h = start.h + (base.h * ratio - start.h) * ease,
             };
             if (background.x > width or background.x + background.w < 0) continue;
-            if (!self.gpu_previews or self.painting_background) view.workspaceProgress(self.allocator, canvas, pixelRect(background), if (self.wallpaper) |image| image.view() else null, ease, animated);
+            if (!self.gpu_previews or self.painting_background) view.workspaceProgress(canvas, pixelRect(background), if (self.wallpaper) |image| image.view() else null, ease, animated);
             if (self.painting_background) continue;
             self.drawWindows(canvas, client, @intCast(i), background, height, ratio, if (i == client.current) ease else 1, animated, width);
         }
@@ -1219,7 +1219,7 @@ const Overview = struct {
                 const max_w: u32 = @intFromFloat(@round(@max(140, item.rect.w + 40)));
                 caption = self.prepareCaption(title_str, max_w, @intFromFloat(@round(canvas.scale)));
             }
-            view.window(self.allocator, canvas, pixelRect(item.rect), if (window.image) |image| image.view() else null, window.icon, .{
+            view.window(canvas, pixelRect(item.rect), if (window.image) |image| image.view() else null, window.icon, .{
                 .hovered = item.hovered,
                 .close_hovered = item.hovered and self.close_hover,
                 .close_pressed = item.hovered and self.close_pressed,
