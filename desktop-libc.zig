@@ -41,6 +41,11 @@ pub const struct_dirent = extern struct {
     d_reclen: c_ushort = 0,
     d_type: u8 = 0,
     d_name: [256]u8 = @splat(0),
+
+    pub fn name(self: *const struct_dirent) [:0]const u8 {
+        // readdir only supplies bytes through the name's terminating NUL.
+        return std.mem.span(@as([*:0]const u8, @ptrCast(&self.d_name)));
+    }
 };
 
 pub const DIR = opaque {};

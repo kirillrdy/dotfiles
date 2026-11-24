@@ -45,7 +45,7 @@ fn lidState(directory: [:0]const u8) Lid {
     defer _ = libc.closedir(dir);
     var result = Lid{};
     while (libc.readdir(dir)) |entry| {
-        const item = std.mem.sliceTo(&entry.*.d_name, 0);
+        const item = entry.*.name();
         if (item.len == 0 or item[0] == '.') continue;
         var path: [4096]u8 = undefined;
         const file = std.fmt.bufPrintSentinel(&path, "{s}/{s}/state", .{ directory, item }, 0) catch continue;

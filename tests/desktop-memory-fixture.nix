@@ -4,7 +4,8 @@ import ./fixture.nix { inherit pkgs; } {
   fixture = {
     name = "desktop-memory-tests";
     steps = "memory-tests";
-    debug = true;
+    # Memcheck instruments every pixel operation in the native renderer.
+    cpu = "baseline";
   };
   pygobject = true;
   gtkEnv = true;

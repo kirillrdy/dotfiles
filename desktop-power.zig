@@ -102,7 +102,7 @@ pub const Backend = struct {
         if (directory) |dir| {
             defer _ = c.closedir(dir);
             while (c.readdir(dir)) |entry| {
-                const policy = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.*.d_name)));
+                const policy = entry.*.name();
                 if (!std.mem.startsWith(u8, policy, "policy") or policy.len == 6) continue;
                 for (policy[6..]) |byte| if (!std.ascii.isDigit(byte)) return error.InvalidPolicy;
                 const choices = read(try path(&name, "{s}/devices/system/cpu/cpufreq/{s}/energy_performance_available_preferences", .{ self.root, policy }), &buffer) catch |err| switch (err) {

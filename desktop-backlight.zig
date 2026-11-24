@@ -58,7 +58,7 @@ pub const Backend = struct {
         while (true) {
             const entry = libc.readdir(dir);
             if (entry == null) break;
-            const name = std.mem.sliceTo(&entry.*.d_name, 0);
+            const name = entry.*.name();
             if (!validName(name)) continue;
             const device = self.readDevice(name) catch continue;
             if (selected == null or device.priority > selected.?.priority or (device.priority == selected.?.priority and std.mem.order(u8, name, std.mem.sliceTo(&selected.?.name, 0)) == .lt)) selected = device;

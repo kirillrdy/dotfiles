@@ -205,7 +205,7 @@ pub const Backend = struct {
         var total = Aggregate{};
         var online: ?bool = null;
         while (libc.readdir(dir)) |entry| {
-            const name = std.mem.sliceTo(&entry.*.d_name, 0);
+            const name = entry.*.name();
             if (!validName(name)) continue;
             var buffer: [128]u8 = undefined;
             const kind = self.attribute(name, "type", &buffer) orelse continue;

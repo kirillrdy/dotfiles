@@ -733,9 +733,9 @@ let
             cp -r ${desktop.zigGlobalCache} "$TMPDIR/zig-cache"
             chmod -R u+w "$TMPDIR/zig-cache"
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-            NIX_LDFLAGS= zig build ${fixture.steps} --prefix "$out" ${
-              if (fixture.debug or false) then "-Doptimize=Debug -Dcpu=baseline" else "-Doptimize=ReleaseSafe"
-            }
+            NIX_LDFLAGS= zig build ${fixture.steps} --prefix "$out" \
+              -Doptimize=${if (fixture.debug or false) then "Debug" else "ReleaseSafe"} \
+              -Dcpu=${fixture.cpu or (if (fixture.debug or false) then "baseline" else "native")}
           '';
           doCheck = false;
           installPhase = "true";
