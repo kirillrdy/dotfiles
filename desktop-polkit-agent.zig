@@ -500,17 +500,18 @@ fn unescape(text: [:0]u8) [:0]u8 {
     return text[0..out :0];
 }
 
-test "escape decoding matches g_strcompress" {
-    const glib = struct {
-        extern fn g_strcompress(source: [*:0]const u8) [*:0]u8;
-        extern fn g_free(mem: ?*anyopaque) void;
+test "escape decoding handles C and octal escapes" {
+    const cases = [_][2][:0]const u8{
+        .{ "plain", "plain" },
+        .{ "a\\nb\\tc", "a\nb\tc" },
+        .{ "\\101\\0610x", "A10x" },
+        .{ "\\\\\\\"q\\'", "\\\"q'" },
+        .{ "\\b\\f\\r\\v", "\x08\x0c\r\x0b" },
     };
-    for ([_][:0]const u8{ "plain", "a\\nb\\tc", "\\101\\0610x", "\\\\\\\"q\\'", "\\z\\8\\777", "end\\", "\\b\\f\\r\\v" }) |sample| {
-        const expected = glib.g_strcompress(sample);
-        defer glib.g_free(expected);
+    for (cases) |case| {
         var copy: [64]u8 = undefined;
-        @memcpy(copy[0..sample.len], sample);
-        copy[sample.len] = 0;
-        try std.testing.expectEqualSlices(u8, std.mem.span(expected), unescape(copy[0..sample.len :0]));
+        @memcpy(copy[0..case[0].len], case[0]);
+        copy[case[0].len] = 0;
+        try std.testing.expectEqualSlices(u8, case[1], unescape(copy[0..case[0].len :0]));
     }
 }

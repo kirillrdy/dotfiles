@@ -90,13 +90,10 @@ pkgs.stdenv.mkDerivation {
   # Case folding and normalization tables are generated from the UCD at build time.
   UNICODE_DATA_DIR = "${pkgs.unicode-character-database}/share/unicode";
   buildInputs = [
-    pkgs.glib
     # Text: fontconfig matching, HarfBuzz shaping and FreeType rasterization.
     pkgs.fontconfig
     pkgs.freetype
     pkgs.harfbuzz
-    # Reference renderer for unit tests only.
-    textLibraries.cairo
     pkgs.wayland
     pkgs.wayland-protocols
     compositorLibraries
@@ -119,7 +116,7 @@ pkgs.stdenv.mkDerivation {
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
     # pkg-config supplies the declared libraries. Zig also turns every -L in
     # NIX_LDFLAGS into an RPATH, including unused propagated dependencies.
-    NIX_LDFLAGS= zig build install compositor-fixture window-fixture --prefix "$out" -Dtest-bin=libexec/desktop-tests --release=safe
+    NIX_LDFLAGS= zig build install --prefix "$out" -Dtest-bin=libexec/desktop-tests --release=safe
     # Executable interfaces required by SSH and the screenshot portal.
     for name in desktop-askpass grim slurp; do
       ln -s desktop-zig "$out/bin/$name"
@@ -164,8 +161,8 @@ pkgs.stdenv.mkDerivation {
     mv "$out/libexec/desktop-tests" "$tests/bin"
     mv "$out/lib/libdesktop_secrets_test_token.so" "$tests/lib/"
     rmdir "$out/libexec"
-    for name in secrets-pam secrets portal portal-chooser portal-video pointer battery audio backlight network idle lock apps dash widgets switcher settings askpass polkit polkit-agent screenshot command notifications; do
-      ln -sf desktop-fixture "$tests/bin/desktop-$name-fixture"
+    for name in $("$tests/bin/desktop-fixture" --list); do
+      ln -sf desktop-fixture "$tests/bin/$name"
     done
     mkdir -p "$out/share/dbus-1/services"
     cat > "$out/share/dbus-1/services/org.freedesktop.secrets.service" <<EOF_SECRETS_SERVICE

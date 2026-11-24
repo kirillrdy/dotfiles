@@ -1,10 +1,10 @@
 //! PAM stays off the Wayland thread. No credentials are passed to subprocesses.
 const std = @import("std");
-const posix = @import("posix");
+const pam = @import("pam");
 
-pub const Message = posix.struct_pam_message;
-pub const Response = posix.struct_pam_response;
-pub const Conversation = posix.struct_pam_conv;
+pub const Message = pam.struct_pam_message;
+pub const Response = pam.struct_pam_response;
+pub const Conversation = pam.struct_pam_conv;
 
 extern fn strdup([*:0]const u8) [*c]u8;
 
@@ -15,10 +15,10 @@ pub const Attempt = struct {
 };
 
 pub fn converse(count: c_int, messages: [*c]const [*c]const Message, responses: [*c][*c]Response, data: ?*anyopaque) callconv(.c) c_int {
-    if (count <= 0 or count > 32 or messages == null or responses == null or data == null) return posix.PAM_CONV_ERR;
+    if (count <= 0 or count > 32 or messages == null or responses == null or data == null) return pam.PAM_CONV_ERR;
     responses.* = null;
     const attempt: *Attempt = @ptrCast(@alignCast(data));
-    const result: [*]Response = @ptrCast(@alignCast(posix.calloc(@intCast(count), @sizeOf(Response)) orelse return posix.PAM_BUF_ERR));
+    const result: [*]Response = @ptrCast(@alignCast(std.c.calloc(@intCast(count), @sizeOf(Response)) orelse return pam.PAM_BUF_ERR));
     var valid = true;
     for (0..@intCast(count)) |i| {
         if (messages[i] == null) {
@@ -26,7 +26,7 @@ pub fn converse(count: c_int, messages: [*c]const [*c]const Message, responses: 
             break;
         }
         switch (messages[i].*.msg_style) {
-            posix.PAM_PROMPT_ECHO_OFF => { // One hidden password prompt; fail closed on unsupported MFA challenges.
+            pam.PAM_PROMPT_ECHO_OFF => { // One hidden password prompt; fail closed on unsupported MFA challenges.
                 if (attempt.prompted) {
                     valid = false;
                     break;
@@ -38,14 +38,14 @@ pub fn converse(count: c_int, messages: [*c]const [*c]const Message, responses: 
                     break;
                 }
             },
-            posix.PAM_PROMPT_ECHO_ON => {
+            pam.PAM_PROMPT_ECHO_ON => {
                 result[i].resp = strdup(attempt.user);
                 if (result[i].resp == null) {
                     valid = false;
                     break;
                 }
             },
-            posix.PAM_ERROR_MSG, posix.PAM_TEXT_INFO => {},
+            pam.PAM_ERROR_MSG, pam.PAM_TEXT_INFO => {},
             else => {
                 valid = false;
                 break;
@@ -55,26 +55,26 @@ pub fn converse(count: c_int, messages: [*c]const [*c]const Message, responses: 
     if (!valid) {
         for (0..@intCast(count)) |i| if (result[i].resp != null) {
             std.crypto.secureZero(u8, std.mem.span(result[i].resp));
-            posix.free(result[i].resp);
+            std.c.free(result[i].resp);
         };
-        posix.free(result);
-        return posix.PAM_CONV_ERR;
+        std.c.free(result);
+        return pam.PAM_CONV_ERR;
     }
     responses.* = result;
-    return posix.PAM_SUCCESS;
+    return pam.PAM_SUCCESS;
 }
 
 pub fn authenticate(user: [*:0]const u8, password: [*:0]const u8) bool {
     var attempt = Attempt{ .user = user, .password = password };
     var conversation = Conversation{ .conv = &converse, .appdata_ptr = &attempt };
-    var handle: ?*posix.pam_handle_t = null;
-    var status = posix.pam_start("desktop-lock", user, &conversation, &handle);
-    if (status != posix.PAM_SUCCESS) return false;
-    defer _ = posix.pam_end(handle, status);
-    status = posix.pam_authenticate(handle, posix.PAM_DISALLOW_NULL_AUTHTOK);
-    if (status != posix.PAM_SUCCESS) return false;
-    status = posix.pam_acct_mgmt(handle, 0);
-    return status == posix.PAM_SUCCESS;
+    var handle: ?*pam.pam_handle_t = null;
+    var status = pam.pam_start("desktop-lock", user, &conversation, &handle);
+    if (status != pam.PAM_SUCCESS) return false;
+    defer _ = pam.pam_end(handle, status);
+    status = pam.pam_authenticate(handle, pam.PAM_DISALLOW_NULL_AUTHTOK);
+    if (status != pam.PAM_SUCCESS) return false;
+    status = pam.pam_acct_mgmt(handle, 0);
+    return status == pam.PAM_SUCCESS;
 }
 
 const Mock = struct {
@@ -94,9 +94,9 @@ const Mock = struct {
     }
     fn auth(_: ?*anyopaque, flags: c_int) callconv(.c) c_int {
         std.debug.assert(flags == 1);
-        var info = Message{ .msg_style = posix.PAM_TEXT_INFO, .msg = "Info" };
-        var user = Message{ .msg_style = posix.PAM_PROMPT_ECHO_ON, .msg = "User" };
-        var password = Message{ .msg_style = posix.PAM_PROMPT_ECHO_OFF, .msg = "Password" };
+        var info = Message{ .msg_style = pam.PAM_TEXT_INFO, .msg = "Info" };
+        var user = Message{ .msg_style = pam.PAM_PROMPT_ECHO_ON, .msg = "User" };
+        var password = Message{ .msg_style = pam.PAM_PROMPT_ECHO_OFF, .msg = "Password" };
         var messages = [_][*c]const Message{ &info, &user, &password };
         var responses: [*c]Response = null;
         const result = conversation.conv.?(3, &messages, &responses, conversation.appdata_ptr);
@@ -106,14 +106,14 @@ const Mock = struct {
         std.debug.assert(std.mem.eql(u8, std.mem.span(responses[2].resp), "fixture-password"));
         for (0..3) |i| if (responses[i].resp != null) {
             std.crypto.secureZero(u8, std.mem.span(responses[i].resp));
-            posix.free(responses[i].resp);
+            std.c.free(responses[i].resp);
         };
-        posix.free(responses);
+        std.c.free(responses);
         if (prompt_twice) {
             var again = [_][*c]const Message{&password};
             responses = null;
             const second = conversation.conv.?(1, &again, &responses, conversation.appdata_ptr);
-            std.debug.assert(second == posix.PAM_CONV_ERR and responses == null);
+            std.debug.assert(second == pam.PAM_CONV_ERR and responses == null);
             return second;
         }
         return authentication_status;

@@ -1,7 +1,7 @@
 //! Versioned authenticated vault. Metadata is public; secret values are encrypted.
 //! Every allocation used for keys, KDF scratch, and decoded values is wiped on free.
 const std = @import("std");
-const p = @import("posix");
+const p = @import("desktop-libc.zig");
 const Aead = std.crypto.aead.chacha_poly.XChaCha20Poly1305;
 pub fn wipe(bytes: []u8) void {
     std.crypto.secureZero(u8, bytes);
@@ -60,8 +60,10 @@ pub const Vault = struct {
     arena: std.heap.ArenaAllocator,
     pub fn init(a: std.mem.Allocator, directory: [:0]const u8) !Vault {
         if (p.mkdir(directory, 0o700) != 0 and p.__errno_location().* != p.EEXIST) return error.CreateDirectory;
-        var st: p.struct_stat = undefined;
-        if (p.lstat(directory, &st) != 0 or st.st_uid != p.getuid() or st.st_mode & p.S_IFMT != p.S_IFDIR or st.st_mode & 0o077 != 0) return error.UnsafeDirectory;
+        const linux = std.os.linux;
+        const stat_mask: linux.STATX = .{ .TYPE = true, .MODE = true, .UID = true, .SIZE = true };
+        var st: linux.Statx = undefined;
+        if (linux.errno(linux.statx(linux.AT.FDCWD, directory, linux.AT.SYMLINK_NOFOLLOW, stat_mask, &st)) != .SUCCESS or st.uid != p.getuid() or st.mode & linux.S.IFMT != linux.S.IFDIR or st.mode & 0o077 != 0) return error.UnsafeDirectory;
         const lock_path = try std.fmt.allocPrintSentinel(a, "{s}/lock", .{directory}, 0);
         defer a.free(lock_path);
         const lock_fd = p.open(lock_path, p.O_CREAT | p.O_RDWR | p.O_CLOEXEC | p.O_NOFOLLOW, @as(c_uint, 0o600));
@@ -70,7 +72,7 @@ pub const Vault = struct {
         errdefer if (owns_lock) {
             _ = p.close(lock_fd);
         };
-        if (p.fstat(lock_fd, &st) != 0 or st.st_uid != p.getuid() or st.st_mode & p.S_IFMT != p.S_IFREG or st.st_mode & 0o077 != 0) return error.UnsafeVault;
+        if (linux.errno(linux.statx(lock_fd, "", linux.AT.EMPTY_PATH, stat_mask, &st)) != .SUCCESS or st.uid != p.getuid() or st.mode & linux.S.IFMT != linux.S.IFREG or st.mode & 0o077 != 0) return error.UnsafeVault;
         if (p.flock(lock_fd, p.LOCK_EX | p.LOCK_NB) != 0) return error.VaultInUse;
         var result = Vault{ .a = a, .directory = directory, .lock_fd = lock_fd, .arena = .init(a) };
         owns_lock = false;
@@ -83,8 +85,8 @@ pub const Vault = struct {
             return error.ReadVault;
         }
         defer _ = p.close(fd);
-        if (p.fstat(fd, &st) != 0 or st.st_uid != p.getuid() or st.st_mode & p.S_IFMT != p.S_IFREG or st.st_mode & 0o077 != 0 or st.st_size < 0 or st.st_size > 16 * 1024 * 1024) return error.UnsafeVault;
-        const bytes = try a.alloc(u8, @intCast(st.st_size));
+        if (linux.errno(linux.statx(fd, "", linux.AT.EMPTY_PATH, stat_mask, &st)) != .SUCCESS or st.uid != p.getuid() or st.mode & linux.S.IFMT != linux.S.IFREG or st.mode & 0o077 != 0 or st.size > 16 * 1024 * 1024) return error.UnsafeVault;
+        const bytes = try a.alloc(u8, @intCast(st.size));
         defer a.free(bytes);
         var offset: usize = 0;
         while (offset < bytes.len) {

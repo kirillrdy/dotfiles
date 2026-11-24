@@ -3,18 +3,19 @@
 //! greeter session, authenticates users via PAM (unlocking desktop-secrets),
 //! and runs the user's `desktop-zig.service` under `systemd --user`.
 const std = @import("std");
-const posix = @import("posix");
+const pam = @import("pam");
+const libc = @import("desktop-libc.zig");
 const dbus = @import("dbus");
 const greeter = @import("desktop-greeter.zig");
 const pam_auth = @import("desktop-lock-auth.zig");
 
-const PamHandle = ?*posix.pam_handle_t;
+const PamHandle = ?*pam.pam_handle_t;
 extern "c" fn ioctl(c_int, c_ulong, ...) c_int;
 extern "c" fn clearenv() c_int;
 extern "c" fn setenv([*:0]const u8, [*:0]const u8, c_int) c_int;
 extern "c" fn chdir([*:0]const u8) c_int;
-extern "c" fn kill(posix.pid_t, c_int) c_int;
-extern "c" fn nanosleep(*const posix.struct_timespec, ?*posix.struct_timespec) c_int;
+extern "c" fn kill(std.c.pid_t, c_int) c_int;
+extern "c" fn nanosleep(*const std.c.timespec, ?*std.c.timespec) c_int;
 extern "c" fn signal(c_int, ?*const fn (c_int) callconv(.c) void) ?*const fn (c_int) callconv(.c) void;
 
 const TIOCSCTTY: c_ulong = 0x540E;
@@ -26,7 +27,7 @@ const SIGHUP: c_int = 1;
 const SIGPIPE: c_int = 13;
 
 var dm_running: std.atomic.Value(bool) = .init(true);
-var active_child: std.atomic.Value(posix.pid_t) = .init(0);
+var active_child: std.atomic.Value(std.c.pid_t) = .init(0);
 
 fn handleSignal(_: c_int) callconv(.c) void {
     dm_running.store(false, .release);
@@ -34,48 +35,48 @@ fn handleSignal(_: c_int) callconv(.c) void {
     if (pid > 0) _ = kill(pid, SIGTERM);
 }
 
-fn nullConverse(count: c_int, _: [*c]const [*c]const posix.struct_pam_message, responses: [*c][*c]posix.struct_pam_response, _: ?*anyopaque) callconv(.c) c_int {
-    if (count <= 0 or count > 32 or responses == null) return posix.PAM_CONV_ERR;
-    const result = posix.calloc(@intCast(count), @sizeOf(posix.struct_pam_response)) orelse return posix.PAM_BUF_ERR;
+fn nullConverse(count: c_int, _: [*c]const [*c]const pam.struct_pam_message, responses: [*c][*c]pam.struct_pam_response, _: ?*anyopaque) callconv(.c) c_int {
+    if (count <= 0 or count > 32 or responses == null) return pam.PAM_CONV_ERR;
+    const result = std.c.calloc(@intCast(count), @sizeOf(pam.struct_pam_response)) orelse return pam.PAM_BUF_ERR;
     responses.* = @ptrCast(@alignCast(result));
-    return posix.PAM_SUCCESS;
+    return pam.PAM_SUCCESS;
 }
 
 fn sleepMs(ms: u64) void {
-    const req: posix.struct_timespec = .{
-        .tv_sec = @intCast(ms / 1000),
-        .tv_nsec = @intCast((ms % 1000) * 1_000_000),
+    const req: std.c.timespec = .{
+        .sec = @intCast(ms / 1000),
+        .nsec = @intCast((ms % 1000) * 1_000_000),
     };
     _ = nanosleep(&req, null);
 }
 
 fn activateVt(vt: c_int) void {
-    const fd = posix.open("/dev/tty0", posix.O_RDWR | posix.O_CLOEXEC);
+    const fd = libc.open("/dev/tty0", libc.O_RDWR | libc.O_CLOEXEC);
     if (fd < 0) return;
-    defer _ = posix.close(fd);
+    defer _ = libc.close(fd);
     _ = ioctl(fd, VT_ACTIVATE, vt);
     _ = ioctl(fd, VT_WAITACTIVE, vt);
 }
 
 fn attachControllingTty(tty_path: [*:0]const u8) void {
-    _ = posix.setsid();
-    const fd = posix.open(tty_path, posix.O_RDWR);
+    _ = libc.setsid();
+    const fd = libc.open(tty_path, libc.O_RDWR);
     if (fd >= 0) {
         _ = ioctl(fd, TIOCSCTTY, @as(c_int, 0));
-        _ = posix.dup2(fd, 0);
-        if (fd > 2) _ = posix.close(fd);
+        _ = libc.dup2(fd, 0);
+        if (fd > 2) _ = libc.close(fd);
     }
 }
 
 fn closePamSession(handle: PamHandle) void {
     if (handle == null) return;
-    _ = posix.pam_close_session(handle, 0);
-    _ = posix.pam_setcred(handle, posix.PAM_DELETE_CRED);
-    _ = posix.pam_end(handle, posix.PAM_SUCCESS);
+    _ = pam.pam_close_session(handle, 0);
+    _ = pam.pam_setcred(handle, pam.PAM_DELETE_CRED);
+    _ = pam.pam_end(handle, pam.PAM_SUCCESS);
 }
 
 fn openPamSession(handle: PamHandle, tty_path: [*:0]const u8, class: []const u8, vt_str: []const u8) bool {
-    _ = posix.pam_set_item(handle, posix.PAM_TTY, tty_path);
+    _ = pam.pam_set_item(handle, pam.PAM_TTY, tty_path);
     var buf: [128:0]u8 = undefined;
     const entries = [_]struct { key: []const u8, val: []const u8 }{
         .{ .key = "XDG_SESSION_TYPE", .val = "wayland" },
@@ -87,11 +88,11 @@ fn openPamSession(handle: PamHandle, tty_path: [*:0]const u8, class: []const u8,
     };
     for (entries) |e| {
         const kv = std.fmt.bufPrintSentinel(&buf, "{s}={s}", .{ e.key, e.val }, 0) catch continue;
-        _ = posix.pam_putenv(handle, kv.ptr);
+        _ = pam.pam_putenv(handle, kv.ptr);
     }
-    if (posix.pam_setcred(handle, posix.PAM_ESTABLISH_CRED) != posix.PAM_SUCCESS) return false;
-    if (posix.pam_open_session(handle, 0) != posix.PAM_SUCCESS) {
-        _ = posix.pam_setcred(handle, posix.PAM_DELETE_CRED);
+    if (pam.pam_setcred(handle, pam.PAM_ESTABLISH_CRED) != pam.PAM_SUCCESS) return false;
+    if (pam.pam_open_session(handle, 0) != pam.PAM_SUCCESS) {
+        _ = pam.pam_setcred(handle, pam.PAM_DELETE_CRED);
         return false;
     }
     return true;
@@ -122,14 +123,14 @@ const AuthResult = struct {
     username_len: usize = 0,
 };
 
-fn waitPid(pid: posix.pid_t) void {
+fn waitPid(pid: std.c.pid_t) void {
     var status: c_int = 0;
-    while (posix.waitpid(pid, &status, 0) < 0) {
-        if (posix.__errno_location().* != posix.EINTR) break;
+    while (libc.waitpid(pid, &status, 0) < 0) {
+        if (libc.__errno_location().* != libc.EINTR) break;
     }
 }
 
-fn waitChild(pid: posix.pid_t) void {
+fn waitChild(pid: std.c.pid_t) void {
     active_child.store(pid, .release);
     defer active_child.store(0, .release);
     waitPid(pid);
@@ -146,7 +147,7 @@ fn copyZ(comptime N: usize, value: ?[*:0]const u8) [N:0]u8 {
 }
 
 fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []const u8, wlr_renderer: ?[*:0]const u8) ?AuthResult {
-    const greeter_pw = posix.getpwnam("greeter") orelse {
+    const greeter_pw = libc.getpwnam("greeter") orelse {
         std.log.err("dm: user 'greeter' does not exist", .{});
         return null;
     };
@@ -155,48 +156,48 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
     const greeter_home: [*:0]const u8 = if (greeter_pw.*.pw_dir != null) greeter_pw.*.pw_dir else "/var/lib/greeter";
 
     var fds: [2]c_int = undefined;
-    if (posix.socketpair(posix.AF_UNIX, posix.SOCK_STREAM, 0, &fds) != 0) return null;
+    if (libc.socketpair(libc.AF_UNIX, libc.SOCK_STREAM, 0, &fds) != 0) return null;
 
     // Fork a dedicated session leader so pam_systemd never moves the DM daemon
     // itself into the greeter's logind session scope.
-    const session_pid = posix.fork();
+    const session_pid = libc.fork();
     if (session_pid < 0) {
-        _ = posix.close(fds[0]);
-        _ = posix.close(fds[1]);
+        _ = libc.close(fds[0]);
+        _ = libc.close(fds[1]);
         return null;
     }
     if (session_pid == 0) {
-        _ = posix.close(fds[0]);
+        _ = libc.close(fds[0]);
         attachControllingTty(tty_path);
 
-        var conv: posix.struct_pam_conv = .{ .conv = &nullConverse, .appdata_ptr = null };
+        var conv: pam.struct_pam_conv = .{ .conv = &nullConverse, .appdata_ptr = null };
         var greeter_pam: PamHandle = null;
-        if (posix.pam_start("desktop-greeter", "greeter", &conv, &greeter_pam) != posix.PAM_SUCCESS) {
+        if (pam.pam_start("desktop-greeter", "greeter", &conv, &greeter_pam) != pam.PAM_SUCCESS) {
             std.log.err("dm: pam_start(desktop-greeter) failed", .{});
-            posix._exit(1);
+            libc._exit(1);
         }
         if (!openPamSession(greeter_pam, tty_path, "greeter", vt_str)) {
             std.log.err("dm: pam_open_session(desktop-greeter) failed", .{});
-            _ = posix.pam_end(greeter_pam, posix.PAM_SYSTEM_ERR);
-            posix._exit(1);
+            _ = pam.pam_end(greeter_pam, pam.PAM_SYSTEM_ERR);
+            libc._exit(1);
         }
 
-        const child_pid = posix.fork();
+        const child_pid = libc.fork();
         if (child_pid < 0) {
             closePamSession(greeter_pam);
-            posix._exit(1);
+            libc._exit(1);
         }
         if (child_pid == 0) {
             const target_fd: c_int = 3;
             if (fds[1] != target_fd) {
-                if (posix.dup2(fds[1], target_fd) < 0) posix._exit(1);
-                _ = posix.close(fds[1]);
+                if (libc.dup2(fds[1], target_fd) < 0) libc._exit(1);
+                _ = libc.close(fds[1]);
             }
-            _ = posix.fcntl(target_fd, posix.F_SETFD, @as(c_int, 0));
-            _ = posix.close_range(4, std.math.maxInt(c_uint), 0);
+            _ = libc.fcntl(target_fd, libc.F_SETFD, @as(c_int, 0));
+            _ = libc.close_range(4, std.math.maxInt(c_uint), 0);
 
-            const runtime_dir_val = posix.pam_getenv(greeter_pam, "XDG_RUNTIME_DIR");
-            const session_id_val = posix.pam_getenv(greeter_pam, "XDG_SESSION_ID");
+            const runtime_dir_val = pam.pam_getenv(greeter_pam, "XDG_RUNTIME_DIR");
+            const session_id_val = pam.pam_getenv(greeter_pam, "XDG_SESSION_ID");
             var runtime_buf: [64:0]u8 = undefined;
             const runtime_fallback = std.fmt.bufPrintSentinel(&runtime_buf, "/run/user/{d}", .{greeter_uid}, 0) catch "/tmp";
 
@@ -220,23 +221,23 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
             _ = setenv("XCURSOR_SIZE", "24", 1);
             if (saved_wlr[0] != 0) _ = setenv("WLR_RENDERER", &saved_wlr, 1);
 
-            if (posix.initgroups("greeter", greeter_gid) != 0) posix._exit(1);
-            if (posix.setgid(greeter_gid) != 0) posix._exit(1);
-            if (posix.setuid(greeter_uid) != 0) posix._exit(1);
+            if (libc.initgroups("greeter", greeter_gid) != 0) libc._exit(1);
+            if (libc.setgid(greeter_gid) != 0) libc._exit(1);
+            if (libc.setuid(greeter_uid) != 0) libc._exit(1);
             _ = chdir(&saved_home);
 
             const argv = [_:null]?[*:0]const u8{ "/proc/self/exe", "greeter", "3" };
-            _ = posix.execv("/proc/self/exe", @ptrCast(&argv));
-            posix._exit(127);
+            _ = libc.execv("/proc/self/exe", @ptrCast(&argv));
+            libc._exit(127);
         }
 
-        _ = posix.close(fds[1]);
+        _ = libc.close(fds[1]);
         waitPid(child_pid);
         closePamSession(greeter_pam);
-        posix._exit(0);
+        libc._exit(0);
     }
 
-    _ = posix.close(fds[1]);
+    _ = libc.close(fds[1]);
     var auth_result: ?AuthResult = null;
     while (dm_running.load(.acquire)) {
         var op_byte: [1]u8 = undefined;
@@ -265,17 +266,17 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
             pass_buf[pass_len] = 0;
 
             var attempt: pam_auth.Attempt = .{ .user = &user_buf, .password = &pass_buf };
-            var user_conv: posix.struct_pam_conv = .{ .conv = &pam_auth.converse, .appdata_ptr = &attempt };
+            var user_conv: pam.struct_pam_conv = .{ .conv = &pam_auth.converse, .appdata_ptr = &attempt };
             var user_pam: PamHandle = null;
-            var status = posix.pam_start("desktop-login", &user_buf, &user_conv, &user_pam);
-            if (status == posix.PAM_SUCCESS) {
-                status = posix.pam_authenticate(user_pam, posix.PAM_DISALLOW_NULL_AUTHTOK);
+            var status = pam.pam_start("desktop-login", &user_buf, &user_conv, &user_pam);
+            if (status == pam.PAM_SUCCESS) {
+                status = pam.pam_authenticate(user_pam, pam.PAM_DISALLOW_NULL_AUTHTOK);
             }
             std.crypto.secureZero(u8, &pass_buf);
-            if (status == posix.PAM_SUCCESS) {
-                status = posix.pam_acct_mgmt(user_pam, 0);
+            if (status == pam.PAM_SUCCESS) {
+                status = pam.pam_acct_mgmt(user_pam, 0);
             }
-            if (status == posix.PAM_SUCCESS) {
+            if (status == pam.PAM_SUCCESS) {
                 const reply = [1]u8{@backingInt(greeter.Reply.ok)};
                 _ = greeter.writeAll(fds[0], &reply);
                 var res: AuthResult = .{ .handle = user_pam, .username_len = user_len };
@@ -283,13 +284,13 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
                 auth_result = res;
                 break;
             } else {
-                if (user_pam != null) _ = posix.pam_end(user_pam, status);
+                if (user_pam != null) _ = pam.pam_end(user_pam, status);
                 const reply = [1]u8{@backingInt(greeter.Reply.failed)};
                 if (!greeter.writeAll(fds[0], &reply)) break;
             }
         } else break;
     }
-    _ = posix.close(fds[0]);
+    _ = libc.close(fds[0]);
     // Wait for the greeter session leader (and compositor) to exit and close its logind session.
     waitChild(session_pid);
     return auth_result;
@@ -297,8 +298,8 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
 
 fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8, wlr_renderer: ?[*:0]const u8) void {
     const username: [*:0]const u8 = &auth.username;
-    const pw = posix.getpwnam(username) orelse {
-        _ = posix.pam_end(auth.handle, posix.PAM_USER_UNKNOWN);
+    const pw = libc.getpwnam(username) orelse {
+        _ = pam.pam_end(auth.handle, pam.PAM_USER_UNKNOWN);
         return;
     };
     const uid = pw.*.pw_uid;
@@ -308,32 +309,32 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
 
     // Fork a dedicated user session leader so pam_systemd puts it (not the DM
     // daemon) in the user's session-N.scope and starts user@<uid>.service.
-    const session_pid = posix.fork();
+    const session_pid = libc.fork();
     if (session_pid < 0) {
-        _ = posix.pam_end(auth.handle, posix.PAM_SYSTEM_ERR);
+        _ = pam.pam_end(auth.handle, pam.PAM_SYSTEM_ERR);
         return;
     }
     if (session_pid == 0) {
         attachControllingTty(tty_path);
         if (!openPamSession(auth.handle, tty_path, "user", vt_str)) {
             std.log.err("dm: pam_open_session(desktop-login) failed for {s}", .{auth.username[0..auth.username_len]});
-            _ = posix.pam_end(auth.handle, posix.PAM_SESSION_ERR);
-            posix._exit(1);
+            _ = pam.pam_end(auth.handle, pam.PAM_SESSION_ERR);
+            libc._exit(1);
         }
 
-        const child_pid = posix.fork();
+        const child_pid = libc.fork();
         if (child_pid < 0) {
             closePamSession(auth.handle);
-            posix._exit(1);
+            libc._exit(1);
         }
         if (child_pid == 0) {
-            _ = posix.close_range(3, std.math.maxInt(c_uint), 0);
+            _ = libc.close_range(3, std.math.maxInt(c_uint), 0);
 
             const saved_home = copyZ(256, home);
             const saved_shell = copyZ(256, shell);
             const saved_wlr = copyZ(64, wlr_renderer);
 
-            const pam_env = posix.pam_getenvlist(auth.handle);
+            const pam_env = pam.pam_getenvlist(auth.handle);
             _ = clearenv();
             if (pam_env) |list| {
                 var i: usize = 0;
@@ -347,9 +348,9 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
                             _ = setenv(key_buf[0..eq :0].ptr, list[i] + eq + 1, 1);
                         }
                     }
-                    posix.free(list[i]);
+                    std.c.free(list[i]);
                 }
-                posix.free(@ptrCast(list));
+                std.c.free(@ptrCast(list));
             }
 
             _ = setenv("HOME", &saved_home, 1);
@@ -365,9 +366,9 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
             _ = setenv("PATH", "/run/wrappers/bin:/run/current-system/sw/bin", 0);
             if (saved_wlr[0] != 0) _ = setenv("WLR_RENDERER", &saved_wlr, 1);
 
-            if (posix.initgroups(username, gid) != 0) posix._exit(1);
-            if (posix.setgid(gid) != 0) posix._exit(1);
-            if (posix.setuid(uid) != 0) posix._exit(1);
+            if (libc.initgroups(username, gid) != 0) libc._exit(1);
+            if (libc.setgid(gid) != 0) libc._exit(1);
+            if (libc.setuid(uid) != 0) libc._exit(1);
             _ = chdir(&saved_home);
 
             // Source login profile so NixOS environment.variables & sessionVariables
@@ -383,17 +384,17 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
                 \\systemctl --user start --wait desktop-zig.service
             ;
             const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", script };
-            _ = posix.execv("/bin/sh", @ptrCast(&argv));
-            posix._exit(127);
+            _ = libc.execv("/bin/sh", @ptrCast(&argv));
+            libc._exit(127);
         }
 
         waitPid(child_pid);
         closePamSession(auth.handle);
-        posix._exit(0);
+        libc._exit(0);
     }
 
     // The child owns and closes the PAM session; end only the parent's copy of the handle.
-    _ = posix.pam_end(auth.handle, posix.PAM_SUCCESS);
+    _ = pam.pam_end(auth.handle, pam.PAM_SUCCESS);
     waitChild(session_pid);
 }
 
@@ -407,7 +408,7 @@ pub fn run(a: std.mem.Allocator) !void {
     const vt_str = "1";
     const vt_num: c_int = 1;
     const tty_path: [:0]const u8 = "/dev/tty1";
-    const wlr_renderer = posix.getenv("WLR_RENDERER");
+    const wlr_renderer = libc.getenv("WLR_RENDERER");
 
     while (dm_running.load(.acquire)) {
         activateVt(vt_num);

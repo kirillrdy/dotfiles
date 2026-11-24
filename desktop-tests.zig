@@ -129,7 +129,6 @@ test {
     // Nix builds do not inherit the graphical session's loader environment.
     try @import("desktop-runtime.zig").setup(std.testing.allocator);
     _ = @import("desktop-zig.zig");
-    _ = @import("tests/desktop-glib-abi.zig");
     _ = @import("tests/desktop-libc-abi.zig");
     _ = @import("tests/desktop-protocols.zig");
     _ = @import("desktop-switcher.zig");
@@ -206,7 +205,6 @@ test {
     _ = @import("desktop-http.zig");
     _ = @import("desktop-lock-auth.zig");
     _ = @import("desktop-wayland-client.zig");
-    _ = @import("tests/desktop-dbus-oracle.zig");
     _ = @import("tests/desktop-dbus-bus.zig");
     _ = @import("tests/desktop-power-fixture.zig");
 }

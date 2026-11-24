@@ -1,9 +1,9 @@
 //! A real application window built and exercised without linking GTK or GDK.
 const std = @import("std");
-const native = @import("native");
-const mainloop = native.mainloop;
-const util = native.util;
-const wire = native.surface;
+const desktop = @import("desktop");
+const mainloop = desktop.mainloop;
+const util = desktop.util;
+const wire = desktop.window.wire;
 const cast = util.cast;
 const State = struct {
     painted: bool = false,
@@ -43,7 +43,7 @@ const State = struct {
     }
 };
 pub fn main(init: std.process.Init) !void {
-    defer native.form.host.deinit();
+    defer desktop.form.host.deinit();
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     defer std.heap.page_allocator.free(args);
     if (args.len == 2 and std.mem.eql(u8, args[1], "forms")) return forms(init.gpa);
@@ -158,7 +158,7 @@ fn consent(init: std.process.Init) !void {
     var done: Done = .{};
     var allocator: std.heap.DebugAllocator(.{}) = .init;
     defer if (allocator.deinit() == .leak) @panic("native consent allocation leak");
-    const dialog = try native.auth.Dialog.createWithOptions(allocator.allocator(), .confirm, "An application requests your account information.\nName: 日本語", .{ .title = "Native consent fixture", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .response_context = &done, .responded = &Done.completed });
+    const dialog = try desktop.auth_dialog.Dialog.createWithOptions(allocator.allocator(), .confirm, "An application requests your account information.\nName: 日本語", .{ .title = "Native consent fixture", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .response_context = &done, .responded = &Done.completed });
     defer dialog.destroy();
     const deadline = util.monotonicTime() + 8_000_000;
     while (done.accepted == null and util.monotonicTime() < deadline) {
@@ -174,14 +174,14 @@ fn forms(allocator: std.mem.Allocator) !void {
         fn action(_: ?*anyopaque, _: usize) void {}
         fn changed(_: ?*anyopaque, _: usize) void {}
     };
-    const previous = try native.form.Form.create(allocator, "Clipboard owner", null, &Owner.action, &Owner.changed);
+    const previous = try desktop.form.Form.create(allocator, "Clipboard owner", null, &Owner.action, &Owner.changed);
     const previous_field = try previous.add(.entry, "Name", "", false);
     try previous.setText(previous_field, "Clipboard after window close");
     previous.focusItem(previous_field);
     try std.testing.expect(previous.handleKey('a', 4));
     try std.testing.expect(previous.handleKey('c', 4));
     previous.deinit();
-    const form = try native.form.Form.create(allocator, "Native form fixture", null, &Owner.action, &Owner.changed);
+    const form = try desktop.form.Form.create(allocator, "Native form fixture", null, &Owner.action, &Owner.changed);
     defer form.deinit();
     const field = try form.add(.entry, "Name", "", false);
     form.focusItem(field);
@@ -211,7 +211,7 @@ fn forms(allocator: std.mem.Allocator) !void {
         mainloop.sleep(1000);
     }
     try std.testing.expectEqualStrings("Text from another client", form.get(field).value());
-    const dialog = try native.auth.Dialog.create(allocator, .password, "Native authentication fixture");
+    const dialog = try desktop.auth_dialog.Dialog.create(allocator, .password, "Native authentication fixture");
     defer dialog.destroy();
     try dialog.entry.?.insert("synthetic-password");
     try std.testing.expect(dialog.handleKey(0xff1b, 0));

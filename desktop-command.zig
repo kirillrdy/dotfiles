@@ -68,18 +68,17 @@ pub fn escapeMarkup(a: std.mem.Allocator, out: *std.ArrayList(u8), text: []const
     };
 }
 
-test "markup escaping matches GLib" {
-    const glib = struct {
-        extern fn g_markup_escape_text(text: [*]const u8, length: isize) [*:0]u8;
-        extern fn g_free(mem: ?*anyopaque) void;
-    };
+test "markup escaping encodes XML entities" {
     const a = std.testing.allocator;
-    for ([_][]const u8{ "plain", "a & b <c> \"d\" 'e'", "東京 &amp;" }) |text| {
-        const expected = glib.g_markup_escape_text(text.ptr, @intCast(text.len));
-        defer glib.g_free(expected);
+    const cases = [_][2][]const u8{
+        .{ "plain", "plain" },
+        .{ "a & b <c> \"d\" 'e'", "a &amp; b &lt;c&gt; &quot;d&quot; &apos;e&apos;" },
+        .{ "東京 &amp;", "東京 &amp;amp;" },
+    };
+    for (cases) |case| {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(a);
-        try escapeMarkup(a, &out, text);
-        try std.testing.expectEqualStrings(std.mem.span(expected), out.items);
+        try escapeMarkup(a, &out, case[0]);
+        try std.testing.expectEqualStrings(case[1], out.items);
     }
 }

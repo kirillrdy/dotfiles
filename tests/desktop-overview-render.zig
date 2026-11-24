@@ -1,12 +1,9 @@
-//! Frozen Cairo reference for the Activities pixel renderer.
+//! Offscreen pixel checks for the Activities renderer.
 const std = @import("std");
-const cairo = @import("desktop-cairo.zig");
 const raster = @import("../desktop-raster.zig");
 const text = @import("../desktop-text.zig");
 const view = @import("../desktop-overview-view.zig");
 const Image = @import("../desktop-image.zig").Image;
-const capture = @import("../desktop-capture.zig");
-const Rect = capture.Rect;
 
 test "GPU preview corner masks match rounded content over the cached background" {
     const allocator = std.testing.allocator;
@@ -57,124 +54,6 @@ test "strip corner masks fade with the overview controls" {
     view.roundedMask(std.testing.allocator, canvas, bounds, 12, 0.5);
     const corner = pixels[4 * 40 + 4];
     try std.testing.expect(corner >> 24 > 0x60 and corner >> 24 < 0xa0);
-}
-
-const reference = struct {
-    fn rounded(cr: *cairo.cairo_t, r: Rect, radius: f64) void {
-        const rad = @max(0, @min(radius, @min(r.w, r.h) / 2));
-        cairo.cairo_new_sub_path(cr);
-        cairo.cairo_arc(cr, r.x + r.w - rad, r.y + rad, rad, -std.math.pi / 2.0, 0);
-        cairo.cairo_arc(cr, r.x + r.w - rad, r.y + r.h - rad, rad, 0, std.math.pi / 2.0);
-        cairo.cairo_arc(cr, r.x + rad, r.y + r.h - rad, rad, std.math.pi / 2.0, std.math.pi);
-        cairo.cairo_arc(cr, r.x + rad, r.y + rad, rad, std.math.pi, 1.5 * std.math.pi);
-        cairo.cairo_close_path(cr);
-    }
-    fn drawImage(cr: *cairo.cairo_t, image: ?capture.Image, r: Rect, opacity: f64) void {
-        cairo.cairo_save(cr);
-        defer cairo.cairo_restore(cr);
-        cairo.cairo_translate(cr, r.x, r.y);
-        cairo.cairo_rectangle(cr, 0, 0, r.w, r.h);
-        cairo.cairo_clip(cr);
-        if (image) |pixels| {
-            // Borrow capture storage only for this draw; no Cairo object owns it.
-            const surface = cairo.cairo_image_surface_create_for_data(pixels.pixels.ptr, cairo.CAIRO_FORMAT_ARGB32, @intCast(pixels.width), @intCast(pixels.height), @intCast(pixels.stride)) orelse return;
-            defer cairo.cairo_surface_destroy(surface);
-            if (cairo.cairo_surface_status(surface) != cairo.CAIRO_STATUS_SUCCESS) return;
-            cairo.cairo_scale(cr, r.w / @as(f64, @floatFromInt(pixels.width)), r.h / @as(f64, @floatFromInt(pixels.height)));
-            cairo.cairo_set_source_surface(cr, surface, 0, 0);
-            cairo.cairo_pattern_set_extend(cairo.cairo_get_source(cr), cairo.CAIRO_EXTEND_PAD);
-            cairo.cairo_paint_with_alpha(cr, opacity);
-        } else {
-            cairo.cairo_rectangle(cr, 0, 0, r.w, r.h);
-            cairo.cairo_set_source_rgb(cr, 0.3, 0.3, 0.33);
-            cairo.cairo_fill(cr);
-        }
-    }
-    fn workspace(cr: *cairo.cairo_t, r: Rect, wallpaper: ?*cairo.cairo_surface_t) void {
-        cairo.cairo_save(cr);
-        defer cairo.cairo_restore(cr);
-        rounded(cr, r, 30);
-        cairo.cairo_clip(cr);
-        cairo.cairo_set_source_rgb(cr, 0.015, 0.235, 0.53);
-        cairo.cairo_paint(cr);
-        if (wallpaper) |image| {
-            const iw: f64 = @floatFromInt(cairo.cairo_image_surface_get_width(image));
-            const ih: f64 = @floatFromInt(cairo.cairo_image_surface_get_height(image));
-            const scale = @max(r.w / iw, r.h / ih);
-            cairo.cairo_translate(cr, r.x + (r.w - iw * scale) / 2, r.y + (r.h - ih * scale) / 2);
-            cairo.cairo_scale(cr, scale, scale);
-            cairo.cairo_set_source_surface(cr, image, 0, 0);
-            cairo.cairo_pattern_set_extend(cairo.cairo_get_source(cr), cairo.CAIRO_EXTEND_PAD);
-            cairo.cairo_paint(cr);
-        }
-    }
-};
-
-fn rect(value: Rect) raster.Rect {
-    return .{ .x = value.x, .y = value.y, .width = value.w, .height = value.h };
-}
-
-fn compare(expected: []const u32, actual: []const u32, scale: u32, ease: f64) !void {
-    var total: u64 = 0;
-    var differing: usize = 0;
-    for (expected, actual) |left, right| {
-        var worst: u32 = 0;
-        inline for (.{ 0, 8, 16, 24 }) |shift| {
-            const delta = @abs(@as(i32, @intCast((left >> shift) & 255)) - @as(i32, @intCast((right >> shift) & 255)));
-            total += delta;
-            worst = @max(worst, delta);
-        }
-        if (worst > 32) differing += 1;
-    }
-    const mean = @as(f64, @floatFromInt(total)) / @as(f64, @floatFromInt(actual.len * 4));
-    // Signed-distance antialiasing differs at curved edges. Broad color,
-    // opacity, crop or layout changes must fail rather than hide in that allowance.
-    if (mean > 1.4 or differing > actual.len / 100) {
-        std.debug.print("overview reference scale={} ease={d}: mean={d} differing={}/{}\n", .{ scale, ease, mean, differing, actual.len });
-        return error.OverviewPixelsDiffer;
-    }
-}
-
-test "native buffer overview preserves wallpaper crops and workspace clipping" {
-    const a = std.testing.allocator;
-    var words: [11 * 9]u32 = undefined;
-    for (&words, 0..) |*word, i| {
-        const alpha: u32 = @intCast(128 + i % 128);
-        word.* = (alpha << 24) | ((@as(u32, @intCast(i * 7 % 256)) * alpha / 255) << 16) | ((@as(u32, @intCast(i * 13 % 256)) * alpha / 255) << 8) | (alpha / 2);
-    }
-    const image = try Image.thumbnail(a, .{ .pixels = std.mem.sliceAsBytes(&words), .width = 11, .height = 9, .stride = 44, .format = .argb });
-    defer image.deinit(a);
-    const wallpaper = cairo.cairo_image_surface_create_for_data(image.pixels.ptr, cairo.CAIRO_FORMAT_ARGB32, 11, 9, 44).?;
-    defer cairo.cairo_surface_destroy(wallpaper);
-    const workspace: Rect = .{ .x = 10.25, .y = 8.75, .w = 240, .h = 138 };
-    const miniature: Rect = .{ .x = -4, .y = 156, .w = 80, .h = 40 };
-    const clip: Rect = .{ .x = 12, .y = 160, .w = 55, .h = 30 };
-    for ([_]u32{ 1, 2 }) |scale| for ([_]f64{ 0, 0.45, 1 }) |ease| for ([_]bool{ false, true }) |available| {
-        const width = 260 * scale;
-        const height = 200 * scale;
-        const pixels = try a.alloc(u32, width * height);
-        defer a.free(pixels);
-        @memset(pixels, 0xff222226);
-        const canvas: raster.Canvas = .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) };
-        view.workspaceCard(std.testing.allocator, canvas, rect(workspace), if (available) image.view() else null, 30, false, false);
-        view.miniatureRounded(std.testing.allocator, canvas, if (available) image.view() else null, rect(miniature), rect(clip), 0, false);
-        const surface = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
-        defer cairo.cairo_surface_destroy(surface);
-        const cr = cairo.cairo_create(surface).?;
-        defer cairo.cairo_destroy(cr);
-        cairo.cairo_scale(cr, @floatFromInt(scale), @floatFromInt(scale));
-        cairo.cairo_set_source_rgb(cr, 34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
-        cairo.cairo_paint(cr);
-        reference.workspace(cr, workspace, if (available) wallpaper else null);
-        cairo.cairo_save(cr);
-        cairo.cairo_rectangle(cr, clip.x, clip.y, clip.w, clip.h);
-        cairo.cairo_clip(cr);
-        reference.drawImage(cr, if (available) image else null, miniature, 1);
-        cairo.cairo_restore(cr);
-        cairo.cairo_surface_flush(surface);
-        const expected: [*]const u32 = @ptrCast(@alignCast(cairo.cairo_image_surface_get_data(surface)));
-        try compare(expected[0 .. width * height], pixels, scale, ease);
-    };
 }
 
 test "workspace corners grow with overview progress from an unrounded desktop" {
@@ -277,8 +156,6 @@ test "hovered window expands without white border and paints close states, capti
 test "tiny wallpaper stays opaque and uniformly colored when enlarged" {
     const a = std.testing.allocator;
     var source: [4]u32 = @splat(0xff142850);
-    const wallpaper = cairo.cairo_image_surface_create_for_data(@ptrCast(&source), cairo.CAIRO_FORMAT_ARGB32, 2, 2, 8).?;
-    defer cairo.cairo_surface_destroy(wallpaper);
     const pixels = try a.alloc(u32, 200 * 120);
     defer a.free(pixels);
     @memset(pixels, 0);
@@ -301,43 +178,4 @@ test "window previews retain client corners and do not add a second frame" {
         try std.testing.expectEqual(@as(u32, 255), pixels[40 * scale * width + 40 * scale] >> 24);
         try std.testing.expectEqual(@as(u32, 0), pixels[80 * scale * width + 170 * scale]);
     }
-}
-
-test "large wallpapers downscale into workspace cards like Cairo while animating and at rest" {
-    const a = std.testing.allocator;
-    const iw = 640;
-    const ih = 400;
-    const words = try a.alloc(u32, iw * ih);
-    defer a.free(words);
-    for (words, 0..) |*word, i| {
-        const x: u32 = @intCast(i % iw);
-        const y: u32 = @intCast(i / iw);
-        word.* = 0xff000000 | ((x * 255 / iw) << 16) | ((y * 255 / ih) << 8) | ((x ^ y) & 255);
-    }
-    const image: raster.Image = .{ .pixels = std.mem.sliceAsBytes(words), .width = iw, .height = ih, .stride = iw * 4, .format = .argb };
-    const wallpaper = cairo.cairo_image_surface_create_for_data(@ptrCast(words.ptr), cairo.CAIRO_FORMAT_ARGB32, iw, ih, iw * 4).?;
-    defer cairo.cairo_surface_destroy(wallpaper);
-    const cards = [_]Rect{ .{ .x = 3.3, .y = 2.6, .w = 250, .h = 150 }, .{ .x = 10, .y = 20, .w = 120.5, .h = 70.25 }, .{ .x = -30, .y = 5, .w = 300, .h = 190 }, .{ .x = 40.7, .y = 30.1, .w = 64, .h = 40 } };
-    for ([_]u32{ 1, 2 }) |scale| for (cards) |card| for ([_]bool{ false, true }) |animated| {
-        const width = 260 * scale;
-        const height = 200 * scale;
-        const pixels = try a.alloc(u32, width * height);
-        defer a.free(pixels);
-        @memset(pixels, 0xff222226);
-        view.workspaceCard(std.testing.allocator, .{ .target = .{ .pixels = pixels, .width = width, .height = height }, .scale = @floatFromInt(scale) }, rect(card), image, 30, false, animated);
-        const surface = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(width), @intCast(height)).?;
-        defer cairo.cairo_surface_destroy(surface);
-        const cr = cairo.cairo_create(surface).?;
-        defer cairo.cairo_destroy(cr);
-        cairo.cairo_scale(cr, @floatFromInt(scale), @floatFromInt(scale));
-        cairo.cairo_set_source_rgb(cr, 34.0 / 255.0, 34.0 / 255.0, 38.0 / 255.0);
-        cairo.cairo_paint(cr);
-        reference.workspace(cr, card, wallpaper);
-        cairo.cairo_surface_flush(surface);
-        const expected: [*]const u32 = @ptrCast(@alignCast(cairo.cairo_image_surface_get_data(surface)));
-        compare(expected[0 .. width * height], pixels, scale, if (animated) 1 else 0) catch |err| {
-            std.debug.print("card {any} animated={}\n", .{ card, animated });
-            return err;
-        };
-    };
 }

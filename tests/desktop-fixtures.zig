@@ -16,6 +16,8 @@ fn wrapNoInit(comptime f: fn () anyerror!void) fn (std.process.Init) anyerror!vo
 
 const entries = [_]Entry{
     .{ .name = "desktop-compositor-fixture", .run = @import("desktop-compositor-fixture.zig").main },
+    .{ .name = "desktop-decoration-fixture", .run = @import("desktop-decoration-fixture.zig").main },
+    .{ .name = "desktop-window-fixture", .run = @import("desktop-window-fixture.zig").main },
     .{ .name = "desktop-secrets-pam-fixture", .run = @import("desktop-secrets-pam-fixture.zig").main },
     .{ .name = "desktop-secrets-fixture", .run = @import("desktop-secrets-fixture.zig").main },
     .{ .name = "desktop-portal-fixture", .run = wrapNoInit(@import("desktop-portal-fixture.zig").main) },
@@ -44,6 +46,10 @@ const entries = [_]Entry{
 pub fn main(init: std.process.Init) !void {
     @import("desktop").util.io = init.io;
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
+    if (args.len == 2 and std.mem.eql(u8, args[1], "--list")) {
+        for (entries) |entry| @import("desktop").util.printOut("{s}\n", .{entry.name});
+        return;
+    }
     const prog = if (args.len > 0) std.fs.path.basename(args[0]) else "";
     inline for (entries) |entry| {
         if (std.mem.eql(u8, prog, entry.name)) return entry.run(init);

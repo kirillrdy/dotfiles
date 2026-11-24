@@ -14,16 +14,6 @@ let
     find $out/share/X11/locale -type f -exec sed -i \
       "s@${pkgs.libx11}/share/X11/locale@$out/share/X11/locale@g" {} +
       '';
-  # Cairo renders frozen reference images in unit tests; the desktop does not link it.
-  cairo =
-    (pkgs.cairo.override {
-      x11Support = false;
-      xcbSupport = false;
-    }).overrideAttrs
-      {
-        separateDebugInfo = false;
-      };
-
   # Wayland supplies complete keymaps. Keep the compiler, layouts, and compose
   # data, without registry enumeration, X11 helpers, or interactive CLI tools.
   xkbcommon = (pkgs.libxkbcommon.override { withWaylandTools = false; }).overrideAttrs (old: {
@@ -46,8 +36,5 @@ let
   });
 in
 {
-  inherit
-    cairo
-    xkbcommon
-    ;
+  inherit xkbcommon;
 }

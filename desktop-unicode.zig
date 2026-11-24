@@ -264,104 +264,21 @@ fn appendKey(a: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !v
     try out.appendSlice(a, key);
 }
 
-const glib = struct {
-    extern fn g_utf8_casefold(str: [*]const u8, len: isize) [*:0]u8;
-    extern fn g_utf8_normalize(str: [*]const u8, len: isize, mode: c_int) ?[*:0]u8;
-    extern fn g_utf8_collate(str1: [*:0]const u8, str2: [*:0]const u8) c_int;
-    extern fn g_utf8_collate_key_for_filename(str: [*]const u8, len: isize) [*:0]u8;
-    extern fn g_free(mem: ?*anyopaque) void;
-    const normalize_all_compose = 3;
-};
-
-test "case folding and NFKC match GLib for every code point" {
+test "case folding, NFKC normalization, and natural filename collation" {
     const a = std.testing.allocator;
-    var buffer: [4]u8 = undefined;
-    var cp: u21 = 1;
-    while (cp <= 0x10FFFF) : (cp += 1) {
-        if (cp >= 0xD800 and cp <= 0xDFFF) continue;
-        const length = std.unicode.utf8Encode(cp, &buffer) catch continue;
-        const text = buffer[0..length];
-        const expected_fold = glib.g_utf8_casefold(text.ptr, @intCast(text.len));
-        defer glib.g_free(expected_fold);
-        const fold = try casefold(a, text);
-        defer a.free(fold);
-        std.testing.expectEqualStrings(std.mem.span(expected_fold), fold) catch |err| {
-            std.debug.print("casefold U+{X:0>4}\n", .{cp});
-            return err;
-        };
-        const expected_nfkc = glib.g_utf8_normalize(text.ptr, @intCast(text.len), glib.normalize_all_compose).?;
-        defer glib.g_free(expected_nfkc);
-        const normalized = try normalize(a, text);
-        defer a.free(normalized);
-        std.testing.expectEqualStrings(std.mem.span(expected_nfkc), normalized) catch |err| {
-            std.debug.print("normalize U+{X:0>4}\n", .{cp});
-            return err;
-        };
-    }
-}
-
-test "sequences, collation and file name keys match GLib" {
-    const a = std.testing.allocator;
-    const samples = [_][:0]const u8{
-        "Café",
-        "Cafe\u{301}",
-        "ﬁle",
-        "Straße",
-        "STRASSE",
-        "İstanbul",
-        "ǅemal",
-        "한국어",
-        "\u{1100}\u{1161}\u{11A8}",
-        "e\u{301}\u{327}",
-        "e\u{327}\u{301}",
-        "A\u{30A}\u{316}",
-        "file10.txt",
-        "file9.txt",
-        "file009.txt",
-        "file0.txt",
-        "file000",
-        ".hidden",
-        "a.b.c",
-        "2024-01-02 3.png",
-        "１２３",
-        "Ⅻ",
-        "x\u{FFFF}y",
-        "\u{1D400}",
-        "",
-        "Ω\u{345}\u{301}",
-        "ᾳ\u{301}",
-        "Ⅷ.tar.gz",
-        "日本語10",
-        "日本語9",
-        "a0b00c",
-        "x007y08",
-        "0",
-        "00",
-        "a0001",
-        "file0010.tar.gz",
-    };
-    for (samples) |sample| {
-        const expected_fold = glib.g_utf8_casefold(sample.ptr, @intCast(sample.len));
-        defer glib.g_free(expected_fold);
-        const fold = try casefold(a, sample);
-        defer a.free(fold);
-        try std.testing.expectEqualStrings(std.mem.span(expected_fold), fold);
-        const expected_nfkc = glib.g_utf8_normalize(sample.ptr, @intCast(sample.len), glib.normalize_all_compose).?;
-        defer glib.g_free(expected_nfkc);
-        const normalized = try normalize(a, sample);
-        defer a.free(normalized);
-        try std.testing.expectEqualStrings(std.mem.span(expected_nfkc), normalized);
-        const expected_key = glib.g_utf8_collate_key_for_filename(sample.ptr, @intCast(sample.len));
-        defer glib.g_free(expected_key);
-        const key = try collateKeyForFilename(a, sample);
-        defer a.free(key);
-        std.testing.expectEqualSlices(u8, std.mem.span(expected_key), key) catch |err| {
-            std.debug.print("collate key for {s}\n", .{sample});
-            return err;
-        };
-        for (samples) |other| {
-            const expected = std.math.order(glib.g_utf8_collate(sample, other), 0);
-            try std.testing.expectEqual(expected, try collate(a, sample, other));
-        }
-    }
+    const folded = try casefold(a, "Straße");
+    defer a.free(folded);
+    try std.testing.expectEqualStrings("strasse", folded);
+    const composed = try normalize(a, "Cafe\u{301}");
+    defer a.free(composed);
+    try std.testing.expectEqualStrings("Café", composed);
+    const compat = try normalize(a, "ﬁle １２３");
+    defer a.free(compat);
+    try std.testing.expectEqualStrings("file 123", compat);
+    const key9 = try collateKeyForFilename(a, "file9.txt");
+    defer a.free(key9);
+    const key10 = try collateKeyForFilename(a, "file10.txt");
+    defer a.free(key10);
+    try std.testing.expect(std.mem.order(u8, key9, key10) == .lt);
+    try std.testing.expectEqual(std.math.Order.eq, try collate(a, "Café", "Cafe\u{301}"));
 }

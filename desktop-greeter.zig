@@ -6,7 +6,6 @@ const wire = @import("wayland-wire");
 const mainloop = @import("desktop-loop.zig");
 const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
-const posix = @import("posix");
 const view = @import("desktop-greeter-view.zig");
 const login = @import("desktop-login-ui.zig");
 const login_client = @import("desktop-login-client.zig");
@@ -40,9 +39,9 @@ fn discoverUsers(a: std.mem.Allocator) ![]DiscoveredUser {
         }
         list.deinit(a);
     }
-    posix.setpwent();
-    defer posix.endpwent();
-    while (posix.getpwent()) |pw| {
+    libc.setpwent();
+    defer libc.endpwent();
+    while (libc.getpwent()) |pw| {
         const uid = pw.*.pw_uid;
         if (uid < 1000 or uid >= 65534) continue;
         const name = std.mem.span(pw.*.pw_name orelse continue);
@@ -54,13 +53,13 @@ fn discoverUsers(a: std.mem.Allocator) ![]DiscoveredUser {
         const accounts_icon = try std.fmt.allocPrintSentinel(a, "/var/lib/AccountsService/icons/{s}", .{name}, 0);
         const home = if (pw.*.pw_dir) |d| std.mem.span(d) else "";
         var avatar: ?[:0]u8 = null;
-        if (posix.access(accounts_icon.ptr, posix.R_OK) == 0) {
+        if (libc.access(accounts_icon.ptr, libc.R_OK) == 0) {
             avatar = accounts_icon;
         } else {
             a.free(accounts_icon);
             if (home.len > 0) {
                 const face = try std.fmt.allocPrintSentinel(a, "{s}/.face", .{home}, 0);
-                if (posix.access(face.ptr, posix.R_OK) == 0) avatar = face else a.free(face);
+                if (libc.access(face.ptr, libc.R_OK) == 0) avatar = face else a.free(face);
             }
         }
         try list.append(a, .{

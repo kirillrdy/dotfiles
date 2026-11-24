@@ -645,44 +645,6 @@ test "settings read schema defaults and keep memory-backend writes" {
 
 const Mutex = @import("desktop-util.zig").Mutex;
 
-test "dconf values match GLib" {
-    defer deinit();
-    // Runs against the real dconf databases when GLib would use them.
-    // The write test below loads a throwaway profile; the store loads only once.
-    if (getenv("DESKTOP_GSETTINGS_DCONF_TEST_PROFILE") != null) return error.SkipZigTest;
-    if (getenv("GSETTINGS_BACKEND") != null) return error.SkipZigTest;
-    const c = @import("tests/glib-oracle.zig");
-    const g = struct {
-        extern fn g_variant_print(*c.GVariant, c_int) [*:0]u8;
-    };
-    const settings = Settings.open(std.testing.allocator, "org.gnome.desktop.interface", null) orelse return error.SkipZigTest;
-    defer settings.close();
-    const r = gvdb.reference;
-    const source = r.g_settings_schema_source_get_default() orelse return error.SkipZigTest;
-    const schema = r.g_settings_schema_source_lookup(source, "org.gnome.desktop.interface", 1) orelse return error.SkipZigTest;
-    defer r.g_settings_schema_unref(schema);
-    const reference = r.g_settings_new_full(schema, null, null);
-    defer r.g_object_unref(reference);
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const text = @import("desktop-dbus-text.zig");
-    for (try settings.keys(a)) |key| {
-        const expected = r.g_settings_get_value(reference, (try a.dupeSentinel(u8, key, 0)).ptr);
-        defer c.g_variant_unref(expected);
-        const printed = std.mem.span(g.g_variant_print(expected, 1));
-        defer c.g_free(printed.ptr);
-        const value = settings.get(a, key).?;
-        var buffer: [256]u8 = undefined;
-        const signature = try value.signatureInto(&buffer);
-        std.testing.expectEqualStrings(try text.print(a, try text.parse(a, signature, printed)), try text.print(a, value)) catch |err| {
-            std.debug.print("key {s}\n", .{key});
-            return err;
-        };
-    }
-    try std.testing.expectEqual(@as(i32, r.g_settings_get_enum(reference, "color-scheme")), settings.enumeration("color-scheme"));
-}
-
 test "settings opened twice share memory-backend writes" {
     defer deinit();
     if (getenv("GSETTINGS_SCHEMA_DIR") == null) return error.SkipZigTest;

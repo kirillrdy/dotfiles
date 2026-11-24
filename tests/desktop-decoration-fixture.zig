@@ -1,94 +1,106 @@
 //! Exercise Chrome's decoration ordering without needing a browser or a GPU.
 const std = @import("std");
-const c = @import("decoration-client");
+const wayland = @import("desktop").wayland;
+const wire = wayland.wire;
+const wl = wayland.protocol;
 
-var compositor: ?*c.wl_compositor = null;
-var shell: ?*c.xdg_wm_base = null;
-var manager: ?*c.zxdg_decoration_manager_v1 = null;
-var configures: usize = 0;
-var decoration_configures: usize = 0;
+const State = struct {
+    compositor: ?wl.wl_compositor = null,
+    shell: ?wl.xdg_wm_base = null,
+    manager: ?wl.zxdg_decoration_manager_v1 = null,
+    configures: usize = 0,
+    decoration_configures: usize = 0,
 
-fn ping(_: ?*anyopaque, base: ?*c.xdg_wm_base, serial: u32) callconv(.c) void {
-    c.xdg_wm_base_pong(base, serial);
-}
-const shell_listener = c.xdg_wm_base_listener{ .ping = ping };
-
-fn global(_: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*c]const u8, _: u32) callconv(.c) void {
-    const iface = std.mem.span(interface);
-    if (std.mem.eql(u8, iface, "wl_compositor"))
-        compositor = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_compositor_interface, 1));
-    if (std.mem.eql(u8, iface, "xdg_wm_base")) {
-        shell = @ptrCast(c.wl_registry_bind(registry, name, &c.xdg_wm_base_interface, 1));
-        std.debug.assert(c.xdg_wm_base_add_listener(shell, &shell_listener, null) == 0);
+    fn registryEvent(self: *State, registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+        switch (event) {
+            .global => |g| {
+                if (std.mem.eql(u8, g.interface, "wl_compositor"))
+                    self.compositor = registry.bind(g.name, wl.wl_compositor, 1);
+                if (std.mem.eql(u8, g.interface, "xdg_wm_base")) {
+                    const base = registry.bind(g.name, wl.xdg_wm_base, 1);
+                    self.shell = base;
+                    base.listen(State, self, shellEvent);
+                }
+                if (std.mem.eql(u8, g.interface, "zxdg_decoration_manager_v1"))
+                    self.manager = registry.bind(g.name, wl.zxdg_decoration_manager_v1, 1);
+            },
+            .global_remove => {},
+        }
     }
-    if (std.mem.eql(u8, iface, "zxdg_decoration_manager_v1"))
-        manager = @ptrCast(c.wl_registry_bind(registry, name, &c.zxdg_decoration_manager_v1_interface, 1));
-}
-fn removed(_: ?*anyopaque, _: ?*c.wl_registry, _: u32) callconv(.c) void {}
-const registry_listener = c.wl_registry_listener{ .global = global, .global_remove = removed };
 
-fn configure(_: ?*anyopaque, surface: ?*c.xdg_surface, serial: u32) callconv(.c) void {
-    c.xdg_surface_ack_configure(surface, serial);
-    configures += 1;
-}
-const surface_listener = c.xdg_surface_listener{ .configure = configure };
-
-fn decorated(_: ?*anyopaque, _: ?*c.zxdg_toplevel_decoration_v1, mode: u32) callconv(.c) void {
-    std.debug.assert(mode == c.ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
-    decoration_configures += 1;
-}
-const decoration_listener = c.zxdg_toplevel_decoration_v1_listener{ .configure = decorated };
-
-fn roundtrip(display: *c.wl_display) !void {
-    if (c.wl_display_roundtrip(display) < 0) return error.Disconnected;
-}
-
-fn check(display: *c.wl_display, early: bool, abandon: bool) !void {
-    const surface = c.wl_compositor_create_surface(compositor) orelse return error.Surface;
-    defer c.wl_surface_destroy(surface);
-    const xdg = c.xdg_wm_base_get_xdg_surface(shell, surface) orelse return error.XdgSurface;
-    defer c.xdg_surface_destroy(xdg);
-    if (c.xdg_surface_add_listener(xdg, &surface_listener, null) != 0) return error.Listener;
-    const toplevel = c.xdg_surface_get_toplevel(xdg) orelse return error.Toplevel;
-    defer c.xdg_toplevel_destroy(toplevel);
-    var before = configures;
-    const before_decoration = decoration_configures;
-    if (!early) {
-        c.wl_surface_commit(surface);
-        while (configures == before) try roundtrip(display);
-        before = configures;
+    fn shellEvent(_: *State, base: wl.xdg_wm_base, event: wl.xdg_wm_base.Event) void {
+        switch (event) {
+            .ping => |p| base.pong(p.serial),
+        }
     }
-    const decoration = c.zxdg_decoration_manager_v1_get_toplevel_decoration(manager, toplevel) orelse return error.Decoration;
-    defer c.zxdg_toplevel_decoration_v1_destroy(decoration);
-    if (c.zxdg_toplevel_decoration_v1_add_listener(decoration, &decoration_listener, null) != 0) return error.Listener;
-    c.zxdg_toplevel_decoration_v1_set_mode(decoration, c.ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
-    try roundtrip(display);
-    if (early and configures != before) return error.PrematureConfigure;
-    c.zxdg_toplevel_decoration_v1_unset_mode(decoration);
-    try roundtrip(display);
-    if (!abandon) {
-        c.wl_surface_commit(surface);
-        while (configures == before or decoration_configures == before_decoration) try roundtrip(display);
-        c.zxdg_toplevel_decoration_v1_set_mode(decoration, c.ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
-        try roundtrip(display);
-        try roundtrip(display);
-    }
-}
 
-pub fn main() !void {
-    const display = c.wl_display_connect(null) orelse return error.Display;
-    defer c.wl_display_disconnect(display);
-    const registry = c.wl_display_get_registry(display) orelse return error.Registry;
-    defer c.wl_registry_destroy(registry);
-    if (c.wl_registry_add_listener(registry, &registry_listener, null) != 0) return error.Listener;
-    try roundtrip(display);
-    if (compositor == null or shell == null or manager == null) return error.MissingGlobals;
-    defer c.wl_compositor_destroy(compositor);
-    defer c.xdg_wm_base_destroy(shell);
-    defer c.zxdg_decoration_manager_v1_destroy(manager);
+    fn surfaceEvent(self: *State, surface: wl.xdg_surface, event: wl.xdg_surface.Event) void {
+        switch (event) {
+            .configure => |c| {
+                surface.ack_configure(c.serial);
+                self.configures += 1;
+            },
+        }
+    }
+
+    fn decorationEvent(self: *State, _: wl.zxdg_toplevel_decoration_v1, event: wl.zxdg_toplevel_decoration_v1.Event) void {
+        switch (event) {
+            .configure => |c| {
+                std.debug.assert(c.mode == wl.zxdg_toplevel_decoration_v1.Mode.client_side);
+                self.decoration_configures += 1;
+            },
+        }
+    }
+
+    fn check(self: *State, connection: *wire.Connection, early: bool, abandon: bool) !void {
+        const surface = self.compositor.?.create_surface();
+        defer surface.destroy();
+        const xdg = self.shell.?.get_xdg_surface(surface);
+        defer xdg.destroy();
+        xdg.listen(State, self, surfaceEvent);
+        const toplevel = xdg.get_toplevel();
+        defer toplevel.destroy();
+        var before = self.configures;
+        const before_decoration = self.decoration_configures;
+        if (!early) {
+            surface.commit();
+            while (self.configures == before) try connection.roundtrip();
+            before = self.configures;
+        }
+        const decoration = self.manager.?.get_toplevel_decoration(toplevel);
+        defer decoration.destroy();
+        decoration.listen(State, self, decorationEvent);
+        decoration.set_mode(wl.zxdg_toplevel_decoration_v1.Mode.server_side);
+        try connection.roundtrip();
+        if (early and self.configures != before) return error.PrematureConfigure;
+        decoration.unset_mode();
+        try connection.roundtrip();
+        if (!abandon) {
+            surface.commit();
+            while (self.configures == before or self.decoration_configures == before_decoration) try connection.roundtrip();
+            decoration.set_mode(wl.zxdg_toplevel_decoration_v1.Mode.server_side);
+            try connection.roundtrip();
+            try connection.roundtrip();
+        }
+    }
+};
+
+pub fn main(init: std.process.Init) !void {
+    const connection = try wire.Connection.connect(init.gpa);
+    defer connection.deinit();
+    const display: wl.wl_display = .{ .proxy = connection.display() };
+    var state: State = .{};
+    const registry = display.get_registry();
+    defer registry.destroy();
+    registry.listen(State, &state, State.registryEvent);
+    try connection.roundtrip();
+    if (state.compositor == null or state.shell == null or state.manager == null) return error.MissingGlobals;
+    defer state.compositor.?.destroy();
+    defer state.shell.?.destroy();
+    defer state.manager.?.destroy();
     for ([_][2]bool{ .{ true, false }, .{ false, false }, .{ true, true }, .{ true, false } }) |scenario| {
-        try check(display, scenario[0], scenario[1]);
-        try roundtrip(display);
+        try state.check(connection, scenario[0], scenario[1]);
+        try connection.roundtrip();
     }
     std.debug.print("early/late decoration, mode requests and destruction PASS\n", .{});
 }

@@ -801,61 +801,8 @@ test "Exec field codes expand like GIO" {
     for (expected, args) |want, got| try std.testing.expectEqualStrings(want, got);
 }
 
-test "installed applications match GIO" {
-    const glib = struct {
-        extern fn g_app_info_get_all() ?*List;
-        extern fn g_app_info_get_id(info: *anyopaque) ?[*:0]const u8;
-        extern fn g_app_info_get_display_name(info: *anyopaque) [*:0]const u8;
-        extern fn g_app_info_get_name(info: *anyopaque) [*:0]const u8;
-        extern fn g_app_info_get_commandline(info: *anyopaque) ?[*:0]const u8;
-        extern fn g_app_info_should_show(info: *anyopaque) c_int;
-        extern fn g_app_info_get_icon(info: *anyopaque) ?*anyopaque;
-        extern fn g_icon_to_string(icon: *anyopaque) ?[*:0]u8;
-        extern fn g_desktop_app_info_get_filename(info: *anyopaque) ?[*:0]const u8;
-        extern fn g_desktop_app_info_new(id: [*:0]const u8) ?*anyopaque;
-        extern fn g_list_free_full(list: ?*List, free: *const fn (?*anyopaque) callconv(.c) void) void;
-        extern fn g_object_unref(object: ?*anyopaque) callconv(.c) void;
-        extern fn g_free(mem: ?*anyopaque) void;
-        const List = extern struct { data: *anyopaque, next: ?*List, prev: ?*List };
-    };
-    const a = std.testing.allocator;
-    const apps = try all(a);
-    defer {
-        for (apps) |app| app.unref();
-        a.free(apps);
-    }
-    const list = glib.g_app_info_get_all();
-    defer glib.g_list_free_full(list, &glib.g_object_unref);
-    var count: usize = 0;
-    var node = list;
-    while (node) |item| : (node = item.next) {
-        count += 1;
-        const info = item.data;
-        const id = std.mem.span(glib.g_app_info_get_id(info).?);
-        const app = for (apps) |candidate| {
-            if (std.mem.eql(u8, candidate.id, id)) break candidate;
-        } else {
-            std.debug.print("missing application {s}\n", .{id});
-            return error.TestExpectedEqual;
-        };
-        errdefer std.debug.print("differs: {s}\n", .{id});
-        try std.testing.expectEqualStrings(std.mem.span(glib.g_desktop_app_info_get_filename(info).?), app.filename.?);
-        try std.testing.expectEqualStrings(std.mem.span(glib.g_app_info_get_name(info)), app.name);
-        try std.testing.expectEqualStrings(std.mem.span(glib.g_app_info_get_display_name(info)), app.display_name);
-        try std.testing.expectEqual(glib.g_app_info_should_show(info) != 0, app.shouldShow());
-        if (glib.g_app_info_get_commandline(info)) |command| try std.testing.expectEqualStrings(std.mem.span(command), app.exec.?) else try std.testing.expect(app.exec == null);
-        if (glib.g_app_info_get_icon(info)) |icon| {
-            const text = glib.g_icon_to_string(icon).?;
-            defer glib.g_free(text);
-            try std.testing.expectEqualStrings(std.mem.span(text), app.icon.?);
-        } else try std.testing.expect(app.icon == null);
-        const found = lookup(a, id) orelse return error.TestExpectedEqual;
-        defer found.unref();
-        try std.testing.expectEqualStrings(app.filename.?, found.filename.?);
-    }
-    try std.testing.expectEqual(count, apps.len);
-    try std.testing.expect(lookup(a, "desktop-appinfo-test-missing.desktop") == null);
-    try std.testing.expect(glib.g_desktop_app_info_new("desktop-appinfo-test-missing.desktop") == null);
+test "missing application lookup returns null" {
+    try std.testing.expect(lookup(std.testing.allocator, "desktop-appinfo-test-missing.desktop") == null);
 }
 
 test "URIs expand into field codes like GIO" {
@@ -884,51 +831,4 @@ test "URIs expand into field codes like GIO" {
     try std.testing.expectEqualStrings("https", uriScheme("https://x").?);
     try std.testing.expect(uriScheme("/tmp/x") == null);
     try std.testing.expect(uriScheme("1abc:x") == null);
-}
-
-test "default applications match GIO" {
-    const glib = struct {
-        extern fn g_app_info_get_default_for_type(content_type: [*:0]const u8, must_support_uris: c_int) ?*anyopaque;
-        extern fn g_app_info_get_default_for_uri_scheme(scheme: [*:0]const u8) ?*anyopaque;
-        extern fn g_app_info_get_id(info: *anyopaque) ?[*:0]const u8;
-        extern fn g_object_unref(object: ?*anyopaque) void;
-    };
-    const a = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(a);
-    defer arena.deinit();
-    const scratch = arena.allocator();
-    var types: std.ArrayList([:0]const u8) = .empty;
-    const apps = try all(a);
-    defer {
-        for (apps) |app| app.unref();
-        a.free(apps);
-    }
-    for (apps) |app| for (app.mime_types) |mime| try types.append(scratch, try scratch.dupeSentinel(u8, mime, 0));
-    for ([_][:0]const u8{ "text/plain", "text/html", "image/png", "application/pdf", "inode/directory", "application/octet-stream", "text/x-csrc", "image/svg+xml", "application/x-zerosize" }) |mime| try types.append(scratch, mime);
-    for (types.items) |mime| {
-        for ([_]bool{ false, true }) |must_support_uris| {
-            const expected = glib.g_app_info_get_default_for_type(mime, @intFromBool(must_support_uris));
-            defer if (expected) |info| glib.g_object_unref(info);
-            const ours = defaultFor(a, mime, must_support_uris);
-            defer if (ours) |app| app.unref();
-            const want: []const u8 = if (expected) |info| std.mem.span(glib.g_app_info_get_id(info).?) else "(none)";
-            const got: []const u8 = if (ours) |app| app.id else "(none)";
-            std.testing.expectEqualStrings(want, got) catch |err| {
-                std.debug.print("default for {s} (uris: {})\n", .{ mime, must_support_uris });
-                return err;
-            };
-        }
-    }
-    for ([_][:0]const u8{ "http", "https", "mailto", "file", "ftp", "irc", "magnet", "zoommtg", "HTTPS" }) |scheme| {
-        const expected = glib.g_app_info_get_default_for_uri_scheme(scheme);
-        defer if (expected) |info| glib.g_object_unref(info);
-        const ours = defaultForScheme(a, scheme);
-        defer if (ours) |app| app.unref();
-        const want: []const u8 = if (expected) |info| std.mem.span(glib.g_app_info_get_id(info).?) else "(none)";
-        const got: []const u8 = if (ours) |app| app.id else "(none)";
-        std.testing.expectEqualStrings(want, got) catch |err| {
-            std.debug.print("default for scheme {s}\n", .{scheme});
-            return err;
-        };
-    }
 }

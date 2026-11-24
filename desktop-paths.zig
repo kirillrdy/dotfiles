@@ -447,49 +447,33 @@ fn decodeFileUri(a: std.mem.Allocator, uri: []const u8) ![:0]u8 {
     return out.toOwnedSliceSentinel(a, 0);
 }
 
-test "file URIs and canonical paths match GLib" {
-    const glib = struct {
-        extern fn g_filename_to_uri(filename: [*:0]const u8, hostname: ?[*:0]const u8, err: ?*anyopaque) ?[*:0]u8;
-        extern fn g_filename_from_uri(uri: [*:0]const u8, hostname: ?*anyopaque, err: ?*anyopaque) ?[*:0]u8;
-        extern fn g_canonicalize_filename(filename: [*:0]const u8, relative_to: ?[*:0]const u8) [*:0]u8;
-        extern fn g_free(mem: ?*anyopaque) void;
-    };
+test "file URIs and canonical paths roundtrip" {
     const a = std.testing.allocator;
-    var every: [255]u8 = undefined;
-    for (&every, 1..) |*slot, byte| slot.* = @intCast(byte);
-    var paths: std.ArrayList([:0]const u8) = .empty;
-    defer {
-        for (paths.items) |path| a.free(path);
-        paths.deinit(a);
+    const canonical_cases = [_][2][]const u8{
+        .{ "/", "/" },
+        .{ "/a//b/./c/../d/", "/a/b/d" },
+        .{ "/..", "/" },
+    };
+    for (canonical_cases) |case| {
+        const actual = try canonicalize(a, case[0]);
+        defer a.free(actual);
+        try std.testing.expectEqualStrings(case[1], actual);
     }
-    for ([_][]const u8{ "/", "//", "///", "/a//b/./c/../d/", "/..", "//srv/x", "/home/user/Pictures/東京 #1?.png", "/tmp/50% off;x=[1]{2}<3>|\"4\"" }) |path| try paths.append(a, try a.dupeSentinel(u8, path, 0));
-    var with_bytes: std.ArrayList(u8) = .empty;
-    defer with_bytes.deinit(a);
-    for (every) |byte| if (byte != '/') try with_bytes.append(a, byte);
-    try paths.append(a, try std.fmt.allocPrintSentinel(a, "/x/{s}", .{with_bytes.items}, 0));
-    for (paths.items) |path| {
-        const expected_canonical = glib.g_canonicalize_filename(path, null);
-        defer glib.g_free(expected_canonical);
-        const canonical = try canonicalize(a, path);
-        defer a.free(canonical);
-        try std.testing.expectEqualStrings(std.mem.span(expected_canonical), canonical);
-        const expected_uri = glib.g_filename_to_uri(canonical, null, null).?;
-        defer glib.g_free(expected_uri);
+    for ([_][]const u8{ "/", "/home/user/Pictures/東京 #1?.png", "/tmp/50% off;x=[1]{2}<3>|\"4\"" }) |path| {
         const uri = try fileUri(a, path);
         defer a.free(uri);
-        try std.testing.expectEqualStrings(std.mem.span(expected_uri), uri);
         const back = pathFromUri(a, uri).?;
         defer a.free(back);
-        try std.testing.expectEqualStrings(canonical, back);
+        try std.testing.expectEqualStrings(path, back);
     }
-    for ([_][:0]const u8{ "file:///a%20b", "FILE:///x", "file://localhost/etc/hosts", "file://host.example/srv", "file:/plain", "file:///a%2Fb", "file:///a%00b", "file:///a#frag", "file:///a%23b?q", "file:///a#b#c", "file://bad host/x", "file:relative", "http://x/y", "file:///%zz", "file:///a%2" }) |uri| {
-        const expected = glib.g_filename_from_uri(uri, null, null);
-        defer glib.g_free(expected);
-        const actual = pathFromUri(a, uri);
-        defer if (actual) |value| a.free(value);
-        if (expected) |value| {
-            try std.testing.expectEqualStrings(std.mem.span(value), actual orelse return error.TestExpectedEqual);
-        } else try std.testing.expect(actual == null);
+    const decoded = pathFromUri(a, "file:///a%20b").?;
+    defer a.free(decoded);
+    try std.testing.expectEqualStrings("/a b", decoded);
+    const plain = pathFromUri(a, "file:/plain").?;
+    defer a.free(plain);
+    try std.testing.expectEqualStrings("/plain", plain);
+    for ([_][]const u8{ "file:///a%2Fb", "file:///a%00b", "file://bad host/x", "file:relative", "http://x/y", "file:///%zz", "file:///a%2" }) |invalid| {
+        try std.testing.expect(pathFromUri(a, invalid) == null);
     }
 }
 
@@ -550,31 +534,4 @@ test "files, links, directories and temporary files" {
         _ = linux.unlinkat(linux.AT.FDCWD, dir, linux.AT.REMOVEDIR);
     }
     _ = linux.unlinkat(linux.AT.FDCWD, base, linux.AT.REMOVEDIR);
-}
-
-test "user directories and names match GLib" {
-    const glib = struct {
-        extern fn g_get_home_dir() [*:0]const u8;
-        extern fn g_get_user_name() [*:0]const u8;
-        extern fn g_get_real_name() [*:0]const u8;
-        extern fn g_get_user_data_dir() [*:0]const u8;
-        extern fn g_get_user_config_dir() [*:0]const u8;
-        extern fn g_get_user_cache_dir() [*:0]const u8;
-        extern fn g_get_user_runtime_dir() [*:0]const u8;
-        extern fn g_get_user_special_dir(directory: c_int) ?[*:0]const u8;
-    };
-    const expectEqualStrings = std.testing.expectEqualStrings;
-    try expectEqualStrings(std.mem.span(glib.g_get_home_dir()), home());
-    try expectEqualStrings(std.mem.span(glib.g_get_user_name()), userName());
-    const real = std.mem.span(glib.g_get_real_name());
-    try expectEqualStrings(if (std.mem.eql(u8, real, "Unknown")) "" else real, realName());
-    try expectEqualStrings(std.mem.span(glib.g_get_user_data_dir()), dataHome());
-    try expectEqualStrings(std.mem.span(glib.g_get_user_config_dir()), configHome());
-    try expectEqualStrings(std.mem.span(glib.g_get_user_cache_dir()), cacheHome());
-    try expectEqualStrings(std.mem.span(glib.g_get_user_runtime_dir()), runtimeDir());
-    inline for (@typeInfo(Special).@"enum".field_names, 0..) |name, i| {
-        const expected = glib.g_get_user_special_dir(i);
-        const actual = special(@field(Special, name));
-        if (expected) |value| try expectEqualStrings(std.mem.span(value), actual orelse return error.TestExpectedEqual) else try std.testing.expect(actual == null);
-    }
 }

@@ -1,11 +1,6 @@
 { pkgs }:
 import ./fixture.nix { inherit pkgs; } {
   name = "desktop-network-check";
-  fixture = {
-    name = "desktop-network-fixture";
-    steps = "network-fixture";
-    debug = true;
-  };
   pygobject = true;
   gtkEnv = true;
   fonts = true;
@@ -14,9 +9,9 @@ import ./fixture.nix { inherit pkgs; } {
   headless = true;
   nativeBuildInputs = [ pkgs.dbus ];
   script =
-    { fixture, dbusConfig, ... }:
+    { desktop, dbusConfig, ... }:
     ''
-      G_DEBUG=fatal-criticals python3 - --binary ${fixture}/bin/desktop-network-fixture --dbus-config ${dbusConfig} <<'PY'
+      G_DEBUG=fatal-criticals python3 - --binary ${desktop.tests}/bin/desktop-network-fixture --dbus-config ${dbusConfig} <<'PY'
       import argparse
       import json
       import os

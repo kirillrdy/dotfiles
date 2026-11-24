@@ -2,7 +2,7 @@
 const std = @import("std");
 const mainloop = @import("desktop-loop.zig");
 const util = @import("desktop-util.zig");
-const p = @import("posix");
+const p = @import("desktop-libc.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
 pub const store = @import("desktop-secrets-store.zig");

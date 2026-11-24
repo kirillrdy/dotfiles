@@ -58,5 +58,5 @@ test "generated Wayland bindings match every reference interface and message" {
         try sameMessages(generated.requests, expected.methods);
         try sameMessages(generated.events, expected.events);
     }
-    try std.testing.expectEqual(@as(usize, 47), names.len);
+    try std.testing.expectEqual(@as(usize, 49), names.len);
 }

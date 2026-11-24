@@ -198,16 +198,16 @@ test "file filters preserve directories and combine glob and MIME rules" {
     try std.testing.expectEqualStrings("a\u{FFFD}b", try displayName(arena.allocator(), "a\xffb"));
 }
 
-test "simple patterns match GLib" {
-    const glib = struct {
-        extern fn g_pattern_match_simple(pattern: [*:0]const u8, string: [*:0]const u8) c_int;
-    };
-    const patterns = [_][:0]const u8{ "*", "*.txt", "?.txt", "a*b*c", "*.TXT", "[ab]*", "日*", "*語.txt", "**", "?", "" };
-    const names = [_][:0]const u8{ "a.txt", "ab.txt", "abc", "aXbYc", "日本語.txt", "[ab]x", "", "x" };
-    for (patterns) |pattern| for (names) |name| {
-        std.testing.expectEqual(glib.g_pattern_match_simple(pattern, name) != 0, simpleMatch(pattern, name)) catch |err| {
-            std.debug.print("match({s}, {s})\n", .{ pattern, name });
-            return err;
-        };
-    };
+test "simple glob patterns match UTF-8 and wildcards" {
+    try std.testing.expect(simpleMatch("*", "a.txt"));
+    try std.testing.expect(simpleMatch("*.txt", "a.txt"));
+    try std.testing.expect(!simpleMatch("*.TXT", "a.txt"));
+    try std.testing.expect(simpleMatch("?.txt", "a.txt"));
+    try std.testing.expect(!simpleMatch("?.txt", "ab.txt"));
+    try std.testing.expect(simpleMatch("a*b*c", "aXbYc"));
+    try std.testing.expect(simpleMatch("日*", "日本語.txt"));
+    try std.testing.expect(simpleMatch("*語.txt", "日本語.txt"));
+    try std.testing.expect(simpleMatch("[ab]*", "[ab]x"));
+    try std.testing.expect(simpleMatch("", ""));
+    try std.testing.expect(!simpleMatch("", "x"));
 }

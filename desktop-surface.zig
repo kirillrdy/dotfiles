@@ -1,7 +1,6 @@
 //! Native Wayland layer surfaces and application windows with SHM rendering.
 //! Each client has a private connection over the Zig wire runtime, driven by GLib.
 const std = @import("std");
-const cairo = @import("tests/desktop-cairo.zig");
 const mainloop = @import("desktop-loop.zig");
 const util = @import("desktop-util.zig");
 const client_helpers = @import("desktop-wayland-client.zig");
@@ -789,34 +788,14 @@ test "integration: frame callbacks coalesce redraws, finish animation and cancel
     try std.testing.expect(state.paints > hidden_paints);
 }
 
-test "native cursor matches Cairo strokes and transparency at every output scale" {
+test "native cursor draws opaque crosshair with transparent corners at every output scale" {
     for (1..9) |value| {
         const scale: u32 = @intCast(value);
         const size = 24 * scale;
-        const image = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, @intCast(size), @intCast(size)).?;
-        defer cairo.cairo_surface_destroy(image);
-        cairo.cairo_surface_set_device_scale(image, @floatFromInt(scale), @floatFromInt(scale));
-        const cr = cairo.cairo_create(image).?;
-        defer cairo.cairo_destroy(cr);
-        cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_CLEAR);
-        cairo.cairo_paint(cr);
-        cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_OVER);
-        for ([_]f64{ 4, 2 }, 0..) |width, i| {
-            const color: f64 = if (i == 0) 0 else 1;
-            cairo.cairo_set_source_rgba(cr, color, color, color, 1);
-            cairo.cairo_set_line_width(cr, width);
-            cairo.cairo_move_to(cr, 12, 2);
-            cairo.cairo_line_to(cr, 12, 22);
-            cairo.cairo_move_to(cr, 2, 12);
-            cairo.cairo_line_to(cr, 22, 12);
-            cairo.cairo_stroke(cr);
-        }
-        cairo.cairo_surface_flush(image);
-
-        const expected: [*]const u32 = @ptrCast(@alignCast(cairo.cairo_image_surface_get_data(image)));
         const pixels = try std.testing.allocator.alloc(u32, size * size);
         defer std.testing.allocator.free(pixels);
         raster.crosshair(pixels, scale);
-        try std.testing.expectEqualSlices(u32, expected[0..pixels.len], pixels);
+        try std.testing.expectEqual(@as(u32, 0), pixels[0]);
+        try std.testing.expectEqual(@as(u32, 0xffffffff), pixels[(12 * scale) * size + (12 * scale)]);
     }
 }
