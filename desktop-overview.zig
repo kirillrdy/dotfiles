@@ -12,8 +12,11 @@ const text = @import("desktop-text.zig");
 const view = @import("desktop-overview-view.zig");
 const picker = @import("desktop-overview-layout.zig");
 const animation = @import("desktop-overview-animation.zig");
-const c = capture.c;
-const cast = c.__zig.cast;
+const gsettings = @import("desktop-gsettings.zig");
+const keyboard = @import("desktop-keyboard.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
+const cast = util.cast;
 const Rect = capture.Rect;
 const Part = enum { search, grid, stage, strip, dash, tooltip };
 const Pointer = struct { x: f64, y: f64, button: u32 = 1 };
@@ -49,11 +52,11 @@ const Overview = struct {
     modifiers: u32 = 0,
     painting: bool = false,
     animating: bool = false,
-    repaint_source: c.guint = 0,
+    repaint_source: u32 = 0,
     dash_view: native_dash.View,
-    tooltip_timer: c.guint = 0,
+    tooltip_timer: u32 = 0,
     wallpaper: ?Image,
-    timer: c.guint = 0,
+    timer: u32 = 0,
     tick_count: u32 = 0,
     apps_mode: bool = false,
     selected: usize = 0,
@@ -103,9 +106,9 @@ const Overview = struct {
         return self;
     }
     fn destroy(self: *Overview) void {
-        if (self.repaint_source != 0) _ = c.g_source_remove(self.repaint_source);
+        if (self.repaint_source != 0) _ = mainloop.remove(self.repaint_source);
         self.repaint_source = 0;
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         self.timer = 0;
         if (self.client) |client| client.destroy();
         self.client = null;
@@ -171,14 +174,14 @@ const Overview = struct {
         if (self.surface == null) return;
         if (self.launcher.visible_window) {
             if (!self.transition.shown) {
-                self.transition.setShown(true, c.__zig.monotonicTime());
+                self.transition.setShown(true, util.monotonicTime());
                 if (self.client) |client| client.visible(!self.gpu_previews);
                 self.focusPart(.stage);
                 self.redrawSelf();
             }
             return;
         }
-        if (self.timer == 0) self.timer = c.g_timeout_add(33, &tick, self);
+        if (self.timer == 0) self.timer = mainloop.timeout(33, self, tick);
         if (self.client == null) self.client = capture.Client.create(self.allocator, self, &changed) catch null;
         const output = self.surface.?.output;
         self.monitor = .{ .x = output.x, .y = output.y, .width = output.width(), .height = output.height() };
@@ -200,8 +203,8 @@ const Overview = struct {
             self.selected = top orelse 0;
             if (!self.gpu_previews) client.captureMissing();
         }
-        self.transition.setShown(true, c.__zig.monotonicTime());
-        self.activation_time = c.__zig.monotonicTime();
+        self.transition.setShown(true, util.monotonicTime());
+        self.activation_time = util.monotonicTime();
         self.rebuildDash();
         self.launcher.visible_window = true;
         self.updateMode();
@@ -226,7 +229,7 @@ const Overview = struct {
         var favorites_arena = std.heap.ArenaAllocator.init(self.allocator);
         defer favorites_arena.deinit();
         var favorites: []const [:0]const u8 = &.{};
-        if (c.__zig.settings(self.allocator, "org.gnome.shell", "favorite-apps")) |settings| {
+        if (gsettings.Settings.open(self.allocator, "org.gnome.shell", "favorite-apps")) |settings| {
             defer settings.close();
             const names = settings.strings(favorites_arena.allocator(), "favorite-apps");
             const owned: [][:0]const u8 = favorites_arena.allocator().alloc([:0]const u8, names.len) catch &.{};
@@ -246,7 +249,7 @@ const Overview = struct {
         var separated = favorites.len == 0;
         if (self.client) |client| for (client.windows.items, 0..) |window, i| {
             var duplicate = false;
-            for (client.windows.items[0..i]) |previous| if (c.__zig.strEql(previous.app_id, window.app_id)) {
+            for (client.windows.items[0..i]) |previous| if (util.strEql(previous.app_id, window.app_id)) {
                 duplicate = true;
                 break;
             };
@@ -279,17 +282,16 @@ const Overview = struct {
         self.dash_view.add(std.mem.span(title), app, if (window) |w| @ptrCast(w.id) else null, if (window) |w| w.icon else null) catch @panic("out of memory");
     }
     fn hideTooltip(self: *Overview) void {
-        if (self.tooltip_timer != 0) _ = c.g_source_remove(self.tooltip_timer);
+        if (self.tooltip_timer != 0) _ = mainloop.remove(self.tooltip_timer);
         self.tooltip_timer = 0;
         self.tooltip_visible = false;
     }
-    fn showTooltip(data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
+    fn showTooltip(self: *Overview) bool {
         self.tooltip_timer = 0;
-        const index = self.dash_view.hover orelse if (self.dash_view.keyboard_focus) self.dash_view.focus else return 0;
-        if (index >= self.dash_view.items.items.len) return 0;
+        const index = self.dash_view.hover orelse if (self.dash_view.keyboard_focus) self.dash_view.focus else return false;
+        if (index >= self.dash_view.items.items.len) return false;
         const scale = self.surface.?.output.scale;
-        self.dash_view.prepareTooltip(index, scale) catch return 0;
+        self.dash_view.prepareTooltip(index, scale) catch return false;
         const mask = self.dash_view.tooltip_mask.?;
         const width = @divTrunc(mask.logical_width, scale) + 26;
         const height = @divTrunc(mask.logical_height, scale) + 14;
@@ -299,7 +301,7 @@ const Overview = struct {
         self.tooltip = .{ .x = std.math.clamp(left, 8, @max(8, stage_width - @as(f64, @floatFromInt(width)) - 8)), .y = @as(f64, @floatFromInt(self.surface.?.height)) - @as(f64, @floatFromInt(self.dash_view.layout.height + 8 + height)), .width = width, .height = height };
         self.tooltip_visible = true;
         self.redrawSelf();
-        return 0;
+        return false;
     }
     fn dashPress(self: *Overview, event: Pointer) void {
         if (event.button != 1) return;
@@ -322,14 +324,14 @@ const Overview = struct {
         if (index != self.dash_view.hover) {
             self.hideTooltip();
             self.dash_view.hover = index;
-            if (index != null) self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
+            if (index != null) self.tooltip_timer = mainloop.timeout(300, self, showTooltip);
             self.redrawSelf();
         }
     }
     fn dashLeave(self: *Overview) void {
         self.hideTooltip();
         self.dash_view.hover = null;
-        if (self.dash_view.keyboard_focus) self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
+        if (self.dash_view.keyboard_focus) self.tooltip_timer = mainloop.timeout(300, self, showTooltip);
         self.redrawSelf();
     }
 
@@ -340,7 +342,7 @@ const Overview = struct {
             if (client.current != self.workspace_target) {
                 self.workspace_from = self.workspacePosition();
                 self.workspace_target = client.current;
-                self.workspace_started = c.__zig.monotonicTime();
+                self.workspace_started = util.monotonicTime();
             }
             if (self.drag) |drag| {
                 var found = false;
@@ -372,22 +374,21 @@ const Overview = struct {
             }
         }
     }
-    fn tick(data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
-        if (!self.launcher.visible_window) return 1;
+    fn tick(self: *Overview) bool {
+        if (!self.launcher.visible_window) return true;
         // Existing previews are sufficient during the short transition. Avoid
         // capture readbacks competing with high-refresh animation frames.
-        const now = c.__zig.monotonicTime();
+        const now = util.monotonicTime();
         if (self.previewsPaused(now)) {
             if (self.client) |client| client.streaming = false;
-            return 1;
+            return true;
         }
         self.tick_count +%= 1;
         if (self.client) |client| {
             if (self.tick_count % 8 == 0) client.refresh();
             if (!self.gpu_previews) client.tick();
         }
-        return 1;
+        return true;
     }
     fn previewsPaused(self: *Overview, now: i64) bool {
         return self.transition.active(now) or !self.transition.shown or now - self.workspace_started < 250000;
@@ -396,7 +397,7 @@ const Overview = struct {
         const self = cast(Overview, data);
         // App-grid/search transitions are separate from the window picker.
         if (self.apps_mode or self.launcher.searchText().len != 0 or self.surface == null or self.surface.?.role == null) return false;
-        const now = c.__zig.monotonicTime();
+        const now = util.monotonicTime();
         if (!self.transition.shown) return self.transition.active(now);
         if (self.transition.value(now) == 0) return false;
         self.transition.setShown(false, now);
@@ -413,15 +414,15 @@ const Overview = struct {
     }
     fn hidden(data: ?*anyopaque) void {
         const self = cast(Overview, data);
-        self.transition.setShown(false, c.__zig.monotonicTime());
+        self.transition.setShown(false, util.monotonicTime());
         self.transition.finish();
         self.hideTooltip();
         self.dash_view.hover = null;
         self.dash_view.pressed = null;
         self.dash_view.keyboard_focus = false;
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         self.timer = 0;
-        if (self.repaint_source != 0) _ = c.g_source_remove(self.repaint_source);
+        if (self.repaint_source != 0) _ = mainloop.remove(self.repaint_source);
         self.repaint_source = 0;
         if (self.client) |client| client.visible(false);
         if (self.native.preview_control) |control| {
@@ -456,7 +457,7 @@ const Overview = struct {
             self.toggleApps();
             return;
         }
-        if (item.window_id) |id| if (self.client) |client| for (client.windows.items) |window| if (c.__zig.strEql(window.id, id)) {
+        if (item.window_id) |id| if (self.client) |client| for (client.windows.items) |window| if (util.strEql(window.id, id)) {
             client.activate(window);
             self.launcher.hide();
             return;
@@ -464,14 +465,14 @@ const Overview = struct {
         if (item.app) |app| _ = self.launcher.launch(app);
     }
     fn key(self: *Overview, event: *apps.KeyEvent) bool {
-        if (event.keyval == c.__zig.keys.Escape) {
+        if (event.keyval == keyboard.keys.Escape) {
             self.escape();
             return true;
         }
         const dash_focused = self.focus_part == .dash;
         const window_mode = !self.apps_mode and self.launcher.searchText().len == 0;
         if (event.keyval == 0xff09 or event.keyval == 0xfe20) {
-            const backwards = event.keyval == 0xfe20 or event.state & c.__zig.shift_mask != 0;
+            const backwards = event.keyval == 0xfe20 or event.state & keyboard.shift != 0;
             const search_focused = self.focus_part == .search;
             if ((search_focused and backwards) or (!search_focused and !dash_focused and !backwards)) {
                 self.hideTooltip();
@@ -482,14 +483,14 @@ const Overview = struct {
             } else self.focusPart(.search);
             if (self.focus_part == .dash) {
                 self.hideTooltip();
-                self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
+                self.tooltip_timer = mainloop.timeout(300, self, showTooltip);
             }
             self.redrawSelf();
             return true;
         }
         if (dash_focused) {
             switch (event.keyval) {
-                c.__zig.keys.Left, c.__zig.keys.Right => self.dash_view.navigate(if (event.keyval == c.__zig.keys.Left) -1 else 1),
+                keyboard.keys.Left, keyboard.keys.Right => self.dash_view.navigate(if (event.keyval == keyboard.keys.Left) -1 else 1),
                 0xff50 => {
                     self.dash_view.focus = 0;
                     self.dash_view.keyboard_focus = true;
@@ -498,21 +499,21 @@ const Overview = struct {
                     self.dash_view.focus = self.dash_view.items.items.len -| 1;
                     self.dash_view.keyboard_focus = true;
                 },
-                c.__zig.keys.Return, c.__zig.keys.KP_Enter, 0x20 => self.activateDash(self.dash_view.focus),
-                c.__zig.keys.Up => {
+                keyboard.keys.Return, keyboard.keys.KP_Enter, 0x20 => self.activateDash(self.dash_view.focus),
+                keyboard.keys.Up => {
                     if (window_mode) self.focusPart(.stage) else self.focusPart(.grid);
                 },
                 else => return apps.keyPress(&self.launcher, event),
             }
             self.hideTooltip();
             if (self.dash_view.keyboard_focus and self.focus_part == .dash)
-                self.tooltip_timer = c.g_timeout_add(300, &showTooltip, self);
+                self.tooltip_timer = mainloop.timeout(300, self, showTooltip);
             self.redrawSelf();
             return true;
         }
-        if ((window_mode and (event.keyval == c.__zig.keys.Page_Up or event.keyval == c.__zig.keys.Page_Down)) or (event.state & c.__zig.control_mask != 0 and (event.keyval == c.__zig.keys.Left or event.keyval == c.__zig.keys.Right))) {
-            const direction: i32 = if (event.keyval == c.__zig.keys.Page_Up or event.keyval == c.__zig.keys.Left) -1 else 1;
-            if (event.state & c.__zig.shift_mask != 0) {
+        if ((window_mode and (event.keyval == keyboard.keys.Page_Up or event.keyval == keyboard.keys.Page_Down)) or (event.state & keyboard.control != 0 and (event.keyval == keyboard.keys.Left or event.keyval == keyboard.keys.Right))) {
+            const direction: i32 = if (event.keyval == keyboard.keys.Page_Up or event.keyval == keyboard.keys.Left) -1 else 1;
+            if (event.state & keyboard.shift != 0) {
                 if (self.client) |client| {
                     const target = @as(i64, client.current) + direction;
                     if (self.selected < client.windows.items.len and target >= 0 and target < client.count) client.move(client.windows.items[self.selected], @intCast(target));
@@ -521,14 +522,14 @@ const Overview = struct {
             return true;
         }
         if (!self.apps_mode and self.launcher.searchText().len == 0) {
-            if (event.keyval == c.__zig.keys.Return or event.keyval == c.__zig.keys.KP_Enter) {
+            if (event.keyval == keyboard.keys.Return or event.keyval == keyboard.keys.KP_Enter) {
                 if (self.client) |client| if (self.selected < client.windows.items.len and (client.windows.items[self.selected].workspace == client.current or client.windows.items[self.selected].sticky)) {
                     client.activate(client.windows.items[self.selected]);
                     self.launcher.hide();
                 };
                 return true;
             }
-            const direction: i32 = if (event.keyval == c.__zig.keys.Left or event.keyval == c.__zig.keys.Up) -1 else if (event.keyval == c.__zig.keys.Right or event.keyval == c.__zig.keys.Down) 1 else 0;
+            const direction: i32 = if (event.keyval == keyboard.keys.Left or event.keyval == keyboard.keys.Up) -1 else if (event.keyval == keyboard.keys.Right or event.keyval == keyboard.keys.Down) 1 else 0;
             if (direction != 0) {
                 self.selectNext(direction);
                 return true;
@@ -537,7 +538,7 @@ const Overview = struct {
         return self.launcherKey(event);
     }
     fn keyRelease(self: *Overview, event: *apps.KeyEvent) bool {
-        if (event.keyval == c.__zig.keys.Super_L or event.keyval == c.__zig.keys.Super_R) {
+        if (event.keyval == keyboard.keys.Super_L or event.keyval == keyboard.keys.Super_R) {
             if (self.transition.shown) self.launcher.hide() else self.present();
             return true;
         }
@@ -740,7 +741,7 @@ const Overview = struct {
     }
     fn renderScale(data: ?*anyopaque, surface: *wire.Surface) u32 {
         const self = cast(Overview, data);
-        const now = c.__zig.monotonicTime();
+        const now = util.monotonicTime();
         // Fractional outputs otherwise render at the next integer scale (for
         // example 2x buffers on a 1.625x display). Keep motion inexpensive, then
         // restore native text/icon detail on the final compositor-paced frame.
@@ -756,7 +757,7 @@ const Overview = struct {
         const self = cast(Overview, data);
         const surface = self.surface orelse return;
         if (surface.output != output) return;
-        self.transition.setShown(false, c.__zig.monotonicTime());
+        self.transition.setShown(false, util.monotonicTime());
         self.transition.finish();
         self.launcher.hide();
         for (self.native.outputs.items) |candidate| if (candidate != output) {
@@ -774,17 +775,16 @@ const Overview = struct {
         cast(Overview, data).redrawSelf();
     }
     fn redrawSelf(self: *Overview) void {
-        if (self.previewsPaused(c.__zig.monotonicTime())) if (self.client) |client| {
+        if (self.previewsPaused(util.monotonicTime())) if (self.client) |client| {
             client.streaming = false;
         };
         for (self.native.seats.items) |seat| if (seat.text_input) |value| value.update();
-        if (!self.painting and self.launcher.visible_window and self.repaint_source == 0) self.repaint_source = c.g_idle_add(&repaint, self);
+        if (!self.painting and self.launcher.visible_window and self.repaint_source == 0) self.repaint_source = mainloop.idle(self, repaint);
     }
-    fn repaint(data: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Overview, data);
+    fn repaint(self: *Overview) bool {
         self.repaint_source = 0;
         if (self.launcher.visible_window) if (self.surface) |surface| surface.redraw();
-        return 0;
+        return false;
     }
     fn focusPart(self: *Overview, part: Part) void {
         self.focus_part = part;
@@ -803,7 +803,7 @@ const Overview = struct {
     fn symbol(data: ?*anyopaque, _: *wire.Surface, value: u32, modifiers: u32, pressed: bool) bool {
         const self = cast(Overview, data);
         if (!self.transition.shown) {
-            if (!pressed and (value == c.__zig.keys.Super_L or value == c.__zig.keys.Super_R)) self.present();
+            if (!pressed and (value == keyboard.keys.Super_L or value == keyboard.keys.Super_R)) self.present();
             return true;
         }
         self.modifiers = modifiers;
@@ -962,7 +962,7 @@ const Overview = struct {
     fn paint(data: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(Overview, data);
         self.painting = true;
-        self.progress = self.transition.value(c.__zig.monotonicTime());
+        self.progress = self.transition.value(util.monotonicTime());
         self.animating = self.progress != (if (self.transition.shown) @as(f64, 1) else 0);
         defer self.painting = false;
         const scale = self.surface.?.buffer_scale;
@@ -1031,7 +1031,7 @@ const Overview = struct {
     }
     fn paintStrip(self: *Overview, canvas: raster.Canvas, width: f64) void {
         const client = self.client orelse return;
-        const now = c.__zig.monotonicTime();
+        const now = util.monotonicTime();
         const animated = self.transition.active(now) or !self.transition.shown or now - self.workspace_started < 250000;
         const geom = self.stripGeometry(width, client.count);
         const work_w: f64 = @floatFromInt(self.monitor.width);
@@ -1098,7 +1098,7 @@ const Overview = struct {
         };
     }
     fn workspacePosition(self: *const Overview) f64 {
-        const t = std.math.clamp(@as(f64, @floatFromInt(c.__zig.monotonicTime() - self.workspace_started)) / 250000, 0, 1);
+        const t = std.math.clamp(@as(f64, @floatFromInt(util.monotonicTime() - self.workspace_started)) / 250000, 0, 1);
         const ease = 1 - (1 - t) * (1 - t) * (1 - t);
         return self.workspace_from + (@as(f64, @floatFromInt(self.workspace_target)) - self.workspace_from) * ease;
     }
@@ -1255,7 +1255,7 @@ pub fn deinit(state: *State) void {
 
 pub fn activateCorner(a: std.mem.Allocator, state: *State) void {
     if (state.overview) |self| {
-        const now = c.__zig.monotonicTime();
+        const now = util.monotonicTime();
         // overview.js shouldToggleByCornerOrButton(): don't interrupt an
         // animation or drag, and debounce for 500 ms after opening.
         if (self.transition.active(now) or self.dragging or self.drag != null) return;

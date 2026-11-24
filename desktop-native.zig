@@ -1,5 +1,6 @@
 //! GTK-independent Wayland window hosting. Link only the libraries used here.
-pub const c = @import("desktop-glib.zig");
+pub const mainloop = @import("desktop-loop.zig");
+pub const util = @import("desktop-util.zig");
 pub const surface = @import("desktop-surface.zig");
 pub const keyboard = @import("desktop-keyboard.zig");
 

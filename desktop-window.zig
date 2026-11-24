@@ -1,9 +1,10 @@
 //! Shared native toplevel connection and explicit window lifetimes.
 //! Owner callbacks run outside Wayland dispatch so they may destroy windows.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 pub const wire = @import("desktop-surface.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 var connection: ?*wire.Client = null;
 var windows: std.ArrayList(*Window) = .empty;
 
@@ -21,7 +22,7 @@ pub const Window = struct {
     closed: ?*const fn (?*anyopaque) void = null,
     parent: ?*Window = null,
     closing: bool = false,
-    idle: c.guint = 0,
+    idle: u32 = 0,
 
     pub fn create(a: std.mem.Allocator, title: [:0]const u8, namespace: [:0]const u8, width: u32, height: u32, paint: wire.PixelPaint, context: ?*anyopaque) !*Window {
         const self = try a.create(Window);
@@ -105,17 +106,16 @@ pub const Window = struct {
         self.closing = true;
         for (windows.items) |child| if (child.parent == self) child.close();
         if (self.surface) |surface| if (!surface.rendering) surface.hide();
-        self.idle = c.g_idle_add(&deliverClose, self);
+        self.idle = mainloop.idle(self, deliverClose);
     }
-    fn deliverClose(ptr: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Window, ptr);
+    fn deliverClose(self: *Window) bool {
         self.idle = 0;
         self.hide();
         if (self.closed) |callback| callback(self.context);
-        return 0;
+        return false;
     }
     pub fn destroy(self: *Window) void {
-        if (self.idle != 0) _ = c.g_source_remove(self.idle);
+        if (self.idle != 0) _ = mainloop.remove(self.idle);
         for (windows.items) |child| if (child.parent == self) {
             child.parent = null;
             child.close();

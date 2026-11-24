@@ -1,20 +1,21 @@
 //! Native audio commands and raster control integration against an isolated PipeWire server.
 const std = @import("std");
-const c = @import("desktop").glib;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
 const audio = @import("desktop").audio;
 const quick = @import("desktop").quick;
 const settings = @import("desktop").settings;
 const assert = std.debug.assert;
 var stopping = false;
 var watch = false;
-const cast = c.__zig.cast;
+const cast = util.cast;
 fn pump() void {
     audio.dispatch();
-    c.g_usleep(1000);
+    mainloop.sleep(1000);
 }
-fn stop(_: ?*anyopaque) callconv(.c) c_int {
+fn stop(_: void) bool {
     stopping = true;
-    return 1;
+    return true;
 }
 fn changed(_: ?*anyopaque, service: *audio.Service) void {
     if (watch) dump(service) catch @panic("dump failed");
@@ -36,12 +37,12 @@ const Completion = struct {
     }
 };
 fn apply(service: *audio.Service, target: audio.Target, change: audio.Change) !audio.State {
-    const cancel = c.g_cancellable_new().?;
-    defer c.g_object_unref(cancel);
+    const cancel = mainloop.Cancellable.create();
+    defer cancel.unref();
     var completion = Completion{};
     service.apply(target, change, cancel, &Completion.done, &completion);
-    const deadline = c.__zig.monotonicTime() + 6_000_000;
-    while (completion.result == null and c.__zig.monotonicTime() < deadline) pump();
+    const deadline = util.monotonicTime() + 6_000_000;
+    while (completion.result == null and util.monotonicTime() < deadline) pump();
     const result = completion.result orelse return error.AudioOperationHung;
     return switch (result) {
         .value => |value| value,
@@ -49,8 +50,8 @@ fn apply(service: *audio.Service, target: audio.Target, change: audio.Change) !a
     };
 }
 fn ready(service: *audio.Service) !void {
-    const deadline = c.__zig.monotonicTime() + 8_000_000;
-    while ((!service.ready or service.nodes.items.len < 3 or service.state(.output) == null or service.state(.input) == null) and c.__zig.monotonicTime() < deadline) pump();
+    const deadline = util.monotonicTime() + 8_000_000;
+    while ((!service.ready or service.nodes.items.len < 3 or service.state(.output) == null or service.state(.input) == null) and util.monotonicTime() < deadline) pump();
     if (!service.ready or service.state(.output) == null or service.state(.input) == null) return error.AudioNeverReady;
 }
 fn click(sound: *settings.Sound, row: usize, control: @import("desktop").settings.SoundControl) void {
@@ -77,25 +78,25 @@ fn ui(service: *audio.Service) !void {
     try dialogs.show(.network);
     try dialogs.show(.sound);
     assert(dialogs.windows.items.len == 1 and shell.window == sound.window);
-    var deadline = c.__zig.monotonicTime() + 8_000_000;
-    while ((controls.devices.audio_service == null or controls.devices.audio_service.?.state(.output) == null or sound.view.rows.items.len < 5) and c.__zig.monotonicTime() < deadline) pump();
+    var deadline = util.monotonicTime() + 8_000_000;
+    while ((controls.devices.audio_service == null or controls.devices.audio_service.?.state(.output) == null or sound.view.rows.items.len < 5) and util.monotonicTime() < deadline) pump();
     assert(sound.view.rows.items.len >= 5);
     assert(controls.view.model.volume != null);
     controls.setSlider(.volume, 63);
-    deadline = c.__zig.monotonicTime() + 5_000_000;
-    while ((controls.volume_timer != 0 or @abs((service.state(.output) orelse return error.NoOutput).percent - 63) > 0.01) and c.__zig.monotonicTime() < deadline) pump();
+    deadline = util.monotonicTime() + 5_000_000;
+    while ((controls.volume_timer != 0 or @abs((service.state(.output) orelse return error.NoOutput).percent - 63) > 0.01) and util.monotonicTime() < deadline) pump();
     assert(@abs(service.state(.output).?.percent - 63) < 0.01);
     // Rows survive volume-only changes, so dragging cannot target a freed row.
     const row = sound.view.rows.items.ptr;
     sound.setVolume(0, 47);
-    deadline = c.__zig.monotonicTime() + 5_000_000;
-    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.output).?.percent - 47) > 0.01) and c.__zig.monotonicTime() < deadline) pump();
+    deadline = util.monotonicTime() + 5_000_000;
+    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.output).?.percent - 47) > 0.01) and util.monotonicTime() < deadline) pump();
     assert(sound.view.rows.items.ptr == row);
     assert(@abs(service.state(.output).?.percent - 47) < 0.01);
     assert(@abs(controls.view.model.volume.? - 47) < 0.01);
     click(sound, 1, .mute);
-    deadline = c.__zig.monotonicTime() + 5_000_000;
-    while ((!service.state(.input).?.muted or sound.operations != 0) and c.__zig.monotonicTime() < deadline) pump();
+    deadline = util.monotonicTime() + 5_000_000;
+    while ((!service.state(.input).?.muted or sound.operations != 0) and util.monotonicTime() < deadline) pump();
     assert(service.state(.input).?.muted);
     const previous = service.node(.output).?.id;
     var selected: ?u32 = null;
@@ -113,11 +114,11 @@ fn ui(service: *audio.Service) !void {
         }
     }
     assert(selected != null);
-    deadline = c.__zig.monotonicTime() + 5_000_000;
-    while ((service.node(.output).?.id != selected.? or sound.operations != 0) and c.__zig.monotonicTime() < deadline) pump();
+    deadline = util.monotonicTime() + 5_000_000;
+    while ((service.node(.output).?.id != selected.? or sound.operations != 0) and util.monotonicTime() < deadline) pump();
     assert(service.node(.output).?.id == selected.?);
-    deadline = c.__zig.monotonicTime() + 5_000_000;
-    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.{ .id = previous }).?.percent - 52) > 0.01) and c.__zig.monotonicTime() < deadline) pump();
+    deadline = util.monotonicTime() + 5_000_000;
+    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.{ .id = previous }).?.percent - 52) > 0.01) and util.monotonicTime() < deadline) pump();
     assert(@abs(service.state(.{ .id = previous }).?.percent - 52) < 0.01);
     assert(sound.view.expanded == null);
     // The device selector also opens, navigates and dismisses through the keyboard.
@@ -137,13 +138,13 @@ fn ui(service: *audio.Service) !void {
         application_classes |= if (candidate.class == .playback) @as(u8, 1) else 2;
         const id = candidate.target.id;
         click(sound, index, .volume);
-        deadline = c.__zig.monotonicTime() + 5_000_000;
-        while ((sound.operations != 0 or @abs((service.state(.{ .id = id }) orelse return error.MissingStream).percent - 50) > 0.01) and c.__zig.monotonicTime() < deadline) pump();
+        deadline = util.monotonicTime() + 5_000_000;
+        while ((sound.operations != 0 or @abs((service.state(.{ .id = id }) orelse return error.MissingStream).percent - 50) > 0.01) and util.monotonicTime() < deadline) pump();
         assert(@abs(service.state(.{ .id = id }).?.percent - 50) < 0.01);
         const muted = service.state(.{ .id = id }).?.muted;
         click(sound, index, .mute);
-        deadline = c.__zig.monotonicTime() + 5_000_000;
-        while ((sound.operations != 0 or service.state(.{ .id = id }).?.muted == muted) and c.__zig.monotonicTime() < deadline) pump();
+        deadline = util.monotonicTime() + 5_000_000;
+        while ((sound.operations != 0 or service.state(.{ .id = id }).?.muted == muted) and util.monotonicTime() < deadline) pump();
         assert(service.state(.{ .id = id }).?.muted != muted);
     }
     assert(application_classes == 3);
@@ -155,13 +156,13 @@ fn ui(service: *audio.Service) !void {
     assert(sound.view.focus.?.row == 0 and sound.view.focus.?.control == .volume);
     assert(sound.handleKey(0xff50, 0)); // Home clamps to zero.
     assert(sound.handleKey(0xff53, 0)); // Right increases by five.
-    deadline = c.__zig.monotonicTime() + 5_000_000;
-    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.output).?.percent - 5) > 0.01) and c.__zig.monotonicTime() < deadline) pump();
+    deadline = util.monotonicTime() + 5_000_000;
+    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.output).?.percent - 5) > 0.01) and util.monotonicTime() < deadline) pump();
     assert(@abs(service.state(.output).?.percent - 5) < 0.01);
     // A pointer press/release on the track sets volume through native hit testing.
     click(sound, 0, .volume);
-    deadline = c.__zig.monotonicTime() + 5_000_000;
-    while ((sound.operations != 0 or @abs(service.state(.output).?.percent - 50) > 0.01) and c.__zig.monotonicTime() < deadline) pump();
+    deadline = util.monotonicTime() + 5_000_000;
+    while ((sound.operations != 0 or @abs(service.state(.output).?.percent - 50) > 0.01) and util.monotonicTime() < deadline) pump();
     assert(@abs(service.state(.output).?.percent - 50) < 0.01);
     click(sound, 0, .test_sound);
     assert(sound.feedback.playing());
@@ -188,9 +189,9 @@ pub fn main(init: std.process.Init) !void {
     }
     if (watch) {
         try dump(service);
-        const term = c.g_unix_signal_add(c.SIGTERM, &stop, null);
-        defer _ = c.g_source_remove(term);
-        while (!stopping) _ = c.g_main_context_iteration(null, 1);
+        const term = mainloop.signal(mainloop.SIGTERM, {}, stop);
+        defer _ = mainloop.remove(term);
+        while (!stopping) _ = mainloop.iteration(true);
         return;
     }
     if (std.mem.eql(u8, args[1], "dispose")) return;
@@ -204,11 +205,11 @@ pub fn main(init: std.process.Init) !void {
             while (sound.operations != 0 or shell.network_operations != 0) pump();
             shell.destroy();
         }
-        const deadline = c.__zig.monotonicTime() + 5_000_000;
-        while ((sound.service == null or sound.service.?.state(.output) == null) and c.__zig.monotonicTime() < deadline) pump();
+        const deadline = util.monotonicTime() + 5_000_000;
+        while ((sound.service == null or sound.service.?.state(.output) == null) and util.monotonicTime() < deadline) pump();
         if (std.mem.eql(u8, args[1], "preview-levels")) sound.showPage(.levels);
         if (std.mem.eql(u8, args[1], "preview-devices")) sound.activate(.{ .control = .device });
-        while (!sound.closed) _ = c.g_main_context_iteration(null, 1);
+        while (!sound.closed) _ = mainloop.iteration(true);
         return;
     }
     if (std.mem.eql(u8, args[1], "feedback") and args.len == 3) {
@@ -217,11 +218,11 @@ pub fn main(init: std.process.Init) !void {
         const path = try arena.allocator().dupeSentinel(u8, args[2], 0);
         player.play(path);
         assert(player.playing());
-        const start_time = c.__zig.monotonicTime();
-        while (c.__zig.monotonicTime() < start_time + 600_000) pump();
+        const start_time = util.monotonicTime();
+        while (util.monotonicTime() < start_time + 600_000) pump();
         assert(player.playing()); // The two-second stream is still delivering audio.
         player.play(path); // Repeated volume keys keep the existing sound.
-        while (c.__zig.monotonicTime() < start_time + 2_300_000) pump();
+        while (util.monotonicTime() < start_time + 2_300_000) pump();
         assert(!player.playing());
         @import("desktop").util.printOut("PASS native event-sound playback without overlap\n", .{});
         return;
@@ -236,13 +237,13 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, args[1], "cancel")) {
-        const cancel = c.g_cancellable_new().?;
-        defer c.g_object_unref(cancel);
+        const cancel = mainloop.Cancellable.create();
+        defer cancel.unref();
         var completion = Completion{};
         service.apply(.output, .{ .volume = 25 }, cancel, &Completion.done, &completion);
-        c.g_cancellable_cancel(cancel);
-        const deadline = c.__zig.monotonicTime() + 6_000_000;
-        while (completion.result == null and c.__zig.monotonicTime() < deadline) pump();
+        cancel.cancel();
+        const deadline = util.monotonicTime() + 6_000_000;
+        while (completion.result == null and util.monotonicTime() < deadline) pump();
         assert(completion.result != null and completion.result.? == .failure);
         @import("desktop").util.printOut("PASS pending native audio cancellation\n", .{});
         return;

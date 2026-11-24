@@ -1,6 +1,7 @@
 //! Native Linux power-supply monitoring, shared by the panel and system power policy.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 // Test builds account for service state and asynchronous callback allocations.
 
@@ -95,7 +96,7 @@ pub const Device = struct {
     time_full: i64 = 0,
     threshold: bool = false,
 };
-const eq = c.__zig.eq;
+const eq = util.eq;
 fn validName(name: []const u8) bool {
     return name.len > 0 and name.len < 256 and name[0] != '.' and std.mem.indexOfAny(u8, name, "/\x00") == null;
 }
@@ -307,10 +308,10 @@ pub const Service = struct {
     data: ?*anyopaque,
     backend: Backend,
     root: [:0]u8,
-    cancel: *c.GCancellable,
-    timer: c.guint = 0,
-    event_source: c.guint = 0,
-    debounce: c.guint = 0,
+    cancel: *mainloop.Cancellable,
+    timer: u32 = 0,
+    event_source: u32 = 0,
+    debounce: u32 = 0,
     event_fd: c_int = -1,
     events: bool,
     pending: bool = false,
@@ -329,9 +330,9 @@ pub const Service = struct {
         const self = try a.create(Service);
         errdefer a.destroy(self);
         const root = try a.dupeSentinel(u8, options.backend.root, 0);
-        self.* = .{ .allocator = a, .callback = callback, .data = data, .backend = .{ .root = root }, .root = root, .cancel = c.g_cancellable_new().?, .events = options.events };
+        self.* = .{ .allocator = a, .callback = callback, .data = data, .backend = .{ .root = root }, .root = root, .cancel = mainloop.Cancellable.create(), .events = options.events };
         if (self.events) self.connectEvents();
-        self.timer = c.g_timeout_add(options.poll_ms, &poll, self);
+        self.timer = mainloop.timeout(options.poll_ms, self, poll);
         self.refresh();
         return self;
     }
@@ -341,17 +342,17 @@ pub const Service = struct {
     }
     pub fn stop(self: *Service) void {
         self.stopped = true;
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
-        if (self.debounce != 0) _ = c.g_source_remove(self.debounce);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.debounce != 0) _ = mainloop.remove(self.debounce);
         self.disconnectEvents();
         self.timer = 0;
         self.debounce = 0;
-        c.g_cancellable_cancel(self.cancel);
+        self.cancel.cancel();
     }
     fn unref(self: *Service) void {
         self.refs -= 1;
         if (self.refs == 0) {
-            c.g_object_unref(self.cancel);
+            self.cancel.unref();
             self.allocator.free(self.root);
             self.allocator.destroy(self);
         }
@@ -364,23 +365,16 @@ pub const Service = struct {
         }
         self.pending = true;
         self.refs += 1;
-        const task = c.g_task_new(null, self.cancel, &readDone, self);
-        c.g_task_set_task_data(task, self, null);
-        c.g_task_run_in_thread(task, &readWork);
-        c.g_object_unref(task);
+        mainloop.background(self, readWork, readDone);
     }
-    fn readWork(task: ?*c.GTask, _: ?*anyopaque, data: ?*anyopaque, _: [*c]c.GCancellable) callconv(.c) void {
-        const self: *Service = @ptrCast(@alignCast(data));
+    fn readWork(self: *Service) void {
         self.next = self.backend.read();
-        c.g_task_return_boolean(task, 1);
     }
-    fn readDone(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
-        const self: *Service = @ptrCast(@alignCast(data));
+    fn readDone(self: *Service) void {
         defer self.unref();
         self.pending = false;
-        const ok = c.g_task_propagate_boolean(@ptrCast(result), null) != 0;
         if (self.stopped) return;
-        if (ok and (!self.sent or !std.meta.eql(self.value, self.next))) {
+        if (!self.sent or !std.meta.eql(self.value, self.next)) {
             self.value = self.next;
             self.sent = true;
             self.callback(self.data, self.value);
@@ -390,11 +384,10 @@ pub const Service = struct {
             self.refresh();
         }
     }
-    fn poll(data: ?*anyopaque) callconv(.c) c_int {
-        const self: *Service = @ptrCast(@alignCast(data));
+    fn poll(self: *Service) bool {
         if (self.events and self.event_fd < 0) self.connectEvents();
         self.refresh();
-        return 1;
+        return true;
     }
     fn connectEvents(self: *Service) void {
         const fd = libc.socket(libc.AF_NETLINK, libc.SOCK_DGRAM | libc.SOCK_NONBLOCK | libc.SOCK_CLOEXEC, libc.NETLINK_KOBJECT_UEVENT);
@@ -405,21 +398,20 @@ pub const Service = struct {
             return;
         }
         self.event_fd = fd;
-        self.event_source = c.g_unix_fd_add(fd, c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &eventReady, self);
+        self.event_source = mainloop.watch(fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, eventReady);
     }
     fn disconnectEvents(self: *Service) void {
-        if (self.event_source != 0) _ = c.g_source_remove(self.event_source);
+        if (self.event_source != 0) _ = mainloop.remove(self.event_source);
         self.event_source = 0;
         if (self.event_fd >= 0) _ = libc.close(self.event_fd);
         self.event_fd = -1;
     }
-    fn eventReady(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
-        const self: *Service = @ptrCast(@alignCast(data));
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) {
+    fn eventReady(self: *Service, _: c_int, condition: u32) bool {
+        if (condition & (mainloop.ERR | mainloop.HUP) != 0) {
             self.event_source = 0;
             self.disconnectEvents();
             self.refresh();
-            return 0;
+            return false;
         }
         var buffer: [8192]u8 = undefined;
         while (true) {
@@ -431,15 +423,14 @@ pub const Service = struct {
                 if (libc.__errno_location().* == 105) self.refresh(); // ENOBUFS: recover a lost event by reading sysfs.
                 break;
             }
-            if (size >= @sizeOf(@TypeOf(sender)) and count < buffer.len and powerSupplyEvent(buffer[0..@intCast(count)], sender.nl_pid) and self.debounce == 0) self.debounce = c.g_timeout_add(100, &eventRefresh, self);
+            if (size >= @sizeOf(@TypeOf(sender)) and count < buffer.len and powerSupplyEvent(buffer[0..@intCast(count)], sender.nl_pid) and self.debounce == 0) self.debounce = mainloop.timeout(100, self, eventRefresh);
         }
-        return 1;
+        return true;
     }
-    fn eventRefresh(data: ?*anyopaque) callconv(.c) c_int {
-        const self: *Service = @ptrCast(@alignCast(data));
+    fn eventRefresh(self: *Service) bool {
         self.debounce = 0;
         self.refresh();
-        return 0;
+        return false;
     }
 };
 
@@ -518,10 +509,10 @@ test "disposing an in-flight sysfs scan releases ownership without publishing af
     service.refs += 1;
     service.refresh();
     service.destroy();
-    const deadline = c.__zig.monotonicTime() + 5000000;
-    while (service.pending and c.__zig.monotonicTime() < deadline) {
-        while (c.g_main_context_iteration(null, 0) != 0) {}
-        c.g_usleep(1000);
+    const deadline = util.monotonicTime() + 5000000;
+    while (service.pending and util.monotonicTime() < deadline) {
+        while (mainloop.iteration(false)) {}
+        mainloop.sleep(1000);
     }
     const pending = service.pending;
     service.unref();

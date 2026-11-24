@@ -1,12 +1,14 @@
 //! Native, input-transparent Wayland presentation for the application switcher.
 const std = @import("std");
+const decode = @import("desktop-decode.zig");
 const cairo = @import("tests/desktop-cairo.zig");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const native = @import("desktop-surface.zig");
 const capture = @import("desktop-capture.zig");
 const raster = @import("desktop-raster.zig");
 const fonts = @import("desktop-text.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 pub const Item = struct {
     id: [256:0]u8 = @splat(0),
     app_id: [256:0]u8 = @splat(0),
@@ -23,12 +25,12 @@ var displayed: Snapshot = .{};
 var latest: Snapshot = .{};
 var previews: Snapshot = .{};
 var client: ?*capture.Client = null;
-var delay: c.guint = 0;
-var ticker: c.guint = 0;
+var delay: u32 = 0;
+var ticker: u32 = 0;
 var showing_previews = false;
 var icon_size: i32 = 96;
 var asset_scale: u32 = 0;
-var icons: [64]?c.__icons.Image = @splat(null);
+var icons: [64]?decode.Image = @splat(null);
 var labels: [64]?[:0]u8 = @splat(null);
 var label_masks: [64]?fonts.Mask = @splat(null);
 var preview_masks: [64]?fonts.Mask = @splat(null);
@@ -43,7 +45,7 @@ var preview_height: i32 = 0;
 pub fn publish(a: std.mem.Allocator, snapshot: Snapshot) void {
     const pending = a.create(Update) catch return;
     pending.* = .{ .allocator = a, .snapshot = snapshot };
-    _ = c.g_idle_add(&update, pending);
+    _ = mainloop.idle(pending, update);
 }
 pub fn deinit(a: std.mem.Allocator) void {
     stopPreviews(a);
@@ -62,7 +64,7 @@ pub fn deinit(a: std.mem.Allocator) void {
 }
 fn clearAssets(a: std.mem.Allocator) void {
     for (&icons, &labels, &label_masks) |*icon, *label, *mask| {
-        if (icon.*) |value| c.__icons.free(a, value);
+        if (icon.*) |value| decode.free(a, value);
         if (label.*) |value| a.free(value);
         if (mask.*) |value| value.deinit(a);
         icon.* = null;
@@ -85,11 +87,10 @@ fn outputChanged(_: ?*anyopaque, output: *native.Output) void {
     if (monitor == output and latest.visible) present(output.client.allocator, &latest) catch |err| std.log.warn("switcher layout: {s}", .{@errorName(err)});
 }
 const Update = struct { allocator: std.mem.Allocator, snapshot: Snapshot };
-fn update(data: c.gpointer) callconv(.c) c.gboolean {
-    const pending = cast(Update, data);
+fn update(pending: *Update) bool {
     defer pending.allocator.destroy(pending);
     present(pending.allocator, &pending.snapshot) catch |err| std.log.warn("switcher: {s}", .{@errorName(err)});
-    return 0;
+    return false;
 }
 fn present(allocator: std.mem.Allocator, snapshot: *const Snapshot) !void {
     const a = if (connection) |existing| existing.allocator else allocator;
@@ -151,7 +152,7 @@ fn present(allocator: std.mem.Allocator, snapshot: *const Snapshot) !void {
     try window.?.show();
     if (changed_app or leaving_windows) {
         stopPreviews(a);
-        if (changed_app) delay = c.g_timeout_add(500, &reveal, null);
+        if (changed_app) delay = mainloop.timeout(500, {}, reveal);
     }
     if (snapshot.window_selection) showing_previews = true;
     if (showing_previews) try showPreviews();
@@ -242,21 +243,21 @@ fn draw(_: ?*anyopaque, buffer: native.Pixels) void {
 }
 fn stopPreviews(a: std.mem.Allocator) void {
     clearPreviewLabels(a);
-    if (delay != 0) _ = c.g_source_remove(delay);
-    if (ticker != 0) _ = c.g_source_remove(ticker);
+    if (delay != 0) _ = mainloop.remove(delay);
+    if (ticker != 0) _ = mainloop.remove(ticker);
     delay = 0;
     ticker = 0;
     showing_previews = false;
     if (preview_window) |value| value.hide();
     if (client) |value| value.visible(false);
 }
-fn reveal(_: c.gpointer) callconv(.c) c.gboolean {
+fn reveal(_: void) bool {
     delay = 0;
     if (latest.visible) {
         showing_previews = true;
         showPreviews() catch |err| std.log.warn("switcher previews: {s}", .{@errorName(err)});
     }
-    return 0;
+    return false;
 }
 fn showPreviews() !void {
     const a = if (connection) |value| value.allocator else return;
@@ -292,15 +293,15 @@ fn showPreviews() !void {
         value.refresh();
         value.visible(true);
         value.tick();
-        if (ticker == 0) ticker = c.g_timeout_add(100, &captureTick, null);
+        if (ticker == 0) ticker = mainloop.timeout(100, {}, captureTick);
     }
 }
 fn captureChanged(_: ?*anyopaque) void {
     if (preview_window) |value| value.redraw();
 }
-fn captureTick(_: c.gpointer) callconv(.c) c.gboolean {
+fn captureTick(_: void) bool {
     if (client) |value| value.tick();
-    return 1;
+    return true;
 }
 fn drawPreviews(_: ?*anyopaque, buffer: native.Pixels) void {
     const scale = if (preview_window) |value| value.output.scale else 1;
@@ -443,7 +444,7 @@ test "integration: native switcher preserves its role and icons across selection
     const restored_icon = if (icons[0]) |icon| icon.pixels.ptr else null;
     try present(std.testing.allocator, &.{});
     try std.testing.expect(window.?.role == null and preview_window.?.role == null);
-    try std.testing.expectEqual(@as(c.guint, 0), ticker);
+    try std.testing.expectEqual(@as(u32, 0), ticker);
     try present(std.testing.allocator, &snapshot);
     probe.pump();
     try std.testing.expectEqual(original_window, window.?);
@@ -562,7 +563,6 @@ test "Zig switcher panels and highlights agree with Cairo at multiple scales" {
 }
 
 test "native icon scaling preserves Cairo colors and alpha" {
-    const decode = @import("desktop-decode.zig");
     const icon = try decode.create(std.testing.allocator, 7, 5);
     defer decode.free(std.testing.allocator, icon);
     const source = icon.view();

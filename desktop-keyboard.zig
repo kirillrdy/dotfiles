@@ -26,7 +26,23 @@ extern fn xkb_compose_state_get_status(*Compose) c_int;
 extern fn xkb_compose_state_get_utf8(*Compose, [*]u8, usize) c_int;
 extern fn xkb_compose_state_reset(*Compose) void;
 
-// Same modifier positions as the existing shell controls; no GDK objects involved.
+/// X keysyms used by the native key handlers.
+pub const keys = struct {
+    pub const BackSpace: c_int = 0xff08;
+    pub const Return: c_int = 0xff0d;
+    pub const Escape: c_int = 0xff1b;
+    pub const Left: c_int = 0xff51;
+    pub const Up: c_int = 0xff52;
+    pub const Right: c_int = 0xff53;
+    pub const Down: c_int = 0xff54;
+    pub const Page_Up: c_int = 0xff55;
+    pub const Page_Down: c_int = 0xff56;
+    pub const KP_Enter: c_int = 0xff8d;
+    pub const Super_L: c_int = 0xffeb;
+    pub const Super_R: c_int = 0xffec;
+};
+/// Modifier bits, at the positions X and GDK use.
+pub const Modifiers = c_uint;
 pub const shift = 1;
 pub const control = 4;
 pub const alt = 8;

@@ -3,10 +3,11 @@
 //! local file enumerator reported, and results are delivered on the main loop.
 const std = @import("std");
 const linux = std.os.linux;
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const paths = @import("desktop-paths.zig");
 const mime = @import("desktop-mime.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 
 pub const Entry = struct {
     name: [:0]const u8,
@@ -110,13 +111,12 @@ pub const Scan = struct {
         self.failure = if (self.read()) |_| null else |err| err;
         if (self.cancelled.load(.acquire)) self.failure = error.DirectoryUnavailable;
         if (self.failure == null) std.mem.sort(Entry, self.entries.items, {}, less);
-        _ = c.g_idle_add(&deliver, self);
+        _ = mainloop.idle(self, deliver);
     }
 
-    fn deliver(data: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Scan, data);
+    fn deliver(self: *Scan) bool {
         self.completed(self.context, self, self.failure);
-        return 0;
+        return false;
     }
 
     fn read(self: *Scan) !void {

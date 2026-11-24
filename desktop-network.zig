@@ -1,6 +1,7 @@
 //! Shared, event-driven NetworkManager state and asynchronous actions on the system bus.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
 const objects = @import("desktop-dbus-objects.zig");
@@ -11,11 +12,11 @@ const wireless_iface = device_iface ++ ".Wireless";
 const ap_iface = name ++ ".AccessPoint";
 const profile_iface = name ++ ".Settings.Connection";
 const active_iface = name ++ ".Connection.Active";
-const cast = c.__zig.cast;
+const cast = util.cast;
 fn z(a: std.mem.Allocator, value: []const u8) [:0]u8 {
-    return c.__zig.dupeZ(a, value);
+    return util.dupeZ(a, value);
 }
-const eq = c.__zig.eq;
+const eq = util.eq;
 /// An interface's cached properties, as mirrored from NetworkManager's ObjectManager.
 const Proxy = objects.Interface;
 fn text(a: std.mem.Allocator, proxy: *const Proxy, key: []const u8) [:0]u8 {
@@ -176,8 +177,8 @@ pub const Service = struct {
     waiting: std.ArrayList(*Call) = .empty,
     state: State = .{},
     refs: usize = 0,
-    idle: c.guint = 0,
-    timer: c.guint = 0,
+    idle: u32 = 0,
+    timer: u32 = 0,
     connecting: bool = false,
     stopped: bool = false,
     epoch: u64 = 0,
@@ -206,7 +207,7 @@ pub const Service = struct {
     }
     fn start(self: *Service) void {
         self.connectBus();
-        self.timer = c.g_timeout_add_seconds(5, &maintain, self);
+        self.timer = mainloop.timeoutSeconds(5, self, maintain);
     }
     fn connectBus(self: *Service) void {
         if (self.stopped or self.manager != null) return;
@@ -240,22 +241,21 @@ pub const Service = struct {
     fn stop(self: *Service) void {
         self.stopped = true;
         if (shared == self) shared = null;
-        if (self.idle != 0) _ = c.g_source_remove(self.idle);
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.idle != 0) _ = mainloop.remove(self.idle);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         self.idle = 0;
         self.timer = 0;
         self.ref();
         defer self.unref();
         self.dropManager();
     }
-    fn maintain(ptr: c.gpointer) callconv(.c) c_int {
-        const self = cast(Service, ptr);
+    fn maintain(self: *Service) bool {
         if (self.source) |source| if (source.connection.closed) {
             self.dropManager();
             self.schedule();
         };
         if (self.manager == null) self.connectBus();
-        return 1;
+        return true;
     }
     fn event(ptr: ?*anyopaque, change: objects.Event) void {
         const self = cast(Service, ptr);
@@ -272,10 +272,9 @@ pub const Service = struct {
         self.schedule();
     }
     fn schedule(self: *Service) void {
-        if (!self.stopped and self.idle == 0) self.idle = c.g_timeout_add(0, &updated, self);
+        if (!self.stopped and self.idle == 0) self.idle = mainloop.timeout(0, self, updated);
     }
-    fn updated(ptr: c.gpointer) callconv(.c) c_int {
-        const self = cast(Service, ptr);
+    fn updated(self: *Service) bool {
         self.idle = 0;
         self.ref();
         defer self.unref();
@@ -294,7 +293,7 @@ pub const Service = struct {
             client.unref();
             if (i < self.clients.items.len and self.clients.items[i] == client) i += 1;
         }
-        return 0;
+        return false;
     }
     fn interface(self: *Service, path: []const u8, iface: []const u8) ?*const Proxy {
         return (self.manager orelse return null).interface(path, iface);
@@ -443,7 +442,7 @@ pub const Client = struct {
     service: *Service,
     callback: *const fn (?*anyopaque, *Client) void,
     data: ?*anyopaque,
-    cancel: *c.GCancellable,
+    cancel: *mainloop.Cancellable,
     refs: usize = 1,
     dead: bool = false,
     pub fn create(a: std.mem.Allocator, callback: *const fn (?*anyopaque, *Client) void, data: ?*anyopaque) !*Client {
@@ -457,8 +456,8 @@ pub const Client = struct {
         };
         service.ref();
         errdefer service.unref();
-        self.* = .{ .allocator = a, .service = service, .callback = callback, .data = data, .cancel = c.g_cancellable_new().? };
-        errdefer c.g_object_unref(self.cancel);
+        self.* = .{ .allocator = a, .service = service, .callback = callback, .data = data, .cancel = mainloop.Cancellable.create() };
+        errdefer self.cancel.unref();
         try service.clients.append(service.allocator, self);
         if (shared == null) {
             shared = service;
@@ -476,7 +475,7 @@ pub const Client = struct {
     }
     pub fn destroy(self: *Client) void {
         self.dead = true;
-        c.g_cancellable_cancel(self.cancel);
+        self.cancel.cancel();
         for (self.service.clients.items, 0..) |value, i| if (value == self) {
             _ = self.service.clients.orderedRemove(i);
             break;
@@ -488,25 +487,25 @@ pub const Client = struct {
         self.refs -= 1;
         if (self.refs == 0) {
             const service = self.service;
-            c.g_object_unref(self.cancel);
+            self.cancel.unref();
             self.allocator.destroy(self);
             service.unref();
         }
     }
-    pub fn perform(self: *Client, action: Action, cancel: *c.GCancellable, callback: Completion, data: ?*anyopaque) void {
+    pub fn perform(self: *Client, action: Action, cancel: *mainloop.Cancellable, callback: Completion, data: ?*anyopaque) void {
         if (self.dead or !self.state().available) {
             callback(data, .{ .failure = "NetworkManager unavailable" });
             return;
         }
-        if (c.g_cancellable_is_cancelled(cancel) != 0) {
+        if (cancel.isCancelled()) {
             callback(data, .{ .failure = "Cancelled" });
             return;
         }
         const call = self.allocator.create(Call) catch @panic("out of memory");
         self.refs += 1;
-        call.* = .{ .client = self, .callback = callback, .data = data, .cancel = c.g_cancellable_new().?, .parent = cast(c.GCancellable, c.g_object_ref(cancel)) };
-        call.parent_signal = c.g_signal_connect_data(cancel, "cancelled", @ptrCast(&Call.cancelled), call, null, 0);
-        call.client_signal = c.g_signal_connect_data(self.cancel, "cancelled", @ptrCast(&Call.cancelled), call, null, 0);
+        call.* = .{ .client = self, .callback = callback, .data = data, .cancel = mainloop.Cancellable.create(), .parent = cancel.ref() };
+        call.parent_signal = cancel.listen(call, Call.cancelled);
+        call.client_signal = self.cancel.listen(call, Call.cancelled);
         call.begin(action) catch |err| {
             call.finish(.{ .failure = @errorName(err) });
             return;
@@ -608,10 +607,10 @@ const Call = struct {
     client: *Client,
     callback: Completion,
     data: ?*anyopaque,
-    cancel: *c.GCancellable,
-    parent: *c.GCancellable,
-    parent_signal: c.gulong = 0,
-    client_signal: c.gulong = 0,
+    cancel: *mainloop.Cancellable,
+    parent: *mainloop.Cancellable,
+    parent_signal: u64 = 0,
+    client_signal: u64 = 0,
     pending: usize = 0,
     failed: bool = false,
     message: [512:0]u8 = @splat(0),
@@ -619,7 +618,7 @@ const Call = struct {
     active_seen: bool = false,
     active_index: usize = 0,
     active: ?[:0]u8 = null,
-    activation_timer: c.guint = 0,
+    activation_timer: u32 = 0,
     next_profile: ?[:0]u8 = null,
     next_device: ?[:0]u8 = null,
     next_ap: ?[:0]u8 = null,
@@ -628,9 +627,8 @@ const Call = struct {
     save_version: u64 = 0,
     secret_next: usize = 0,
     reading_secrets: bool = false,
-    fn cancelled(_: ?*c.GCancellable, ptr: c.gpointer) callconv(.c) void {
-        const self = cast(Call, ptr);
-        c.g_cancellable_cancel(self.cancel);
+    fn cancelled(self: *Call) void {
+        self.cancel.cancel();
         if (self.active != null) self.finish(.{ .failure = "Cancelled" });
     }
     /// Calls NetworkManager on a request connection, so cancelling still completes the call once.
@@ -683,7 +681,7 @@ const Call = struct {
             return;
         }
         if (self.next_profile) |profile| {
-            if (self.client.dead or c.g_cancellable_is_cancelled(self.cancel) != 0 or !self.client.state().available) {
+            if (self.client.dead or self.cancel.isCancelled() or !self.client.state().available) {
                 self.finish(.{ .failure = "Cancelled" });
                 return;
             }
@@ -698,7 +696,7 @@ const Call = struct {
             return;
         }
         if (self.activation) {
-            if (self.client.dead or c.g_cancellable_is_cancelled(self.cancel) != 0) {
+            if (self.client.dead or self.cancel.isCancelled()) {
                 self.finish(.{ .failure = "Cancelled" });
                 return;
             }
@@ -709,17 +707,16 @@ const Call = struct {
                 else => return self.finish(.{ .failure = "InvalidReply" }),
             });
             self.client.service.waiting.append(self.client.service.allocator, self) catch @panic("out of memory");
-            self.activation_timer = c.g_timeout_add(30000, &activationTimeout, self);
+            self.activation_timer = mainloop.timeout(30000, self, activationTimeout);
             self.client.service.schedule();
             return;
         }
         self.finish(.success);
     }
-    fn activationTimeout(ptr: c.gpointer) callconv(.c) c_int {
-        const self = cast(Call, ptr);
+    fn activationTimeout(self: *Call) bool {
         self.activation_timer = 0;
         self.finish(.{ .failure = "Connection activation timed out" });
-        return 0;
+        return false;
     }
     fn checkActivation(self: *Call) void {
         if (!self.client.state().available) {
@@ -735,7 +732,7 @@ const Call = struct {
     }
     fn finish(self: *Call, result: Result) void {
         const client = self.client;
-        if (self.activation_timer != 0) _ = c.g_source_remove(self.activation_timer);
+        if (self.activation_timer != 0) _ = mainloop.remove(self.activation_timer);
         if (self.active) |path| {
             for (client.service.waiting.items, 0..) |value, i| if (value == self) {
                 _ = client.service.waiting.orderedRemove(i);
@@ -743,11 +740,11 @@ const Call = struct {
             };
             self.client.allocator.free(path);
         }
-        c.g_signal_handler_disconnect(self.parent, self.parent_signal);
-        c.g_signal_handler_disconnect(client.cancel, self.client_signal);
+        self.parent.disconnect(self.parent_signal);
+        client.cancel.disconnect(self.client_signal);
         self.callback(self.data, result);
-        c.g_object_unref(self.cancel);
-        c.g_object_unref(self.parent);
+        self.cancel.unref();
+        self.parent.unref();
         if (self.next_profile) |s| self.client.allocator.free(s);
         if (self.next_device) |s| self.client.allocator.free(s);
         if (self.next_ap) |s| self.client.allocator.free(s);
@@ -757,7 +754,7 @@ const Call = struct {
         client.unref();
     }
     fn nextSecret(self: *Call) void {
-        if (self.client.dead or c.g_cancellable_is_cancelled(self.cancel) != 0 or !self.client.state().available) {
+        if (self.client.dead or self.cancel.isCancelled() or !self.client.state().available) {
             self.finish(.{ .failure = "Cancelled" });
             return;
         }

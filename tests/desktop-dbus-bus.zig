@@ -2,7 +2,7 @@
 //! timeouts, signals and sender filters on well-known names.
 const std = @import("std");
 const dbus = @import("dbus");
-const c = @import("../desktop-glib.zig");
+const mainloop = @import("../desktop-loop.zig");
 const a = std.testing.allocator;
 const io = std.testing.io;
 
@@ -37,7 +37,7 @@ fn pump(connections: []const *dbus.Connection, done: anytype) !void {
             try connection.readAndDispatch();
             _ = connection.expire();
         }
-        c.g_usleep(1000);
+        mainloop.sleep(1000);
     }
 }
 
@@ -153,7 +153,7 @@ test "integration: native D-Bus calls, errors, timeouts and owner-filtered signa
     // Give a stray intruder signal time to arrive before counting.
     for (0..20) |_| {
         for (all) |connection| try connection.readAndDispatch();
-        c.g_usleep(1000);
+        mainloop.sleep(1000);
     }
     try std.testing.expectEqual(@as(usize, 1), state.signals);
 

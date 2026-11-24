@@ -1,6 +1,7 @@
 //! Native Adwaita-style drawing primitives shared by settings pages.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const decode = @import("desktop-decode.zig");
+const imaging = @import("desktop-image.zig");
 const form = @import("desktop-form.zig");
 const raster = @import("desktop-raster.zig");
 pub const Rect = form.Rect;
@@ -116,19 +117,19 @@ pub fn toast(ui: *form.Form, canvas: Canvas, id: usize, frame: Frame) !void {
 }
 
 pub const Icons = struct {
-    const Icon = struct { name: [:0]const u8, size: u32, image: c.__icons.Image };
+    const Icon = struct { name: [:0]const u8, size: u32, image: decode.Image };
     entries: std.ArrayList(Icon) = .empty,
     pub fn deinit(self: *Icons, a: std.mem.Allocator) void {
         self.clear(a);
         self.entries.deinit(a);
     }
     pub fn clear(self: *Icons, a: std.mem.Allocator) void {
-        for (self.entries.items) |entry| c.__icons.free(a, entry.image);
+        for (self.entries.items) |entry| decode.free(a, entry.image);
         self.entries.clearRetainingCapacity();
     }
     pub fn paint(self: *Icons, a: std.mem.Allocator, canvas: Canvas, name: [:0]const u8, x: f64, y: f64, size: u32) !void {
         const physical: u32 = @intFromFloat(@as(f64, @floatFromInt(size)) * canvas.scale);
-        var image: ?c.__icons.Image = null;
+        var image: ?decode.Image = null;
         for (self.entries.items) |entry| if (entry.size == physical and std.mem.eql(u8, name, entry.name)) {
             image = entry.image;
             break;
@@ -142,10 +143,10 @@ pub const Icons = struct {
                 image = @import("desktop-icons.zig").load(a, name, physical, 1, if (symbolic) @import("desktop-icons.zig").white else null);
             }
             if (image) |decoded| self.entries.append(a, .{ .name = name, .size = physical, .image = decoded }) catch |err| {
-                c.__icons.free(a, decoded);
+                decode.free(a, decoded);
                 return err;
             };
         }
-        if (image) |decoded| c.__zig.blitImage(canvas, decoded, .{ .x = x, .y = y, .width = @floatFromInt(size), .height = @floatFromInt(size) });
+        if (image) |decoded| imaging.blit(canvas, decoded, .{ .x = x, .y = y, .width = @floatFromInt(size), .height = @floatFromInt(size) });
     }
 };

@@ -1,12 +1,12 @@
 //! Runs only against a private test bus and an unprivileged fake helper.
 const std = @import("std");
 const polkit = @import("desktop").polkit;
-const c = polkit.c;
+const mainloop = @import("desktop").mainloop;
 const libc = @import("desktop").libc;
 var running = true;
-fn stop(_: c.gpointer) callconv(.c) c.gboolean {
+fn stop(_: void) bool {
     running = false;
-    return 1;
+    return true;
 }
 pub fn main(init: std.process.Init) !void {
     var debug: std.heap.DebugAllocator(.{}) = .init;
@@ -22,7 +22,7 @@ pub fn main(init: std.process.Init) !void {
         .peer_uid = if (args.len == 3) try std.fmt.parseInt(u32, args[2], 10) else libc.getuid(),
     });
     defer service.deinit();
-    const signal = c.g_unix_signal_add(c.SIGTERM, &stop, null);
-    defer _ = c.g_source_remove(signal);
-    while (running) _ = c.g_main_context_iteration(null, 1);
+    const signal = mainloop.signal(mainloop.SIGTERM, {}, stop);
+    defer _ = mainloop.remove(signal);
+    while (running) _ = mainloop.iteration(true);
 }

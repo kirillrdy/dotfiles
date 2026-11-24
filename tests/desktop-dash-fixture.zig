@@ -2,7 +2,6 @@
 const std = @import("std");
 const desktop = @import("desktop");
 const native = desktop.dash_view;
-const c = desktop.glib;
 
 pub fn main(init: std.process.Init) !void {
     var view: native.View = .{ .allocator = init.gpa };
@@ -91,7 +90,7 @@ fn tooltipSnapshot(view: *native.View, scale: u32) !void {
     try snapshot(data, width, height, scale, "tooltip");
 }
 fn snapshot(pixels: []const u32, width: u32, height: u32, scale: u32, state: []const u8) !void {
-    const root = c.__zig.getenv("DESKTOP_DASH_SCREENSHOTS") orelse return;
+    const root = std.c.getenv("DESKTOP_DASH_SCREENSHOTS") orelse return;
     const path = try std.fmt.allocPrintSentinel(std.heap.page_allocator, "{s}/dash-{s}-{d}x.png", .{ root, state, scale }, 0);
     defer std.heap.page_allocator.free(path);
     try writePng(pixels, width, height, path);

@@ -1,6 +1,7 @@
 //! Portal settings read directly from the desktop's GSettings schemas.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const dbus = @import("dbus");
 const Settings = @import("desktop-gsettings.zig").Settings;
 const schemas = [_][:0]const u8{
@@ -12,8 +13,8 @@ const schemas = [_][:0]const u8{
 };
 const appearance = "org.freedesktop.appearance";
 const fontconfig = "org.gnome.fontconfig";
-const eq = c.__zig.eq;
-const cast = c.__zig.cast;
+const eq = util.eq;
+const cast = util.cast;
 const Bundle = struct {
     service: *Service,
     name: [:0]const u8,
@@ -25,7 +26,7 @@ pub const Service = struct {
     bundles: std.ArrayList(*Bundle) = .empty,
     fonts: ?*@import("desktop-watch.zig").Watcher = null,
     serial: i32 = 0,
-    timer: c.guint = 0,
+    timer: u32 = 0,
 
     pub fn create(allocator: std.mem.Allocator, connection: *dbus.Connection) !*Service {
         const self = try allocator.create(Service);
@@ -49,7 +50,7 @@ pub const Service = struct {
         if (@import("desktop-watch.zig").Watcher.create(allocator, &fontsChanged, self)) |watcher| {
             self.fonts = watcher;
             try watcher.watch("/etc/fonts");
-            if (c.__zig.getenv("HOME")) |home| {
+            if (std.c.getenv("HOME")) |home| {
                 const directory = try std.fmt.allocPrint(allocator, "{s}/.fonts", .{home});
                 defer allocator.free(directory);
                 try watcher.watch(directory);
@@ -61,7 +62,7 @@ pub const Service = struct {
         return self;
     }
     pub fn destroy(self: *Service) void {
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         if (self.fonts) |watcher| watcher.destroy();
         for (self.bundles.items) |bundle| {
             bundle.settings.close();
@@ -84,14 +85,13 @@ pub const Service = struct {
     }
     fn fontsChanged(data: ?*anyopaque) void {
         const self = cast(Service, data);
-        if (self.timer == 0) self.timer = c.g_timeout_add(100, &fontsSettled, self);
+        if (self.timer == 0) self.timer = mainloop.timeout(100, self, fontsSettled);
     }
-    fn fontsSettled(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Service, data);
+    fn fontsSettled(self: *Service) bool {
         self.timer = 0;
         self.serial +%= 1;
         self.emit(fontconfig, "serial");
-        return 0;
+        return false;
     }
     /// A setting's value, allocated from `arena`; null for unknown settings.
     pub fn read(self: *Service, arena: std.mem.Allocator, namespace: []const u8, key: []const u8) !?dbus.Value {

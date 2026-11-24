@@ -1,6 +1,7 @@
 //! System battery policy and core read-only UPower status compatibility.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
 const libc = @import("desktop-libc.zig");
@@ -13,8 +14,8 @@ const iface = name ++ ".Device";
 const login = "org.freedesktop.login1";
 const login_path = "/org/freedesktop/login1";
 const login_iface = login ++ ".Manager";
-const cast = c.__zig.cast;
-const eq = c.__zig.eq;
+const cast = util.cast;
+const eq = util.eq;
 
 pub const Policy = struct {
     since: ?i64 = null,
@@ -66,7 +67,7 @@ const Server = struct {
     options: Options,
     connection: *dbus.Connection,
     service: ?*battery.Service = null,
-    cancel: *c.GCancellable,
+    cancel: *mainloop.Cancellable,
     state: battery.State = .{},
     lid: Lid = .{},
     policy: Policy = .{},
@@ -137,15 +138,14 @@ const Server = struct {
         if (self.stopping) return;
         const was_present = self.state.present;
         self.state = value;
-        self.update_time = @intCast(@divTrunc(c.__zig.realTime(), 1000000));
-        _ = self.policy.update(value, c.__zig.monotonicTime(), self.options.action_delay_us);
+        self.update_time = @intCast(@divTrunc(util.realTime(), 1000000));
+        _ = self.policy.update(value, util.monotonicTime(), self.options.action_delay_us);
         self.connection.emitPropertiesChanged(root, name) catch {};
         self.connection.emitPropertiesChanged(display, iface) catch {};
         self.connection.emitPropertiesChanged(device, iface) catch {};
         if (was_present != value.present) self.connection.emit(root, name, if (value.present) "DeviceAdded" else "DeviceRemoved", .{dbus.ObjectPath{ .value = device }}) catch {};
     }
-    fn tick(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Server, data);
+    fn tick(self: *Server) bool {
         self.tick_count +%= 1;
         if (self.tick_count % 4 == 0) {
             const lid = lidState(self.options.lid_root);
@@ -154,18 +154,18 @@ const Server = struct {
                 self.connection.emitPropertiesChanged(root, name) catch {};
             }
         }
-        if (self.policy.update(self.state, c.__zig.monotonicTime(), self.options.action_delay_us)) {
+        if (self.policy.update(self.state, util.monotonicTime(), self.options.action_delay_us)) {
             self.policy.done = true;
             Job.start(self, null) catch {
                 self.policy.done = false;
-                self.policy.retry_at = c.__zig.monotonicTime() + 60 * 1000000;
+                self.policy.retry_at = util.monotonicTime() + 60 * 1000000;
             };
         }
-        return 1;
+        return true;
     }
     fn deinit(self: *Server) void {
         self.stopping = true;
-        c.g_cancellable_cancel(self.cancel);
+        self.cancel.cancel();
         // Calls still waiting on logind are dropped; jobs re-reading sysfs finish on cancellation.
         var index: usize = 0;
         while (index < self.jobs.items.len) {
@@ -181,11 +181,11 @@ const Server = struct {
         }
         if (self.service) |service| {
             service.stop();
-            while (service.pending or self.jobs.items.len > 0) _ = c.g_main_context_iteration(null, 1);
+            while (service.pending or self.jobs.items.len > 0) _ = mainloop.iteration(true);
             service.destroy();
-        } else while (self.jobs.items.len > 0) _ = c.g_main_context_iteration(null, 1);
+        } else while (self.jobs.items.len > 0) _ = mainloop.iteration(true);
         self.jobs.deinit(self.allocator);
-        c.g_object_unref(self.cancel);
+        self.cancel.unref();
     }
 };
 
@@ -218,7 +218,7 @@ const Job = struct {
             if (success) server.connection.answer(invocation, .{actions[self.index]}) catch {} else server.connection.answerError(invocation, "org.freedesktop.UPower.Error.NotSupported", "No critical power action is available") catch {};
         } else if (!success and self.current()) {
             server.policy.done = false;
-            server.policy.retry_at = c.__zig.monotonicTime() + 60 * 1000000;
+            server.policy.retry_at = util.monotonicTime() + 60 * 1000000;
             std.log.warn("battery: critical power action unavailable; retrying in one minute", .{});
         }
         for (server.jobs.items, 0..) |job, i| if (job == self) {
@@ -252,23 +252,17 @@ const Job = struct {
         if (eq(status[0], "yes")) {
             if (self.invocation != null) return self.finish(true);
             // Re-read AC and every battery after capability negotiation, before acting.
-            const task = c.g_task_new(null, self.server.cancel, &validated, self);
-            c.g_task_set_task_data(task, self, null);
-            c.g_task_run_in_thread(task, &validateWork);
-            c.g_object_unref(task);
+            mainloop.background(self, validateWork, validated);
             return;
         }
         self.index += 1;
         self.next();
     }
-    fn validateWork(task: ?*c.GTask, _: ?*anyopaque, data: ?*anyopaque, _: [*c]c.GCancellable) callconv(.c) void {
-        const self = cast(Job, data);
+    fn validateWork(self: *Job) void {
         self.fresh = self.server.options.source.backend.read();
-        c.g_task_return_boolean(task, 1);
     }
-    fn validated(_: ?*c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
-        const self = cast(Job, data);
-        if (c.g_task_propagate_boolean(@ptrCast(result), null) == 0 or !self.current()) return self.finish(false);
+    fn validated(self: *Job) void {
+        if (!self.current()) return self.finish(false);
         Server.changed(self.server, self.fresh);
         if (!self.current() or self.fresh.warning() != .action) return self.finish(false);
         self.stage = .action;
@@ -276,9 +270,9 @@ const Job = struct {
         self.call(actions[self.index], .{false}, 60000);
     }
 };
-fn quit(data: ?*anyopaque) callconv(.c) c_int {
-    cast(Server, data).stopping = true;
-    return 1;
+fn quit(self: *Server) bool {
+    self.stopping = true;
+    return true;
 }
 pub fn run(allocator: std.mem.Allocator) !void {
     if (libc.geteuid() != 0) return error.RequiresRoot;
@@ -290,7 +284,7 @@ pub fn runWithOptions(options: Options, allocator: std.mem.Allocator) !void {
     const source = loop.Source.open(allocator, .system) catch return error.NoSystemBus;
     defer source.destroy();
     const connection = source.connection;
-    var server = Server{ .allocator = allocator, .options = options, .connection = connection, .cancel = c.g_cancellable_new().?, .lid = lidState(options.lid_root) };
+    var server = Server{ .allocator = allocator, .options = options, .connection = connection, .cancel = mainloop.Cancellable.create(), .lid = lidState(options.lid_root) };
     defer server.deinit();
     const manager = introspection.find(name) orelse return error.InvalidXml;
     const device_info = introspection.find(iface) orelse return error.InvalidXml;
@@ -299,15 +293,15 @@ pub fn runWithOptions(options: Options, allocator: std.mem.Allocator) !void {
     _ = try connection.exportObject(device, device_info, &Server.methodCall, &Server.getProperty, &server);
     server.service = try battery.Service.createWithOptions(allocator, options.source, &Server.changed, &server);
     if ((connection.requestName(name, 4) catch return error.NameUnavailable) != 1) return error.NameUnavailable;
-    const timer = c.g_timeout_add(250, &Server.tick, &server);
-    const term = c.g_unix_signal_add(c.SIGTERM, &quit, &server);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, &server);
+    const timer = mainloop.timeout(250, &server, Server.tick);
+    const term = mainloop.signal(mainloop.SIGTERM, &server, quit);
+    const interrupt = mainloop.signal(mainloop.SIGINT, &server, quit);
     defer {
-        _ = c.g_source_remove(timer);
-        _ = c.g_source_remove(term);
-        _ = c.g_source_remove(interrupt);
+        _ = mainloop.remove(timer);
+        _ = mainloop.remove(term);
+        _ = mainloop.remove(interrupt);
     }
-    while (!server.stopping and !connection.closed) _ = c.g_main_context_iteration(null, 1);
+    while (!server.stopping and !connection.closed) _ = mainloop.iteration(true);
     if (!server.stopping) return error.SystemBusDisconnected;
 }
 

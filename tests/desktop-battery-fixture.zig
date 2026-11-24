@@ -1,6 +1,7 @@
 //! Test-only sysfs injection. Production always reads the fixed kernel paths.
 const std = @import("std");
-const c = @import("desktop").glib;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
 const battery = @import("desktop").battery;
 const quick = @import("desktop").quick;
 const data = @import("desktop").panel_data;
@@ -14,12 +15,11 @@ fn changed(data_ptr: ?*anyopaque, state: battery.State) void {
     latest = state;
     if (alerts.update(state)) |level| battery.notifyWarning(allocator.*, level);
 }
-fn stop(_: ?*anyopaque) callconv(.c) c_int {
+fn stop(_: void) bool {
     stopping = true;
-    return 1;
+    return true;
 }
-fn report(data_ptr: ?*anyopaque) callconv(.c) c_int {
-    const allocator: *const std.mem.Allocator = @ptrCast(@alignCast(data_ptr));
+fn report(allocator: *const std.mem.Allocator) bool {
     const a = allocator.*;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
@@ -50,7 +50,7 @@ fn report(data_ptr: ?*anyopaque) callconv(.c) c_int {
         const terminated = alloc.dupeSentinel(u8, json, 0) catch unreachable;
         @import("desktop").util.printOut("{s}\n", .{terminated});
     }
-    return 1;
+    return true;
 }
 pub fn main(init: std.process.Init) !void {
     var allocator = init.gpa;
@@ -80,25 +80,25 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "--dispose")) {
         controls.?.deinit();
         service.destroy();
-        const deadline = c.__zig.monotonicTime() + 500000;
-        while (c.__zig.monotonicTime() < deadline) {
-            while (c.g_main_context_iteration(null, 0) != 0) {}
-            c.g_usleep(1000);
+        const deadline = util.monotonicTime() + 500000;
+        while (util.monotonicTime() < deadline) {
+            while (mainloop.iteration(false)) {}
+            mainloop.sleep(1000);
         }
         return;
     }
-    const timer = c.g_timeout_add(20, &report, &allocator);
-    const term = c.g_unix_signal_add(c.SIGTERM, &stop, null);
-    while (!stopping) _ = c.g_main_context_iteration(null, 1);
-    _ = c.g_source_remove(timer);
-    _ = c.g_source_remove(term);
+    const timer = mainloop.timeout(20, &allocator, report);
+    const term = mainloop.signal(mainloop.SIGTERM, {}, stop);
+    while (!stopping) _ = mainloop.iteration(true);
+    _ = mainloop.remove(timer);
+    _ = mainloop.remove(term);
     service.stop();
-    while (service.pending) _ = c.g_main_context_iteration(null, 1);
+    while (service.pending) _ = mainloop.iteration(true);
     service.destroy();
     controls.?.deinit();
-    const deadline = c.__zig.monotonicTime() + 250000;
-    while (c.__zig.monotonicTime() < deadline) {
-        while (c.g_main_context_iteration(null, 0) != 0) {}
-        c.g_usleep(1000);
+    const deadline = util.monotonicTime() + 250000;
+    while (util.monotonicTime() < deadline) {
+        while (mainloop.iteration(false)) {}
+        mainloop.sleep(1000);
     }
 }

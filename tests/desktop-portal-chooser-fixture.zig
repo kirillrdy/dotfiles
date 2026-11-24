@@ -1,6 +1,8 @@
 //! Native file controls under the headless compositor; portal result contracts.
 const std = @import("std");
-const c = @import("desktop").glib;
+const keyboard = @import("desktop").keyboard;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
 const dbus = @import("desktop").dbus;
 const variant_text = @import("desktop").dbus_text;
 const Dialog = @import("desktop").chooser.Dialog;
@@ -8,10 +10,10 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectStrings = std.testing.expectEqualStrings;
 var io: std.Io = undefined;
-const cast = c.__zig.cast;
+const cast = util.cast;
 const Dict = dbus.Dict([]const u8, dbus.Value);
 fn pump() void {
-    while (c.g_main_context_iteration(null, 0) != 0) {}
+    while (mainloop.iteration(false)) {}
     io.sleep(.fromMilliseconds(5), .awake) catch {};
 }
 /// A value from its GVariant text form.
@@ -62,8 +64,8 @@ const Done = struct {
         self.result = .{ .entries = entries };
     }
     fn accept(self: *Done, dialog: *Dialog) !void {
-        const deadline = c.__zig.monotonicTime() + 5_000_000;
-        while (self.code == null and c.__zig.monotonicTime() < deadline) {
+        const deadline = util.monotonicTime() + 5_000_000;
+        while (self.code == null and util.monotonicTime() < deadline) {
             pump();
             dialog.accept();
         }
@@ -71,8 +73,8 @@ const Done = struct {
     }
 };
 fn loaded(dialog: *Dialog) !void {
-    const deadline = c.__zig.monotonicTime() + 5_000_000;
-    while (dialog.pending != null and c.__zig.monotonicTime() < deadline) pump();
+    const deadline = util.monotonicTime() + 5_000_000;
+    while (dialog.pending != null and util.monotonicTime() < deadline) pump();
     try expect(dialog.pending == null and dialog.listing != null);
 }
 fn select(dialog: *Dialog, paths: []const [:0]const u8) !void {
@@ -191,7 +193,7 @@ pub fn main(init: std.process.Init) !void {
         try expect(done.code == null);
         try expect(dialog.overwrite != null);
         dialog.ui.focusItem(dialog.name_item.?);
-        try expect(dialog.ui.handleKey('a', c.__zig.control_mask));
+        try expect(dialog.ui.handleKey('a', keyboard.control));
         try expect(dialog.ui.handleKey('b', 0));
         try expect(dialog.overwrite == null);
         try dialog.ui.setText(dialog.name_item.?, "report.txt");
@@ -255,14 +257,14 @@ pub fn main(init: std.process.Init) !void {
         try expectEqual(@as(f64, 52), dialog.ui.get(dialog.rows.items[0].item).bounds.height);
         dialog.ui.activate(dialog.view.toggle_view);
         try expect(dialog.view.grid);
-        try expect(dialog.ui.shortcut.?(dialog, 'f', c.__zig.control_mask));
+        try expect(dialog.ui.shortcut.?(dialog, 'f', keyboard.control));
         try dialog.ui.setText(dialog.view.query, "PAGE-599");
         dialog.ui.changed(dialog, dialog.view.query);
         try expectEqual(@as(usize, 1), dialog.view.count);
         try expect(dialog.ui.shortcut.?(dialog, 0xff1b, 0));
         try expect(dialog.view.count > 600);
         try std.testing.expectError(error.NoSelection, dialog.selectPath(hidden));
-        _ = dialog.ui.shortcut.?(dialog, 'h', c.__zig.control_mask);
+        _ = dialog.ui.shortcut.?(dialog, 'h', keyboard.control);
         try expectEqual(@as(f64, 0), dialog.view.offset);
         try dialog.selectPath(first);
         try dialog.selectPath(hidden);

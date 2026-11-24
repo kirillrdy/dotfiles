@@ -3,7 +3,8 @@
 const std = @import("std");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const posix = @import("posix");
 const view = @import("desktop-greeter-view.zig");
@@ -11,7 +12,7 @@ const login = @import("desktop-login-ui.zig");
 const login_client = @import("desktop-login-client.zig");
 const raster = @import("desktop-raster.zig");
 
-const cast = c.__zig.cast;
+const cast = util.cast;
 const SecretBuffer = login.SecretBuffer;
 
 pub const Op = enum(u8) { auth = 1, power = 2 };
@@ -418,9 +419,9 @@ fn sendAuth(fd: c_int, username: []const u8, password: []const u8) bool {
     return reply[0] == @backingInt(Reply.ok);
 }
 
-fn onSignal(data: c.gpointer) callconv(.c) c.gboolean {
-    cast(LoginClient, data).stopped = true;
-    return 0;
+fn onSignal(self: *LoginClient) bool {
+    self.stopped = true;
+    return false;
 }
 
 /// `dm_fd` is the display manager control socket, or -1 when run standalone.
@@ -475,10 +476,10 @@ pub fn run(a: std.mem.Allocator, dm_fd: c_int) !void {
     state.client.attachAll();
     connection.roundtrip() catch return error.WaylandDisconnected;
 
-    const term = c.g_unix_signal_add(c.SIGTERM, &onSignal, &state.client);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &onSignal, &state.client);
-    defer _ = c.g_source_remove(term);
-    defer _ = c.g_source_remove(interrupt);
+    const term = mainloop.signal(mainloop.SIGTERM, &state.client, onSignal);
+    const interrupt = mainloop.signal(mainloop.SIGINT, &state.client, onSignal);
+    defer _ = mainloop.remove(term);
+    defer _ = mainloop.remove(interrupt);
 
     state.client.run();
     if (!state.accepted) return error.NotAuthenticated;

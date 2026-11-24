@@ -5,7 +5,7 @@
 //!   name: [*:0]const u8            shared-memory buffer name
 //!   fail_closed: bool              exit the process on any client failure
 //!   cursor_shapes: bool            bind wp_cursor_shape_manager_v1
-//!   retry_ms: c.guint              pause after a rejected password
+//!   retry_ms: u32              pause after a rejected password
 //!   Role: type                     per-output role object with `destroy()`
 //!   fn canAttach(*App) bool
 //!   fn attachRole(*App, *Output, wl_surface) Role
@@ -24,12 +24,13 @@ const std = @import("std");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
 const helpers = @import("desktop-wayland-client.zig");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const login = @import("desktop-login-ui.zig");
 const raster = @import("desktop-raster.zig");
 const kb = @import("desktop-keyboard.zig");
 
-const cast = c.__zig.cast;
+const cast = util.cast;
 
 pub const Pointer = union(enum) { enter, leave, motion, button: u32 };
 
@@ -50,7 +51,7 @@ pub fn Client(comptime App: type) type {
         pointer_output: ?*Output = null,
         pointer_x: f64 = 0,
         pointer_y: f64 = 0,
-        spinner: c.guint = 0,
+        spinner: u32 = 0,
         /// Characters shown as dots, tracked on the main thread so rendering never
         /// reads the password while the authentication thread may be clearing it.
         typed: usize = 0,
@@ -301,57 +302,50 @@ pub fn Client(comptime App: type) type {
             self.busy = true;
             self.failed = false;
             self.render();
-            if (self.spinner == 0) self.spinner = c.g_timeout_add(50, &spin, self);
-            const task = c.g_task_new(null, null, &authDone, self);
-            c.g_task_set_task_data(task, self, null);
-            c.g_task_run_in_thread(task, &authWork);
-            c.g_object_unref(task);
+            if (self.spinner == 0) self.spinner = mainloop.timeout(50, self, spin);
+            mainloop.background(self, authWork, authDone);
         }
 
-        fn authWork(task: ?*c.GTask, _: ?*anyopaque, data: ?*anyopaque, _: [*c]c.GCancellable) callconv(.c) void {
-            const self = cast(Self, data);
+        fn authWork(self: *Self) bool {
             const success = App.verify(self.app());
             self.password.clear();
-            c.g_task_return_boolean(task, @intFromBool(success));
+            return success;
         }
 
-        fn authDone(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
-            const self = cast(Self, data);
+        fn authDone(self: *Self, success: bool) void {
             self.busy = false;
             self.typed = 0;
-            if (c.g_task_propagate_boolean(@ptrCast(result), null) != 0 and !self.done and App.acceptAuth(self.app())) {
+            if (success and !self.done and App.acceptAuth(self.app())) {
                 self.done = true;
                 App.authenticated(self.app());
             } else {
                 self.failed = true;
                 if (!self.done) {
                     self.busy = true;
-                    _ = c.g_timeout_add(App.retry_ms, &retry, self);
+                    _ = mainloop.timeout(App.retry_ms, self, retry);
                     self.render();
                 }
             }
         }
 
-        fn retry(data: ?*anyopaque) callconv(.c) c_int {
-            const self = cast(Self, data);
+        fn retry(self: *Self) bool {
             self.busy = false;
             self.render();
-            return 0;
+            return false;
         }
 
-        fn spin(data: ?*anyopaque) callconv(.c) c_int {
-            const self = cast(Self, data);
+        fn spin(self: *Self) bool {
             if (!self.busy or self.failed or self.done) {
                 self.spinner = 0;
-                return 0;
+                return false;
             }
             self.render();
-            return 1;
+            return true;
         }
 
-        fn tick(data: ?*anyopaque) callconv(.c) c_int {
-            App.tick(cast(Self, data).app());
-            return 1;
+        fn tick(self: *Self) bool {
+            App.tick(self.app());
+            return true;
         }
 
         fn registryEvent(self: *Self, registry: wl.wl_registry, event: wl.wl_registry.Event) void {
@@ -411,19 +405,18 @@ pub fn Client(comptime App: type) type {
             }
         }
 
-        fn readable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
-            const self = cast(Self, data);
-            if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) {
+        fn readable(self: *Self, _: c_int, condition: u32) bool {
+            if (condition & (mainloop.ERR | mainloop.HUP) != 0) {
                 self.fatal();
                 self.done = true;
-                return 0;
+                return false;
             }
             self.connection.readAndDispatch() catch {
                 self.fatal();
                 self.done = true;
-                return 0;
+                return false;
             };
-            return 1;
+            return true;
         }
 
         /// Binds globals and waits for the initial burst; `self` must not move afterwards.
@@ -443,21 +436,21 @@ pub fn Client(comptime App: type) type {
         /// Runs the GLib loop until done or stopped, then lets a pending
         /// authentication finish so the worker never outlives its secrets.
         pub fn run(self: *Self) void {
-            const source = c.g_unix_fd_add(self.connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &readable, self);
-            defer _ = c.g_source_remove(source);
-            const clock = c.g_timeout_add_seconds(1, &tick, self);
-            defer _ = c.g_source_remove(clock);
+            const source = mainloop.watch(self.connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
+            defer _ = mainloop.remove(source);
+            const clock = mainloop.timeoutSeconds(1, self, tick);
+            defer _ = mainloop.remove(clock);
             defer if (self.spinner != 0) {
-                _ = c.g_source_remove(self.spinner);
+                _ = mainloop.remove(self.spinner);
             };
             while (!self.done and !self.stopped) {
                 self.connection.flush() catch {
                     self.fatal();
                     break;
                 };
-                _ = c.g_main_context_iteration(null, 1);
+                _ = mainloop.iteration(true);
             }
-            while (self.busy) _ = c.g_main_context_iteration(null, 1);
+            while (self.busy) _ = mainloop.iteration(true);
         }
 
         pub fn deinit(self: *Self) void {

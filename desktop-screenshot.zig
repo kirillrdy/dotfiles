@@ -6,12 +6,13 @@ pub const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
 const helpers = @import("desktop-wayland-client.zig");
 const libc = @import("desktop-libc.zig");
-pub const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 pub const png = @import("desktop-png.zig");
 const raster = @import("desktop-raster.zig");
 const fonts = @import("desktop-text.zig");
 
-const cast = c.__zig.cast;
+const cast = util.cast;
 
 pub const Rect = struct {
     x: i32 = 0,
@@ -488,7 +489,7 @@ pub const SelectionOverlay = struct {
             client.roundtrip();
         }
         client.start() catch return null;
-        while (!self.done and !client.failed and client.hasInput() and self.hasLayers()) _ = c.g_main_context_iteration(null, 1);
+        while (!self.done and !client.failed and client.hasInput() and self.hasLayers()) _ = mainloop.iteration(true);
         return self.selected;
     }
     fn hasLayers(self: *SelectionOverlay) bool {

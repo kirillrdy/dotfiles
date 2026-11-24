@@ -1,10 +1,11 @@
 //! Shared native popup surface, output selection, and deferred dismissal.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const wire = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const input = @import("desktop-input.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 
 pub const Host = struct {
     allocator: std.mem.Allocator,
@@ -21,7 +22,7 @@ pub const Host = struct {
     view_width: u32 = 1,
     view_height: u32 = 1,
     visible: bool = false,
-    close_idle: c.guint = 0,
+    close_idle: u32 = 0,
     anchor_x: i32 = 0,
     anchor_y: i32 = 0,
 
@@ -121,18 +122,17 @@ pub const Host = struct {
         }, null);
     }
     fn cancelHide(self: *Host) void {
-        if (self.close_idle != 0) _ = c.g_source_remove(self.close_idle);
+        if (self.close_idle != 0) _ = mainloop.remove(self.close_idle);
         self.close_idle = 0;
     }
     pub fn requestHide(self: *Host) void {
         // Dismissal may destroy the owner and client; leave Wayland dispatch first.
-        if (self.close_idle == 0) self.close_idle = c.g_idle_add(&hideIdle, self);
+        if (self.close_idle == 0) self.close_idle = mainloop.idle(self, hideIdle);
     }
-    fn hideIdle(ptr: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Host, ptr);
+    fn hideIdle(self: *Host) bool {
         self.close_idle = 0;
         self.dismiss(self.context);
-        return 0;
+        return false;
     }
     fn added(_: ?*anyopaque, _: *wire.Output) void {}
     fn removed(ptr: ?*anyopaque, output: *wire.Output) void {
@@ -184,18 +184,18 @@ test "popup dismissal coalesces and hide or destruction cancels queued callbacks
     try std.testing.expect(pending != 0);
     try std.testing.expectEqual(pending, host.close_idle);
     try std.testing.expectEqual(@as(usize, 0), owner.calls);
-    while (host.close_idle != 0) _ = c.g_main_context_iteration(null, 0);
+    while (host.close_idle != 0) _ = mainloop.iteration(false);
     try std.testing.expectEqual(@as(usize, 1), owner.calls);
 
     host.requestHide();
     host.hide();
     try std.testing.expect(!host.visible and host.close_idle == 0);
-    while (c.g_main_context_iteration(null, 0) != 0) {}
+    while (mainloop.iteration(false)) {}
     try std.testing.expectEqual(@as(usize, 1), owner.calls);
 
     host.requestHide();
     host.deinit();
-    while (c.g_main_context_iteration(null, 0) != 0) {}
+    while (mainloop.iteration(false)) {}
     try std.testing.expectEqual(@as(usize, 1), owner.calls);
 }
 
@@ -214,7 +214,7 @@ test "popup dismissal callback can destroy its owner" {
     owner.* = .{ .host = .{ .allocator = std.testing.allocator, .context = owner, .namespace = "test-popup", .paint = &Owner.paint, .input = .{}, .resized = &Owner.resized, .dismiss = &Owner.dismiss } };
     owner.host.requestHide();
     // The callback frees owner; dispatch must never read its host afterward.
-    _ = c.g_main_context_iteration(null, 0);
+    _ = mainloop.iteration(false);
 }
 
 test "popup placement fits output edges and small screens in logical coordinates" {

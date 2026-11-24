@@ -1,17 +1,21 @@
 //! Isolated desktop-entry, native-control and launch integration checks.
 const std = @import("std");
 const apps = @import("desktop").apps;
-const c = apps.c;
+const decode = @import("desktop").decode;
+const icons = @import("desktop").icons;
+const keyboard = @import("desktop").keyboard;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
 const assert = std.debug.assert;
-const cast = c.__zig.cast;
+const cast = util.cast;
 fn eq(actual: [*c]const u8, expected: []const u8) void {
     assert(std.mem.eql(u8, std.mem.span(actual), expected));
 }
 fn pump() void {
-    const end = @divTrunc(c.__zig.monotonicTime(), 1000) + 100;
-    while (@divTrunc(c.__zig.monotonicTime(), 1000) < end) {
-        while (c.g_main_context_iteration(null, 0) != 0) {}
-        c.g_usleep(1000);
+    const end = @divTrunc(util.monotonicTime(), 1000) + 100;
+    while (@divTrunc(util.monotonicTime(), 1000) < end) {
+        while (mainloop.iteration(false)) {}
+        mainloop.sleep(1000);
     }
 }
 fn firstName(launcher: *apps.Launcher) [*c]const u8 {
@@ -28,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
     }
     // GLib can cache XDG paths in library constructors, before main. Re-exec
     // with the isolated paths already in the environment.
-    if (c.__zig.getenv("DESKTOP_APPS_FIXTURE_ROOT") == null) {
+    if (std.c.getenv("DESKTOP_APPS_FIXTURE_ROOT") == null) {
         const root = try @import("desktop").paths.createTemporaryDirectory(a, "desktop-apps-");
         defer std.Io.Dir.cwd().deleteTree(init.io, root) catch {};
         var env = try init.minimal.environ.createMap(a);
@@ -40,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
         if (term != .exited or term.exited != 0) return error.FixtureFailed;
         return;
     }
-    const base = c.__zig.getenv("DESKTOP_APPS_FIXTURE_ROOT").?;
+    const base = std.c.getenv("DESKTOP_APPS_FIXTURE_ROOT").?;
     const applications = try std.fmt.allocPrint(a, "{s}/applications", .{base});
     try std.Io.Dir.createDirAbsolute(init.io, applications, .default_dir);
     const theme = try std.fmt.allocPrint(a, "{s}/icons/hicolor", .{base});
@@ -71,8 +75,8 @@ pub fn main(init: std.process.Init) !void {
             .data = try std.fmt.allocPrint(a, "[Desktop Entry]\nType=Application\nExec=/proc/self/exe\nComment=unrelated description\n{s}", .{fixture.text}),
         });
     }
-    const svg = c.__icons.load(init.gpa, "desktop-apps-fixture-icon", 96, 1, null).?;
-    defer c.__icons.free(init.gpa, svg);
+    const svg = icons.load(init.gpa, "desktop-apps-fixture-icon", 96, 1, null).?;
+    defer decode.free(init.gpa, svg);
     assert(svg.width == 96 and svg.height == 96);
     var launcher = apps.Launcher.init(init.gpa);
     defer launcher.deinit();
@@ -125,7 +129,7 @@ pub fn main(init: std.process.Init) !void {
     navigation.keyval = 0xff57; // End
     _ = apps.keyPress(&launcher, &navigation);
     try std.testing.expectEqual(@as(usize, 29), launcher.selected);
-    navigation.keyval = c.__zig.keys.Right;
+    navigation.keyval = keyboard.keys.Right;
     _ = apps.keyPress(&launcher, &navigation);
     try std.testing.expectEqual(@as(usize, 29), launcher.selected);
     navigation.keyval = 0xff50; // Home
@@ -163,7 +167,7 @@ pub fn main(init: std.process.Init) !void {
     assert(launcher.status.len != 0);
 
     // Exercise Escape and repeat activation, including clearing a stale query.
-    var escape = apps.KeyEvent{ .state = 0, .keyval = c.__zig.keys.Escape };
+    var escape = apps.KeyEvent{ .state = 0, .keyval = keyboard.keys.Escape };
     assert(apps.keyPress(&launcher, &escape));
     assert(!launcher.visible_window);
     var state: ?apps.Launcher = null;
@@ -189,8 +193,8 @@ pub fn main(init: std.process.Init) !void {
     defer success.unref();
     assert(launcher.launch(success));
     assert(!launcher.visible_window);
-    const deadline = @divTrunc(c.__zig.monotonicTime(), 1000) + 5000;
-    while (@divTrunc(c.__zig.monotonicTime(), 1000) < deadline) {
+    const deadline = @divTrunc(util.monotonicTime(), 1000) + 5000;
+    while (@divTrunc(util.monotonicTime(), 1000) < deadline) {
         if (std.Io.Dir.openFileAbsolute(init.io, marker, .{})) |file| {
             file.close(init.io);
             break;
@@ -201,7 +205,7 @@ pub fn main(init: std.process.Init) !void {
     eq((try a.dupeSentinel(u8, recorded, 0)).ptr, "launched");
 
     // Render a screenshot when explicitly requested for visual inspection.
-    if (c.__zig.getenv("DESKTOP_APPS_SCREENSHOT")) |path| {
+    if (std.c.getenv("DESKTOP_APPS_SCREENSHOT")) |path| {
         launcher.present();
         pump();
         const host = launcher.host.?;

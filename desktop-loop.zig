@@ -1,14 +1,12 @@
-//! The desktop's event loop, in Zig, with the semantics of GLib's default main
-//! context that the desktop used before: timeouts, idle callbacks, descriptor
-//! watches and Unix signals, dispatched by `iteration`. Sources may be added
-//! and removed from any thread; callbacks run on the thread that iterates.
+//! The desktop's event loop: timeouts, idle callbacks, descriptor watches and
+//! Unix signals, dispatched by `iteration`. Sources may be added and removed
+//! from any thread; callbacks run on the thread that iterates.
 //!
-//! Like GLib, a callback returning 0 removes its source, idle callbacks run
-//! only when nothing else is ready, and a source being dispatched is not
-//! dispatched again by a nested iteration.
+//! Callbacks receive the context they were registered with and return whether
+//! to keep their source. Idle callbacks run only when nothing else is ready,
+//! and a source being dispatched is not dispatched again by a nested iteration.
 //!
-//! Also here: Cancellable and Task, the cancellation and worker-thread
-//! primitives the loop's users share.
+//! Also here: Cancellable, and `background` for work on a worker thread.
 const std = @import("std");
 const linux = std.os.linux;
 const util = @import("desktop-util.zig");
@@ -19,11 +17,11 @@ pub const OUT: u32 = 4;
 pub const ERR: u32 = 8;
 pub const HUP: u32 = 16;
 pub const NVAL: u32 = 32;
+pub const SIGINT: u6 = 2;
+pub const SIGTERM: u6 = 15;
 
-/// Returns nonzero to keep the source.
-pub const SourceFn = *const fn (?*anyopaque) callconv(.c) c_int;
-/// Receives the descriptor and the conditions that occurred.
-pub const FdFn = *const fn (c_int, c_uint, ?*anyopaque) callconv(.c) c_int;
+/// A registered callback with its context erased; returns whether to keep the source.
+const Thunk = *const fn (data: ?*anyopaque, fd: c_int, conditions: u32) bool;
 
 const Source = struct {
     id: u32,
@@ -33,11 +31,36 @@ const Source = struct {
         fd: struct { fd: c_int, events: u32 },
         signal: u6,
     },
-    callback: union { plain: SourceFn, fd: FdFn },
+    callback: Thunk,
     data: ?*anyopaque,
     removed: bool = false,
     in_call: bool = false,
 };
+
+/// Converts a context (a pointer, or `{}` for none) to and from the loop's untyped slot.
+fn toData(context: anytype) ?*anyopaque {
+    return switch (@typeInfo(@TypeOf(context))) {
+        .void => null,
+        .optional => if (context) |value| @ptrCast(@constCast(value)) else null,
+        else => @ptrCast(@constCast(context)),
+    };
+}
+fn fromData(comptime Context: type, data: ?*anyopaque) Context {
+    return switch (@typeInfo(Context)) {
+        .void => {},
+        .optional => @ptrCast(@alignCast(data)),
+        else => @ptrCast(@alignCast(data.?)),
+    };
+}
+
+/// Adapts `callback(context) bool` to the loop's thunk.
+fn plain(comptime Context: type, comptime callback: anytype) Thunk {
+    return &struct {
+        fn call(data: ?*anyopaque, _: c_int, _: u32) bool {
+            return callback(fromData(Context, data));
+        }
+    }.call;
+}
 
 const allocator = std.heap.smp_allocator;
 
@@ -84,28 +107,35 @@ fn add(source: Source) u32 {
     return owned.id;
 }
 
-/// Calls `callback` every `ms` milliseconds until it returns 0.
-pub fn timeout(ms: u32, callback: SourceFn, data: ?*anyopaque) u32 {
+/// Calls `callback(context)` every `ms` milliseconds until it returns false.
+pub fn timeout(ms: u32, context: anytype, comptime callback: anytype) u32 {
     const interval: i64 = @as(i64, ms) * std.time.us_per_ms;
-    return add(.{ .id = 0, .kind = .{ .timeout = .{ .interval_us = interval, .deadline = util.monotonicTime() + interval } }, .callback = .{ .plain = callback }, .data = data });
+    return add(.{ .id = 0, .kind = .{ .timeout = .{ .interval_us = interval, .deadline = util.monotonicTime() + interval } }, .callback = plain(@TypeOf(context), callback), .data = toData(context) });
 }
 
-pub fn timeoutSeconds(seconds: u32, callback: SourceFn, data: ?*anyopaque) u32 {
-    return timeout(seconds *| 1000, callback, data);
+pub fn timeoutSeconds(seconds: u32, context: anytype, comptime callback: anytype) u32 {
+    return timeout(seconds *| 1000, context, callback);
 }
 
-/// Calls `callback` whenever nothing else is ready, until it returns 0.
-pub fn idle(callback: SourceFn, data: ?*anyopaque) u32 {
-    return add(.{ .id = 0, .kind = .idle, .callback = .{ .plain = callback }, .data = data });
+/// Calls `callback(context)` whenever nothing else is ready, until it returns false.
+pub fn idle(context: anytype, comptime callback: anytype) u32 {
+    return add(.{ .id = 0, .kind = .idle, .callback = plain(@TypeOf(context), callback), .data = toData(context) });
 }
 
-/// Calls `callback` when `fd` reports any of `events`, or an error or hangup.
-pub fn watch(fd: c_int, events: u32, callback: FdFn, data: ?*anyopaque) u32 {
-    return add(.{ .id = 0, .kind = .{ .fd = .{ .fd = fd, .events = events } }, .callback = .{ .fd = callback }, .data = data });
+/// Calls `callback(context, fd, conditions)` when `fd` reports any of `events`,
+/// or an error or hangup, until it returns false.
+pub fn watch(fd: c_int, events: u32, context: anytype, comptime callback: anytype) u32 {
+    const Context = @TypeOf(context);
+    const thunk = &struct {
+        fn call(data: ?*anyopaque, descriptor: c_int, conditions: u32) bool {
+            return callback(fromData(Context, data), descriptor, conditions);
+        }
+    }.call;
+    return add(.{ .id = 0, .kind = .{ .fd = .{ .fd = fd, .events = events } }, .callback = thunk, .data = toData(context) });
 }
 
-/// Calls `callback` on the loop after the process receives `signum`.
-pub fn signal(signum: u6, callback: SourceFn, data: ?*anyopaque) u32 {
+/// Calls `callback(context)` on the loop after the process receives `signum`.
+pub fn signal(signum: u6, context: anytype, comptime callback: anytype) u32 {
     _ = wakeFd();
     mutex.lock();
     signal_refs[signum] += 1;
@@ -115,7 +145,7 @@ pub fn signal(signum: u6, callback: SourceFn, data: ?*anyopaque) u32 {
         var action: linux.Sigaction = .{ .handler = .{ .handler = &caught }, .mask = linux.sigemptyset(), .flags = linux.SA.RESTART | linux.SA.NOCLDSTOP };
         _ = linux.sigaction(@fromBackingInt(@intCast(signum)), &action, null);
     }
-    return add(.{ .id = 0, .kind = .{ .signal = signum }, .callback = .{ .plain = callback }, .data = data });
+    return add(.{ .id = 0, .kind = .{ .signal = signum }, .callback = plain(@TypeOf(context), callback), .data = toData(context) });
 }
 
 fn caught(sig: linux.SIG) callconv(.c) void {
@@ -248,10 +278,7 @@ fn dispatch(item: Ready) bool {
     source.in_call = true;
     mutex.unlock();
 
-    const keep = switch (source.kind) {
-        .fd => |value| source.callback.fd(value.fd, item.conditions, source.data),
-        else => source.callback.plain(source.data),
-    } != 0;
+    const keep = source.callback(source.data, if (source.kind == .fd) source.kind.fd.fd else -1, item.conditions);
 
     mutex.lock();
     source.in_call = false;
@@ -282,52 +309,18 @@ pub fn sleep(microseconds: u64) void {
     }
 }
 
-/// The header shared by reference-counted loop objects.
-pub const Object = extern struct {
-    refs: u32 = 1,
-    finalize: *const fn (*Object) callconv(.c) void,
-    /// Callbacks run once the last reference goes away.
-    weak: ?*anyopaque = null,
 
-    pub fn ref(self: *Object) *Object {
-        _ = @atomicRmw(u32, &self.refs, .Add, 1, .acq_rel);
-        return self;
-    }
-
-    pub fn unref(self: *Object) void {
-        if (@atomicRmw(u32, &self.refs, .Sub, 1, .acq_rel) != 1) return;
-        if (self.weak) |raw| {
-            const list: *std.ArrayList(Weak) = @ptrCast(@alignCast(raw));
-            for (list.items) |item| item.notify(item.data, self);
-            list.deinit(allocator);
-            allocator.destroy(list);
-        }
-        self.finalize(self);
-    }
-
-    /// Calls `notify` when the object is finalized.
-    pub fn weakRef(self: *Object, notify: *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void, data: ?*anyopaque) void {
-        const list: *std.ArrayList(Weak) = if (self.weak) |raw| @ptrCast(@alignCast(raw)) else blk: {
-            const created = allocator.create(std.ArrayList(Weak)) catch @panic("out of memory");
-            created.* = .empty;
-            self.weak = created;
-            break :blk created;
-        };
-        list.append(allocator, .{ .notify = notify, .data = data }) catch @panic("out of memory");
-    }
-
-    const Weak = struct { notify: *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void, data: ?*anyopaque };
-};
-
-/// A cancellation flag with callbacks, as GCancellable: callbacks run on the
+/// A reference-counted cancellation flag with callbacks: callbacks run on the
 /// cancelling thread, and connecting to a cancelled one runs the callback at once.
-pub const Cancellable = extern struct {
-    object: Object = .{ .finalize = &finalize },
-    cancelled: u32 = 0,
-    handlers: ?*anyopaque = null,
+pub const Cancellable = struct {
+    refs: std.atomic.Value(u32) = .init(1),
+    cancelled: std.atomic.Value(bool) = .init(false),
+    /// Guarded by `handler_mutex`.
+    handlers: std.ArrayList(Entry) = .empty,
+    /// Run once the last reference goes away; guarded by `handler_mutex`.
+    finalizers: std.ArrayList(Entry) = .empty,
 
-    pub const Handler = *const fn (?*Cancellable, ?*anyopaque) callconv(.c) void;
-    const Entry = struct { id: u64, handler: Handler, data: ?*anyopaque };
+    const Entry = struct { id: u64, call: *const fn (?*anyopaque) void, data: ?*anyopaque };
 
     var handler_mutex: Mutex = .{};
     var next_handler: u64 = 1;
@@ -338,57 +331,51 @@ pub const Cancellable = extern struct {
         return self;
     }
 
-    fn finalize(object: *Object) callconv(.c) void {
-        const self: *Cancellable = @fieldParentPtr("object", object);
-        if (self.handlers) |raw| {
-            const list: *std.ArrayList(Entry) = @ptrCast(@alignCast(raw));
-            list.deinit(allocator);
-            allocator.destroy(list);
-        }
+    pub fn ref(self: *Cancellable) *Cancellable {
+        _ = self.refs.fetchAdd(1, .acq_rel);
+        return self;
+    }
+
+    pub fn unref(self: *Cancellable) void {
+        if (self.refs.fetchSub(1, .acq_rel) != 1) return;
+        for (self.finalizers.items) |entry| entry.call(entry.data);
+        self.finalizers.deinit(allocator);
+        self.handlers.deinit(allocator);
         allocator.destroy(self);
     }
 
     pub fn isCancelled(self: *const Cancellable) bool {
-        return @atomicLoad(u32, &self.cancelled, .acquire) != 0;
+        return self.cancelled.load(.acquire);
     }
 
     pub fn cancel(self: *Cancellable) void {
-        if (@atomicRmw(u32, &self.cancelled, .Xchg, 1, .acq_rel) != 0) return;
-        _ = self.object.ref();
-        defer self.object.unref();
+        if (self.cancelled.swap(true, .acq_rel)) return;
+        _ = self.ref();
+        defer self.unref();
         handler_mutex.lock();
-        var copy: std.ArrayList(Entry) = .empty;
-        defer copy.deinit(allocator);
-        if (self.handlers) |raw| {
-            const list: *std.ArrayList(Entry) = @ptrCast(@alignCast(raw));
-            copy.appendSlice(allocator, list.items) catch {};
-        }
+        const copy = allocator.dupe(Entry, self.handlers.items) catch &.{};
         handler_mutex.unlock();
-        for (copy.items) |entry| entry.handler(self, entry.data);
+        defer allocator.free(copy);
+        for (copy) |entry| entry.call(entry.data);
     }
 
-    /// Adds a callback for cancellation; when already cancelled it runs now and 0 is returned.
-    pub fn connect(self: *Cancellable, handler: Handler, data: ?*anyopaque) u64 {
+    /// Calls `handler(context)` on cancellation, or now when already
+    /// cancelled, in which case 0 is returned.
+    pub fn connect(self: *Cancellable, context: anytype, comptime handler: anytype) u64 {
         if (self.isCancelled()) {
-            handler(self, data);
+            handler(context);
             return 0;
         }
-        return self.listen(handler, data);
+        return self.listen(context, handler);
     }
 
-    /// Adds a callback for a later cancellation only.
-    pub fn listen(self: *Cancellable, handler: Handler, data: ?*anyopaque) u64 {
+    /// Calls `handler(context)` on a later cancellation only.
+    pub fn listen(self: *Cancellable, context: anytype, comptime handler: anytype) u64 {
         handler_mutex.lock();
         defer handler_mutex.unlock();
-        const list: *std.ArrayList(Entry) = if (self.handlers) |raw| @ptrCast(@alignCast(raw)) else blk: {
-            const created = allocator.create(std.ArrayList(Entry)) catch @panic("out of memory");
-            created.* = .empty;
-            self.handlers = created;
-            break :blk created;
-        };
         const id = next_handler;
         next_handler += 1;
-        list.append(allocator, .{ .id = id, .handler = handler, .data = data }) catch @panic("out of memory");
+        self.handlers.append(allocator, makeEntry(id, context, handler)) catch @panic("out of memory");
         return id;
     }
 
@@ -396,92 +383,54 @@ pub const Cancellable = extern struct {
         if (id == 0) return;
         handler_mutex.lock();
         defer handler_mutex.unlock();
-        const list: *std.ArrayList(Entry) = @ptrCast(@alignCast(self.handlers orelse return));
-        for (list.items, 0..) |entry, i| if (entry.id == id) {
-            _ = list.orderedRemove(i);
+        for (self.handlers.items, 0..) |item, i| if (item.id == id) {
+            _ = self.handlers.orderedRemove(i);
             return;
         };
     }
-};
 
-/// Work run on its own thread, then completed on the loop, as GTask's
-/// run_in_thread: the completion callback runs on the loop after the work
-/// returns its result, and the task is released afterwards.
-pub const Task = extern struct {
-    object: Object = .{ .finalize = &finalize },
-    callback: ?Completion,
-    callback_data: ?*anyopaque,
-    cancellable: ?*Cancellable,
-    task_data: ?*anyopaque = null,
-    task_data_destroy: ?Destroy = null,
-    result: ?*anyopaque = null,
-    result_destroy: ?Destroy = null,
-    result_bool: bool = false,
-    work: ?Work = null,
-
-    pub const Completion = *const fn (?*anyopaque, ?*Task, ?*anyopaque) callconv(.c) void;
-    pub const Work = *const fn (?*Task, ?*anyopaque, ?*anyopaque, ?*Cancellable) callconv(.c) void;
-    pub const Destroy = *const fn (?*anyopaque) callconv(.c) void;
-
-    pub fn create(cancellable: ?*Cancellable, callback: ?Completion, callback_data: ?*anyopaque) *Task {
-        const self = allocator.create(Task) catch @panic("out of memory");
-        self.* = .{ .callback = callback, .callback_data = callback_data, .cancellable = cancellable };
-        if (cancellable) |value| _ = value.object.ref();
-        return self;
+    /// Calls `callback(context)` when the last reference is released; used by
+    /// lifecycle tests to observe that a cancellable is freed.
+    pub fn onFinalize(self: *Cancellable, context: anytype, comptime callback: anytype) void {
+        handler_mutex.lock();
+        defer handler_mutex.unlock();
+        self.finalizers.append(allocator, makeEntry(0, context, callback)) catch @panic("out of memory");
     }
 
-    fn finalize(object: *Object) callconv(.c) void {
-        const self: *Task = @fieldParentPtr("object", object);
-        if (self.task_data_destroy) |destroy| destroy(self.task_data);
-        if (self.result_destroy) |destroy| destroy(self.result);
-        if (self.cancellable) |value| value.object.unref();
-        allocator.destroy(self);
-    }
-
-    pub fn runInThread(self: *Task, work: Work) void {
-        self.work = work;
-        _ = self.object.ref();
-        const thread = std.Thread.spawn(.{}, run, .{self}) catch {
-            // Without a thread the work runs here, still completing on the loop.
-            run(self);
-            return;
-        };
-        thread.detach();
-    }
-
-    fn run(self: *Task) void {
-        self.work.?(self, null, self.task_data, self.cancellable);
-        _ = idle(&complete, self);
-    }
-
-    fn complete(data: ?*anyopaque) callconv(.c) c_int {
-        const self: *Task = @ptrCast(@alignCast(data));
-        if (self.callback) |callback| callback(null, self, self.callback_data);
-        self.object.unref();
-        return 0;
-    }
-
-    pub fn returnPointer(self: *Task, result: ?*anyopaque, destroy: ?Destroy) void {
-        self.result = result;
-        self.result_destroy = destroy;
-    }
-
-    pub fn returnBoolean(self: *Task, result: bool) void {
-        self.result_bool = result;
-    }
-
-    /// Takes the pointer result; the caller now owns it.
-    pub fn propagatePointer(self: *Task) ?*anyopaque {
-        const result = self.result;
-        self.result = null;
-        self.result_destroy = null;
-        return result;
-    }
-
-    pub fn propagateBoolean(self: *Task) bool {
-        return self.result_bool;
+    fn makeEntry(id: u64, context: anytype, comptime callback: anytype) Entry {
+        const Context = @TypeOf(context);
+        return .{ .id = id, .data = toData(context), .call = &struct {
+            fn call(data: ?*anyopaque) void {
+                callback(fromData(Context, data));
+            }
+        }.call };
     }
 };
+
+/// Runs `work(context)` on its own thread, then `done(context, result)` on the
+/// loop; `done(context)` when `work` returns nothing.
+pub fn background(context: anytype, comptime work: anytype, comptime done: anytype) void {
+    const Context = @TypeOf(context);
+    const Result = @typeInfo(@TypeOf(work)).@"fn".return_type.?;
+    const Job = struct {
+        context: Context,
+        result: Result = undefined,
+        fn run(job: *@This()) void {
+            job.result = work(job.context);
+            _ = idle(job, complete);
+        }
+        fn complete(job: *@This()) bool {
+            defer allocator.destroy(job);
+            if (Result == void) done(job.context) else done(job.context, job.result);
+            return false;
+        }
+    };
+    const job = allocator.create(Job) catch @panic("out of memory");
+    job.* = .{ .context = context };
+    // Without a thread the work runs here, still completing on the loop.
+    const thread = std.Thread.spawn(.{}, Job.run, .{job}) catch return Job.run(job);
+    thread.detach();
+}
 
 test "timeouts, idles, descriptors, removal and nested iteration" {
     const State = struct {
@@ -489,59 +438,54 @@ test "timeouts, idles, descriptors, removal and nested iteration" {
         idles: u32 = 0,
         reads: u32 = 0,
         nested: bool = false,
-        removed_id: u32 = 0,
-        fn tick(data: ?*anyopaque) callconv(.c) c_int {
-            const self: *@This() = @ptrCast(@alignCast(data));
+        fn tick(self: *@This()) bool {
             self.ticks += 1;
-            return @intFromBool(self.ticks < 3);
+            return self.ticks < 3;
         }
-        fn idled(data: ?*anyopaque) callconv(.c) c_int {
-            const self: *@This() = @ptrCast(@alignCast(data));
+        fn idled(self: *@This()) bool {
             self.idles += 1;
             // A nested iteration must not dispatch this source again.
             if (!self.nested) {
                 self.nested = true;
                 _ = iteration(false);
             }
-            return 0;
+            return false;
         }
-        fn readable(fd: c_int, conditions: c_uint, data: ?*anyopaque) callconv(.c) c_int {
-            const self: *@This() = @ptrCast(@alignCast(data));
+        fn readable(self: *@This(), fd: c_int, conditions: u32) bool {
             var byte: [8]u8 = undefined;
             _ = linux.read(fd, &byte, byte.len);
             std.debug.assert(conditions & IN != 0);
             self.reads += 1;
-            return 1;
+            return true;
         }
-        fn never(_: ?*anyopaque) callconv(.c) c_int {
+        fn never(_: void) bool {
             unreachable;
         }
     };
     var state: State = .{};
-    _ = timeout(5, &State.tick, &state);
-    _ = idle(&State.idled, &state);
-    const doomed = timeout(1, &State.never, null);
+    _ = timeout(5, &state, State.tick);
+    _ = idle(&state, State.idled);
+    const doomed = timeout(1, {}, State.never);
     try std.testing.expect(remove(doomed));
     try std.testing.expect(!remove(doomed));
     var pipe: [2]linux.fd_t = undefined;
     _ = linux.pipe2(&pipe, .{ .CLOEXEC = true, .NONBLOCK = true });
     defer _ = linux.close(pipe[0]);
     defer _ = linux.close(pipe[1]);
-    const reader = watch(pipe[0], IN, &State.readable, &state);
+    const reader = watch(pipe[0], IN, &state, State.readable);
     _ = linux.write(pipe[1], "x", 1);
     while (state.ticks < 3 or state.reads == 0 or state.idles == 0) _ = iteration(true);
     try std.testing.expectEqual(@as(u32, 1), state.idles);
     try std.testing.expect(remove(reader));
     // Sources added from another thread wake a blocked iteration.
     const Wake = struct {
-        fn fire(data: ?*anyopaque) callconv(.c) c_int {
-            const flag: *bool = @ptrCast(@alignCast(data));
+        fn fire(flag: *bool) bool {
             flag.* = true;
-            return 0;
+            return false;
         }
         fn later(flag: *bool) void {
             sleep(20 * std.time.us_per_ms);
-            _ = idle(&fire, flag);
+            _ = idle(flag, fire);
         }
     };
     var woken = false;
@@ -550,53 +494,52 @@ test "timeouts, idles, descriptors, removal and nested iteration" {
     thread.join();
 }
 
-test "signals, cancellation and worker tasks" {
+test "signals, cancellation and background work" {
     const Flags = struct {
         signalled: bool = false,
         cancelled: u32 = 0,
+        finalized: bool = false,
         finished: bool = false,
         result: bool = false,
-        fn onSignal(data: ?*anyopaque) callconv(.c) c_int {
-            const self: *@This() = @ptrCast(@alignCast(data));
+        input: u32 = 42,
+        fn onSignal(self: *@This()) bool {
             self.signalled = true;
-            return 1;
+            return true;
         }
-        fn onCancel(_: ?*Cancellable, data: ?*anyopaque) callconv(.c) void {
-            const self: *@This() = @ptrCast(@alignCast(data));
+        fn onCancel(self: *@This()) void {
             self.cancelled += 1;
         }
-        fn work(task: ?*Task, _: ?*anyopaque, data: ?*anyopaque, _: ?*Cancellable) callconv(.c) void {
-            const input: *u32 = @ptrCast(@alignCast(data));
-            task.?.returnBoolean(input.* == 42);
+        fn onFinalize(self: *@This()) void {
+            self.finalized = true;
         }
-        fn done(_: ?*anyopaque, task: ?*Task, data: ?*anyopaque) callconv(.c) void {
-            const self: *@This() = @ptrCast(@alignCast(data));
-            self.result = task.?.propagateBoolean();
+        fn work(self: *@This()) bool {
+            return self.input == 42;
+        }
+        fn done(self: *@This(), result: bool) void {
+            self.result = result;
             self.finished = true;
         }
     };
     var flags: Flags = .{};
-    const id = signal(@intCast(@backingInt(linux.SIG.USR1)), &Flags.onSignal, &flags);
+    const id = signal(@intCast(@backingInt(linux.SIG.USR1)), &flags, Flags.onSignal);
     _ = linux.kill(linux.getpid(), .USR1);
     while (!flags.signalled) _ = iteration(true);
     try std.testing.expect(remove(id));
 
     const cancellable = Cancellable.create();
-    _ = cancellable.connect(&Flags.onCancel, &flags);
-    const gone = cancellable.connect(&Flags.onCancel, &flags);
+    cancellable.onFinalize(&flags, Flags.onFinalize);
+    _ = cancellable.connect(&flags, Flags.onCancel);
+    const gone = cancellable.connect(&flags, Flags.onCancel);
     cancellable.disconnect(gone);
     cancellable.cancel();
     cancellable.cancel();
     try std.testing.expectEqual(@as(u32, 1), flags.cancelled);
-    try std.testing.expectEqual(@as(u64, 0), cancellable.connect(&Flags.onCancel, &flags));
+    try std.testing.expectEqual(@as(u64, 0), cancellable.connect(&flags, Flags.onCancel));
     try std.testing.expectEqual(@as(u32, 2), flags.cancelled);
+    cancellable.unref();
+    try std.testing.expect(flags.finalized);
 
-    var input: u32 = 42;
-    const task = Task.create(cancellable, &Flags.done, &flags);
-    task.task_data = &input;
-    task.runInThread(&Flags.work);
-    task.object.unref();
-    cancellable.object.unref();
+    background(&flags, Flags.work, Flags.done);
     while (!flags.finished) _ = iteration(true);
     try std.testing.expect(flags.result);
 }

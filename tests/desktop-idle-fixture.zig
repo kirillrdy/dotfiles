@@ -1,17 +1,17 @@
 const std = @import("std");
-const c = @import("desktop").glib;
+const mainloop = @import("desktop").mainloop;
 const idle = @import("desktop").idle;
 var stopping = false;
 var service_ptr: ?*idle.Service = null;
 var audio_inhibited = false;
-fn stop(_: ?*anyopaque) callconv(.c) c_int {
+fn stop(_: void) bool {
     stopping = true;
-    return 1;
+    return true;
 }
-fn toggleAudio(_: ?*anyopaque) callconv(.c) c_int {
+fn toggleAudio(_: void) bool {
     audio_inhibited = !audio_inhibited;
     if (service_ptr) |service| service.setAudioInhibited(audio_inhibited);
-    return 1;
+    return true;
 }
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -26,12 +26,12 @@ pub fn main(init: std.process.Init) !void {
         .session_inhibit = session,
     });
     service_ptr = service;
-    const term = c.g_unix_signal_add(c.SIGTERM, &stop, null);
-    defer _ = c.g_source_remove(term);
-    const usr1 = c.g_unix_signal_add(@as(c_int, @intCast(@backingInt(std.posix.SIG.USR1))), &toggleAudio, null);
-    defer _ = c.g_source_remove(usr1);
-    while (!stopping) _ = c.g_main_context_iteration(null, 1);
+    const term = mainloop.signal(mainloop.SIGTERM, {}, stop);
+    defer _ = mainloop.remove(term);
+    const usr1 = mainloop.signal(@as(c_int, @intCast(@backingInt(std.posix.SIG.USR1))), {}, toggleAudio);
+    defer _ = mainloop.remove(usr1);
+    while (!stopping) _ = mainloop.iteration(true);
     service_ptr = null;
     service.destroy();
-    while (c.g_main_context_iteration(null, 0) != 0) {}
+    while (mainloop.iteration(false)) {}
 }

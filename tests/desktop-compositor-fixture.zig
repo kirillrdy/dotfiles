@@ -1,7 +1,7 @@
 //! End-to-end probe for workspace control and actual per-window capture.
 const std = @import("std");
 const d = @import("desktop");
-const c = d.glib;
+const mainloop = @import("desktop").mainloop;
 const capture = d.capture;
 fn changed(data: ?*anyopaque) void {
     const count: *usize = @ptrCast(@alignCast(data.?));
@@ -33,7 +33,7 @@ pub fn main(init: std.process.Init) !void {
         const timer = d.util.Timer.start();
         while (timer.read() < 5 * std.time.ns_per_s) {
             client.tick();
-            while (c.g_main_context_iteration(null, 0) != 0) {}
+            while (mainloop.iteration(false)) {}
             var complete = client.windows.items.len > 0;
             for (client.windows.items) |window| if (window.image == null) {
                 complete = false;
@@ -61,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
         const resumed = d.util.Timer.start();
         while (changes == previous and resumed.read() < 5 * std.time.ns_per_s) {
             client.tick();
-            while (c.g_main_context_iteration(null, 0) != 0) {}
+            while (mainloop.iteration(false)) {}
             d.util.sleep(10 * std.time.ns_per_ms);
         }
         if (changes == previous) return error.CaptureDidNotResume;

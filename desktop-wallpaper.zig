@@ -3,11 +3,11 @@ const native = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const std = @import("std");
 const cairo = @import("tests/desktop-cairo.zig");
-const c = @import("desktop-glib.zig");
+const util = @import("desktop-util.zig");
 const decode = @import("desktop-decode.zig");
 const Image = decode.Image;
 
-const cast = c.__zig.cast;
+const cast = util.cast;
 
 fn paint(target: native.Pixels, image: Image) void {
     raster.cover(target, image.view()) catch |err| std.log.err("wallpaper render: {s}", .{@errorName(err)});

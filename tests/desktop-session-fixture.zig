@@ -1,15 +1,16 @@
 //! Run only through desktop-session-fixture.nix and its private system bus.
 const std = @import("std");
-const c = @import("desktop").glib;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
 const session = @import("desktop").session_actions;
 const quick = @import("desktop").quick;
 
 fn env(key: [:0]const u8) []const u8 {
-    return if (c.__zig.getenv(key)) |value| std.mem.span(value) else "";
+    return if (std.c.getenv(key)) |value| std.mem.span(value) else "";
 }
 fn pump() void {
-    while (c.g_main_context_iteration(null, 0) != 0) {}
-    c.g_usleep(1000);
+    while (mainloop.iteration(false)) {}
+    mainloop.sleep(1000);
 }
 const Completion = struct {
     count: usize = 0,
@@ -27,12 +28,11 @@ const Completion = struct {
         }
     }
 };
-fn cancelLater(ptr: c.gpointer) callconv(.c) c.gboolean {
-    c.g_cancellable_cancel(@ptrCast(@alignCast(ptr)));
-    return 0;
+fn cancelLater(cancel: *mainloop.Cancellable) bool {
+    cancel.cancel();
+    return false;
 }
-fn finalized(ptr: ?*anyopaque, _: ?*c.GObject) callconv(.c) void {
-    const live: *bool = @ptrCast(@alignCast(ptr));
+fn finalized(live: *bool) void {
     live.* = false;
 }
 
@@ -93,13 +93,13 @@ test "session: private logind actions and quick-settings lifecycle" {
     try std.testing.expectEqualStrings("1", env("DESKTOP_SESSION_TEST_RUN"));
     try std.testing.expect(env("DBUS_SYSTEM_BUS_ADDRESS").len != 0);
     const scenario = env("SESSION_CASE");
-    const deadline = c.__zig.monotonicTime() + 8_000_000;
+    const deadline = util.monotonicTime() + 8_000_000;
     if (std.mem.startsWith(u8, scenario, "ui-")) {
         const controls = quick.Controls.create(std.testing.allocator, "true", "true");
         var live = true;
-        c.g_object_weak_ref(@ptrCast(controls.cancel), &finalized, &live);
+        controls.cancel.onFinalize(&live, finalized);
         var battery_live = controls.battery_service != null;
-        if (controls.battery_service) |service| c.g_object_weak_ref(@ptrCast(service.cancel), &finalized, &battery_live);
+        if (controls.battery_service) |service| service.cancel.onFinalize(&battery_live, finalized);
         const network = @import("desktop").network;
         try checkPowerDialog(controls);
         // Power Off asks first, as GNOME does, with the action focused and a countdown.
@@ -122,12 +122,12 @@ test "session: private logind actions and quick-settings lifecycle" {
         pump();
         controls.sessionAction(.reboot); // A pending action must prevent duplicate requests.
         if (std.mem.eql(u8, scenario, "ui-denied")) {
-            while (controls.session_busy and c.__zig.monotonicTime() < deadline) pump();
+            while (controls.session_busy and util.monotonicTime() < deadline) pump();
             try std.testing.expect(!controls.session_busy);
             try std.testing.expect(std.mem.indexOf(u8, controls.view.model.message.slice(), "denied") != null);
         } else {
-            const ready = c.__zig.monotonicTime() + 100_000;
-            while (c.__zig.monotonicTime() < ready) pump();
+            const ready = util.monotonicTime() + 100_000;
+            while (util.monotonicTime() < ready) pump();
             try std.testing.expect(controls.session_busy);
         }
         // A shown native dialog must release its reference during shutdown.
@@ -138,18 +138,18 @@ test "session: private logind actions and quick-settings lifecycle" {
         controls.deinit();
         // Device workers retain their own cancellation objects after Controls
         // is freed. Drain their completion callbacks before the allocator audit.
-        while ((live or battery_live or network.live_services != 0) and c.__zig.monotonicTime() < deadline) pump();
+        while ((live or battery_live or network.live_services != 0) and util.monotonicTime() < deadline) pump();
         try std.testing.expect(!live and !battery_live and network.live_services == 0);
         return;
     }
     const action = std.meta.stringToEnum(session.Action, env("SESSION_ACTION")) orelse return error.UnknownAction;
-    const cancel = c.g_cancellable_new().?;
-    defer c.g_object_unref(cancel);
+    const cancel = mainloop.Cancellable.create();
+    defer cancel.unref();
     var completion: Completion = .{};
     session.perform(std.testing.allocator, action, cancel, &Completion.done, &completion);
-    if (std.mem.eql(u8, scenario, "cancel-immediate")) c.g_cancellable_cancel(cancel);
-    if (std.mem.startsWith(u8, scenario, "cancel-delayed")) _ = c.g_timeout_add(100, &cancelLater, cancel);
-    while (completion.count == 0 and c.__zig.monotonicTime() < deadline) pump();
+    if (std.mem.eql(u8, scenario, "cancel-immediate")) cancel.cancel();
+    if (std.mem.startsWith(u8, scenario, "cancel-delayed")) _ = mainloop.timeout(100, cancel, cancelLater);
+    while (completion.count == 0 and util.monotonicTime() < deadline) pump();
     try std.testing.expectEqual(@as(usize, 1), completion.count);
     const expected = env("SESSION_EXPECT");
     if (std.mem.eql(u8, expected, "success")) {

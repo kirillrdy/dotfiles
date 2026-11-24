@@ -2,7 +2,6 @@
 const std = @import("std");
 const desktop = @import("desktop");
 const wire = @import("desktop").window.wire;
-const c = desktop.glib;
 var background: ?*wire.Client = null;
 var color = [3]f64{ 1, 0, 0 };
 fn draw(_: ?*anyopaque, target: wire.Pixels) void {
@@ -42,7 +41,7 @@ pub fn main() !void {
     defer loop.release(source);
     var introspection = try dbus.Introspection.parse(allocator.allocator(), "<node><interface name='org.dotfiles.CaptureFixture'><method name='Color'><arg type='d' direction='in'/><arg type='d' direction='in'/><arg type='d' direction='in'/></method></interface></node>");
     defer introspection.deinit();
-    const registration = if (c.__zig.getenv("DESKTOP_PORTAL_FIXTURE_CAPTURE") != null) try source.connection.exportObject("/org/dotfiles/CaptureFixture", &introspection.interfaces[0], &method, null, null) else 0;
+    const registration = if (std.c.getenv("DESKTOP_PORTAL_FIXTURE_CAPTURE") != null) try source.connection.exportObject("/org/dotfiles/CaptureFixture", &introspection.interfaces[0], &method, null, null) else 0;
     defer {
         if (registration != 0) source.connection.unregister(registration);
     }

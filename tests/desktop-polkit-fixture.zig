@@ -1,8 +1,9 @@
 //! Native PolicyKit dialog checks with synthetic credentials on Wayland.
 const std = @import("std");
 const polkit = @import("desktop").polkit;
-const c = polkit.c;
-const cast = c.__zig.cast;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
+const cast = util.cast;
 
 const Reply = struct {
     count: usize = 0,
@@ -46,14 +47,14 @@ fn checkDialog(allocator: std.mem.Allocator) !void {
     for (dialog.native.entry.?.buffer.bytes) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
     try dialog.native.entry.?.insert("123456");
     try std.testing.expect(dialog.native.handleKey(0xff0d, 0));
-    while (reply.count < 1) _ = c.g_main_context_iteration(null, 1);
+    while (reply.count < 1) _ = mainloop.iteration(true);
     try std.testing.expect(reply.accepted);
     dialog.clear();
     dialog.setEnabled(false);
     try std.testing.expect(dialog.native.handleKey('x', 0));
     try std.testing.expectEqualStrings("", dialog.answer());
     try std.testing.expect(dialog.native.handleKey(0xff1b, 0));
-    while (reply.count < 2) _ = c.g_main_context_iteration(null, 1);
+    while (reply.count < 2) _ = mainloop.iteration(true);
     try std.testing.expect(!reply.accepted);
     try std.testing.expectEqual(@as(usize, 2), reply.count);
 }

@@ -1,7 +1,6 @@
 //! Screenshot parsing, PNG stream encoding and overlay tests.
 const std = @import("std");
 const screenshot = @import("desktop").screenshot;
-const c = screenshot.c;
 const wl_formats = screenshot.wl.wl_shm.Format;
 const assert = std.debug.assert;
 const libc = @import("desktop").libc;

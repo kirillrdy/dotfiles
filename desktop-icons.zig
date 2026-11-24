@@ -1,6 +1,6 @@
 //! Icon theme lookup in Zig. Images decode through desktop-decode.zig.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const gsettings = @import("desktop-gsettings.zig");
 const decode = @import("desktop-decode.zig");
 const files = @import("desktop-paths.zig");
 const Image = decode.Image;
@@ -265,10 +265,10 @@ fn makeResolver(a: std.mem.Allocator, settings: ?*@import("desktop-gsettings.zig
     defer arena.deinit();
     const alloc = arena.allocator();
     var roots: std.ArrayList([]const u8) = .empty;
-    for ([_][:0]const u8{ "DESKTOP_PANEL_ICON_PATH", "DESKTOP_APPS_ICON_PATH" }) |name| if (c.__zig.getenv(name)) |path| try roots.append(alloc, std.mem.span(path));
+    for ([_][:0]const u8{ "DESKTOP_PANEL_ICON_PATH", "DESKTOP_APPS_ICON_PATH" }) |name| if (std.c.getenv(name)) |path| try roots.append(alloc, std.mem.span(path));
     try roots.append(alloc, try std.fmt.allocPrint(alloc, "{s}/.icons", .{files.home()}));
     try roots.append(alloc, try std.fmt.allocPrint(alloc, "{s}/icons", .{files.dataHome()}));
-    const dirs = if (c.__zig.getenv("XDG_DATA_DIRS")) |value| std.mem.span(value) else "/usr/local/share:/usr/share";
+    const dirs = if (std.c.getenv("XDG_DATA_DIRS")) |value| std.mem.span(value) else "/usr/local/share:/usr/share";
     var paths = std.mem.splitScalar(u8, dirs, ':');
     while (paths.next()) |path| if (std.fs.path.isAbsolute(path)) {
         try roots.append(alloc, try std.fmt.allocPrint(alloc, "{s}/icons", .{path}));
@@ -286,7 +286,7 @@ pub fn load(a: std.mem.Allocator, name: [:0]const u8, size: u32, scale: u32, tin
     if (size == 0 or size > 4096 or scale == 0 or scale > 8) return null;
     if (std.fs.path.isAbsolute(name)) return loadPath(a, name, size * scale, tint);
     if (cache) |*value| {
-        if (value.settings == null) if (c.__zig.settings(value.allocator, "org.gnome.desktop.interface", null)) |settings| {
+        if (value.settings == null) if (gsettings.Settings.open(value.allocator, "org.gnome.desktop.interface", null)) |settings| {
             value.settings = settings;
             settings.watch(&themeChanged, null) catch {};
         };

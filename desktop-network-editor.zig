@@ -1,6 +1,7 @@
 //! Native connection properties. Unknown settings round-trip without libnm.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const dbus = @import("dbus");
 const variant_text = @import("desktop-dbus-text.zig");
 const native = @import("desktop-form.zig");
@@ -8,11 +9,11 @@ const network = @import("desktop-network.zig");
 const Settings = network.Settings;
 const presentation = @import("desktop-network-editor-view.zig");
 const raster = @import("desktop-raster.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 fn z(a: std.mem.Allocator, s: []const u8) [:0]u8 {
-    return c.__zig.dupeZ(a, s);
+    return util.dupeZ(a, s);
 }
-const eq = c.__zig.eq;
+const eq = util.eq;
 fn text(w: *native.Item) [:0]const u8 {
     return w.value();
 }
@@ -151,7 +152,7 @@ pub const Editor = struct {
     save_button: *native.Item,
     client: *network.Client,
     base: *Settings,
-    cancel: *c.GCancellable,
+    cancel: *mainloop.Cancellable,
     path: ?[:0]u8,
     version: u64,
     rows: std.ArrayList(Row) = .empty,
@@ -187,7 +188,7 @@ pub const Editor = struct {
         window.parent = parent;
         // Rows borrow their original values from these settings for the editor's lifetime.
         const base = if (initial) |value| value.ref() else if (profile) |p| p.base.ref() else template(a, null) catch @panic("out of memory");
-        self.* = .{ .allocator = a, .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = c.g_cancellable_new().?, .path = if (profile) |p| z(a, p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(a, &changed, self) catch @panic("out of memory"), .base = base, .property_group = undefined, .property_key = undefined, .property_type = undefined };
+        self.* = .{ .allocator = a, .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = mainloop.Cancellable.create(), .path = if (profile) |p| z(a, p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(a, &changed, self) catch @panic("out of memory"), .base = base, .property_group = undefined, .property_key = undefined, .property_type = undefined };
         // Known fields first; every other property remains editable below them.
         for (fields) |field| {
             if (base.group(field.group) != null or eq(field.group, "connection")) self.addRow(field, base.get(field.group, field.key));
@@ -517,7 +518,7 @@ pub const Editor = struct {
     fn destroyed(ptr: ?*anyopaque) void {
         const self = cast(Editor, ptr);
         self.closed = true;
-        c.g_cancellable_cancel(self.cancel);
+        self.cancel.cancel();
         self.unref();
     }
     fn unref(self: *Editor) void {
@@ -525,7 +526,7 @@ pub const Editor = struct {
         if (self.refs != 0) return;
         self.client.destroy();
         self.base.unref();
-        c.g_object_unref(self.cancel);
+        self.cancel.unref();
         if (self.path) |path| self.allocator.free(path);
         for (self.rows.items) |*r| r.deinit(self.allocator);
         self.rows.deinit(self.allocator);

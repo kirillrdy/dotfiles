@@ -407,7 +407,7 @@ pub const View = struct {
         const ix = pill.x + (pill.width - 16) / 2;
         const iy = pill.y + (pill.height - 16) / 2;
         if (self.power_icon) |icon| {
-            @import("desktop-ui.zig").blitImage(canvas, icon, .{ .x = ix, .y = iy, .width = 16, .height = 16 });
+            @import("desktop-image.zig").blit(canvas, icon, .{ .x = ix, .y = iy, .width = 16, .height = 16 });
         } else {
             // Crisp fallback power symbol when icon theme is absent in unit tests.
             const cx = pill.x + pill.width / 2;

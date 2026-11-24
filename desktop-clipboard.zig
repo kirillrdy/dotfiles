@@ -1,10 +1,11 @@
 //! Bounded asynchronous text clipboard for the desktop's data-control protocol.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const wl = @import("wayland-client");
 const input = @import("desktop-input.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 const capacity = 4096;
 const utf8: [:0]const u8 = "text/plain;charset=utf-8";
 pub const Callback = *const fn (?*anyopaque, ?[]const u8) void;
@@ -86,8 +87,8 @@ pub const Device = struct {
         };
         offer.proxy.receive(mime, fds[1]);
         _ = libc.close(fds[1]);
-        request.source = c.g_unix_fd_add(fds[0], c.G_IO_IN | c.G_IO_HUP | c.G_IO_ERR, &Request.read, request);
-        request.timer = c.g_timeout_add(5000, &Request.timeout, request);
+        request.source = mainloop.watch(fds[0], mainloop.IN | mainloop.HUP | mainloop.ERR, request, Request.read);
+        request.timer = mainloop.timeout(5000, request, Request.timeout);
         self.seat.client.flush();
     }
     fn deviceEvent(self: *Device, _: wl.zwlr_data_control_device_v1, event: wl.zwlr_data_control_device_v1.Event) void {
@@ -180,43 +181,41 @@ const Request = struct {
     context: ?*anyopaque,
     bytes: [capacity + 1]u8 = @splat(0),
     len: usize = 0,
-    source: c.guint = 0,
-    timer: c.guint = 0,
-    fn read(fd: c_int, condition: c.GIOCondition, ptr: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Request, ptr);
+    source: u32 = 0,
+    timer: u32 = 0,
+    fn read(self: *Request, fd: c_int, condition: u32) bool {
         while (true) {
             const n = libc.read(fd, self.bytes[self.len..].ptr, self.bytes.len - self.len);
             if (n < 0) {
                 const err = libc.__errno_location().*;
                 if (err == libc.EINTR) continue;
-                if (err == @backingInt(std.c.E.AGAIN) and condition & c.G_IO_ERR == 0) return 1;
+                if (err == @backingInt(std.c.E.AGAIN) and condition & mainloop.ERR == 0) return true;
                 self.source = 0;
                 self.finish(null);
-                return 0;
+                return false;
             }
             if (n == 0) {
                 self.source = 0;
                 self.finish(self.bytes[0..self.len]);
-                return 0;
+                return false;
             }
             self.len += @intCast(n);
             if (self.len > capacity) {
                 self.source = 0;
                 self.finish(null);
-                return 0;
+                return false;
             }
         }
     }
-    fn timeout(ptr: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Request, ptr);
+    fn timeout(self: *Request) bool {
         self.timer = 0;
         self.finish(null);
-        return 0;
+        return false;
     }
     fn finish(self: *Request, value: ?[]const u8) void {
         const a = self.device.seat.client.allocator;
-        if (self.source != 0) _ = c.g_source_remove(self.source);
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.source != 0) _ = mainloop.remove(self.source);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         _ = libc.close(self.fd);
         for (self.device.requests.items, 0..) |request, index| if (request == self) {
             _ = self.device.requests.orderedRemove(index);

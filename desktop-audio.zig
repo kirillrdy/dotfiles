@@ -1,9 +1,10 @@
 //! Direct PipeWire audio control and event-driven discovery on the main context.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const Registry = @import("desktop-audio-registry.zig").Registry;
 // Test builds account for service state and asynchronous callback allocations.
-const cast = c.__zig.cast;
+const cast = util.cast;
 pub const Class = enum { output, input, playback, recording };
 pub const State = struct { percent: f64, muted: bool = false };
 pub const Node = struct {
@@ -52,8 +53,8 @@ pub const Service = struct {
     registry: ?*Registry = null,
     calls: std.ArrayList(*Call) = .empty,
     nodes: std.ArrayList(Node) = .empty,
-    timer: c.guint = 0,
-    idle: c.guint = 0,
+    timer: u32 = 0,
+    idle: u32 = 0,
     epoch: u64 = 0,
     refs: usize = 1,
     ready: bool = false,
@@ -63,12 +64,12 @@ pub const Service = struct {
         const self = try a.create(Service);
         self.* = .{ .allocator = a, .callback = callback, .data = data };
         self.connect();
-        self.timer = c.g_timeout_add_seconds(5, &maintain, self);
+        self.timer = mainloop.timeoutSeconds(5, self, maintain);
         return self;
     }
     pub fn destroy(self: *Service) void {
         self.stopped = true;
-        _ = c.g_source_remove(self.timer);
+        _ = mainloop.remove(self.timer);
         self.reset();
         self.unref();
     }
@@ -83,17 +84,16 @@ pub const Service = struct {
     fn reset(self: *Service) void {
         self.epoch +%= 1;
         self.ready = false;
-        if (self.idle != 0) _ = c.g_source_remove(self.idle);
+        if (self.idle != 0) _ = mainloop.remove(self.idle);
         self.idle = 0;
         if (self.registry) |registry| registry.destroy();
         self.registry = null;
         self.nodes.clearRetainingCapacity();
         for (self.calls.items) |call| call.wake();
     }
-    fn maintain(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Service, data);
+    fn maintain(self: *Service) bool {
         if (self.registry == null) self.connect();
-        return 1;
+        return true;
     }
     fn connect(self: *Service) void {
         self.registry = Registry.create(self.allocator, &changed, self) catch null;
@@ -102,22 +102,21 @@ pub const Service = struct {
         cast(Service, data).schedule();
     }
     fn schedule(self: *Service) void {
-        if (!self.stopped and self.idle == 0) self.idle = c.g_timeout_add(0, &updated, self);
+        if (!self.stopped and self.idle == 0) self.idle = mainloop.timeout(0, self, updated);
     }
-    fn updated(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Service, data);
+    fn updated(self: *Service) bool {
         self.idle = 0;
         if (self.registry) |registry| {
             if (registry.failed) {
                 self.reset();
                 self.notify();
-                return 0;
+                return false;
             }
             self.ready = registry.ready;
         }
         self.rebuild();
         self.notify();
-        return 0;
+        return false;
     }
     fn notify(self: *Service) void {
         if (!self.stopped) self.callback(self.data, self);
@@ -180,16 +179,16 @@ pub const Service = struct {
         const item = self.node(wanted) orelse return null;
         return self.volume(item.id);
     }
-    pub fn apply(self: *Service, wanted: Target, change: Change, cancel: *c.GCancellable, callback: Completion, data: ?*anyopaque) void {
+    pub fn apply(self: *Service, wanted: Target, change: Change, cancel: *mainloop.Cancellable, callback: Completion, data: ?*anyopaque) void {
         const item = self.node(wanted) orelse {
             callback(data, .{ .failure = error.AudioUnavailable });
             return;
         };
-        if (c.g_cancellable_is_cancelled(cancel) != 0) {
+        if (cancel.isCancelled()) {
             callback(data, .{ .failure = error.Cancelled });
             return;
         }
-        var ok: c.gboolean = 0;
+        var ok: c_int = 0;
         var expected: ?State = null;
         if (change == .default) {
             switch (item.class) {
@@ -235,7 +234,7 @@ pub const Service = struct {
             return;
         };
         const call = self.allocator.create(Call) catch @panic("out of memory");
-        call.* = .{ .service = self, .epoch = self.epoch, .target = .{ .id = item.id }, .ticket = ticket, .expected = expected, .default_class = if (change == .default) item.class else null, .callback = callback, .data = data, .parent = cast(c.GCancellable, c.g_object_ref(cancel)), .deadline = c.__zig.monotonicTime() + 4_000_000 };
+        call.* = .{ .service = self, .epoch = self.epoch, .target = .{ .id = item.id }, .ticket = ticket, .expected = expected, .default_class = if (change == .default) item.class else null, .callback = callback, .data = data, .parent = cancel.ref(), .deadline = util.monotonicTime() + 4_000_000 };
         self.refs += 1;
         self.calls.append(self.allocator, call) catch @panic("out of memory");
         call.wake();
@@ -250,50 +249,49 @@ const Call = struct {
     default_class: ?Class,
     callback: Completion,
     data: ?*anyopaque,
-    parent: *c.GCancellable,
-    source: c.guint = 0,
+    parent: *mainloop.Cancellable,
+    source: u32 = 0,
     deadline: i64,
     fn wake(self: *Call) void {
-        if (self.source != 0) _ = c.g_source_remove(self.source);
-        self.source = c.g_idle_add(&poll, self);
+        if (self.source != 0) _ = mainloop.remove(self.source);
+        self.source = mainloop.idle(self, poll);
     }
     fn again(self: *Call) void {
-        self.source = c.g_timeout_add(5, &poll, self);
+        self.source = mainloop.timeout(5, self, poll);
     }
-    fn poll(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Call, data);
+    fn poll(self: *Call) bool {
         self.source = 0;
-        if (c.g_cancellable_is_cancelled(self.parent) != 0) {
+        if (self.parent.isCancelled()) {
             self.finish(.{ .failure = error.Cancelled });
-            return 0;
+            return false;
         }
         if (self.service.stopped or self.epoch != self.service.epoch or self.service.registry == null or self.service.registry.?.failed) {
             self.finish(.{ .failure = error.AudioDisconnected });
-            return 0;
+            return false;
         }
-        if (c.__zig.monotonicTime() >= self.deadline) {
+        if (util.monotonicTime() >= self.deadline) {
             self.finish(.{ .failure = error.AudioTimedOut });
-            return 0;
+            return false;
         }
         const registry = self.service.registry.?;
         if (registry.find(self.target.id) == null) {
             self.finish(.{ .failure = error.AudioUnavailable });
-            return 0;
+            return false;
         }
         if (registry.completed < self.ticket) {
             self.again();
-            return 0;
+            return false;
         }
         const actual = self.service.state(self.target) orelse {
             self.again();
-            return 0;
+            return false;
         };
         const confirmed = if (self.expected) |expected|
             @abs(actual.percent - expected.percent) < 0.01 and actual.muted == expected.muted
         else
             self.service.defaultId(if (self.default_class.? == .output) "Audio/Sink" else "Audio/Source") == self.target.id;
         if (confirmed) self.finish(.{ .value = actual }) else self.again();
-        return 0;
+        return false;
     }
     fn finish(self: *Call, answer: Result) void {
         const service = self.service;
@@ -302,7 +300,7 @@ const Call = struct {
             break;
         };
         self.callback(self.data, answer);
-        c.g_object_unref(self.parent);
+        self.parent.unref();
         service.allocator.destroy(self);
         service.unref();
     }
@@ -310,7 +308,7 @@ const Call = struct {
 
 /// Drive callbacks for the legacy standalone JSON stream.
 pub fn dispatch() void {
-    while (c.g_main_context_iteration(null, 0) != 0) {}
+    while (mainloop.iteration(false)) {}
 }
 
 pub const Feedback = @import("desktop-feedback.zig").Feedback;

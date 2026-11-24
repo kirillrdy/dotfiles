@@ -1,10 +1,11 @@
 //! Opt-in Wayland input for native surfaces. Passive clients never bind seats.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const wl = @import("wayland-client");
 const native = @import("desktop-surface.zig");
 const keyboard = @import("desktop-keyboard.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 
 pub const TextState = struct { text: [:0]const u8, cursor: u32, anchor: u32, rect: @import("desktop-raster.zig").IntRect, private: bool = false };
 
@@ -40,7 +41,7 @@ pub const Seat = struct {
     repeat_rate: u32 = 0,
     repeat_delay: u32 = 0,
     repeat_code: ?u32 = null,
-    repeat_source: c.guint = 0,
+    repeat_source: u32 = 0,
     text_input: ?*TextInput = null,
     clipboard: ?*@import("desktop-clipboard.zig").Device = null,
 
@@ -204,7 +205,7 @@ pub const Seat = struct {
             self.stopRepeat();
             if (self.repeat_rate > 0 and self.xkb.repeats(code)) {
                 self.repeat_code = code;
-                self.repeat_source = c.g_timeout_add(self.repeat_delay, &repeatBegin, self);
+                self.repeat_source = mainloop.timeout(self.repeat_delay, self, repeatBegin);
             }
         } else if (self.repeat_code == code) self.stopRepeat();
         self.dispatchKey(code, pressed);
@@ -226,23 +227,21 @@ pub const Seat = struct {
         if (surface.input.key) |callback| callback(surface.data, surface, code, pressed);
     }
     fn stopRepeat(self: *Seat) void {
-        if (self.repeat_source != 0) _ = c.g_source_remove(self.repeat_source);
+        if (self.repeat_source != 0) _ = mainloop.remove(self.repeat_source);
         self.repeat_source = 0;
         self.repeat_code = null;
     }
-    fn repeatBegin(ptr: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Seat, ptr);
+    fn repeatBegin(self: *Seat) bool {
         self.repeat_source = 0;
-        const code = self.repeat_code orelse return 0;
-        self.repeat_source = c.g_timeout_add(@max(1, 1000 / self.repeat_rate), &repeatTick, self);
+        const code = self.repeat_code orelse return false;
+        self.repeat_source = mainloop.timeout(@max(1, 1000 / self.repeat_rate), self, repeatTick);
         self.dispatchKey(code, true);
-        return 0;
+        return false;
     }
-    fn repeatTick(ptr: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Seat, ptr);
-        const code = self.repeat_code orelse return 0;
+    fn repeatTick(self: *Seat) bool {
+        const code = self.repeat_code orelse return false;
         self.dispatchKey(code, true);
-        return @intFromBool(self.repeat_source != 0);
+        return self.repeat_source != 0;
     }
 };
 

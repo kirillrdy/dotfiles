@@ -1,6 +1,6 @@
 //! Native Wayland layer-shell panel hosting native pixel views.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
 const wl = @import("wayland-client");
 const raster = @import("desktop-raster.zig");
 const wire = @import("desktop-surface.zig");
@@ -35,7 +35,7 @@ const Panel = struct {
     pixels: std.ArrayList(u32) = .empty,
     hovered_index: ?usize = null,
     tooltip_surface: ?*wire.Surface = null,
-    tooltip_timer: c.guint = 0,
+    tooltip_timer: u32 = 0,
     tooltip_text: [:0]const u8 = "",
     tooltip_owned: bool = false,
     tooltip_label: widgets.native.Label = .{},
@@ -154,7 +154,7 @@ const Panel = struct {
     }
 
     fn hideTooltip(self: *Panel) void {
-        if (self.tooltip_timer != 0) _ = c.g_source_remove(self.tooltip_timer);
+        if (self.tooltip_timer != 0) _ = mainloop.remove(self.tooltip_timer);
         self.tooltip_timer = 0;
         if (self.tooltip_surface) |surface| surface.hide();
         self.clearTooltipText();
@@ -176,11 +176,10 @@ const Panel = struct {
         return m.tooltip orelse "";
     }
 
-    fn onTooltipTimer(data: c.gpointer) callconv(.c) c.gboolean {
-        const self: *Panel = @ptrCast(@alignCast(data));
+    fn onTooltipTimer(self: *Panel) bool {
         self.tooltip_timer = 0;
         self.showTooltip() catch {};
-        return 0;
+        return false;
     }
 
     fn showTooltip(self: *Panel) !void {
@@ -243,7 +242,7 @@ const Panel = struct {
                 self.tooltip_text = self.app.allocator.dupeSentinel(u8, text, 0) catch return;
                 self.tooltip_owned = true;
                 self.tooltip_x = @intFromFloat(@round(x));
-                self.tooltip_timer = c.g_timeout_add(500, &onTooltipTimer, self);
+                self.tooltip_timer = mainloop.timeout(500, self, onTooltipTimer);
             } else {
                 self.tooltip_x = @intFromFloat(@round(x));
             }

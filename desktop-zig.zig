@@ -1,6 +1,5 @@
 //! Session shell. Compositor-specific operations stay behind Wayland protocols.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
 pub const libc = @import("desktop-libc.zig");
 const panel = @import("desktop-panel.zig");
 const wallpaper = @import("desktop-wallpaper.zig");
@@ -41,7 +40,7 @@ const Session = struct {
     data: collectors.Service = undefined,
     data_started: bool = false,
     image: ?[:0]u8 = null,
-    timer: c.guint = 0,
+    timer: u32 = 0,
     serving: bool = false,
     stopping: bool = false,
 
@@ -77,7 +76,7 @@ const Session = struct {
         self.serving = true;
         current = self;
         widgets.refresh_source = &refresh;
-        self.timer = c.g_timeout_add_seconds(5, &maintain, self);
+        self.timer = mainloop.timeoutSeconds(5, self, maintain);
     }
 
     fn devicesChanged(ptr: ?*anyopaque, source: *device_service.Service, event: device_service.Event) void {
@@ -91,18 +90,17 @@ const Session = struct {
         inactivity.setAudioInhibited(audio_service.activeRecording());
     }
 
-    fn maintain(ptr: c.gpointer) callconv(.c) c.gboolean {
-        const self: *Session = @ptrCast(@alignCast(ptr));
+    fn maintain(self: *Session) bool {
         self.dialogs.reap();
         if (self.agent == null) self.agent = polkit.Service.init(self.allocator) catch null;
-        return 1;
+        return true;
     }
 
     fn deinit(self: *Session) void {
         self.stopping = true;
         current = null;
         widgets.refresh_source = null;
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         if (self.device_subscribed) self.devices.?.unsubscribe(&self.device_subscription);
         self.device_subscribed = false;
         if (self.inactivity) |inactivity| inactivity.destroy();
@@ -116,16 +114,16 @@ const Session = struct {
         if (self.notices) |notices| notices.destroy();
         if (self.background) |background| background.destroy();
         // Drain cancelled widget reads while their reference-counted states survive.
-        while (c.g_main_context_iteration(null, 0) != 0) {}
+        while (mainloop.iteration(false)) {}
         if (self.image) |image| self.allocator.free(image);
     }
 };
 fn refresh(kind: []const u8) void {
     if (current) |session| session.data.refresh(kind);
 }
-fn quit(_: c.gpointer) callconv(.c) c.gboolean {
+fn quit(_: void) bool {
     running = false;
-    return 1;
+    return true;
 }
 fn stop() void {
     running = false;
@@ -182,7 +180,7 @@ pub fn main(init: std.process.Init) !void {
     @import("desktop-icons.zig").init(a);
     defer {
         if (compositor) |handle| handle.stop();
-        while (c.g_main_context_iteration(null, 0) != 0) {}
+        while (mainloop.iteration(false)) {}
         @import("desktop-switcher.zig").deinit(a);
         window.deinit();
         @import("desktop-icons.zig").deinit();
@@ -278,12 +276,12 @@ pub fn main(init: std.process.Init) !void {
     const exported = try bus.connection.exportObject(shell_path, &introspection.interfaces[0], &command, null, &session);
     defer bus.connection.unregister(exported);
     notifications.on_lost = &stop;
-    const term = c.g_unix_signal_add(c.SIGTERM, &quit, null);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, null);
-    defer _ = c.g_source_remove(term);
-    defer _ = c.g_source_remove(interrupt);
+    const term = mainloop.signal(mainloop.SIGTERM, {}, quit);
+    const interrupt = mainloop.signal(mainloop.SIGINT, {}, quit);
+    defer _ = mainloop.remove(term);
+    defer _ = mainloop.remove(interrupt);
     try dispatch(&session, args[1..]);
-    while (running and !bus.connection.closed) _ = c.g_main_context_iteration(null, 1);
+    while (running and !bus.connection.closed) _ = mainloop.iteration(true);
     if (running) return error.SessionBusDisconnected;
     if (session.serving and !session.notices.?.isOwned()) return error.NotificationNameUnavailable;
 }
@@ -299,7 +297,9 @@ fn helperStatus(status: u8) void {
 }
 
 // Shared production namespace for isolated protocol and lifecycle clients.
-pub const glib = @import("desktop-glib.zig");
+pub const mainloop = @import("desktop-loop.zig");
+pub const keyboard = @import("desktop-keyboard.zig");
+pub const imaging = @import("desktop-image.zig");
 pub const paths = @import("desktop-paths.zig");
 pub const appinfo = @import("desktop-appinfo.zig");
 pub const capture = @import("desktop-capture.zig");

@@ -3,6 +3,7 @@
 //! and a directory that does not exist yet is polled for and reported once it
 //! appears.
 const std = @import("std");
+const mainloop = @import("desktop-loop.zig");
 const linux = std.os.linux;
 
 const events: u32 = linux.IN.CREATE | linux.IN.DELETE | linux.IN.MODIFY | linux.IN.ATTRIB | linux.IN.CLOSE_WRITE |
@@ -31,13 +32,13 @@ pub const Watcher = struct {
             return err;
         };
         self.* = .{ .allocator = a, .fd = @intCast(opened), .changed = changed, .context = context };
-        self.source = glib.g_unix_fd_add(self.fd, glib.IN, &readable, self);
+        self.source = mainloop.watch(self.fd, mainloop.IN, self, readable);
         return self;
     }
 
     pub fn destroy(self: *Watcher) void {
-        if (self.source != 0) _ = glib.g_source_remove(self.source);
-        if (self.poll != 0) _ = glib.g_source_remove(self.poll);
+        if (self.source != 0) _ = mainloop.remove(self.source);
+        if (self.poll != 0) _ = mainloop.remove(self.poll);
         _ = linux.close(self.fd);
         for (self.directories.items) |directory| self.allocator.free(directory.path);
         self.directories.deinit(self.allocator);
@@ -61,11 +62,10 @@ pub const Watcher = struct {
     }
 
     fn pollMissing(self: *Watcher) void {
-        if (self.poll == 0) self.poll = glib.g_timeout_add(missing_poll_ms, &checkMissing, self);
+        if (self.poll == 0) self.poll = mainloop.timeout(missing_poll_ms, self, checkMissing);
     }
 
-    fn checkMissing(data: ?*anyopaque) callconv(.c) c_int {
-        const self: *Watcher = @ptrCast(@alignCast(data));
+    fn checkMissing(self: *Watcher) bool {
         var appeared = false;
         var still_missing = false;
         for (self.directories.items) |*directory| {
@@ -73,13 +73,12 @@ pub const Watcher = struct {
             if (self.attach(directory)) appeared = true else still_missing = true;
         }
         if (appeared) self.changed(self.context);
-        if (still_missing) return 1;
+        if (still_missing) return true;
         self.poll = 0;
-        return 0;
+        return false;
     }
 
-    fn readable(_: c_int, _: c_uint, data: ?*anyopaque) callconv(.c) c_int {
-        const self: *Watcher = @ptrCast(@alignCast(data));
+    fn readable(self: *Watcher, _: c_int, _: u32) bool {
         var buffer: [4096]u8 align(@alignOf(linux.inotify_event)) = undefined;
         var any = false;
         while (true) {
@@ -105,22 +104,10 @@ pub const Watcher = struct {
             }
         }
         if (any) self.changed(self.context);
-        return 1;
+        return true;
     }
 };
 
-const loop = @import("desktop-loop.zig");
-const glib = struct {
-    const IN = loop.IN;
-    const g_unix_fd_add = loop.watch;
-    const g_timeout_add = loop.timeout;
-    fn g_source_remove(id: c_uint) c_int {
-        return @intFromBool(loop.remove(id));
-    }
-    fn g_main_context_iteration(_: ?*anyopaque, may_block: c_int) c_int {
-        return @intFromBool(loop.iteration(may_block != 0));
-    }
-};
 
 test "directory changes, deletion and late creation are reported" {
     const a = std.testing.allocator;
@@ -135,7 +122,7 @@ test "directory changes, deletion and late creation are reported" {
             const deadline = @import("desktop-util.zig").monotonicTime() + seconds * std.time.us_per_s;
             while (self.value <= above) {
                 if (@import("desktop-util.zig").monotonicTime() > deadline) return error.Timeout;
-                _ = glib.g_main_context_iteration(null, 0);
+                _ = mainloop.iteration(false);
                 std.Thread.yield() catch {};
             }
         }

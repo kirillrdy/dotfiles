@@ -7,14 +7,15 @@ const popup = @import("desktop-popup.zig");
 const wire = @import("desktop-surface.zig");
 const quick = @import("desktop-quick-settings.zig");
 pub const date_menu = @import("desktop-date-menu.zig");
-pub const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const DateTime = @import("desktop-datetime.zig").DateTime;
 const Process = @import("desktop-process.zig").Process;
 pub const native = @import("desktop-panel-view.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
 const notifications: dbus.Connection.Call = .{ .destination = "org.freedesktop.Notifications", .path = "/org/freedesktop/Notifications", .interface = "org.dotfiles.Notifications", .member = "" };
-const cast = c.__zig.cast;
+const cast = util.cast;
 pub const Options = struct {
     name: [:0]const u8 = "",
     kind: [:0]const u8 = "indicator",
@@ -25,25 +26,24 @@ pub const Options = struct {
 };
 pub const Module = struct {
     allocator: std.mem.Allocator,
-    refs: c.gint = 1,
-    dead: c.gboolean = 0,
-    monitors: c.gboolean = 0,
-    status: c.gboolean = 0,
+    refs: c_int = 1,
+    dead: c_int = 0,
+    monitors: c_int = 0,
+    status: c_int = 0,
     date_controls: ?*date_menu.Controls = null,
     history_subscription: u32 = 0,
     history_serial: u32 = 0,
     history_busy: bool = false,
     history_dirty: bool = false,
     source: [*:0]const u8 = "",
-    cancel: [*c]c.GCancellable = null,
-    clock_timer: c.guint = 0,
-    power_timer: c.guint = 0,
+    clock_timer: u32 = 0,
+    power_timer: u32 = 0,
     /// The shared session bus, for notification history and device-change signals.
     bus: ?*loop.Source = null,
     device_subscription: u32 = 0,
     settings_subscription: u32 = 0,
     quick: ?*quick.Controls = null,
-    power_pending: c.gboolean = 0,
+    power_pending: c_int = 0,
     power_process: ?*Process = null,
     usage_menu: ?*UsagePopup = null,
     view: native.View = .{},
@@ -170,7 +170,6 @@ pub const UsagePopup = struct {
 pub fn unref_module(m: *Module) callconv(.c) void {
     m.refs -= 1;
     if (m.refs != 0) return;
-    if (m.cancel != null) c.g_object_unref(m.cancel);
     if (m.tooltip) |text| m.allocator.free(text);
     m.view.deinit(m.allocator);
     m.usage.deinit(m.allocator);
@@ -192,11 +191,10 @@ pub fn apply_power_state(m: *Module, state: power_backend.State) void {
 pub fn update_power(m: *Module) callconv(.c) void {
     apply_power_state(m, (power_backend.Backend{}).inspect(m.allocator));
 }
-fn refresh_power(data: c.gpointer) callconv(.c) c.gboolean {
-    const m: *Module = @ptrCast(@alignCast(data));
-    if (m.dead != 0) return 0;
+fn refresh_power(m: *Module) bool {
+    if (m.dead != 0) return false;
     update_power(m);
-    return 1;
+    return true;
 }
 fn set_power_message(m: *Module, message: [*c]const u8) void {
     if (m.quick) |controls| controls.setMessage(std.mem.span(message));
@@ -244,8 +242,7 @@ fn select_power(m: *Module, id: [*c]const u8) void {
     set_power_message(m, "Switching…");
     m.refs += 1;
 }
-pub fn update_clock(data: c.gpointer) callconv(.c) c.gboolean {
-    const m: *Module = @as(*Module, @ptrCast(@alignCast(data)));
+pub fn update_clock(m: *Module) bool {
     var buffer: [64]u8 = undefined;
     if (DateTime.now()) |now| if (now.format(&buffer, "%b %-d\u{2002}%H:%M")) |label| {
         if (!std.mem.eql(u8, m.view.clock.value, label)) {
@@ -254,7 +251,7 @@ pub fn update_clock(data: c.gpointer) callconv(.c) c.gboolean {
         }
     } else |_| {} else |_| {}
     if (m.date_controls) |controls| controls.tick();
-    return 1;
+    return true;
 }
 pub fn make_calendar(m: *Module) callconv(.c) void {
     m.date_controls = date_menu.Controls.create(m.allocator, .{
@@ -460,13 +457,13 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
         controls.profile_context = m;
         controls.profile_selected = &native_profile_selected;
         update_power(m);
-        m.power_timer = c.g_timeout_add_seconds(2, &refresh_power, m);
+        m.power_timer = mainloop.timeoutSeconds(2, m, refresh_power);
         connect_session(m);
-    } else if (c.__zig.strEql(options.kind.ptr, "clock")) {
+    } else if (util.strEql(options.kind.ptr, "clock")) {
         make_calendar(m);
         connect_session(m);
-        _ = update_clock(@as(c.gpointer, @ptrCast(m)));
-        m.clock_timer = c.g_timeout_add_seconds(1, &update_clock, @as(c.gpointer, @ptrCast(m)));
+        _ = update_clock(m);
+        m.clock_timer = mainloop.timeoutSeconds(1, m, update_clock);
     }
     resize(m);
     m.source = options.source.ptr;
@@ -475,7 +472,6 @@ pub fn init(allocator: std.mem.Allocator, options: Options, devices: ?*@import("
     const m = allocator.create(Module) catch @panic("out of memory");
     m.* = .{
         .allocator = allocator,
-        .cancel = c.g_cancellable_new(),
         .monitors = @intFromBool(std.mem.eql(u8, options.kind, "monitors")),
         .status = @intFromBool(std.mem.eql(u8, options.name, "gnome-status")),
         .view = .{ .monitors = std.mem.eql(u8, options.kind, "monitors"), .status = std.mem.eql(u8, options.name, "gnome-status"), .activities = std.mem.eql(u8, options.kind, "activities"), .usage = std.mem.eql(u8, options.name, "gnome-codex") or std.mem.eql(u8, options.name, "gnome-claude") or std.mem.eql(u8, options.name, "gnome-antigravity"), .disk = std.mem.eql(u8, options.name, "gnome-disk") },
@@ -520,15 +516,14 @@ pub fn deinit(m: *Module) void {
         loop.release(bus);
     }
     if (m.clock_timer != 0) {
-        _ = c.g_source_remove(m.clock_timer);
+        _ = mainloop.remove(m.clock_timer);
     }
     if (m.date_controls) |controls| controls.destroy();
     m.date_controls = null;
     if (m.usage_menu) |menu| menu.destroy();
     m.usage_menu = null;
     if (m.quick) |controls| controls.deinit();
-    if (m.power_timer != 0) _ = c.g_source_remove(m.power_timer);
-    c.g_cancellable_cancel(m.cancel);
+    if (m.power_timer != 0) _ = mainloop.remove(m.power_timer);
     if (m.power_process) |child| child.cancel();
     unref_module(m);
 }

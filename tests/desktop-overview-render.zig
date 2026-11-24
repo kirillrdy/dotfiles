@@ -1,7 +1,6 @@
 //! Frozen Cairo reference for the Activities pixel renderer.
 const std = @import("std");
 const cairo = @import("desktop-cairo.zig");
-const c = @import("../desktop-glib.zig");
 const raster = @import("../desktop-raster.zig");
 const text = @import("../desktop-text.zig");
 const view = @import("../desktop-overview-view.zig");

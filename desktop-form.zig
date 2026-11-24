@@ -1,12 +1,14 @@
 //! Raster form controls hosted directly in native Wayland windows.
 const std = @import("std");
-pub const c = @import("desktop-glib.zig");
+const keyboard = @import("desktop-keyboard.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 const input = @import("desktop-password-entry.zig");
 pub const host = @import("desktop-window.zig");
 const wire = host.wire;
-const cast = c.__zig.cast;
+const cast = util.cast;
 pub const Rect = raster.Rect;
 pub const Kind = enum { heading, label, entry, toggle, button, choice };
 pub const Option = struct { id: [:0]const u8, label: [:0]const u8 };
@@ -66,7 +68,7 @@ pub const Form = struct {
     close_callback: ?*const fn (?*anyopaque) void = null,
     actions: std.ArrayList(usize) = .empty,
     dispatching: bool = false,
-    action_idle: c.guint = 0,
+    action_idle: u32 = 0,
     last_click: i64 = 0,
     last_item: ?usize = null,
     last_x: f64 = 0,
@@ -115,7 +117,7 @@ pub const Form = struct {
     }
     pub fn deinit(self: *Form) void {
         self.closed = true;
-        if (self.action_idle != 0) _ = c.g_source_remove(self.action_idle);
+        if (self.action_idle != 0) _ = mainloop.remove(self.action_idle);
         self.actions.deinit(self.allocator);
         for (self.items.items) |item| {
             if (item.entry) |entry| entry.destroy();
@@ -173,7 +175,7 @@ pub const Form = struct {
         std.debug.assert(count <= self.items.items.len);
         // IDs in the dynamic suffix may be reused by the next listing.
         self.actions.clearRetainingCapacity();
-        if (self.action_idle != 0) _ = c.g_source_remove(self.action_idle);
+        if (self.action_idle != 0) _ = mainloop.remove(self.action_idle);
         self.action_idle = 0;
         if (self.focus) |id| if (id >= count) {
             self.focus = null;
@@ -396,7 +398,7 @@ pub const Form = struct {
                         self.close();
                         return;
                     };
-                    if (self.action_idle == 0) self.action_idle = c.g_idle_add(&deliverAction, self);
+                    if (self.action_idle == 0) self.action_idle = mainloop.idle(self, deliverAction);
                 } else self.action(self.context, id);
             },
             .toggle => {
@@ -422,7 +424,7 @@ pub const Form = struct {
         };
         unreachable;
     }
-    pub fn handleKey(self: *Form, symbol: u32, modifiers: c.__zig.Modifiers) bool {
+    pub fn handleKey(self: *Form, symbol: u32, modifiers: keyboard.Modifiers) bool {
         self.input_modifiers = modifiers;
         if (self.closed or self.window.closing) return false;
         if (symbol == 0xff1b) {
@@ -437,7 +439,7 @@ pub const Form = struct {
             self.relayout();
             const n = self.items.items.len;
             if (n == 0) return true;
-            const backwards = symbol == 0xfe20 or modifiers & c.__zig.shift_mask != 0;
+            const backwards = symbol == 0xfe20 or modifiers & keyboard.shift != 0;
             var start = if (backwards) @as(usize, 0) else n - 1;
             if (self.focus) |focused| for (0..n) |index| {
                 if (self.orderedId(index) == focused) {
@@ -477,7 +479,7 @@ pub const Form = struct {
         if (field.entry) |entry| {
             if (entry.key(symbol, modifiers)) return true;
             const codepoint = @import("desktop-keyboard.zig").unicode(symbol);
-            if (modifiers & (c.__zig.control_mask | c.__zig.alt_mask) != 0 or codepoint < 32 or codepoint == 127) return false;
+            if (modifiers & (keyboard.control | keyboard.alt) != 0 or codepoint < 32 or codepoint == 127) return false;
             var bytes: [4]u8 = @splat(0);
             defer std.crypto.secureZero(u8, &bytes);
             const len = std.unicode.utf8Encode(@intCast(codepoint), &bytes) catch return false;
@@ -519,13 +521,12 @@ pub const Form = struct {
         }
         return self.handleKey(symbol, modifiers);
     }
-    fn deliverAction(ptr: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Form, ptr);
+    fn deliverAction(self: *Form) bool {
         self.action_idle = 0;
         const id = self.actions.orderedRemove(0);
-        if (self.actions.items.len != 0) self.action_idle = c.g_idle_add(&deliverAction, self);
+        if (self.actions.items.len != 0) self.action_idle = mainloop.idle(self, deliverAction);
         if (!self.closed and id < self.items.items.len) self.activate(id);
-        return 0;
+        return false;
     }
     fn commit(ptr: ?*anyopaque, _: *wire.Surface, value: []const u8) void {
         const self = cast(Form, ptr);
@@ -571,7 +572,7 @@ pub const Form = struct {
                 self.relayout();
                 return;
             };
-            const now = c.__zig.monotonicTime();
+            const now = util.monotonicTime();
             const double = self.last_item == id and now - self.last_click < 400_000 and @abs(x - self.last_x) < 5 and @abs(screen_y - self.last_y) < 5;
             self.last_item = id;
             self.last_click = now;
@@ -795,19 +796,19 @@ test "integration: native forms preserve selections, isolate passwords and navig
     form.show();
     form.focusItem(name);
     try std.testing.expectEqual(@as(usize, 0), callbacks.edits);
-    try std.testing.expect(form.handleKey('a', c.__zig.control_mask));
-    try std.testing.expect(form.handleKey('c', c.__zig.control_mask));
+    try std.testing.expect(form.handleKey('a', keyboard.control));
+    try std.testing.expect(form.handleKey('c', keyboard.control));
     form.focusItem(secret);
-    try std.testing.expect(form.handleKey('a', c.__zig.control_mask));
-    try std.testing.expect(form.handleKey('c', c.__zig.control_mask));
+    try std.testing.expect(form.handleKey('a', keyboard.control));
+    try std.testing.expect(form.handleKey('c', keyboard.control));
     // A password copy must leave the public clipboard selection untouched.
     try form.setText(name, "");
     form.focusItem(name);
-    try std.testing.expect(form.handleKey('v', c.__zig.control_mask));
-    const deadline = c.__zig.monotonicTime() + 2_000_000;
-    while (form.get(name).value().len == 0 and c.__zig.monotonicTime() < deadline) {
-        _ = c.g_main_context_iteration(null, 0);
-        c.g_usleep(1000);
+    try std.testing.expect(form.handleKey('v', keyboard.control));
+    const deadline = util.monotonicTime() + 2_000_000;
+    while (form.get(name).value().len == 0 and util.monotonicTime() < deadline) {
+        _ = mainloop.iteration(false);
+        mainloop.sleep(1000);
     }
     try std.testing.expectEqualStrings("Cafe 東京", form.get(name).value());
     try std.testing.expect(!form.get(secret).entry.?.public_text);
@@ -828,7 +829,7 @@ test "integration: native forms preserve selections, isolate passwords and navig
     try std.testing.expect(!form.get(toggle).checked);
     form.get(toggle).enabled = false;
     form.focusItem(button);
-    try std.testing.expect(form.handleKey(0xfe20, c.__zig.shift_mask));
+    try std.testing.expect(form.handleKey(0xfe20, keyboard.shift));
     try std.testing.expectEqual(choice, form.focus.?);
     form.activate(button);
     try std.testing.expectEqual(@as(usize, 1), callbacks.actions);
@@ -858,7 +859,7 @@ test "integration: native forms preserve selections, isolate passwords and navig
     const previous_actions = callbacks.actions;
     form.activate(button);
     try std.testing.expectEqual(previous_actions, callbacks.actions);
-    while (!form.closed) _ = c.g_main_context_iteration(null, 1);
+    while (!form.closed) _ = mainloop.iteration(true);
     try std.testing.expect(form.closed);
 }
 
@@ -886,10 +887,10 @@ test "integration: native form children share their parent connection and close 
     try std.testing.expectEqual(parent.window.surface.?.client, child.window.surface.?.client);
     try std.testing.expect(parent.window.blocked());
     parent.close();
-    const deadline = c.__zig.monotonicTime() + 2_000_000;
-    while (owner.closes != 2 and c.__zig.monotonicTime() < deadline) {
-        _ = c.g_main_context_iteration(null, 0);
-        c.g_usleep(1000);
+    const deadline = util.monotonicTime() + 2_000_000;
+    while (owner.closes != 2 and util.monotonicTime() < deadline) {
+        _ = mainloop.iteration(false);
+        mainloop.sleep(1000);
     }
     try std.testing.expectEqual(@as(usize, 2), owner.closes);
     try std.testing.expect(parent.closed and child.closed);

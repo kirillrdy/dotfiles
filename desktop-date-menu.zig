@@ -1,10 +1,11 @@
 //! Native Wayland calendar and notification-history popup.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const keyboard = @import("desktop-keyboard.zig");
+const util = @import("desktop-util.zig");
 const wire = @import("desktop-surface.zig");
 const popup = @import("desktop-popup.zig");
 pub const native = @import("desktop-date-menu-view.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 pub const Callbacks = struct {
     context: ?*anyopaque,
     clear: *const fn (?*anyopaque) void,
@@ -86,7 +87,7 @@ pub const Controls = struct {
             self.requestHide();
             return;
         }
-        if (self.view.minute != @divTrunc(c.__zig.realTime(), 60_000_000)) self.redraw();
+        if (self.view.minute != @divTrunc(util.realTime(), 60_000_000)) self.redraw();
     }
     fn redraw(self: *Controls) void {
         self.popup.redraw();
@@ -121,7 +122,7 @@ pub const Controls = struct {
             0xff09, 0xfe20, 0xff0d, 0xff8d, 0x20, 0xff55, 0xff56, 0xff50, 0xff51, 0xff52, 0xff53, 0xff54 => {},
             else => return false,
         }
-        const effect = self.view.key(symbol, modifiers & c.__zig.shift_mask != 0) catch |err| {
+        const effect = self.view.key(symbol, modifiers & keyboard.shift != 0) catch |err| {
             self.failed(err);
             return true;
         };

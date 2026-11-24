@@ -6,7 +6,7 @@ const c = @import("compositor-abi");
 /// From wayland-scanner private-code for desktop-overview-v1.xml.
 extern const dotfiles_overview_v1_interface: c.wl_interface;
 const hot_corner = @import("desktop-hot-corner.zig");
-const g = @import("desktop-glib.zig");
+const gsettings = @import("desktop-gsettings.zig");
 
 pub const Mode = enum { session, headless, greeter };
 
@@ -78,9 +78,7 @@ pub const Handle = struct {
         return null;
     }
 };
-fn cast(comptime T: type, ptr: ?*anyopaque) *T {
-    return @ptrCast(@alignCast(ptr.?));
-}
+const cast = @import("desktop-util.zig").cast;
 fn alloc(comptime T: type, s: *Server, value: T) *T {
     const ptr = s.a.create(T) catch @panic("compositor allocation");
     ptr.* = value;
@@ -259,7 +257,7 @@ const Server = struct {
         const name = std.mem.span(socket);
         @memcpy(handle.socket[0..name.len], name);
         if (!c.wlr_backend_start(self.backend)) return error.StartBackend;
-        self.corner_settings = g.__zig.settings(self.a, "org.gnome.desktop.interface", "enable-hot-corners");
+        self.corner_settings = gsettings.Settings.open(self.a, "org.gnome.desktop.interface", "enable-hot-corners");
         std.log.info("desktop compositor ready on {s}", .{name});
     }
     fn deinit(self: *Server) void {

@@ -1,6 +1,7 @@
 //! Leak assertions only. Requires the private desktop-memory-fixture.nix runtime.
 const std = @import("std");
-const c = @import("desktop").glib;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
 const audio = @import("desktop").audio;
 const network = @import("desktop").network;
 const battery = @import("desktop").battery;
@@ -9,30 +10,29 @@ const editor = @import("desktop").network_editor;
 const widgets = @import("desktop").widgets;
 
 fn env(name: [:0]const u8) ?[]const u8 {
-    return if (c.__zig.getenv(name)) |value| std.mem.span(value) else null;
+    return if (std.c.getenv(name)) |value| std.mem.span(value) else null;
 }
 fn pump() void {
-    while (c.g_main_context_iteration(null, 0) != 0) {}
-    c.g_usleep(1000);
+    while (mainloop.iteration(false)) {}
+    mainloop.sleep(1000);
 }
 fn fixture() !void {
     if (!std.mem.eql(u8, env("DESKTOP_MEMORY_TEST_RUN") orelse "", "1")) return error.PrivateMemoryFixtureRequired;
 }
 const Objects = struct {
     live: usize = 0,
-    fn watch(self: *Objects, object: anytype) void {
+    fn watch(self: *Objects, cancellable: *mainloop.Cancellable) void {
         self.live += 1;
-        c.g_object_weak_ref(@ptrCast(@alignCast(object)), &finalized, self);
+        cancellable.onFinalize(self, finalized);
     }
-    fn finalized(data: ?*anyopaque, _: ?*c.GObject) callconv(.c) void {
-        const self: *Objects = @ptrCast(@alignCast(data));
+    fn finalized(self: *Objects) void {
         self.live -= 1;
     }
     fn wait(self: *Objects, timeout_us: i64) !void {
-        const deadline = c.__zig.monotonicTime() + timeout_us;
-        while (self.live != 0 and c.__zig.monotonicTime() < deadline) pump();
+        const deadline = util.monotonicTime() + timeout_us;
+        while (self.live != 0 and util.monotonicTime() < deadline) pump();
         if (self.live != 0) {
-            std.debug.print("memory: {d} owned GObjects were not finalized\n", .{self.live});
+            std.debug.print("memory: {d} cancellables were not finalized\n", .{self.live});
             return error.RetainedObjects;
         }
     }
@@ -40,8 +40,8 @@ const Objects = struct {
 fn audioChanged(_: ?*anyopaque, _: *audio.Service) void {}
 fn batteryChanged(_: ?*anyopaque, _: battery.State) void {}
 fn ready(service: *audio.Service) !void {
-    const deadline = c.__zig.monotonicTime() + 15_000_000;
-    while ((!service.ready or service.state(.output) == null) and c.__zig.monotonicTime() < deadline) pump();
+    const deadline = util.monotonicTime() + 15_000_000;
+    while ((!service.ready or service.state(.output) == null) and util.monotonicTime() < deadline) pump();
     if (!service.ready or service.state(.output) == null) return error.PrivateAudioNotReady;
 }
 const Completion = struct {
@@ -56,13 +56,13 @@ fn audioLifetime(settle: bool) !void {
     const service = try audio.Service.create(std.testing.allocator, &audioChanged, null);
     if (settle) try ready(service);
     if (settle) {
-        const cancel = c.g_cancellable_new().?;
+        const cancel = mainloop.Cancellable.create();
         objects.watch(cancel);
         var completion = Completion{};
         service.apply(.output, .{ .volume = 43 }, cancel, &Completion.done, &completion);
-        c.g_cancellable_cancel(cancel);
+        cancel.cancel();
         service.destroy();
-        c.g_object_unref(cancel);
+        cancel.unref();
         try objects.wait(15_000_000);
         try std.testing.expect(completion.finished);
     } else {
@@ -75,8 +75,8 @@ fn batteryLifetime(settle: bool) !void {
     var objects = Objects{};
     const service = try battery.Service.create(std.testing.allocator, &batteryChanged, null);
     if (settle) {
-        const deadline = c.__zig.monotonicTime() + 15_000_000;
-        while (service.pending and c.__zig.monotonicTime() < deadline) pump();
+        const deadline = util.monotonicTime() + 15_000_000;
+        while (service.pending and util.monotonicTime() < deadline) pump();
         try std.testing.expect(!service.pending);
     }
     objects.watch(service.cancel);
@@ -102,16 +102,16 @@ fn networkLifetime(settle: bool) !void {
     objects.watch(second.cancel);
     var activation = NetworkCompletion{};
     if (settle) {
-        const deadline = c.__zig.monotonicTime() + 15_000_000;
-        while ((!client.state().available or client.state().profiles.items.len == 0) and c.__zig.monotonicTime() < deadline) pump();
+        const deadline = util.monotonicTime() + 15_000_000;
+        while ((!client.state().available or client.state().profiles.items.len == 0) and util.monotonicTime() < deadline) pump();
         try std.testing.expect(client.state().available and client.state().profiles.items.len != 0);
-        const cancel = c.g_cancellable_new().?;
-        defer c.g_object_unref(cancel);
+        const cancel = mainloop.Cancellable.create();
+        defer cancel.unref();
         objects.watch(cancel);
         var connected = NetworkCompletion{};
         const ap = client.state().access_points.items[0];
         client.perform(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = "memory-secret" } }, cancel, &NetworkCompletion.done, &connected);
-        while (!connected.finished and c.__zig.monotonicTime() < deadline) pump();
+        while (!connected.finished and util.monotonicTime() < deadline) pump();
         try std.testing.expect(connected.finished and connected.succeeded);
         const ui = settings.Settings.create(std.testing.allocator, .network);
         objects.watch(ui.audio_cancel);
@@ -127,11 +127,11 @@ fn networkLifetime(settle: bool) !void {
         // Start a real asynchronous action, then cancel it during window teardown.
         ui.refresh();
         ui.ui.close();
-        while (!ui.closed) _ = c.g_main_context_iteration(null, 1);
+        while (!ui.closed) _ = mainloop.iteration(true);
         while (ui.network_operations != 0) pump();
         ui.destroy();
         client.perform(.{ .activate = client.state().profiles.items[0].path }, cancel, &NetworkCompletion.done, &activation);
-        while (!activation.finished and client.service.waiting.items.len == 0 and c.__zig.monotonicTime() < deadline) pump();
+        while (!activation.finished and client.service.waiting.items.len == 0 and util.monotonicTime() < deadline) pump();
         try std.testing.expect(activation.finished or client.service.waiting.items.len != 0);
     }
     second.destroy();
@@ -148,15 +148,15 @@ fn soundLifetime(settle: bool) !void {
     if (sound.service) |service| {
         if (settle) {
             try ready(service);
-            const deadline = c.__zig.monotonicTime() + 15_000_000;
-            while (sound.view.rows.items.len == 0 and c.__zig.monotonicTime() < deadline) pump();
+            const deadline = util.monotonicTime() + 15_000_000;
+            while (sound.view.rows.items.len == 0 and util.monotonicTime() < deadline) pump();
             try std.testing.expect(sound.view.rows.items.len != 0);
         }
     }
     sound.close();
     while (!sound.closed) pump();
-    const deadline = c.__zig.monotonicTime() + 15_000_000;
-    while ((sound.operations != 0 or shell.network_operations != 0) and c.__zig.monotonicTime() < deadline) pump();
+    const deadline = util.monotonicTime() + 15_000_000;
+    while ((sound.operations != 0 or shell.network_operations != 0) and util.monotonicTime() < deadline) pump();
     try std.testing.expect(sound.operations == 0 and shell.network_operations == 0);
     try std.testing.expect(shell.closed);
     shell.destroy();
@@ -165,7 +165,6 @@ fn soundLifetime(settle: bool) !void {
 fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) !void {
     var objects = Objects{};
     const module = widgets.init(std.testing.allocator, .{ .name = name, .kind = kind, .source = source }, null, null, null);
-    objects.watch(module.cancel);
     if (module.quick) |controls| {
         objects.watch(controls.cancel);
         if (controls.devices.network_client) |client| {
@@ -174,8 +173,8 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         if (controls.devices.battery_service) |service| objects.watch(service.cancel);
         for (0..2) |cycle| {
             try controls.show(320, 32);
-            const deadline = c.__zig.monotonicTime() + 5_000_000;
-            while (!controls.popup.surface.?.configured and c.__zig.monotonicTime() < deadline) pump();
+            const deadline = util.monotonicTime() + 5_000_000;
+            while (!controls.popup.surface.?.configured and util.monotonicTime() < deadline) pump();
             try std.testing.expect(controls.popup.surface.?.configured);
             if (cycle == 0) controls.hide() else _ = controls.handleKey(0xff1b, 0);
         }
@@ -183,8 +182,8 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
     if (module.usage_menu) |menu| {
         for (0..2) |cycle| {
             try menu.show(320, 32);
-            const deadline = c.__zig.monotonicTime() + 5_000_000;
-            while (!menu.popup.surface.?.configured and c.__zig.monotonicTime() < deadline) pump();
+            const deadline = util.monotonicTime() + 5_000_000;
+            while (!menu.popup.surface.?.configured and util.monotonicTime() < deadline) pump();
             try std.testing.expect(menu.popup.surface.?.configured);
             if (cycle == 0) menu.hide() else _ = menu.handleKey(0xff1b);
         }
@@ -194,8 +193,8 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         // with a dismissal still queued rather than merely freeing its model.
         for (0..2) |cycle| {
             try controls.show(320, 32);
-            const deadline = c.__zig.monotonicTime() + 5_000_000;
-            while (!controls.popup.surface.?.configured and c.__zig.monotonicTime() < deadline) pump();
+            const deadline = util.monotonicTime() + 5_000_000;
+            while (!controls.popup.surface.?.configured and util.monotonicTime() < deadline) pump();
             try std.testing.expect(controls.popup.surface.?.configured);
             if (cycle == 0) controls.hide() else _ = controls.handleKey(0xff1b, 0);
         }
@@ -216,8 +215,8 @@ test "memory: detector controls" {
         std.mem.doNotOptimizeAway(std.c.malloc(37));
     } else if (std.mem.eql(u8, probe, "object")) {
         var objects = Objects{};
-        const retained = c.g_cancellable_new().?;
-        defer c.g_object_unref(retained);
+        const retained = mainloop.Cancellable.create();
+        defer retained.unref();
         objects.watch(retained);
         try objects.wait(50_000);
     } else return error.UnknownLeakProbe;

@@ -1,6 +1,6 @@
 //! Asynchronous logind actions. Result messages are valid for the callback only.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
 const name = "org.freedesktop.login1";
@@ -11,30 +11,30 @@ pub const Action = enum { @"suspend", reboot, poweroff, logout };
 pub const Result = union(enum) { success, cancelled, failure: [:0]const u8 };
 pub const Callback = *const fn (?*anyopaque, Result) void;
 
-pub fn perform(a: std.mem.Allocator, action: Action, cancel: *c.GCancellable, callback: Callback, data: ?*anyopaque) void {
-    if (c.g_cancellable_is_cancelled(cancel) != 0) return callback(data, .cancelled);
+pub fn perform(a: std.mem.Allocator, action: Action, cancel: *mainloop.Cancellable, callback: Callback, data: ?*anyopaque) void {
+    if (cancel.isCancelled()) return callback(data, .cancelled);
     const job = a.create(Job) catch return callback(data, .{ .failure = "Could not allocate session action" });
     job.* = .{ .allocator = a, .action = action, .cancel = cancel, .callback = callback, .data = data };
     if (action == .logout) {
-        if (c.__zig.getenv("XDG_SESSION_ID")) |id| {
+        if (std.c.getenv("XDG_SESSION_ID")) |id| {
             if (id[0] != 0) job.session_id = a.dupeSentinel(u8, std.mem.span(id), 0) catch {
                 a.destroy(job);
                 return callback(data, .{ .failure = "Could not allocate session ID" });
             };
         }
     }
-    _ = c.g_object_ref(cancel);
-    job.cancel_handler = c.g_cancellable_connect(cancel, @ptrCast(&Job.cancelled), job, null);
+    _ = cancel.ref();
+    job.cancel_handler = cancel.connect(job, Job.cancelled);
     // Connect from the main loop, so a cancellation right after `perform` sends nothing.
-    job.idle = c.g_idle_add(&Job.start, job);
+    job.idle = mainloop.idle(job, Job.start);
 }
 
 const Job = struct {
     allocator: std.mem.Allocator,
     action: Action,
-    cancel: *c.GCancellable,
-    cancel_handler: c.gulong = 0,
-    idle: c.guint = 0,
+    cancel: *mainloop.Cancellable,
+    cancel_handler: u64 = 0,
+    idle: u32 = 0,
     callback: Callback,
     data: ?*anyopaque,
     source: ?*loop.Source = null,
@@ -44,14 +44,14 @@ const Job = struct {
     message: [512:0]u8 = @splat(0),
 
     fn finish(self: *Job, result: Result) void {
-        if (self.idle != 0) _ = c.g_source_remove(self.idle);
-        if (self.cancel_handler != 0) c.g_cancellable_disconnect(self.cancel, self.cancel_handler);
+        if (self.idle != 0) _ = mainloop.remove(self.idle);
+        self.cancel.disconnect(self.cancel_handler);
         if (self.source) |source| {
             source.connection.cancel(self.serial);
             source.destroy();
         }
         self.callback(self.data, result);
-        c.g_object_unref(self.cancel);
+        self.cancel.unref();
         if (self.session_id) |id| self.allocator.free(id);
         self.allocator.destroy(self);
     }
@@ -60,23 +60,20 @@ const Job = struct {
         self.finish(.{ .failure = text });
     }
     /// Runs in the cancelling thread; disconnecting there could deadlock, so finish from the loop.
-    fn cancelled(_: *c.GCancellable, ptr: c.gpointer) callconv(.c) void {
-        const self: *Job = @ptrCast(@alignCast(ptr));
-        if (self.idle != 0) _ = c.g_source_remove(self.idle);
-        self.idle = c.g_idle_add(&finishCancelled, self);
+    fn cancelled(self: *Job) void {
+        if (self.idle != 0) _ = mainloop.remove(self.idle);
+        self.idle = mainloop.idle(self, finishCancelled);
     }
-    fn finishCancelled(ptr: c.gpointer) callconv(.c) c.gboolean {
-        const self: *Job = @ptrCast(@alignCast(ptr));
+    fn finishCancelled(self: *Job) bool {
         self.idle = 0;
         self.finish(.cancelled);
-        return 0;
+        return false;
     }
-    fn start(ptr: c.gpointer) callconv(.c) c.gboolean {
-        const self: *Job = @ptrCast(@alignCast(ptr));
+    fn start(self: *Job) bool {
         self.idle = 0;
         self.source = loop.Source.open(self.allocator, .system) catch |err| {
             self.fail("Could not connect to the system bus: {s}", .{@errorName(err)});
-            return 0;
+            return false;
         };
         if (self.action == .logout) {
             if (self.session_id) |id| {
@@ -94,7 +91,7 @@ const Job = struct {
                 .logout => unreachable,
             }, .{}, 5000);
         }
-        return 0;
+        return false;
     }
     fn call(self: *Job, object: []const u8, interface: []const u8, method: []const u8, args: anytype, timeout: u32) void {
         const connection = self.source.?.connection;
@@ -109,7 +106,7 @@ const Job = struct {
             .ok => |value| value,
             .failed => |failure| return self.fail("{s}: {s}", .{ failure.name, failure.text }),
         };
-        if (c.g_cancellable_is_cancelled(self.cancel) != 0) return self.finish(.cancelled);
+        if (self.cancel.isCancelled()) return self.finish(.cancelled);
         switch (self.stage) {
             .action => self.finish(.success),
             .session => {

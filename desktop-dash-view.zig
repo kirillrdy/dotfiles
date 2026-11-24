@@ -1,6 +1,7 @@
 //! Native Activities dash, following GNOME 50's dash and overview-tile styles.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const decode = @import("desktop-decode.zig");
+const icons = @import("desktop-icons.zig");
 const App = @import("desktop-appinfo.zig").App;
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
@@ -46,8 +47,8 @@ pub const Item = struct {
     window_id: ?[:0]u8 = null,
     /// The application's icon; the item's reference keeps it alive.
     icon: ?[:0]const u8 = null,
-    fallback: ?c.__icons.Image = null,
-    pixels: ?c.__icons.Image = null,
+    fallback: ?decode.Image = null,
+    pixels: ?decode.Image = null,
     scale: u32 = 0,
     size: u32 = 0,
     show_apps: bool = false,
@@ -55,17 +56,17 @@ pub const Item = struct {
         a.free(self.title);
         if (self.window_id) |id| a.free(id);
         if (self.app) |app| app.unref();
-        if (self.fallback) |image| c.__icons.free(a, image);
-        if (self.pixels) |image| c.__icons.free(a, image);
+        if (self.fallback) |image| decode.free(a, image);
+        if (self.pixels) |image| decode.free(a, image);
     }
     fn prepare(self: *Item, a: std.mem.Allocator, scale: u32, size: u32) void {
         if (self.scale == scale and self.size == size) return;
-        if (self.pixels) |image| c.__icons.free(a, image);
+        if (self.pixels) |image| decode.free(a, image);
         self.pixels = null;
         if (self.show_apps) {
             self.pixels = @import("desktop-icons.zig").load(a, "view-app-grid-symbolic", size, scale, @import("desktop-icons.zig").foreground);
         } else {
-            self.pixels = c.__icons.loadApp(a, self.icon, size * scale, self.fallback, "application-x-executable");
+            self.pixels = icons.loadApp(a, self.icon, size * scale, self.fallback, "application-x-executable");
         }
         self.scale = scale;
         self.size = size;
@@ -99,7 +100,7 @@ pub const View = struct {
         self.pressed = null;
         self.invalidateTooltip();
     }
-    pub fn add(self: *View, title: [:0]const u8, app: ?*App, window_id: ?[*:0]const u8, fallback: ?c.__icons.Image) !void {
+    pub fn add(self: *View, title: [:0]const u8, app: ?*App, window_id: ?[*:0]const u8, fallback: ?decode.Image) !void {
         const owned = try self.allocator.dupeSentinel(u8, title, 0);
         errdefer self.allocator.free(owned);
         const id = if (window_id) |value| try self.allocator.dupeSentinel(u8, std.mem.span(value), 0) else null;

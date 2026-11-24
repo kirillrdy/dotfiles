@@ -1,8 +1,9 @@
 //! Application discovery, search, selection and native Wayland hosting.
 const std = @import("std");
-pub const c = @import("desktop-glib.zig");
+const keyboard = @import("desktop-keyboard.zig");
+const util = @import("desktop-util.zig");
 pub const KeyEvent = struct { state: u32 = 0, keyval: u32 };
-const cast = c.__zig.cast;
+const cast = util.cast;
 const wire = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const shaping = @import("desktop-text.zig");
@@ -264,11 +265,11 @@ fn inputChanged(data: ?*anyopaque) void {
 pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
     const symbol = event.keyval;
     const search_mode = self.searchMode();
-    if (symbol == c.__zig.keys.Escape) {
+    if (symbol == keyboard.keys.Escape) {
         self.hide();
         return true;
     }
-    if (symbol == c.__zig.keys.Return or symbol == c.__zig.keys.KP_Enter) {
+    if (symbol == keyboard.keys.Return or symbol == keyboard.keys.KP_Enter) {
         const count = self.visible.items.len;
         if (count > 0) {
             const selected = if (search_mode)
@@ -284,12 +285,12 @@ pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
         return true;
     }
     if (symbol == 0xff09 or symbol == 0xfe20) {
-        if (self.search_focus and symbol == 0xff09 and event.state & c.__zig.shift_mask == 0) self.focusGrid() else {
+        if (self.search_focus and symbol == 0xff09 and event.state & keyboard.shift == 0) self.focusGrid() else {
             self.focusSearch();
         }
         return true;
     }
-    if (self.search_focus and symbol == c.__zig.keys.Down) {
+    if (self.search_focus and symbol == keyboard.keys.Down) {
         if (search_mode) {
             if (self.visible.items.len == 0) return true;
             self.selected = 0;
@@ -298,8 +299,8 @@ pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
         self.focusGrid();
         return true;
     }
-    if (self.search_focus and symbol == c.__zig.keys.Right and
-        event.state & (c.__zig.shift_mask | c.__zig.control_mask | c.__zig.alt_mask) == 0 and
+    if (self.search_focus and symbol == keyboard.keys.Right and
+        event.state & (keyboard.shift | keyboard.control | keyboard.alt) == 0 and
         search_mode and self.searchGrid().shown > 1)
     {
         const entry = self.search_input.?;
@@ -315,11 +316,11 @@ pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
         if (search_mode) {
             const shown = self.searchGrid().shown;
             if (shown > 0) {
-                if (symbol == c.__zig.keys.Up) {
+                if (symbol == keyboard.keys.Up) {
                     self.focusSearch();
                     return true;
                 }
-                const delta: i64 = if (symbol == c.__zig.keys.Left) -1 else if (symbol == c.__zig.keys.Right) 1 else 0;
+                const delta: i64 = if (symbol == keyboard.keys.Left) -1 else if (symbol == keyboard.keys.Right) 1 else 0;
                 if (delta != 0 or symbol == 0xff50 or symbol == 0xff57) {
                     const last: i64 = @intCast(shown - 1);
                     const current: i64 = @intCast(@min(self.selected, shown - 1));
@@ -333,10 +334,10 @@ pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
             }
         } else {
             const cols: i64 = @intCast(self.geometry.columns);
-            const delta: i64 = if (symbol == c.__zig.keys.Left) -1 else if (symbol == c.__zig.keys.Right) 1 else if (symbol == c.__zig.keys.Up) -cols else if (symbol == c.__zig.keys.Down) cols else 0;
+            const delta: i64 = if (symbol == keyboard.keys.Left) -1 else if (symbol == keyboard.keys.Right) 1 else if (symbol == keyboard.keys.Up) -cols else if (symbol == keyboard.keys.Down) cols else 0;
             if (delta != 0 or symbol == 0xff50 or symbol == 0xff57) {
                 const next: i64 = if (symbol == 0xff50) 0 else if (symbol == 0xff57) @intCast(self.visible.items.len - 1) else @as(i64, @intCast(self.selected)) + delta;
-                if (next < 0 and symbol == c.__zig.keys.Up) {
+                if (next < 0 and symbol == keyboard.keys.Up) {
                     self.focusSearch();
                 } else self.selected = @intCast(std.math.clamp(next, 0, @as(i64, @intCast(self.visible.items.len - 1))));
                 self.page = self.selected / self.geometry.capacity();
@@ -346,7 +347,7 @@ pub fn keyPress(self: *Launcher, event: *KeyEvent) bool {
             }
         }
     }
-    if (self.search_focus or symbol == c.__zig.keys.BackSpace) {
+    if (self.search_focus or symbol == keyboard.keys.BackSpace) {
         self.focusSearch();
         return self.search_input.?.key(symbol, event.state);
     }
@@ -431,7 +432,7 @@ pub fn motion(self: *Launcher, part: Part, x: f64, y: f64) void {
 }
 pub fn scroll(self: *Launcher, amount: f64) void {
     if (self.searchMode()) return;
-    const time: u32 = @truncate(@as(u64, @intCast(@divTrunc(c.__zig.monotonicTime(), 1000))));
+    const time: u32 = @truncate(@as(u64, @intCast(@divTrunc(util.monotonicTime(), 1000))));
     if (time -% self.wheel_time > 200) self.wheel = 0;
     self.wheel_time = time;
     self.wheel += amount;
@@ -788,10 +789,10 @@ test "overview search navigates results from the end of the query" {
     try launcher.setSearch("Editor");
     try std.testing.expectEqual(@as(usize, 3), launcher.visible.items.len);
 
-    var event: KeyEvent = .{ .keyval = c.__zig.keys.Left, .state = c.__zig.shift_mask };
+    var event: KeyEvent = .{ .keyval = keyboard.keys.Left, .state = keyboard.shift };
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(launcher.search_input.?.buffer.selected());
-    event = .{ .keyval = c.__zig.keys.Right };
+    event = .{ .keyval = keyboard.keys.Right };
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(launcher.search_focus and !launcher.search_input.?.buffer.selected());
     try std.testing.expect(keyPress(&launcher, &event));
@@ -799,13 +800,13 @@ test "overview search navigates results from the end of the query" {
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expectEqual(@as(usize, 2), launcher.selected);
 
-    event.keyval = c.__zig.keys.Left;
+    event.keyval = keyboard.keys.Left;
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expectEqual(@as(usize, 1), launcher.selected);
-    event.keyval = c.__zig.keys.Up;
+    event.keyval = keyboard.keys.Up;
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(launcher.search_focus);
-    event.keyval = c.__zig.keys.Down;
+    event.keyval = keyboard.keys.Down;
     try std.testing.expect(keyPress(&launcher, &event));
     try std.testing.expect(!launcher.search_focus and launcher.selected == 0);
 }

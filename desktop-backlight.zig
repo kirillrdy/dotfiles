@@ -1,6 +1,6 @@
 //! Shared backlight discovery and asynchronous, session-authorized brightness changes.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
 const dbus = @import("dbus");
 const libc = @import("desktop-libc.zig");
 // Test builds account for service state and asynchronous callback allocations.
@@ -65,10 +65,10 @@ pub const Backend = struct {
         }
         return selected orelse error.NoBacklight;
     }
-    pub fn start(self: Backend, a: std.mem.Allocator, action: Action, cancel: *c.GCancellable, callback: Callback, context: ?*anyopaque) void {
+    pub fn start(self: Backend, a: std.mem.Allocator, action: Action, cancel: *mainloop.Cancellable, callback: Callback, context: ?*anyopaque) void {
         const job = a.create(Job) catch @panic("out of memory");
         job.* = .{ .allocator = a, .backend = self, .action = action, .cancel = cancel, .callback = callback, .context = context };
-        _ = c.g_object_ref(cancel);
+        _ = cancel.ref();
         job.read();
     }
 };
@@ -79,30 +79,22 @@ const Job = struct {
     allocator: std.mem.Allocator,
     backend: Backend,
     action: Action,
-    cancel: *c.GCancellable,
+    cancel: *mainloop.Cancellable,
     callback: Callback,
     context: ?*anyopaque,
     device: Device = undefined,
     failure: ?anyerror = null,
     written: bool = false,
     fn read(self: *Job) void {
-        const task = c.g_task_new(null, self.cancel, &readDone, self);
-        c.g_task_set_task_data(task, self, null);
-        c.g_task_run_in_thread(task, &readWork);
-        c.g_object_unref(task);
+        mainloop.background(self, readWork, readDone);
     }
-    fn readWork(task: ?*c.GTask, _: ?*anyopaque, data: ?*anyopaque, _: [*c]c.GCancellable) callconv(.c) void {
-        const self: *Job = @ptrCast(@alignCast(data));
+    fn readWork(self: *Job) void {
         self.device = (if (self.written) self.backend.readDevice(std.mem.sliceTo(&self.device.name, 0)) else self.backend.discover()) catch |err| {
             self.failure = err;
-            c.g_task_return_boolean(task, 1);
             return;
         };
-        c.g_task_return_boolean(task, 1);
     }
-    fn readDone(_: [*c]c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
-        const self: *Job = @ptrCast(@alignCast(data));
-        if (c.g_task_propagate_boolean(@ptrCast(result), null) == 0) return self.finish(.{ .failure = error.Cancelled });
+    fn readDone(self: *Job) void {
         if (self.failure) |err| return self.finish(.{ .failure = err });
         if (self.written or self.action == .read) return self.finish(.{ .value = self.device });
         const percent = switch (self.action) {
@@ -122,7 +114,7 @@ const Job = struct {
                 self.read();
             },
             .failed => |failure| {
-                const cancelled = c.g_cancellable_is_cancelled(self.cancel) != 0;
+                const cancelled = self.cancel.isCancelled();
                 if (!cancelled) std.log.warn("backlight: {s}: {s}", .{ failure.name, failure.text });
                 self.finish(.{ .failure = if (cancelled) error.Cancelled else error.SetBrightnessFailed });
             },
@@ -130,7 +122,7 @@ const Job = struct {
     }
     fn finish(self: *Job, result: Result) void {
         self.callback(self.context, result);
-        c.g_object_unref(self.cancel);
+        self.cancel.unref();
         self.allocator.destroy(self);
     }
 };

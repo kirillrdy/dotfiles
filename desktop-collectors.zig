@@ -1,6 +1,6 @@
 //! Shared collectors: blocking device/API queries run in GLib workers, never the UI thread.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
 const data = @import("desktop-panel-data.zig");
 const u = @import("desktop-util.zig");
 const devices = @import("desktop-devices.zig");
@@ -13,7 +13,7 @@ pub const Service = struct {
     allocator: std.mem.Allocator,
     panel: *panel.Service,
     sources: [kinds.len]Source = undefined,
-    timer: c.guint = 0,
+    timer: u32 = 0,
     dead: bool = false,
     revision: u64 = 0,
     devices: *devices.Service,
@@ -25,7 +25,7 @@ pub const Service = struct {
         self.subscription = .{ .context = self, .changed = &deviceChanged };
         self.devices.subscribe(&self.subscription);
         _ = tick(self);
-        self.timer = c.g_timeout_add(500, &tick, self);
+        self.timer = mainloop.timeout(500, self, tick);
     }
 
     pub fn refresh(self: *Service, kind: []const u8) void {
@@ -36,8 +36,7 @@ pub const Service = struct {
         };
     }
 
-    fn tick(ptr: c.gpointer) callconv(.c) c.gboolean {
-        const self: *Service = @ptrCast(@alignCast(ptr));
+    fn tick(self: *Service) bool {
         const revision = self.panel.revision();
         for (&self.sources, kinds) |*source, kind| {
             // Initialize new panels without repeatedly repainting unchanged data.
@@ -46,7 +45,7 @@ pub const Service = struct {
             if (source.remaining == 0 and !source.busy) source.launch();
         }
         self.revision = revision;
-        return 1;
+        return true;
     }
 
     fn deviceChanged(ptr: ?*anyopaque, service: *devices.Service, event: devices.Event) void {
@@ -58,9 +57,9 @@ pub const Service = struct {
     pub fn deinit(self: *Service) void {
         self.dead = true;
         self.devices.unsubscribe(&self.subscription);
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         for (&self.sources) |*source| {
-            while (source.busy) _ = c.g_main_context_iteration(null, 1);
+            while (source.busy) _ = mainloop.iteration(true);
             if (source.cached) |output| output.destroy();
         }
     }
@@ -89,18 +88,11 @@ const Source = struct {
     fn launch(self: *Source) void {
         self.busy = true;
         self.remaining = intervals[self.index];
-        const task = c.g_task_new(null, null, &done, self).?;
-        c.g_task_set_task_data(task, self, null);
-        c.g_task_run_in_thread(task, &work);
-        c.g_object_unref(task);
+        mainloop.background(self, work, done);
     }
 
-    fn work(task: ?*c.GTask, _: c.gpointer, ptr: c.gpointer, _: ?*c.GCancellable) callconv(.c) void {
-        const self: *Source = @ptrCast(@alignCast(ptr));
-        const output = self.owner.allocator.create(Output) catch {
-            c.g_task_return_pointer(task, null, null);
-            return;
-        };
+    fn work(self: *Source) ?*Output {
+        const output = self.owner.allocator.create(Output) catch return null;
         output.* = .{ .allocator = self.owner.allocator, .arena = std.heap.ArenaAllocator.init(self.owner.allocator), .value = undefined };
         const alloc = output.arena.allocator();
         const demo = std.mem.eql(u8, u.env("WB_PANEL_DEMO") orelse "", "1");
@@ -114,16 +106,13 @@ const Source = struct {
         // Transfer the arena and its typed update to the main thread.
         if (result) |value| {
             output.value = value;
-            c.g_task_return_pointer(task, output, null);
-        } else {
-            output.destroy();
-            c.g_task_return_pointer(task, null, null);
+            return output;
         }
+        output.destroy();
+        return null;
     }
 
-    fn done(_: ?*c.GObject, result: ?*c.GAsyncResult, ptr: c.gpointer) callconv(.c) void {
-        const self: *Source = @ptrCast(@alignCast(ptr));
-        const output: ?*Output = @ptrCast(@alignCast(c.g_task_propagate_pointer(@ptrCast(result), null)));
+    fn done(self: *Source, output: ?*Output) void {
         if (output) |out| {
             if (self.cached) |old| old.destroy();
             self.cached = out;

@@ -1,6 +1,7 @@
 //! Native portal broker, dialogs and capture for host desktop applications.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const netmon = @import("desktop-netmon.zig");
 const appinfo = @import("desktop-appinfo.zig");
@@ -24,8 +25,8 @@ const idle_portal_xml =
     "<method name=\"IdleInhibited\"><arg type=\"b\" name=\"inhibited\" direction=\"out\"/></method>" ++
     "<signal name=\"IdleInhibitedChanged\"><arg type=\"b\" name=\"inhibited\"/></signal>" ++
     "</interface></node>";
-const cast = c.__zig.cast;
-const eq = c.__zig.eq;
+const cast = util.cast;
+const eq = util.eq;
 const portal_options = @import("desktop-portal-options.zig");
 const Dict = portal_options.Dict;
 /// Options (`a{sv}`) from a method argument; entries borrow from the message.
@@ -120,7 +121,7 @@ const Server = struct {
         self.network = null;
         for (self.subscriptions.items) |id| self.connection.unsubscribe(id);
         self.cancelRequests(null);
-        while (self.requests.items.len > 0) _ = c.g_main_context_iteration(null, 1);
+        while (self.requests.items.len > 0) _ = mainloop.iteration(true);
         while (self.sessions.items.len > 0) self.closeSession(self.sessions.items[0]);
         for (self.registrations.items) |id| self.connection.unregister(id);
         if (self.idle_introspection) |*idle| idle.deinit();
@@ -260,7 +261,7 @@ const Request = struct {
     interface: [:0]const u8,
     method: [:0]const u8,
     session_handle: ?[:0]const u8 = null,
-    cancel: *c.GCancellable,
+    cancel: *mainloop.Cancellable,
     registration: u32 = 0,
     kind: Kind,
     /// A held NetworkMonitor.CanReach call, answered when the probe finishes.
@@ -273,7 +274,7 @@ const Request = struct {
     account: ?*Account = null,
     screenshot: ?*Capture.Operation = null,
     picker: ?*Capture.Picker = null,
-    idle: c.guint = 0,
+    idle: u32 = 0,
 
     fn create(server: *Server, client_info: *Client, interface: []const u8, method: []const u8, options: Dict, kind: Kind) !*Request {
         if (server.requests.items.len >= 128) return error.TooManyRequests;
@@ -284,10 +285,10 @@ const Request = struct {
         if (count >= 32) return error.TooManyClientRequests;
         const item = try server.allocator.create(Request);
         errdefer server.allocator.destroy(item);
-        item.* = .{ .server = server, .arena = std.heap.ArenaAllocator.init(server.allocator), .owner = undefined, .app = undefined, .handle = undefined, .interface = undefined, .method = undefined, .cancel = c.g_cancellable_new().?, .kind = kind };
+        item.* = .{ .server = server, .arena = std.heap.ArenaAllocator.init(server.allocator), .owner = undefined, .app = undefined, .handle = undefined, .interface = undefined, .method = undefined, .cancel = mainloop.Cancellable.create(), .kind = kind };
         errdefer {
             item.arena.deinit();
-            c.g_object_unref(item.cancel);
+            item.cancel.unref();
         }
         const alloc = item.arena.allocator();
         item.owner = try alloc.dupeSentinel(u8, client_info.sender, 0);
@@ -318,7 +319,7 @@ const Request = struct {
             self.server.connection.unregister(self.registration);
             self.registration = 0;
         }
-        c.g_cancellable_cancel(self.cancel);
+        self.cancel.cancel();
         if (self.reach) |reach| reach.cancel();
         if (self.session_handle) |handle| if (self.server.session(handle, self.owner)) |session_info| {
             session_info.pending = null;
@@ -342,7 +343,7 @@ const Request = struct {
         const server = self.server;
         const had_idle = self.inhibit_idle;
         self.inhibit_idle = false;
-        if (self.idle != 0) _ = c.g_source_remove(self.idle);
+        if (self.idle != 0) _ = mainloop.remove(self.idle);
         if (self.picker) |picker| picker.destroy();
         if (self.session_handle) |handle| if (self.server.session(handle, self.owner)) |session_info| {
             if (session_info.pending == self) session_info.pending = null;
@@ -353,7 +354,7 @@ const Request = struct {
         if (self.registration != 0) self.server.connection.unregister(self.registration);
         if (self.invocation) |*invocation| invocation.release(self.server.connection.allocator);
         if (self.reach) |reach| reach.abandon();
-        c.g_object_unref(self.cancel);
+        self.cancel.unref();
         for (self.server.requests.items, 0..) |item, index| if (item == self) {
             _ = self.server.requests.swapRemove(index);
             break;
@@ -365,11 +366,10 @@ const Request = struct {
     fn respond(self: *Request, code: u32, results: Dict) void {
         if (!self.closed and !self.server.quitting) self.server.connection.emitTo(self.owner, self.handle, public ++ "Request", "Response", .{ code, results }) catch {};
     }
-    fn nativeFinished(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Request, data);
+    fn nativeFinished(self: *Request) bool {
         self.idle = 0;
         defer self.destroy();
-        const session_info = self.server.session(self.session_handle.?, self.owner) orelse return 0;
+        const session_info = self.server.session(self.session_handle.?, self.owner) orelse return false;
         const handle = [_]Dict.Entry{.{ .key = "session_handle", .value = .{ .string = session_info.handle } }};
         if (eq(self.method, "CreateSession")) {
             session_info.state = .created;
@@ -378,7 +378,7 @@ const Request = struct {
             session_info.state = .selected;
             self.respond(0, portal_options.empty);
         }
-        return 0;
+        return false;
     }
     fn picked(data: ?*anyopaque, chosen: ?Capture.Picked, _: bool) void {
         const self = cast(Request, data);
@@ -496,7 +496,7 @@ fn screencast(server: *Server, client_info: *Client, method: []const u8, args: [
         session_info.state = .starting;
     } else {
         session_info.state = if (eq(method, "CreateSession")) .creating else .selecting;
-        request.idle = c.g_idle_add(&Request.nativeFinished, request);
+        request.idle = mainloop.idle(request, Request.nativeFinished);
     }
     replyHandle(server, message, request.handle);
 }
@@ -526,8 +526,8 @@ fn openRemote(server: *Server, client_info: *Client, args: []const dbus.Value, m
     if (session_info.state != .started) return error.InvalidSessionState;
     // Host clients already have access to this socket. Sandboxed callers are
     // rejected before dispatch rather than receiving an unrestricted remote.
-    const runtime = c.__zig.getenv("XDG_RUNTIME_DIR") orelse return error.NoRuntimeDirectory;
-    const remote: [*c]const u8 = c.__zig.getenv("PIPEWIRE_REMOTE") orelse @as([*c]const u8, "pipewire-0");
+    const runtime = std.c.getenv("XDG_RUNTIME_DIR") orelse return error.NoRuntimeDirectory;
+    const remote: [*c]const u8 = std.c.getenv("PIPEWIRE_REMOTE") orelse @as([*c]const u8, "pipewire-0");
     var address = std.mem.zeroes(libc.struct_sockaddr_un);
     address.sun_family = libc.AF_UNIX;
     const socket_path = if (std.mem.startsWith(u8, std.mem.span(remote), "/")) try std.fmt.bufPrint(&address.sun_path, "{s}", .{remote}) else try std.fmt.bufPrint(&address.sun_path, "{s}/{s}", .{ runtime, remote });
@@ -707,9 +707,9 @@ fn idlePortalCall(data: ?*anyopaque, message: *const dbus.Message) void {
     if (eq(message.member orelse "", "IdleInhibited")) return server.connection.reply(message, .{server.idle_inhibited}) catch {};
     server.connection.replyError(message, "org.freedesktop.DBus.Error.UnknownMethod", "Unknown method") catch {};
 }
-fn quit(data: ?*anyopaque) callconv(.c) c_int {
-    cast(Server, data).quitting = true;
-    return 1;
+fn quit(self: *Server) bool {
+    self.quitting = true;
+    return true;
 }
 pub fn run(allocator: std.mem.Allocator) !void {
     return runWithAllocator(allocator);
@@ -727,11 +727,11 @@ pub fn runWithAllocator(allocator: std.mem.Allocator) !void {
     defer server.deinit();
     try server.start();
     if ((connection.requestName("org.freedesktop.portal.Desktop", 4) catch return error.PortalNameUnavailable) != 1) return error.PortalNameUnavailable;
-    const term = c.g_unix_signal_add(c.SIGTERM, &quit, &server);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, &server);
+    const term = mainloop.signal(mainloop.SIGTERM, &server, quit);
+    const interrupt = mainloop.signal(mainloop.SIGINT, &server, quit);
     defer {
-        _ = c.g_source_remove(term);
-        _ = c.g_source_remove(interrupt);
+        _ = mainloop.remove(term);
+        _ = mainloop.remove(interrupt);
     }
-    while (!server.quitting and !connection.closed) _ = c.g_main_context_iteration(null, 1);
+    while (!server.quitting and !connection.closed) _ = mainloop.iteration(true);
 }

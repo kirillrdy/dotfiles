@@ -2,6 +2,7 @@
 //! helpers, starting programs with exec failures reported to the caller, and
 //! watching children on the main loop through a pidfd, as GSubprocess did.
 const std = @import("std");
+const mainloop = @import("desktop-loop.zig");
 const linux = std.os.linux;
 const util = @import("desktop-util.zig");
 
@@ -328,8 +329,8 @@ pub const Process = struct {
         stderr_pipe[0] = -1;
         // Spawning may happen on any thread; the main loop may deliver and free
         // the process as soon as the exit watch is attached, so it goes last.
-        if (self.stderr_fd >= 0) _ = glib.g_unix_fd_add(self.stderr_fd, glib.IN | glib.HUP | glib.ERR, &readable, self);
-        _ = glib.g_unix_fd_add(self.pidfd, glib.IN, &exited, self);
+        if (self.stderr_fd >= 0) _ = mainloop.watch(self.stderr_fd, mainloop.IN | mainloop.HUP | mainloop.ERR, self, readable);
+        _ = mainloop.watch(self.pidfd, mainloop.IN, self, exited);
         return self;
     }
 
@@ -337,35 +338,32 @@ pub const Process = struct {
     /// keeps running and is still reaped when it exits.
     pub fn cancel(self: *Process) void {
         if (self.delivered or self.cancel_idle != 0) return;
-        self.cancel_idle = glib.g_idle_add(&cancelled, self);
+        self.cancel_idle = mainloop.idle(self, cancelled);
     }
 
-    fn cancelled(data: ?*anyopaque) callconv(.c) c_int {
-        const self: *Process = @ptrCast(@alignCast(data));
+    fn cancelled(self: *Process) bool {
         self.cancel_idle = 0;
         self.deliver(.{ .code = null, .cancelled = true });
         self.finishIfDone();
-        return 0;
+        return false;
     }
 
-    fn exited(_: c_int, _: c_uint, data: ?*anyopaque) callconv(.c) c_int {
-        const self: *Process = @ptrCast(@alignCast(data));
+    fn exited(self: *Process, _: c_int, _: u32) bool {
         var status: i32 = 0;
         while (linux.errno(linux.wait4(self.pid, &status, 0, null)) == .INTR) {}
         self.status = @bitCast(status);
         self.settle();
-        return 0;
+        return false;
     }
 
-    fn readable(_: c_int, _: c_uint, data: ?*anyopaque) callconv(.c) c_int {
-        const self: *Process = @ptrCast(@alignCast(data));
+    fn readable(self: *Process, _: c_int, _: u32) bool {
         var buffer: [4096]u8 = undefined;
         while (true) {
             const got = linux.read(self.stderr_fd, &buffer, buffer.len);
             switch (linux.errno(got)) {
                 .SUCCESS => {},
                 .INTR => continue,
-                .AGAIN => return 1,
+                .AGAIN => return true,
                 else => break,
             }
             if (got == 0) break;
@@ -375,7 +373,7 @@ pub const Process = struct {
         _ = linux.close(self.stderr_fd);
         self.stderr_fd = -1;
         self.settle();
-        return 0;
+        return false;
     }
 
     /// Delivers the result once the process has exited and its output closed.
@@ -400,27 +398,13 @@ pub const Process = struct {
 
     fn finishIfDone(self: *Process) void {
         if (self.status == null or self.stderr_fd >= 0 or !self.delivered) return;
-        if (self.cancel_idle != 0) _ = glib.g_source_remove(self.cancel_idle);
+        if (self.cancel_idle != 0) _ = mainloop.remove(self.cancel_idle);
         _ = linux.close(self.pidfd);
         self.output.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 };
 
-const loop = @import("desktop-loop.zig");
-const glib = struct {
-    const IN = loop.IN;
-    const ERR = loop.ERR;
-    const HUP = loop.HUP;
-    const g_unix_fd_add = loop.watch;
-    const g_idle_add = loop.idle;
-    fn g_source_remove(id: c_uint) c_int {
-        return @intFromBool(loop.remove(id));
-    }
-    fn g_main_context_iteration(_: ?*anyopaque, may_block: c_int) c_int {
-        return @intFromBool(loop.iteration(may_block != 0));
-    }
-};
 
 test "command lines split and quote like GLib" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -459,7 +443,7 @@ test "watched processes report status, standard error, descriptors and cancellat
             self.result = copy;
         }
         fn wait(self: *@This()) Result {
-            while (self.result == null) _ = glib.g_main_context_iteration(null, 1);
+            while (self.result == null) _ = mainloop.iteration(true);
             return self.result.?;
         }
     };
@@ -487,7 +471,7 @@ test "watched processes report status, standard error, descriptors and cancellat
     try std.testing.expect(stopped.wait().cancelled);
     // The cancelled child is still reaped once it exits.
     const deadline = util.monotonicTime() + 2 * std.time.us_per_s;
-    while (util.monotonicTime() < deadline) _ = glib.g_main_context_iteration(null, 0);
+    while (util.monotonicTime() < deadline) _ = mainloop.iteration(false);
 
     try std.testing.expectError(error.FileNotFound, Process.spawn(a, &.{"desktop-process-test-missing-program"}, .{}, &Outcome.done, &stopped));
 }

@@ -1,7 +1,8 @@
 //! Settings page input routing and teardown while native backends connect.
 const std = @import("std");
 const settings = @import("desktop").settings;
-const c = settings.c;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
 fn pageInput(ui: *settings.Settings) !void {
     const surface = ui.window.surface.?;
     const events = surface.input;
@@ -63,13 +64,13 @@ pub fn main(init: std.process.Init) !void {
         try pageInput(ui);
         try std.testing.expectEqualStrings("Cafe: Tokyo\\5G", ui.manual.value());
         ui.ui.close();
-        while (!ui.closed) _ = c.g_main_context_iteration(null, 1);
-        while (ui.network_operations != 0 or ui.sound.?.operations != 0) _ = c.g_main_context_iteration(null, 1);
+        while (!ui.closed) _ = mainloop.iteration(true);
+        while (ui.network_operations != 0 or ui.sound.?.operations != 0) _ = mainloop.iteration(true);
         ui.destroy();
-        const deadline = c.__zig.monotonicTime() + 100000;
-        while (c.__zig.monotonicTime() < deadline) {
-            while (c.g_main_context_iteration(null, 0) != 0) {}
-            c.g_usleep(1000);
+        const deadline = util.monotonicTime() + 100000;
+        while (util.monotonicTime() < deadline) {
+            while (mainloop.iteration(false)) {}
+            mainloop.sleep(1000);
         }
     }
     @import("desktop").util.printOut("desktop-settings: page switching, pointer and keyboard routing, focus, preserved fields and pending-close teardown passed\n", .{});

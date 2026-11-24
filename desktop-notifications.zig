@@ -3,10 +3,12 @@ const native = @import("desktop-surface.zig");
 const banner = @import("desktop-notification-banner.zig");
 const std = @import("std");
 const view = banner;
-const c = @import("desktop-glib.zig");
+const decode = @import("desktop-decode.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 const path = "/org/freedesktop/Notifications";
 const name = "org.freedesktop.Notifications";
 const control = "org.dotfiles.Notifications";
@@ -38,14 +40,14 @@ const Notice = struct {
     sender: [:0]const u8,
     actions: []view.Action,
     created: i64,
-    image: ?c.__icons.Image = null,
+    image: ?decode.Image = null,
     critical: bool = false,
     transient: bool = false,
     resident: bool = false,
     pending: bool = true,
 
     fn destroy(self: *Notice) void {
-        if (self.image) |image| c.__icons.free(self.allocator, image);
+        if (self.image) |image| decode.free(self.allocator, image);
         self.arena.deinit();
         self.allocator.destroy(self);
     }
@@ -66,7 +68,7 @@ const Server = struct {
     client: ?*native.Client = null,
     surface: ?*native.Surface = null,
     theme: banner.Theme = .{},
-    timer: c.guint = 0,
+    timer: u32 = 0,
     hovered: bool = false,
     calendar_open: bool = false,
 
@@ -147,7 +149,7 @@ const Server = struct {
             surface.redraw();
         }
         self.hovered = true;
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         self.timer = 0;
     }
     fn button(data: ?*anyopaque, surface: *native.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
@@ -187,7 +189,7 @@ const Server = struct {
         if (self.connection) |connection| connection.emit(path, control, "Changed", .{}) catch {};
     }
     fn hide(self: *Server) void {
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         self.timer = 0;
         self.active = null;
         if (self.surface) |surface| surface.destroy();
@@ -208,7 +210,7 @@ const Server = struct {
         notice.pending = false;
         self.active = notice;
         self.present() catch |err| std.log.err("notification banner: {s}", .{@errorName(err)});
-        if (!notice.critical) self.timer = c.g_timeout_add(4000, &expired, self);
+        if (!notice.critical) self.timer = mainloop.timeout(4000, self, expired);
     }
     fn close(self: *Server, id: u32, reason: u32) void {
         for (self.notices.items, 0..) |notice, i| if (notice.id == id) {
@@ -232,16 +234,15 @@ const Server = struct {
         if (exists) if (self.connection) |connection| connection.emitTo(notice.sender, path, name, "ActionInvoked", .{ id, @as([]const u8, key) }) catch {};
         if (!notice.resident) self.close(id, 2);
     }
-    fn expired(data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Server, data);
+    fn expired(self: *Server) bool {
         self.timer = 0;
-        if (self.hovered) return 0;
-        const notice = self.active orelse return 0;
+        if (self.hovered) return false;
+        const notice = self.active orelse return false;
         if (notice.transient) self.close(notice.id, 1) else {
             self.hide();
             self.showNext();
         }
-        return 0;
+        return false;
     }
     fn left(data: ?*anyopaque, surface: *native.Surface) void {
         const self = cast(Server, data);
@@ -257,8 +258,8 @@ const Server = struct {
     fn resetHover(self: *Server) void {
         self.hovered = false;
         if (self.active) |notice| if (!notice.critical) {
-            if (self.timer != 0) _ = c.g_source_remove(self.timer);
-            self.timer = c.g_timeout_add(200, &expired, self);
+            if (self.timer != 0) _ = mainloop.remove(self.timer);
+            self.timer = mainloop.timeout(200, self, expired);
         };
     }
     fn deinit(self: *Server) void {
@@ -274,7 +275,7 @@ const Server = struct {
     }
     fn notify(self: *Server, sender: []const u8, args: NotifyArgs) !u32 {
         const notice = try self.allocator.create(Notice);
-        notice.* = .{ .allocator = self.allocator, .arena = std.heap.ArenaAllocator.init(self.allocator), .id = 0, .app = "", .title = "", .body = "", .icon = "", .sender = "", .actions = &.{}, .created = @divTrunc(c.__zig.realTime(), 1000000) };
+        notice.* = .{ .allocator = self.allocator, .arena = std.heap.ArenaAllocator.init(self.allocator), .id = 0, .app = "", .title = "", .body = "", .icon = "", .sender = "", .actions = &.{}, .created = @divTrunc(util.realTime(), 1000000) };
         errdefer notice.destroy();
         const a = notice.arena.allocator();
         notice.app = try clip(a, args[0], 150);
@@ -371,7 +372,7 @@ fn hintString(hints: Hints, key: []const u8) ?[]const u8 {
         else => null,
     };
 }
-fn imageHint(a: std.mem.Allocator, hints: Hints) ?c.__icons.Image {
+fn imageHint(a: std.mem.Allocator, hints: Hints) ?decode.Image {
     for ([_][]const u8{ "image-data", "image_data", "icon_data" }) |key| {
         // (iiibiiay): width, height, stride, alpha, bits per sample, channels, pixels.
         const fields = switch (hint(hints, key) orelse continue) {
@@ -410,7 +411,6 @@ fn imageHint(a: std.mem.Allocator, hints: Hints) ?c.__icons.Image {
         if (width <= 0 or height <= 0 or width > 4096 or height > 4096 or bits != 8 or channels != @as(i32, if (alpha) 4 else 3) or stride < width * channels) return null;
         const row: usize = @intCast(width * channels);
         if (bytes.len < @as(usize, @intCast(stride)) * @as(usize, @intCast(height - 1)) + row) return null;
-        const decode = @import("desktop-decode.zig");
         return decode.Image.normalize(a, .{ .pixels = bytes, .width = @intCast(width), .height = @intCast(height), .stride = @intCast(stride), .format = if (alpha) .rgba else .rgb }) catch null;
     }
     const value = hintString(hints, "image-path") orelse return null;

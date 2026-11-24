@@ -1,18 +1,19 @@
 //! Test-only sysfs injection; the installed shell always uses /sys/class/backlight.
 const std = @import("std");
-const c = @import("desktop").glib;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
 const backlight = @import("desktop").backlight;
 const osd = @import("desktop").osd;
 const quick = @import("desktop").quick;
 const assert = std.debug.assert;
-const cast = c.__zig.cast;
+const cast = util.cast;
 fn pump() void {
-    while (c.g_main_context_iteration(null, 0) != 0) {}
-    c.g_usleep(1000);
+    while (mainloop.iteration(false)) {}
+    mainloop.sleep(1000);
 }
 fn waitControls(controls: *quick.Controls) void {
-    const deadline = c.__zig.monotonicTime() + 8_000_000;
-    while ((controls.brightness_busy or controls.brightness_timer != 0) and c.__zig.monotonicTime() < deadline) pump();
+    const deadline = util.monotonicTime() + 8_000_000;
+    while ((controls.brightness_busy or controls.brightness_timer != 0) and util.monotonicTime() < deadline) pump();
     assert(!controls.brightness_busy and controls.brightness_timer == 0);
 }
 fn controlsTest(allocator: std.mem.Allocator, backend: backlight.Backend, empty: bool, denied: bool) !void {
@@ -30,8 +31,8 @@ fn controlsTest(allocator: std.mem.Allocator, backend: backlight.Backend, empty:
         assert(controls.view.model.brightness != null);
         assert(@abs(controls.view.model.brightness.? - 20) < 0.01);
         controls.setSlider(.brightness, 75);
-        const deadline = c.__zig.monotonicTime() + 3_000_000;
-        while (!controls.brightness_busy and c.__zig.monotonicTime() < deadline) pump();
+        const deadline = util.monotonicTime() + 3_000_000;
+        while (!controls.brightness_busy and util.monotonicTime() < deadline) pump();
         assert(controls.brightness_busy);
         controls.setSlider(.brightness, 38);
         waitControls(controls);
@@ -42,8 +43,8 @@ fn controlsTest(allocator: std.mem.Allocator, backend: backlight.Backend, empty:
         controls.refresh(); // Exercise disposal while a native read is in flight.
     }
     controls.deinit();
-    const deadline = c.__zig.monotonicTime() + 250_000;
-    while (c.__zig.monotonicTime() < deadline) pump();
+    const deadline = util.monotonicTime() + 250_000;
+    while (util.monotonicTime() < deadline) pump();
 }
 const Completion = struct {
     result: ?backlight.Result = null,
@@ -55,17 +56,17 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
-    const root = c.__zig.getenv("DESKTOP_BACKLIGHT_FIXTURE_ROOT") orelse return error.ExpectedFixtureRoot;
+    const root = std.c.getenv("DESKTOP_BACKLIGHT_FIXTURE_ROOT") orelse return error.ExpectedFixtureRoot;
     const backend = backlight.Backend{ .root = std.mem.span(root) };
     if (args.len < 2) return error.ExpectedMode;
     if (std.mem.eql(u8, args[1], "serve") or osd.parseCommand(args[1..]) != null) return runOsd(init, backend);
     if (std.mem.startsWith(u8, args[1], "controls")) return controlsTest(init.gpa, backend, std.mem.eql(u8, args[1], "controls-empty"), std.mem.eql(u8, args[1], "controls-denied"));
     const action: backlight.Action = if (std.mem.eql(u8, args[1], "read")) .read else if (std.mem.eql(u8, args[1], "set") and args.len == 3) .{ .set = try std.fmt.parseFloat(f64, args[2]) } else if (std.mem.eql(u8, args[1], "step") and args.len == 3) .{ .step = try std.fmt.parseInt(i16, args[2], 10) } else return error.InvalidMode;
-    const cancel = c.g_cancellable_new().?;
-    defer c.g_object_unref(cancel);
+    const cancel = mainloop.Cancellable.create();
+    defer cancel.unref();
     var completion = Completion{};
     backend.start(init.gpa, action, cancel, &Completion.done, &completion);
-    while (completion.result == null) _ = c.g_main_context_iteration(null, 1);
+    while (completion.result == null) _ = mainloop.iteration(true);
     switch (completion.result.?) {
         .failure => |err| return err,
         .value => |device| {
@@ -103,9 +104,9 @@ const Instance = struct {
     }
 };
 
-fn quit(_: c.gpointer) callconv(.c) c.gboolean {
+fn quit(_: void) bool {
     running = false;
-    return 1;
+    return true;
 }
 
 fn runOsd(init: std.process.Init, backend: backlight.Backend) !void {
@@ -132,14 +133,14 @@ fn runOsd(init: std.process.Init, backend: backlight.Backend) !void {
     var instance: Instance = .{ .server = &server, .connection = bus.connection };
     const exported = try bus.connection.exportObject(osd_path, &introspection.interfaces[0], &Instance.command, null, &instance);
     defer bus.connection.unregister(exported);
-    const term = c.g_unix_signal_add(c.SIGTERM, &quit, null);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, null);
-    defer _ = c.g_source_remove(term);
-    defer _ = c.g_source_remove(interrupt);
+    const term = mainloop.signal(mainloop.SIGTERM, {}, quit);
+    const interrupt = mainloop.signal(mainloop.SIGINT, {}, quit);
+    defer _ = mainloop.remove(term);
+    defer _ = mainloop.remove(interrupt);
     const failure = try run(&server, forwarded);
     if (failure.len > 0) {
         std.debug.print("desktop-osd: {s}\n", .{failure});
         return error.CommandFailed;
     }
-    while (running and !bus.connection.closed) _ = c.g_main_context_iteration(null, 1);
+    while (running and !bus.connection.closed) _ = mainloop.iteration(true);
 }

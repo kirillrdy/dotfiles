@@ -294,3 +294,23 @@ test "resample averages wide downscales without truncation and propagates OOM" {
     var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = 1 });
     try std.testing.expectError(error.OutOfMemory, resample(failing.allocator(), source, 1, 1));
 }
+
+/// Draws `image` scaled into `rect` of a logical-pixel canvas.
+pub fn blit(canvas: raster.Canvas, image: Image, rect: raster.Rect) void {
+    raster.blit(canvas.target, image.view(), .{
+        .x = (rect.x + canvas.origin.x) * canvas.scale,
+        .y = (rect.y + canvas.origin.y) * canvas.scale,
+        .width = rect.width * canvas.scale,
+        .height = rect.height * canvas.scale,
+    }, null) catch {};
+}
+/// Extracts an image's alpha channel as a glyph-style coverage mask.
+pub fn alphaMask(allocator: std.mem.Allocator, image: Image, out_width: *u32, out_height: *u32) ![]u8 {
+    const mask = try allocator.alloc(u8, @as(usize, image.width) * image.height);
+    for (0..image.height) |y| for (0..image.width) |x| {
+        mask[y * image.width + x] = @intCast(std.mem.readInt(u32, image.pixels[y * image.stride + x * 4 ..][0..4], @import("builtin").cpu.arch.endian()) >> 24);
+    };
+    out_width.* = image.width;
+    out_height.* = image.height;
+    return mask;
+}

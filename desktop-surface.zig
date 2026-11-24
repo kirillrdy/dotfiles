@@ -2,13 +2,14 @@
 //! Each client has a private connection over the Zig wire runtime, driven by GLib.
 const std = @import("std");
 const cairo = @import("tests/desktop-cairo.zig");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const client_helpers = @import("desktop-wayland-client.zig");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
 const input = @import("desktop-input.zig");
 const raster = @import("desktop-raster.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 
 pub const top = 1;
 pub const bottom = 2;
@@ -58,7 +59,7 @@ pub const Client = struct {
     input_enabled: bool = false,
     callbacks: Callbacks,
     data: ?*anyopaque,
-    source: c.guint = 0,
+    source: u32 = 0,
     running: bool = false,
     failed: bool = false,
 
@@ -85,7 +86,7 @@ pub const Client = struct {
         return self;
     }
     pub fn start(self: *Client) !void {
-        self.source = c.g_unix_fd_add(self.connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
+        self.source = mainloop.watch(self.connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
         if (self.source == 0) return error.WaylandEventSource;
         self.running = true;
         for (self.outputs.items) |output| {
@@ -102,7 +103,7 @@ pub const Client = struct {
     fn clear(self: *Client) void {
         self.running = false;
         self.failed = true;
-        if (self.source != 0) _ = c.g_source_remove(self.source);
+        if (self.source != 0) _ = mainloop.remove(self.source);
         while (self.surfaces.items.len > 0) self.surfaces.items[0].destroy();
         for (self.seats.items) |seat| seat.destroy();
         self.seats.deinit(self.allocator);
@@ -145,19 +146,18 @@ pub const Client = struct {
         self.preview_control = self.registry.bind(self.overview_global, wl.dotfiles_overview_v1, 3);
         return true;
     }
-    fn dispatch(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Client, data);
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) {
+    fn dispatch(self: *Client, _: c_int, condition: u32) bool {
+        if (condition & (mainloop.ERR | mainloop.HUP) != 0) {
             self.source = 0;
             self.fail();
-            return 0;
+            return false;
         }
         self.connection.readAndDispatch() catch {
             self.source = 0;
             self.fail();
-            return 0;
+            return false;
         };
-        return 1;
+        return true;
     }
     fn registryEvent(self: *Client, registry: wl.wl_registry, event: wl.wl_registry.Event) void {
         switch (event) {
@@ -757,19 +757,19 @@ test "integration: frame callbacks coalesce redraws, finish animation and cancel
     surface.render_scale = &State.scale;
     try client.start();
     try surface.show();
-    const deadline = c.__zig.monotonicTime() + 2_000_000;
-    while (state.paints == 0 and c.__zig.monotonicTime() < deadline) {
-        while (c.g_main_context_iteration(null, 0) != 0) {}
-        c.g_usleep(1000);
+    const deadline = util.monotonicTime() + 2_000_000;
+    while (state.paints == 0 and util.monotonicTime() < deadline) {
+        while (mainloop.iteration(false)) {}
+        mainloop.sleep(1000);
     }
     try std.testing.expect(surface.frame_callback != null);
     const paints = state.paints;
     for (0..20) |_| surface.redraw();
     try std.testing.expectEqual(paints, state.paints);
     try std.testing.expect(surface.pending);
-    while ((state.frames < 4 or surface.frame_callback != null or surface.pending) and c.__zig.monotonicTime() < deadline) {
-        while (c.g_main_context_iteration(null, 0) != 0) {}
-        c.g_usleep(1000);
+    while ((state.frames < 4 or surface.frame_callback != null or surface.pending) and util.monotonicTime() < deadline) {
+        while (mainloop.iteration(false)) {}
+        mainloop.sleep(1000);
     }
     try std.testing.expectEqual(@as(usize, 4), state.frames);
     try std.testing.expectEqual(@as(usize, 4), state.paints);

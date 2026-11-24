@@ -1,10 +1,12 @@
 //! Locked native entry. Masked responses never enter text layouts; PAM can opt into echo.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const keyboard = @import("desktop-keyboard.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 
 pub const Buffer = struct {
     pub const capacity = 4096;
@@ -132,7 +134,7 @@ pub const Entry = struct {
     public_text: bool = false,
     dragging: bool = false,
     caret: bool = true,
-    blink: c.guint = 0,
+    blink: u32 = 0,
     preedit_count: usize = 0,
     composition: Buffer = .{},
     composition_cursor: usize = 0,
@@ -186,20 +188,19 @@ pub const Entry = struct {
         if (self.focused == focused or self.dead) return;
         self.focused = focused;
         if (focused) {
-            self.blink = c.g_timeout_add(500, &tick, self);
+            self.blink = mainloop.timeout(500, self, tick);
         } else {
             self.resetComposition();
             self.dragging = false;
-            if (self.blink != 0) _ = c.g_source_remove(self.blink);
+            if (self.blink != 0) _ = mainloop.remove(self.blink);
             self.blink = 0;
         }
         self.notify();
     }
-    fn tick(data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Entry, data);
+    fn tick(self: *Entry) bool {
         self.caret = !self.caret;
         self.changed(self.data);
-        return 1;
+        return true;
     }
     fn notify(self: *Entry) void {
         self.caret = true;
@@ -231,9 +232,9 @@ pub const Entry = struct {
         self.revision += 1;
         self.notify();
     }
-    pub fn key(self: *Entry, symbol: u32, modifiers: c.__zig.Modifiers) bool {
-        const control = modifiers & c.__zig.control_mask != 0;
-        const shift = modifiers & c.__zig.shift_mask != 0;
+    pub fn key(self: *Entry, symbol: u32, modifiers: keyboard.Modifiers) bool {
+        const control = modifiers & keyboard.control != 0;
+        const shift = modifiers & keyboard.shift != 0;
         switch (symbol) {
             0xff51, 0xff53 => {
                 self.resetComposition();
@@ -428,7 +429,7 @@ pub const Entry = struct {
     pub fn destroy(self: *Entry) void {
         self.dead = true;
         self.clear();
-        if (self.blink != 0) _ = c.g_source_remove(self.blink);
+        if (self.blink != 0) _ = mainloop.remove(self.blink);
         self.release();
     }
     fn release(self: *Entry) void {
@@ -511,7 +512,7 @@ test "native password pixels depend on character count rather than plaintext" {
     entry.setPreedit("とうきょう");
     try std.testing.expectEqual(@as(usize, 5), entry.preedit_count);
     try std.testing.expectEqualStrings("東京🔑", entry.buffer.value());
-    try std.testing.expect(entry.key('a', c.__zig.control_mask));
+    try std.testing.expect(entry.key('a', keyboard.control));
     try entry.insert("x");
     try std.testing.expectEqualStrings("x", entry.buffer.value());
     for (entry.buffer.bytes[1..]) |byte| try std.testing.expectEqual(@as(u8, 0), byte);

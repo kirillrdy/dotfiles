@@ -1,6 +1,7 @@
 //! Isolated D-Bus integration driver; never run against the host system bus.
 const std = @import("std");
-const c = @import("desktop").glib;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
 const network = @import("desktop").network;
 const settings = @import("desktop").settings;
 const editor = @import("desktop").network_editor;
@@ -23,12 +24,12 @@ fn done(_: ?*anyopaque, result: network.Result) void {
     complete = true;
 }
 fn pump() void {
-    while (c.g_main_context_iteration(null, 0) != 0) {}
-    c.g_usleep(1000);
+    while (mainloop.iteration(false)) {}
+    mainloop.sleep(1000);
 }
 fn settle() void {
-    const deadline = c.__zig.monotonicTime() + 100000;
-    while (c.__zig.monotonicTime() < deadline) pump();
+    const deadline = util.monotonicTime() + 100000;
+    while (util.monotonicTime() < deadline) pump();
 }
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
@@ -38,16 +39,16 @@ pub fn main(init: std.process.Init) !void {
         client.destroy();
         settle();
     }
-    const limit = c.__zig.monotonicTime() + 5_000_000;
-    while ((!client.state().available or client.state().profiles.items.len == 0) and c.__zig.monotonicTime() < limit) pump();
+    const limit = util.monotonicTime() + 5_000_000;
+    while ((!client.state().available or client.state().profiles.items.len == 0) and util.monotonicTime() < limit) pump();
     try std.testing.expect(client.state().available);
     const state = client.state();
     if (std.mem.eql(u8, args[1], "events")) {
         fixture_io = init.io;
         watching = true;
         changed(null, client);
-        const deadline = c.__zig.monotonicTime() + 8_000_000;
-        while (c.__zig.monotonicTime() < deadline) pump();
+        const deadline = util.monotonicTime() + 8_000_000;
+        while (util.monotonicTime() < deadline) pump();
         watching = false;
         return;
     }
@@ -149,7 +150,7 @@ pub fn main(init: std.process.Init) !void {
             if (std.mem.endsWith(u8, args[1], "security")) properties.view.page = .security;
             properties.ui.relayout();
         }
-        while (!window.closed) _ = c.g_main_context_iteration(null, 1);
+        while (!window.closed) _ = mainloop.iteration(true);
         while (window.network_operations != 0 or (window.sound != null and window.sound.?.operations != 0)) pump();
         window.destroy();
         return;
@@ -190,11 +191,11 @@ pub fn main(init: std.process.Init) !void {
         }
         const values = try ui.values();
         defer values.unref();
-        const cancel = c.g_cancellable_new().?;
-        defer c.g_object_unref(cancel);
+        const cancel = mainloop.Cancellable.create();
+        defer cancel.unref();
         client.perform(.{ .save = .{ .path = ui.path, .settings = values, .version = ui.version } }, cancel, &done, null);
-        const deadline = c.__zig.monotonicTime() + 8_000_000;
-        while (!complete and c.__zig.monotonicTime() < deadline) pump();
+        const deadline = util.monotonicTime() + 8_000_000;
+        while (!complete and util.monotonicTime() < deadline) pump();
         ui.ui.close();
         settle();
         try std.testing.expect(complete);
@@ -216,7 +217,7 @@ pub fn main(init: std.process.Init) !void {
         ui.ui.activate(ui.view.connect);
         try std.testing.expectEqualStrings("", ui.password.value());
         ui.ui.close();
-        while (!ui.closed) _ = c.g_main_context_iteration(null, 1);
+        while (!ui.closed) _ = mainloop.iteration(true);
         while (ui.network_operations != 0) pump();
         ui.destroy();
         controls.view.submenu = .network;
@@ -248,17 +249,17 @@ pub fn main(init: std.process.Init) !void {
         settle();
         return;
     }
-    const cancel = c.g_cancellable_new().?;
-    defer c.g_object_unref(cancel);
+    const cancel = mainloop.Cancellable.create();
+    defer cancel.unref();
     const command = args[1];
     const action: network.Action = if (std.mem.eql(u8, command, "scan") or std.mem.eql(u8, command, "cancel")) .scan else if (std.mem.eql(u8, command, "wifi")) .{ .wifi = std.mem.eql(u8, args[2], "on") } else if (std.mem.eql(u8, command, "activate")) .{ .activate = args[2] } else if (std.mem.eql(u8, command, "deactivate")) .{ .deactivate = args[2] } else if (std.mem.eql(u8, command, "forget")) .{ .forget = args[2] } else if (std.mem.eql(u8, command, "disconnect")) .{ .disconnect = args[2] } else if (std.mem.eql(u8, command, "connect-ap")) blk: {
         const ap = state.ap(args[2]) orelse return error.MissingAP;
         break :blk .{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = if (args.len > 3) args[3] else "" } };
     } else .{ .connect = .{ .ssid = args[2], .password = if (args.len > 3) args[3] else "", .hidden = true } };
     client.perform(action, cancel, &done, null);
-    if (std.mem.eql(u8, command, "cancel")) c.g_cancellable_cancel(cancel);
-    const deadline = c.__zig.monotonicTime() + 8_000_000;
-    while (!complete and c.__zig.monotonicTime() < deadline) pump();
+    if (std.mem.eql(u8, command, "cancel")) cancel.cancel();
+    const deadline = util.monotonicTime() + 8_000_000;
+    while (!complete and util.monotonicTime() < deadline) pump();
     try std.testing.expect(complete);
     if (std.mem.eql(u8, command, "cancel")) try std.testing.expect(!success) else try std.testing.expect(success);
 }

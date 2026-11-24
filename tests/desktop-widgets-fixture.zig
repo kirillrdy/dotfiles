@@ -1,16 +1,19 @@
 //! Native panel modules and popup checks on a private Wayland display.
 const std = @import("std");
 const p = @import("desktop").widgets;
-const c = p.c;
+const decode = @import("desktop").decode;
+const icons = @import("desktop").icons;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
 const assert = std.debug.assert;
 fn eq(a: [*c]const u8, b: [:0]const u8) void {
     assert(std.mem.eql(u8, std.mem.span(a), b));
 }
 fn pumpEvents(milliseconds: i64) void {
-    const end = c.__zig.monotonicTime() + milliseconds * 1000;
-    while (c.__zig.monotonicTime() < end) {
-        while (c.g_main_context_iteration(null, 0) != 0) {}
-        c.g_usleep(1000);
+    const end = util.monotonicTime() + milliseconds * 1000;
+    while (util.monotonicTime() < end) {
+        while (mainloop.iteration(false)) {}
+        mainloop.sleep(1000);
     }
 }
 var refresh_count: usize = 0;
@@ -39,7 +42,7 @@ pub fn main(process_init: std.process.Init) !void {
     }
     _ = @import("desktop").libc.setenv("GSETTINGS_BACKEND", "memory", 1);
     // Resolve and decode the SVGs through the native icon loader.
-    if (c.__zig.getenv("DESKTOP_PANEL_ICON_PATH") != null) {
+    if (std.c.getenv("DESKTOP_PANEL_ICON_PATH") != null) {
         for ([_][:0]const u8{
             "network-wireless-signal-good-symbolic",
             "battery-level-90-symbolic",
@@ -50,9 +53,9 @@ pub fn main(process_init: std.process.Init) !void {
             "display-brightness-symbolic",
         }) |name| {
             for ([_]u32{ 1, 2 }) |scale| {
-                const image = c.__icons.load(process_init.gpa, name, 16, scale, null).?;
+                const image = icons.load(process_init.gpa, name, 16, scale, null).?;
                 assert(image.width > 0 and image.height > 0);
-                c.__icons.free(process_init.gpa, image);
+                decode.free(process_init.gpa, image);
             }
         }
     }
@@ -155,7 +158,7 @@ pub fn main(process_init: std.process.Init) !void {
     controls.view.focus = .network;
     assert(controls.handleKey(0xff0d, 0) and controls.view.submenu == .network);
     assert(controls.handleKey(0xff1b, 0) and controls.view.submenu == .none and controls.view.focus == .network);
-    _ = c.g_source_remove(controls.volume_timer);
+    _ = mainloop.remove(controls.volume_timer);
     controls.volume_timer = 0;
     controls.view.model.volume = previous_volume;
     controls.redraw();

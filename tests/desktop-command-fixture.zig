@@ -2,7 +2,7 @@
 const std = @import("std");
 const desktop = @import("desktop");
 const commands = desktop.commands;
-const c = desktop.screenshot.c;
+const mainloop = desktop.mainloop;
 const libc = desktop.libc;
 
 fn work(allocator: std.mem.Allocator, binary: [:0]const u8) void {
@@ -13,10 +13,9 @@ fn work(allocator: std.mem.Allocator, binary: [:0]const u8) void {
     commands.commandLine(allocator, "Invalid command", "'");
 }
 
-fn stop(data: c.gpointer) callconv(.c) c.gboolean {
-    const done: *bool = @ptrCast(@alignCast(data.?));
+fn stop(done: *bool) bool {
     done.* = true;
-    return 0;
+    return false;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -34,6 +33,6 @@ pub fn main(init: std.process.Init) !void {
     const thread = try std.Thread.spawn(.{}, work, .{ init.gpa, args[0] });
     thread.join();
     var done = false;
-    _ = c.g_timeout_add(1500, &stop, &done);
-    while (!done) _ = c.g_main_context_iteration(null, 1);
+    _ = mainloop.timeout(1500, &done, stop);
+    while (!done) _ = mainloop.iteration(true);
 }

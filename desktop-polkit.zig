@@ -1,6 +1,5 @@
 //! PolicyKit prompts rendered with native pixels and a locked password buffer.
 const std = @import("std");
-pub const c = @import("desktop-glib.zig");
 const auth = @import("desktop-auth-dialog.zig");
 
 pub const Dialog = struct {

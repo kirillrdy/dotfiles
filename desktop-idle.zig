@@ -2,7 +2,8 @@
 const std = @import("std");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
@@ -20,7 +21,7 @@ const screensaver_xml =
 const portal_name = "org.freedesktop.portal.Desktop";
 const portal_path = "/org/dotfiles/Portal";
 const portal_interface = "org.dotfiles.Portal";
-const cast = c.__zig.cast;
+const cast = util.cast;
 const Process = @import("desktop-process.zig").Process;
 
 pub const Options = struct {
@@ -105,13 +106,13 @@ pub const Service = struct {
     session_inhibit: bool = false,
     refs: usize = 1,
     stopped: bool = false,
-    timer: c.guint = 0,
+    timer: u32 = 0,
     connection: ?*wire.Connection = null,
     registry: ?wl.wl_registry = null,
     notifier: ?wl.ext_idle_notifier_v1 = null,
     notifier_name: u32 = 0,
     seats: ?*Seat = null,
-    wayland_source: c.guint = 0,
+    wayland_source: u32 = 0,
     bus: ?*loop.Source = null,
     login_watch: ?*dbus.NameWatcher = null,
     sleep_signal: u32 = 0,
@@ -136,10 +137,10 @@ pub const Service = struct {
     portal_inhibited: bool = false,
     audio_inhibited: bool = false,
     last_inhibited: bool = false,
-    cancel: [*c]c.GCancellable,
+    cancel: *mainloop.Cancellable,
     process: ?*Process = null,
     ready_fd: c_int = -1,
-    ready_source: c.guint = 0,
+    ready_source: u32 = 0,
     lock_ready: bool = false,
 
     pub fn create(a: std.mem.Allocator, options: Options) !*Service {
@@ -150,29 +151,29 @@ pub const Service = struct {
         const wallpaper = if (options.wallpaper) |value| try a.dupeSentinel(u8, value, 0) else null;
         errdefer if (wallpaper) |value| a.free(value);
         const self = try a.create(Service);
-        self.* = .{ .allocator = a, .timeout_ms = options.timeout_ms, .executable = path, .wallpaper = wallpaper, .session_inhibit = options.session_inhibit, .cancel = c.g_cancellable_new() };
+        self.* = .{ .allocator = a, .timeout_ms = options.timeout_ms, .executable = path, .wallpaper = wallpaper, .session_inhibit = options.session_inhibit, .cancel = mainloop.Cancellable.create() };
         self.connectWayland();
         self.connectBus();
         self.connectSessionBus();
-        self.timer = c.g_timeout_add_seconds(5, &maintain, self);
+        self.timer = mainloop.timeoutSeconds(5, self, maintain);
         return self;
     }
     pub fn destroy(self: *Service) void {
         self.stopped = true;
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         self.disconnectWayland();
         self.disconnectBus();
         self.disconnectSessionBus();
         self.closeReady();
         // A running locker continues independently when the shell exits.
-        c.g_cancellable_cancel(self.cancel);
+        self.cancel.cancel();
         if (self.process) |child| child.cancel();
         self.unref();
     }
     fn unref(self: *Service) void {
         self.refs -= 1;
         if (self.refs == 0) {
-            c.g_object_unref(self.cancel);
+            self.cancel.unref();
             self.screensaver_inhibitors.deinit(self.allocator);
             self.calls.deinit(self.allocator);
             self.allocator.free(self.executable);
@@ -180,8 +181,7 @@ pub const Service = struct {
             self.allocator.destroy(self);
         }
     }
-    fn maintain(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Service, data);
+    fn maintain(self: *Service) bool {
         if (self.connection == null) self.connectWayland();
         if (self.bus) |bus| if (bus.connection.closed) self.disconnectBus();
         if (self.bus == null) self.connectBus();
@@ -191,7 +191,7 @@ pub const Service = struct {
         }
         self.acquire();
         if (self.sleeping or self.allIdle()) self.ensureLocked();
-        return 1;
+        return true;
     }
     pub fn setAudioInhibited(self: *Service, active: bool) void {
         if (self.stopped or self.audio_inhibited == active) return;
@@ -253,11 +253,11 @@ pub const Service = struct {
         connection.roundtrip() catch return self.disconnectWayland();
         connection.roundtrip() catch return self.disconnectWayland();
         if (self.notifier == null) std.log.warn("idle: ext-idle-notify unavailable", .{});
-        self.wayland_source = c.g_unix_fd_add(connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
+        self.wayland_source = mainloop.watch(connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
         self.flushWayland();
     }
     fn disconnectWayland(self: *Service) void {
-        if (self.wayland_source != 0) _ = c.g_source_remove(self.wayland_source);
+        if (self.wayland_source != 0) _ = mainloop.remove(self.wayland_source);
         self.wayland_source = 0;
         while (self.seats) |seat| {
             self.seats = seat.next;
@@ -310,15 +310,14 @@ pub const Service = struct {
         }
         if (self.allIdle()) self.ensureLocked();
     }
-    fn dispatch(_: c_int, flags: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Service, data);
-        const ok = flags & (c.G_IO_HUP | c.G_IO_ERR) == 0 and if (self.connection) |connection| if (connection.readAndDispatch()) |_| true else |_| false else false;
+    fn dispatch(self: *Service, _: c_int, flags: u32) bool {
+        const ok = flags & (mainloop.HUP | mainloop.ERR) == 0 and if (self.connection) |connection| if (connection.readAndDispatch()) |_| true else |_| false else false;
         if (!ok) {
             self.wayland_source = 0;
             self.disconnectWayland();
-            return 0;
+            return false;
         }
-        return 1;
+        return true;
     }
     /// Sends a call that holds a reference on the service until it is answered or cancelled.
     fn send(self: *Service, source: *loop.Source, target: dbus.Connection.Call, args: anytype, handler: dbus.ReplyHandler) bool {
@@ -641,33 +640,32 @@ pub const Service = struct {
         };
         self.lock_ready = false;
         self.ready_fd = fds[0];
-        self.ready_source = c.g_unix_fd_add(self.ready_fd, c.G_IO_IN | c.G_IO_HUP | c.G_IO_ERR, &ready, self);
+        self.ready_source = mainloop.watch(self.ready_fd, mainloop.IN | mainloop.HUP | mainloop.ERR, self, ready);
         self.refs += 1;
     }
     fn closeReady(self: *Service) void {
-        if (self.ready_source != 0) _ = c.g_source_remove(self.ready_source);
+        if (self.ready_source != 0) _ = mainloop.remove(self.ready_source);
         self.ready_source = 0;
         if (self.ready_fd >= 0) _ = libc.close(self.ready_fd);
         self.ready_fd = -1;
         self.lock_ready = false;
     }
     fn refreshReady(self: *Service) void {
-        if (self.ready_fd >= 0) _ = ready(self.ready_fd, 0, self);
+        if (self.ready_fd >= 0) _ = ready(self, self.ready_fd, 0);
     }
-    fn ready(_: c_int, _: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Service, data);
+    fn ready(self: *Service, _: c_int, _: u32) bool {
         var byte: u8 = 0;
         const count = libc.read(self.ready_fd, &byte, 1);
-        if (count < 0 and (libc.__errno_location().* == 11 or libc.__errno_location().* == 4)) return 1;
+        if (count < 0 and (libc.__errno_location().* == 11 or libc.__errno_location().* == 4)) return true;
         if (count == 1 and byte == '1') {
             self.lock_ready = true;
             if (self.sleeping) self.release();
-            return 1;
+            return true;
         }
         const was_ready = self.lock_ready;
         self.closeReady();
         if (!was_ready) std.log.warn("idle: lock readiness failed; retaining sleep inhibitor", .{});
-        return 0;
+        return false;
     }
     fn exited(data: ?*anyopaque, result: *const @import("desktop-process.zig").Result) void {
         const self = cast(Service, data);
@@ -684,12 +682,12 @@ pub const Service = struct {
 
 test "ScreenSaver inhibitors track senders and enforce ownership" {
     const a = std.testing.allocator;
-    var service = Service{ .allocator = a, .timeout_ms = 600_000, .executable = try a.dupeSentinel(u8, "/bin/false", 0), .session_inhibit = true, .cancel = c.g_cancellable_new() };
+    var service = Service{ .allocator = a, .timeout_ms = 600_000, .executable = try a.dupeSentinel(u8, "/bin/false", 0), .session_inhibit = true, .cancel = mainloop.Cancellable.create() };
     defer {
         service.stopped = true;
         service.clearScreenSaverInhibitors();
         service.screensaver_inhibitors.deinit(a);
-        c.g_object_unref(service.cancel);
+        service.cancel.unref();
         a.free(service.executable);
     }
     try std.testing.expect(!service.idleInhibited());

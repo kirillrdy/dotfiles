@@ -1,11 +1,12 @@
 //! PipeWire registry, parameter cache and round trips on the GLib main thread.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const p = @import("pipewire");
 const Pod = @import("desktop-audio-pod.zig");
 const defaults = @import("desktop-audio-defaults.zig");
 var initialized = false;
-const cast = c.__zig.cast;
+const cast = util.cast;
 fn iface(object: anytype) *p.spa_interface {
     return cast(p.spa_interface, object);
 }
@@ -140,7 +141,7 @@ pub const Registry = struct {
     next_ticket: u64 = 0,
     completed: u64 = 0,
     initial: u64 = 0,
-    source: c.guint = 0,
+    source: u32 = 0,
     sequence: c_int = 0,
     ready: bool = false,
     failed: bool = false,
@@ -164,11 +165,11 @@ pub const Registry = struct {
         self.initial = self.sync() orelse return error.AudioSyncFailed;
         const fd = methods(p.spa_loop_control_methods, control).get_fd.?(iface(control).cb.data);
         if (fd < 0) return error.AudioLoopUnavailable;
-        self.source = c.g_unix_fd_add(fd, c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
+        self.source = mainloop.watch(fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
         return self;
     }
     fn deinit(self: *Registry) void {
-        if (self.source != 0) _ = c.g_source_remove(self.source);
+        if (self.source != 0) _ = mainloop.remove(self.source);
         for (self.objects.items) |object| object.destroy();
         self.objects.deinit(self.allocator);
         self.barriers.deinit(self.allocator);
@@ -215,16 +216,15 @@ pub const Registry = struct {
         self.barriers.append(self.allocator, .{ .sequence = sequence, .ticket = self.next_ticket }) catch return null;
         return self.next_ticket;
     }
-    fn dispatch(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Registry, data);
+    fn dispatch(self: *Registry, _: c_int, condition: u32) bool {
         const control = self.loop.*.control;
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0 or methods(p.spa_loop_control_methods, control).iterate.?(iface(control).cb.data, 0) < 0) self.failed = true;
+        if (condition & (mainloop.ERR | mainloop.HUP) != 0 or methods(p.spa_loop_control_methods, control).iterate.?(iface(control).cb.data, 0) < 0) self.failed = true;
         if (self.failed) {
             self.source = 0;
             self.changed();
-            return 0;
+            return false;
         }
-        return 1;
+        return true;
     }
     fn done(data: ?*anyopaque, id: u32, sequence: c_int) callconv(.c) void {
         if (id != p.PW_ID_CORE) return;

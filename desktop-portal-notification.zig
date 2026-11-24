@@ -1,10 +1,10 @@
 //! Translate portal notifications directly to the shell's notification service.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const util = @import("desktop-util.zig");
 const dbus = @import("dbus");
 const fdo = "org.freedesktop.Notifications";
 const object_path = "/org/freedesktop/Notifications";
-const eq = c.__zig.eq;
+const eq = util.eq;
 const Dict = dbus.Dict([]const u8, dbus.Value);
 /// An owned copy of a notification's `a{sv}` contents.
 const Contents = struct {

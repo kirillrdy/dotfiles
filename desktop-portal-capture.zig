@@ -4,11 +4,13 @@ const form = @import("desktop-form.zig");
 const fonts = @import("desktop-text.zig");
 const raster = @import("desktop-raster.zig");
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const keyboard = @import("desktop-keyboard.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const sc = @import("desktop-screenshot.zig");
 pub const Image = @import("desktop-image.zig").Image;
-const cast = c.__zig.cast;
+const cast = util.cast;
 const portal_options = @import("desktop-portal-options.zig");
 const dbus = @import("dbus");
 const Options = portal_options.Options(error.InvalidScreenshotOptions);
@@ -19,8 +21,8 @@ pub const Capture = struct {
     allocator: std.mem.Allocator,
     client: sc.WaylandClient,
     frame: ?sc.FrameCapture = null,
-    source: c.guint = 0,
-    timeout: c.guint = 0,
+    source: u32 = 0,
+    timeout: u32 = 0,
     // A successful callback owns the image and frees it with this allocator.
     callback: *const fn (?*anyopaque, ?Image) void,
     data: ?*anyopaque,
@@ -49,40 +51,38 @@ pub const Capture = struct {
         };
         self.frame.?.listen();
         self.client.connection.flush() catch return error.CaptureFailed;
-        self.source = c.g_unix_fd_add(self.client.connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
-        self.timeout = c.g_timeout_add_seconds(10, &expired, self);
+        self.source = mainloop.watch(self.client.connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
+        self.timeout = mainloop.timeoutSeconds(10, self, expired);
     }
     fn clearFrame(self: *Capture) void {
         if (self.frame) |*frame| frame.deinit();
         self.frame = null;
     }
     pub fn destroy(self: *Capture) void {
-        if (self.source != 0) _ = c.g_source_remove(self.source);
-        if (self.timeout != 0) _ = c.g_source_remove(self.timeout);
+        if (self.source != 0) _ = mainloop.remove(self.source);
+        if (self.timeout != 0) _ = mainloop.remove(self.timeout);
         self.clearFrame();
         self.client.deinit();
         self.allocator.destroy(self);
     }
-    fn expired(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Capture, data);
+    fn expired(self: *Capture) bool {
         self.timeout = 0;
-        if (self.source != 0) _ = c.g_source_remove(self.source);
+        if (self.source != 0) _ = mainloop.remove(self.source);
         self.source = 0;
         self.callback(self.data, null);
-        return 0;
+        return false;
     }
-    fn dispatch(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Capture, data);
-        const ok = condition & (c.G_IO_ERR | c.G_IO_HUP) == 0 and if (self.client.connection.readAndDispatch()) |_| true else |_| false;
+    fn dispatch(self: *Capture, _: c_int, condition: u32) bool {
+        const ok = condition & (mainloop.ERR | mainloop.HUP) == 0 and if (self.client.connection.readAndDispatch()) |_| true else |_| false;
         const frame = &self.frame.?;
-        if (ok and !frame.done and !frame.failed) return 1;
+        if (ok and !frame.done and !frame.failed) return true;
         self.source = 0;
-        if (self.timeout != 0) _ = c.g_source_remove(self.timeout);
+        if (self.timeout != 0) _ = mainloop.remove(self.timeout);
         self.timeout = 0;
         const result = if (ok and frame.done and !frame.failed) image(self.allocator, frame) catch null else null;
         // Ownership passes to the callback, which may destroy this capture.
         self.callback(self.data, result);
-        return 0;
+        return false;
     }
 };
 
@@ -166,7 +166,7 @@ pub const Picker = struct {
         self.respond(id == self.share);
     }
     fn shortcut(data: ?*anyopaque, symbol: u32, modifiers: u32) bool {
-        if (modifiers & c.__zig.alt_mask == 0) return false;
+        if (modifiers & keyboard.alt == 0) return false;
         const self = cast(Picker, data);
         switch (symbol) {
             's', 'S' => self.ui.activate(self.share),
@@ -206,7 +206,7 @@ pub const Operation = struct {
     hint: ?fonts.Mask = null,
     hint_scale: u32 = 0,
     selection_done: bool = false,
-    timer: c.guint = 0,
+    timer: u32 = 0,
     name: ?[:0]u8 = null,
     point: bool,
     region: ?sc.Rect = null,
@@ -230,7 +230,7 @@ pub const Operation = struct {
         return self;
     }
     pub fn destroy(self: *Operation) void {
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         if (self.capture) |capture| capture.destroy();
         if (self.picker) |picker| picker.destroy();
         if (self.overlay_client) |client| client.destroy();
@@ -251,7 +251,7 @@ pub const Operation = struct {
             if (self.overlay == null) return self.finish(2, null);
             // Completion runs outside Wayland dispatch: callbacks can destroy
             // the operation, its input seats, and the private connection.
-            self.timer = c.g_timeout_add(16, &selectionFinished, self);
+            self.timer = mainloop.timeout(16, self, selectionFinished);
         } else self.schedule();
     }
     fn outputAdded(data: ?*anyopaque, output: *native.Output) void {
@@ -341,31 +341,29 @@ pub const Operation = struct {
     fn key(data: ?*anyopaque, _: *native.Surface, code: u32, pressed: bool) void {
         if (code == 1 and pressed) overlayClosed(data);
     }
-    fn selectionFinished(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Operation, data);
+    fn selectionFinished(self: *Operation) bool {
         const client = self.overlay_client.?;
         const mapped = if (self.overlay) |surface| surface.role != null else false;
         if (client.failed or !client.hasInput() or !mapped) {
             self.region = null;
             self.selection_done = true;
         }
-        if (!self.selection_done) return 1;
+        if (!self.selection_done) return true;
         self.timer = 0;
         if (self.overlay) |surface| surface.hide();
         if (self.region == null) self.finish(1, null) else self.schedule();
-        return 0;
+        return false;
     }
     fn schedule(self: *Operation) void {
-        self.timer = c.g_timeout_add(150, &startCapture, self);
+        self.timer = mainloop.timeout(150, self, startCapture);
     }
-    fn startCapture(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Operation, data);
+    fn startCapture(self: *Operation) bool {
         self.timer = 0;
         self.capture = Capture.create(self.allocator, self.name.?, false, &captured, self) catch {
             self.finish(2, null);
-            return 0;
+            return false;
         };
-        return 0;
+        return false;
     }
     fn captured(data: ?*anyopaque, source: ?Image) void {
         const self = cast(Operation, data);

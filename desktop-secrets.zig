@@ -1,6 +1,7 @@
 //! Native Secret Service. Bus sessions and prompts belong to their unique caller.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const p = @import("posix");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
@@ -25,10 +26,10 @@ fn iface(kind: Kind) [:0]const u8 {
         .login => "org.dotfiles.Desktop.Secrets",
     };
 }
-const eq = c.__zig.eq;
-const cast = c.__zig.cast;
+const eq = util.eq;
+const cast = util.cast;
 fn now() u64 {
-    return @intCast(@divTrunc(c.__zig.realTime(), 1000000));
+    return @intCast(@divTrunc(util.realTime(), 1000000));
 }
 fn append(comptime T: type, a: std.mem.Allocator, old: []const T, value: T) ![]const T {
     const out = try a.alloc(T, old.len + 1);
@@ -739,9 +740,9 @@ fn sessionSignal(data: ?*anyopaque, message: *const dbus.Message) void {
         }
     }
 }
-fn quit(data: ?*anyopaque) callconv(.c) c_int {
-    cast(Server, data).stopping = true;
-    return 1;
+fn quit(self: *Server) bool {
+    self.stopping = true;
+    return true;
 }
 pub fn run(allocator: std.mem.Allocator) !void {
     const base = @import("desktop-paths.zig").dataHome();
@@ -793,13 +794,13 @@ pub fn runAtWithOptions(allocator: std.mem.Allocator, directory: [:0]const u8, o
         subscriptions[1] = try connection.subscribe("org.freedesktop.login1", "org.freedesktop.DBus.Properties", "PropertiesChanged", null, &sessionSignal, &server);
         subscriptions[2] = try connection.subscribe("org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep", "/org/freedesktop/login1", &sessionSignal, &server);
     }
-    const term = c.g_unix_signal_add(c.SIGTERM, &quit, &server);
-    const interrupt = c.g_unix_signal_add(c.SIGINT, &quit, &server);
+    const term = mainloop.signal(mainloop.SIGTERM, &server, quit);
+    const interrupt = mainloop.signal(mainloop.SIGINT, &server, quit);
     defer {
-        _ = c.g_source_remove(term);
-        _ = c.g_source_remove(interrupt);
+        _ = mainloop.remove(term);
+        _ = mainloop.remove(interrupt);
     }
-    while (!server.stopping and !bus.closed) _ = c.g_main_context_iteration(null, 1);
+    while (!server.stopping and !bus.closed) _ = mainloop.iteration(true);
 }
 /// Called by PAM's dropped-privilege helper. Passwords travel through stdin, never argv or environment.
 pub fn loginUnlock(password: []const u8) !void {

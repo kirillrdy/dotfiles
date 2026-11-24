@@ -1,9 +1,10 @@
 //! A real application window built and exercised without linking GTK or GDK.
 const std = @import("std");
 const native = @import("native");
-const c = native.c;
+const mainloop = native.mainloop;
+const util = native.util;
 const wire = native.surface;
-const cast = c.__zig.cast;
+const cast = util.cast;
 const State = struct {
     painted: bool = false,
     focused: bool = false,
@@ -58,9 +59,9 @@ pub fn main(init: std.process.Init) !void {
     surface.close = &State.close;
     try client.start();
     try surface.show();
-    const deadline = c.__zig.monotonicTime() + 8_000_000;
-    while (!state.closed and c.__zig.monotonicTime() < deadline) {
-        while (c.g_main_context_iteration(null, 0) != 0) {}
+    const deadline = util.monotonicTime() + 8_000_000;
+    while (!state.closed and util.monotonicTime() < deadline) {
+        while (mainloop.iteration(false)) {}
         try init.io.sleep(.fromMilliseconds(5), .awake);
     }
     if (!state.closed or !state.painted) {
@@ -80,9 +81,9 @@ fn idle(init: std.process.Init) !void {
             @memset(pixels.pixels, 0xff245b98);
         }
         fn pump(io: std.Io, milliseconds: i64) !void {
-            const until = c.__zig.monotonicTime() + milliseconds * 1000;
-            while (c.__zig.monotonicTime() < until) {
-                while (c.g_main_context_iteration(null, 0) != 0) {}
+            const until = util.monotonicTime() + milliseconds * 1000;
+            while (util.monotonicTime() < until) {
+                while (mainloop.iteration(false)) {}
                 try io.sleep(.fromMilliseconds(1), .awake);
             }
         }
@@ -138,9 +139,9 @@ fn frames(init: std.process.Init) !void {
     surface.next_frame = &Animation.next;
     try client.start();
     try surface.show();
-    const deadline = c.__zig.monotonicTime() + 5_000_000;
-    while (animation.frames < 60 and c.__zig.monotonicTime() < deadline) {
-        while (c.g_main_context_iteration(null, 0) != 0) {}
+    const deadline = util.monotonicTime() + 5_000_000;
+    while (animation.frames < 60 and util.monotonicTime() < deadline) {
+        while (mainloop.iteration(false)) {}
         try init.io.sleep(.fromMilliseconds(1), .awake);
     }
     try std.testing.expectEqual(@as(u32, 60), animation.frames);
@@ -159,9 +160,9 @@ fn consent(init: std.process.Init) !void {
     defer if (allocator.deinit() == .leak) @panic("native consent allocation leak");
     const dialog = try native.auth.Dialog.createWithOptions(allocator.allocator(), .confirm, "An application requests your account information.\nName: 日本語", .{ .title = "Native consent fixture", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .response_context = &done, .responded = &Done.completed });
     defer dialog.destroy();
-    const deadline = c.__zig.monotonicTime() + 8_000_000;
-    while (done.accepted == null and c.__zig.monotonicTime() < deadline) {
-        while (c.g_main_context_iteration(null, 0) != 0) {}
+    const deadline = util.monotonicTime() + 8_000_000;
+    while (done.accepted == null and util.monotonicTime() < deadline) {
+        while (mainloop.iteration(false)) {}
         try init.io.sleep(.fromMilliseconds(5), .awake);
     }
     if (done.accepted == null) return error.ConsentNotExercised;
@@ -198,16 +199,16 @@ fn forms(allocator: std.mem.Allocator) !void {
     try external.start();
     const device = form.get(field).entry.?.clipboard().?;
     external.seats.items[0].clipboard.?.copy("Text from another client");
-    const clipboard_deadline = c.__zig.monotonicTime() + 2_000_000;
-    while ((device.source != null or device.selection == null) and c.__zig.monotonicTime() < clipboard_deadline) {
-        _ = c.g_main_context_iteration(null, 0);
-        c.g_usleep(1000);
+    const clipboard_deadline = util.monotonicTime() + 2_000_000;
+    while ((device.source != null or device.selection == null) and util.monotonicTime() < clipboard_deadline) {
+        _ = mainloop.iteration(false);
+        mainloop.sleep(1000);
     }
     try form.setText(field, "");
     form.get(field).entry.?.paste();
-    while (device.requests.items.len != 0 and c.__zig.monotonicTime() < clipboard_deadline) {
-        _ = c.g_main_context_iteration(null, 0);
-        c.g_usleep(1000);
+    while (device.requests.items.len != 0 and util.monotonicTime() < clipboard_deadline) {
+        _ = mainloop.iteration(false);
+        mainloop.sleep(1000);
     }
     try std.testing.expectEqualStrings("Text from another client", form.get(field).value());
     const dialog = try native.auth.Dialog.create(allocator, .password, "Native authentication fixture");
@@ -217,19 +218,19 @@ fn forms(allocator: std.mem.Allocator) !void {
     try std.testing.expectEqualStrings("", dialog.entry.?.buffer.value());
     dialog.entry.?.paste();
     dialog.clear();
-    while (device.requests.items.len != 0 and c.__zig.monotonicTime() < clipboard_deadline) {
-        _ = c.g_main_context_iteration(null, 0);
-        c.g_usleep(1000);
+    while (device.requests.items.len != 0 and util.monotonicTime() < clipboard_deadline) {
+        _ = mainloop.iteration(false);
+        mainloop.sleep(1000);
     }
     try std.testing.expectEqualStrings("", dialog.entry.?.buffer.value());
     form.show();
-    const deadline = c.__zig.monotonicTime() + 2_000_000;
-    while (!form.window.surface.?.configured and c.__zig.monotonicTime() < deadline) {
-        _ = c.g_main_context_iteration(null, 0);
-        c.g_usleep(1000);
+    const deadline = util.monotonicTime() + 2_000_000;
+    while (!form.window.surface.?.configured and util.monotonicTime() < deadline) {
+        _ = mainloop.iteration(false);
+        mainloop.sleep(1000);
     }
     try std.testing.expect(form.window.surface.?.configured);
     form.close();
-    while (!form.closed) _ = c.g_main_context_iteration(null, 1);
+    while (!form.closed) _ = mainloop.iteration(true);
     std.debug.print("PASS GTK-free production forms, clipboard and authentication\n", .{});
 }

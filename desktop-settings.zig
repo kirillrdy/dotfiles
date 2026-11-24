@@ -1,6 +1,8 @@
 //! One settings window with Wi-Fi, Network, and Sound pages.
 const std = @import("std");
-pub const c = @import("desktop-glib.zig");
+const keyboard = @import("desktop-keyboard.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 pub const SoundControl = @import("desktop-sound-view.zig").Control;
 pub const Sound = @import("desktop-sound-settings.zig").Sound;
 const network = @import("desktop-network.zig");
@@ -11,10 +13,10 @@ const network_view = @import("desktop-network-view.zig");
 const wire = native.host.wire;
 const input = @import("desktop-input.zig");
 const raster = @import("desktop-raster.zig");
-const cast = c.__zig.cast;
-const eq = c.__zig.eq;
+const cast = util.cast;
+const eq = util.eq;
 fn z(a: std.mem.Allocator, value: []const u8) [:0]u8 {
-    return c.__zig.dupeZ(a, value);
+    return util.dupeZ(a, value);
 }
 pub const Mode = enum { sound, network };
 const Page = struct {
@@ -36,7 +38,7 @@ pub const Settings = struct {
     network_client: ?*network.Client = null,
     network_operations: usize = 0,
     closed: bool = false,
-    audio_cancel: *c.GCancellable,
+    audio_cancel: *mainloop.Cancellable,
     manual: *native.Item,
     password: *native.Item,
     view: network_view.View = .{},
@@ -47,7 +49,7 @@ pub const Settings = struct {
     pub fn create(a: std.mem.Allocator, mode: Mode) *Settings {
         const self = a.create(Settings) catch @panic("out of memory");
         const ui = native.Form.create(a, "Settings", self, &action, &fieldChanged) catch @panic("out of memory");
-        self.* = .{ .allocator = a, .row_arena = .init(a), .window = ui.window, .ui = ui, .audio_cancel = c.g_cancellable_new().?, .message = undefined, .manual = undefined, .password = undefined };
+        self.* = .{ .allocator = a, .row_arena = .init(a), .window = ui.window, .ui = ui, .audio_cancel = mainloop.Cancellable.create(), .message = undefined, .manual = undefined, .password = undefined };
         self.manual = self.add(.entry, "Wi-Fi network name", "Enter the hidden network’s name", false);
         self.password = self.add(.entry, "Password", "Leave empty for a saved or open network", true);
         self.message = ui.get(ui.addPinned(.label, "") catch @panic("out of memory"));
@@ -205,7 +207,7 @@ pub const Settings = struct {
             self.refresh();
             return true;
         }
-        if ((symbol == 'f' or symbol == 'F') and modifiers & c.__zig.control_mask != 0) {
+        if ((symbol == 'f' or symbol == 'F') and modifiers & keyboard.control != 0) {
             self.showSearch();
             return true;
         }
@@ -251,7 +253,7 @@ pub const Settings = struct {
     }
     pub fn destroy(self: *Settings) void {
         std.debug.assert(self.closed and self.network_operations == 0 and (self.sound == null or self.sound.?.operations == 0));
-        c.g_object_unref(self.audio_cancel);
+        self.audio_cancel.unref();
         if (self.sound) |sound| sound.destroy();
         self.ui.deinit();
         self.view.deinit(self.allocator);
@@ -263,7 +265,7 @@ pub const Settings = struct {
         const self = cast(Settings, ptr);
         self.closed = true;
         if (self.sound) |sound| sound.shutdown();
-        c.g_cancellable_cancel(self.audio_cancel);
+        self.audio_cancel.cancel();
         if (self.network_client) |client| client.destroy();
         self.network_client = null;
     }
@@ -572,7 +574,7 @@ pub const Service = struct {
         for (self.windows.items) |settings| if (!settings.closed) settings.ui.close();
         while (self.windows.items.len > 0) {
             self.reap();
-            if (self.windows.items.len > 0) _ = c.g_main_context_iteration(null, 1);
+            if (self.windows.items.len > 0) _ = mainloop.iteration(true);
         }
         self.windows.deinit(self.allocator);
     }

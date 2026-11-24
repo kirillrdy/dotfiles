@@ -1,6 +1,7 @@
 //! Polkit D-Bus agent. The root-owned system helper performs PAM and grants auth.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
@@ -11,7 +12,7 @@ const authority_path = "/org/freedesktop/PolicyKit1/Authority";
 const agent = name ++ ".AuthenticationAgent";
 const path = "/org/dotfiles/PolicyKit1/AuthenticationAgent";
 const xml = "<node><interface name='" ++ agent ++ "'><method name='BeginAuthentication'><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='a{ss}' direction='in'/><arg type='s' direction='in'/><arg type='a(sa{sv})' direction='in'/></method><method name='CancelAuthentication'><arg type='s' direction='in'/></method></interface></node>";
-const cast = c.__zig.cast;
+const cast = util.cast;
 const Details = dbus.Dict([]const u8, dbus.Value);
 /// A polkit subject or identity: a kind with typed details, `(sa{sv})`.
 const Identity = struct { []const u8, Details };
@@ -42,15 +43,15 @@ pub const Service = struct {
         self.subscription = try connection.subscribeArg0("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", name, &State.ownerChanged, self);
         errdefer connection.unsubscribe(self.subscription);
         try self.register();
-        self.timer = c.g_timeout_add_seconds(2, &State.maintain, self);
+        self.timer = mainloop.timeoutSeconds(2, self, State.maintain);
         return .{ .state = self };
     }
     pub fn deinit(self: *Service) void {
         const state = self.state;
         const connection = state.source.connection;
         state.stopping = true;
-        if (state.advance_source != 0) _ = c.g_source_remove(state.advance_source);
-        _ = c.g_source_remove(state.timer);
+        if (state.advance_source != 0) _ = mainloop.remove(state.advance_source);
+        _ = mainloop.remove(state.timer);
         connection.unsubscribe(state.subscription);
         state.cancelAll();
         if (state.registered and state.owner != null) {
@@ -75,7 +76,7 @@ const Subject = struct {
     fn find(self: *Subject, connection: *dbus.Connection) !void {
         if (sessionId(connection, &self.session)) |len| {
             self.session_len = len;
-        } else if (c.__zig.getenv("XDG_SESSION_ID")) |id| {
+        } else if (std.c.getenv("XDG_SESSION_ID")) |id| {
             const value = std.mem.span(id);
             if (value.len > 0 and value.len <= self.session.len) {
                 @memcpy(self.session[0..value.len], value);
@@ -130,8 +131,8 @@ const State = struct {
     subject: Subject = .{},
     registration: u32 = 0,
     subscription: u32 = 0,
-    timer: c.guint = 0,
-    advance_source: c.guint = 0,
+    timer: u32 = 0,
+    advance_source: u32 = 0,
     owner: ?[:0]u8 = null,
     registered: bool = false,
     stopping: bool = false,
@@ -147,15 +148,14 @@ const State = struct {
         const owner = try self.allocator.dupeSentinel(u8, owner_name[0], 0);
         if (self.owner) |old| self.allocator.free(old);
         self.owner = owner;
-        const locale: []const u8 = if (c.__zig.getenv("LANG")) |value| std.mem.span(value) else "C";
+        const locale: []const u8 = if (std.c.getenv("LANG")) |value| std.mem.span(value) else "C";
         const registered = connection.callBlocking(.{ .destination = owner, .path = authority_path, .interface = authority, .member = "RegisterAuthenticationAgent" }, .{ self.subject.identity(), locale, dbus.ObjectPath{ .value = path } }, 1500) catch return error.PolicyKitUnavailable;
         registered.deinit();
         self.registered = true;
     }
-    fn maintain(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(State, data);
+    fn maintain(self: *State) bool {
         if (!self.registered) self.register() catch {};
-        return 1;
+        return true;
     }
     fn cancelAll(self: *State) void {
         self.cancelling = true;
@@ -171,11 +171,10 @@ const State = struct {
         if (self.owner) |old| self.allocator.free(old);
         self.owner = null;
     }
-    fn advance(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(State, data);
+    fn advance(self: *State) bool {
         self.advance_source = 0;
         if (!self.stopping and self.requests.items.len > 0 and self.requests.items[0].dialog == null) self.requests.items[0].start();
-        return 0;
+        return false;
     }
     fn replyError(self: *State, message: *const dbus.Message, text: []const u8) void {
         self.source.connection.replyError(message, name ++ ".Error.Failed", text) catch {};
@@ -217,8 +216,8 @@ const Auth = struct {
     username: [:0]const u8,
     dialog: ?Dialog = null,
     fd: c_int = -1,
-    source: c.guint = 0,
-    write_source: c.guint = 0,
+    source: u32 = 0,
+    write_source: u32 = 0,
     input: [16384]u8 = undefined,
     input_len: usize = 0,
     output: [8192]u8 = @splat(0),
@@ -267,8 +266,8 @@ const Auth = struct {
         self.restart();
     }
     fn closeTransport(self: *Auth) void {
-        if (self.source != 0) _ = c.g_source_remove(self.source);
-        if (self.write_source != 0) _ = c.g_source_remove(self.write_source);
+        if (self.source != 0) _ = mainloop.remove(self.source);
+        if (self.write_source != 0) _ = mainloop.remove(self.write_source);
         self.source = 0;
         self.write_source = 0;
         if (self.fd >= 0) _ = libc.close(self.fd);
@@ -302,7 +301,7 @@ const Auth = struct {
             self.complete(false, false, "Authentication helper has an unexpected owner");
             return;
         }
-        self.source = c.g_unix_fd_add(self.fd, c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &readable, self);
+        self.source = mainloop.watch(self.fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
         const bytes = std.fmt.bufPrint(&self.output, "{s}\n{s}\n", .{ self.username, self.cookie }) catch {
             self.complete(false, false, "Authentication request is too large");
             return;
@@ -317,7 +316,7 @@ const Auth = struct {
                 const err = libc.__errno_location().*;
                 if (err == libc.EINTR) continue;
                 if (err == 11) {
-                    if (self.write_source == 0) self.write_source = c.g_unix_fd_add(self.fd, c.G_IO_OUT | c.G_IO_ERR | c.G_IO_HUP, &writable, self);
+                    if (self.write_source == 0) self.write_source = mainloop.watch(self.fd, mainloop.OUT | mainloop.ERR | mainloop.HUP, self, writable);
                     return true;
                 }
                 self.complete(false, false, "Could not contact authentication helper");
@@ -335,31 +334,29 @@ const Auth = struct {
         self.output_len = 0;
         return true;
     }
-    fn writable(_: c_int, _: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Auth, data);
+    fn writable(self: *Auth, _: c_int, _: u32) bool {
         // Remove this source before flush can finish or dispose the request.
         self.write_source = 0;
-        if (!self.flush()) return 0;
-        return 0;
+        if (!self.flush()) return false;
+        return false;
     }
-    fn readable(_: c_int, _: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Auth, data);
+    fn readable(self: *Auth, _: c_int, _: u32) bool {
         while (true) {
             if (self.input_len == self.input.len) {
                 self.complete(false, false, "Authentication helper sent an oversized message");
-                return 0;
+                return false;
             }
             const count = libc.read(self.fd, self.input[self.input_len..].ptr, self.input.len - self.input_len);
             if (count < 0) {
                 const err = libc.__errno_location().*;
                 if (err == libc.EINTR) continue;
-                if (err == 11) return 1;
+                if (err == 11) return true;
                 self.complete(false, false, "Authentication helper read failed");
-                return 0;
+                return false;
             }
             if (count == 0) {
                 self.complete(false, false, "Authentication helper disconnected");
-                return 0;
+                return false;
             }
             self.input_len += @intCast(count);
             while (std.mem.indexOfScalar(u8, self.input[0..self.input_len], '\n')) |end| {
@@ -367,7 +364,7 @@ const Auth = struct {
                 // Escapes decode in place: the result is never longer than the line.
                 const decoded_line = unescape(self.input[0..end :0]);
                 const live = self.line(decoded_line);
-                if (!live) return 0;
+                if (!live) return false;
                 const remaining = self.input_len - end - 1;
                 std.mem.copyForwards(u8, self.input[0..remaining], self.input[end + 1 .. self.input_len]);
                 self.input_len = remaining;
@@ -451,7 +448,7 @@ const Auth = struct {
         const connection = state.source.connection;
         if (success) connection.answer(&self.invocation, .{}) catch {} else connection.answerError(&self.invocation, if (cancelled) name ++ ".Error.Cancelled" else name ++ ".Error.Failed", std.mem.span(message)) catch {};
         self.destroy();
-        if (!state.stopping and !state.cancelling and state.requests.items.len > 0 and state.advance_source == 0) state.advance_source = c.g_idle_add(&State.advance, state);
+        if (!state.stopping and !state.cancelling and state.requests.items.len > 0 and state.advance_source == 0) state.advance_source = mainloop.idle(state, State.advance);
     }
     fn destroy(self: *Auth) void {
         self.closeTransport();

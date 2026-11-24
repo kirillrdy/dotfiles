@@ -1,6 +1,5 @@
 //! Compose mail through the configured mailto handler, without a portal backend.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const files = @import("desktop-paths.zig");
 

@@ -1,13 +1,15 @@
 //! Askpass protocol tests. Uses only synthetic credentials on an isolated display.
 const std = @import("std");
 const askpass = @import("desktop").askpass;
-const c = askpass.c;
+const keyboard = @import("desktop").keyboard;
+const mainloop = @import("desktop").mainloop;
+const util = @import("desktop").util;
 const libc = @import("desktop").libc;
 const assert = std.debug.assert;
-const cast = c.__zig.cast;
+const cast = util.cast;
 fn pump() void {
-    while (c.g_main_context_iteration(null, 0) != 0) {}
-    c.g_usleep(1000);
+    while (mainloop.iteration(false)) {}
+    mainloop.sleep(1000);
 }
 fn checkEditing(allocator: std.mem.Allocator) !void {
     const dialog = try askpass.Dialog.create(allocator, .password, "Synthetic clipboard and editing checks");
@@ -16,15 +18,15 @@ fn checkEditing(allocator: std.mem.Allocator) !void {
     const clipboard = entry.clipboard().?;
     clipboard.copy("paste-東京");
     entry.paste();
-    var deadline = c.__zig.monotonicTime() + 3_000_000;
-    while (entry.refs > 1 and c.__zig.monotonicTime() < deadline) pump();
+    var deadline = util.monotonicTime() + 3_000_000;
+    while (entry.refs > 1 and util.monotonicTime() < deadline) pump();
     try std.testing.expectEqualStrings("paste-東京", entry.buffer.value());
-    try std.testing.expect(dialog.handleKey('a', c.__zig.control_mask));
+    try std.testing.expect(dialog.handleKey('a', keyboard.control));
     try entry.insert("replacement");
     try std.testing.expectEqualStrings("replacement", entry.buffer.value());
     clipboard.copy("clipboard-guard");
-    try std.testing.expect(dialog.handleKey('c', c.__zig.control_mask));
-    try std.testing.expect(dialog.handleKey('x', c.__zig.control_mask));
+    try std.testing.expect(dialog.handleKey('c', keyboard.control));
+    try std.testing.expect(dialog.handleKey('x', keyboard.control));
     const Receipt = struct {
         done: bool = false,
         matches: bool = false,
@@ -36,28 +38,27 @@ fn checkEditing(allocator: std.mem.Allocator) !void {
     };
     var receipt: Receipt = .{};
     clipboard.paste(&Receipt.received, &receipt);
-    while (!receipt.done and c.__zig.monotonicTime() < deadline) pump();
+    while (!receipt.done and util.monotonicTime() < deadline) pump();
     try std.testing.expect(receipt.matches);
     try std.testing.expectEqualStrings("replacement", entry.buffer.value());
     // A late clipboard response must neither use the destroyed dialog nor
     // repopulate the password after clear/cancellation.
     entry.paste();
     dialog.clear();
-    while (entry.refs > 1 and c.__zig.monotonicTime() < deadline) pump();
+    while (entry.refs > 1 and util.monotonicTime() < deadline) pump();
     try std.testing.expectEqualStrings("", entry.buffer.value());
     entry.paste();
     dialog.destroy();
     // Drain the outstanding clipboard request after the owner has been freed.
-    deadline = c.__zig.monotonicTime() + 100_000;
-    while (c.__zig.monotonicTime() < deadline) pump();
+    deadline = util.monotonicTime() + 100_000;
+    while (util.monotonicTime() < deadline) pump();
 }
 const Trigger = enum { response, enter, escape, allow_key, accept_click, cancel_click, term, interrupt };
 const Response = struct {
     dialog: *askpass.Dialog,
     accepted: bool,
     trigger: Trigger = .response,
-    fn send(data: c.gpointer) callconv(.c) c.gboolean {
-        const self: *Response = @ptrCast(@alignCast(data));
+    fn send(self: *Response) bool {
         switch (self.trigger) {
             .response => self.dialog.respond(self.accepted),
             .enter => _ = self.dialog.handleKey(0xff0d, 0),
@@ -74,7 +75,7 @@ const Response = struct {
             .term => _ = libc.raise(libc.SIGTERM),
             .interrupt => _ = libc.raise(libc.SIGINT),
         }
-        return 0;
+        return false;
     }
 };
 fn check(init: std.process.Init, root: []const u8, mode: askpass.Mode, accepted: bool, expected: []const u8, status: u8, trigger: Trigger) !void {
@@ -86,7 +87,7 @@ fn check(init: std.process.Init, root: []const u8, mode: askpass.Mode, accepted:
         try entry.insert("test-secret:$()\\ 東京");
     } else assert(mode != .password);
     var reply = Response{ .dialog = dialog, .accepted = accepted, .trigger = trigger };
-    _ = c.g_timeout_add(25, &Response.send, &reply);
+    _ = mainloop.timeout(25, &reply, Response.send);
     dialog.run();
     const path = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/answer", .{root});
     defer std.heap.page_allocator.free(path);

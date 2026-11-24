@@ -1,7 +1,7 @@
 //! GNOME 50 app-grid geometry and native pixels. Theme references:
 //! gnome-shell-sass/widgets/{_app-grid,_search-entry}.scss and js/ui/iconGrid.js.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const decode = @import("desktop-decode.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 pub const Rect = raster.Rect;
@@ -113,19 +113,19 @@ fn drawMask(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64, rgb: u32) vo
 }
 pub const Tile = struct {
     mask: ?text.Mask = null,
-    image: ?c.__icons.Image = null,
+    image: ?decode.Image = null,
     scale: u32 = 0,
     size: u32 = 0,
     pub fn deinit(self: *Tile, a: std.mem.Allocator) void {
         if (self.mask) |mask| mask.deinit(a);
-        if (self.image) |image| c.__icons.free(a, image);
+        if (self.image) |image| decode.free(a, image);
         self.* = .{};
     }
     pub fn paint(self: *Tile, a: std.mem.Allocator, canvas: raster.Canvas, scale: u32, renderer: *text.Renderer, name: [*c]const u8, icon: ?[:0]const u8, rect: Rect, size: u32, hover: bool, focused: bool, selected: bool, pressed: bool) !void {
         if (self.scale != scale or self.size != size) {
             self.deinit(a);
             self.mask = try renderer.renderLayout(a, std.mem.span(name), .{ .size = 14.6666666667 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat((rect.width - 24) * canvas.scale), .alignment = .center, .ellipsize = true, .origin = .top });
-            self.image = c.__icons.loadApp(a, icon, size * scale, null, "application-x-executable");
+            self.image = @import("desktop-icons.zig").loadApp(a, icon, size * scale, null, "application-x-executable");
             self.scale = scale;
             self.size = size;
         }
@@ -146,12 +146,12 @@ pub const Tile = struct {
     }
 };
 pub const Search = struct {
-    find: ?c.__icons.Image = null,
-    clear: ?c.__icons.Image = null,
+    find: ?decode.Image = null,
+    clear: ?decode.Image = null,
     scale: u32 = 0,
     pub fn deinit(self: *Search, a: std.mem.Allocator) void {
-        if (self.find) |image| c.__icons.free(a, image);
-        if (self.clear) |image| c.__icons.free(a, image);
+        if (self.find) |image| decode.free(a, image);
+        if (self.clear) |image| decode.free(a, image);
         self.* = .{};
     }
     fn prepare(self: *Search, a: std.mem.Allocator, scale: u32) void {
@@ -161,11 +161,11 @@ pub const Search = struct {
         self.clear = symbol(a, "edit-clear-symbolic", scale);
         self.scale = scale;
     }
-    fn symbol(a: std.mem.Allocator, name: [:0]const u8, scale: u32) ?c.__icons.Image {
+    fn symbol(a: std.mem.Allocator, name: [:0]const u8, scale: u32) ?decode.Image {
         const tint: raster.Color = .{ .red = 0.98, .green = 0.98, .blue = 0.984, .alpha = 0.7 };
         return @import("desktop-icons.zig").load(a, name, 16, scale, tint);
     }
-    fn paintIcon(image: ?c.__icons.Image, canvas: raster.Canvas, x: f64, y: f64) !void {
+    fn paintIcon(image: ?decode.Image, canvas: raster.Canvas, x: f64, y: f64) !void {
         const icon = image orelse return;
         try raster.blit(canvas.target, icon.view(), .{ .x = x * canvas.scale, .y = y * canvas.scale, .width = 16 * canvas.scale, .height = 16 * canvas.scale }, null);
     }

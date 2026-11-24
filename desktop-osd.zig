@@ -3,10 +3,11 @@
 const native = @import("desktop-surface.zig");
 const view = @import("desktop-osd-view.zig");
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const audio = @import("desktop-audio.zig");
 const backlight = @import("desktop-backlight.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 
 pub const Kind = view.Kind;
 pub const Work = struct { kind: Kind, delta: i16 = 0 };
@@ -88,8 +89,8 @@ pub const Server = struct {
     last_state: State = .{ .percent = 0 },
     audio_service: ?*audio.Service = null,
     audio_busy: bool = false,
-    cancel: ?*c.GCancellable = null,
-    hide_timer: c.guint = 0,
+    cancel: ?*mainloop.Cancellable = null,
+    hide_timer: u32 = 0,
     feedback_player: audio.Feedback,
 
     pub fn init(allocator: std.mem.Allocator) Server {
@@ -154,7 +155,7 @@ pub const Server = struct {
         self.active = self.queue.orderedRemove(0);
         if (self.active.?.kind == .brightness) {
             self.brightness_busy = true;
-            self.cancel = c.g_cancellable_new();
+            self.cancel = mainloop.Cancellable.create();
             self.backlight_backend.start(self.allocator, .{ .step = self.active.?.delta }, self.cancel.?, &brightnessDone, self);
             return;
         }
@@ -162,7 +163,7 @@ pub const Server = struct {
             self.finish();
             return;
         };
-        self.cancel = c.g_cancellable_new();
+        self.cancel = mainloop.Cancellable.create();
         self.audio_busy = true;
         const work = self.active.?;
         service.apply(if (work.kind == .microphone) .input else .output, if (work.delta == 0) .toggle else .{ .step = work.delta }, self.cancel.?, &audioDone, self);
@@ -171,7 +172,7 @@ pub const Server = struct {
     fn audioDone(ptr: ?*anyopaque, result: audio.Result) void {
         const self = cast(Server, ptr);
         self.audio_busy = false;
-        c.g_object_unref(self.cancel);
+        self.cancel.?.unref();
         self.cancel = null;
         if (self.dead) return;
         switch (result) {
@@ -184,7 +185,7 @@ pub const Server = struct {
     fn brightnessDone(data: ?*anyopaque, result: backlight.Result) void {
         const self = cast(Server, data);
         self.brightness_busy = false;
-        c.g_object_unref(self.cancel);
+        self.cancel.?.unref();
         self.cancel = null;
         if (self.dead) return;
         switch (result) {
@@ -198,8 +199,8 @@ pub const Server = struct {
         self.last_kind = kind;
         self.last_state = state;
         for (self.overlays.items) |overlay| overlay.show(kind, state);
-        if (self.hide_timer != 0) _ = c.g_source_remove(self.hide_timer);
-        self.hide_timer = c.g_timeout_add(1500, &hide, self);
+        if (self.hide_timer != 0) _ = mainloop.remove(self.hide_timer);
+        self.hide_timer = mainloop.timeout(1500, self, hide);
         if (kind == .volume and self.active.?.delta != 0 and !state.muted and state.percent > 0) self.feedback();
     }
 
@@ -208,11 +209,10 @@ pub const Server = struct {
         self.next();
     }
 
-    fn hide(data: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Server, data);
+    fn hide(self: *Server) bool {
         self.hide_timer = 0;
         for (self.overlays.items) |overlay| overlay.surface.hide();
-        return 0;
+        return false;
     }
 
     fn feedback(self: *Server) void {
@@ -222,12 +222,12 @@ pub const Server = struct {
 
     pub fn deinit(self: *Server) void {
         self.dead = true;
-        if (self.hide_timer != 0) _ = c.g_source_remove(self.hide_timer);
-        if (self.cancel != null) c.g_cancellable_cancel(self.cancel);
+        if (self.hide_timer != 0) _ = mainloop.remove(self.hide_timer);
+        if (self.cancel) |cancel| cancel.cancel();
         if (self.audio_service) |service| service.destroy();
         self.audio_service = null;
         self.feedback_player.deinit();
-        while (self.audio_busy or self.brightness_busy) _ = c.g_main_context_iteration(null, 1);
+        while (self.audio_busy or self.brightness_busy) _ = mainloop.iteration(true);
         for (self.overlays.items) |overlay| overlay.destroy();
         self.overlays.deinit(self.allocator);
         if (self.client) |client| client.destroy();

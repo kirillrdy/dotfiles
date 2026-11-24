@@ -2,7 +2,7 @@
 const std = @import("std");
 const sc = @import("../desktop-screenshot.zig");
 const libc = @import("../desktop-libc.zig");
-const c = sc.c;
+const mainloop = @import("../desktop-loop.zig");
 pub const Frame = struct {
     bytes: []u8,
     width: u32,
@@ -32,7 +32,7 @@ pub fn capture() !Frame {
 }
 pub fn pump() void {
     for (0..20) |_| {
-        while (c.g_main_context_iteration(null, 0) != 0) {}
+        while (mainloop.iteration(false)) {}
         _ = libc.poll(null, 0, 10);
     }
 }

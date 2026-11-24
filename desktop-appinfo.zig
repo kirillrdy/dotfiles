@@ -8,6 +8,7 @@
 //! of installed applications is cached for the main thread and rescanned when
 //! an application directory changes.
 const std = @import("std");
+const mainloop = @import("desktop-loop.zig");
 const linux = std.os.linux;
 const paths = @import("desktop-paths.zig");
 const util = @import("desktop-util.zig");
@@ -246,7 +247,7 @@ pub const LaunchOptions = struct {
     /// An xdg-activation token for the started application.
     activation_token: ?[]const u8 = null,
     /// Cancels a pending D-Bus activation, which then completes with failure.
-    cancellable: ?*@import("desktop-glib.zig").GCancellable = null,
+    cancellable: ?*mainloop.Cancellable = null,
 };
 
 pub const Done = *const fn (?*anyopaque, bool) void;
@@ -261,17 +262,16 @@ const Completion = struct {
     fn later(gpa: std.mem.Allocator, done: Done, context: ?*anyopaque, ok: bool) void {
         const self = gpa.create(Completion) catch return done(context, ok);
         self.* = .{ .allocator = gpa, .done = done, .context = context, .ok = ok };
-        _ = idle.g_idle_add(&deliver, self);
+        _ = mainloop.idle(self, deliver);
     }
 
-    fn deliver(data: ?*anyopaque) callconv(.c) c_int {
-        const self: *Completion = @ptrCast(@alignCast(data));
+    fn deliver(self: *Completion) bool {
         const done = self.done;
         const context = self.context;
         const ok = self.ok;
         self.allocator.destroy(self);
         done(context, ok);
-        return 0;
+        return false;
     }
 
     fn replied(data: ?*anyopaque, reply: @import("dbus").Reply) void {
@@ -287,9 +287,6 @@ const Completion = struct {
     }
 };
 
-const idle = struct {
-    const g_idle_add = @import("desktop-loop.zig").idle;
-};
 
 /// A desktop file ID without ".desktop", when it is a valid D-Bus name.
 fn busName(id: []const u8) ?[]const u8 {

@@ -3,16 +3,16 @@
 //! Owners may destroy a source from inside any of its callbacks; teardown is
 //! then deferred until the connection has finished dispatching.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
 const dbus = @import("dbus");
 
 pub const Source = struct {
     allocator: std.mem.Allocator,
     connection: *dbus.Connection,
-    watch: c.guint = 0,
-    timer: c.guint = 0,
+    watch: u32 = 0,
+    timer: u32 = 0,
     /// An idle dispatch for messages buffered by a blocking call.
-    backlog: c.guint = 0,
+    backlog: u32 = 0,
     busy: u32 = 0,
     /// Holders of a shared source (see `acquire`).
     refs: u32 = 1,
@@ -27,7 +27,7 @@ pub const Source = struct {
         connection.on_schedule = &scheduled;
         connection.on_backlog = &backlogged;
         connection.schedule_context = self;
-        self.watch = c.g_unix_fd_add(connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &readable, self);
+        self.watch = mainloop.watch(connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
         return self;
     }
 
@@ -39,18 +39,17 @@ pub const Source = struct {
         self.finalize();
     }
     fn finalize(self: *Source) void {
-        if (self.watch != 0) _ = c.g_source_remove(self.watch);
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
-        if (self.backlog != 0) _ = c.g_source_remove(self.backlog);
+        if (self.watch != 0) _ = mainloop.remove(self.watch);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.backlog != 0) _ = mainloop.remove(self.backlog);
         self.connection.close();
         self.allocator.destroy(self);
     }
 
-    fn readable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c.gboolean {
-        const self: *Source = @ptrCast(@alignCast(data));
+    fn readable(self: *Source, _: c_int, condition: u32) bool {
         self.busy += 1;
         var keep = true;
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) {
+        if (condition & (mainloop.ERR | mainloop.HUP) != 0) {
             // Drain anything still buffered, then fail what can no longer be answered.
             self.connection.readAndDispatch() catch {};
             keep = false;
@@ -64,28 +63,27 @@ pub const Source = struct {
         self.busy -= 1;
         if (self.dying) {
             self.finalize();
-            return 0;
+            return false;
         }
         self.arm();
-        return @intFromBool(keep);
+        return keep;
     }
 
     fn backlogged(data: ?*anyopaque) void {
         const self: *Source = @ptrCast(@alignCast(data));
-        if (self.backlog == 0 and !self.dying) self.backlog = c.g_idle_add(&drain, self);
+        if (self.backlog == 0 and !self.dying) self.backlog = mainloop.idle(self, drain);
     }
-    fn drain(data: ?*anyopaque) callconv(.c) c.gboolean {
-        const self: *Source = @ptrCast(@alignCast(data));
+    fn drain(self: *Source) bool {
         self.backlog = 0;
         self.busy += 1;
         self.connection.dispatchPending() catch self.connection.disconnect();
         self.busy -= 1;
         if (self.dying) {
             self.finalize();
-            return 0;
+            return false;
         }
         self.arm();
-        return 0;
+        return false;
     }
     fn scheduled(data: ?*anyopaque) void {
         const self: *Source = @ptrCast(@alignCast(data));
@@ -93,23 +91,22 @@ pub const Source = struct {
     }
     /// Re-arms the timer for the earliest call deadline.
     fn arm(self: *Source) void {
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         self.timer = 0;
         const remaining = self.connection.nextTimeout() orelse return;
-        self.timer = c.g_timeout_add(@intCast(@min(remaining + 1, std.math.maxInt(c_uint))), &expired, self);
+        self.timer = mainloop.timeout(@intCast(@min(remaining + 1, std.math.maxInt(c_uint))), self, expired);
     }
-    fn expired(data: ?*anyopaque) callconv(.c) c.gboolean {
-        const self: *Source = @ptrCast(@alignCast(data));
+    fn expired(self: *Source) bool {
         self.timer = 0;
         self.busy += 1;
         _ = self.connection.expire();
         self.busy -= 1;
         if (self.dying) {
             self.finalize();
-            return 0;
+            return false;
         }
         self.arm();
-        return 0;
+        return false;
     }
 };
 
@@ -142,16 +139,16 @@ pub fn release(source: *Source) void {
 /// A single method call on a private connection that closes once the reply arrives.
 /// The handler always runs later from the main loop, exactly once, unless the
 /// request was cancelled, in which case it receives a failure named `Cancelled`.
-pub fn request(allocator: std.mem.Allocator, bus: dbus.Bus, target: dbus.Connection.Call, args: anytype, timeout_ms: u32, cancel: ?*c.GCancellable, handler: dbus.ReplyHandler, context: ?*anyopaque) void {
+pub fn request(allocator: std.mem.Allocator, bus: dbus.Bus, target: dbus.Connection.Call, args: anytype, timeout_ms: u32, cancel: ?*mainloop.Cancellable, handler: dbus.ReplyHandler, context: ?*anyopaque) void {
     const self = allocator.create(Request) catch {
         // Without memory there is no way to defer; failing synchronously is the only option.
         return handler(context, .{ .failed = .{ .name = "org.freedesktop.DBus.Error.NoMemory", .text = "Out of memory" } });
     };
     self.* = .{ .allocator = allocator, .handler = handler, .context = context, .cancel = cancel };
     if (cancel) |value| {
-        _ = c.g_object_ref(value);
-        if (c.g_cancellable_is_cancelled(value) != 0) return self.later(.cancelled);
-        self.cancel_handler = c.g_cancellable_connect(value, @ptrCast(&Request.cancelled), self, null);
+        _ = value.ref();
+        if (value.isCancelled()) return self.later(.cancelled);
+        self.cancel_handler = value.connect(self, Request.cancelled);
     }
     const source = Source.open(allocator, bus) catch return self.later(.unreachable_bus);
     self.source = source;
@@ -162,31 +159,29 @@ const Request = struct {
     allocator: std.mem.Allocator,
     handler: dbus.ReplyHandler,
     context: ?*anyopaque,
-    cancel: ?*c.GCancellable,
-    cancel_handler: c.gulong = 0,
+    cancel: ?*mainloop.Cancellable,
+    cancel_handler: u64 = 0,
     source: ?*Source = null,
     serial: u32 = 0,
-    idle: c.guint = 0,
+    idle: u32 = 0,
     outcome: enum { cancelled, unreachable_bus, send_failed } = .cancelled,
 
     fn later(self: *Request, outcome: @TypeOf(self.outcome)) void {
         self.outcome = outcome;
-        if (self.idle == 0) self.idle = c.g_idle_add(&deferred, self);
+        if (self.idle == 0) self.idle = mainloop.idle(self, deferred);
     }
-    fn deferred(data: c.gpointer) callconv(.c) c.gboolean {
-        const self: *Request = @ptrCast(@alignCast(data));
+    fn deferred(self: *Request) bool {
         self.idle = 0;
         self.finish(.{ .failed = switch (self.outcome) {
             .cancelled => .{ .name = "Cancelled", .text = "The request was cancelled" },
             .unreachable_bus => .{ .name = "org.freedesktop.DBus.Error.NoServer", .text = "Could not connect to the message bus" },
             .send_failed => .{ .name = "org.freedesktop.DBus.Error.Disconnected", .text = "Could not send the request" },
         } });
-        return 0;
+        return false;
     }
     /// Runs in the cancelling thread; disconnecting there could deadlock, so finish from the loop.
-    fn cancelled(_: *c.GCancellable, data: c.gpointer) callconv(.c) void {
-        const self: *Request = @ptrCast(@alignCast(data));
-        if (self.idle != 0) _ = c.g_source_remove(self.idle);
+    fn cancelled(self: *Request) void {
+        if (self.idle != 0) _ = mainloop.remove(self.idle);
         self.idle = 0;
         self.later(.cancelled);
     }
@@ -197,16 +192,16 @@ const Request = struct {
         self.finish(reply);
     }
     fn finish(self: *Request, reply: dbus.Reply) void {
-        if (self.idle != 0) _ = c.g_source_remove(self.idle);
+        if (self.idle != 0) _ = mainloop.remove(self.idle);
         if (self.cancel) |value| {
-            if (self.cancel_handler != 0) c.g_cancellable_disconnect(value, self.cancel_handler);
+            value.disconnect(self.cancel_handler);
         }
         if (self.source) |source| {
             if (self.serial != 0) source.connection.cancel(self.serial);
             source.destroy();
         }
         self.handler(self.context, reply);
-        if (self.cancel) |value| c.g_object_unref(value);
+        if (self.cancel) |value| value.unref();
         self.allocator.destroy(self);
     }
 };

@@ -1,6 +1,5 @@
 //! OpenSSH askpass protocol with native pixels and a locked, masked text entry.
 const std = @import("std");
-pub const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 pub const native = @import("desktop-askpass-view.zig");
 pub const password = @import("desktop-password-entry.zig");
@@ -21,7 +20,7 @@ pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
     const allocator = init.gpa;
     const text = try allocator.dupeSentinel(u8, if (args.len > 1) args[1] else "Enter your SSH passphrase:", 0);
     defer allocator.free(text);
-    const hint = c.__zig.getenv("SSH_ASKPASS_PROMPT");
+    const hint = std.c.getenv("SSH_ASKPASS_PROMPT");
     const dialog = Dialog.create(allocator, Mode.fromHint(if (hint) |h| std.mem.span(h) else null), text) catch return 1;
     defer dialog.destroy();
     dialog.run();

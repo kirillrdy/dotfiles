@@ -2,7 +2,9 @@
 const std = @import("std");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
-const c = @import("desktop-glib.zig");
+const decode = @import("desktop-decode.zig");
+const imaging = @import("desktop-image.zig");
+const mainloop = @import("desktop-loop.zig");
 pub const Rect = raster.Rect;
 const white: raster.Color = .{ .red = 1, .green = 1, .blue = 1 };
 const overview_foreground: raster.Color = .{ .red = 250.0 / 255.0, .green = 250.0 / 255.0, .blue = 251.0 / 255.0 };
@@ -52,7 +54,7 @@ pub const Label = struct {
 };
 pub const Tooltip = struct {
     label: Label = .{},
-    timer: c.guint = 0,
+    timer: u32 = 0,
     visible: bool = false,
     x: f64 = 0,
     y: f64 = 0,
@@ -62,16 +64,16 @@ pub const Tooltip = struct {
         self.label.deinit(a);
     }
     pub fn hide(self: *Tooltip) void {
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         self.timer = 0;
         self.visible = false;
     }
-    pub fn update(self: *Tooltip, a: std.mem.Allocator, x: f64, y: f64, value: ?[:0]const u8, active: bool, callback: c.GSourceFunc, data: ?*anyopaque) void {
+    pub fn update(self: *Tooltip, a: std.mem.Allocator, x: f64, y: f64, value: ?[:0]const u8, active: bool, context: anytype, comptime callback: anytype) void {
         self.x = x;
         self.y = y;
         self.hide();
         self.label.set(a, value orelse "");
-        if (active and value != null) self.timer = c.g_timeout_add(500, callback, data);
+        if (active and value != null) self.timer = mainloop.timeout(500, context, callback);
     }
     pub fn show(self: *Tooltip) void {
         self.timer = 0;
@@ -95,7 +97,7 @@ pub const Item = struct {
     icon: Label = .{},
     tooltip: Label = .{},
     command: Label = .{},
-    image: ?c.__icons.Image = null,
+    image: ?decode.Image = null,
     icon_scale: u32 = 0,
     visible: bool = false,
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
@@ -104,20 +106,20 @@ pub const Item = struct {
         self.icon.deinit(a);
         self.tooltip.deinit(a);
         self.command.deinit(a);
-        if (self.image) |image| c.__icons.free(a, image);
+        if (self.image) |image| decode.free(a, image);
         self.image = null;
     }
     pub fn setIcon(self: *Item, a: std.mem.Allocator, value: []const u8) void {
         if (std.mem.eql(u8, self.icon.value, value)) return;
         self.icon.set(a, value);
-        if (self.image) |image| c.__icons.free(a, image);
+        if (self.image) |image| decode.free(a, image);
         self.image = null;
         self.icon_scale = 0;
     }
     fn prepare(self: *Item, a: std.mem.Allocator, renderer: *text.Renderer, scale: u32, small: bool) !void {
         try self.label.prepare(a, renderer, scale, if (small) 12 else 14.666, true, null, false);
         if (self.icon_scale == scale) return;
-        if (self.image) |image| c.__icons.free(a, image);
+        if (self.image) |image| decode.free(a, image);
         self.image = null;
         if (self.icon.value.len != 0) {
             self.image = @import("desktop-icons.zig").load(a, self.icon.value, 16, scale, @import("desktop-icons.zig").white);
@@ -127,7 +129,7 @@ pub const Item = struct {
     fn paint(self: *const Item, buffer: raster.Buffer, scale: u32, foreground: raster.Color) void {
         var x = self.rect.x;
         if (self.image) |image| {
-            c.__zig.blitImage(.{ .target = buffer, .scale = @floatFromInt(scale) }, image, .{ .x = x, .y = (self.rect.height - 16) / 2, .width = 16, .height = 16 });
+            imaging.blit(.{ .target = buffer, .scale = @floatFromInt(scale) }, image, .{ .x = x, .y = (self.rect.height - 16) / 2, .width = 16, .height = 16 });
         }
         if (self.icon.value.len != 0) x += 16 + (if (self.label.value.len != 0) @as(f64, 6) else 0);
         self.label.paint(buffer, x, (self.rect.height - self.label.height()) / 2, foreground);
@@ -140,7 +142,7 @@ pub const Graph = struct {
     series: u32 = 0,
     sequence: i64 = -1,
     maximum: f64 = 100,
-    autoscale: c.gboolean = 0,
+    autoscale: c_int = 0,
     tooltip: Label = .{},
     name: Label = .{},
     pub fn deinit(self: *Graph, a: std.mem.Allocator) void {
@@ -348,10 +350,10 @@ pub const Usage = struct {
     fn prepareRefreshIcon(self: *Usage, a: std.mem.Allocator, scale: u32) !void {
         if (self.refresh_icon_scale == scale) return;
         const image = @import("desktop-icons.zig").load(a, "view-refresh-symbolic", 14, scale, @import("desktop-icons.zig").white) orelse return;
-        defer c.__icons.free(a, image);
+        defer decode.free(a, image);
         var width: u32 = 0;
         var height: u32 = 0;
-        const coverage = try c.__zig.alphaMask(a, image, &width, &height);
+        const coverage = try imaging.alphaMask(a, image, &width, &height);
         if (self.refresh_icon) |old| old.deinit(a);
         self.refresh_icon = .{ .pixels = coverage, .width = width, .height = height, .left = 0, .top = 0 };
         self.refresh_icon_scale = scale;

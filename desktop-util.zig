@@ -109,6 +109,17 @@ pub fn Lazy(comptime T: type, comptime compute: fn () T) type {
         }
     };
 }
+pub fn cast(comptime T: type, ptr: anytype) *T {
+    return @ptrCast(@alignCast(ptr));
+}
+/// Equality of optional C strings: two nulls are equal.
+pub fn strEql(left: [*c]const u8, right: [*c]const u8) bool {
+    if (left == null or right == null) return left == right;
+    return std.mem.orderZ(u8, left, right) == .eq;
+}
+pub fn dupeZ(allocator: std.mem.Allocator, value: []const u8) [:0]u8 {
+    return allocator.dupeSentinel(u8, value, 0) catch @panic("out of memory");
+}
 pub fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }

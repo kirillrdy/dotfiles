@@ -1,19 +1,21 @@
 //! Native Wayland authentication dialogs with locked password buffers.
 const std = @import("std");
-pub const c = @import("desktop-glib.zig");
+const keyboard = @import("desktop-keyboard.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 pub const native = @import("desktop-askpass-view.zig");
 pub const password = @import("desktop-password-entry.zig");
 pub const Mode = native.Mode;
 pub const host = @import("desktop-window.zig");
 const wire = host.wire;
-const cast = c.__zig.cast;
+const cast = util.cast;
 pub const Dialog = struct {
     allocator: std.mem.Allocator,
     window: *host.Window,
     image: []u32 = &.{},
     offset: f64 = 0,
     response: ?bool = null,
-    response_idle: c.guint = 0,
+    response_idle: u32 = 0,
     response_context: ?*anyopaque = null,
     responded: ?*const fn (?*anyopaque, bool) void = null,
     prompt: [:0]u8,
@@ -139,7 +141,7 @@ pub const Dialog = struct {
     pub fn destroy(self: *Dialog) void {
         if (self.confirmation) |entry| entry.destroy();
         if (self.entry) |entry| entry.destroy();
-        if (self.response_idle != 0) _ = c.g_source_remove(self.response_idle);
+        if (self.response_idle != 0) _ = mainloop.remove(self.response_idle);
         self.window.destroy();
         self.allocator.free(self.image);
         self.view.deinit(self.allocator);
@@ -301,7 +303,7 @@ pub const Dialog = struct {
     fn closeRequested(ptr: ?*anyopaque) void {
         cast(Dialog, ptr).respond(false);
     }
-    pub fn handleKey(self: *Dialog, symbol: u32, modifiers: c.__zig.Modifiers) bool {
+    pub fn handleKey(self: *Dialog, symbol: u32, modifiers: keyboard.Modifiers) bool {
         self.view.keyboard_focus = true;
         switch (symbol) {
             0xff1b => {
@@ -309,7 +311,7 @@ pub const Dialog = struct {
                 return true;
             },
             0xff09, 0xfe20 => {
-                self.view.stepFocus(symbol == 0xfe20 or modifiers & c.__zig.shift_mask != 0);
+                self.view.stepFocus(symbol == 0xfe20 or modifiers & keyboard.shift != 0);
                 self.focus(self.view.focus);
             },
             0xff0d, 0xff8d => {
@@ -325,7 +327,7 @@ pub const Dialog = struct {
                     if (!self.enabled) return true;
                     if (!entry.key(symbol, modifiers)) {
                         const codepoint = @import("desktop-keyboard.zig").unicode(symbol);
-                        if (modifiers & (c.__zig.control_mask | c.__zig.alt_mask) != 0 or codepoint < 32 or codepoint == 127) return false;
+                        if (modifiers & (keyboard.control | keyboard.alt) != 0 or codepoint < 32 or codepoint == 127) return false;
                         var bytes: [4]u8 = @splat(0);
                         defer std.crypto.secureZero(u8, &bytes);
                         const len = std.unicode.utf8Encode(@intCast(codepoint), &bytes) catch return false;
@@ -356,10 +358,9 @@ pub const Dialog = struct {
         if (self.response != null and accepted) return;
         self.response = accepted;
         if (self.response_idle != 0) return;
-        self.response_idle = c.g_idle_add(&deliverResponse, self);
+        self.response_idle = mainloop.idle(self, deliverResponse);
     }
-    fn deliverResponse(ptr: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Dialog, ptr);
+    fn deliverResponse(self: *Dialog) bool {
         self.response_idle = 0;
         self.accepted = self.response.? and !self.failed;
         self.response = null;
@@ -367,25 +368,25 @@ pub const Dialog = struct {
             if (self.mode == .confirm) self.window.hide();
             callback(self.response_context, self.accepted);
         }
-        return 0;
+        return false;
     }
     pub fn clear(self: *Dialog) void {
         if (self.entry) |entry| entry.clear();
         if (self.confirmation) |entry| entry.clear();
     }
-    fn cancel(data: c.gpointer) callconv(.c) c.gboolean {
-        cast(Dialog, data).respond(false);
-        return 1;
+    fn cancel(self: *Dialog) bool {
+        self.respond(false);
+        return true;
     }
     pub fn run(self: *Dialog) void {
         if (self.failed) {
             self.accepted = false;
             return;
         }
-        const term = c.g_unix_signal_add(c.SIGTERM, &cancel, self);
-        defer _ = c.g_source_remove(term);
-        const interrupt = c.g_unix_signal_add(c.SIGINT, &cancel, self);
-        defer _ = c.g_source_remove(interrupt);
+        const term = mainloop.signal(mainloop.SIGTERM, self, cancel);
+        defer _ = mainloop.remove(term);
+        const interrupt = mainloop.signal(mainloop.SIGINT, self, cancel);
+        defer _ = mainloop.remove(interrupt);
         self.accepted = false;
         self.window.show() catch {
             self.failed = true;
@@ -401,7 +402,7 @@ pub const Dialog = struct {
             self.responded = previous_callback;
             self.response_context = previous_context;
         }
-        while (!done) _ = c.g_main_context_iteration(null, 1);
+        while (!done) _ = mainloop.iteration(true);
     }
     fn runCompleted(ptr: ?*anyopaque, _: bool) void {
         cast(bool, ptr).* = true;

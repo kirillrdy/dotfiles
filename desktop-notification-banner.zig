@@ -1,6 +1,8 @@
 //! Native notification cards shared by Wayland banners and date-menu history.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const decode = @import("desktop-decode.zig");
+const imaging = @import("desktop-image.zig");
+const util = @import("desktop-util.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
 
@@ -11,7 +13,7 @@ pub const Data = struct {
     title: [:0]const u8,
     body: [:0]const u8,
     icon: [:0]const u8 = "application-x-executable-symbolic",
-    image: ?c.__icons.Image = null,
+    image: ?decode.Image = null,
     actions: []const Action = &.{},
     created: i64,
 };
@@ -44,7 +46,7 @@ pub const View = struct {
     renderer: text.Renderer = .{},
     masks: [7]?text.Mask = @splat(null), // app, title, body, three actions, age
     shadow: ?[]u8 = null,
-    icon: ?c.__icons.Image = null,
+    icon: ?decode.Image = null,
     action_keys: [3]?[:0]const u8 = @splat(null),
     action_labels: [3]?[:0]const u8 = @splat(null),
     action_count: usize = 0,
@@ -76,7 +78,7 @@ pub const View = struct {
             if (slot.*) |mask| mask.deinit(self.allocator);
             slot.* = null;
         }
-        if (self.icon) |icon| c.__icons.free(self.allocator, icon);
+        if (self.icon) |icon| decode.free(self.allocator, icon);
         self.icon = null;
         self.scale = 0;
     }
@@ -150,7 +152,7 @@ pub const View = struct {
         const content_width = self.width - 48 - @as(u32, if (self.notice.image != null) 60 else 0);
         self.masks[1] = try self.label(self.notice.title, content_width, true, false, scale);
         self.masks[2] = try self.label(self.notice.body, content_width, false, true, scale);
-        const age = @max(0, @divTrunc(c.__zig.realTime(), 1000000) - self.notice.created);
+        const age = @max(0, @divTrunc(util.realTime(), 1000000) - self.notice.created);
         var buffer: [64]u8 = undefined;
         const age_text: [:0]const u8 = if (age < 60) "Just now" else if (age < 3600) std.fmt.bufPrintSentinel(&buffer, "{d}m ago", .{@divTrunc(age, 60)}, 0) catch unreachable else std.fmt.bufPrintSentinel(&buffer, "{d}h ago", .{@divTrunc(age, 3600)}, 0) catch unreachable;
         self.masks[6] = try self.renderer.renderLayout(self.allocator, age_text, .{ .size = 12 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = 65 * scale, .ellipsize = true, .origin = .top });
@@ -204,13 +206,13 @@ pub const View = struct {
                 .{ .line = .{ .start = .{ .x = rect.x + 14, .y = tip }, .end = .{ .x = rect.x + 18, .y = y }, .radius = 1 } },
             }, self.theme.foreground);
         }
-        if (self.icon) |icon| c.__zig.blitImage(canvas, icon, .{ .x = 21, .y = 24, .width = 16, .height = 16 });
+        if (self.icon) |icon| imaging.blit(canvas, icon, .{ .x = 21, .y = 24, .width = 16, .height = 16 });
         text.paintMask(canvas, self.masks[0], 43, 22, self.theme.secondary);
         text.paintMask(canvas, self.masks[6], self.age_x, 25, self.theme.secondary);
         const x: f64 = if (self.notice.image != null) 81 else 21;
         text.paintMask(canvas, self.masks[1], x, 55, self.theme.foreground);
         text.paintMask(canvas, self.masks[2], x, 78, self.theme.foreground);
-        if (self.notice.image) |image| c.__zig.blitImage(canvas, image, .{ .x = 21, .y = 55, .width = 48, .height = 48 });
+        if (self.notice.image) |image| imaging.blit(canvas, image, .{ .x = 21, .y = 55, .width = 48, .height = 48 });
         if (self.expanded) for (0..self.action_count) |i| {
             const rect = self.actionRect(i);
             self.button(canvas, rect, @fromBackingInt(@intCast(@backingInt(Target.action0) + i)), 8);
@@ -310,7 +312,7 @@ test "integration: native notification expansion wraps markup and keeps action h
 test "integration: GNOME header keeps the age beside the source and reserves button space" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
     for ([_]u32{ 1, 2 }) |scale| {
-        var card = View.init(std.testing.allocator, .{ .id = 1, .app = "Terminal", .title = "Build complete", .body = "All checks passed. Your desktop is ready.", .created = @divTrunc(c.__zig.realTime(), 1000000) }, .{}, 529);
+        var card = View.init(std.testing.allocator, .{ .id = 1, .app = "Terminal", .title = "Build complete", .body = "All checks passed. Your desktop is ready.", .created = @divTrunc(util.realTime(), 1000000) }, .{}, 529);
         defer card.deinit();
         try card.prepare(scale);
         try std.testing.expectEqual(@as(u32, 118), card.height);
@@ -330,7 +332,7 @@ test "integration: expanded banner matches GNOME's measured line and action geom
     if (!@import("options").integration_tests) return error.SkipZigTest;
     const actions = [_]data.Action{ .{ .key = "open", .label = "Open Settings" }, .{ .key = "later", .label = "Later" } };
     for ([_]u32{ 1, 2 }) |scale| {
-        var card = View.init(std.testing.allocator, .{ .id = 1, .app = "Terminal", .title = "A longer notification title that should fit on one line", .body = "This notification contains a longer message that wraps onto multiple lines. Expand it to read the complete notification and choose an action.", .created = @divTrunc(c.__zig.realTime(), 1000000), .actions = &actions }, .{}, 529);
+        var card = View.init(std.testing.allocator, .{ .id = 1, .app = "Terminal", .title = "A longer notification title that should fit on one line", .body = "This notification contains a longer message that wraps onto multiple lines. Expand it to read the complete notification and choose an action.", .created = @divTrunc(util.realTime(), 1000000), .actions = &actions }, .{}, 529);
         defer card.deinit();
         try card.prepare(scale);
         card.toggle();

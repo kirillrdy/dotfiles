@@ -1,10 +1,11 @@
 //! PipeWire video producer. All callbacks run on the broker's GLib thread.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const p = @import("pipewire");
 const Pod = @import("desktop-audio-pod.zig");
 const Capture = @import("desktop-portal-capture.zig").Capture;
-const cast = c.__zig.cast;
+const cast = util.cast;
 const Image = @import("desktop-image.zig").Image;
 fn control(loop: *p.pw_loop) struct { methods: *const p.spa_loop_control_methods, data: ?*anyopaque } {
     const iface = cast(p.spa_interface, loop.*.control);
@@ -19,7 +20,7 @@ pub const Stream = struct {
     image: ?Image = null,
     loop: ?*p.pw_loop = null,
     stream: ?*p.pw_stream = null,
-    timer: c.guint = 0,
+    timer: u32 = 0,
     width: u32 = 0,
     height: u32 = 0,
     node: u32 = p.PW_ID_ANY,
@@ -34,11 +35,11 @@ pub const Stream = struct {
         const self = try allocator.create(Stream);
         errdefer allocator.destroy(self);
         self.* = .{ .allocator = allocator, .name = try allocator.dupeSentinel(u8, name, 0), .cursor = cursor, .callback = callback, .data = data };
-        self.timer = c.g_timeout_add(10, &tick, self);
+        self.timer = mainloop.timeout(10, self, tick);
         return self;
     }
     pub fn destroy(self: *Stream) void {
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         if (self.capture) |capture| capture.destroy();
         if (self.stream) |stream| p.pw_stream_destroy(stream);
         if (self.loop) |loop| {
@@ -87,8 +88,7 @@ pub const Stream = struct {
         var params = [_][*c]const p.spa_pod{@ptrCast(&bytes)};
         if (p.pw_stream_connect(self.stream, p.PW_DIRECTION_OUTPUT, p.PW_ID_ANY, p.PW_STREAM_FLAG_DRIVER | p.PW_STREAM_FLAG_MAP_BUFFERS, &params, params.len) < 0) return error.StreamConnectFailed;
     }
-    fn tick(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Stream, data);
+    fn tick(self: *Stream) bool {
         self.ticks +%= 1;
         if (self.capture == null and self.ticks >= 15) {
             self.capture = Capture.create(self.allocator, self.name, self.cursor, &captured, self) catch null;
@@ -102,7 +102,7 @@ pub const Stream = struct {
         if (self.failed) {
             self.timer = 0;
             self.callback(self.data, null);
-            return 0;
+            return false;
         }
         if (!self.announced and self.stream != null and self.state >= p.PW_STREAM_STATE_PAUSED) {
             const node = p.pw_stream_get_node_id(self.stream);
@@ -116,11 +116,11 @@ pub const Stream = struct {
         if (self.announced and self.ticks % (if (self.state == p.PW_STREAM_STATE_STREAMING) @as(u32, 3) else @as(u32, 100)) == 0) {
             if (self.capture.?.source == 0) self.capture.?.next(self.name, self.cursor) catch {
                 self.failed = true;
-                return 1;
+                return true;
             };
             if (self.state == p.PW_STREAM_STATE_STREAMING) _ = p.pw_stream_trigger_process(self.stream);
         }
-        return 1;
+        return true;
     }
     fn stateChanged(data: ?*anyopaque, _: p.pw_stream_state, state: p.pw_stream_state, _: [*c]const u8) callconv(.c) void {
         const self = cast(Stream, data);

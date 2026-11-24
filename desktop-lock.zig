@@ -3,7 +3,6 @@ const std = @import("std");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
 const dbus = @import("dbus");
-const c = @import("desktop-glib.zig");
 const libc = @import("desktop-libc.zig");
 const auth = @import("desktop-lock-auth.zig");
 const view = @import("desktop-lock-view.zig");

@@ -5,9 +5,9 @@
 //! its addresses falls inside a known route.
 const std = @import("std");
 const linux = std.os.linux;
-const c = @import("desktop-glib.zig");
+const mainloop = @import("desktop-loop.zig");
 const u = @import("desktop-util.zig");
-const cast = c.__zig.cast;
+const cast = u.cast;
 
 const RTM_NEWROUTE = 24;
 const RTM_DELROUTE = 25;
@@ -162,8 +162,8 @@ pub const Monitor = struct {
     allocator: std.mem.Allocator,
     fd: linux.fd_t,
     routes: Routes = .{},
-    watch: c.guint = 0,
-    idle: c.guint = 0,
+    watch: u32 = 0,
+    idle: u32 = 0,
     changed: *const fn (?*anyopaque) void,
     context: ?*anyopaque,
 
@@ -182,13 +182,13 @@ pub const Monitor = struct {
         try self.dump();
         const flags = linux.fcntl(fd, linux.F.GETFL, 0);
         _ = linux.fcntl(fd, linux.F.SETFL, flags | @as(usize, @as(u32, @bitCast(linux.O{ .NONBLOCK = true }))));
-        self.watch = c.g_unix_fd_add(fd, c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &readable, self);
+        self.watch = mainloop.watch(fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
         return self;
     }
 
     pub fn destroy(self: *Monitor) void {
-        if (self.watch != 0) _ = c.g_source_remove(self.watch);
-        if (self.idle != 0) _ = c.g_source_remove(self.idle);
+        if (self.watch != 0) _ = mainloop.remove(self.watch);
+        if (self.idle != 0) _ = mainloop.remove(self.idle);
         _ = linux.close(self.fd);
         self.routes.deinit(self.allocator);
         self.allocator.destroy(self);
@@ -244,11 +244,10 @@ pub const Monitor = struct {
         return false;
     }
 
-    fn readable(_: c_int, condition: c.GIOCondition, data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Monitor, data);
-        if (condition & (c.G_IO_ERR | c.G_IO_HUP) != 0) {
+    fn readable(self: *Monitor, _: c_int, condition: u32) bool {
+        if (condition & (mainloop.ERR | mainloop.HUP) != 0) {
             self.watch = 0;
-            return 0;
+            return false;
         }
         var buffer: [32 * 1024]u8 align(4) = undefined;
         while (true) {
@@ -256,19 +255,18 @@ pub const Monitor = struct {
             // An allocation failure loses one update, as a full socket buffer would.
             if (self.routes.apply(self.allocator, got) catch false) self.queueChanged();
         }
-        return 1;
+        return true;
     }
 
     /// Coalesces a burst of route changes into one notification, as GIO does.
     fn queueChanged(self: *Monitor) void {
-        if (self.idle == 0) self.idle = c.g_idle_add(&notify, self);
+        if (self.idle == 0) self.idle = mainloop.idle(self, notify);
     }
 
-    fn notify(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Monitor, data);
+    fn notify(self: *Monitor) bool {
         self.idle = 0;
         self.changed(self.context);
-        return 0;
+        return false;
     }
 };
 
@@ -303,7 +301,7 @@ pub const Reach = struct {
     pub fn cancel(self: *Reach) void {
         if (self.delivered) return;
         self.refs += 1;
-        _ = c.g_idle_add(&cancelled, self);
+        _ = mainloop.idle(self, cancelled);
     }
 
     /// Never calls `done`, for a caller that goes away first.
@@ -330,25 +328,24 @@ pub const Reach = struct {
                 } else |_| {}
             } else |_| {}
         } else |_| {}
-        _ = c.g_idle_add(&resolved, self);
+        _ = mainloop.idle(self, resolved);
     }
 
-    fn resolved(data: ?*anyopaque) callconv(.c) c_int {
-        const self = cast(Reach, data);
+    fn resolved(self: *Reach) bool {
         const monitor = self.monitor orelse return self.finish(true);
         for (self.addresses[0..self.count]) |address| if (monitor.routes.reachable(address)) return self.finish(true);
         self.deliver(false);
-        return 0;
+        return false;
     }
 
-    fn finish(self: *Reach, ok: bool) c_int {
+    fn finish(self: *Reach, ok: bool) bool {
         self.deliver(ok);
-        return 0;
+        return false;
     }
 
-    fn cancelled(data: ?*anyopaque) callconv(.c) c_int {
-        cast(Reach, data).deliver(false);
-        return 0;
+    fn cancelled(self: *Reach) bool {
+        self.deliver(false);
+        return false;
     }
 
     fn deliver(self: *Reach, ok: bool) void {
@@ -462,7 +459,7 @@ test "reachability matches GIO's netlink monitor" {
         glib.g_clear_error(&err);
         var result: Result = .{};
         _ = try Reach.start(std.testing.allocator, monitor, host, 80, &Result.done, &result);
-        while (result.value == null) _ = c.g_main_context_iteration(null, 1);
+        while (result.value == null) _ = mainloop.iteration(true);
         std.testing.expectEqual(expected, result.value.?) catch |e| {
             std.debug.print("CanReach({s}) differs from GIO\n", .{host});
             return e;

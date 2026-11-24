@@ -1,7 +1,6 @@
 //! Native Zig OSD rendering.
 const std = @import("std");
 const cairo = @import("tests/desktop-cairo.zig");
-const c = @import("desktop-glib.zig");
 const raster = @import("desktop-raster.zig");
 pub const Kind = enum { volume, microphone, brightness };
 

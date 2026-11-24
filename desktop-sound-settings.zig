@@ -1,9 +1,11 @@
 //! Native Wayland sound settings with asynchronous PipeWire controls.
 const std = @import("std");
-const c = @import("desktop-glib.zig");
+const keyboard = @import("desktop-keyboard.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const audio = @import("desktop-audio.zig");
 pub const native = @import("desktop-sound-view.zig");
-const cast = c.__zig.cast;
+const cast = util.cast;
 const host = @import("desktop-window.zig");
 const wire = host.wire;
 const Tooltip = @import("desktop-panel-view.zig").Tooltip;
@@ -15,10 +17,10 @@ pub const Sound = struct {
     tooltip: Tooltip = .{},
     view: native.View = .{},
     service: ?*audio.Service = null,
-    cancel: *c.GCancellable,
+    cancel: *mainloop.Cancellable,
     closed: bool = false,
     operations: usize = 0,
-    timer: c.guint = 0,
+    timer: u32 = 0,
     layout: ?u64 = null,
     message: ?[:0]u8 = null,
     failed: bool = false,
@@ -28,7 +30,7 @@ pub const Sound = struct {
     // The settings shell owns window lifetime, drawing, and input dispatch.
     pub fn create(a: std.mem.Allocator, window: *host.Window, context: ?*anyopaque, navigate: *const fn (?*anyopaque, native.Control) void) !*Sound {
         const self = try a.create(Sound);
-        self.* = .{ .allocator = a, .feedback = .{ .allocator = a }, .window = window, .navigation_context = context, .navigate = navigate, .cancel = c.g_cancellable_new().? };
+        self.* = .{ .allocator = a, .feedback = .{ .allocator = a }, .window = window, .navigation_context = context, .navigate = navigate, .cancel = mainloop.Cancellable.create() };
         self.view.test_enabled = @import("desktop-runtime.zig").sound_file != null;
         self.service = audio.Service.create(a, &changed, self) catch null;
         self.refresh() catch self.renderFailure();
@@ -45,7 +47,7 @@ pub const Sound = struct {
     pub fn destroy(self: *Sound) void {
         std.debug.assert(self.closed and self.operations == 0);
         self.tooltip.deinit(self.allocator);
-        c.g_object_unref(self.cancel);
+        self.cancel.unref();
         self.view.deinit(self.allocator);
         if (self.message) |message| self.allocator.free(message);
         self.allocator.destroy(self);
@@ -57,8 +59,8 @@ pub const Sound = struct {
         if (self.closed) return;
         self.closed = true;
         self.tooltip.hide();
-        c.g_cancellable_cancel(self.cancel);
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        self.cancel.cancel();
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         self.timer = 0;
         self.feedback.deinit();
         if (self.service) |service| service.destroy();
@@ -140,18 +142,17 @@ pub const Sound = struct {
         const node = service.node(self.view.rows.items[index].target) orelse return;
         self.view.rows.items[index].pending_target = .{ .id = node.id };
         self.view.rows.items[index].pending = @round(std.math.clamp(value, 0, 100));
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
-        self.timer = c.g_timeout_add(150, &volumeTimeout, self);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        self.timer = mainloop.timeout(150, self, volumeTimeout);
         self.window.redraw();
     }
-    fn volumeTimeout(ptr: c.gpointer) callconv(.c) c.gboolean {
-        const self = cast(Sound, ptr);
+    fn volumeTimeout(self: *Sound) bool {
         self.timer = 0;
         self.flushVolumes();
-        return 0;
+        return false;
     }
     fn flushVolumes(self: *Sound) void {
-        if (self.timer != 0) _ = c.g_source_remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.timer);
         self.timer = 0;
         // Rejected writes may complete synchronously; keep row storage stable.
         self.flushing = true;
@@ -304,11 +305,10 @@ pub const Sound = struct {
     pub fn button(ptr: ?*anyopaque, _: *wire.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
         if (code == 272) cast(Sound, ptr).pointerButton(pressed, x, y);
     }
-    fn showTooltip(ptr: ?*anyopaque) callconv(.c) c.gboolean {
-        const self = cast(Sound, ptr);
+    fn showTooltip(self: *Sound) bool {
         self.tooltip.show();
         self.window.redraw();
-        return 0;
+        return false;
     }
     pub fn motion(ptr: ?*anyopaque, _: *wire.Surface, x: f64, y: f64) void {
         const self = cast(Sound, ptr);
@@ -328,7 +328,7 @@ pub const Sound = struct {
             .network_nav => "Network",
             .sound_nav => "Sound",
         } else null;
-        self.tooltip.update(self.allocator, x, y, tooltip, self.view.pressed == null, &showTooltip, self);
+        self.tooltip.update(self.allocator, x, y, tooltip, self.view.pressed == null, self, showTooltip);
         if (self.view.pressed) |target| if (target.control == .volume) self.setVolume(target.row, self.view.percent(target, x));
         self.window.redraw();
     }
@@ -350,7 +350,7 @@ pub const Sound = struct {
     pub fn key(ptr: ?*anyopaque, _: *wire.Surface, symbol: u32, modifiers: u32, pressed: bool) bool {
         return !pressed or cast(Sound, ptr).handleKey(symbol, modifiers);
     }
-    pub fn handleKey(self: *Sound, symbol: u32, modifiers: c.__zig.Modifiers) bool {
+    pub fn handleKey(self: *Sound, symbol: u32, modifiers: keyboard.Modifiers) bool {
         if (self.closed or self.window.closing) return false;
         self.tooltip.hide();
         if (self.view.expanded != null) {
@@ -373,7 +373,7 @@ pub const Sound = struct {
         switch (symbol) {
             0xff1b => if (self.view.page == .levels) self.showPage(.sound) else self.close(),
             0xff09, 0xfe20 => { // Tab / Shift-Tab
-                self.view.moveFocus(modifiers & c.__zig.shift_mask != 0 or symbol == 0xfe20);
+                self.view.moveFocus(modifiers & keyboard.shift != 0 or symbol == 0xfe20);
                 self.focus();
             },
             0x20, 0xff0d, 0xff8d => if (self.view.focus) |target| self.activate(target),

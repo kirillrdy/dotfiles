@@ -1,9 +1,7 @@
 //! Text-input-v3 / input-method-v2 relay owned by the compositor thread.
 const std = @import("std");
 const c = @import("compositor-abi");
-fn cast(comptime T: type, ptr: ?*anyopaque) *T {
-    return @ptrCast(@alignCast(ptr.?));
-}
+const cast = @import("desktop-util.zig").cast;
 
 pub fn Relay(comptime Hooks: type) type {
     return struct {

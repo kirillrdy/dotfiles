@@ -8,6 +8,7 @@ const std = @import("std");
 const dbus = @import("dbus");
 const gvdb = @import("desktop-gvdb.zig");
 const gvariant = @import("desktop-gvariant.zig");
+const mainloop = @import("desktop-loop.zig");
 const Value = dbus.Value;
 
 const writer_name = "ca.desrt.dconf";
@@ -49,7 +50,7 @@ const Store = struct {
     watchers: std.ArrayList(*Settings) = .empty,
     bus: ?*@import("desktop-dbus-loop.zig").Source = null,
     subscription: u32 = 0,
-    write_cancel: ?*@import("desktop-glib.zig").GCancellable = null,
+    write_cancel: ?*mainloop.Cancellable = null,
     pending_writes: usize = 0,
 };
 var mutex: Mutex = .{};
@@ -57,16 +58,15 @@ var store: Store = .{};
 
 /// Releases the process-wide settings cache after all settings handles close.
 pub fn deinit() void {
-    const glib = @import("desktop-glib.zig");
     if (store.write_cancel) |cancel| {
-        glib.g_cancellable_cancel(cancel);
-        while (store.pending_writes != 0) _ = glib.g_main_context_iteration(null, 1);
-        glib.g_object_unref(cancel);
+        cancel.cancel();
+        while (store.pending_writes != 0) _ = mainloop.iteration(true);
+        cancel.unref();
     }
     mutex.lock();
     defer mutex.unlock();
     if (!store.loaded) return;
-    if (store.keyfile_watch != 0) _ = glib.g_source_remove(store.keyfile_watch);
+    if (store.keyfile_watch != 0) _ = mainloop.remove(store.keyfile_watch);
     if (store.keyfile_fd >= 0) _ = std.c.close(store.keyfile_fd);
     if (store.bus) |bus| {
         if (store.subscription != 0) bus.connection.unsubscribe(store.subscription);
@@ -247,15 +247,14 @@ fn watchKeyfile() void {
         _ = std.c.close(fd);
         return;
     }
-    const glib = @import("desktop-glib.zig");
-    store.keyfile_watch = glib.g_unix_fd_add(fd, glib.G_IO_IN, &keyfileChanged, null);
+    store.keyfile_watch = mainloop.watch(fd, mainloop.IN, {}, keyfileChanged);
     if (store.keyfile_watch == 0) {
         _ = std.c.close(fd);
     } else {
         store.keyfile_fd = fd;
     }
 }
-fn keyfileChanged(fd: c_int, _: @import("desktop-glib.zig").GIOCondition, _: ?*anyopaque) callconv(.c) c_int {
+fn keyfileChanged(_: void, fd: c_int, _: u32) bool {
     var buffer: [4096]u8 align(@alignOf(std.os.linux.inotify_event)) = undefined;
     while (std.c.read(fd, &buffer, buffer.len) > 0) {}
     var arena: std.heap.ArenaAllocator = .init(store.arena.child_allocator);
@@ -277,7 +276,7 @@ fn keyfileChanged(fd: c_int, _: @import("desktop-glib.zig").GIOCondition, _: ?*a
         while (old_it.next()) |entry| if (!store.keyfile.contains(entry.key_ptr.*)) changed_paths.append(arena.allocator(), entry.key_ptr.*) catch {};
     }
     for (changed_paths.items) |path| notify(path);
-    return 1;
+    return true;
 }
 fn findSchema(id: []const u8) ?Schema {
     for (store.sources.items) |file| {
@@ -540,7 +539,7 @@ fn writeDconf(allocator: std.mem.Allocator, arena: std.mem.Allocator, path: []co
     const loop = @import("desktop-dbus-loop.zig");
     const changeset = try gvariant.encodeChangeset(arena, &.{.{ .key = path, .value = value }});
     const object = try std.fmt.allocPrint(arena, "/ca/desrt/dconf/Writer/{s}", .{database});
-    if (store.write_cancel == null) store.write_cancel = @import("desktop-glib.zig").g_cancellable_new();
+    if (store.write_cancel == null) store.write_cancel = mainloop.Cancellable.create();
     store.pending_writes += 1;
     loop.request(allocator, .session, .{ .destination = writer_name, .path = object, .interface = writer_interface, .member = "Change" }, .{dbus.Bytes{ .value = changeset }}, 25000, store.write_cancel, &writeFinished, null);
 }
@@ -654,7 +653,7 @@ test "dconf values match GLib" {
     if (getenv("GSETTINGS_BACKEND") != null) return error.SkipZigTest;
     const c = @import("tests/glib-oracle.zig");
     const g = struct {
-        extern fn g_variant_print(*c.GVariant, c.gboolean) [*:0]u8;
+        extern fn g_variant_print(*c.GVariant, c_int) [*:0]u8;
     };
     const settings = Settings.open(std.testing.allocator, "org.gnome.desktop.interface", null) orelse return error.SkipZigTest;
     defer settings.close();
@@ -717,7 +716,6 @@ test "dconf writes reach the database and notify watchers" {
     const profile = getenv("DESKTOP_GSETTINGS_DCONF_TEST_PROFILE") orelse return error.SkipZigTest;
     if (getenv("GSETTINGS_BACKEND") != null) return error.SkipZigTest;
     _ = profile;
-    const c = @import("desktop-glib.zig");
     const settings = Settings.open(std.testing.allocator, "org.gnome.desktop.interface", "color-scheme") orelse return error.SkipZigTest;
     defer settings.close();
     try std.testing.expect(store.writable != null and !std.mem.eql(u8, store.writable.?, "user"));
@@ -735,7 +733,7 @@ test "dconf writes reach the database and notify watchers" {
     // Once immediately, again when dconf's Notify arrives.
     var tries: usize = 0;
     while (Seen.count < 2 and tries < 300) : (tries += 1) {
-        _ = c.g_main_context_iteration(null, 0);
+        _ = mainloop.iteration(false);
         std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
     }
     try std.testing.expect(Seen.count >= 2);

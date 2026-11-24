@@ -3,10 +3,13 @@ const std = @import("std");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
 const helpers = @import("desktop-wayland-client.zig");
-pub const c = @import("desktop-glib.zig");
+const decode = @import("desktop-decode.zig");
+const icons = @import("desktop-icons.zig");
+const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 pub const Image = @import("desktop-image.zig").Image;
-const cast = c.__zig.cast;
+const cast = util.cast;
 const formats = wl.wl_shm.Format;
 pub const Rect = struct { x: f64 = 0, y: f64 = 0, w: f64 = 1, h: f64 = 1 };
 pub const Workspace = struct { name: [128:0]u8 = @splat(0) };
@@ -22,7 +25,7 @@ pub const Window = struct {
     stacking: usize = 0,
     geometry: Rect = .{},
     target: Rect = .{},
-    icon: ?c.__icons.Image = null,
+    icon: ?decode.Image = null,
     image: ?Image = null,
     thumbnail: ?*Thumbnail = null,
     source: ?wl.ext_image_capture_source_v1 = null,
@@ -70,7 +73,7 @@ pub const Window = struct {
     fn destroy(self: *Window) void {
         self.stop();
         if (self.image) |image| image.deinit(self.client.allocator);
-        if (self.icon) |icon| c.__icons.free(self.client.allocator, icon);
+        if (self.icon) |icon| decode.free(self.client.allocator, icon);
         const a = self.client.allocator;
         freeString(a, self.id);
         freeString(a, self.title);
@@ -175,7 +178,7 @@ pub const Client = struct {
     active: bool = false,
     streaming: bool = false,
     connected: bool = true,
-    fd_source: c.guint = 0,
+    fd_source: u32 = 0,
     context: ?*anyopaque,
     changed: *const fn (?*anyopaque) void,
 
@@ -192,11 +195,11 @@ pub const Client = struct {
         connection.roundtrip() catch return error.WaylandDisconnected;
         connection.roundtrip() catch return error.WaylandDisconnected;
         if (self.shm == null or self.list == null or self.sources == null or self.captures == null or self.control == null) return error.OverviewProtocolUnavailable;
-        self.fd_source = c.g_unix_fd_add(connection.getFd(), c.G_IO_IN | c.G_IO_ERR | c.G_IO_HUP, &dispatch, self);
+        self.fd_source = mainloop.watch(connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
         return self;
     }
     pub fn destroy(self: *Client) void {
-        if (self.fd_source != 0) _ = c.g_source_remove(self.fd_source);
+        if (self.fd_source != 0) _ = mainloop.remove(self.fd_source);
         self.connected = false;
         for (self.windows.items) |window| window.stop();
         self.drainThumbnails();
@@ -212,7 +215,7 @@ pub const Client = struct {
         self.allocator.destroy(self);
     }
     fn drainThumbnails(self: *Client) void {
-        while (self.thumbnails != 0) _ = c.g_main_context_iteration(null, 1);
+        while (self.thumbnails != 0) _ = mainloop.iteration(true);
     }
     pub fn visible(self: *Client, active: bool) void {
         self.active = active;
@@ -253,7 +256,7 @@ pub const Client = struct {
     }
     fn disconnect(self: *Client) void {
         self.connected = false;
-        if (self.fd_source != 0) _ = c.g_source_remove(self.fd_source);
+        if (self.fd_source != 0) _ = mainloop.remove(self.fd_source);
         self.fd_source = 0;
     }
     pub fn activate(self: *Client, window: *Window) void {
@@ -322,16 +325,15 @@ pub const Client = struct {
     }
 };
 
-fn dispatch(_: c_int, condition: c.GIOCondition, data: c.gpointer) callconv(.c) c.gboolean {
-    const self = cast(Client, data);
-    const ok = condition & (c.G_IO_HUP | c.G_IO_ERR) == 0 and if (self.connection.readAndDispatch()) |_| true else |_| false;
+fn dispatch(self: *Client, _: c_int, condition: u32) bool {
+    const ok = condition & (mainloop.HUP | mainloop.ERR) == 0 and if (self.connection.readAndDispatch()) |_| true else |_| false;
     if (!ok) {
         self.connected = false;
         self.fd_source = 0;
         self.changed(self.context);
-        return 0;
+        return false;
     }
-    return 1;
+    return true;
 }
 fn closed(window: *Window) void {
     const client = window.client;
@@ -344,14 +346,14 @@ fn closed(window: *Window) void {
 }
 fn appId(w: *Window, value: [:0]const u8) void {
     setString(w.client.allocator, &w.app_id, value);
-    if (w.icon) |icon| c.__icons.free(w.client.allocator, icon);
+    if (w.icon) |icon| decode.free(w.client.allocator, icon);
     w.icon = null;
     var filename: [1024]u8 = undefined;
     const path = std.fmt.bufPrintSentinel(&filename, "{s}.desktop", .{value}, 0) catch return;
     const appinfo = @import("desktop-appinfo.zig");
     const info = appinfo.lookup(w.client.allocator, path) orelse appinfo.lookup(w.client.allocator, value);
     defer if (info) |app| app.unref();
-    w.icon = c.__icons.loadApp(w.client.allocator, if (info) |app| app.icon else null, 128, null, "application-x-executable");
+    w.icon = icons.loadApp(w.client.allocator, if (info) |app| app.icon else null, 128, null, "application-x-executable");
 }
 fn workspace(self: *Client, index: u32, name: [:0]const u8, active: u32) void {
     if (index >= self.workspaces.len) return;
@@ -359,7 +361,7 @@ fn workspace(self: *Client, index: u32, name: [:0]const u8, active: u32) void {
         self.pending_count = 0;
         self.pending_stacking = 0;
     }
-    if (!c.__zig.strEql(&self.workspaces[index].name, name.ptr)) {
+    if (!util.strEql(&self.workspaces[index].name, name.ptr)) {
         const slot = &self.workspaces[index].name;
         const len = @min(name.len, slot.len - 1);
         @memcpy(slot[0..len], name[0..len]);
@@ -372,7 +374,7 @@ fn workspace(self: *Client, index: u32, name: [:0]const u8, active: u32) void {
 fn placement(self: *Client, id: [:0]const u8, index: u32, x: i32, y: i32, width: i32, height: i32, sticky: u32) void {
     const stacking = self.pending_stacking;
     self.pending_stacking += 1;
-    for (self.windows.items) |w| if (c.__zig.strEql(w.id, id.ptr)) {
+    for (self.windows.items) |w| if (util.strEql(w.id, id.ptr)) {
         if (w.stacking != stacking) {
             w.stacking = stacking;
             self.snapshot_dirty = true;
@@ -426,21 +428,13 @@ const Thumbnail = struct {
         const a = client.allocator;
         const self = a.create(Thumbnail) catch return;
         self.* = .{ .client = client, .owner = window, .source = source };
-        const task = c.g_task_new(null, null, &completed, self) orelse {
-            a.destroy(self);
-            return;
-        };
-        defer c.g_object_unref(task);
         window.thumbnail = self;
         client.thumbnails += 1;
-        c.g_task_set_task_data(task, self, null);
-        c.g_task_run_in_thread(task, &work);
+        mainloop.background(self, work, completed);
     }
 
-    fn work(task: ?*c.GTask, _: ?*anyopaque, data: ?*anyopaque, _: [*c]c.GCancellable) callconv(.c) void {
-        const self = cast(Thumbnail, data);
+    fn work(self: *Thumbnail) void {
         self.result = makeImage(self.client.allocator, self.source) catch null;
-        c.g_task_return_boolean(task, @intFromBool(self.result != null));
     }
     fn makeImage(allocator: std.mem.Allocator, source: @import("desktop-raster.zig").Image) !Image {
         const normalized = try Image.normalize(allocator, source);
@@ -452,9 +446,7 @@ const Thumbnail = struct {
         // Area filtering keeps text in large windows legible when minified.
         return @import("desktop-image.zig").resample(allocator, normalized, width, height);
     }
-    fn completed(_: ?*c.GObject, result: ?*c.GAsyncResult, data: ?*anyopaque) callconv(.c) void {
-        const self = cast(Thumbnail, data);
-        _ = c.g_task_propagate_boolean(@ptrCast(result), null);
+    fn completed(self: *Thumbnail) void {
         const window = self.owner orelse return self.destroy();
         window.thumbnail = null;
         const image = self.result orelse return self.destroy();
@@ -599,10 +591,10 @@ test "thumbnail workers publish owned pixels and discard captures detached on hi
     window.length = 16;
     const source: @import("desktop-raster.zig").Image = .{ .pixels = @as([*]const u8, @ptrCast(mapping))[0..16], .width = 2, .height = 2, .stride = 8, .format = .xrgb };
     Thumbnail.start(&window, source);
-    const deadline = c.__zig.monotonicTime() + 2_000_000;
-    while (window.thumbnail != null and c.__zig.monotonicTime() < deadline) {
-        while (c.g_main_context_iteration(null, 0) != 0) {}
-        c.g_usleep(1000);
+    const deadline = util.monotonicTime() + 2_000_000;
+    while (window.thumbnail != null and util.monotonicTime() < deadline) {
+        while (mainloop.iteration(false)) {}
+        mainloop.sleep(1000);
     }
     try std.testing.expect(window.thumbnail == null and state.changed);
     try std.testing.expectEqual(@as(u32, 0xff604020), std.mem.bytesAsSlice(u32, window.image.?.pixels)[0]);
