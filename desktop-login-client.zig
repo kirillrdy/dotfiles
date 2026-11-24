@@ -212,6 +212,7 @@ pub fn Client(comptime App: type) type {
             fn keyboardEvent(self: *Seat, _: wl.wl_keyboard, event: wl.wl_keyboard.Event) void {
                 switch (event) {
                     .keymap => |value| self.keyboard_state.load(value.fd, value.format, value.size),
+                    .enter => if (@hasDecl(App, "keyboardEnter") and self.keyboard_state.state != null) App.keyboardEnter(self.client.app()),
                     .leave => if (@hasDecl(App, "keyboardLeave")) App.keyboardLeave(self.client.app()),
                     .key => |value| self.key(value.key, value.state),
                     .modifiers => |value| self.modifiers(value.mods_depressed, value.mods_latched, value.mods_locked, value.group),

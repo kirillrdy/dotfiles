@@ -78,6 +78,7 @@ pkgs.testers.runNixOSTest {
     };
 
   testScript = ''
+    from datetime import timedelta
     import shlex
 
     def user(command):
@@ -97,17 +98,22 @@ pkgs.testers.runNixOSTest {
     machine.start()
     machine.wait_for_unit("desktop-display-manager.service")
     machine.wait_for_unit("desktop-battery.service")
-    machine.wait_until_succeeds("pgrep -u greeter desktop-zig")
+    machine.wait_until_succeeds(
+        "journalctl --no-pager | grep -F 'greeter: keyboard focus ready'",
+        timeout=timedelta(seconds=60),
+    )
 
     with subtest("GDM-like greeter authenticates and starts desktop-zig.service"):
-        machine.sleep(1)
         machine.screenshot("desktop-greeter-users")
         # Select pre-highlighted Alice user and open password prompt.
         machine.send_key("ret")
         machine.sleep(1)
         machine.screenshot("desktop-greeter-password")
         machine.send_chars("wrong-password\n")
-        machine.wait_until_succeeds("journalctl --no-pager | grep 'pam_unix(desktop-login:auth): authentication failure'")
+        machine.wait_until_succeeds(
+            "journalctl --no-pager | grep 'pam_unix(desktop-login:auth): authentication failure'",
+            timeout=timedelta(seconds=60),
+        )
         machine.sleep(4)
         machine.send_chars("vm-password\n")
         machine.wait_for_file("/run/user/1000/wayland-0")

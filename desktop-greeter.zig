@@ -224,6 +224,10 @@ const State = struct {
         }
     }
 
+    pub fn keyboardEnter(_: *State) void {
+        std.log.info("greeter: keyboard focus ready", .{});
+    }
+
     pub fn capsLockChanged(self: *State) void {
         if (self.stage == .password) self.render();
     }
