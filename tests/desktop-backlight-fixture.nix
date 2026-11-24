@@ -123,7 +123,7 @@ import ./fixture.nix { inherit pkgs; } {
       from backlight_mock import BacklightMock
       from audio_server import AudioServer
       from pathlib import Path
-      from session_fixture import read_png, terminate_processes, wait_until, wait_wayland
+      from session_fixture import terminate_processes, wait_until, wait_wayland
 
       parser = argparse.ArgumentParser()
       parser.add_argument("--binary", required=True, type=Path)
@@ -197,9 +197,10 @@ import ./fixture.nix { inherit pkgs; } {
 
 
       def pixels(name, output="HEADLESS-1"):
-          path = root / (name + ".png")
-          run(["grim", "-o", output, str(path)])
-          return read_png(path)[2]
+          # PPM keeps screen capture comparisons within the overlay's short lifetime.
+          path = root / (name + ".ppm")
+          run(["${pkgs.grim}/bin/grim", "-t", "ppm", "-o", output, str(path)])
+          return path.read_bytes()
 
 
       def log():
