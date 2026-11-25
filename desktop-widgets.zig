@@ -339,11 +339,9 @@ pub fn update_usage(m: *Module, content: panel_data.Update) void {
         m.usage.values[i] = value;
         m.usage.pace[i] = if (valid) window.pace else null;
         m.usage.reset[i].set(m.allocator, window.reset);
+        m.view.window_percent[i] = if (valid) value else null;
+        m.view.window_pace[i] = if (valid) window.pace else null;
     }
-    const weekly: panel_data.Window = if (content.windows.len > 1) content.windows[1] else .{};
-    const weekly_valid = if (weekly.percent) |p| std.math.isFinite(p) else false;
-    m.view.weekly_percent = if (weekly_valid) std.math.clamp(weekly.percent.?, 0, 100) else null;
-    m.view.weekly_pace = if (weekly_valid) weekly.pace else null;
     m.usage.checked.set(m.allocator, if (content.checked.len != 0) content.checked else "Checked: —");
     m.usage.error_label.set(m.allocator, content.@"error");
     m.usage.enabled = true;
@@ -502,12 +500,15 @@ test "usage indicators are visible before either collector returns" {
     update(codex, .{ .items = &.{.{ .text = "54%" }}, .windows = &.{ .{ .percent = 54, .pace = 45 }, .{ .percent = 93, .pace = 62 } } });
     try std.testing.expectEqualStrings("54%", codex.view.items[0].label.value);
     try std.testing.expect(codex.usage.enabled);
-    try std.testing.expectEqual(@as(?f64, 93), codex.view.weekly_percent);
-    try std.testing.expectEqual(@as(?f64, 62), codex.view.weekly_pace);
+    try std.testing.expectEqual(@as(?f64, 54), codex.view.window_percent[0]);
+    try std.testing.expectEqual(@as(?f64, 45), codex.view.window_pace[0]);
+    try std.testing.expectEqual(@as(?f64, 93), codex.view.window_percent[1]);
+    try std.testing.expectEqual(@as(?f64, 62), codex.view.window_pace[1]);
 
     update(codex, .{ .items = &.{.{ .text = "—" }}, .windows = &.{} });
-    try std.testing.expectEqual(@as(?f64, null), codex.view.weekly_percent);
-    try std.testing.expectEqual(@as(?f64, null), codex.view.weekly_pace);
+    try std.testing.expectEqual(@as(?f64, null), codex.view.window_percent[1]);
+    try std.testing.expectEqual(@as(?f64, null), codex.view.window_pace[1]);
+    try std.testing.expectEqual(@as(?f64, null), codex.view.window_percent[0]);
 }
 
 pub fn deinit(m: *Module) void {

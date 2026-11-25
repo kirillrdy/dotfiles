@@ -126,13 +126,18 @@ pub const Item = struct {
         }
         self.icon_scale = scale;
     }
-    fn paint(self: *const Item, buffer: raster.Buffer, scale: u32, foreground: raster.Color, content_height: f64) void {
+    fn paint(self: *const Item, buffer: raster.Buffer, scale: u32, foreground: raster.Color, show_label: bool) void {
         var x = self.rect.x;
         if (self.image) |image| {
-            imaging.blit(.{ .target = buffer, .scale = @floatFromInt(scale) }, image, .{ .x = x, .y = (content_height - 16) / 2, .width = 16, .height = 16 });
+            imaging.blit(.{ .target = buffer, .scale = @floatFromInt(scale) }, image, .{ .x = x, .y = (self.rect.height - 16) / 2, .width = 16, .height = 16 });
         }
+        if (!show_label) return;
         if (self.icon.value.len != 0) x += 16 + (if (self.label.value.len != 0) @as(f64, 6) else 0);
-        self.label.paint(buffer, x, (content_height - self.label.height()) / 2, foreground);
+        self.label.paint(buffer, x, (self.rect.height - self.label.height()) / 2, foreground);
+    }
+    /// Usage widgets with an icon replace the percent label with the pace bars.
+    fn barsReplaceLabel(self: *const Item) bool {
+        return self.icon.value.len != 0;
     }
 };
 pub const Graph = struct {
@@ -211,8 +216,9 @@ pub const View = struct {
     monitors: bool = false,
     status: bool = false,
     usage: bool = false,
-    weekly_percent: ?f64 = null,
-    weekly_pace: ?f64 = null,
+    /// Remaining percent and expected pace for the 5-hour (0) and weekly (1) windows.
+    window_percent: [2]?f64 = .{ null, null },
+    window_pace: [2]?f64 = .{ null, null },
     disk: bool = false,
     hovered: bool = false,
     focus: bool = false,
@@ -248,11 +254,17 @@ pub const View = struct {
             try item.prepare(a, &self.renderer, scale, self.usage);
             const gap: f64 = if (self.status) 8 else 0;
             x += gap / 2;
-            const width = (if (item.icon.value.len != 0) @as(f64, 16) else 0) + (if (item.icon.value.len != 0 and item.label.value.len != 0) @as(f64, 6) else 0) + item.label.width();
+            const width = if (self.hasBars())
+                (if (item.barsReplaceLabel()) @as(f64, 16) else item.label.width()) + usage_bar_spacing + usage_bar_width
+            else
+                (if (item.icon.value.len != 0) @as(f64, 16) else 0) + (if (item.icon.value.len != 0 and item.label.value.len != 0) @as(f64, 6) else 0) + item.label.width();
             item.rect = .{ .x = x, .y = 0, .width = width, .height = height };
             x += width + gap / 2;
         }
         self.width = @intFromFloat(@ceil(@max(1, x + padding)));
+    }
+    fn hasBars(self: *const View) bool {
+        return self.usage and (self.window_percent[0] != null or self.window_percent[1] != null);
     }
     pub fn hit(self: *const View, x: f64, y: f64) ?usize {
         for (self.items, 0..) |item, i| if (item.visible and item.rect.contains(x, y)) return i;
@@ -303,17 +315,30 @@ pub const View = struct {
                 graph.paint(canvas, x + 14, 100, height);
             }
         } else if (self.clock.value.len != 0) self.clock.paint(buffer, padding, (height - self.clock.height()) / 2, fg) else {
-            const has_weekly = self.usage and self.weekly_percent != null;
-            const content_height = if (has_weekly) @max(16, height - 6) else height;
+            const has_bars = self.hasBars();
             for (self.items) |item| {
-                if (item.visible) item.paint(buffer, self.scale, fg, content_height);
+                if (!item.visible) continue;
+                item.paint(buffer, self.scale, fg, !has_bars or !item.barsReplaceLabel());
+                if (!has_bars) continue;
+                // Icon on the left; 5-hour bar on top, weekly bar underneath, centred vertically.
+                const bar_x = item.rect.x + item.rect.width - usage_bar_width;
+                const top = (height - 2 * usage_bar_height - usage_bar_gap) / 2;
+                for (self.window_percent, self.window_pace, 0..) |percent, pace, i| {
+                    const y = top + @as(f64, @floatFromInt(i)) * (usage_bar_height + usage_bar_gap);
+                    if (percent) |value| paintUsageBar(canvas, .{ .x = bar_x, .y = y, .width = usage_bar_width, .height = usage_bar_height }, value, pace);
+                }
+                break;
             }
-            if (has_weekly) paintWeeklyBar(canvas, .{ .x = padding, .y = height - 8, .width = @max(0, width - 2 * padding), .height = 3 }, self.weekly_percent.?, self.weekly_pace);
         }
     }
 };
 
-fn paintWeeklyBar(canvas: raster.Canvas, bar: raster.Rect, percent: f64, pace: ?f64) void {
+const usage_bar_height: f64 = 6;
+const usage_bar_gap: f64 = 3;
+const usage_bar_width: f64 = 44;
+const usage_bar_spacing: f64 = 8;
+
+fn paintUsageBar(canvas: raster.Canvas, bar: raster.Rect, percent: f64, pace: ?f64) void {
     if (bar.width <= 0 or bar.height <= 0) return;
     const value = std.math.clamp(percent, 0, 100);
     canvas.draw(&.{.{ .rounded = bar }}, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.16 });
@@ -512,42 +537,47 @@ test "native tooltips preserve explicit line breaks without forcing a fixed widt
     try std.testing.expect(label.width() < 300);
 }
 
-test "usage panel view paints weekly surplus and deficit around the pace tick" {
+test "usage panel view paints icon then 5-hour and weekly pace bars instead of the percent label" {
     const a = std.testing.allocator;
     var view: View = .{ .usage = true };
     defer view.deinit(a);
     view.items[0].visible = true;
+    view.items[0].setIcon(a, "test-usage-symbolic");
     view.items[0].label.set(a, "54%");
+
+    // Without usage data, the label layout is kept.
+    try view.prepare(a, 1, 32);
+    const label_width = view.width;
+
+    view.window_percent = .{ 20, 85 };
+    view.window_pace = .{ 65, 40 };
     try view.prepare(a, 1, 32);
     const width = view.width;
+    try std.testing.expect(width != label_width);
+    try std.testing.expectEqual(@as(u32, 8 + 16 + 8 + 44 + 8), width);
     const pixels = try a.alloc(u32, width * 32);
     defer a.free(pixels);
 
-    // Without weekly data, the bottom micro-bar band stays empty.
-    view.paint(.{ .pixels = pixels, .width = width, .height = 32 });
-    const bar_row = 25 * width;
-    for (pixels[bar_row .. bar_row + width]) |px| try std.testing.expectEqual(@as(u32, 0), px);
+    // Bars are centred: 5-hour spans rows 8.5..14.5, weekly rows 17.5..23.5.
+    const five_row = 11 * width;
+    const weekly_row = 20 * width;
+    const bar_x: f64 = @as(f64, @floatFromInt(width)) - 8 - 44;
+    const surplus_x: usize = @intFromFloat(bar_x + 44 * 0.65);
+    const deficit_x: usize = @intFromFloat(bar_x + 44 * 0.42);
 
-    const bar_x: f64 = 8;
-    const bar_w: f64 = @as(f64, @floatFromInt(width)) - 16;
-
-    // Surplus (85% remaining vs 40% pace): pixel between pace and value is green.
-    view.weekly_percent = 85;
-    view.weekly_pace = 40;
+    // Weekly surplus (85% vs 40% pace) is green; 5-hour deficit (20% vs 65% pace) is red/orange.
     view.paint(.{ .pixels = pixels, .width = width, .height = 32 });
-    const surplus_x: usize = @intFromFloat(bar_x + bar_w * 0.65);
-    const surplus_px = pixels[bar_row + surplus_x];
-    const sg = (surplus_px >> 8) & 255;
-    const sr = (surplus_px >> 16) & 255;
-    try std.testing.expect(sg > sr + 50);
+    const surplus_px = pixels[weekly_row + surplus_x];
+    try std.testing.expect(((surplus_px >> 8) & 255) > ((surplus_px >> 16) & 255) + 50);
+    const deficit_px = pixels[five_row + deficit_x];
+    try std.testing.expect(((deficit_px >> 16) & 255) > ((deficit_px >> 8) & 255) + 50);
 
-    // Deficit (20% remaining vs 65% pace): pixel between value and pace is red/orange.
-    view.weekly_percent = 20;
-    view.weekly_pace = 65;
+    // And the other way round.
+    view.window_percent = .{ 85, 20 };
+    view.window_pace = .{ 40, 65 };
     view.paint(.{ .pixels = pixels, .width = width, .height = 32 });
-    const deficit_x: usize = @intFromFloat(bar_x + bar_w * 0.42);
-    const deficit_px = pixels[bar_row + deficit_x];
-    const dr = (deficit_px >> 16) & 255;
-    const dg = (deficit_px >> 8) & 255;
-    try std.testing.expect(dr > dg + 50);
+    const five_surplus = pixels[five_row + surplus_x];
+    try std.testing.expect(((five_surplus >> 8) & 255) > ((five_surplus >> 16) & 255) + 50);
+    const weekly_deficit = pixels[weekly_row + deficit_x];
+    try std.testing.expect(((weekly_deficit >> 16) & 255) > ((weekly_deficit >> 8) & 255) + 50);
 }
