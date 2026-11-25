@@ -123,6 +123,14 @@
       gtk-titlebar-style = tabs
     ''} /home/kirillvr/.config/ghostty/config.ghostty
   '';
+  # Work around NVIDIA EGL/GskGLRenderer tab-title text color flips in Ghostty.
+  systemd.user.services."app-com.mitchellh.ghostty" = lib.mkIf enableNvidia {
+    overrideStrategy = "asDropin";
+    environment = {
+      GSK_DEBUG = "full-redraw";
+      __GL_THREADED_OPTIMIZATIONS = "0";
+    };
+  };
   hardware.nvidia-container-toolkit.enable = enableNvidia;
   hardware.graphics.extraPackages = lib.optional (!enableNvidia) pkgs.intel-compute-runtime;
   environment.systemPackages =
