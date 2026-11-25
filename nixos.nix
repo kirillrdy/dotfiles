@@ -129,6 +129,7 @@
     environment = {
       GSK_DEBUG = "full-redraw";
       __GL_THREADED_OPTIMIZATIONS = "0";
+      PATH = lib.mkForce null;
     };
   };
   hardware.nvidia-container-toolkit.enable = enableNvidia;
