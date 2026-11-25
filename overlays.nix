@@ -1,18 +1,5 @@
 final: prev:
 {
-  # Pin codex to the latest upstream release until nixpkgs catches up.
-  codex = prev.codex.overrideAttrs (old: rec {
-    version = "0.172.0";
-    buildCommit = "3d86e43b075adeba2193ec5c22ac92f55afd82e6";
-    src = prev.fetchFromGitHub {
-      owner = "openai";
-      repo = "codex";
-      rev = buildCommit;
-      hash = "sha256-MDLBCNRb/1DNPZWegnF2yFDQU4IdSsgQcYOh0JV3EN8=";
-    };
-    cargoHash = "sha256-baArx7G/DmmT+1k4ykHoBnVU73ta0F+Hai4hWBkHV/Q=";
-  });
-
   # Pin antigravity-cli to the latest upstream release until nixpkgs catches up.
   antigravity-cli = prev.antigravity-cli.overrideAttrs (old: rec {
     version = "1.5.17";
