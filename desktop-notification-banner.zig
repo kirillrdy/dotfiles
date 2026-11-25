@@ -53,6 +53,8 @@ pub const View = struct {
     action_widths: [3]f64 = @splat(0),
     body_height: u32 = 19,
     age_x: f64 = 0,
+    /// Bumped whenever masks, icon or layout are dropped, so cached pixels go stale.
+    generation: u64 = 0,
 
     pub fn init(a: std.mem.Allocator, notice: data.Data, theme: Theme, width: u32) View {
         var self: View = .{ .allocator = a, .notice = notice, .theme = theme, .width = @max(160, width) };
@@ -72,6 +74,7 @@ pub const View = struct {
         self.clear();
     }
     fn clear(self: *View) void {
+        self.generation +%= 1;
         if (self.shadow) |pixels| self.allocator.free(pixels);
         self.shadow = null;
         for (&self.masks) |*slot| {

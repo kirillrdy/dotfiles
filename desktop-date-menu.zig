@@ -34,6 +34,7 @@ pub const Controls = struct {
             .allocator = a,
             .context = self,
             .namespace = "desktop-date-menu",
+            .partial = true, // Draws only through blit.
             .paint = &draw,
             .input = .{ .motion = &motion, .button = &button, .leave = &leave, .symbol = &key, .scroll = &scroll },
             .resized = &resized,
@@ -132,7 +133,6 @@ pub const Controls = struct {
     }
     fn draw(ptr: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(Controls, ptr);
-        @memset(target.pixels, 0);
         self.paint(target) catch |err| self.failed(err);
     }
     fn paint(self: *Controls, target: wire.Pixels) !void {

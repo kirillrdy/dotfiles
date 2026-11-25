@@ -714,6 +714,10 @@ pub fn blitWithOptions(target: Buffer, image: Image, destination: Rect, options:
     const step_x = @as(f64, @floatFromInt(image.width)) / destination.width;
     const step_y = @as(f64, @floatFromInt(image.height)) / destination.height;
     if (image.format == .argb and image.stride % 4 == 0 and @intFromPtr(image.pixels.ptr) % 4 == 0) {
+        if (step_x == 1 and step_y == 1 and destination.x == @floor(destination.x) and destination.y == @floor(destination.y)) {
+            blitArgbAligned(target, image, destination, x0, y0, x1, y1, options);
+            return;
+        }
         const use_bilinear = options.filter == .bilinear or (step_x <= 4.0 / 3.0 and step_y <= 4.0 / 3.0);
         if (use_bilinear) {
             blitArgbBilinear(target, image, destination, x0, y0, x1, y1, step_x, step_y, options);
@@ -865,6 +869,64 @@ fn compositeBlitRow(dest_row: []u32, out_row: []const u32, tx0: usize, tx1: usiz
             const f: u32 = @intFromFloat(@round(cov * 255));
             if (f > 0) dest_row[x] = vec.over(dest_row[x], if (f == 255) out_row[x - tx0] else vec.fade(out_row[x - tx0], f));
         }
+    }
+}
+
+/// Unscaled, pixel-aligned blit. Bilinear taps there carry weights 256/0, so
+/// the sampled row is exactly the source row; skip sampling and composite it.
+fn blitArgbAligned(target: Buffer, image: Image, destination: Rect, x0: usize, y0: usize, x1: usize, y1: usize, options: BlitOptions) void {
+    @setRuntimeSafety(false);
+    const opacity_255: u32 = @intFromFloat(@round(options.opacity * 255));
+    if (opacity_255 == 0) return;
+    const src_pixels: [*]const u32 = @ptrCast(@alignCast(image.pixels.ptr));
+    const src_stride = image.stride / 4;
+    const dx: i64 = @intFromFloat(destination.x);
+    const dy: i64 = @intFromFloat(destination.y);
+    const sx: usize = @intCast(@as(i64, @intCast(x0)) - dx);
+    for (y0..y1) |y| {
+        const sy: usize = @intCast(@as(i64, @intCast(y)) - dy);
+        compositeBlitRow(target.pixels[y * target.width ..], src_pixels[sy * src_stride + sx ..][0 .. x1 - x0], x0, x1, y, options, opacity_255);
+    }
+}
+
+test "aligned unscaled blit matches the bilinear path exactly, including offsets, clips, shapes and opacity" {
+    var source: [7 * 5]u32 = undefined;
+    for (&source, 0..) |*value, i| {
+        const alpha: u32 = @intCast((i * 37) % 256);
+        const channel = alpha * @as(u32, @intCast(i % 3 + 1)) / 3;
+        value.* = alpha << 24 | channel << 16 | (alpha / 2) << 8 | channel / 2;
+    }
+    const image: Image = .{ .pixels = std.mem.sliceAsBytes(&source), .width = 7, .height = 5, .stride = 28, .format = .argb };
+    const cases = [_]struct { destination: Rect, options: BlitOptions }{
+        .{ .destination = .{ .x = 2, .y = 1, .width = 7, .height = 5 }, .options = .{} },
+        .{ .destination = .{ .x = -3, .y = -2, .width = 7, .height = 5 }, .options = .{ .opacity = 0.6 } },
+        .{ .destination = .{ .x = 5, .y = 4, .width = 7, .height = 5 }, .options = .{ .clip = .{ .x = 6, .y = 4, .width = 3, .height = 2 } } },
+        .{ .destination = .{ .x = 1, .y = 1, .width = 7, .height = 5 }, .options = .{ .shape = (Rect{ .x = 1, .y = 1, .width = 7, .height = 5 }).shape(2), .opacity = 0.8 } },
+    };
+    for (cases) |case| {
+        var fast: [10 * 8]u32 = undefined;
+        var slow: [10 * 8]u32 = undefined;
+        for (&fast, &slow, 0..) |*f, *s, i| {
+            f.* = 0xff000000 | @as(u32, @intCast(i * 3));
+            s.* = f.*;
+        }
+        const target_fast: Buffer = .{ .pixels = &fast, .width = 10, .height = 8 };
+        const target_slow: Buffer = .{ .pixels = &slow, .width = 10, .height = 8 };
+        try blitWithOptions(target_fast, image, case.destination, case.options);
+        // Reproduce the bounds blitWithOptions computes, then force the bilinear path.
+        const d = case.destination;
+        var x0: usize = @intFromFloat(std.math.clamp(@floor(d.x), 0, 10));
+        var y0: usize = @intFromFloat(std.math.clamp(@floor(d.y), 0, 8));
+        var x1: usize = @intFromFloat(std.math.clamp(@ceil(d.x + d.width), 0, 10));
+        var y1: usize = @intFromFloat(std.math.clamp(@ceil(d.y + d.height), 0, 8));
+        if (case.options.clip) |c| {
+            x0 = @max(x0, @as(usize, @intCast(c.x)));
+            y0 = @max(y0, @as(usize, @intCast(c.y)));
+            x1 = @min(x1, @as(usize, @intCast(c.x + @as(i32, @intCast(c.width)))));
+            y1 = @min(y1, @as(usize, @intCast(c.y + @as(i32, @intCast(c.height)))));
+        }
+        blitArgbBilinear(target_slow, image, d, x0, y0, x1, y1, 1, 1, case.options);
+        try std.testing.expectEqualSlices(u32, &slow, &fast);
     }
 }
 

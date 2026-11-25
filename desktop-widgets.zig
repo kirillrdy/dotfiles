@@ -65,6 +65,7 @@ pub const UsagePopup = struct {
             .allocator = module.allocator,
             .context = self,
             .namespace = "desktop-usage",
+            .partial = true, // Draws only through blit.
             .paint = &draw,
             .input = .{ .button = &button, .motion = &motion, .leave = &leave, .symbol = &key },
             .resized = &resized,
@@ -102,7 +103,6 @@ pub const UsagePopup = struct {
     }
     fn draw(ptr: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(UsagePopup, ptr);
-        @memset(target.pixels, 0);
         self.paint(target) catch |err| {
             std.log.err("Usage paint: {s}", .{@errorName(err)});
             self.popup.requestHide();

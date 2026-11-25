@@ -25,6 +25,12 @@ pub const Host = struct {
     close_idle: u32 = 0,
     anchor_x: i32 = 0,
     anchor_y: i32 = 0,
+    /// Opt in when the owner draws only through blit: the host then clears and
+    /// damages just the popup bounds instead of the whole output-sized surface.
+    partial: bool = false,
+    /// Logical popup bounds and buffer scale of the last commit, for damage.
+    committed: ?raster.Rect = null,
+    committed_scale: u32 = 0,
 
     pub fn deinit(self: *Host) void {
         self.visible = false;
@@ -65,8 +71,12 @@ pub const Host = struct {
                 .interactive = true,
                 .keyboard = .exclusive,
                 .cursor = .arrow,
+                .clear_buffer = !self.partial,
             }, self.paint, self.context);
+            self.committed = null;
             self.surface.?.input = self.input;
+            // Coalesce input-driven redraws (scroll bursts, motion) to one per compositor frame.
+            self.surface.?.next_frame = &paced;
         }
         self.cancelHide();
         self.anchor_x = global_x;
@@ -80,6 +90,7 @@ pub const Host = struct {
     pub fn hide(self: *Host) void {
         self.cancelHide();
         self.visible = false;
+        self.committed = null; // A remapped surface starts with no previous frame.
         if (self.surface) |surface| surface.hide();
     }
     pub fn redraw(self: *Host) void {
@@ -109,17 +120,31 @@ pub const Host = struct {
         try self.pixels.resize(self.allocator, @as(usize, physical_width) * physical_height);
         return .{ .pixels = self.pixels.items, .width = physical_width, .height = physical_height };
     }
-    pub fn blit(self: *const Host, target: wire.Pixels) !void {
-        const factor = self.surface.?.buffer_scale;
+    pub fn blit(self: *Host, target: wire.Pixels) !void {
+        const surface = self.surface.?;
+        const factor = surface.buffer_scale;
         const scale: f64 = @floatFromInt(factor);
         const width = self.view_width * factor;
         const height = self.view_height * factor;
-        try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(self.pixels.items), .width = width, .height = height, .stride = width * 4, .format = .argb }, .{
-            .x = self.rect.x * scale,
-            .y = self.rect.y * scale,
-            .width = self.rect.width * scale,
-            .height = self.rect.height * scale,
-        }, null);
+        const destination: raster.Rect = .{ .x = self.rect.x * scale, .y = self.rect.y * scale, .width = self.rect.width * scale, .height = self.rect.height * scale };
+        if (self.partial) {
+            // The rest of the output-sized buffer stays transparent: clear only
+            // where this buffer last drew and where the popup lands now.
+            const now = outward(destination, target.width, target.height);
+            raster.fill(target, enclose(surface.swapDrawn(now), now), 0, .source);
+        }
+        if (self.partial and copyAligned(target, self.pixels.items, width, height, destination)) {
+            // Fast path done: an unscaled popup over cleared pixels is a plain copy.
+        } else try raster.blit(target, .{ .pixels = std.mem.sliceAsBytes(self.pixels.items), .width = width, .height = height, .stride = width * 4, .format = .argb }, destination, null);
+        if (self.partial) {
+            // Damage what changed since the previous commit: old and new popup bounds.
+            if (self.committed) |previous| if (self.committed_scale == factor) {
+                const logical = enclose(outward(previous, std.math.maxInt(u32), std.math.maxInt(u32)), outward(self.rect, std.math.maxInt(u32), std.math.maxInt(u32)));
+                surface.damage_hint = .{ .x = logical.x, .y = logical.y, .width = @intCast(logical.width), .height = @intCast(logical.height) };
+            };
+            self.committed = self.rect;
+            self.committed_scale = factor;
+        }
     }
     fn cancelHide(self: *Host) void {
         if (self.close_idle != 0) _ = mainloop.remove(self.close_idle);
@@ -134,6 +159,9 @@ pub const Host = struct {
         self.dismiss(self.context);
         return false;
     }
+    fn paced(_: ?*anyopaque, _: *wire.Surface, _: u32) bool {
+        return false; // Pace only; popups never animate on their own.
+    }
     fn added(_: ?*anyopaque, _: *wire.Output) void {}
     fn removed(ptr: ?*anyopaque, output: *wire.Output) void {
         const self = cast(Host, ptr);
@@ -147,6 +175,42 @@ pub const Host = struct {
         if (self.surface) |surface| if (surface.output == output) self.resized(self.context);
     }
 };
+
+/// Pixel bounds covering `rect`, rounded outward and clamped to a width x height buffer.
+fn outward(rect: raster.Rect, width: u32, height: u32) raster.Region {
+    const w: f64 = @floatFromInt(width);
+    const h: f64 = @floatFromInt(height);
+    const x0 = std.math.clamp(@floor(rect.x), 0, w);
+    const y0 = std.math.clamp(@floor(rect.y), 0, h);
+    const x1 = std.math.clamp(@ceil(rect.x + rect.width), x0, w);
+    const y1 = std.math.clamp(@ceil(rect.y + rect.height), y0, h);
+    return .{ .x = @intFromFloat(x0), .y = @intFromFloat(y0), .width = @intFromFloat(x1 - x0), .height = @intFromFloat(y1 - y0) };
+}
+/// Copy rows when `destination` is pixel-aligned, unscaled and inside the target.
+/// Source-over onto cleared (transparent) pixels equals the source, so this
+/// matches raster.blit there. Returns false when the general blit is needed.
+fn copyAligned(target: wire.Pixels, source: []const u32, width: u32, height: u32, destination: raster.Rect) bool {
+    const w: f64 = @floatFromInt(width);
+    const h: f64 = @floatFromInt(height);
+    if (destination.width != w or destination.height != h) return false;
+    if (destination.x != @floor(destination.x) or destination.y != @floor(destination.y)) return false;
+    if (destination.x < 0 or destination.y < 0) return false;
+    if (destination.x + w > @as(f64, @floatFromInt(target.width)) or destination.y + h > @as(f64, @floatFromInt(target.height))) return false;
+    if (source.len < @as(usize, width) * height) return false;
+    const x: usize = @intFromFloat(destination.x);
+    const y: usize = @intFromFloat(destination.y);
+    for (0..height) |row| @memcpy(target.pixels[(y + row) * target.width + x ..][0..width], source[row * width ..][0..width]);
+    return true;
+}
+fn enclose(a: raster.Region, b: raster.Region) raster.Region {
+    if (a.width == 0 or a.height == 0) return b;
+    if (b.width == 0 or b.height == 0) return a;
+    const x0 = @min(a.x, b.x);
+    const y0 = @min(a.y, b.y);
+    const x1 = @max(a.x + @as(i32, @intCast(a.width)), b.x + @as(i32, @intCast(b.width)));
+    const y1 = @max(a.y + @as(i32, @intCast(a.height)), b.y + @as(i32, @intCast(b.height)));
+    return .{ .x = x0, .y = y0, .width = @intCast(x1 - x0), .height = @intCast(y1 - y0) };
+}
 
 // Coordinates are output-local logical pixels, independent of buffer scale.
 pub fn placement(output_width: i32, output_height: i32, x: i32, y: i32, view_width: u32, view_height: u32) raster.Rect {
@@ -231,4 +295,28 @@ test "popup placement fits output edges and small screens in logical coordinates
         try std.testing.expect(small.x + small.width <= 632 and small.y + small.height <= 352);
         try std.testing.expectApproxEqAbs(@as(f64, @floatFromInt(size[0])) / @as(f64, @floatFromInt(size[1])), small.width / small.height, 0.000001);
     }
+}
+
+test "partial popup clearing rounds bounds outward, clamps to the buffer, and unions regions" {
+    try std.testing.expectEqual(raster.Region{ .x = 1, .y = 2, .width = 4, .height = 3 }, outward(.{ .x = 1.5, .y = 2.2, .width = 3, .height = 2.5 }, 100, 100));
+    try std.testing.expectEqual(raster.Region{ .x = 90, .y = 0, .width = 10, .height = 5 }, outward(.{ .x = 90, .y = -3, .width = 40, .height = 8 }, 100, 100));
+    const empty: raster.Region = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+    const a: raster.Region = .{ .x = 10, .y = 10, .width = 5, .height = 5 };
+    try std.testing.expectEqual(a, enclose(empty, a));
+    try std.testing.expectEqual(a, enclose(a, empty));
+    try std.testing.expectEqual(raster.Region{ .x = 2, .y = 10, .width = 13, .height = 20 }, enclose(a, .{ .x = 2, .y = 20, .width = 3, .height = 10 }));
+}
+
+test "aligned popup copy matches source-over blit onto cleared pixels and declines unaligned cases" {
+    const source = [_]u32{ 0x00000000, 0x80402010, 0xff112233, 0x40000000, 0xffffffff, 0x10101010 };
+    var fast: [8 * 6]u32 = @splat(0);
+    var slow: [8 * 6]u32 = @splat(0);
+    const destination: raster.Rect = .{ .x = 2, .y = 1, .width = 3, .height = 2 };
+    try std.testing.expect(copyAligned(.{ .pixels = &fast, .width = 8, .height = 6 }, &source, 3, 2, destination));
+    try raster.blit(.{ .pixels = &slow, .width = 8, .height = 6 }, .{ .pixels = std.mem.sliceAsBytes(&source), .width = 3, .height = 2, .stride = 12, .format = .argb }, destination, null);
+    try std.testing.expectEqualSlices(u32, &slow, &fast);
+    const target: wire.Pixels = .{ .pixels = &fast, .width = 8, .height = 6 };
+    try std.testing.expect(!copyAligned(target, &source, 3, 2, .{ .x = 2.5, .y = 1, .width = 3, .height = 2 }));
+    try std.testing.expect(!copyAligned(target, &source, 3, 2, .{ .x = 2, .y = 1, .width = 2.5, .height = 2 }));
+    try std.testing.expect(!copyAligned(target, &source, 3, 2, .{ .x = 6, .y = 1, .width = 3, .height = 2 }));
 }

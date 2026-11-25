@@ -194,7 +194,6 @@ pub const Controls = struct {
     }
     fn draw(ptr: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(Controls, ptr);
-        @memset(target.pixels, 0);
         if (self.dead) return;
         self.paint(target) catch |err| std.log.err("quick-settings render: {s}", .{@errorName(err)});
     }

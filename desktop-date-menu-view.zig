@@ -9,13 +9,36 @@ pub const Rect = raster.Rect;
 pub const NoticeTarget = struct { id: u32, part: banner.Target };
 pub const Target = union(enum) { none, today, previous, month, next, day: usize, clear, scrollbar, notice: NoticeTarget };
 pub const Effect = union(enum) { none, clear, dismiss: u32, activate: struct { id: u32, key: [:0]const u8 } };
-const Card = struct { view: banner.View, y: f64 = 0 };
+const Card = struct {
+    view: banner.View,
+    y: f64 = 0,
+    /// The card's last painted pixels, reused while only the scroll offset changes.
+    pixels: std.ArrayList(u32) = .empty,
+    key: ?CardKey = null,
+    fn release(self: *Card, a: std.mem.Allocator) void {
+        self.pixels.deinit(a);
+        self.pixels = .empty;
+        self.key = null;
+    }
+};
+const CardKey = struct { generation: u64, scale: u32, width: u32, height: u32, expanded: bool, hover: banner.Target, pressed: banner.Target };
+const ChromeKey = struct { generation: u64, width: u32, height: u32, empty: bool, keyboard_focus: bool, focus: Target, hover: Target, pressed: Target };
+/// History targets are painted every frame, so they never invalidate the chrome.
+fn chromeTarget(target: Target) Target {
+    return switch (target) {
+        .notice, .scrollbar => .none,
+        else => target,
+    };
+}
 const Snapshot = struct {
     arena: std.heap.ArenaAllocator,
     raw: []const u8 = "",
     cards: std.ArrayList(Card) = .empty,
     fn deinit(self: *Snapshot, a: std.mem.Allocator) void {
-        for (self.cards.items) |*card| card.view.deinit();
+        for (self.cards.items) |*card| {
+            card.release(a);
+            card.view.deinit();
+        }
         self.cards.deinit(a);
         self.arena.deinit();
     }
@@ -38,7 +61,11 @@ pub const View = struct {
     renderer: text.Renderer = .{},
     masks: [54]?text.Mask = @splat(null),
     targets: std.ArrayList(Target) = .empty,
-    scratch: std.ArrayList(u32) = .empty,
+    /// Cached calendar side and frame, reused while scrolling the history.
+    chrome: std.ArrayList(u32) = .empty,
+    chrome_key: ?ChromeKey = null,
+    /// Bumped whenever labels are re-rendered (date, minute, scale).
+    generation: u64 = 0,
 
     pub fn init(a: std.mem.Allocator) !View {
         return .{ .allocator = a, .selected = try DateTime.now(), .snapshot = .{ .arena = std.heap.ArenaAllocator.init(a) } };
@@ -48,9 +75,10 @@ pub const View = struct {
         self.renderer.deinit();
         self.snapshot.deinit(self.allocator);
         self.targets.deinit(self.allocator);
-        self.scratch.deinit(self.allocator);
+        self.chrome.deinit(self.allocator);
     }
     fn invalidate(self: *View) void {
+        self.generation +%= 1;
         for (&self.masks) |*mask| {
             if (mask.*) |value| value.deinit(self.allocator);
             mask.* = null;
@@ -348,7 +376,31 @@ pub const View = struct {
         if (self.focus == .day and (symbol == 0xff50 or symbol == 0xff55 or symbol == 0xff56)) self.focus = .{ .day = self.selectedIndex() };
         return .none;
     }
+    /// Everything the calendar side and frame depend on; scrolling changes none of it.
+    fn chromeKey(self: *const View, target: raster.Buffer) ChromeKey {
+        return .{
+            .generation = self.generation,
+            .width = target.width,
+            .height = target.height,
+            .empty = self.count() == 0,
+            .keyboard_focus = self.keyboard_focus,
+            .focus = chromeTarget(self.focus),
+            .hover = chromeTarget(self.hover),
+            .pressed = chromeTarget(self.pressed),
+        };
+    }
     pub fn paint(self: *View, target: raster.Buffer) !void {
+        const wanted = self.chromeKey(target);
+        if (self.chrome_key == null or !std.meta.eql(self.chrome_key.?, wanted)) {
+            self.chrome_key = null;
+            try self.chrome.resize(self.allocator, target.pixels.len);
+            try self.paintChrome(.{ .pixels = self.chrome.items, .width = target.width, .height = target.height });
+            self.chrome_key = wanted;
+        }
+        @memcpy(target.pixels, self.chrome.items);
+        try self.paintHistory(target);
+    }
+    fn paintChrome(self: *View, target: raster.Buffer) !void {
         @memset(target.pixels, 0);
         const scale: f64 = @floatFromInt(self.scale);
         const canvas: raster.Canvas = .{ .target = target, .scale = scale };
@@ -377,7 +429,6 @@ pub const View = struct {
         }
         self.paintButton(canvas, .clear, 18, if (self.count() == 0) 0x404044 else 0x505054);
         self.center(canvas, 52, self.rect(.clear), if (self.count() == 0) 0x929296 else 0xffffff);
-        const area = self.historyRect();
         if (self.count() == 0) {
             // Bell outline and strike use the same raster primitives as controls.
             canvas.draw(&.{
@@ -390,19 +441,33 @@ pub const View = struct {
             }, color(0x929296));
             self.center(canvas, 53, .{ .x = 8, .y = 214, .width = 424, .height = 36 }, 0x929296);
         }
+    }
+    /// Cards, scrollbar and card focus ring: the parts that move with scrolling.
+    fn paintHistory(self: *View, target: raster.Buffer) !void {
+        const scale: f64 = @floatFromInt(self.scale);
+        const canvas: raster.Canvas = .{ .target = target, .scale = scale };
+        const area = self.historyRect();
         for (self.snapshot.cards.items) |*card| {
             const y = area.y + card.y - self.scroll;
-            if (y + @as(f64, @floatFromInt(card.view.height)) <= area.y or y >= area.y + area.height) continue;
+            if (y + @as(f64, @floatFromInt(card.view.height)) <= area.y or y >= area.y + area.height) {
+                card.release(self.allocator); // Bound memory to the cards on screen.
+                continue;
+            }
             const id = card.view.notice.id;
             card.view.hover = if (self.hover == .notice and self.hover.notice.id == id) self.hover.notice.part else .none;
             card.view.pressed = if (self.pressed == .notice and self.pressed.notice.id == id) self.pressed.notice.part else .none;
             const w = card.view.width * self.scale;
             const h = card.view.height * self.scale;
-            try self.scratch.resize(self.allocator, w * h);
-            @memset(self.scratch.items, 0);
-            card.view.paint(.{ .pixels = self.scratch.items, .width = w, .height = h });
+            const wanted: CardKey = .{ .generation = card.view.generation, .scale = self.scale, .width = w, .height = h, .expanded = card.view.expanded, .hover = card.view.hover, .pressed = card.view.pressed };
+            if (card.key == null or !std.meta.eql(card.key.?, wanted)) {
+                card.key = null;
+                try card.pixels.resize(self.allocator, w * h);
+                @memset(card.pixels.items, 0);
+                card.view.paint(.{ .pixels = card.pixels.items, .width = w, .height = h });
+                card.key = wanted;
+            }
             const clipped: raster.Buffer = .{ .pixels = target.pixels[8 * self.scale * target.width .. 360 * self.scale * target.width], .width = target.width, .height = 352 * self.scale };
-            try raster.blit(clipped, .{ .pixels = std.mem.sliceAsBytes(self.scratch.items), .width = w, .height = h, .stride = w * 4, .format = .argb }, .{ .x = area.x * scale, .y = (card.y - self.scroll) * scale, .width = @floatFromInt(w), .height = @floatFromInt(h) }, .{ .x = 8 * @as(i32, @intCast(self.scale)), .y = 0, .width = 424 * self.scale, .height = 352 * self.scale });
+            try raster.blit(clipped, .{ .pixels = std.mem.sliceAsBytes(card.pixels.items), .width = w, .height = h, .stride = w * 4, .format = .argb }, .{ .x = area.x * scale, .y = (card.y - self.scroll) * scale, .width = @floatFromInt(w), .height = @floatFromInt(h) }, .{ .x = 8 * @as(i32, @intCast(self.scale)), .y = 0, .width = 424 * self.scale, .height = 352 * self.scale });
         }
         if (self.history_height > area.height) {
             const thumb = self.scrollbarRect();
@@ -543,4 +608,58 @@ test "integration: native history preserves expansion and focus across snapshots
     try std.testing.expect(view.focus == .month);
     try view.load("[{\"id\":-1,\"created\":1},{\"id\":4294967296,\"created\":1},{\"id\":7,\"created\":1},{\"id\":7,\"created\":1}]");
     try std.testing.expectEqual(@as(usize, 1), view.count());
+}
+test "cached calendar chrome and cards paint the same pixels as a full repaint while scrolling, hovering and expanding" {
+    var view = try View.init(std.testing.allocator);
+    defer view.deinit();
+    try view.prepare(1);
+    try view.load(
+        \\[{"id":1,"created":1,"app":"A","title":"One","body":"Body"},{"id":2,"created":2,"app":"B","title":"Two","body":"Body"},
+        \\ {"id":3,"created":3,"app":"C","title":"Three","body":"Body"},{"id":4,"created":4,"app":"D","title":"Four","body":"Body"},
+        \\ {"id":5,"created":5,"app":"E","title":"Five","body":"Body"},{"id":6,"created":6,"app":"F","title":"Six","body":"Body","actions":[{"key":"reply","label":"Reply"}]}]
+    );
+    for ([_]u32{ 1, 2 }) |scale| {
+        try view.prepare(scale);
+        const len = view.width * view.height * scale * scale;
+        const cached = try std.testing.allocator.alloc(u32, len);
+        defer std.testing.allocator.free(cached);
+        const fresh = try std.testing.allocator.alloc(u32, len);
+        defer std.testing.allocator.free(fresh);
+        const buffer = struct {
+            fn of(pixels: []u32, v: *const View, s: u32) raster.Buffer {
+                return .{ .pixels = pixels, .width = v.width * s, .height = v.height * s };
+            }
+        }.of;
+        try view.paint(buffer(cached, &view, scale));
+        const steps = [_]struct { scroll: f64, hover: Target }{
+            .{ .scroll = 40, .hover = .none },
+            .{ .scroll = 40, .hover = .next },
+            .{ .scroll = -20, .hover = .{ .day = 10 } },
+            .{ .scroll = 10, .hover = .scrollbar },
+            .{ .scroll = 0, .hover = .{ .notice = .{ .id = 5, .part = .close } } },
+            .{ .scroll = 30, .hover = .{ .notice = .{ .id = 4, .part = .card } } },
+        };
+        for (steps) |step| {
+            view.scrollBy(step.scroll);
+            view.hover = step.hover;
+            try view.paint(buffer(cached, &view, scale));
+            view.chrome_key = null;
+            for (view.snapshot.cards.items) |*card| card.key = null;
+            try view.paint(buffer(fresh, &view, scale));
+            try std.testing.expectEqualSlices(u32, fresh, cached);
+        }
+        // Expanding changes the card's height and content; the cache must follow.
+        view.scrollBy(-100000);
+        try view.paint(buffer(cached, &view, scale));
+        _ = try view.activate(.{ .notice = .{ .id = 6, .part = .expand } });
+        try view.prepare(scale);
+        try std.testing.expect(view.snapshot.cards.items[0].view.expanded);
+        try view.paint(buffer(cached, &view, scale));
+        view.chrome_key = null;
+        for (view.snapshot.cards.items) |*card| card.key = null;
+        try view.paint(buffer(fresh, &view, scale));
+        try std.testing.expectEqualSlices(u32, fresh, cached);
+        _ = try view.activate(.{ .notice = .{ .id = 6, .part = .expand } });
+        try view.prepare(scale);
+    }
 }

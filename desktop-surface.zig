@@ -327,6 +327,9 @@ const Buffer = struct {
     width: u32,
     height: u32,
     busy: bool = false,
+    /// Physical bounds of every non-transparent pixel, for painters that skip
+    /// clear_buffer. New shm memory is zero-filled, so it starts empty.
+    drawn: raster.Region = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
     fn create(owner: *Surface, width: u32, height: u32) !*Buffer {
         const a = owner.client.allocator;
@@ -455,6 +458,10 @@ pub const Surface = struct {
     pending: bool = false,
     rendering: bool = false,
     buffers: [2]?*Buffer = .{ null, null },
+    /// The buffer being painted, valid only inside the paint callback.
+    painting: ?*Buffer = null,
+    /// Logical region changed since the previous commit; null damages everything.
+    damage_hint: ?raster.IntRect = null,
 
     pub fn createPixels(output: *Output, options: Options, paint: PixelPaint, data: ?*anyopaque) !*Surface {
         const a = output.client.allocator;
@@ -600,6 +607,14 @@ pub const Surface = struct {
             self.client.flush();
         }
     }
+    /// For clear_buffer=false painters that draw into one rectangle: returns the
+    /// physical bounds the current buffer last held content in and records `next`.
+    pub fn swapDrawn(self: *Surface, next: raster.Region) raster.Region {
+        const buffer = self.painting orelse return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        const previous = buffer.drawn;
+        buffer.drawn = next;
+        return previous;
+    }
     pub fn redraw(self: *Surface) void {
         if (self.role == null) return;
         self.pending = true;
@@ -631,8 +646,14 @@ pub const Surface = struct {
         const buffer = available orelse return; // release retries the newest state.
         const surface = self.proxy.?;
         self.buffer_scale = scale;
-        if (self.options.clear_buffer) @memset(buffer.pixels(), 0);
+        if (self.options.clear_buffer) {
+            @memset(buffer.pixels(), 0);
+            buffer.drawn = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        }
+        self.damage_hint = null;
+        self.painting = buffer;
         self.paint(self.data, .{ .pixels = buffer.pixels(), .width = width, .height = height });
+        self.painting = null;
         if (self.next_frame != null) {
             const callback = surface.frame();
             self.frame_callback = callback;
@@ -646,7 +667,10 @@ pub const Surface = struct {
             region.destroy();
         }
         surface.attach(buffer.shm.buffer, 0, 0);
-        surface.damage(0, 0, @intCast(self.width), @intCast(self.height));
+        if (self.damage_hint) |hint| {
+            surface.damage(hint.x, hint.y, hint.width, hint.height);
+        } else surface.damage(0, 0, @intCast(self.width), @intCast(self.height));
+        self.damage_hint = null;
         buffer.busy = true;
         self.pending = false;
         surface.commit();
