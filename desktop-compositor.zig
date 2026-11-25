@@ -3,8 +3,8 @@
 //! on the main thread so synchronous client roundtrips cannot deadlock the server.
 const std = @import("std");
 const c = @import("compositor-abi");
-/// From wayland-scanner private-code for desktop-overview-v1.xml.
-extern const dotfiles_overview_v1_interface: c.wl_interface;
+/// libwayland-server metadata generated from desktop-overview-v1.xml.
+const dotfiles_overview_v1_interface = @import("wayland-server-protocols").dotfiles_overview_v1_interface;
 const hot_corner = @import("desktop-hot-corner.zig");
 const gsettings = @import("desktop-gsettings.zig");
 
@@ -1781,6 +1781,12 @@ const Overview = struct {
         begin_previews: *const fn (?*c.wl_client, ?*c.wl_resource, ?*c.wl_resource) callconv(.c) void = &beginPreviews,
         preview: *const fn (?*c.wl_client, ?*c.wl_resource, [*c]const u8, *c.wl_array) callconv(.c) void = &preview,
     };
+    comptime {
+        // libwayland dispatches requests by opcode into this table.
+        const names = @typeInfo(Interface).@"struct".field_names;
+        std.debug.assert(names.len == dotfiles_overview_v1_interface.method_count);
+        for (names, 0..) |name, opcode| std.debug.assert(std.mem.eql(u8, name, std.mem.span(dotfiles_overview_v1_interface.methods[opcode].name)));
+    }
     const implementation: Interface = .{};
     fn bind(client: ?*c.wl_client, ptr: ?*anyopaque, version: u32, id: u32) callconv(.c) void {
         const s = cast(Server, ptr);

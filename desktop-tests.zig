@@ -130,7 +130,6 @@ test {
     try @import("desktop-runtime.zig").setup(std.testing.allocator);
     _ = @import("desktop-zig.zig");
     _ = @import("tests/desktop-libc-abi.zig");
-    _ = @import("tests/desktop-protocols.zig");
     _ = @import("desktop-switcher.zig");
     _ = @import("desktop-overview.zig");
     _ = @import("desktop-overview-animation.zig");

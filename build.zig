@@ -5,11 +5,6 @@ fn bindings(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
     for (libraries) |name| translated.linkSystemLibrary(name, .{});
     return translated.createModule();
 }
-fn protocolCode(b: *std.Build, xml: std.Build.LazyPath, output: []const u8) std.Build.LazyPath {
-    const command = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
-    command.addFileArg(xml);
-    return command.addOutputFileArg(output);
-}
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -27,57 +22,6 @@ pub fn build(b: *std.Build) void {
     desktop.addImport("text-c", text_c);
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
     const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
-    const protocol_names = [_][]const u8{
-        "zxdg_output_manager_v1_interface",
-        "zxdg_output_v1_interface",
-        "xdg_wm_base_interface",
-        "xdg_activation_v1_interface",
-        "xdg_activation_token_v1_interface",
-        "xdg_positioner_interface",
-        "xdg_surface_interface",
-        "xdg_toplevel_interface",
-        "xdg_popup_interface",
-        "zxdg_importer_v2_interface",
-        "zxdg_imported_v2_interface",
-        "zwlr_layer_shell_v1_interface",
-        "zwlr_layer_surface_v1_interface",
-        "zwlr_output_manager_v1_interface",
-        "zwlr_output_head_v1_interface",
-        "zwlr_output_mode_v1_interface",
-        "zwlr_output_configuration_v1_interface",
-        "zwlr_output_configuration_head_v1_interface",
-        "ext_idle_notifier_v1_interface",
-        "ext_idle_notification_v1_interface",
-        "ext_session_lock_manager_v1_interface",
-        "ext_session_lock_v1_interface",
-        "ext_session_lock_surface_v1_interface",
-        "zwlr_screencopy_manager_v1_interface",
-        "zwlr_screencopy_frame_v1_interface",
-        "zwlr_data_control_manager_v1_interface",
-        "zwlr_data_control_device_v1_interface",
-        "zwlr_data_control_source_v1_interface",
-        "zwlr_data_control_offer_v1_interface",
-        "ext_foreign_toplevel_list_v1_interface",
-        "ext_foreign_toplevel_handle_v1_interface",
-        "ext_image_capture_source_v1_interface",
-        "ext_output_image_capture_source_manager_v1_interface",
-        "ext_foreign_toplevel_image_capture_source_manager_v1_interface",
-        "ext_image_copy_capture_manager_v1_interface",
-        "ext_image_copy_capture_session_v1_interface",
-        "ext_image_copy_capture_frame_v1_interface",
-        "ext_image_copy_capture_cursor_session_v1_interface",
-        "dotfiles_overview_v1_interface",
-        "zwlr_virtual_pointer_v1_interface",
-        "zwlr_virtual_pointer_manager_v1_interface",
-        "zwp_text_input_manager_v3_interface",
-        "zwp_text_input_v3_interface",
-        "wp_cursor_shape_manager_v1_interface",
-        "wp_cursor_shape_device_v1_interface",
-        "zwp_tablet_tool_v2_interface",
-        "zwp_tablet_v2_interface",
-        "zxdg_decoration_manager_v1_interface",
-        "zxdg_toplevel_decoration_v1_interface",
-    };
     const protocol_files = [_]std.Build.LazyPath{
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-output/xdg-output-unstable-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/stable/xdg-shell/xdg-shell.xml", .{protocol_dir}) },
@@ -99,8 +43,6 @@ pub fn build(b: *std.Build) void {
         .{ .cwd_relative = b.fmt("{s}/staging/ext-idle-notify/ext-idle-notify-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-output-management-unstable-v1.xml", .{wlr_protocols}) },
     };
-    // The compositor serves dotfiles_overview_v1 from wayland-scanner's C metadata.
-    desktop.addCSourceFile(.{ .file = protocolCode(b, b.path("desktop-overview-v1.xml"), "dotfiles-overview-v1-protocol.c") });
     // Native Wayland client: the wire runtime plus typed bindings for every protocol used.
     const wire = b.createModule(.{ .root_source_file = b.path("desktop-wire.zig"), .target = target, .optimize = optimize, .link_libc = true });
     const wayland_generator = b.addExecutable(.{ .name = "wayland-zig", .root_module = b.createModule(.{ .root_source_file = b.path("tools/wayland-zig.zig"), .target = b.graph.host, .optimize = .ReleaseSafe }) });
@@ -112,6 +54,12 @@ pub fn build(b: *std.Build) void {
     wayland_client.addImport("wayland-wire", wire);
     desktop.addImport("wayland-wire", wire);
     desktop.addImport("wayland-client", wayland_client);
+    // The compositor serves dotfiles_overview_v1 through libwayland-server's wl_interface metadata.
+    const server_command = b.addRunArtifact(wayland_generator);
+    server_command.addArg("--libwayland");
+    const server_source = server_command.addOutputFileArg("wayland-server-protocols.zig");
+    server_command.addFileArg(b.path("desktop-overview-v1.xml"));
+    desktop.addImport("wayland-server-protocols", b.createModule(.{ .root_source_file = server_source, .target = target, .optimize = optimize }));
     // Unicode case folding and normalization tables, generated from the UCD.
     const ucd = b.graph.environ_map.get("UNICODE_DATA_DIR") orelse "/usr/share/unicode";
     const unicode_generator = b.addExecutable(.{ .name = "unicode-tables", .root_module = b.createModule(.{ .root_source_file = b.path("tools/unicode-tables.zig"), .target = b.graph.host, .optimize = .ReleaseSafe }) });
@@ -125,8 +73,6 @@ pub fn build(b: *std.Build) void {
     const integration_tests = b.option(bool, "integration-tests", "Include system and Wayland integration tests") orelse false;
     const options = b.addOptions();
     options.addOption(bool, "integration_tests", integration_tests);
-    // Interfaces whose wayland-scanner tables are compiled into tests as reference_*.
-    options.addOption([]const []const u8, "reference_interfaces", &protocol_names);
     for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "SOUND_FILE", "CODEX_ICON", "DATA_DIRS" }) |name| {
         options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
     }
@@ -163,13 +109,8 @@ pub fn build(b: *std.Build) void {
     // The wire runtime is its own module, so its tests need their own root.
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "desktop-wire-tests", .root_module = wire })).step);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "desktop-dbus-tests", .root_module = dbus })).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "wayland-zig-tests", .root_module = wayland_generator.root_module })).step);
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/stat.h>\n#include <sys/random.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <grp.h>\n#include <sys/statvfs.h>\n", &.{}));
-    var reference_flags: [protocol_names.len][]const u8 = undefined;
-    for (protocol_names, &reference_flags) |name, *flag| flag.* = b.fmt("-D{s}=reference_{s}", .{ name, name });
-    for (protocol_files, 0..) |xml, i| {
-        // Reference symbols are used only by the test binary.
-        tests.root_module.addCSourceFile(.{ .file = protocolCode(b, xml, b.fmt("protocol-{d}.c", .{i})), .flags = &reference_flags });
-    }
 
     const fixtures_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-fixtures.zig"), .target = target, .optimize = optimize });
     fixtures_module.addImport("desktop", desktop);
