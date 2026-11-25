@@ -340,6 +340,10 @@ pub fn update_usage(m: *Module, content: panel_data.Update) void {
         m.usage.pace[i] = if (valid) window.pace else null;
         m.usage.reset[i].set(m.allocator, window.reset);
     }
+    const weekly: panel_data.Window = if (content.windows.len > 1) content.windows[1] else .{};
+    const weekly_valid = if (weekly.percent) |p| std.math.isFinite(p) else false;
+    m.view.weekly_percent = if (weekly_valid) std.math.clamp(weekly.percent.?, 0, 100) else null;
+    m.view.weekly_pace = if (weekly_valid) weekly.pace else null;
     m.usage.checked.set(m.allocator, if (content.checked.len != 0) content.checked else "Checked: —");
     m.usage.error_label.set(m.allocator, content.@"error");
     m.usage.enabled = true;
@@ -495,9 +499,15 @@ test "usage indicators are visible before either collector returns" {
     try std.testing.expectEqualStrings("Loading…", codex.usage.checked.value);
     try std.testing.expect(!codex.usage.enabled);
 
-    update(codex, .{ .items = &.{.{ .text = "54%" }} });
+    update(codex, .{ .items = &.{.{ .text = "54%" }}, .windows = &.{ .{ .percent = 54, .pace = 45 }, .{ .percent = 93, .pace = 62 } } });
     try std.testing.expectEqualStrings("54%", codex.view.items[0].label.value);
     try std.testing.expect(codex.usage.enabled);
+    try std.testing.expectEqual(@as(?f64, 93), codex.view.weekly_percent);
+    try std.testing.expectEqual(@as(?f64, 62), codex.view.weekly_pace);
+
+    update(codex, .{ .items = &.{.{ .text = "—" }}, .windows = &.{} });
+    try std.testing.expectEqual(@as(?f64, null), codex.view.weekly_percent);
+    try std.testing.expectEqual(@as(?f64, null), codex.view.weekly_pace);
 }
 
 pub fn deinit(m: *Module) void {

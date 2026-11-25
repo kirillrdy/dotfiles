@@ -126,13 +126,13 @@ pub const Item = struct {
         }
         self.icon_scale = scale;
     }
-    fn paint(self: *const Item, buffer: raster.Buffer, scale: u32, foreground: raster.Color) void {
+    fn paint(self: *const Item, buffer: raster.Buffer, scale: u32, foreground: raster.Color, content_height: f64) void {
         var x = self.rect.x;
         if (self.image) |image| {
-            imaging.blit(.{ .target = buffer, .scale = @floatFromInt(scale) }, image, .{ .x = x, .y = (self.rect.height - 16) / 2, .width = 16, .height = 16 });
+            imaging.blit(.{ .target = buffer, .scale = @floatFromInt(scale) }, image, .{ .x = x, .y = (content_height - 16) / 2, .width = 16, .height = 16 });
         }
         if (self.icon.value.len != 0) x += 16 + (if (self.label.value.len != 0) @as(f64, 6) else 0);
-        self.label.paint(buffer, x, (self.rect.height - self.label.height()) / 2, foreground);
+        self.label.paint(buffer, x, (content_height - self.label.height()) / 2, foreground);
     }
 };
 pub const Graph = struct {
@@ -211,6 +211,8 @@ pub const View = struct {
     monitors: bool = false,
     status: bool = false,
     usage: bool = false,
+    weekly_percent: ?f64 = null,
+    weekly_pace: ?f64 = null,
     disk: bool = false,
     hovered: bool = false,
     focus: bool = false,
@@ -300,11 +302,54 @@ pub const View = struct {
                 }
                 graph.paint(canvas, x + 14, 100, height);
             }
-        } else if (self.clock.value.len != 0) self.clock.paint(buffer, padding, (height - self.clock.height()) / 2, fg) else for (self.items) |item| {
-            if (item.visible) item.paint(buffer, self.scale, fg);
+        } else if (self.clock.value.len != 0) self.clock.paint(buffer, padding, (height - self.clock.height()) / 2, fg) else {
+            const has_weekly = self.usage and self.weekly_percent != null;
+            const content_height = if (has_weekly) @max(16, height - 6) else height;
+            for (self.items) |item| {
+                if (item.visible) item.paint(buffer, self.scale, fg, content_height);
+            }
+            if (has_weekly) paintWeeklyBar(canvas, .{ .x = padding, .y = height - 8, .width = @max(0, width - 2 * padding), .height = 3 }, self.weekly_percent.?, self.weekly_pace);
         }
     }
 };
+
+fn paintWeeklyBar(canvas: raster.Canvas, bar: raster.Rect, percent: f64, pace: ?f64) void {
+    if (bar.width <= 0 or bar.height <= 0) return;
+    const value = std.math.clamp(percent, 0, 100);
+    canvas.draw(&.{.{ .rounded = bar }}, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.16 });
+    if (pace) |raw_pace| {
+        const expected = std.math.clamp(raw_pace, 0, 100);
+        const neutral = raster.hex(0x9ca3af);
+        if (value > expected) {
+            var filled = bar;
+            filled.width = bar.width * value / 100;
+            if (filled.width > 0) canvas.draw(&.{.{ .rounded = filled }}, raster.hex(0x10b981));
+            var base = bar;
+            base.width = bar.width * expected / 100;
+            if (base.width > 0) canvas.draw(&.{.{ .rounded = base }}, neutral);
+        } else {
+            var target = bar;
+            target.width = bar.width * expected / 100;
+            if (value < expected and target.width > 0) {
+                const deficit = expected - value;
+                const color = if (deficit >= 20 or value <= 10) raster.hex(0xef4444) else raster.hex(0xf97316);
+                canvas.draw(&.{.{ .rounded = target }}, color);
+            }
+            var base = bar;
+            base.width = bar.width * value / 100;
+            if (base.width > 0) canvas.draw(&.{.{ .rounded = base }}, neutral);
+        }
+        const x = bar.x + bar.width * expected / 100;
+        const tick: raster.Shape = .{ .line = .{ .start = .{ .x = x, .y = bar.y - 1 }, .end = .{ .x = x, .y = bar.y + bar.height + 1 }, .radius = 0.6 } };
+        const outline: raster.Shape = .{ .line = .{ .start = tick.line.start, .end = tick.line.end, .radius = 1.2 } };
+        canvas.draw(&.{outline}, .{ .red = 0, .green = 0, .blue = 0, .alpha = 0.65 });
+        canvas.draw(&.{tick}, .{ .red = 1, .green = 1, .blue = 1, .alpha = 0.95 });
+    } else {
+        var filled = bar;
+        filled.width = bar.width * value / 100;
+        if (filled.width > 0) canvas.draw(&.{.{ .rounded = filled }}, usageColor(value));
+    }
+}
 
 pub const Usage = struct {
     renderer: text.Renderer = .{},
@@ -465,4 +510,44 @@ test "native tooltips preserve explicit line breaks without forcing a fixed widt
     try label.prepare(a, &renderer, 1, 13.333, false, null, false);
     try std.testing.expect(label.height() > height * 1.5);
     try std.testing.expect(label.width() < 300);
+}
+
+test "usage panel view paints weekly surplus and deficit around the pace tick" {
+    const a = std.testing.allocator;
+    var view: View = .{ .usage = true };
+    defer view.deinit(a);
+    view.items[0].visible = true;
+    view.items[0].label.set(a, "54%");
+    try view.prepare(a, 1, 32);
+    const width = view.width;
+    const pixels = try a.alloc(u32, width * 32);
+    defer a.free(pixels);
+
+    // Without weekly data, the bottom micro-bar band stays empty.
+    view.paint(.{ .pixels = pixels, .width = width, .height = 32 });
+    const bar_row = 25 * width;
+    for (pixels[bar_row .. bar_row + width]) |px| try std.testing.expectEqual(@as(u32, 0), px);
+
+    const bar_x: f64 = 8;
+    const bar_w: f64 = @as(f64, @floatFromInt(width)) - 16;
+
+    // Surplus (85% remaining vs 40% pace): pixel between pace and value is green.
+    view.weekly_percent = 85;
+    view.weekly_pace = 40;
+    view.paint(.{ .pixels = pixels, .width = width, .height = 32 });
+    const surplus_x: usize = @intFromFloat(bar_x + bar_w * 0.65);
+    const surplus_px = pixels[bar_row + surplus_x];
+    const sg = (surplus_px >> 8) & 255;
+    const sr = (surplus_px >> 16) & 255;
+    try std.testing.expect(sg > sr + 50);
+
+    // Deficit (20% remaining vs 65% pace): pixel between value and pace is red/orange.
+    view.weekly_percent = 20;
+    view.weekly_pace = 65;
+    view.paint(.{ .pixels = pixels, .width = width, .height = 32 });
+    const deficit_x: usize = @intFromFloat(bar_x + bar_w * 0.42);
+    const deficit_px = pixels[bar_row + deficit_x];
+    const dr = (deficit_px >> 16) & 255;
+    const dg = (deficit_px >> 8) & 255;
+    try std.testing.expect(dr > dg + 50);
 }
