@@ -90,6 +90,7 @@
     }
   '';
   programs.steam.enable = enableNvidia;
+  services.avahi.enable = true;
   services.avahi.nssmdns4 = true;
   services.avahi.settings.publish = {
     disable-publishing = false;
