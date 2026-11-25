@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
     };
     // Native Wayland client: the wire runtime plus typed bindings for every protocol used.
     const wire = b.createModule(.{ .root_source_file = b.path("desktop-wire.zig"), .target = target, .optimize = optimize, .link_libc = true });
-    const wayland_generator = b.addExecutable(.{ .name = "wayland-zig", .root_module = b.createModule(.{ .root_source_file = b.path("tools/wayland-zig.zig"), .target = b.graph.host, .optimize = .ReleaseSafe }) });
+    const wayland_generator = b.addExecutable(.{ .name = "wayland-zig", .root_module = b.createModule(.{ .root_source_file = b.path("tools/wayland-zig.zig"), .target = b.graph.host, .optimize = optimize }) });
     const client_command = b.addRunArtifact(wayland_generator);
     const client_source = client_command.addOutputFileArg("wayland-client.zig");
     client_command.addFileArg(.{ .cwd_relative = b.graph.environ_map.get("WAYLAND_XML") orelse "/usr/share/wayland/wayland.xml" });
@@ -62,7 +62,7 @@ pub fn build(b: *std.Build) void {
     desktop.addImport("wayland-server-protocols", b.createModule(.{ .root_source_file = server_source, .target = target, .optimize = optimize }));
     // Unicode case folding and normalization tables, generated from the UCD.
     const ucd = b.graph.environ_map.get("UNICODE_DATA_DIR") orelse "/usr/share/unicode";
-    const unicode_generator = b.addExecutable(.{ .name = "unicode-tables", .root_module = b.createModule(.{ .root_source_file = b.path("tools/unicode-tables.zig"), .target = b.graph.host, .optimize = .ReleaseSafe }) });
+    const unicode_generator = b.addExecutable(.{ .name = "unicode-tables", .root_module = b.createModule(.{ .root_source_file = b.path("tools/unicode-tables.zig"), .target = b.graph.host, .optimize = optimize }) });
     const unicode_command = b.addRunArtifact(unicode_generator);
     for ([_][]const u8{ "UnicodeData.txt", "CaseFolding.txt", "DerivedNormalizationProps.txt" }) |name| unicode_command.addFileArg(.{ .cwd_relative = b.fmt("{s}/{s}", .{ ucd, name }) });
     const unicode_tables = b.createModule(.{ .root_source_file = unicode_command.addOutputFileArg("unicode-tables.zig"), .target = target, .optimize = optimize });
