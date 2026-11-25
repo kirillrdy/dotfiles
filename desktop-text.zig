@@ -1,8 +1,9 @@
-//! Text layout into grayscale glyph masks. fontconfig selects fonts and
+//! Text layout into grayscale glyph masks. desktop-fonts.zig selects fonts and
 //! fallbacks, HarfBuzz shapes and FreeType rasterizes; markup, bidi ordering,
 //! line breaking, ellipsis and alignment are handled here, without Pango.
 const std = @import("std");
 const t = @import("text-c");
+const fonts = @import("desktop-fonts.zig");
 
 pub const Mask = struct {
     pixels: []u8,
@@ -31,33 +32,28 @@ pub fn paintMask(canvas: @import("desktop-raster.zig").Canvas, value: ?Mask, x: 
     if (value) |mask| mask.paint(canvas, x, y, color);
 }
 
-const load_target_light: i32 = 1 << 16;
-const load_no_hinting: i32 = 1 << 1;
-const load_force_autohint: i32 = 1 << 5;
-const load_no_bitmap: i32 = 1 << 3;
+/// Slight hinting with the light hinter and outlines only, as fontconfig's
+/// NixOS defaults and Pango load glyphs.
+const load_flags: i32 = (1 << 16) | (1 << 3);
 
 fn tag(comptime s: *const [4]u8) c_ulong {
     return (@as(c_ulong, s[0]) << 24) | (@as(c_ulong, s[1]) << 16) | (@as(c_ulong, s[2]) << 8) | s[3];
 }
 
-/// A loaded face from a fontconfig match.
+/// A loaded face from a font match.
 const Face = struct {
     face: t.FT_Face,
     hb: *t.hb_font_t,
-    charset: ?*t.FcCharSet,
-    load_flags: i32,
     embolden: bool,
     /// Axis indexes for automatic variations, when the face is variable.
     axes: [8]c_ulong = @splat(0),
     defaults: [8]t.FT_Fixed = @splat(0),
     axis_count: u32 = 0,
-    named: bool,
     size: f64 = 0,
     points: f64 = 0,
     weight: f64 = 0,
 
     fn has(self: *const Face, codepoint: u21) bool {
-        if (self.charset) |set| return t.FcCharSetHasChar(set, codepoint) != 0;
         return t.FT_Get_Char_Index(self.face, codepoint) != 0;
     }
 
@@ -73,7 +69,7 @@ const Face = struct {
             for (0..self.axis_count) |i| {
                 coords[i] = self.defaults[i];
                 if (self.axes[i] == tag("opsz")) coords[i] = @intFromFloat(points * 65536);
-                if (self.axes[i] == tag("wght") and !self.named) coords[i] = @intFromFloat(weight * 65536);
+                if (self.axes[i] == tag("wght")) coords[i] = @intFromFloat(weight * 65536);
             }
             _ = t.FT_Set_Var_Design_Coordinates(self.face, self.axis_count, &coords);
         }
@@ -98,10 +94,12 @@ const Face = struct {
     }
 };
 
-/// The fontconfig fallback list for one family, weight and slant.
+/// The fallback list for one family, weight and slant.
 const Family = struct {
-    set: [*c]t.FcFontSet,
+    matches: []const fonts.Match,
     faces: []?*Face,
+    /// Faces that failed to load are not retried.
+    failed: []bool,
     weight: f64,
 };
 
@@ -110,7 +108,6 @@ const GlyphKey = struct { face: *Face, glyph: u32, size: u32, points: u32, weigh
 
 pub const Renderer = struct {
     library: t.FT_Library = null,
-    config: ?*t.FcConfig = null,
     families: std.StringHashMapUnmanaged(*Family) = .empty,
     glyphs: std.AutoHashMapUnmanaged(GlyphKey, Bitmap) = .empty,
     arena: ?std.heap.ArenaAllocator = null,
@@ -122,10 +119,8 @@ pub const Renderer = struct {
                 t.hb_font_destroy(loaded.hb);
                 _ = t.FT_Done_Face(loaded.face);
             };
-            t.FcFontSetDestroy(owner.*.set);
         }
         if (self.library) |library| _ = t.FT_Done_FreeType(library);
-        if (self.config) |config| t.FcConfigDestroy(config);
         if (self.arena) |*arena| arena.deinit();
         self.* = .{};
     }
@@ -152,82 +147,35 @@ pub const Renderer = struct {
         var library: t.FT_Library = null;
         if (t.FT_Init_FreeType(&library) != 0) return error.FontMap;
         self.library = library;
-        // Share the process-wide configuration instead of rescanning fonts per renderer.
-        if (t.FcInit() == 0) return error.FontMap;
-        self.config = t.FcConfigReference(null) orelse return error.FontMap;
     }
 
     fn family(self: *Renderer, description: Description) !*Family {
         const a = self.arena.?.allocator();
         const key = try std.fmt.allocPrint(a, "{s}|{d}|{}", .{ description.family, description.weight, description.italic });
         if (self.families.get(key)) |existing| return existing;
-        const pattern = t.FcPatternCreate() orelse return error.FontMap;
-        defer t.FcPatternDestroy(pattern);
-        var names = std.mem.splitScalar(u8, description.family, ',');
-        while (names.next()) |raw| {
-            const name = std.mem.trim(u8, raw, " ");
-            if (name.len == 0) continue;
-            const z = try a.dupeSentinel(u8, name, 0);
-            _ = t.FcPatternAddString(pattern, "family", z.ptr);
-        }
-        _ = t.FcPatternAddDouble(pattern, "weight", t.FcWeightFromOpenTypeDouble(description.weight));
-        _ = t.FcPatternAddInteger(pattern, "slant", if (description.italic) 100 else 0);
-        _ = t.FcConfigSubstitute(self.config, pattern, t.FcMatchPattern);
-        t.FcDefaultSubstitute(pattern);
-        var result: t.FcResult = undefined;
-        const sorted = t.FcFontSort(self.config, pattern, 1, null, &result);
-        if (sorted == null or sorted.*.nfont == 0) return error.FontMap;
-        // Render-prepared patterns carry hinting and embolden settings.
-        const set = t.FcFontSetCreate() orelse return error.FontMap;
-        for (0..@intCast(sorted.*.nfont)) |i| {
-            if (t.FcFontRenderPrepare(self.config, pattern, sorted.*.fonts[i])) |prepared| _ = t.FcFontSetAdd(set, prepared);
-        }
-        t.FcFontSetDestroy(sorted);
+        const matches = try fonts.sort(a, fonts.catalog(), description.family, description.weight, description.italic);
+        if (matches.len == 0) return error.FontMap;
         const value = try a.create(Family);
-        value.* = .{ .set = set, .faces = try a.alloc(?*Face, @intCast(set.*.nfont)), .weight = description.weight };
+        value.* = .{ .matches = matches, .faces = try a.alloc(?*Face, matches.len), .failed = try a.alloc(bool, matches.len), .weight = description.weight };
         @memset(value.faces, null);
+        @memset(value.failed, false);
         try self.families.put(a, key, value);
         return value;
     }
 
     fn face(self: *Renderer, owner: *Family, index: usize) ?*Face {
         if (owner.faces[index]) |existing| return existing;
-        const pattern = owner.set.*.fonts[index];
-        var file: [*c]u8 = null;
-        if (t.FcPatternGetString(pattern, "file", 0, &file) != t.FcResultMatch) return null;
-        var face_index: c_int = 0;
-        _ = t.FcPatternGetInteger(pattern, "index", 0, &face_index);
-        var scalable: t.FcBool = 1;
-        _ = t.FcPatternGetBool(pattern, "scalable", 0, &scalable);
-        if (scalable == 0) return null;
+        if (owner.failed[index]) return null;
+        owner.failed[index] = true;
+        const match = owner.matches[index];
         var ft_face: t.FT_Face = null;
-        if (t.FT_New_Face(self.library, file, face_index, &ft_face) != 0) return null;
+        if (t.FT_New_Face(self.library, match.font.path, match.font.index, &ft_face) != 0) return null;
         const hb = t.hb_ft_font_create_referenced(ft_face) orelse {
             _ = t.FT_Done_Face(ft_face);
             return null;
         };
-        var charset: ?*t.FcCharSet = null;
-        _ = t.FcPatternGetCharSet(pattern, "charset", 0, &charset);
-        var antialias: t.FcBool = 1;
-        var hinting: t.FcBool = 1;
-        var autohint: t.FcBool = 0;
-        var embolden: t.FcBool = 0;
-        var hintstyle: c_int = 1;
-        _ = t.FcPatternGetBool(pattern, "antialias", 0, &antialias);
-        _ = t.FcPatternGetBool(pattern, "hinting", 0, &hinting);
-        _ = t.FcPatternGetBool(pattern, "autohint", 0, &autohint);
-        _ = t.FcPatternGetBool(pattern, "embolden", 0, &embolden);
-        _ = t.FcPatternGetInteger(pattern, "hintstyle", 0, &hintstyle);
-        // Match Pango's FreeType loading: slight hinting targets the light hinter.
-        var flags: i32 = load_no_bitmap;
-        if (hinting == 0 or hintstyle == 0) {
-            flags |= load_no_hinting;
-        } else if (hintstyle == 1) {
-            flags |= load_target_light;
-        }
-        if (autohint != 0) flags |= load_force_autohint;
         const value = self.arena.?.allocator().create(Face) catch return null;
-        value.* = .{ .face = ft_face, .hb = hb, .charset = charset, .load_flags = flags, .embolden = embolden != 0, .named = (face_index >> 16) != 0 };
+        value.* = .{ .face = ft_face, .hb = hb, .embolden = match.embolden };
         if ((ft_face.*.face_flags & (@as(c_long, 1) << 8)) != 0) {
             var mm: [*c]t.FT_MM_Var = null;
             if (t.FT_Get_MM_Var(ft_face, &mm) == 0) {
@@ -260,7 +208,7 @@ pub const Renderer = struct {
     fn glyph(self: *Renderer, owner: *Face, id: u32) ?Bitmap {
         const key: GlyphKey = .{ .face = owner, .glyph = id, .size = @intFromFloat(owner.size * 64), .points = @intFromFloat(owner.points * 64), .weight = @intFromFloat(owner.weight) };
         if (self.glyphs.get(key)) |cached| return cached;
-        if (t.FT_Load_Glyph(owner.face, id, owner.load_flags) != 0) return null;
+        if (t.FT_Load_Glyph(owner.face, id, load_flags) != 0) return null;
         const slot = owner.face.*.glyph;
         if (owner.embolden) t.FT_GlyphSlot_Embolden(slot);
         if (t.FT_Render_Glyph(slot, t.FT_RENDER_MODE_NORMAL) != 0) return null;

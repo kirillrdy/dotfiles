@@ -17,8 +17,8 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     // Wayland clients use the native wire runtime; only the compositor links libwayland (server).
-    for ([_][]const u8{ "libpipewire-0.3", "pam", "xkbcommon", "freetype2", "harfbuzz", "fontconfig" }) |name| desktop.linkSystemLibrary(name, .{});
-    const text_c = bindings(b, target, optimize, "#include <ft2build.h>\n#include FT_FREETYPE_H\n#include FT_MULTIPLE_MASTERS_H\n#include FT_SYNTHESIS_H\n#include <hb.h>\n#include <hb-ft.h>\n#include <fontconfig/fontconfig.h>\n", &.{ "freetype2", "harfbuzz", "fontconfig" });
+    for ([_][]const u8{ "libpipewire-0.3", "pam", "xkbcommon", "freetype2", "harfbuzz" }) |name| desktop.linkSystemLibrary(name, .{});
+    const text_c = bindings(b, target, optimize, "#include <ft2build.h>\n#include FT_FREETYPE_H\n#include FT_MULTIPLE_MASTERS_H\n#include FT_SYNTHESIS_H\n#include <hb.h>\n#include <hb-ft.h>\n#include FT_TRUETYPE_TABLES_H\n#include FT_SFNT_NAMES_H\n", &.{ "freetype2", "harfbuzz" });
     desktop.addImport("text-c", text_c);
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
     const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";

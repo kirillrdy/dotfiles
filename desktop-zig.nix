@@ -90,8 +90,7 @@ pkgs.stdenv.mkDerivation {
   # Case folding and normalization tables are generated from the UCD at build time.
   UNICODE_DATA_DIR = "${pkgs.unicode-character-database}/share/unicode";
   buildInputs = [
-    # Text: fontconfig matching, HarfBuzz shaping and FreeType rasterization.
-    pkgs.fontconfig
+    # Text: HarfBuzz shaping and FreeType rasterization; font matching is native.
     pkgs.freetype
     pkgs.harfbuzz
     pkgs.wayland
