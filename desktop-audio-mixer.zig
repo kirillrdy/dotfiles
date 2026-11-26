@@ -1,6 +1,6 @@
 //! Audio control through cached PipeWire Props and device Route parameters.
 const std = @import("std");
-const p = @import("pipewire");
+const p = @import("desktop-spa.zig");
 const Pod = @import("desktop-audio-pod.zig");
 const Registry = @import("desktop-audio-registry.zig").Registry;
 const Object = @import("desktop-audio-registry.zig").Object;
@@ -154,8 +154,13 @@ test "Props and saved device Route parameters carry cubic channel levels and mut
 }
 
 test "native reader accepts scalar-only Props from C layouts" {
-    const Scalar = extern struct { property: p.spa_pod_prop, value: u32, padding: u32 = 0 };
-    const Props = extern struct { header: p.spa_pod, body: p.spa_pod_object_body, volume: Scalar, mute: Scalar };
+    // spa_pod, spa_pod_object_body and spa_pod_prop as laid out in the SPA headers.
+    const Header = extern struct { size: u32, type: u32 };
+    const Body = extern struct { type: u32, id: u32 };
+    const Prop = extern struct { key: u32, flags: u32, value: Header };
+    const ObjectHeader = extern struct { header: Header, body: Body };
+    const Scalar = extern struct { property: Prop, value: u32, padding: u32 = 0 };
+    const Props = extern struct { header: Header, body: Body, volume: Scalar, mute: Scalar };
     var props: Props = .{
         .header = .{ .size = @sizeOf(Props) - 8, .type = p.SPA_TYPE_Object },
         .body = .{ .type = p.SPA_TYPE_OBJECT_Props, .id = p.SPA_PARAM_Props },
@@ -169,9 +174,9 @@ test "native reader accepts scalar-only Props from C layouts" {
     try std.testing.expect(control.muted);
     var buffer: Parameter = .{};
     const written = control.parameter(&buffer, 75, false).?;
-    const raw: *const p.spa_pod_object = @ptrCast(@alignCast(written.bytes.ptr));
+    const raw: *const ObjectHeader = @ptrCast(@alignCast(written.bytes.ptr));
     try std.testing.expectEqual(@as(u32, p.SPA_TYPE_OBJECT_Props), raw.body.type);
-    const field: *const Scalar = @ptrCast(@alignCast(written.bytes[@sizeOf(p.spa_pod_object)..].ptr));
+    const field: *const Scalar = @ptrCast(@alignCast(written.bytes[@sizeOf(ObjectHeader)..].ptr));
     try std.testing.expectEqual(@as(u32, p.SPA_PROP_volume), field.property.key);
     try std.testing.expectEqual(@as(u32, p.SPA_TYPE_Float), field.property.value.type);
     try std.testing.expectApproxEqAbs(@as(f32, 0.421875), @as(f32, @bitCast(field.value)), 0.000001);

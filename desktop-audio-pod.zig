@@ -1,6 +1,6 @@
 //! Bounded SPA parameter decoding and fixed-buffer encoding in native byte order.
 const std = @import("std");
-const p = @import("pipewire");
+const p = @import("desktop-spa.zig");
 const endian = @import("builtin").cpu.arch.endian();
 pub const Error = error{ InvalidPod, WrongPodType, BufferTooSmall };
 fn word(bytes: []const u8) u32 {
@@ -177,9 +177,9 @@ test "SPA flags choice encodes choice header, Int child, and mask value" {
     const object = try builder.view().object(p.SPA_TYPE_OBJECT_ParamBuffers);
     const prop = object.property(p.SPA_PARAM_BUFFERS_dataType).?;
     try std.testing.expectEqual(@as(u32, p.SPA_TYPE_Choice), prop.kind());
-    const choice: *const p.spa_pod_choice = @ptrCast(@alignCast(prop.bytes.ptr));
-    try std.testing.expectEqual(@as(u32, p.SPA_CHOICE_Flags), choice.body.type);
-    try std.testing.expectEqual(@as(u32, p.SPA_TYPE_Int), choice.body.child.type);
-    try std.testing.expectEqual(@as(u32, 4), choice.body.child.size);
+    // spa_pod_choice_body: choice type, flags, then the child {size, type}.
+    try std.testing.expectEqual(@as(u32, p.SPA_CHOICE_Flags), word(prop.bytes[8..]));
+    try std.testing.expectEqual(@as(u32, 4), word(prop.bytes[16..]));
+    try std.testing.expectEqual(@as(u32, p.SPA_TYPE_Int), word(prop.bytes[20..]));
     try std.testing.expectEqual(@as(i32, 1 << p.SPA_DATA_MemFd), @as(i32, @bitCast(word(prop.bytes[24..]))));
 }

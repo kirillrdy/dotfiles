@@ -1,106 +1,158 @@
-//! PipeWire registry, parameter cache and round trips on the GLib main thread.
+//! PipeWire registry, parameter cache and round trips on the main thread,
+//! over the native protocol client in desktop-pipewire.zig.
 const std = @import("std");
 const mainloop = @import("desktop-loop.zig");
-const util = @import("desktop-util.zig");
-const p = @import("pipewire");
+const spa = @import("desktop-spa.zig");
+const wire = @import("desktop-pipewire.zig");
 const Pod = @import("desktop-audio-pod.zig");
 const defaults = @import("desktop-audio-defaults.zig");
-var initialized = false;
-const cast = util.cast;
-fn iface(object: anytype) *p.spa_interface {
-    return cast(p.spa_interface, object);
-}
-fn methods(comptime T: type, object: anytype) *const T {
-    return @ptrCast(@alignCast(iface(object).cb.funcs));
-}
-fn text(value: [*c]const u8) ?[]const u8 {
-    return if (value == null) null else std.mem.span(value);
-}
-fn eq(left: [*c]const u8, right: []const u8) bool {
-    return left != null and std.mem.eql(u8, std.mem.span(left), right);
-}
-fn unhook(hook: *p.spa_hook) void {
-    if (hook.link.next != null and hook.link.prev != null) p.spa_hook_remove(hook);
-    hook.* = std.mem.zeroes(p.spa_hook);
-}
+
 pub const Kind = enum { node, device, metadata };
 pub const Param = struct { index: u32, bytes: []u8 };
+pub const ParamInfo = struct { id: u32, flags: u32 };
+
+/// Global properties, updated from info events; a null value removes a key.
+pub const Properties = struct {
+    entries: std.ArrayList(struct { key: [:0]u8, value: [:0]u8 }) = .empty,
+
+    fn get(self: *const Properties, key: []const u8) ?[:0]const u8 {
+        for (self.entries.items) |entry| if (std.mem.eql(u8, entry.key, key)) return entry.value;
+        return null;
+    }
+    fn update(self: *Properties, a: std.mem.Allocator, dict: *wire.Dict) !void {
+        while (try dict.next()) |item| {
+            const existing = for (self.entries.items, 0..) |entry, i| {
+                if (std.mem.eql(u8, entry.key, item.key)) break i;
+            } else null;
+            if (item.value) |value| {
+                const copy = try a.dupeSentinel(u8, value, 0);
+                if (existing) |i| {
+                    a.free(self.entries.items[i].value);
+                    self.entries.items[i].value = copy;
+                } else {
+                    errdefer a.free(copy);
+                    if (self.entries.items.len >= 1024) return error.Protocol;
+                    const key = try a.dupeSentinel(u8, item.key, 0);
+                    errdefer a.free(key);
+                    try self.entries.append(a, .{ .key = key, .value = copy });
+                }
+            } else if (existing) |i| {
+                const entry = self.entries.orderedRemove(i);
+                a.free(entry.key);
+                a.free(entry.value);
+            }
+        }
+    }
+    fn deinit(self: *Properties, a: std.mem.Allocator) void {
+        for (self.entries.items) |entry| {
+            a.free(entry.key);
+            a.free(entry.value);
+        }
+        self.entries.deinit(a);
+    }
+};
+
 pub const Object = struct {
     allocator: std.mem.Allocator,
     registry: *Registry,
     id: u32,
     kind: Kind,
-    proxy: *anyopaque,
-    hook: p.spa_hook = std.mem.zeroes(p.spa_hook),
-    properties: *p.pw_properties,
+    proxy: u32,
+    properties: Properties = .{},
     params: std.ArrayList(Param) = .empty,
     param_flags: ?u32 = null,
     names: defaults.Defaults = .{},
     running: bool = false,
 
     pub fn property(self: *const Object, key: [*:0]const u8) [*c]const u8 {
-        return p.pw_properties_get(self.properties, key);
+        return if (self.properties.get(std.mem.span(key))) |value| value.ptr else null;
+    }
+    fn paramId(self: *const Object) u32 {
+        return if (self.kind == .device) spa.SPA_PARAM_Route else spa.SPA_PARAM_Props;
     }
     fn clearParams(self: *Object) void {
         for (self.params.items) |param| self.allocator.free(param.bytes);
         self.params.clearRetainingCapacity();
     }
     fn destroy(self: *Object) void {
-        unhook(&self.hook);
-        p.pw_proxy_destroy(@ptrCast(self.proxy));
-        p.pw_properties_free(self.properties);
+        self.properties.deinit(self.allocator);
         self.clearParams();
         self.params.deinit(self.allocator);
         self.names.deinit(self.allocator);
         self.allocator.destroy(self);
     }
     pub fn set(self: *Object, value: Pod.View) bool {
-        const raw: *const p.spa_pod = @ptrCast(@alignCast(value.bytes.ptr));
-        const id: u32 = if (self.kind == .device) p.SPA_PARAM_Route else p.SPA_PARAM_Props;
-        return if (self.kind == .device)
-            methods(p.pw_device_methods, self.proxy).set_param.?(iface(self.proxy).cb.data, id, 0, raw) >= 0
-        else
-            methods(p.pw_node_methods, self.proxy).set_param.?(iface(self.proxy).cb.data, id, 0, raw) >= 0;
+        const connection = self.registry.connection orelse return false;
+        const message = connection.begin();
+        message.id(self.paramId());
+        message.int(0);
+        message.pod(value.bytes);
+        _ = connection.end(self.proxy, if (self.kind == .device) spa.PW_DEVICE_METHOD_SET_PARAM else spa.PW_NODE_METHOD_SET_PARAM) catch return false;
+        return true;
     }
     fn enumParams(self: *Object) void {
-        const id: u32 = if (self.kind == .device) p.SPA_PARAM_Route else p.SPA_PARAM_Props;
-        if (self.kind == .device)
-            _ = methods(p.pw_device_methods, self.proxy).enum_params.?(iface(self.proxy).cb.data, 0, id, 0, std.math.maxInt(u32), null)
-        else
-            _ = methods(p.pw_node_methods, self.proxy).enum_params.?(iface(self.proxy).cb.data, 0, id, 0, std.math.maxInt(u32), null);
+        const connection = self.registry.connection orelse return;
+        const message = connection.begin();
+        message.int(0);
+        message.id(self.paramId());
+        message.int(0);
+        message.int(std.math.maxInt(i32));
+        message.none();
+        // Node and device share the enum_params opcode.
+        _ = connection.end(self.proxy, spa.PW_NODE_METHOD_ENUM_PARAMS) catch self.registry.fail();
     }
-    fn nodeInfo(data: ?*anyopaque, info: [*c]const p.pw_node_info) callconv(.c) void {
-        const self = cast(Object, data);
-        if (info.*.change_mask & p.PW_NODE_CHANGE_MASK_STATE != 0) self.running = info.*.state == p.PW_NODE_STATE_RUNNING;
-        if (info.*.props != null) _ = p.pw_properties_update(self.properties, info.*.props);
-        if (info.*.change_mask & p.PW_NODE_CHANGE_MASK_PARAMS != 0 and self.changedParams(info.*.params, info.*.n_params)) self.enumParams();
+    fn info(self: *Object, body: *wire.Reader) wire.Error!void {
+        var mask: u64 = undefined;
+        var props_bit: u64 = undefined;
+        var params_bit: u64 = undefined;
+        if (self.kind == .node) {
+            _ = try body.uint(); // id
+            _ = try body.int(); // max input ports
+            _ = try body.int(); // max output ports
+            mask = @bitCast(try body.long());
+            _ = try body.int(); // input ports
+            _ = try body.int(); // output ports
+            const state: i32 = @bitCast(try body.id());
+            _ = try body.string(); // error
+            if (mask & spa.PW_NODE_CHANGE_MASK_STATE != 0) self.running = state == spa.PW_NODE_STATE_RUNNING;
+            props_bit = spa.PW_NODE_CHANGE_MASK_PROPS;
+            params_bit = spa.PW_NODE_CHANGE_MASK_PARAMS;
+        } else {
+            _ = try body.uint(); // id
+            mask = @bitCast(try body.long());
+            props_bit = spa.PW_DEVICE_CHANGE_MASK_PROPS;
+            params_bit = spa.PW_DEVICE_CHANGE_MASK_PARAMS;
+        }
+        var dict = try body.dict();
+        if (mask & props_bit != 0) self.properties.update(self.allocator, &dict) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Protocol;
+        var params = try body.structure();
+        const count = try params.int();
+        if (count < 0 or count > 256) return error.Protocol;
+        var infos: [256]ParamInfo = undefined;
+        for (infos[0..@intCast(count)]) |*entry| entry.* = .{ .id = try params.id(), .flags = try params.uint() };
+        if (mask & params_bit != 0 and self.changedParams(infos[0..@intCast(count)])) self.enumParams();
         self.registry.changed();
     }
-    fn deviceInfo(data: ?*anyopaque, info: [*c]const p.pw_device_info) callconv(.c) void {
-        const self = cast(Object, data);
-        if (info.*.props != null) _ = p.pw_properties_update(self.properties, info.*.props);
-        if (info.*.change_mask & p.PW_DEVICE_CHANGE_MASK_PARAMS != 0 and self.changedParams(info.*.params, info.*.n_params)) self.enumParams();
-        self.registry.changed();
-    }
-    fn changedParams(self: *Object, params: [*c]const p.spa_param_info, count: u32) bool {
+    fn changedParams(self: *Object, params: []const ParamInfo) bool {
         var flags: ?u32 = null;
-        for (0..count) |i| if (params[i].id == @as(u32, if (self.kind == .device) p.SPA_PARAM_Route else p.SPA_PARAM_Props)) {
-            flags = params[i].flags;
+        for (params) |param| if (param.id == self.paramId()) {
+            flags = param.flags;
             break;
         };
         const changed = self.param_flags != flags;
         if (changed) self.clearParams();
         self.param_flags = flags;
-        return changed and flags != null and (flags.? & p.SPA_PARAM_INFO_READ) != 0;
+        return changed and flags != null and (flags.? & spa.SPA_PARAM_INFO_READ) != 0;
     }
-    fn parameter(data: ?*anyopaque, _: c_int, id: u32, index: u32, _: u32, pod: [*c]const p.spa_pod) callconv(.c) void {
-        const self = cast(Object, data);
-        if (pod == null or pod.*.size > 1024 * 1024 - 8) return;
-        if (id != @as(u32, if (self.kind == .device) p.SPA_PARAM_Route else p.SPA_PARAM_Props)) return;
-        const bytes: [*]const u8 = @ptrCast(pod);
-        const length = @sizeOf(p.spa_pod) + @as(usize, pod.*.size);
-        _ = Pod.View.init(bytes[0..length]) catch return;
-        const copy = self.allocator.dupe(u8, bytes[0..length]) catch return;
+    fn parameter(self: *Object, body: *wire.Reader) wire.Error!void {
+        _ = try body.int(); // seq
+        const id = try body.id();
+        const index = try body.uint();
+        _ = try body.uint(); // next
+        const pod = try body.raw();
+        if (id != self.paramId() or pod.len > 1024 * 1024) return;
+        _ = Pod.View.init(pod) catch return;
+        const copy = try self.allocator.dupe(u8, pod);
         for (self.params.items) |*param| if (param.index == index) {
             self.allocator.free(param.bytes);
             param.bytes = copy;
@@ -113,84 +165,79 @@ pub const Object = struct {
         }
         self.params.append(self.allocator, .{ .index = index, .bytes = copy }) catch {
             self.allocator.free(copy);
-            return;
+            return error.OutOfMemory;
         };
         self.registry.changed();
     }
-    fn metadata(data: ?*anyopaque, subject: u32, key: [*c]const u8, kind: [*c]const u8, value: [*c]const u8) callconv(.c) c_int {
-        const self = cast(Object, data);
-        if (self.names.update(self.allocator, subject, text(key), text(kind), text(value))) self.registry.changed();
-        return 0;
+    fn metadata(self: *Object, body: *wire.Reader) wire.Error!void {
+        const subject = try body.uint();
+        const key = try body.string();
+        const kind = try body.string();
+        const value = try body.string();
+        if (self.names.update(self.allocator, subject, key, kind, value)) self.registry.changed();
+    }
+    fn event(self: *Object, opcode: u8, body: *wire.Reader) wire.Error!void {
+        switch (self.kind) {
+            .node, .device => switch (opcode) {
+                spa.PW_NODE_EVENT_INFO => try self.info(body),
+                spa.PW_NODE_EVENT_PARAM => try self.parameter(body),
+                else => {},
+            },
+            .metadata => if (opcode == spa.PW_METADATA_EVENT_PROPERTY) try self.metadata(body),
+        }
     }
 };
-const node_events: p.pw_node_events = .{ .version = p.PW_VERSION_NODE_EVENTS, .info = &Object.nodeInfo, .param = &Object.parameter };
-const device_events: p.pw_device_events = .{ .version = p.PW_VERSION_DEVICE_EVENTS, .info = &Object.deviceInfo, .param = &Object.parameter };
-const metadata_events: p.pw_metadata_events = .{ .version = p.PW_VERSION_METADATA_EVENTS, .property = &Object.metadata };
+
 pub const Registry = struct {
     allocator: std.mem.Allocator,
     callback: *const fn (?*anyopaque) void,
     data: ?*anyopaque,
-    loop: *p.pw_loop,
-    context: ?*p.pw_context = null,
-    core: ?*p.pw_core = null,
-    proxy: ?*p.pw_registry = null,
-    core_hook: p.spa_hook = std.mem.zeroes(p.spa_hook),
-    registry_hook: p.spa_hook = std.mem.zeroes(p.spa_hook),
+    connection: ?*wire.Connection = null,
+    proxy: u32 = 0,
     objects: std.ArrayList(*Object) = .empty,
     barriers: std.ArrayList(struct { sequence: c_int, ticket: u64 }) = .empty,
     next_ticket: u64 = 0,
     completed: u64 = 0,
     initial: u64 = 0,
     source: u32 = 0,
-    sequence: c_int = 0,
     ready: bool = false,
     failed: bool = false,
+
     pub fn create(a: std.mem.Allocator, callback: *const fn (?*anyopaque) void, data: ?*anyopaque) !*Registry {
-        if (!initialized) {
-            p.pw_init(null, null);
-            initialized = true;
-        }
         const self = try a.create(Registry);
-        errdefer a.destroy(self);
-        const loop = p.pw_loop_new(null) orelse return error.AudioLoopUnavailable;
-        self.* = .{ .allocator = a, .callback = callback, .data = data, .loop = loop };
-        const control = loop.*.control;
-        methods(p.spa_loop_control_methods, control).enter.?(iface(control).cb.data);
-        errdefer self.deinit();
-        self.context = p.pw_context_new(loop, null, 0) orelse return error.AudioContextUnavailable;
-        self.core = p.pw_context_connect(self.context, null, 0) orelse return error.AudioDisconnected;
-        _ = methods(p.pw_core_methods, self.core).add_listener.?(iface(self.core).cb.data, &self.core_hook, &core_events, self);
-        self.proxy = methods(p.pw_core_methods, self.core).get_registry.?(iface(self.core).cb.data, p.PW_VERSION_REGISTRY, 0) orelse return error.AudioRegistryUnavailable;
-        _ = methods(p.pw_registry_methods, self.proxy).add_listener.?(iface(self.proxy).cb.data, &self.registry_hook, &registry_events, self);
+        self.* = .{ .allocator = a, .callback = callback, .data = data };
+        errdefer self.destroy();
+        const connection = wire.Connection.connect(a, &.{ .{ "application.name", "desktop-zig" }, .{ "media.category", "Manager" } }) catch return error.AudioDisconnected;
+        self.connection = connection;
+        self.proxy = connection.newId();
+        const message = connection.begin();
+        message.int(spa.PW_VERSION_REGISTRY);
+        message.uint(self.proxy);
+        _ = connection.end(spa.PW_ID_CORE, spa.PW_CORE_METHOD_GET_REGISTRY) catch return error.AudioRegistryUnavailable;
         self.initial = self.sync() orelse return error.AudioSyncFailed;
-        const fd = methods(p.spa_loop_control_methods, control).get_fd.?(iface(control).cb.data);
-        if (fd < 0) return error.AudioLoopUnavailable;
-        self.source = mainloop.watch(fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
+        self.source = mainloop.watch(connection.fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
         return self;
     }
-    fn deinit(self: *Registry) void {
+    pub fn destroy(self: *Registry) void {
         if (self.source != 0) _ = mainloop.remove(self.source);
         for (self.objects.items) |object| object.destroy();
         self.objects.deinit(self.allocator);
         self.barriers.deinit(self.allocator);
-        unhook(&self.registry_hook);
-        if (self.proxy) |proxy| p.pw_proxy_destroy(@ptrCast(proxy));
-        unhook(&self.core_hook);
-        if (self.core) |core| _ = p.pw_core_disconnect(core);
-        if (self.context) |context| p.pw_context_destroy(context);
-        const control = self.loop.*.control;
-        methods(p.spa_loop_control_methods, control).leave.?(iface(control).cb.data);
-        p.pw_loop_destroy(self.loop);
-    }
-    pub fn destroy(self: *Registry) void {
-        self.deinit();
+        if (self.connection) |connection| connection.destroy();
         self.allocator.destroy(self);
     }
     fn changed(self: *Registry) void {
         self.callback(self.data);
     }
+    fn fail(self: *Registry) void {
+        self.failed = true;
+    }
     pub fn find(self: *Registry, id: u32) ?*Object {
         for (self.objects.items) |object| if (object.id == id) return object;
+        return null;
+    }
+    fn byProxy(self: *Registry, proxy: u32) ?*Object {
+        for (self.objects.items) |object| if (object.proxy == proxy) return object;
         return null;
     }
     pub fn defaultName(self: *Registry, output: bool) ?[]const u8 {
@@ -200,25 +247,37 @@ pub const Registry = struct {
         return null;
     }
     pub fn setDefault(self: *Registry, output: bool, name: []const u8) bool {
+        const connection = self.connection orelse return false;
         for (self.objects.items) |object| if (object.kind == .metadata) {
             const json = defaults.encode(self.allocator, name) catch return false;
             defer self.allocator.free(json);
-            return methods(p.pw_metadata_methods, object.proxy).set_property.?(iface(object.proxy).cb.data, 0, if (output) "default.configured.audio.sink" else "default.configured.audio.source", "Spa:String:JSON", json) >= 0;
+            const message = connection.begin();
+            message.int(0);
+            message.string(if (output) "default.configured.audio.sink" else "default.configured.audio.source");
+            message.string("Spa:String:JSON");
+            message.string(json);
+            _ = connection.end(object.proxy, spa.PW_METADATA_METHOD_SET_PROPERTY) catch return false;
+            return true;
         };
         return false;
     }
+    /// Starts a round trip; the ticket completes once every earlier request is processed.
     pub fn sync(self: *Registry) ?u64 {
-        const core = self.core orelse return null;
-        const sequence = methods(p.pw_core_methods, core).sync.?(iface(core).cb.data, p.PW_ID_CORE, self.sequence);
-        if (sequence < 0) return null;
-        self.sequence = sequence;
+        const connection = self.connection orelse return null;
+        // libpipewire marks sync sequences as asynchronous results.
+        const sequence: c_int = @bitCast(0x40000000 | (connection.sequence & 0x3fffffff));
+        const message = connection.begin();
+        message.int(spa.PW_ID_CORE);
+        message.int(sequence);
+        _ = connection.end(spa.PW_ID_CORE, spa.PW_CORE_METHOD_SYNC) catch return null;
         self.next_ticket += 1;
         self.barriers.append(self.allocator, .{ .sequence = sequence, .ticket = self.next_ticket }) catch return null;
         return self.next_ticket;
     }
     fn dispatch(self: *Registry, _: c_int, condition: u32) bool {
-        const control = self.loop.*.control;
-        if (condition & (mainloop.ERR | mainloop.HUP) != 0 or methods(p.spa_loop_control_methods, control).iterate.?(iface(control).cb.data, 0) < 0) self.failed = true;
+        self.receive(condition) catch {
+            self.failed = true;
+        };
         if (self.failed) {
             self.source = 0;
             self.changed();
@@ -226,9 +285,49 @@ pub const Registry = struct {
         }
         return true;
     }
-    fn done(data: ?*anyopaque, id: u32, sequence: c_int) callconv(.c) void {
-        if (id != p.PW_ID_CORE) return;
-        const self = cast(Registry, data);
+    fn receive(self: *Registry, condition: u32) wire.Error!void {
+        const connection = self.connection.?;
+        try connection.read();
+        while (try connection.next()) |message| {
+            var body = message.body;
+            if (message.id == spa.PW_ID_CORE) {
+                try self.core(message.opcode, &body);
+            } else if (message.id == self.proxy) {
+                try self.registryEvent(message.opcode, &body);
+            } else if (self.byProxy(message.id)) |object| {
+                try object.event(message.opcode, &body);
+            }
+            if (self.failed) return;
+        }
+        if (condition & (mainloop.ERR | mainloop.HUP) != 0) return error.ConnectionClosed;
+    }
+    fn core(self: *Registry, opcode: u8, body: *wire.Reader) wire.Error!void {
+        switch (opcode) {
+            spa.PW_CORE_EVENT_DONE => {
+                const id = try body.uint();
+                self.done(id, try body.int());
+            },
+            spa.PW_CORE_EVENT_PING => {
+                const id = try body.int();
+                const sequence = try body.int();
+                const connection = self.connection.?;
+                const message = connection.begin();
+                message.int(id);
+                message.int(sequence);
+                _ = try connection.end(spa.PW_ID_CORE, spa.PW_CORE_METHOD_PONG);
+            },
+            spa.PW_CORE_EVENT_ERROR => {
+                const id = try body.uint();
+                _ = try body.int(); // seq
+                const res = try body.int();
+                if (id == spa.PW_ID_CORE or res == -32 or res == -104) self.failed = true;
+            },
+            spa.PW_CORE_EVENT_REMOVE_ID => self.connection.?.releaseId(try body.uint()),
+            else => {},
+        }
+    }
+    fn done(self: *Registry, id: u32, sequence: c_int) void {
+        if (id != spa.PW_ID_CORE) return;
         for (self.barriers.items) |barrier| if (barrier.sequence == sequence) {
             self.completed = @max(self.completed, barrier.ticket);
             break;
@@ -242,98 +341,95 @@ pub const Registry = struct {
             self.changed();
         }
     }
-    fn ping(data: ?*anyopaque, id: u32, sequence: c_int) callconv(.c) void {
-        const self = cast(Registry, data);
-        _ = methods(p.pw_core_methods, self.core).pong.?(iface(self.core).cb.data, id, sequence);
-    }
-    fn failure(data: ?*anyopaque, id: u32, _: c_int, res: c_int, _: [*c]const u8) callconv(.c) void {
-        const self = cast(Registry, data);
-        if (id == p.PW_ID_CORE or res == -32 or res == -104) {
-            self.failed = true;
-            self.changed();
+    fn registryEvent(self: *Registry, opcode: u8, body: *wire.Reader) wire.Error!void {
+        switch (opcode) {
+            spa.PW_REGISTRY_EVENT_GLOBAL => {
+                const id = try body.uint();
+                _ = try body.uint(); // permissions
+                const kind_name = try body.string() orelse return error.Protocol;
+                const version = try body.uint();
+                var dict = try body.dict();
+                try self.global(id, kind_name, version, &dict);
+            },
+            spa.PW_REGISTRY_EVENT_GLOBAL_REMOVE => {
+                const id = try body.uint();
+                // The server destroys our proxy and later sends remove_id for it.
+                for (self.objects.items, 0..) |object, index| if (object.id == id) {
+                    _ = self.objects.orderedRemove(index);
+                    object.destroy();
+                    self.changed();
+                    return;
+                };
+            },
+            else => {},
         }
     }
-    fn global(data: ?*anyopaque, id: u32, _: u32, kind_name: [*c]const u8, version: u32, properties: [*c]const p.spa_dict) callconv(.c) void {
-        const self = cast(Registry, data);
-        const kind: Kind = if (eq(kind_name, p.PW_TYPE_INTERFACE_Node)) .node else if (eq(kind_name, p.PW_TYPE_INTERFACE_Device)) .device else if (eq(kind_name, p.PW_TYPE_INTERFACE_Metadata)) .metadata else return;
-        const props = p.pw_properties_new_dict(properties) orelse return;
-        if (self.objects.items.len >= 4096 or (kind == .metadata and !eq(p.pw_properties_get(props, "metadata.name"), "default"))) {
-            p.pw_properties_free(props);
-            return;
-        }
-        const proxy = methods(p.pw_registry_methods, self.proxy).bind.?(iface(self.proxy).cb.data, id, kind_name, @min(version, @as(u32, 3)), 0) orelse {
-            p.pw_properties_free(props);
-            return;
+    fn global(self: *Registry, id: u32, kind_name: []const u8, version: u32, dict: *wire.Dict) wire.Error!void {
+        const kind: Kind = if (std.mem.eql(u8, kind_name, spa.PW_TYPE_INTERFACE_Node)) .node else if (std.mem.eql(u8, kind_name, spa.PW_TYPE_INTERFACE_Device)) .device else if (std.mem.eql(u8, kind_name, spa.PW_TYPE_INTERFACE_Metadata)) .metadata else return;
+        if (self.objects.items.len >= 4096) return;
+        const connection = self.connection.?;
+        const object = try self.allocator.create(Object);
+        object.* = .{ .allocator = self.allocator, .registry = self, .id = id, .kind = kind, .proxy = 0 };
+        object.properties.update(self.allocator, dict) catch |err| {
+            object.destroy();
+            return if (err == error.OutOfMemory) error.OutOfMemory else error.Protocol;
         };
-        const object = self.allocator.create(Object) catch {
-            p.pw_proxy_destroy(@ptrCast(proxy));
-            p.pw_properties_free(props);
-            return;
-        };
-        object.* = .{ .allocator = self.allocator, .registry = self, .id = id, .kind = kind, .proxy = proxy, .properties = props };
-        self.objects.append(self.allocator, object) catch {
+        if (kind == .metadata and !std.mem.eql(u8, object.properties.get("metadata.name") orelse "", "default")) {
             object.destroy();
             return;
+        }
+        self.objects.append(self.allocator, object) catch {
+            object.destroy();
+            return error.OutOfMemory;
         };
-        switch (kind) {
-            .node => {
-                _ = methods(p.pw_node_methods, proxy).add_listener.?(iface(proxy).cb.data, &object.hook, &node_events, object);
-                var ids = [_]u32{p.SPA_PARAM_Props};
-                _ = methods(p.pw_node_methods, proxy).subscribe_params.?(iface(proxy).cb.data, &ids, 1);
-            },
-            .device => {
-                _ = methods(p.pw_device_methods, proxy).add_listener.?(iface(proxy).cb.data, &object.hook, &device_events, object);
-                var ids = [_]u32{p.SPA_PARAM_Route};
-                _ = methods(p.pw_device_methods, proxy).subscribe_params.?(iface(proxy).cb.data, &ids, 1);
-            },
-            .metadata => _ = methods(p.pw_metadata_methods, proxy).add_listener.?(iface(proxy).cb.data, &object.hook, &metadata_events, object),
+        object.proxy = connection.newId();
+        var message = connection.begin();
+        message.uint(id);
+        message.string(kind_name);
+        message.uint(@min(version, 3));
+        message.uint(object.proxy);
+        _ = try connection.end(self.proxy, spa.PW_REGISTRY_METHOD_BIND);
+        if (kind != .metadata) {
+            message = connection.begin();
+            message.ids(&.{object.paramId()});
+            // Node and device share the subscribe_params opcode.
+            _ = try connection.end(object.proxy, spa.PW_NODE_METHOD_SUBSCRIBE_PARAMS);
         }
         if (self.sync()) |ticket| {
             if (!self.ready) self.initial = ticket;
         }
         self.changed();
     }
-    fn removed(data: ?*anyopaque, id: u32) callconv(.c) void {
-        const self = cast(Registry, data);
-        for (self.objects.items, 0..) |object, index| if (object.id == id) {
-            _ = self.objects.orderedRemove(index);
-            object.destroy();
-            self.changed();
-            return;
-        };
-    }
 };
-const core_events: p.pw_core_events = .{ .version = p.PW_VERSION_CORE_EVENTS, .done = &Registry.done, .ping = &Registry.ping, .@"error" = &Registry.failure };
-const registry_events: p.pw_registry_events = .{ .version = p.PW_VERSION_REGISTRY_EVENTS, .global = &Registry.global, .global_remove = &Registry.removed };
 
 test "unrelated parameter changes preserve Props while serial changes invalidate it" {
     const a = std.testing.allocator;
-    var object = Object{ .allocator = a, .registry = undefined, .id = 42, .kind = .node, .proxy = undefined, .properties = undefined, .param_flags = p.SPA_PARAM_INFO_READ };
+    var object = Object{ .allocator = a, .registry = undefined, .id = 42, .kind = .node, .proxy = 2, .param_flags = spa.SPA_PARAM_INFO_READ };
     defer object.params.deinit(a);
     defer object.clearParams();
     try object.params.append(a, .{ .index = 0, .bytes = try a.dupe(u8, "cached") });
-    var params = [_]p.spa_param_info{
-        .{ .id = p.SPA_PARAM_Props, .flags = p.SPA_PARAM_INFO_READ },
-        .{ .id = p.SPA_PARAM_Format, .flags = p.SPA_PARAM_INFO_READ | p.SPA_PARAM_INFO_SERIAL },
+    var params = [_]ParamInfo{
+        .{ .id = spa.SPA_PARAM_Props, .flags = spa.SPA_PARAM_INFO_READ },
+        .{ .id = 4, .flags = spa.SPA_PARAM_INFO_READ | spa.SPA_PARAM_INFO_SERIAL },
     };
-    try std.testing.expect(!object.changedParams(&params, params.len));
+    try std.testing.expect(!object.changedParams(&params));
     try std.testing.expectEqual(@as(usize, 1), object.params.items.len);
-    params[0].flags |= p.SPA_PARAM_INFO_SERIAL;
-    try std.testing.expect(object.changedParams(&params, params.len));
+    params[0].flags |= spa.SPA_PARAM_INFO_SERIAL;
+    try std.testing.expect(object.changedParams(&params));
     try std.testing.expectEqual(@as(usize, 0), object.params.items.len);
 }
 test "core barriers complete only matching round trips and release earlier tickets" {
     const a = std.testing.allocator;
-    var registry = Registry{ .allocator = a, .callback = undefined, .data = null, .loop = undefined, .ready = true };
+    var registry = Registry{ .allocator = a, .callback = undefined, .data = null, .ready = true };
     defer registry.barriers.deinit(a);
     try registry.barriers.append(a, .{ .sequence = 100, .ticket = 1 });
     try registry.barriers.append(a, .{ .sequence = 101, .ticket = 2 });
     try registry.barriers.append(a, .{ .sequence = 103, .ticket = 3 });
-    Registry.done(&registry, p.PW_ID_CORE, 99);
+    registry.done(spa.PW_ID_CORE, 99);
     try std.testing.expectEqual(@as(u64, 0), registry.completed);
-    Registry.done(&registry, p.PW_ID_CORE, 101);
+    registry.done(spa.PW_ID_CORE, 101);
     try std.testing.expectEqual(@as(u64, 2), registry.completed);
     try std.testing.expectEqual(@as(usize, 1), registry.barriers.items.len);
-    Registry.done(&registry, p.PW_ID_CORE, 100);
+    registry.done(spa.PW_ID_CORE, 100);
     try std.testing.expectEqual(@as(u64, 2), registry.completed);
 }

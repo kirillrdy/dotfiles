@@ -8,3 +8,7 @@ test "explicit desktop declarations match the installed C ABI" {
 test "explicit PAM declarations match the installed Linux-PAM headers" {
     abi.checkDeclarations(@import("../desktop-pam.zig"), @import("pam-reference"));
 }
+
+test "explicit SPA and PipeWire constants match the installed PipeWire headers" {
+    abi.checkDeclarations(@import("../desktop-spa.zig"), @import("pipewire"));
+}

@@ -1,0 +1,75 @@
+//! SPA and PipeWire protocol constants, declared explicitly. Tests compare them
+//! with the installed PipeWire headers (tests/desktop-libc-abi.zig).
+// POD types.
+pub const SPA_TYPE_None = 1;
+pub const SPA_TYPE_Bool = 2;
+pub const SPA_TYPE_Id = 3;
+pub const SPA_TYPE_Int = 4;
+pub const SPA_TYPE_Long = 5;
+pub const SPA_TYPE_Float = 6;
+pub const SPA_TYPE_String = 8;
+pub const SPA_TYPE_Array = 13;
+pub const SPA_TYPE_Struct = 14;
+pub const SPA_TYPE_Object = 15;
+pub const SPA_TYPE_Fd = 18;
+pub const SPA_TYPE_Choice = 19;
+pub const SPA_TYPE_OBJECT_Props = 0x40002;
+pub const SPA_TYPE_OBJECT_ParamBuffers = 0x40004;
+pub const SPA_TYPE_OBJECT_ParamRoute = 0x40009;
+pub const SPA_CHOICE_Flags = 4;
+// Parameters and their properties.
+pub const SPA_PARAM_Props = 2;
+pub const SPA_PARAM_Buffers = 5;
+pub const SPA_PARAM_Route = 13;
+pub const SPA_PARAM_INFO_SERIAL = 1 << 0;
+pub const SPA_PARAM_INFO_READ = 1 << 1;
+pub const SPA_PROP_volume = 0x10003;
+pub const SPA_PROP_mute = 0x10004;
+pub const SPA_PROP_channelVolumes = 0x10008;
+pub const SPA_PARAM_ROUTE_index = 1;
+pub const SPA_PARAM_ROUTE_device = 3;
+pub const SPA_PARAM_ROUTE_props = 10;
+pub const SPA_PARAM_ROUTE_save = 13;
+pub const SPA_PARAM_BUFFERS_dataType = 6;
+pub const SPA_DATA_MemFd = 2;
+// Objects.
+pub const PW_ID_CORE = 0;
+pub const PW_ID_ANY = 0xffffffff;
+pub const PW_VERSION_CORE = 4;
+pub const PW_VERSION_REGISTRY = 3;
+pub const PW_VERSION_NODE = 3;
+pub const PW_VERSION_DEVICE = 3;
+pub const PW_VERSION_METADATA = 3;
+pub const PW_TYPE_INTERFACE_Node = "PipeWire:Interface:Node";
+pub const PW_TYPE_INTERFACE_Device = "PipeWire:Interface:Device";
+pub const PW_TYPE_INTERFACE_Metadata = "PipeWire:Interface:Metadata";
+pub const PW_NODE_STATE_RUNNING = 3;
+pub const PW_NODE_CHANGE_MASK_STATE = 1 << 2;
+pub const PW_NODE_CHANGE_MASK_PROPS = 1 << 3;
+pub const PW_NODE_CHANGE_MASK_PARAMS = 1 << 4;
+pub const PW_DEVICE_CHANGE_MASK_PROPS = 1 << 0;
+pub const PW_DEVICE_CHANGE_MASK_PARAMS = 1 << 1;
+// Native protocol opcodes.
+pub const PW_CORE_METHOD_HELLO = 1;
+pub const PW_CORE_METHOD_SYNC = 2;
+pub const PW_CORE_METHOD_PONG = 3;
+pub const PW_CORE_METHOD_GET_REGISTRY = 5;
+pub const PW_CORE_EVENT_DONE = 1;
+pub const PW_CORE_EVENT_PING = 2;
+pub const PW_CORE_EVENT_ERROR = 3;
+pub const PW_CORE_EVENT_REMOVE_ID = 4;
+pub const PW_CLIENT_METHOD_UPDATE_PROPERTIES = 2;
+pub const PW_REGISTRY_METHOD_BIND = 1;
+pub const PW_REGISTRY_EVENT_GLOBAL = 0;
+pub const PW_REGISTRY_EVENT_GLOBAL_REMOVE = 1;
+pub const PW_NODE_METHOD_SUBSCRIBE_PARAMS = 1;
+pub const PW_NODE_METHOD_ENUM_PARAMS = 2;
+pub const PW_NODE_METHOD_SET_PARAM = 3;
+pub const PW_NODE_EVENT_INFO = 0;
+pub const PW_NODE_EVENT_PARAM = 1;
+pub const PW_DEVICE_METHOD_SUBSCRIBE_PARAMS = 1;
+pub const PW_DEVICE_METHOD_SET_PARAM = 3;
+pub const PW_DEVICE_EVENT_INFO = 0;
+pub const PW_DEVICE_EVENT_PARAM = 1;
+pub const PW_METADATA_METHOD_SET_PROPERTY = 1;
+pub const PW_METADATA_EVENT_PROPERTY = 0;
