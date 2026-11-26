@@ -51,36 +51,36 @@ fn tag(text: *const [4]u8) u32 {
 }
 
 /// Bounds-checked big-endian reads.
-const Bytes = struct {
+pub const Bytes = struct {
     data: []const u8,
 
-    fn slice(self: Bytes, offset: usize, length: usize) Error![]const u8 {
+    pub fn slice(self: Bytes, offset: usize, length: usize) Error![]const u8 {
         if (offset > self.data.len or length > self.data.len - offset) return error.InvalidFont;
         return self.data[offset..][0..length];
     }
-    fn from(self: Bytes, offset: usize) Error!Bytes {
+    pub fn from(self: Bytes, offset: usize) Error!Bytes {
         if (offset > self.data.len) return error.InvalidFont;
         return .{ .data = self.data[offset..] };
     }
-    fn u8At(self: Bytes, offset: usize) Error!u8 {
+    pub fn u8At(self: Bytes, offset: usize) Error!u8 {
         return (try self.slice(offset, 1))[0];
     }
-    fn u16At(self: Bytes, offset: usize) Error!u16 {
+    pub fn u16At(self: Bytes, offset: usize) Error!u16 {
         return std.mem.readInt(u16, (try self.slice(offset, 2))[0..2], .big);
     }
-    fn i16At(self: Bytes, offset: usize) Error!i16 {
+    pub fn i16At(self: Bytes, offset: usize) Error!i16 {
         return @bitCast(try self.u16At(offset));
     }
-    fn u24At(self: Bytes, offset: usize) Error!u32 {
+    pub fn u24At(self: Bytes, offset: usize) Error!u32 {
         return std.mem.readInt(u24, (try self.slice(offset, 3))[0..3], .big);
     }
-    fn u32At(self: Bytes, offset: usize) Error!u32 {
+    pub fn u32At(self: Bytes, offset: usize) Error!u32 {
         return std.mem.readInt(u32, (try self.slice(offset, 4))[0..4], .big);
     }
-    fn f2dot14(self: Bytes, offset: usize) Error!f32 {
+    pub fn f2dot14(self: Bytes, offset: usize) Error!f32 {
         return @as(f32, @floatFromInt(try self.i16At(offset))) / 16384;
     }
-    fn fixed(self: Bytes, offset: usize) Error!f32 {
+    pub fn fixed(self: Bytes, offset: usize) Error!f32 {
         return @as(f32, @floatFromInt(@as(i32, @bitCast(try self.u32At(offset))))) / 65536;
     }
 };
@@ -106,6 +106,8 @@ pub const Font = struct {
     color: bool = false,
     axes: [max_axes]Axis = undefined,
     axis_count: usize = 0,
+    /// Offset of this face's table directory in `data`.
+    directory: usize = 0,
 
     /// Opens face `index` of a font file or collection.
     pub fn init(data: []const u8, index: u32) Error!Font {
@@ -117,7 +119,7 @@ pub const Font = struct {
         } else if (index != 0) return error.InvalidFont;
         const version = try file.u32At(offset);
         if (version != 0x00010000 and version != tag("OTTO") and version != tag("true")) return error.Unsupported;
-        var self: Font = .{ .data = file };
+        var self: Font = .{ .data = file, .directory = offset };
         const count = try file.u16At(offset + 4);
         var cff1: ?Bytes = null;
         var cff2: ?Bytes = null;
@@ -150,6 +152,19 @@ pub const Font = struct {
         if (fvar) |table| try self.readAxes(table);
         if (cff2) |table| self.cff = try Cff.init(table, true) else if (cff1) |table| self.cff = try Cff.init(table, false);
         return self;
+    }
+
+    /// The contents of table `table_tag` (see `tagOf`), if the face has it.
+    pub fn findTable(self: *const Font, table_tag: u32) ?Bytes {
+        const count = self.data.u16At(self.directory + 4) catch return null;
+        for (0..count) |i| {
+            const record = self.directory + 12 + 16 * i;
+            if ((self.data.u32At(record) catch return null) != table_tag) continue;
+            const start = self.data.u32At(record + 8) catch return null;
+            const length = self.data.u32At(record + 12) catch return null;
+            return .{ .data = self.data.slice(start, length) catch return null };
+        }
+        return null;
     }
 
     /// Whether glyphs have outlines this module can draw.

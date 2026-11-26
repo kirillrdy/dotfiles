@@ -18,10 +18,8 @@ pub fn build(b: *std.Build) void {
     });
     // Wayland clients use the native wire runtime; only the compositor links libwayland (server).
     // PipeWire is spoken natively too: its headers only serve as test references.
-    for ([_][]const u8{ "pam", "harfbuzz" }) |name| desktop.linkSystemLibrary(name, .{});
-    // HarfBuzz shapes; font files are read and rasterized in Zig.
-    const text_c = bindings(b, target, optimize, "#include <hb.h>\n", &.{"harfbuzz"});
-    desktop.addImport("text-c", text_c);
+    // Text is shaped, read and rasterized in Zig; HarfBuzz is only a test reference.
+    desktop.linkSystemLibrary("pam", .{});
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
     const wlr_protocols = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
     const protocol_files = [_]std.Build.LazyPath{
@@ -66,7 +64,7 @@ pub fn build(b: *std.Build) void {
     const ucd = b.graph.environ_map.get("UNICODE_DATA_DIR") orelse "/usr/share/unicode";
     const unicode_generator = b.addExecutable(.{ .name = "unicode-tables", .root_module = b.createModule(.{ .root_source_file = b.path("tools/unicode-tables.zig"), .target = b.graph.host, .optimize = optimize }) });
     const unicode_command = b.addRunArtifact(unicode_generator);
-    for ([_][]const u8{ "UnicodeData.txt", "CaseFolding.txt", "DerivedNormalizationProps.txt" }) |name| unicode_command.addFileArg(.{ .cwd_relative = b.fmt("{s}/{s}", .{ ucd, name }) });
+    for ([_][]const u8{ "UnicodeData.txt", "CaseFolding.txt", "DerivedNormalizationProps.txt", "Scripts.txt", "PropertyValueAliases.txt", "DerivedCoreProperties.txt", "ArabicShaping.txt", "BidiMirroring.txt" }) |name| unicode_command.addFileArg(.{ .cwd_relative = b.fmt("{s}/{s}", .{ ucd, name }) });
     const unicode_tables = b.createModule(.{ .root_source_file = unicode_command.addOutputFileArg("unicode-tables.zig"), .target = target, .optimize = optimize });
     desktop.addImport("unicode-tables", unicode_tables);
     // Keysym names and characters, generated from xkbcommon's keysym header.
@@ -123,6 +121,8 @@ pub fn build(b: *std.Build) void {
     const keymap_files = b.addWriteFiles();
     _ = keymap_files.addCopyFile(keymap.captureStdOut(.{}), "us-intl.xkb");
     test_module.addImport("xkb-reference", b.createModule(.{ .root_source_file = keymap_files.add("xkb-reference.zig", "pub const us_intl = @embedFile(\"us-intl.xkb\");\n") }));
+    // HarfBuzz is the reference the native shaper is compared against; the desktop does not link it.
+    test_module.addImport("harfbuzz-reference", bindings(b, target, optimize, "#include <hb.h>\n", &.{"harfbuzz"}));
     test_module.addImport("pam-reference", bindings(b, target, optimize, "#include <security/pam_appl.h>\n#include <security/pam_modules.h>\n", &.{"pam"}));
     // PipeWire's headers, plus its private node activation record (src/pipewire/private.h
     // is not installed) restated over the public SPA types with its bitfield word named.

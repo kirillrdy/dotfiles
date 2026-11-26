@@ -94,7 +94,8 @@ pkgs.stdenv.mkDerivation {
   # Keysym names and characters are generated from xkbcommon's keysym header.
   XKB_KEYSYMS_HEADER = "${textLibraries.xkbcommon.dev}/include/xkbcommon/xkbcommon-keysyms.h";
   buildInputs = [
-    # Text: HarfBuzz shaping; font matching, reading and rasterization are native.
+    # Text is matched, shaped, read and rasterized natively. HarfBuzz is the
+    # reference the shaper is tested against.
     pkgs.harfbuzz
     pkgs.wayland
     pkgs.wayland-protocols
@@ -150,6 +151,11 @@ pkgs.stdenv.mkDerivation {
     # Only test fixtures may load libpipewire; the desktop speaks the protocol itself.
     if grep -rlF ${audioLibraries.pipewire} "$out"; then
       echo "desktop output references libpipewire" >&2
+      exit 1
+    fi
+    # Only the shaping reference test may load HarfBuzz.
+    if grep -rlF ${pkgs.harfbuzz} "$out"; then
+      echo "desktop output references HarfBuzz" >&2
       exit 1
     fi
   '';

@@ -29,6 +29,66 @@ pub fn combiningClass(cp: u21) u8 {
     return if (find(tables.Class, &tables.classes, cp)) |entry| entry.class else 0;
 }
 
+fn rangeValue(ranges: []const tables.Range, cp: u21) ?u32 {
+    var low: usize = 0;
+    var high: usize = ranges.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        if (cp < ranges[mid].first) high = mid else if (cp > ranges[mid].last) low = mid + 1 else return ranges[mid].value;
+    }
+    return null;
+}
+
+/// The ISO 15924 script code as a big-endian tag, e.g. "Latn"; "Zzzz" when unassigned.
+pub fn script(cp: u21) u32 {
+    return rangeValue(&tables.scripts, cp) orelse std.mem.readInt(u32, "Zzzz", .big);
+}
+
+/// The general categories text shaping distinguishes.
+pub const Category = enum(u32) { other, nonspacing_mark, spacing_mark, enclosing_mark, format, space };
+
+pub fn category(cp: u21) Category {
+    return @fromBackingInt(@intCast(rangeValue(&tables.categories, cp) orelse 0));
+}
+
+pub fn isMark(cp: u21) bool {
+    return switch (category(cp)) {
+        .nonspacing_mark, .spacing_mark, .enclosing_mark => true,
+        else => false,
+    };
+}
+
+pub fn isDefaultIgnorable(cp: u21) bool {
+    return rangeValue(&tables.ignorables, cp) != null;
+}
+
+/// Arabic-style joining type, with the Syriac groups shaping treats specially.
+pub const Joining = enum(u32) { non_joining, left, right, dual, causing, transparent, alaph, dalath_rish };
+
+pub fn joining(cp: u21) Joining {
+    if (rangeValue(&tables.joining, cp)) |value| return @fromBackingInt(@intCast(value));
+    // Unlisted marks and format characters are transparent; everything else does not join.
+    return switch (category(cp)) {
+        .nonspacing_mark, .enclosing_mark, .format => .transparent,
+        else => .non_joining,
+    };
+}
+
+/// The Bidi_Mirroring_Glyph of a character, if it has one.
+pub fn mirror(cp: u21) ?u21 {
+    return if (find(tables.Mapping, &tables.mirrors, cp)) |entry| entry.to else null;
+}
+
+/// The canonical decomposition of a character into two parts (or one), unless it has none.
+pub fn decomposeCanonical(cp: u21) ?[]const u21 {
+    if (cp >= hangul.s_base and cp < hangul.s_base + hangul.s_count) return null;
+    const entry = find(tables.Expansion, &tables.decompositions, cp) orelse return null;
+    if (entry.compat) return null;
+    return tables.data[entry.start..][0..entry.len];
+}
+
+pub const composePair = compose;
+
 /// Decodes UTF-8, replacing invalid sequences with U+FFFD.
 fn decode(a: std.mem.Allocator, text: []const u8) ![]u21 {
     var out: std.ArrayList(u21) = .empty;

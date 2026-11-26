@@ -1,11 +1,11 @@
 //! Text layout into grayscale glyph masks. desktop-fonts.zig selects fonts and
-//! fallbacks, HarfBuzz shapes, desktop-opentype.zig reads outlines and
+//! fallbacks, desktop-shape.zig shapes, desktop-opentype.zig reads outlines and
 //! desktop-path.zig rasterizes them; markup, bidi ordering, line breaking,
 //! ellipsis and alignment are handled here, without Pango.
 const std = @import("std");
-const t = @import("text-c");
 const fonts = @import("desktop-fonts.zig");
 const opentype = @import("desktop-opentype.zig");
+const shaper = @import("desktop-shape.zig");
 
 pub const Mask = struct {
     pixels: []u8,
@@ -35,11 +35,11 @@ pub fn paintMask(canvas: @import("desktop-raster.zig").Canvas, value: ?Mask, x: 
 }
 
 /// A loaded face from a font match: the mapped file, its Zig outline reader
-/// and a HarfBuzz font over the same bytes for shaping.
+/// and its shaping tables.
 const Face = struct {
     file: opentype.Mapped,
     font: opentype.Font,
-    hb: *t.hb_font_t,
+    shaping: shaper.Face,
     embolden: bool,
     /// Design coordinates per axis, and the normalized ones outlines use.
     design: [opentype.max_axes]f32 = @splat(0),
@@ -58,11 +58,6 @@ const Face = struct {
         self.size = size;
         self.points = points;
         self.weight = weight;
-        // HarfBuzz positions come out in 26.6 pixels, as they did through FreeType.
-        const scale: c_int = @intFromFloat(@round(size * 64));
-        t.hb_font_set_scale(self.hb, scale, scale);
-        const ppem: c_uint = @intFromFloat(@round(size));
-        t.hb_font_set_ppem(self.hb, ppem, ppem);
         const count = self.font.axis_count;
         if (count > 0) {
             for (self.font.axes[0..count], self.design[0..count]) |axis, *value| {
@@ -70,25 +65,23 @@ const Face = struct {
                 if (axis.tag == opentype.tagOf("opsz")) value.* = @floatCast(points);
                 if (axis.tag == opentype.tagOf("wght")) value.* = @floatCast(weight);
             }
-            t.hb_font_set_var_coords_design(self.hb, &self.design, @intCast(count));
             self.font.normalize(self.design[0..count], &self.coords);
         }
     }
 
     /// Ascent and descent at 1/1024 pixel precision, matching Pango's units.
     fn extents(self: *Face) [2]f64 {
-        const font = t.hb_font_create(t.hb_font_get_face(self.hb)) orelse return .{ 0, 0 };
-        defer t.hb_font_destroy(font);
-        const scale: c_int = @intFromFloat(@round(self.size * 1024));
-        t.hb_font_set_scale(font, scale, scale);
-        if (self.font.axis_count > 0) t.hb_font_set_var_coords_design(font, &self.design, @intCast(self.font.axis_count));
-        var value: t.hb_font_extents_t = .{};
-        _ = t.hb_font_get_h_extents(font, &value);
-        return .{ @as(f64, @floatFromInt(value.ascender)) / 1024, @as(f64, @floatFromInt(-value.descender)) / 1024 };
+        const value = self.shaping.extents(self.coords[0..self.font.axis_count], @round(self.size * 1024));
+        return .{ @as(f64, @floatFromInt(value[0])) / 1024, @as(f64, @floatFromInt(-value[1])) / 1024 };
+    }
+
+    /// Shapes `text[start..end]` at the configured size and variation.
+    fn shape(self: *Face, a: std.mem.Allocator, text: []const u8, start: usize, end: usize, rtl: bool) ![]shaper.Glyph {
+        return shaper.shape(a, &self.shaping, self.coords[0..self.font.axis_count], self.size, text, start, end, if (rtl) .rtl else .ltr);
     }
 
     fn destroy(self: *Face) void {
-        t.hb_font_destroy(self.hb);
+        self.shaping.deinit();
         self.file.close();
     }
 };
@@ -167,16 +160,10 @@ pub const Renderer = struct {
             file.close();
             return null;
         };
-        // HarfBuzz reads OpenType tables itself from the mapped bytes.
-        const blob = t.hb_blob_create(@ptrCast(file.bytes.ptr), @intCast(file.bytes.len), t.HB_MEMORY_MODE_READONLY, null, null);
-        const hb_face = t.hb_face_create(blob, @intCast(match.font.index));
-        t.hb_blob_destroy(blob);
-        const hb = t.hb_font_create(hb_face);
-        t.hb_face_destroy(hb_face);
-        value.* = .{ .file = file, .font = font, .hb = hb orelse {
-            file.close();
-            return null;
-        }, .embolden = match.embolden };
+        value.* = .{ .file = file, .font = font, .shaping = undefined, .embolden = match.embolden };
+        // Shaping reads tables through the face's own Font, at its final address. Its
+        // cached plans outlive layouts and are freed when the renderer destroys the face.
+        value.shaping = shaper.Face.init(std.heap.c_allocator, &value.font);
         owner.faces[index] = value;
         return value;
     }
@@ -443,7 +430,7 @@ const Item = struct {
 };
 
 /// Glyph positions snap to whole pixels, as with Pango's default rounding.
-fn snap(value: t.hb_position_t) f64 {
+fn snap(value: i32) f64 {
     return @round(@as(f64, @floatFromInt(value)) / 64);
 }
 
@@ -579,19 +566,9 @@ const Layout = struct {
         if (current) |item| try self.items.append(self.a, item);
     }
 
-    const Shaped = struct { infos: []const t.hb_glyph_info_t, positions: []const t.hb_glyph_position_t, buffer: *t.hb_buffer_t };
-
-    fn shape(self: *Layout, item: Item, start: usize, end: usize) !Shaped {
+    fn shape(self: *Layout, item: Item, start: usize, end: usize) ![]shaper.Glyph {
         item.face.configure(item.size, self.points(item.size), item.weight);
-        const buffer = t.hb_buffer_create() orelse return error.TextLayout;
-        t.hb_buffer_add_utf8(buffer, self.text.ptr, @intCast(self.text.len), @intCast(start), @intCast(end - start));
-        t.hb_buffer_guess_segment_properties(buffer);
-        t.hb_buffer_set_direction(buffer, if (item.level % 2 == 1) t.HB_DIRECTION_RTL else t.HB_DIRECTION_LTR);
-        t.hb_shape(item.face.hb, buffer, null, 0);
-        var count: c_uint = 0;
-        const infos = t.hb_buffer_get_glyph_infos(buffer, &count);
-        const positions = t.hb_buffer_get_glyph_positions(buffer, &count);
-        return .{ .infos = infos[0..count], .positions = positions[0..count], .buffer = buffer };
+        return item.face.shape(self.a, self.text, start, end, item.level % 2 == 1);
     }
 
     fn measure(self: *Layout) !void {
@@ -600,8 +577,8 @@ const Layout = struct {
         for (self.items.items) |item| {
             if (self.text[item.start] == '\n') continue;
             const shaped = try self.shape(item, item.start, item.end);
-            defer t.hb_buffer_destroy(shaped.buffer);
-            for (shaped.infos, shaped.positions) |info, position| self.advances[info.cluster] += snap(position.x_advance);
+            defer self.a.free(shaped);
+            for (shaped) |glyph| self.advances[glyph.cluster] += snap(glyph.x_advance);
         }
     }
 
@@ -741,11 +718,11 @@ const Layout = struct {
     fn symbolWidth(self: *Layout, offset: usize, symbol: []const u8) !f64 {
         const near = self.itemAt(offset) orelse (if (self.items.items.len > 0) self.items.items[0] else return 0);
         const info = try self.symbolItem(near, symbol);
-        t.hb_buffer_destroy(info.glyphs.buffer);
+        self.a.free(info.glyphs);
         return info.width;
     }
 
-    const SymbolInfo = struct { glyphs: Shaped, item: Item, width: f64 };
+    const SymbolInfo = struct { glyphs: []shaper.Glyph, item: Item, width: f64 };
 
     fn ellipsisItem(self: *Layout, near: Item) !SymbolInfo {
         return self.symbolItem(near, "\u{2026}");
@@ -760,17 +737,10 @@ const Layout = struct {
             item.face = self.renderer.pick(owner, codepoint) orelse item.face;
         }
         item.face.configure(item.size, self.points(item.size), item.weight);
-        const buffer = t.hb_buffer_create() orelse return error.TextLayout;
-        t.hb_buffer_add_utf8(buffer, symbol.ptr, @intCast(symbol.len), 0, @intCast(symbol.len));
-        t.hb_buffer_guess_segment_properties(buffer);
-        t.hb_buffer_set_direction(buffer, if (item.level % 2 == 1) t.HB_DIRECTION_RTL else t.HB_DIRECTION_LTR);
-        t.hb_shape(item.face.hb, buffer, null, 0);
-        var count: c_uint = 0;
-        const infos = t.hb_buffer_get_glyph_infos(buffer, &count);
-        const positions = t.hb_buffer_get_glyph_positions(buffer, &count);
+        const glyphs = try item.face.shape(self.a, symbol, 0, symbol.len, item.level % 2 == 1);
         var total: f64 = 0;
-        for (positions[0..count]) |p| total += snap(p.x_advance);
-        return .{ .glyphs = .{ .infos = infos[0..count], .positions = positions[0..count], .buffer = buffer }, .item = item, .width = total };
+        for (glyphs) |p| total += snap(p.x_advance);
+        return .{ .glyphs = glyphs, .item = item, .width = total };
     }
 
     fn run(self: *Layout) !void {
@@ -803,7 +773,7 @@ const Layout = struct {
             if (line.ellipsis) {
                 const near = self.itemAt(if (end > line.start) previousStart(self.text, end) else line.start) orelse self.items.items[0];
                 const info = try self.ellipsisItem(near);
-                t.hb_buffer_destroy(info.glyphs.buffer);
+                self.a.free(info.glyphs);
                 ellipsis_item = info.item;
                 ellipsis_width = info.width;
                 if (limit) |w| {
@@ -865,7 +835,7 @@ const Layout = struct {
             if (line.hyphen and end > line.start) {
                 const near = self.itemAt(previousStart(self.text, end)) orelse self.items.items[0];
                 const info = try self.symbolItem(near, hyphen_symbol);
-                t.hb_buffer_destroy(info.glyphs.buffer);
+                self.a.free(info.glyphs);
                 hyphen_item = info.item;
                 hyphen_width = info.width;
             }
@@ -900,12 +870,12 @@ const Layout = struct {
             if (ellipsis_first) x = try self.placeEllipsis(line.ellipsis.?, x, baseline);
             for (line.runs) |r| {
                 const shaped = try self.shape(r.item, r.start, r.end);
-                defer t.hb_buffer_destroy(shaped.buffer);
+                defer self.a.free(shaped);
                 const start_x = x;
-                for (shaped.infos, shaped.positions) |info, position| {
+                for (shaped) |position| {
                     try self.glyphs.append(self.a, .{
                         .face = r.item.face,
-                        .id = info.codepoint,
+                        .id = position.id,
                         .x = x + snap(position.x_offset),
                         .y = baseline - snap(position.y_offset),
                         .size = r.item.size,
@@ -934,10 +904,10 @@ const Layout = struct {
 
     fn placeSymbol(self: *Layout, near: Item, symbol: []const u8, start: f64, baseline: f64) !f64 {
         const info = try self.symbolItem(near, symbol);
-        defer t.hb_buffer_destroy(info.glyphs.buffer);
+        defer self.a.free(info.glyphs);
         var x = start;
-        for (info.glyphs.infos, info.glyphs.positions) |g, p| {
-            try self.glyphs.append(self.a, .{ .face = info.item.face, .id = g.codepoint, .x = x + snap(p.x_offset), .y = baseline - snap(p.y_offset), .size = info.item.size, .weight = info.item.weight, .points = self.points(info.item.size) });
+        for (info.glyphs) |p| {
+            try self.glyphs.append(self.a, .{ .face = info.item.face, .id = p.id, .x = x + snap(p.x_offset), .y = baseline - snap(p.y_offset), .size = info.item.size, .weight = info.item.weight, .points = self.points(info.item.size) });
             x += snap(p.x_advance);
         }
         return x;

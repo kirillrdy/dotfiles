@@ -135,6 +135,8 @@ test {
     _ = @import("desktop-pipewire-node.zig");
     _ = @import("desktop-xkb.zig");
     _ = @import("desktop-opentype.zig");
+    _ = @import("desktop-shape.zig");
+    _ = @import("tests/desktop-shape-reference.zig");
     _ = @import("desktop-switcher.zig");
     _ = @import("desktop-overview.zig");
     _ = @import("desktop-overview-animation.zig");
