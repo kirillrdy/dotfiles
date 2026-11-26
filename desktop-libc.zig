@@ -153,6 +153,7 @@ pub extern fn setsid() c_int;
 pub const PROT_READ = @as(c_int, 0x1);
 pub const PROT_WRITE = @as(c_int, 0x2);
 pub const MAP_SHARED = @as(c_int, 0x01);
+pub const MAP_PRIVATE = @as(c_int, 0x02);
 pub const MFD_CLOEXEC = @as(c_uint, 1);
 pub const MAP_FAILED = @as(?*anyopaque, @ptrFromInt(std.math.maxInt(usize)));
 pub const STDOUT_FILENO = @as(c_int, 1);

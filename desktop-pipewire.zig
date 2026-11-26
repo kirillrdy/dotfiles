@@ -28,6 +28,8 @@ pub const Connection = struct {
     /// Descriptors of the message last returned by `next`; those not taken
     /// are closed when the next message is returned.
     message_fds: std.ArrayList(c_int) = .empty,
+    /// The server closed the socket.
+    closed: bool = false,
     out: Writer,
 
     /// Connects like libpipewire: $PIPEWIRE_REMOTE (default pipewire-0) in
@@ -44,9 +46,15 @@ pub const Connection = struct {
         }
         const fd = std.c.socket(1, 1 | 0o2000000, 0); // AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC
         if (fd < 0) return error.ConnectionFailed;
-        errdefer _ = std.c.close(fd);
-        if (std.c.connect(fd, @ptrCast(&address), @sizeOf(SockaddrUn)) != 0) return error.ConnectionFailed;
-        const self = try fromFd(a, fd);
+        if (std.c.connect(fd, @ptrCast(&address), @sizeOf(SockaddrUn)) != 0) {
+            _ = std.c.close(fd);
+            return error.ConnectionFailed;
+        }
+        // From here the connection owns the socket.
+        const self = fromFd(a, fd) catch |err| {
+            _ = std.c.close(fd);
+            return err;
+        };
         errdefer self.destroy();
         var hello = self.begin();
         hello.int(spa.PW_VERSION_CORE);
@@ -150,7 +158,10 @@ pub const Connection = struct {
     }
 
     /// Reads what the socket holds without blocking, queueing any descriptors.
+    /// After the server closes the socket, messages already received are still
+    /// returned by `next`; the following read reports the closed connection.
     pub fn read(self: *Connection) Error!void {
+        if (self.closed) return error.ConnectionClosed;
         while (true) {
             if (self.in.items.len > 4 * max_message) return error.Protocol;
             try self.in.ensureUnusedCapacity(self.allocator, 64 * 1024);
@@ -165,7 +176,13 @@ pub const Connection = struct {
                 else => return error.IoFailed,
             };
             try self.queueFds(control[0..header.controllen]);
-            if (received == 0) return error.ConnectionClosed;
+            // Lost descriptors would shift every later message's descriptors.
+            if (header.flags & 0x8 != 0) return error.Protocol; // MSG_CTRUNC
+            if (received == 0) {
+                self.closed = true;
+                if (self.in.items.len > self.consumed) return;
+                return error.ConnectionClosed;
+            }
             self.in.items.len += @intCast(received);
         }
     }
@@ -576,4 +593,22 @@ test "descriptors belong to the message that carries them and are closed unless 
     try std.testing.expectEqual(@as(c_int, -1), std.c.fcntl(untaken, 1));
     try std.testing.expectError(error.Protocol, client.next());
     _ = std.c.close(fds[1]);
+}
+
+test "messages sent just before the server closes are still delivered" {
+    const a = std.testing.allocator;
+    var fds: [2]c_int = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.socketpair(1, 1 | 0o2000000, 0, &fds));
+    const client = try Connection.fromFd(a, fds[0]);
+    defer client.destroy();
+    const server = try Connection.fromFd(a, fds[1]);
+    var message = server.begin();
+    message.int(-32);
+    _ = try server.end(spa.PW_ID_CORE, spa.PW_CORE_EVENT_ERROR);
+    server.destroy();
+    try client.read();
+    var last = (try client.next()).?;
+    try std.testing.expectEqual(@as(i32, -32), try last.body.int());
+    try std.testing.expect(try client.next() == null);
+    try std.testing.expectError(error.ConnectionClosed, client.read());
 }

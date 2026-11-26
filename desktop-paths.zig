@@ -155,6 +155,16 @@ pub fn kind(path: []const u8) Kind {
     return .other;
 }
 
+/// The device and inode a path resolves to, identifying the file however it is reached.
+pub fn identity(path: []const u8) ?u128 {
+    var name: [std.fs.max_path_bytes:0]u8 = undefined;
+    const z = terminate(path, &name) orelse return null;
+    var info: linux.Statx = undefined;
+    if (linux.errno(linux.statx(linux.AT.FDCWD, z, 0, .{ .INO = true }, &info)) != .SUCCESS or !info.mask.INO) return null;
+    const device = (@as(u64, info.dev_major) << 32) | info.dev_minor;
+    return (@as(u128, device) << 64) | info.ino;
+}
+
 pub fn exists(path: []const u8) bool {
     return kind(path) != .missing;
 }

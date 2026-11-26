@@ -160,12 +160,14 @@ const Splitter = struct {
 
 /// The tokens between the brace starting at `tokens[open]` and its match.
 fn braced(tokens: []const Token, open: usize) ![]const Token {
+    if (open >= tokens.len or tokens[open].kind != .punct or std.mem.indexOfScalar(u8, "{[(", tokens[open].text[0]) == null) return error.InvalidKeymap;
     var depth: usize = 0;
     for (tokens[open..], open..) |token, i| {
         if (token.kind != .punct) continue;
         switch (token.text[0]) {
             '{', '[', '(' => depth += 1,
             '}', ']', ')' => {
+                if (depth == 0) return error.InvalidKeymap;
                 depth -= 1;
                 if (depth == 0) return tokens[open + 1 .. i];
             },
@@ -258,6 +260,9 @@ pub const Keymap = struct {
                 try self.names.put(a, statement[0].text, code);
             }
         }
+        // A later keycodes section keeps the names of earlier ones valid.
+        var names = self.names.valueIterator();
+        while (names.next()) |code| max = @max(max, code.*);
         self.keys = try a.alloc(Key, max + 1);
         @memset(self.keys, .{});
     }
@@ -280,7 +285,7 @@ pub const Keymap = struct {
                 try self.mod_names.append(self.arena.allocator(), item[0].text);
                 break :blk self.mod_names.items.len - 1;
             };
-            if (item.len == 3 and isPunct(item[1], '=')) self.mapping[index] = try self.modMask(item[2..]);
+            if (item.len >= 3 and isPunct(item[1], '=')) self.mapping[index] = try self.modMask(item[2..]);
         }
     }
 
@@ -374,6 +379,7 @@ pub const Keymap = struct {
                     const predicate = header[2..];
                     const paren = indexOfPunct(predicate, '(');
                     if (paren) |p| {
+                        if (p == 0 or p + 2 > predicate.len or !isPunct(predicate[predicate.len - 1], ')')) return error.InvalidKeymap;
                         interp.match = try matchName(predicate[0].text);
                         interp.mods = try self.modMask(predicate[p + 1 .. predicate.len - 1]);
                     } else {
@@ -482,6 +488,7 @@ pub const Keymap = struct {
             if (statement.len < 3 or statement[0].kind != .ident) continue;
             if (std.mem.eql(u8, statement[0].text, "key") and statement[1].kind == .keyname) {
                 const code = self.keycode(statement[1].text) orelse continue;
+                if (code >= self.keys.len) continue;
                 const key = &self.keys[code];
                 key.defined = true;
                 const open = indexOfPunct(statement, '{') orelse return error.InvalidKeymap;
@@ -525,7 +532,9 @@ pub const Keymap = struct {
                 while (members.next()) |member| {
                     if (member.len != 1) continue;
                     if (member[0].kind == .keyname) {
-                        if (self.keycode(member[0].text)) |code| self.keys[code].modmap |= mask;
+                        if (self.keycode(member[0].text)) |code| if (code < self.keys.len) {
+                            self.keys[code].modmap |= mask;
+                        };
                     } else {
                         // A keysym names the first key that produces it.
                         const sym = try self.keysymToken(member[0]);
@@ -795,24 +804,39 @@ pub const ComposeTable = struct {
 
     fn readAll(a: std.mem.Allocator, path: []const u8) ?[]const u8 {
         const z = a.dupeSentinel(u8, path, 0) catch return null;
+        defer a.free(z);
         const fd = std.c.open(z, .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
         if (fd < 0) return null;
         defer _ = std.c.close(fd);
         var data: std.ArrayList(u8) = .empty;
         while (data.items.len < 8 * 1024 * 1024) {
-            data.ensureUnusedCapacity(a, 64 * 1024) catch return null;
+            data.ensureUnusedCapacity(a, 64 * 1024) catch {
+                data.deinit(a);
+                return null;
+            };
             const spare = data.unusedCapacitySlice();
             const got = std.c.read(fd, spare.ptr, spare.len);
-            if (got < 0) return null;
-            if (got == 0) return data.items;
+            if (got < 0) {
+                if (std.c._errno().* == 4) continue; // EINTR
+                data.deinit(a);
+                return null;
+            }
+            if (got == 0) return data.toOwnedSlice(a) catch {
+                data.deinit(a);
+                return null;
+            };
             data.items.len += @intCast(got);
         }
+        data.deinit(a);
         return null;
     }
 
     fn readFile(self: *ComposeTable, path: []const u8, context: Context, depth: u32) bool {
         if (depth > 8) return false;
-        const data = readAll(self.arena.allocator(), path) orelse return false;
+        // Parsed results are copied into the table, so the file itself is temporary.
+        const gpa = self.arena.child_allocator;
+        const data = readAll(gpa, path) orelse return false;
+        defer gpa.free(data);
         self.parse(data, context, depth) catch return false;
         return true;
     }
@@ -1095,4 +1119,29 @@ test "compose sequences complete, cancel, ignore modifiers and override prefixes
     _ = compose.feed(0xfe51);
     try std.testing.expectEqual(Status.composed, compose.feed(0xfe51));
     try std.testing.expectEqualStrings("''", compose.utf8(&buffer));
+}
+
+test "malformed keymaps fail instead of panicking" {
+    const malformed = [_][]const u8{
+        // A type without a body.
+        "xkb_keymap { xkb_keycodes { <A> = 38; }; xkb_types { type \"X\" }; }; };",
+        // An interpret predicate without its closing parenthesis.
+        "xkb_keymap { xkb_keycodes { <A> = 38; }; xkb_compat { interpret Any+AnyOf( { }; }; };",
+    };
+    for (malformed) |text| {
+        if (Keymap.parse(std.testing.allocator, text)) |keymap| keymap.deinit() else |_| {}
+    }
+    // A second, smaller keycodes section keeps keys named by the first.
+    const keymap = try Keymap.parse(std.testing.allocator,
+        \\xkb_keymap {
+        \\  xkb_keycodes { <HIGH> = 400; };
+        \\  xkb_keycodes { <A> = 38; };
+        \\  xkb_types { type "ONE_LEVEL" { modifiers = none; level_name[Level1] = "Any"; }; };
+        \\  xkb_symbols { key <HIGH> { [ a ] }; key <A> { [ b ] }; };
+        \\};
+    );
+    defer keymap.deinit();
+    var state: State = .{ .keymap = keymap };
+    try std.testing.expectEqual(@as(u32, 'a'), state.keysym(400));
+    try std.testing.expectEqual(@as(u32, 'b'), state.keysym(38));
 }

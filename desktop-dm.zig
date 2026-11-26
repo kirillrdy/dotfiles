@@ -35,7 +35,7 @@ fn handleSignal(_: c_int) callconv(.c) void {
     if (pid > 0) _ = kill(pid, SIGTERM);
 }
 
-fn nullConverse(count: c_int, _: [*c]const [*c]const pam.pam_message, responses: [*c][*c]pam.pam_response, _: ?*anyopaque) callconv(.c) c_int {
+fn nullConverse(count: c_int, _: [*c][*c]const pam.pam_message, responses: [*c][*c]pam.pam_response, _: ?*anyopaque) callconv(.c) c_int {
     if (count <= 0 or count > 32 or responses == null) return pam.PAM_CONV_ERR;
     const result = std.c.calloc(@intCast(count), @sizeOf(pam.pam_response)) orelse return pam.PAM_BUF_ERR;
     responses.* = @ptrCast(@alignCast(result));

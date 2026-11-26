@@ -138,8 +138,11 @@ pub const Renderer = struct {
 
     fn family(self: *Renderer, description: Description) !*Family {
         const a = self.arena.?.allocator();
-        const key = try std.fmt.allocPrint(a, "{s}|{d}|{}", .{ description.family, description.weight, description.italic });
-        if (self.families.get(key)) |existing| return existing;
+        // Looked up for every rendered character: only a new family keeps its key.
+        var buffer: [512]u8 = undefined;
+        const lookup = std.fmt.bufPrint(&buffer, "{s}|{d}|{}", .{ description.family, description.weight, description.italic }) catch return error.FontMap;
+        if (self.families.get(lookup)) |existing| return existing;
+        const key = try a.dupe(u8, lookup);
         const matches = try fonts.sort(a, fonts.catalog(), description.family, description.weight, description.italic);
         if (matches.len == 0) return error.FontMap;
         const value = try a.create(Family);
@@ -352,7 +355,9 @@ fn spanAttributes(text: []const u8, style: *Style) !void {
         rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t\n");
         const eql = std.mem.eql;
         if (eql(u8, name, "weight") or eql(u8, name, "font_weight")) {
-            style.weight = if (eql(u8, value, "bold")) 700 else if (eql(u8, value, "normal")) 400 else if (eql(u8, value, "light")) 300 else if (eql(u8, value, "heavy")) 900 else if (eql(u8, value, "semibold")) 600 else std.fmt.parseFloat(f64, value) catch 400;
+            const number = std.fmt.parseFloat(f64, value) catch 400;
+            // CSS weights run from 1 to 1000; anything else (or NaN) is normal.
+            style.weight = if (eql(u8, value, "bold")) 700 else if (eql(u8, value, "normal")) 400 else if (eql(u8, value, "light")) 300 else if (eql(u8, value, "heavy")) 900 else if (eql(u8, value, "semibold")) 600 else if (number >= 1 and number <= 1000) number else 400;
         } else if (eql(u8, name, "style") or eql(u8, name, "font_style")) {
             style.italic = !eql(u8, value, "normal");
         } else if (eql(u8, name, "underline")) {
@@ -480,7 +485,8 @@ const Layout = struct {
         for (self.spans) |span| if (offset >= span.start and offset < span.end) {
             if (span.style.weight) |w| style.weight = w;
             if (span.style.italic) |v| style.italic = v;
-            style.scale *= span.style.scale;
+            // Deeply nested big/small stays within a sane size range.
+            style.scale = std.math.clamp(style.scale * span.style.scale, 1.0 / 64.0, 64);
             style.underline = style.underline or span.style.underline;
             style.strike = style.strike or span.style.strike;
             if (span.style.family) |f| style.family = f;
@@ -778,6 +784,8 @@ const Layout = struct {
             return;
         }
         try self.itemize();
+        // No face could be opened for any of the text: nothing can be laid out.
+        if (self.items.items.len == 0) return error.FontMap;
         try self.measure();
         const lines = try self.breakLines();
         const limit: ?f64 = if (self.options.width) |w| @floatFromInt(w) else null;
@@ -1101,4 +1109,14 @@ test "font descriptions, markup spans and bidi levels" {
     var levels: [classes.len]u8 = undefined;
     resolveLevels(&classes, &levels, 0);
     try std.testing.expectEqualSlices(u8, &.{ 0, 0, 1, 1, 1, 1, 2 }, &levels);
+}
+
+test "markup weights outside the CSS range fall back to normal" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "-5", "nan", "inf", "100000" }) |weight| {
+        const markup = try std.fmt.allocPrint(arena.allocator(), "<span weight='{s}'>x</span>", .{weight});
+        const parsed = try parseMarkup(arena.allocator(), markup);
+        try std.testing.expectEqual(@as(?f64, 400), parsed.spans[0].style.weight);
+    }
 }

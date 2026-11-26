@@ -4,7 +4,17 @@
 const std = @import("std");
 const c = @import("compositor-abi");
 /// libwayland-server metadata generated from desktop-overview-v1.xml.
-const dotfiles_overview_v1_interface = @import("wayland-server-protocols").dotfiles_overview_v1_interface;
+const server_protocols = @import("wayland-server-protocols");
+const overview_interface = &server_protocols.dotfiles_overview_v1_interface;
+comptime {
+    // The generated metadata is passed to libwayland as its own types.
+    for (.{ .{ server_protocols.Interface, c.wl_interface }, .{ server_protocols.Message, c.wl_message } }) |pair| {
+        if (@sizeOf(pair[0]) != @sizeOf(pair[1])) @compileError("wl_interface layout differs");
+        for (std.meta.fieldNames(pair[0])) |field| {
+            if (@offsetOf(pair[0], field) != @offsetOf(pair[1], field)) @compileError("wl_interface field differs: " ++ field);
+        }
+    }
+}
 const hot_corner = @import("desktop-hot-corner.zig");
 const gsettings = @import("desktop-gsettings.zig");
 
@@ -250,7 +260,7 @@ const Server = struct {
         self.output_manager = c.wlr_output_manager_v1_create(self.display).?;
         self.hooks.add(&self.output_manager.events.apply, self, &applyOutputs);
         self.hooks.add(&self.output_manager.events.@"test", self, &testOutputs);
-        _ = c.wl_global_create(self.display, @ptrCast(&dotfiles_overview_v1_interface), 3, self, &Overview.bind) orelse return error.Overview;
+        _ = c.wl_global_create(self.display, @ptrCast(overview_interface), 3, self, &Overview.bind) orelse return error.Overview;
         _ = c.wl_event_loop_add_fd(self.loop, handle.stop_pipe[0], c.WL_EVENT_READABLE, &stopEvent, self) orelse return error.StopEvent;
         self.lock_blank_timer = c.wl_event_loop_add_timer(self.loop, &lockBlankTimeout, self) orelse return error.LockTimer;
         const socket = c.wl_display_add_socket_auto(self.display) orelse return error.Socket;
@@ -1784,14 +1794,14 @@ const Overview = struct {
     comptime {
         // libwayland dispatches requests by opcode into this table.
         const names = @typeInfo(Interface).@"struct".field_names;
-        std.debug.assert(names.len == dotfiles_overview_v1_interface.method_count);
-        for (names, 0..) |name, opcode| std.debug.assert(std.mem.eql(u8, name, std.mem.span(dotfiles_overview_v1_interface.methods[opcode].name)));
+        std.debug.assert(names.len == overview_interface.method_count);
+        for (names, 0..) |name, opcode| std.debug.assert(std.mem.eql(u8, name, std.mem.span(overview_interface.methods.?[opcode].name)));
     }
     const implementation: Interface = .{};
     fn bind(client: ?*c.wl_client, ptr: ?*anyopaque, version: u32, id: u32) callconv(.c) void {
         const s = cast(Server, ptr);
         const bound_version: c_int = @intCast(@min(version, 3));
-        const resource = c.wl_resource_create(client, @ptrCast(&dotfiles_overview_v1_interface), bound_version, id) orelse {
+        const resource = c.wl_resource_create(client, @ptrCast(overview_interface), bound_version, id) orelse {
             c.wl_client_post_no_memory(client);
             return;
         };

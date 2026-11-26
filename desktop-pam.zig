@@ -12,7 +12,7 @@ pub const pam_response = extern struct {
     resp_retcode: c_int,
 };
 pub const pam_conv = extern struct {
-    conv: ?*const fn (c_int, [*c]const [*c]const pam_message, [*c][*c]pam_response, ?*anyopaque) callconv(.c) c_int,
+    conv: ?*const fn (c_int, [*c][*c]const pam_message, [*c][*c]pam_response, ?*anyopaque) callconv(.c) c_int,
     appdata_ptr: ?*anyopaque,
 };
 

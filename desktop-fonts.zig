@@ -56,7 +56,7 @@ const Loaded = util.Lazy(Catalog, struct {
         var config: Config = .{ .a = a, .scratch = scratch };
         config.read(file, 0);
         var fonts: std.ArrayList(Font) = .empty;
-        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        var seen: std.AutoHashMapUnmanaged(u128, void) = .empty;
         for (config.dirs.items) |dir| scanDirectory(a, scratch, dir, &seen, &fonts, 0);
         return .{ .fonts = fonts.toOwnedSlice(a) catch &.{}, .aliases = config.aliases };
     }
@@ -111,7 +111,9 @@ const Config = struct {
     }
 
     fn alias(self: *Config, tags: *Tags) !void {
-        var name: ?[]const u8 = null;
+        // Every family outside prefer/accept/default is matched, as in
+        // fontconfig: 45-latin.conf lists many families in one alias.
+        var names: std.ArrayList([]const u8) = .empty;
         var lists: [3]std.ArrayList([]const u8) = .{ .empty, .empty, .empty };
         var section: ?usize = null;
         while (tags.next()) |tag| {
@@ -121,17 +123,18 @@ const Config = struct {
                 section = if (tag.closing or tag.self_closing) null else i;
             } else if (std.mem.eql(u8, tag.name, "family") and !tag.closing and !tag.self_closing) {
                 const family = try lower(self.a, try decode(self.scratch, tags.text("family")));
-                if (section) |i| try lists[i].append(self.a, family) else if (name == null) name = family;
+                if (section) |i| try lists[i].append(self.a, family) else try names.append(self.scratch, family);
             }
         }
-        const key = name orelse return;
-        const entry = try self.aliases.getOrPut(self.a, key);
-        if (!entry.found_existing) entry.value_ptr.* = .{};
-        const value = entry.value_ptr;
-        // Later rules apply after earlier ones: their prefers land closer to the family.
-        value.prefer = try std.mem.concat(self.a, []const u8, &.{ value.prefer, lists[0].items });
-        value.accept = try std.mem.concat(self.a, []const u8, &.{ lists[1].items, value.accept });
-        value.default = try std.mem.concat(self.a, []const u8, &.{ value.default, lists[2].items });
+        for (names.items) |key| {
+            const entry = try self.aliases.getOrPut(self.a, key);
+            if (!entry.found_existing) entry.value_ptr.* = .{};
+            const value = entry.value_ptr;
+            // Later rules apply after earlier ones: their prefers land closer to the family.
+            value.prefer = try std.mem.concat(self.a, []const u8, &.{ value.prefer, lists[0].items });
+            value.accept = try std.mem.concat(self.a, []const u8, &.{ lists[1].items, value.accept });
+            value.default = try std.mem.concat(self.a, []const u8, &.{ value.default, lists[2].items });
+        }
     }
 
     fn resolve(self: *Config, value: []const u8, prefix: ?[]const u8, base: []const u8, xdg: enum { data, config }) !?[]const u8 {
@@ -224,7 +227,7 @@ fn lower(a: std.mem.Allocator, value: []const u8) ![]const u8 {
 
 // ---------------------------------------------------------------- Scanning
 
-fn scanDirectory(a: std.mem.Allocator, scratch: std.mem.Allocator, dir: []const u8, seen: *std.StringHashMapUnmanaged(void), fonts: *std.ArrayList(Font), depth: u32) void {
+fn scanDirectory(a: std.mem.Allocator, scratch: std.mem.Allocator, dir: []const u8, seen: *std.AutoHashMapUnmanaged(u128, void), fonts: *std.ArrayList(Font), depth: u32) void {
     if (depth > 8) return;
     const entries = paths.list(scratch, dir) catch return;
     std.mem.sort(paths.Listed, entries, {}, struct {
@@ -245,8 +248,12 @@ fn scanDirectory(a: std.mem.Allocator, scratch: std.mem.Allocator, dir: []const 
         const known = for ([_][]const u8{ ".ttf", ".otf", ".ttc", ".otc" }) |suffix| {
             if (std.ascii.eqlIgnoreCase(extension, suffix)) break true;
         } else false;
-        // Directories are often listed twice through different store paths.
-        if (!known or (seen.getOrPut(scratch, entry.name) catch continue).found_existing) continue;
+        // Directories are often listed twice through different store paths:
+        // the same file is scanned once, while equal names in different
+        // directories are different fonts.
+        if (!known) continue;
+        const id = paths.identity(path) orelse continue;
+        if ((seen.getOrPut(scratch, id) catch continue).found_existing) continue;
         scanFile(a, path, fonts);
     }
 }
@@ -288,12 +295,23 @@ fn describe(a: std.mem.Allocator, face: *const opentype.Font, path: [:0]const u8
 /// every other installed family. Each family contributes its closest face.
 pub fn sort(a: std.mem.Allocator, from: *const Catalog, families: []const u8, weight: f64, italic: bool) ![]Match {
     var order: std.ArrayList([]const u8) = .empty;
+    defer order.deinit(a);
+    // Matches refer to the catalog, so the lowered request names are temporary.
+    var keys: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (keys.items) |key| a.free(key);
+        keys.deinit(a);
+    }
     var requested_generic = false;
     var names = std.mem.splitScalar(u8, families, ',');
     while (names.next()) |raw| {
         const name = std.mem.trim(u8, raw, " ");
         if (name.len == 0) continue;
         const key = try lower(a, name);
+        keys.append(a, key) catch |err| {
+            a.free(key);
+            return err;
+        };
         for (generic) |g| requested_generic = requested_generic or std.mem.eql(u8, key, g);
         try expand(a, from, key, &order, 0);
     }
@@ -407,4 +425,19 @@ test "fallback order follows the request, aliases, then everything else" {
     try std.testing.expectEqualStrings("dejavu", regular[0].font.path);
     const emoji = try sort(a, &catalog_value, "Noto Color Emoji", 700, false);
     try std.testing.expect(emoji[0].embolden);
+}
+
+test "an alias applies to every family it lists, as in 45-latin.conf" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var config: Config = .{ .a = arena.allocator(), .scratch = arena.allocator() };
+    try config.parse(
+        \\<fontconfig>
+        \\  <alias><family>Cambria</family><family>Georgia</family><default><family>serif</family></default></alias>
+        \\</fontconfig>
+    , "/etc/fonts", 0);
+    for ([_][]const u8{ "cambria", "georgia" }) |name| {
+        const alias = config.aliases.get(name).?;
+        try std.testing.expectEqualStrings("serif", alias.default[0]);
+    }
 }

@@ -6,6 +6,8 @@ fn checkType(comptime A: type, comptime B: type) void {
     const right = @typeInfo(B);
     if (left == .@"opaque" or right == .@"opaque") return;
     if (left == .@"struct" and @sizeOf(A) == 0) return; // Incomplete toolkit handle.
+    // Bytes standing in for a nested struct that is never read: only its size matters.
+    if (left == .array and left.array.child == u8 and right != .array and @sizeOf(A) == @sizeOf(B)) return;
     if (left == .pointer and right == .optional and @typeInfo(right.optional.child) == .pointer) {
         checkType(A, right.optional.child);
         return;
@@ -39,6 +41,7 @@ fn checkType(comptime A: type, comptime B: type) void {
             inline for (std.meta.fieldNames(A)) |field| {
                 if (!@hasField(B, field)) @compileError("ABI field missing: " ++ field);
                 if (left == .@"struct" and @offsetOf(A, field) != @offsetOf(B, field)) @compileError("ABI field offset differs: " ++ field);
+                checkType(@FieldType(A, field), @FieldType(B, field));
             }
         },
         .int => if (left.int.bits != right.int.bits or left.int.signedness != right.int.signedness) @compileError("ABI integer differs"),

@@ -14,7 +14,7 @@ pub const Attempt = struct {
     prompted: bool = false,
 };
 
-pub fn converse(count: c_int, messages: [*c]const [*c]const Message, responses: [*c][*c]Response, data: ?*anyopaque) callconv(.c) c_int {
+pub fn converse(count: c_int, messages: [*c][*c]const Message, responses: [*c][*c]Response, data: ?*anyopaque) callconv(.c) c_int {
     if (count <= 0 or count > 32 or messages == null or responses == null or data == null) return pam.PAM_CONV_ERR;
     responses.* = null;
     const attempt: *Attempt = @ptrCast(@alignCast(data));

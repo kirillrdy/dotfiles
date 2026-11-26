@@ -40,7 +40,8 @@ pub const Keyboard = struct {
         defer _ = libc.close(fd);
         self.deinit();
         if (format != 1 or size == 0 or size > 16 * 1024 * 1024) return;
-        const memory = libc.mmap(null, size, libc.PROT_READ, libc.MAP_SHARED, fd, 0);
+        // wl_keyboard v7: the keymap fd may be sealed read-only, so it is mapped privately.
+        const memory = libc.mmap(null, size, libc.PROT_READ, libc.MAP_PRIVATE, fd, 0);
         if (memory == null or memory == libc.MAP_FAILED) return;
         defer _ = libc.munmap(memory, size);
         const bytes: [*]const u8 = @ptrCast(memory);
@@ -76,10 +77,10 @@ pub const Keyboard = struct {
         return if (self.state) |state| state.active("Lock") else false;
     }
     pub fn symbol(self: *const Keyboard, code: u32) u32 {
-        return if (self.state) |state| state.keysym(code + 8) else 0;
+        return if (self.state) |state| state.keysym(code +| 8) else 0;
     }
     pub fn repeats(self: *const Keyboard, code: u32) bool {
-        return if (self.map) |map| map.repeats(code + 8) else false;
+        return if (self.map) |map| map.repeats(code +| 8) else false;
     }
     pub fn reset(self: *Keyboard) void {
         if (self.compose) |*compose| compose.reset();
@@ -101,9 +102,9 @@ pub const Keyboard = struct {
                     compose.reset();
                     return "";
                 },
-                .nothing => value = state.utf8(code + 8, buffer),
+                .nothing => value = state.utf8(code +| 8, buffer),
             }
-        } else value = state.utf8(code + 8, buffer);
+        } else value = state.utf8(code +| 8, buffer);
         if (value.len == 0 or value.len >= buffer.len) return "";
         if (std.mem.indexOfAny(u8, value, "\x00\r\n") != null) return "";
         for (value) |byte| if (byte < 32 or byte == 127) return "";

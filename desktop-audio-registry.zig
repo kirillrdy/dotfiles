@@ -87,7 +87,10 @@ pub const Object = struct {
         message.id(self.paramId());
         message.int(0);
         message.pod(value.bytes);
-        _ = connection.end(self.proxy, if (self.kind == .device) spa.PW_DEVICE_METHOD_SET_PARAM else spa.PW_NODE_METHOD_SET_PARAM) catch return false;
+        _ = connection.end(self.proxy, if (self.kind == .device) spa.PW_DEVICE_METHOD_SET_PARAM else spa.PW_NODE_METHOD_SET_PARAM) catch {
+            self.registry.fail();
+            return false;
+        };
         return true;
     }
     fn enumParams(self: *Object) void {
@@ -256,7 +259,10 @@ pub const Registry = struct {
             message.string(if (output) "default.configured.audio.sink" else "default.configured.audio.source");
             message.string("Spa:String:JSON");
             message.string(json);
-            _ = connection.end(object.proxy, spa.PW_METADATA_METHOD_SET_PROPERTY) catch return false;
+            _ = connection.end(object.proxy, spa.PW_METADATA_METHOD_SET_PROPERTY) catch {
+                self.fail();
+                return false;
+            };
             return true;
         };
         return false;
@@ -269,7 +275,10 @@ pub const Registry = struct {
         const message = connection.begin();
         message.int(spa.PW_ID_CORE);
         message.int(sequence);
-        _ = connection.end(spa.PW_ID_CORE, spa.PW_CORE_METHOD_SYNC) catch return null;
+        _ = connection.end(spa.PW_ID_CORE, spa.PW_CORE_METHOD_SYNC) catch {
+            self.fail();
+            return null;
+        };
         self.next_ticket += 1;
         self.barriers.append(self.allocator, .{ .sequence = sequence, .ticket = self.next_ticket }) catch return null;
         return self.next_ticket;
@@ -322,7 +331,19 @@ pub const Registry = struct {
                 const res = try body.int();
                 if (id == spa.PW_ID_CORE or res == -32 or res == -104) self.failed = true;
             },
-            spa.PW_CORE_EVENT_REMOVE_ID => self.connection.?.releaseId(try body.uint()),
+            spa.PW_CORE_EVENT_REMOVE_ID => {
+                const id = try body.uint();
+                // Normally global_remove already dropped the object. A proxy the
+                // server destroys first (a failed bind) is dead: drop it, so a
+                // new proxy reusing the id is not mistaken for it.
+                for (self.objects.items, 0..) |object, index| if (object.proxy == id) {
+                    _ = self.objects.orderedRemove(index);
+                    object.destroy();
+                    self.changed();
+                    break;
+                };
+                self.connection.?.releaseId(id);
+            },
             else => {},
         }
     }

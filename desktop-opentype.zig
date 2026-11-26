@@ -38,7 +38,9 @@ pub const Mapped = struct {
     }
 };
 
-pub const max_axes = 8;
+/// Variable fonts in use have far fewer (Roboto Flex has 13); larger ones render
+/// only at their default coordinates.
+pub const max_axes = 64;
 
 pub fn tagOf(text: *const [4]u8) u32 {
     return tag(text);
@@ -232,7 +234,7 @@ pub const Font = struct {
             const at = 16 + 12 * mid;
             const start = try table.u32At(at);
             const end = try table.u32At(at + 4);
-            if (cp < start) high = mid else if (cp > end) low = mid + 1 else return try table.u32At(at + 8) + (cp - start);
+            if (cp < start) high = mid else if (cp > end) low = mid + 1 else return std.math.add(u32, try table.u32At(at + 8), cp - start) catch error.InvalidFont;
         }
         return 0;
     }
@@ -314,7 +316,7 @@ pub const Font = struct {
             try parseSimple(a, data, @intCast(contours), &simple, &simple_ends);
             try self.vary(a, glyph, coords, simple.items, simple_ends.items, null);
             try points.appendSlice(a, simple.items);
-            for (simple_ends.items) |end| try ends.append(a, @intCast(base + end));
+            for (simple_ends.items) |end| try ends.append(a, std.math.cast(u16, base + end) orelse return error.InvalidFont);
             return;
         }
         // Composite: each component's offset is one varied "point".
@@ -326,8 +328,14 @@ pub const Font = struct {
             var component: Component = .{ .glyph = try data.u16At(offset + 2) };
             offset += 4;
             if (flags & 0x0001 != 0) {
-                component.arg1 = try data.i16At(offset);
-                component.arg2 = try data.i16At(offset + 2);
+                // Offsets are signed words; point indices are unsigned.
+                if (flags & 0x0002 != 0) {
+                    component.arg1 = try data.i16At(offset);
+                    component.arg2 = try data.i16At(offset + 2);
+                } else {
+                    component.arg1 = try data.u16At(offset);
+                    component.arg2 = try data.u16At(offset + 2);
+                }
                 offset += 4;
             } else {
                 const first = try data.u8At(offset);
@@ -605,7 +613,7 @@ pub const Font = struct {
                     cursor.* += 1;
                 }
                 if (value >= total) return error.InvalidFont;
-                list[filled] = @intCast(value);
+                list[filled] = std.math.cast(u16, value) orelse return error.InvalidFont;
                 filled += 1;
             }
         }
@@ -769,10 +777,13 @@ pub fn render(a: std.mem.Allocator, font: *const Font, glyph: u32, coords: []con
     const bounds = outline.bounds() orelse return .{ .left = 0, .top = 0, .width = 0, .height = 0, .pixels = &.{} };
     const scale = size / @as(f64, @floatFromInt(font.units_per_em));
     const grow: f64 = if (embolden) size / 24 / 2 else 0;
-    const left: i32 = @intFromFloat(@floor(bounds[0] * scale - grow));
-    const right: i32 = @intFromFloat(@ceil(bounds[2] * scale + grow));
-    const bottom: i32 = @intFromFloat(@floor(bounds[1] * scale - grow));
-    const top: i32 = @intFromFloat(@ceil(bounds[3] * scale + grow));
+    const edges = [4]f64{ @floor(bounds[0] * scale - grow), @ceil(bounds[2] * scale + grow), @floor(bounds[1] * scale - grow), @ceil(bounds[3] * scale + grow) };
+    // Malformed outlines (huge or non-finite coordinates) render nothing.
+    for (edges) |edge| if (!(@abs(edge) <= 1 << 24)) return .{ .left = 0, .top = 0, .width = 0, .height = 0, .pixels = &.{} };
+    const left: i32 = @intFromFloat(edges[0]);
+    const right: i32 = @intFromFloat(edges[1]);
+    const bottom: i32 = @intFromFloat(edges[2]);
+    const top: i32 = @intFromFloat(edges[3]);
     const width: u32 = @intCast(@max(0, right - left));
     const height: u32 = @intCast(@max(0, top - bottom));
     if (width == 0 or height == 0 or width > 4096 or height > 4096) return .{ .left = left, .top = top, .width = 0, .height = 0, .pixels = &.{} };
@@ -868,6 +879,17 @@ const Index = struct {
         return self.data.slice(self.objects + start, end - start);
     }
 };
+
+/// An offset, count or index operand from untrusted font data.
+fn operandIndex(value: f64) Error!usize {
+    if (!(value >= 0 and value <= std.math.maxInt(i32))) return error.InvalidFont;
+    return @intFromFloat(value);
+}
+
+fn operandInt(value: f64) Error!i32 {
+    if (!(value >= std.math.minInt(i32) and value <= std.math.maxInt(i32))) return error.InvalidFont;
+    return @intFromFloat(value);
+}
 
 /// DICT operands and operators.
 const Dict = struct {
@@ -1000,24 +1022,26 @@ const Cff = struct {
             global_at = strings.end;
         }
         var operands: [4]f64 = undefined;
-        const charstrings_at = (top.get(17, &operands) orelse return error.InvalidFont)[0];
+        const charstrings_op = top.get(17, &operands) orelse return error.InvalidFont;
+        if (charstrings_op.len == 0) return error.InvalidFont;
+        const charstrings_at = try operandIndex(charstrings_op[0]);
         var self: Cff = .{
             .data = table,
             .cff2 = cff2,
-            .charstrings = try Index.read(table, @intFromFloat(charstrings_at), cff2),
+            .charstrings = try Index.read(table, charstrings_at, cff2),
             .global_subrs = try Index.read(table, global_at, cff2),
         };
         if (top.get(1206, &operands)) |kind| if (kind.len > 0 and kind[0] != 2) return error.Unsupported;
         if (top.get(24, &operands)) |vstore| if (vstore.len > 0) {
             // The vstore starts with a length before the ItemVariationStore.
-            self.vstore = try table.from(@as(usize, @intFromFloat(vstore[0])) + 2);
+            self.vstore = try table.from(try operandIndex(vstore[0]) + 2);
         };
         if (top.get(1236, &operands)) |fd_array| if (fd_array.len > 0) {
-            const fds = try Index.read(table, @intFromFloat(fd_array[0]), cff2);
+            const fds = try Index.read(table, try operandIndex(fd_array[0]), cff2);
             self.fd_count = @min(fds.count, self.private_subrs.len);
             for (0..self.fd_count) |i| try self.readPrivate(.{ .data = try fds.get(i) }, i);
             if (top.get(1237, &operands)) |select| if (select.len > 0) {
-                self.fd_select = @intFromFloat(select[0]);
+                self.fd_select = try operandIndex(select[0]);
             };
             return self;
         };
@@ -1029,14 +1053,14 @@ const Cff = struct {
         var operands: [4]f64 = undefined;
         const private = dict.get(18, &operands) orelse return;
         if (private.len < 2) return error.InvalidFont;
-        const size: usize = @intFromFloat(private[0]);
-        const at: usize = @intFromFloat(private[1]);
+        const size = try operandIndex(private[0]);
+        const at = try operandIndex(private[1]);
         const private_dict: Dict = .{ .data = try self.data.slice(at, size) };
         if (private_dict.get(19, &operands)) |subrs| if (subrs.len > 0) {
-            self.private_subrs[fd] = try Index.read(self.data, at + @as(usize, @intFromFloat(subrs[0])), self.cff2);
+            self.private_subrs[fd] = try Index.read(self.data, at + try operandIndex(subrs[0]), self.cff2);
         };
         if (private_dict.get(22, &operands)) |vsindex| if (vsindex.len > 0) {
-            self.vsindex[fd] = @intFromFloat(vsindex[0]);
+            self.vsindex[fd] = std.math.cast(u16, try operandIndex(vsindex[0])) orelse return error.InvalidFont;
         };
     }
 
@@ -1281,7 +1305,7 @@ const Machine = struct {
                     if (self.count == 0) return error.InvalidFont;
                     self.count -= 1;
                     const subrs = if (b == 10) self.local orelse return error.InvalidFont else self.cff.global_subrs;
-                    const index = @as(i64, @intFromFloat(self.stack[self.count])) + bias(subrs.count);
+                    const index = @as(i64, try operandInt(self.stack[self.count])) + bias(subrs.count);
                     if (index < 0) return error.InvalidFont;
                     try self.run(try subrs.get(@intCast(index)), depth + 1);
                 },
@@ -1294,12 +1318,12 @@ const Machine = struct {
                 },
                 15 => { // vsindex (CFF2)
                     if (self.count < 1) return error.InvalidFont;
-                    try self.setVsindex(@intFromFloat(self.stack[self.count - 1]));
+                    try self.setVsindex(std.math.cast(u16, try operandIndex(self.stack[self.count - 1])) orelse return error.InvalidFont);
                     self.count = 0;
                 },
                 16 => { // blend (CFF2): n defaults, each followed by its region deltas
                     if (self.count < 1) return error.InvalidFont;
-                    const n: usize = @intFromFloat(self.stack[self.count - 1]);
+                    const n = try operandIndex(self.stack[self.count - 1]);
                     self.count -= 1;
                     const k = self.regions;
                     if (n * (k + 1) > self.count) return error.InvalidFont;
@@ -1395,4 +1419,11 @@ test "CFF numbers decode every operand encoding" {
     try std.testing.expectEqual(@as(f64, 1.5), try number(&.{ 255, 0, 1, 0x80, 0 }, &i, false));
     i = 0;
     try std.testing.expectApproxEqAbs(@as(f64, -2.25), try number(&.{ 30, 0xe2, 0xa2, 0x5f }, &i, true), 1e-9);
+}
+
+test "CFF offset and index operands reject values that are not small integers" {
+    try std.testing.expectEqual(@as(usize, 42), try operandIndex(42));
+    for ([_]f64{ -1, std.math.nan(f64), std.math.inf(f64), 1e12 }) |value| try std.testing.expectError(error.InvalidFont, operandIndex(value));
+    try std.testing.expectEqual(@as(i32, -107), try operandInt(-107));
+    try std.testing.expectError(error.InvalidFont, operandInt(std.math.nan(f64)));
 }

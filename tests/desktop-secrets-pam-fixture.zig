@@ -2,7 +2,7 @@
 const std = @import("std");
 const pam = @import("desktop").pam;
 const libc = @import("desktop").libc;
-fn converse(_: c_int, _: [*c]const [*c]const pam.pam_message, _: [*c][*c]pam.pam_response, _: ?*anyopaque) callconv(.c) c_int {
+fn converse(_: c_int, _: [*c][*c]const pam.pam_message, _: [*c][*c]pam.pam_response, _: ?*anyopaque) callconv(.c) c_int {
     return pam.PAM_CONV_ERR;
 }
 pub fn main(init: std.process.Init) !void {

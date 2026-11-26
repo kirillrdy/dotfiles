@@ -271,12 +271,17 @@ fn libwaylandTypes(a: std.mem.Allocator, message: Message, externs: *std.StringA
 }
 
 fn libwaylandMessages(a: std.mem.Allocator, out: *std.ArrayList(u8), list: []const Message, externs: *std.StringArrayHashMapUnmanaged(void), local: *const std.StringHashMapUnmanaged(void)) !void {
+    // Like wayland-scanner, an empty list is a null pointer.
+    if (list.len == 0) return out.appendSlice(a, "null");
     try out.appendSlice(a, "&[_]Message{ ");
     for (list) |message| {
-        try out.print(a, ".{{ .name = \"{s}\", .signature = \"{s}\", .types = &[_]?*const Interface{{ {s}}} }}, ", .{
+        const types = try libwaylandTypes(a, message, externs, local);
+        try out.print(a, ".{{ .name = \"{s}\", .signature = \"{s}\", .types = {s}{s}{s} }}, ", .{
             message.name,
             try libwaylandSignature(a, message),
-            try libwaylandTypes(a, message, externs, local),
+            if (types.len == 0) "null" else "&[_]?*const Interface{ ",
+            types,
+            if (types.len == 0) "" else "}",
         });
     }
     try out.appendSlice(a, "}");
@@ -299,8 +304,8 @@ fn emitLibwayland(a: std.mem.Allocator, interfaces: []const Interface) ![]const 
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(a,
         \\// Generated from protocol XML by tools/wayland-zig.zig --libwayland. Do not edit.
-        \\pub const Interface = extern struct { name: [*:0]const u8, version: c_int, method_count: c_int, methods: [*]const Message, event_count: c_int, events: [*]const Message };
-        \\pub const Message = extern struct { name: [*:0]const u8, signature: [*:0]const u8, types: [*]const ?*const Interface };
+        \\pub const Interface = extern struct { name: [*:0]const u8, version: c_int, method_count: c_int, methods: ?[*]const Message, event_count: c_int, events: ?[*]const Message };
+        \\pub const Message = extern struct { name: [*:0]const u8, signature: [*:0]const u8, types: ?[*]const ?*const Interface };
         \\
     );
     for (externs.keys()) |name| try out.print(a, "extern const {s}_interface: Interface;\n", .{name});
