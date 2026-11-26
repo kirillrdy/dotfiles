@@ -2,12 +2,14 @@
 let
   textLibraries = import ./desktop-text-libs.nix { inherit pkgs; };
   glLibraries = import ./desktop-gl-libs.nix { inherit pkgs; };
+  inputLibraries = import ./desktop-input-libs.nix { inherit pkgs; };
 in
 # The Zig compositor implements Wayland clients only; it never creates an
 # XWayland server. Avoid its libdecor plugin and second, full GTK dependency.
 (pkgs.wlroots_0_20.override {
   enableXWayland = false;
   libGL = glLibraries;
+  libinput = inputLibraries;
   libxkbcommon = textLibraries.xkbcommon;
 }).overrideAttrs
   (old: {

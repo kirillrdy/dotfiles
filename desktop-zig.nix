@@ -3,6 +3,7 @@ let
   compositorLibraries = import ./desktop-compositor-libs.nix { inherit pkgs; };
   audioLibraries = import ./desktop-audio-libs.nix { inherit pkgs; };
   pamLibraries = import ./desktop-pam-libs.nix { inherit pkgs; };
+  inputLibraries = import ./desktop-input-libs.nix { inherit pkgs; };
   textLibraries = import ./desktop-text-libs.nix { inherit pkgs; };
   # Keep the portal's xsettings namespace without retaining the daemon.
   portalSettingsSchemas =
@@ -100,7 +101,7 @@ pkgs.stdenv.mkDerivation {
     pkgs.wayland
     pkgs.wayland-protocols
     compositorLibraries
-    pkgs.libinput
+    inputLibraries
     pkgs.libdrm
     pkgs.pixman
     pamLibraries
