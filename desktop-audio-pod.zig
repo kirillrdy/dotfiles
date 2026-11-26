@@ -3,10 +3,10 @@ const std = @import("std");
 const p = @import("desktop-spa.zig");
 const endian = @import("builtin").cpu.arch.endian();
 pub const Error = error{ InvalidPod, WrongPodType, BufferTooSmall };
-fn word(bytes: []const u8) u32 {
+pub fn word(bytes: []const u8) u32 {
     return std.mem.readInt(u32, bytes[0..4], endian);
 }
-fn put(bytes: []u8, value: u32) void {
+pub fn put(bytes: []u8, value: u32) void {
     std.mem.writeInt(u32, bytes[0..4], value, endian);
 }
 pub const View = struct {

@@ -153,8 +153,8 @@ pub const Object = struct {
         const index = try body.uint();
         _ = try body.uint(); // next
         const pod = try body.raw();
-        if (id != self.paramId() or pod.len > 1024 * 1024) return;
-        _ = Pod.View.init(pod) catch return;
+        // raw() has already checked the header with Pod.View.init.
+        if (id != self.paramId()) return;
         const copy = try self.allocator.dupe(u8, pod);
         for (self.params.items) |*param| if (param.index == index) {
             self.allocator.free(param.bytes);

@@ -760,9 +760,7 @@ pub const Node = struct {
     }
 };
 
-fn get(bytes: []const u8) u32 {
-    return std.mem.readInt(u32, bytes[0..4], @import("builtin").cpu.arch.endian());
-}
+const get = Pod.word;
 
 fn nanoseconds() u64 {
     var now: std.c.timespec = undefined;

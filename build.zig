@@ -118,6 +118,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "desktop-dbus-tests", .root_module = dbus })).step);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "wayland-zig-tests", .root_module = wayland_generator.root_module })).step);
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/stat.h>\n#include <sys/random.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <grp.h>\n#include <sys/statvfs.h>\n", &.{}));
+    // A complete keymap as compositors send it, compiled by xkbcommon as the reference.
+    const keymap = b.addSystemCommand(&.{ "xkbcli", "compile-keymap", "--layout", "us", "--variant", "intl" });
+    const keymap_files = b.addWriteFiles();
+    _ = keymap_files.addCopyFile(keymap.captureStdOut(.{}), "us-intl.xkb");
+    test_module.addImport("xkb-reference", b.createModule(.{ .root_source_file = keymap_files.add("xkb-reference.zig", "pub const us_intl = @embedFile(\"us-intl.xkb\");\n") }));
     test_module.addImport("pam-reference", bindings(b, target, optimize, "#include <security/pam_appl.h>\n#include <security/pam_modules.h>\n", &.{"pam"}));
     // PipeWire's headers, plus its private node activation record (src/pipewire/private.h
     // is not installed) restated over the public SPA types with its bitfield word named.

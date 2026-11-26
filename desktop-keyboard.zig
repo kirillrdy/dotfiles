@@ -117,8 +117,8 @@ pub fn unicode(symbol: u32) u32 {
 }
 
 test "native XKB input follows modifiers, composes accents and suppresses control text" {
-    // Compiled by xkbcommon (xkbcli compile-keymap --layout us --variant intl).
-    const keymap = @embedFile("tests/xkb/us-intl.xkb");
+    // Compiled by xkbcommon at build time (xkbcli compile-keymap --layout us --variant intl).
+    const keymap = @import("xkb-reference").us_intl;
     const fd = libc.memfd_create("native-keyboard-test", libc.MFD_CLOEXEC);
     try std.testing.expect(fd >= 0);
     try std.testing.expectEqual(@as(isize, @intCast(keymap.len + 1)), libc.write(fd, keymap.ptr, keymap.len + 1));

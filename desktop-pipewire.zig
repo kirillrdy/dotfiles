@@ -4,6 +4,7 @@
 //! message arrive as ancillary data and are referenced by index from its body.
 const std = @import("std");
 const spa = @import("desktop-spa.zig");
+const Pod = @import("desktop-audio-pod.zig");
 const endian = @import("builtin").cpu.arch.endian();
 
 pub const Error = error{ ConnectionFailed, ConnectionClosed, IoFailed, Protocol, OutOfMemory };
@@ -245,12 +246,8 @@ const SockaddrUn = extern struct {
     path: [108]u8 = @splat(0),
 };
 
-fn get(bytes: []const u8) u32 {
-    return std.mem.readInt(u32, bytes[0..4], endian);
-}
-fn put(bytes: []u8, value: u32) void {
-    std.mem.writeInt(u32, bytes[0..4], value, endian);
-}
+const get = Pod.word;
+const put = Pod.put;
 
 /// Builds a POD: each value is a {size, type} header and a body padded to 8 bytes.
 pub const Writer = struct {
@@ -443,10 +440,7 @@ pub const Dict = struct {
 
 /// The bytes of the POD at the start of `bytes`, header included and padding excluded.
 fn podBytes(bytes: []const u8) Error![]const u8 {
-    if (bytes.len < 8) return error.Protocol;
-    const size: usize = get(bytes[0..4]);
-    if (size > bytes.len - 8) return error.Protocol;
-    return bytes[0 .. 8 + size];
+    return (Pod.View.init(bytes) catch return error.Protocol).bytes;
 }
 
 test "messages round-trip through the native framing and POD encoding" {

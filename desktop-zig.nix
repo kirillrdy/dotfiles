@@ -78,6 +78,8 @@ pkgs.stdenv.mkDerivation {
     pkgs.zig_0_17
     pkgs.pkg-config
     pkgs.wayland-scanner
+    # xkbcli compiles the reference keymap for the native XKB tests.
+    pkgs.libxkbcommon
     pkgs.removeReferencesTo
   ];
   passthru = {
