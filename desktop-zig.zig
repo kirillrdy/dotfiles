@@ -330,7 +330,6 @@ pub const runtime = @import("desktop-runtime.zig");
 pub const icons = @import("desktop-icons.zig");
 pub const gsettings = @import("desktop-gsettings.zig");
 pub const pam = @import("desktop-pam.zig");
-pub const pipewire = @import("pipewire");
 pub const form = @import("desktop-form.zig");
 pub const auth_dialog = @import("desktop-auth-dialog.zig");
 pub const network_editor = @import("desktop-network-editor.zig");

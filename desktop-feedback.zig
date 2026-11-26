@@ -1,9 +1,13 @@
-//! Bounded PCM WAV decoding and native PipeWire event playback.
+//! Bounded PCM WAV decoding and event playback through a native PipeWire node.
+//! The node offers one 32-bit float DSP port per output channel, like a JACK
+//! client, so the sink links it without a converter in this process; the
+//! sound is resampled to the graph rate as it plays.
 const std = @import("std");
-const p = @import("pipewire");
+const spa = @import("desktop-spa.zig");
+const Pod = @import("desktop-audio-pod.zig");
+const pipewire = @import("desktop-pipewire-node.zig");
 const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
-var initialized = false;
 
 const Wave = struct {
     samples: []const u8,
@@ -38,22 +42,24 @@ const Wave = struct {
     }
 };
 
+/// The largest graph quantum a DSP port buffer must hold, as pw_filter assumes.
+const quantum_limit = 8192;
+
 pub const Feedback = struct {
     allocator: std.mem.Allocator,
-    loop: ?*p.pw_thread_loop = null,
-    stream: ?*p.pw_stream = null,
+    node: ?*pipewire.Node = null,
     bytes: ?[]u8 = null,
     wave: Wave = undefined,
-    offset: usize = 0,
-    active: bool = false,
-    draining: bool = false,
+    /// Playback position in source frames; advanced on the node thread.
+    position: f64 = 0,
     deadline: i64 = 0,
 
     pub fn playing(self: *Feedback) bool {
-        const loop = self.loop orelse return false;
-        p.pw_thread_loop_lock(loop);
-        defer p.pw_thread_loop_unlock(loop);
-        return self.active and util.monotonicTime() < self.deadline;
+        const node = self.node orelse return false;
+        return switch (node.state.load(.acquire)) {
+            .connecting, .paused, .streaming => util.monotonicTime() < self.deadline,
+            .failed, .finished => false,
+        };
     }
 
     pub fn play(self: *Feedback, path: [*:0]const u8) void {
@@ -78,87 +84,91 @@ pub const Feedback = struct {
             return;
         };
         self.bytes = bytes;
-        if (!initialized) {
-            p.pw_init(null, null);
-            initialized = true;
-        }
-        const loop = p.pw_thread_loop_new("desktop-feedback", null) orelse {
-            self.deinit();
-            return;
+        self.position = 0;
+        var format: [256]u8 align(8) = undefined;
+        var builder = Pod.Builder.init(&format, spa.SPA_TYPE_OBJECT_Format, spa.SPA_PARAM_EnumFormat) catch unreachable;
+        builder.identifier(spa.SPA_FORMAT_mediaType, spa.SPA_MEDIA_TYPE_audio) catch unreachable;
+        builder.identifier(spa.SPA_FORMAT_mediaSubtype, spa.SPA_MEDIA_SUBTYPE_dsp) catch unreachable;
+        builder.identifier(spa.SPA_FORMAT_AUDIO_format, spa.SPA_AUDIO_FORMAT_DSP_F32) catch unreachable;
+        const enum_format = builder.view().bytes;
+        const ports = [_]pipewire.PortSpec{
+            .{ .enum_format = enum_format, .properties = &.{ .{ "port.name", "output_FL" }, .{ "audio.channel", "FL" }, .{ "format.dsp", "32 bit float mono audio" } } },
+            .{ .enum_format = enum_format, .properties = &.{ .{ "port.name", "output_FR" }, .{ "audio.channel", "FR" }, .{ "format.dsp", "32 bit float mono audio" } } },
         };
-        self.loop = loop;
-        self.stream = p.pw_stream_new_simple(p.pw_thread_loop_get_loop(loop), "Volume feedback", p.pw_properties_new(@as([*:0]const u8, "media.type"), @as([*:0]const u8, "Audio"), @as([*:0]const u8, "media.category"), @as([*:0]const u8, "Playback"), @as([*:0]const u8, "media.role"), @as([*:0]const u8, "Event"), @as(?*anyopaque, null)), &events, self) orelse {
-            self.deinit();
-            return;
-        };
-        // SPA object with five scalar properties; all pods are aligned to 8 bytes.
-        const Property = extern struct { key: u32, flags: u32 = 0, size: u32 = 4, kind: u32, value: u32, padding: u32 = 0 };
-        const Format = extern struct { size: u32 = @sizeOf(@This()) - 8, kind: u32 = p.SPA_TYPE_Object, object_type: u32 = p.SPA_TYPE_OBJECT_Format, id: u32 = p.SPA_PARAM_EnumFormat, props: [5]Property };
-        const format: Format = .{ .props = .{
-            .{ .key = p.SPA_FORMAT_mediaType, .kind = p.SPA_TYPE_Id, .value = p.SPA_MEDIA_TYPE_audio },
-            .{ .key = p.SPA_FORMAT_mediaSubtype, .kind = p.SPA_TYPE_Id, .value = p.SPA_MEDIA_SUBTYPE_raw },
-            .{ .key = p.SPA_FORMAT_AUDIO_format, .kind = p.SPA_TYPE_Id, .value = p.SPA_AUDIO_FORMAT_S16_LE },
-            .{ .key = p.SPA_FORMAT_AUDIO_rate, .kind = p.SPA_TYPE_Int, .value = self.wave.rate },
-            .{ .key = p.SPA_FORMAT_AUDIO_channels, .kind = p.SPA_TYPE_Int, .value = self.wave.channels },
-        } };
-        var params = [_][*c]const p.spa_pod{@ptrCast(&format)};
-        self.active = true;
+        // The session manager links audio streams by the stream format their
+        // node reports: planar float stereo, one channel per DSP port.
+        var stream: [256]u8 align(8) = undefined;
+        var stream_builder = Pod.Builder.init(&stream, spa.SPA_TYPE_OBJECT_Format, spa.SPA_PARAM_EnumFormat) catch unreachable;
+        stream_builder.identifier(spa.SPA_FORMAT_mediaType, spa.SPA_MEDIA_TYPE_audio) catch unreachable;
+        stream_builder.identifier(spa.SPA_FORMAT_mediaSubtype, spa.SPA_MEDIA_SUBTYPE_raw) catch unreachable;
+        stream_builder.identifier(spa.SPA_FORMAT_AUDIO_format, spa.SPA_AUDIO_FORMAT_F32P) catch unreachable;
+        stream_builder.integer(spa.SPA_FORMAT_AUDIO_channels, 2) catch unreachable;
+        stream_builder.ids(spa.SPA_FORMAT_AUDIO_position, &.{ spa.SPA_AUDIO_CHANNEL_FL, spa.SPA_AUDIO_CHANNEL_FR }) catch unreachable;
         self.deadline = util.monotonicTime() + 5_000_000 + @as(i64, @intCast(self.wave.samples.len * 1_000_000 / (self.wave.rate * self.wave.channels * 2)));
-        if (p.pw_stream_connect(self.stream, p.PW_DIRECTION_OUTPUT, p.PW_ID_ANY, p.PW_STREAM_FLAG_AUTOCONNECT | p.PW_STREAM_FLAG_MAP_BUFFERS, &params, 1) < 0 or p.pw_thread_loop_start(loop) < 0) self.deinit();
+        self.node = pipewire.Node.create(self.allocator, .{
+            .properties = &.{
+                .{ "media.type", "Audio" },
+                .{ "media.category", "Playback" },
+                .{ "media.role", "Event" },
+                .{ "media.class", "Stream/Output/Audio" },
+                .{ "node.name", "desktop-feedback" },
+                .{ "node.description", "Volume feedback" },
+                .{ "node.autoconnect", "true" },
+            },
+            .ports = &ports,
+            .format = stream_builder.view().bytes,
+        }, .{ .context = self, .format = &format_buffers, .process = &process }) catch null;
+        if (self.node == null) self.deinit();
     }
 
     pub fn deinit(self: *Feedback) void {
-        if (self.loop) |loop| p.pw_thread_loop_stop(loop);
-        if (self.stream) |stream| p.pw_stream_destroy(stream);
-        if (self.loop) |loop| p.pw_thread_loop_destroy(loop);
+        if (self.node) |node| node.destroy();
         if (self.bytes) |bytes| self.allocator.free(bytes);
         self.* = .{ .allocator = self.allocator };
     }
 
-    fn process(data: ?*anyopaque) callconv(.c) void {
-        const self: *Feedback = @ptrCast(@alignCast(data.?));
-        if (self.draining) return;
-        const buffer = p.pw_stream_dequeue_buffer(self.stream) orelse return;
-        const spa = buffer.*.buffer;
-        if (spa == null or spa.*.n_datas == 0) {
-            _ = p.pw_stream_queue_buffer(self.stream, buffer);
-            return;
-        }
-        const dest = &spa.*.datas[0];
-        const stride: u32 = self.wave.channels * 2;
-        const count = @min(self.wave.samples.len - self.offset, dest.maxsize - dest.maxsize % stride);
-        if (dest.data == null or dest.chunk == null or count == 0) {
-            _ = p.pw_stream_queue_buffer(self.stream, buffer);
-            self.active = false;
-            return;
-        }
-        @memcpy(@as([*]u8, @ptrCast(dest.data))[0..count], self.wave.samples[self.offset..][0..count]);
-        dest.chunk.*.offset = 0;
-        dest.chunk.*.stride = @intCast(stride);
-        dest.chunk.*.size = @intCast(count);
-        buffer.*.size = count / stride;
-        self.offset += count;
-        _ = p.pw_stream_queue_buffer(self.stream, buffer);
-        if (self.offset == self.wave.samples.len) {
-            self.draining = true;
-            _ = p.pw_stream_flush(self.stream, true);
-        }
+    fn format_buffers(_: *anyopaque, _: u32, _: []const u8, out: []align(8) u8) ?[]const u8 {
+        var builder = Pod.Builder.init(out, spa.SPA_TYPE_OBJECT_ParamBuffers, spa.SPA_PARAM_Buffers) catch return null;
+        builder.integer(spa.SPA_PARAM_BUFFERS_buffers, 2) catch return null;
+        builder.integer(spa.SPA_PARAM_BUFFERS_blocks, 1) catch return null;
+        builder.integer(spa.SPA_PARAM_BUFFERS_size, quantum_limit * @sizeOf(f32)) catch return null;
+        builder.integer(spa.SPA_PARAM_BUFFERS_stride, @sizeOf(f32)) catch return null;
+        return builder.view().bytes;
     }
-    fn drained(data: ?*anyopaque) callconv(.c) void {
-        const self: *Feedback = @ptrCast(@alignCast(data.?));
-        self.active = false;
+
+    /// Writes one quantum per channel, interpolating source frames linearly.
+    fn process(context: *anyopaque, cycle: *pipewire.Cycle) void {
+        const self: *Feedback = @ptrCast(@alignCast(context));
+        if (cycle.rate == 0) return;
+        const frames_total = self.wave.samples.len / (@as(usize, self.wave.channels) * 2);
+        const step = @as(f64, @floatFromInt(self.wave.rate)) / @as(f64, @floatFromInt(cycle.rate));
+        var frames: usize = @intCast(@min(cycle.duration, quantum_limit));
+        for (cycle.buffers) |buffer| if (buffer) |value| {
+            frames = @min(frames, value.data.len / @sizeOf(f32));
+        };
+        for (cycle.buffers, 0..) |buffer, channel| {
+            const value = buffer orelse continue;
+            const out: [*]align(1) f32 = @ptrCast(value.data.ptr);
+            const source = @min(channel, self.wave.channels - 1);
+            for (0..frames) |index| {
+                const at = self.position + @as(f64, @floatFromInt(index)) * step;
+                const first: usize = @intFromFloat(@floor(at));
+                const weight: f32 = @floatCast(at - @floor(at));
+                out[index] = (1 - weight) * self.sample(first, source, frames_total) + weight * self.sample(first + 1, source, frames_total);
+            }
+            value.chunk.* = .{ .offset = 0, .size = @intCast(frames * @sizeOf(f32)), .stride = @sizeOf(f32), .flags = 0 };
+        }
+        self.position += @as(f64, @floatFromInt(frames)) * step;
+        // One silent quantum after the sound lets the sink drain its last samples.
+        if (self.position >= @as(f64, @floatFromInt(frames_total)) + @as(f64, @floatFromInt(frames)) * step) cycle.finished = true;
     }
-    fn stateChanged(data: ?*anyopaque, _: p.pw_stream_state, state: p.pw_stream_state, _: [*c]const u8) callconv(.c) void {
-        if (state == p.PW_STREAM_STATE_ERROR or state == p.PW_STREAM_STATE_UNCONNECTED) drained(data);
+
+    fn sample(self: *const Feedback, frame: usize, channel: usize, frames_total: usize) f32 {
+        if (frame >= frames_total) return 0;
+        const at = (frame * self.wave.channels + channel) * 2;
+        const value = std.mem.readInt(i16, self.wave.samples[at..][0..2], .little);
+        return @as(f32, @floatFromInt(value)) / 32768.0;
     }
-    const events = blk: {
-        var value = std.mem.zeroes(p.pw_stream_events);
-        value.version = p.PW_VERSION_STREAM_EVENTS;
-        value.process = &process;
-        value.drained = &drained;
-        value.state_changed = &stateChanged;
-        break :blk value;
-    };
 };
 
 test "PCM WAV validates chunks, format, and complete frames" {
@@ -185,4 +195,23 @@ test "PCM WAV validates chunks, format, and complete frames" {
     std.mem.writeInt(u32, bytes[40..44], 4, .little);
     std.mem.writeInt(u16, bytes[20..22], 3, .little);
     try std.testing.expectError(error.UnsupportedWave, Wave.parse(&bytes));
+}
+
+test "feedback resamples to the graph rate and finishes after a silent quantum" {
+    var samples: [8]u8 = undefined;
+    for (0..4) |index| std.mem.writeInt(i16, samples[index * 2 ..][0..2], @intCast(index * 8192), .little);
+    var player = Feedback{ .allocator = std.testing.allocator, .wave = .{ .samples = &samples, .rate = 24000, .channels = 1 } };
+    var left: [8]f32 = undefined;
+    var right: [8]f32 = undefined;
+    var chunks: [2]spa.spa_chunk = undefined;
+    var buffers = [_]?pipewire.Buffer{ .{ .data = std.mem.sliceAsBytes(&left), .chunk = &chunks[0] }, .{ .data = std.mem.sliceAsBytes(&right), .chunk = &chunks[1] } };
+    var cycle: pipewire.Cycle = .{ .duration = 8, .rate = 48000, .buffers = &buffers };
+    Feedback.process(&player, &cycle);
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.375 }, &left);
+    try std.testing.expectEqualSlices(f32, &left, &right);
+    try std.testing.expectEqual(@as(u32, 32), chunks[0].size);
+    try std.testing.expect(!cycle.finished);
+    Feedback.process(&player, &cycle);
+    try std.testing.expect(cycle.finished);
+    try std.testing.expectEqual(@as(f32, 0), left[0]);
 }

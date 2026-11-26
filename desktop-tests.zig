@@ -132,6 +132,7 @@ test {
     _ = @import("tests/desktop-libc-abi.zig");
     _ = @import("desktop-fonts.zig");
     _ = @import("desktop-pipewire.zig");
+    _ = @import("desktop-pipewire-node.zig");
     _ = @import("desktop-xkb.zig");
     _ = @import("desktop-opentype.zig");
     _ = @import("desktop-switcher.zig");

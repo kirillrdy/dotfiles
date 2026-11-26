@@ -1,7 +1,7 @@
 //! PipeWire's native protocol over its Unix socket, without libpipewire.
 //! Each message is a 16-byte header (object id, opcode and size, sequence,
-//! descriptor count) followed by a SPA Struct POD. This covers the control
-//! plane: core, registry and proxies bound from it. Streams still use libpipewire.
+//! descriptor count) followed by a SPA Struct POD. Descriptors sent with a
+//! message arrive as ancillary data and are referenced by index from its body.
 const std = @import("std");
 const spa = @import("desktop-spa.zig");
 const endian = @import("builtin").cpu.arch.endian();
@@ -10,7 +10,7 @@ pub const Error = error{ ConnectionFailed, ConnectionClosed, IoFailed, Protocol,
 
 const max_message = 1024 * 1024;
 
-pub const Message = struct { id: u32, opcode: u8, body: Reader };
+pub const Message = struct { id: u32, opcode: u8, body: Reader, fds: []c_int };
 
 pub const Connection = struct {
     allocator: std.mem.Allocator,
@@ -23,6 +23,11 @@ pub const Connection = struct {
     in: std.ArrayList(u8) = .empty,
     /// Bytes of `in` belonging to the message last returned by `next`.
     consumed: usize = 0,
+    /// Received descriptors not yet claimed by a message, in arrival order.
+    fds: std.ArrayList(c_int) = .empty,
+    /// Descriptors of the message last returned by `next`; those not taken
+    /// are closed when the next message is returned.
+    message_fds: std.ArrayList(c_int) = .empty,
     out: Writer,
 
     /// Connects like libpipewire: $PIPEWIRE_REMOTE (default pipewire-0) in
@@ -66,6 +71,10 @@ pub const Connection = struct {
 
     pub fn destroy(self: *Connection) void {
         _ = std.c.close(self.fd);
+        self.closeMessageFds();
+        for (self.fds.items) |fd| _ = std.c.close(fd);
+        self.fds.deinit(self.allocator);
+        self.message_fds.deinit(self.allocator);
         self.free_ids.deinit(self.allocator);
         self.in.deinit(self.allocator);
         self.out.bytes.deinit(self.allocator);
@@ -124,8 +133,23 @@ pub const Connection = struct {
         }
     }
 
-    /// Reads what the socket holds without blocking. Descriptors are closed:
-    /// the control plane never receives memory or event descriptors it uses.
+    /// Claims descriptor `index` of the current message; the caller then owns it.
+    pub fn takeFd(self: *Connection, index: i64) Error!c_int {
+        if (index < 0 or index >= self.message_fds.items.len) return error.Protocol;
+        const fd = self.message_fds.items[@intCast(index)];
+        if (fd < 0) return error.Protocol;
+        self.message_fds.items[@intCast(index)] = -1;
+        return fd;
+    }
+
+    fn closeMessageFds(self: *Connection) void {
+        for (self.message_fds.items) |fd| {
+            if (fd >= 0) _ = std.c.close(fd);
+        }
+        self.message_fds.clearRetainingCapacity();
+    }
+
+    /// Reads what the socket holds without blocking, queueing any descriptors.
     pub fn read(self: *Connection) Error!void {
         while (true) {
             if (self.in.items.len > 4 * max_message) return error.Protocol;
@@ -140,14 +164,16 @@ pub const Connection = struct {
                 11 => return,
                 else => return error.IoFailed,
             };
-            closeFds(control[0..header.controllen]);
+            try self.queueFds(control[0..header.controllen]);
             if (received == 0) return error.ConnectionClosed;
             self.in.items.len += @intCast(received);
         }
     }
 
-    /// The next complete message already read. Its body is valid until the next call.
+    /// The next complete message already read. Its body and descriptors are
+    /// valid until the next call.
     pub fn next(self: *Connection) Error!?Message {
+        self.closeMessageFds();
         if (self.consumed > 0) {
             const rest = self.in.items.len - self.consumed;
             std.mem.copyForwards(u8, self.in.items[0..rest], self.in.items[self.consumed..]);
@@ -159,24 +185,43 @@ pub const Connection = struct {
         const word = get(data[4..8]);
         const size: usize = word & 0xffffff;
         if (data.len < 16 + size) return null;
+        // Descriptors arrive with the first byte of their message, so once the
+        // whole message is read, all of its descriptors are queued.
+        const count = get(data[12..16]);
+        if (count > self.fds.items.len) return error.Protocol;
+        try self.message_fds.appendSlice(self.allocator, self.fds.items[0..count]);
+        std.mem.copyForwards(c_int, self.fds.items, self.fds.items[count..]);
+        self.fds.items.len -= count;
         self.consumed = 16 + size;
         // A footer POD may follow the body; only the first POD is the message.
-        return .{ .id = get(data[0..4]), .opcode = @intCast(word >> 24), .body = try Reader.init(data[16..][0..size]) };
+        return .{ .id = get(data[0..4]), .opcode = @intCast(word >> 24), .body = try Reader.init(data[16..][0..size]), .fds = self.message_fds.items };
+    }
+
+    /// Queues SCM_RIGHTS descriptors. On failure, every one received is closed.
+    fn queueFds(self: *Connection, control: []const u8) Error!void {
+        var failed = false;
+        var offset: usize = 0;
+        while (offset + 16 <= control.len) {
+            const len = std.mem.readInt(usize, control[offset..][0..8], endian);
+            if (len < 16 or offset + len > control.len) break;
+            if (std.mem.readInt(i32, control[offset + 8 ..][0..4], endian) == 1 and std.mem.readInt(i32, control[offset + 12 ..][0..4], endian) == 1) {
+                var at = offset + 16;
+                while (at + 4 <= offset + len) : (at += 4) {
+                    const fd = std.mem.readInt(i32, control[at..][0..4], endian);
+                    if (failed or self.fds.items.len >= 256) {
+                        failed = true;
+                        _ = std.c.close(fd);
+                    } else self.fds.append(self.allocator, fd) catch {
+                        failed = true;
+                        _ = std.c.close(fd);
+                    };
+                }
+            }
+            offset += std.mem.alignForward(usize, len, 8);
+        }
+        if (failed) return error.Protocol;
     }
 };
-
-fn closeFds(control: []const u8) void {
-    var offset: usize = 0;
-    while (offset + 16 <= control.len) {
-        const len = std.mem.readInt(usize, control[offset..][0..8], .little);
-        if (len < 16 or offset + len > control.len) return;
-        if (std.mem.readInt(i32, control[offset + 8 ..][0..4], .little) == 1 and std.mem.readInt(i32, control[offset + 12 ..][0..4], .little) == 1) {
-            var at = offset + 16;
-            while (at + 4 <= offset + len) : (at += 4) _ = std.c.close(std.mem.readInt(i32, control[at..][0..4], .little));
-        }
-        offset += std.mem.alignForward(usize, len, 8);
-    }
-}
 
 const SockaddrUn = extern struct {
     family: u16 = 1,
@@ -267,6 +312,9 @@ pub const Writer = struct {
         self.append(&.{0});
         self.pad();
     }
+    pub fn boolean(self: *Writer, flag: bool) void {
+        self.scalar(spa.SPA_TYPE_Bool, @intFromBool(flag));
+    }
     pub fn none(self: *Writer) void {
         self.value(spa.SPA_TYPE_None, &.{});
     }
@@ -325,6 +373,22 @@ pub const Reader = struct {
     }
     pub fn long(self: *Reader) Error!i64 {
         return std.mem.readInt(i64, (try self.typed(spa.SPA_TYPE_Long, 8))[0..8], endian);
+    }
+    /// A descriptor's index in the message's descriptor list.
+    pub fn fd(self: *Reader) Error!i64 {
+        return std.mem.readInt(i64, (try self.typed(spa.SPA_TYPE_Fd, 8))[0..8], endian);
+    }
+    pub fn boolean(self: *Reader) Error!bool {
+        return get(try self.typed(spa.SPA_TYPE_Bool, 4)) != 0;
+    }
+    /// An Object POD with its header, or null for a None POD.
+    pub fn object(self: *Reader) Error!?[]const u8 {
+        const whole = try self.raw();
+        return switch (get(whole[4..8])) {
+            spa.SPA_TYPE_None => null,
+            spa.SPA_TYPE_Object => if (whole.len >= 16) whole else error.Protocol,
+            else => error.Protocol,
+        };
     }
     /// A String, or null for a None POD.
     pub fn string(self: *Reader) Error!?[:0]const u8 {
@@ -445,4 +509,71 @@ test "freed ids are reused last-in first-out after the server releases them" {
     try std.testing.expectEqual(@as(u32, 2), connection.newId());
     try std.testing.expectEqual(@as(u32, 3), connection.newId());
     try std.testing.expectEqual(@as(u32, 5), connection.newId());
+}
+
+/// Sends one message with `passed` descriptors attached, as the server does.
+fn sendWithFds(fd: c_int, id: u32, opcode: u8, body: []const u8, passed: []const c_int, claimed: usize) !void {
+    var header: [16]u8 = undefined;
+    put(header[0..4], id);
+    put(header[4..8], (@as(u32, opcode) << 24) | @as(u32, @intCast(body.len)));
+    put(header[8..12], 0);
+    put(header[12..16], @intCast(claimed));
+    var control: [16 + 4 * 4]u8 align(8) = @splat(0);
+    std.mem.writeInt(usize, control[0..8], 16 + 4 * passed.len, endian);
+    std.mem.writeInt(i32, control[8..12], 1, endian); // SOL_SOCKET
+    std.mem.writeInt(i32, control[12..16], 1, endian); // SCM_RIGHTS
+    for (passed, 0..) |value, index| std.mem.writeInt(i32, control[16 + 4 * index ..][0..4], value, endian);
+    var iov = [_]std.posix.iovec_const{ .{ .base = &header, .len = header.len }, .{ .base = body.ptr, .len = body.len } };
+    const length = if (passed.len == 0) 0 else std.mem.alignForward(usize, 16 + 4 * passed.len, 8);
+    const message: std.c.msghdr_const = .{ .name = null, .namelen = 0, .iov = &iov, .iovlen = 2, .control = if (length == 0) null else &control, .controllen = @intCast(length), .flags = 0 };
+    if (std.c.sendmsg(fd, &message, 0) != header.len + body.len) return error.IoFailed;
+}
+
+test "descriptors belong to the message that carries them and are closed unless taken" {
+    const a = std.testing.allocator;
+    var fds: [2]c_int = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.socketpair(1, 1 | 0o2000000, 0, &fds));
+    const client = try Connection.fromFd(a, fds[0]);
+    defer client.destroy();
+    var writer: Writer = .{ .allocator = a };
+    defer writer.bytes.deinit(a);
+    var pipe: [2]c_int = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.pipe(&pipe));
+    defer for (pipe) |end| {
+        _ = std.c.close(end);
+    };
+    // add_mem-like: an id and a descriptor index; then a message without descriptors.
+    writer.beginStruct();
+    writer.uint(7);
+    var index: [8]u8 = undefined;
+    std.mem.writeInt(i64, &index, 1, endian);
+    writer.value(spa.SPA_TYPE_Fd, &index);
+    writer.endStruct();
+    try sendWithFds(fds[1], 0, 6, writer.bytes.items, &pipe, 2);
+    writer.reset();
+    writer.beginStruct();
+    writer.uint(8);
+    writer.endStruct();
+    try sendWithFds(fds[1], 0, 7, writer.bytes.items, &.{}, 0);
+    // Claims a descriptor that never arrived.
+    try sendWithFds(fds[1], 0, 7, writer.bytes.items, &.{}, 1);
+
+    try client.read();
+    var first = (try client.next()).?;
+    try std.testing.expectEqual(@as(usize, 2), first.fds.len);
+    try std.testing.expectEqual(@as(u32, 7), try first.body.uint());
+    const taken = try client.takeFd(try first.body.fd());
+    defer _ = std.c.close(taken);
+    const untaken = first.fds[0];
+    try std.testing.expectError(error.Protocol, client.takeFd(1));
+    try std.testing.expectError(error.Protocol, client.takeFd(2));
+    try std.testing.expectEqual(@as(isize, 1), std.c.write(taken, "x", 1));
+
+    var second = (try client.next()).?;
+    try std.testing.expectEqual(@as(usize, 0), second.fds.len);
+    try std.testing.expectEqual(@as(u32, 8), try second.body.uint());
+    // The first message's unclaimed descriptor was closed with it.
+    try std.testing.expectEqual(@as(c_int, -1), std.c.fcntl(untaken, 1));
+    try std.testing.expectError(error.Protocol, client.next());
+    _ = std.c.close(fds[1]);
 }

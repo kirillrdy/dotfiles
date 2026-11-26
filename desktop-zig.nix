@@ -102,6 +102,8 @@ pkgs.stdenv.mkDerivation {
     pkgs.pixman
     pamLibraries
     textLibraries.xkbcommon
+    # Audio and screen video use PipeWire's native protocol. Its headers are
+    # test references, and an independent libpipewire consumer is a fixture.
     audioLibraries.pipewire
   ];
   # Compile the former launcher's environment setup into the Zig executable.
@@ -143,6 +145,11 @@ pkgs.stdenv.mkDerivation {
   # Keep debug information without retaining the compiler through source paths.
   postFixup = ''
     find "$out" ''${tests:+"$tests"} -type f -exec remove-references-to -t ${pkgs.zig_0_17} {} +
+    # Only test fixtures may load libpipewire; the desktop speaks the protocol itself.
+    if grep -rlF ${audioLibraries.pipewire} "$out"; then
+      echo "desktop output references libpipewire" >&2
+      exit 1
+    fi
   '';
   installPhase = ''
     mkdir -p "$out/share/applications"

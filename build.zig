@@ -17,7 +17,8 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     // Wayland clients use the native wire runtime; only the compositor links libwayland (server).
-    for ([_][]const u8{ "libpipewire-0.3", "pam", "harfbuzz" }) |name| desktop.linkSystemLibrary(name, .{});
+    // PipeWire is spoken natively too: its headers only serve as test references.
+    for ([_][]const u8{ "pam", "harfbuzz" }) |name| desktop.linkSystemLibrary(name, .{});
     // HarfBuzz shapes; font files are read and rasterized in Zig.
     const text_c = bindings(b, target, optimize, "#include <hb.h>\n", &.{"harfbuzz"});
     desktop.addImport("text-c", text_c);
@@ -85,7 +86,6 @@ pub fn build(b: *std.Build) void {
         options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
     }
     desktop.addOptions("options", options);
-    desktop.addImport("pipewire", bindings(b, target, optimize, "#include <pipewire/pipewire.h>\n#include <pipewire/extensions/metadata.h>\n#include <spa/param/audio/format.h>\n#include <spa/param/video/format.h>\n#include <spa/param/buffers.h>\n#include <spa/param/props.h>\n#include <spa/param/route.h>\n", &.{"libpipewire-0.3"}));
     const compositor_headers = b.addWriteFiles();
     const layer_header = b.addSystemCommand(&.{ "wayland-scanner", "server-header" });
     const wlr_dir = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
@@ -119,9 +119,28 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "wayland-zig-tests", .root_module = wayland_generator.root_module })).step);
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/stat.h>\n#include <sys/random.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <grp.h>\n#include <sys/statvfs.h>\n", &.{}));
     test_module.addImport("pam-reference", bindings(b, target, optimize, "#include <security/pam_appl.h>\n#include <security/pam_modules.h>\n", &.{"pam"}));
+    // PipeWire's headers, plus its private node activation record (src/pipewire/private.h
+    // is not installed) restated over the public SPA types with its bitfield word named.
+    const pipewire_headers = "#include <pipewire/pipewire.h>\n#include <pipewire/extensions/metadata.h>\n#include <pipewire/extensions/client-node.h>\n#include <spa/param/audio/format.h>\n#include <spa/param/video/format.h>\n#include <spa/param/buffers.h>\n#include <spa/param/props.h>\n#include <spa/param/route.h>\n#include <spa/node/io.h>\n#include <spa/node/command.h>\n";
+    test_module.addImport("pipewire", bindings(b, target, optimize, pipewire_headers ++
+        \\struct pw_node_activation_state { int status; int32_t required; int32_t pending; };
+        \\struct pw_node_activation {
+        \\  uint32_t status; uint32_t bits; struct pw_node_activation_state state[2];
+        \\  uint64_t signal_time; uint64_t awake_time; uint64_t finish_time; uint64_t prev_signal_time;
+        \\  struct spa_io_segment reposition; struct spa_io_segment segment; uint32_t segment_owner[16];
+        \\  uint64_t prev_awake_time; uint64_t prev_finish_time; uint32_t padding[7];
+        \\  uint32_t client_version; uint32_t server_version; uint32_t active_driver_id; uint32_t driver_id; uint32_t flags;
+        \\  struct spa_io_position position; uint64_t sync_timeout; uint64_t sync_left; float cpu_load[3];
+        \\  uint32_t xrun_count; uint64_t xrun_time; uint64_t xrun_delay; uint64_t max_delay; uint32_t command; uint32_t reposition_owner;
+        \\};
+        \\
+    , &.{"libpipewire-0.3"}));
 
     const fixtures_module = b.createModule(.{ .root_source_file = b.path("tests/desktop-fixtures.zig"), .target = target, .optimize = optimize });
     fixtures_module.addImport("desktop", desktop);
+    // The video consumer fixture uses libpipewire as an independent implementation.
+    fixtures_module.addImport("pipewire", bindings(b, target, optimize, pipewire_headers, &.{"libpipewire-0.3"}));
+    fixtures_module.linkSystemLibrary("libpipewire-0.3", .{});
     const desktop_fixture = b.addExecutable(.{ .name = "desktop-fixture", .root_module = fixtures_module });
     const install_fixture = b.addInstallArtifact(desktop_fixture, fixture_install);
     b.getInstallStep().dependOn(&install_fixture.step);

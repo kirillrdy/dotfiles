@@ -140,6 +140,14 @@ pub const Builder = struct {
         @memcpy(bytes[8..][0 .. values.len * 4], std.mem.sliceAsBytes(values));
         try self.add(key, p.SPA_TYPE_Array, bytes[0 .. 8 + values.len * 4]);
     }
+    pub fn ids(self: *Builder, key: u32, values: []const u32) Error!void {
+        var bytes: [8 + 64 * 4]u8 = undefined;
+        if (values.len > 64) return error.BufferTooSmall;
+        put(&bytes, 4);
+        put(bytes[4..], p.SPA_TYPE_Id);
+        for (values, 0..) |value, index| put(bytes[8 + index * 4 ..], value);
+        try self.add(key, p.SPA_TYPE_Array, bytes[0 .. 8 + values.len * 4]);
+    }
     pub fn object(self: *Builder, key: u32, value: View) Error!void {
         try self.add(key, value.kind(), value.bytes[8..]);
     }
