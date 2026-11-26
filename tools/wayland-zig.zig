@@ -3,6 +3,7 @@
 //! Each interface becomes a struct holding a `wire.Proxy` with one method per
 //! request, an `Event` union in opcode order and `listen` for typed handlers.
 //! With `--libwayland`, emit libwayland `wl_interface` tables for protocols the compositor serves.
+//! With `--server`, emit typed bindings for the native server runtime, desktop-wire-server.zig.
 const std = @import("std");
 
 const Arg = struct {
@@ -339,6 +340,126 @@ test "libwayland metadata matches wayland-scanner conventions" {
     try std.testing.expect(std.mem.indexOf(u8, source, ".method_count = 3,") != null);
 }
 
+fn serverArgType(a: std.mem.Allocator, arg: Arg, known: *const std.StringHashMapUnmanaged(void), sending: bool) ![]const u8 {
+    if (std.mem.eql(u8, arg.kind, "int")) return "i32";
+    if (std.mem.eql(u8, arg.kind, "uint")) return "u32";
+    if (std.mem.eql(u8, arg.kind, "fixed")) return "f64";
+    if (std.mem.eql(u8, arg.kind, "string")) {
+        if (sending) return if (arg.allow_null) "?[]const u8" else "[]const u8";
+        return if (arg.allow_null) "?[:0]const u8" else "[:0]const u8";
+    }
+    if (std.mem.eql(u8, arg.kind, "array")) return "[]const u8";
+    if (std.mem.eql(u8, arg.kind, "fd")) return "wire.Fd";
+    if (std.mem.eql(u8, arg.kind, "object") or std.mem.eql(u8, arg.kind, "new_id")) {
+        const base = if (arg.interface) |target| (if (known.contains(target)) target else "wire.Resource") else "wire.Resource";
+        return if (arg.allow_null) std.fmt.allocPrint(a, "?{s}", .{base}) else base;
+    }
+    return error.UnknownArgType;
+}
+
+/// Emit typed server bindings for desktop-wire-server.zig: a `Request` union
+/// per interface, `setHandler`, and one `send` method per event.
+fn emitServer(a: std.mem.Allocator, interfaces: []const Interface) ![]const u8 {
+    var known: std.StringHashMapUnmanaged(void) = .empty;
+    for (interfaces) |iface| try known.put(a, iface.name, {});
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(a, "// Generated from protocol XML by tools/wayland-zig.zig --server. Do not edit.\n");
+    try out.appendSlice(a, "const wire = @import(\"wayland-server-wire\");\n");
+    for (interfaces) |iface| {
+        try out.print(a, "pub const {s} = struct {{\n", .{iface.name});
+        try out.appendSlice(a, "    resource: wire.Resource,\n");
+        try out.appendSlice(a, "    const Self = @This();\n");
+        try out.print(a, "    pub const interface: wire.Interface = .{{ .name = \"{s}\", .version = {s}, .requests = &.{{ {s} }}, .events = &.{{ {s} }} }};\n", .{
+            iface.name,
+            iface.version,
+            try formatMessages(a, iface.requests, &known),
+            try formatMessages(a, iface.events, &known),
+        });
+        try out.appendSlice(a, "    pub const Request = union(enum) {\n");
+        for (iface.requests) |req| {
+            try out.print(a, "        {s}: struct {{ ", .{try ident(a, req.name)});
+            var first = true;
+            for (req.args) |arg| {
+                if (std.mem.eql(u8, arg.kind, "new_id") and arg.interface == null) {
+                    // Untyped new ids carry their interface name and version on the wire.
+                    try out.print(a, "{s}{s}_interface: [:0]const u8, {s}_version: u32, {s}: wire.Resource", .{ if (first) "" else ", ", arg.name, arg.name, try ident(a, arg.name) });
+                    first = false;
+                    continue;
+                }
+                try out.print(a, "{s}{s}: {s}", .{ if (first) "" else ", ", try ident(a, arg.name), try serverArgType(a, arg, &known, false) });
+                first = false;
+            }
+            try out.appendSlice(a, " },\n");
+        }
+        try out.appendSlice(a, "    };\n");
+        for (iface.enums) |e| {
+            try out.print(a, "    pub const {s} = struct {{\n", .{try camel(a, e.name)});
+            for (e.entries) |entry| try out.print(a, "        pub const {s}: u32 = {s};\n", .{ try ident(a, entry.name), entry.value });
+            try out.appendSlice(a, "    };\n");
+        }
+        try out.appendSlice(a,
+            \\    /// Routes requests to `handler` and destruction (by request, server or disconnect) to `destructor`.
+            \\    pub fn setHandler(self: Self, comptime Data: type, context: *Data, comptime handler: ?fn (*Data, Self, Request) void, comptime destructor: ?fn (*Data, Self) void) void {
+            \\        self.resource.setHandler(context, if (handler) |h| &wire.Dispatcher(Self, Data, h).dispatch else null, if (destructor) |d| &wire.Finalizer(Self, Data, d).destroy else null);
+            \\    }
+            \\    pub fn data(self: Self, comptime Data: type) ?*Data {
+            \\        return @ptrCast(@alignCast(self.resource.userData()));
+            \\    }
+            \\    pub fn version(self: Self) u32 {
+            \\        return self.resource.version();
+            \\    }
+            \\    pub fn client(self: Self) *wire.Client {
+            \\        return self.resource.client;
+            \\    }
+            \\    pub fn alive(self: Self) bool {
+            \\        return self.resource.alive();
+            \\    }
+            \\    /// Destroys the object server-side, as wl_resource_destroy.
+            \\    pub fn destroyResource(self: Self) void {
+            \\        self.resource.destroy();
+            \\    }
+            \\    pub fn postError(self: Self, code: u32, comptime format: []const u8, args: anytype) void {
+            \\        self.resource.postError(code, format, args);
+            \\    }
+            \\
+        );
+        for (iface.events, 0..) |event, opcode| {
+            var params: std.ArrayList(u8) = .empty;
+            try params.appendSlice(a, "self: Self");
+            var values: std.ArrayList(u8) = .empty;
+            var returns: []const u8 = "void";
+            var new_interface: []const u8 = "null";
+            for (event.args) |arg| {
+                if (std.mem.eql(u8, arg.kind, "new_id")) {
+                    const target = arg.interface orelse return error.UntypedServerNewId;
+                    if (values.items.len > 0) try values.appendSlice(a, ", ");
+                    try values.appendSlice(a, "wire.new_id");
+                    returns = if (known.contains(target)) target else "wire.Resource";
+                    new_interface = if (known.contains(target)) try std.fmt.allocPrint(a, "&{s}.interface", .{target}) else "null";
+                    continue;
+                }
+                const raw = if (std.mem.eql(u8, arg.name, "self") or std.mem.eql(u8, arg.name, "data") or std.mem.eql(u8, arg.name, "client") or std.mem.eql(u8, arg.name, "version") or std.mem.eql(u8, arg.name, "interface")) try std.fmt.allocPrint(a, "{s}_value", .{arg.name}) else arg.name;
+                const aname = try ident(a, raw);
+                try params.print(a, ", {s}: {s}", .{ aname, try serverArgType(a, arg, &known, true) });
+                if (values.items.len > 0) try values.appendSlice(a, ", ");
+                try values.appendSlice(a, aname);
+            }
+            const call = try std.fmt.allocPrint(a, "self.resource.send({d}, interface.events[{d}], {s}, .{{ {s} }})", .{ opcode, opcode, new_interface, values.items });
+            try out.print(a, "    pub fn send{s}({s}) {s} {{\n", .{ try camel(a, event.name), params.items, returns });
+            if (std.mem.eql(u8, returns, "void")) {
+                try out.print(a, "        _ = {s};\n", .{call});
+            } else if (std.mem.eql(u8, returns, "wire.Resource")) {
+                try out.print(a, "        return {s};\n", .{call});
+            } else {
+                try out.print(a, "        return .{{ .resource = {s} }};\n", .{call});
+            }
+            try out.appendSlice(a, "    }\n");
+        }
+        try out.appendSlice(a, "};\n");
+    }
+    return out.toOwnedSlice(a);
+}
+
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     const io = init.io;
@@ -346,6 +467,8 @@ pub fn main(init: std.process.Init) !void {
     if (args.len < 3) return error.Usage;
     const libwayland = std.mem.eql(u8, args[1], "--libwayland");
     if (libwayland) args = args[1..];
+    const server_mode = std.mem.eql(u8, args[1], "--server");
+    if (server_mode) args = args[1..];
     if (args.len < 3) return error.Usage;
     const cwd = std.Io.Dir.cwd();
     var interfaces: std.ArrayList(Interface) = .empty;
@@ -354,6 +477,7 @@ pub fn main(init: std.process.Init) !void {
         try parseXml(a, xml, &interfaces);
     }
     if (libwayland) return cwd.writeFile(io, .{ .sub_path = args[1], .data = try emitLibwayland(a, interfaces.items) });
+    if (server_mode) return cwd.writeFile(io, .{ .sub_path = args[1], .data = try emitServer(a, interfaces.items) });
     var known: std.StringHashMapUnmanaged(void) = .empty;
     for (interfaces.items) |iface| try known.put(a, iface.name, {});
 

@@ -45,6 +45,9 @@ pub fn build(b: *std.Build) void {
     };
     // Native Wayland client: the wire runtime plus typed bindings for every protocol used.
     const wire = b.createModule(.{ .root_source_file = b.path("desktop-wire.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    // Native Wayland server runtime, sharing the wire encoding with the client.
+    const wire_server = b.createModule(.{ .root_source_file = b.path("desktop-wire-server.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    wire_server.addImport("wayland-wire", wire);
     const wayland_generator = b.addExecutable(.{ .name = "wayland-zig", .root_module = b.createModule(.{ .root_source_file = b.path("tools/wayland-zig.zig"), .target = b.graph.host, .optimize = optimize }) });
     const client_command = b.addRunArtifact(wayland_generator);
     const client_source = client_command.addOutputFileArg("wayland-client.zig");
@@ -54,6 +57,21 @@ pub fn build(b: *std.Build) void {
     wayland_client.addImport("wayland-wire", wire);
     desktop.addImport("wayland-wire", wire);
     desktop.addImport("wayland-client", wayland_client);
+    // Typed bindings for the native compositor, served by desktop-wire-server.zig.
+    const server_bindings_command = b.addRunArtifact(wayland_generator);
+    server_bindings_command.addArg("--server");
+    const server_bindings_source = server_bindings_command.addOutputFileArg("wayland-server.zig");
+    server_bindings_command.addFileArg(.{ .cwd_relative = b.graph.environ_map.get("WAYLAND_XML") orelse "/usr/share/wayland/wayland.xml" });
+    for (protocol_files) |xml| server_bindings_command.addFileArg(xml);
+    const wayland_server = b.createModule(.{ .root_source_file = server_bindings_source, .target = target, .optimize = optimize });
+    wayland_server.addImport("wayland-server-wire", wire_server);
+    desktop.addImport("wayland-server-wire", wire_server);
+    desktop.addImport("wayland-server", wayland_server);
+    // The native compositor serves a keymap compiled at build time; it needs no xkbcommon at runtime.
+    const default_keymap = b.addSystemCommand(&.{ "xkbcli", "compile-keymap", "--layout", "us" });
+    const default_keymap_files = b.addWriteFiles();
+    _ = default_keymap_files.addCopyFile(default_keymap.captureStdOut(.{}), "us.xkb");
+    desktop.addImport("default-keymap", b.createModule(.{ .root_source_file = default_keymap_files.add("default-keymap.zig", "pub const text = @embedFile(\"us.xkb\");\n") }));
     // The compositor serves dotfiles_overview_v1 through libwayland-server's wl_interface metadata.
     const server_command = b.addRunArtifact(wayland_generator);
     server_command.addArg("--libwayland");
@@ -113,6 +131,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&unit_run.step);
     // The wire runtime is its own module, so its tests need their own root.
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "desktop-wire-tests", .root_module = wire })).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "desktop-wire-server-tests", .root_module = wire_server })).step);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "desktop-dbus-tests", .root_module = dbus })).step);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "wayland-zig-tests", .root_module = wayland_generator.root_module })).step);
     test_module.addImport("libc-reference", bindings(b, target, optimize, "#define _GNU_SOURCE\n#include <unistd.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <termios.h>\n#include <poll.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <time.h>\n#include <stdio.h>\n#include <sys/stat.h>\n#include <sys/random.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\n#include <sys/un.h>\n#include <sys/prctl.h>\n#include <sys/wait.h>\n#include <dirent.h>\n#include <sys/file.h>\n#include <sys/mman.h>\n#include <pwd.h>\n#include <grp.h>\n#include <sys/statvfs.h>\n", &.{}));

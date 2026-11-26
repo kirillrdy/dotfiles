@@ -41,10 +41,10 @@ const Object = struct {
     live: bool = true,
 };
 
-const server_base: u32 = 0xff000000;
-const max_message = 4096;
+pub const server_base: u32 = 0xff000000;
+pub const max_message = 4096;
 /// libwayland's per-sendmsg descriptor limit.
-const max_fds = 28;
+pub const max_fds = 28;
 
 pub const Error = error{ ConnectionFailed, ConnectionClosed, Protocol, OutOfMemory, IoFailed };
 
@@ -615,13 +615,13 @@ fn objectId(value: anytype) u32 {
     };
 }
 
-fn put(buffer: *[max_message]u8, len: *usize, value: u32) Error!void {
+pub fn put(buffer: *[max_message]u8, len: *usize, value: u32) Error!void {
     if (len.* + 4 > buffer.len) return error.Protocol;
     std.mem.writeInt(u32, buffer[len.*..][0..4], value, .little);
     len.* += 4;
 }
 
-fn putArray(buffer: *[max_message]u8, len: *usize, value: []const u8) Error!void {
+pub fn putArray(buffer: *[max_message]u8, len: *usize, value: []const u8) Error!void {
     const padded = std.mem.alignForward(usize, value.len, 4);
     if (len.* + 4 + padded > buffer.len) return error.Protocol;
     try put(buffer, len, @intCast(value.len));
@@ -630,7 +630,7 @@ fn putArray(buffer: *[max_message]u8, len: *usize, value: []const u8) Error!void
     len.* += padded;
 }
 
-fn putString(buffer: *[max_message]u8, len: *usize, value: anytype) Error!void {
+pub fn putString(buffer: *[max_message]u8, len: *usize, value: anytype) Error!void {
     const T = @TypeOf(value);
     const text: ?[]const u8 = switch (@typeInfo(T)) {
         .optional => if (value) |inner| inner else null,
@@ -646,18 +646,18 @@ fn putString(buffer: *[max_message]u8, len: *usize, value: anytype) Error!void {
     len.* += padded;
 }
 
-fn cmsgSpace(count: usize) usize {
+pub fn cmsgSpace(count: usize) usize {
     return 16 + std.mem.alignForward(usize, count * 4, 8);
 }
 
-fn writeCmsg(control: []u8, fds: []const Fd) void {
+pub fn writeCmsg(control: []u8, fds: []const Fd) void {
     std.mem.writeInt(usize, control[0..8], 16 + fds.len * 4, .little);
     std.mem.writeInt(i32, control[8..12], 1, .little); // SOL_SOCKET
     std.mem.writeInt(i32, control[12..16], 1, .little); // SCM_RIGHTS
     for (fds, 0..) |fd, i| std.mem.writeInt(i32, control[16 + i * 4 ..][0..4], fd, .little);
 }
 
-const SockaddrUn = extern struct {
+pub const SockaddrUn = extern struct {
     family: u16 = 1,
     path: [108]u8 = @splat(0),
 };
