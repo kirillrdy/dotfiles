@@ -791,7 +791,8 @@ pub const ComposeTable = struct {
                 if (line.len == 0 or line[0] == '#') continue;
                 const split = std.mem.indexOfAny(u8, line, " \t:") orelse continue;
                 const left = line[0..split];
-                var rest = line[split..];
+                // Either side of the colon may have spaces: "en_US.utf8 : en_US.UTF-8".
+                var rest = std.mem.trimStart(u8, line[split..], " \t");
                 if (rest.len > 0 and rest[0] == ':') rest = rest[1..];
                 rest = std.mem.trim(u8, rest, " \t");
                 const right = rest[0 .. std.mem.indexOfAny(u8, rest, " \t") orelse rest.len];
@@ -1144,4 +1145,17 @@ test "malformed keymaps fail instead of panicking" {
     var state: State = .{ .keymap = keymap };
     try std.testing.expectEqual(@as(u32, 'a'), state.keysym(400));
     try std.testing.expectEqual(@as(u32, 'b'), state.keysym(38));
+}
+
+test "locale aliases allow spaces around the colon" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "locale.alias", .data = "# comment\nen_US.utf8 : en_US.UTF-8\nde_DE.utf8:\tde_DE.UTF-8\n" });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const context: ComposeTable.Context = .{ .locale_dir = dir, .locale = "C" };
+    try std.testing.expectEqualStrings("en_US.UTF-8", context.lookup(arena.allocator(), "locale.alias", "en_US.utf8", false).?);
+    try std.testing.expectEqualStrings("de_DE.UTF-8", context.lookup(arena.allocator(), "locale.alias", "de_DE.utf8", false).?);
 }

@@ -65,6 +65,10 @@ const Mapping = struct {
 
     fn create(fd: c_int, offset: u32, size: u32) !Mapping {
         if (size == 0) return error.InvalidMemory;
+        // Mapping past the end of the file would fault (SIGBUS) on access.
+        var info: std.os.linux.Statx = undefined;
+        if (std.os.linux.errno(std.os.linux.statx(fd, "", std.os.linux.AT.EMPTY_PATH, .{ .SIZE = true }, &info)) != .SUCCESS or !info.mask.SIZE) return error.InvalidMemory;
+        if (@as(u64, offset) + size > info.size) return error.InvalidMemory;
         const page = std.heap.pageSize();
         const start = offset - offset % page;
         const length = std.mem.alignForward(usize, offset - start + size, page);
@@ -104,6 +108,10 @@ pub const Node = struct {
     /// Published to other threads.
     global_id: std.atomic.Value(u32) = .init(invalid),
     state: std.atomic.Value(State) = .init(.connecting),
+    /// Requests from other threads. Each writes at most one pending byte to
+    /// the wake pipe, so the pipe never fills and destroy cannot block.
+    quit: std.atomic.Value(bool) = .init(false),
+    trigger_pending: std.atomic.Value(bool) = .init(false),
     // Owned by the node thread.
     memory: std.ArrayList(Memory) = .empty,
     activation: ?Mapping = null,
@@ -156,6 +164,7 @@ pub const Node = struct {
     /// Leaves the graph, stops the thread and releases everything.
     pub fn destroy(self: *Node) void {
         if (self.thread) |thread| {
+            self.quit.store(true, .release);
             _ = libc.write(self.wake[1], "q", 1);
             thread.join();
         }
@@ -168,6 +177,7 @@ pub const Node = struct {
 
     /// Asks a driving node to start a graph cycle. Callable from any thread.
     pub fn trigger(self: *Node) void {
+        if (self.trigger_pending.swap(true, .acq_rel)) return;
         _ = libc.write(self.wake[1], "t", 1);
     }
 
@@ -278,8 +288,8 @@ pub const Node = struct {
             var poll = [_]libc.pollfd{.{ .fd = self.wake[0], .events = 1, .revents = 0 }};
             if (libc.poll(&poll, 1, -1) < 0) continue;
             var byte: [16]u8 = undefined;
-            const count = libc.read(self.wake[0], &byte, byte.len);
-            if (count > 0 and std.mem.indexOfScalar(u8, byte[0..@intCast(count)], 'q') != null) return;
+            _ = libc.read(self.wake[0], &byte, byte.len);
+            if (self.quit.load(.acquire)) return;
         }
     }
 
@@ -302,11 +312,15 @@ pub const Node = struct {
                 var bytes: [16]u8 = undefined;
                 const count = libc.read(self.wake[0], &bytes, bytes.len);
                 if (count > 0) for (bytes[0..@intCast(count)]) |byte| switch (byte) {
-                    'q' => return error.Quit,
-                    't' => try self.startCycle(),
+                    'q' => {},
+                    't' => {
+                        self.trigger_pending.store(false, .release);
+                        try self.startCycle();
+                    },
                     else => {},
                 };
             }
+            if (self.quit.load(.acquire)) return error.Quit;
             if (polls[1].revents & 1 != 0) {
                 try self.connection.read();
                 while (try self.connection.next()) |message| {
@@ -370,7 +384,7 @@ pub const Node = struct {
                 self.closeTransport();
                 self.readfd = readfd;
                 self.writefd = writefd;
-                const map = try self.mapMemory(try body.uint(), try body.uint(), try body.uint(), @sizeOf(Activation));
+                const map = try self.mapMemory(try body.uint(), try body.uint(), try body.uint(), @sizeOf(Activation), 8);
                 self.activation = map;
                 const activation = self.own();
                 if (activation.server_version < 1) return error.UnsupportedServer;
@@ -396,7 +410,7 @@ pub const Node = struct {
                 };
                 if (slot.*) |old| old.destroy();
                 slot.* = null;
-                if (memory != invalid) slot.* = try self.mapMemory(memory, offset, size, if (id == spa.SPA_IO_Position) @sizeOf(spa.spa_io_position) else @sizeOf(spa.spa_io_clock));
+                if (memory != invalid) slot.* = try self.mapMemory(memory, offset, size, if (id == spa.SPA_IO_Position) @sizeOf(spa.spa_io_position) else @sizeOf(spa.spa_io_clock), 8);
                 if (self.activation != null) self.own().active_driver_id = self.currentPosition().clock.id;
             },
             spa.PW_CLIENT_NODE_EVENT_COMMAND => {
@@ -431,7 +445,7 @@ pub const Node = struct {
                 const entry = try self.mixEntry(port, mix);
                 if (entry.map) |old| old.destroy();
                 entry.map = null;
-                if (memory != invalid) entry.map = try self.mapMemory(memory, offset, size, @sizeOf(spa.spa_io_buffers));
+                if (memory != invalid) entry.map = try self.mapMemory(memory, offset, size, @sizeOf(spa.spa_io_buffers), 4);
             },
             spa.PW_CLIENT_NODE_EVENT_SET_ACTIVATION => {
                 const id = try body.uint();
@@ -442,7 +456,7 @@ pub const Node = struct {
                 self.removeTarget(id);
                 if (memory == invalid) return;
                 const fd = try self.connection.takeFd(index);
-                const map = self.mapMemory(memory, offset, size, @sizeOf(Activation)) catch |err| {
+                const map = self.mapMemory(memory, offset, size, @sizeOf(Activation), 8) catch |err| {
                     _ = libc.close(fd);
                     return err;
                 };
@@ -498,9 +512,10 @@ pub const Node = struct {
         const count = try body.uint();
         if (count > 64) return error.Protocol;
         for (0..count) |_| {
-            const meta = try self.mapMemory(try body.uint(), try body.uint(), try body.uint(), 16);
+            const meta = try self.mapMemory(try body.uint(), try body.uint(), try body.uint(), 16, 8);
             var buffer: PortBuffer = .{ .meta = meta, .data_map = null, .data = &.{}, .chunk = undefined };
             errdefer meta.destroy();
+            errdefer if (buffer.data_map) |map| map.destroy();
             const metas = try body.uint();
             if (metas > 16) return error.Protocol;
             var offset: usize = 0;
@@ -524,17 +539,14 @@ pub const Node = struct {
                         buffer.data = meta.bytes[data..][0..max_size];
                     },
                     spa.SPA_DATA_MemId => {
-                        const map = try self.mapMemory(data, map_offset, max_size, 1);
+                        const map = try self.mapMemory(data, map_offset, max_size, 1, 1);
                         buffer.data_map = map;
                         buffer.data = map.bytes;
                     },
                     else => return error.UnsupportedBuffer,
                 }
             }
-            port.buffers.append(self.allocator, buffer) catch {
-                if (buffer.data_map) |map| map.destroy();
-                return error.OutOfMemory;
-            };
+            try port.buffers.append(self.allocator, buffer);
         }
         port.next = 0;
     }
@@ -547,7 +559,9 @@ pub const Node = struct {
         port.buffers.clearRetainingCapacity();
     }
 
-    fn mapMemory(self: *Node, id: u32, offset: u32, size: u32, minimum: usize) !Mapping {
+    /// Maps `size` bytes of memory `id` at `offset`, which must suit structures of `alignment`.
+    fn mapMemory(self: *Node, id: u32, offset: u32, size: u32, minimum: usize, alignment: u32) !Mapping {
+        if (offset % alignment != 0) return error.Protocol;
         if (size < minimum) return error.Protocol;
         for (self.memory.items) |entry| if (entry.id == id) return Mapping.create(entry.fd, offset, size);
         return error.UnknownMemory;

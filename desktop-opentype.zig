@@ -110,7 +110,7 @@ pub const Font = struct {
     /// Opens face `index` of a font file or collection.
     pub fn init(data: []const u8, index: u32) Error!Font {
         const file: Bytes = .{ .data = data };
-        var offset: u32 = 0;
+        var offset: usize = 0;
         if (try file.u32At(0) == tag("ttcf")) {
             if (index >= try file.u32At(8)) return error.InvalidFont;
             offset = try file.u32At(12 + 4 * @as(usize, index));
@@ -187,7 +187,11 @@ pub const Font = struct {
         self.axis_count = @min(count, max_axes);
         for (0..self.axis_count) |i| {
             const at = offset + size * i;
-            self.axes[i] = .{ .tag = try table.u32At(at), .min = try table.fixed(at + 4), .default = try table.fixed(at + 8), .max = try table.fixed(at + 12) };
+            const default = try table.fixed(at + 8);
+            const low = try table.fixed(at + 4);
+            const high = try table.fixed(at + 12);
+            // Malformed ranges are widened to hold the default, so clamping stays valid.
+            self.axes[i] = .{ .tag = try table.u32At(at), .min = @min(low, high, default), .default = default, .max = @max(low, high, default) };
         }
     }
 
@@ -303,7 +307,7 @@ pub const Font = struct {
 
     /// Appends a glyph's points (variations applied, composites resolved).
     fn glyphPoints(self: *const Font, a: std.mem.Allocator, glyph: u32, coords: []const f32, points: *std.ArrayList(Point), ends: *std.ArrayList(u16), depth: u32) Error!void {
-        if (depth > 8) return error.InvalidFont;
+        if (depth > 8 or glyph >= self.num_glyphs) return error.InvalidFont;
         const data: Bytes = .{ .data = try self.glyphData(glyph) };
         if (data.data.len == 0) return;
         const contours = try data.i16At(0);
@@ -414,7 +418,8 @@ pub const Font = struct {
         var count: usize = 0;
         for (0..contours) |i| {
             const end = try data.u16At(10 + 2 * i);
-            if (i > 0 and end < ends.items[i - 1]) return error.InvalidFont;
+            // Contour ends strictly increase, as FreeType requires.
+            if (i > 0 and end <= ends.items[i - 1]) return error.InvalidFont;
             try ends.append(a, end);
             count = @as(usize, end) + 1;
         }
@@ -701,6 +706,9 @@ pub const Font = struct {
     pub fn familyNames(self: *const Font, a: std.mem.Allocator) Error!Names {
         const table = self.name orelse return .{};
         var names: Names = .{};
+        // English names win; otherwise the first in any language with a
+        // Unicode encoding (Windows or Unicode platform), as FreeType falls back.
+        var other: Names = .{};
         const count = try table.u16At(2);
         const strings = try table.u16At(4);
         for (0..count) |i| {
@@ -715,10 +723,21 @@ pub const Font = struct {
             };
             const windows = platform == 3 and language == 0x409;
             const mac = platform == 1 and language == 0;
-            if (!windows and !(mac and slot.* == null)) continue;
-            const raw = try table.slice(@as(usize, strings) + try table.u16At(record + 10), try table.u16At(record + 8));
+            const at = @as(usize, strings) + try table.u16At(record + 10);
+            const length = try table.u16At(record + 8);
+            if (!windows and !(mac and slot.* == null)) {
+                const fallback = if (id == 16) &other.typographic else &other.legacy;
+                if ((platform == 0 or platform == 3) and fallback.* == null) {
+                    const raw = table.slice(at, length) catch continue;
+                    fallback.* = try utf16be(a, raw);
+                }
+                continue;
+            }
+            const raw = try table.slice(at, length);
             slot.* = if (windows) try utf16be(a, raw) else try std.ascii.allocLowerString(a, raw);
         }
+        if (names.typographic == null) names.typographic = other.typographic;
+        if (names.legacy == null) names.legacy = other.legacy;
         return names;
     }
 
@@ -1426,4 +1445,30 @@ test "CFF offset and index operands reject values that are not small integers" {
     for ([_]f64{ -1, std.math.nan(f64), std.math.inf(f64), 1e12 }) |value| try std.testing.expectError(error.InvalidFont, operandIndex(value));
     try std.testing.expectEqual(@as(i32, -107), try operandInt(-107));
     try std.testing.expectError(error.InvalidFont, operandInt(std.math.nan(f64)));
+}
+
+test "malformed fvar axis ranges are widened instead of breaking clamping" {
+    var table: [36]u8 = @splat(0);
+    std.mem.writeInt(u16, table[4..6], 16, .big); // axes offset
+    std.mem.writeInt(u16, table[8..10], 1, .big); // axis count
+    std.mem.writeInt(u16, table[10..12], 20, .big); // axis record size
+    @memcpy(table[16..20], "wght");
+    std.mem.writeInt(i32, table[20..24], 900 << 16, .big); // min above max
+    std.mem.writeInt(i32, table[24..28], 400 << 16, .big);
+    std.mem.writeInt(i32, table[28..32], 100 << 16, .big);
+    var font: Font = .{ .data = .{ .data = &.{} } };
+    try font.readAxes(.{ .data = &table });
+    try std.testing.expectEqual(@as(f32, 100), font.axes[0].min);
+    try std.testing.expectEqual(@as(f32, 900), font.axes[0].max);
+}
+
+test "simple glyphs reject repeated contour ends" {
+    var glyph: [16]u8 = @splat(0);
+    std.mem.writeInt(u16, glyph[10..12], 1, .big);
+    std.mem.writeInt(u16, glyph[12..14], 1, .big);
+    var points: std.ArrayList(Font.Point) = .empty;
+    defer points.deinit(std.testing.allocator);
+    var ends: std.ArrayList(u16) = .empty;
+    defer ends.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFont, Font.parseSimple(std.testing.allocator, .{ .data = &glyph }, 2, &points, &ends));
 }
