@@ -32,12 +32,25 @@ import ./fixture.nix { inherit pkgs; } {
       export DESKTOP_APPS_ICON_PATH=${pkgs.adwaita-icon-theme}/share/icons
       export G_DEBUG=fatal-criticals
 
+      # Fixtures exit successfully even when their checking allocator reports
+      # leaks; fail on those reports.
+      no_leaks() {
+        local status=0
+        "$@" 2>fixture.stderr || status=$?
+        cat fixture.stderr >&2
+        if grep -q "SafeAllocator): leaked" fixture.stderr; then
+          echo "$1 leaked allocations" >&2
+          return 1
+        fi
+        return "$status"
+      }
+
       # Screen pixel checks run before other fixtures map their windows.
-      ${fixture}/bin/desktop-tests
+      no_leaks ${fixture}/bin/desktop-tests
       for name in apps dash widgets settings polkit screenshot; do
-        ${desktop.tests}/bin/desktop-$name-fixture
+        no_leaks ${desktop.tests}/bin/desktop-$name-fixture
       done
-      ${desktop.tests}/bin/desktop-askpass-fixture ${desktop}/bin/desktop-zig
+      no_leaks ${desktop.tests}/bin/desktop-askpass-fixture ${desktop}/bin/desktop-zig
       mkdir clients
       ln -s ${desktop.tests}/bin/* clients/
       ln -s ${desktop}/bin/desktop-zig clients/desktop-zig

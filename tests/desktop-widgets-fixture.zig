@@ -28,6 +28,8 @@ fn clickControl(controls: *@import("desktop").quick.Controls, target: @import("d
 }
 pub fn main(process_init: std.process.Init) !void {
     const args = try process_init.minimal.args.toSlice(process_init.arena.allocator());
+    // Panels open settings through the shared cache, which outlives each handle.
+    defer @import("desktop").gsettings.deinit();
     // Re-exec this fixture in place of pkexec to exercise argv, async completion,
     // error reporting and disposal without authorization or real sysfs writes.
     if (args.len == 5 and std.mem.eql(u8, args[1], "--power-fixture")) {

@@ -105,6 +105,8 @@ fn check(init: std.process.Init, root: []const u8, mode: askpass.Mode, accepted:
     }
 }
 pub fn main(init: std.process.Init) !void {
+    // Clipboard ownership keeps the shared connection after the last dialog closes.
+    defer @import("desktop").window.deinit();
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
