@@ -1,9 +1,11 @@
 //! Text layout into grayscale glyph masks. desktop-fonts.zig selects fonts and
-//! fallbacks, HarfBuzz shapes and FreeType rasterizes; markup, bidi ordering,
-//! line breaking, ellipsis and alignment are handled here, without Pango.
+//! fallbacks, HarfBuzz shapes, desktop-opentype.zig reads outlines and
+//! desktop-path.zig rasterizes them; markup, bidi ordering, line breaking,
+//! ellipsis and alignment are handled here, without Pango.
 const std = @import("std");
 const t = @import("text-c");
 const fonts = @import("desktop-fonts.zig");
+const opentype = @import("desktop-opentype.zig");
 
 pub const Mask = struct {
     pixels: []u8,
@@ -32,29 +34,22 @@ pub fn paintMask(canvas: @import("desktop-raster.zig").Canvas, value: ?Mask, x: 
     if (value) |mask| mask.paint(canvas, x, y, color);
 }
 
-/// Slight hinting with the light hinter and outlines only, as fontconfig's
-/// NixOS defaults and Pango load glyphs.
-const load_flags: i32 = (1 << 16) | (1 << 3);
-
-fn tag(comptime s: *const [4]u8) c_ulong {
-    return (@as(c_ulong, s[0]) << 24) | (@as(c_ulong, s[1]) << 16) | (@as(c_ulong, s[2]) << 8) | s[3];
-}
-
-/// A loaded face from a font match.
+/// A loaded face from a font match: the mapped file, its Zig outline reader
+/// and a HarfBuzz font over the same bytes for shaping.
 const Face = struct {
-    face: t.FT_Face,
+    file: opentype.Mapped,
+    font: opentype.Font,
     hb: *t.hb_font_t,
     embolden: bool,
-    /// Axis indexes for automatic variations, when the face is variable.
-    axes: [8]c_ulong = @splat(0),
-    defaults: [8]t.FT_Fixed = @splat(0),
-    axis_count: u32 = 0,
+    /// Design coordinates per axis, and the normalized ones outlines use.
+    design: [opentype.max_axes]f32 = @splat(0),
+    coords: [opentype.max_axes]f32 = @splat(0),
     size: f64 = 0,
     points: f64 = 0,
     weight: f64 = 0,
 
     fn has(self: *const Face, codepoint: u21) bool {
-        return t.FT_Get_Char_Index(self.face, codepoint) != 0;
+        return self.font.glyphIndex(codepoint) != 0;
     }
 
     /// Sets the pixel size, optical size and weight used for shaping and rendering.
@@ -63,17 +58,21 @@ const Face = struct {
         self.size = size;
         self.points = points;
         self.weight = weight;
-        _ = t.FT_Set_Char_Size(self.face, 0, @intFromFloat(@round(size * 64)), 72, 72);
-        if (self.axis_count > 0) {
-            var coords: [8]t.FT_Fixed = undefined;
-            for (0..self.axis_count) |i| {
-                coords[i] = self.defaults[i];
-                if (self.axes[i] == tag("opsz")) coords[i] = @intFromFloat(points * 65536);
-                if (self.axes[i] == tag("wght")) coords[i] = @intFromFloat(weight * 65536);
+        // HarfBuzz positions come out in 26.6 pixels, as they did through FreeType.
+        const scale: c_int = @intFromFloat(@round(size * 64));
+        t.hb_font_set_scale(self.hb, scale, scale);
+        const ppem: c_uint = @intFromFloat(@round(size));
+        t.hb_font_set_ppem(self.hb, ppem, ppem);
+        const count = self.font.axis_count;
+        if (count > 0) {
+            for (self.font.axes[0..count], self.design[0..count]) |axis, *value| {
+                value.* = axis.default;
+                if (axis.tag == opentype.tagOf("opsz")) value.* = @floatCast(points);
+                if (axis.tag == opentype.tagOf("wght")) value.* = @floatCast(weight);
             }
-            _ = t.FT_Set_Var_Design_Coordinates(self.face, self.axis_count, &coords);
+            t.hb_font_set_var_coords_design(self.hb, &self.design, @intCast(count));
+            self.font.normalize(self.design[0..count], &self.coords);
         }
-        t.hb_ft_font_changed(self.hb);
     }
 
     /// Ascent and descent at 1/1024 pixel precision, matching Pango's units.
@@ -82,15 +81,15 @@ const Face = struct {
         defer t.hb_font_destroy(font);
         const scale: c_int = @intFromFloat(@round(self.size * 1024));
         t.hb_font_set_scale(font, scale, scale);
-        var coords: [8]t.FT_Fixed = undefined;
-        if (self.axis_count > 0 and t.FT_Get_Var_Design_Coordinates(self.face, self.axis_count, &coords) == 0) {
-            var design: [8]f32 = undefined;
-            for (0..self.axis_count) |i| design[i] = @as(f32, @floatFromInt(coords[i])) / 65536;
-            t.hb_font_set_var_coords_design(font, &design, self.axis_count);
-        }
+        if (self.font.axis_count > 0) t.hb_font_set_var_coords_design(font, &self.design, @intCast(self.font.axis_count));
         var value: t.hb_font_extents_t = .{};
         _ = t.hb_font_get_h_extents(font, &value);
         return .{ @as(f64, @floatFromInt(value.ascender)) / 1024, @as(f64, @floatFromInt(-value.descender)) / 1024 };
+    }
+
+    fn destroy(self: *Face) void {
+        t.hb_font_destroy(self.hb);
+        self.file.close();
     }
 };
 
@@ -103,11 +102,10 @@ const Family = struct {
     weight: f64,
 };
 
-const Bitmap = struct { left: i32, top: i32, width: u32, height: u32, pixels: []u8 };
+const Bitmap = opentype.Bitmap;
 const GlyphKey = struct { face: *Face, glyph: u32, size: u32, points: u32, weight: u32 };
 
 pub const Renderer = struct {
-    library: t.FT_Library = null,
     families: std.StringHashMapUnmanaged(*Family) = .empty,
     glyphs: std.AutoHashMapUnmanaged(GlyphKey, Bitmap) = .empty,
     arena: ?std.heap.ArenaAllocator = null,
@@ -115,12 +113,8 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer) void {
         var families = self.families.valueIterator();
         while (families.next()) |owner| {
-            for (owner.*.faces) |entry| if (entry) |loaded| {
-                t.hb_font_destroy(loaded.hb);
-                _ = t.FT_Done_Face(loaded.face);
-            };
+            for (owner.*.faces) |entry| if (entry) |loaded| loaded.destroy();
         }
-        if (self.library) |library| _ = t.FT_Done_FreeType(library);
         if (self.arena) |*arena| arena.deinit();
         self.* = .{};
     }
@@ -142,13 +136,6 @@ pub const Renderer = struct {
         markup: bool = false,
     };
 
-    fn init(self: *Renderer) !void {
-        if (self.library != null) return;
-        var library: t.FT_Library = null;
-        if (t.FT_Init_FreeType(&library) != 0) return error.FontMap;
-        self.library = library;
-    }
-
     fn family(self: *Renderer, description: Description) !*Family {
         const a = self.arena.?.allocator();
         const key = try std.fmt.allocPrint(a, "{s}|{d}|{}", .{ description.family, description.weight, description.italic });
@@ -168,28 +155,25 @@ pub const Renderer = struct {
         if (owner.failed[index]) return null;
         owner.failed[index] = true;
         const match = owner.matches[index];
-        var ft_face: t.FT_Face = null;
-        if (t.FT_New_Face(self.library, match.font.path, match.font.index, &ft_face) != 0) return null;
-        const hb = t.hb_ft_font_create_referenced(ft_face) orelse {
-            _ = t.FT_Done_Face(ft_face);
+        const file = opentype.Mapped.open(match.font.path) orelse return null;
+        const font = opentype.Font.init(file.bytes, @intCast(match.font.index)) catch {
+            file.close();
             return null;
         };
-        const value = self.arena.?.allocator().create(Face) catch return null;
-        value.* = .{ .face = ft_face, .hb = hb, .embolden = match.embolden };
-        if ((ft_face.*.face_flags & (@as(c_long, 1) << 8)) != 0) {
-            var mm: [*c]t.FT_MM_Var = null;
-            if (t.FT_Get_MM_Var(ft_face, &mm) == 0) {
-                defer _ = t.FT_Done_MM_Var(self.library, mm);
-                var current: [8]t.FT_Fixed = undefined;
-                const count = @min(mm.*.num_axis, 8);
-                _ = t.FT_Get_Var_Design_Coordinates(ft_face, count, &current);
-                for (0..count) |i| {
-                    value.axes[i] = mm.*.axis[i].tag;
-                    value.defaults[i] = current[i];
-                }
-                value.axis_count = count;
-            }
-        }
+        const value = self.arena.?.allocator().create(Face) catch {
+            file.close();
+            return null;
+        };
+        // HarfBuzz reads OpenType tables itself from the mapped bytes.
+        const blob = t.hb_blob_create(@ptrCast(file.bytes.ptr), @intCast(file.bytes.len), t.HB_MEMORY_MODE_READONLY, null, null);
+        const hb_face = t.hb_face_create(blob, @intCast(match.font.index));
+        t.hb_blob_destroy(blob);
+        const hb = t.hb_font_create(hb_face);
+        t.hb_face_destroy(hb_face);
+        value.* = .{ .file = file, .font = font, .hb = hb orelse {
+            file.close();
+            return null;
+        }, .embolden = match.embolden };
         owner.faces[index] = value;
         return value;
     }
@@ -208,31 +192,13 @@ pub const Renderer = struct {
     fn glyph(self: *Renderer, owner: *Face, id: u32) ?Bitmap {
         const key: GlyphKey = .{ .face = owner, .glyph = id, .size = @intFromFloat(owner.size * 64), .points = @intFromFloat(owner.points * 64), .weight = @intFromFloat(owner.weight) };
         if (self.glyphs.get(key)) |cached| return cached;
-        if (t.FT_Load_Glyph(owner.face, id, load_flags) != 0) return null;
-        const slot = owner.face.*.glyph;
-        if (owner.embolden) t.FT_GlyphSlot_Embolden(slot);
-        if (t.FT_Render_Glyph(slot, t.FT_RENDER_MODE_NORMAL) != 0) return null;
-        const bitmap = slot.*.bitmap;
-        const width = bitmap.width;
-        const height = bitmap.rows;
+        // Outlines are rendered unhinted; faces without outlines (bitmap emoji) draw nothing.
+        const scratch = std.heap.c_allocator;
+        const rendered = opentype.render(scratch, &owner.font, id, owner.coords[0..owner.font.axis_count], owner.size, owner.embolden) catch return null;
+        defer scratch.free(rendered.pixels);
         const a = self.arena.?.allocator();
-        const pixels = a.alloc(u8, @as(usize, width) * height) catch return null;
-        for (0..height) |row| {
-            const pitch: isize = bitmap.pitch;
-            const source: [*]const u8 = @ptrCast(bitmap.buffer + @as(usize, @intCast(if (pitch >= 0) @as(isize, @intCast(row)) * pitch else (@as(isize, @intCast(height - 1 - row))) * -pitch)));
-            switch (bitmap.pixel_mode) {
-                // FT_PIXEL_MODE_MONO: one bit per pixel.
-                1 => for (0..width) |column| {
-                    pixels[row * width + column] = if ((source[column / 8] >> @intCast(7 - column % 8)) & 1 != 0) 255 else 0;
-                },
-                // FT_PIXEL_MODE_BGRA: keep the alpha channel.
-                7 => for (0..width) |column| {
-                    pixels[row * width + column] = source[column * 4 + 3];
-                },
-                else => @memcpy(pixels[row * width ..][0..width], source[0..width]),
-            }
-        }
-        const value: Bitmap = .{ .left = slot.*.bitmap_left, .top = slot.*.bitmap_top, .width = width, .height = height, .pixels = pixels };
+        var value = rendered;
+        value.pixels = a.dupe(u8, rendered.pixels) catch return null;
         self.glyphs.put(a, key, value) catch {};
         return value;
     }
@@ -244,7 +210,6 @@ pub const Renderer = struct {
         if (options.width) |limit| if (limit == 0 or limit > 32768) return error.InvalidText;
         if (options.lines) |lines| if (lines == 0 or lines > 64) return error.InvalidText;
         if (options.line_height) |height| if (height == 0 or height > 4096) return error.InvalidText;
-        try self.init();
         if (self.arena == null) self.arena = .init(allocator);
         var arena: std.heap.ArenaAllocator = .init(allocator);
         defer arena.deinit();

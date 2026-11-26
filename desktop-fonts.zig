@@ -1,9 +1,9 @@
 //! Font discovery and fallback ordering without fontconfig. The font
 //! directories and family aliases come from the system fonts.conf
 //! ($FONTCONFIG_FILE, else /etc/fonts/fonts.conf) and its includes; face
-//! metadata is read with FreeType once per process.
+//! metadata is read with desktop-opentype.zig once per process.
 const std = @import("std");
-const t = @import("text-c");
+const opentype = @import("desktop-opentype.zig");
 const paths = @import("desktop-paths.zig");
 const util = @import("desktop-util.zig");
 
@@ -56,12 +56,8 @@ const Loaded = util.Lazy(Catalog, struct {
         var config: Config = .{ .a = a, .scratch = scratch };
         config.read(file, 0);
         var fonts: std.ArrayList(Font) = .empty;
-        var library: t.FT_Library = null;
-        if (t.FT_Init_FreeType(&library) == 0) {
-            defer _ = t.FT_Done_FreeType(library);
-            var seen: std.StringHashMapUnmanaged(void) = .empty;
-            for (config.dirs.items) |dir| scanDirectory(a, scratch, library, dir, &seen, &fonts, 0);
-        }
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        for (config.dirs.items) |dir| scanDirectory(a, scratch, dir, &seen, &fonts, 0);
         return .{ .fonts = fonts.toOwnedSlice(a) catch &.{}, .aliases = config.aliases };
     }
 }.load);
@@ -228,7 +224,7 @@ fn lower(a: std.mem.Allocator, value: []const u8) ![]const u8 {
 
 // ---------------------------------------------------------------- Scanning
 
-fn scanDirectory(a: std.mem.Allocator, scratch: std.mem.Allocator, library: t.FT_Library, dir: []const u8, seen: *std.StringHashMapUnmanaged(void), fonts: *std.ArrayList(Font), depth: u32) void {
+fn scanDirectory(a: std.mem.Allocator, scratch: std.mem.Allocator, dir: []const u8, seen: *std.StringHashMapUnmanaged(void), fonts: *std.ArrayList(Font), depth: u32) void {
     if (depth > 8) return;
     const entries = paths.list(scratch, dir) catch return;
     std.mem.sort(paths.Listed, entries, {}, struct {
@@ -241,7 +237,7 @@ fn scanDirectory(a: std.mem.Allocator, scratch: std.mem.Allocator, library: t.FT
         const path = std.fmt.allocPrintSentinel(scratch, "{s}/{s}", .{ dir, entry.name }, 0) catch continue;
         const kind = if (entry.resolved) entry.kind else paths.kind(path);
         if (kind == .directory) {
-            scanDirectory(a, scratch, library, path, seen, fonts, depth + 1);
+            scanDirectory(a, scratch, path, seen, fonts, depth + 1);
             continue;
         }
         if (kind != .file) continue;
@@ -251,83 +247,38 @@ fn scanDirectory(a: std.mem.Allocator, scratch: std.mem.Allocator, library: t.FT
         } else false;
         // Directories are often listed twice through different store paths.
         if (!known or (seen.getOrPut(scratch, entry.name) catch continue).found_existing) continue;
-        scanFile(a, library, path, fonts);
+        scanFile(a, path, fonts);
     }
 }
 
-fn scanFile(a: std.mem.Allocator, library: t.FT_Library, path: [:0]const u8, fonts: *std.ArrayList(Font)) void {
+fn scanFile(a: std.mem.Allocator, path: [:0]const u8, fonts: *std.ArrayList(Font)) void {
+    const file = opentype.Mapped.open(path) orelse return;
+    defer file.close();
     // The path is copied into the catalog once a face from the file is kept.
     var kept: ?[:0]const u8 = null;
-    var index: c_long = 0;
-    var count: c_long = 1;
-    while (index < count) : (index += 1) {
-        var face: t.FT_Face = null;
-        if (t.FT_New_Face(library, path, index, &face) != 0) return;
-        defer _ = t.FT_Done_Face(face);
-        count = face.*.num_faces;
-        // Bitmap-only faces cannot be scaled, except color emoji, as in fontconfig.
-        if ((face.*.face_flags & (t.FT_FACE_FLAG_SCALABLE | t.FT_FACE_FLAG_COLOR)) == 0) continue;
+    for (0..file.faces()) |index| {
+        const face = opentype.Font.init(file.bytes, @intCast(index)) catch continue;
+        // Faces without outlines are skipped, except color emoji, as in fontconfig.
+        if (!face.scalable() and !face.color) continue;
         const owned = kept orelse (a.dupeSentinel(u8, path, 0) catch return);
         kept = owned;
-        const font = describe(a, library, face, owned, index) catch continue;
+        const font = describe(a, &face, owned, @intCast(index)) catch continue;
         fonts.append(a, font) catch return;
     }
 }
 
-fn describe(a: std.mem.Allocator, library: t.FT_Library, face: t.FT_Face, path: [:0]const u8, index: c_long) !Font {
-    var typographic: ?[]const u8 = null;
-    var legacy: ?[]const u8 = null;
-    for (0..t.FT_Get_Sfnt_Name_Count(face)) |i| {
-        var name: t.FT_SfntName = undefined;
-        if (t.FT_Get_Sfnt_Name(face, @intCast(i), &name) != 0) continue;
-        const slot = switch (name.name_id) {
-            16 => &typographic,
-            1 => &legacy,
-            else => continue,
-        };
-        // Prefer English names: Windows US English, then Macintosh Roman English.
-        const windows = name.platform_id == 3 and name.language_id == 0x409;
-        const mac = name.platform_id == 1 and name.language_id == 0;
-        if (!windows and !(mac and slot.* == null)) continue;
-        const raw = name.string[0..name.string_len];
-        slot.* = if (windows) try utf16be(a, raw) else try lower(a, raw);
-    }
-    const family_fallback = if (face.*.family_name != null) try lower(a, std.mem.span(face.*.family_name)) else return error.Unnamed;
-    const first = typographic orelse legacy orelse family_fallback;
-    var weight: f64 = if ((face.*.style_flags & t.FT_STYLE_FLAG_BOLD) != 0) 700 else 400;
-    var width: u16 = 5;
-    var italic = (face.*.style_flags & t.FT_STYLE_FLAG_ITALIC) != 0;
-    if (@as(?*t.TT_OS2, @ptrCast(@alignCast(t.FT_Get_Sfnt_Table(face, t.FT_SFNT_OS2))))) |os2| {
-        if (os2.version != 0xffff) {
-            if (os2.usWeightClass >= 1 and os2.usWeightClass <= 1000) weight = @floatFromInt(os2.usWeightClass);
-            if (os2.usWidthClass >= 1 and os2.usWidthClass <= 9) width = os2.usWidthClass;
-            italic = italic or (os2.fsSelection & 1) != 0;
-        }
-    }
-    var font: Font = .{ .path = path, .index = index, .families = .{ first, legacy orelse first }, .weight = weight, .weight_min = weight, .weight_max = weight, .italic = italic, .width = width };
-    if ((face.*.face_flags & t.FT_FACE_FLAG_MULTIPLE_MASTERS) != 0) {
-        var mm: [*c]t.FT_MM_Var = null;
-        if (t.FT_Get_MM_Var(face, &mm) == 0) {
-            defer _ = t.FT_Done_MM_Var(library, mm);
-            for (0..mm.*.num_axis) |i| {
-                const axis = mm.*.axis[i];
-                if (axis.tag != (('w' << 24) | ('g' << 16) | ('h' << 8) | 't')) continue;
-                font.weight_min = @as(f64, @floatFromInt(axis.minimum)) / 65536;
-                font.weight_max = @as(f64, @floatFromInt(axis.maximum)) / 65536;
-                font.weight = @as(f64, @floatFromInt(axis.def)) / 65536;
-            }
-        }
+fn describe(a: std.mem.Allocator, face: *const opentype.Font, path: [:0]const u8, index: c_long) !Font {
+    const names = try face.familyNames(a);
+    const legacy = names.legacy;
+    const first = names.typographic orelse legacy orelse return error.Unnamed;
+    const style = face.style();
+    var font: Font = .{ .path = path, .index = index, .families = .{ first, legacy orelse first }, .weight = style.weight, .weight_min = style.weight, .weight_max = style.weight, .italic = style.italic, .width = style.width };
+    if (face.findAxis("wght")) |axis| {
+        font.weight_min = axis.min;
+        font.weight_max = axis.max;
+        font.weight = axis.default;
     }
     return font;
-}
-
-fn utf16be(a: std.mem.Allocator, raw: []const u8) ![]const u8 {
-    const units = try a.alloc(u16, raw.len / 2);
-    defer a.free(units);
-    for (units, 0..) |*unit, i| unit.* = std.mem.readInt(u16, raw[i * 2 ..][0..2], .big);
-    const text = try std.unicode.utf16LeToUtf8Alloc(a, units);
-    defer a.free(text);
-    return lower(a, text);
 }
 
 // ---------------------------------------------------------------- Matching

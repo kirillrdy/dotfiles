@@ -92,8 +92,7 @@ pkgs.stdenv.mkDerivation {
   # Keysym names and characters are generated from xkbcommon's keysym header.
   XKB_KEYSYMS_HEADER = "${textLibraries.xkbcommon.dev}/include/xkbcommon/xkbcommon-keysyms.h";
   buildInputs = [
-    # Text: HarfBuzz shaping and FreeType rasterization; font matching is native.
-    pkgs.freetype
+    # Text: HarfBuzz shaping; font matching, reading and rasterization are native.
     pkgs.harfbuzz
     pkgs.wayland
     pkgs.wayland-protocols

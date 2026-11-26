@@ -133,6 +133,7 @@ test {
     _ = @import("desktop-fonts.zig");
     _ = @import("desktop-pipewire.zig");
     _ = @import("desktop-xkb.zig");
+    _ = @import("desktop-opentype.zig");
     _ = @import("desktop-switcher.zig");
     _ = @import("desktop-overview.zig");
     _ = @import("desktop-overview-animation.zig");
