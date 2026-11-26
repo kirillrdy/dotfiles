@@ -896,6 +896,12 @@ import ./fixture.nix { inherit pkgs; } {
                   any(row.count(bytes([54, 54, 58])) > 60 for row in frame[2][33:120]))
 
 
+      def usage_bars():
+          # Usage widgets draw pace bars instead of a percent label. The demo
+          # report is ahead of pace, so each bar has a neutral #9ca3af base.
+          return any(row.count(bytes([156, 163, 175])) > 2 for row in capture()[2][:32])
+
+
       def wait_for(predicate, description):
           def alive():
               assert shell.poll() is None, log.read_text()[-8000:]
@@ -911,8 +917,7 @@ import ./fixture.nix { inherit pkgs; } {
       try:
           wait_for(lambda: sp.run([str(bin_dir / "desktop-zig"), "ping"], env=env,
                                  capture_output=True).returncode == 0, "Codex shell ready")
-          wait_for(lambda: any(row.count(bytes([255, 255, 255])) > 2 for row in capture()[2][:32]),
-                   "Codex panel label")
+          wait_for(usage_bars, "Codex panel usage bars")
           width, height, _ = capture()
           pointer.command(f"size {width} {height}")
           pointer.move(width - 30, 16)
@@ -946,8 +951,7 @@ import ./fixture.nix { inherit pkgs; } {
           time.sleep(.15)
           run("wlr-randr", "--output", "HEADLESS-1", "--on")
           wait_for(lambda: not visible(), "popup revoked with its output")
-          wait_for(lambda: any(row.count(bytes([255, 255, 255])) > 2 for row in capture()[2][:32]),
-                   "replacement panel")
+          wait_for(usage_bars, "replacement panel")
           pointer.click(width - 30, 16)
           wait_for(visible, "popup on replacement output")
           shell.terminate()
