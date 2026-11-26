@@ -65,7 +65,10 @@ pub const Resolver = struct {
         const alloc = arena.allocator();
         const owned = try alloc.alloc([]const u8, roots.len);
         for (owned, roots) |*out, root| out.* = try alloc.dupe(u8, root);
-        return .{ .arena = arena, .scratch = std.heap.ArenaAllocator.init(allocator), .roots = owned, .theme = try alloc.dupe(u8, theme) };
+        // Allocate everything before copying the arena into the result: a
+        // buffer the arena gains after the copy would never be freed.
+        const owned_theme = try alloc.dupe(u8, theme);
+        return .{ .arena = arena, .scratch = std.heap.ArenaAllocator.init(allocator), .roots = owned, .theme = owned_theme };
     }
     pub fn deinit(self: *Resolver) void {
         const alloc = self.arena.child_allocator;

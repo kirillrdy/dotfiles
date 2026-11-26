@@ -253,7 +253,10 @@ const Auth = struct {
         if (cookie.len == 0 or cookie.len > 4096 or std.mem.indexOfAny(u8, cookie, "\r\n") != null) return error.InvalidCookie;
         var invocation = try state.source.connection.hold(call);
         errdefer invocation.release(state.allocator);
-        self.* = .{ .state = state, .arena = arena, .invocation = invocation, .action = try a.dupeSentinel(u8, args[0], 0), .message = try a.dupeSentinel(u8, args[1], 0), .cookie = cookie, .username = username };
+        // Allocate before copying the arena into self, so no buffer escapes it.
+        const action = try a.dupeSentinel(u8, args[0], 0);
+        const message = try a.dupeSentinel(u8, args[1], 0);
+        self.* = .{ .state = state, .arena = arena, .invocation = invocation, .action = action, .message = message, .cookie = cookie, .username = username };
         return self;
     }
     fn start(self: *Auth) void {
