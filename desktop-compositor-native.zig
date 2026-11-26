@@ -81,7 +81,37 @@ const Buffer = struct {
 
 // ------------------------------------------------------------------ Surfaces
 
-const Role = enum { none, toplevel, popup, subsurface, cursor };
+/// A wl_region: rectangles added and subtracted in order.
+const Region = struct {
+    ops: std.ArrayList(Op) = .empty,
+
+    const Op = struct { rect: Rect, add: bool };
+
+    fn contains(ops: []const Op, x: i32, y: i32) bool {
+        var inside = false;
+        for (ops) |op| {
+            const r = op.rect;
+            if (x >= r.x and y >= r.y and x < r.x +| r.width and y < r.y +| r.height) inside = op.add;
+        }
+        return inside;
+    }
+
+    fn handle(self: *Region, _: ws.wl_region, request: ws.wl_region.Request) void {
+        const a = std.heap.c_allocator;
+        switch (request) {
+            .destroy => {},
+            .add => |r| self.ops.append(a, .{ .rect = .{ .x = r.x, .y = r.y, .width = r.width, .height = r.height }, .add = true }) catch {},
+            .subtract => |r| self.ops.append(a, .{ .rect = .{ .x = r.x, .y = r.y, .width = r.width, .height = r.height }, .add = false }) catch {},
+        }
+    }
+
+    fn destroyed(self: *Region, _: ws.wl_region) void {
+        self.ops.deinit(std.heap.c_allocator);
+        std.heap.c_allocator.destroy(self);
+    }
+};
+
+const Role = enum { none, toplevel, popup, subsurface, cursor, layer };
 
 const Surface = struct {
     comp: *Compositor,
@@ -89,7 +119,12 @@ const Surface = struct {
     role: Role = .none,
     xdg: ?*XdgSurface = null,
     subsurface: ?*Subsurface = null,
+    layer: ?*Layer = null,
     /// Pending state, applied on commit.
+    /// Input regions; null accepts input everywhere on the surface.
+    pending_input: ?[]Region.Op = null,
+    pending_input_set: bool = false,
+    input: ?[]Region.Op = null,
     pending_buffer: ?*Buffer = null,
     pending_attach: bool = false,
     pending_dx: i32 = 0,
@@ -146,7 +181,13 @@ const Surface = struct {
                 args.callback.setHandler(Surface, self, null, null);
                 self.pending_releases.append(self.comp.a, args.callback) catch {};
             },
-            .set_opaque_region, .set_input_region, .set_buffer_transform => {},
+            .set_input_region => |args| {
+                // The region is copied now; later changes to it do not apply.
+                if (self.pending_input) |ops| std.heap.c_allocator.free(ops);
+                self.pending_input = if (args.region) |region| (if (region.data(Region)) |value| std.heap.c_allocator.dupe(Region.Op, value.ops.items) catch null else null) else null;
+                self.pending_input_set = true;
+            },
+            .set_opaque_region, .set_buffer_transform => {},
             .set_buffer_scale => |args| {
                 if (args.scale < 1) return resource.postError(ws.wl_surface.Error.invalid_scale, "buffer scale must be positive", .{});
                 self.pending_scale = args.scale;
@@ -182,10 +223,17 @@ const Surface = struct {
             self.pending_buffer = null;
         }
         self.scale = self.pending_scale;
+        if (self.pending_input_set) {
+            self.pending_input_set = false;
+            if (self.input) |ops| std.heap.c_allocator.free(ops);
+            self.input = self.pending_input;
+            self.pending_input = null;
+        }
         self.frames.appendSlice(self.comp.a, self.pending_frames.items) catch {};
         self.pending_frames.clearRetainingCapacity();
         for (self.children.items) |child| child.parentCommitted();
         if (self.xdg) |xdg| xdg.committed();
+        if (self.layer) |layer| layer.committed();
         self.comp.scheduleRepaint();
     }
 
@@ -219,6 +267,10 @@ const Surface = struct {
         const comp = self.comp;
         if (self.xdg) |xdg| xdg.surfaceGone();
         if (self.subsurface) |sub| sub.surfaceGone();
+        if (self.layer) |layer| layer.surfaceGone();
+        if (self.input) |ops| std.heap.c_allocator.free(ops);
+        if (self.pending_input) |ops| std.heap.c_allocator.free(ops);
+        comp.seat.surfaceGone(self);
         for (self.children.items) |child| child.parent = null;
         self.children.deinit(comp.a);
         for (self.frames.items) |callback| callback.destroyResource();
@@ -235,13 +287,33 @@ const Surface = struct {
         comp.a.destroy(self);
     }
 
+    /// Whether surface-local (x, y) accepts input.
+    fn accepts(self: *const Surface, x: i32, y: i32) bool {
+        if (!self.mapped() or x < 0 or y < 0 or x >= self.logicalWidth() or y >= self.logicalHeight()) return false;
+        return if (self.input) |ops| Region.contains(ops, x, y) else true;
+    }
+
+    /// The topmost surface of this tree under (x, y), relative to this surface's origin.
+    fn hit(self: *Surface, x: i32, y: i32) ?Hit {
+        var index = self.children.items.len;
+        while (index > 0) {
+            index -= 1;
+            const child = self.children.items[index];
+            const surface = child.surface orelse continue;
+            if (surface.hit(x - child.x, y - child.y)) |found| return found;
+        }
+        if (self.accepts(x, y)) return .{ .surface = self, .x = x, .y = y };
+        return null;
+    }
+
     /// Draws this surface and its subsurfaces with its origin at (x, y).
-    fn draw(self: *Surface, target: raster.Buffer, x: i32, y: i32) void {
+    /// Coordinates are logical; `scale` converts them to output pixels.
+    fn draw(self: *Surface, target: raster.Buffer, x: i32, y: i32, scale: i32) void {
         if (self.mapped()) {
             const image: raster.Image = .{ .pixels = std.mem.sliceAsBytes(self.pixels), .width = self.width, .height = self.height, .stride = self.width * 4, .format = .argb };
-            raster.blit(target, image, .{ .x = @floatFromInt(x), .y = @floatFromInt(y), .width = @floatFromInt(self.logicalWidth()), .height = @floatFromInt(self.logicalHeight()) }, null) catch {};
+            raster.blit(target, image, .{ .x = @floatFromInt(x * scale), .y = @floatFromInt(y * scale), .width = @floatFromInt(self.logicalWidth() * scale), .height = @floatFromInt(self.logicalHeight() * scale) }, null) catch {};
         }
-        for (self.children.items) |child| if (child.surface) |surface| surface.draw(target, x + child.x, y + child.y);
+        for (self.children.items) |child| if (child.surface) |surface| surface.draw(target, x + child.x, y + child.y, scale);
     }
 };
 
@@ -511,8 +583,18 @@ const Toplevel = struct {
     x: i32 = 0,
     y: i32 = 0,
     mapped: bool = false,
-    placed: bool = false,
     activated: bool = false,
+    /// Windows open maximized to the usable area, as with the wlroots compositor.
+    maximized: bool = true,
+    fullscreen: bool = false,
+    parent: ?*Toplevel = null,
+    min_size: [2]i32 = .{ 0, 0 },
+    max_size: [2]i32 = .{ 0, 0 },
+    /// The last configure sent, so unchanged layouts do not wake the client.
+    sent: ?struct { width: i32, height: i32, states: u32, activated: bool } = null,
+    handles: std.ArrayList(*ForeignHandle) = .empty,
+    /// xdg-decoration: clients always decorate themselves, as with the wlroots compositor.
+    decoration: ?ws.zxdg_toplevel_decoration_v1 = null,
 
     fn handle(self: *Toplevel, _: ws.xdg_toplevel, request: ws.xdg_toplevel.Request) void {
         const a = self.comp.a;
@@ -520,24 +602,99 @@ const Toplevel = struct {
             .set_title => |args| {
                 a.free(self.title);
                 self.title = a.dupe(u8, args.title) catch &.{};
+                for (self.handles.items) |h| {
+                    h.resource.sendTitle(self.title);
+                    h.resource.sendDone();
+                }
             },
             .set_app_id => |args| {
                 a.free(self.app_id);
                 self.app_id = a.dupe(u8, args.app_id) catch &.{};
+                for (self.handles.items) |h| {
+                    h.resource.sendAppId(self.app_id);
+                    h.resource.sendDone();
+                }
             },
+            .set_parent => |args| self.parent = if (args.parent) |p| p.data(Toplevel) else null,
+            .set_min_size => |args| self.min_size = .{ args.width, args.height },
+            .set_max_size => |args| self.max_size = .{ args.width, args.height },
+            .set_maximized => self.requestState(.{ .maximized = true }),
+            .unset_maximized => self.requestState(.{ .maximized = false }),
+            .set_fullscreen => self.requestState(.{ .fullscreen = true }),
+            .unset_fullscreen => self.requestState(.{ .fullscreen = false }),
             else => {},
         }
     }
 
-    fn configure(self: *Toplevel) void {
-        var states: [1]u32 = undefined;
+    fn requestState(self: *Toplevel, change: struct { maximized: ?bool = null, fullscreen: ?bool = null }) void {
+        if (change.maximized) |value| self.maximized = value;
+        if (change.fullscreen) |value| self.fullscreen = value;
+        if (self.xdg) |xdg| if (xdg.initial_sent) self.configure();
+    }
+
+    /// Dialogs keep their own size and are centred over the usable area.
+    fn dialog(self: *const Toplevel) bool {
+        return self.parent != null or (self.max_size[0] > 0 and self.max_size[1] > 0 and self.min_size[0] == self.max_size[0] and self.min_size[1] == self.max_size[1]);
+    }
+
+    fn area(self: *const Toplevel) Rect {
+        const output = self.comp.output;
+        return if (self.fullscreen) .{ .width = output.logicalWidth(), .height = output.logicalHeight() } else self.comp.usable;
+    }
+
+    /// Places the window: filling its area, or centred in it when it sizes itself.
+    fn place(self: *Toplevel) void {
+        const box = self.area();
+        if (self.sized()) {
+            self.x = box.x;
+            self.y = box.y;
+            return;
+        }
+        const geometry = if (self.xdg) |xdg| xdg.windowGeometry() else Rect{};
+        self.x = box.x + @divTrunc(box.width - geometry.width, 2);
+        self.y = @max(box.y, box.y + @divTrunc(box.height - geometry.height, 2));
+    }
+
+    fn sized(self: *const Toplevel) bool {
+        return self.fullscreen or (self.maximized and !self.dialog());
+    }
+
+    /// Sends a configure if the size or states changed, or when `force` is set.
+    fn reconfigure(self: *Toplevel, force: bool) void {
+        const box = self.area();
+        const width: i32 = if (self.sized()) @max(1, box.width) else 0;
+        const height: i32 = if (self.sized()) @max(1, box.height) else 0;
+        var bits: u32 = 0;
+        if (self.maximized and !self.fullscreen and !self.dialog()) bits |= 1;
+        if (self.fullscreen) bits |= 2;
+        if (!force) if (self.sent) |last| {
+            if (last.width == width and last.height == height and last.states == bits and last.activated == self.activated) return;
+        };
+        self.sent = .{ .width = width, .height = height, .states = bits, .activated = self.activated };
+        var states: [3]u32 = undefined;
         var count: usize = 0;
+        if (bits & 1 != 0) {
+            states[count] = ws.xdg_toplevel.State.maximized;
+            count += 1;
+        }
+        if (bits & 2 != 0) {
+            states[count] = ws.xdg_toplevel.State.fullscreen;
+            count += 1;
+        }
         if (self.activated) {
             states[count] = ws.xdg_toplevel.State.activated;
             count += 1;
         }
-        self.resource.sendConfigure(0, 0, std.mem.sliceAsBytes(states[0..count]));
+        if (self.decoration) |decoration| decoration.sendConfigure(ws.zxdg_toplevel_decoration_v1.Mode.client_side);
+        self.resource.sendConfigure(width, height, std.mem.sliceAsBytes(states[0..count]));
         if (self.xdg) |xdg| xdg.sendConfigure();
+        for (self.handles.items) |h| h.describe(false);
+        self.place();
+        self.comp.scheduleRepaint();
+    }
+
+    fn configure(self: *Toplevel) void {
+        self.reconfigure(true);
     }
 
     fn mapChanged(self: *Toplevel, mapped: bool) void {
@@ -545,19 +702,18 @@ const Toplevel = struct {
         const comp = self.comp;
         self.mapped = mapped;
         if (mapped) {
-            if (!self.placed) {
-                // New windows open centred on the output.
-                self.placed = true;
-                const geometry = if (self.xdg) |xdg| xdg.windowGeometry() else Rect{};
-                const output = comp.output;
-                self.x = @divTrunc(@as(i32, @intCast(output.width)) - geometry.width, 2);
-                self.y = @max(0, @divTrunc(@as(i32, @intCast(output.height)) - geometry.height, 2));
-            }
+            self.place();
             comp.toplevels.append(comp.a, self) catch {};
+            for (comp.foreign_managers.items) |manager| ForeignHandle.announce(comp, manager, self);
             if (self.xdg) |xdg| if (xdg.surface) |surface| comp.output.enter(surface);
             comp.focus(self);
         } else {
             removeItem(*Toplevel, &comp.toplevels, self);
+            for (self.handles.items) |h| {
+                h.resource.sendClosed();
+                h.toplevel = null;
+            }
+            self.handles.clearRetainingCapacity();
             if (comp.focused == self) {
                 comp.focused = null;
                 comp.focus(if (comp.toplevels.items.len > 0) comp.toplevels.items[comp.toplevels.items.len - 1] else null);
@@ -572,6 +728,9 @@ const Toplevel = struct {
         if (self.comp.focused == self) self.comp.focused = null;
         self.comp.a.free(self.title);
         self.comp.a.free(self.app_id);
+        for (self.handles.items) |h| h.toplevel = null;
+        self.handles.deinit(self.comp.a);
+        if (self.decoration) |decoration| decoration.setHandler(Toplevel, self, null, null);
         self.comp.a.destroy(self);
     }
 };
@@ -582,6 +741,8 @@ const Popup = struct {
     xdg: ?*XdgSurface,
     parent: ?*XdgSurface,
     positioner: Positioner,
+    /// Set when a layer surface adopts the popup with get_popup.
+    layer_parent: ?*Layer = null,
     rect: Rect = .{},
     mapped: bool = false,
 
@@ -599,6 +760,7 @@ const Popup = struct {
 
     /// The parent's origin on the output and its window geometry offset.
     fn parentOrigin(self: *const Popup) ?[2]i32 {
+        if (self.layer_parent) |layer| return .{ layer.rect.x, layer.rect.y };
         const parent = self.parent orelse return null;
         if (parent.toplevel) |toplevel| {
             const geometry = parent.windowGeometry();
@@ -614,7 +776,7 @@ const Popup = struct {
     fn configure(self: *Popup) void {
         const placed = self.positioner.place();
         const origin = self.parentOrigin() orelse .{ 0, 0 };
-        const bounds: Rect = .{ .x = -origin[0], .y = -origin[1], .width = @intCast(self.comp.output.width), .height = @intCast(self.comp.output.height) };
+        const bounds: Rect = .{ .x = -origin[0], .y = -origin[1], .width = self.comp.output.logicalWidth(), .height = self.comp.output.logicalHeight() };
         self.rect = self.positioner.constrain(placed, bounds);
         self.resource.sendConfigure(self.rect.x, self.rect.y, self.rect.width, self.rect.height);
         if (self.xdg) |xdg| xdg.sendConfigure();
@@ -628,6 +790,182 @@ const Popup = struct {
     }
 };
 
+// ------------------------------------------------------------------ Layer shell
+
+const Layer = struct {
+    comp: *Compositor,
+    resource: ws.zwlr_layer_surface_v1,
+    surface: ?*Surface,
+    namespace: []u8,
+    pending: Config,
+    current: Config,
+    /// Arranged position and size on the output.
+    rect: Rect = .{},
+    configured: ?[2]u32 = null,
+    configure_serial: u32 = 0,
+    acked: bool = false,
+    initial_sent: bool = false,
+    mapped: bool = false,
+
+    const Config = struct {
+        layer: u32,
+        width: u32 = 0,
+        height: u32 = 0,
+        anchor: u32 = 0,
+        zone: i32 = 0,
+        /// Top, right, bottom, left.
+        margin: [4]i32 = .{ 0, 0, 0, 0 },
+        interactivity: u32 = 0,
+    };
+
+    const A = ws.zwlr_layer_surface_v1.Anchor;
+
+    fn handle(self: *Layer, resource: ws.zwlr_layer_surface_v1, request: ws.zwlr_layer_surface_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .set_size => |args| {
+                self.pending.width = args.width;
+                self.pending.height = args.height;
+            },
+            .set_anchor => |args| {
+                if (args.anchor > 15) return resource.postError(ws.zwlr_layer_surface_v1.Error.invalid_anchor, "invalid anchor", .{});
+                self.pending.anchor = args.anchor;
+            },
+            .set_exclusive_zone => |args| self.pending.zone = args.zone,
+            .set_margin => |args| self.pending.margin = .{ args.top, args.right, args.bottom, args.left },
+            .set_keyboard_interactivity => |args| {
+                if (args.keyboard_interactivity > 2) return resource.postError(ws.zwlr_layer_surface_v1.Error.invalid_keyboard_interactivity, "invalid keyboard interactivity", .{});
+                self.pending.interactivity = args.keyboard_interactivity;
+            },
+            .set_layer => |args| {
+                if (args.layer > 3) return resource.postError(ws.zwlr_layer_shell_v1.Error.invalid_layer, "invalid layer", .{});
+                self.pending.layer = args.layer;
+            },
+            .get_popup => |args| if (args.popup.data(Popup)) |popup| {
+                popup.layer_parent = self;
+                popup.configure();
+            },
+            .ack_configure => |args| {
+                if (args.serial == self.configure_serial) self.acked = true;
+            },
+        }
+    }
+
+    fn committed(self: *Layer) void {
+        const surface = self.surface orelse return;
+        const cfg = self.pending;
+        const horizontal = cfg.anchor & (A.left | A.right) == A.left | A.right;
+        const vertical = cfg.anchor & (A.top | A.bottom) == A.top | A.bottom;
+        if ((cfg.width == 0 and !horizontal) or (cfg.height == 0 and !vertical))
+            return self.resource.postError(ws.zwlr_layer_surface_v1.Error.invalid_size, "zero size needs opposite anchors", .{});
+        self.current = cfg;
+        if (!self.initial_sent) {
+            if (surface.mapped()) return self.resource.postError(ws.zwlr_layer_shell_v1.Error.already_constructed, "buffer attached before the first configure", .{});
+            self.initial_sent = true;
+            self.comp.arrange();
+            return;
+        }
+        const mapped = surface.mapped() and self.acked;
+        const changed = mapped != self.mapped;
+        self.mapped = mapped;
+        self.comp.arrange();
+        if (changed) {
+            if (mapped) self.comp.output.enter(surface);
+            if (!mapped and self.comp.focused_layer == self) self.comp.focused_layer = null;
+            self.comp.updateKeyboardFocus();
+        }
+    }
+
+    /// Places the surface within `bounds`, following anchors and margins.
+    fn place(self: *Layer, bounds: Rect) Rect {
+        const cfg = self.current;
+        const m = cfg.margin;
+        var box: Rect = .{ .width = @intCast(cfg.width), .height = @intCast(cfg.height) };
+        const horizontal = cfg.anchor & (A.left | A.right) == A.left | A.right;
+        const vertical = cfg.anchor & (A.top | A.bottom) == A.top | A.bottom;
+        if (box.width == 0 and horizontal) {
+            box.x = bounds.x + m[3];
+            box.width = bounds.width - m[3] - m[1];
+        } else if (horizontal or cfg.anchor & (A.left | A.right) == 0) {
+            box.x = bounds.x + @divTrunc(bounds.width - box.width, 2);
+        } else if (cfg.anchor & A.left != 0) {
+            box.x = bounds.x + m[3];
+        } else {
+            box.x = bounds.x + bounds.width - box.width - m[1];
+        }
+        if (box.height == 0 and vertical) {
+            box.y = bounds.y + m[0];
+            box.height = bounds.height - m[0] - m[2];
+        } else if (vertical or cfg.anchor & (A.top | A.bottom) == 0) {
+            box.y = bounds.y + @divTrunc(bounds.height - box.height, 2);
+        } else if (cfg.anchor & A.top != 0) {
+            box.y = bounds.y + m[0];
+        } else {
+            box.y = bounds.y + bounds.height - box.height - m[2];
+        }
+        box.width = @max(box.width, 1);
+        box.height = @max(box.height, 1);
+        return box;
+    }
+
+    /// Shrinks `usable` by this surface's exclusive zone, if it claims an edge.
+    fn exclude(self: *Layer, usable: *Rect) void {
+        const cfg = self.current;
+        if (cfg.zone <= 0) return;
+        const m = cfg.margin;
+        const edges = cfg.anchor;
+        const horizontal = edges & (A.left | A.right);
+        const vertical = edges & (A.top | A.bottom);
+        // The zone applies to the single edge the surface is anchored to,
+        // possibly stretched along it between the two perpendicular edges.
+        if (edges & A.top != 0 and vertical == A.top and (horizontal == 0 or horizontal == A.left | A.right)) {
+            usable.y += cfg.zone + m[0];
+            usable.height -= cfg.zone + m[0];
+        } else if (edges & A.bottom != 0 and vertical == A.bottom and (horizontal == 0 or horizontal == A.left | A.right)) {
+            usable.height -= cfg.zone + m[2];
+        } else if (edges & A.left != 0 and horizontal == A.left and (vertical == 0 or vertical == A.top | A.bottom)) {
+            usable.x += cfg.zone + m[3];
+            usable.width -= cfg.zone + m[3];
+        } else if (edges & A.right != 0 and horizontal == A.right and (vertical == 0 or vertical == A.top | A.bottom)) {
+            usable.width -= cfg.zone + m[1];
+        }
+    }
+
+    fn configure(self: *Layer) void {
+        const size: [2]u32 = .{ @intCast(self.rect.width), @intCast(self.rect.height) };
+        if (self.configured) |last| if (last[0] == size[0] and last[1] == size[1]) return;
+        self.configured = size;
+        self.configure_serial = self.comp.server.nextSerial();
+        self.resource.sendConfigure(self.configure_serial, size[0], size[1]);
+    }
+
+    fn surfaceGone(self: *Layer) void {
+        self.surface = null;
+        self.mapped = false;
+        if (self.comp.focused_layer == self) self.comp.focused_layer = null;
+        self.comp.arrange();
+        self.comp.updateKeyboardFocus();
+    }
+
+    fn destroyed(self: *Layer, _: ws.zwlr_layer_surface_v1) void {
+        const comp = self.comp;
+        removeItem(*Layer, &comp.layers, self);
+        for (comp.popups.items) |popup| if (popup.layer_parent == self) {
+            popup.layer_parent = null;
+        };
+        if (self.surface) |surface| {
+            surface.layer = null;
+            surface.role = .none;
+        }
+        if (comp.focused_layer == self) comp.focused_layer = null;
+        comp.a.free(self.namespace);
+        comp.a.destroy(self);
+        comp.arrange();
+        comp.updateKeyboardFocus();
+        comp.scheduleRepaint();
+    }
+};
+
 // ------------------------------------------------------------------ Output
 
 const Output = struct {
@@ -638,6 +976,7 @@ const Output = struct {
     scale: i32 = 1,
     pixels: []u32,
     resources: std.ArrayList(ws.wl_output) = .empty,
+    xdg_outputs: std.ArrayList(ws.zxdg_output_v1) = .empty,
     repaint: *wire.Loop.Source = undefined,
     scheduled: bool = false,
     /// Frames rendered so far; tests wait on it.
@@ -660,10 +999,42 @@ const Output = struct {
         for (self.comp.surfaces.items) |surface| if (surface.entered and surface.resource.client() == output.client()) surface.resource.sendEnter(output);
     }
 
+    fn logicalWidth(self: *const Output) i32 {
+        return @divTrunc(@as(i32, @intCast(self.width)), self.scale);
+    }
+    fn logicalHeight(self: *const Output) i32 {
+        return @divTrunc(@as(i32, @intCast(self.height)), self.scale);
+    }
+
+    /// Changes the integer output scale and tells every client.
+    fn setScale(self: *Output, scale: i32) void {
+        if (scale == self.scale) return;
+        self.scale = scale;
+        for (self.xdg_outputs.items) |xdg_output| {
+            xdg_output.sendLogicalSize(self.logicalWidth(), self.logicalHeight());
+            if (xdg_output.version() < 3) xdg_output.sendDone();
+        }
+        for (self.resources.items) |output| {
+            if (output.version() >= 2) output.sendScale(scale);
+            if (output.version() >= 2) output.sendDone();
+        }
+        for (self.comp.surfaces.items) |surface| {
+            if (surface.entered and surface.resource.version() >= 6) surface.resource.sendPreferredBufferScale(scale);
+        }
+        const seat = &self.comp.seat;
+        seat.pointer_x = @min(seat.pointer_x, @as(f64, @floatFromInt(self.logicalWidth() - 1)));
+        seat.pointer_y = @min(seat.pointer_y, @as(f64, @floatFromInt(self.logicalHeight() - 1)));
+        self.comp.arrange();
+    }
+
     fn handle(_: *Output, _: ws.wl_output, _: ws.wl_output.Request) void {}
 
     fn destroyed(self: *Output, resource: ws.wl_output) void {
         removeItem(ws.wl_output, &self.resources, resource);
+    }
+
+    fn xdgOutputGone(self: *Output, resource: ws.zxdg_output_v1) void {
+        removeItem(ws.zxdg_output_v1, &self.xdg_outputs, resource);
     }
 
     fn enter(self: *Output, surface: *Surface) void {
@@ -677,20 +1048,8 @@ const Output = struct {
         const comp = self.comp;
         const target: raster.Buffer = .{ .pixels = self.pixels, .width = self.width, .height = self.height };
         @memset(self.pixels, comp.background);
-        for (comp.toplevels.items) |toplevel| {
-            const xdg = toplevel.xdg orelse continue;
-            const surface = xdg.surface orelse continue;
-            const geometry = xdg.windowGeometry();
-            surface.draw(target, toplevel.x - geometry.x, toplevel.y - geometry.y);
-        }
-        for (comp.popups.items) |popup| {
-            if (!popup.mapped) continue;
-            const xdg = popup.xdg orelse continue;
-            const surface = xdg.surface orelse continue;
-            const origin = popup.parentOrigin() orelse continue;
-            const geometry = xdg.windowGeometry();
-            surface.draw(target, origin[0] + popup.rect.x - geometry.x, origin[1] + popup.rect.y - geometry.y);
-        }
+        var roots: [256]Root = undefined;
+        for (comp.stack(&roots)) |root| root.surface.draw(target, root.x, root.y, self.scale);
         self.frames += 1;
         const time = nowMs();
         for (comp.surfaces.items) |surface| {
@@ -706,7 +1065,152 @@ const Output = struct {
     }
 };
 
+// ------------------------------------------------------------------ Keymaps
+
+/// The byte range of a top-level keymap section such as `xkb_types "name" { ... };`.
+fn keymapSection(text: []const u8, keyword: []const u8) ?struct { start: usize, end: usize } {
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, text, from, keyword)) |start| {
+        from = start + keyword.len;
+        // Skip names that merely contain the keyword, such as xkb_types_extra.
+        if (from < text.len and (std.ascii.isAlphanumeric(text[from]) or text[from] == '_')) continue;
+        const open = std.mem.indexOfScalarPos(u8, text, from, '{') orelse return null;
+        var depth: usize = 0;
+        var index = open;
+        var quoted = false;
+        while (index < text.len) : (index += 1) {
+            const char = text[index];
+            if (char == '"') quoted = !quoted;
+            if (quoted) continue;
+            if (char == '{') depth += 1;
+            if (char == '}') {
+                depth -= 1;
+                if (depth == 0) {
+                    var end = index + 1;
+                    while (end < text.len and text[end] != ';' and std.ascii.isWhitespace(text[end])) end += 1;
+                    if (end < text.len and text[end] == ';') end += 1;
+                    return .{ .start = start, .end = end };
+                }
+            }
+        }
+        return null;
+    }
+    return null;
+}
+
+/// Completes a client keymap whose sections include shared definitions,
+/// as wtype's types and compatibility do, by substituting the compositor's
+/// own compiled sections, so clients that read complete keymaps can use it.
+/// Returns null when nothing needed replacing.
+fn completeKeymap(a: std.mem.Allocator, text: []const u8) !?[]u8 {
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(a);
+    var changed = false;
+    var rest = text;
+    try result.ensureTotalCapacity(a, text.len + keymap_text.len);
+    // Replace sections in the order they appear.
+    while (true) {
+        var next: ?struct { start: usize, end: usize, keyword: []const u8 } = null;
+        for ([_][]const u8{ "xkb_keycodes", "xkb_types", "xkb_compatibility", "xkb_symbols" }) |keyword| {
+            const found = keymapSection(rest, keyword) orelse continue;
+            if (next == null or found.start < next.?.start) next = .{ .start = found.start, .end = found.end, .keyword = keyword };
+        }
+        const section = next orelse break;
+        const body = rest[section.start..section.end];
+        const replacement = if (std.mem.indexOf(u8, body, "include") != null) keymapSection(keymap_text, section.keyword) else null;
+        try result.appendSlice(a, rest[0..section.start]);
+        if (replacement) |own| {
+            try result.appendSlice(a, keymap_text[own.start..own.end]);
+            changed = true;
+        } else {
+            try result.appendSlice(a, body);
+        }
+        rest = rest[section.end..];
+    }
+    if (!changed) {
+        result.deinit(a);
+        return null;
+    }
+    try result.appendSlice(a, rest);
+    return try result.toOwnedSlice(a);
+}
+
+/// A sealed, read-only keymap file for clients.
+fn keymapFile(text: []const u8) ?Keymap {
+    const fd = libc.memfd_create("desktop-keymap", 0x0001 | 0x0002); // MFD_CLOEXEC | MFD_ALLOW_SEALING
+    if (fd < 0) return null;
+    const size = text.len + 1;
+    if (libc.ftruncate(fd, @intCast(size)) != 0) {
+        _ = std.c.close(fd);
+        return null;
+    }
+    var written: usize = 0;
+    while (written < text.len) {
+        const count = std.c.write(fd, text[written..].ptr, text.len - written);
+        if (count <= 0) {
+            _ = std.c.close(fd);
+            return null;
+        }
+        written += @intCast(count);
+    }
+    _ = std.c.fcntl(fd, 1033, @as(c_int, 0x0001 | 0x0002 | 0x0004 | 0x0008)); // F_ADD_SEALS: SEAL, SHRINK, GROW, WRITE
+    return .{ .fd = fd, .size = @intCast(size) };
+}
+
+/// Reads a client keymap and returns one clients can parse, taking ownership of `fd`.
+fn clientKeymap(a: std.mem.Allocator, fd: wire.Fd, size: u32) Keymap {
+    const original: Keymap = .{ .fd = fd, .size = size };
+    if (size == 0 or size > 1 << 20) return original;
+    const memory = libc.mmap(null, size, libc.PROT_READ, libc.MAP_PRIVATE, fd, 0) orelse return original;
+    if (memory == libc.MAP_FAILED) return original;
+    defer _ = libc.munmap(memory, size);
+    const bytes: [*]const u8 = @ptrCast(memory);
+    const text = std.mem.sliceTo(bytes[0..size], 0);
+    const completed = (completeKeymap(a, text) catch null) orelse return original;
+    defer a.free(completed);
+    const file = keymapFile(completed) orelse return original;
+    _ = std.c.close(fd);
+    return file;
+}
+
+test "virtual keyboard keymaps that include shared types and compatibility are completed" {
+    const wtype =
+        \\xkb_keymap {
+        \\xkb_keycodes "(unnamed)" {
+        \\minimum = 8;
+        \\maximum = 11;
+        \\<K1> = 9;
+        \\};
+        \\xkb_types "(unnamed)" { include "complete" };
+        \\xkb_compatibility "(unnamed)" { include "complete" };
+        \\xkb_symbols "(unnamed)" {
+        \\key <K1> {[U65E5]};
+        \\};
+        \\};
+    ;
+    const a = std.testing.allocator;
+    const completed = (try completeKeymap(a, wtype)).?;
+    defer a.free(completed);
+    try std.testing.expect(std.mem.indexOf(u8, completed, "include") == null);
+    try std.testing.expect(std.mem.indexOf(u8, completed, "key <K1> {[U65E5]};") != null);
+    try std.testing.expect(std.mem.indexOf(u8, completed, "type \"ALPHABETIC\"") != null);
+    // A keymap of includes only becomes the compositor's own.
+    const includes = "xkb_keymap {\n xkb_keycodes { include \"evdev+aliases(qwerty)\" };\n xkb_types { include \"complete\" };\n xkb_compatibility { include \"complete\" };\n xkb_symbols { include \"pc+us+inet(evdev)\" };\n};";
+    const own = (try completeKeymap(a, includes)).?;
+    defer a.free(own);
+    try std.testing.expect(std.mem.indexOf(u8, own, "include") == null);
+    try std.testing.expect(std.mem.indexOf(u8, own, "<ESC>") != null);
+    // A complete keymap is left alone.
+    try std.testing.expect(try completeKeymap(a, keymap_text) == null);
+}
+
 // ------------------------------------------------------------------ Seat
+
+const Hit = struct { surface: *Surface, x: i32, y: i32 };
+/// A surface tree drawn at an output position.
+const Root = struct { surface: *Surface, x: i32, y: i32 };
+
+const Keymap = struct { fd: wire.Fd = -1, size: u32 = 0 };
 
 const Seat = struct {
     comp: *Compositor,
@@ -715,29 +1219,24 @@ const Seat = struct {
     pointers: std.ArrayList(ws.wl_pointer) = .empty,
     keyboard_focus: ?*Surface = null,
     cursor: ?*Surface = null,
-    keymap_fd: wire.Fd = -1,
-    keymap_size: u32 = 0,
+    default_keymap: Keymap = .{},
+    /// The keymap clients last received; virtual keyboards bring their own.
+    active_keymap: Keymap = .{},
+    modifiers: [4]u32 = .{ 0, 0, 0, 0 },
+    pointer_x: f64 = 0,
+    pointer_y: f64 = 0,
+    pointer_focus: ?*Surface = null,
+    /// The focused surface's origin on the output.
+    focus_origin: [2]f64 = .{ 0, 0 },
+    buttons: u32 = 0,
 
     fn init(self: *Seat) !void {
-        const fd = libc.memfd_create("desktop-keymap", 0x0001 | 0x0002); // MFD_CLOEXEC | MFD_ALLOW_SEALING
-        if (fd < 0) return error.Keymap;
-        errdefer _ = std.c.close(fd);
-        const size = keymap_text.len + 1;
-        if (libc.ftruncate(fd, @intCast(size)) != 0) return error.Keymap;
-        var written: usize = 0;
-        while (written < keymap_text.len) {
-            const count = std.c.write(fd, keymap_text[written..].ptr, keymap_text.len - written);
-            if (count <= 0) return error.Keymap;
-            written += @intCast(count);
-        }
-        // Clients map the keymap read-only and must not be able to change it for others.
-        _ = std.c.fcntl(fd, 1033, @as(c_int, 0x0001 | 0x0002 | 0x0004 | 0x0008)); // F_ADD_SEALS: SEAL, SHRINK, GROW, WRITE
-        self.keymap_fd = fd;
-        self.keymap_size = @intCast(size);
+        self.default_keymap = keymapFile(keymap_text) orelse return error.Keymap;
+        self.active_keymap = self.default_keymap;
     }
 
     fn deinit(self: *Seat) void {
-        if (self.keymap_fd >= 0) _ = std.c.close(self.keymap_fd);
+        if (self.default_keymap.fd >= 0) _ = std.c.close(self.default_keymap.fd);
         self.seats.deinit(self.comp.a);
         self.keyboards.deinit(self.comp.a);
         self.pointers.deinit(self.comp.a);
@@ -758,16 +1257,20 @@ const Seat = struct {
                 const keyboard = args.id;
                 keyboard.setHandler(Seat, self, keyboardRequest, keyboardGone);
                 self.keyboards.append(self.comp.a, keyboard) catch {};
-                keyboard.sendKeymap(ws.wl_keyboard.KeymapFormat.xkb_v1, self.keymap_fd, self.keymap_size);
+                keyboard.sendKeymap(ws.wl_keyboard.KeymapFormat.xkb_v1, self.active_keymap.fd, self.active_keymap.size);
                 if (keyboard.version() >= 4) keyboard.sendRepeatInfo(25, 600);
                 if (self.keyboard_focus) |surface| if (surface.resource.client() == keyboard.client()) {
                     keyboard.sendEnter(self.comp.server.nextSerial(), surface.resource, &.{});
-                    keyboard.sendModifiers(self.comp.server.nextSerial(), 0, 0, 0, 0);
+                    keyboard.sendModifiers(self.comp.server.nextSerial(), self.modifiers[0], self.modifiers[1], self.modifiers[2], self.modifiers[3]);
                 };
             },
             .get_pointer => |args| {
                 args.id.setHandler(Seat, self, pointerRequest, pointerGone);
                 self.pointers.append(self.comp.a, args.id) catch {};
+                if (self.pointer_focus) |surface| if (surface.resource.client() == args.id.client()) {
+                    args.id.sendEnter(self.comp.server.nextSerial(), surface.resource, self.pointer_x - self.focus_origin[0], self.pointer_y - self.focus_origin[1]);
+                    if (args.id.version() >= 5) args.id.sendFrame();
+                };
             },
             .get_touch => |args| args.id.setHandler(Seat, self, null, null),
             .release => {},
@@ -802,6 +1305,17 @@ const Seat = struct {
         removeItem(ws.wl_pointer, &self.pointers, resource);
     }
 
+    fn surfaceGone(self: *Seat, surface: *Surface) void {
+        if (self.keyboard_focus == surface) self.keyboard_focus = null;
+        if (self.cursor == surface) self.cursor = null;
+        if (self.pointer_focus == surface) {
+            self.pointer_focus = null;
+            self.buttons = 0;
+        }
+    }
+
+    // -------------------------------------------------------------- Keyboard
+
     /// Moves keyboard focus, sending leave and enter to the affected clients.
     fn focusSurface(self: *Seat, surface: ?*Surface) void {
         if (self.keyboard_focus == surface) return;
@@ -813,8 +1327,432 @@ const Seat = struct {
         if (surface) |new| for (self.keyboards.items) |keyboard| {
             if (keyboard.client() != new.resource.client()) continue;
             keyboard.sendEnter(server.nextSerial(), new.resource, &.{});
-            keyboard.sendModifiers(server.nextSerial(), 0, 0, 0, 0);
+            keyboard.sendModifiers(server.nextSerial(), self.modifiers[0], self.modifiers[1], self.modifiers[2], self.modifiers[3]);
         };
+    }
+
+    /// Sends `keymap` to every keyboard unless clients already have it.
+    fn useKeymap(self: *Seat, keymap: Keymap) void {
+        if (keymap.fd == self.active_keymap.fd) return;
+        self.active_keymap = keymap;
+        for (self.keyboards.items) |keyboard| keyboard.sendKeymap(ws.wl_keyboard.KeymapFormat.xkb_v1, keymap.fd, keymap.size);
+    }
+
+    fn key(self: *Seat, keymap: Keymap, time: u32, code: u32, state: u32) void {
+        self.useKeymap(keymap);
+        const surface = self.keyboard_focus orelse return;
+        for (self.keyboards.items) |keyboard| {
+            if (keyboard.client() == surface.resource.client()) keyboard.sendKey(self.comp.server.nextSerial(), time, code, state);
+        }
+    }
+
+    fn setModifiers(self: *Seat, keymap: Keymap, values: [4]u32) void {
+        self.useKeymap(keymap);
+        self.modifiers = values;
+        const surface = self.keyboard_focus orelse return;
+        for (self.keyboards.items) |keyboard| {
+            if (keyboard.client() == surface.resource.client()) keyboard.sendModifiers(self.comp.server.nextSerial(), values[0], values[1], values[2], values[3]);
+        }
+    }
+
+    // --------------------------------------------------------------- Pointer
+
+    /// Re-targets the pointer at the surface under it, sending leave and enter.
+    fn updatePointerFocus(self: *Seat) void {
+        const server = self.comp.server;
+        const found = self.comp.surfaceAt(self.pointer_x, self.pointer_y);
+        const target = if (found) |value| value.surface else null;
+        if (found) |value| self.focus_origin = .{ @floor(self.pointer_x) - @as(f64, @floatFromInt(value.x)), @floor(self.pointer_y) - @as(f64, @floatFromInt(value.y)) };
+        if (target == self.pointer_focus) return;
+        if (self.pointer_focus) |old| for (self.pointers.items) |pointer| {
+            if (pointer.client() != old.resource.client()) continue;
+            pointer.sendLeave(server.nextSerial(), old.resource);
+            if (pointer.version() >= 5) pointer.sendFrame();
+        };
+        self.pointer_focus = target;
+        if (target) |new| for (self.pointers.items) |pointer| {
+            if (pointer.client() != new.resource.client()) continue;
+            pointer.sendEnter(server.nextSerial(), new.resource, self.pointer_x - self.focus_origin[0], self.pointer_y - self.focus_origin[1]);
+            if (pointer.version() >= 5) pointer.sendFrame();
+        };
+    }
+
+    fn moveTo(self: *Seat, x: f64, y: f64, time: u32) void {
+        const output = self.comp.output;
+        self.pointer_x = std.math.clamp(x, 0, @as(f64, @floatFromInt(output.logicalWidth())) - 1);
+        self.pointer_y = std.math.clamp(y, 0, @as(f64, @floatFromInt(output.logicalHeight())) - 1);
+        // An implicit grab keeps events on the pressed surface until release.
+        if (self.buttons == 0) self.updatePointerFocus();
+        const surface = self.pointer_focus orelse return;
+        for (self.pointers.items) |pointer| {
+            if (pointer.client() == surface.resource.client()) pointer.sendMotion(time, self.pointer_x - self.focus_origin[0], self.pointer_y - self.focus_origin[1]);
+        }
+    }
+
+    fn button(self: *Seat, time: u32, code: u32, pressed: bool) void {
+        if (pressed) {
+            if (self.buttons == 0) {
+                self.updatePointerFocus();
+                self.comp.pointerPressed(self.pointer_focus);
+            }
+            self.buttons += 1;
+        } else {
+            self.buttons -|= 1;
+        }
+        if (self.pointer_focus) |surface| for (self.pointers.items) |pointer| {
+            if (pointer.client() == surface.resource.client()) pointer.sendButton(self.comp.server.nextSerial(), time, code, if (pressed) 1 else 0);
+        };
+        if (!pressed and self.buttons == 0) self.updatePointerFocus();
+    }
+
+    fn axis(self: *Seat, time: u32, which: u32, value: f64, discrete: ?i32) void {
+        const surface = self.pointer_focus orelse return;
+        for (self.pointers.items) |pointer| {
+            if (pointer.client() != surface.resource.client()) continue;
+            if (discrete) |steps| {
+                if (pointer.version() >= 8) pointer.sendAxisValue120(which, steps * 120) else if (pointer.version() >= 5) pointer.sendAxisDiscrete(which, steps);
+            }
+            pointer.sendAxis(time, which, value);
+        }
+    }
+
+    fn frame(self: *Seat) void {
+        const surface = self.pointer_focus orelse return;
+        for (self.pointers.items) |pointer| {
+            if (pointer.client() == surface.resource.client() and pointer.version() >= 5) pointer.sendFrame();
+        }
+    }
+};
+
+/// zwp_virtual_keyboard_v1: keys from a client, under the keymap it uploads.
+const VirtualKeyboard = struct {
+    comp: *Compositor,
+    keymap: ?Keymap = null,
+
+    fn handle(self: *VirtualKeyboard, resource: ws.zwp_virtual_keyboard_v1, request: ws.zwp_virtual_keyboard_v1.Request) void {
+        const seat = &self.comp.seat;
+        switch (request) {
+            .keymap => |args| {
+                self.release();
+                self.keymap = clientKeymap(self.comp.a, args.fd, args.size);
+            },
+            .key => |args| {
+                const keymap = self.keymap orelse return resource.postError(ws.zwp_virtual_keyboard_v1.Error.no_keymap, "no keymap set", .{});
+                seat.key(keymap, args.time, args.key, args.state);
+            },
+            .modifiers => |args| {
+                const keymap = self.keymap orelse return resource.postError(ws.zwp_virtual_keyboard_v1.Error.no_keymap, "no keymap set", .{});
+                seat.setModifiers(keymap, .{ args.mods_depressed, args.mods_latched, args.mods_locked, args.group });
+            },
+            .destroy => {},
+        }
+    }
+
+    /// Returns clients to the default keymap if this keyboard's was active.
+    fn release(self: *VirtualKeyboard) void {
+        const keymap = self.keymap orelse return;
+        const seat = &self.comp.seat;
+        if (seat.active_keymap.fd == keymap.fd) seat.useKeymap(seat.default_keymap);
+        _ = std.c.close(keymap.fd);
+        self.keymap = null;
+    }
+
+    fn destroyed(self: *VirtualKeyboard, _: ws.zwp_virtual_keyboard_v1) void {
+        self.release();
+        self.comp.a.destroy(self);
+    }
+};
+
+/// zwlr_virtual_pointer_v1: pointer events from a client, as wlrctl sends.
+const VirtualPointer = struct {
+    comp: *Compositor,
+    axis_discrete: [2]?i32 = .{ null, null },
+
+    fn handle(self: *VirtualPointer, _: ws.zwlr_virtual_pointer_v1, request: ws.zwlr_virtual_pointer_v1.Request) void {
+        const seat = &self.comp.seat;
+        const output = self.comp.output;
+        switch (request) {
+            .motion => |args| seat.moveTo(seat.pointer_x + args.dx, seat.pointer_y + args.dy, args.time),
+            .motion_absolute => |args| {
+                if (args.x_extent == 0 or args.y_extent == 0) return;
+                const x = @as(f64, @floatFromInt(args.x)) * @as(f64, @floatFromInt(output.logicalWidth())) / @as(f64, @floatFromInt(args.x_extent));
+                const y = @as(f64, @floatFromInt(args.y)) * @as(f64, @floatFromInt(output.logicalHeight())) / @as(f64, @floatFromInt(args.y_extent));
+                seat.moveTo(x, y, args.time);
+            },
+            .button => |args| seat.button(args.time, args.button, args.state != 0),
+            .axis => |args| seat.axis(args.time, args.axis, args.value, null),
+            .axis_discrete => |args| seat.axis(args.time, args.axis, args.value, args.discrete),
+            .frame => seat.frame(),
+            .axis_source, .axis_stop, .destroy => {},
+        }
+    }
+
+    fn destroyed(self: *VirtualPointer, _: ws.zwlr_virtual_pointer_v1) void {
+        self.comp.a.destroy(self);
+    }
+};
+
+// ------------------------------------------------------------------ Foreign toplevels
+
+/// A zwlr_foreign_toplevel_handle_v1 describing one window to a task list or wlrctl.
+const ForeignHandle = struct {
+    comp: *Compositor,
+    resource: ws.zwlr_foreign_toplevel_handle_v1,
+    toplevel: ?*Toplevel,
+
+    fn handle(self: *ForeignHandle, _: ws.zwlr_foreign_toplevel_handle_v1, request: ws.zwlr_foreign_toplevel_handle_v1.Request) void {
+        const toplevel = self.toplevel orelse return;
+        switch (request) {
+            .activate => {
+                self.comp.focused_layer = null;
+                self.comp.focus(toplevel);
+            },
+            .close => toplevel.resource.sendClose(),
+            else => {},
+        }
+    }
+
+    fn destroyed(self: *ForeignHandle, _: ws.zwlr_foreign_toplevel_handle_v1) void {
+        if (self.toplevel) |toplevel| removeItem(*ForeignHandle, &toplevel.handles, self);
+        self.comp.a.destroy(self);
+    }
+
+    /// Sends the window's state, then done.
+    fn describe(self: *ForeignHandle, full: bool) void {
+        const toplevel = self.toplevel orelse return;
+        if (full) {
+            self.resource.sendTitle(toplevel.title);
+            self.resource.sendAppId(toplevel.app_id);
+            for (self.comp.output.resources.items) |output| if (output.client() == self.resource.client()) self.resource.sendOutputEnter(output);
+        }
+        var states: [1]u32 = undefined;
+        var count: usize = 0;
+        if (toplevel.activated) {
+            states[count] = ws.zwlr_foreign_toplevel_handle_v1.State.activated;
+            count += 1;
+        }
+        self.resource.sendState(std.mem.sliceAsBytes(states[0..count]));
+        self.resource.sendDone();
+    }
+
+    /// Announces `toplevel` to one manager.
+    fn announce(comp: *Compositor, manager: ws.zwlr_foreign_toplevel_manager_v1, toplevel: *Toplevel) void {
+        const resource = manager.sendToplevel();
+        if (!resource.alive()) return;
+        const self = create(ForeignHandle, comp, .{ .comp = comp, .resource = resource, .toplevel = toplevel }) orelse return resource.destroyResource();
+        toplevel.handles.append(comp.a, self) catch {
+            comp.a.destroy(self);
+            return resource.destroyResource();
+        };
+        resource.setHandler(ForeignHandle, self, handle, destroyed);
+        self.describe(true);
+    }
+};
+
+// ------------------------------------------------------------------ Screen capture
+
+/// A zwlr_screencopy_frame_v1: one copy of the output, or a region of it, into a client buffer.
+const CaptureFrame = struct {
+    comp: *Compositor,
+    rect: Rect,
+    used: bool = false,
+
+    fn handle(self: *CaptureFrame, resource: ws.zwlr_screencopy_frame_v1, request: ws.zwlr_screencopy_frame_v1.Request) void {
+        switch (request) {
+            .copy => |args| self.copy(resource, args.buffer, false),
+            .copy_with_damage => |args| self.copy(resource, args.buffer, true),
+            .destroy => {},
+        }
+    }
+
+    fn copy(self: *CaptureFrame, resource: ws.zwlr_screencopy_frame_v1, buffer_resource: ws.wl_buffer, damage: bool) void {
+        if (self.used) return resource.postError(ws.zwlr_screencopy_frame_v1.Error.already_used, "frame already used", .{});
+        self.used = true;
+        const buffer = buffer_resource.data(Buffer) orelse return resource.sendFailed();
+        const width: u32 = @intCast(self.rect.width);
+        const height: u32 = @intCast(self.rect.height);
+        if (buffer.width != width or buffer.height != height or buffer.stride < width * 4 or (buffer.format != ws.wl_shm.Format.xrgb8888 and buffer.format != ws.wl_shm.Format.argb8888))
+            return resource.postError(ws.zwlr_screencopy_frame_v1.Error.invalid_buffer, "buffer does not match the frame", .{});
+        // Show pending commits, as the next frame would.
+        const output = self.comp.output;
+        if (output.scheduled) {
+            output.scheduled = false;
+            wire.Loop.arm(output.repaint, 0);
+            output.render();
+        }
+        const size = buffer.offset + buffer.stride * height;
+        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, buffer.pool.fd, 0) orelse return resource.sendFailed();
+        if (memory == libc.MAP_FAILED) return resource.sendFailed();
+        defer _ = libc.munmap(memory, size);
+        if (buffer.bytes() == null) return resource.sendFailed();
+        const bytes: [*]u8 = @ptrCast(memory);
+        for (0..height) |row| {
+            const source = output.pixels[(@as(usize, @intCast(self.rect.y)) + row) * output.width + @as(usize, @intCast(self.rect.x)) ..][0..width];
+            const line = bytes[buffer.offset + row * buffer.stride ..][0 .. width * 4];
+            for (source, 0..) |pixel, column| std.mem.writeInt(u32, line[column * 4 ..][0..4], pixel | 0xff000000, .little);
+        }
+        resource.sendFlags(0);
+        if (damage) resource.sendDamage(0, 0, width, height);
+        const now = util.monotonicTime();
+        const seconds: u64 = @intCast(@divTrunc(now, std.time.us_per_s));
+        resource.sendReady(@truncate(seconds >> 32), @truncate(seconds), @intCast(@mod(now, std.time.us_per_s) * 1000));
+    }
+
+    fn destroyed(self: *CaptureFrame, _: ws.zwlr_screencopy_frame_v1) void {
+        self.comp.a.destroy(self);
+    }
+
+    fn start(comp: *Compositor, resource: ws.zwlr_screencopy_frame_v1, region: ?Rect) void {
+        const output = comp.output;
+        const full: Rect = .{ .width = @intCast(output.width), .height = @intCast(output.height) };
+        var rect = full;
+        if (region) |r| {
+            // Clip the requested region to the output.
+            const x0 = std.math.clamp(r.x, 0, full.width);
+            const y0 = std.math.clamp(r.y, 0, full.height);
+            const x1 = std.math.clamp(r.x +| r.width, 0, full.width);
+            const y1 = std.math.clamp(r.y +| r.height, 0, full.height);
+            rect = .{ .x = x0, .y = y0, .width = x1 - x0, .height = y1 - y0 };
+        }
+        const self = create(CaptureFrame, comp, .{ .comp = comp, .rect = rect }) orelse return;
+        resource.setHandler(CaptureFrame, self, handle, destroyed);
+        if (rect.width <= 0 or rect.height <= 0) return resource.sendFailed();
+        resource.sendBuffer(ws.wl_shm.Format.xrgb8888, @intCast(rect.width), @intCast(rect.height), @intCast(rect.width * 4));
+        if (resource.version() >= 3) resource.sendBufferDone();
+    }
+};
+
+// ------------------------------------------------------------------ Output management
+
+/// One zwlr_output_manager_v1 and the head and mode it was shown for the output.
+const HeadManager = struct {
+    comp: *Compositor,
+    manager: ws.zwlr_output_manager_v1,
+    head: ?ws.zwlr_output_head_v1 = null,
+    mode: ?ws.zwlr_output_mode_v1 = null,
+
+    fn announce(self: *HeadManager) void {
+        const output = self.comp.output;
+        const head = self.manager.sendHead();
+        if (!head.alive()) return;
+        head.setHandler(HeadManager, self, headRequest, headGone);
+        self.head = head;
+        head.sendName(output.name);
+        head.sendDescription("Headless output");
+        head.sendPhysicalSize(0, 0);
+        const mode = head.sendMode();
+        if (mode.alive()) {
+            mode.setHandler(HeadManager, self, modeRequest, modeGone);
+            self.mode = mode;
+            mode.sendSize(@intCast(output.width), @intCast(output.height));
+            mode.sendRefresh(60000);
+            mode.sendPreferred();
+        }
+        head.sendEnabled(1);
+        if (self.mode) |current| head.sendCurrentMode(current);
+        self.describe();
+        if (head.version() >= 2) {
+            head.sendMake("Headless");
+            head.sendModel("Headless output");
+        }
+        self.manager.sendDone(self.comp.output_serial);
+    }
+
+    /// The state that configurations change.
+    fn describe(self: *HeadManager) void {
+        const head = self.head orelse return;
+        head.sendPosition(0, 0);
+        head.sendTransform(ws.wl_output.Transform.normal);
+        head.sendScale(@floatFromInt(self.comp.output.scale));
+    }
+
+    fn headRequest(_: *HeadManager, _: ws.zwlr_output_head_v1, _: ws.zwlr_output_head_v1.Request) void {}
+    fn modeRequest(_: *HeadManager, _: ws.zwlr_output_mode_v1, _: ws.zwlr_output_mode_v1.Request) void {}
+
+    fn headGone(self: *HeadManager, _: ws.zwlr_output_head_v1) void {
+        self.head = null;
+    }
+
+    fn modeGone(self: *HeadManager, _: ws.zwlr_output_mode_v1) void {
+        self.mode = null;
+    }
+
+    fn request(self: *HeadManager, resource: ws.zwlr_output_manager_v1, message: ws.zwlr_output_manager_v1.Request) void {
+        switch (message) {
+            .create_configuration => |args| {
+                const config = create(OutputConfig, self.comp, .{ .comp = self.comp, .serial = args.serial }) orelse return;
+                args.id.setHandler(OutputConfig, config, OutputConfig.handle, OutputConfig.destroyed);
+            },
+            .stop => {
+                resource.sendFinished();
+                resource.destroyResource();
+            },
+        }
+    }
+
+    fn destroyed(self: *HeadManager, _: ws.zwlr_output_manager_v1) void {
+        removeItem(*HeadManager, &self.comp.head_managers, self);
+        self.comp.a.destroy(self);
+    }
+};
+
+/// A zwlr_output_configuration_v1 being assembled by a client.
+const OutputConfig = struct {
+    comp: *Compositor,
+    serial: u32,
+    used: bool = false,
+    enabled: bool = true,
+    scale: ?f64 = null,
+    head: ?*ConfigHead = null,
+
+    fn handle(self: *OutputConfig, resource: ws.zwlr_output_configuration_v1, request: ws.zwlr_output_configuration_v1.Request) void {
+        switch (request) {
+            .enable_head => |args| {
+                if (self.used) return resource.postError(ws.zwlr_output_configuration_v1.Error.already_used, "configuration already used", .{});
+                const head = std.heap.c_allocator.create(ConfigHead) catch return;
+                head.* = .{ .config = self };
+                self.head = head;
+                args.id.setHandler(ConfigHead, head, ConfigHead.handle, ConfigHead.destroyed);
+            },
+            .disable_head => self.enabled = false,
+            .apply => self.finish(resource, true),
+            .@"test" => self.finish(resource, false),
+            .destroy => {},
+        }
+    }
+
+    fn finish(self: *OutputConfig, resource: ws.zwlr_output_configuration_v1, apply: bool) void {
+        if (self.used) return resource.postError(ws.zwlr_output_configuration_v1.Error.already_used, "configuration already used", .{});
+        self.used = true;
+        const comp = self.comp;
+        if (self.serial != comp.output_serial) return resource.sendCancelled();
+        // The only output cannot be disabled, and the renderer composites at integer scales.
+        const scale = self.scale orelse @as(f64, @floatFromInt(comp.output.scale));
+        if (!self.enabled or scale < 1 or scale > 4 or scale != @round(scale)) return resource.sendFailed();
+        if (apply) comp.setOutputScale(@intFromFloat(scale));
+        resource.sendSucceeded();
+    }
+
+    fn destroyed(self: *OutputConfig, _: ws.zwlr_output_configuration_v1) void {
+        if (self.head) |head| head.config = null;
+        self.comp.a.destroy(self);
+    }
+};
+
+const ConfigHead = struct {
+    config: ?*OutputConfig,
+
+    fn handle(self: *ConfigHead, _: ws.zwlr_output_configuration_head_v1, request: ws.zwlr_output_configuration_head_v1.Request) void {
+        const config = self.config orelse return;
+        switch (request) {
+            .set_scale => |args| config.scale = args.scale,
+            else => {},
+        }
+    }
+
+    fn destroyed(self: *ConfigHead, _: ws.zwlr_output_configuration_head_v1) void {
+        if (self.config) |config| config.head = null;
+        std.heap.c_allocator.destroy(self);
     }
 };
 
@@ -1007,8 +1945,17 @@ const Compositor = struct {
     toplevels: std.ArrayList(*Toplevel) = .empty,
     popups: std.ArrayList(*Popup) = .empty,
     focused: ?*Toplevel = null,
+    layers: std.ArrayList(*Layer) = .empty,
+    /// A layer surface given keyboard focus by a click (on-demand interactivity).
+    focused_layer: ?*Layer = null,
+    /// The output area left after layer surfaces' exclusive zones.
+    usable: Rect = .{},
     selection: ?*DataSource = null,
     data_devices: std.ArrayList(*DataDevice) = .empty,
+    foreign_managers: std.ArrayList(ws.zwlr_foreign_toplevel_manager_v1) = .empty,
+    head_managers: std.ArrayList(*HeadManager) = .empty,
+    /// Changes whenever the output configuration does.
+    output_serial: u32 = 1,
     background: u32 = 0xff303030,
 
     fn init(self: *Compositor, width: u32, height: u32) !void {
@@ -1018,6 +1965,7 @@ const Compositor = struct {
         errdefer self.a.free(output.pixels);
         output.repaint = try self.server.loop.timer(output, &Output.repaintReady);
         self.output = output;
+        self.usable = .{ .width = @intCast(width), .height = @intCast(height) };
         self.seat = .{ .comp = self };
         try self.seat.init();
         const server = self.server;
@@ -1030,6 +1978,13 @@ const Compositor = struct {
         _ = try server.createGlobal(&ws.wl_seat.interface, 9, &self.seat, &Seat.bind);
         _ = try server.createGlobal(&ws.wl_data_device_manager.interface, 3, self, &bindDataDeviceManager);
         _ = try server.createGlobal(&ws.zwlr_data_control_manager_v1.interface, 1, self, &bindDataControlManager);
+        _ = try server.createGlobal(&ws.zwlr_layer_shell_v1.interface, 4, self, &bindLayerShell);
+        _ = try server.createGlobal(&ws.zwp_virtual_keyboard_manager_v1.interface, 1, self, &bindVirtualKeyboardManager);
+        _ = try server.createGlobal(&ws.zwlr_virtual_pointer_manager_v1.interface, 2, self, &bindVirtualPointerManager);
+        _ = try server.createGlobal(&ws.zwlr_foreign_toplevel_manager_v1.interface, 3, self, &bindForeignManager);
+        _ = try server.createGlobal(&ws.zwlr_screencopy_manager_v1.interface, 3, self, &bindScreencopy);
+        _ = try server.createGlobal(&ws.zwlr_output_manager_v1.interface, 4, self, &bindOutputManagement);
+        _ = try server.createGlobal(&ws.zxdg_decoration_manager_v1.interface, 1, self, &bindDecorationManager);
         output.render();
     }
 
@@ -1038,8 +1993,12 @@ const Compositor = struct {
         self.surfaces.deinit(self.a);
         self.toplevels.deinit(self.a);
         self.popups.deinit(self.a);
+        self.layers.deinit(self.a);
         self.data_devices.deinit(self.a);
+        self.foreign_managers.deinit(self.a);
+        self.head_managers.deinit(self.a);
         self.output.resources.deinit(self.a);
+        self.output.xdg_outputs.deinit(self.a);
         self.a.free(self.output.pixels);
         self.a.destroy(self.output);
     }
@@ -1072,9 +2031,138 @@ const Compositor = struct {
             removeItem(*Toplevel, &self.toplevels, new);
             self.toplevels.append(self.a, new) catch {};
         }
-        const surface = if (toplevel) |t| (if (t.xdg) |xdg| xdg.surface else null) else null;
-        self.seat.focusSurface(surface);
+        self.updateKeyboardFocus();
+    }
+
+    /// Keyboard focus: an exclusive layer surface on the top or overlay layer,
+    /// then a layer surface the user clicked, then the focused window.
+    fn updateKeyboardFocus(self: *Compositor) void {
+        var target: ?*Surface = null;
+        for ([_]u32{ 3, 2 }) |level| {
+            for (self.layers.items) |layer| {
+                if (layer.mapped and layer.current.layer == level and layer.current.interactivity == 1) target = layer.surface;
+            }
+            if (target != null) break;
+        }
+        if (target == null) if (self.focused_layer) |layer| {
+            if (layer.mapped and layer.current.interactivity != 0) target = layer.surface;
+        };
+        if (target == null) if (self.focused) |toplevel| {
+            if (toplevel.xdg) |xdg| target = xdg.surface;
+        };
+        if (target == self.seat.keyboard_focus) return;
+        self.seat.focusSurface(target);
         self.sendSelection();
+    }
+
+    /// Lays out layer surfaces: exclusive zones first, from the overlay down.
+    fn arrange(self: *Compositor) void {
+        const full: Rect = .{ .width = self.output.logicalWidth(), .height = self.output.logicalHeight() };
+        var usable = full;
+        var level: u32 = 4;
+        while (level > 0) {
+            level -= 1;
+            for (self.layers.items) |layer| {
+                if (layer.current.layer != level or !layer.initial_sent or layer.current.zone <= 0) continue;
+                layer.rect = layer.place(usable);
+                layer.exclude(&usable);
+            }
+        }
+        for (self.layers.items) |layer| {
+            if (!layer.initial_sent or layer.current.zone > 0) continue;
+            layer.rect = layer.place(if (layer.current.zone < 0) full else usable);
+        }
+        self.usable = usable;
+        for (self.layers.items) |layer| if (layer.initial_sent) layer.configure();
+        for (self.toplevels.items) |toplevel| toplevel.reconfigure(false);
+        self.scheduleRepaint();
+    }
+
+    /// Mapped surfaces bottom to top with their positions on the output.
+    fn stack(self: *Compositor, out: []Root) []Root {
+        var count: usize = 0;
+        const add = struct {
+            fn f(list: []Root, n: *usize, surface: ?*Surface, x: i32, y: i32) void {
+                const value = surface orelse return;
+                if (n.* < list.len and value.mapped()) {
+                    list[n.*] = .{ .surface = value, .x = x, .y = y };
+                    n.* += 1;
+                }
+            }
+        }.f;
+        for ([_]u32{ 0, 1 }) |level| for (self.layers.items) |layer| {
+            if (layer.mapped and layer.current.layer == level) add(out, &count, layer.surface, layer.rect.x, layer.rect.y);
+        };
+        for (self.toplevels.items) |toplevel| {
+            const xdg = toplevel.xdg orelse continue;
+            const geometry = xdg.windowGeometry();
+            add(out, &count, xdg.surface, toplevel.x - geometry.x, toplevel.y - geometry.y);
+        }
+        for (self.layers.items) |layer| {
+            if (layer.mapped and layer.current.layer == 2) add(out, &count, layer.surface, layer.rect.x, layer.rect.y);
+        }
+        for (self.popups.items) |popup| {
+            if (!popup.mapped) continue;
+            const xdg = popup.xdg orelse continue;
+            const origin = popup.parentOrigin() orelse continue;
+            const geometry = xdg.windowGeometry();
+            add(out, &count, xdg.surface, origin[0] + popup.rect.x - geometry.x, origin[1] + popup.rect.y - geometry.y);
+        }
+        for (self.layers.items) |layer| {
+            if (layer.mapped and layer.current.layer == 3) add(out, &count, layer.surface, layer.rect.x, layer.rect.y);
+        }
+        return out[0..count];
+    }
+
+    /// The topmost surface accepting input at an output position.
+    fn surfaceAt(self: *Compositor, x: f64, y: f64) ?Hit {
+        var roots: [256]Root = undefined;
+        const ordered = self.stack(&roots);
+        const px: i32 = @intFromFloat(@floor(x));
+        const py: i32 = @intFromFloat(@floor(y));
+        var index = ordered.len;
+        while (index > 0) {
+            index -= 1;
+            const root = ordered[index];
+            if (root.surface.hit(px - root.x, py - root.y)) |found| return found;
+        }
+        return null;
+    }
+
+    /// Click to focus, and dismiss popups when clicking outside them.
+    fn pointerPressed(self: *Compositor, surface: ?*Surface) void {
+        var root = surface;
+        while (root) |candidate| {
+            const sub = candidate.subsurface orelse break;
+            root = sub.parent;
+        }
+        const target = root orelse {
+            self.dismissPopups();
+            return;
+        };
+        if (target.xdg) |xdg| {
+            if (xdg.popup == null) self.dismissPopups();
+            if (xdg.toplevel) |toplevel| {
+                self.focused_layer = null;
+                self.focus(toplevel);
+                self.updateKeyboardFocus();
+            }
+        } else if (target.layer) |layer| {
+            self.dismissPopups();
+            if (layer.current.interactivity != 0) {
+                self.focused_layer = layer;
+                self.updateKeyboardFocus();
+            }
+        } else self.dismissPopups();
+    }
+
+    fn dismissPopups(self: *Compositor) void {
+        var index = self.popups.items.len;
+        while (index > 0) {
+            index -= 1;
+            const popup = self.popups.items[index];
+            if (popup.mapped) popup.resource.sendPopupDone();
+        }
     }
 
     fn bindCompositor(data: ?*anyopaque, resource: wire.Resource) void {
@@ -1089,7 +2177,11 @@ const Compositor = struct {
                 self.surfaces.append(self.a, surface) catch {};
                 args.id.setHandler(Surface, surface, Surface.handle, Surface.destroyed);
             },
-            .create_region => |args| args.id.setHandler(Compositor, self, null, null),
+            .create_region => |args| {
+                const region = std.heap.c_allocator.create(Region) catch return;
+                region.* = .{};
+                args.id.setHandler(Region, region, Region.handle, Region.destroyed);
+            },
             .release => {},
         }
     }
@@ -1223,9 +2315,10 @@ const Compositor = struct {
             .get_xdg_output => |args| {
                 const output = self.output;
                 const xdg_output = args.id;
-                xdg_output.setHandler(Compositor, self, null, null);
+                xdg_output.setHandler(Output, output, null, Output.xdgOutputGone);
+                output.xdg_outputs.append(self.a, xdg_output) catch {};
                 xdg_output.sendLogicalPosition(0, 0);
-                xdg_output.sendLogicalSize(@divTrunc(@as(i32, @intCast(output.width)), output.scale), @divTrunc(@as(i32, @intCast(output.height)), output.scale));
+                xdg_output.sendLogicalSize(output.logicalWidth(), output.logicalHeight());
                 if (xdg_output.version() >= 2) {
                     xdg_output.sendName(output.name);
                     xdg_output.sendDescription("Headless output");
@@ -1235,6 +2328,147 @@ const Compositor = struct {
                 for (output.resources.items) |wl_output| if (wl_output.client() == xdg_output.client() and wl_output.version() >= 2) wl_output.sendDone();
             },
         }
+    }
+
+    fn bindLayerShell(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.zwlr_layer_shell_v1{ .resource = resource }).setHandler(Compositor, self, layerShellRequest, null);
+    }
+
+    fn layerShellRequest(self: *Compositor, resource: ws.zwlr_layer_shell_v1, request: ws.zwlr_layer_shell_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .get_layer_surface => |args| {
+                const surface = args.surface.data(Surface) orelse return;
+                if (surface.role != .none) return resource.postError(ws.zwlr_layer_shell_v1.Error.role, "surface already has a role", .{});
+                if (args.layer > 3) return resource.postError(ws.zwlr_layer_shell_v1.Error.invalid_layer, "invalid layer", .{});
+                if (surface.mapped()) return resource.postError(ws.zwlr_layer_shell_v1.Error.already_constructed, "surface already has a buffer", .{});
+                const namespace = self.a.dupe(u8, args.namespace) catch return;
+                const config: Layer.Config = .{ .layer = args.layer };
+                const layer = create(Layer, self, .{ .comp = self, .resource = args.id, .surface = surface, .namespace = namespace, .pending = config, .current = config }) orelse {
+                    self.a.free(namespace);
+                    return;
+                };
+                surface.role = .layer;
+                surface.layer = layer;
+                self.layers.append(self.a, layer) catch {};
+                args.id.setHandler(Layer, layer, Layer.handle, Layer.destroyed);
+            },
+        }
+    }
+
+    fn bindVirtualKeyboardManager(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.zwp_virtual_keyboard_manager_v1{ .resource = resource }).setHandler(Compositor, self, virtualKeyboardManagerRequest, null);
+    }
+
+    fn virtualKeyboardManagerRequest(self: *Compositor, _: ws.zwp_virtual_keyboard_manager_v1, request: ws.zwp_virtual_keyboard_manager_v1.Request) void {
+        switch (request) {
+            .create_virtual_keyboard => |args| {
+                const keyboard = create(VirtualKeyboard, self, .{ .comp = self }) orelse return;
+                args.id.setHandler(VirtualKeyboard, keyboard, VirtualKeyboard.handle, VirtualKeyboard.destroyed);
+            },
+        }
+    }
+
+    fn bindVirtualPointerManager(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.zwlr_virtual_pointer_manager_v1{ .resource = resource }).setHandler(Compositor, self, virtualPointerManagerRequest, null);
+    }
+
+    fn virtualPointerManagerRequest(self: *Compositor, _: ws.zwlr_virtual_pointer_manager_v1, request: ws.zwlr_virtual_pointer_manager_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .create_virtual_pointer => |args| self.virtualPointer(args.id),
+            .create_virtual_pointer_with_output => |args| self.virtualPointer(args.id),
+        }
+    }
+
+    fn virtualPointer(self: *Compositor, resource: ws.zwlr_virtual_pointer_v1) void {
+        const pointer = create(VirtualPointer, self, .{ .comp = self }) orelse return;
+        resource.setHandler(VirtualPointer, pointer, VirtualPointer.handle, VirtualPointer.destroyed);
+    }
+
+    fn bindDecorationManager(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.zxdg_decoration_manager_v1{ .resource = resource }).setHandler(Compositor, self, decorationManagerRequest, null);
+    }
+
+    fn decorationManagerRequest(_: *Compositor, resource: ws.zxdg_decoration_manager_v1, request: ws.zxdg_decoration_manager_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .get_toplevel_decoration => |args| {
+                const toplevel = args.toplevel.data(Toplevel) orelse return;
+                if (toplevel.decoration != null) return resource.postError(ws.zxdg_toplevel_decoration_v1.Error.already_constructed, "toplevel already has a decoration", .{});
+                toplevel.decoration = args.id;
+                args.id.setHandler(Toplevel, toplevel, decorationRequest, decorationGone);
+            },
+        }
+    }
+
+    fn decorationRequest(toplevel: *Toplevel, _: ws.zxdg_toplevel_decoration_v1, request: ws.zxdg_toplevel_decoration_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            // Mode requests before the first commit wait for its configure.
+            .set_mode, .unset_mode => if (toplevel.xdg) |xdg| if (xdg.initial_sent) toplevel.configure(),
+        }
+    }
+
+    fn decorationGone(toplevel: *Toplevel, _: ws.zxdg_toplevel_decoration_v1) void {
+        toplevel.decoration = null;
+    }
+
+    fn bindOutputManagement(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        const manager = create(HeadManager, self, .{ .comp = self, .manager = .{ .resource = resource } }) orelse return;
+        manager.manager.setHandler(HeadManager, manager, HeadManager.request, HeadManager.destroyed);
+        self.head_managers.append(self.a, manager) catch {};
+        manager.announce();
+    }
+
+    /// Applies a new output scale and tells output management clients.
+    fn setOutputScale(self: *Compositor, scale: i32) void {
+        self.output.setScale(scale);
+        self.output_serial +%= 1;
+        for (self.head_managers.items) |manager| {
+            manager.describe();
+            manager.manager.sendDone(self.output_serial);
+        }
+    }
+
+    fn bindScreencopy(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.zwlr_screencopy_manager_v1{ .resource = resource }).setHandler(Compositor, self, screencopyRequest, null);
+    }
+
+    fn screencopyRequest(self: *Compositor, _: ws.zwlr_screencopy_manager_v1, request: ws.zwlr_screencopy_manager_v1.Request) void {
+        switch (request) {
+            .capture_output => |args| CaptureFrame.start(self, args.frame, null),
+            .capture_output_region => |args| CaptureFrame.start(self, args.frame, .{ .x = args.x, .y = args.y, .width = args.width, .height = args.height }),
+            .destroy => {},
+        }
+    }
+
+    fn bindForeignManager(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        const manager: ws.zwlr_foreign_toplevel_manager_v1 = .{ .resource = resource };
+        manager.setHandler(Compositor, self, foreignManagerRequest, foreignManagerGone);
+        self.foreign_managers.append(self.a, manager) catch {};
+        for (self.toplevels.items) |toplevel| ForeignHandle.announce(self, manager, toplevel);
+    }
+
+    fn foreignManagerRequest(self: *Compositor, resource: ws.zwlr_foreign_toplevel_manager_v1, request: ws.zwlr_foreign_toplevel_manager_v1.Request) void {
+        switch (request) {
+            .stop => {
+                removeItem(ws.zwlr_foreign_toplevel_manager_v1, &self.foreign_managers, resource);
+                resource.sendFinished();
+                resource.destroyResource();
+            },
+        }
+    }
+
+    fn foreignManagerGone(self: *Compositor, resource: ws.zwlr_foreign_toplevel_manager_v1) void {
+        removeItem(ws.zwlr_foreign_toplevel_manager_v1, &self.foreign_managers, resource);
     }
 
     fn bindDataDeviceManager(data: ?*anyopaque, resource: wire.Resource) void {
@@ -1538,11 +2772,11 @@ test "native compositor maps an xdg toplevel from shared memory and composites i
     try std.testing.expect(window.released);
     try std.testing.expect(window.activated);
     try std.testing.expect(window.entered);
-    // Centred on the 1280x720 output.
+    // Windows open maximized; this one draws less than it was offered, from the corner.
     deadline = util.monotonicTime() + 3_000_000;
-    while (handle.pixel(640, 360).value != 0xffff0000 and util.monotonicTime() < deadline) util.sleep(10 * std.time.ns_per_ms);
-    try std.testing.expectEqual(@as(u32, 0xffff0000), handle.pixel(640, 360).value);
-    try std.testing.expectEqual(@as(u32, 0xff303030), handle.pixel(10, 10).value);
+    while (handle.pixel(50, 25).value != 0xffff0000 and util.monotonicTime() < deadline) util.sleep(10 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u32, 0xffff0000), handle.pixel(50, 25).value);
+    try std.testing.expectEqual(@as(u32, 0xff303030), handle.pixel(640, 360).value);
     buffer.destroy();
     toplevel.destroy();
     xdg_surface.destroy();
