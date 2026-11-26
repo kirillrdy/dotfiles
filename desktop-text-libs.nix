@@ -36,5 +36,5 @@ let
   });
 in
 {
-  inherit xkbcommon;
+  inherit xkbcommon composeData;
 }

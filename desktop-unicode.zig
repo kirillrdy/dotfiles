@@ -21,6 +21,10 @@ pub fn toLower(cp: u21) u21 {
     return if (find(tables.Mapping, &tables.lower, cp)) |entry| entry.to else cp;
 }
 
+pub fn toUpper(cp: u21) u21 {
+    return if (find(tables.Mapping, &tables.upper, cp)) |entry| entry.to else cp;
+}
+
 pub fn combiningClass(cp: u21) u8 {
     return if (find(tables.Class, &tables.classes, cp)) |entry| entry.class else 0;
 }

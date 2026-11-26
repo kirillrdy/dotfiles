@@ -11,6 +11,8 @@ fn terminated(comptime value: ?[]const u8) ?[:0]const u8 {
 /// Values of DESKTOP_RUNTIME_* when the package was built.
 pub const sound_file = terminated(options.SOUND_FILE);
 pub const codex_icon = terminated(options.CODEX_ICON);
+/// The X11 locale directory holding Compose files.
+pub const xlocale_dir = terminated(options.XLOCALE_DIR);
 /// This executable, for starting its other commands.
 pub const executable: [:0]const u8 = terminated(options.POWER_HELPER) orelse "desktop-zig";
 /// The power profile helper runs through pkexec; fixtures substitute both.

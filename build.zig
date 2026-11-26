@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     // Wayland clients use the native wire runtime; only the compositor links libwayland (server).
-    for ([_][]const u8{ "libpipewire-0.3", "pam", "xkbcommon", "freetype2", "harfbuzz" }) |name| desktop.linkSystemLibrary(name, .{});
+    for ([_][]const u8{ "libpipewire-0.3", "pam", "freetype2", "harfbuzz" }) |name| desktop.linkSystemLibrary(name, .{});
     const text_c = bindings(b, target, optimize, "#include <ft2build.h>\n#include FT_FREETYPE_H\n#include FT_MULTIPLE_MASTERS_H\n#include FT_SYNTHESIS_H\n#include <hb.h>\n#include <hb-ft.h>\n#include FT_TRUETYPE_TABLES_H\n#include FT_SFNT_NAMES_H\n", &.{ "freetype2", "harfbuzz" });
     desktop.addImport("text-c", text_c);
     const protocol_dir = b.graph.environ_map.get("WAYLAND_PROTOCOLS_DIR") orelse "/usr/share/wayland-protocols";
@@ -67,13 +67,20 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "UnicodeData.txt", "CaseFolding.txt", "DerivedNormalizationProps.txt" }) |name| unicode_command.addFileArg(.{ .cwd_relative = b.fmt("{s}/{s}", .{ ucd, name }) });
     const unicode_tables = b.createModule(.{ .root_source_file = unicode_command.addOutputFileArg("unicode-tables.zig"), .target = target, .optimize = optimize });
     desktop.addImport("unicode-tables", unicode_tables);
+    // Keysym names and characters, generated from xkbcommon's keysym header.
+    const keysym_header = b.graph.environ_map.get("XKB_KEYSYMS_HEADER") orelse "/usr/include/xkbcommon/xkbcommon-keysyms.h";
+    const keysym_generator = b.addExecutable(.{ .name = "keysym-tables", .root_module = b.createModule(.{ .root_source_file = b.path("tools/keysym-tables.zig"), .target = b.graph.host, .optimize = optimize }) });
+    const keysym_command = b.addRunArtifact(keysym_generator);
+    const keysym_tables = b.createModule(.{ .root_source_file = keysym_command.addOutputFileArg("keysym-tables.zig"), .target = target, .optimize = optimize });
+    keysym_command.addFileArg(.{ .cwd_relative = keysym_header });
+    desktop.addImport("keysym-tables", keysym_tables);
     // Native D-Bus client runtime, independent of GLib.
     const dbus = b.createModule(.{ .root_source_file = b.path("desktop-dbus.zig"), .target = target, .optimize = optimize, .link_libc = true });
     desktop.addImport("dbus", dbus);
     const integration_tests = b.option(bool, "integration-tests", "Include system and Wayland integration tests") orelse false;
     const options = b.addOptions();
     options.addOption(bool, "integration_tests", integration_tests);
-    for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "SOUND_FILE", "CODEX_ICON", "DATA_DIRS" }) |name| {
+    for ([_][]const u8{ "POWER_HELPER", "POWER_PKEXEC", "SOUND_FILE", "CODEX_ICON", "DATA_DIRS", "XLOCALE_DIR" }) |name| {
         options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
     }
     desktop.addOptions("options", options);

@@ -1,5 +1,5 @@
 //! Generates Zig tables from the Unicode Character Database for
-//! desktop-unicode.zig: lowercase mappings, full case folding, decompositions,
+//! desktop-unicode.zig: lowercase and uppercase mappings, full case folding, decompositions,
 //! canonical combining classes and canonical compositions.
 //!
 //! Usage: unicode-tables UnicodeData.txt CaseFolding.txt DerivedNormalizationProps.txt output.zig
@@ -18,6 +18,7 @@ pub fn main(init: std.process.Init) !void {
     const normalization = try cwd.readFileAlloc(io, args[3], a, .limited(16 << 20));
 
     var lower: std.ArrayList([2]u21) = .empty;
+    var upper: std.ArrayList([2]u21) = .empty;
     var classes: std.ArrayList([2]u21) = .empty;
     var decompositions: std.ArrayList(Decomposition) = .empty;
     var lines = std.mem.splitScalar(u8, unicode_data, '\n');
@@ -30,6 +31,7 @@ pub fn main(init: std.process.Init) !void {
         const class = try std.fmt.parseInt(u8, fields[3], 10);
         if (class != 0) try classes.append(a, .{ cp, class });
         if (fields[13].len > 0) try lower.append(a, .{ cp, try std.fmt.parseInt(u21, fields[13], 16) });
+        if (fields[12].len > 0) try upper.append(a, .{ cp, try std.fmt.parseInt(u21, fields[12], 16) });
         if (fields[5].len > 0) {
             var text = fields[5];
             const compat = text[0] == '<';
@@ -76,6 +78,8 @@ pub fn main(init: std.process.Init) !void {
 
     try out.appendSlice(a, "pub const lower = [_]Mapping{\n");
     for (lower.items) |pair| try out.print(a, "    .{{ .cp = 0x{X}, .to = 0x{X} }},\n", .{ pair[0], pair[1] });
+    try out.appendSlice(a, "};\n\npub const upper = [_]Mapping{\n");
+    for (upper.items) |pair| try out.print(a, "    .{{ .cp = 0x{X}, .to = 0x{X} }},\n", .{ pair[0], pair[1] });
     try out.appendSlice(a, "};\n\npub const classes = [_]Class{\n");
     for (classes.items) |pair| try out.print(a, "    .{{ .cp = 0x{X}, .class = {d} }},\n", .{ pair[0], pair[1] });
     try out.appendSlice(a, "};\n\n");

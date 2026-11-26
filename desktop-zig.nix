@@ -89,6 +89,8 @@ pkgs.stdenv.mkDerivation {
   WAYLAND_XML = "${pkgs.wayland-scanner}/share/wayland/wayland.xml";
   # Case folding and normalization tables are generated from the UCD at build time.
   UNICODE_DATA_DIR = "${pkgs.unicode-character-database}/share/unicode";
+  # Keysym names and characters are generated from xkbcommon's keysym header.
+  XKB_KEYSYMS_HEADER = "${textLibraries.xkbcommon.dev}/include/xkbcommon/xkbcommon-keysyms.h";
   buildInputs = [
     # Text: HarfBuzz shaping and FreeType rasterization; font matching is native.
     pkgs.freetype
@@ -108,6 +110,7 @@ pkgs.stdenv.mkDerivation {
   DESKTOP_RUNTIME_POWER_PKEXEC = "/run/wrappers/bin/pkexec";
   DESKTOP_RUNTIME_SOUND_FILE = "${feedbackSound}";
   DESKTOP_RUNTIME_CODEX_ICON = "${codexIcon}";
+  DESKTOP_RUNTIME_XLOCALE_DIR = "${textLibraries.composeData}/share/X11/locale";
   DESKTOP_RUNTIME_DATA_DIRS = "${placeholder "out"}/share:${pkgs.adwaita-icon-theme}/share:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${portalSettingsSchemas}/share/gsettings-schemas/gnome-settings-daemon-${pkgs.gnome-settings-daemon.version}";
   buildPhase = ''
     cp -r ${zigGlobalCache} "$TMPDIR/zig-cache"
