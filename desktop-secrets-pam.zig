@@ -2,12 +2,8 @@
 //! Only a child with the user's UID connects to their session bus.
 const std = @import("std");
 const c = @import("desktop").libc;
-const Handle = opaque {};
-extern fn pam_get_item(?*Handle, c_int, *?*const anyopaque) c_int;
-extern fn pam_get_user(?*Handle, *?[*:0]const u8, ?[*:0]const u8) c_int;
-extern fn pam_getenv(?*Handle, [*:0]const u8) ?[*:0]const u8;
-extern fn pam_set_data(?*Handle, [*:0]const u8, ?*anyopaque, *const fn (?*Handle, ?*anyopaque, c_int) callconv(.c) void) c_int;
-extern fn pam_get_data(?*const Handle, [*:0]const u8, *?*const anyopaque) c_int;
+const pam = @import("desktop").pam;
+const Handle = pam.pam_handle_t;
 const Cached = struct { length: usize, password: [4096]u8 };
 fn cleanup(_: ?*Handle, data: ?*anyopaque, _: c_int) callconv(.c) void {
     if (data) |ptr| {
@@ -19,7 +15,7 @@ fn cleanup(_: ?*Handle, data: ?*anyopaque, _: c_int) callconv(.c) void {
 }
 export fn pam_sm_authenticate(handle: ?*Handle, _: c_int, _: c_int, _: [*c][*c]const u8) c_int {
     var token: ?*const anyopaque = null;
-    if (pam_get_item(handle, 6, &token) != 0 or token == null) return 25; // PAM_IGNORE; PAM_AUTHTOK
+    if (pam.pam_get_item(handle, 6, &token) != 0 or token == null) return 25; // PAM_IGNORE; PAM_AUTHTOK
     const password = std.mem.span(@as([*:0]const u8, @ptrCast(token.?)));
     if (password.len == 0 or password.len > 4096) return 25;
     const cached = std.heap.page_allocator.create(Cached) catch return 25;
@@ -29,7 +25,7 @@ export fn pam_sm_authenticate(handle: ?*Handle, _: c_int, _: c_int, _: [*c][*c]c
         cleanup(handle, cached, 0);
         return 25;
     }
-    if (pam_set_data(handle, "desktop-secrets-token", cached, &cleanup) != 0) cleanup(handle, cached, 0);
+    if (pam.pam_set_data(handle, "desktop-secrets-token", cached, &cleanup) != 0) cleanup(handle, cached, 0);
     return 25;
 }
 export fn pam_sm_setcred(_: ?*Handle, _: c_int, _: c_int, _: [*c][*c]const u8) c_int {
@@ -40,7 +36,7 @@ export fn pam_sm_close_session(_: ?*Handle, _: c_int, _: c_int, _: [*c][*c]const
 }
 export fn pam_sm_open_session(handle: ?*Handle, _: c_int, argc: c_int, argv: [*c][*c]const u8) c_int {
     var raw: ?*const anyopaque = null;
-    if (pam_get_data(handle, "desktop-secrets-token", &raw) != 0 or raw == null) return 25;
+    if (pam.pam_get_data(handle, "desktop-secrets-token", &raw) != 0 or raw == null) return 25;
     const cached: *Cached = @ptrCast(@alignCast(@constCast(raw.?)));
     if (cached.length == 0) return 25;
     defer {
@@ -48,7 +44,7 @@ export fn pam_sm_open_session(handle: ?*Handle, _: c_int, argc: c_int, argv: [*c
         cached.length = 0;
     }
     var username: ?[*:0]const u8 = null;
-    if (pam_get_user(handle, &username, null) != 0 or username == null) return 25;
+    if (pam.pam_get_user(handle, &username, null) != 0 or username == null) return 25;
     const user = c.getpwnam(username.?) orelse return 25;
     const user_id = user.*.pw_uid;
     const group_id = user.*.pw_gid;
@@ -65,7 +61,7 @@ export fn pam_sm_open_session(handle: ?*Handle, _: c_int, argc: c_int, argv: [*c
     const home = std.fmt.allocPrintSentinel(a, "HOME={s}", .{user.*.pw_dir}, 0) catch return 25;
     const runtime = std.fmt.allocPrintSentinel(a, "XDG_RUNTIME_DIR=/run/user/{d}", .{user.*.pw_uid}, 0) catch return 25;
     const bus = std.fmt.allocPrintSentinel(a, "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{d}/bus", .{user.*.pw_uid}, 0) catch return 25;
-    const session = std.fmt.allocPrintSentinel(a, "XDG_SESSION_ID={s}", .{pam_getenv(handle, "XDG_SESSION_ID") orelse ""}, 0) catch return 25;
+    const session = std.fmt.allocPrintSentinel(a, "XDG_SESSION_ID={s}", .{pam.pam_getenv(handle, "XDG_SESSION_ID") orelse ""}, 0) catch return 25;
     const env = [_:null]?[*:0]const u8{ home, runtime, bus, session };
     const args = [_:null]?[*:0]const u8{ executable, "secrets-login" };
     var fds: [2]c_int = undefined;

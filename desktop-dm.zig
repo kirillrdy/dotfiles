@@ -3,7 +3,7 @@
 //! greeter session, authenticates users via PAM (unlocking desktop-secrets),
 //! and runs the user's `desktop-zig.service` under `systemd --user`.
 const std = @import("std");
-const pam = @import("pam");
+const pam = @import("desktop-pam.zig");
 const libc = @import("desktop-libc.zig");
 const dbus = @import("dbus");
 const greeter = @import("desktop-greeter.zig");
@@ -35,9 +35,9 @@ fn handleSignal(_: c_int) callconv(.c) void {
     if (pid > 0) _ = kill(pid, SIGTERM);
 }
 
-fn nullConverse(count: c_int, _: [*c]const [*c]const pam.struct_pam_message, responses: [*c][*c]pam.struct_pam_response, _: ?*anyopaque) callconv(.c) c_int {
+fn nullConverse(count: c_int, _: [*c]const [*c]const pam.pam_message, responses: [*c][*c]pam.pam_response, _: ?*anyopaque) callconv(.c) c_int {
     if (count <= 0 or count > 32 or responses == null) return pam.PAM_CONV_ERR;
-    const result = std.c.calloc(@intCast(count), @sizeOf(pam.struct_pam_response)) orelse return pam.PAM_BUF_ERR;
+    const result = std.c.calloc(@intCast(count), @sizeOf(pam.pam_response)) orelse return pam.PAM_BUF_ERR;
     responses.* = @ptrCast(@alignCast(result));
     return pam.PAM_SUCCESS;
 }
@@ -170,7 +170,7 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
         _ = libc.close(fds[0]);
         attachControllingTty(tty_path);
 
-        var conv: pam.struct_pam_conv = .{ .conv = &nullConverse, .appdata_ptr = null };
+        var conv: pam.pam_conv = .{ .conv = &nullConverse, .appdata_ptr = null };
         var greeter_pam: PamHandle = null;
         if (pam.pam_start("desktop-greeter", "greeter", &conv, &greeter_pam) != pam.PAM_SUCCESS) {
             std.log.err("dm: pam_start(desktop-greeter) failed", .{});
@@ -266,7 +266,7 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
             pass_buf[pass_len] = 0;
 
             var attempt: pam_auth.Attempt = .{ .user = &user_buf, .password = &pass_buf };
-            var user_conv: pam.struct_pam_conv = .{ .conv = &pam_auth.converse, .appdata_ptr = &attempt };
+            var user_conv: pam.pam_conv = .{ .conv = &pam_auth.converse, .appdata_ptr = &attempt };
             var user_pam: PamHandle = null;
             var status = pam.pam_start("desktop-login", &user_buf, &user_conv, &user_pam);
             if (status == pam.PAM_SUCCESS) {

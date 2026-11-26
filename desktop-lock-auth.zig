@@ -1,10 +1,10 @@
 //! PAM stays off the Wayland thread. No credentials are passed to subprocesses.
 const std = @import("std");
-const pam = @import("pam");
+const pam = @import("desktop-pam.zig");
 
-pub const Message = pam.struct_pam_message;
-pub const Response = pam.struct_pam_response;
-pub const Conversation = pam.struct_pam_conv;
+pub const Message = pam.pam_message;
+pub const Response = pam.pam_response;
+pub const Conversation = pam.pam_conv;
 
 extern fn strdup([*:0]const u8) [*c]u8;
 
