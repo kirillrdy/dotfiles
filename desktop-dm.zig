@@ -232,7 +232,8 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
         }
 
         _ = libc.close(fds[1]);
-        waitPid(child_pid);
+        // Session leaders inherit handleSignal; forward the DM's SIGTERM to the greeter.
+        waitChild(child_pid);
         closePamSession(greeter_pam);
         libc._exit(0);
     }
@@ -388,7 +389,8 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
             libc._exit(127);
         }
 
-        waitPid(child_pid);
+        // Forward the DM's SIGTERM so the shell's trap stops desktop-zig.service.
+        waitChild(child_pid);
         closePamSession(auth.handle);
         libc._exit(0);
     }

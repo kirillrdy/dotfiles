@@ -74,6 +74,9 @@ lib.mkIf enableLightDesktop {
   systemd.services.desktop-display-manager = {
     description = "Native GDM-like display manager";
     wantedBy = [ "graphical.target" ];
+    # Like upstream display-manager.service: restarting it on switch would kill
+    # the logged-in session. The new build is used from the next login/boot.
+    restartIfChanged = false;
     conflicts = [ "getty@tty1.service" ];
     after = [
       "systemd-user-sessions.service"
@@ -175,6 +178,8 @@ lib.mkIf enableLightDesktop {
     desktop-zig = {
       description = "Desktop compositor and shell";
       after = [ "graphical-session-pre.target" ];
+      # Only the display manager starts the compositor; a switch must not restart it.
+      restartIfChanged = false;
       environment = {
         XDG_CURRENT_DESKTOP = "desktop:wlroots";
         XDG_SESSION_DESKTOP = "desktop";
@@ -194,6 +199,9 @@ lib.mkIf enableLightDesktop {
         # XCURSOR_PATH, GTK_PATH, ...) and the full user PATH only come from /etc/profile.
         ExecStart = "${pkgs.writeShellScript "desktop-zig-session" ''
           . /etc/profile
+          # A dead compositor's WAYLAND_DISPLAY lingers in the user manager; inheriting
+          # it makes wlroots pick the nested Wayland backend instead of DRM.
+          unset WAYLAND_DISPLAY DISPLAY
           exec ${shell} session ${gnomeWallpaper}
         ''}";
         Slice = "session.slice";
