@@ -43,19 +43,24 @@ pub fn catalog() *const Catalog {
     return Loaded.get();
 }
 
+/// The catalog lives for the whole process; scanning scratch is freed after loading.
+var retained: std.heap.ArenaAllocator = .init(std.heap.c_allocator);
+
 const Loaded = util.Lazy(Catalog, struct {
     fn load() Catalog {
-        // The catalog lives for the whole process.
-        const a = std.heap.c_allocator;
+        const a = retained.allocator();
+        var scratch_arena: std.heap.ArenaAllocator = .init(std.heap.c_allocator);
+        defer scratch_arena.deinit();
+        const scratch = scratch_arena.allocator();
         const file = util.env("FONTCONFIG_FILE") orelse "/etc/fonts/fonts.conf";
-        var config: Config = .{ .a = a };
+        var config: Config = .{ .a = a, .scratch = scratch };
         config.read(file, 0);
         var fonts: std.ArrayList(Font) = .empty;
         var library: t.FT_Library = null;
         if (t.FT_Init_FreeType(&library) == 0) {
             defer _ = t.FT_Done_FreeType(library);
             var seen: std.StringHashMapUnmanaged(void) = .empty;
-            for (config.dirs.items) |dir| scanDirectory(a, library, dir, &seen, &fonts, 0);
+            for (config.dirs.items) |dir| scanDirectory(a, scratch, library, dir, &seen, &fonts, 0);
         }
         return .{ .fonts = fonts.toOwnedSlice(a) catch &.{}, .aliases = config.aliases };
     }
@@ -64,7 +69,10 @@ const Loaded = util.Lazy(Catalog, struct {
 // ---------------------------------------------------------------- fonts.conf
 
 const Config = struct {
+    /// Retained with the catalog: alias names and lists.
     a: std.mem.Allocator,
+    /// Freed after loading: file contents, listings and paths.
+    scratch: std.mem.Allocator,
     dirs: std.ArrayList([]const u8) = .empty,
     aliases: std.StringHashMapUnmanaged(Alias) = .empty,
 
@@ -72,7 +80,7 @@ const Config = struct {
     fn read(self: *Config, path: []const u8, depth: u32) void {
         if (depth > 8) return;
         if (paths.isDirectory(path)) {
-            const entries = paths.list(self.a, path) catch return;
+            const entries = paths.list(self.scratch, path) catch return;
             std.mem.sort(paths.Listed, entries, {}, struct {
                 fn less(_: void, x: paths.Listed, y: paths.Listed) bool {
                     return std.mem.lessThan(u8, x.name, y.name);
@@ -80,12 +88,12 @@ const Config = struct {
             }.less);
             for (entries) |entry| {
                 if (!std.mem.endsWith(u8, entry.name, ".conf")) continue;
-                const child = std.fs.path.join(self.a, &.{ path, entry.name }) catch continue;
+                const child = std.fs.path.join(self.scratch, &.{ path, entry.name }) catch continue;
                 if (!paths.isDirectory(child)) self.read(child, depth + 1);
             }
             return;
         }
-        const xml = paths.readFile(self.a, path, 1 << 20) catch return;
+        const xml = paths.readFile(self.scratch, path, 1 << 20) catch return;
         self.parse(xml, std.fs.path.dirname(path) orelse "/", depth) catch {};
     }
 
@@ -95,10 +103,10 @@ const Config = struct {
         while (tags.next()) |tag| {
             if (tag.closing or tag.self_closing) continue;
             if (std.mem.eql(u8, tag.name, "dir")) {
-                const value = try decode(self.a, tags.text("dir"));
-                if (try self.resolve(value, attribute(tag.attributes, "prefix"), base, .data)) |dir| try self.dirs.append(self.a, dir);
+                const value = try decode(self.scratch, tags.text("dir"));
+                if (try self.resolve(value, attribute(tag.attributes, "prefix"), base, .data)) |dir| try self.dirs.append(self.scratch, dir);
             } else if (std.mem.eql(u8, tag.name, "include")) {
-                const value = try decode(self.a, tags.text("include"));
+                const value = try decode(self.scratch, tags.text("include"));
                 if (try self.resolve(value, attribute(tag.attributes, "prefix"), base, .config)) |included| self.read(included, depth + 1);
             } else if (std.mem.eql(u8, tag.name, "alias")) {
                 try self.alias(&tags);
@@ -116,7 +124,7 @@ const Config = struct {
             if (index) |i| {
                 section = if (tag.closing or tag.self_closing) null else i;
             } else if (std.mem.eql(u8, tag.name, "family") and !tag.closing and !tag.self_closing) {
-                const family = try lower(self.a, try decode(self.a, tags.text("family")));
+                const family = try lower(self.a, try decode(self.scratch, tags.text("family")));
                 if (section) |i| try lists[i].append(self.a, family) else if (name == null) name = family;
             }
         }
@@ -133,11 +141,11 @@ const Config = struct {
     fn resolve(self: *Config, value: []const u8, prefix: ?[]const u8, base: []const u8, xdg: enum { data, config }) !?[]const u8 {
         if (value.len == 0) return null;
         if (prefix) |p| if (std.mem.eql(u8, p, "xdg")) {
-            return try std.fs.path.join(self.a, &.{ if (xdg == .data) paths.dataHome() else paths.configHome(), value });
+            return try std.fs.path.join(self.scratch, &.{ if (xdg == .data) paths.dataHome() else paths.configHome(), value });
         };
-        if (std.mem.startsWith(u8, value, "~/")) return try std.fs.path.join(self.a, &.{ paths.home(), value[2..] });
+        if (std.mem.startsWith(u8, value, "~/")) return try std.fs.path.join(self.scratch, &.{ paths.home(), value[2..] });
         if (std.fs.path.isAbsolute(value)) return value;
-        return try std.fs.path.join(self.a, &.{ base, value });
+        return try std.fs.path.join(self.scratch, &.{ base, value });
     }
 };
 
@@ -220,9 +228,9 @@ fn lower(a: std.mem.Allocator, value: []const u8) ![]const u8 {
 
 // ---------------------------------------------------------------- Scanning
 
-fn scanDirectory(a: std.mem.Allocator, library: t.FT_Library, dir: []const u8, seen: *std.StringHashMapUnmanaged(void), fonts: *std.ArrayList(Font), depth: u32) void {
+fn scanDirectory(a: std.mem.Allocator, scratch: std.mem.Allocator, library: t.FT_Library, dir: []const u8, seen: *std.StringHashMapUnmanaged(void), fonts: *std.ArrayList(Font), depth: u32) void {
     if (depth > 8) return;
-    const entries = paths.list(a, dir) catch return;
+    const entries = paths.list(scratch, dir) catch return;
     std.mem.sort(paths.Listed, entries, {}, struct {
         fn less(_: void, x: paths.Listed, y: paths.Listed) bool {
             return std.mem.lessThan(u8, x.name, y.name);
@@ -230,10 +238,10 @@ fn scanDirectory(a: std.mem.Allocator, library: t.FT_Library, dir: []const u8, s
     }.less);
     for (entries) |entry| {
         if (entry.name[0] == '.') continue;
-        const path = std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, entry.name }, 0) catch continue;
+        const path = std.fmt.allocPrintSentinel(scratch, "{s}/{s}", .{ dir, entry.name }, 0) catch continue;
         const kind = if (entry.resolved) entry.kind else paths.kind(path);
         if (kind == .directory) {
-            scanDirectory(a, library, path, seen, fonts, depth + 1);
+            scanDirectory(a, scratch, library, path, seen, fonts, depth + 1);
             continue;
         }
         if (kind != .file) continue;
@@ -242,12 +250,14 @@ fn scanDirectory(a: std.mem.Allocator, library: t.FT_Library, dir: []const u8, s
             if (std.ascii.eqlIgnoreCase(extension, suffix)) break true;
         } else false;
         // Directories are often listed twice through different store paths.
-        if (!known or (seen.getOrPut(a, entry.name) catch continue).found_existing) continue;
+        if (!known or (seen.getOrPut(scratch, entry.name) catch continue).found_existing) continue;
         scanFile(a, library, path, fonts);
     }
 }
 
 fn scanFile(a: std.mem.Allocator, library: t.FT_Library, path: [:0]const u8, fonts: *std.ArrayList(Font)) void {
+    // The path is copied into the catalog once a face from the file is kept.
+    var kept: ?[:0]const u8 = null;
     var index: c_long = 0;
     var count: c_long = 1;
     while (index < count) : (index += 1) {
@@ -257,7 +267,9 @@ fn scanFile(a: std.mem.Allocator, library: t.FT_Library, path: [:0]const u8, fon
         count = face.*.num_faces;
         // Bitmap-only faces cannot be scaled, except color emoji, as in fontconfig.
         if ((face.*.face_flags & (t.FT_FACE_FLAG_SCALABLE | t.FT_FACE_FLAG_COLOR)) == 0) continue;
-        const font = describe(a, library, face, path, index) catch continue;
+        const owned = kept orelse (a.dupeSentinel(u8, path, 0) catch return);
+        kept = owned;
+        const font = describe(a, library, face, owned, index) catch continue;
         fonts.append(a, font) catch return;
     }
 }
@@ -396,7 +408,7 @@ fn best(a: std.mem.Allocator, from: *const Catalog, family: []const u8, weight: 
 test "fonts.conf directories, includes and aliases" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    var config: Config = .{ .a = arena.allocator() };
+    var config: Config = .{ .a = arena.allocator(), .scratch = arena.allocator() };
     try config.parse(
         \\<?xml version="1.0"?>
         \\<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
