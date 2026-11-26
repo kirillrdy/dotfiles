@@ -930,7 +930,9 @@ pub fn rasterizeSpans(a: std.mem.Allocator, flat: Flat, rule: FillRule, width: u
     var crossings: std.ArrayList(f64) = .empty;
     defer crossings.deinit(a);
     const fw: f64 = @floatFromInt(width);
-    const left: u32 = @intFromFloat(std.math.clamp(@floor(min_x), 0, fw));
+    // Interpolated crossings can round an ulp past the outline's leftmost
+    // point; on a whole pixel that is the column before it, so keep one spare.
+    const left: u32 = @intFromFloat(std.math.clamp(@floor(min_x) - 1, 0, fw));
     const right: u32 = @intFromFloat(std.math.clamp(@ceil(max_x) + 1, 0, fw));
     var accumulator: Accumulator = try .init(a, width, left, @max(left, right));
     defer accumulator.deinit(a);
@@ -1350,4 +1352,22 @@ test "SVG arcs reach their endpoints and transforms compose" {
     try std.testing.expectEqual(Point{ .x = 12, .y = 2 }, p);
     const back = t.invert().?.apply(p);
     try std.testing.expectApproxEqAbs(@as(f64, 1), back.x, 1e-12);
+}
+
+test "edge crossings rounded just past a whole-pixel bound stay in the shape's columns" {
+    // Interpolated crossings can land an ulp outside the outline's extremes;
+    // with an extreme exactly on a pixel boundary that is the column before it.
+    const a = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(1);
+    const random = prng.random();
+    for (0..2000) |_| {
+        var path: Path = .{};
+        defer path.deinit(a);
+        const left: f64 = @floatFromInt(random.intRangeAtMost(u32, 1, 20));
+        try path.moveTo(a, .{ .x = left, .y = random.float(f64) * 30 });
+        for (0..4) |_| try path.lineTo(a, .{ .x = left + random.float(f64) * 40, .y = random.float(f64) * 30 });
+        try path.close(a);
+        const mask = try fillMask(a, path, .identity, .nonzero, 64, 32);
+        mask.deinit(a);
+    }
 }
