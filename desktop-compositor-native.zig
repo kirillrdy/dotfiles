@@ -182,6 +182,12 @@ const Surface = struct {
     /// then holds a CPU copy only once something needs one.
     held: ?*Buffer = null,
     cpu_stale: bool = false,
+    /// Explicit sync: the surface's syncobj object, the client's fence the
+    /// GPU waits for before sampling the held buffer, and the point that
+    /// signals when the buffer is released.
+    sync: ?*SyncSurface = null,
+    acquire_fence: i32 = -1,
+    release: ?SyncPoint = null,
     scale: i32 = 1,
     frames: std.ArrayList(ws.wl_callback) = .empty,
     /// Subsurfaces drawn above this surface, bottom to top.
@@ -224,10 +230,72 @@ const Surface = struct {
     }
 
     fn releaseHeld(self: *Surface) void {
+        self.signalRelease();
         const buffer = self.held orelse return;
         self.held = null;
         self.cpu_stale = false;
         buffer.resource.sendRelease();
+    }
+
+    /// Signals the held buffer's release point once the GPU is done with the
+    /// frames drawn so far, as the last frame's fence says.
+    fn signalRelease(self: *Surface) void {
+        const point = self.release orelse return;
+        self.release = null;
+        defer point.timeline.unref();
+        const fence = if (self.comp.drm) |backend| if (backend.renderer) |renderer| renderer.last_fence else -1 else -1;
+        if (fence >= 0 and point.timeline.timeline.importPoint(point.value, fence)) return;
+        _ = point.timeline.timeline.signal(point.value);
+    }
+
+    /// Checks and takes the explicit sync points of a commit; false after a protocol error.
+    fn takeSyncPoints(self: *Surface) ?struct { acquire: ?SyncPoint, release: ?SyncPoint } {
+        const sync = self.sync orelse return .{ .acquire = null, .release = null };
+        const Error = ws.wp_linux_drm_syncobj_surface_v1.Error;
+        const buffer: ?*Buffer = if (self.pending_attach) self.pending_buffer else null;
+        if (buffer == null) {
+            if (sync.acquire != null or sync.release != null) {
+                sync.resource.postError(Error.no_buffer, "timeline points without a buffer", .{});
+                return null;
+            }
+            return .{ .acquire = null, .release = null };
+        }
+        const acquire = sync.acquire orelse {
+            sync.resource.postError(Error.no_acquire_point, "no acquire point", .{});
+            return null;
+        };
+        const release = sync.release orelse {
+            sync.resource.postError(Error.no_release_point, "no release point", .{});
+            return null;
+        };
+        if (buffer.?.image == null) {
+            sync.resource.postError(Error.unsupported_buffer, "explicit sync needs a dmabuf", .{});
+            return null;
+        }
+        if (acquire.timeline == release.timeline and acquire.value >= release.value) {
+            sync.resource.postError(Error.conflicting_points, "the acquire point is not before the release point", .{});
+            return null;
+        }
+        sync.acquire = null;
+        sync.release = null;
+        return .{ .acquire = acquire, .release = release };
+    }
+
+    /// Turns the acquire point into a fence for the GPU to wait on.
+    fn useAcquirePoint(self: *Surface, point: SyncPoint) void {
+        defer point.timeline.unref();
+        if (self.acquire_fence >= 0) _ = std.c.close(self.acquire_fence);
+        self.acquire_fence = -1;
+        const timeline = point.timeline.timeline;
+        // Clients normally submit before committing; the fence then exists already.
+        if (timeline.waitSubmitted(point.value, std.time.ns_per_s)) {
+            if (timeline.exportPoint(point.value)) |fence| {
+                self.acquire_fence = fence;
+                return;
+            }
+        }
+        // Without a fence to hand the GPU, wait for the client's work here.
+        _ = timeline.waitSignalled(point.value, std.time.ns_per_s);
     }
 
     /// Makes `texture` show the current content: the GPU buffer, or uploaded pixels.
@@ -235,6 +303,11 @@ const Surface = struct {
         if (self.texture == 0) self.texture = Gl.Renderer.createTexture();
         if (!self.texture_stale) return;
         self.texture_stale = false;
+        // The client's rendering must finish before the buffer is sampled.
+        if (self.acquire_fence >= 0) {
+            _ = renderer.waitFence(self.acquire_fence);
+            self.acquire_fence = -1;
+        }
         if (self.held) |buffer| renderer.bindImage(self.texture, buffer.image) else renderer.upload(self.texture, self.pixels, self.width, self.height);
     }
 
@@ -363,6 +436,7 @@ const Surface = struct {
     }
 
     fn apply(self: *Surface) void {
+        const points = self.takeSyncPoints() orelse return;
         // A commit that maps, unmaps or resizes redraws everything; otherwise
         // only what the client damaged.
         const was_mapped = self.mapped();
@@ -390,6 +464,10 @@ const Surface = struct {
             if (self.pending_buffer) |buffer| {
                 if (buffer.image != null) {
                     self.hold(buffer);
+                    // A re-committed buffer's earlier release point is released now.
+                    self.signalRelease();
+                    self.release = points.release;
+                    if (points.acquire) |acquire| self.useAcquirePoint(acquire);
                 } else {
                     self.releaseHeld();
                     self.copy(buffer);
@@ -512,6 +590,8 @@ const Surface = struct {
         self.pending_frames.deinit(comp.a);
         if (self.texture != 0) if (comp.drm) |backend| if (backend.renderer) |renderer| renderer.deleteTexture(self.texture);
         self.releaseHeld();
+        if (self.acquire_fence >= 0) _ = std.c.close(self.acquire_fence);
+        if (self.sync) |sync| sync.surface = null;
         comp.a.free(self.pixels);
         comp.dragSurfaceGone(self);
         removeItem(*Surface, &comp.surfaces, self);
@@ -3860,6 +3940,8 @@ const Compositor = struct {
     dmabuf_table: i32 = -1,
     /// The card's dev_t, as feedback main_device sends it.
     dmabuf_device: [8]u8 = @splat(0),
+    /// The DRM device clients' timelines are imported into.
+    sync_device: i32 = -1,
     /// The overview state last broadcast.
     overview_sent: bool = false,
     /// Themed cursors by shape and size, and where themes are searched.
@@ -3971,6 +4053,9 @@ const Compositor = struct {
     fn deinit(self: *Compositor) void {
         if (self.nested) |nested| nested.destroy();
         if (self.drm) |backend| backend.destroy();
+        // Clients' surfaces go after this; they must not reach the closed card.
+        self.drm = null;
+        self.sync_device = -1;
         self.a.free(self.dmabuf_formats);
         if (self.dmabuf_table >= 0) _ = std.c.close(self.dmabuf_table);
         for (self.cursor_cache.items) |entry| if (entry.image) |image| image.deinit(self.a);
@@ -5047,6 +5132,45 @@ const Compositor = struct {
         }
     }
 
+    /// Offers linux-drm-syncobj on NVIDIA, whose clients synchronise
+    /// explicitly; DESKTOP_EXPLICIT_SYNC=1 or 0 overrides the choice.
+    fn enableExplicitSync(self: *Compositor, renderer: *Gl.Renderer, card_fd: i32) void {
+        const wanted = if (std.c.getenv("DESKTOP_EXPLICIT_SYNC")) |value| std.mem.eql(u8, std.mem.span(value), "1") else std.mem.indexOf(u8, renderer.name(), "NVIDIA") != null;
+        if (!wanted) return;
+        if (renderer.dup_fence == null or !Syncobj.supported(card_fd)) {
+            std.log.warn("compositor: explicit sync needs native fences and timeline syncobjs", .{});
+            return;
+        }
+        self.sync_device = card_fd;
+        _ = self.server.createGlobal(&ws.wp_linux_drm_syncobj_manager_v1.interface, 1, self, &bindExplicitSync) catch return;
+        std.log.info("compositor: offering explicit sync", .{});
+    }
+
+    fn bindExplicitSync(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.wp_linux_drm_syncobj_manager_v1{ .resource = resource }).setHandler(Compositor, self, explicitSyncRequest, null);
+    }
+
+    fn explicitSyncRequest(self: *Compositor, resource: ws.wp_linux_drm_syncobj_manager_v1, request: ws.wp_linux_drm_syncobj_manager_v1.Request) void {
+        const Error = ws.wp_linux_drm_syncobj_manager_v1.Error;
+        switch (request) {
+            .destroy => {},
+            .get_surface => |args| {
+                const surface = args.surface.data(Surface) orelse return;
+                if (surface.sync != null) return resource.postError(Error.surface_exists, "the surface already has explicit sync", .{});
+                const sync = create(SyncSurface, self, .{ .comp = self, .resource = args.id, .surface = surface }) orelse return;
+                surface.sync = sync;
+                args.id.setHandler(SyncSurface, sync, SyncSurface.handle, SyncSurface.destroyed);
+            },
+            .import_timeline => |args| {
+                defer _ = std.c.close(args.fd);
+                const timeline = Syncobj.Timeline.import(self.sync_device, args.fd) orelse return resource.postError(Error.invalid_timeline, "not a DRM syncobj", .{});
+                const object = create(SyncTimeline, self, .{ .comp = self, .timeline = timeline }) orelse return timeline.destroy();
+                args.id.setHandler(SyncTimeline, object, SyncTimeline.handle, SyncTimeline.destroyed);
+            },
+        }
+    }
+
     /// Offers linux-dmabuf, so GL and Vulkan clients share GPU buffers.
     fn enableDmabuf(self: *Compositor, renderer: *Gl.Renderer, major: u32, minor: u32) !void {
         const formats = try renderer.dmabufFormats(self.a);
@@ -5676,6 +5800,69 @@ const Compositor = struct {
     }
 };
 
+// ------------------------------------------------------------------ Explicit sync
+
+const Syncobj = @import("desktop-syncobj.zig");
+
+/// A client's DRM timeline (wp_linux_drm_syncobj_timeline_v1), kept while
+/// points on it are pending even if the client destroys the object.
+const SyncTimeline = struct {
+    comp: *Compositor,
+    timeline: Syncobj.Timeline,
+    refs: u32 = 1,
+
+    fn ref(self: *SyncTimeline) *SyncTimeline {
+        self.refs += 1;
+        return self;
+    }
+
+    fn unref(self: *SyncTimeline) void {
+        self.refs -= 1;
+        if (self.refs > 0) return;
+        self.timeline.destroy();
+        self.comp.a.destroy(self);
+    }
+
+    fn handle(_: *SyncTimeline, _: ws.wp_linux_drm_syncobj_timeline_v1, _: ws.wp_linux_drm_syncobj_timeline_v1.Request) void {}
+
+    fn destroyed(self: *SyncTimeline, _: ws.wp_linux_drm_syncobj_timeline_v1) void {
+        self.unref();
+    }
+};
+
+const SyncPoint = struct { timeline: *SyncTimeline, value: u64 };
+
+/// wp_linux_drm_syncobj_surface_v1: the points set for the next commit.
+const SyncSurface = struct {
+    comp: *Compositor,
+    resource: ws.wp_linux_drm_syncobj_surface_v1,
+    surface: ?*Surface,
+    acquire: ?SyncPoint = null,
+    release: ?SyncPoint = null,
+
+    fn handle(self: *SyncSurface, resource: ws.wp_linux_drm_syncobj_surface_v1, request: ws.wp_linux_drm_syncobj_surface_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .set_acquire_point => |args| self.set(resource, &self.acquire, args.timeline, args.point_hi, args.point_lo),
+            .set_release_point => |args| self.set(resource, &self.release, args.timeline, args.point_hi, args.point_lo),
+        }
+    }
+
+    fn set(self: *SyncSurface, resource: ws.wp_linux_drm_syncobj_surface_v1, slot: *?SyncPoint, timeline: ws.wp_linux_drm_syncobj_timeline_v1, hi: u32, lo: u32) void {
+        if (self.surface == null) return resource.postError(ws.wp_linux_drm_syncobj_surface_v1.Error.no_surface, "the surface is gone", .{});
+        const target = timeline.data(SyncTimeline) orelse return;
+        if (slot.*) |old| old.timeline.unref();
+        slot.* = .{ .timeline = target.ref(), .value = (@as(u64, hi) << 32) | lo };
+    }
+
+    fn destroyed(self: *SyncSurface, _: ws.wp_linux_drm_syncobj_surface_v1) void {
+        if (self.acquire) |point| point.timeline.unref();
+        if (self.release) |point| point.timeline.unref();
+        if (self.surface) |surface| surface.sync = null;
+        self.comp.a.destroy(self);
+    }
+};
+
 // ------------------------------------------------------------------ GPU buffers
 
 /// zwp_linux_buffer_params_v1: the planes of a client's GPU buffer.
@@ -5796,6 +5983,8 @@ const Drm = struct {
     /// without a cursor plane.
     cursor_scale: f64 = 1,
     software_cursor: []u32 = &.{},
+    /// A display rejecting GPU buffers is reported once.
+    fb_warned: bool = false,
     /// The pointer image last sent to the cursor plane.
     cursor_surface: ?*Surface = null,
 
@@ -5832,6 +6021,7 @@ const Drm = struct {
                 comp.enableDmabuf(renderer, self.card_device.major, self.card_device.minor) catch |err| {
                     std.log.warn("compositor: GPU buffers are not shared ({s}); GL clients copy through memory", .{@errorName(err)});
                 };
+                if (comp.dmabuf_formats.len > 0) comp.enableExplicitSync(renderer, self.card.fd);
             } else |err| std.log.warn("compositor: no GPU renderer ({s}); rendering on the CPU", .{@errorName(err)});
         }
         self.udev = li.udev_new() orelse return error.NoUdev;
@@ -5855,11 +6045,14 @@ const Drm = struct {
         return self;
     }
 
-    /// Takes the first card with a connected display.
+    /// Takes the first card with a connected display, or DESKTOP_DRM_DEVICE
+    /// (such as /dev/dri/card1) on machines with several GPUs.
     fn openCard(self: *Drm) !void {
         var path_buffer: [32]u8 = undefined;
+        const chosen = std.c.getenv("DESKTOP_DRM_DEVICE");
         for (0..16) |index| {
-            const path = std.fmt.bufPrintSentinel(&path_buffer, "/dev/dri/card{d}", .{index}, 0) catch unreachable;
+            const path: [*:0]const u8 = if (chosen) |value| value else std.fmt.bufPrintSentinel(&path_buffer, "/dev/dri/card{d}", .{index}, 0) catch unreachable;
+            if (chosen != null and index > 0) break;
             if (std.c.access(path, 0) != 0) continue;
             const device = self.session.takeDevice(path) catch continue;
             const card = kms.Card.init(self.comp.a, device.fd) catch {
@@ -6006,8 +6199,18 @@ const Drm = struct {
     /// The framebuffer of a GBM buffer, registered on first use and removed with it.
     fn framebuffer(self: *Drm, bo: *Gl.GbmBo) ?u32 {
         if (Gl.gbm_bo_get_user_data(bo)) |data| return @as(*Framebuffer, @ptrCast(@alignCast(data))).id;
-        const handle: u32 = @truncate(Gl.gbm_bo_get_handle(bo));
-        const id = self.card.addFramebuffer(Gl.gbm_bo_get_width(bo), Gl.gbm_bo_get_height(bo), Gl.gbm_bo_get_format(bo), handle, Gl.gbm_bo_get_stride(bo)) orelse return null;
+        var planes: [4]kms.Card.FramePlane = undefined;
+        const count: usize = @intCast(std.math.clamp(Gl.gbm_bo_get_plane_count(bo), 1, 4));
+        for (planes[0..count], 0..) |*plane, index| {
+            const number: c_int = @intCast(index);
+            plane.* = .{ .handle = @truncate(Gl.gbm_bo_get_handle_for_plane(bo, number)), .stride = Gl.gbm_bo_get_stride_for_plane(bo, number), .offset = Gl.gbm_bo_get_offset(bo, number) };
+        }
+        const id = self.card.addFramebuffer(Gl.gbm_bo_get_width(bo), Gl.gbm_bo_get_height(bo), Gl.gbm_bo_get_format(bo), planes[0..count], Gl.gbm_bo_get_modifier(bo)) orelse {
+            if (self.fb_warned) return null;
+            self.fb_warned = true;
+            std.log.warn("compositor: the display rejected a {d}x{d} buffer with layout {x}", .{ Gl.gbm_bo_get_width(bo), Gl.gbm_bo_get_height(bo), Gl.gbm_bo_get_modifier(bo) });
+            return null;
+        };
         const entry = std.heap.c_allocator.create(Framebuffer) catch {
             self.card.removeFramebuffer(id);
             return null;

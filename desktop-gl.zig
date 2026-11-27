@@ -27,6 +27,12 @@ pub extern fn gbm_bo_get_stride(*GbmBo) u32;
 pub extern fn gbm_bo_get_width(*GbmBo) u32;
 pub extern fn gbm_bo_get_height(*GbmBo) u32;
 pub extern fn gbm_bo_get_format(*GbmBo) u32;
+pub extern fn gbm_bo_get_modifier(*GbmBo) u64;
+pub extern fn gbm_bo_get_plane_count(*GbmBo) c_int;
+/// Returns union gbm_bo_handle for one plane, eight bytes returned in a register.
+pub extern fn gbm_bo_get_handle_for_plane(*GbmBo, plane: c_int) u64;
+pub extern fn gbm_bo_get_stride_for_plane(*GbmBo, plane: c_int) u32;
+pub extern fn gbm_bo_get_offset(*GbmBo, plane: c_int) u32;
 pub extern fn gbm_bo_set_user_data(*GbmBo, data: ?*anyopaque, destroy: ?*const fn (*GbmBo, ?*anyopaque) callconv(.c) void) void;
 pub extern fn gbm_bo_get_user_data(*GbmBo) ?*anyopaque;
 
@@ -54,6 +60,8 @@ pub const egl = struct {
     pub const context_client_version: i32 = 0x3098;
     pub const extensions: i32 = 0x3055;
     pub const buffer_age: i32 = 0x313D;
+    pub const sync_native_fence: u32 = 0x3144;
+    pub const sync_native_fence_fd: isize = 0x3145;
     pub const linux_dma_buf: u32 = 0x3270;
     pub const width: i32 = 0x3057;
     pub const height: i32 = 0x3056;
@@ -84,6 +92,12 @@ pub extern fn eglGetProcAddress(name: [*:0]const u8) ?*const anyopaque;
 pub extern fn eglGetError() i32;
 pub extern fn eglQuerySurface(EGLDisplay, EGLSurface, attribute: i32, value: *i32) u32;
 pub extern fn eglCreateImage(EGLDisplay, EGLContext, target: u32, buffer: ?*anyopaque, attributes: [*]const isize) EGLImage;
+pub const EGLSync = ?*anyopaque;
+pub extern fn eglCreateSync(EGLDisplay, kind: u32, attributes: ?[*]const isize) EGLSync;
+pub extern fn eglDestroySync(EGLDisplay, EGLSync) u32;
+pub extern fn eglWaitSync(EGLDisplay, EGLSync, flags: i32) u32;
+/// eglDupNativeFenceFDANDROID, from EGL_ANDROID_native_fence_sync.
+const DupNativeFence = *const fn (EGLDisplay, EGLSync) callconv(.c) i32;
 pub extern fn eglDestroyImage(EGLDisplay, EGLImage) u32;
 
 // ------------------------------------------------------------------ GLES 2
@@ -271,6 +285,10 @@ pub const Renderer = struct {
     /// The part of the frame being redrawn; drawing outside it is clipped.
     frame_clip: ?Clip = null,
     buffer_age: bool = false,
+    /// Fences shared with the kernel (EGL_ANDROID_native_fence_sync), and the
+    /// fence of the last frame: released buffers signal when it does.
+    dup_fence: ?DupNativeFence = null,
+    last_fence: i32 = -1,
     name_buffer: [128]u8 = undefined,
     name_len: usize = 0,
 
@@ -314,11 +332,15 @@ pub const Renderer = struct {
         }
         if (eglGetProcAddress("glEGLImageTargetTexture2DOES")) |address| self.image_target = @ptrCast(address);
         self.buffer_age = self.hasExtension("EGL_EXT_buffer_age");
+        if (self.hasExtension("EGL_ANDROID_native_fence_sync")) if (eglGetProcAddress("eglDupNativeFenceFDANDROID")) |address| {
+            self.dup_fence = @ptrCast(address);
+        };
         self.scratch = createTexture();
         return self;
     }
 
     pub fn deinit(self: *Renderer) void {
+        if (self.last_fence >= 0) _ = std.c.close(self.last_fence);
         glDeleteTextures(1, @ptrCast(&self.scratch));
         glDeleteProgram(self.program);
         _ = eglMakeCurrent(self.display, null, null, null);
@@ -612,8 +634,41 @@ pub const Renderer = struct {
         return true;
     }
 
+    /// Makes the GPU wait for a client's fence (a sync_file, taken over)
+    /// before the commands that follow, such as sampling its buffer.
+    pub fn waitFence(self: *Renderer, fd: i32) bool {
+        if (self.dup_fence == null) {
+            _ = std.c.close(fd);
+            return false;
+        }
+        const attributes = [_]isize{ egl.sync_native_fence_fd, fd, egl.none };
+        const sync = eglCreateSync(self.display, egl.sync_native_fence, &attributes);
+        if (sync == null) {
+            _ = std.c.close(fd);
+            return false;
+        }
+        defer _ = eglDestroySync(self.display, sync);
+        return eglWaitSync(self.display, sync, 0) != 0;
+    }
+
+    /// A sync_file that signals when the GPU finished the frame's commands, or -1.
+    pub fn frameFence(self: *Renderer) i32 {
+        const dup = self.dup_fence orelse return -1;
+        const sync = eglCreateSync(self.display, egl.sync_native_fence, null);
+        if (sync == null) return -1;
+        defer _ = eglDestroySync(self.display, sync);
+        glFlush();
+        return dup(self.display, sync);
+    }
+
     /// Finishes the frame; returns the buffer to scan out, locked until released.
     pub fn finish(self: *Renderer, target: *Target) ?*GbmBo {
+        // The fence of everything sampled so far, for release points.
+        const fence = self.frameFence();
+        if (fence >= 0) {
+            if (self.last_fence >= 0) _ = std.c.close(self.last_fence);
+            self.last_fence = fence;
+        }
         if (eglSwapBuffers(self.display, target.surface) == 0) return null;
         return gbm_surface_lock_front_buffer(target.gbm_surface);
     }
@@ -673,6 +728,9 @@ test "EGL, GLES and GBM constants match their headers" {
     try std.testing.expectEqual(@as(i32, c.EGL_NATIVE_VISUAL_ID), egl.native_visual_id);
     try std.testing.expectEqual(@as(i32, c.EGL_CONTEXT_CLIENT_VERSION), egl.context_client_version);
     try std.testing.expectEqual(@as(u32, c.EGL_LINUX_DMA_BUF_EXT), egl.linux_dma_buf);
+    try std.testing.expectEqual(@as(u32, c.EGL_SYNC_NATIVE_FENCE_ANDROID), egl.sync_native_fence);
+    try std.testing.expectEqual(@as(isize, c.EGL_SYNC_NATIVE_FENCE_FD_ANDROID), egl.sync_native_fence_fd);
+    try std.testing.expectEqual(@as(i32, c.EGL_BUFFER_AGE_EXT), egl.buffer_age);
     try std.testing.expectEqual(@as(i32, c.EGL_LINUX_DRM_FOURCC_EXT), egl.linux_drm_fourcc);
     try std.testing.expectEqual(@as(i32, c.EGL_DMA_BUF_PLANE0_FD_EXT), egl.plane_attributes[0][0]);
     try std.testing.expectEqual(@as(i32, c.EGL_DMA_BUF_PLANE1_PITCH_EXT), egl.plane_attributes[1][2]);
@@ -691,4 +749,44 @@ test "EGL, GLES and GBM constants match their headers" {
     try std.testing.expectEqual(@as(u32, c.GL_PACK_ALIGNMENT), gl.pack_alignment);
     // DRM_FORMAT_MOD_INVALID is fourcc_mod_code(NONE, DRM_FORMAT_RESERVED).
     try std.testing.expectEqual(@as(u64, c.DRM_FORMAT_RESERVED), modifier_invalid);
+}
+
+test "integration: GLES draws into scanout buffers on every GPU" {
+    if (!@import("options").integration_tests) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var tested: usize = 0;
+    var name_buffer: [32]u8 = undefined;
+    for (128..136) |minor| {
+        const path = std.fmt.bufPrintSentinel(&name_buffer, "/dev/dri/renderD{d}", .{minor}, 0) catch unreachable;
+        const fd = std.c.open(path, .{ .ACCMODE = .RDWR, .CLOEXEC = true });
+        if (fd < 0) continue;
+        defer _ = std.c.close(fd);
+        const renderer = Renderer.init(a, fd) catch |err| {
+            std.debug.print("{s}: no renderer ({s})\n", .{ path, @errorName(err) });
+            continue;
+        };
+        defer renderer.deinit();
+        const target = try renderer.createTarget(256, 128);
+        defer target.destroy();
+        try std.testing.expect(renderer.begin(target, 0xff336699, null, 0));
+        const pixels: [4]u32 = @splat(0xffff0000);
+        renderer.drawPixels(&pixels, 2, 2, .{ .x = 10, .y = 10, .width = 50, .height = 50 }, null, 1);
+        // Explicit sync: a frame fence, and the GPU waiting on one.
+        const fence = renderer.frameFence();
+        std.debug.print("{s}: native fences {}, frame fence {d}\n", .{ path, renderer.dup_fence != null, fence });
+        if (renderer.dup_fence != null) {
+            try std.testing.expect(fence >= 0);
+            try std.testing.expect(renderer.waitFence(fence));
+        }
+        const bo = renderer.finish(target) orelse return error.NoBuffer;
+        defer target.discard(bo);
+        try std.testing.expectEqual(@as(u32, 256), gbm_bo_get_width(bo));
+        try std.testing.expectEqual(gbm_format_xrgb8888, gbm_bo_get_format(bo));
+        const formats = try renderer.dmabufFormats(a);
+        defer a.free(formats);
+        std.debug.print("{s}: {s}, layout {x} in {d} planes, {d} client formats, buffer age {}\n", .{ path, renderer.name(), gbm_bo_get_modifier(bo), gbm_bo_get_plane_count(bo), formats.len, renderer.buffer_age });
+        try std.testing.expect(formats.len > 0);
+        tested += 1;
+    }
+    if (tested == 0) return error.SkipZigTest;
 }

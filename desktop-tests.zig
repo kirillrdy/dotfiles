@@ -141,6 +141,7 @@ test {
     _ = @import("desktop-logind.zig");
     _ = @import("desktop-libinput.zig");
     _ = @import("desktop-gl.zig");
+    _ = @import("desktop-syncobj.zig");
     _ = @import("desktop-xcursor.zig");
     _ = @import("tests/desktop-shape-reference.zig");
     _ = @import("desktop-switcher.zig");

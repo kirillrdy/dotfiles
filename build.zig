@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) void {
         .{ .cwd_relative = b.fmt("{s}/stable/xdg-shell/xdg-shell.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/stable/viewporter/viewporter.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/stable/linux-dmabuf/linux-dmabuf-v1.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/staging/fractional-scale/fractional-scale-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-foreign/xdg-foreign-unstable-v2.xml", .{protocol_dir}) },

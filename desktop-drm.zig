@@ -223,6 +223,10 @@ const page_flip_event: u32 = 0x01;
 const event_flip_complete: u32 = 0x02;
 const cap_dumb_buffer: u64 = 0x1;
 const cap_cursor_width: u64 = 0x8;
+const cap_addfb2_modifiers: u64 = 0x10;
+const fb_modifiers: u32 = 1 << 1;
+/// DRM_FORMAT_MOD_INVALID: no explicit layout.
+pub const modifier_invalid: u64 = 0x00ffffffffffffff;
 const cap_cursor_height: u64 = 0x9;
 const cursor_set_image: u32 = 0x01;
 const cursor_move: u32 = 0x02;
@@ -448,6 +452,8 @@ pub const Card = struct {
     cursor_size: [2]u32 = .{ 64, 64 },
     cursor_hotspot: [2]i32 = .{ 0, 0 },
     cursor_visible: bool = false,
+    /// Whether framebuffers may carry layout modifiers.
+    modifiers: bool = false,
     /// False once a display rejected the cursor plane.
     cursor_hardware: bool = true,
     /// Called before a display that was unplugged is freed.
@@ -459,6 +465,8 @@ pub const Card = struct {
         if (!call(fd, ioctl.get_cap, &cap) or cap.value == 0) return error.DrmFailed;
         const self = try allocator.create(Card);
         self.* = .{ .allocator = allocator, .fd = fd };
+        var modifiers: GetCap = .{ .capability = cap_addfb2_modifiers };
+        self.modifiers = call(fd, ioctl.get_cap, &modifiers) and modifiers.value != 0;
         var width: GetCap = .{ .capability = cap_cursor_width };
         var height: GetCap = .{ .capability = cap_cursor_height };
         if (call(fd, ioctl.get_cap, &width) and call(fd, ioctl.get_cap, &height) and width.value > 0 and height.value > 0) {
@@ -584,11 +592,20 @@ pub const Card = struct {
         return null;
     }
 
-    /// Registers a GPU buffer as a framebuffer, for `Display.show`.
-    pub fn addFramebuffer(self: *Card, width: u32, height: u32, format: u32, handle: u32, stride: u32) ?u32 {
+    pub const FramePlane = struct { handle: u32, stride: u32, offset: u32 };
+
+    /// Registers a GPU buffer as a framebuffer, for `Display.show`. Tiled
+    /// layouts (NVIDIA's always are) need their modifier, where the driver
+    /// takes modifiers; DRM_FORMAT_MOD_INVALID keeps the implicit layout.
+    pub fn addFramebuffer(self: *Card, width: u32, height: u32, format: u32, planes: []const FramePlane, modifier: u64) ?u32 {
         var command: FbCommand2 = .{ .width = width, .height = height, .pixel_format = format };
-        command.handles[0] = handle;
-        command.pitches[0] = stride;
+        for (planes[0..@min(planes.len, 4)], 0..) |plane, index| {
+            command.handles[index] = plane.handle;
+            command.pitches[index] = plane.stride;
+            command.offsets[index] = plane.offset;
+            if (modifier != modifier_invalid and self.modifiers) command.modifier[index] = modifier;
+        }
+        if (modifier != modifier_invalid and self.modifiers) command.flags = fb_modifiers;
         if (!call(self.fd, ioctl.add_fb2, &command)) return null;
         return command.fb_id;
     }
@@ -690,6 +707,8 @@ test "DRM ioctl structures match the kernel headers" {
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_GET_CAP), ioctl.get_cap);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_CURSOR2), ioctl.cursor2);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_ADDFB2), ioctl.add_fb2);
+    try std.testing.expectEqual(@as(u64, c.DRM_CAP_ADDFB2_MODIFIERS), cap_addfb2_modifiers);
+    try std.testing.expectEqual(@as(u32, c.DRM_MODE_FB_MODIFIERS), fb_modifiers);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_GETPROPERTY), ioctl.get_property);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_OBJ_GETPROPERTIES), ioctl.object_properties);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_OBJ_SETPROPERTY), ioctl.set_object_property);
