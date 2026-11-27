@@ -795,7 +795,10 @@ let
     + body
   );
   setup =
-    lib.optionalString (pythonPkg != null) ''
+    lib.optionalString nativeCompositor ''
+      export DESKTOP_COMPOSITOR=native
+    ''
+    + lib.optionalString (pythonPkg != null) ''
       export PYTHONPATH=${pythonHelpers}
       export PYTHONDONTWRITEBYTECODE=1
     ''

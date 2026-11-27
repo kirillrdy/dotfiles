@@ -20,7 +20,7 @@
   "shell"
   "ui"
 ] (name: import (./. + "/desktop-${name}-fixture.nix") { inherit pkgs; })
-# The headless fixtures again, on the wlroots-free compositor.
+# The fixture checks again, on the wlroots-free compositor.
 // pkgs.lib.listToAttrs (
   map
     (name: {
@@ -33,9 +33,20 @@
     })
     [
       "audio"
+      "backlight"
+      "battery"
+      "idle"
+      "lock"
       "memory"
       "network"
+      "output"
+      "polkit"
+      "portal"
+      "portal-capture"
+      "screenshot"
+      "secrets"
       "session"
+      "shell"
       "ui"
     ]
 )

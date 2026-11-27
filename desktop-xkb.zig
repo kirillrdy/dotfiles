@@ -630,6 +630,12 @@ pub const Keymap = struct {
     pub fn repeats(self: *const Keymap, code: u32) bool {
         return code < self.keys.len and self.keys[code].defined and self.keys[code].repeats;
     }
+
+    /// The real modifiers a key sets through modifier_map, for compositors
+    /// tracking modifier state from key presses.
+    pub fn modifierMask(self: *const Keymap, code: u32) u32 {
+        return if (code < self.keys.len and self.keys[code].defined) self.keys[code].modmap else 0;
+    }
 };
 
 // ---------------------------------------------------------------- State

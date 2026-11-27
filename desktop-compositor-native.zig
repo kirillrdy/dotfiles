@@ -158,7 +158,8 @@ const Surface = struct {
     frames: std.ArrayList(ws.wl_callback) = .empty,
     /// Subsurfaces drawn above this surface, bottom to top.
     children: std.ArrayList(*Subsurface) = .empty,
-    entered: bool = false,
+    /// The output the surface is shown on.
+    entered: ?*Output = null,
     /// wp_viewport destination size, which overrides buffer size / scale.
     pending_destination: ?[2]i32 = null,
     destination: ?[2]i32 = null,
@@ -298,6 +299,10 @@ const Surface = struct {
         if (self.input) |ops| std.heap.c_allocator.free(ops);
         if (self.pending_input) |ops| std.heap.c_allocator.free(ops);
         comp.seat.surfaceGone(self);
+        for (comp.idle_inhibitors.items) |inhibitor| if (inhibitor.surface == self) {
+            inhibitor.surface = null;
+        };
+        comp.updateInhibition();
         for (self.children.items) |child| child.parent = null;
         self.children.deinit(comp.a);
         for (self.frames.items) |callback| callback.destroyResource();
@@ -613,6 +618,7 @@ const Toplevel = struct {
     y: i32 = 0,
     mapped: bool = false,
     activated: bool = false,
+    output: ?*Output = null,
     /// Windows open maximized to the usable area, as with the wlroots compositor.
     maximized: bool = true,
     fullscreen: bool = false,
@@ -683,9 +689,9 @@ const Toplevel = struct {
     }
 
     fn area(self: *const Toplevel) Rect {
-        const output = self.comp.output;
-        if (self.fullscreen) return .{ .width = output.logicalWidth(), .height = output.logicalHeight() };
-        var box = self.comp.usable;
+        const output = self.output orelse self.comp.primary() orelse return .{ .width = 1, .height = 1 };
+        if (self.fullscreen) return output.box();
+        var box = output.usable;
         if (self.tile != .none) {
             box.width = @divTrunc(box.width, 2);
             if (self.tile == .right) box.x += box.width;
@@ -763,12 +769,17 @@ const Toplevel = struct {
         return std.fmt.bufPrint(&self.id_buffer, "native-{d}", .{self.serial}) catch "native";
     }
 
+    fn scale(self: *const Toplevel) f64 {
+        const output = self.output orelse self.comp.primary() orelse return 1;
+        return output.scale;
+    }
+
     /// Draws the window geometry into `target` at the output scale.
     fn render(self: *Toplevel, target: raster.Buffer) bool {
         const xdg = self.xdg orelse return false;
         const surface = xdg.surface orelse return false;
         const geometry = xdg.windowGeometry();
-        surface.draw(target, -geometry.x, -geometry.y, self.comp.output.scale);
+        surface.draw(target, -geometry.x, -geometry.y, self.scale());
         return true;
     }
 
@@ -777,6 +788,8 @@ const Toplevel = struct {
         const comp = self.comp;
         self.mapped = mapped;
         if (mapped) {
+            if (self.output == null) self.output = comp.focusedOutput();
+            self.reconfigure(false);
             self.place();
             comp.toplevels.append(comp.a, self) catch {};
             comp.recent.append(comp.a, self) catch {};
@@ -787,8 +800,9 @@ const Toplevel = struct {
                 self.workspace = comp.workspace;
             }
             for (comp.toplevel_lists.items) |list| ListHandle.announce(comp, list, self);
-            if (self.xdg) |xdg| if (xdg.surface) |surface| comp.output.enter(surface);
+            if (self.output) |output| if (self.xdg) |xdg| if (xdg.surface) |surface| output.enter(surface);
             comp.focus(self);
+            comp.updateInhibition();
         } else {
             removeItem(*Toplevel, &comp.toplevels, self);
             // A window closing while selected moves the selection on, as before.
@@ -805,6 +819,7 @@ const Toplevel = struct {
                 comp.focused = null;
                 comp.refocus();
             }
+            comp.updateInhibition();
         }
         comp.scheduleRepaint();
     }
@@ -876,7 +891,9 @@ const Popup = struct {
     fn configure(self: *Popup) void {
         const placed = self.positioner.place();
         const origin = self.parentOrigin() orelse .{ 0, 0 };
-        const bounds: Rect = .{ .x = -origin[0], .y = -origin[1], .width = self.comp.output.logicalWidth(), .height = self.comp.output.logicalHeight() };
+        const output = (if (self.layer_parent) |layer| layer.output else if (self.toplevelRoot()) |toplevel| toplevel.output else null) orelse self.comp.primary();
+        const area = if (output) |o| o.box() else Rect{ .width = 1, .height = 1 };
+        const bounds: Rect = .{ .x = area.x - origin[0], .y = area.y - origin[1], .width = area.width, .height = area.height };
         self.rect = self.positioner.constrain(placed, bounds);
         self.resource.sendConfigure(self.rect.x, self.rect.y, self.rect.width, self.rect.height);
         if (self.xdg) |xdg| xdg.sendConfigure();
@@ -896,6 +913,7 @@ const Layer = struct {
     comp: *Compositor,
     resource: ws.zwlr_layer_surface_v1,
     surface: ?*Surface,
+    output: *Output,
     namespace: []u8,
     pending: Config,
     current: Config,
@@ -984,7 +1002,7 @@ const Layer = struct {
         self.comp.arrange();
         if (changed) {
             if (std.mem.eql(u8, self.namespace, "desktop-overview")) self.comp.broadcastOverview();
-            if (mapped) self.comp.output.enter(surface);
+            if (mapped) self.output.enter(surface);
             if (!mapped and self.comp.focused_layer == self) self.comp.focused_layer = null;
             self.comp.updateKeyboardFocus();
         }
@@ -1074,8 +1092,8 @@ const Layer = struct {
             @memset(pixels, 0);
             if (!toplevel.render(.{ .pixels = pixels, .width = size[0], .height = size[1] })) continue;
             const v = preview.values;
-            const ox: f64 = @floatFromInt(self.rect.x);
-            const oy: f64 = @floatFromInt(self.rect.y);
+            const ox: f64 = @floatFromInt(self.rect.x - self.output.x);
+            const oy: f64 = @floatFromInt(self.rect.y - self.output.y);
             const image: raster.Image = .{ .pixels = std.mem.sliceAsBytes(pixels), .width = size[0], .height = size[1], .stride = size[0] * 4, .format = .argb };
             const clip: raster.Region = .{ .x = @intFromFloat(@floor((ox + v[4]) * s)), .y = @intFromFloat(@floor((oy + v[5]) * s)), .width = @intFromFloat(@ceil(v[6] * s)), .height = @intFromFloat(@ceil(v[7] * s)) };
             raster.blitWithOptions(target, image, .{ .x = (ox + v[0]) * s, .y = (oy + v[1]) * s, .width = v[2] * s, .height = v[3] * s }, .{ .clip = clip, .opacity = v[8], .filter = .bilinear }) catch {};
@@ -1124,12 +1142,18 @@ const Layer = struct {
 
 const Output = struct {
     comp: *Compositor,
-    name: []const u8 = "HEADLESS-1",
+    name_buffer: [16]u8 = undefined,
+    name_len: usize = 0,
+    /// Position in the global logical layout.
+    x: i32 = 0,
+    y: i32 = 0,
     width: u32,
     height: u32,
     /// Fractional; wl_output and preferred_buffer_scale advertise it rounded up.
     scale: f64 = 1,
     pixels: []u32,
+    /// The output area left after layer surfaces' exclusive zones, in global coordinates.
+    usable: Rect = .{},
     resources: std.ArrayList(ws.wl_output) = .empty,
     xdg_outputs: std.ArrayList(ws.zxdg_output_v1) = .empty,
     repaint: *wire.Loop.Source = undefined,
@@ -1141,21 +1165,58 @@ const Output = struct {
     enabled: bool = true,
     global: ?*wire.Global = null,
 
+    fn create(comp: *Compositor, index: usize, width: u32, height: u32) !*Output {
+        const self = try comp.a.create(Output);
+        errdefer comp.a.destroy(self);
+        self.* = .{ .comp = comp, .width = width, .height = height, .pixels = try comp.a.alloc(u32, @as(usize, width) * height) };
+        errdefer comp.a.free(self.pixels);
+        self.name_len = (std.fmt.bufPrint(&self.name_buffer, "HEADLESS-{d}", .{index + 1}) catch unreachable).len;
+        self.repaint = try comp.server.loop.timer(self, &repaintReady);
+        self.global = try comp.server.createGlobal(&ws.wl_output.interface, 4, self, &bind);
+        return self;
+    }
+
+    fn destroy(self: *Output) void {
+        const a = self.comp.a;
+        self.resources.deinit(a);
+        self.xdg_outputs.deinit(a);
+        a.free(self.pixels);
+        a.destroy(self);
+    }
+
+    fn name(self: *const Output) []const u8 {
+        return self.name_buffer[0..self.name_len];
+    }
+
+    /// The output's area in global logical coordinates.
+    fn box(self: *const Output) Rect {
+        return .{ .x = self.x, .y = self.y, .width = self.logicalWidth(), .height = self.logicalHeight() };
+    }
+
+    fn contains(self: *const Output, x: f64, y: f64) bool {
+        const b = self.box();
+        return x >= @as(f64, @floatFromInt(b.x)) and y >= @as(f64, @floatFromInt(b.y)) and x < @as(f64, @floatFromInt(b.x + b.width)) and y < @as(f64, @floatFromInt(b.y + b.height));
+    }
+
     fn bind(data: ?*anyopaque, resource: wire.Resource) void {
         const self: *Output = @ptrCast(@alignCast(data));
         const output: ws.wl_output = .{ .resource = resource };
         output.setHandler(Output, self, handle, destroyed);
         self.resources.append(self.comp.a, output) catch {};
-        output.sendGeometry(0, 0, 0, 0, ws.wl_output.Subpixel.unknown, "Headless", "Headless output", ws.wl_output.Transform.normal);
+        self.describe(output);
+        // Mapped surfaces of this client are on the output.
+        for (self.comp.surfaces.items) |surface| if (surface.entered == self and surface.resource.client() == output.client()) surface.resource.sendEnter(output);
+    }
+
+    fn describe(self: *Output, output: ws.wl_output) void {
+        output.sendGeometry(self.x, self.y, 0, 0, ws.wl_output.Subpixel.unknown, "Headless", "Headless output", ws.wl_output.Transform.normal);
         output.sendMode(ws.wl_output.Mode.current | ws.wl_output.Mode.preferred, @intCast(self.width), @intCast(self.height), 60000);
         if (output.version() >= 2) output.sendScale(self.bufferScale());
         if (output.version() >= 4) {
-            output.sendName(self.name);
+            output.sendName(self.name());
             output.sendDescription("Headless output");
         }
         if (output.version() >= 2) output.sendDone();
-        // Mapped surfaces of this client are on the output.
-        for (self.comp.surfaces.items) |surface| if (surface.entered and surface.resource.client() == output.client()) surface.resource.sendEnter(output);
     }
 
     fn logicalWidth(self: *const Output) i32 {
@@ -1174,26 +1235,42 @@ const Output = struct {
         return @intFromFloat(@round(self.scale * 120));
     }
 
-    /// Changes the output scale and tells every client.
-    fn setScale(self: *Output, scale: f64) void {
-        if (scale == self.scale) return;
-        self.scale = scale;
+    /// Re-announces geometry, mode and scale to wl_output and xdg-output clients.
+    fn announce(self: *Output) void {
         for (self.xdg_outputs.items) |xdg_output| {
+            xdg_output.sendLogicalPosition(self.x, self.y);
             xdg_output.sendLogicalSize(self.logicalWidth(), self.logicalHeight());
             if (xdg_output.version() < 3) xdg_output.sendDone();
         }
-        for (self.resources.items) |output| {
-            if (output.version() >= 2) output.sendScale(self.bufferScale());
-            if (output.version() >= 2) output.sendDone();
-        }
-        for (self.comp.surfaces.items) |surface| {
-            if (surface.entered and surface.resource.version() >= 6) surface.resource.sendPreferredBufferScale(self.bufferScale());
+        for (self.resources.items) |output| self.describe(output);
+        for (self.comp.surfaces.items) |surface| if (surface.entered == self) {
+            if (surface.resource.version() >= 6) surface.resource.sendPreferredBufferScale(self.bufferScale());
             if (surface.fractional) |fractional| fractional.sendPreferredScale(self.fractionalScale());
-        }
-        const seat = &self.comp.seat;
-        seat.pointer_x = @min(seat.pointer_x, @as(f64, @floatFromInt(self.logicalWidth() - 1)));
-        seat.pointer_y = @min(seat.pointer_y, @as(f64, @floatFromInt(self.logicalHeight() - 1)));
+        };
+    }
+
+    /// Changes the output's scale, mode or position and tells every client.
+    fn configure(self: *Output, scale: f64, size: ?[2]u32, position: ?[2]i32) void {
+        var changed = scale != self.scale;
+        self.scale = scale;
+        if (size) |dimensions| if (dimensions[0] != self.width or dimensions[1] != self.height) {
+            const pixels = self.comp.a.alloc(u32, @as(usize, dimensions[0]) * dimensions[1]) catch return;
+            self.comp.a.free(self.pixels);
+            self.pixels = pixels;
+            self.width = dimensions[0];
+            self.height = dimensions[1];
+            changed = true;
+        };
+        if (position) |point| if (point[0] != self.x or point[1] != self.y) {
+            self.x = point[0];
+            self.y = point[1];
+            changed = true;
+        };
+        if (!changed) return;
+        self.announce();
+        self.comp.seat.clampPointer();
         self.comp.arrange();
+        self.scheduleRepaint();
     }
 
     fn handle(_: *Output, _: ws.wl_output, _: ws.wl_output.Request) void {}
@@ -1206,11 +1283,31 @@ const Output = struct {
         removeItem(ws.zxdg_output_v1, &self.xdg_outputs, resource);
     }
 
+    /// Sends wl_surface.enter for this output, and leave for the one it was on.
     fn enter(self: *Output, surface: *Surface) void {
-        if (surface.entered) return;
-        surface.entered = true;
+        if (surface.entered == self) return;
+        if (surface.entered) |old| for (old.resources.items) |output| {
+            if (output.client() == surface.resource.client()) surface.resource.sendLeave(output);
+        };
+        surface.entered = self;
         for (self.resources.items) |output| if (output.client() == surface.resource.client()) surface.resource.sendEnter(output);
         if (surface.resource.version() >= 6) surface.resource.sendPreferredBufferScale(self.bufferScale());
+        if (surface.fractional) |fractional| fractional.sendPreferredScale(self.fractionalScale());
+    }
+
+    fn scheduleRepaint(self: *Output) void {
+        if (self.scheduled or !self.enabled) return;
+        self.scheduled = true;
+        // Composite at most once per 60 Hz frame, batching commits that arrive together.
+        wire.Loop.arm(self.repaint, 16);
+    }
+
+    /// Draws pending commits now, as a capture of the next frame would show them.
+    fn flush(self: *Output) void {
+        if (!self.scheduled) return;
+        self.scheduled = false;
+        wire.Loop.arm(self.repaint, 0);
+        self.render();
     }
 
     fn render(self: *Output) void {
@@ -1220,8 +1317,8 @@ const Output = struct {
         @memset(self.pixels, if (comp.locked) 0xff000000 else comp.background);
         var roots: [256]Root = undefined;
         for (comp.stack(&roots)) |root| {
-            root.surface.draw(target, root.x, root.y, self.scale);
-            if (root.surface.layer) |layer| if (layer.previews.items.len > 0) layer.drawPreviews(target, self.scale);
+            root.surface.draw(target, root.x - self.x, root.y - self.y, self.scale);
+            if (root.surface.layer) |layer| if (layer.previews.items.len > 0 and layer.output == self) layer.drawPreviews(target, self.scale);
         }
         if (comp.locked) {
             self.lock_serial = comp.lock_serial;
@@ -1421,6 +1518,8 @@ const Seat = struct {
     buttons: u32 = 0,
     /// Keys a shortcut consumed; their release is withheld from clients too.
     consumed: [256]bool = @splat(false),
+    /// Modifiers held by each pressed key, from the keymap's modifier_map.
+    held: [256]u32 = @splat(0),
 
     fn init(self: *Seat) !void {
         self.default_keymap = keymapFile(keymap_text) orelse return error.Keymap;
@@ -1528,9 +1627,15 @@ const Seat = struct {
         if (keymap.fd == self.active_keymap.fd) return;
         self.active_keymap = keymap;
         for (self.keyboards.items) |keyboard| keyboard.sendKeymap(ws.wl_keyboard.KeymapFormat.xkb_v1, keymap.fd, keymap.size);
+        // Modifiers are re-read under the new keymap, as wlroots does when the seat changes keyboards.
+        const surface = self.keyboard_focus orelse return;
+        for (self.keyboards.items) |keyboard| {
+            if (keyboard.client() == surface.resource.client()) keyboard.sendModifiers(self.comp.server.nextSerial(), self.modifiers[0], self.modifiers[1], self.modifiers[2], self.modifiers[3]);
+        }
     }
 
     fn key(self: *Seat, keymap: Keymap, time: u32, code: u32, state: u32) void {
+        self.comp.activity();
         self.useKeymap(keymap);
         const pressed = state == ws.wl_keyboard.KeyState.pressed;
         var handled = false;
@@ -1549,11 +1654,30 @@ const Seat = struct {
                 self.consumed[code] = false;
             }
         }
-        if (handled) return;
-        const surface = self.keyboard_focus orelse return;
-        for (self.keyboards.items) |keyboard| {
+        if (!handled) if (self.keyboard_focus) |surface| for (self.keyboards.items) |keyboard| {
             if (keyboard.client() == surface.resource.client()) keyboard.sendKey(self.comp.server.nextSerial(), time, code, state);
-        }
+        };
+        if (keymap.map) |map| self.trackModifiers(keymap, map, code, pressed);
+    }
+
+    /// Derives modifier state from modifier keys, as xkbcommon does for SetMods
+    /// and LockMods: held keys set depressed modifiers, lock keys toggle locked ones.
+    fn trackModifiers(self: *Seat, keymap: Keymap, map: *const xkb.Keymap, code: u32, pressed: bool) void {
+        const mask = map.modifierMask(code + 8);
+        if (mask == 0 or code >= self.held.len) return;
+        var values = self.modifiers;
+        if (pressed) {
+            self.held[code] = mask;
+            var xkb_state: xkb.State = .{ .keymap = map };
+            xkb_state.update(values[0], values[1], values[2], values[3]);
+            const sym = xkb_state.keysym(code + 8);
+            if (sym == keysyms.Caps_Lock or sym == keysyms.Num_Lock) values[2] ^= mask;
+        } else self.held[code] = 0;
+        var depressed: u32 = 0;
+        for (self.held) |held| depressed |= held;
+        values[0] = depressed;
+        if (std.mem.eql(u32, &values, &self.modifiers)) return;
+        self.setModifiers(keymap, values);
     }
 
     fn setModifiers(self: *Seat, keymap: Keymap, values: [4]u32) void {
@@ -1593,10 +1717,18 @@ const Seat = struct {
         };
     }
 
+    /// Keeps the pointer on the output layout.
+    fn clampPointer(self: *Seat) void {
+        const b = self.comp.layoutBox();
+        self.pointer_x = std.math.clamp(self.pointer_x, @as(f64, @floatFromInt(b.x)), @as(f64, @floatFromInt(b.x + b.width)) - 1);
+        self.pointer_y = std.math.clamp(self.pointer_y, @as(f64, @floatFromInt(b.y)), @as(f64, @floatFromInt(b.y + b.height)) - 1);
+    }
+
     fn moveTo(self: *Seat, x: f64, y: f64, time: u32) void {
-        const output = self.comp.output;
-        self.pointer_x = std.math.clamp(x, 0, @as(f64, @floatFromInt(output.logicalWidth())) - 1);
-        self.pointer_y = std.math.clamp(y, 0, @as(f64, @floatFromInt(output.logicalHeight())) - 1);
+        self.comp.activity();
+        self.pointer_x = x;
+        self.pointer_y = y;
+        self.clampPointer();
         // An implicit grab keeps events on the pressed surface until release.
         if (self.buttons == 0) self.updatePointerFocus();
         const surface = self.pointer_focus orelse return;
@@ -1606,6 +1738,7 @@ const Seat = struct {
     }
 
     fn button(self: *Seat, time: u32, code: u32, pressed: bool) void {
+        self.comp.activity();
         if (pressed) {
             if (self.buttons == 0) {
                 self.updatePointerFocus();
@@ -1622,6 +1755,7 @@ const Seat = struct {
     }
 
     fn axis(self: *Seat, time: u32, which: u32, value: f64, discrete: ?i32) void {
+        self.comp.activity();
         const surface = self.pointer_focus orelse return;
         for (self.pointers.items) |pointer| {
             if (pointer.client() != surface.resource.client()) continue;
@@ -1686,13 +1820,13 @@ const VirtualPointer = struct {
 
     fn handle(self: *VirtualPointer, _: ws.zwlr_virtual_pointer_v1, request: ws.zwlr_virtual_pointer_v1.Request) void {
         const seat = &self.comp.seat;
-        const output = self.comp.output;
+        const area = self.comp.layoutBox();
         switch (request) {
             .motion => |args| seat.moveTo(seat.pointer_x + args.dx, seat.pointer_y + args.dy, args.time),
             .motion_absolute => |args| {
                 if (args.x_extent == 0 or args.y_extent == 0) return;
-                const x = @as(f64, @floatFromInt(args.x)) * @as(f64, @floatFromInt(output.logicalWidth())) / @as(f64, @floatFromInt(args.x_extent));
-                const y = @as(f64, @floatFromInt(args.y)) * @as(f64, @floatFromInt(output.logicalHeight())) / @as(f64, @floatFromInt(args.y_extent));
+                const x = @as(f64, @floatFromInt(area.x)) + @as(f64, @floatFromInt(args.x)) * @as(f64, @floatFromInt(area.width)) / @as(f64, @floatFromInt(args.x_extent));
+                const y = @as(f64, @floatFromInt(area.y)) + @as(f64, @floatFromInt(args.y)) * @as(f64, @floatFromInt(area.height)) / @as(f64, @floatFromInt(args.y_extent));
                 seat.moveTo(x, y, args.time);
             },
             .button => |args| seat.button(args.time, args.button, args.state != 0),
@@ -1739,7 +1873,7 @@ const ForeignHandle = struct {
         if (full) {
             self.resource.sendTitle(toplevel.title);
             self.resource.sendAppId(toplevel.app_id);
-            for (self.comp.output.resources.items) |output| if (output.client() == self.resource.client()) self.resource.sendOutputEnter(output);
+            if (toplevel.output) |on| for (on.resources.items) |output| if (output.client() == self.resource.client()) self.resource.sendOutputEnter(output);
         }
         var states: [1]u32 = undefined;
         var count: usize = 0;
@@ -1770,6 +1904,7 @@ const ForeignHandle = struct {
 /// A zwlr_screencopy_frame_v1: one copy of the output, or a region of it, into a client buffer.
 const CaptureFrame = struct {
     comp: *Compositor,
+    output: *Output,
     rect: Rect,
     used: bool = false,
 
@@ -1790,12 +1925,8 @@ const CaptureFrame = struct {
         if (buffer.width != width or buffer.height != height or buffer.stride < width * 4 or (buffer.format != ws.wl_shm.Format.xrgb8888 and buffer.format != ws.wl_shm.Format.argb8888))
             return resource.postError(ws.zwlr_screencopy_frame_v1.Error.invalid_buffer, "buffer does not match the frame", .{});
         // Show pending commits, as the next frame would.
-        const output = self.comp.output;
-        if (output.scheduled) {
-            output.scheduled = false;
-            wire.Loop.arm(output.repaint, 0);
-            output.render();
-        }
+        const output = self.output;
+        output.flush();
         const size = buffer.offset + buffer.stride * height;
         const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, buffer.pool.fd, 0) orelse return resource.sendFailed();
         if (memory == libc.MAP_FAILED) return resource.sendFailed();
@@ -1818,11 +1949,16 @@ const CaptureFrame = struct {
         self.comp.a.destroy(self);
     }
 
-    fn start(comp: *Compositor, resource: ws.zwlr_screencopy_frame_v1, region: ?Rect) void {
-        const output = comp.output;
+    fn start(comp: *Compositor, resource: ws.zwlr_screencopy_frame_v1, output_resource: ws.wl_output, logical: ?Rect) void {
+        const output = comp.findOutput(output_resource) orelse {
+            resource.setHandler(Compositor, comp, null, null);
+            return resource.sendFailed();
+        };
         const full: Rect = .{ .width = @intCast(output.width), .height = @intCast(output.height) };
         var rect = full;
-        if (region) |r| {
+        if (logical) |l| {
+            // Regions are logical; the frame holds output pixels.
+            const r: Rect = .{ .x = @intFromFloat(@floor(@as(f64, @floatFromInt(l.x)) * output.scale)), .y = @intFromFloat(@floor(@as(f64, @floatFromInt(l.y)) * output.scale)), .width = @intFromFloat(@ceil(@as(f64, @floatFromInt(l.width)) * output.scale)), .height = @intFromFloat(@ceil(@as(f64, @floatFromInt(l.height)) * output.scale)) };
             // Clip the requested region to the output.
             const x0 = std.math.clamp(r.x, 0, full.width);
             const y0 = std.math.clamp(r.y, 0, full.height);
@@ -1830,7 +1966,7 @@ const CaptureFrame = struct {
             const y1 = std.math.clamp(r.y +| r.height, 0, full.height);
             rect = .{ .x = x0, .y = y0, .width = x1 - x0, .height = y1 - y0 };
         }
-        const self = create(CaptureFrame, comp, .{ .comp = comp, .rect = rect }) orelse return;
+        const self = create(CaptureFrame, comp, .{ .comp = comp, .output = output, .rect = rect }) orelse return;
         resource.setHandler(CaptureFrame, self, handle, destroyed);
         if (rect.width <= 0 or rect.height <= 0) return resource.sendFailed();
         resource.sendBuffer(ws.wl_shm.Format.xrgb8888, @intCast(rect.width), @intCast(rect.height), @intCast(rect.width * 4));
@@ -1840,58 +1976,88 @@ const CaptureFrame = struct {
 
 // ------------------------------------------------------------------ Output management
 
-/// One zwlr_output_manager_v1 and the head and mode it was shown for the output.
+/// One zwlr_output_manager_v1, with the head and current mode it was shown per output.
 const HeadManager = struct {
     comp: *Compositor,
     manager: ws.zwlr_output_manager_v1,
-    head: ?ws.zwlr_output_head_v1 = null,
-    mode: ?ws.zwlr_output_mode_v1 = null,
+    heads: std.ArrayList(*Head) = .empty,
 
-    fn announce(self: *HeadManager) void {
-        const output = self.comp.output;
-        const head = self.manager.sendHead();
-        if (!head.alive()) return;
-        head.setHandler(HeadManager, self, headRequest, headGone);
-        self.head = head;
-        head.sendName(output.name);
-        head.sendDescription("Headless output");
-        head.sendPhysicalSize(0, 0);
-        const mode = head.sendMode();
-        if (mode.alive()) {
-            mode.setHandler(HeadManager, self, modeRequest, modeGone);
+    const Head = struct {
+        owner: ?*HeadManager,
+        output: *Output,
+        head: ?ws.zwlr_output_head_v1 = null,
+        mode: ?ws.zwlr_output_mode_v1 = null,
+        /// The mode size last announced; a custom size gets a new mode object.
+        size: [2]u32 = .{ 0, 0 },
+
+        fn request(_: *Head, _: ws.zwlr_output_head_v1, _: ws.zwlr_output_head_v1.Request) void {}
+        fn modeRequest(_: *Head, _: ws.zwlr_output_mode_v1, _: ws.zwlr_output_mode_v1.Request) void {}
+
+        fn gone(self: *Head, _: ws.zwlr_output_head_v1) void {
+            self.head = null;
+            if (self.owner) |owner| removeItem(*Head, &owner.heads, self);
+            if (self.mode == null) std.heap.c_allocator.destroy(self);
+        }
+
+        fn modeGone(self: *Head, _: ws.zwlr_output_mode_v1) void {
+            self.mode = null;
+            if (self.head == null) std.heap.c_allocator.destroy(self);
+        }
+
+        /// Announces the current mode, as a new mode object when its size changed.
+        fn announceMode(self: *Head) void {
+            const head = self.head orelse return;
+            const output = self.output;
+            if (self.mode != null and self.size[0] == output.width and self.size[1] == output.height) return;
+            if (self.mode) |old| {
+                old.sendFinished();
+                old.setHandler(Head, self, null, null);
+                self.mode = null;
+            }
+            const mode = head.sendMode();
+            if (!mode.alive()) return;
+            mode.setHandler(Head, self, modeRequest, modeGone);
             self.mode = mode;
+            self.size = .{ output.width, output.height };
             mode.sendSize(@intCast(output.width), @intCast(output.height));
             mode.sendRefresh(60000);
             mode.sendPreferred();
         }
-        self.describe();
-        if (head.version() >= 2) {
-            head.sendMake("Headless");
-            head.sendModel("Headless output");
+
+        /// The state that configurations change.
+        fn describe(self: *Head) void {
+            const head = self.head orelse return;
+            const output = self.output;
+            head.sendEnabled(@intFromBool(output.enabled));
+            if (!output.enabled) return;
+            self.announceMode();
+            if (self.mode) |current| head.sendCurrentMode(current);
+            head.sendPosition(output.x, output.y);
+            head.sendTransform(ws.wl_output.Transform.normal);
+            head.sendScale(output.scale);
         }
-        self.manager.sendDone(self.comp.output_serial);
+    };
+
+    fn announce(self: *HeadManager, output: *Output) void {
+        const resource = self.manager.sendHead();
+        if (!resource.alive()) return;
+        const head = std.heap.c_allocator.create(Head) catch return resource.destroyResource();
+        head.* = .{ .owner = self, .output = output, .head = resource };
+        resource.setHandler(Head, head, Head.request, Head.gone);
+        self.heads.append(self.comp.a, head) catch {};
+        resource.sendName(output.name());
+        resource.sendDescription("Headless output");
+        resource.sendPhysicalSize(0, 0);
+        head.describe();
+        if (resource.version() >= 2) {
+            resource.sendMake("Headless");
+            resource.sendModel("Headless output");
+        }
     }
 
-    /// The state that configurations change.
     fn describe(self: *HeadManager) void {
-        const head = self.head orelse return;
-        head.sendEnabled(@intFromBool(self.comp.output.enabled));
-        if (!self.comp.output.enabled) return;
-        if (self.mode) |current| head.sendCurrentMode(current);
-        head.sendPosition(0, 0);
-        head.sendTransform(ws.wl_output.Transform.normal);
-        head.sendScale(self.comp.output.scale);
-    }
-
-    fn headRequest(_: *HeadManager, _: ws.zwlr_output_head_v1, _: ws.zwlr_output_head_v1.Request) void {}
-    fn modeRequest(_: *HeadManager, _: ws.zwlr_output_mode_v1, _: ws.zwlr_output_mode_v1.Request) void {}
-
-    fn headGone(self: *HeadManager, _: ws.zwlr_output_head_v1) void {
-        self.head = null;
-    }
-
-    fn modeGone(self: *HeadManager, _: ws.zwlr_output_mode_v1) void {
-        self.mode = null;
+        for (self.heads.items) |head| head.describe();
+        self.manager.sendDone(self.comp.output_serial);
     }
 
     fn request(self: *HeadManager, resource: ws.zwlr_output_manager_v1, message: ws.zwlr_output_manager_v1.Request) void {
@@ -1908,6 +2074,8 @@ const HeadManager = struct {
     }
 
     fn destroyed(self: *HeadManager, _: ws.zwlr_output_manager_v1) void {
+        for (self.heads.items) |head| head.owner = null;
+        self.heads.deinit(self.comp.a);
         removeItem(*HeadManager, &self.comp.head_managers, self);
         self.comp.a.destroy(self);
     }
@@ -1918,24 +2086,36 @@ const OutputConfig = struct {
     comp: *Compositor,
     serial: u32,
     used: bool = false,
-    enabled: bool = true,
-    scale: ?f64 = null,
-    head: ?*ConfigHead = null,
+    heads: std.ArrayList(*ConfigHead) = .empty,
+    disabled: std.ArrayList(*Output) = .empty,
 
     fn handle(self: *OutputConfig, resource: ws.zwlr_output_configuration_v1, request: ws.zwlr_output_configuration_v1.Request) void {
+        const a = self.comp.a;
         switch (request) {
             .enable_head => |args| {
                 if (self.used) return resource.postError(ws.zwlr_output_configuration_v1.Error.already_used, "configuration already used", .{});
-                const head = std.heap.c_allocator.create(ConfigHead) catch return;
-                head.* = .{ .config = self };
-                self.head = head;
-                args.id.setHandler(ConfigHead, head, ConfigHead.handle, ConfigHead.destroyed);
+                const head = args.head.data(HeadManager.Head) orelse return args.id.setHandler(OutputConfig, self, null, null);
+                if (self.configures(head.output)) return resource.postError(ws.zwlr_output_configuration_v1.Error.already_configured_head, "head already configured", .{});
+                const config_head = a.create(ConfigHead) catch return;
+                config_head.* = .{ .comp = self.comp, .config = self, .output = head.output };
+                self.heads.append(a, config_head) catch {};
+                args.id.setHandler(ConfigHead, config_head, ConfigHead.handle, ConfigHead.destroyed);
             },
-            .disable_head => self.enabled = false,
+            .disable_head => |args| {
+                const head = args.head.data(HeadManager.Head) orelse return;
+                if (self.configures(head.output)) return resource.postError(ws.zwlr_output_configuration_v1.Error.already_configured_head, "head already configured", .{});
+                self.disabled.append(a, head.output) catch {};
+            },
             .apply => self.finish(resource, true),
             .@"test" => self.finish(resource, false),
             .destroy => {},
         }
+    }
+
+    fn configures(self: *OutputConfig, output: *Output) bool {
+        for (self.heads.items) |head| if (head.output == output) return true;
+        for (self.disabled.items) |disabled| if (disabled == output) return true;
+        return false;
     }
 
     fn finish(self: *OutputConfig, resource: ws.zwlr_output_configuration_v1, apply: bool) void {
@@ -1943,37 +2123,55 @@ const OutputConfig = struct {
         self.used = true;
         const comp = self.comp;
         if (self.serial != comp.output_serial) return resource.sendCancelled();
-        // The only output cannot be disabled, and the renderer composites at integer scales.
-        const scale = self.scale orelse comp.output.scale;
-        if (!std.math.isFinite(scale) or scale < 0.5 or scale > 4) return resource.sendFailed();
+        for (self.heads.items) |head| {
+            const scale = head.scale orelse head.output.scale;
+            if (!std.math.isFinite(scale) or scale < 0.5 or scale > 4) return resource.sendFailed();
+            if (head.size) |size| if (size[0] == 0 or size[1] == 0 or size[0] > 8192 or size[1] > 8192) return resource.sendFailed();
+        }
         if (apply) {
-            comp.setOutputEnabled(self.enabled);
-            if (self.enabled) comp.setOutputScale(scale);
+            for (self.disabled.items) |output| comp.setOutputEnabled(output, false);
+            for (self.heads.items) |head| {
+                comp.setOutputEnabled(head.output, true);
+                head.output.configure(head.scale orelse head.output.scale, head.size, head.position);
+            }
             comp.outputChanged();
         }
         resource.sendSucceeded();
     }
 
     fn destroyed(self: *OutputConfig, _: ws.zwlr_output_configuration_v1) void {
-        if (self.head) |head| head.config = null;
+        for (self.heads.items) |head| head.config = null;
+        self.heads.deinit(self.comp.a);
+        self.disabled.deinit(self.comp.a);
         self.comp.a.destroy(self);
     }
 };
 
 const ConfigHead = struct {
+    comp: *Compositor,
     config: ?*OutputConfig,
+    output: *Output,
+    scale: ?f64 = null,
+    size: ?[2]u32 = null,
+    position: ?[2]i32 = null,
 
     fn handle(self: *ConfigHead, _: ws.zwlr_output_configuration_head_v1, request: ws.zwlr_output_configuration_head_v1.Request) void {
-        const config = self.config orelse return;
         switch (request) {
-            .set_scale => |args| config.scale = args.scale,
-            else => {},
+            .set_scale => |args| self.scale = args.scale,
+            .set_mode => |args| if (args.mode.data(HeadManager.Head)) |head| {
+                self.size = head.size;
+            },
+            .set_custom_mode => |args| if (args.width > 0 and args.height > 0) {
+                self.size = .{ @intCast(args.width), @intCast(args.height) };
+            },
+            .set_position => |args| self.position = .{ args.x, args.y },
+            .set_transform, .set_adaptive_sync => {},
         }
     }
 
     fn destroyed(self: *ConfigHead, _: ws.zwlr_output_configuration_head_v1) void {
-        if (self.config) |config| config.head = null;
-        std.heap.c_allocator.destroy(self);
+        if (self.config) |config| removeItem(*ConfigHead, &config.heads, self);
+        self.comp.a.destroy(self);
     }
 };
 
@@ -2033,7 +2231,7 @@ const CaptureSession = struct {
     /// Window geometry in output pixels.
     fn size(toplevel: *Toplevel) [2]u32 {
         const geometry = if (toplevel.xdg) |xdg| xdg.windowGeometry() else Rect{};
-        const scale = toplevel.comp.output.scale;
+        const scale = toplevel.scale();
         const width: u32 = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(geometry.width)) * scale)));
         const height: u32 = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(geometry.height)) * scale)));
         return .{ width, height };
@@ -2211,8 +2409,9 @@ const Lock = struct {
                 const surface = args.surface.data(Surface) orelse return;
                 if (surface.role != .none) return resource.postError(ws.ext_session_lock_v1.Error.role, "surface already has a role", .{});
                 if (surface.mapped()) return resource.postError(ws.ext_session_lock_v1.Error.already_constructed, "surface already has a buffer", .{});
-                if (self.surfaces.items.len > 0) return resource.postError(ws.ext_session_lock_v1.Error.duplicate_output, "output already has a lock surface", .{});
-                const lock_surface = create(LockSurface, comp, .{ .comp = comp, .lock = self, .resource = args.id, .surface = surface }) orelse return;
+                const output = comp.findOutput(args.output) orelse return args.id.setHandler(Compositor, comp, null, null);
+                for (self.surfaces.items) |existing| if (existing.output == output) return resource.postError(ws.ext_session_lock_v1.Error.duplicate_output, "output already has a lock surface", .{});
+                const lock_surface = create(LockSurface, comp, .{ .comp = comp, .output = output, .lock = self, .resource = args.id, .surface = surface }) orelse return;
                 surface.role = .lock;
                 surface.lock_surface = lock_surface;
                 self.surfaces.append(comp.a, lock_surface) catch {};
@@ -2223,6 +2422,7 @@ const Lock = struct {
                 if (!self.acknowledged) return resource.postError(ws.ext_session_lock_v1.Error.invalid_unlock, "unlock before locked", .{});
                 self.unlocked = true;
                 comp.locked = false;
+                comp.updateInhibition();
                 comp.refocus();
                 comp.updateKeyboardFocus();
                 comp.scheduleRepaint();
@@ -2233,7 +2433,8 @@ const Lock = struct {
 
     /// Sends locked once an output has shown an opaque locked frame.
     fn acknowledge(self: *Lock) void {
-        if (self.acknowledged or self.comp.output.lock_serial != self.comp.lock_serial) return;
+        if (self.acknowledged) return;
+        for (self.comp.outputs.items) |output| if (output.enabled and output.lock_serial != self.comp.lock_serial) return;
         self.acknowledged = true;
         self.resource.sendLocked();
     }
@@ -2257,12 +2458,13 @@ const Lock = struct {
 const LockSurface = struct {
     comp: *Compositor,
     lock: ?*Lock,
+    output: *Output,
     resource: ws.ext_session_lock_surface_v1,
     surface: ?*Surface,
 
     fn configure(self: *LockSurface) void {
         const lock = self.lock orelse return;
-        const output = lock.comp.output;
+        const output = self.output;
         self.resource.sendConfigure(lock.comp.server.nextSerial(), @intCast(output.logicalWidth()), @intCast(output.logicalHeight()));
     }
 
@@ -2288,6 +2490,58 @@ const LockSurface = struct {
         self.comp.updateKeyboardFocus();
         self.comp.scheduleRepaint();
         self.comp.a.destroy(self);
+    }
+};
+
+// ------------------------------------------------------------------ Idle
+
+/// An ext_idle_notification_v1 with its own timer, as wlroots' idle notifier.
+const IdleNotification = struct {
+    comp: *Compositor,
+    resource: ws.ext_idle_notification_v1,
+    timeout: u32,
+    timer: *wire.Loop.Source,
+    /// Input idle notifications (version 2) ignore idle inhibitors.
+    input_only: bool,
+    idle: bool = false,
+
+    fn arm(self: *IdleNotification) void {
+        const inhibited = self.comp.idle_inhibited and !self.input_only;
+        wire.Loop.arm(self.timer, if (inhibited) 0 else @max(1, self.timeout));
+    }
+
+    fn expired(data: ?*anyopaque, _: u32) void {
+        const self: *IdleNotification = @ptrCast(@alignCast(data));
+        if (self.idle or (self.comp.idle_inhibited and !self.input_only)) return;
+        self.idle = true;
+        self.resource.sendIdled();
+    }
+
+    /// User input: idled notifications resume, and every timer starts again.
+    fn activity(self: *IdleNotification) void {
+        if (self.idle) {
+            self.idle = false;
+            self.resource.sendResumed();
+        }
+        self.arm();
+    }
+
+    fn destroyed(self: *IdleNotification, _: ws.ext_idle_notification_v1) void {
+        removeItem(*IdleNotification, &self.comp.idle_notifications, self);
+        self.comp.server.loop.remove(self.timer);
+        self.comp.a.destroy(self);
+    }
+};
+
+const IdleInhibitor = struct {
+    comp: *Compositor,
+    surface: ?*Surface,
+
+    fn destroyed(self: *IdleInhibitor, _: ws.zwp_idle_inhibitor_v1) void {
+        const comp = self.comp;
+        removeItem(*IdleInhibitor, &comp.idle_inhibitors, self);
+        comp.a.destroy(self);
+        comp.updateInhibition();
     }
 };
 
@@ -2473,7 +2727,7 @@ const DataDevice = struct {
 const Compositor = struct {
     a: std.mem.Allocator,
     server: *wire.Server,
-    output: *Output = undefined,
+    outputs: std.ArrayList(*Output) = .empty,
     seat: Seat = undefined,
     surfaces: std.ArrayList(*Surface) = .empty,
     /// Mapped toplevels, bottom to top.
@@ -2491,14 +2745,15 @@ const Compositor = struct {
     next_window: u64 = 0,
     locked: bool = false,
     lock: ?*Lock = null,
+    idle_notifications: std.ArrayList(*IdleNotification) = .empty,
+    idle_inhibitors: std.ArrayList(*IdleInhibitor) = .empty,
+    idle_inhibited: bool = false,
     lock_serial: u32 = 0,
     toplevel_lists: std.ArrayList(ws.ext_foreign_toplevel_list_v1) = .empty,
     overviews: std.ArrayList(*OverviewControl) = .empty,
     layers: std.ArrayList(*Layer) = .empty,
     /// A layer surface given keyboard focus by a click (on-demand interactivity).
     focused_layer: ?*Layer = null,
-    /// The output area left after layer surfaces' exclusive zones.
-    usable: Rect = .{},
     selection: ?*DataSource = null,
     data_devices: std.ArrayList(*DataDevice) = .empty,
     foreign_managers: std.ArrayList(ws.zwlr_foreign_toplevel_manager_v1) = .empty,
@@ -2507,21 +2762,20 @@ const Compositor = struct {
     output_serial: u32 = 1,
     background: u32 = 0xff303030,
 
-    fn init(self: *Compositor, width: u32, height: u32) !void {
-        const output = try self.a.create(Output);
-        errdefer self.a.destroy(output);
-        output.* = .{ .comp = self, .width = width, .height = height, .pixels = try self.a.alloc(u32, @as(usize, width) * height) };
-        errdefer self.a.free(output.pixels);
-        output.repaint = try self.server.loop.timer(output, &Output.repaintReady);
-        self.output = output;
-        self.usable = .{ .width = @intCast(width), .height = @intCast(height) };
+    /// Creates `count` headless outputs side by side, as wlroots lays them out.
+    fn init(self: *Compositor, width: u32, height: u32, count: usize) !void {
+        for (0..count) |index| {
+            const output = try Output.create(self, index, width, height);
+            output.x = @intCast(index * width);
+            output.usable = output.box();
+            try self.outputs.append(self.a, output);
+        }
         self.seat = .{ .comp = self };
         try self.seat.init();
         const server = self.server;
         _ = try server.createGlobal(&ws.wl_compositor.interface, 6, self, &bindCompositor);
         _ = try server.createGlobal(&ws.wl_subcompositor.interface, 1, self, &bindSubcompositor);
         _ = try server.createGlobal(&ws.wl_shm.interface, 2, self, &bindShm);
-        output.global = try server.createGlobal(&ws.wl_output.interface, 4, output, &Output.bind);
         _ = try server.createGlobal(&ws.xdg_wm_base.interface, 6, self, &bindWmBase);
         _ = try server.createGlobal(&ws.zxdg_output_manager_v1.interface, 3, self, &bindOutputManager);
         _ = try server.createGlobal(&ws.wl_seat.interface, 9, &self.seat, &Seat.bind);
@@ -2541,7 +2795,9 @@ const Compositor = struct {
         _ = try server.createGlobal(&ws.wp_viewporter.interface, 1, self, &bindViewporter);
         _ = try server.createGlobal(&ws.ext_session_lock_manager_v1.interface, 1, self, &bindLockManager);
         _ = try server.createGlobal(&ws.wp_fractional_scale_manager_v1.interface, 1, self, &bindFractionalScale);
-        output.render();
+        _ = try server.createGlobal(&ws.ext_idle_notifier_v1.interface, 2, self, &bindIdleNotifier);
+        _ = try server.createGlobal(&ws.zwp_idle_inhibit_manager_v1.interface, 1, self, &bindIdleInhibit);
+        for (self.outputs.items) |output| output.render();
     }
 
     fn deinit(self: *Compositor) void {
@@ -2550,24 +2806,61 @@ const Compositor = struct {
         self.toplevels.deinit(self.a);
         self.recent.deinit(self.a);
         self.toplevel_lists.deinit(self.a);
+        self.idle_notifications.deinit(self.a);
+        self.idle_inhibitors.deinit(self.a);
         self.overviews.deinit(self.a);
         self.popups.deinit(self.a);
         self.layers.deinit(self.a);
         self.data_devices.deinit(self.a);
         self.foreign_managers.deinit(self.a);
         self.head_managers.deinit(self.a);
-        self.output.resources.deinit(self.a);
-        self.output.xdg_outputs.deinit(self.a);
-        self.a.free(self.output.pixels);
-        self.a.destroy(self.output);
+        for (self.outputs.items) |output| output.destroy();
+        self.outputs.deinit(self.a);
     }
 
     fn scheduleRepaint(self: *Compositor) void {
-        const output = self.output;
-        if (output.scheduled) return;
-        output.scheduled = true;
-        // Composite at most once per 60 Hz frame, batching commits that arrive together.
-        wire.Loop.arm(output.repaint, 16);
+        for (self.outputs.items) |output| output.scheduleRepaint();
+    }
+
+    /// The first enabled output, where windows go when no other output fits.
+    fn primary(self: *Compositor) ?*Output {
+        for (self.outputs.items) |output| if (output.enabled) return output;
+        return null;
+    }
+
+    fn outputAt(self: *Compositor, x: f64, y: f64) ?*Output {
+        for (self.outputs.items) |output| if (output.enabled and output.contains(x, y)) return output;
+        return null;
+    }
+
+    /// The output under the pointer, where new windows and panels appear.
+    fn focusedOutput(self: *Compositor) ?*Output {
+        return self.outputAt(self.seat.pointer_x, self.seat.pointer_y) orelse self.primary();
+    }
+
+    /// The bounding box of every enabled output.
+    fn layoutBox(self: *Compositor) Rect {
+        var result: ?Rect = null;
+        for (self.outputs.items) |output| {
+            if (!output.enabled) continue;
+            const b = output.box();
+            if (result) |*r| {
+                const x1 = @max(r.x + r.width, b.x + b.width);
+                const y1 = @max(r.y + r.height, b.y + b.height);
+                r.x = @min(r.x, b.x);
+                r.y = @min(r.y, b.y);
+                r.width = x1 - r.x;
+                r.height = y1 - r.y;
+            } else result = b;
+        }
+        return result orelse .{ .width = 1, .height = 1 };
+    }
+
+    fn findOutput(self: *Compositor, resource: ?ws.wl_output) ?*Output {
+        const value = resource orelse return null;
+        const output = value.data(Output) orelse return null;
+        for (self.outputs.items) |candidate| if (candidate == output) return output;
+        return null;
     }
 
     /// Offers the selection to the newly focused client, as wlroots does on focus.
@@ -2616,6 +2909,7 @@ const Compositor = struct {
     fn switchWorkspace(self: *Compositor, index: u32) void {
         if (index >= workspace_count) return;
         self.workspace = index;
+        self.updateInhibition();
         self.refocus();
         self.broadcastWorkspaces();
         self.scheduleRepaint();
@@ -2650,7 +2944,7 @@ const Compositor = struct {
     /// Handles a key before clients see it; returns whether it was consumed.
     fn shortcut(self: *Compositor, sym: u32, mods: Mods, pressed: bool) bool {
         if (self.locked) return false;
-        if (sym == key.Super_L) {
+        if (sym == keysyms.Super_L) {
             if (pressed) self.super_alone = true else {
                 if (self.super_alone) launch(self.a, "overview");
                 self.super_alone = false;
@@ -2663,40 +2957,40 @@ const Compositor = struct {
     }
 
     fn binding(self: *Compositor, sym: u32, mods: Mods) bool {
-        if ((mods.logo or mods.alt) and (sym == key.Tab or sym == key.ISO_Left_Tab)) {
+        if ((mods.logo or mods.alt) and (sym == keysyms.Tab or sym == keysyms.ISO_Left_Tab)) {
             self.cycle(mods.shift, false);
             return true;
         }
-        if ((mods.logo or mods.alt) and (sym == key.grave or sym == key.asciitilde)) {
+        if ((mods.logo or mods.alt) and (sym == keysyms.grave or sym == keysyms.asciitilde)) {
             self.cycle(mods.shift, true);
             return true;
         }
         if (self.cycling) {
             switch (sym) {
-                key.Escape => self.finishCycle(true),
-                key.Return, key.KP_Enter => self.finishCycle(false),
-                key.Down => self.cycle_app = true,
-                key.Up => self.cycle_app = false,
-                key.Left, key.Right => self.cycle(sym == key.Left, self.cycle_app),
+                keysyms.Escape => self.finishCycle(true),
+                keysyms.Return, keysyms.KP_Enter => self.finishCycle(false),
+                keysyms.Down => self.cycle_app = true,
+                keysyms.Up => self.cycle_app = false,
+                keysyms.Left, keysyms.Right => self.cycle(sym == keysyms.Left, self.cycle_app),
                 else => return false,
             }
             return true;
         }
-        if (mods.alt and sym == key.F4) {
+        if (mods.alt and sym == keysyms.F4) {
             if (self.focused) |toplevel| toplevel.resource.sendClose();
             return true;
         }
         if (mods.logo) {
             switch (sym) {
-                key.Return => launchTerminal(self.a),
-                key.d, key.a => launch(self.a, "overview"),
-                key.l => launch(self.a, "lock --daemonize"),
-                key.e, key.E => {
+                keysyms.Return => launchTerminal(self.a),
+                keysyms.d, keysyms.a => launch(self.a, "overview"),
+                keysyms.l => launch(self.a, "lock --daemonize"),
+                keysyms.e, keysyms.E => {
                     if (!mods.shift) return false;
                     self.server.quit = true;
                 },
-                key.Left, key.Right, key.Up, key.Down => if (self.focused) |toplevel| {
-                    toplevel.tile = if (sym == key.Left) .left else if (sym == key.Right) .right else .none;
+                keysyms.Left, keysyms.Right, keysyms.Up, keysyms.Down => if (self.focused) |toplevel| {
+                    toplevel.tile = if (sym == keysyms.Left) .left else if (sym == keysyms.Right) .right else .none;
                     toplevel.maximized = true;
                     toplevel.reconfigure(false);
                 },
@@ -2705,13 +2999,13 @@ const Compositor = struct {
             return true;
         }
         switch (sym) {
-            key.XF86AudioRaiseVolume => launch(self.a, "volume up"),
-            key.XF86AudioLowerVolume => launch(self.a, "volume down"),
-            key.XF86AudioMute => launch(self.a, "volume mute"),
-            key.XF86AudioMicMute => launch(self.a, "microphone mute"),
-            key.XF86MonBrightnessUp => launch(self.a, "brightness up"),
-            key.XF86MonBrightnessDown => launch(self.a, "brightness down"),
-            key.Print => launch(self.a, "screenshot"),
+            keysyms.XF86AudioRaiseVolume => launch(self.a, "volume up"),
+            keysyms.XF86AudioLowerVolume => launch(self.a, "volume down"),
+            keysyms.XF86AudioMute => launch(self.a, "volume mute"),
+            keysyms.XF86AudioMicMute => launch(self.a, "microphone mute"),
+            keysyms.XF86MonBrightnessUp => launch(self.a, "brightness up"),
+            keysyms.XF86MonBrightnessDown => launch(self.a, "brightness down"),
+            keysyms.Print => launch(self.a, "screenshot"),
             else => return false,
         }
         return true;
@@ -2790,26 +3084,29 @@ const Compositor = struct {
 
     /// Lays out layer surfaces: exclusive zones first, from the overlay down.
     fn arrange(self: *Compositor) void {
-        if (!self.output.enabled) return;
-        const full: Rect = .{ .width = self.output.logicalWidth(), .height = self.output.logicalHeight() };
+        for (self.outputs.items) |output| if (output.enabled) self.arrangeOutput(output);
+        for (self.layers.items) |layer| if (layer.initial_sent and !layer.closed) layer.configure();
+        for (self.toplevels.items) |toplevel| toplevel.reconfigure(false);
+        self.scheduleRepaint();
+    }
+
+    fn arrangeOutput(self: *Compositor, output: *Output) void {
+        const full = output.box();
         var usable = full;
         var level: u32 = 4;
         while (level > 0) {
             level -= 1;
             for (self.layers.items) |layer| {
-                if (layer.current.layer != level or !layer.initial_sent or layer.closed or layer.current.zone <= 0) continue;
+                if (layer.output != output or layer.current.layer != level or !layer.initial_sent or layer.closed or layer.current.zone <= 0) continue;
                 layer.rect = layer.place(usable);
                 layer.exclude(&usable);
             }
         }
         for (self.layers.items) |layer| {
-            if (!layer.initial_sent or layer.closed or layer.current.zone > 0) continue;
+            if (layer.output != output or !layer.initial_sent or layer.closed or layer.current.zone > 0) continue;
             layer.rect = layer.place(if (layer.current.zone < 0) full else usable);
         }
-        self.usable = usable;
-        for (self.layers.items) |layer| if (layer.initial_sent and !layer.closed) layer.configure();
-        for (self.toplevels.items) |toplevel| toplevel.reconfigure(false);
-        self.scheduleRepaint();
+        output.usable = usable;
     }
 
     /// Mapped surfaces bottom to top with their positions on the output.
@@ -2825,7 +3122,7 @@ const Compositor = struct {
             }
         }.f;
         if (self.locked) {
-            if (self.lock) |lock| for (lock.surfaces.items) |lock_surface| add(out, &count, lock_surface.surface, 0, 0);
+            if (self.lock) |lock| for (lock.surfaces.items) |lock_surface| add(out, &count, lock_surface.surface, lock_surface.output.x, lock_surface.output.y);
             return out[0..count];
         }
         for ([_]u32{ 0, 1 }) |level| for (self.layers.items) |layer| {
@@ -3053,14 +3350,14 @@ const Compositor = struct {
         switch (request) {
             .destroy => {},
             .get_xdg_output => |args| {
-                const output = self.output;
                 const xdg_output = args.id;
+                const output = self.findOutput(args.output) orelse return xdg_output.setHandler(Compositor, self, null, null);
                 xdg_output.setHandler(Output, output, null, Output.xdgOutputGone);
                 output.xdg_outputs.append(self.a, xdg_output) catch {};
-                xdg_output.sendLogicalPosition(0, 0);
+                xdg_output.sendLogicalPosition(output.x, output.y);
                 xdg_output.sendLogicalSize(output.logicalWidth(), output.logicalHeight());
                 if (xdg_output.version() >= 2) {
-                    xdg_output.sendName(output.name);
+                    xdg_output.sendName(output.name());
                     xdg_output.sendDescription("Headless output");
                 }
                 if (xdg_output.version() < 3) xdg_output.sendDone();
@@ -3085,7 +3382,13 @@ const Compositor = struct {
                 if (surface.mapped()) return resource.postError(ws.zwlr_layer_shell_v1.Error.already_constructed, "surface already has a buffer", .{});
                 const namespace = self.a.dupe(u8, args.namespace) catch return;
                 const config: Layer.Config = .{ .layer = args.layer };
-                const layer = create(Layer, self, .{ .comp = self, .resource = args.id, .surface = surface, .namespace = namespace, .pending = config, .current = config }) orelse {
+                // A panel asks for an output, or gets the one under the pointer.
+                const output = self.findOutput(args.output) orelse self.focusedOutput() orelse {
+                    self.a.free(namespace);
+                    args.id.setHandler(Compositor, self, null, null);
+                    return args.id.sendClosed();
+                };
+                const layer = create(Layer, self, .{ .comp = self, .resource = args.id, .surface = surface, .output = output, .namespace = namespace, .pending = config, .current = config }) orelse {
                     self.a.free(namespace);
                     return;
                 };
@@ -3144,6 +3447,7 @@ const Compositor = struct {
                 if (self.lock != null) return args.id.sendFinished();
                 self.lock = lock;
                 self.locked = true;
+                self.updateInhibition();
                 self.lock_serial +%= 1;
                 self.cycling = false;
                 self.cycle_origin = null;
@@ -3153,6 +3457,69 @@ const Compositor = struct {
                 self.seat.focusSurface(null);
                 self.seat.updatePointerFocus();
                 self.scheduleRepaint();
+            },
+        }
+    }
+
+    /// User input resets idle timers.
+    fn activity(self: *Compositor) void {
+        for (self.idle_notifications.items) |notification| notification.activity();
+    }
+
+    /// Idle is inhibited by a visible window's inhibitor, never while locked.
+    fn updateInhibition(self: *Compositor) void {
+        var inhibited = false;
+        if (!self.locked) for (self.idle_inhibitors.items) |inhibitor| {
+            var root = inhibitor.surface orelse continue;
+            while (root.subsurface) |sub| root = sub.parent orelse break;
+            if (!root.mapped()) continue;
+            const xdg = root.xdg orelse continue;
+            const toplevel = xdg.toplevel orelse continue;
+            if (toplevel.mapped and toplevel.workspace == self.workspace) inhibited = true;
+        };
+        if (inhibited == self.idle_inhibited) return;
+        self.idle_inhibited = inhibited;
+        for (self.idle_notifications.items) |notification| notification.arm();
+    }
+
+    fn bindIdleNotifier(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.ext_idle_notifier_v1{ .resource = resource }).setHandler(Compositor, self, idleNotifierRequest, null);
+    }
+
+    fn idleNotifierRequest(self: *Compositor, _: ws.ext_idle_notifier_v1, request: ws.ext_idle_notifier_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .get_idle_notification => |args| self.idleNotification(args.id, args.timeout, false),
+            .get_input_idle_notification => |args| self.idleNotification(args.id, args.timeout, true),
+        }
+    }
+
+    fn idleNotification(self: *Compositor, resource: ws.ext_idle_notification_v1, timeout: u32, input_only: bool) void {
+        const notification = self.a.create(IdleNotification) catch return resource.setHandler(Compositor, self, null, null);
+        const timer = self.server.loop.timer(notification, &IdleNotification.expired) catch {
+            self.a.destroy(notification);
+            return resource.setHandler(Compositor, self, null, null);
+        };
+        notification.* = .{ .comp = self, .resource = resource, .timeout = timeout, .timer = timer, .input_only = input_only };
+        resource.setHandler(IdleNotification, notification, null, IdleNotification.destroyed);
+        self.idle_notifications.append(self.a, notification) catch {};
+        notification.arm();
+    }
+
+    fn bindIdleInhibit(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.zwp_idle_inhibit_manager_v1{ .resource = resource }).setHandler(Compositor, self, idleInhibitRequest, null);
+    }
+
+    fn idleInhibitRequest(self: *Compositor, _: ws.zwp_idle_inhibit_manager_v1, request: ws.zwp_idle_inhibit_manager_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .create_inhibitor => |args| {
+                const inhibitor = create(IdleInhibitor, self, .{ .comp = self, .surface = args.surface.data(Surface) }) orelse return;
+                args.id.setHandler(IdleInhibitor, inhibitor, null, IdleInhibitor.destroyed);
+                self.idle_inhibitors.append(self.a, inhibitor) catch {};
+                self.updateInhibition();
             },
         }
     }
@@ -3207,7 +3574,8 @@ const Compositor = struct {
                 if (surface.fractional != null) return resource.postError(ws.wp_fractional_scale_manager_v1.Error.fractional_scale_exists, "surface already has a fractional scale", .{});
                 surface.fractional = args.id;
                 args.id.setHandler(Surface, surface, null, fractionalGone);
-                args.id.sendPreferredScale(self.output.fractionalScale());
+                const output = surface.entered orelse self.focusedOutput();
+                if (output) |o| args.id.sendPreferredScale(o.fractionalScale());
             },
         }
     }
@@ -3324,42 +3692,41 @@ const Compositor = struct {
         const manager = create(HeadManager, self, .{ .comp = self, .manager = .{ .resource = resource } }) orelse return;
         manager.manager.setHandler(HeadManager, manager, HeadManager.request, HeadManager.destroyed);
         self.head_managers.append(self.a, manager) catch {};
-        manager.announce();
+        for (self.outputs.items) |output| manager.announce(output);
+        manager.manager.sendDone(self.output_serial);
     }
 
-    fn setOutputScale(self: *Compositor, scale: f64) void {
-        self.output.setScale(scale);
-    }
-
-    /// Turns the output off, as unplugging it, or back on.
-    fn setOutputEnabled(self: *Compositor, enabled: bool) void {
-        const output = self.output;
+    /// Turns an output off, as unplugging it, or back on.
+    fn setOutputEnabled(self: *Compositor, output: *Output, enabled: bool) void {
         if (output.enabled == enabled) return;
         output.enabled = enabled;
         if (!enabled) {
             if (output.global) |global| global.remove();
             output.global = null;
-            for (self.layers.items) |layer| layer.close();
-            for (self.surfaces.items) |surface| surface.entered = false;
+            for (self.layers.items) |layer| if (layer.output == output) layer.close();
+            for (self.surfaces.items) |surface| if (surface.entered == output) {
+                surface.entered = null;
+            };
+            // Windows move to an output that is still there.
+            for (self.toplevels.items) |toplevel| if (toplevel.output == output) {
+                toplevel.output = self.primary();
+                if (toplevel.output) |other| if (toplevel.xdg) |xdg| if (xdg.surface) |surface| other.enter(surface);
+            };
+            self.seat.clampPointer();
             self.updateKeyboardFocus();
+            self.arrange();
             return;
         }
         output.global = self.server.createGlobal(&ws.wl_output.interface, 4, output, &Output.bind) catch null;
+        self.seat.clampPointer();
         self.arrange();
-        for (self.toplevels.items) |toplevel| {
-            toplevel.reconfigure(false);
-            if (toplevel.xdg) |xdg| if (xdg.surface) |surface| output.enter(surface);
-        }
-        self.scheduleRepaint();
+        output.scheduleRepaint();
     }
 
     /// Tells output management clients about the new configuration.
     fn outputChanged(self: *Compositor) void {
         self.output_serial +%= 1;
-        for (self.head_managers.items) |manager| {
-            manager.describe();
-            manager.manager.sendDone(self.output_serial);
-        }
+        for (self.head_managers.items) |manager| manager.describe();
     }
 
     fn bindScreencopy(data: ?*anyopaque, resource: wire.Resource) void {
@@ -3369,8 +3736,8 @@ const Compositor = struct {
 
     fn screencopyRequest(self: *Compositor, _: ws.zwlr_screencopy_manager_v1, request: ws.zwlr_screencopy_manager_v1.Request) void {
         switch (request) {
-            .capture_output => |args| CaptureFrame.start(self, args.frame, null),
-            .capture_output_region => |args| CaptureFrame.start(self, args.frame, .{ .x = args.x, .y = args.y, .width = args.width, .height = args.height }),
+            .capture_output => |args| CaptureFrame.start(self, args.frame, args.output, null),
+            .capture_output_region => |args| CaptureFrame.start(self, args.frame, args.output, .{ .x = args.x, .y = args.y, .width = args.width, .height = args.height }),
             .destroy => {},
         }
     }
@@ -3527,7 +3894,7 @@ pub const Handle = struct {
         };
         defer server.destroy();
         var comp: Compositor = .{ .a = a, .server = server };
-        comp.init(self.width, self.height) catch {
+        comp.init(self.width, self.height, headlessOutputs()) catch {
             self.failed = true;
             self.signal();
             return;
@@ -3547,10 +3914,17 @@ pub const Handle = struct {
         };
         self.signal();
         while (running and !server.quit) {
-            const before = comp.output.frames;
+            const output = comp.outputs.items[0];
+            const before = output.frames;
             server.dispatch(-1);
-            if (comp.output.frames != before) self.publish(comp.output);
+            if (output.frames != before) self.publish(output);
         }
+    }
+
+    /// How many headless outputs to create; WLR_HEADLESS_OUTPUTS is honoured as with wlroots.
+    fn headlessOutputs() usize {
+        const value = std.c.getenv("WLR_HEADLESS_OUTPUTS") orelse return 1;
+        return std.math.clamp(std.fmt.parseInt(usize, std.mem.span(value), 10) catch 1, 1, 8);
     }
 
     fn publish(self: *Handle, output: *Output) void {
@@ -3723,7 +4097,7 @@ fn launchTerminal(a: std.mem.Allocator) void {
 }
 
 /// Keysyms the compositor binds, from xkbcommon-keysyms.h.
-const key = struct {
+const keysyms = struct {
     const Tab: u32 = 0xff09;
     const ISO_Left_Tab: u32 = 0xfe20;
     const grave: u32 = 0x60;
@@ -3737,6 +4111,8 @@ const key = struct {
     const Down: u32 = 0xff54;
     const F4: u32 = 0xffc1;
     const Super_L: u32 = 0xffeb;
+    const Caps_Lock: u32 = 0xffe5;
+    const Num_Lock: u32 = 0xff7f;
     const Print: u32 = 0xff61;
     const a: u32 = 0x61;
     const d: u32 = 0x64;
@@ -3752,7 +4128,7 @@ const key = struct {
 };
 
 test "bound keysyms match the names xkbcommon gives them" {
-    inline for (@typeInfo(key).@"struct".decl_names) |name| {
-        try std.testing.expectEqual(@as(?u32, @field(key, name)), xkb.keysymFromName(name));
+    inline for (@typeInfo(keysyms).@"struct".decl_names) |name| {
+        try std.testing.expectEqual(@as(?u32, @field(keysyms, name)), xkb.keysymFromName(name));
     }
 }

@@ -46,6 +46,7 @@ pub fn build(b: *std.Build) void {
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-foreign-toplevel-management-unstable-v1.xml", .{wlr_protocols}) },
         .{ .cwd_relative = b.fmt("{s}/staging/ext-session-lock/ext-session-lock-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/staging/ext-idle-notify/ext-idle-notify-v1.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-output-management-unstable-v1.xml", .{wlr_protocols}) },
     };
     // Native Wayland client: the wire runtime plus typed bindings for every protocol used.
