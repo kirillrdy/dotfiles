@@ -265,6 +265,10 @@ pub const Display = struct {
     /// The buffer scanned out, and whether a flip to the other is pending.
     front: usize = 0,
     flipping: bool = false,
+    /// When the last flip reached the screen (CLOCK_MONOTONIC seconds and
+    /// microseconds, from the vblank event) and its vblank count.
+    flip_time: [2]u32 = .{ 0, 0 },
+    flip_sequence: u32 = 0,
     /// The first frame sets the mode; later ones flip.
     modeset: bool = false,
     /// Called when a flip finished and the next frame may be drawn.
@@ -363,7 +367,9 @@ pub const Display = struct {
         self.flipping = false;
     }
 
-    fn flipped(self: *Display) void {
+    fn flipped(self: *Display, event: *const VblankEvent) void {
+        self.flip_time = .{ event.tv_sec, event.tv_usec };
+        self.flip_sequence = event.sequence;
         self.flipping = false;
         self.front = 1 - self.front;
         if (self.on_flip) |callback| callback(self.context);
@@ -551,7 +557,7 @@ pub const Card = struct {
             if (event.length < 8) break;
             if (event.type == event_flip_complete) {
                 for (self.displays.items) |display| if (@intFromPtr(display) == event.user_data) {
-                    display.flipped();
+                    display.flipped(event);
                     break;
                 };
             }

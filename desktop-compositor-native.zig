@@ -1702,7 +1702,8 @@ const Output = struct {
         }
         if (self.nested) |window| window.present();
         if (self.display != null and self.target == null) self.present();
-        comp.presented(self);
+        // Displays report when the frame is on screen, at its page flip.
+        if (self.display != null and self.target != null) comp.drawnFor(self) else comp.presented(self);
         self.frames += 1;
         const time = nowMs();
         for (comp.surfaces.items) |surface| {
@@ -3063,6 +3064,8 @@ const Presentation = struct {
     surface: ?*Surface,
     /// Set by the surface's next commit; earlier frames do not show it.
     committed: bool = false,
+    /// Drawn into a frame still waiting to reach a display.
+    in_frame: ?*Output = null,
 
     fn destroyed(self: *Presentation, _: ws.wp_presentation_feedback) void {
         removeItem(*Presentation, &self.comp.presentations, self);
@@ -5043,6 +5046,35 @@ const Compositor = struct {
     }
 
     /// Reports frames as presented once an output has drawn them.
+    /// Marks feedback for this frame, to be presented when it reaches the screen.
+    fn drawnFor(self: *Compositor, output: *Output) void {
+        for (self.presentations.items) |entry| {
+            const surface = entry.surface orelse continue;
+            if (entry.committed and entry.in_frame == null and surface.entered == output) entry.in_frame = output;
+        }
+    }
+
+    /// A display shows the frame drawn for `output`: feedback gets the vblank's
+    /// time and sequence, from the hardware.
+    fn flipPresented(self: *Compositor, output: *Output, display: *Drm.kms.Display) void {
+        self.frame_sequence +%= 1;
+        const seconds: u64 = display.flip_time[0];
+        const nanoseconds: u32 = display.flip_time[1] * 1000;
+        const refresh_mhz = display.mode.refreshMilli();
+        const refresh: u32 = if (refresh_mhz > 0) @intCast(@min(1_000_000_000_000 / @as(u64, refresh_mhz), std.math.maxInt(u32))) else 0;
+        const Kind = ws.wp_presentation_feedback.Kind;
+        const flags = Kind.vsync | Kind.hw_clock | Kind.hw_completion;
+        var index = self.presentations.items.len;
+        while (index > 0) {
+            index -= 1;
+            const entry = self.presentations.items[index];
+            if (entry.in_frame != output) continue;
+            _ = self.presentations.swapRemove(index);
+            for (output.resources.items) |resource| if (resource.client() == entry.resource.client()) entry.resource.sendSyncOutput(resource);
+            entry.resource.sendPresented(@truncate(seconds >> 32), @truncate(seconds), nanoseconds, refresh, 0, display.flip_sequence, flags);
+        }
+    }
+
     fn presented(self: *Compositor, output: *Output) void {
         self.frame_sequence +%= 1;
         const now = util.monotonicTime();
@@ -5675,6 +5707,7 @@ const Drm = struct {
     fn flipped(context: ?*anyopaque) void {
         const output: *Output = @ptrCast(@alignCast(context));
         if (output.target) |target| target.flipped();
+        if (output.display) |display| if (output.target != null) output.comp.flipPresented(output, display);
         if (output.unpresented) {
             output.unpresented = false;
             if (output.target != null) output.render() else output.present();
@@ -5706,8 +5739,13 @@ const Drm = struct {
         const fb = self.framebuffer(bo) orelse return target.discard(bo);
         switch (display.show(fb)) {
             .shown => {
+                // A mode set shows the frame at once, without a flip event.
                 target.pending = bo;
                 target.flipped();
+                const now = util.monotonicTime();
+                display.flip_time = .{ @intCast(@divTrunc(now, std.time.us_per_s)), @intCast(@mod(now, std.time.us_per_s)) };
+                self.comp.drawnFor(output);
+                self.comp.flipPresented(output, display);
             },
             .flipping => target.pending = bo,
             .failed => {
