@@ -469,13 +469,18 @@ const Surface = struct {
         }
         self.width = buffer.width;
         self.height = buffer.height;
-        self.opaque_format = buffer.format == ws.wl_shm.Format.xrgb8888;
+        const layout = shmLayout(buffer.format) orelse return;
+        self.opaque_format = layout.opaque_pixels;
         for (0..buffer.height) |row| {
-            const line = source[row * buffer.stride ..][0 .. buffer.width * 4];
+            const line = source[row * buffer.stride ..][0 .. buffer.width * layout.bytes];
             const out = self.pixels[row * buffer.width ..][0..buffer.width];
-            for (out, 0..) |*pixel, column| {
-                const value = std.mem.readInt(u32, line[column * 4 ..][0..4], .little);
-                pixel.* = if (self.opaque_format) value | 0xff000000 else value;
+            if (buffer.format == ws.wl_shm.Format.argb8888 or buffer.format == ws.wl_shm.Format.xrgb8888) {
+                for (out, 0..) |*pixel, column| {
+                    const value = std.mem.readInt(u32, line[column * 4 ..][0..4], .little);
+                    pixel.* = if (self.opaque_format) value | 0xff000000 else value;
+                }
+            } else for (out, 0..) |*pixel, column| {
+                pixel.* = shmPixel(buffer.format, line[column * layout.bytes ..]);
             }
         }
     }
@@ -1895,6 +1900,51 @@ test "virtual keyboard keymaps that include shared types and compatibility are c
 const Hit = struct { surface: *Surface, x: i32, y: i32 };
 /// A surface tree drawn at an output position.
 const Root = struct { surface: *Surface, x: i32, y: i32 };
+
+/// Shared-memory formats clients may use, as wlroots' renderers accept them;
+/// they are converted to premultiplied ARGB8888 when committed.
+const shm_formats = [_]u32{ 0, 1, 0x34324241, 0x34324258, 0x36314752, 0x30335241, 0x30335258, 0x30334241, 0x30334258 };
+
+fn shmLayout(format: u32) ?struct { bytes: usize, opaque_pixels: bool } {
+    return switch (format) {
+        0, 0x34324241, 0x30335241, 0x30334241 => .{ .bytes = 4, .opaque_pixels = false },
+        1, 0x34324258, 0x30335258, 0x30334258 => .{ .bytes = 4, .opaque_pixels = true },
+        0x36314752 => .{ .bytes = 2, .opaque_pixels = true }, // RGB565
+        else => null,
+    };
+}
+
+/// One pixel of a shared-memory buffer as premultiplied ARGB8888.
+fn shmPixel(format: u32, bytes: []const u8) u32 {
+    switch (format) {
+        // ABGR8888 and XBGR8888: red and blue swap places.
+        0x34324241, 0x34324258 => {
+            const value = std.mem.readInt(u32, bytes[0..4], .little);
+            const alpha = if (format == 0x34324258) 0xff000000 else value & 0xff000000;
+            return alpha | (value & 0x0000ff00) | ((value & 0xff) << 16) | ((value >> 16) & 0xff);
+        },
+        0x36314752 => {
+            const value = std.mem.readInt(u16, bytes[0..2], .little);
+            const r: u32 = (value >> 11) & 0x1f;
+            const g: u32 = (value >> 5) & 0x3f;
+            const b: u32 = value & 0x1f;
+            return 0xff000000 | (((r << 3) | (r >> 2)) << 16) | (((g << 2) | (g >> 4)) << 8) | ((b << 3) | (b >> 2));
+        },
+        // 10-bit channels with a 2-bit alpha, red or blue first from the top.
+        0x30335241, 0x30335258, 0x30334241, 0x30334258 => {
+            const value = std.mem.readInt(u32, bytes[0..4], .little);
+            const high: u32 = (value >> 22) & 0xff;
+            const middle: u32 = (value >> 12) & 0xff;
+            const low: u32 = (value >> 2) & 0xff;
+            const alpha: u32 = if (format == 0x30335258 or format == 0x30334258) 0xff else (value >> 30) * 0x55;
+            const red_first = format == 0x30335241 or format == 0x30335258;
+            const r = if (red_first) high else low;
+            const b = if (red_first) low else high;
+            return (alpha << 24) | (r << 16) | (middle << 8) | b;
+        },
+        else => return 0,
+    }
+}
 
 fn unionClip(a: Gl.Clip, b: Gl.Clip) Gl.Clip {
     const left = @min(a.x, b.x);
@@ -4362,8 +4412,7 @@ const Compositor = struct {
         const self: *Compositor = @ptrCast(@alignCast(data));
         const shm: ws.wl_shm = .{ .resource = resource };
         shm.setHandler(Compositor, self, shmRequest, null);
-        shm.sendFormat(ws.wl_shm.Format.argb8888);
-        shm.sendFormat(ws.wl_shm.Format.xrgb8888);
+        for (shm_formats) |format| shm.sendFormat(format);
     }
 
     fn shmRequest(self: *Compositor, resource: ws.wl_shm, request: ws.wl_shm.Request) void {
@@ -4395,9 +4444,9 @@ const Compositor = struct {
                 if (!pool.remap(@intCast(args.size))) resource.postError(ws.wl_shm.Error.invalid_fd, "cannot map the pool", .{});
             },
             .create_buffer => |args| {
-                if (args.format != ws.wl_shm.Format.argb8888 and args.format != ws.wl_shm.Format.xrgb8888)
+                const layout = shmLayout(args.format) orelse
                     return resource.postError(ws.wl_shm.Error.invalid_format, "unsupported format {d}", .{args.format});
-                if (args.width <= 0 or args.height <= 0 or args.offset < 0 or args.stride < args.width * 4 or args.stride > 1 << 20)
+                if (args.width <= 0 or args.height <= 0 or args.offset < 0 or args.width > 1 << 16 or args.stride < args.width * @as(i32, @intCast(layout.bytes)) or args.stride > 1 << 20)
                     return resource.postError(ws.wl_shm.Error.invalid_stride, "invalid buffer geometry", .{});
                 const end = @as(u64, @intCast(args.offset)) + @as(u64, @intCast(args.stride)) * @as(u64, @intCast(args.height));
                 if (end > pool.map.len) return resource.postError(ws.wl_shm.Error.invalid_stride, "buffer exceeds the pool", .{});
@@ -7238,4 +7287,24 @@ test "keyboards switch layouts on the keymap's group keys" {
     try std.testing.expectEqual(@as(u32, 0x6ca), state.keysym(16 + 8));
     state.update(0, 0, 0, 0);
     try std.testing.expectEqual(@as(u32, 'q'), state.keysym(16 + 8));
+}
+
+test "shared-memory formats convert to premultiplied ARGB" {
+    var bytes: [4]u8 = undefined;
+    // ABGR8888 half-transparent red (premultiplied): 0x80 alpha, 0x80 red.
+    std.mem.writeInt(u32, &bytes, 0x80000080, .little);
+    try std.testing.expectEqual(@as(u32, 0x80800000), shmPixel(0x34324241, &bytes));
+    // RGB565 pure green widens to 0xff.
+    std.mem.writeInt(u16, bytes[0..2], 0x07e0, .little);
+    try std.testing.expectEqual(@as(u32, 0xff00ff00), shmPixel(0x36314752, &bytes));
+    // XRGB2101010 full red: top 8 of the 10 bits.
+    std.mem.writeInt(u32, &bytes, 0x3ff00000, .little);
+    try std.testing.expectEqual(@as(u32, 0xffff0000), shmPixel(0x30335258, &bytes));
+    // ABGR2101010 opaque blue: blue in the high bits.
+    std.mem.writeInt(u32, &bytes, 0xfff00000, .little);
+    try std.testing.expectEqual(@as(u32, 0xff0000ff), shmPixel(0x30334241, &bytes));
+    try std.testing.expectEqual(@as(usize, 2), shmLayout(0x36314752).?.bytes);
+    try std.testing.expect(shmLayout(0x12345678) == null);
+    const F = ws.wl_shm.Format;
+    try std.testing.expectEqualSlices(u32, &.{ F.argb8888, F.xrgb8888, F.abgr8888, F.xbgr8888, F.rgb565, F.argb2101010, F.xrgb2101010, F.abgr2101010, F.xbgr2101010 }, &shm_formats);
 }
