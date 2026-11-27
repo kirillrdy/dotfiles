@@ -7,10 +7,7 @@ const util = @import("desktop").util;
 const libc = @import("desktop").libc;
 const assert = std.debug.assert;
 const cast = util.cast;
-fn pump() void {
-    while (mainloop.iteration(false)) {}
-    mainloop.sleep(1000);
-}
+const pump = @import("fixture-util.zig").pump;
 fn checkEditing(allocator: std.mem.Allocator) !void {
     const dialog = try askpass.Dialog.create(allocator, .password, "Synthetic clipboard and editing checks");
     const entry = dialog.entry.?;

@@ -5,7 +5,7 @@ const http = @import("desktop-http.zig");
 const usage = @import("desktop-usage.zig");
 
 fn unavailable(message: []const u8) usage.Report {
-    return .{ .name = "Codex", .@"error" = message };
+    return usage.unavailable("Codex", message);
 }
 
 /// Reads `rate_limit.{primary,secondary}_window` from the usage response.
@@ -30,12 +30,10 @@ fn fetch(a: u.Allocator) !usage.Report {
     const tokens = if (nested == .object) nested else auth;
     const token = u.string(u.get(tokens, "access_token"));
     if (token.len == 0) return unavailable("Sign in with codex login to see account usage");
-    // Never pass authorization through process arguments or log HTTP headers.
-    if (std.mem.indexOfAny(u8, token, "\r\n") != null) return error.InvalidToken;
     const account = u.string(u.get(tokens, "account_id"));
     if (std.mem.indexOfAny(u8, account, "\r\n") != null) return error.InvalidAccount;
     const headers = [_]std.http.Header{
-        .{ .name = "Authorization", .value = try u.fmt(a, "Bearer {s}", .{token}) },
+        try usage.bearerHeader(a, token),
         .{ .name = "ChatGPT-Account-Id", .value = account },
     };
     const response = try http.get(a, u.io, .{

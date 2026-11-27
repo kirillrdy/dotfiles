@@ -9,7 +9,6 @@
   fixture ? null,
   gtkEnv ? false,
   iconTheme ? gtkEnv,
-  extraDataDirs ? [ ],
   fonts ? false,
   fontDirs ? pkgs.lib.optional fonts pkgs.dejavu_fonts,
   memorySettings ? false,
@@ -437,6 +436,12 @@ let
             assert time.monotonic() < deadline, message() if callable(message) else message
             time.sleep(interval)
 
+    def glib_pump():
+        from gi.repository import GLib
+        ctx = GLib.MainContext.default()
+        while ctx.pending():
+            ctx.iteration(False)
+
     def wait_wayland(runtime_dir, compositor, log_path=None, timeout=10):
         runtime_dir = Path(runtime_dir)
         def ready():
@@ -761,7 +766,7 @@ let
   dbusConfig = "${pkgs.dbus}/share/dbus-1/session.conf";
   dbusRun = "dbus-run-session --config-file=${dbusConfig} --";
   pythonPkg = if pygobject then pkgs.python3.withPackages (p: [ p.pygobject3 ]) else python;
-  dataDirs = extraDataDirs ++ lib.optional iconTheme "${pkgs.adwaita-icon-theme}/share";
+  dataDirs = lib.optional iconTheme "${pkgs.adwaita-icon-theme}/share";
   body =
     if builtins.isFunction script then
       script {

@@ -119,7 +119,6 @@ import ./fixture.nix { inherit pkgs; } {
 
       parser = argparse.ArgumentParser()
       parser.add_argument("--binary", required=True, type=Path)
-      parser.add_argument("--style", type=Path)
       parser.add_argument("--dbus-config", type=Path)
       args = parser.parse_args()
       for tool in ("desktop-zig", "grim", "wlr-randr", "wtype", "dbus-send"):

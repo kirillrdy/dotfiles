@@ -410,9 +410,7 @@ fn paintButton(canvas: raster.Canvas, rect: Rect, radius: f64, cap: Cap, color: 
 pub const profile_names = [_][:0]const u8{ "Performance", "Balanced", "Power Saver" };
 pub const profile_icons = [_][:0]const u8{ "power-profile-performance-symbolic", "power-profile-balanced-symbolic", "power-profile-power-saver-symbolic" };
 const rgb = raster.Color.rgb;
-fn paintMask(canvas: raster.Canvas, mask: text.Mask, x: f64, y: f64, color: raster.Color) void {
-    mask.paint(canvas, x, y, color);
-}
+const paintMask = text.paintMask;
 
 test "quick-settings layout keeps hit regions separate and omits unavailable devices" {
     var view: View = .{};

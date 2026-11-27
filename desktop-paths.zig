@@ -32,11 +32,6 @@ pub fn configHome() [:0]const u8 {
     return dirs().config;
 }
 
-/// $XDG_CACHE_HOME or ~/.cache.
-pub fn cacheHome() [:0]const u8 {
-    return dirs().cache;
-}
-
 /// $XDG_RUNTIME_DIR, else the cache directory.
 pub fn runtimeDir() [:0]const u8 {
     return dirs().runtime;
@@ -312,14 +307,19 @@ pub fn readLink(a: std.mem.Allocator, path: []const u8) ![:0]u8 {
 
 /// Creates a new file named `prefix` plus six random characters, readable and
 /// writable only by the user, like mkstemp. The caller closes the descriptor.
-pub fn createTemporary(a: std.mem.Allocator, prefix: []const u8) !struct { fd: linux.fd_t, path: [:0]u8 } {
+fn fillRandomSuffix(tail: []u8) bool {
     const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    var random: [6]u8 = undefined;
+    if (linux.errno(linux.getrandom(&random, random.len, 0)) != .SUCCESS) return false;
+    for (random, tail) |byte, *slot| slot.* = alphabet[byte % alphabet.len];
+    return true;
+}
+
+pub fn createTemporary(a: std.mem.Allocator, prefix: []const u8) !struct { fd: linux.fd_t, path: [:0]u8 } {
     const path = try std.fmt.allocPrintSentinel(a, "{s}XXXXXX", .{prefix}, 0);
     errdefer a.free(path);
     for (0..100) |_| {
-        var random: [6]u8 = undefined;
-        if (linux.errno(linux.getrandom(&random, random.len, 0)) != .SUCCESS) return error.CreateFileFailed;
-        for (random, path[prefix.len..]) |byte, *slot| slot.* = alphabet[byte % alphabet.len];
+        if (!fillRandomSuffix(path[prefix.len..])) return error.CreateFileFailed;
         const opened = linux.openat(linux.AT.FDCWD, path, .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true, .CLOEXEC = true }, 0o600);
         switch (linux.errno(opened)) {
             .SUCCESS => return .{ .fd = @intCast(opened), .path = path },
@@ -364,14 +364,11 @@ pub fn writeFileAtomic(a: std.mem.Allocator, path: []const u8, data: []const u8,
 /// Creates a new private directory named `prefix` plus six random characters
 /// in $TMPDIR or /tmp, like g_dir_make_tmp.
 pub fn createTemporaryDirectory(a: std.mem.Allocator, prefix: []const u8) ![:0]u8 {
-    const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     const base = util.env("TMPDIR") orelse "/tmp";
     const path = try std.fmt.allocPrintSentinel(a, "{s}/{s}XXXXXX", .{ std.mem.trimEnd(u8, if (base.len > 0) base else "/tmp", "/"), prefix }, 0);
     errdefer a.free(path);
     for (0..100) |_| {
-        var random: [6]u8 = undefined;
-        if (linux.errno(linux.getrandom(&random, random.len, 0)) != .SUCCESS) return error.CreateDirectoryFailed;
-        for (random, path[path.len - 6 ..]) |byte, *slot| slot.* = alphabet[byte % alphabet.len];
+        if (!fillRandomSuffix(path[path.len - 6 ..])) return error.CreateDirectoryFailed;
         switch (linux.errno(linux.mkdirat(linux.AT.FDCWD, path, 0o700))) {
             .SUCCESS => return path,
             .EXIST => continue,

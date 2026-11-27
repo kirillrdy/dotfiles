@@ -40,10 +40,6 @@
   networking.networkmanager.plugins = lib.mkForce [ ];
   networking.hostName = hostName;
   nix.settings = {
-    experimental-features = [
-      "nix-command"
-      "flakes"
-    ];
     allow-import-from-derivation = false;
     trusted-public-keys = [
       "silverpond:DvvEdyKZvc86cR1o/a+iJxnb7JxMCBzvSTjjEQIY8+g="
@@ -51,14 +47,17 @@
     ];
   };
   services.desktopManager.gnome.enable = !enableLightDesktop;
-  environment.gnome.excludePackages = with pkgs; [
-    epiphany
-    gnome-tour
-    gnome-user-docs
-    yelp
-  ];
+  environment.gnome.excludePackages = lib.mkIf (!enableLightDesktop) (
+    with pkgs;
+    [
+      epiphany
+      gnome-tour
+      gnome-user-docs
+      yelp
+    ]
+  );
   services.displayManager.gdm.enable = !enableLightDesktop;
-  services.displayManager.gdm.autoSuspend = false;
+  services.displayManager.gdm.autoSuspend = lib.mkIf (!enableLightDesktop) false;
   programs.dconf.profiles.user.databases = [
     {
       settings = {

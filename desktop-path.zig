@@ -674,20 +674,6 @@ pub const Spans = struct {
     pub fn empty(self: Spans) bool {
         return self.runs.len == 0;
     }
-
-    /// Row-wise product of two coverages.
-    pub fn intersect(a: std.mem.Allocator, first: Spans, second: Spans) !Spans {
-        const y0 = @max(first.y, second.y);
-        const y1 = @min(first.y + first.height, second.y + second.height);
-        if (y1 <= y0) return .{};
-        var builder: Builder = try .init(a, y0, y1 - y0);
-        errdefer builder.deinit();
-        for (y0..y1) |y| {
-            try intersectRuns(&builder, first.row(y), second.row(y), 1);
-            try builder.endRow();
-        }
-        return builder.finish();
-    }
 };
 
 /// Appends the product of two sorted run lists, scaled by `scale`.

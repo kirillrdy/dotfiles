@@ -8,15 +8,10 @@ const mainloop = @import("desktop").mainloop;
 const util = @import("desktop").util;
 const assert = std.debug.assert;
 const cast = util.cast;
-fn eq(actual: [*c]const u8, expected: []const u8) void {
-    assert(std.mem.eql(u8, std.mem.span(actual), expected));
-}
+const fixture_util = @import("fixture-util.zig");
+const eq = fixture_util.assertEq;
 fn pump() void {
-    const end = @divTrunc(util.monotonicTime(), 1000) + 100;
-    while (@divTrunc(util.monotonicTime(), 1000) < end) {
-        while (mainloop.iteration(false)) {}
-        mainloop.sleep(1000);
-    }
+    fixture_util.pumpFor(100_000);
 }
 fn firstName(launcher: *apps.Launcher) [*c]const u8 {
     return launcher.first().?.name;

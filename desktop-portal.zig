@@ -29,16 +29,9 @@ const cast = util.cast;
 const eq = util.eq;
 const portal_options = @import("desktop-portal-options.zig");
 const Dict = portal_options.Dict;
-/// Options (`a{sv}`) from a method argument; entries borrow from the message.
-fn dictionary(arena: std.mem.Allocator, value: dbus.Value) !Dict {
-    const items = value.array.items;
-    const entries = try arena.alloc(Dict.Entry, items.len);
-    for (entries, items) |*entry, item| entry.* = .{ .key = item.dict_entry[0].string, .value = item.dict_entry[1].variant.* };
-    return .{ .entries = entries };
-}
+const dictionary = portal_options.fromValue;
 fn option(options: Dict, key: []const u8) ?dbus.Value {
-    for (options.entries) |entry| if (eq(entry.key, key)) return entry.value;
-    return null;
+    return portal_options.lookup(options.entries, key);
 }
 fn errorReply(connection: *dbus.Connection, message: *const dbus.Message, text_value: []const u8) void {
     connection.replyError(message, "org.freedesktop.portal.Error.Failed", text_value) catch {};

@@ -11,7 +11,6 @@
   networking.hostName = "shirahama";
 
   nix.settings = {
-    experimental-features = "nix-command flakes";
     sandbox = "relaxed";
   };
 

@@ -8,6 +8,7 @@ const libc = @import("desktop-libc.zig");
 const dbus = @import("dbus");
 const greeter = @import("desktop-greeter.zig");
 const pam_auth = @import("desktop-lock-auth.zig");
+const util = @import("desktop-util.zig");
 
 const PamHandle = ?*pam.pam_handle_t;
 extern "c" fn ioctl(c_int, c_ulong, ...) c_int;
@@ -15,7 +16,6 @@ extern "c" fn clearenv() c_int;
 extern "c" fn setenv([*:0]const u8, [*:0]const u8, c_int) c_int;
 extern "c" fn chdir([*:0]const u8) c_int;
 extern "c" fn kill(std.c.pid_t, c_int) c_int;
-extern "c" fn nanosleep(*const std.c.timespec, ?*std.c.timespec) c_int;
 extern "c" fn signal(c_int, ?*const fn (c_int) callconv(.c) void) ?*const fn (c_int) callconv(.c) void;
 
 const TIOCSCTTY: c_ulong = 0x540E;
@@ -40,14 +40,6 @@ fn nullConverse(count: c_int, _: [*c][*c]const pam.pam_message, responses: [*c][
     const result = std.c.calloc(@intCast(count), @sizeOf(pam.pam_response)) orelse return pam.PAM_BUF_ERR;
     responses.* = @ptrCast(@alignCast(result));
     return pam.PAM_SUCCESS;
-}
-
-fn sleepMs(ms: u64) void {
-    const req: std.c.timespec = .{
-        .sec = @intCast(ms / 1000),
-        .nsec = @intCast((ms % 1000) * 1_000_000),
-    };
-    _ = nanosleep(&req, null);
 }
 
 fn activateVt(vt: c_int) void {
@@ -416,7 +408,7 @@ pub fn run(a: std.mem.Allocator) !void {
         if (runGreeterRound(a, tty_path.ptr, vt_str)) |auth| {
             runUserSession(auth, tty_path.ptr, vt_str);
         } else if (dm_running.load(.acquire)) {
-            sleepMs(500);
+            util.sleep(500 * std.time.ns_per_ms);
         }
     }
 }

@@ -32,6 +32,7 @@ import ./fixture.nix { inherit pkgs; } {
       import time
       import wave
       from audio_server import AudioServer
+      from session_fixture import wait_until
       from session_fixture import VirtualPointer, read_png
       from wayland_ui import WaylandUI
 
@@ -72,10 +73,7 @@ import ./fixture.nix { inherit pkgs; } {
 
 
       def wait(check, description, timeout=12):
-          deadline = time.monotonic() + timeout
-          while not check():
-              assert time.monotonic() < deadline, description
-              time.sleep(0.03)
+          wait_until(check, description, timeout=timeout)
 
 
       def watch_updates(process):

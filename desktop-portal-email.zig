@@ -128,10 +128,8 @@ pub fn activationToken(options: portal_options.Dict) !?[]const u8 {
 
 /// Options from their GVariant text form.
 fn parse(a: std.mem.Allocator, value: []const u8) portal_options.Dict {
-    const items = (@import("desktop-dbus-text.zig").parse(a, "a{sv}", value) catch unreachable).array.items;
-    const entries = a.alloc(portal_options.Dict.Entry, items.len) catch unreachable;
-    for (entries, items) |*entry, item| entry.* = .{ .key = item.dict_entry[0].string, .value = item.dict_entry[1].variant.* };
-    return .{ .entries = entries };
+    const parsed = @import("desktop-dbus-text.zig").parse(a, "a{sv}", value) catch unreachable;
+    return portal_options.fromValue(a, parsed) catch unreachable;
 }
 test "email URI escapes recipients and Unicode headers independently" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

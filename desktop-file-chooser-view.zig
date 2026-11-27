@@ -91,11 +91,7 @@ pub const View = struct {
         self.columns = if (self.grid) @max(1, @as(usize, @intFromFloat(@floor((self.width - self.sidebar - 32) / cell_width)))) else 1;
         self.offset = std.math.clamp(self.offset, 0, self.maxOffset());
         ui.height = @intFromFloat(self.height);
-        for (ui.items.items) |item| {
-            item.visible = false;
-            item.pinned = false;
-            item.clip = null;
-        }
+        @import("desktop-preferences-view.zig").reset(ui);
         place(ui, self.search, .{ .x = 6, .y = 6, .width = 34, .height = 34 });
         place(ui, self.back, .{ .x = self.sidebar + 6, .y = 6, .width = 34, .height = 34 });
         place(ui, self.forward, .{ .x = self.sidebar + 46, .y = 6, .width = 34, .height = 34 });

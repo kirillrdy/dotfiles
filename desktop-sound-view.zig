@@ -271,12 +271,10 @@ pub const View = struct {
         self.drawMask(canvas, self.labels[@backingInt(label)].?, bounds, centered, tint);
     }
     fn drawMask(_: *const View, canvas: raster.Canvas, mask: text.Mask, bounds: Rect, centered: bool, tint: u32) void {
-        const w: f64 = @as(f64, @floatFromInt(mask.logical_width)) / canvas.scale;
-        const h: f64 = @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale;
-        mask.paint(canvas, bounds.x + (if (centered) (bounds.width - w) / 2 else 0), bounds.y + (bounds.height - h) / 2, color(tint));
+        mask.paintCentered(canvas, bounds, centered, color(tint));
     }
     fn icon(self: *View, allocator: std.mem.Allocator, canvas: raster.Canvas, name: [:0]const u8, bounds: Rect, size: u32) void {
-        self.icons.paint(allocator, canvas, name, bounds.x + (bounds.width - @as(f64, @floatFromInt(size))) / 2, bounds.y + (bounds.height - @as(f64, @floatFromInt(size))) / 2, size) catch {};
+        self.icons.paintCentered(allocator, canvas, name, bounds, size);
     }
     fn controlFocus(self: *const View, canvas: raster.Canvas, t: Target) void {
         if (self.keyboard_focus) if (self.focus) |f| if (f.eql(t) and self.active(t)) p.focus(canvas, self.rect(t));

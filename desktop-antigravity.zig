@@ -15,7 +15,7 @@ const claude = @import("desktop-claude.zig");
 const name = "Antigravity";
 
 fn unavailable(message: []const u8) usage.Report {
-    return .{ .name = name, .@"error" = message };
+    return usage.unavailable(name, message);
 }
 
 /// Which shared window (0 = 5h, 1 = 7d) a quota bucket describes, if known.

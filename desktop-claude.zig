@@ -66,7 +66,7 @@ pub fn backoffSeconds(retry_after: ?u32) i64 {
 }
 
 fn unavailable(message: []const u8) usage.Report {
-    return .{ .name = "Claude", .@"error" = message };
+    return usage.unavailable("Claude", message);
 }
 
 /// Shows the last good report while rate limited, so a 429 does not blank
@@ -94,13 +94,11 @@ fn fetch(a: A) !usage.Report {
     const oauth = u.get(try u.parse(a, raw), "claudeAiOauth");
     const token = u.string(u.get(oauth, "accessToken"));
     if (token.len == 0) return unavailable("Sign in with claude to see account usage");
-    // Never pass authorization through process arguments or log HTTP headers.
-    if (std.mem.indexOfAny(u8, token, "\r\n") != null) return error.InvalidToken;
     if (u.number(u.get(oauth, "expiresAt"))) |expires| {
         if (expires / 1000 < @as(f64, @floatFromInt(now))) return unavailable("Claude login expired; run claude to refresh it");
     }
     const headers = [_]std.http.Header{
-        .{ .name = "Authorization", .value = try u.fmt(a, "Bearer {s}", .{token}) },
+        try usage.bearerHeader(a, token),
         .{ .name = "anthropic-beta", .value = "oauth-2025-04-20" },
     };
     const response = try http.get(a, u.io, .{

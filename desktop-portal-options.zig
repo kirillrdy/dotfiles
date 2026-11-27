@@ -7,6 +7,52 @@ pub const Dict = dbus.Dict([]const u8, dbus.Value);
 pub const Completion = *const fn (?*anyopaque, u32, Dict) void;
 pub const empty: Dict = .{ .entries = &.{} };
 
+/// Extracts an `a{sv}` D-Bus dictionary value into a `Dict` (entries borrow from `value`).
+pub fn fromValue(arena: std.mem.Allocator, value: dbus.Value) !Dict {
+    const items = switch (value) {
+        .array => |array| array.items,
+        else => return error.InvalidType,
+    };
+    const entries = try arena.alloc(Dict.Entry, items.len);
+    for (entries, items) |*entry, item| entry.* = .{ .key = item.dict_entry[0].string, .value = item.dict_entry[1].variant.* };
+    return .{ .entries = entries };
+}
+
+/// Boxes key/value pairs into an `a{sv}` D-Bus dictionary value.
+pub fn toValue(arena: std.mem.Allocator, pairs: []const struct { []const u8, dbus.Value }) !dbus.Value {
+    const items = try arena.alloc(dbus.Value, pairs.len);
+    for (items, pairs) |*item, pair| {
+        const entry = try arena.create([2]dbus.Value);
+        const boxed = try arena.create(dbus.Value);
+        boxed.* = pair[1];
+        entry.* = .{ .{ .string = pair[0] }, .{ .variant = boxed } };
+        item.* = .{ .dict_entry = entry };
+    }
+    return .{ .array = .{ .element = "{sv}", .items = items } };
+}
+
+/// Untyped lookup by key in a `Dict`.
+pub fn lookup(entries: []const Dict.Entry, key: []const u8) ?dbus.Value {
+    for (entries) |entry| if (std.mem.eql(u8, entry.key, key)) return entry.value;
+    return null;
+}
+
+/// Typed lookup by key and D-Bus signature, returning `null` when missing or mismatched.
+pub fn lookupTyped(entries: []const Dict.Entry, key: []const u8, signature: []const u8) ?dbus.Value {
+    const value = lookup(entries, key) orelse return null;
+    var buffer: [256]u8 = undefined;
+    const actual = value.signatureInto(&buffer) catch return null;
+    return if (std.mem.eql(u8, actual, signature)) value else null;
+}
+
+/// Typed lookup on an `a{sv}` `dbus.Value`, returning `null` when missing or mismatched.
+pub fn lookupValue(dict: dbus.Value, key: []const u8, signature: []const u8) ?dbus.Value {
+    const value = dict.lookup(key) orelse return null;
+    var buffer: [256]u8 = undefined;
+    const actual = value.signatureInto(&buffer) catch return null;
+    return if (std.mem.eql(u8, actual, signature)) value else null;
+}
+
 pub fn Options(comptime invalid: anyerror) type {
     return struct {
         /// The option's value, null when missing, or `invalid` when it has another type.

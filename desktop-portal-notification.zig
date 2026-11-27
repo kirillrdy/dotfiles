@@ -2,10 +2,13 @@
 const std = @import("std");
 const util = @import("desktop-util.zig");
 const dbus = @import("dbus");
+const portal_options = @import("desktop-portal-options.zig");
+const paths = @import("desktop-paths.zig");
 const fdo = "org.freedesktop.Notifications";
 const object_path = "/org/freedesktop/Notifications";
 const eq = util.eq;
-const Dict = dbus.Dict([]const u8, dbus.Value);
+const Dict = portal_options.Dict;
+const lookupValue = portal_options.lookupValue;
 /// An owned copy of a notification's `a{sv}` contents.
 const Contents = struct {
     arena: std.heap.ArenaAllocator,
@@ -17,7 +20,7 @@ const Contents = struct {
             self.arena.deinit();
             allocator.destroy(self);
         }
-        self.dict = try @import("desktop-portal-options.zig").clone(self.arena.allocator(), dict);
+        self.dict = try portal_options.clone(self.arena.allocator(), dict);
         return self;
     }
     fn destroy(self: *Contents) void {
@@ -26,32 +29,9 @@ const Contents = struct {
         allocator.destroy(self);
     }
     fn get(self: *const Contents, key: []const u8, signature: []const u8) ?dbus.Value {
-        return lookup(self.dict.entries, key, signature);
+        return portal_options.lookupTyped(self.dict.entries, key, signature);
     }
 };
-/// A dictionary value of the given type, or null when missing or of another type.
-fn lookup(entries: []const Dict.Entry, key: []const u8, signature: []const u8) ?dbus.Value {
-    for (entries) |entry| if (eq(entry.key, key)) {
-        var buffer: [256]u8 = undefined;
-        const actual = entry.value.signatureInto(&buffer) catch return null;
-        return if (eq(actual, signature)) entry.value else null;
-    };
-    return null;
-}
-/// A value from an `a{sv}` given as a Value.
-fn lookupValue(dict: dbus.Value, key: []const u8, signature: []const u8) ?dbus.Value {
-    const items = switch (dict) {
-        .array => |array| array.items,
-        else => return null,
-    };
-    for (items) |item| if (eq(item.dict_entry[0].string, key)) {
-        const value = item.dict_entry[1].variant.*;
-        var buffer: [256]u8 = undefined;
-        const actual = value.signatureInto(&buffer) catch return null;
-        return if (eq(actual, signature)) value else null;
-    };
-    return null;
-}
 fn string(value: ?dbus.Value) []const u8 {
     return if (value) |v| v.string else "";
 }
@@ -181,9 +161,7 @@ pub const Service = struct {
                 .string => |text| text,
                 else => return "",
             };
-            if (!std.mem.startsWith(u8, uri, "file://")) return "";
-            const path = try arena.dupe(u8, uri["file://".len..]);
-            return std.Uri.percentDecodeInPlace(path);
+            return paths.pathFromUri(arena, uri) orelse "";
         }
         if (eq(kind, "bytes")) {
             const encoded = switch (data) {

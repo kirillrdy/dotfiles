@@ -5,12 +5,9 @@ const util = @import("desktop").util;
 const session = @import("desktop").session_actions;
 const quick = @import("desktop").quick;
 
+const pump = @import("fixture-util.zig").pump;
 fn env(key: [:0]const u8) []const u8 {
-    return if (std.c.getenv(key)) |value| std.mem.span(value) else "";
-}
-fn pump() void {
-    while (mainloop.iteration(false)) {}
-    mainloop.sleep(1000);
+    return util.env(key) orelse "";
 }
 const Completion = struct {
     count: usize = 0,

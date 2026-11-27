@@ -23,13 +23,10 @@ fn done(_: ?*anyopaque, result: network.Result) void {
     if (result == .failure) std.debug.print("{s}\n", .{result.failure});
     complete = true;
 }
-fn pump() void {
-    while (mainloop.iteration(false)) {}
-    mainloop.sleep(1000);
-}
+const fixture_util = @import("fixture-util.zig");
+const pump = fixture_util.pump;
 fn settle() void {
-    const deadline = util.monotonicTime() + 100000;
-    while (util.monotonicTime() < deadline) pump();
+    fixture_util.pumpFor(100_000);
 }
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);

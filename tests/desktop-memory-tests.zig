@@ -9,13 +9,8 @@ const settings = @import("desktop").settings;
 const editor = @import("desktop").network_editor;
 const widgets = @import("desktop").widgets;
 
-fn env(name: [:0]const u8) ?[]const u8 {
-    return if (std.c.getenv(name)) |value| std.mem.span(value) else null;
-}
-fn pump() void {
-    while (mainloop.iteration(false)) {}
-    mainloop.sleep(1000);
-}
+const pump = @import("fixture-util.zig").pump;
+const env = util.env;
 fn fixture() !void {
     if (!std.mem.eql(u8, env("DESKTOP_MEMORY_TEST_RUN") orelse "", "1")) return error.PrivateMemoryFixtureRequired;
 }

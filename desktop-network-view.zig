@@ -99,11 +99,7 @@ pub const View = struct {
         };
     }
     fn iconButton(self: *View, ui: *form.Form, canvas: p.Canvas, id: usize, icon: [:0]const u8) !void {
-        const field = ui.get(id);
-        if (!field.visible) return;
-        if (ui.hover == id) p.fill(canvas, field.bounds, 0x414145, 6);
-        try self.icons.paint(ui.allocator, canvas, icon, field.bounds.x + (field.bounds.width - 16) / 2, field.bounds.y + (field.bounds.height - 16) / 2, 16);
-        if (ui.focus == id) p.focus(canvas, field.bounds);
+        try p.iconButton(&self.icons, ui, canvas, id, icon);
     }
     pub fn paint(self: *View, ui: *form.Form, target: raster.Buffer, scale: u32) !void {
         self.layout(ui);

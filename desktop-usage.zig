@@ -18,6 +18,16 @@ pub const Report = struct {
     retry_at: ?i64 = null,
 };
 
+pub fn unavailable(name: []const u8, message: []const u8) Report {
+    return .{ .name = name, .@"error" = message };
+}
+
+/// Validates a bearer token against header injection and formats an Authorization header.
+pub fn bearerHeader(a: A, token: []const u8) !std.http.Header {
+    if (std.mem.indexOfAny(u8, token, "\r\n") != null) return error.InvalidToken;
+    return .{ .name = "Authorization", .value = try u.fmt(a, "Bearer {s}", .{token}) };
+}
+
 /// Accepts JSON epoch seconds within a range that converts and formats safely.
 pub fn stamp(value: u.Value) ?i64 {
     const n = u.number(value) orelse return null;

@@ -54,8 +54,7 @@ pub fn text(ui: *form.Form, canvas: Canvas, value: [:0]const u8, rect: Rect, siz
 pub fn title(ui: *form.Form, canvas: Canvas, id: usize, rect: Rect, bold: bool, tint: u32) !void {
     const item = ui.get(id);
     if (item.title_mask == null) item.title_mask = try ui.renderer.renderLayout(ui.allocator, item.title, .{ .font = if (bold) "Adwaita Sans Bold" else "Adwaita Sans", .size = 14.666 * canvas.scale, .dpi = 96 * canvas.scale, .width = @intFromFloat(@max(1, rect.width) * canvas.scale), .ellipsize = true, .lines = 1, .origin = .top });
-    const mask = item.title_mask.?;
-    mask.paint(canvas, rect.x, rect.y + (rect.height - @as(f64, @floatFromInt(mask.logical_height)) / canvas.scale) / 2, raster.Color.rgb(tint, 1));
+    item.title_mask.?.paintCentered(canvas, rect, false, raster.Color.rgb(tint, 1));
 }
 pub fn button(ui: *form.Form, canvas: Canvas, id: usize, suggested: bool, destructive: bool) !void {
     const item = ui.get(id);
@@ -149,4 +148,15 @@ pub const Icons = struct {
         }
         if (image) |decoded| imaging.blit(canvas, decoded, .{ .x = x, .y = y, .width = @floatFromInt(size), .height = @floatFromInt(size) });
     }
+    pub fn paintCentered(self: *Icons, a: std.mem.Allocator, canvas: Canvas, name: [:0]const u8, bounds: Rect, size: u32) void {
+        const s: f64 = @floatFromInt(size);
+        self.paint(a, canvas, name, bounds.x + (bounds.width - s) / 2, bounds.y + (bounds.height - s) / 2, size) catch {};
+    }
 };
+pub fn iconButton(icons: *Icons, ui: *form.Form, canvas: Canvas, id: usize, icon: [:0]const u8) !void {
+    const item = ui.get(id);
+    if (!item.visible) return;
+    if (ui.hover == id) fill(canvas, item.bounds, 0x414145, 6);
+    try icons.paint(ui.allocator, canvas, icon, item.bounds.x + (item.bounds.width - 16) / 2, item.bounds.y + (item.bounds.height - 16) / 2, 16);
+    if (ui.focus == id) focus(canvas, item.bounds);
+}

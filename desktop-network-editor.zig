@@ -119,18 +119,7 @@ pub fn parseAddresses(arena: std.mem.Allocator, input: []const u8, ipv6: bool) !
     }
     return .{ .array = .{ .element = "a{sv}", .items = items.items } };
 }
-/// An `a{sv}` value from key/value pairs.
-fn dictionary(arena: std.mem.Allocator, pairs: []const struct { []const u8, dbus.Value }) !dbus.Value {
-    const items = try arena.alloc(dbus.Value, pairs.len);
-    for (items, pairs) |*item, pair| {
-        const entry = try arena.create([2]dbus.Value);
-        const boxed = try arena.create(dbus.Value);
-        boxed.* = pair[1];
-        entry.* = .{ .{ .string = pair[0] }, .{ .variant = boxed } };
-        item.* = .{ .dict_entry = entry };
-    }
-    return .{ .array = .{ .element = "{sv}", .items = items } };
-}
+const dictionary = @import("desktop-portal-options.zig").toValue;
 /// A dictionary entry's value with any variant wrapper removed.
 fn lookupString(dict: dbus.Value, key: []const u8) ?[]const u8 {
     return switch (dict.lookup(key) orelse return null) {

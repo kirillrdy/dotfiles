@@ -9,7 +9,9 @@ const dbus = @import("dbus");
 const gvdb = @import("desktop-gvdb.zig");
 const gvariant = @import("desktop-gvariant.zig");
 const mainloop = @import("desktop-loop.zig");
+const util = @import("desktop-util.zig");
 const Value = dbus.Value;
+const getenv = util.env;
 
 const writer_name = "ca.desrt.dconf";
 const writer_interface = "ca.desrt.dconf.Writer";
@@ -77,10 +79,6 @@ pub fn deinit() void {
     store.keyfile_arena.deinit();
     store.arena.deinit();
     store = .{};
-}
-
-fn getenv(name: [*:0]const u8) ?[]const u8 {
-    return if (std.c.getenv(name)) |value| std.mem.span(value) else null;
 }
 
 /// Loads the schema sources and the dconf profile once. Call with the mutex held.

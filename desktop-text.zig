@@ -28,6 +28,11 @@ pub const Mask = struct {
             .height = self.height,
         }, self.pixels, color);
     }
+    pub fn paintCentered(self: Mask, canvas: @import("desktop-raster.zig").Canvas, bounds: @import("desktop-raster.zig").Rect, centered: bool, color: @import("desktop-raster.zig").Color) void {
+        const w: f64 = @as(f64, @floatFromInt(self.logical_width)) / canvas.scale;
+        const h: f64 = @as(f64, @floatFromInt(self.logical_height)) / canvas.scale;
+        self.paint(canvas, bounds.x + (if (centered) (bounds.width - w) / 2 else 0), bounds.y + (bounds.height - h) / 2, color);
+    }
 };
 
 pub fn paintMask(canvas: @import("desktop-raster.zig").Canvas, value: ?Mask, x: f64, y: f64, color: @import("desktop-raster.zig").Color) void {

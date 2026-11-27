@@ -7,10 +7,7 @@ const osd = @import("desktop").osd;
 const quick = @import("desktop").quick;
 const assert = std.debug.assert;
 const cast = util.cast;
-fn pump() void {
-    while (mainloop.iteration(false)) {}
-    mainloop.sleep(1000);
-}
+const pump = @import("fixture-util.zig").pump;
 fn waitControls(controls: *quick.Controls) void {
     const deadline = util.monotonicTime() + 8_000_000;
     while ((controls.brightness_busy or controls.brightness_timer != 0) and util.monotonicTime() < deadline) pump();

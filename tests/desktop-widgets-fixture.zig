@@ -6,15 +6,10 @@ const icons = @import("desktop").icons;
 const mainloop = @import("desktop").mainloop;
 const util = @import("desktop").util;
 const assert = std.debug.assert;
-fn eq(a: [*c]const u8, b: [:0]const u8) void {
-    assert(std.mem.eql(u8, std.mem.span(a), b));
-}
+const fixture_util = @import("fixture-util.zig");
+const eq = fixture_util.assertEq;
 fn pumpEvents(milliseconds: i64) void {
-    const end = util.monotonicTime() + milliseconds * 1000;
-    while (util.monotonicTime() < end) {
-        while (mainloop.iteration(false)) {}
-        mainloop.sleep(1000);
-    }
+    fixture_util.pumpFor(milliseconds * 1000);
 }
 var refresh_count: usize = 0;
 fn refresh(kind: []const u8) void {

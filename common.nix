@@ -27,7 +27,13 @@
     NEOVIDE_FORK = "1";
   };
 
-  nix.settings.trusted-users = [ "kirillvr" ];
+  nix.settings = {
+    experimental-features = [
+      "nix-command"
+      "flakes"
+    ];
+    trusted-users = [ "kirillvr" ];
+  };
   nixpkgs.config.allowUnfree = true;
   nixpkgs.overlays = [ (import ./overlays.nix) ];
 

@@ -48,8 +48,7 @@ import ./fixture.nix { inherit pkgs; } {
                  XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"),
                  XDG_STATE_HOME=str(root / "state"), GSETTINGS_BACKEND="memory",
                  NO_AT_BRIDGE="1", GDK_BACKEND="wayland", G_DEBUG="gc-friendly,fatal-criticals",
-                 DESKTOP_MEMORY_TEST_RUN="1", DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDRESS"],
-                 PATH=os.environ["PATH"])
+                 DESKTOP_MEMORY_TEST_RUN="1", DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDRESS"])
       env.pop("DESKTOP_MEMORY_LEAK_PROBE", None)
       heap_binary = root / "desktop-memory-tests-valgrind"
       shutil.copyfile(args.binary, heap_binary)
