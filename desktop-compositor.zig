@@ -1498,21 +1498,31 @@ const Layer = struct {
     fn drawPreviews(self: *Layer, target: Canvas, scale: f64) void {
         const comp = self.comp;
         const s = scale;
+        const ox: f64 = @floatFromInt(self.rect.x - self.output.x);
+        const oy: f64 = @floatFromInt(self.rect.y - self.output.y);
         for (self.previews.items) |preview| {
             const toplevel = comp.findWindow(preview.id[0..preview.id_len]) orelse continue;
+            const v = preview.values;
+            const dest_x = (ox + v[0]) * s;
+            const dest_y = (oy + v[1]) * s;
+            const dest_w = v[2] * s;
+            const dest_h = v[3] * s;
+            const clip: Rect = .{
+                .x = @intFromFloat(@floor((ox + v[4]) * s)),
+                .y = @intFromFloat(@floor((oy + v[5]) * s)),
+                .width = @intFromFloat(@ceil(v[6] * s)),
+                .height = @intFromFloat(@ceil(v[7] * s)),
+            };
             if (target == .gl) {
                 // Straight from the window's textures: no CPU copy per frame.
                 const xdg = toplevel.xdg orelse continue;
                 const surface = xdg.surface orelse continue;
                 const geometry = xdg.windowGeometry();
                 if (geometry.width <= 0 or geometry.height <= 0) continue;
-                const v = preview.values;
-                const ox: f64 = @floatFromInt(self.rect.x - self.output.x);
-                const oy: f64 = @floatFromInt(self.rect.y - self.output.y);
-                const fx = v[2] * s / @as(f64, @floatFromInt(geometry.width));
-                const fy = v[3] * s / @as(f64, @floatFromInt(geometry.height));
-                const clip: Gl.Clip = .{ .x = @intFromFloat(@floor((ox + v[4]) * s)), .y = @intFromFloat(@floor((oy + v[5]) * s)), .width = @intFromFloat(@ceil(v[6] * s)), .height = @intFromFloat(@ceil(v[7] * s)) };
-                surface.drawGpu(target.gl, (ox + v[0]) * s - @as(f64, @floatFromInt(geometry.x)) * fx, (oy + v[1]) * s - @as(f64, @floatFromInt(geometry.y)) * fy, fx, fy, clip, @floatCast(v[8]));
+                const fx = dest_w / @as(f64, @floatFromInt(geometry.width));
+                const fy = dest_h / @as(f64, @floatFromInt(geometry.height));
+                const gl_clip: Gl.Clip = .{ .x = clip.x, .y = clip.y, .width = clip.width, .height = clip.height };
+                surface.drawGpu(target.gl, dest_x - @as(f64, @floatFromInt(geometry.x)) * fx, dest_y - @as(f64, @floatFromInt(geometry.y)) * fy, fx, fy, gl_clip, @floatCast(v[8]));
                 continue;
             }
             const size = CaptureSession.size(toplevel);
@@ -1520,11 +1530,8 @@ const Layer = struct {
             defer comp.a.free(pixels);
             @memset(pixels, 0);
             if (!toplevel.render(.{ .pixels = pixels, .width = size[0], .height = size[1] })) continue;
-            const v = preview.values;
-            const ox: f64 = @floatFromInt(self.rect.x - self.output.x);
-            const oy: f64 = @floatFromInt(self.rect.y - self.output.y);
-            const clip: raster.Region = .{ .x = @intFromFloat(@floor((ox + v[4]) * s)), .y = @intFromFloat(@floor((oy + v[5]) * s)), .width = @intFromFloat(@ceil(v[6] * s)), .height = @intFromFloat(@ceil(v[7] * s)) };
-            target.image(pixels, size[0], size[1], .{ .x = (ox + v[0]) * s, .y = (oy + v[1]) * s, .width = v[2] * s, .height = v[3] * s }, clip, v[8]);
+            const cpu_clip: raster.Region = .{ .x = clip.x, .y = clip.y, .width = @intCast(@max(0, clip.width)), .height = @intCast(@max(0, clip.height)) };
+            target.image(pixels, size[0], size[1], .{ .x = dest_x, .y = dest_y, .width = dest_w, .height = dest_h }, cpu_clip, v[8]);
         }
     }
 
@@ -1593,8 +1600,10 @@ const Output = struct {
     scheduled: bool = false,
     /// Frames rendered so far; tests wait on it.
     frames: u64 = 0,
-    /// The lock serial of the last frame drawn while locked.
+    /// The lock serial of the last frame shown on screen while locked.
     lock_serial: u32 = 0,
+    /// The lock serial of a frame queued for a page flip, not yet on screen.
+    pending_lock_serial: ?u32 = null,
     enabled: bool = true,
     global: ?*wire.Global = null,
     /// The window showing this output, with the nested backend.
@@ -1901,16 +1910,21 @@ const Output = struct {
                 self.pixels_valid = false;
                 backend.showGpu(self, target);
             }
-        } else if (self.display == null) self.drawCpu();
-        if (comp.locked) {
-            self.lock_serial = comp.lock_serial;
-            if (comp.lock) |lock| lock.acknowledge();
+        } else if (self.display == null) {
+            self.drawCpu();
+            if (self.nested) |window| window.present();
+            if (comp.locked) self.confirmLock(comp.lock_serial);
         }
-        if (self.nested) |window| window.present();
         // Displays report when the frame is on screen, at its page flip.
         if (self.display != null and self.target != null) comp.drawnFor(self) else comp.presented(self);
         self.frames += 1;
         self.sendFrameDone();
+    }
+
+    /// Records that `serial` is now visible on this output and acknowledges any pending lock.
+    fn confirmLock(self: *Output, serial: u32) void {
+        self.lock_serial = serial;
+        if (self.comp.lock) |lock| lock.acknowledge();
     }
 
     fn sendFrameDone(self: *Output) void {
@@ -3057,18 +3071,29 @@ const OutputConfig = struct {
             if (head.adaptive_sync) |enabled| if (enabled) if (head.output.display == null or !head.output.display.?.vrr_capable) return resource.sendFailed();
         }
         if (apply) {
+            var ok = true;
             for (self.disabled.items) |output| comp.setOutputEnabled(output, false);
             for (self.heads.items) |head| {
                 comp.setOutputEnabled(head.output, true);
+                var mode_ok = true;
                 if (head.size) |size| if (head.output.display) |display| if (findMode(display, size, head.refresh)) |mode| {
-                    if (comp.drm) |backend| backend.switchMode(head.output, display, mode);
+                    if (comp.drm) |backend| if (!backend.switchMode(head.output, display, mode)) {
+                        mode_ok = false;
+                        ok = false;
+                    };
+                };
+                if (comp.drm) |backend| if (head.output.display != null and head.output.target == null) {
+                    if (!backend.attachTarget(head.output)) ok = false;
                 };
                 if (head.adaptive_sync) |enabled| if (head.output.display) |display| {
-                    if (!display.setAdaptiveSync(enabled)) std.log.warn("compositor: {s}: variable refresh could not be {s}", .{ display.name(), if (enabled) "enabled" else "disabled" });
+                    if (!display.setAdaptiveSync(enabled)) {
+                        std.log.warn("compositor: {s}: variable refresh could not be {s}", .{ display.name(), if (enabled) "enabled" else "disabled" });
+                        ok = false;
+                    }
                 };
                 // The scene is the mode's size, its sides swapped by quarter turns.
                 const transform = head.transform orelse head.output.transform;
-                var size = head.size;
+                var size = if (mode_ok) head.size else null;
                 if (transform != head.output.transform or size != null) {
                     const base = size orelse if (head.output.display) |display| [2]u32{ display.width(), display.height() } else if (head.output.transform & 1 != 0) [2]u32{ head.output.height, head.output.width } else [2]u32{ head.output.width, head.output.height };
                     size = if (transform & 1 != 0) .{ base[1], base[0] } else base;
@@ -3091,6 +3116,7 @@ const OutputConfig = struct {
                 }
             }
             comp.outputChanged();
+            if (!ok) return resource.sendFailed();
         }
         resource.sendSucceeded();
     }
@@ -4200,20 +4226,21 @@ const Compositor = struct {
 
     /// Creates `count` outputs side by side, as wlroots lays them out, shown by `backend`.
     fn init(self: *Compositor, backend: Backend, width: u32, height: u32, count: usize) !void {
+        self.seat = .{ .comp = self };
+        self.ime = .{ .comp = self };
         if (backend == .wayland) self.nested = try Nested.create(self);
         if (backend == .drm) self.drm = try Drm.create(self);
         for (0..if (backend == .drm) 0 else count) |index| {
             const output = try Output.create(self, index, width, height);
+            errdefer output.destroy();
             output.x = @intCast(index * width);
             output.usable = output.box();
             try self.outputs.append(self.a, output);
             if (self.nested) |nested| try nested.addOutput(output);
         }
-        self.seat = .{ .comp = self };
         try self.seat.init();
         self.blank_timer = try self.server.loop.timer(self, &blankTimeout);
         if (self.show_ui) self.corner_settings = @import("desktop-gsettings.zig").Settings.open(self.a, "org.gnome.desktop.interface", "enable-hot-corners");
-        self.ime = .{ .comp = self };
         const server = self.server;
         try self.expose(ws.wl_compositor, 6, compositorRequest);
         try self.expose(ws.wl_subcompositor, 1, subcompositorRequest);
@@ -6358,6 +6385,7 @@ const Drm = struct {
             return;
         };
         const output = try Output.create(comp, comp.outputs.items.len, display.width(), display.height());
+        errdefer output.destroy();
         output.display = display;
         display.context = output;
         _ = self.attachTarget(output);
@@ -6399,6 +6427,10 @@ const Drm = struct {
         const output: *Output = @ptrCast(@alignCast(context));
         if (primary) {
             if (output.target) |target| target.flipped();
+            if (output.pending_lock_serial) |serial| {
+                output.pending_lock_serial = null;
+                output.confirmLock(serial);
+            }
             if (output.display) |display| if (output.target != null) output.comp.flipPresented(output, display);
         }
         if (output.unpresented) {
@@ -6408,13 +6440,21 @@ const Drm = struct {
     }
 
     /// Switches a display's mode; its buffers follow the new size.
-    fn switchMode(self: *Drm, output: *Output, display: *kms.Display, mode: kms.ModeInfo) void {
-        if (std.meta.eql(mode, display.mode)) return;
+    fn switchMode(self: *Drm, output: *Output, display: *kms.Display, mode: kms.ModeInfo) bool {
+        if (std.meta.eql(mode, display.mode)) return true;
+        const previous_mode = display.mode;
+        const previous_refresh = output.refresh;
         self.detachTarget(output);
         display.setMode(mode);
         output.refresh = @intCast(mode.refreshMilli());
-        _ = self.attachTarget(output);
+        if (!self.attachTarget(output)) {
+            display.setMode(previous_mode);
+            output.refresh = previous_refresh;
+            _ = self.attachTarget(output);
+            return false;
+        }
         std.log.info("compositor: {s} now {d}x{d} at {d} mHz", .{ display.name(), mode.hdisplay, mode.vdisplay, mode.refreshMilli() });
+        return true;
     }
 
     /// GPU frames go to a GBM surface the size of the display.
@@ -6434,12 +6474,14 @@ const Drm = struct {
         _ = self;
         if (output.target) |target| target.destroy();
         output.target = null;
+        output.pending_lock_serial = null;
     }
 
     /// Scans out the frame just drawn into `target`.
     fn showGpu(self: *Drm, output: *Output, target: *Gl.Target) void {
         const renderer = self.renderer orelse return;
         const display = output.display orelse return;
+        const frame_lock_serial: ?u32 = if (self.comp.locked) self.comp.lock_serial else null;
         const bo = renderer.finish(target) orelse return;
         const fb = self.framebuffer(bo) orelse return target.discard(bo);
         switch (display.show(fb)) {
@@ -6451,8 +6493,13 @@ const Drm = struct {
                 display.flip_time = .{ @intCast(@divTrunc(now, std.time.us_per_s)), @intCast(@mod(now, std.time.us_per_s)) };
                 self.comp.drawnFor(output);
                 self.comp.flipPresented(output, display);
+                output.pending_lock_serial = null;
+                if (frame_lock_serial) |serial| output.confirmLock(serial);
             },
-            .flipping => target.pending = bo,
+            .flipping => {
+                target.pending = bo;
+                output.pending_lock_serial = frame_lock_serial;
+            },
             .failed => {
                 target.discard(bo);
                 output.unpresented = true;
@@ -7245,6 +7292,9 @@ pub const Handle = struct {
         };
         defer server.destroy();
         var comp: Compositor = .{ .a = a, .server = server, .show_ui = self.mode == .session, .greeter = self.mode == .greeter };
+        comp.seat = .{ .comp = &comp };
+        comp.ime = .{ .comp = &comp };
+        defer comp.deinit();
         const backend = self.backend orelse selectBackend();
         comp.init(backend, self.width, self.height, if (backend == .headless) headlessOutputs() else 1) catch |err| {
             std.log.err("compositor: {s} backend: {s}", .{ @tagName(backend), @errorName(err) });
@@ -7252,7 +7302,6 @@ pub const Handle = struct {
             self.signal();
             return;
         };
-        defer comp.deinit();
         const name = server.addSocketAuto() catch {
             self.failed = true;
             self.signal();
@@ -7307,49 +7356,121 @@ pub const Handle = struct {
 
 // ------------------------------------------------------------------ Tests
 
-test "native compositor maps an xdg toplevel from shared memory and composites it" {
+const TestEnv = struct {
+    handle: *Handle = undefined,
+    runtime_buf: [64]u8 = undefined,
+    runtime_len: usize = 0,
+    previous_runtime: ?[*:0]const u8 = null,
+
+    fn start(self: *TestEnv, a: std.mem.Allocator, tag: []const u8) !void {
+        const dir = try std.fmt.bufPrintSentinel(&self.runtime_buf, "/tmp/desktop-native-{s}-{d}", .{ tag, libc.getpid() }, 0);
+        self.runtime_len = dir.len;
+        _ = libc.mkdir(dir, 0o700);
+        self.previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
+        _ = libc.setenv("XDG_RUNTIME_DIR", dir, 1);
+        self.handle = try Handle.startWith(a, .headless, .headless);
+    }
+
+    fn stop(self: *TestEnv) void {
+        self.handle.stop();
+        if (self.previous_runtime) |value| _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
+        _ = libc.rmdir(self.runtime_buf[0..self.runtime_len :0]);
+    }
+};
+
+const TestClient = struct {
     const client_wire = @import("wayland-wire");
     const wl = @import("wayland-client");
-    const a = std.testing.allocator;
-    var runtime: [64]u8 = undefined;
-    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-test-{d}", .{libc.getpid()}, 0);
-    _ = libc.mkdir(directory, 0o700);
-    defer _ = libc.rmdir(directory);
-    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
-    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
-    defer if (previous_runtime) |value| {
-        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
-    };
-    const handle = try Handle.startWith(a, .headless, .headless);
-    defer handle.stop();
 
-    const connection = try client_wire.Connection.connect(a);
-    defer connection.deinit();
-    const Globals = struct {
-        compositor: ?wl.wl_compositor = null,
-        shm: ?wl.wl_shm = null,
-        wm_base: ?wl.xdg_wm_base = null,
-        seat: ?wl.wl_seat = null,
-        output: ?wl.wl_output = null,
-        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
-            switch (event) {
-                .global => |g| {
-                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
-                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_seat")) self.seat = registry.bind(g.name, wl.wl_seat, 9);
-                    if (std.mem.eql(u8, g.interface, "wl_output")) self.output = registry.bind(g.name, wl.wl_output, 4);
-                },
-                .global_remove => {},
-            }
+    conn: *client_wire.Connection = undefined,
+    compositor: ?wl.wl_compositor = null,
+    shm: ?wl.wl_shm = null,
+    wm_base: ?wl.xdg_wm_base = null,
+    seat: ?wl.wl_seat = null,
+    output: ?wl.wl_output = null,
+    layers: ?wl.zwlr_layer_shell_v1 = null,
+    data: ?wl.wl_data_device_manager = null,
+    pointers: ?wl.zwlr_virtual_pointer_manager_v1 = null,
+    keyboards: ?wl.zwp_virtual_keyboard_manager_v1 = null,
+    texts: ?wl.zwp_text_input_manager_v3 = null,
+    methods: ?wl.zwp_input_method_manager_v2 = null,
+    list: ?wl.ext_foreign_toplevel_list_v1 = null,
+    sources: ?wl.ext_foreign_toplevel_image_capture_source_manager_v1 = null,
+    copy: ?wl.ext_image_copy_capture_manager_v1 = null,
+    output_manager: ?wl.zwlr_output_manager_v1 = null,
+    viewporter: ?wl.wp_viewporter = null,
+    fractional: ?wl.wp_fractional_scale_manager_v1 = null,
+    presentation: ?wl.wp_presentation = null,
+
+    fn connect(self: *TestClient, a: std.mem.Allocator) !void {
+        self.* = .{ .conn = try client_wire.Connection.connect(a) };
+        errdefer self.conn.deinit();
+        const registry = (wl.wl_display{ .proxy = self.conn.display() }).get_registry();
+        registry.listen(TestClient, self, global);
+        try self.conn.roundtrip();
+    }
+
+    fn deinit(self: *TestClient) void {
+        self.conn.deinit();
+    }
+
+    fn global(self: *TestClient, registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+        switch (event) {
+            .global => |g| {
+                const binds = .{
+                    .{ "wl_compositor", "compositor", wl.wl_compositor, 6 },
+                    .{ "wl_shm", "shm", wl.wl_shm, 1 },
+                    .{ "xdg_wm_base", "wm_base", wl.xdg_wm_base, 6 },
+                    .{ "wl_seat", "seat", wl.wl_seat, 9 },
+                    .{ "wl_output", "output", wl.wl_output, 4 },
+                    .{ "zwlr_layer_shell_v1", "layers", wl.zwlr_layer_shell_v1, 4 },
+                    .{ "wl_data_device_manager", "data", wl.wl_data_device_manager, 3 },
+                    .{ "zwlr_virtual_pointer_manager_v1", "pointers", wl.zwlr_virtual_pointer_manager_v1, 2 },
+                    .{ "zwp_virtual_keyboard_manager_v1", "keyboards", wl.zwp_virtual_keyboard_manager_v1, 1 },
+                    .{ "zwp_text_input_manager_v3", "texts", wl.zwp_text_input_manager_v3, 1 },
+                    .{ "zwp_input_method_manager_v2", "methods", wl.zwp_input_method_manager_v2, 1 },
+                    .{ "ext_foreign_toplevel_list_v1", "list", wl.ext_foreign_toplevel_list_v1, 1 },
+                    .{ "ext_foreign_toplevel_image_capture_source_manager_v1", "sources", wl.ext_foreign_toplevel_image_capture_source_manager_v1, 1 },
+                    .{ "ext_image_copy_capture_manager_v1", "copy", wl.ext_image_copy_capture_manager_v1, 1 },
+                    .{ "zwlr_output_manager_v1", "output_manager", wl.zwlr_output_manager_v1, 4 },
+                    .{ "wp_viewporter", "viewporter", wl.wp_viewporter, 1 },
+                    .{ "wp_fractional_scale_manager_v1", "fractional", wl.wp_fractional_scale_manager_v1, 1 },
+                    .{ "wp_presentation", "presentation", wl.wp_presentation, 1 },
+                };
+                inline for (binds) |entry| {
+                    if (std.mem.eql(u8, g.interface, entry[0])) @field(self, entry[1]) = registry.bind(g.name, entry[2], entry[3]);
+                }
+            },
+            .global_remove => {},
         }
-    };
-    var globals: Globals = .{};
-    const display: wl.wl_display = .{ .proxy = connection.display() };
-    const registry = display.get_registry();
-    registry.listen(Globals, &globals, Globals.global);
-    try connection.roundtrip();
-    try std.testing.expect(globals.compositor != null and globals.shm != null and globals.wm_base != null and globals.seat != null and globals.output != null);
+    }
+
+    fn shmBuffer(self: *TestClient, width: usize, height: usize, color: ?u32) !wl.wl_buffer {
+        const size = width * height * 4;
+        const fd = libc.memfd_create("buffer", 0x0001);
+        defer _ = std.c.close(fd);
+        if (libc.ftruncate(fd, @intCast(size)) != 0) return error.NoMemory;
+        if (color) |fill| {
+            const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0).?;
+            defer _ = libc.munmap(memory, size);
+            @memset(@as([*]u32, @ptrCast(@alignCast(memory)))[0 .. width * height], fill);
+        }
+        const pool = self.shm.?.create_pool(fd, @intCast(size));
+        defer pool.destroy();
+        return pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), 0);
+    }
+};
+
+test "native compositor maps an xdg toplevel from shared memory and composites it" {
+    const wl = @import("wayland-client");
+    const a = std.testing.allocator;
+    var env: TestEnv = .{};
+    try env.start(a, "test");
+    defer env.stop();
+    var client: TestClient = undefined;
+    try client.connect(a);
+    defer client.deinit();
+    try std.testing.expect(client.compositor != null and client.shm != null and client.wm_base != null and client.seat != null and client.output != null);
 
     const Window = struct {
         configured: u32 = 0,
@@ -7393,53 +7514,43 @@ test "native compositor maps an xdg toplevel from shared memory and composites i
         }
     };
     var window: Window = .{};
-    const keyboard = globals.seat.?.get_keyboard();
+    const keyboard = client.seat.?.get_keyboard();
     keyboard.listen(Window, &window, Window.keyboard);
-    const surface = globals.compositor.?.create_surface();
-    const xdg_surface = globals.wm_base.?.get_xdg_surface(surface);
+    const surface = client.compositor.?.create_surface();
+    const xdg_surface = client.wm_base.?.get_xdg_surface(surface);
     xdg_surface.listen(Window, &window, Window.xdgSurface);
     const toplevel = xdg_surface.get_toplevel();
     toplevel.listen(Window, &window, Window.toplevel);
     toplevel.set_title("native test");
     surface.commit();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     try std.testing.expectEqual(@as(u32, 1), window.configured);
     try std.testing.expect(window.keymap_size > 1000);
 
     // A 100x50 opaque red buffer.
-    const width = 100;
-    const height = 50;
-    const fd = libc.memfd_create("buffer", 0x0001);
-    defer _ = std.c.close(fd);
-    try std.testing.expectEqual(@as(c_int, 0), libc.ftruncate(fd, width * height * 4));
-    const memory = libc.mmap(null, width * height * 4, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0).?;
-    defer _ = libc.munmap(memory, width * height * 4);
-    @memset(@as([*]u32, @ptrCast(@alignCast(memory)))[0 .. width * height], 0xffff0000);
-    const pool = globals.shm.?.create_pool(fd, width * height * 4);
-    const buffer = pool.create_buffer(0, width, height, width * 4, 0);
+    const buffer = try client.shmBuffer(100, 50, 0xffff0000);
     buffer.listen(Window, &window, Window.buffer);
-    pool.destroy();
     surface.attach(buffer, 0, 0);
-    surface.damage_buffer(0, 0, width, height);
+    surface.damage_buffer(0, 0, 100, 50);
     const callback = surface.frame();
     callback.listen(Window, &window, Window.frame);
     surface.commit();
     var deadline = util.monotonicTime() + 3_000_000;
-    while (!window.frame_done and util.monotonicTime() < deadline) _ = try connection.dispatchTimeout(100);
+    while (!window.frame_done and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(100);
     try std.testing.expect(window.frame_done);
     try std.testing.expect(window.released);
     try std.testing.expect(window.activated);
     try std.testing.expect(window.entered);
     // Windows open maximized; this one draws less than it was offered, from the corner.
     deadline = util.monotonicTime() + 3_000_000;
-    while (handle.pixel(50, 25).value != 0xffff0000 and util.monotonicTime() < deadline) util.sleep(10 * std.time.ns_per_ms);
-    try std.testing.expectEqual(@as(u32, 0xffff0000), handle.pixel(50, 25).value);
-    try std.testing.expectEqual(@as(u32, 0xff303030), handle.pixel(640, 360).value);
+    while (env.handle.pixel(50, 25).value != 0xffff0000 and util.monotonicTime() < deadline) util.sleep(10 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u32, 0xffff0000), env.handle.pixel(50, 25).value);
+    try std.testing.expectEqual(@as(u32, 0xff303030), env.handle.pixel(640, 360).value);
     buffer.destroy();
     toplevel.destroy();
     xdg_surface.destroy();
     surface.destroy();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
 }
 
 fn sameApp(a: *const Toplevel, b: *const Toplevel) bool {
@@ -7501,56 +7612,19 @@ test "native compositor relays text input to an input method and its keyboard gr
     const client_wire = @import("wayland-wire");
     const wl = @import("wayland-client");
     const a = std.testing.allocator;
-    var runtime: [64]u8 = undefined;
-    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-ime-{d}", .{libc.getpid()}, 0);
-    _ = libc.mkdir(directory, 0o700);
-    defer _ = libc.rmdir(directory);
-    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
-    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
-    defer if (previous_runtime) |value| {
-        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
-    };
-    const handle = try Handle.startWith(a, .headless, .headless);
-    defer handle.stop();
+    var env: TestEnv = .{};
+    try env.start(a, "ime");
+    defer env.stop();
 
-    const Globals = struct {
-        compositor: ?wl.wl_compositor = null,
-        shm: ?wl.wl_shm = null,
-        wm_base: ?wl.xdg_wm_base = null,
-        seat: ?wl.wl_seat = null,
-        texts: ?wl.zwp_text_input_manager_v3 = null,
-        methods: ?wl.zwp_input_method_manager_v2 = null,
-        keyboards: ?wl.zwp_virtual_keyboard_manager_v1 = null,
-        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
-            switch (event) {
-                .global => |g| {
-                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
-                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_seat")) self.seat = registry.bind(g.name, wl.wl_seat, 9);
-                    if (std.mem.eql(u8, g.interface, "zwp_text_input_manager_v3")) self.texts = registry.bind(g.name, wl.zwp_text_input_manager_v3, 1);
-                    if (std.mem.eql(u8, g.interface, "zwp_input_method_manager_v2")) self.methods = registry.bind(g.name, wl.zwp_input_method_manager_v2, 1);
-                    if (std.mem.eql(u8, g.interface, "zwp_virtual_keyboard_manager_v1")) self.keyboards = registry.bind(g.name, wl.zwp_virtual_keyboard_manager_v1, 1);
-                },
-                .global_remove => {},
-            }
-        }
-    };
     // The application: a focused window with an enabled text input.
-    const app = try client_wire.Connection.connect(a);
+    var app: TestClient = undefined;
+    try app.connect(a);
     defer app.deinit();
-    var app_globals: Globals = .{};
-    const app_registry = (wl.wl_display{ .proxy = app.display() }).get_registry();
-    app_registry.listen(Globals, &app_globals, Globals.global);
-    try app.roundtrip();
     // The input method, on its own connection.
-    const ime = try client_wire.Connection.connect(a);
+    var ime: TestClient = undefined;
+    try ime.connect(a);
     defer ime.deinit();
-    var ime_globals: Globals = .{};
-    const ime_registry = (wl.wl_display{ .proxy = ime.display() }).get_registry();
-    ime_registry.listen(Globals, &ime_globals, Globals.global);
-    try ime.roundtrip();
-    try std.testing.expect(app_globals.texts != null and ime_globals.methods != null);
+    try std.testing.expect(app.texts != null and ime.methods != null);
 
     const App = struct {
         entered: bool = false,
@@ -7613,47 +7687,42 @@ test "native compositor relays text input to an input method and its keyboard gr
         }
     };
 
-    const keyboard = app_globals.seat.?.get_keyboard();
+    const keyboard = app.seat.?.get_keyboard();
     keyboard.listen(App, &app_state, App.keyboard);
-    const text = app_globals.texts.?.get_text_input(app_globals.seat.?);
+    const text = app.texts.?.get_text_input(app.seat.?);
     text.listen(App, &app_state, App.text);
-    const method = ime_globals.methods.?.get_input_method(ime_globals.seat.?);
+    const method = ime.methods.?.get_input_method(ime.seat.?);
     method.listen(Method, &method_state, Method.method);
-    try ime.roundtrip();
+    try ime.conn.roundtrip();
 
     // Map a window so it gets keyboard focus, then enable text input on it.
-    const surface = app_globals.compositor.?.create_surface();
-    const xdg_surface = app_globals.wm_base.?.get_xdg_surface(surface);
+    const surface = app.compositor.?.create_surface();
+    const xdg_surface = app.wm_base.?.get_xdg_surface(surface);
     xdg_surface.listen(App, &app_state, App.xdgSurface);
     const toplevel = xdg_surface.get_toplevel();
     surface.commit();
-    try app.roundtrip();
-    const fd = libc.memfd_create("buffer", 0x0001);
-    defer _ = std.c.close(fd);
-    _ = libc.ftruncate(fd, 4);
-    const pool = app_globals.shm.?.create_pool(fd, 4);
-    const buffer = pool.create_buffer(0, 1, 1, 4, 0);
-    pool.destroy();
+    try app.conn.roundtrip();
+    const buffer = try app.shmBuffer(1, 1, null);
     surface.attach(buffer, 0, 0);
     surface.commit();
-    try pump.until(&.{app}, &app_state.entered);
+    try pump.until(&.{app.conn}, &app_state.entered);
     try std.testing.expect(app_state.entered);
     text.enable();
     text.set_content_type(0, 8); // ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_EMAIL
     text.commit();
-    try app.roundtrip();
-    try pump.until(&.{ime}, &method_state.active);
+    try app.conn.roundtrip();
+    try pump.until(&.{ime.conn}, &method_state.active);
     try std.testing.expect(method_state.active);
     try std.testing.expectEqual(@as(u32, 8), method_state.purpose);
 
     // A commit answering the latest done reaches the application.
     method.commit_string("日本");
     method.commit(method_state.dones);
-    try ime.roundtrip();
+    try ime.conn.roundtrip();
     var done = false;
     const deadline = util.monotonicTime() + 3_000_000;
     while (!done and util.monotonicTime() < deadline) {
-        _ = try app.dispatchTimeout(20);
+        _ = try app.conn.dispatchTimeout(20);
         done = app_state.committed_len > 0;
     }
     try std.testing.expectEqualStrings("日本", app_state.committed[0..app_state.committed_len]);
@@ -7661,22 +7730,22 @@ test "native compositor relays text input to an input method and its keyboard gr
     // With a keyboard grab, keys from another client's virtual keyboard go to the input method.
     const grab = method.grab_keyboard();
     grab.listen(Method, &method_state, Method.grab);
-    try ime.roundtrip();
-    const virtual = app_globals.keyboards.?.create_virtual_keyboard(app_globals.seat.?);
+    try ime.conn.roundtrip();
+    const virtual = app.keyboards.?.create_virtual_keyboard(app.seat.?);
     const keymap = keymapFile(keymap_text).?;
     defer keymap.deinit();
     virtual.keymap(1, keymap.fd, keymap.size);
     virtual.key(0, 30, 1);
     virtual.key(0, 30, 0);
-    try app.roundtrip();
+    try app.conn.roundtrip();
     var grabbed = false;
     const grab_deadline = util.monotonicTime() + 3_000_000;
     while (!grabbed and util.monotonicTime() < grab_deadline) {
-        _ = try ime.dispatchTimeout(20);
+        _ = try ime.conn.dispatchTimeout(20);
         grabbed = method_state.grabbed_keys == 2;
     }
     try std.testing.expectEqual(@as(u32, 2), method_state.grabbed_keys);
-    try app.roundtrip();
+    try app.conn.roundtrip();
     try std.testing.expectEqual(@as(u32, 0), app_state.keys);
 
     virtual.destroy();
@@ -7688,8 +7757,8 @@ test "native compositor relays text input to an input method and its keyboard gr
     xdg_surface.destroy();
     surface.destroy();
     keyboard.release();
-    try app.roundtrip();
-    try ime.roundtrip();
+    try app.conn.roundtrip();
+    try ime.conn.roundtrip();
 }
 
 test "popups flip, slide and shrink into the output as their positioner allows" {
@@ -7744,46 +7813,13 @@ test "native compositor carries a drag from press to drop with negotiated action
     const client_wire = @import("wayland-wire");
     const wl = @import("wayland-client");
     const a = std.testing.allocator;
-    var runtime: [64]u8 = undefined;
-    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-dnd-{d}", .{libc.getpid()}, 0);
-    _ = libc.mkdir(directory, 0o700);
-    defer _ = libc.rmdir(directory);
-    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
-    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
-    defer if (previous_runtime) |value| {
-        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
-    };
-    const handle = try Handle.startWith(a, .headless, .headless);
-    defer handle.stop();
-
-    const connection = try client_wire.Connection.connect(a);
-    defer connection.deinit();
-    const Globals = struct {
-        compositor: ?wl.wl_compositor = null,
-        shm: ?wl.wl_shm = null,
-        wm_base: ?wl.xdg_wm_base = null,
-        seat: ?wl.wl_seat = null,
-        data: ?wl.wl_data_device_manager = null,
-        pointers: ?wl.zwlr_virtual_pointer_manager_v1 = null,
-        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
-            switch (event) {
-                .global => |g| {
-                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
-                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_seat")) self.seat = registry.bind(g.name, wl.wl_seat, 9);
-                    if (std.mem.eql(u8, g.interface, "wl_data_device_manager")) self.data = registry.bind(g.name, wl.wl_data_device_manager, 3);
-                    if (std.mem.eql(u8, g.interface, "zwlr_virtual_pointer_manager_v1")) self.pointers = registry.bind(g.name, wl.zwlr_virtual_pointer_manager_v1, 2);
-                },
-                .global_remove => {},
-            }
-        }
-    };
-    var globals: Globals = .{};
-    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
-    registry.listen(Globals, &globals, Globals.global);
-    try connection.roundtrip();
-    try std.testing.expect(globals.data != null and globals.pointers != null);
+    var env: TestEnv = .{};
+    try env.start(a, "dnd");
+    defer env.stop();
+    var client: TestClient = undefined;
+    try client.connect(a);
+    defer client.deinit();
+    try std.testing.expect(client.data != null and client.pointers != null);
 
     const Dnd = struct {
         press_serial: u32 = 0,
@@ -7847,29 +7883,22 @@ test "native compositor carries a drag from press to drop with negotiated action
         }
     };
     var dnd: Dnd = .{};
-    const pointer = globals.seat.?.get_pointer();
+    const pointer = client.seat.?.get_pointer();
     pointer.listen(Dnd, &dnd, Dnd.pointer);
-    const device = globals.data.?.get_data_device(globals.seat.?);
+    const device = client.data.?.get_data_device(client.seat.?);
     device.listen(Dnd, &dnd, Dnd.device);
-    const surface = globals.compositor.?.create_surface();
-    const xdg_surface = globals.wm_base.?.get_xdg_surface(surface);
+    const surface = client.compositor.?.create_surface();
+    const xdg_surface = client.wm_base.?.get_xdg_surface(surface);
     xdg_surface.listen(Dnd, &dnd, Dnd.xdgSurface);
     const toplevel = xdg_surface.get_toplevel();
     surface.commit();
-    try connection.roundtrip();
-    const width = 400;
-    const height = 300;
-    const fd = libc.memfd_create("buffer", 0x0001);
-    defer _ = std.c.close(fd);
-    try std.testing.expectEqual(@as(c_int, 0), libc.ftruncate(fd, width * height * 4));
-    const pool = globals.shm.?.create_pool(fd, width * height * 4);
-    const buffer = pool.create_buffer(0, width, height, width * 4, 0);
-    pool.destroy();
+    try client.conn.roundtrip();
+    const buffer = try client.shmBuffer(400, 300, null);
     surface.attach(buffer, 0, 0);
     // "Everything", as GL clients damage it, must not overflow the compositor.
     surface.damage(0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
     surface.commit();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
 
     const wait = struct {
         fn until(conn: *client_wire.Connection, flag: *const bool) !void {
@@ -7879,25 +7908,23 @@ test "native compositor carries a drag from press to drop with negotiated action
         }
     };
     // Press inside the window, then start dragging text from it.
-    const virtual = globals.pointers.?.create_virtual_pointer(globals.seat.?);
+    const virtual = client.pointers.?.create_virtual_pointer(client.seat.?);
     virtual.motion_absolute(0, 100, 100, 1280, 720);
     virtual.frame();
-    try wait.until(connection, &dnd.pointer_entered);
+    try wait.until(client.conn, &dnd.pointer_entered);
     virtual.button(0, 0x110, 1);
     virtual.frame();
-    try connection.roundtrip();
-    var pressed = false;
+    try client.conn.roundtrip();
     const deadline = util.monotonicTime() + 3_000_000;
-    while (dnd.press_serial == 0 and util.monotonicTime() < deadline) _ = try connection.dispatchTimeout(50);
-    pressed = dnd.press_serial != 0;
-    try std.testing.expect(pressed);
-    const source = globals.data.?.create_data_source();
+    while (dnd.press_serial == 0 and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(50);
+    try std.testing.expect(dnd.press_serial != 0);
+    const source = client.data.?.create_data_source();
     source.listen(Dnd, &dnd, Dnd.source);
     source.offer("text/plain");
     source.set_actions(wl.wl_data_device_manager.DndAction.copy | wl.wl_data_device_manager.DndAction.move);
     device.start_drag(source, surface, null, dnd.press_serial);
-    try connection.roundtrip();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
+    try client.conn.roundtrip();
     try std.testing.expectEqual(@as(u32, 1), dnd.enters);
     try std.testing.expect(dnd.offered_text);
     try std.testing.expectEqual(@as(u32, 3), dnd.source_actions);
@@ -7905,8 +7932,8 @@ test "native compositor carries a drag from press to drop with negotiated action
     // The target accepts text and prefers moving it.
     dnd.offer.?.accept(dnd.enter_serial, "text/plain");
     dnd.offer.?.set_actions(wl.wl_data_device_manager.DndAction.copy | wl.wl_data_device_manager.DndAction.move, wl.wl_data_device_manager.DndAction.move);
-    try connection.roundtrip();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
+    try client.conn.roundtrip();
     try std.testing.expect(dnd.target_text);
     try std.testing.expectEqual(@as(u32, 2), dnd.offer_action);
     try std.testing.expectEqual(@as(u32, 2), dnd.source_action);
@@ -7914,10 +7941,10 @@ test "native compositor carries a drag from press to drop with negotiated action
     virtual.motion_absolute(0, 150, 120, 1280, 720);
     virtual.button(0, 0x110, 0);
     virtual.frame();
-    try wait.until(connection, &dnd.dropped);
-    try wait.until(connection, &dnd.drop_performed);
+    try wait.until(client.conn, &dnd.dropped);
+    try wait.until(client.conn, &dnd.drop_performed);
     dnd.offer.?.finish();
-    try wait.until(connection, &dnd.finished);
+    try wait.until(client.conn, &dnd.finished);
     try std.testing.expect(!dnd.cancelled);
 
     dnd.offer.?.destroy();
@@ -7926,7 +7953,7 @@ test "native compositor carries a drag from press to drop with negotiated action
     toplevel.destroy();
     xdg_surface.destroy();
     surface.destroy();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
 }
 
 test "outputs redraw the damage of the frames a reused buffer missed" {
@@ -7985,46 +8012,14 @@ test "shared-memory formats convert to premultiplied ARGB" {
 }
 
 test "native compositor moves a window dragged by its title bar" {
-    const client_wire = @import("wayland-wire");
     const wl = @import("wayland-client");
     const a = std.testing.allocator;
-    var runtime: [64]u8 = undefined;
-    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-move-{d}", .{libc.getpid()}, 0);
-    _ = libc.mkdir(directory, 0o700);
-    defer _ = libc.rmdir(directory);
-    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
-    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
-    defer if (previous_runtime) |value| {
-        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
-    };
-    const handle = try Handle.startWith(a, .headless, .headless);
-    defer handle.stop();
-
-    const connection = try client_wire.Connection.connect(a);
-    defer connection.deinit();
-    const Globals = struct {
-        compositor: ?wl.wl_compositor = null,
-        shm: ?wl.wl_shm = null,
-        wm_base: ?wl.xdg_wm_base = null,
-        seat: ?wl.wl_seat = null,
-        pointers: ?wl.zwlr_virtual_pointer_manager_v1 = null,
-        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
-            switch (event) {
-                .global => |g| {
-                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
-                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_seat")) self.seat = registry.bind(g.name, wl.wl_seat, 9);
-                    if (std.mem.eql(u8, g.interface, "zwlr_virtual_pointer_manager_v1")) self.pointers = registry.bind(g.name, wl.zwlr_virtual_pointer_manager_v1, 2);
-                },
-                .global_remove => {},
-            }
-        }
-    };
-    var globals: Globals = .{};
-    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
-    registry.listen(Globals, &globals, Globals.global);
-    try connection.roundtrip();
+    var env: TestEnv = .{};
+    try env.start(a, "move");
+    defer env.stop();
+    var client: TestClient = undefined;
+    try client.connect(a);
+    defer client.deinit();
 
     const Window = struct {
         press_serial: u32 = 0,
@@ -8050,100 +8045,65 @@ test "native compositor moves a window dragged by its title bar" {
         }
     };
     var window: Window = .{};
-    const pointer = globals.seat.?.get_pointer();
+    const pointer = client.seat.?.get_pointer();
     pointer.listen(Window, &window, Window.pointer);
-    const surface = globals.compositor.?.create_surface();
-    const xdg_surface = globals.wm_base.?.get_xdg_surface(surface);
+    const surface = client.compositor.?.create_surface();
+    const xdg_surface = client.wm_base.?.get_xdg_surface(surface);
     xdg_surface.listen(Window, &window, Window.xdgSurface);
     const toplevel = xdg_surface.get_toplevel();
     toplevel.listen(Window, &window, Window.toplevel);
     surface.commit();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     // A red window of the size it was given (the output's usable area).
-    const width: usize = @intCast(window.size[0]);
-    const height: usize = @intCast(window.size[1]);
-    const fd = libc.memfd_create("buffer", 0x0001);
-    defer _ = std.c.close(fd);
-    try std.testing.expectEqual(@as(c_int, 0), libc.ftruncate(fd, @intCast(width * height * 4)));
-    const memory = libc.mmap(null, width * height * 4, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0).?;
-    defer _ = libc.munmap(memory, width * height * 4);
-    @memset(@as([*]u32, @ptrCast(@alignCast(memory)))[0 .. width * height], 0xffff0000);
-    const pool = globals.shm.?.create_pool(fd, @intCast(width * height * 4));
-    const buffer = pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), 0);
-    pool.destroy();
+    const buffer = try client.shmBuffer(@intCast(window.size[0]), @intCast(window.size[1]), 0xffff0000);
     surface.attach(buffer, 0, 0);
     surface.commit();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
+    var deadline = util.monotonicTime() + 3_000_000;
+    while (env.handle.pixel(50, 50).value != 0xffff0000 and util.monotonicTime() < deadline) {
+        _ = try client.conn.dispatchTimeout(20);
+    }
+    try std.testing.expectEqual(@as(u32, 0xffff0000), env.handle.pixel(50, 50).value);
 
-    const virtual = globals.pointers.?.create_virtual_pointer(globals.seat.?);
+    const virtual = client.pointers.?.create_virtual_pointer(client.seat.?);
     virtual.motion_absolute(0, 100, 100, 1280, 720);
     virtual.button(0, 0x110, 1);
     virtual.frame();
-    var deadline = util.monotonicTime() + 3_000_000;
-    while (window.press_serial == 0 and util.monotonicTime() < deadline) _ = try connection.dispatchTimeout(50);
+    deadline = util.monotonicTime() + 3_000_000;
+    while (window.press_serial == 0 and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(50);
     try std.testing.expect(window.press_serial != 0);
-    toplevel.move(globals.seat.?, window.press_serial);
-    try connection.roundtrip();
+    toplevel.move(client.seat.?, window.press_serial);
+    try client.conn.roundtrip();
     virtual.motion(0, 200, 150);
     virtual.frame();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     // The window keeps its size and follows the pointer; its old corner shows the background.
     deadline = util.monotonicTime() + 3_000_000;
-    while (handle.pixel(50, 50).value != 0xff303030 and util.monotonicTime() < deadline) {
-        _ = try connection.dispatchTimeout(20);
+    while ((env.handle.pixel(50, 50).value != 0xff303030 or env.handle.pixel(250, 200).value != 0xffff0000) and util.monotonicTime() < deadline) {
+        _ = try client.conn.dispatchTimeout(20);
     }
-    try std.testing.expectEqual(@as(u32, 0xff303030), handle.pixel(50, 50).value);
-    try std.testing.expectEqual(@as(u32, 0xffff0000), handle.pixel(250, 200).value);
+    try std.testing.expectEqual(@as(u32, 0xff303030), env.handle.pixel(50, 50).value);
+    try std.testing.expectEqual(@as(u32, 0xffff0000), env.handle.pixel(250, 200).value);
     virtual.button(0, 0x110, 0);
     virtual.frame();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
 
     buffer.destroy();
     toplevel.destroy();
     xdg_surface.destroy();
     surface.destroy();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
 }
 
 test "native compositor hides the panel over a fullscreen window" {
-    const client_wire = @import("wayland-wire");
     const wl = @import("wayland-client");
     const a = std.testing.allocator;
-    var runtime: [64]u8 = undefined;
-    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-fullscreen-{d}", .{libc.getpid()}, 0);
-    _ = libc.mkdir(directory, 0o700);
-    defer _ = libc.rmdir(directory);
-    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
-    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
-    defer if (previous_runtime) |value| {
-        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
-    };
-    const handle = try Handle.startWith(a, .headless, .headless);
-    defer handle.stop();
-
-    const connection = try client_wire.Connection.connect(a);
-    defer connection.deinit();
-    const Globals = struct {
-        compositor: ?wl.wl_compositor = null,
-        shm: ?wl.wl_shm = null,
-        wm_base: ?wl.xdg_wm_base = null,
-        layers: ?wl.zwlr_layer_shell_v1 = null,
-        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
-            switch (event) {
-                .global => |g| {
-                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
-                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
-                    if (std.mem.eql(u8, g.interface, "zwlr_layer_shell_v1")) self.layers = registry.bind(g.name, wl.zwlr_layer_shell_v1, 4);
-                },
-                .global_remove => {},
-            }
-        }
-    };
-    var globals: Globals = .{};
-    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
-    registry.listen(Globals, &globals, Globals.global);
-    try connection.roundtrip();
+    var env: TestEnv = .{};
+    try env.start(a, "fullscreen");
+    defer env.stop();
+    var client: TestClient = undefined;
+    try client.connect(a);
+    defer client.deinit();
 
     const State = struct {
         panel_serial: u32 = 0,
@@ -8167,55 +8127,42 @@ test "native compositor hides the panel over a fullscreen window" {
         }
     };
     var state: State = .{};
-    const Shm = struct {
-        fn buffer(shm: wl.wl_shm, width: usize, height: usize, color: u32) !wl.wl_buffer {
-            const fd = libc.memfd_create("buffer", 0x0001);
-            defer _ = std.c.close(fd);
-            if (libc.ftruncate(fd, @intCast(width * height * 4)) != 0) return error.NoMemory;
-            const memory = libc.mmap(null, width * height * 4, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0).?;
-            defer _ = libc.munmap(memory, width * height * 4);
-            @memset(@as([*]u32, @ptrCast(@alignCast(memory)))[0 .. width * height], color);
-            const pool = shm.create_pool(fd, @intCast(width * height * 4));
-            defer pool.destroy();
-            return pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), 0);
-        }
-    };
     // A blue panel across the top, in the top layer.
-    const panel_surface = globals.compositor.?.create_surface();
-    const panel = globals.layers.?.get_layer_surface(panel_surface, null, 2, "desktop-panel");
+    const panel_surface = client.compositor.?.create_surface();
+    const panel = client.layers.?.get_layer_surface(panel_surface, null, 2, "desktop-panel");
     panel.listen(State, &state, State.layer);
     panel.set_size(0, 32);
     panel.set_anchor(1 | 4 | 8);
     panel.set_exclusive_zone(32);
     panel_surface.commit();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     panel.ack_configure(state.panel_serial);
-    const panel_buffer = try Shm.buffer(globals.shm.?, 1280, 32, 0xff0000ff);
+    const panel_buffer = try client.shmBuffer(1280, 32, 0xff0000ff);
     panel_surface.attach(panel_buffer, 0, 0);
     panel_surface.commit();
     // A red window that goes fullscreen.
-    const surface = globals.compositor.?.create_surface();
-    const xdg_surface = globals.wm_base.?.get_xdg_surface(surface);
+    const surface = client.compositor.?.create_surface();
+    const xdg_surface = client.wm_base.?.get_xdg_surface(surface);
     xdg_surface.listen(State, &state, State.xdgSurface);
     const toplevel = xdg_surface.get_toplevel();
     toplevel.listen(State, &state, State.toplevel);
     toplevel.set_fullscreen(null);
     surface.commit();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     try std.testing.expectEqual([2]i32{ 1280, 720 }, state.size);
-    const buffer = try Shm.buffer(globals.shm.?, 1280, 720, 0xffff0000);
+    const buffer = try client.shmBuffer(1280, 720, 0xffff0000);
     surface.attach(buffer, 0, 0);
     surface.commit();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     var deadline = util.monotonicTime() + 3_000_000;
-    while (handle.pixel(10, 10).value != 0xffff0000 and util.monotonicTime() < deadline) _ = try connection.dispatchTimeout(20);
-    try std.testing.expectEqual(@as(u32, 0xffff0000), handle.pixel(10, 10).value);
+    while (env.handle.pixel(10, 10).value != 0xffff0000 and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(20);
+    try std.testing.expectEqual(@as(u32, 0xffff0000), env.handle.pixel(10, 10).value);
     // Leaving fullscreen brings the panel back over the maximized window.
     toplevel.unset_fullscreen();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     deadline = util.monotonicTime() + 3_000_000;
-    while (handle.pixel(10, 10).value != 0xff0000ff and util.monotonicTime() < deadline) _ = try connection.dispatchTimeout(20);
-    try std.testing.expectEqual(@as(u32, 0xff0000ff), handle.pixel(10, 10).value);
+    while (env.handle.pixel(10, 10).value != 0xff0000ff and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(20);
+    try std.testing.expectEqual(@as(u32, 0xff0000ff), env.handle.pixel(10, 10).value);
 
     buffer.destroy();
     panel_buffer.destroy();
@@ -8224,49 +8171,19 @@ test "native compositor hides the panel over a fullscreen window" {
     surface.destroy();
     panel.destroy();
     panel_surface.destroy();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
 }
 
 test "native compositor passes scroll sources, stops and wheel steps to clients" {
-    const client_wire = @import("wayland-wire");
     const wl = @import("wayland-client");
     const a = std.testing.allocator;
-    var runtime: [64]u8 = undefined;
-    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-scroll-{d}", .{libc.getpid()}, 0);
-    _ = libc.mkdir(directory, 0o700);
-    defer _ = libc.rmdir(directory);
-    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
-    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
-    defer if (previous_runtime) |value| {
-        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
-    };
-    const handle = try Handle.startWith(a, .headless, .headless);
-    defer handle.stop();
-    const connection = try client_wire.Connection.connect(a);
-    defer connection.deinit();
-    const Globals = struct {
-        compositor: ?wl.wl_compositor = null,
-        shm: ?wl.wl_shm = null,
-        wm_base: ?wl.xdg_wm_base = null,
-        seat: ?wl.wl_seat = null,
-        pointers: ?wl.zwlr_virtual_pointer_manager_v1 = null,
-        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
-            switch (event) {
-                .global => |g| {
-                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
-                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_seat")) self.seat = registry.bind(g.name, wl.wl_seat, 9);
-                    if (std.mem.eql(u8, g.interface, "zwlr_virtual_pointer_manager_v1")) self.pointers = registry.bind(g.name, wl.zwlr_virtual_pointer_manager_v1, 2);
-                },
-                .global_remove => {},
-            }
-        }
-    };
-    var globals: Globals = .{};
-    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
-    registry.listen(Globals, &globals, Globals.global);
-    try connection.roundtrip();
+    var env: TestEnv = .{};
+    try env.start(a, "scroll");
+    defer env.stop();
+    var client: TestClient = undefined;
+    try client.connect(a);
+    defer client.deinit();
+
     const Events = struct {
         entered: bool = false,
         sources: u32 = 0,
@@ -8303,31 +8220,24 @@ test "native compositor passes scroll sources, stops and wheel steps to clients"
         }
     };
     var events: Events = .{};
-    const pointer = globals.seat.?.get_pointer();
+    const pointer = client.seat.?.get_pointer();
     pointer.listen(Events, &events, Events.pointer);
-    const surface = globals.compositor.?.create_surface();
-    const xdg_surface = globals.wm_base.?.get_xdg_surface(surface);
+    const surface = client.compositor.?.create_surface();
+    const xdg_surface = client.wm_base.?.get_xdg_surface(surface);
     xdg_surface.listen(Events, &events, Events.xdgSurface);
     const toplevel = xdg_surface.get_toplevel();
     toplevel.listen(Events, &events, Events.toplevel);
     surface.commit();
-    try connection.roundtrip();
-    const width: usize = @intCast(events.size[0]);
-    const height: usize = @intCast(events.size[1]);
-    const fd = libc.memfd_create("buffer", 0x0001);
-    defer _ = std.c.close(fd);
-    try std.testing.expectEqual(@as(c_int, 0), libc.ftruncate(fd, @intCast(width * height * 4)));
-    const pool = globals.shm.?.create_pool(fd, @intCast(width * height * 4));
-    const buffer = pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), 0);
-    pool.destroy();
+    try client.conn.roundtrip();
+    const buffer = try client.shmBuffer(@intCast(events.size[0]), @intCast(events.size[1]), null);
     surface.attach(buffer, 0, 0);
     surface.commit();
-    try connection.roundtrip();
-    const virtual = globals.pointers.?.create_virtual_pointer(globals.seat.?);
+    try client.conn.roundtrip();
+    const virtual = client.pointers.?.create_virtual_pointer(client.seat.?);
     virtual.motion_absolute(0, 200, 200, 1280, 720);
     virtual.frame();
     const deadline = util.monotonicTime() + 3_000_000;
-    while (!events.entered and util.monotonicTime() < deadline) _ = try connection.dispatchTimeout(20);
+    while (!events.entered and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(20);
     try std.testing.expect(events.entered);
     // Two fingers on a touchpad, both axes in one frame, then lifted.
     virtual.axis_source(1);
@@ -8341,8 +8251,8 @@ test "native compositor passes scroll sources, stops and wheel steps to clients"
     virtual.axis_source(0);
     virtual.axis_discrete(2, 0, 15, 1);
     virtual.frame();
-    try connection.roundtrip();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
+    try client.conn.roundtrip();
     try std.testing.expectEqual(@as(u32, 3), events.sources);
     try std.testing.expectEqual(@as(u32, 1), events.stops);
     try std.testing.expectEqual(@as(u32, 3), events.axis_values);
@@ -8352,52 +8262,25 @@ test "native compositor passes scroll sources, stops and wheel steps to clients"
     toplevel.destroy();
     xdg_surface.destroy();
     surface.destroy();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
 }
 
 test "native compositor shuts down cleanly with connected clients and stale capture objects" {
-    const client_wire = @import("wayland-wire");
     const wl = @import("wayland-client");
     const a = std.testing.allocator;
-    var runtime: [64]u8 = undefined;
-    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-teardown-{d}", .{libc.getpid()}, 0);
-    _ = libc.mkdir(directory, 0o700);
-    defer _ = libc.rmdir(directory);
-    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
-    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
-    defer if (previous_runtime) |value| {
-        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
-    };
-    const handle = try Handle.startWith(a, .headless, .headless);
+    var env: TestEnv = .{};
+    try env.start(a, "teardown");
     // Stop compositor BEFORE closing client connection to exercise shutdown teardown order.
-    const connection = try client_wire.Connection.connect(a);
-    defer connection.deinit();
-    defer handle.stop();
+    var client: TestClient = undefined;
+    try client.connect(a);
+    defer client.deinit();
+    defer env.stop();
 
     const State = struct {
-        compositor: ?wl.wl_compositor = null,
-        shm: ?wl.wl_shm = null,
-        wm_base: ?wl.xdg_wm_base = null,
-        list: ?wl.ext_foreign_toplevel_list_v1 = null,
-        sources: ?wl.ext_foreign_toplevel_image_capture_source_manager_v1 = null,
-        copy: ?wl.ext_image_copy_capture_manager_v1 = null,
         last_handle: ?wl.ext_foreign_toplevel_handle_v1 = null,
         session_stopped: bool = false,
         frame_failed: bool = false,
         size: [2]i32 = .{ 0, 0 },
-        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
-            switch (event) {
-                .global => |g| {
-                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
-                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
-                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
-                    if (std.mem.eql(u8, g.interface, "ext_foreign_toplevel_list_v1")) self.list = registry.bind(g.name, wl.ext_foreign_toplevel_list_v1, 1);
-                    if (std.mem.eql(u8, g.interface, "ext_foreign_toplevel_image_capture_source_manager_v1")) self.sources = registry.bind(g.name, wl.ext_foreign_toplevel_image_capture_source_manager_v1, 1);
-                    if (std.mem.eql(u8, g.interface, "ext_image_copy_capture_manager_v1")) self.copy = registry.bind(g.name, wl.ext_image_copy_capture_manager_v1, 1);
-                },
-                .global_remove => {},
-            }
-        }
         fn listEvent(self: *@This(), _: wl.ext_foreign_toplevel_list_v1, event: wl.ext_foreign_toplevel_list_v1.Event) void {
             switch (event) {
                 .toplevel => |args| self.last_handle = args.toplevel,
@@ -8423,106 +8306,80 @@ test "native compositor shuts down cleanly with connected clients and stale capt
         }
     };
     var state: State = .{};
-    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
-    registry.listen(State, &state, State.global);
-    try connection.roundtrip();
-    state.list.?.listen(State, &state, State.listEvent);
-    try connection.roundtrip();
+    client.list.?.listen(State, &state, State.listEvent);
+    try client.conn.roundtrip();
 
     // Map first window, create a CaptureSource, then destroy the window before create_session.
-    const s1 = state.compositor.?.create_surface();
-    const x1 = state.wm_base.?.get_xdg_surface(s1);
+    const s1 = client.compositor.?.create_surface();
+    const x1 = client.wm_base.?.get_xdg_surface(s1);
     x1.listen(State, &state, State.xdgSurface);
     const t1 = x1.get_toplevel();
     t1.listen(State, &state, State.toplevel);
     s1.commit();
-    try connection.roundtrip();
-    const fd = libc.memfd_create("buffer", 0x0001);
-    defer _ = std.c.close(fd);
+    try client.conn.roundtrip();
     const w: usize = @intCast(@max(1, state.size[0]));
     const h: usize = @intCast(@max(1, state.size[1]));
-    try std.testing.expectEqual(@as(c_int, 0), libc.ftruncate(fd, @intCast(w * h * 4)));
-    const pool = state.shm.?.create_pool(fd, @intCast(w * h * 4));
-    const buf1 = pool.create_buffer(0, @intCast(w), @intCast(h), @intCast(w * 4), 0);
+    const buf1 = try client.shmBuffer(w, h, null);
     s1.attach(buf1, 0, 0);
     s1.commit();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     try std.testing.expect(state.last_handle != null);
-    const stale_source = state.sources.?.create_source(state.last_handle.?);
+    const stale_source = client.sources.?.create_source(state.last_handle.?);
     t1.destroy();
     x1.destroy();
     s1.destroy();
-    try connection.roundtrip();
-    const stopped_session = state.copy.?.create_session(stale_source, 0);
+    try client.conn.roundtrip();
+    const stopped_session = client.copy.?.create_session(stale_source, 0);
     stopped_session.listen(State, &state, State.sessionEvent);
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     try std.testing.expect(state.session_stopped);
     stopped_session.destroy();
     stale_source.destroy();
 
     // Map second window, create a session & frame, destroy session & buffer before capture().
     state.last_handle = null;
-    const s2 = state.compositor.?.create_surface();
-    const x2 = state.wm_base.?.get_xdg_surface(s2);
+    const s2 = client.compositor.?.create_surface();
+    const x2 = client.wm_base.?.get_xdg_surface(s2);
     x2.listen(State, &state, State.xdgSurface);
     const t2 = x2.get_toplevel();
     t2.listen(State, &state, State.toplevel);
     s2.commit();
-    try connection.roundtrip();
-    const buf2 = pool.create_buffer(0, @intCast(w), @intCast(h), @intCast(w * 4), 0);
+    try client.conn.roundtrip();
+    const buf2 = try client.shmBuffer(w, h, null);
     s2.attach(buf2, 0, 0);
     s2.commit();
-    try connection.roundtrip();
-    const src2 = state.sources.?.create_source(state.last_handle.?);
-    const sess2 = state.copy.?.create_session(src2, 0);
+    try client.conn.roundtrip();
+    const src2 = client.sources.?.create_source(state.last_handle.?);
+    const sess2 = client.copy.?.create_session(src2, 0);
     const frame2 = sess2.create_frame();
     frame2.listen(State, &state, State.frameEvent);
-    const cap_buf = pool.create_buffer(0, @intCast(w), @intCast(h), @intCast(w * 4), 0);
+    const cap_buf = try client.shmBuffer(w, h, null);
     frame2.attach_buffer(cap_buf);
     cap_buf.destroy();
     sess2.destroy();
     frame2.capture();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     try std.testing.expect(state.frame_failed);
-    // Intentionally leave s2/x2/t2/buf1/buf2/pool/src2/frame2 live when handle.stop() runs.
+    // Intentionally leave s2/x2/t2/buf1/buf2/src2/frame2 live when env.stop() runs.
 }
 
 test "native compositor keeps physical wl_output mode size when rotated" {
-    const client_wire = @import("wayland-wire");
     const wl = @import("wayland-client");
     const a = std.testing.allocator;
-    var runtime: [64]u8 = undefined;
-    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-rotate-{d}", .{libc.getpid()}, 0);
-    _ = libc.mkdir(directory, 0o700);
-    defer _ = libc.rmdir(directory);
-    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
-    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
-    defer if (previous_runtime) |value| {
-        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
-    };
-    const handle = try Handle.startWith(a, .headless, .headless);
-    defer handle.stop();
-    const connection = try client_wire.Connection.connect(a);
-    defer connection.deinit();
+    var env: TestEnv = .{};
+    try env.start(a, "rotate");
+    defer env.stop();
+    var client: TestClient = undefined;
+    try client.connect(a);
+    defer client.deinit();
 
     const State = struct {
-        output: ?wl.wl_output = null,
-        manager: ?wl.zwlr_output_manager_v1 = null,
         head: ?wl.zwlr_output_head_v1 = null,
         serial: u32 = 0,
         mode_w: i32 = 0,
         mode_h: i32 = 0,
         transform: i32 = 0,
         succeeded: bool = false,
-        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
-            switch (event) {
-                .global => |g| {
-                    if (std.mem.eql(u8, g.interface, "wl_output")) self.output = registry.bind(g.name, wl.wl_output, 4);
-                    if (std.mem.eql(u8, g.interface, "zwlr_output_manager_v1")) self.manager = registry.bind(g.name, wl.zwlr_output_manager_v1, 4);
-                },
-                .global_remove => {},
-            }
-        }
         fn outputEvent(self: *@This(), _: wl.wl_output, event: wl.wl_output.Event) void {
             switch (event) {
                 .geometry => |args| self.transform = args.transform,
@@ -8545,80 +8402,40 @@ test "native compositor keeps physical wl_output mode size when rotated" {
         }
     };
     var state: State = .{};
-    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
-    registry.listen(State, &state, State.global);
-    try connection.roundtrip();
-    state.output.?.listen(State, &state, State.outputEvent);
-    state.manager.?.listen(State, &state, State.managerEvent);
-    try connection.roundtrip();
+    client.output.?.listen(State, &state, State.outputEvent);
+    client.output_manager.?.listen(State, &state, State.managerEvent);
+    try client.conn.roundtrip();
     try std.testing.expect(state.head != null);
-    const config = state.manager.?.create_configuration(state.serial);
-    config.listen(State, &state, State.configEvent);
-    const head_cfg = config.enable_head(state.head.?);
-    head_cfg.set_transform(1); // 90 degrees
-    config.apply();
-    try connection.roundtrip();
-    try std.testing.expect(state.succeeded);
-    try std.testing.expectEqual(@as(i32, 1), state.transform);
-    try std.testing.expectEqual(@as(i32, 1280), state.mode_w);
-    try std.testing.expectEqual(@as(i32, 720), state.mode_h);
-    head_cfg.destroy();
-    config.destroy();
-
-    // 180-degree rotation keeps the same dimensions and must still announce the new transform.
-    state.succeeded = false;
-    const config180 = state.manager.?.create_configuration(state.serial);
-    config180.listen(State, &state, State.configEvent);
-    const head180 = config180.enable_head(state.head.?);
-    head180.set_transform(2);
-    config180.apply();
-    try connection.roundtrip();
-    try std.testing.expect(state.succeeded);
-    try std.testing.expectEqual(@as(i32, 2), state.transform);
-    head180.destroy();
-    config180.destroy();
+    for ([_]i32{ 1, 2 }) |turn| {
+        state.succeeded = false;
+        const config = client.output_manager.?.create_configuration(state.serial);
+        config.listen(State, &state, State.configEvent);
+        const head_cfg = config.enable_head(state.head.?);
+        head_cfg.set_transform(turn);
+        config.apply();
+        try client.conn.roundtrip();
+        try std.testing.expect(state.succeeded);
+        try std.testing.expectEqual(turn, state.transform);
+        try std.testing.expectEqual(@as(i32, 1280), state.mode_w);
+        try std.testing.expectEqual(@as(i32, 720), state.mode_h);
+        head_cfg.destroy();
+        config.destroy();
+    }
 }
 
 test "native compositor frees presentation feedback and handles out-of-order surface destruction" {
-    const client_wire = @import("wayland-wire");
     const wl = @import("wayland-client");
     const a = std.testing.allocator;
-    var runtime: [64]u8 = undefined;
-    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-lifetime-{d}", .{libc.getpid()}, 0);
-    _ = libc.mkdir(directory, 0o700);
-    defer _ = libc.rmdir(directory);
-    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
-    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
-    defer if (previous_runtime) |value| {
-        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
-    };
-    const handle = try Handle.startWith(a, .headless, .headless);
-    defer handle.stop();
-    const connection = try client_wire.Connection.connect(a);
-    defer connection.deinit();
+    var env: TestEnv = .{};
+    try env.start(a, "lifetime");
+    defer env.stop();
+    var client: TestClient = undefined;
+    try client.connect(a);
+    defer client.deinit();
 
     const State = struct {
-        compositor: ?wl.wl_compositor = null,
-        shm: ?wl.wl_shm = null,
-        wm: ?wl.xdg_wm_base = null,
-        viewporter: ?wl.wp_viewporter = null,
-        fractional: ?wl.wp_fractional_scale_manager_v1 = null,
-        presentation: ?wl.wp_presentation = null,
         configured: bool = false,
         presented: usize = 0,
-        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
-            switch (event) {
-                .global => |g| {
-                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 4);
-                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
-                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm = registry.bind(g.name, wl.xdg_wm_base, 2);
-                    if (std.mem.eql(u8, g.interface, "wp_viewporter")) self.viewporter = registry.bind(g.name, wl.wp_viewporter, 1);
-                    if (std.mem.eql(u8, g.interface, "wp_fractional_scale_manager_v1")) self.fractional = registry.bind(g.name, wl.wp_fractional_scale_manager_v1, 1);
-                    if (std.mem.eql(u8, g.interface, "wp_presentation")) self.presentation = registry.bind(g.name, wl.wp_presentation, 1);
-                },
-                .global_remove => {},
-            }
-        }
         fn xdgEvent(self: *@This(), surface: wl.xdg_surface, event: wl.xdg_surface.Event) void {
             if (event == .configure) {
                 surface.ack_configure(event.configure.serial);
@@ -8630,53 +8447,43 @@ test "native compositor frees presentation feedback and handles out-of-order sur
         }
     };
     var state: State = .{};
-    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
-    registry.listen(State, &state, State.global);
-    try connection.roundtrip();
 
     // Destroy wl_surface before its wp_viewport and wp_fractional_scale_v1.
-    const doomed = state.compositor.?.create_surface();
-    const vp = state.viewporter.?.get_viewport(doomed);
-    const fs = state.fractional.?.get_fractional_scale(doomed);
+    const doomed = client.compositor.?.create_surface();
+    const vp = client.viewporter.?.get_viewport(doomed);
+    const fs = client.fractional.?.get_fractional_scale(doomed);
     doomed.destroy();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     vp.destroy();
     fs.destroy();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
 
     // Map a toplevel and submit presentation feedback across multiple commits.
-    const fd = std.c.memfd_create("desktop-pres-test", 0);
-    defer _ = std.c.close(fd);
-    const size: usize = 32 * 32 * 4;
-    try std.testing.expectEqual(@as(c_int, 0), libc.ftruncate(fd, size));
-    const pool = state.shm.?.create_pool(fd, size);
-    const buf = pool.create_buffer(0, 32, 32, 32 * 4, 0);
-    const surface = state.compositor.?.create_surface();
-    const xdg = state.wm.?.get_xdg_surface(surface);
+    const buf = try client.shmBuffer(32, 32, null);
+    const surface = client.compositor.?.create_surface();
+    const xdg = client.wm_base.?.get_xdg_surface(surface);
     xdg.listen(State, &state, State.xdgEvent);
     const toplevel = xdg.get_toplevel();
     surface.commit();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
     try std.testing.expect(state.configured);
     for (0..3) |_| {
-        const fb = state.presentation.?.feedback(surface);
+        const fb = client.presentation.?.feedback(surface);
         fb.listen(State, &state, State.feedbackEvent);
         surface.attach(buf, 0, 0);
         surface.damage_buffer(0, 0, 32, 32);
         surface.commit();
-        try connection.roundtrip();
+        try client.conn.roundtrip();
     }
     const deadline = util.monotonicTime() + 500_000;
     while (state.presented == 0 and util.monotonicTime() < deadline) {
-        var ts: std.c.timespec = .{ .sec = 0, .nsec = 5_000_000 };
-        _ = std.c.nanosleep(&ts, null);
-        try connection.roundtrip();
+        util.sleep(5 * std.time.ns_per_ms);
+        try client.conn.roundtrip();
     }
     try std.testing.expect(state.presented >= 1);
     toplevel.destroy();
     xdg.destroy();
     surface.destroy();
     buf.destroy();
-    pool.destroy();
-    try connection.roundtrip();
+    try client.conn.roundtrip();
 }
