@@ -140,6 +140,7 @@ test {
     _ = @import("desktop-drm.zig");
     _ = @import("desktop-logind.zig");
     _ = @import("desktop-libinput.zig");
+    _ = @import("desktop-gl.zig");
     _ = @import("tests/desktop-shape-reference.zig");
     _ = @import("desktop-switcher.zig");
     _ = @import("desktop-overview.zig");

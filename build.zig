@@ -126,6 +126,8 @@ pub fn build(b: *std.Build) void {
     }
     // The native compositor reads input through libinput and hotplug through libudev.
     desktop.linkSystemLibrary("libudev", .{});
+    // GPU compositing: GLES through EGL on GBM scanout buffers.
+    for ([_][]const u8{ "egl", "glesv2", "gbm" }) |name| desktop.linkSystemLibrary(name, .{});
     desktop.addImport("compositor-abi", compositor.createModule());
     const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = desktop });
     b.installArtifact(session);
@@ -157,6 +159,7 @@ pub fn build(b: *std.Build) void {
     test_module.addImport("harfbuzz-reference", bindings(b, target, optimize, "#include <hb.h>\n", &.{"harfbuzz"}));
     // The kernel DRM headers (through libdrm), as the reference for desktop-drm.zig.
     test_module.addImport("libinput-reference", bindings(b, target, optimize, "#include <libinput.h>\n", &.{"libinput"}));
+    test_module.addImport("gl-reference", bindings(b, target, optimize, "#include <EGL/egl.h>\n#include <EGL/eglext.h>\n#include <GLES2/gl2.h>\n#include <GLES2/gl2ext.h>\n#include <gbm.h>\n", &.{ "egl", "glesv2", "gbm" }));
     test_module.addImport("drm-reference", bindings(b, target, optimize, "#include <drm.h>\n#include <drm_mode.h>\n", &.{"libdrm"}));
     test_module.addImport("pam-reference", bindings(b, target, optimize, "#include <security/pam_appl.h>\n#include <security/pam_modules.h>\n", &.{"pam"}));
     // PipeWire's headers, plus its private node activation record (src/pipewire/private.h

@@ -7,6 +7,7 @@ pkgs.testers.runNixOSTest {
   name = if native then "desktop-native" else "desktop";
   node.specialArgs.enableLightDesktop = true;
   node.specialArgs.enableNvidia = false;
+  node.specialArgs.enableNativeCompositor = native;
   node.pkgsReadOnly = false;
 
   nodes.machine =
@@ -38,7 +39,6 @@ pkgs.testers.runNixOSTest {
         ];
       };
       systemd.services.desktop-display-manager.environment.WLR_RENDERER = "pixman";
-      systemd.services.desktop-display-manager.environment.DESKTOP_COMPOSITOR = lib.mkIf native "native";
       environment.sessionVariables.WLR_RENDERER = "pixman";
       environment.systemPackages = with pkgs; [
         wtype
@@ -155,6 +155,8 @@ pkgs.testers.runNixOSTest {
 
     # wlroots leaves Ctrl+Alt+Fn to compositors, and the wlroots one never handled it.
     if ${if native then "True" else "False"}:
+      with subtest("the native compositor composites on the GPU"):
+        machine.succeed("journalctl -b | grep -F 'compositor: rendering with GLES'")
       with subtest("the session survives switching to another VT and back"):
         machine.send_key("ctrl-alt-f2")
         machine.wait_until_succeeds("test \"$(cat /sys/class/tty/tty0/active)\" = tty2")

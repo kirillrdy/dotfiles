@@ -9,6 +9,7 @@ const std = @import("std");
 const wire = @import("wayland-server-wire");
 const ws = @import("wayland-server");
 const raster = @import("desktop-raster.zig");
+const Gl = @import("desktop-gl.zig");
 const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const keymap_text = @import("default-keymap").text;
@@ -159,6 +160,9 @@ const Surface = struct {
     width: u32 = 0,
     height: u32 = 0,
     opaque_format: bool = false,
+    /// The GPU copy of `pixels`, uploaded when the content changed.
+    texture: u32 = 0,
+    texture_stale: bool = true,
     scale: i32 = 1,
     frames: std.ArrayList(ws.wl_callback) = .empty,
     /// Subsurfaces drawn above this surface, bottom to top.
@@ -238,6 +242,7 @@ const Surface = struct {
     fn apply(self: *Surface) void {
         if (self.pending_attach) {
             self.pending_attach = false;
+            self.texture_stale = true;
             if (self.pending_buffer) |buffer| {
                 self.copy(buffer);
                 buffer.resource.sendRelease();
@@ -349,6 +354,7 @@ const Surface = struct {
         self.pending_releases.deinit(comp.a);
         self.frames.deinit(comp.a);
         self.pending_frames.deinit(comp.a);
+        if (self.texture != 0) if (comp.drm) |backend| if (backend.renderer) |renderer| renderer.deleteTexture(self.texture);
         comp.a.free(self.pixels);
         removeItem(*Surface, &comp.surfaces, self);
         if (comp.seat.keyboard_focus == self) comp.seat.keyboard_focus = null;
@@ -378,12 +384,11 @@ const Surface = struct {
 
     /// Draws this surface and its subsurfaces with its origin at (x, y).
     /// Coordinates are logical; `scale` converts them to output pixels.
-    fn draw(self: *Surface, target: raster.Buffer, x: i32, y: i32, scale: f64) void {
+    fn draw(self: *Surface, target: Canvas, x: i32, y: i32, scale: f64) void {
         if (self.mapped()) {
-            const image: raster.Image = .{ .pixels = std.mem.sliceAsBytes(self.pixels), .width = self.width, .height = self.height, .stride = self.width * 4, .format = .argb };
             const fx: f64 = @floatFromInt(x);
             const fy: f64 = @floatFromInt(y);
-            raster.blit(target, image, .{ .x = @round(fx * scale), .y = @round(fy * scale), .width = @round(@as(f64, @floatFromInt(self.logicalWidth())) * scale), .height = @round(@as(f64, @floatFromInt(self.logicalHeight())) * scale) }, null) catch {};
+            target.surface(self, .{ .x = @round(fx * scale), .y = @round(fy * scale), .width = @round(@as(f64, @floatFromInt(self.logicalWidth())) * scale), .height = @round(@as(f64, @floatFromInt(self.logicalHeight())) * scale) });
         }
         for (self.children.items) |child| if (child.surface) |surface| surface.draw(target, x + child.x, y + child.y, scale);
     }
@@ -817,7 +822,7 @@ const Toplevel = struct {
         const xdg = self.xdg orelse return false;
         const surface = xdg.surface orelse return false;
         const geometry = xdg.windowGeometry();
-        surface.draw(target, -geometry.x, -geometry.y, self.scale());
+        surface.draw(.{ .cpu = target }, -geometry.x, -geometry.y, self.scale());
         return true;
     }
 
@@ -1120,7 +1125,7 @@ const Layer = struct {
     }
 
     /// Draws each previewed window scaled into its rectangle, clipped and faded.
-    fn drawPreviews(self: *Layer, target: raster.Buffer, scale: f64) void {
+    fn drawPreviews(self: *Layer, target: Canvas, scale: f64) void {
         const comp = self.comp;
         const s = scale;
         for (self.previews.items) |preview| {
@@ -1133,9 +1138,8 @@ const Layer = struct {
             const v = preview.values;
             const ox: f64 = @floatFromInt(self.rect.x - self.output.x);
             const oy: f64 = @floatFromInt(self.rect.y - self.output.y);
-            const image: raster.Image = .{ .pixels = std.mem.sliceAsBytes(pixels), .width = size[0], .height = size[1], .stride = size[0] * 4, .format = .argb };
             const clip: raster.Region = .{ .x = @intFromFloat(@floor((ox + v[4]) * s)), .y = @intFromFloat(@floor((oy + v[5]) * s)), .width = @intFromFloat(@ceil(v[6] * s)), .height = @intFromFloat(@ceil(v[7] * s)) };
-            raster.blitWithOptions(target, image, .{ .x = (ox + v[0]) * s, .y = (oy + v[1]) * s, .width = v[2] * s, .height = v[3] * s }, .{ .clip = clip, .opacity = v[8], .filter = .bilinear }) catch {};
+            target.image(pixels, size[0], size[1], .{ .x = (ox + v[0]) * s, .y = (oy + v[1]) * s, .width = v[2] * s, .height = v[3] * s }, clip, v[8]);
         }
     }
 
@@ -1209,6 +1213,11 @@ const Output = struct {
     display: ?*Drm.kms.Display = null,
     /// A rendered frame waits for the display's previous flip.
     unpresented: bool = false,
+    /// The GPU scanout target, when the DRM backend renders with GLES.
+    target: ?*Gl.Target = null,
+    /// Whether `pixels` holds the latest frame; GPU frames are drawn again
+    /// on the CPU when a capture needs them.
+    pixels_valid: bool = false,
     make: []const u8 = "Headless",
     model: []const u8 = "Headless output",
     refresh: i32 = 60000,
@@ -1372,19 +1381,26 @@ const Output = struct {
     fn render(self: *Output) void {
         const comp = self.comp;
         if (!self.enabled) return;
-        const target: raster.Buffer = .{ .pixels = self.pixels, .width = self.width, .height = self.height };
-        @memset(self.pixels, if (comp.locked) 0xff000000 else comp.background);
-        var roots: [256]Root = undefined;
-        for (comp.stack(&roots)) |root| {
-            root.surface.draw(target, root.x - self.x, root.y - self.y, self.scale);
-            if (root.surface.layer) |layer| if (layer.previews.items.len > 0 and layer.output == self) layer.drawPreviews(target, self.scale);
-        }
+        if (self.target != null) if (self.display) |display| if (display.flipping or !display.card.active) {
+            // The GPU draws the next frame once the last one is on screen.
+            self.unpresented = true;
+            return;
+        };
+        if (self.target) |target| {
+            const backend = comp.drm.?;
+            const renderer = backend.renderer.?;
+            if (renderer.begin(target, self.backgroundColor())) {
+                self.drawScene(.{ .gl = renderer });
+                self.pixels_valid = false;
+                backend.showGpu(self, target);
+            }
+        } else self.drawCpu();
         if (comp.locked) {
             self.lock_serial = comp.lock_serial;
             if (comp.lock) |lock| lock.acknowledge();
         }
         if (self.nested) |window| window.present();
-        if (self.display != null) self.present();
+        if (self.display != null and self.target == null) self.present();
         comp.presented(self);
         self.frames += 1;
         const time = nowMs();
@@ -1392,6 +1408,30 @@ const Output = struct {
             for (surface.frames.items) |callback| callback.sendDone(time);
             surface.frames.clearRetainingCapacity();
         }
+    }
+
+    fn backgroundColor(self: *const Output) u32 {
+        return if (self.comp.locked) 0xff000000 else self.comp.background;
+    }
+
+    fn drawScene(self: *Output, canvas: Canvas) void {
+        var roots: [256]Root = undefined;
+        for (self.comp.stack(&roots)) |root| {
+            root.surface.draw(canvas, root.x - self.x, root.y - self.y, self.scale);
+            if (root.surface.layer) |layer| if (layer.previews.items.len > 0 and layer.output == self) layer.drawPreviews(canvas, self.scale);
+        }
+    }
+
+    fn drawCpu(self: *Output) void {
+        @memset(self.pixels, self.backgroundColor());
+        self.drawScene(.{ .cpu = .{ .pixels = self.pixels, .width = self.width, .height = self.height } });
+        self.pixels_valid = true;
+    }
+
+    /// Pending commits drawn into `pixels`, for captures.
+    fn capturePixels(self: *Output) void {
+        self.flush();
+        if (!self.pixels_valid) self.drawCpu();
     }
 
     fn repaintReady(data: ?*anyopaque, _: u32) void {
@@ -1548,6 +1588,41 @@ test "virtual keyboard keymaps that include shared types and compatibility are c
 const Hit = struct { surface: *Surface, x: i32, y: i32 };
 /// A surface tree drawn at an output position.
 const Root = struct { surface: *Surface, x: i32, y: i32 };
+
+/// Where a frame is drawn: CPU pixels (headless, nested, captures) or the GPU.
+const Canvas = union(enum) {
+    cpu: raster.Buffer,
+    gl: *Gl.Renderer,
+
+    /// Draws a surface's content stretched over `rect`, in output pixels.
+    fn surface(self: Canvas, source: *Surface, rect: Gl.Rect) void {
+        switch (self) {
+            .cpu => |target| {
+                const content: raster.Image = .{ .pixels = std.mem.sliceAsBytes(source.pixels), .width = source.width, .height = source.height, .stride = source.width * 4, .format = .argb };
+                raster.blit(target, content, .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height }, null) catch {};
+            },
+            .gl => |renderer| {
+                if (source.texture == 0) source.texture = Gl.Renderer.createTexture();
+                if (source.texture_stale) {
+                    renderer.upload(source.texture, source.pixels, source.width, source.height);
+                    source.texture_stale = false;
+                }
+                renderer.draw(source.texture, rect, null, 1, false);
+            },
+        }
+    }
+
+    /// Draws premultiplied ARGB pixels once, clipped and faded.
+    fn image(self: Canvas, pixels: []const u32, width: u32, height: u32, rect: Gl.Rect, clip: raster.Region, opacity: f64) void {
+        switch (self) {
+            .cpu => |target| {
+                const source: raster.Image = .{ .pixels = std.mem.sliceAsBytes(pixels), .width = width, .height = height, .stride = width * 4, .format = .argb };
+                raster.blitWithOptions(target, source, .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height }, .{ .clip = clip, .opacity = opacity, .filter = .bilinear }) catch {};
+            },
+            .gl => |renderer| renderer.drawPixels(pixels, width, height, rect, .{ .x = @intCast(clip.x), .y = @intCast(clip.y), .width = @intCast(clip.width), .height = @intCast(clip.height) }, @floatCast(opacity)),
+        }
+    }
+};
 
 /// A keymap file served to clients, with its parsed form for compositor shortcuts.
 const Keymap = struct {
@@ -2010,7 +2085,7 @@ const CaptureFrame = struct {
             return resource.postError(ws.zwlr_screencopy_frame_v1.Error.invalid_buffer, "buffer does not match the frame", .{});
         // Show pending commits, as the next frame would.
         const output = self.output;
-        output.flush();
+        output.capturePixels();
         const size = buffer.offset + buffer.stride * height;
         const pool = buffer.pool orelse return resource.sendFailed();
         const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, pool.fd, 0) orelse return resource.sendFailed();
@@ -2390,7 +2465,7 @@ const CopyFrame = struct {
         defer comp.a.free(pixels);
         @memset(pixels, 0);
         if (session.output) |output| {
-            output.flush();
+            output.capturePixels();
             if (output.pixels.len != pixels.len) return resource.sendFailed(Reason.buffer_constraints);
             @memcpy(pixels, output.pixels);
         } else if (!session.toplevel.?.render(.{ .pixels = pixels, .width = buffer.width, .height = buffer.height })) return resource.sendFailed(Reason.unknown);
@@ -4615,6 +4690,8 @@ const Drm = struct {
     devices: std.ArrayList(logind.Device) = .empty,
     sources: std.ArrayList(*wire.Loop.Source) = .empty,
     active: bool = true,
+    /// GLES on the card; null renders on the CPU into dumb buffers.
+    renderer: ?*Gl.Renderer = null,
     /// The pointer image last sent to the cursor plane.
     cursor_surface: ?*Surface = null,
 
@@ -4637,6 +4714,15 @@ const Drm = struct {
         }
         self.card.on_remove = unplugged;
         self.card.remove_context = self;
+        // DESKTOP_RENDERER=software keeps compositing on the CPU.
+        const software = if (std.c.getenv("DESKTOP_RENDERER")) |value| std.mem.eql(u8, std.mem.span(value), "software") else false;
+        if (!software) {
+            if (Gl.Renderer.init(comp.a, self.card.fd)) |renderer| {
+                self.renderer = renderer;
+                std.log.info("compositor: rendering with GLES on {s}", .{renderer.name()});
+                for (comp.outputs.items) |output| self.attachTarget(output);
+            } else |err| std.log.warn("compositor: no GPU renderer ({s}); rendering on the CPU", .{@errorName(err)});
+        }
         self.udev = li.udev_new() orelse return error.NoUdev;
         try self.watch(self.session.getFd(), sessionReadable);
         try self.watch(self.card.fd, cardReadable);
@@ -4698,6 +4784,7 @@ const Drm = struct {
             output.display = display;
             display.context = output;
             output.configure(output.scale, .{ display.width(), display.height() }, null);
+            self.attachTarget(output);
             comp.setOutputEnabled(output, true);
             comp.outputChanged();
             return;
@@ -4705,6 +4792,7 @@ const Drm = struct {
         const output = try Output.create(comp, comp.outputs.items.len, display.width(), display.height());
         output.display = display;
         display.context = output;
+        self.attachTarget(output);
         output.setName(display.name());
         output.make = "Display";
         output.refresh = @intCast(display.mode.refreshMilli());
@@ -4731,6 +4819,7 @@ const Drm = struct {
     fn unplugged(context: ?*anyopaque, display: *kms.Display) void {
         const self: *Drm = @ptrCast(@alignCast(context));
         for (self.comp.outputs.items) |output| if (output.display == display) {
+            self.detachTarget(output);
             output.display = null;
             self.comp.setOutputEnabled(output, false);
             self.comp.outputChanged();
@@ -4739,7 +4828,70 @@ const Drm = struct {
 
     fn flipped(context: ?*anyopaque) void {
         const output: *Output = @ptrCast(@alignCast(context));
-        if (output.unpresented) output.present();
+        if (output.target) |target| target.flipped();
+        if (output.unpresented) {
+            output.unpresented = false;
+            if (output.target != null) output.render() else output.present();
+        }
+    }
+
+    /// GPU frames go to a GBM surface the size of the display.
+    fn attachTarget(self: *Drm, output: *Output) void {
+        const renderer = self.renderer orelse return;
+        const display = output.display orelse return;
+        if (output.target != null) return;
+        output.target = renderer.createTarget(display.width(), display.height()) catch |err| {
+            std.log.warn("compositor: {s}: no GPU target ({s}); rendering on the CPU", .{ display.name(), @errorName(err) });
+            return;
+        };
+    }
+
+    fn detachTarget(self: *Drm, output: *Output) void {
+        _ = self;
+        if (output.target) |target| target.destroy();
+        output.target = null;
+    }
+
+    /// Scans out the frame just drawn into `target`.
+    fn showGpu(self: *Drm, output: *Output, target: *Gl.Target) void {
+        const renderer = self.renderer orelse return;
+        const display = output.display orelse return;
+        const bo = renderer.finish(target) orelse return;
+        const fb = self.framebuffer(bo) orelse return target.discard(bo);
+        switch (display.show(fb)) {
+            .shown => {
+                target.pending = bo;
+                target.flipped();
+            },
+            .flipping => target.pending = bo,
+            .failed => {
+                target.discard(bo);
+                output.unpresented = true;
+                if (self.card.active) output.scheduleRepaint();
+            },
+        }
+    }
+
+    const Framebuffer = struct { card: *kms.Card, id: u32 };
+
+    /// The framebuffer of a GBM buffer, registered on first use and removed with it.
+    fn framebuffer(self: *Drm, bo: *Gl.GbmBo) ?u32 {
+        if (Gl.gbm_bo_get_user_data(bo)) |data| return @as(*Framebuffer, @ptrCast(@alignCast(data))).id;
+        const handle: u32 = @truncate(Gl.gbm_bo_get_handle(bo));
+        const id = self.card.addFramebuffer(Gl.gbm_bo_get_width(bo), Gl.gbm_bo_get_height(bo), Gl.gbm_bo_get_format(bo), handle, Gl.gbm_bo_get_stride(bo)) orelse return null;
+        const entry = std.heap.c_allocator.create(Framebuffer) catch {
+            self.card.removeFramebuffer(id);
+            return null;
+        };
+        entry.* = .{ .card = self.card, .id = id };
+        Gl.gbm_bo_set_user_data(bo, entry, releaseFramebuffer);
+        return id;
+    }
+
+    fn releaseFramebuffer(_: *Gl.GbmBo, data: ?*anyopaque) callconv(.c) void {
+        const entry: *Framebuffer = @ptrCast(@alignCast(data orelse return));
+        entry.card.removeFramebuffer(entry.id);
+        std.heap.c_allocator.destroy(entry);
     }
 
     /// Presents an output's frame, or remembers to once the display is ready.
@@ -4793,6 +4945,8 @@ const Drm = struct {
         std.log.info("compositor: session paused device {d}:{d}", .{ major, minor });
         if (major == self.card_device.major and minor == self.card_device.minor) {
             self.card.pause();
+            // A flip still pending when the session left will not report back.
+            for (self.comp.outputs.items) |output| if (output.target) |target| if (target.pending != null) target.flipped();
             // The card pauses when the session is switched away, as wlroots' logind backend took it.
             setActive(self, false);
         }
@@ -4969,7 +5123,11 @@ const Drm = struct {
         self.devices.deinit(a);
         if (self.monitor) |monitor| _ = li.udev_monitor_unref(monitor);
         _ = li.udev_unref(self.udev);
-        for (self.comp.outputs.items) |output| output.display = null;
+        for (self.comp.outputs.items) |output| {
+            self.detachTarget(output);
+            output.display = null;
+        }
+        if (self.renderer) |renderer| renderer.deinit();
         self.card.deinit();
         self.session.releaseDevice(self.card_device);
         self.session.close();
@@ -5406,7 +5564,8 @@ pub const Handle = struct {
             const output = comp.outputs.items[0];
             const before = output.frames;
             server.dispatch(-1);
-            if (output.frames != before) self.publish(output);
+            // Tests read frames back; displays do not need a copy of each.
+            if (output.frames != before and comp.drm == null) self.publish(output);
             if (comp.nested) |nested| nested.flush();
             if (comp.drm) |display_backend| display_backend.idle();
         }

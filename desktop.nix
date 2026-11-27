@@ -106,6 +106,8 @@ lib.mkIf enableLightDesktop {
       TTYVTDisallocate = true;
     };
   };
+  # Mesa's EGL and GBM drivers, for the native compositor and GL clients.
+  hardware.graphics.enable = true;
   networking.networkmanager.enable = true;
   services.power-profiles-daemon.enable = false;
   security.pam.services.desktop-lock = { };

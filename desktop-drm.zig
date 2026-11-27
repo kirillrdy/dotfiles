@@ -106,6 +106,18 @@ pub const FbCommand = extern struct {
     handle: u32 = 0,
 };
 
+pub const FbCommand2 = extern struct {
+    fb_id: u32 = 0,
+    width: u32 = 0,
+    height: u32 = 0,
+    pixel_format: u32 = 0,
+    flags: u32 = 0,
+    handles: [4]u32 = @splat(0),
+    pitches: [4]u32 = @splat(0),
+    offsets: [4]u32 = @splat(0),
+    modifier: [4]u64 = @splat(0),
+};
+
 pub const PageFlip = extern struct {
     crtc_id: u32 = 0,
     fb_id: u32 = 0,
@@ -169,6 +181,7 @@ pub const ioctl = struct {
     pub const add_fb = ioctlNumber(read_write, 0xae, FbCommand);
     pub const remove_fb = ioctlNumber(read_write, 0xaf, u32);
     pub const page_flip = ioctlNumber(read_write, 0xb0, PageFlip);
+    pub const add_fb2 = ioctlNumber(read_write, 0xb8, FbCommand2);
     pub const create_dumb = ioctlNumber(read_write, 0xb2, CreateDumb);
     pub const map_dumb = ioctlNumber(read_write, 0xb3, MapDumb);
     pub const destroy_dumb = ioctlNumber(read_write, 0xb4, DestroyDumb);
@@ -278,6 +291,7 @@ pub const Display = struct {
     /// Returns false while a previous flip is pending or the session is inactive.
     pub fn present(self: *Display, pixels: []const u32) bool {
         if (self.flipping or !self.card.active) return false;
+        if (self.buffers[0].handle == 0) self.allocate() catch return false;
         const back = &self.buffers[1 - self.front];
         const memory = back.memory orelse return false;
         const w = self.width();
@@ -287,23 +301,38 @@ pub const Display = struct {
             const line: [*]u32 = @ptrCast(@alignCast(memory + row * back.pitch));
             @memcpy(line[0..w], pixels[row * w ..][0..w]);
         }
+        switch (self.show(back.fb)) {
+            .shown => {
+                self.front = 1 - self.front;
+                return true;
+            },
+            .flipping => return true,
+            .failed => return false,
+        }
+    }
+
+    pub const Shown = enum { shown, flipping, failed };
+
+    /// Scans out framebuffer `fb`: the first frame sets the mode and shows at
+    /// once; later ones flip at the next vblank and report it through on_flip.
+    pub fn show(self: *Display, fb: u32) Shown {
+        if (self.flipping or !self.card.active) return .failed;
         if (!self.modeset) {
             var connectors = [_]u32{self.connector};
-            var request: Crtc = .{ .set_connectors_ptr = @intFromPtr(&connectors), .count_connectors = 1, .crtc_id = self.crtc, .fb_id = back.fb, .mode_valid = 1, .mode = self.mode };
-            if (!call(self.card.fd, ioctl.set_crtc, &request)) return false;
+            var request: Crtc = .{ .set_connectors_ptr = @intFromPtr(&connectors), .count_connectors = 1, .crtc_id = self.crtc, .fb_id = fb, .mode_valid = 1, .mode = self.mode };
+            if (!call(self.card.fd, ioctl.set_crtc, &request)) return .failed;
             self.modeset = true;
             self.showCursor();
-            self.front = 1 - self.front;
-            return true;
+            return .shown;
         }
-        var flip: PageFlip = .{ .crtc_id = self.crtc, .fb_id = back.fb, .flags = page_flip_event, .user_data = @intFromPtr(self) };
+        var flip: PageFlip = .{ .crtc_id = self.crtc, .fb_id = fb, .flags = page_flip_event, .user_data = @intFromPtr(self) };
         if (!call(self.card.fd, ioctl.page_flip, &flip)) {
             // Drivers without flips, or a mode lost to another master, get a mode set.
             self.modeset = false;
-            return false;
+            return .failed;
         }
         self.flipping = true;
-        return true;
+        return .flipping;
     }
 
     /// Places the cursor image's top-left corner, in this display's pixels.
@@ -419,10 +448,6 @@ pub const Card = struct {
             errdefer a.destroy(display);
             display.* = .{ .card = self, .connector = connector_id, .crtc = crtc, .mode = mode, .mm_width = info.header.mm_width, .mm_height = info.header.mm_height };
             display.name_len = connectorName(&display.name_buffer, info.header.connector_type, info.header.connector_type_id).len;
-            display.allocate() catch |err| {
-                display.destroy();
-                return err;
-            };
             try self.displays.append(a, display);
             try added.append(a, display);
         }
@@ -475,6 +500,20 @@ pub const Card = struct {
         };
         display.destroy();
         self.allocator.destroy(display);
+    }
+
+    /// Registers a GPU buffer as a framebuffer, for `Display.show`.
+    pub fn addFramebuffer(self: *Card, width: u32, height: u32, format: u32, handle: u32, stride: u32) ?u32 {
+        var command: FbCommand2 = .{ .width = width, .height = height, .pixel_format = format };
+        command.handles[0] = handle;
+        command.pitches[0] = stride;
+        if (!call(self.fd, ioctl.add_fb2, &command)) return null;
+        return command.fb_id;
+    }
+
+    pub fn removeFramebuffer(self: *Card, fb: u32) void {
+        var id = fb;
+        _ = call(self.fd, ioctl.remove_fb, &id);
     }
 
     /// Shows premultiplied ARGB `pixels` (`width` wide) as the cursor on every
@@ -546,6 +585,7 @@ test "DRM ioctl structures match the kernel headers" {
         .{ DestroyDumb, c.struct_drm_mode_destroy_dumb },
         .{ GetCap, c.struct_drm_get_cap },
         .{ CursorCommand, c.struct_drm_mode_cursor2 },
+        .{ FbCommand2, c.struct_drm_mode_fb_cmd2 },
         .{ VblankEvent, c.struct_drm_event_vblank },
     }) |pair| {
         try std.testing.expectEqual(@sizeOf(pair[1]), @sizeOf(pair[0]));
@@ -563,6 +603,7 @@ test "DRM ioctl structures match the kernel headers" {
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_SET_MASTER), ioctl.set_master);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_GET_CAP), ioctl.get_cap);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_CURSOR2), ioctl.cursor2);
+    try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_ADDFB2), ioctl.add_fb2);
 }
 
 test "connector names follow the kernel's" {

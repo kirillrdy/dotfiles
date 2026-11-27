@@ -1,6 +1,7 @@
 { pkgs }:
 let
   compositorLibraries = import ./desktop-compositor-libs.nix { inherit pkgs; };
+  glLibraries = import ./desktop-gl-libs.nix { inherit pkgs; };
   audioLibraries = import ./desktop-audio-libs.nix { inherit pkgs; };
   pamLibraries = import ./desktop-pam-libs.nix { inherit pkgs; };
   inputLibraries = import ./desktop-input-libs.nix { inherit pkgs; };
@@ -104,6 +105,9 @@ pkgs.stdenv.mkDerivation {
     inputLibraries
     pkgs.libdrm
     pkgs.pixman
+    # The native compositor composites with GLES through EGL on GBM buffers.
+    glLibraries
+    pkgs.libgbm
     pamLibraries
     textLibraries.xkbcommon
     # Audio and screen video use PipeWire's native protocol. Its headers are
