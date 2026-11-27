@@ -46,6 +46,7 @@ pkgs.testers.runNixOSTest {
         grim
         wayland-utils
         mesa-demos
+        wlr-randr
       ];
       fonts.packages = [ pkgs.dejavu_fonts ];
       # Screenshots leave out the cursor plane; draw the native cursor into frames.
@@ -171,6 +172,17 @@ pkgs.testers.runNixOSTest {
         machine.screenshot("desktop-gl-client")
         machine.fail("journalctl -b | grep -F 'could not import'")
         machine.succeed(user("systemctl --user stop gears.service"))
+      with subtest("displays offer their modes and switch between them"):
+        print(machine.succeed(user("wlr-randr")))
+        machine.succeed(user("wlr-randr --output Virtual-1 --mode 1024x768"))
+        machine.wait_until_succeeds("journalctl -b | grep -F 'compositor: Virtual-1 now 1024x768'")
+        machine.sleep(1)
+        machine.screenshot("desktop-mode-1024x768")
+        machine.succeed(user("wlr-randr | grep -F '1024x768' | grep -F current"))
+        machine.succeed(user("wlr-randr --output Virtual-1 --mode 1280x800"))
+        machine.wait_until_succeeds("journalctl -b | grep -F 'compositor: Virtual-1 now 1280x800'")
+        machine.sleep(1)
+
       with subtest("overview previews draw on the GPU and the panel turns opaque again"):
         machine.succeed(user("desktop-zig settings"))
         machine.wait_until_succeeds(user("wlrctl toplevel find title:Settings"))

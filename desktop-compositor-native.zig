@@ -1512,6 +1512,25 @@ const Output = struct {
         return self.name_buffer[0..self.name_len];
     }
 
+    /// The modes output management offers: the connector's, or the current size.
+    fn modeList(self: *const Output, buffer: []OutputMode) []OutputMode {
+        const display = self.display orelse {
+            buffer[0] = .{ .size = .{ self.width, self.height }, .refresh = @intCast(self.refresh), .preferred = true };
+            return buffer[0..1];
+        };
+        var count: usize = 0;
+        for (display.modes) |mode| {
+            const entry: OutputMode = .{ .size = .{ mode.hdisplay, mode.vdisplay }, .refresh = mode.refreshMilli(), .preferred = mode.type & Drm.kms.ModeInfo.type_preferred != 0 };
+            const duplicate = for (buffer[0..count]) |seen| {
+                if (seen.size[0] == entry.size[0] and seen.size[1] == entry.size[1] and seen.refresh == entry.refresh) break true;
+            } else false;
+            if (duplicate or count == buffer.len) continue;
+            buffer[count] = entry;
+            count += 1;
+        }
+        return buffer[0..count];
+    }
+
     fn setName(self: *Output, text: []const u8) void {
         const len = @min(text.len, self.name_buffer.len);
         @memcpy(self.name_buffer[0..len], text[0..len]);
@@ -2577,46 +2596,86 @@ const HeadManager = struct {
     manager: ws.zwlr_output_manager_v1,
     heads: std.ArrayList(*Head) = .empty,
 
+    /// A zwlr_output_mode_v1: one of a head's modes. It outlives its head
+    /// until the client lets go of it, so configurations can still name it.
+    const ModeObject = struct {
+        head: *Head,
+        resource: ws.zwlr_output_mode_v1,
+        size: [2]u32,
+        refresh: u32,
+        /// No longer offered; choosing it fails the configuration.
+        finished: bool = false,
+
+        fn request(_: *ModeObject, _: ws.zwlr_output_mode_v1, _: ws.zwlr_output_mode_v1.Request) void {}
+
+        fn gone(self: *ModeObject, _: ws.zwlr_output_mode_v1) void {
+            const head = self.head;
+            removeItem(*ModeObject, &head.modes, self);
+            head.live -= 1;
+            std.heap.c_allocator.destroy(self);
+            if (head.head == null and head.live == 0) {
+                head.modes.deinit(std.heap.c_allocator);
+                std.heap.c_allocator.destroy(head);
+            }
+        }
+    };
+
     const Head = struct {
         owner: ?*HeadManager,
         output: *Output,
         head: ?ws.zwlr_output_head_v1 = null,
-        mode: ?ws.zwlr_output_mode_v1 = null,
-        /// The mode size last announced; a custom size gets a new mode object.
-        size: [2]u32 = .{ 0, 0 },
+        /// Mode objects still held by the client, and how many there are.
+        modes: std.ArrayList(*ModeObject) = .empty,
+        live: u32 = 0,
 
         fn request(_: *Head, _: ws.zwlr_output_head_v1, _: ws.zwlr_output_head_v1.Request) void {}
-        fn modeRequest(_: *Head, _: ws.zwlr_output_mode_v1, _: ws.zwlr_output_mode_v1.Request) void {}
 
         fn gone(self: *Head, _: ws.zwlr_output_head_v1) void {
             self.head = null;
             if (self.owner) |owner| removeItem(*Head, &owner.heads, self);
-            if (self.mode == null) std.heap.c_allocator.destroy(self);
-        }
-
-        fn modeGone(self: *Head, _: ws.zwlr_output_mode_v1) void {
-            self.mode = null;
-            if (self.head == null) std.heap.c_allocator.destroy(self);
-        }
-
-        /// Announces the current mode, as a new mode object when its size changed.
-        fn announceMode(self: *Head) void {
-            const head = self.head orelse return;
-            const output = self.output;
-            if (self.mode != null and self.size[0] == output.width and self.size[1] == output.height) return;
-            if (self.mode) |old| {
-                old.sendFinished();
-                old.setHandler(Head, self, null, null);
-                self.mode = null;
+            if (self.live == 0) {
+                self.modes.deinit(std.heap.c_allocator);
+                std.heap.c_allocator.destroy(self);
             }
-            const mode = head.sendMode();
-            if (!mode.alive()) return;
-            mode.setHandler(Head, self, modeRequest, modeGone);
-            self.mode = mode;
-            self.size = .{ output.width, output.height };
-            mode.sendSize(@intCast(output.width), @intCast(output.height));
-            mode.sendRefresh(60000);
-            mode.sendPreferred();
+        }
+
+        /// Announces the output's modes, finishing ones it no longer has.
+        fn announceModes(self: *Head) void {
+            const head = self.head orelse return;
+            var wanted: [128]OutputMode = undefined;
+            const list = self.output.modeList(&wanted);
+            for (self.modes.items) |mode| if (!mode.finished) {
+                const kept = for (list) |entry| {
+                    if (entry.size[0] == mode.size[0] and entry.size[1] == mode.size[1] and entry.refresh == mode.refresh) break true;
+                } else false;
+                if (!kept) {
+                    mode.finished = true;
+                    mode.resource.sendFinished();
+                }
+            };
+            for (list) |entry| {
+                const known = for (self.modes.items) |mode| {
+                    if (!mode.finished and mode.size[0] == entry.size[0] and mode.size[1] == entry.size[1] and mode.refresh == entry.refresh) break true;
+                } else false;
+                if (known) continue;
+                const resource = head.sendMode();
+                if (!resource.alive()) continue;
+                const mode = std.heap.c_allocator.create(ModeObject) catch {
+                    resource.destroyResource();
+                    continue;
+                };
+                mode.* = .{ .head = self, .resource = resource, .size = entry.size, .refresh = entry.refresh };
+                self.modes.append(std.heap.c_allocator, mode) catch {
+                    std.heap.c_allocator.destroy(mode);
+                    resource.destroyResource();
+                    continue;
+                };
+                self.live += 1;
+                resource.setHandler(ModeObject, mode, ModeObject.request, ModeObject.gone);
+                resource.sendSize(@intCast(entry.size[0]), @intCast(entry.size[1]));
+                resource.sendRefresh(@intCast(entry.refresh));
+                if (entry.preferred) resource.sendPreferred();
+            }
         }
 
         /// The state that configurations change.
@@ -2625,8 +2684,11 @@ const HeadManager = struct {
             const output = self.output;
             head.sendEnabled(@intFromBool(output.enabled));
             if (!output.enabled) return;
-            self.announceMode();
-            if (self.mode) |current| head.sendCurrentMode(current);
+            self.announceModes();
+            for (self.modes.items) |mode| if (!mode.finished and mode.size[0] == output.width and mode.size[1] == output.height and mode.refresh == @as(u32, @intCast(output.refresh))) {
+                head.sendCurrentMode(mode.resource);
+                break;
+            };
             head.sendPosition(output.x, output.y);
             head.sendTransform(ws.wl_output.Transform.normal);
             head.sendScale(output.scale);
@@ -2721,14 +2783,18 @@ const OutputConfig = struct {
         for (self.heads.items) |head| {
             const scale = head.scale orelse head.output.scale;
             if (!std.math.isFinite(scale) or scale < 0.5 or scale > 4) return resource.sendFailed();
+            if (head.stale) return resource.sendFailed();
             if (head.size) |size| if (size[0] == 0 or size[1] == 0 or size[0] > 8192 or size[1] > 8192) return resource.sendFailed();
-            // Displays keep the mode they were set up with.
-            if (head.size) |size| if (head.output.display) |display| if (size[0] != display.width() or size[1] != display.height()) return resource.sendFailed();
+            // Displays only take the modes their connector offers.
+            if (head.size) |size| if (head.output.display) |display| if (findMode(display, size, head.refresh) == null) return resource.sendFailed();
         }
         if (apply) {
             for (self.disabled.items) |output| comp.setOutputEnabled(output, false);
             for (self.heads.items) |head| {
                 comp.setOutputEnabled(head.output, true);
+                if (head.size) |size| if (head.output.display) |display| if (findMode(display, size, head.refresh)) |mode| {
+                    if (comp.drm) |backend| backend.switchMode(head.output, display, mode);
+                };
                 head.output.configure(head.scale orelse head.output.scale, head.size, head.position);
             }
             comp.outputChanged();
@@ -2744,22 +2810,48 @@ const OutputConfig = struct {
     }
 };
 
+/// The connector's mode of `size`, at `refresh` mHz if asked (within 1 Hz),
+/// else the fastest.
+fn findMode(display: *const Drm.kms.Display, size: [2]u32, refresh: u32) ?Drm.kms.ModeInfo {
+    var best: ?Drm.kms.ModeInfo = null;
+    for (display.modes) |mode| {
+        if (mode.hdisplay != size[0] or mode.vdisplay != size[1]) continue;
+        const rate = mode.refreshMilli();
+        if (refresh != 0) {
+            if (@max(rate, refresh) - @min(rate, refresh) <= 1000) return mode;
+            continue;
+        }
+        if (best == null or rate > best.?.refreshMilli()) best = mode;
+    }
+    return best;
+}
+
+/// A mode as output management lists it.
+const OutputMode = struct { size: [2]u32, refresh: u32, preferred: bool = false };
+
 const ConfigHead = struct {
     comp: *Compositor,
     config: ?*OutputConfig,
     output: *Output,
     scale: ?f64 = null,
     size: ?[2]u32 = null,
+    /// The refresh rate asked for, in mHz; 0 takes any.
+    refresh: u32 = 0,
+    /// A mode that is no longer offered was chosen.
+    stale: bool = false,
     position: ?[2]i32 = null,
 
     fn handle(self: *ConfigHead, _: ws.zwlr_output_configuration_head_v1, request: ws.zwlr_output_configuration_head_v1.Request) void {
         switch (request) {
             .set_scale => |args| self.scale = args.scale,
-            .set_mode => |args| if (args.mode.data(HeadManager.Head)) |head| {
-                self.size = head.size;
+            .set_mode => |args| if (args.mode.data(HeadManager.ModeObject)) |mode| {
+                self.size = mode.size;
+                self.refresh = mode.refresh;
+                self.stale = mode.finished or mode.head.output != self.output;
             },
             .set_custom_mode => |args| if (args.width > 0 and args.height > 0) {
                 self.size = .{ @intCast(args.width), @intCast(args.height) };
+                self.refresh = if (args.refresh > 0) @intCast(args.refresh) else 0;
             },
             .set_position => |args| self.position = .{ args.x, args.y },
             .set_transform, .set_adaptive_sync => {},
@@ -5795,6 +5887,7 @@ const Drm = struct {
         self.attachTarget(output);
         output.setName(display.name());
         output.make = "Display";
+        output.model = "Display";
         output.refresh = @intCast(display.mode.refreshMilli());
         output.physical = .{ @intCast(display.mm_width), @intCast(display.mm_height) };
         // The laptop panel starts at the scale the wlroots compositor gave it.
@@ -5834,6 +5927,16 @@ const Drm = struct {
             output.unpresented = false;
             if (output.target != null) output.render() else output.present();
         }
+    }
+
+    /// Switches a display's mode; its buffers follow the new size.
+    fn switchMode(self: *Drm, output: *Output, display: *kms.Display, mode: kms.ModeInfo) void {
+        if (std.meta.eql(mode, display.mode)) return;
+        self.detachTarget(output);
+        display.setMode(mode);
+        output.refresh = @intCast(mode.refreshMilli());
+        self.attachTarget(output);
+        std.log.info("compositor: {s} now {d}x{d} at {d} mHz", .{ display.name(), mode.hdisplay, mode.vdisplay, mode.refreshMilli() });
     }
 
     /// GPU frames go to a GBM surface the size of the display.

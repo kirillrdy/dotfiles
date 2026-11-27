@@ -257,6 +257,8 @@ pub const Display = struct {
     connector: u32,
     crtc: u32,
     mode: ModeInfo,
+    /// Every mode the connector offers, preferred first as the kernel lists them.
+    modes: []ModeInfo = &.{},
     name_buffer: [32]u8 = undefined,
     name_len: usize = 0,
     mm_width: u32 = 0,
@@ -375,8 +377,17 @@ pub const Display = struct {
         if (self.on_flip) |callback| callback(self.context);
     }
 
+    /// Switches to another of the connector's modes at the next frame.
+    pub fn setMode(self: *Display, mode: ModeInfo) void {
+        if (std.meta.eql(mode, self.mode)) return;
+        for (&self.buffers) |*buffer| buffer.destroy(self.card.fd);
+        self.mode = mode;
+        self.modeset = false;
+    }
+
     fn destroy(self: *Display) void {
         for (&self.buffers) |*buffer| buffer.destroy(self.card.fd);
+        self.card.allocator.free(self.modes);
     }
 };
 
@@ -455,7 +466,7 @@ pub const Card = struct {
             };
             const display = try a.create(Display);
             errdefer a.destroy(display);
-            display.* = .{ .card = self, .connector = connector_id, .crtc = crtc, .mode = mode, .mm_width = info.header.mm_width, .mm_height = info.header.mm_height };
+            display.* = .{ .card = self, .connector = connector_id, .crtc = crtc, .mode = mode, .mm_width = info.header.mm_width, .mm_height = info.header.mm_height, .modes = try a.dupe(ModeInfo, info.modes) };
             display.name_len = connectorName(&display.name_buffer, info.header.connector_type, info.header.connector_type_id).len;
             try self.displays.append(a, display);
             try added.append(a, display);
