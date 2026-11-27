@@ -1384,6 +1384,8 @@ const Layer = struct {
         if (changed) {
             if (std.mem.eql(u8, self.namespace, "desktop-overview")) self.comp.broadcastOverview();
             if (mapped) self.output.enter(surface);
+            // A layer that takes the keyboard gets it when it appears, as before.
+            if (mapped and !self.comp.locked and self.current.interactivity != 0) self.comp.focused_layer = self;
             if (!mapped and self.comp.focused_layer == self) self.comp.focused_layer = null;
             self.comp.updateKeyboardFocus();
         }
