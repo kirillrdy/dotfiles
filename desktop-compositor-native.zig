@@ -2690,6 +2690,10 @@ const HeadManager = struct {
                 break;
             };
             head.sendPosition(output.x, output.y);
+            if (head.version() >= 4) {
+                const enabled = if (output.display) |display| display.vrr_enabled else false;
+                head.sendAdaptiveSync(if (enabled) ws.zwlr_output_head_v1.AdaptiveSyncState.enabled else ws.zwlr_output_head_v1.AdaptiveSyncState.disabled);
+            }
             head.sendTransform(ws.wl_output.Transform.normal);
             head.sendScale(output.scale);
         }
@@ -2787,6 +2791,8 @@ const OutputConfig = struct {
             if (head.size) |size| if (size[0] == 0 or size[1] == 0 or size[0] > 8192 or size[1] > 8192) return resource.sendFailed();
             // Displays only take the modes their connector offers.
             if (head.size) |size| if (head.output.display) |display| if (findMode(display, size, head.refresh) == null) return resource.sendFailed();
+            // Variable refresh needs a display that supports it.
+            if (head.adaptive_sync) |enabled| if (enabled) if (head.output.display == null or !head.output.display.?.vrr_capable) return resource.sendFailed();
         }
         if (apply) {
             for (self.disabled.items) |output| comp.setOutputEnabled(output, false);
@@ -2794,6 +2800,9 @@ const OutputConfig = struct {
                 comp.setOutputEnabled(head.output, true);
                 if (head.size) |size| if (head.output.display) |display| if (findMode(display, size, head.refresh)) |mode| {
                     if (comp.drm) |backend| backend.switchMode(head.output, display, mode);
+                };
+                if (head.adaptive_sync) |enabled| if (head.output.display) |display| {
+                    if (!display.setAdaptiveSync(enabled)) std.log.warn("compositor: {s}: variable refresh could not be {s}", .{ display.name(), if (enabled) "enabled" else "disabled" });
                 };
                 head.output.configure(head.scale orelse head.output.scale, head.size, head.position);
             }
@@ -2839,6 +2848,7 @@ const ConfigHead = struct {
     refresh: u32 = 0,
     /// A mode that is no longer offered was chosen.
     stale: bool = false,
+    adaptive_sync: ?bool = null,
     position: ?[2]i32 = null,
 
     fn handle(self: *ConfigHead, _: ws.zwlr_output_configuration_head_v1, request: ws.zwlr_output_configuration_head_v1.Request) void {
@@ -2854,7 +2864,8 @@ const ConfigHead = struct {
                 self.refresh = if (args.refresh > 0) @intCast(args.refresh) else 0;
             },
             .set_position => |args| self.position = .{ args.x, args.y },
-            .set_transform, .set_adaptive_sync => {},
+            .set_adaptive_sync => |args| self.adaptive_sync = args.state == ws.zwlr_output_head_v1.AdaptiveSyncState.enabled,
+            .set_transform => {},
         }
     }
 

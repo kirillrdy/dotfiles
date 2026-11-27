@@ -146,6 +146,34 @@ pub const DestroyDumb = extern struct { handle: u32 = 0 };
 
 pub const GetCap = extern struct { capability: u64 = 0, value: u64 = 0 };
 
+pub const ObjectProperties = extern struct {
+    props_ptr: u64 = 0,
+    prop_values_ptr: u64 = 0,
+    count_props: u32 = 0,
+    obj_id: u32 = 0,
+    obj_type: u32 = 0,
+};
+
+pub const Property = extern struct {
+    values_ptr: u64 = 0,
+    enum_blob_ptr: u64 = 0,
+    prop_id: u32 = 0,
+    flags: u32 = 0,
+    name: [32]u8 = @splat(0),
+    count_values: u32 = 0,
+    count_enum_blobs: u32 = 0,
+};
+
+pub const SetProperty = extern struct {
+    value: u64 = 0,
+    prop_id: u32 = 0,
+    obj_id: u32 = 0,
+    obj_type: u32 = 0,
+};
+
+pub const object_crtc: u32 = 0xcccccccc;
+pub const object_connector: u32 = 0xc0c0c0c0;
+
 pub const CursorCommand = extern struct {
     flags: u32 = 0,
     crtc_id: u32 = 0,
@@ -181,6 +209,9 @@ pub const ioctl = struct {
     pub const add_fb = ioctlNumber(read_write, 0xae, FbCommand);
     pub const remove_fb = ioctlNumber(read_write, 0xaf, u32);
     pub const page_flip = ioctlNumber(read_write, 0xb0, PageFlip);
+    pub const get_property = ioctlNumber(read_write, 0xaa, Property);
+    pub const object_properties = ioctlNumber(read_write, 0xb9, ObjectProperties);
+    pub const set_object_property = ioctlNumber(read_write, 0xba, SetProperty);
     pub const add_fb2 = ioctlNumber(read_write, 0xb8, FbCommand2);
     pub const create_dumb = ioctlNumber(read_write, 0xb2, CreateDumb);
     pub const map_dumb = ioctlNumber(read_write, 0xb3, MapDumb);
@@ -271,6 +302,9 @@ pub const Display = struct {
     /// microseconds, from the vblank event) and its vblank count.
     flip_time: [2]u32 = .{ 0, 0 },
     flip_sequence: u32 = 0,
+    /// Whether the display can vary its refresh rate, and whether it does.
+    vrr_capable: bool = false,
+    vrr_enabled: bool = false,
     /// The first frame sets the mode; later ones flip.
     modeset: bool = false,
     /// Called when a flip finished and the next frame may be drawn.
@@ -377,6 +411,17 @@ pub const Display = struct {
         if (self.on_flip) |callback| callback(self.context);
     }
 
+    /// Turns variable refresh on or off, as the CRTC's VRR_ENABLED property.
+    pub fn setAdaptiveSync(self: *Display, enabled: bool) bool {
+        if (enabled == self.vrr_enabled) return true;
+        if (enabled and !self.vrr_capable) return false;
+        const property = self.card.findProperty(self.crtc, object_crtc, "VRR_ENABLED") orelse return false;
+        var request: SetProperty = .{ .value = @intFromBool(enabled), .prop_id = property.id, .obj_id = self.crtc, .obj_type = object_crtc };
+        if (!call(self.card.fd, ioctl.set_object_property, &request)) return false;
+        self.vrr_enabled = enabled;
+        return true;
+    }
+
     /// Switches to another of the connector's modes at the next frame.
     pub fn setMode(self: *Display, mode: ModeInfo) void {
         if (std.meta.eql(mode, self.mode)) return;
@@ -468,6 +513,8 @@ pub const Card = struct {
             errdefer a.destroy(display);
             display.* = .{ .card = self, .connector = connector_id, .crtc = crtc, .mode = mode, .mm_width = info.header.mm_width, .mm_height = info.header.mm_height, .modes = try a.dupe(ModeInfo, info.modes) };
             display.name_len = connectorName(&display.name_buffer, info.header.connector_type, info.header.connector_type_id).len;
+            if (self.findProperty(connector_id, object_connector, "vrr_capable")) |property| display.vrr_capable = property.value != 0;
+            if (self.findProperty(crtc, object_crtc, "VRR_ENABLED")) |property| display.vrr_enabled = property.value != 0;
             try self.displays.append(a, display);
             try added.append(a, display);
         }
@@ -520,6 +567,21 @@ pub const Card = struct {
         };
         display.destroy();
         self.allocator.destroy(display);
+    }
+
+    /// A DRM object's property by name, with its current value.
+    pub fn findProperty(self: *Card, object: u32, kind: u32, name: []const u8) ?struct { id: u32, value: u64 } {
+        var ids: [64]u32 = undefined;
+        var values: [64]u64 = undefined;
+        var request: ObjectProperties = .{ .props_ptr = @intFromPtr(&ids), .prop_values_ptr = @intFromPtr(&values), .count_props = ids.len, .obj_id = object, .obj_type = kind };
+        if (!call(self.fd, ioctl.object_properties, &request)) return null;
+        for (ids[0..@min(request.count_props, ids.len)], values[0..@min(request.count_props, ids.len)]) |id, value| {
+            var property: Property = .{ .prop_id = id };
+            if (!call(self.fd, ioctl.get_property, &property)) continue;
+            const length = std.mem.indexOfScalar(u8, &property.name, 0) orelse property.name.len;
+            if (std.mem.eql(u8, property.name[0..length], name)) return .{ .id = id, .value = value };
+        }
+        return null;
     }
 
     /// Registers a GPU buffer as a framebuffer, for `Display.show`.
@@ -606,6 +668,9 @@ test "DRM ioctl structures match the kernel headers" {
         .{ GetCap, c.struct_drm_get_cap },
         .{ CursorCommand, c.struct_drm_mode_cursor2 },
         .{ FbCommand2, c.struct_drm_mode_fb_cmd2 },
+        .{ ObjectProperties, c.struct_drm_mode_obj_get_properties },
+        .{ Property, c.struct_drm_mode_get_property },
+        .{ SetProperty, c.struct_drm_mode_obj_set_property },
         .{ VblankEvent, c.struct_drm_event_vblank },
     }) |pair| {
         try std.testing.expectEqual(@sizeOf(pair[1]), @sizeOf(pair[0]));
@@ -624,6 +689,11 @@ test "DRM ioctl structures match the kernel headers" {
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_GET_CAP), ioctl.get_cap);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_CURSOR2), ioctl.cursor2);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_ADDFB2), ioctl.add_fb2);
+    try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_GETPROPERTY), ioctl.get_property);
+    try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_OBJ_GETPROPERTIES), ioctl.object_properties);
+    try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_OBJ_SETPROPERTY), ioctl.set_object_property);
+    try std.testing.expectEqual(@as(u32, c.DRM_MODE_OBJECT_CRTC), object_crtc);
+    try std.testing.expectEqual(@as(u32, c.DRM_MODE_OBJECT_CONNECTOR), object_connector);
 }
 
 test "connector names follow the kernel's" {

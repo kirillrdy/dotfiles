@@ -181,6 +181,9 @@ pkgs.testers.runNixOSTest {
         machine.succeed(user("wlr-randr | grep -F '1024x768' | grep -F current"))
         machine.succeed(user("wlr-randr --output Virtual-1 --mode 1280x800"))
         machine.wait_until_succeeds("journalctl -b | grep -F 'compositor: Virtual-1 now 1280x800'")
+        # virtio-gpu cannot vary its refresh rate, so turning it on is refused.
+        machine.fail(user("wlr-randr --output Virtual-1 --adaptive-sync enabled"))
+        machine.succeed(user("wlr-randr | grep -F 'Adaptive Sync: disabled'"))
         machine.sleep(1)
 
       with subtest("overview previews draw on the GPU and the panel turns opaque again"):
