@@ -6132,10 +6132,12 @@ const Drm = struct {
         };
     }
 
-    fn flipped(context: ?*anyopaque) void {
+    fn flipped(context: ?*anyopaque, primary: bool) void {
         const output: *Output = @ptrCast(@alignCast(context));
-        if (output.target) |target| target.flipped();
-        if (output.display) |display| if (output.target != null) output.comp.flipPresented(output, display);
+        if (primary) {
+            if (output.target) |target| target.flipped();
+            if (output.display) |display| if (output.target != null) output.comp.flipPresented(output, display);
+        }
         if (output.unpresented) {
             output.unpresented = false;
             if (output.target != null) output.render() else output.present();
@@ -6275,12 +6277,13 @@ const Drm = struct {
         a.free(self.software_cursor);
         self.software_cursor = &.{};
         if (!self.card.cursor_visible) return;
-        const memory = self.card.cursor.memory orelse return;
+        const cursor = self.card.cursorBuffer();
+        const memory = cursor.memory orelse return;
         const width = self.card.cursor_size[0];
         const height = self.card.cursor_size[1];
         self.software_cursor = a.alloc(u32, @as(usize, width) * height) catch return;
         for (0..height) |row| {
-            const line: [*]const u32 = @ptrCast(@alignCast(memory + row * self.card.cursor.pitch));
+            const line: [*]const u32 = @ptrCast(@alignCast(memory + row * cursor.pitch));
             @memcpy(self.software_cursor[row * width ..][0..width], line[0..width]);
         }
     }
