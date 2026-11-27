@@ -168,6 +168,16 @@ pkgs.testers.runNixOSTest {
         machine.screenshot("desktop-gl-client")
         machine.fail("journalctl -b | grep -F 'could not import'")
         machine.succeed(user("systemctl --user stop gears.service"))
+      with subtest("overview previews draw on the GPU and the panel turns opaque again"):
+        machine.succeed(user("desktop-zig settings"))
+        machine.wait_until_succeeds(user("wlrctl toplevel find title:Settings"))
+        machine.succeed(user("desktop-zig overview"))
+        machine.sleep(2)
+        machine.screenshot("desktop-overview-open")
+        machine.send_key("esc")
+        machine.sleep(2)
+        machine.screenshot("desktop-overview-closed")
+        machine.succeed(user("wlrctl toplevel close title:Settings"))
       with subtest("the session survives switching to another VT and back"):
         machine.send_key("ctrl-alt-f2")
         machine.wait_until_succeeds("test \"$(cat /sys/class/tty/tty0/active)\" = tty2")

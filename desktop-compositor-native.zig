@@ -444,6 +444,16 @@ const Surface = struct {
 
     /// Draws this surface and its subsurfaces with its origin at (x, y).
     /// Coordinates are logical; `scale` converts them to output pixels.
+    /// Draws the surface tree with surface-local coordinates scaled by
+    /// (fx, fy) from (x, y) in output pixels, clipped and faded.
+    fn drawGpu(self: *Surface, renderer: *Gl.Renderer, x: f64, y: f64, fx: f64, fy: f64, clip: Gl.Clip, opacity: f32) void {
+        if (self.mapped()) {
+            self.syncTexture(renderer);
+            renderer.draw(self.texture, .{ .x = x, .y = y, .width = @as(f64, @floatFromInt(self.logicalWidth())) * fx, .height = @as(f64, @floatFromInt(self.logicalHeight())) * fy }, clip, opacity, false);
+        }
+        for (self.children.items) |child| if (child.surface) |surface| surface.drawGpu(renderer, x + @as(f64, @floatFromInt(child.x)) * fx, y + @as(f64, @floatFromInt(child.y)) * fy, fx, fy, clip, opacity);
+    }
+
     fn draw(self: *Surface, target: Canvas, x: i32, y: i32, scale: f64) void {
         if (self.mapped()) {
             const fx: f64 = @floatFromInt(x);
@@ -1171,6 +1181,7 @@ const Layer = struct {
         if (self.closed) return;
         self.closed = true;
         self.mapped = false;
+        self.comp.broadcastOverview();
         self.resource.sendClosed();
         for (self.comp.popups.items) |popup| if (popup.layer_parent == self and popup.mapped) popup.resource.sendPopupDone();
         if (self.comp.focused_layer == self) self.comp.focused_layer = null;
@@ -1190,6 +1201,21 @@ const Layer = struct {
         const s = scale;
         for (self.previews.items) |preview| {
             const toplevel = comp.findWindow(preview.id[0..preview.id_len]) orelse continue;
+            if (target == .gl) {
+                // Straight from the window's textures: no CPU copy per frame.
+                const xdg = toplevel.xdg orelse continue;
+                const surface = xdg.surface orelse continue;
+                const geometry = xdg.windowGeometry();
+                if (geometry.width <= 0 or geometry.height <= 0) continue;
+                const v = preview.values;
+                const ox: f64 = @floatFromInt(self.rect.x - self.output.x);
+                const oy: f64 = @floatFromInt(self.rect.y - self.output.y);
+                const fx = v[2] * s / @as(f64, @floatFromInt(geometry.width));
+                const fy = v[3] * s / @as(f64, @floatFromInt(geometry.height));
+                const clip: Gl.Clip = .{ .x = @intFromFloat(@floor((ox + v[4]) * s)), .y = @intFromFloat(@floor((oy + v[5]) * s)), .width = @intFromFloat(@ceil(v[6] * s)), .height = @intFromFloat(@ceil(v[7] * s)) };
+                surface.drawGpu(target.gl, (ox + v[0]) * s - @as(f64, @floatFromInt(geometry.x)) * fx, (oy + v[1]) * s - @as(f64, @floatFromInt(geometry.y)) * fy, fx, fy, clip, @floatCast(v[8]));
+                continue;
+            }
             const size = CaptureSession.size(toplevel);
             const pixels = comp.a.alloc(u32, @as(usize, size[0]) * size[1]) catch continue;
             defer comp.a.free(pixels);
@@ -1214,6 +1240,7 @@ const Layer = struct {
     fn surfaceGone(self: *Layer) void {
         self.surface = null;
         self.mapped = false;
+        self.comp.broadcastOverview();
         if (self.comp.focused_layer == self) self.comp.focused_layer = null;
         self.comp.arrange();
         self.comp.updateKeyboardFocus();
@@ -1233,8 +1260,9 @@ const Layer = struct {
         comp.a.free(self.namespace);
         self.previews.deinit(comp.a);
         self.pending_previews.deinit(comp.a);
-        if (std.mem.eql(u8, self.namespace, "desktop-overview") and self.mapped) comp.broadcastOverview();
         comp.a.destroy(self);
+        // The layer is out of the list, so the overview state is current.
+        comp.broadcastOverview();
         comp.arrange();
         comp.updateKeyboardFocus();
         comp.scheduleRepaint();
@@ -3323,6 +3351,8 @@ const Compositor = struct {
     dmabuf_table: i32 = -1,
     /// The card's dev_t, as feedback main_device sends it.
     dmabuf_device: [8]u8 = @splat(0),
+    /// The overview state last broadcast.
+    overview_sent: bool = false,
     /// Set once start-up finished; later outputs are hotplugged.
     started: bool = false,
     seat: Seat = undefined,
@@ -3562,9 +3592,12 @@ const Compositor = struct {
         };
     }
 
+    /// Tells overview clients (the panel) when the overview opens or closes.
     fn broadcastOverview(self: *Compositor) void {
-        const active: u32 = @intFromBool(self.overviewActive());
-        for (self.overviews.items) |overview| if (overview.resource.version() >= 2) overview.resource.sendOverview(active);
+        const active = self.overviewActive();
+        if (active == self.overview_sent) return;
+        self.overview_sent = active;
+        for (self.overviews.items) |overview| if (overview.resource.version() >= 2) overview.resource.sendOverview(@intFromBool(active));
     }
 
     // ---------------------------------------------------------- Shortcuts
