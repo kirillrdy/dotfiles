@@ -1,6 +1,7 @@
-//! Kernel mode setting without libdrm: connector discovery, modes, dumb
-//! buffers and page flips through the DRM ioctls. Frames are drawn in
-//! software and scanned out from dumb buffers; GPU rendering is separate.
+//! Kernel mode setting without libdrm: connector discovery, modes, the
+//! cursor plane and page flips through the DRM ioctls. Frames are drawn by
+//! the GPU (desktop-gl.zig) into GBM buffers registered as framebuffers;
+//! dumb buffers only hold the cursor.
 const std = @import("std");
 const linux = std.os.linux;
 
@@ -335,9 +336,7 @@ pub const Display = struct {
     name_len: usize = 0,
     mm_width: u32 = 0,
     mm_height: u32 = 0,
-    buffers: [2]Dumb = .{ .{}, .{} },
-    /// The buffer scanned out, and whether an atomic commit is pending.
-    front: usize = 0,
+    /// Whether an atomic commit is pending.
     flipping: bool = false,
     /// True when the pending atomic commit updates only the cursor plane.
     cursor_commit: bool = false,
@@ -372,34 +371,6 @@ pub const Display = struct {
 
     pub fn height(self: *const Display) u32 {
         return self.mode.vdisplay;
-    }
-
-    fn allocate(self: *Display) Error!void {
-        for (&self.buffers) |*buffer| buffer.* = try Dumb.create(self.card.fd, self.width(), self.height(), format_xrgb8888);
-    }
-
-    /// Copies ARGB pixels into the back buffer and shows it at the next vblank.
-    /// Returns false while a previous flip is pending or the session is inactive.
-    pub fn present(self: *Display, pixels: []const u32) bool {
-        if (self.flipping or !self.card.active) return false;
-        if (self.buffers[0].handle == 0) self.allocate() catch return false;
-        const back = &self.buffers[1 - self.front];
-        const memory = back.memory orelse return false;
-        const w = self.width();
-        // Frames of another size (a mode the display does not have) are not shown.
-        if (pixels.len != @as(usize, w) * self.height()) return false;
-        for (0..self.height()) |row| {
-            const line: [*]u32 = @ptrCast(@alignCast(memory + row * back.pitch));
-            @memcpy(line[0..w], pixels[row * w ..][0..w]);
-        }
-        switch (self.show(back.fb)) {
-            .shown => {
-                self.front = 1 - self.front;
-                return true;
-            },
-            .flipping => return true,
-            .failed => return false,
-        }
     }
 
     pub const Shown = enum { shown, flipping, failed };
@@ -552,7 +523,6 @@ pub const Display = struct {
         self.flipping = false;
         const primary = !self.cursor_commit;
         self.cursor_commit = false;
-        if (primary) self.front = 1 - self.front;
         if (self.on_flip) |callback| callback(self.context, primary);
         if (self.cursor_dirty and !self.flipping) self.commitCursor();
     }
@@ -571,13 +541,11 @@ pub const Display = struct {
     /// Switches to another of the connector's modes at the next frame.
     pub fn setMode(self: *Display, mode: ModeInfo) void {
         if (std.meta.eql(mode, self.mode)) return;
-        for (&self.buffers) |*buffer| buffer.destroy(self.card.fd);
         self.mode = mode;
         self.modeset = false;
     }
 
     fn destroy(self: *Display) void {
-        for (&self.buffers) |*buffer| buffer.destroy(self.card.fd);
         self.card.allocator.free(self.modes);
     }
 };

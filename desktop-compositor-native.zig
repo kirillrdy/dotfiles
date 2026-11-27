@@ -1640,10 +1640,6 @@ const Output = struct {
         self.name_len = len;
     }
 
-    fn present(self: *Output) void {
-        Drm.present(self);
-    }
-
     /// The output's area in global logical coordinates.
     fn box(self: *const Output) Rect {
         return .{ .x = self.x, .y = self.y, .width = self.logicalWidth(), .height = self.logicalHeight() };
@@ -1824,13 +1820,12 @@ const Output = struct {
                 self.pixels_valid = false;
                 backend.showGpu(self, target);
             }
-        } else self.drawCpu();
+        } else if (self.display == null) self.drawCpu();
         if (comp.locked) {
             self.lock_serial = comp.lock_serial;
             if (comp.lock) |lock| lock.acknowledge();
         }
         if (self.nested) |window| window.present();
-        if (self.display != null and self.target == null) self.present();
         // Displays report when the frame is on screen, at its page flip.
         if (self.display != null and self.target != null) comp.drawnFor(self) else comp.presented(self);
         self.frames += 1;
@@ -2966,8 +2961,6 @@ const OutputConfig = struct {
             if (head.size) |size| if (size[0] == 0 or size[1] == 0 or size[0] > 8192 or size[1] > 8192) return resource.sendFailed();
             // Displays only take the modes their connector offers.
             if (head.size) |size| if (head.output.display) |display| if (findMode(display, size, head.refresh) == null) return resource.sendFailed();
-            // Displays drawn on the CPU cannot be turned.
-            if (head.transform) |transform| if (transform != 0 and head.output.display != null and head.output.target == null) return resource.sendFailed();
             // Variable refresh needs a display that supports it.
             if (head.adaptive_sync) |enabled| if (enabled) if (head.output.display == null or !head.output.display.?.vrr_capable) return resource.sendFailed();
         }
@@ -6216,7 +6209,7 @@ const DmabufParams = struct {
 // ------------------------------------------------------------------ DRM backend
 
 /// Runs on the displays, as wlroots' DRM and libinput backends with a logind
-/// session: software-composited frames are scanned out from dumb buffers.
+/// session: frames are composited by the GPU and scanned out from GBM buffers.
 const Drm = struct {
     const kms = @import("desktop-drm.zig");
     const logind = @import("desktop-logind.zig");
@@ -6236,7 +6229,7 @@ const Drm = struct {
     leds: c_int = 0,
     sources: std.ArrayList(*wire.Loop.Source) = .empty,
     active: bool = true,
-    /// GLES on the card; null renders on the CPU into dumb buffers.
+    /// GLES on the card, which draws every display.
     renderer: ?*Gl.Renderer = null,
     /// The scale the cursor image was chosen for, and its copy for displays
     /// without a cursor plane.
@@ -6270,19 +6263,22 @@ const Drm = struct {
         if (std.c.getenv("DESKTOP_CURSOR")) |value| if (std.mem.eql(u8, std.mem.span(value), "software")) {
             self.card.cursor_hardware = false;
         };
-        // DESKTOP_RENDERER=software keeps compositing on the CPU.
-        const software = if (std.c.getenv("DESKTOP_RENDERER")) |value| std.mem.eql(u8, std.mem.span(value), "software") else false;
-        if (!software) {
-            if (Gl.Renderer.init(comp.a, self.card.fd)) |renderer| {
-                self.renderer = renderer;
-                std.log.info("compositor: rendering with GLES on {s}{s}", .{ renderer.name(), if (renderer.buffer_age) ", redrawing only damage" else "" });
-                for (comp.outputs.items) |output| self.attachTarget(output);
-                comp.enableDmabuf(renderer, self.card_device.major, self.card_device.minor) catch |err| {
-                    std.log.warn("compositor: GPU buffers are not shared ({s}); GL clients copy through memory", .{@errorName(err)});
-                };
-                if (comp.dmabuf_formats.len > 0) comp.enableExplicitSync(renderer, self.card.fd);
-            } else |err| std.log.warn("compositor: no GPU renderer ({s}); rendering on the CPU", .{@errorName(err)});
+        // Displays are drawn by the GPU only: NVIDIA, or Intel and others through Mesa.
+        const renderer = Gl.Renderer.init(comp.a, self.card.fd) catch |err| {
+            std.log.err("compositor: no GPU renderer on the display's card ({s})", .{@errorName(err)});
+            return err;
+        };
+        self.renderer = renderer;
+        errdefer {
+            for (comp.outputs.items) |output| self.detachTarget(output);
+            renderer.deinit();
         }
+        std.log.info("compositor: rendering with GLES on {s}{s}", .{ renderer.name(), if (renderer.buffer_age) ", redrawing only damage" else "" });
+        for (comp.outputs.items) |output| if (!self.attachTarget(output)) return error.NoGpuTarget;
+        comp.enableDmabuf(renderer, self.card_device.major, self.card_device.minor) catch |err| {
+            std.log.warn("compositor: GPU buffers are not shared ({s}); GL clients copy through memory", .{@errorName(err)});
+        };
+        if (comp.dmabuf_formats.len > 0) comp.enableExplicitSync(renderer, self.card.fd);
         self.udev = li.udev_new() orelse return error.NoUdev;
         try self.watch(self.session.getFd(), sessionReadable);
         try self.watch(self.card.fd, cardReadable);
@@ -6348,7 +6344,7 @@ const Drm = struct {
             display.context = output;
             const upright: [2]u32 = if (output.transform & 1 != 0) .{ display.height(), display.width() } else .{ display.width(), display.height() };
             output.configure(output.scale, upright, null);
-            self.attachTarget(output);
+            _ = self.attachTarget(output);
             comp.setOutputEnabled(output, true);
             comp.outputChanged();
             return;
@@ -6356,7 +6352,7 @@ const Drm = struct {
         const output = try Output.create(comp, comp.outputs.items.len, display.width(), display.height());
         output.display = display;
         display.context = output;
-        self.attachTarget(output);
+        _ = self.attachTarget(output);
         output.setName(display.name());
         output.make = "Display";
         output.model = "Display";
@@ -6409,19 +6405,21 @@ const Drm = struct {
         self.detachTarget(output);
         display.setMode(mode);
         output.refresh = @intCast(mode.refreshMilli());
-        self.attachTarget(output);
+        _ = self.attachTarget(output);
         std.log.info("compositor: {s} now {d}x{d} at {d} mHz", .{ display.name(), mode.hdisplay, mode.vdisplay, mode.refreshMilli() });
     }
 
     /// GPU frames go to a GBM surface the size of the display.
-    fn attachTarget(self: *Drm, output: *Output) void {
-        const renderer = self.renderer orelse return;
-        const display = output.display orelse return;
-        if (output.target != null) return;
+    /// Returns false when the GPU cannot draw for the display; it then shows nothing.
+    fn attachTarget(self: *Drm, output: *Output) bool {
+        const renderer = self.renderer orelse return false;
+        const display = output.display orelse return false;
+        if (output.target != null) return true;
         output.target = renderer.createTarget(display.width(), display.height()) catch |err| {
-            std.log.warn("compositor: {s}: no GPU target ({s}); rendering on the CPU", .{ display.name(), @errorName(err) });
-            return;
+            std.log.err("compositor: {s}: the GPU cannot draw for this display ({s})", .{ display.name(), @errorName(err) });
+            return false;
         };
+        return true;
     }
 
     fn detachTarget(self: *Drm, output: *Output) void {
@@ -6485,12 +6483,6 @@ const Drm = struct {
         const entry: *Framebuffer = @ptrCast(@alignCast(data orelse return));
         entry.card.removeFramebuffer(entry.id);
         std.heap.c_allocator.destroy(entry);
-    }
-
-    /// Presents an output's frame, or remembers to once the display is ready.
-    fn present(output: *Output) void {
-        const display = output.display orelse return;
-        output.unpresented = !display.present(output.pixels);
     }
 
     // ---------------------------------------------------------- Cursor
