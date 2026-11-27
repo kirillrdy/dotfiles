@@ -16,7 +16,19 @@ const libc = @import("desktop-libc.zig");
 const keymap_text = @import("default-keymap").text;
 const xkb = @import("desktop-xkb.zig");
 
-const Rect = struct { x: i32 = 0, y: i32 = 0, width: i32 = 0, height: i32 = 0 };
+const Rect = struct {
+    x: i32 = 0,
+    y: i32 = 0,
+    width: i32 = 0,
+    height: i32 = 0,
+
+    /// The smallest rectangle covering both.
+    fn merge(self: Rect, other: Rect) Rect {
+        const left = @min(self.x, other.x);
+        const top = @min(self.y, other.y);
+        return .{ .x = left, .y = top, .width = @max(self.x +| self.width, other.x +| other.width) - left, .height = @max(self.y +| self.height, other.y +| other.height) - top };
+    }
+};
 
 fn create(comptime T: type, comp: *Compositor, value: T) ?*T {
     const ptr = comp.a.create(T) catch return null;
@@ -186,7 +198,16 @@ const Surface = struct {
     pending_transform: u32 = 0,
     transform: u32 = 0,
     has_viewport: bool = false,
+    /// Damage collected for the next commit, in surface coordinates.
+    pending_damage: ?Rect = null,
     fractional: ?ws.wp_fractional_scale_v1 = null,
+
+    /// Damage in surface coordinates since the last commit.
+    fn addDamage(self: *Surface, x: i32, y: i32, width: i32, height: i32) void {
+        if (width <= 0 or height <= 0) return;
+        const box: Rect = .{ .x = x, .y = y, .width = width, .height = height };
+        self.pending_damage = if (self.pending_damage) |current| current.merge(box) else box;
+    }
 
     fn mapped(self: *const Surface) bool {
         return self.width > 0 and (self.pixels.len > 0 or self.held != null);
@@ -304,7 +325,17 @@ const Surface = struct {
                 self.pending_dx = args.x;
                 self.pending_dy = args.y;
             },
-            .damage, .damage_buffer => {},
+            .damage => |args| self.addDamage(args.x, args.y, args.width, args.height),
+            .damage_buffer => |args| {
+                // Buffer pixels to surface coordinates, rounding outwards.
+                const fx = if (self.width > 0) @as(f64, @floatFromInt(self.logicalWidth())) / @as(f64, @floatFromInt(self.transformedSize()[0])) else 1;
+                const fy = if (self.height > 0) @as(f64, @floatFromInt(self.logicalHeight())) / @as(f64, @floatFromInt(self.transformedSize()[1])) else 1;
+                const x0: f64 = @floor(@as(f64, @floatFromInt(args.x)) * fx);
+                const y0: f64 = @floor(@as(f64, @floatFromInt(args.y)) * fy);
+                const x1: f64 = @ceil(@as(f64, @floatFromInt(args.x +| args.width)) * fx);
+                const y1: f64 = @ceil(@as(f64, @floatFromInt(args.y +| args.height)) * fy);
+                self.addDamage(clampInt(x0), clampInt(y0), clampInt(x1 - x0), clampInt(y1 - y0));
+            },
             .frame => |args| {
                 args.callback.setHandler(Surface, self, null, null);
                 self.pending_frames.append(self.comp.a, args.callback) catch {};
@@ -342,6 +373,27 @@ const Surface = struct {
     }
 
     fn apply(self: *Surface) void {
+        // A commit that maps, unmaps or resizes redraws everything; otherwise
+        // only what the client damaged.
+        const was_mapped = self.mapped();
+        const old_size = [2]i32{ self.logicalWidth(), self.logicalHeight() };
+        const attached = self.pending_attach;
+        defer {
+            var damage = self.pending_damage;
+            self.pending_damage = null;
+            const whole: Rect = .{ .width = self.logicalWidth(), .height = self.logicalHeight() };
+            if (attached and damage == null) damage = whole;
+            // Clients damage "everything" with huge rectangles; keep to the surface.
+            if (damage) |box| {
+                const left = @max(box.x, 0);
+                const top = @max(box.y, 0);
+                const right = @min(box.x +| box.width, whole.width);
+                const bottom = @min(box.y +| box.height, whole.height);
+                damage = if (right > left and bottom > top) .{ .x = left, .y = top, .width = right - left, .height = bottom - top } else null;
+            }
+            const unchanged = was_mapped == self.mapped() and old_size[0] == self.logicalWidth() and old_size[1] == self.logicalHeight();
+            if (unchanged) self.comp.surfaceDamaged(self, damage) else self.comp.scheduleRepaint();
+        }
         if (self.pending_attach) {
             self.pending_attach = false;
             self.texture_stale = true;
@@ -386,7 +438,6 @@ const Surface = struct {
             entry.committed = true;
         };
         if (self.comp.seat.cursor == self) self.comp.cursorChanged();
-        self.comp.scheduleRepaint();
     }
 
     fn copy(self: *Surface, buffer: *Buffer) void {
@@ -1417,6 +1468,12 @@ const Output = struct {
     display: ?*Drm.kms.Display = null,
     /// A rendered frame waits for the display's previous flip.
     unpresented: bool = false,
+    /// What changed since the last frame (output pixels), whether everything
+    /// did, and the damage of recent frames for buffers that are reused.
+    damage: ?Gl.Clip = null,
+    damage_full: bool = true,
+    damage_history: [4]?Gl.Clip = @splat(null),
+    history_len: u32 = 0,
     /// The GPU scanout target, when the DRM backend renders with GLES.
     target: ?*Gl.Target = null,
     /// Whether `pixels` holds the latest frame; GPU frames are drawn again
@@ -1567,7 +1624,44 @@ const Output = struct {
         if (surface.fractional) |fractional| fractional.sendPreferredScale(self.fractionalScale());
     }
 
+    /// Redraws the whole output at the next frame.
     fn scheduleRepaint(self: *Output) void {
+        self.damage_full = true;
+        self.armRepaint();
+    }
+
+    /// Redraws `box` (output pixels) at the next frame.
+    fn addDamage(self: *Output, area: Gl.Clip) void {
+        const left = @max(0, area.x);
+        const top = @max(0, area.y);
+        const right = @min(@as(i32, @intCast(self.width)), area.x + area.width);
+        const bottom = @min(@as(i32, @intCast(self.height)), area.y + area.height);
+        if (right <= left or bottom <= top) return;
+        const clipped: Gl.Clip = .{ .x = left, .y = top, .width = right - left, .height = bottom - top };
+        self.damage = if (self.damage) |current| unionClip(current, clipped) else clipped;
+        self.armRepaint();
+    }
+
+    /// The region to redraw into a buffer `age` frames old, consuming this frame's damage.
+    fn takeDamage(self: *Output, age: u32) ?Gl.Clip {
+        const full = self.damage_full or self.damage == null;
+        const frame: ?Gl.Clip = if (full) null else self.damage;
+        self.damage = null;
+        self.damage_full = false;
+        defer {
+            var index = self.damage_history.len - 1;
+            while (index > 0) : (index -= 1) self.damage_history[index] = self.damage_history[index - 1];
+            self.damage_history[0] = frame;
+            self.history_len = @min(self.history_len + 1, self.damage_history.len);
+        }
+        var region = frame orelse return null;
+        // The buffer misses the frames drawn since it was last shown.
+        if (age == 0 or age > self.history_len + 1) return null;
+        for (self.damage_history[0 .. age - 1]) |older| region = unionClip(region, older orelse return null);
+        return region;
+    }
+
+    fn armRepaint(self: *Output) void {
         if (self.scheduled or !self.enabled) return;
         self.scheduled = true;
         // Composite at most once per 60 Hz frame, batching commits that arrive together.
@@ -1595,7 +1689,8 @@ const Output = struct {
         if (self.target) |target| {
             const backend = comp.drm.?;
             const renderer = backend.renderer.?;
-            if (renderer.begin(target, self.backgroundColor())) {
+            const region = self.takeDamage(renderer.bufferAge(target));
+            if (renderer.begin(target, self.backgroundColor(), region)) {
                 self.drawScene(.{ .gl = renderer });
                 self.pixels_valid = false;
                 backend.showGpu(self, target);
@@ -1799,6 +1894,16 @@ test "virtual keyboard keymaps that include shared types and compatibility are c
 const Hit = struct { surface: *Surface, x: i32, y: i32 };
 /// A surface tree drawn at an output position.
 const Root = struct { surface: *Surface, x: i32, y: i32 };
+
+fn unionClip(a: Gl.Clip, b: Gl.Clip) Gl.Clip {
+    const left = @min(a.x, b.x);
+    const top = @min(a.y, b.y);
+    return .{ .x = left, .y = top, .width = @max(a.x + a.width, b.x + b.width) - left, .height = @max(a.y + a.height, b.y + b.height) - top };
+}
+
+fn clampInt(value: f64) i32 {
+    return @intFromFloat(std.math.clamp(value, -1e9, 1e9));
+}
 
 /// Where a frame is drawn: CPU pixels (headless, nested, captures) or the GPU.
 const Canvas = union(enum) {
@@ -3684,6 +3789,43 @@ const Compositor = struct {
         for (self.outputs.items) |output| output.scheduleRepaint();
     }
 
+    /// Redraws the part of the outputs a committed surface damaged.
+    fn surfaceDamaged(self: *Compositor, surface: *Surface, damage: ?Rect) void {
+        const box = damage orelse return;
+        // Previews and the drag icon show surfaces outside the stack.
+        for (self.layers.items) |layer| if (layer.previews.items.len > 0) return self.scheduleRepaint();
+        if (self.drag) |drag| if (drag.icon == surface) return self.scheduleRepaint();
+        const origin = self.surfaceOrigin(surface) orelse return;
+        for (self.outputs.items) |output| {
+            if (!output.enabled) continue;
+            const s = output.scale;
+            const x: f64 = @floatFromInt(origin[0] + box.x - output.x);
+            const y: f64 = @floatFromInt(origin[1] + box.y - output.y);
+            // One pixel more each side covers filtering at fractional scales.
+            const left = clampInt(@floor(x * s) - 1);
+            const top = clampInt(@floor(y * s) - 1);
+            const right = clampInt(@ceil((x + @as(f64, @floatFromInt(box.width))) * s) + 1);
+            const bottom = clampInt(@ceil((y + @as(f64, @floatFromInt(box.height))) * s) + 1);
+            output.addDamage(.{ .x = left, .y = top, .width = right -| left, .height = bottom -| top });
+        }
+    }
+
+    /// Where a shown surface is, in global coordinates: a root of the stack
+    /// or a subsurface of one.
+    fn surfaceOrigin(self: *Compositor, surface: *Surface) ?[2]i32 {
+        var roots: [256]Root = undefined;
+        for (self.stack(&roots)) |root| if (findIn(root.surface, surface, root.x, root.y)) |found| return found;
+        return null;
+    }
+
+    fn findIn(tree: *Surface, wanted: *Surface, x: i32, y: i32) ?[2]i32 {
+        if (tree == wanted) return .{ x, y };
+        for (tree.children.items) |child| if (child.surface) |surface| {
+            if (findIn(surface, wanted, x + child.x, y + child.y)) |found| return found;
+        };
+        return null;
+    }
+
     /// The first enabled output, where windows go when no other output fits.
     fn primary(self: *Compositor) ?*Output {
         for (self.outputs.items) |output| if (output.enabled) return output;
@@ -5420,7 +5562,7 @@ const Drm = struct {
         if (!software) {
             if (Gl.Renderer.init(comp.a, self.card.fd)) |renderer| {
                 self.renderer = renderer;
-                std.log.info("compositor: rendering with GLES on {s}", .{renderer.name()});
+                std.log.info("compositor: rendering with GLES on {s}{s}", .{ renderer.name(), if (renderer.buffer_age) ", redrawing only damage" else "" });
                 for (comp.outputs.items) |output| self.attachTarget(output);
                 comp.enableDmabuf(renderer, self.card_device.major, self.card_device.minor) catch |err| {
                     std.log.warn("compositor: GPU buffers are not shared ({s}); GL clients copy through memory", .{@errorName(err)});
@@ -6912,6 +7054,8 @@ test "native compositor carries a drag from press to drop with negotiated action
     const buffer = pool.create_buffer(0, width, height, width * 4, 0);
     pool.destroy();
     surface.attach(buffer, 0, 0);
+    // "Everything", as GL clients damage it, must not overflow the compositor.
+    surface.damage(0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
     surface.commit();
     try connection.roundtrip();
 
@@ -6971,4 +7115,23 @@ test "native compositor carries a drag from press to drop with negotiated action
     xdg_surface.destroy();
     surface.destroy();
     try connection.roundtrip();
+}
+
+test "outputs redraw the damage of the frames a reused buffer missed" {
+    var output: Output = .{ .comp = undefined, .width = 1000, .height = 800, .pixels = &.{} };
+    output.scheduled = true; // keep the repaint timer out of it
+    // The first frame, and frames after a full repaint, draw everything.
+    try std.testing.expectEqual(@as(?Gl.Clip, null), output.takeDamage(1));
+    output.addDamage(.{ .x = 10, .y = 10, .width = 20, .height = 20 });
+    try std.testing.expectEqual(@as(?Gl.Clip, .{ .x = 10, .y = 10, .width = 20, .height = 20 }), output.takeDamage(1));
+    output.addDamage(.{ .x = 500, .y = 500, .width = 10, .height = 10 });
+    // A buffer two frames old also lacks the previous frame's change.
+    try std.testing.expectEqual(@as(?Gl.Clip, .{ .x = 10, .y = 10, .width = 500, .height = 500 }), output.takeDamage(2));
+    // Damage is clipped to the output, and unknown buffer ages redraw everything.
+    output.addDamage(.{ .x = 990, .y = -5, .width = 50, .height = 10 });
+    try std.testing.expectEqual(@as(?Gl.Clip, null), output.takeDamage(0));
+    output.addDamage(.{ .x = 990, .y = -5, .width = 50, .height = 10 });
+    try std.testing.expectEqual(@as(?Gl.Clip, .{ .x = 990, .y = 0, .width = 10, .height = 5 }), output.takeDamage(1));
+    output.scheduleRepaint();
+    try std.testing.expectEqual(@as(?Gl.Clip, null), output.takeDamage(1));
 }

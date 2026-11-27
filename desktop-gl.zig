@@ -53,6 +53,7 @@ pub const egl = struct {
     pub const native_visual_id: i32 = 0x302E;
     pub const context_client_version: i32 = 0x3098;
     pub const extensions: i32 = 0x3055;
+    pub const buffer_age: i32 = 0x313D;
     pub const linux_dma_buf: u32 = 0x3270;
     pub const width: i32 = 0x3057;
     pub const height: i32 = 0x3056;
@@ -81,6 +82,7 @@ pub extern fn eglSwapBuffers(EGLDisplay, EGLSurface) u32;
 pub extern fn eglQueryString(EGLDisplay, name: i32) ?[*:0]const u8;
 pub extern fn eglGetProcAddress(name: [*:0]const u8) ?*const anyopaque;
 pub extern fn eglGetError() i32;
+pub extern fn eglQuerySurface(EGLDisplay, EGLSurface, attribute: i32, value: *i32) u32;
 pub extern fn eglCreateImage(EGLDisplay, EGLContext, target: u32, buffer: ?*anyopaque, attributes: [*]const isize) EGLImage;
 pub extern fn eglDestroyImage(EGLDisplay, EGLImage) u32;
 
@@ -241,6 +243,9 @@ pub const Renderer = struct {
     image_target: ?ImageTargetTexture = null,
     /// The size of the target being drawn, in pixels.
     viewport: [2]f32 = .{ 1, 1 },
+    /// The part of the frame being redrawn; drawing outside it is clipped.
+    frame_clip: ?Clip = null,
+    buffer_age: bool = false,
     name_buffer: [128]u8 = undefined,
     name_len: usize = 0,
 
@@ -282,6 +287,7 @@ pub const Renderer = struct {
             @memcpy(self.name_buffer[0..self.name_len], text[0..self.name_len]);
         }
         if (eglGetProcAddress("glEGLImageTargetTexture2DOES")) |address| self.image_target = @ptrCast(address);
+        self.buffer_age = self.hasExtension("EGL_EXT_buffer_age");
         self.scratch = createTexture();
         return self;
     }
@@ -368,12 +374,24 @@ pub const Renderer = struct {
         glTexImage2D(gl.texture_2d, 0, @intCast(gl.bgra_ext), @intCast(width), @intCast(height), 0, gl.bgra_ext, gl.unsigned_byte, pixels.ptr);
     }
 
+    /// How many frames old the next buffer's content is: 0 when unknown.
+    pub fn bufferAge(self: *Renderer, target: *Target) u32 {
+        if (!self.buffer_age) return 0;
+        if (eglMakeCurrent(self.display, target.surface, target.surface, self.context) == 0) return 0;
+        var age: i32 = 0;
+        if (eglQuerySurface(self.display, target.surface, egl.buffer_age, &age) == 0) return 0;
+        return @intCast(@max(0, age));
+    }
+
     /// Starts drawing into `target`, cleared to opaque `background` (ARGB).
-    pub fn begin(self: *Renderer, target: *Target, background: u32) bool {
+    /// With `damage`, only that part is cleared and drawn; the rest keeps
+    /// the buffer's previous content.
+    pub fn begin(self: *Renderer, target: *Target, background: u32, damage: ?Clip) bool {
         if (eglMakeCurrent(self.display, target.surface, target.surface, self.context) == 0) return false;
         self.viewport = .{ @floatFromInt(target.width), @floatFromInt(target.height) };
         glViewport(0, 0, @intCast(target.width), @intCast(target.height));
-        glDisable(gl.scissor_test);
+        self.frame_clip = damage;
+        _ = self.scissor(null);
         const channel = struct {
             fn of(color: u32, shift: u5) f32 {
                 return @as(f32, @floatFromInt((color >> shift) & 0xff)) / 255.0;
@@ -400,18 +418,33 @@ pub const Renderer = struct {
         glUniform2f(self.uv_locations[0], uv.origin[0], uv.origin[1]);
         glUniform2f(self.uv_locations[1], uv.x[0], uv.x[1]);
         glUniform2f(self.uv_locations[2], uv.y[0], uv.y[1]);
-        if (clip) |c| {
-            if (c.width <= 0 or c.height <= 0) return;
-            glEnable(gl.scissor_test);
-            // Scissor boxes count from the bottom row.
-            glScissor(c.x, @as(i32, @intFromFloat(self.viewport[1])) - c.y - c.height, c.width, c.height);
-        } else glDisable(gl.scissor_test);
+        if (!self.scissor(clip)) return;
         glBindTexture(gl.texture_2d, texture);
         glUniform4f(self.rect_location, @floatCast(rect.x), @floatCast(rect.y), @floatCast(rect.width), @floatCast(rect.height));
         glUniformViewport(self);
         glUniform1f(self.opacity_location, opacity);
         glUniform1f(self.opaque_location, if (opaque_alpha) 1 else 0);
         glDrawArrays(gl.triangle_strip, 0, 4);
+    }
+
+    /// Limits drawing to `clip` within the frame's damage; false when nothing is left.
+    fn scissor(self: *Renderer, clip: ?Clip) bool {
+        var box = clip orelse self.frame_clip orelse {
+            glDisable(gl.scissor_test);
+            return true;
+        };
+        if (clip != null) if (self.frame_clip) |frame| {
+            const left = @max(box.x, frame.x);
+            const top = @max(box.y, frame.y);
+            const right = @min(box.x + box.width, frame.x + frame.width);
+            const bottom = @min(box.y + box.height, frame.y + frame.height);
+            box = .{ .x = left, .y = top, .width = right - left, .height = bottom - top };
+        };
+        if (box.width <= 0 or box.height <= 0) return false;
+        glEnable(gl.scissor_test);
+        // Scissor boxes count from the bottom row.
+        glScissor(box.x, @as(i32, @intFromFloat(self.viewport[1])) - box.y - box.height, box.width, box.height);
+        return true;
     }
 
     fn glUniformViewport(self: *Renderer) void {
