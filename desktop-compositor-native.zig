@@ -4709,6 +4709,8 @@ const Drm = struct {
         output.make = "Display";
         output.refresh = @intCast(display.mode.refreshMilli());
         output.physical = .{ @intCast(display.mm_width), @intCast(display.mm_height) };
+        // The laptop panel starts at the scale the wlroots compositor gave it.
+        if (std.mem.eql(u8, display.name(), "eDP-1")) output.scale = 1.625;
         // New displays go to the right of the others, as wlroots' auto layout places them.
         var right: i32 = 0;
         for (comp.outputs.items) |other| if (other.enabled) {
