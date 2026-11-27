@@ -12,6 +12,7 @@ const raster = @import("desktop-raster.zig");
 const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const keymap_text = @import("default-keymap").text;
+const xkb = @import("desktop-xkb.zig");
 
 const Rect = struct { x: i32 = 0, y: i32 = 0, width: i32 = 0, height: i32 = 0 };
 
@@ -67,6 +68,21 @@ const Buffer = struct {
     stride: usize,
     format: u32,
 
+    /// Copies premultiplied ARGB into the buffer, as capture clients receive it.
+    fn write(self: *Buffer, pixels: []const u32, opaque_pixels: bool) bool {
+        if (self.bytes() == null) return false;
+        const size = self.offset + self.stride * self.height;
+        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, self.pool.fd, 0) orelse return false;
+        if (memory == libc.MAP_FAILED) return false;
+        defer _ = libc.munmap(memory, size);
+        const target: [*]u8 = @ptrCast(memory);
+        for (0..self.height) |row| {
+            const line = target[self.offset + row * self.stride ..][0 .. self.width * 4];
+            for (pixels[row * self.width ..][0..self.width], 0..) |pixel, column| std.mem.writeInt(u32, line[column * 4 ..][0..4], if (opaque_pixels) pixel | 0xff000000 else pixel, .little);
+        }
+        return true;
+    }
+
     /// The pixels, if the pool still holds them. A client that shrinks the
     /// file behind the mapping must not make the compositor fault.
     fn bytes(self: *Buffer) ?[]const u8 {
@@ -111,7 +127,7 @@ const Region = struct {
     }
 };
 
-const Role = enum { none, toplevel, popup, subsurface, cursor, layer };
+const Role = enum { none, toplevel, popup, subsurface, cursor, layer, lock };
 
 const Surface = struct {
     comp: *Compositor,
@@ -120,6 +136,7 @@ const Surface = struct {
     xdg: ?*XdgSurface = null,
     subsurface: ?*Subsurface = null,
     layer: ?*Layer = null,
+    lock_surface: ?*LockSurface = null,
     /// Pending state, applied on commit.
     /// Input regions; null accepts input everywhere on the surface.
     pending_input: ?[]Region.Op = null,
@@ -142,6 +159,11 @@ const Surface = struct {
     /// Subsurfaces drawn above this surface, bottom to top.
     children: std.ArrayList(*Subsurface) = .empty,
     entered: bool = false,
+    /// wp_viewport destination size, which overrides buffer size / scale.
+    pending_destination: ?[2]i32 = null,
+    destination: ?[2]i32 = null,
+    has_viewport: bool = false,
+    fractional: ?ws.wp_fractional_scale_v1 = null,
 
     fn mapped(self: *const Surface) bool {
         return self.pixels.len > 0;
@@ -149,9 +171,11 @@ const Surface = struct {
 
     /// Size in surface-local (logical) coordinates.
     fn logicalWidth(self: *const Surface) i32 {
+        if (self.destination) |size| return size[0];
         return @divTrunc(@as(i32, @intCast(self.width)), @max(1, self.scale));
     }
     fn logicalHeight(self: *const Surface) i32 {
+        if (self.destination) |size| return size[1];
         return @divTrunc(@as(i32, @intCast(self.height)), @max(1, self.scale));
     }
 
@@ -223,6 +247,7 @@ const Surface = struct {
             self.pending_buffer = null;
         }
         self.scale = self.pending_scale;
+        self.destination = self.pending_destination;
         if (self.pending_input_set) {
             self.pending_input_set = false;
             if (self.input) |ops| std.heap.c_allocator.free(ops);
@@ -234,6 +259,7 @@ const Surface = struct {
         for (self.children.items) |child| child.parentCommitted();
         if (self.xdg) |xdg| xdg.committed();
         if (self.layer) |layer| layer.committed();
+        if (self.lock_surface) |lock_surface| lock_surface.committed();
         self.comp.scheduleRepaint();
     }
 
@@ -268,6 +294,7 @@ const Surface = struct {
         if (self.xdg) |xdg| xdg.surfaceGone();
         if (self.subsurface) |sub| sub.surfaceGone();
         if (self.layer) |layer| layer.surfaceGone();
+        if (self.lock_surface) |lock_surface| lock_surface.surfaceGone();
         if (self.input) |ops| std.heap.c_allocator.free(ops);
         if (self.pending_input) |ops| std.heap.c_allocator.free(ops);
         comp.seat.surfaceGone(self);
@@ -308,10 +335,12 @@ const Surface = struct {
 
     /// Draws this surface and its subsurfaces with its origin at (x, y).
     /// Coordinates are logical; `scale` converts them to output pixels.
-    fn draw(self: *Surface, target: raster.Buffer, x: i32, y: i32, scale: i32) void {
+    fn draw(self: *Surface, target: raster.Buffer, x: i32, y: i32, scale: f64) void {
         if (self.mapped()) {
             const image: raster.Image = .{ .pixels = std.mem.sliceAsBytes(self.pixels), .width = self.width, .height = self.height, .stride = self.width * 4, .format = .argb };
-            raster.blit(target, image, .{ .x = @floatFromInt(x * scale), .y = @floatFromInt(y * scale), .width = @floatFromInt(self.logicalWidth() * scale), .height = @floatFromInt(self.logicalHeight() * scale) }, null) catch {};
+            const fx: f64 = @floatFromInt(x);
+            const fy: f64 = @floatFromInt(y);
+            raster.blit(target, image, .{ .x = @round(fx * scale), .y = @round(fy * scale), .width = @round(@as(f64, @floatFromInt(self.logicalWidth())) * scale), .height = @round(@as(f64, @floatFromInt(self.logicalHeight())) * scale) }, null) catch {};
         }
         for (self.children.items) |child| if (child.surface) |surface| surface.draw(target, x + child.x, y + child.y, scale);
     }
@@ -587,12 +616,20 @@ const Toplevel = struct {
     /// Windows open maximized to the usable area, as with the wlroots compositor.
     maximized: bool = true,
     fullscreen: bool = false,
+    /// Super+Left and Super+Right tile a window to half of the usable area.
+    tile: enum { none, left, right } = .none,
     parent: ?*Toplevel = null,
     min_size: [2]i32 = .{ 0, 0 },
     max_size: [2]i32 = .{ 0, 0 },
     /// The last configure sent, so unchanged layouts do not wake the client.
     sent: ?struct { width: i32, height: i32, states: u32, activated: bool } = null,
     handles: std.ArrayList(*ForeignHandle) = .empty,
+    list_handles: std.ArrayList(*ListHandle) = .empty,
+    sessions: std.ArrayList(*CaptureSession) = .empty,
+    workspace: u32 = 0,
+    /// Distinguishes windows in ext-foreign-toplevel-list and the overview protocol.
+    serial: u64 = 0,
+    id_buffer: [24]u8 = undefined,
     /// xdg-decoration: clients always decorate themselves, as with the wlroots compositor.
     decoration: ?ws.zxdg_toplevel_decoration_v1 = null,
 
@@ -606,11 +643,19 @@ const Toplevel = struct {
                     h.resource.sendTitle(self.title);
                     h.resource.sendDone();
                 }
+                for (self.list_handles.items) |h| {
+                    h.resource.sendTitle(self.title);
+                    h.resource.sendDone();
+                }
             },
             .set_app_id => |args| {
                 a.free(self.app_id);
                 self.app_id = a.dupe(u8, args.app_id) catch &.{};
                 for (self.handles.items) |h| {
+                    h.resource.sendAppId(self.app_id);
+                    h.resource.sendDone();
+                }
+                for (self.list_handles.items) |h| {
                     h.resource.sendAppId(self.app_id);
                     h.resource.sendDone();
                 }
@@ -639,7 +684,13 @@ const Toplevel = struct {
 
     fn area(self: *const Toplevel) Rect {
         const output = self.comp.output;
-        return if (self.fullscreen) .{ .width = output.logicalWidth(), .height = output.logicalHeight() } else self.comp.usable;
+        if (self.fullscreen) return .{ .width = output.logicalWidth(), .height = output.logicalHeight() };
+        var box = self.comp.usable;
+        if (self.tile != .none) {
+            box.width = @divTrunc(box.width, 2);
+            if (self.tile == .right) box.x += box.width;
+        }
+        return box;
     }
 
     /// Places the window: filling its area, or centred in it when it sizes itself.
@@ -665,7 +716,7 @@ const Toplevel = struct {
         const width: i32 = if (self.sized()) @max(1, box.width) else 0;
         const height: i32 = if (self.sized()) @max(1, box.height) else 0;
         var bits: u32 = 0;
-        if (self.maximized and !self.fullscreen and !self.dialog()) bits |= 1;
+        if (self.maximized and !self.fullscreen and !self.dialog() and self.tile == .none) bits |= 1;
         if (self.fullscreen) bits |= 2;
         if (!force) if (self.sent) |last| {
             if (last.width == width and last.height == height and last.states == bits and last.activated == self.activated) return;
@@ -697,6 +748,30 @@ const Toplevel = struct {
         self.reconfigure(true);
     }
 
+    /// Tells window lists and capture sessions that the window went away.
+    fn detachLists(self: *Toplevel) void {
+        for (self.list_handles.items) |h| {
+            h.resource.sendClosed();
+            h.toplevel = null;
+        }
+        self.list_handles.clearRetainingCapacity();
+        for (self.sessions.items) |session| session.stop();
+        self.sessions.clearRetainingCapacity();
+    }
+
+    fn identifier(self: *Toplevel) []const u8 {
+        return std.fmt.bufPrint(&self.id_buffer, "native-{d}", .{self.serial}) catch "native";
+    }
+
+    /// Draws the window geometry into `target` at the output scale.
+    fn render(self: *Toplevel, target: raster.Buffer) bool {
+        const xdg = self.xdg orelse return false;
+        const surface = xdg.surface orelse return false;
+        const geometry = xdg.windowGeometry();
+        surface.draw(target, -geometry.x, -geometry.y, self.comp.output.scale);
+        return true;
+    }
+
     fn mapChanged(self: *Toplevel, mapped: bool) void {
         if (mapped == self.mapped) return;
         const comp = self.comp;
@@ -704,19 +779,31 @@ const Toplevel = struct {
         if (mapped) {
             self.place();
             comp.toplevels.append(comp.a, self) catch {};
+            comp.recent.append(comp.a, self) catch {};
             for (comp.foreign_managers.items) |manager| ForeignHandle.announce(comp, manager, self);
+            if (self.serial == 0) {
+                comp.next_window +%= 1;
+                self.serial = comp.next_window;
+                self.workspace = comp.workspace;
+            }
+            for (comp.toplevel_lists.items) |list| ListHandle.announce(comp, list, self);
             if (self.xdg) |xdg| if (xdg.surface) |surface| comp.output.enter(surface);
             comp.focus(self);
         } else {
             removeItem(*Toplevel, &comp.toplevels, self);
+            // A window closing while selected moves the selection on, as before.
+            if (comp.cycle_selected == self) comp.cycle(false, comp.cycle_app);
+            if (comp.cycle_origin == self) comp.cycle_origin = null;
+            removeItem(*Toplevel, &comp.recent, self);
             for (self.handles.items) |h| {
                 h.resource.sendClosed();
                 h.toplevel = null;
             }
             self.handles.clearRetainingCapacity();
+            self.detachLists();
             if (comp.focused == self) {
                 comp.focused = null;
-                comp.focus(if (comp.toplevels.items.len > 0) comp.toplevels.items[comp.toplevels.items.len - 1] else null);
+                comp.refocus();
             }
         }
         comp.scheduleRepaint();
@@ -726,10 +813,15 @@ const Toplevel = struct {
         self.mapChanged(false);
         if (self.xdg) |xdg| xdg.toplevel = null;
         if (self.comp.focused == self) self.comp.focused = null;
+        if (self.comp.cycle_selected == self) self.comp.cycle_selected = null;
+        if (self.comp.cycle_origin == self) self.comp.cycle_origin = null;
         self.comp.a.free(self.title);
         self.comp.a.free(self.app_id);
         for (self.handles.items) |h| h.toplevel = null;
         self.handles.deinit(self.comp.a);
+        self.detachLists();
+        self.list_handles.deinit(self.comp.a);
+        self.sessions.deinit(self.comp.a);
         if (self.decoration) |decoration| decoration.setHandler(Toplevel, self, null, null);
         self.comp.a.destroy(self);
     }
@@ -756,6 +848,14 @@ const Popup = struct {
                 self.configure();
             },
         }
+    }
+
+    /// The window this popup ultimately belongs to, if any.
+    fn toplevelRoot(self: *const Popup) ?*Toplevel {
+        const parent = self.parent orelse return null;
+        if (parent.toplevel) |toplevel| return toplevel;
+        if (parent.popup) |popup| return popup.toplevelRoot();
+        return null;
     }
 
     /// The parent's origin on the output and its window geometry offset.
@@ -806,6 +906,13 @@ const Layer = struct {
     acked: bool = false,
     initial_sent: bool = false,
     mapped: bool = false,
+    /// Sent closed when its output went away; the client must destroy it.
+    closed: bool = false,
+    /// The overview's live window previews, applied with its surface commits.
+    preview_owner: ?*OverviewControl = null,
+    pending_previews: std.ArrayList(Preview) = .empty,
+    previews: std.ArrayList(Preview) = .empty,
+    previews_pending: bool = false,
 
     const Config = struct {
         layer: u32,
@@ -853,6 +960,12 @@ const Layer = struct {
 
     fn committed(self: *Layer) void {
         const surface = self.surface orelse return;
+        if (self.closed) return;
+        if (self.previews_pending) {
+            self.previews_pending = false;
+            std.mem.swap(std.ArrayList(Preview), &self.previews, &self.pending_previews);
+            self.pending_previews.clearRetainingCapacity();
+        }
         const cfg = self.pending;
         const horizontal = cfg.anchor & (A.left | A.right) == A.left | A.right;
         const vertical = cfg.anchor & (A.top | A.bottom) == A.top | A.bottom;
@@ -870,6 +983,7 @@ const Layer = struct {
         self.mapped = mapped;
         self.comp.arrange();
         if (changed) {
+            if (std.mem.eql(u8, self.namespace, "desktop-overview")) self.comp.broadcastOverview();
             if (mapped) self.comp.output.enter(surface);
             if (!mapped and self.comp.focused_layer == self) self.comp.focused_layer = null;
             self.comp.updateKeyboardFocus();
@@ -931,6 +1045,43 @@ const Layer = struct {
         }
     }
 
+    fn close(self: *Layer) void {
+        if (self.closed) return;
+        self.closed = true;
+        self.mapped = false;
+        self.resource.sendClosed();
+        for (self.comp.popups.items) |popup| if (popup.layer_parent == self and popup.mapped) popup.resource.sendPopupDone();
+        if (self.comp.focused_layer == self) self.comp.focused_layer = null;
+    }
+
+    fn clearPreviews(self: *Layer) void {
+        self.preview_owner = null;
+        self.previews.clearRetainingCapacity();
+        self.pending_previews.clearRetainingCapacity();
+        self.previews_pending = false;
+        self.comp.scheduleRepaint();
+    }
+
+    /// Draws each previewed window scaled into its rectangle, clipped and faded.
+    fn drawPreviews(self: *Layer, target: raster.Buffer, scale: f64) void {
+        const comp = self.comp;
+        const s = scale;
+        for (self.previews.items) |preview| {
+            const toplevel = comp.findWindow(preview.id[0..preview.id_len]) orelse continue;
+            const size = CaptureSession.size(toplevel);
+            const pixels = comp.a.alloc(u32, @as(usize, size[0]) * size[1]) catch continue;
+            defer comp.a.free(pixels);
+            @memset(pixels, 0);
+            if (!toplevel.render(.{ .pixels = pixels, .width = size[0], .height = size[1] })) continue;
+            const v = preview.values;
+            const ox: f64 = @floatFromInt(self.rect.x);
+            const oy: f64 = @floatFromInt(self.rect.y);
+            const image: raster.Image = .{ .pixels = std.mem.sliceAsBytes(pixels), .width = size[0], .height = size[1], .stride = size[0] * 4, .format = .argb };
+            const clip: raster.Region = .{ .x = @intFromFloat(@floor((ox + v[4]) * s)), .y = @intFromFloat(@floor((oy + v[5]) * s)), .width = @intFromFloat(@ceil(v[6] * s)), .height = @intFromFloat(@ceil(v[7] * s)) };
+            raster.blitWithOptions(target, image, .{ .x = (ox + v[0]) * s, .y = (oy + v[1]) * s, .width = v[2] * s, .height = v[3] * s }, .{ .clip = clip, .opacity = v[8], .filter = .bilinear }) catch {};
+        }
+    }
+
     fn configure(self: *Layer) void {
         const size: [2]u32 = .{ @intCast(self.rect.width), @intCast(self.rect.height) };
         if (self.configured) |last| if (last[0] == size[0] and last[1] == size[1]) return;
@@ -959,6 +1110,9 @@ const Layer = struct {
         }
         if (comp.focused_layer == self) comp.focused_layer = null;
         comp.a.free(self.namespace);
+        self.previews.deinit(comp.a);
+        self.pending_previews.deinit(comp.a);
+        if (std.mem.eql(u8, self.namespace, "desktop-overview") and self.mapped) comp.broadcastOverview();
         comp.a.destroy(self);
         comp.arrange();
         comp.updateKeyboardFocus();
@@ -973,7 +1127,8 @@ const Output = struct {
     name: []const u8 = "HEADLESS-1",
     width: u32,
     height: u32,
-    scale: i32 = 1,
+    /// Fractional; wl_output and preferred_buffer_scale advertise it rounded up.
+    scale: f64 = 1,
     pixels: []u32,
     resources: std.ArrayList(ws.wl_output) = .empty,
     xdg_outputs: std.ArrayList(ws.zxdg_output_v1) = .empty,
@@ -981,6 +1136,10 @@ const Output = struct {
     scheduled: bool = false,
     /// Frames rendered so far; tests wait on it.
     frames: u64 = 0,
+    /// The lock serial of the last frame drawn while locked.
+    lock_serial: u32 = 0,
+    enabled: bool = true,
+    global: ?*wire.Global = null,
 
     fn bind(data: ?*anyopaque, resource: wire.Resource) void {
         const self: *Output = @ptrCast(@alignCast(data));
@@ -989,7 +1148,7 @@ const Output = struct {
         self.resources.append(self.comp.a, output) catch {};
         output.sendGeometry(0, 0, 0, 0, ws.wl_output.Subpixel.unknown, "Headless", "Headless output", ws.wl_output.Transform.normal);
         output.sendMode(ws.wl_output.Mode.current | ws.wl_output.Mode.preferred, @intCast(self.width), @intCast(self.height), 60000);
-        if (output.version() >= 2) output.sendScale(self.scale);
+        if (output.version() >= 2) output.sendScale(self.bufferScale());
         if (output.version() >= 4) {
             output.sendName(self.name);
             output.sendDescription("Headless output");
@@ -1000,14 +1159,23 @@ const Output = struct {
     }
 
     fn logicalWidth(self: *const Output) i32 {
-        return @divTrunc(@as(i32, @intCast(self.width)), self.scale);
+        return @intFromFloat(@round(@as(f64, @floatFromInt(self.width)) / self.scale));
     }
     fn logicalHeight(self: *const Output) i32 {
-        return @divTrunc(@as(i32, @intCast(self.height)), self.scale);
+        return @intFromFloat(@round(@as(f64, @floatFromInt(self.height)) / self.scale));
     }
 
-    /// Changes the integer output scale and tells every client.
-    fn setScale(self: *Output, scale: i32) void {
+    fn bufferScale(self: *const Output) i32 {
+        return @intFromFloat(@ceil(self.scale));
+    }
+
+    /// The scale in 120ths, as wp_fractional_scale_v1 reports it.
+    fn fractionalScale(self: *const Output) u32 {
+        return @intFromFloat(@round(self.scale * 120));
+    }
+
+    /// Changes the output scale and tells every client.
+    fn setScale(self: *Output, scale: f64) void {
         if (scale == self.scale) return;
         self.scale = scale;
         for (self.xdg_outputs.items) |xdg_output| {
@@ -1015,11 +1183,12 @@ const Output = struct {
             if (xdg_output.version() < 3) xdg_output.sendDone();
         }
         for (self.resources.items) |output| {
-            if (output.version() >= 2) output.sendScale(scale);
+            if (output.version() >= 2) output.sendScale(self.bufferScale());
             if (output.version() >= 2) output.sendDone();
         }
         for (self.comp.surfaces.items) |surface| {
-            if (surface.entered and surface.resource.version() >= 6) surface.resource.sendPreferredBufferScale(scale);
+            if (surface.entered and surface.resource.version() >= 6) surface.resource.sendPreferredBufferScale(self.bufferScale());
+            if (surface.fractional) |fractional| fractional.sendPreferredScale(self.fractionalScale());
         }
         const seat = &self.comp.seat;
         seat.pointer_x = @min(seat.pointer_x, @as(f64, @floatFromInt(self.logicalWidth() - 1)));
@@ -1041,15 +1210,23 @@ const Output = struct {
         if (surface.entered) return;
         surface.entered = true;
         for (self.resources.items) |output| if (output.client() == surface.resource.client()) surface.resource.sendEnter(output);
-        if (surface.resource.version() >= 6) surface.resource.sendPreferredBufferScale(self.scale);
+        if (surface.resource.version() >= 6) surface.resource.sendPreferredBufferScale(self.bufferScale());
     }
 
     fn render(self: *Output) void {
         const comp = self.comp;
+        if (!self.enabled) return;
         const target: raster.Buffer = .{ .pixels = self.pixels, .width = self.width, .height = self.height };
-        @memset(self.pixels, comp.background);
+        @memset(self.pixels, if (comp.locked) 0xff000000 else comp.background);
         var roots: [256]Root = undefined;
-        for (comp.stack(&roots)) |root| root.surface.draw(target, root.x, root.y, self.scale);
+        for (comp.stack(&roots)) |root| {
+            root.surface.draw(target, root.x, root.y, self.scale);
+            if (root.surface.layer) |layer| if (layer.previews.items.len > 0) layer.drawPreviews(target, self.scale);
+        }
+        if (comp.locked) {
+            self.lock_serial = comp.lock_serial;
+            if (comp.lock) |lock| lock.acknowledge();
+        }
         self.frames += 1;
         const time = nowMs();
         for (comp.surfaces.items) |surface| {
@@ -1154,19 +1331,22 @@ fn keymapFile(text: []const u8) ?Keymap {
         written += @intCast(count);
     }
     _ = std.c.fcntl(fd, 1033, @as(c_int, 0x0001 | 0x0002 | 0x0004 | 0x0008)); // F_ADD_SEALS: SEAL, SHRINK, GROW, WRITE
-    return .{ .fd = fd, .size = @intCast(size) };
+    return .{ .fd = fd, .size = @intCast(size), .map = xkb.Keymap.parse(std.heap.c_allocator, text) catch null };
 }
 
 /// Reads a client keymap and returns one clients can parse, taking ownership of `fd`.
 fn clientKeymap(a: std.mem.Allocator, fd: wire.Fd, size: u32) Keymap {
-    const original: Keymap = .{ .fd = fd, .size = size };
+    var original: Keymap = .{ .fd = fd, .size = size };
     if (size == 0 or size > 1 << 20) return original;
     const memory = libc.mmap(null, size, libc.PROT_READ, libc.MAP_PRIVATE, fd, 0) orelse return original;
     if (memory == libc.MAP_FAILED) return original;
     defer _ = libc.munmap(memory, size);
     const bytes: [*]const u8 = @ptrCast(memory);
     const text = std.mem.sliceTo(bytes[0..size], 0);
-    const completed = (completeKeymap(a, text) catch null) orelse return original;
+    const completed = (completeKeymap(a, text) catch null) orelse {
+        original.map = xkb.Keymap.parse(std.heap.c_allocator, text) catch null;
+        return original;
+    };
     defer a.free(completed);
     const file = keymapFile(completed) orelse return original;
     _ = std.c.close(fd);
@@ -1210,7 +1390,17 @@ const Hit = struct { surface: *Surface, x: i32, y: i32 };
 /// A surface tree drawn at an output position.
 const Root = struct { surface: *Surface, x: i32, y: i32 };
 
-const Keymap = struct { fd: wire.Fd = -1, size: u32 = 0 };
+/// A keymap file served to clients, with its parsed form for compositor shortcuts.
+const Keymap = struct {
+    fd: wire.Fd = -1,
+    size: u32 = 0,
+    map: ?*xkb.Keymap = null,
+
+    fn deinit(self: Keymap) void {
+        if (self.map) |map| map.deinit();
+        if (self.fd >= 0) _ = std.c.close(self.fd);
+    }
+};
 
 const Seat = struct {
     comp: *Compositor,
@@ -1229,6 +1419,8 @@ const Seat = struct {
     /// The focused surface's origin on the output.
     focus_origin: [2]f64 = .{ 0, 0 },
     buttons: u32 = 0,
+    /// Keys a shortcut consumed; their release is withheld from clients too.
+    consumed: [256]bool = @splat(false),
 
     fn init(self: *Seat) !void {
         self.default_keymap = keymapFile(keymap_text) orelse return error.Keymap;
@@ -1236,7 +1428,7 @@ const Seat = struct {
     }
 
     fn deinit(self: *Seat) void {
-        if (self.default_keymap.fd >= 0) _ = std.c.close(self.default_keymap.fd);
+        self.default_keymap.deinit();
         self.seats.deinit(self.comp.a);
         self.keyboards.deinit(self.comp.a);
         self.pointers.deinit(self.comp.a);
@@ -1340,6 +1532,24 @@ const Seat = struct {
 
     fn key(self: *Seat, keymap: Keymap, time: u32, code: u32, state: u32) void {
         self.useKeymap(keymap);
+        const pressed = state == ws.wl_keyboard.KeyState.pressed;
+        var handled = false;
+        if (keymap.map) |map| {
+            var xkb_state: xkb.State = .{ .keymap = map };
+            xkb_state.update(self.modifiers[0], self.modifiers[1], self.modifiers[2], self.modifiers[3]);
+            handled = self.comp.shortcut(xkb_state.keysym(code + 8), .{
+                .shift = xkb_state.active("Shift"),
+                .alt = xkb_state.active("Mod1"),
+                .logo = xkb_state.active("Mod4"),
+            }, pressed);
+        }
+        if (code < self.consumed.len) {
+            if (pressed) self.consumed[code] = handled else {
+                handled = self.consumed[code] or handled;
+                self.consumed[code] = false;
+            }
+        }
+        if (handled) return;
         const surface = self.keyboard_focus orelse return;
         for (self.keyboards.items) |keyboard| {
             if (keyboard.client() == surface.resource.client()) keyboard.sendKey(self.comp.server.nextSerial(), time, code, state);
@@ -1349,6 +1559,12 @@ const Seat = struct {
     fn setModifiers(self: *Seat, keymap: Keymap, values: [4]u32) void {
         self.useKeymap(keymap);
         self.modifiers = values;
+        // Releasing Alt or Super confirms the switcher selection.
+        if (self.comp.cycling) if (keymap.map) |map| {
+            var xkb_state: xkb.State = .{ .keymap = map };
+            xkb_state.update(values[0], values[1], values[2], values[3]);
+            if (!xkb_state.active("Mod1") and !xkb_state.active("Mod4")) self.comp.finishCycle(false);
+        };
         const surface = self.keyboard_focus orelse return;
         for (self.keyboards.items) |keyboard| {
             if (keyboard.client() == surface.resource.client()) keyboard.sendModifiers(self.comp.server.nextSerial(), values[0], values[1], values[2], values[3]);
@@ -1453,7 +1669,7 @@ const VirtualKeyboard = struct {
         const keymap = self.keymap orelse return;
         const seat = &self.comp.seat;
         if (seat.active_keymap.fd == keymap.fd) seat.useKeymap(seat.default_keymap);
-        _ = std.c.close(keymap.fd);
+        keymap.deinit();
         self.keymap = null;
     }
 
@@ -1648,8 +1864,6 @@ const HeadManager = struct {
             mode.sendRefresh(60000);
             mode.sendPreferred();
         }
-        head.sendEnabled(1);
-        if (self.mode) |current| head.sendCurrentMode(current);
         self.describe();
         if (head.version() >= 2) {
             head.sendMake("Headless");
@@ -1661,9 +1875,12 @@ const HeadManager = struct {
     /// The state that configurations change.
     fn describe(self: *HeadManager) void {
         const head = self.head orelse return;
+        head.sendEnabled(@intFromBool(self.comp.output.enabled));
+        if (!self.comp.output.enabled) return;
+        if (self.mode) |current| head.sendCurrentMode(current);
         head.sendPosition(0, 0);
         head.sendTransform(ws.wl_output.Transform.normal);
-        head.sendScale(@floatFromInt(self.comp.output.scale));
+        head.sendScale(self.comp.output.scale);
     }
 
     fn headRequest(_: *HeadManager, _: ws.zwlr_output_head_v1, _: ws.zwlr_output_head_v1.Request) void {}
@@ -1727,9 +1944,13 @@ const OutputConfig = struct {
         const comp = self.comp;
         if (self.serial != comp.output_serial) return resource.sendCancelled();
         // The only output cannot be disabled, and the renderer composites at integer scales.
-        const scale = self.scale orelse @as(f64, @floatFromInt(comp.output.scale));
-        if (!self.enabled or scale < 1 or scale > 4 or scale != @round(scale)) return resource.sendFailed();
-        if (apply) comp.setOutputScale(@intFromFloat(scale));
+        const scale = self.scale orelse comp.output.scale;
+        if (!std.math.isFinite(scale) or scale < 0.5 or scale > 4) return resource.sendFailed();
+        if (apply) {
+            comp.setOutputEnabled(self.enabled);
+            if (self.enabled) comp.setOutputScale(scale);
+            comp.outputChanged();
+        }
         resource.sendSucceeded();
     }
 
@@ -1753,6 +1974,320 @@ const ConfigHead = struct {
     fn destroyed(self: *ConfigHead, _: ws.zwlr_output_configuration_head_v1) void {
         if (self.config) |config| config.head = null;
         std.heap.c_allocator.destroy(self);
+    }
+};
+
+// ------------------------------------------------------------------ Window list and capture
+
+const workspace_count = 4;
+
+/// An ext_foreign_toplevel_handle_v1; capture sources refer to windows through it.
+const ListHandle = struct {
+    comp: *Compositor,
+    resource: ws.ext_foreign_toplevel_handle_v1,
+    toplevel: ?*Toplevel,
+
+    fn destroyed(self: *ListHandle, _: ws.ext_foreign_toplevel_handle_v1) void {
+        if (self.toplevel) |toplevel| removeItem(*ListHandle, &toplevel.list_handles, self);
+        self.comp.a.destroy(self);
+    }
+
+    fn describe(self: *ListHandle) void {
+        const toplevel = self.toplevel orelse return;
+        self.resource.sendIdentifier(toplevel.identifier());
+        self.resource.sendTitle(toplevel.title);
+        self.resource.sendAppId(toplevel.app_id);
+        self.resource.sendDone();
+    }
+
+    fn announce(comp: *Compositor, list: ws.ext_foreign_toplevel_list_v1, toplevel: *Toplevel) void {
+        const resource = list.sendToplevel();
+        if (!resource.alive()) return;
+        const self = create(ListHandle, comp, .{ .comp = comp, .resource = resource, .toplevel = toplevel }) orelse return resource.destroyResource();
+        toplevel.list_handles.append(comp.a, self) catch {
+            comp.a.destroy(self);
+            return resource.destroyResource();
+        };
+        resource.setHandler(ListHandle, self, null, destroyed);
+        self.describe();
+    }
+};
+
+/// An ext_image_capture_source_v1 for one window.
+const CaptureSource = struct {
+    toplevel: ?*Toplevel,
+
+    fn destroyed(self: *CaptureSource, _: ws.ext_image_capture_source_v1) void {
+        std.heap.c_allocator.destroy(self);
+    }
+};
+
+/// An ext_image_copy_capture_session_v1 copying one window.
+const CaptureSession = struct {
+    comp: *Compositor,
+    resource: ws.ext_image_copy_capture_session_v1,
+    toplevel: ?*Toplevel,
+    width: u32 = 0,
+    height: u32 = 0,
+
+    /// Window geometry in output pixels.
+    fn size(toplevel: *Toplevel) [2]u32 {
+        const geometry = if (toplevel.xdg) |xdg| xdg.windowGeometry() else Rect{};
+        const scale = toplevel.comp.output.scale;
+        const width: u32 = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(geometry.width)) * scale)));
+        const height: u32 = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(geometry.height)) * scale)));
+        return .{ width, height };
+    }
+
+    fn constraints(self: *CaptureSession) void {
+        const toplevel = self.toplevel orelse return;
+        const dimensions = size(toplevel);
+        self.width = dimensions[0];
+        self.height = dimensions[1];
+        self.resource.sendBufferSize(self.width, self.height);
+        self.resource.sendShmFormat(ws.wl_shm.Format.argb8888);
+        self.resource.sendShmFormat(ws.wl_shm.Format.xrgb8888);
+        self.resource.sendDone();
+    }
+
+    fn handle(self: *CaptureSession, _: ws.ext_image_copy_capture_session_v1, request: ws.ext_image_copy_capture_session_v1.Request) void {
+        switch (request) {
+            .create_frame => |args| {
+                const frame = std.heap.c_allocator.create(CopyFrame) catch return;
+                frame.* = .{ .session = self };
+                args.frame.setHandler(CopyFrame, frame, CopyFrame.handle, CopyFrame.destroyed);
+            },
+            .destroy => {},
+        }
+    }
+
+    fn stop(self: *CaptureSession) void {
+        self.toplevel = null;
+        self.resource.sendStopped();
+    }
+
+    fn destroyed(self: *CaptureSession, _: ws.ext_image_copy_capture_session_v1) void {
+        if (self.toplevel) |toplevel| removeItem(*CaptureSession, &toplevel.sessions, self);
+        self.comp.a.destroy(self);
+    }
+};
+
+const CopyFrame = struct {
+    session: ?*CaptureSession,
+    buffer: ?*Buffer = null,
+    captured: bool = false,
+
+    fn handle(self: *CopyFrame, resource: ws.ext_image_copy_capture_frame_v1, request: ws.ext_image_copy_capture_frame_v1.Request) void {
+        switch (request) {
+            .attach_buffer => |args| self.buffer = args.buffer.data(Buffer),
+            .damage_buffer, .destroy => {},
+            .capture => {
+                if (self.captured) return resource.postError(ws.ext_image_copy_capture_frame_v1.Error.already_captured, "frame already captured", .{});
+                self.captured = true;
+                self.copy(resource);
+            },
+        }
+    }
+
+    fn copy(self: *CopyFrame, resource: ws.ext_image_copy_capture_frame_v1) void {
+        const Reason = ws.ext_image_copy_capture_frame_v1.FailureReason;
+        const session = self.session orelse return resource.sendFailed(Reason.stopped);
+        const toplevel = session.toplevel orelse return resource.sendFailed(Reason.stopped);
+        const buffer = self.buffer orelse return resource.sendFailed(Reason.buffer_constraints);
+        if (buffer.width != session.width or buffer.height != session.height or buffer.stride < buffer.width * 4 or (buffer.format != ws.wl_shm.Format.argb8888 and buffer.format != ws.wl_shm.Format.xrgb8888))
+            return resource.sendFailed(Reason.buffer_constraints);
+        const comp = session.comp;
+        const pixels = comp.a.alloc(u32, @as(usize, buffer.width) * buffer.height) catch return resource.sendFailed(Reason.unknown);
+        defer comp.a.free(pixels);
+        @memset(pixels, 0);
+        if (!toplevel.render(.{ .pixels = pixels, .width = buffer.width, .height = buffer.height })) return resource.sendFailed(Reason.unknown);
+        if (!buffer.write(pixels, buffer.format == ws.wl_shm.Format.xrgb8888)) return resource.sendFailed(Reason.unknown);
+        resource.sendTransform(ws.wl_output.Transform.normal);
+        resource.sendDamage(0, 0, @intCast(buffer.width), @intCast(buffer.height));
+        const now = util.monotonicTime();
+        const seconds: u64 = @intCast(@divTrunc(now, std.time.us_per_s));
+        resource.sendPresentationTime(@truncate(seconds >> 32), @truncate(seconds), @intCast(@mod(now, std.time.us_per_s) * 1000));
+        resource.sendReady();
+    }
+
+    fn destroyed(self: *CopyFrame, _: ws.ext_image_copy_capture_frame_v1) void {
+        std.heap.c_allocator.destroy(self);
+    }
+};
+
+/// A live window drawn into the overview surface, from dotfiles_overview_v1 previews.
+const Preview = struct {
+    id: [128]u8 = @splat(0),
+    id_len: usize = 0,
+    /// Destination x, y, width, height, clip x, y, width, height, opacity.
+    values: [9]f64 = @splat(0),
+};
+
+/// A dotfiles_overview_v1: workspaces, windows and live previews for the overview UI.
+const OverviewControl = struct {
+    comp: *Compositor,
+    resource: ws.dotfiles_overview_v1,
+    /// The overview layer whose pending previews this resource is building.
+    building: ?*Layer = null,
+
+    fn sendWorkspaces(self: *OverviewControl) void {
+        const names = [_][]const u8{ "1", "2", "3", "4" };
+        for (names, 0..) |name, index| self.resource.sendWorkspace(@intCast(index), name, @intFromBool(index == self.comp.workspace));
+    }
+
+    fn handle(self: *OverviewControl, resource: ws.dotfiles_overview_v1, request: ws.dotfiles_overview_v1.Request) void {
+        const comp = self.comp;
+        switch (request) {
+            .destroy => {},
+            .refresh => {
+                self.sendWorkspaces();
+                for (comp.toplevels.items) |toplevel| {
+                    const geometry = if (toplevel.xdg) |xdg| xdg.windowGeometry() else Rect{};
+                    resource.sendWindow(toplevel.identifier(), toplevel.workspace, toplevel.x, toplevel.y, geometry.width, geometry.height, 0);
+                }
+                resource.sendDone();
+            },
+            .activate => |args| if (comp.findWindow(args.identifier)) |toplevel| {
+                comp.focused_layer = null;
+                comp.focus(toplevel);
+            },
+            .close => |args| if (comp.findWindow(args.identifier)) |toplevel| toplevel.resource.sendClose(),
+            .switch_workspace => |args| comp.switchWorkspace(args.index),
+            .move => |args| if (args.index < workspace_count) if (comp.findWindow(args.identifier)) |toplevel| {
+                toplevel.workspace = args.index;
+                if (comp.focused == toplevel and args.index != comp.workspace) comp.refocus();
+                comp.scheduleRepaint();
+            },
+            .begin_previews => |args| {
+                self.building = null;
+                const surface = (if (args.surface) |s| s.data(Surface) else null) orelse {
+                    for (comp.layers.items) |layer| if (layer.preview_owner == self) layer.clearPreviews();
+                    return;
+                };
+                const layer = surface.layer orelse return;
+                if (!std.mem.eql(u8, layer.namespace, "desktop-overview") or surface.resource.client() != resource.client()) return;
+                layer.preview_owner = self;
+                layer.pending_previews.clearRetainingCapacity();
+                layer.previews_pending = true;
+                self.building = layer;
+            },
+            .preview => |args| {
+                const layer = self.building orelse return;
+                if (args.rectangles.len != 9 * 4 or args.identifier.len >= 128 or layer.pending_previews.items.len >= 512) return;
+                var spec: Preview = .{ .id_len = args.identifier.len };
+                @memcpy(spec.id[0..args.identifier.len], args.identifier);
+                for (&spec.values, 0..) |*value, index| value.* = @as(f64, @floatFromInt(std.mem.readInt(i32, args.rectangles[index * 4 ..][0..4], .little))) / 256;
+                if (spec.values[2] <= 0 or spec.values[3] <= 0 or spec.values[6] <= 0 or spec.values[7] <= 0) return;
+                spec.values[8] = std.math.clamp(spec.values[8], 0, 1);
+                layer.pending_previews.append(comp.a, spec) catch {};
+            },
+        }
+    }
+
+    fn destroyed(self: *OverviewControl, _: ws.dotfiles_overview_v1) void {
+        const comp = self.comp;
+        for (comp.layers.items) |layer| if (layer.preview_owner == self) layer.clearPreviews();
+        removeItem(*OverviewControl, &comp.overviews, self);
+        comp.a.destroy(self);
+    }
+};
+
+// ------------------------------------------------------------------ Session lock
+
+/// An ext_session_lock_v1. While locked only lock surfaces are drawn and get
+/// input. A lock client that goes away without unlocking leaves the session
+/// locked and blank until a replacement unlocks it.
+const Lock = struct {
+    comp: *Compositor,
+    resource: ws.ext_session_lock_v1,
+    surfaces: std.ArrayList(*LockSurface) = .empty,
+    acknowledged: bool = false,
+    unlocked: bool = false,
+
+    fn handle(self: *Lock, resource: ws.ext_session_lock_v1, request: ws.ext_session_lock_v1.Request) void {
+        const comp = self.comp;
+        switch (request) {
+            .get_lock_surface => |args| {
+                const surface = args.surface.data(Surface) orelse return;
+                if (surface.role != .none) return resource.postError(ws.ext_session_lock_v1.Error.role, "surface already has a role", .{});
+                if (surface.mapped()) return resource.postError(ws.ext_session_lock_v1.Error.already_constructed, "surface already has a buffer", .{});
+                if (self.surfaces.items.len > 0) return resource.postError(ws.ext_session_lock_v1.Error.duplicate_output, "output already has a lock surface", .{});
+                const lock_surface = create(LockSurface, comp, .{ .comp = comp, .lock = self, .resource = args.id, .surface = surface }) orelse return;
+                surface.role = .lock;
+                surface.lock_surface = lock_surface;
+                self.surfaces.append(comp.a, lock_surface) catch {};
+                args.id.setHandler(LockSurface, lock_surface, LockSurface.handle, LockSurface.destroyed);
+                lock_surface.configure();
+            },
+            .unlock_and_destroy => {
+                if (!self.acknowledged) return resource.postError(ws.ext_session_lock_v1.Error.invalid_unlock, "unlock before locked", .{});
+                self.unlocked = true;
+                comp.locked = false;
+                comp.refocus();
+                comp.updateKeyboardFocus();
+                comp.scheduleRepaint();
+            },
+            .destroy => {},
+        }
+    }
+
+    /// Sends locked once an output has shown an opaque locked frame.
+    fn acknowledge(self: *Lock) void {
+        if (self.acknowledged or self.comp.output.lock_serial != self.comp.lock_serial) return;
+        self.acknowledged = true;
+        self.resource.sendLocked();
+    }
+
+    fn focus(self: *Lock) ?*Surface {
+        for (self.surfaces.items) |lock_surface| if (lock_surface.surface) |surface| if (surface.mapped()) return surface;
+        return null;
+    }
+
+    fn destroyed(self: *Lock, _: ws.ext_session_lock_v1) void {
+        const comp = self.comp;
+        for (self.surfaces.items) |lock_surface| lock_surface.lock = null;
+        self.surfaces.deinit(comp.a);
+        if (comp.lock == self) comp.lock = null;
+        comp.updateKeyboardFocus();
+        comp.scheduleRepaint();
+        comp.a.destroy(self);
+    }
+};
+
+const LockSurface = struct {
+    comp: *Compositor,
+    lock: ?*Lock,
+    resource: ws.ext_session_lock_surface_v1,
+    surface: ?*Surface,
+
+    fn configure(self: *LockSurface) void {
+        const lock = self.lock orelse return;
+        const output = lock.comp.output;
+        self.resource.sendConfigure(lock.comp.server.nextSerial(), @intCast(output.logicalWidth()), @intCast(output.logicalHeight()));
+    }
+
+    fn handle(_: *LockSurface, _: ws.ext_session_lock_surface_v1, _: ws.ext_session_lock_surface_v1.Request) void {}
+
+    fn committed(self: *LockSurface) void {
+        const lock = self.lock orelse return;
+        lock.comp.updateKeyboardFocus();
+        lock.comp.scheduleRepaint();
+    }
+
+    fn surfaceGone(self: *LockSurface) void {
+        self.surface = null;
+        if (self.lock) |lock| lock.comp.updateKeyboardFocus();
+    }
+
+    fn destroyed(self: *LockSurface, _: ws.ext_session_lock_surface_v1) void {
+        if (self.surface) |surface| {
+            surface.lock_surface = null;
+            surface.role = .none;
+        }
+        if (self.lock) |lock| removeItem(*LockSurface, &lock.surfaces, self);
+        self.comp.updateKeyboardFocus();
+        self.comp.scheduleRepaint();
+        self.comp.a.destroy(self);
     }
 };
 
@@ -1945,6 +2480,20 @@ const Compositor = struct {
     toplevels: std.ArrayList(*Toplevel) = .empty,
     popups: std.ArrayList(*Popup) = .empty,
     focused: ?*Toplevel = null,
+    /// Mapped toplevels, most recently focused first; Alt-Tab cycles through them.
+    recent: std.ArrayList(*Toplevel) = .empty,
+    cycling: bool = false,
+    cycle_app: bool = false,
+    cycle_origin: ?*Toplevel = null,
+    cycle_selected: ?*Toplevel = null,
+    super_alone: bool = false,
+    workspace: u32 = 0,
+    next_window: u64 = 0,
+    locked: bool = false,
+    lock: ?*Lock = null,
+    lock_serial: u32 = 0,
+    toplevel_lists: std.ArrayList(ws.ext_foreign_toplevel_list_v1) = .empty,
+    overviews: std.ArrayList(*OverviewControl) = .empty,
     layers: std.ArrayList(*Layer) = .empty,
     /// A layer surface given keyboard focus by a click (on-demand interactivity).
     focused_layer: ?*Layer = null,
@@ -1972,7 +2521,7 @@ const Compositor = struct {
         _ = try server.createGlobal(&ws.wl_compositor.interface, 6, self, &bindCompositor);
         _ = try server.createGlobal(&ws.wl_subcompositor.interface, 1, self, &bindSubcompositor);
         _ = try server.createGlobal(&ws.wl_shm.interface, 2, self, &bindShm);
-        _ = try server.createGlobal(&ws.wl_output.interface, 4, output, &Output.bind);
+        output.global = try server.createGlobal(&ws.wl_output.interface, 4, output, &Output.bind);
         _ = try server.createGlobal(&ws.xdg_wm_base.interface, 6, self, &bindWmBase);
         _ = try server.createGlobal(&ws.zxdg_output_manager_v1.interface, 3, self, &bindOutputManager);
         _ = try server.createGlobal(&ws.wl_seat.interface, 9, &self.seat, &Seat.bind);
@@ -1985,6 +2534,13 @@ const Compositor = struct {
         _ = try server.createGlobal(&ws.zwlr_screencopy_manager_v1.interface, 3, self, &bindScreencopy);
         _ = try server.createGlobal(&ws.zwlr_output_manager_v1.interface, 4, self, &bindOutputManagement);
         _ = try server.createGlobal(&ws.zxdg_decoration_manager_v1.interface, 1, self, &bindDecorationManager);
+        _ = try server.createGlobal(&ws.ext_foreign_toplevel_list_v1.interface, 1, self, &bindToplevelList);
+        _ = try server.createGlobal(&ws.ext_foreign_toplevel_image_capture_source_manager_v1.interface, 1, self, &bindCaptureSources);
+        _ = try server.createGlobal(&ws.ext_image_copy_capture_manager_v1.interface, 1, self, &bindImageCopy);
+        _ = try server.createGlobal(&ws.dotfiles_overview_v1.interface, 3, self, &bindOverview);
+        _ = try server.createGlobal(&ws.wp_viewporter.interface, 1, self, &bindViewporter);
+        _ = try server.createGlobal(&ws.ext_session_lock_manager_v1.interface, 1, self, &bindLockManager);
+        _ = try server.createGlobal(&ws.wp_fractional_scale_manager_v1.interface, 1, self, &bindFractionalScale);
         output.render();
     }
 
@@ -1992,6 +2548,9 @@ const Compositor = struct {
         self.seat.deinit();
         self.surfaces.deinit(self.a);
         self.toplevels.deinit(self.a);
+        self.recent.deinit(self.a);
+        self.toplevel_lists.deinit(self.a);
+        self.overviews.deinit(self.a);
         self.popups.deinit(self.a);
         self.layers.deinit(self.a);
         self.data_devices.deinit(self.a);
@@ -2018,14 +2577,24 @@ const Compositor = struct {
     }
 
     fn focus(self: *Compositor, toplevel: ?*Toplevel) void {
+        if (self.locked) return;
         if (self.focused == toplevel) return;
         if (self.focused) |old| {
             old.activated = false;
             if (old.xdg != null) old.configure();
         }
         self.focused = toplevel;
+        if (toplevel) |new| if (new.workspace != self.workspace) {
+            self.workspace = new.workspace;
+            self.broadcastWorkspaces();
+            self.scheduleRepaint();
+        };
         if (toplevel) |new| {
             new.activated = true;
+            if (!self.cycling) {
+                removeItem(*Toplevel, &self.recent, new);
+                self.recent.insert(self.a, 0, new) catch {};
+            }
             new.configure();
             // Raise the focused window.
             removeItem(*Toplevel, &self.toplevels, new);
@@ -2034,10 +2603,174 @@ const Compositor = struct {
         self.updateKeyboardFocus();
     }
 
+    /// Focuses the most recently used window on the active workspace.
+    fn refocus(self: *Compositor) void {
+        for (self.recent.items) |toplevel| if (toplevel.mapped and toplevel.workspace == self.workspace) {
+            self.focused = null;
+            return self.focus(toplevel);
+        };
+        self.focus(null);
+        self.updateKeyboardFocus();
+    }
+
+    fn switchWorkspace(self: *Compositor, index: u32) void {
+        if (index >= workspace_count) return;
+        self.workspace = index;
+        self.refocus();
+        self.broadcastWorkspaces();
+        self.scheduleRepaint();
+    }
+
+    fn findWindow(self: *Compositor, identifier: []const u8) ?*Toplevel {
+        for (self.toplevels.items) |toplevel| if (std.mem.eql(u8, toplevel.identifier(), identifier)) return toplevel;
+        return null;
+    }
+
+    fn overviewActive(self: *Compositor) bool {
+        for (self.layers.items) |layer| if (layer.mapped and std.mem.eql(u8, layer.namespace, "desktop-overview")) return true;
+        return false;
+    }
+
+    fn broadcastWorkspaces(self: *Compositor) void {
+        for (self.overviews.items) |overview| if (overview.resource.version() >= 2) {
+            overview.sendWorkspaces();
+            overview.resource.sendDone();
+        };
+    }
+
+    fn broadcastOverview(self: *Compositor) void {
+        const active: u32 = @intFromBool(self.overviewActive());
+        for (self.overviews.items) |overview| if (overview.resource.version() >= 2) overview.resource.sendOverview(active);
+    }
+
+    // ---------------------------------------------------------- Shortcuts
+
+    const Mods = struct { shift: bool, alt: bool, logo: bool };
+
+    /// Handles a key before clients see it; returns whether it was consumed.
+    fn shortcut(self: *Compositor, sym: u32, mods: Mods, pressed: bool) bool {
+        if (self.locked) return false;
+        if (sym == key.Super_L) {
+            if (pressed) self.super_alone = true else {
+                if (self.super_alone) launch(self.a, "overview");
+                self.super_alone = false;
+            }
+            return true;
+        }
+        if (!pressed) return false;
+        self.super_alone = false;
+        return self.binding(sym, mods);
+    }
+
+    fn binding(self: *Compositor, sym: u32, mods: Mods) bool {
+        if ((mods.logo or mods.alt) and (sym == key.Tab or sym == key.ISO_Left_Tab)) {
+            self.cycle(mods.shift, false);
+            return true;
+        }
+        if ((mods.logo or mods.alt) and (sym == key.grave or sym == key.asciitilde)) {
+            self.cycle(mods.shift, true);
+            return true;
+        }
+        if (self.cycling) {
+            switch (sym) {
+                key.Escape => self.finishCycle(true),
+                key.Return, key.KP_Enter => self.finishCycle(false),
+                key.Down => self.cycle_app = true,
+                key.Up => self.cycle_app = false,
+                key.Left, key.Right => self.cycle(sym == key.Left, self.cycle_app),
+                else => return false,
+            }
+            return true;
+        }
+        if (mods.alt and sym == key.F4) {
+            if (self.focused) |toplevel| toplevel.resource.sendClose();
+            return true;
+        }
+        if (mods.logo) {
+            switch (sym) {
+                key.Return => launchTerminal(self.a),
+                key.d, key.a => launch(self.a, "overview"),
+                key.l => launch(self.a, "lock --daemonize"),
+                key.e, key.E => {
+                    if (!mods.shift) return false;
+                    self.server.quit = true;
+                },
+                key.Left, key.Right, key.Up, key.Down => if (self.focused) |toplevel| {
+                    toplevel.tile = if (sym == key.Left) .left else if (sym == key.Right) .right else .none;
+                    toplevel.maximized = true;
+                    toplevel.reconfigure(false);
+                },
+                else => return false,
+            }
+            return true;
+        }
+        switch (sym) {
+            key.XF86AudioRaiseVolume => launch(self.a, "volume up"),
+            key.XF86AudioLowerVolume => launch(self.a, "volume down"),
+            key.XF86AudioMute => launch(self.a, "volume mute"),
+            key.XF86AudioMicMute => launch(self.a, "microphone mute"),
+            key.XF86MonBrightnessUp => launch(self.a, "brightness up"),
+            key.XF86MonBrightnessDown => launch(self.a, "brightness down"),
+            key.Print => launch(self.a, "screenshot"),
+            else => return false,
+        }
+        return true;
+    }
+
+    /// The first window of `toplevel`'s application in most-recently-used order.
+    fn representative(self: *Compositor, toplevel: *Toplevel) *Toplevel {
+        for (self.recent.items) |candidate| if (candidate.mapped and candidate.workspace == self.workspace and sameApp(toplevel, candidate)) return candidate;
+        return toplevel;
+    }
+
+    /// Alt-Tab: moves the selection by application, or by window within one.
+    fn cycle(self: *Compositor, reverse: bool, same_app: bool) void {
+        if (!self.cycling) {
+            self.cycle_origin = self.focused;
+            self.cycle_selected = self.focused;
+            self.cycling = true;
+        }
+        self.cycle_app = same_app;
+        const windows = self.recent.items;
+        const selected = self.cycle_selected;
+        const start_window = if (!same_app and selected != null) self.representative(selected.?) else selected;
+        var start: usize = 0;
+        for (windows, 0..) |candidate, index| if (candidate == start_window) {
+            start = index;
+            break;
+        };
+        for (1..windows.len + 1) |offset| {
+            const index = if (reverse) (start + windows.len - offset % windows.len) % windows.len else (start + offset) % windows.len;
+            const candidate = windows[index];
+            if (!candidate.mapped or candidate.workspace != self.workspace) continue;
+            if (!same_app and self.representative(candidate) != candidate) continue;
+            if (same_app) if (selected) |origin| if (!sameApp(origin, candidate)) continue;
+            self.cycle_selected = candidate;
+            return;
+        }
+        if (same_app) self.cycle(reverse, false) else self.finishCycle(true);
+    }
+
+    fn finishCycle(self: *Compositor, cancel: bool) void {
+        const selected = if (cancel) self.cycle_origin else self.cycle_selected;
+        self.cycling = false;
+        self.cycle_origin = null;
+        self.cycle_selected = null;
+        if (selected) |toplevel| if (toplevel.mapped) {
+            self.focused_layer = null;
+            self.focus(toplevel);
+        };
+    }
+
     /// Keyboard focus: an exclusive layer surface on the top or overlay layer,
     /// then a layer surface the user clicked, then the focused window.
     fn updateKeyboardFocus(self: *Compositor) void {
         var target: ?*Surface = null;
+        if (self.locked) {
+            const surface = if (self.lock) |lock| lock.focus() else null;
+            if (surface != self.seat.keyboard_focus) self.seat.focusSurface(surface);
+            return;
+        }
         for ([_]u32{ 3, 2 }) |level| {
             for (self.layers.items) |layer| {
                 if (layer.mapped and layer.current.layer == level and layer.current.interactivity == 1) target = layer.surface;
@@ -2057,23 +2790,24 @@ const Compositor = struct {
 
     /// Lays out layer surfaces: exclusive zones first, from the overlay down.
     fn arrange(self: *Compositor) void {
+        if (!self.output.enabled) return;
         const full: Rect = .{ .width = self.output.logicalWidth(), .height = self.output.logicalHeight() };
         var usable = full;
         var level: u32 = 4;
         while (level > 0) {
             level -= 1;
             for (self.layers.items) |layer| {
-                if (layer.current.layer != level or !layer.initial_sent or layer.current.zone <= 0) continue;
+                if (layer.current.layer != level or !layer.initial_sent or layer.closed or layer.current.zone <= 0) continue;
                 layer.rect = layer.place(usable);
                 layer.exclude(&usable);
             }
         }
         for (self.layers.items) |layer| {
-            if (!layer.initial_sent or layer.current.zone > 0) continue;
+            if (!layer.initial_sent or layer.closed or layer.current.zone > 0) continue;
             layer.rect = layer.place(if (layer.current.zone < 0) full else usable);
         }
         self.usable = usable;
-        for (self.layers.items) |layer| if (layer.initial_sent) layer.configure();
+        for (self.layers.items) |layer| if (layer.initial_sent and !layer.closed) layer.configure();
         for (self.toplevels.items) |toplevel| toplevel.reconfigure(false);
         self.scheduleRepaint();
     }
@@ -2090,10 +2824,15 @@ const Compositor = struct {
                 }
             }
         }.f;
+        if (self.locked) {
+            if (self.lock) |lock| for (lock.surfaces.items) |lock_surface| add(out, &count, lock_surface.surface, 0, 0);
+            return out[0..count];
+        }
         for ([_]u32{ 0, 1 }) |level| for (self.layers.items) |layer| {
             if (layer.mapped and layer.current.layer == level) add(out, &count, layer.surface, layer.rect.x, layer.rect.y);
         };
         for (self.toplevels.items) |toplevel| {
+            if (toplevel.workspace != self.workspace) continue;
             const xdg = toplevel.xdg orelse continue;
             const geometry = xdg.windowGeometry();
             add(out, &count, xdg.surface, toplevel.x - geometry.x, toplevel.y - geometry.y);
@@ -2103,6 +2842,7 @@ const Compositor = struct {
         }
         for (self.popups.items) |popup| {
             if (!popup.mapped) continue;
+            if (popup.toplevelRoot()) |owner| if (owner.workspace != self.workspace) continue;
             const xdg = popup.xdg orelse continue;
             const origin = popup.parentOrigin() orelse continue;
             const geometry = xdg.windowGeometry();
@@ -2389,6 +3129,167 @@ const Compositor = struct {
         resource.setHandler(VirtualPointer, pointer, VirtualPointer.handle, VirtualPointer.destroyed);
     }
 
+    fn bindLockManager(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.ext_session_lock_manager_v1{ .resource = resource }).setHandler(Compositor, self, lockManagerRequest, null);
+    }
+
+    fn lockManagerRequest(self: *Compositor, _: ws.ext_session_lock_manager_v1, request: ws.ext_session_lock_manager_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .lock => |args| {
+                const lock = create(Lock, self, .{ .comp = self, .resource = args.id }) orelse return;
+                args.id.setHandler(Lock, lock, Lock.handle, Lock.destroyed);
+                // One lock at a time; a crashed lock can be replaced while still locked.
+                if (self.lock != null) return args.id.sendFinished();
+                self.lock = lock;
+                self.locked = true;
+                self.lock_serial +%= 1;
+                self.cycling = false;
+                self.cycle_origin = null;
+                self.cycle_selected = null;
+                self.super_alone = false;
+                self.dismissPopups();
+                self.seat.focusSurface(null);
+                self.seat.updatePointerFocus();
+                self.scheduleRepaint();
+            },
+        }
+    }
+
+    fn bindViewporter(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.wp_viewporter{ .resource = resource }).setHandler(Compositor, self, viewporterRequest, null);
+    }
+
+    fn viewporterRequest(_: *Compositor, resource: ws.wp_viewporter, request: ws.wp_viewporter.Request) void {
+        switch (request) {
+            .destroy => {},
+            .get_viewport => |args| {
+                const surface = args.surface.data(Surface) orelse return;
+                if (surface.has_viewport) return resource.postError(ws.wp_viewporter.Error.viewport_exists, "surface already has a viewport", .{});
+                surface.has_viewport = true;
+                args.id.setHandler(Surface, surface, viewportRequest, viewportGone);
+            },
+        }
+    }
+
+    fn viewportRequest(surface: *Surface, resource: ws.wp_viewport, request: ws.wp_viewport.Request) void {
+        switch (request) {
+            .destroy => {},
+            // Cropping is accepted; the whole buffer is shown scaled to the destination.
+            .set_source => {},
+            .set_destination => |args| {
+                if (args.width == -1 and args.height == -1) {
+                    surface.pending_destination = null;
+                } else if (args.width <= 0 or args.height <= 0) {
+                    resource.postError(ws.wp_viewport.Error.bad_value, "destination size must be positive", .{});
+                } else surface.pending_destination = .{ args.width, args.height };
+            },
+        }
+    }
+
+    fn viewportGone(surface: *Surface, _: ws.wp_viewport) void {
+        surface.has_viewport = false;
+        surface.pending_destination = null;
+    }
+
+    fn bindFractionalScale(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.wp_fractional_scale_manager_v1{ .resource = resource }).setHandler(Compositor, self, fractionalScaleRequest, null);
+    }
+
+    fn fractionalScaleRequest(self: *Compositor, resource: ws.wp_fractional_scale_manager_v1, request: ws.wp_fractional_scale_manager_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .get_fractional_scale => |args| {
+                const surface = args.surface.data(Surface) orelse return;
+                if (surface.fractional != null) return resource.postError(ws.wp_fractional_scale_manager_v1.Error.fractional_scale_exists, "surface already has a fractional scale", .{});
+                surface.fractional = args.id;
+                args.id.setHandler(Surface, surface, null, fractionalGone);
+                args.id.sendPreferredScale(self.output.fractionalScale());
+            },
+        }
+    }
+
+    fn fractionalGone(surface: *Surface, _: ws.wp_fractional_scale_v1) void {
+        surface.fractional = null;
+    }
+
+    fn bindToplevelList(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        const list: ws.ext_foreign_toplevel_list_v1 = .{ .resource = resource };
+        list.setHandler(Compositor, self, toplevelListRequest, toplevelListGone);
+        self.toplevel_lists.append(self.a, list) catch {};
+        for (self.toplevels.items) |toplevel| ListHandle.announce(self, list, toplevel);
+    }
+
+    fn toplevelListRequest(self: *Compositor, resource: ws.ext_foreign_toplevel_list_v1, request: ws.ext_foreign_toplevel_list_v1.Request) void {
+        switch (request) {
+            .stop => {
+                removeItem(ws.ext_foreign_toplevel_list_v1, &self.toplevel_lists, resource);
+                resource.sendFinished();
+            },
+            .destroy => {},
+        }
+    }
+
+    fn toplevelListGone(self: *Compositor, resource: ws.ext_foreign_toplevel_list_v1) void {
+        removeItem(ws.ext_foreign_toplevel_list_v1, &self.toplevel_lists, resource);
+    }
+
+    fn bindCaptureSources(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.ext_foreign_toplevel_image_capture_source_manager_v1{ .resource = resource }).setHandler(Compositor, self, captureSourceRequest, null);
+    }
+
+    fn captureSourceRequest(_: *Compositor, _: ws.ext_foreign_toplevel_image_capture_source_manager_v1, request: ws.ext_foreign_toplevel_image_capture_source_manager_v1.Request) void {
+        switch (request) {
+            .create_source => |args| {
+                const handle = args.toplevel_handle.data(ListHandle);
+                const source = std.heap.c_allocator.create(CaptureSource) catch return;
+                source.* = .{ .toplevel = if (handle) |h| h.toplevel else null };
+                args.source.setHandler(CaptureSource, source, null, CaptureSource.destroyed);
+            },
+            .destroy => {},
+        }
+    }
+
+    fn bindImageCopy(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.ext_image_copy_capture_manager_v1{ .resource = resource }).setHandler(Compositor, self, imageCopyRequest, null);
+    }
+
+    fn imageCopyRequest(self: *Compositor, _: ws.ext_image_copy_capture_manager_v1, request: ws.ext_image_copy_capture_manager_v1.Request) void {
+        switch (request) {
+            .create_session => |args| {
+                const source = args.source.data(CaptureSource);
+                const toplevel = if (source) |s| s.toplevel else null;
+                const session = create(CaptureSession, self, .{ .comp = self, .resource = args.session, .toplevel = toplevel }) orelse return;
+                args.session.setHandler(CaptureSession, session, CaptureSession.handle, CaptureSession.destroyed);
+                // A window that is gone, or still unknown, stops the session at once.
+                const owner = toplevel orelse return args.session.sendStopped();
+                if (!owner.mapped) return session.stop();
+                owner.sessions.append(self.a, session) catch return session.stop();
+                session.constraints();
+            },
+            .create_pointer_cursor_session => |args| args.session.setHandler(Compositor, self, null, null),
+            .destroy => {},
+        }
+    }
+
+    fn bindOverview(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        const control = create(OverviewControl, self, .{ .comp = self, .resource = .{ .resource = resource } }) orelse return;
+        control.resource.setHandler(OverviewControl, control, OverviewControl.handle, OverviewControl.destroyed);
+        self.overviews.append(self.a, control) catch {};
+        if (control.resource.version() >= 2) {
+            control.sendWorkspaces();
+            control.resource.sendDone();
+            control.resource.sendOverview(@intFromBool(self.overviewActive()));
+        }
+    }
+
     fn bindDecorationManager(data: ?*anyopaque, resource: wire.Resource) void {
         const self: *Compositor = @ptrCast(@alignCast(data));
         (ws.zxdg_decoration_manager_v1{ .resource = resource }).setHandler(Compositor, self, decorationManagerRequest, null);
@@ -2426,9 +3327,34 @@ const Compositor = struct {
         manager.announce();
     }
 
-    /// Applies a new output scale and tells output management clients.
-    fn setOutputScale(self: *Compositor, scale: i32) void {
+    fn setOutputScale(self: *Compositor, scale: f64) void {
         self.output.setScale(scale);
+    }
+
+    /// Turns the output off, as unplugging it, or back on.
+    fn setOutputEnabled(self: *Compositor, enabled: bool) void {
+        const output = self.output;
+        if (output.enabled == enabled) return;
+        output.enabled = enabled;
+        if (!enabled) {
+            if (output.global) |global| global.remove();
+            output.global = null;
+            for (self.layers.items) |layer| layer.close();
+            for (self.surfaces.items) |surface| surface.entered = false;
+            self.updateKeyboardFocus();
+            return;
+        }
+        output.global = self.server.createGlobal(&ws.wl_output.interface, 4, output, &Output.bind) catch null;
+        self.arrange();
+        for (self.toplevels.items) |toplevel| {
+            toplevel.reconfigure(false);
+            if (toplevel.xdg) |xdg| if (xdg.surface) |surface| output.enter(surface);
+        }
+        self.scheduleRepaint();
+    }
+
+    /// Tells output management clients about the new configuration.
+    fn outputChanged(self: *Compositor) void {
         self.output_serial +%= 1;
         for (self.head_managers.items) |manager| {
             manager.describe();
@@ -2620,7 +3546,7 @@ pub const Handle = struct {
             return;
         };
         self.signal();
-        while (running) {
+        while (running and !server.quit) {
             const before = comp.output.frames;
             server.dispatch(-1);
             if (comp.output.frames != before) self.publish(comp.output);
@@ -2782,4 +3708,51 @@ test "native compositor maps an xdg toplevel from shared memory and composites i
     xdg_surface.destroy();
     surface.destroy();
     try connection.roundtrip();
+}
+
+fn sameApp(a: *const Toplevel, b: *const Toplevel) bool {
+    return a == b or (a.app_id.len > 0 and std.mem.eql(u8, a.app_id, b.app_id));
+}
+
+fn launch(a: std.mem.Allocator, comptime command: [:0]const u8) void {
+    @import("desktop-command.zig").commandLine(a, command, "/proc/self/exe " ++ command);
+}
+
+fn launchTerminal(a: std.mem.Allocator) void {
+    @import("desktop-command.zig").commandLine(a, "Terminal", "ghostty");
+}
+
+/// Keysyms the compositor binds, from xkbcommon-keysyms.h.
+const key = struct {
+    const Tab: u32 = 0xff09;
+    const ISO_Left_Tab: u32 = 0xfe20;
+    const grave: u32 = 0x60;
+    const asciitilde: u32 = 0x7e;
+    const Escape: u32 = 0xff1b;
+    const Return: u32 = 0xff0d;
+    const KP_Enter: u32 = 0xff8d;
+    const Left: u32 = 0xff51;
+    const Up: u32 = 0xff52;
+    const Right: u32 = 0xff53;
+    const Down: u32 = 0xff54;
+    const F4: u32 = 0xffc1;
+    const Super_L: u32 = 0xffeb;
+    const Print: u32 = 0xff61;
+    const a: u32 = 0x61;
+    const d: u32 = 0x64;
+    const e: u32 = 0x65;
+    const E: u32 = 0x45;
+    const l: u32 = 0x6c;
+    const XF86MonBrightnessUp: u32 = 0x1008ff02;
+    const XF86MonBrightnessDown: u32 = 0x1008ff03;
+    const XF86AudioLowerVolume: u32 = 0x1008ff11;
+    const XF86AudioMute: u32 = 0x1008ff12;
+    const XF86AudioRaiseVolume: u32 = 0x1008ff13;
+    const XF86AudioMicMute: u32 = 0x1008ffb2;
+};
+
+test "bound keysyms match the names xkbcommon gives them" {
+    inline for (@typeInfo(key).@"struct".decl_names) |name| {
+        try std.testing.expectEqual(@as(?u32, @field(key, name)), xkb.keysymFromName(name));
+    }
 }

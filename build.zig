@@ -25,6 +25,8 @@ pub fn build(b: *std.Build) void {
     const protocol_files = [_]std.Build.LazyPath{
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-output/xdg-output-unstable-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/stable/xdg-shell/xdg-shell.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/stable/viewporter/viewporter.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/staging/fractional-scale/fractional-scale-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-foreign/xdg-foreign-unstable-v2.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/wlr-layer-shell-unstable-v1.xml", .{wlr_protocols}) },

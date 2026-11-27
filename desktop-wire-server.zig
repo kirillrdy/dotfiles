@@ -757,6 +757,8 @@ pub const Server = struct {
     listen_source: ?*Loop.Source = null,
     /// Set when events were queued; `flushClients` sends them.
     dirty: bool = false,
+    /// Set by the compositor to end its loop, as wl_display_terminate.
+    quit: bool = false,
     debug: bool = false,
     /// Called for every new client before it can send requests.
     on_client: ?*const fn (data: ?*anyopaque, client: *Client) void = null,
