@@ -922,7 +922,15 @@ const XdgSurface = struct {
             if (self.popup) |popup| popup.configure();
             return;
         }
-        if (self.toplevel) |toplevel| toplevel.mapChanged(surface.mapped() and self.acked);
+        if (self.toplevel) |toplevel| {
+            toplevel.mapChanged(surface.mapped() and self.acked);
+            // Dialogs size themselves; they stay centred as they do.
+            if (toplevel.mapped and toplevel.dialog()) {
+                const before = [2]i32{ toplevel.x, toplevel.y };
+                toplevel.place();
+                if (before[0] != toplevel.x or before[1] != toplevel.y) self.comp.scheduleRepaint();
+            }
+        }
         if (self.popup) |popup| {
             const mapped = surface.mapped() and self.acked;
             if (mapped != popup.mapped) {
@@ -974,6 +982,8 @@ const Toplevel = struct {
     fullscreen: bool = false,
     /// Super+Left and Super+Right tile a window to half of the usable area.
     tile: enum { none, left, right } = .none,
+    /// Where an unmaximized window sits, as the wlroots compositor kept it.
+    floating: ?Rect = null,
     parent: ?*Toplevel = null,
     min_size: [2]i32 = .{ 0, 0 },
     max_size: [2]i32 = .{ 0, 0 },
@@ -1023,12 +1033,23 @@ const Toplevel = struct {
             .unset_maximized => self.requestState(.{ .maximized = false }),
             .set_fullscreen => self.requestState(.{ .fullscreen = true }),
             .unset_fullscreen => self.requestState(.{ .fullscreen = false }),
+            // Dragging a title bar or a border.
+            .move => self.comp.beginGrab(self, 0),
+            .resize => |args| self.comp.beginGrab(self, args.edges),
             else => {},
         }
     }
 
     fn requestState(self: *Toplevel, change: struct { maximized: ?bool = null, fullscreen: ?bool = null }) void {
-        if (change.maximized) |value| self.maximized = value;
+        if (change.maximized) |value| {
+            self.maximized = value;
+            // Unmaximizing for the first time gives a centred two-thirds of the area.
+            if (!value and self.floating == null) if (self.output orelse self.comp.primary()) |output| {
+                const u = output.usable;
+                self.floating = .{ .x = u.x + @divTrunc(u.width, 6), .y = u.y + @divTrunc(u.height, 6), .width = @divTrunc(u.width * 2, 3), .height = @divTrunc(u.height * 2, 3) };
+            };
+            if (value) self.tile = .none;
+        }
         if (change.fullscreen) |value| self.fullscreen = value;
         if (self.xdg) |xdg| if (xdg.initial_sent) self.configure();
     }
@@ -1041,6 +1062,7 @@ const Toplevel = struct {
     fn area(self: *const Toplevel) Rect {
         const output = self.output orelse self.comp.primary() orelse return .{ .width = 1, .height = 1 };
         if (self.fullscreen) return output.box();
+        if (!self.maximized and self.tile == .none) if (self.floating) |box| return box;
         var box = output.usable;
         if (self.tile != .none) {
             box.width = @divTrunc(box.width, 2);
@@ -1063,7 +1085,7 @@ const Toplevel = struct {
     }
 
     fn sized(self: *const Toplevel) bool {
-        return self.fullscreen or (self.maximized and !self.dialog());
+        return self.fullscreen or (!self.dialog() and (self.maximized or self.tile != .none or self.floating != null));
     }
 
     /// Sends a configure if the size or states changed, or when `force` is set.
@@ -1155,6 +1177,9 @@ const Toplevel = struct {
             comp.updateInhibition();
         } else {
             removeItem(*Toplevel, &comp.toplevels, self);
+            if (comp.grab) |grab| if (grab.toplevel == self) {
+                comp.grab = null;
+            };
             // A window closing while selected moves the selection on, as before.
             if (comp.cycle_selected == self) comp.cycle(false, comp.cycle_app);
             if (comp.cycle_origin == self) comp.cycle_origin = null;
@@ -1552,6 +1577,8 @@ const Output = struct {
     /// How the display is turned (a wl_output transform); `width` and
     /// `height` are the upright scene's, swapped from the mode's by quarter turns.
     transform: u32 = 0,
+    /// The hot corner's barriers at this output's top-left corner.
+    pressure: @import("desktop-hot-corner.zig").Pressure = .{},
     /// The GPU scanout target, when the DRM backend renders with GLES.
     target: ?*Gl.Target = null,
     /// Whether `pixels` holds the latest frame; GPU frames are drawn again
@@ -1575,6 +1602,7 @@ const Output = struct {
 
     fn destroy(self: *Output) void {
         const a = self.comp.a;
+        self.pressure.deinit(a);
         self.resources.deinit(a);
         self.xdg_outputs.deinit(a);
         a.free(self.pixels);
@@ -2405,6 +2433,7 @@ const Seat = struct {
         self.pointer_y = y;
         self.clampPointer();
         defer self.comp.cursorMoved();
+        if (self.comp.grab != null) return self.comp.grabMotion();
         if (self.comp.drag != null) return self.comp.dragMotion(time);
         // An implicit grab keeps events on the pressed surface until release.
         if (self.buttons == 0) self.updatePointerFocus();
@@ -2414,8 +2443,22 @@ const Seat = struct {
         }
     }
 
+    /// Relative motion, which can press against the hot corner's barriers.
+    fn moveBy(self: *Seat, dx: f64, dy: f64, time: u32) void {
+        const next = self.comp.cornerMotion(self.pointer_x, self.pointer_y, dx, dy, time);
+        self.moveTo(next[0], next[1], time);
+    }
+
+    /// Absolute motion has no pressure; it releases barriers it leaves.
+    fn moveToAbsolute(self: *Seat, x: f64, y: f64, time: u32) void {
+        self.moveTo(x, y, time);
+        self.comp.cornerReleased();
+    }
+
     fn button(self: *Seat, time: u32, code: u32, pressed: bool) void {
         self.comp.activity();
+        // Releasing a button ends moving or resizing a window.
+        if (!pressed) self.comp.grab = null;
         if (self.comp.drag != null) {
             if (pressed) {
                 self.buttons += 1;
@@ -2508,12 +2551,12 @@ const VirtualPointer = struct {
         const seat = &self.comp.seat;
         const area = self.comp.layoutBox();
         switch (request) {
-            .motion => |args| seat.moveTo(seat.pointer_x + args.dx, seat.pointer_y + args.dy, args.time),
+            .motion => |args| seat.moveBy(args.dx, args.dy, args.time),
             .motion_absolute => |args| {
                 if (args.x_extent == 0 or args.y_extent == 0) return;
                 const x = @as(f64, @floatFromInt(area.x)) + @as(f64, @floatFromInt(args.x)) * @as(f64, @floatFromInt(area.width)) / @as(f64, @floatFromInt(args.x_extent));
                 const y = @as(f64, @floatFromInt(area.y)) + @as(f64, @floatFromInt(args.y)) * @as(f64, @floatFromInt(area.height)) / @as(f64, @floatFromInt(args.y_extent));
-                seat.moveTo(x, y, args.time);
+                seat.moveToAbsolute(x, y, args.time);
             },
             .button => |args| seat.button(args.time, args.button, args.state != 0),
             .axis => |args| seat.axis(args.time, args.axis, args.value, null),
@@ -2561,12 +2604,14 @@ const ForeignHandle = struct {
             self.resource.sendAppId(toplevel.app_id);
             if (toplevel.output) |on| for (on.resources.items) |output| if (output.client() == self.resource.client()) self.resource.sendOutputEnter(output);
         }
-        var states: [1]u32 = undefined;
+        // Task lists see whether the window is active, maximized or fullscreen.
+        var states: [3]u32 = undefined;
         var count: usize = 0;
-        if (toplevel.activated) {
-            states[count] = ws.zwlr_foreign_toplevel_handle_v1.State.activated;
+        const State = ws.zwlr_foreign_toplevel_handle_v1.State;
+        for ([_]struct { bool, u32 }{ .{ toplevel.activated, State.activated }, .{ toplevel.maximized and !toplevel.fullscreen, State.maximized }, .{ toplevel.fullscreen, State.fullscreen } }) |entry| if (entry[0]) {
+            states[count] = entry[1];
             count += 1;
-        }
+        };
         self.resource.sendState(std.mem.sliceAsBytes(states[0..count]));
         self.resource.sendDone();
     }
@@ -3950,6 +3995,10 @@ const Compositor = struct {
     cursor_path_len: usize = 0,
     /// The drag-and-drop operation in progress.
     drag: ?Drag = null,
+    /// A window being moved or resized with the pointer.
+    grab: ?struct { toplevel: *Toplevel, edges: u32, start: [2]f64, box: Rect } = null,
+    /// GNOME's enable-hot-corners setting, read in sessions.
+    corner_settings: ?*@import("desktop-gsettings.zig").Settings = null,
     /// Turns displays off while locked; set while they are off.
     blank_timer: ?*wire.Loop.Source = null,
     blanked: bool = false,
@@ -4010,6 +4059,7 @@ const Compositor = struct {
         self.seat = .{ .comp = self };
         try self.seat.init();
         self.blank_timer = try self.server.loop.timer(self, &blankTimeout);
+        if (self.show_ui) self.corner_settings = @import("desktop-gsettings.zig").Settings.open(self.a, "org.gnome.desktop.interface", "enable-hot-corners");
         self.ime = .{ .comp = self };
         const server = self.server;
         _ = try server.createGlobal(&ws.wl_compositor.interface, 6, self, &bindCompositor);
@@ -4058,6 +4108,7 @@ const Compositor = struct {
         self.sync_device = -1;
         self.a.free(self.dmabuf_formats);
         if (self.dmabuf_table >= 0) _ = std.c.close(self.dmabuf_table);
+        if (self.corner_settings) |settings| settings.close();
         for (self.cursor_cache.items) |entry| if (entry.image) |image| image.deinit(self.a);
         self.cursor_cache.deinit(self.a);
         self.seat.deinit();
@@ -4463,6 +4514,149 @@ const Compositor = struct {
     }
 
     /// Mapped surfaces bottom to top with their positions on the output.
+    /// The topmost window of the current workspace on `output`.
+    fn frontToplevel(self: *Compositor, output: *Output) ?*Toplevel {
+        var index = self.toplevels.items.len;
+        while (index > 0) {
+            index -= 1;
+            const toplevel = self.toplevels.items[index];
+            if (toplevel.mapped and toplevel.workspace == self.workspace and toplevel.output == output) return toplevel;
+        }
+        return null;
+    }
+
+    // ---------------------------------------------------------- Moving and resizing
+
+    /// Starts moving (no edges) or resizing a window from a button press on it.
+    fn beginGrab(self: *Compositor, toplevel: *Toplevel, edges: u32) void {
+        if (self.locked or toplevel.fullscreen or !toplevel.mapped or self.seat.buttons == 0) return;
+        const pressed_on = self.seat.pointer_focus orelse return;
+        if (pressed_on.resource.client() != toplevel.resource.client()) return;
+        const xdg = toplevel.xdg orelse return;
+        const geometry = xdg.windowGeometry();
+        const box: Rect = .{ .x = toplevel.x, .y = toplevel.y, .width = geometry.width, .height = geometry.height };
+        self.grab = .{ .toplevel = toplevel, .edges = edges, .start = .{ self.seat.pointer_x, self.seat.pointer_y }, .box = box };
+        toplevel.floating = box;
+        toplevel.maximized = false;
+        toplevel.tile = .none;
+        toplevel.reconfigure(false);
+    }
+
+    fn grabMotion(self: *Compositor) void {
+        const grab = self.grab orelse return;
+        const toplevel = grab.toplevel;
+        const dx: i32 = @intFromFloat(self.seat.pointer_x - grab.start[0]);
+        const dy: i32 = @intFromFloat(self.seat.pointer_y - grab.start[1]);
+        var box = grab.box;
+        const Edge = ws.xdg_toplevel.ResizeEdge;
+        if (grab.edges == 0) {
+            box.x += dx;
+            box.y += dy;
+        } else {
+            if (grab.edges & Edge.left != 0) {
+                box.x += dx;
+                box.width -= dx;
+            }
+            if (grab.edges & Edge.right != 0) box.width += dx;
+            if (grab.edges & Edge.top != 0) {
+                box.y += dy;
+                box.height -= dy;
+            }
+            if (grab.edges & Edge.bottom != 0) box.height += dy;
+            box.width = @max(toplevel.min_size[0], @max(64, box.width));
+            box.height = @max(toplevel.min_size[1], @max(48, box.height));
+        }
+        toplevel.floating = box;
+        toplevel.reconfigure(false);
+        toplevel.place();
+        self.scheduleRepaint();
+    }
+
+    // ---------------------------------------------------------- Hot corner
+
+    /// Relative motion against the top-left corner's barriers, as GNOME Shell's
+    /// pressure barriers: enough pressure opens the overview. Returns where
+    /// the pointer goes, held at a barrier it presses against.
+    fn cornerMotion(self: *Compositor, x: f64, y: f64, dx: f64, dy: f64, time: u32) [2]f64 {
+        var next_x = x + dx;
+        var next_y = y + dy;
+        const enabled = if (self.corner_settings) |settings| settings.boolean("enable-hot-corners") else true;
+        var allowed = enabled and !self.locked and !self.greeter and !self.cycling and self.grab == null and self.drag == null;
+        var in_overview = false;
+        for (self.layers.items) |layer| {
+            if (!layer.mapped) continue;
+            if (std.mem.eql(u8, layer.namespace, "desktop-overview")) {
+                in_overview = true;
+            } else if (layer.current.interactivity == 1) allowed = false;
+        }
+        var toggle = false;
+        for (self.outputs.items, 0..) |output, index| {
+            const area = output.box();
+            const left: f64 = @floatFromInt(area.x);
+            const top: f64 = @floatFromInt(area.y);
+            // GNOME always enables the primary corner; others need no monitor above or to their left.
+            var exposed = true;
+            if (index != 0) for (self.outputs.items) |other| {
+                if (other == output or !other.enabled) continue;
+                if (other.contains(left - 1, top) or other.contains(left, top - 1)) exposed = false;
+            };
+            if (!allowed or !exposed or !output.enabled) {
+                output.pressure.reset();
+                continue;
+            }
+            const size = self.barrierSize(output);
+            output.pressure.leave(x <= left and y >= top and y <= top + size, y <= top and x >= left and x <= left + size);
+            var triggered = false;
+            var vertical = false;
+            var horizontal = false;
+            if (dx < 0 and x >= left and next_x <= left) {
+                const cross_y = y + dy * ((left - x) / dx);
+                vertical = cross_y >= top and cross_y <= top + size;
+            }
+            if (dy < 0 and y >= top and next_y <= top) {
+                const cross_x = x + dx * ((top - y) / dy);
+                horizontal = cross_x >= left and cross_x <= left + size;
+            }
+            // After hitting one arm, the remaining motion can hit the other.
+            if (vertical and dy < 0 and next_y <= top) horizontal = true;
+            if (horizontal and dx < 0 and next_x <= left) vertical = true;
+            if (vertical) {
+                next_x = left;
+                triggered = output.pressure.hit(self.a, true, dx, dy, time) or triggered;
+            }
+            if (horizontal) {
+                next_y = top;
+                triggered = output.pressure.hit(self.a, false, dx, dy, time) or triggered;
+            }
+            output.pressure.leave(next_x <= left and next_y >= top and next_y <= top + size, next_y <= top and next_x >= left and next_x <= left + size);
+            const fullscreen = if (self.frontToplevel(output)) |front| front.fullscreen else false;
+            if (triggered and (!fullscreen or in_overview)) toggle = true;
+        }
+        if (toggle) launch(self.a, "overview-corner");
+        return .{ next_x, next_y };
+    }
+
+    /// Absolute pointers have no pressure; leaving a barrier releases it.
+    fn cornerReleased(self: *Compositor) void {
+        const x = self.seat.pointer_x;
+        const y = self.seat.pointer_y;
+        for (self.outputs.items) |output| {
+            const area = output.box();
+            const left: f64 = @floatFromInt(area.x);
+            const top: f64 = @floatFromInt(area.y);
+            const size = self.barrierSize(output);
+            output.pressure.leave(x <= left and y >= top and y <= top + size, y <= top and x >= left and x <= left + size);
+        }
+    }
+
+    /// The barriers reach as far as the panel is tall.
+    fn barrierSize(self: *Compositor, output: *Output) f64 {
+        for (self.layers.items) |layer| {
+            if (layer.output == output and std.mem.eql(u8, layer.namespace, "desktop-panel") and layer.current.zone > 0) return @floatFromInt(layer.current.zone);
+        }
+        return 32;
+    }
+
     fn stack(self: *Compositor, out: []Root) []Root {
         var count: usize = 0;
         const add = struct {
@@ -4487,10 +4681,13 @@ const Compositor = struct {
             const geometry = xdg.windowGeometry();
             add(out, &count, xdg.surface, toplevel.x - geometry.x, toplevel.y - geometry.y);
         }
-        // The panel stays above other top-layer surfaces, such as the overview.
+        // The panel stays above other top-layer surfaces, such as the overview,
+        // and hides over a fullscreen window unless the overview is open.
+        const overview = self.overviewActive();
         for ([_]bool{ false, true }) |panel| for (self.layers.items) |layer| {
-            if (layer.mapped and layer.current.layer == 2 and std.mem.eql(u8, layer.namespace, "desktop-panel") == panel)
-                add(out, &count, layer.surface, layer.rect.x, layer.rect.y);
+            if (!layer.mapped or layer.current.layer != 2 or std.mem.eql(u8, layer.namespace, "desktop-panel") != panel) continue;
+            if (panel and !overview) if (self.frontToplevel(layer.output)) |front| if (front.fullscreen) continue;
+            add(out, &count, layer.surface, layer.rect.x, layer.rect.y);
         };
         for (self.popups.items) |popup| {
             if (!popup.mapped) continue;
@@ -6454,7 +6651,7 @@ const Drm = struct {
             },
             li.EventType.pointer_motion => {
                 const pointer = li.libinput_event_get_pointer_event(event);
-                seat.moveTo(seat.pointer_x + li.libinput_event_pointer_get_dx(pointer), seat.pointer_y + li.libinput_event_pointer_get_dy(pointer), li.libinput_event_pointer_get_time(pointer));
+                seat.moveBy(li.libinput_event_pointer_get_dx(pointer), li.libinput_event_pointer_get_dy(pointer), li.libinput_event_pointer_get_time(pointer));
                 return true;
             },
             li.EventType.pointer_motion_absolute => {
@@ -6463,7 +6660,7 @@ const Drm = struct {
                 const b = self.comp.layoutBox();
                 const x = li.libinput_event_pointer_get_absolute_x_transformed(pointer, @intCast(@max(1, b.width)));
                 const y = li.libinput_event_pointer_get_absolute_y_transformed(pointer, @intCast(@max(1, b.height)));
-                seat.moveTo(@as(f64, @floatFromInt(b.x)) + x, @as(f64, @floatFromInt(b.y)) + y, li.libinput_event_pointer_get_time(pointer));
+                seat.moveToAbsolute(@as(f64, @floatFromInt(b.x)) + x, @as(f64, @floatFromInt(b.y)) + y, li.libinput_event_pointer_get_time(pointer));
                 return true;
             },
             li.EventType.pointer_button => {
@@ -7672,4 +7869,247 @@ test "shared-memory formats convert to premultiplied ARGB" {
     try std.testing.expect(shmLayout(0x12345678) == null);
     const F = ws.wl_shm.Format;
     try std.testing.expectEqualSlices(u32, &.{ F.argb8888, F.xrgb8888, F.abgr8888, F.xbgr8888, F.rgb565, F.argb2101010, F.xrgb2101010, F.abgr2101010, F.xbgr2101010 }, &shm_formats);
+}
+
+test "native compositor moves a window dragged by its title bar" {
+    const client_wire = @import("wayland-wire");
+    const wl = @import("wayland-client");
+    const a = std.testing.allocator;
+    var runtime: [64]u8 = undefined;
+    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-move-{d}", .{libc.getpid()}, 0);
+    _ = libc.mkdir(directory, 0o700);
+    defer _ = libc.rmdir(directory);
+    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
+    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
+    defer if (previous_runtime) |value| {
+        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
+    };
+    const handle = try Handle.startWith(a, .headless, .headless);
+    defer handle.stop();
+
+    const connection = try client_wire.Connection.connect(a);
+    defer connection.deinit();
+    const Globals = struct {
+        compositor: ?wl.wl_compositor = null,
+        shm: ?wl.wl_shm = null,
+        wm_base: ?wl.xdg_wm_base = null,
+        seat: ?wl.wl_seat = null,
+        pointers: ?wl.zwlr_virtual_pointer_manager_v1 = null,
+        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+            switch (event) {
+                .global => |g| {
+                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
+                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
+                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
+                    if (std.mem.eql(u8, g.interface, "wl_seat")) self.seat = registry.bind(g.name, wl.wl_seat, 9);
+                    if (std.mem.eql(u8, g.interface, "zwlr_virtual_pointer_manager_v1")) self.pointers = registry.bind(g.name, wl.zwlr_virtual_pointer_manager_v1, 2);
+                },
+                .global_remove => {},
+            }
+        }
+    };
+    var globals: Globals = .{};
+    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
+    registry.listen(Globals, &globals, Globals.global);
+    try connection.roundtrip();
+
+    const Window = struct {
+        press_serial: u32 = 0,
+        size: [2]i32 = .{ 0, 0 },
+        fn xdgSurface(_: *@This(), surface: wl.xdg_surface, event: wl.xdg_surface.Event) void {
+            surface.ack_configure(event.configure.serial);
+        }
+        fn toplevel(self: *@This(), _: wl.xdg_toplevel, event: wl.xdg_toplevel.Event) void {
+            switch (event) {
+                .configure => |args| if (args.width > 0) {
+                    self.size = .{ args.width, args.height };
+                },
+                else => {},
+            }
+        }
+        fn pointer(self: *@This(), _: wl.wl_pointer, event: wl.wl_pointer.Event) void {
+            switch (event) {
+                .button => |args| if (args.state == 1) {
+                    self.press_serial = args.serial;
+                },
+                else => {},
+            }
+        }
+    };
+    var window: Window = .{};
+    const pointer = globals.seat.?.get_pointer();
+    pointer.listen(Window, &window, Window.pointer);
+    const surface = globals.compositor.?.create_surface();
+    const xdg_surface = globals.wm_base.?.get_xdg_surface(surface);
+    xdg_surface.listen(Window, &window, Window.xdgSurface);
+    const toplevel = xdg_surface.get_toplevel();
+    toplevel.listen(Window, &window, Window.toplevel);
+    surface.commit();
+    try connection.roundtrip();
+    // A red window of the size it was given (the output's usable area).
+    const width: usize = @intCast(window.size[0]);
+    const height: usize = @intCast(window.size[1]);
+    const fd = libc.memfd_create("buffer", 0x0001);
+    defer _ = std.c.close(fd);
+    try std.testing.expectEqual(@as(c_int, 0), libc.ftruncate(fd, @intCast(width * height * 4)));
+    const memory = libc.mmap(null, width * height * 4, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0).?;
+    defer _ = libc.munmap(memory, width * height * 4);
+    @memset(@as([*]u32, @ptrCast(@alignCast(memory)))[0 .. width * height], 0xffff0000);
+    const pool = globals.shm.?.create_pool(fd, @intCast(width * height * 4));
+    const buffer = pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), 0);
+    pool.destroy();
+    surface.attach(buffer, 0, 0);
+    surface.commit();
+    try connection.roundtrip();
+
+    const virtual = globals.pointers.?.create_virtual_pointer(globals.seat.?);
+    virtual.motion_absolute(0, 100, 100, 1280, 720);
+    virtual.button(0, 0x110, 1);
+    virtual.frame();
+    var deadline = util.monotonicTime() + 3_000_000;
+    while (window.press_serial == 0 and util.monotonicTime() < deadline) _ = try connection.dispatchTimeout(50);
+    try std.testing.expect(window.press_serial != 0);
+    toplevel.move(globals.seat.?, window.press_serial);
+    try connection.roundtrip();
+    virtual.motion(0, 200, 150);
+    virtual.frame();
+    try connection.roundtrip();
+    // The window keeps its size and follows the pointer; its old corner shows the background.
+    deadline = util.monotonicTime() + 3_000_000;
+    while (handle.pixel(50, 50).value != 0xff303030 and util.monotonicTime() < deadline) {
+        _ = try connection.dispatchTimeout(20);
+    }
+    try std.testing.expectEqual(@as(u32, 0xff303030), handle.pixel(50, 50).value);
+    try std.testing.expectEqual(@as(u32, 0xffff0000), handle.pixel(250, 200).value);
+    virtual.button(0, 0x110, 0);
+    virtual.frame();
+    try connection.roundtrip();
+
+    buffer.destroy();
+    toplevel.destroy();
+    xdg_surface.destroy();
+    surface.destroy();
+    try connection.roundtrip();
+}
+
+test "native compositor hides the panel over a fullscreen window" {
+    const client_wire = @import("wayland-wire");
+    const wl = @import("wayland-client");
+    const a = std.testing.allocator;
+    var runtime: [64]u8 = undefined;
+    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-fullscreen-{d}", .{libc.getpid()}, 0);
+    _ = libc.mkdir(directory, 0o700);
+    defer _ = libc.rmdir(directory);
+    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
+    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
+    defer if (previous_runtime) |value| {
+        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
+    };
+    const handle = try Handle.startWith(a, .headless, .headless);
+    defer handle.stop();
+
+    const connection = try client_wire.Connection.connect(a);
+    defer connection.deinit();
+    const Globals = struct {
+        compositor: ?wl.wl_compositor = null,
+        shm: ?wl.wl_shm = null,
+        wm_base: ?wl.xdg_wm_base = null,
+        layers: ?wl.zwlr_layer_shell_v1 = null,
+        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+            switch (event) {
+                .global => |g| {
+                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
+                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
+                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
+                    if (std.mem.eql(u8, g.interface, "zwlr_layer_shell_v1")) self.layers = registry.bind(g.name, wl.zwlr_layer_shell_v1, 4);
+                },
+                .global_remove => {},
+            }
+        }
+    };
+    var globals: Globals = .{};
+    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
+    registry.listen(Globals, &globals, Globals.global);
+    try connection.roundtrip();
+
+    const State = struct {
+        panel_serial: u32 = 0,
+        size: [2]i32 = .{ 0, 0 },
+        fn layer(self: *@This(), _: wl.zwlr_layer_surface_v1, event: wl.zwlr_layer_surface_v1.Event) void {
+            switch (event) {
+                .configure => |args| self.panel_serial = args.serial,
+                else => {},
+            }
+        }
+        fn xdgSurface(_: *@This(), surface: wl.xdg_surface, event: wl.xdg_surface.Event) void {
+            surface.ack_configure(event.configure.serial);
+        }
+        fn toplevel(self: *@This(), _: wl.xdg_toplevel, event: wl.xdg_toplevel.Event) void {
+            switch (event) {
+                .configure => |args| if (args.width > 0) {
+                    self.size = .{ args.width, args.height };
+                },
+                else => {},
+            }
+        }
+    };
+    var state: State = .{};
+    const Shm = struct {
+        fn buffer(shm: wl.wl_shm, width: usize, height: usize, color: u32) !wl.wl_buffer {
+            const fd = libc.memfd_create("buffer", 0x0001);
+            defer _ = std.c.close(fd);
+            if (libc.ftruncate(fd, @intCast(width * height * 4)) != 0) return error.NoMemory;
+            const memory = libc.mmap(null, width * height * 4, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0).?;
+            defer _ = libc.munmap(memory, width * height * 4);
+            @memset(@as([*]u32, @ptrCast(@alignCast(memory)))[0 .. width * height], color);
+            const pool = shm.create_pool(fd, @intCast(width * height * 4));
+            defer pool.destroy();
+            return pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), 0);
+        }
+    };
+    // A blue panel across the top, in the top layer.
+    const panel_surface = globals.compositor.?.create_surface();
+    const panel = globals.layers.?.get_layer_surface(panel_surface, null, 2, "desktop-panel");
+    panel.listen(State, &state, State.layer);
+    panel.set_size(0, 32);
+    panel.set_anchor(1 | 4 | 8);
+    panel.set_exclusive_zone(32);
+    panel_surface.commit();
+    try connection.roundtrip();
+    panel.ack_configure(state.panel_serial);
+    const panel_buffer = try Shm.buffer(globals.shm.?, 1280, 32, 0xff0000ff);
+    panel_surface.attach(panel_buffer, 0, 0);
+    panel_surface.commit();
+    // A red window that goes fullscreen.
+    const surface = globals.compositor.?.create_surface();
+    const xdg_surface = globals.wm_base.?.get_xdg_surface(surface);
+    xdg_surface.listen(State, &state, State.xdgSurface);
+    const toplevel = xdg_surface.get_toplevel();
+    toplevel.listen(State, &state, State.toplevel);
+    toplevel.set_fullscreen(null);
+    surface.commit();
+    try connection.roundtrip();
+    try std.testing.expectEqual([2]i32{ 1280, 720 }, state.size);
+    const buffer = try Shm.buffer(globals.shm.?, 1280, 720, 0xffff0000);
+    surface.attach(buffer, 0, 0);
+    surface.commit();
+    try connection.roundtrip();
+    var deadline = util.monotonicTime() + 3_000_000;
+    while (handle.pixel(10, 10).value != 0xffff0000 and util.monotonicTime() < deadline) _ = try connection.dispatchTimeout(20);
+    try std.testing.expectEqual(@as(u32, 0xffff0000), handle.pixel(10, 10).value);
+    // Leaving fullscreen brings the panel back over the maximized window.
+    toplevel.unset_fullscreen();
+    try connection.roundtrip();
+    deadline = util.monotonicTime() + 3_000_000;
+    while (handle.pixel(10, 10).value != 0xff0000ff and util.monotonicTime() < deadline) _ = try connection.dispatchTimeout(20);
+    try std.testing.expectEqual(@as(u32, 0xff0000ff), handle.pixel(10, 10).value);
+
+    buffer.destroy();
+    panel_buffer.destroy();
+    toplevel.destroy();
+    xdg_surface.destroy();
+    surface.destroy();
+    panel.destroy();
+    panel_surface.destroy();
+    try connection.roundtrip();
 }
