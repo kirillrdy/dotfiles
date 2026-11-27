@@ -1791,8 +1791,10 @@ const Output = struct {
     fn armRepaint(self: *Output) void {
         if (self.scheduled or !self.enabled) return;
         self.scheduled = true;
-        // Composite at most once per 60 Hz frame, batching commits that arrive together.
-        wire.Loop.arm(self.repaint, 16);
+        // Displays are paced by their page flips (a frame waits for the last one),
+        // so draw almost at once and keep up with fast panels. Headless and
+        // nested outputs composite at most once per 60 Hz frame.
+        wire.Loop.arm(self.repaint, if (self.display != null) 1 else 16);
     }
 
     /// Draws pending commits now, as a capture of the next frame would show them.
@@ -1808,8 +1810,8 @@ const Output = struct {
         if (!self.enabled) return;
         // A display turned off on the lock screen shows nothing until woken.
         if (comp.blanked and self.display != null) return;
-        if (self.target != null) if (self.display) |display| if (display.flipping or !display.card.active) {
-            // The GPU draws the next frame once the last one is on screen.
+        if (self.display) |display| if (display.flipping or !display.card.active) {
+            // The next frame is drawn once the last one is on screen.
             self.unpresented = true;
             return;
         };
@@ -6397,7 +6399,7 @@ const Drm = struct {
         }
         if (output.unpresented) {
             output.unpresented = false;
-            if (output.target != null) output.render() else output.present();
+            output.render();
         }
     }
 
