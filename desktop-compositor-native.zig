@@ -4487,9 +4487,11 @@ const Compositor = struct {
             const geometry = xdg.windowGeometry();
             add(out, &count, xdg.surface, toplevel.x - geometry.x, toplevel.y - geometry.y);
         }
-        for (self.layers.items) |layer| {
-            if (layer.mapped and layer.current.layer == 2) add(out, &count, layer.surface, layer.rect.x, layer.rect.y);
-        }
+        // The panel stays above other top-layer surfaces, such as the overview.
+        for ([_]bool{ false, true }) |panel| for (self.layers.items) |layer| {
+            if (layer.mapped and layer.current.layer == 2 and std.mem.eql(u8, layer.namespace, "desktop-panel") == panel)
+                add(out, &count, layer.surface, layer.rect.x, layer.rect.y);
+        };
         for (self.popups.items) |popup| {
             if (!popup.mapped) continue;
             if (popup.toplevelRoot()) |owner| if (owner.workspace != self.workspace) continue;
