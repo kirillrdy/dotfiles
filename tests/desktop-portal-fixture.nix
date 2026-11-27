@@ -10,7 +10,6 @@ import ./fixture.nix { inherit pkgs; } {
     pkgs.dbus
     pkgs.wlrctl
     pkgs.wtype
-    pkgs.grim
   ];
   script =
     {

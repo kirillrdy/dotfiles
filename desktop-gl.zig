@@ -21,9 +21,6 @@ pub extern fn gbm_surface_create(*GbmDevice, width: u32, height: u32, format: u3
 pub extern fn gbm_surface_destroy(*GbmSurface) void;
 pub extern fn gbm_surface_lock_front_buffer(*GbmSurface) ?*GbmBo;
 pub extern fn gbm_surface_release_buffer(*GbmSurface, *GbmBo) void;
-/// Returns union gbm_bo_handle, eight bytes returned in a register.
-pub extern fn gbm_bo_get_handle(*GbmBo) u64;
-pub extern fn gbm_bo_get_stride(*GbmBo) u32;
 pub extern fn gbm_bo_get_width(*GbmBo) u32;
 pub extern fn gbm_bo_get_height(*GbmBo) u32;
 pub extern fn gbm_bo_get_format(*GbmBo) u32;
@@ -89,7 +86,6 @@ pub extern fn eglMakeCurrent(EGLDisplay, draw: EGLSurface, read: EGLSurface, EGL
 pub extern fn eglSwapBuffers(EGLDisplay, EGLSurface) u32;
 pub extern fn eglQueryString(EGLDisplay, name: i32) ?[*:0]const u8;
 pub extern fn eglGetProcAddress(name: [*:0]const u8) ?*const anyopaque;
-pub extern fn eglGetError() i32;
 pub extern fn eglQuerySurface(EGLDisplay, EGLSurface, attribute: i32, value: *i32) u32;
 pub extern fn eglCreateImage(EGLDisplay, EGLContext, target: u32, buffer: ?*anyopaque, attributes: [*]const isize) EGLImage;
 pub const EGLSync = ?*anyopaque;
@@ -131,7 +127,6 @@ pub const gl = struct {
     pub const framebuffer_complete: u32 = 0x8CD5;
     pub const rgba: u32 = 0x1908;
     pub const renderer: u32 = 0x1F01;
-    pub const extensions: u32 = 0x1F03;
 };
 
 pub extern fn glGetString(name: u32) ?[*:0]const u8;
@@ -148,7 +143,6 @@ pub extern fn glUseProgram(program: u32) void;
 pub extern fn glDeleteProgram(program: u32) void;
 pub extern fn glGetUniformLocation(program: u32, name: [*:0]const u8) i32;
 pub extern fn glGetAttribLocation(program: u32, name: [*:0]const u8) i32;
-pub extern fn glUniform1i(location: i32, value: i32) void;
 pub extern fn glUniform1f(location: i32, value: f32) void;
 pub extern fn glUniform2f(location: i32, x: f32, y: f32) void;
 pub extern fn glUniform3f(location: i32, x: f32, y: f32, z: f32) void;

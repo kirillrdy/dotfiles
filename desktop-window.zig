@@ -2,9 +2,7 @@
 //! Owner callbacks run outside Wayland dispatch so they may destroy windows.
 const std = @import("std");
 const mainloop = @import("desktop-loop.zig");
-const util = @import("desktop-util.zig");
 pub const wire = @import("desktop-surface.zig");
-const cast = util.cast;
 var connection: ?*wire.Client = null;
 var windows: std.ArrayList(*Window) = .empty;
 

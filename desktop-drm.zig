@@ -97,16 +97,6 @@ pub const Connector = extern struct {
     pad: u32 = 0,
 };
 
-pub const FbCommand = extern struct {
-    fb_id: u32 = 0,
-    width: u32 = 0,
-    height: u32 = 0,
-    pitch: u32 = 0,
-    bpp: u32 = 0,
-    depth: u32 = 0,
-    handle: u32 = 0,
-};
-
 pub const FbCommand2 = extern struct {
     fb_id: u32 = 0,
     width: u32 = 0,
@@ -117,14 +107,6 @@ pub const FbCommand2 = extern struct {
     pitches: [4]u32 = @splat(0),
     offsets: [4]u32 = @splat(0),
     modifier: [4]u64 = @splat(0),
-};
-
-pub const PageFlip = extern struct {
-    crtc_id: u32 = 0,
-    fb_id: u32 = 0,
-    flags: u32 = 0,
-    reserved: u32 = 0,
-    user_data: u64 = 0,
 };
 
 pub const CreateDumb = extern struct {
@@ -215,16 +197,12 @@ pub const VblankEvent = extern struct {
 };
 
 pub const ioctl = struct {
-    pub const set_master = 0x641e; // _IO('d', 0x1e)
-    pub const drop_master = 0x641f; // _IO('d', 0x1f)
     pub const get_cap = ioctlNumber(read_write, 0x0c, GetCap);
     pub const set_client_cap = ioctlNumber(write_only, 0x0d, SetClientCap);
     pub const get_resources = ioctlNumber(read_write, 0xa0, CardResources);
-    pub const get_crtc = ioctlNumber(read_write, 0xa1, Crtc);
     pub const set_crtc = ioctlNumber(read_write, 0xa2, Crtc);
     pub const get_encoder = ioctlNumber(read_write, 0xa6, Encoder);
     pub const get_connector = ioctlNumber(read_write, 0xa7, Connector);
-    pub const add_fb = ioctlNumber(read_write, 0xae, FbCommand);
     pub const remove_fb = ioctlNumber(read_write, 0xaf, u32);
     pub const get_property = ioctlNumber(read_write, 0xaa, Property);
     pub const get_plane_resources = ioctlNumber(read_write, 0xb5, PlaneResources);
@@ -251,7 +229,6 @@ const cap_cursor_height: u64 = 0x9;
 const client_cap_atomic: u64 = 0x3;
 const plane_type_primary: u64 = 1;
 const plane_type_cursor: u64 = 2;
-const format_xrgb8888: u32 = 0x34325258; // 'XR24'
 const format_argb8888: u32 = 0x34325241; // 'AR24'
 const connected: u32 = 1;
 
@@ -458,14 +435,21 @@ pub const Display = struct {
         }
         self.flipping = true;
         self.cursor_commit = false;
-        if (used_cursor) {
-            self.cursor_dirty = false;
-            self.cursor_shown = want_visible;
-            self.cursor_committed_fb = want_fb;
-            self.cursor_committed_x = self.cursor_x;
-            self.cursor_committed_y = self.cursor_y;
-        }
+        if (used_cursor) self.markCursorCommitted(want_visible, want_fb);
         return .flipping;
+    }
+
+    fn cursorMatchesCommitted(self: *const Display, want_visible: bool, want_fb: u32) bool {
+        if (!want_visible and !self.cursor_shown) return true;
+        return want_visible and self.cursor_shown and self.cursor_x == self.cursor_committed_x and self.cursor_y == self.cursor_committed_y and want_fb == self.cursor_committed_fb;
+    }
+
+    fn markCursorCommitted(self: *Display, visible: bool, fb: u32) void {
+        self.cursor_dirty = false;
+        self.cursor_shown = visible;
+        self.cursor_committed_fb = fb;
+        self.cursor_committed_x = self.cursor_x;
+        self.cursor_committed_y = self.cursor_y;
     }
 
     /// Places the cursor image's top-left corner, in this display's pixels.
@@ -475,10 +459,7 @@ pub const Display = struct {
         if (!self.card.active or !self.card.cursor_hardware) return;
         const want_visible = self.cursorVisible();
         const want_fb: u32 = if (want_visible) self.card.cursors[self.card.cursor_front].fb else 0;
-        if (!self.cursor_dirty) {
-            if (!want_visible and !self.cursor_shown) return;
-            if (want_visible and self.cursor_shown and x == self.cursor_committed_x and y == self.cursor_committed_y and want_fb == self.cursor_committed_fb) return;
-        }
+        if (!self.cursor_dirty and self.cursorMatchesCommitted(want_visible, want_fb)) return;
         self.cursor_dirty = true;
         self.commitCursor();
     }
@@ -487,11 +468,7 @@ pub const Display = struct {
         if (!self.card.active or !self.modeset or self.flipping or !self.cursor_dirty or self.cursor_plane.id == 0) return;
         const want_visible = self.cursorVisible();
         const want_fb: u32 = if (want_visible) self.card.cursors[self.card.cursor_front].fb else 0;
-        if (!want_visible and !self.cursor_shown) {
-            self.cursor_dirty = false;
-            return;
-        }
-        if (want_visible and self.cursor_shown and self.cursor_x == self.cursor_committed_x and self.cursor_y == self.cursor_committed_y and want_fb == self.cursor_committed_fb) {
+        if (self.cursorMatchesCommitted(want_visible, want_fb)) {
             self.cursor_dirty = false;
             return;
         }
@@ -514,11 +491,7 @@ pub const Display = struct {
         }
         self.flipping = true;
         self.cursor_commit = true;
-        self.cursor_dirty = false;
-        self.cursor_shown = want_visible;
-        self.cursor_committed_fb = want_fb;
-        self.cursor_committed_x = self.cursor_x;
-        self.cursor_committed_y = self.cursor_y;
+        self.markCursorCommitted(want_visible, want_fb);
     }
 
     /// Turns the display off until the next frame sets its mode again.
@@ -895,8 +868,6 @@ test "DRM ioctl structures match the kernel headers" {
         .{ Crtc, c.struct_drm_mode_crtc },
         .{ Encoder, c.struct_drm_mode_get_encoder },
         .{ Connector, c.struct_drm_mode_get_connector },
-        .{ FbCommand, c.struct_drm_mode_fb_cmd },
-        .{ PageFlip, c.struct_drm_mode_crtc_page_flip },
         .{ CreateDumb, c.struct_drm_mode_create_dumb },
         .{ MapDumb, c.struct_drm_mode_map_dumb },
         .{ DestroyDumb, c.struct_drm_mode_destroy_dumb },
@@ -921,8 +892,6 @@ test "DRM ioctl structures match the kernel headers" {
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_GETCONNECTOR), ioctl.get_connector);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_CREATE_DUMB), ioctl.create_dumb);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_MAP_DUMB), ioctl.map_dumb);
-    try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_ADDFB), ioctl.add_fb);
-    try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_SET_MASTER), ioctl.set_master);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_GET_CAP), ioctl.get_cap);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_SET_CLIENT_CAP), ioctl.set_client_cap);
     try std.testing.expectEqual(@as(u32, c.DRM_IOCTL_MODE_GETPLANERESOURCES), ioctl.get_plane_resources);

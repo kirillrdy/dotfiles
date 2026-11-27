@@ -92,7 +92,7 @@ pkgs.stdenv.mkDerivation {
   # Case folding and normalization tables are generated from the UCD at build time.
   UNICODE_DATA_DIR = "${pkgs.unicode-character-database}/share/unicode";
   # Keysym names and characters are generated from xkbcommon's keysym header.
-  XKB_KEYSYMS_HEADER = "${textLibraries.xkbcommon.dev}/include/xkbcommon/xkbcommon-keysyms.h";
+  XKB_KEYSYMS_HEADER = "${pkgs.libxkbcommon.dev}/include/xkbcommon/xkbcommon-keysyms.h";
   buildInputs = [
     # Text is matched, shaped, read and rasterized natively. HarfBuzz is the
     # reference the shaper is tested against.

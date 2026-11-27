@@ -17,64 +17,10 @@ import ./fixture.nix { inherit pkgs; } {
       import argparse
       import os
       from pathlib import Path
-      import select
-      import struct
       import subprocess as sp
       import tempfile
       import time
-
-      def wait_until(predicate, message, timeout=10, interval=0.05):
-          deadline = time.monotonic() + timeout
-          while True:
-              if predicate():
-                  return
-              assert time.monotonic() < deadline, message
-              time.sleep(interval)
-
-      def wait_wayland(runtime_dir, compositor, log_path=None, timeout=10):
-          runtime_dir = Path(runtime_dir)
-          def ready():
-              assert compositor.poll() is None, (Path(log_path).read_text(errors="replace") if log_path else "Compositor exited")
-              for lock in runtime_dir.glob("wayland-*.lock"):
-                  sock = lock.stem
-                  if (runtime_dir / sock).exists():
-                      return sock
-              return "wayland-0" if (runtime_dir / "wayland-0").exists() else None
-          result = [None]
-          def check():
-              result[0] = ready()
-              return result[0] is not None
-          wait_until(check, "Compositor did not create Wayland socket", timeout=timeout)
-          return result[0]
-
-      def terminate_processes(processes, timeout=5):
-          for process in reversed(processes):
-              if process.poll() is None:
-                  process.terminate()
-                  try:
-                      process.wait(timeout=timeout)
-                  except sp.TimeoutExpired:
-                      process.kill()
-                      process.wait()
-
-      def dimensions(path):
-          data = Path(path).read_bytes()
-          assert data[:8] == b"\x89PNG\r\n\x1a\n"
-          return struct.unpack(">II", data[16:24])
-
-      class VirtualPointer:
-          def __init__(self, binary, env=None, stderr=None, delay=0.0):
-              self.process = sp.Popen([str(binary)], env=env, stdin=sp.PIPE, stdout=sp.PIPE, stderr=stderr, text=True)
-              assert select.select([self.process.stdout], [], [], 5)[0], "Virtual pointer did not start"
-              assert self.process.stdout.readline().strip() == "ready"
-              self.delay = delay
-          def command(self, instruction):
-              self.process.stdin.write(instruction + "\n")
-              self.process.stdin.flush()
-              assert select.select([self.process.stdout], [], [], 5)[0], "Virtual pointer timed out"
-              assert self.process.stdout.readline().strip() == "ok"
-              if self.delay:
-                  time.sleep(self.delay)
+      from session_fixture import VirtualPointer, png_size as dimensions, terminate_processes, wait_until, wait_wayland
 
       parser = argparse.ArgumentParser()
       parser.add_argument("--bin-dir", required=True, type=Path)

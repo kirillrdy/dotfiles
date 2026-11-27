@@ -220,7 +220,7 @@ lib.mkIf enableLightDesktop {
         NoNewPrivileges = true;
         RestrictAddressFamilies = [ "AF_UNIX" ];
         LimitCORE = 0;
-        Environment = "GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-0";
+        Environment = "WAYLAND_DISPLAY=wayland-0";
       };
     };
 

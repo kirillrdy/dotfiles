@@ -2,9 +2,7 @@
 # Compile fixtures in derivations and execute integration checks inside NixOS.
 {
   name,
-  vm ? true,
   nativeBuildInputs ? [ ],
-  buildInputs ? [ ],
   python ? pkgs.python3,
   pygobject ? false,
   withDesktop ? false,
@@ -740,11 +738,6 @@ let
           doCheck = false;
           installPhase = "true";
         }
-        // lib.optionalAttrs (fixture.stripZigRef or false) {
-          postFixup = ''
-            find "$out" -type f -exec remove-references-to -t ${pkgs.zig_0_17} {} +
-          '';
-        }
       );
   headlessScript = ''
     export XDG_RUNTIME_DIR="$TMPDIR/wayland-runtime"
@@ -826,7 +819,6 @@ let
             ++ lib.optional withDesktop desktop
             ++ nativeBuildInputs
             ++ [ pkgs.makeWrapper ];
-          inherit buildInputs;
         }
         // lib.optionalAttrs (fontDirs != [ ]) {
           FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = fontDirs; };
@@ -845,34 +837,20 @@ let
         makeWrapper ${runtimeScript} "$out/bin/check" "''${args[@]}"
       '';
 in
-if !vm then
-  pkgs.runCommand name
-    {
-      nativeBuildInputs = nativeBuildInputs;
-      inherit buildInputs;
-    }
-    (
-      setup
-      + body
-      + ''
-        touch "$out"
-      ''
-    )
-else
-  pkgs.testers.runNixOSTest {
-    inherit name;
-    nodes.machine = {
-      virtualisation.memorySize = 2048;
-      virtualisation.cores = 2;
-      users.users.tester.isNormalUser = true;
-      # These contract tests manage private compositors and mock services.
-      # Production service wiring is covered separately by desktop-vm.nix.
-      environment.systemPackages = [ runner ];
-    };
-    testScript = ''
-      machine.start()
-      machine.wait_for_unit("multi-user.target")
-      with subtest(${builtins.toJSON name}):
-          machine.succeed("su - tester -c ${runner}/bin/check", timeout=900)
-    '';
-  }
+pkgs.testers.runNixOSTest {
+  inherit name;
+  nodes.machine = {
+    virtualisation.memorySize = 2048;
+    virtualisation.cores = 2;
+    users.users.tester.isNormalUser = true;
+    # These contract tests manage private compositors and mock services.
+    # Production service wiring is covered separately by desktop-vm.nix.
+    environment.systemPackages = [ runner ];
+  };
+  testScript = ''
+    machine.start()
+    machine.wait_for_unit("multi-user.target")
+    with subtest(${builtins.toJSON name}):
+        machine.succeed("su - tester -c ${runner}/bin/check", timeout=900)
+  '';
+}

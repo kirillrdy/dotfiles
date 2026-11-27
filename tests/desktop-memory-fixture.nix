@@ -21,7 +21,7 @@ import ./fixture.nix { inherit pkgs; } {
     { fixture, dbusRun, ... }:
     ''
       ${dbusRun} python3 - --binary ${fixture}/bin/desktop-memory-tests \
-        --valgrind ${pkgs.valgrind}/bin/valgrind --suppressions ${./desktop-memory.supp} \
+        --valgrind ${pkgs.valgrind}/bin/valgrind \
         --strip ${pkgs.binutils}/bin/strip <<'PY'
       import argparse
       import os
@@ -39,7 +39,6 @@ import ./fixture.nix { inherit pkgs; } {
       parser = argparse.ArgumentParser()
       parser.add_argument("--binary", required=True)
       parser.add_argument("--valgrind", required=True)
-      parser.add_argument("--suppressions", required=True)
       parser.add_argument("--strip", required=True)
       args = parser.parse_args()
       root = Path(tempfile.mkdtemp(prefix="desktop-memory-check-", dir=os.environ.get("TMPDIR", "/tmp")))
@@ -50,7 +49,6 @@ import ./fixture.nix { inherit pkgs; } {
                  XDG_STATE_HOME=str(root / "state"), GSETTINGS_BACKEND="memory",
                  NO_AT_BRIDGE="1", GDK_BACKEND="wayland", G_DEBUG="gc-friendly,fatal-criticals",
                  DESKTOP_MEMORY_TEST_RUN="1", DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDRESS"],
-                 PIPEWIRE_DLCLOSE="false",
                  PATH=os.environ["PATH"])
       env.pop("DESKTOP_MEMORY_LEAK_PROBE", None)
       heap_binary = root / "desktop-memory-tests-valgrind"
@@ -69,7 +67,7 @@ import ./fixture.nix { inherit pkgs; } {
           if checked_heap:
               command = [args.valgrind, "--leak-check=full", "--show-leak-kinds=definite,indirect",
                          "--errors-for-leak-kinds=definite,indirect", "--error-exitcode=97",
-                         "--num-callers=30", "--suppressions=" + args.suppressions,
+                         "--num-callers=30",
                          "--log-file=" + str(log), *command]
           try:
               started = time.monotonic()

@@ -99,6 +99,10 @@ const Buffer = struct {
 
     /// Copies premultiplied ARGB into the buffer, as capture clients receive it.
     fn write(self: *Buffer, pixels: []const u32, opaque_pixels: bool) bool {
+        return self.writeRect(pixels, self.width, 0, 0, opaque_pixels);
+    }
+
+    fn writeRect(self: *Buffer, pixels: []const u32, source_stride: usize, x: usize, y: usize, opaque_pixels: bool) bool {
         if (self.bytes() == null) return false;
         const size = self.offset + self.stride * self.height;
         const pool = self.pool orelse return false;
@@ -108,7 +112,8 @@ const Buffer = struct {
         const target: [*]u8 = @ptrCast(memory);
         for (0..self.height) |row| {
             const line = target[self.offset + row * self.stride ..][0 .. self.width * 4];
-            for (pixels[row * self.width ..][0..self.width], 0..) |pixel, column| std.mem.writeInt(u32, line[column * 4 ..][0..4], if (opaque_pixels) pixel | 0xff000000 else pixel, .little);
+            for (pixels[(y + row) * source_stride + x ..][0..self.width], 0..) |pixel, column|
+                std.mem.writeInt(u32, line[column * 4 ..][0..4], if (opaque_pixels) pixel | 0xff000000 else pixel, .little);
         }
         return true;
     }
@@ -176,8 +181,6 @@ const Surface = struct {
     input: ?[]Region.Op = null,
     pending_buffer: ?*Buffer = null,
     pending_attach: bool = false,
-    pending_dx: i32 = 0,
-    pending_dy: i32 = 0,
     pending_scale: i32 = 1,
     pending_frames: std.ArrayList(ws.wl_callback) = .empty,
     pending_releases: std.ArrayList(ws.wl_callback) = .empty,
@@ -330,18 +333,21 @@ const Surface = struct {
         if (self.held) |buffer| renderer.bindImage(self.texture, buffer.image) else renderer.upload(self.texture, self.pixels, self.width, self.height);
     }
 
+    fn ensurePixels(self: *Surface, count: usize) bool {
+        if (self.pixels.len == count) return true;
+        self.comp.a.free(self.pixels);
+        self.pixels = self.comp.a.alloc(u32, count) catch {
+            self.pixels = &.{};
+            return false;
+        };
+        return true;
+    }
+
     /// Whether `pixels` holds the content, reading a GPU buffer back if needed.
     fn cpuReady(self: *Surface) bool {
         if (self.held != null and self.cpu_stale) {
             const renderer = (self.comp.drm orelse return false).renderer orelse return false;
-            const count = @as(usize, self.width) * self.height;
-            if (self.pixels.len != count) {
-                self.comp.a.free(self.pixels);
-                self.pixels = self.comp.a.alloc(u32, count) catch {
-                    self.pixels = &.{};
-                    return false;
-                };
-            }
+            if (!self.ensurePixels(@as(usize, self.width) * self.height)) return false;
             self.syncTexture(renderer);
             if (!renderer.readTexture(self.texture, self.width, self.height, self.pixels)) return false;
             if (self.opaque_format) for (self.pixels) |*pixel| {
@@ -396,17 +402,11 @@ const Surface = struct {
             .attach => |args| {
                 self.pending_attach = true;
                 self.pending_buffer = if (args.buffer) |buffer| buffer.data(Buffer) else null;
-                if (resource.version() < 5) {
-                    self.pending_dx = args.x;
-                    self.pending_dy = args.y;
-                } else if (args.x != 0 or args.y != 0) {
+                if (resource.version() >= 5 and (args.x != 0 or args.y != 0)) {
                     resource.postError(ws.wl_surface.Error.invalid_offset, "attach offsets are set with wl_surface.offset", .{});
                 }
             },
-            .offset => |args| {
-                self.pending_dx = args.x;
-                self.pending_dy = args.y;
-            },
+            .offset => {},
             .damage => |args| self.addDamage(args.x, args.y, args.width, args.height),
             .damage_buffer => |args| {
                 // Buffer pixels to surface coordinates, rounding outwards.
@@ -535,13 +535,7 @@ const Surface = struct {
     fn copy(self: *Surface, buffer: *Buffer) void {
         if (buffer.pool == null) {
             // A single-pixel buffer stretches to the viewport destination.
-            if (self.pixels.len != 1) {
-                self.comp.a.free(self.pixels);
-                self.pixels = self.comp.a.alloc(u32, 1) catch {
-                    self.pixels = &.{};
-                    return;
-                };
-            }
+            if (!self.ensurePixels(1)) return;
             self.pixels[0] = buffer.solid;
             self.width = 1;
             self.height = 1;
@@ -552,14 +546,7 @@ const Surface = struct {
             self.resource.postError(ws.wl_shm.Error.invalid_fd, "buffer storage shrank", .{});
             return;
         };
-        const count = @as(usize, buffer.width) * buffer.height;
-        if (self.pixels.len != count) {
-            self.comp.a.free(self.pixels);
-            self.pixels = self.comp.a.alloc(u32, count) catch {
-                self.pixels = &.{};
-                return;
-            };
-        }
+        if (!self.ensurePixels(@as(usize, buffer.width) * buffer.height)) return;
         self.width = buffer.width;
         self.height = buffer.height;
         const layout = shmLayout(buffer.format) orelse return;
@@ -625,8 +612,6 @@ const Surface = struct {
         comp.a.free(self.pixels);
         comp.dragSurfaceGone(self);
         removeItem(*Surface, &comp.surfaces, self);
-        if (comp.seat.keyboard_focus == self) comp.seat.keyboard_focus = null;
-        if (comp.seat.cursor == self) comp.seat.cursor = null;
         comp.scheduleRepaint();
         comp.a.destroy(self);
     }
@@ -2607,10 +2592,6 @@ const Seat = struct {
         if (!pressed and self.buttons == 0) self.updatePointerFocus();
     }
 
-    fn axis(self: *Seat, time: u32, which: u32, value: f64, discrete: ?i32) void {
-        self.scroll(.{ .time = time, .axis = which, .value = value, .value120 = if (discrete) |steps| steps * 120 else null });
-    }
-
     const Scroll = struct {
         time: u32,
         axis: u32,
@@ -2710,7 +2691,6 @@ const VirtualKeyboard = struct {
 /// zwlr_virtual_pointer_v1: pointer events from a client, as wlrctl sends.
 const VirtualPointer = struct {
     comp: *Compositor,
-    axis_discrete: [2]?i32 = .{ null, null },
 
     fn handle(self: *VirtualPointer, _: ws.zwlr_virtual_pointer_v1, request: ws.zwlr_virtual_pointer_v1.Request) void {
         const seat = &self.comp.seat;
@@ -2831,18 +2811,8 @@ const CaptureFrame = struct {
         output.capturePixels();
         if (self.rect.x < 0 or self.rect.y < 0 or @as(usize, @intCast(self.rect.x)) + width > output.width or @as(usize, @intCast(self.rect.y)) + height > output.height or output.pixels.len < @as(usize, output.width) * output.height)
             return resource.sendFailed();
-        const size = buffer.offset + buffer.stride * height;
-        const pool = buffer.pool orelse return resource.sendFailed();
-        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, pool.fd, 0) orelse return resource.sendFailed();
-        if (memory == libc.MAP_FAILED) return resource.sendFailed();
-        defer _ = libc.munmap(memory, size);
-        if (buffer.bytes() == null) return resource.sendFailed();
-        const bytes: [*]u8 = @ptrCast(memory);
-        for (0..height) |row| {
-            const source = output.pixels[(@as(usize, @intCast(self.rect.y)) + row) * output.width + @as(usize, @intCast(self.rect.x)) ..][0..width];
-            const line = bytes[buffer.offset + row * buffer.stride ..][0 .. width * 4];
-            for (source, 0..) |pixel, column| std.mem.writeInt(u32, line[column * 4 ..][0..4], pixel | 0xff000000, .little);
-        }
+        if (!buffer.writeRect(output.pixels, output.width, @intCast(self.rect.x), @intCast(self.rect.y), true))
+            return resource.sendFailed();
         resource.sendFlags(0);
         if (damage) resource.sendDamage(0, 0, width, height);
         const now = util.monotonicTime();
@@ -3433,7 +3403,6 @@ const Lock = struct {
     resource: ws.ext_session_lock_v1,
     surfaces: std.ArrayList(*LockSurface) = .empty,
     acknowledged: bool = false,
-    unlocked: bool = false,
 
     fn handle(self: *Lock, resource: ws.ext_session_lock_v1, request: ws.ext_session_lock_v1.Request) void {
         const comp = self.comp;
@@ -3453,7 +3422,6 @@ const Lock = struct {
             },
             .unlock_and_destroy => {
                 if (!self.acknowledged) return resource.postError(ws.ext_session_lock_v1.Error.invalid_unlock, "unlock before locked", .{});
-                self.unlocked = true;
                 comp.locked = false;
                 comp.wakeDisplays(false);
                 comp.updateInhibition();
@@ -3860,7 +3828,7 @@ const Ime = struct {
             const text = self.active orelse continue;
             const surface = text.entered orelse continue;
             const popup_surface = popup.surface orelse continue;
-            const origin = self.comp.surfacePosition(surface) orelse continue;
+            const origin = self.comp.surfaceOrigin(surface) orelse continue;
             const box: Rect = .{ .x = origin[0], .y = origin[1], .width = surface.logicalWidth(), .height = surface.logicalHeight() };
             const rect = text.current.rect;
             const width = popup_surface.logicalWidth();
@@ -4125,39 +4093,30 @@ const DataDevice = struct {
 
     /// Sends a selection to this device's client.
     fn offer(self: *DataDevice, source: ?*DataSource, primary: bool) void {
-        const comp = self.comp;
         switch (self.kind) {
-            .control => {
-                const device: ws.zwlr_data_control_device_v1 = .{ .resource = self.resource };
-                const current = source orelse return if (primary) device.sendPrimarySelection(null) else device.sendSelection(null);
-                const record = Offer.make(comp, current) orelse return;
-                const resource = device.sendDataOffer();
-                if (!resource.alive()) return record.gone();
-                resource.setHandler(Offer, record, Offer.controlRequest, Offer.controlGone);
-                for (current.mimes.items) |mime| resource.sendOffer(mime);
-                if (primary) device.sendPrimarySelection(resource) else device.sendSelection(resource);
-            },
-            .core => {
-                const device: ws.wl_data_device = .{ .resource = self.resource };
-                const current = source orelse return device.sendSelection(null);
-                const record = Offer.make(comp, current) orelse return;
-                const resource = device.sendDataOffer();
-                if (!resource.alive()) return record.gone();
-                resource.setHandler(Offer, record, Offer.coreRequest, Offer.coreGone);
-                for (current.mimes.items) |mime| resource.sendOffer(mime);
-                device.sendSelection(resource);
-            },
-            .primary => {
-                const device: ws.zwp_primary_selection_device_v1 = .{ .resource = self.resource };
-                const current = source orelse return device.sendSelection(null);
-                const record = Offer.make(comp, current) orelse return;
-                const resource = device.sendDataOffer();
-                if (!resource.alive()) return record.gone();
-                resource.setHandler(Offer, record, Offer.primaryRequest, Offer.primaryGone);
-                for (current.mimes.items) |mime| resource.sendOffer(mime);
-                device.sendSelection(resource);
-            },
+            .control => self.offerTyped(ws.zwlr_data_control_device_v1, Offer.controlRequest, Offer.controlGone, source, primary),
+            .core => self.offerTyped(ws.wl_data_device, Offer.coreRequest, Offer.coreGone, source, false),
+            .primary => self.offerTyped(ws.zwp_primary_selection_device_v1, Offer.primaryRequest, Offer.primaryGone, source, false),
         }
+    }
+
+    fn offerTyped(self: *DataDevice, comptime Device: type, comptime request: anytype, comptime gone_fn: anytype, source: ?*DataSource, primary: bool) void {
+        const device: Device = .{ .resource = self.resource };
+        const current = source orelse {
+            if (comptime @hasDecl(Device, "sendPrimarySelection")) {
+                if (primary) return device.sendPrimarySelection(null);
+            }
+            return device.sendSelection(null);
+        };
+        const record = Offer.make(self.comp, current) orelse return;
+        const resource = device.sendDataOffer();
+        if (!resource.alive()) return record.gone();
+        resource.setHandler(Offer, record, request, gone_fn);
+        for (current.mimes.items) |mime| resource.sendOffer(mime);
+        if (comptime @hasDecl(Device, "sendPrimarySelection")) {
+            if (primary) return device.sendPrimarySelection(resource);
+        }
+        device.sendSelection(resource);
     }
 };
 
@@ -4256,42 +4215,52 @@ const Compositor = struct {
         if (self.show_ui) self.corner_settings = @import("desktop-gsettings.zig").Settings.open(self.a, "org.gnome.desktop.interface", "enable-hot-corners");
         self.ime = .{ .comp = self };
         const server = self.server;
-        _ = try server.createGlobal(&ws.wl_compositor.interface, 6, self, &bindCompositor);
-        _ = try server.createGlobal(&ws.wl_subcompositor.interface, 1, self, &bindSubcompositor);
+        try self.expose(ws.wl_compositor, 6, compositorRequest);
+        try self.expose(ws.wl_subcompositor, 1, subcompositorRequest);
         _ = try server.createGlobal(&ws.wl_shm.interface, 2, self, &bindShm);
-        _ = try server.createGlobal(&ws.xdg_wm_base.interface, 6, self, &bindWmBase);
-        _ = try server.createGlobal(&ws.zxdg_output_manager_v1.interface, 3, self, &bindOutputManager);
+        try self.expose(ws.xdg_wm_base, 6, wmBaseRequest);
+        try self.expose(ws.zxdg_output_manager_v1, 3, outputManagerRequest);
         _ = try server.createGlobal(&ws.wl_seat.interface, 9, &self.seat, &Seat.bind);
-        _ = try server.createGlobal(&ws.wl_data_device_manager.interface, 3, self, &bindDataDeviceManager);
-        _ = try server.createGlobal(&ws.zwlr_data_control_manager_v1.interface, 2, self, &bindDataControlManager);
-        _ = try server.createGlobal(&ws.zwp_primary_selection_device_manager_v1.interface, 1, self, &bindPrimarySelection);
-        _ = try server.createGlobal(&ws.zwlr_layer_shell_v1.interface, 4, self, &bindLayerShell);
-        _ = try server.createGlobal(&ws.zwp_virtual_keyboard_manager_v1.interface, 1, self, &bindVirtualKeyboardManager);
-        _ = try server.createGlobal(&ws.zwlr_virtual_pointer_manager_v1.interface, 2, self, &bindVirtualPointerManager);
+        try self.expose(ws.wl_data_device_manager, 3, dataDeviceManagerRequest);
+        try self.expose(ws.zwlr_data_control_manager_v1, 2, dataControlManagerRequest);
+        try self.expose(ws.zwp_primary_selection_device_manager_v1, 1, primarySelectionRequest);
+        try self.expose(ws.zwlr_layer_shell_v1, 4, layerShellRequest);
+        try self.expose(ws.zwp_virtual_keyboard_manager_v1, 1, virtualKeyboardManagerRequest);
+        try self.expose(ws.zwlr_virtual_pointer_manager_v1, 2, virtualPointerManagerRequest);
         _ = try server.createGlobal(&ws.zwlr_foreign_toplevel_manager_v1.interface, 3, self, &bindForeignManager);
-        _ = try server.createGlobal(&ws.zwlr_screencopy_manager_v1.interface, 3, self, &bindScreencopy);
+        try self.expose(ws.zwlr_screencopy_manager_v1, 3, screencopyRequest);
         _ = try server.createGlobal(&ws.zwlr_output_manager_v1.interface, 4, self, &bindOutputManagement);
-        _ = try server.createGlobal(&ws.zxdg_decoration_manager_v1.interface, 1, self, &bindDecorationManager);
+        try self.expose(ws.zxdg_decoration_manager_v1, 1, decorationManagerRequest);
         _ = try server.createGlobal(&ws.org_kde_kwin_server_decoration_manager.interface, 1, self, &bindKdeDecoration);
         _ = try server.createGlobal(&ws.ext_foreign_toplevel_list_v1.interface, 1, self, &bindToplevelList);
-        _ = try server.createGlobal(&ws.ext_foreign_toplevel_image_capture_source_manager_v1.interface, 1, self, &bindCaptureSources);
-        _ = try server.createGlobal(&ws.ext_image_copy_capture_manager_v1.interface, 1, self, &bindImageCopy);
+        try self.expose(ws.ext_foreign_toplevel_image_capture_source_manager_v1, 1, captureSourceRequest);
+        try self.expose(ws.ext_image_copy_capture_manager_v1, 1, imageCopyRequest);
         _ = try server.createGlobal(&ws.dotfiles_overview_v1.interface, 3, self, &bindOverview);
-        _ = try server.createGlobal(&ws.wp_viewporter.interface, 1, self, &bindViewporter);
-        _ = try server.createGlobal(&ws.ext_session_lock_manager_v1.interface, 1, self, &bindLockManager);
-        _ = try server.createGlobal(&ws.wp_fractional_scale_manager_v1.interface, 1, self, &bindFractionalScale);
-        _ = try server.createGlobal(&ws.ext_idle_notifier_v1.interface, 2, self, &bindIdleNotifier);
-        _ = try server.createGlobal(&ws.zwp_idle_inhibit_manager_v1.interface, 1, self, &bindIdleInhibit);
-        _ = try server.createGlobal(&ws.ext_output_image_capture_source_manager_v1.interface, 1, self, &bindOutputSources);
-        _ = try server.createGlobal(&ws.wp_single_pixel_buffer_manager_v1.interface, 1, self, &bindSinglePixel);
-        _ = try server.createGlobal(&ws.wp_cursor_shape_manager_v1.interface, 1, self, &bindCursorShape);
-        _ = try server.createGlobal(&ws.xdg_activation_v1.interface, 1, self, &bindActivation);
+        try self.expose(ws.wp_viewporter, 1, viewporterRequest);
+        try self.expose(ws.ext_session_lock_manager_v1, 1, lockManagerRequest);
+        try self.expose(ws.wp_fractional_scale_manager_v1, 1, fractionalScaleRequest);
+        try self.expose(ws.ext_idle_notifier_v1, 2, idleNotifierRequest);
+        try self.expose(ws.zwp_idle_inhibit_manager_v1, 1, idleInhibitRequest);
+        try self.expose(ws.ext_output_image_capture_source_manager_v1, 1, outputSourceRequest);
+        try self.expose(ws.wp_single_pixel_buffer_manager_v1, 1, singlePixelRequest);
+        try self.expose(ws.wp_cursor_shape_manager_v1, 1, cursorShapeRequest);
+        try self.expose(ws.xdg_activation_v1, 1, activationRequest);
         _ = try server.createGlobal(&ws.wp_presentation.interface, 1, self, &bindPresentation);
-        _ = try server.createGlobal(&ws.zwp_text_input_manager_v3.interface, 1, self, &bindTextInput);
-        _ = try server.createGlobal(&ws.zwp_input_method_manager_v2.interface, 1, self, &bindInputMethod);
+        try self.expose(ws.zwp_text_input_manager_v3, 1, textInputRequest);
+        try self.expose(ws.zwp_input_method_manager_v2, 1, inputMethodRequest);
         for (self.outputs.items) |output| output.render();
         self.cursorChanged();
         self.started = true;
+    }
+
+    fn expose(self: *Compositor, comptime T: type, version: u32, comptime handler: fn (*Compositor, T, T.Request) void) !void {
+        const Bind = struct {
+            fn bind(data: ?*anyopaque, resource: wire.Resource) void {
+                const comp: *Compositor = @ptrCast(@alignCast(data));
+                (T{ .resource = resource }).setHandler(Compositor, comp, handler, null);
+            }
+        };
+        _ = try self.server.createGlobal(&T.interface, version, self, &Bind.bind);
     }
 
     fn deinit(self: *Compositor) void {
@@ -4399,14 +4368,7 @@ const Compositor = struct {
         for (self.outputs.items) |output| {
             if (!output.enabled) continue;
             const b = output.box();
-            if (result) |*r| {
-                const x1 = @max(r.x + r.width, b.x + b.width);
-                const y1 = @max(r.y + r.height, b.y + b.height);
-                r.x = @min(r.x, b.x);
-                r.y = @min(r.y, b.y);
-                r.width = x1 - r.x;
-                r.height = y1 - r.y;
-            } else result = b;
+            result = if (result) |r| r.merge(b) else b;
         }
         return result orelse .{ .width = 1, .height = 1 };
     }
@@ -4954,11 +4916,6 @@ const Compositor = struct {
         }
     }
 
-    fn bindCompositor(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.wl_compositor{ .resource = resource }).setHandler(Compositor, self, compositorRequest, null);
-    }
-
     fn compositorRequest(self: *Compositor, _: ws.wl_compositor, request: ws.wl_compositor.Request) void {
         switch (request) {
             .create_surface => |args| {
@@ -4973,11 +4930,6 @@ const Compositor = struct {
             },
             .release => {},
         }
-    }
-
-    fn bindSubcompositor(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.wl_subcompositor{ .resource = resource }).setHandler(Compositor, self, subcompositorRequest, null);
     }
 
     fn subcompositorRequest(self: *Compositor, resource: ws.wl_subcompositor, request: ws.wl_subcompositor.Request) void {
@@ -5071,11 +5023,6 @@ const Compositor = struct {
         buffer.unref();
     }
 
-    fn bindWmBase(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.xdg_wm_base{ .resource = resource }).setHandler(Compositor, self, wmBaseRequest, null);
-    }
-
     fn wmBaseRequest(self: *Compositor, resource: ws.xdg_wm_base, request: ws.xdg_wm_base.Request) void {
         switch (request) {
             .destroy, .pong => {},
@@ -5093,11 +5040,6 @@ const Compositor = struct {
                 args.id.setHandler(XdgSurface, xdg, XdgSurface.handle, XdgSurface.destroyed);
             },
         }
-    }
-
-    fn bindOutputManager(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.zxdg_output_manager_v1{ .resource = resource }).setHandler(Compositor, self, outputManagerRequest, null);
     }
 
     fn outputManagerRequest(self: *Compositor, _: ws.zxdg_output_manager_v1, request: ws.zxdg_output_manager_v1.Request) void {
@@ -5119,11 +5061,6 @@ const Compositor = struct {
                 for (output.resources.items) |wl_output| if (wl_output.client() == xdg_output.client() and wl_output.version() >= 2) wl_output.sendDone();
             },
         }
-    }
-
-    fn bindLayerShell(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.zwlr_layer_shell_v1{ .resource = resource }).setHandler(Compositor, self, layerShellRequest, null);
     }
 
     fn layerShellRequest(self: *Compositor, resource: ws.zwlr_layer_shell_v1, request: ws.zwlr_layer_shell_v1.Request) void {
@@ -5154,11 +5091,6 @@ const Compositor = struct {
         }
     }
 
-    fn bindVirtualKeyboardManager(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.zwp_virtual_keyboard_manager_v1{ .resource = resource }).setHandler(Compositor, self, virtualKeyboardManagerRequest, null);
-    }
-
     fn virtualKeyboardManagerRequest(self: *Compositor, _: ws.zwp_virtual_keyboard_manager_v1, request: ws.zwp_virtual_keyboard_manager_v1.Request) void {
         switch (request) {
             .create_virtual_keyboard => |args| {
@@ -5166,11 +5098,6 @@ const Compositor = struct {
                 args.id.setHandler(VirtualKeyboard, keyboard, VirtualKeyboard.handle, VirtualKeyboard.destroyed);
             },
         }
-    }
-
-    fn bindVirtualPointerManager(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.zwlr_virtual_pointer_manager_v1{ .resource = resource }).setHandler(Compositor, self, virtualPointerManagerRequest, null);
     }
 
     fn virtualPointerManagerRequest(self: *Compositor, _: ws.zwlr_virtual_pointer_manager_v1, request: ws.zwlr_virtual_pointer_manager_v1.Request) void {
@@ -5184,11 +5111,6 @@ const Compositor = struct {
     fn virtualPointer(self: *Compositor, resource: ws.zwlr_virtual_pointer_v1) void {
         const pointer = create(VirtualPointer, self, .{ .comp = self }) orelse return;
         resource.setHandler(VirtualPointer, pointer, VirtualPointer.handle, VirtualPointer.destroyed);
-    }
-
-    fn bindLockManager(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.ext_session_lock_manager_v1{ .resource = resource }).setHandler(Compositor, self, lockManagerRequest, null);
     }
 
     fn lockManagerRequest(self: *Compositor, _: ws.ext_session_lock_manager_v1, request: ws.ext_session_lock_manager_v1.Request) void {
@@ -5277,11 +5199,6 @@ const Compositor = struct {
         for (self.idle_notifications.items) |notification| notification.arm();
     }
 
-    fn bindIdleNotifier(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.ext_idle_notifier_v1{ .resource = resource }).setHandler(Compositor, self, idleNotifierRequest, null);
-    }
-
     fn idleNotifierRequest(self: *Compositor, _: ws.ext_idle_notifier_v1, request: ws.ext_idle_notifier_v1.Request) void {
         switch (request) {
             .destroy => {},
@@ -5302,11 +5219,6 @@ const Compositor = struct {
         notification.arm();
     }
 
-    fn bindIdleInhibit(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.zwp_idle_inhibit_manager_v1{ .resource = resource }).setHandler(Compositor, self, idleInhibitRequest, null);
-    }
-
     fn idleInhibitRequest(self: *Compositor, _: ws.zwp_idle_inhibit_manager_v1, request: ws.zwp_idle_inhibit_manager_v1.Request) void {
         switch (request) {
             .destroy => {},
@@ -5319,11 +5231,6 @@ const Compositor = struct {
         }
     }
 
-    fn bindOutputSources(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.ext_output_image_capture_source_manager_v1{ .resource = resource }).setHandler(Compositor, self, outputSourceRequest, null);
-    }
-
     fn outputSourceRequest(self: *Compositor, _: ws.ext_output_image_capture_source_manager_v1, request: ws.ext_output_image_capture_source_manager_v1.Request) void {
         switch (request) {
             .create_source => |args| {
@@ -5332,11 +5239,6 @@ const Compositor = struct {
             },
             .destroy => {},
         }
-    }
-
-    fn bindSinglePixel(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.wp_single_pixel_buffer_manager_v1{ .resource = resource }).setHandler(Compositor, self, singlePixelRequest, null);
     }
 
     fn singlePixelRequest(self: *Compositor, _: ws.wp_single_pixel_buffer_manager_v1, request: ws.wp_single_pixel_buffer_manager_v1.Request) void {
@@ -5354,11 +5256,6 @@ const Compositor = struct {
                 args.id.setHandler(Buffer, buffer, bufferRequest, bufferGone);
             },
         }
-    }
-
-    fn bindCursorShape(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.wp_cursor_shape_manager_v1{ .resource = resource }).setHandler(Compositor, self, cursorShapeRequest, null);
     }
 
     fn cursorShapeDevice(self: *Compositor, resource: ws.wp_cursor_shape_device_v1, request: ws.wp_cursor_shape_device_v1.Request) void {
@@ -5549,13 +5446,8 @@ const Compositor = struct {
             return;
         }
         self.sync_device = card_fd;
-        _ = self.server.createGlobal(&ws.wp_linux_drm_syncobj_manager_v1.interface, 1, self, &bindExplicitSync) catch return;
+        self.expose(ws.wp_linux_drm_syncobj_manager_v1, 1, explicitSyncRequest) catch return;
         std.log.info("compositor: offering explicit sync", .{});
-    }
-
-    fn bindExplicitSync(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.wp_linux_drm_syncobj_manager_v1{ .resource = resource }).setHandler(Compositor, self, explicitSyncRequest, null);
     }
 
     fn explicitSyncRequest(self: *Compositor, resource: ws.wp_linux_drm_syncobj_manager_v1, request: ws.wp_linux_drm_syncobj_manager_v1.Request) void {
@@ -5672,11 +5564,6 @@ const Compositor = struct {
         }
     }
 
-    fn bindActivation(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.xdg_activation_v1{ .resource = resource }).setHandler(Compositor, self, activationRequest, null);
-    }
-
     fn activationRequest(self: *Compositor, _: ws.xdg_activation_v1, request: ws.xdg_activation_v1.Request) void {
         switch (request) {
             .destroy => {},
@@ -5716,11 +5603,6 @@ const Compositor = struct {
         }
     }
 
-    fn bindTextInput(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.zwp_text_input_manager_v3{ .resource = resource }).setHandler(Compositor, self, textInputRequest, null);
-    }
-
     fn textInputRequest(self: *Compositor, _: ws.zwp_text_input_manager_v3, request: ws.zwp_text_input_manager_v3.Request) void {
         switch (request) {
             .destroy => {},
@@ -5731,11 +5613,6 @@ const Compositor = struct {
                 text.follow(self.seat.keyboard_focus);
             },
         }
-    }
-
-    fn bindInputMethod(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.zwp_input_method_manager_v2{ .resource = resource }).setHandler(Compositor, self, inputMethodRequest, null);
     }
 
     fn inputMethodRequest(self: *Compositor, _: ws.zwp_input_method_manager_v2, request: ws.zwp_input_method_manager_v2.Request) void {
@@ -5750,19 +5627,6 @@ const Compositor = struct {
                 self.ime.sync();
             },
         }
-    }
-
-    /// A surface's position on the output layout, if it is shown.
-    fn surfacePosition(self: *Compositor, target: *Surface) ?[2]i32 {
-        var roots: [256]Root = undefined;
-        for (self.stack(&roots)) |root| if (find(root.surface, target, root.x, root.y)) |found| return found;
-        return null;
-    }
-
-    fn find(surface: *Surface, target: *Surface, x: i32, y: i32) ?[2]i32 {
-        if (surface == target) return .{ x, y };
-        for (surface.children.items) |child| if (child.surface) |inner| if (find(inner, target, x + child.x, y + child.y)) |found| return found;
-        return null;
     }
 
     fn bindPresentation(data: ?*anyopaque, resource: wire.Resource) void {
@@ -5831,11 +5695,6 @@ const Compositor = struct {
         }
     }
 
-    fn bindViewporter(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.wp_viewporter{ .resource = resource }).setHandler(Compositor, self, viewporterRequest, null);
-    }
-
     fn viewporterRequest(_: *Compositor, resource: ws.wp_viewporter, request: ws.wp_viewporter.Request) void {
         switch (request) {
             .destroy => {},
@@ -5881,11 +5740,6 @@ const Compositor = struct {
         surface.pending_source = null;
     }
 
-    fn bindFractionalScale(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.wp_fractional_scale_manager_v1{ .resource = resource }).setHandler(Compositor, self, fractionalScaleRequest, null);
-    }
-
     fn fractionalScaleRequest(self: *Compositor, resource: ws.wp_fractional_scale_manager_v1, request: ws.wp_fractional_scale_manager_v1.Request) void {
         switch (request) {
             .destroy => {},
@@ -5926,11 +5780,6 @@ const Compositor = struct {
         removeItem(ws.ext_foreign_toplevel_list_v1, &self.toplevel_lists, resource);
     }
 
-    fn bindCaptureSources(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.ext_foreign_toplevel_image_capture_source_manager_v1{ .resource = resource }).setHandler(Compositor, self, captureSourceRequest, null);
-    }
-
     fn captureSourceRequest(self: *Compositor, _: ws.ext_foreign_toplevel_image_capture_source_manager_v1, request: ws.ext_foreign_toplevel_image_capture_source_manager_v1.Request) void {
         switch (request) {
             .create_source => |args| {
@@ -5944,11 +5793,6 @@ const Compositor = struct {
             },
             .destroy => {},
         }
-    }
-
-    fn bindImageCopy(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.ext_image_copy_capture_manager_v1{ .resource = resource }).setHandler(Compositor, self, imageCopyRequest, null);
     }
 
     fn imageCopyRequest(self: *Compositor, _: ws.ext_image_copy_capture_manager_v1, request: ws.ext_image_copy_capture_manager_v1.Request) void {
@@ -5985,11 +5829,6 @@ const Compositor = struct {
             control.resource.sendDone();
             control.resource.sendOverview(@intFromBool(self.overviewActive()));
         }
-    }
-
-    fn bindDecorationManager(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.zxdg_decoration_manager_v1{ .resource = resource }).setHandler(Compositor, self, decorationManagerRequest, null);
     }
 
     fn decorationManagerRequest(_: *Compositor, resource: ws.zxdg_decoration_manager_v1, request: ws.zxdg_decoration_manager_v1.Request) void {
@@ -6104,11 +5943,6 @@ const Compositor = struct {
         for (self.head_managers.items) |manager| manager.describe();
     }
 
-    fn bindScreencopy(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.zwlr_screencopy_manager_v1{ .resource = resource }).setHandler(Compositor, self, screencopyRequest, null);
-    }
-
     fn screencopyRequest(self: *Compositor, _: ws.zwlr_screencopy_manager_v1, request: ws.zwlr_screencopy_manager_v1.Request) void {
         switch (request) {
             .capture_output => |args| CaptureFrame.start(self, args.frame, args.output, null),
@@ -6139,11 +5973,6 @@ const Compositor = struct {
         removeItem(ws.zwlr_foreign_toplevel_manager_v1, &self.foreign_managers, resource);
     }
 
-    fn bindDataDeviceManager(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.wl_data_device_manager{ .resource = resource }).setHandler(Compositor, self, dataDeviceManagerRequest, null);
-    }
-
     fn dataDeviceManagerRequest(self: *Compositor, _: ws.wl_data_device_manager, request: ws.wl_data_device_manager.Request) void {
         switch (request) {
             .create_data_source => |args| {
@@ -6159,11 +5988,6 @@ const Compositor = struct {
         }
     }
 
-    fn bindPrimarySelection(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.zwp_primary_selection_device_manager_v1{ .resource = resource }).setHandler(Compositor, self, primarySelectionRequest, null);
-    }
-
     fn primarySelectionRequest(self: *Compositor, _: ws.zwp_primary_selection_device_manager_v1, request: ws.zwp_primary_selection_device_manager_v1.Request) void {
         switch (request) {
             .create_source => |args| {
@@ -6177,11 +6001,6 @@ const Compositor = struct {
             },
             .destroy => {},
         }
-    }
-
-    fn bindDataControlManager(data: ?*anyopaque, resource: wire.Resource) void {
-        const self: *Compositor = @ptrCast(@alignCast(data));
-        (ws.zwlr_data_control_manager_v1{ .resource = resource }).setHandler(Compositor, self, dataControlManagerRequest, null);
     }
 
     fn dataControlManagerRequest(self: *Compositor, _: ws.zwlr_data_control_manager_v1, request: ws.zwlr_data_control_manager_v1.Request) void {
@@ -6420,8 +6239,6 @@ const Drm = struct {
     software_cursor: []u32 = &.{},
     /// A display rejecting GPU buffers is reported once.
     fb_warned: bool = false,
-    /// The pointer image last sent to the cursor plane.
-    cursor_surface: ?*Surface = null,
 
     const interface: li.Interface = .{ .open_restricted = openRestricted, .close_restricted = closeRestricted };
 

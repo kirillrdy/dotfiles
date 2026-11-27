@@ -141,12 +141,8 @@ pub const Request = struct {
         const info = @typeInfo(S).@"struct";
         var at: usize = 0;
         comptime var field = 0;
-        comptime var nullable = false;
         inline for (signature) |code| {
-            if (code == '?') {
-                nullable = true;
-                continue;
-            }
+            if (code == '?') continue;
             const name = info.field_names[field];
             const T = info.field_types[field];
             switch (code) {
@@ -171,7 +167,6 @@ pub const Request = struct {
                 else => @compileError("unknown signature code"),
             }
             field += 1;
-            nullable = false;
         }
         comptime std.debug.assert(field == info.field_names.len);
         return result;
@@ -488,36 +483,7 @@ pub const Client = struct {
                 else => return error.IoFailed,
             }
         };
-        var offset: usize = 0;
-        const control_len: usize = @intCast(header.controllen);
-        while (offset + 16 <= control_len) {
-            const len = std.mem.readInt(usize, control[offset..][0..8], .little);
-            const level = std.mem.readInt(i32, control[offset + 8 ..][0..4], .little);
-            const kind = std.mem.readInt(i32, control[offset + 12 ..][0..4], .little);
-            if (len < 16 or offset + len > control_len) break;
-            if (level == 1 and kind == 1) {
-                var at = offset + 16;
-                while (at + 4 <= offset + len) : (at += 4) {
-                    const fd = std.mem.readInt(i32, control[at..][0..4], .little);
-                    if (self.in_fds.items.len >= 1024) {
-                        var rest = at;
-                        while (rest + 4 <= offset + len) : (rest += 4) {
-                            _ = std.c.close(std.mem.readInt(i32, control[rest..][0..4], .little));
-                        }
-                        return error.Protocol;
-                    }
-                    self.in_fds.append(self.server.allocator, fd) catch {
-                        // Close this fd and any remaining fds in the control message.
-                        var rest = at;
-                        while (rest + 4 <= offset + len) : (rest += 4) {
-                            _ = std.c.close(std.mem.readInt(i32, control[rest..][0..4], .little));
-                        }
-                        return error.OutOfMemory;
-                    };
-                }
-            }
-            offset += std.mem.alignForward(usize, len, 8);
-        }
+        try wire.takeFds(self.server.allocator, &self.in_fds, control[0..@intCast(header.controllen)], 1024);
         if (header.flags & 0x8 != 0) return error.Protocol; // MSG_CTRUNC
         if (received == 0) return error.Disconnected;
         self.in_len += @intCast(received);
@@ -679,7 +645,6 @@ pub const Loop = struct {
         callback: Callback,
         owned: bool = false,
         timer: bool = false,
-        removed: bool = false,
     };
 
     pub fn init(allocator: std.mem.Allocator) Error!Loop {
@@ -736,7 +701,6 @@ pub const Loop = struct {
 
     pub fn remove(self: *Loop, source: *Source) void {
         _ = linux.epoll_ctl(self.epoll, linux.EPOLL.CTL_DEL, source.fd, null);
-        source.removed = true;
         for (self.sources.items, 0..) |candidate, index| if (candidate == source) {
             _ = self.sources.swapRemove(index);
             break;
@@ -982,7 +946,7 @@ pub const Server = struct {
             0 => _ = callback.send(0, callback_interface.events[0], null, .{client.server.serial}),
             1 => {
                 const registry = callback;
-                registry.setHandler(client, &registryRequest, &registryGone);
+                registry.setHandler(client, &registryRequest, null);
                 client.registries.append(client.server.allocator, registry) catch return client.fail(error.OutOfMemory);
                 for (client.server.globals.items) |global| {
                     if (!global.removed and global.visibleTo(client)) announce(registry, global);
@@ -990,14 +954,6 @@ pub const Server = struct {
             },
             else => {},
         }
-    }
-
-    fn registryGone(data: ?*anyopaque, resource: Resource) void {
-        const client: *Client = @ptrCast(@alignCast(data));
-        for (client.registries.items, 0..) |registry, index| if (registry.id == resource.id) {
-            _ = client.registries.swapRemove(index);
-            break;
-        };
     }
 
     fn registryRequest(data: ?*anyopaque, request: *Request) void {

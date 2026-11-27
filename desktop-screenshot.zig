@@ -675,14 +675,6 @@ pub fn captureAndWrite(options: Options, allocator: std.mem.Allocator) !void {
     }
 }
 
-pub fn main(init: std.process.Init) void {
-    const status = run(init) catch 1;
-    if (status != 0) std.process.exit(status);
-}
-
-fn run(init: std.process.Init) !u8 {
-    return runArgs(init, try init.minimal.args.toSlice(init.arena.allocator()));
-}
 pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
     var opt = Options.parse(args);
     // Clipboard mode keeps dispatching in the forked child. Its allocator

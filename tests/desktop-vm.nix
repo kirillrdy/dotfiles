@@ -35,7 +35,6 @@ pkgs.testers.runNixOSTest {
       environment.systemPackages = with pkgs; [
         wtype
         wlrctl
-        grim
         wayland-utils
         mesa-demos
         wlr-randr

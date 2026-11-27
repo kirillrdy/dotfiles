@@ -20,30 +20,7 @@ import ./fixture.nix { inherit pkgs; } {
       import subprocess as sp
       import tempfile
       import time
-
-      def wait_until(predicate, message, timeout=10, interval=0.03):
-          deadline = time.monotonic() + timeout
-          while True:
-              if predicate():
-                  return
-              assert time.monotonic() < deadline, message
-              time.sleep(interval)
-
-      def wait_wayland(runtime_dir, compositor, log_path=None, timeout=10):
-          runtime_dir = Path(runtime_dir)
-          def ready():
-              assert compositor.poll() is None, (Path(log_path).read_text(errors="replace") if log_path else "Compositor exited")
-              for lock in runtime_dir.glob("wayland-*.lock"):
-                  sock = lock.stem
-                  if (runtime_dir / sock).exists():
-                      return sock
-              return "wayland-0" if (runtime_dir / "wayland-0").exists() else None
-          result = [None]
-          def check():
-              result[0] = ready()
-              return result[0] is not None
-          wait_until(check, "Compositor did not create Wayland socket", timeout=timeout, interval=0.05)
-          return result[0]
+      from session_fixture import wait_until, wait_wayland
 
       parser = argparse.ArgumentParser()
       parser.add_argument("--fixture", required=True)

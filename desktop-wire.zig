@@ -402,32 +402,11 @@ pub const Connection = struct {
                 else => return self.broken(error.IoFailed),
             }
         };
-        try self.takeFds(control[0..header.controllen]);
+        takeFds(self.allocator, &self.in_fds, control[0..header.controllen], std.math.maxInt(usize)) catch |err| return self.broken(err);
         if (header.flags & 0x8 != 0) return self.broken(error.Protocol); // MSG_CTRUNC lost descriptors
         if (received == 0) return self.broken(error.ConnectionClosed);
         self.in_len += @intCast(received);
         return true;
-    }
-
-    fn takeFds(self: *Connection, control: []const u8) Error!void {
-        var offset: usize = 0;
-        while (offset + 16 <= control.len) {
-            const len = std.mem.readInt(usize, control[offset..][0..8], .little);
-            const level = std.mem.readInt(i32, control[offset + 8 ..][0..4], .little);
-            const kind = std.mem.readInt(i32, control[offset + 12 ..][0..4], .little);
-            if (len < 16 or offset + len > control.len) break;
-            if (level == 1 and kind == 1) { // SOL_SOCKET, SCM_RIGHTS
-                var at = offset + 16;
-                while (at + 4 <= offset + len) : (at += 4) {
-                    const fd = std.mem.readInt(i32, control[at..][0..4], .little);
-                    self.in_fds.append(self.allocator, fd) catch {
-                        _ = std.c.close(fd);
-                        return self.broken(error.OutOfMemory);
-                    };
-                }
-            }
-            offset += std.mem.alignForward(usize, len, 8);
-        }
     }
 
     /// Dispatches every complete message already read.
@@ -644,6 +623,40 @@ pub fn putString(buffer: *[max_message]u8, len: *usize, value: anytype) Error!vo
     @memset(buffer[len.*..][0..padded], 0);
     @memcpy(buffer[len.*..][0..bytes.len], bytes);
     len.* += padded;
+}
+
+/// Extracts SCM_RIGHTS file descriptors from a recvmsg control buffer, closing
+/// any remaining descriptors on limit overflow or OOM.
+pub fn takeFds(allocator: std.mem.Allocator, list: *std.ArrayList(Fd), control: []const u8, limit: usize) error{ OutOfMemory, Protocol }!void {
+    var offset: usize = 0;
+    while (offset + 16 <= control.len) {
+        const len = std.mem.readInt(usize, control[offset..][0..8], .little);
+        const level = std.mem.readInt(i32, control[offset + 8 ..][0..4], .little);
+        const kind = std.mem.readInt(i32, control[offset + 12 ..][0..4], .little);
+        if (len < 16 or offset + len > control.len) break;
+        if (level == 1 and kind == 1) { // SOL_SOCKET, SCM_RIGHTS
+            var at = offset + 16;
+            while (at + 4 <= offset + len) : (at += 4) {
+                const fd = std.mem.readInt(i32, control[at..][0..4], .little);
+                if (list.items.len >= limit) {
+                    closeRemainingFds(control[at .. offset + len]);
+                    return error.Protocol;
+                }
+                list.append(allocator, fd) catch {
+                    closeRemainingFds(control[at .. offset + len]);
+                    return error.OutOfMemory;
+                };
+            }
+        }
+        offset += std.mem.alignForward(usize, len, 8);
+    }
+}
+
+fn closeRemainingFds(bytes: []const u8) void {
+    var at: usize = 0;
+    while (at + 4 <= bytes.len) : (at += 4) {
+        _ = std.c.close(std.mem.readInt(i32, bytes[at..][0..4], .little));
+    }
 }
 
 pub fn cmsgSpace(count: usize) usize {

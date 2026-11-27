@@ -8,7 +8,6 @@ import ./fixture.nix { inherit pkgs; } {
   nativeBuildInputs = [
     pkgs.dbus
     pkgs.glib
-    pkgs.xorg-server
     pkgs.grim
     pkgs.wlr-randr
     pkgs.wtype
@@ -23,14 +22,7 @@ import ./fixture.nix { inherit pkgs; } {
       ...
     }:
     ''
-      Xvfb :98 -nolisten tcp &
-      xvfb_pid=$!
-      trap 'kill "$xvfb_pid"' EXIT
-      for attempt in $(seq 1 100); do
-        test -S /tmp/.X11-unix/X98 && break
-        sleep 0.05
-      done
-      DISPLAY=:98 GDK_BACKEND=x11 python3 - \
+      python3 - \
         --fixture ${desktop.tests}/bin/desktop-backlight-fixture \
         --dbus-config ${dbusConfig} <<'PY'
       import argparse

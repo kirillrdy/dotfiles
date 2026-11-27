@@ -2,7 +2,7 @@
 //! performed before starting the UI or helpers.
 const std = @import("std");
 const options = @import("options");
-extern "c" fn setenv([*:0]const u8, [*:0]const u8, c_int) c_int;
+const libc = @import("desktop-libc.zig");
 
 fn terminated(comptime value: ?[]const u8) ?[:0]const u8 {
     return if (value) |text| std.fmt.comptimePrint("{s}", .{text}) else null;
@@ -26,7 +26,7 @@ pub fn setup(a: std.mem.Allocator) !void {
         const inherited = std.c.getenv("XDG_DATA_DIRS");
         const dirs = try dataDirs(a, prefix, if (inherited) |value| std.mem.span(value) else "");
         defer a.free(dirs);
-        if (setenv("XDG_DATA_DIRS", dirs, 1) != 0) return error.EnvironmentSetupFailed;
+        if (libc.setenv("XDG_DATA_DIRS", dirs, 1) != 0) return error.EnvironmentSetupFailed;
     }
 }
 

@@ -6,13 +6,6 @@ pub const password = @import("desktop-password-entry.zig");
 pub const Mode = native.Mode;
 pub const Dialog = @import("desktop-auth-dialog.zig").Dialog;
 
-pub fn main(init: std.process.Init) void {
-    const status = run(init) catch 1;
-    if (status != 0) std.process.exit(status);
-}
-fn run(init: std.process.Init) !u8 {
-    return runArgs(init, try init.minimal.args.toSlice(init.arena.allocator()));
-}
 pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
     // Passwords should not appear in a core dump or another process's ptrace
     // view. No password is copied into argv, an environment variable or a file.

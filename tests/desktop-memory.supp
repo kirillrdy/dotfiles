@@ -1,9 +1,0 @@
-# fontconfig 2.18 loses pattern elements while parsing its own configuration
-# (pango's fontconfig initialisation thread); nothing in the desktop owns them.
-{
-   fontconfig-config-parse
-   Memcheck:Leak
-   match-leak-kinds: definite,indirect
-   ...
-   fun:_FcConfigParse
-}
