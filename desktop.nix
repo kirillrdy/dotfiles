@@ -3,8 +3,6 @@
   pkgs,
   config ? null,
   enableLightDesktop ? false,
-  enableNvidia ? false,
-  enableNativeCompositor ? false,
   ...
 }:
 let
@@ -85,14 +83,6 @@ lib.mkIf enableLightDesktop {
       "systemd-logind.service"
       "dbus.service"
     ];
-    environment =
-      lib.optionalAttrs enableNvidia {
-        WLR_RENDERER = "vulkan";
-      }
-      // lib.optionalAttrs enableNativeCompositor {
-        # Forwarded by the display manager to the greeter and the session.
-        DESKTOP_COMPOSITOR = "native";
-      };
     serviceConfig = {
       ExecStart = "${shell} dm";
       Restart = "always";
@@ -201,9 +191,6 @@ lib.mkIf enableLightDesktop {
         # NixOS gives units a coreutils-only PATH; the compositor imports PATH into
         # the user manager, which hides every app whose Exec= is not absolute.
         PATH = lib.mkForce null;
-      }
-      // lib.optionalAttrs enableNvidia {
-        WLR_RENDERER = "vulkan";
       };
       serviceConfig = {
         Type = "simple";
@@ -212,7 +199,7 @@ lib.mkIf enableLightDesktop {
         ExecStart = "${pkgs.writeShellScript "desktop-zig-session" ''
           . /etc/profile
           # A dead compositor's WAYLAND_DISPLAY lingers in the user manager; inheriting
-          # it makes wlroots pick the nested Wayland backend instead of DRM.
+          # it makes the compositor pick the nested Wayland backend instead of DRM.
           unset WAYLAND_DISPLAY DISPLAY
           exec ${shell} session ${gnomeWallpaper}
         ''}";

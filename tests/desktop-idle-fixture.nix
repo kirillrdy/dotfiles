@@ -41,7 +41,7 @@ import ./fixture.nix { inherit pkgs; } {
       for key in ("DISPLAY", "WAYLAND_DISPLAY"):
           env.pop(key, None)
       env.update(XDG_RUNTIME_DIR=str(root / "runtime"), XDG_CONFIG_HOME=str(root / "config-home"),
-                 WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="2",
+                 WLR_BACKENDS="headless", WLR_HEADLESS_OUTPUTS="2",
                  WAYLAND_DEBUG="client", G_DEBUG="fatal-criticals")
       processes = []
       errors = []

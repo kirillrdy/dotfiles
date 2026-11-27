@@ -2,7 +2,6 @@
 //!
 //! Each interface becomes a struct holding a `wire.Proxy` with one method per
 //! request, an `Event` union in opcode order and `listen` for typed handlers.
-//! With `--libwayland`, emit libwayland `wl_interface` tables for protocols the compositor serves.
 //! With `--server`, emit typed bindings for the native server runtime, desktop-wire-server.zig.
 const std = @import("std");
 
@@ -248,98 +247,6 @@ fn parseXml(a: std.mem.Allocator, xml: []const u8, interfaces: *std.ArrayList(In
     }
 }
 
-/// libwayland's `wl_message` signature: the `since` version prefixes the argument codes.
-fn libwaylandSignature(a: std.mem.Allocator, message: Message) ![]const u8 {
-    const codes = try signature(a, message);
-    return if (std.mem.eql(u8, message.since, "1")) codes else std.fmt.allocPrint(a, "{s}{s}", .{ message.since, codes });
-}
-
-/// One `types` entry per argument code; objects and typed new_ids name their interface.
-fn libwaylandTypes(a: std.mem.Allocator, message: Message, externs: *std.StringArrayHashMapUnmanaged(void), local: *const std.StringHashMapUnmanaged(void)) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    for (message.args) |arg| {
-        if (std.mem.eql(u8, arg.kind, "new_id") and arg.interface == null) {
-            try out.appendSlice(a, "null, null, null, ");
-            continue;
-        }
-        const target = if (std.mem.eql(u8, arg.kind, "object") or std.mem.eql(u8, arg.kind, "new_id")) arg.interface else null;
-        if (target) |name| {
-            if (!local.contains(name)) try externs.put(a, name, {});
-            try out.print(a, "&{s}_interface, ", .{name});
-        } else try out.appendSlice(a, "null, ");
-    }
-    return out.toOwnedSlice(a);
-}
-
-fn libwaylandMessages(a: std.mem.Allocator, out: *std.ArrayList(u8), list: []const Message, externs: *std.StringArrayHashMapUnmanaged(void), local: *const std.StringHashMapUnmanaged(void)) !void {
-    // Like wayland-scanner, an empty list is a null pointer.
-    if (list.len == 0) return out.appendSlice(a, "null");
-    try out.appendSlice(a, "&[_]Message{ ");
-    for (list) |message| {
-        const types = try libwaylandTypes(a, message, externs, local);
-        try out.print(a, ".{{ .name = \"{s}\", .signature = \"{s}\", .types = {s}{s}{s} }}, ", .{
-            message.name,
-            try libwaylandSignature(a, message),
-            if (types.len == 0) "null" else "&[_]?*const Interface{ ",
-            types,
-            if (types.len == 0) "" else "}",
-        });
-    }
-    try out.appendSlice(a, "}");
-}
-
-/// Emit libwayland `wl_interface` metadata, the Zig equivalent of `wayland-scanner private-code`.
-/// Interfaces from other protocols resolve to the symbols libwayland-server exports.
-fn emitLibwayland(a: std.mem.Allocator, interfaces: []const Interface) ![]const u8 {
-    var local: std.StringHashMapUnmanaged(void) = .empty;
-    for (interfaces) |iface| try local.put(a, iface.name, {});
-    var externs: std.StringArrayHashMapUnmanaged(void) = .empty;
-    var body: std.ArrayList(u8) = .empty;
-    for (interfaces) |iface| {
-        try body.print(a, "pub const {s}_interface: Interface = .{{ .name = \"{s}\", .version = {s}, .method_count = {d}, .methods = ", .{ iface.name, iface.name, iface.version, iface.requests.len });
-        try libwaylandMessages(a, &body, iface.requests, &externs, &local);
-        try body.print(a, ", .event_count = {d}, .events = ", .{iface.events.len});
-        try libwaylandMessages(a, &body, iface.events, &externs, &local);
-        try body.appendSlice(a, " };\n");
-    }
-    var out: std.ArrayList(u8) = .empty;
-    try out.appendSlice(a,
-        \\// Generated from protocol XML by tools/wayland-zig.zig --libwayland. Do not edit.
-        \\pub const Interface = extern struct { name: [*:0]const u8, version: c_int, method_count: c_int, methods: ?[*]const Message, event_count: c_int, events: ?[*]const Message };
-        \\pub const Message = extern struct { name: [*:0]const u8, signature: [*:0]const u8, types: ?[*]const ?*const Interface };
-        \\
-    );
-    for (externs.keys()) |name| try out.print(a, "extern const {s}_interface: Interface;\n", .{name});
-    try out.appendSlice(a, body.items);
-    return out.toOwnedSlice(a);
-}
-
-test "libwayland metadata matches wayland-scanner conventions" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var interfaces: std.ArrayList(Interface) = .empty;
-    try parseXml(a,
-        \\<protocol name="t"><interface name="t_manager" version="4">
-        \\  <request name="destroy" type="destructor"/>
-        \\  <request name="get" since="3"><arg name="id" type="new_id" interface="t_item"/><arg name="surface" type="object" interface="wl_surface" allow-null="true"/><arg name="n" type="int"/></request>
-        \\  <request name="bind"><arg name="id" type="new_id"/></request>
-        \\  <event name="ready"><arg name="fd" type="fd"/><arg name="data" type="array"/></event>
-        \\</interface><interface name="t_item" version="1"></interface></protocol>
-    , &interfaces);
-    const manager = interfaces.items[0];
-    try std.testing.expectEqualStrings("", try libwaylandSignature(a, manager.requests[0]));
-    try std.testing.expectEqualStrings("3n?oi", try libwaylandSignature(a, manager.requests[1]));
-    try std.testing.expectEqualStrings("sun", try libwaylandSignature(a, manager.requests[2]));
-    try std.testing.expectEqualStrings("ha", try libwaylandSignature(a, manager.events[0]));
-    const source = try emitLibwayland(a, interfaces.items);
-    try std.testing.expect(std.mem.indexOf(u8, source, "extern const wl_surface_interface: Interface;\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "extern const t_item_interface") == null);
-    try std.testing.expect(std.mem.indexOf(u8, source, ".types = &[_]?*const Interface{ &t_item_interface, &wl_surface_interface, null, }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, ".types = &[_]?*const Interface{ null, null, null, }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, ".method_count = 3,") != null);
-}
-
 fn serverArgType(a: std.mem.Allocator, arg: Arg, known: *const std.StringHashMapUnmanaged(void), sending: bool) ![]const u8 {
     if (std.mem.eql(u8, arg.kind, "int")) return "i32";
     if (std.mem.eql(u8, arg.kind, "uint")) return "u32";
@@ -465,8 +372,6 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     var args = try init.minimal.args.toSlice(a);
     if (args.len < 3) return error.Usage;
-    const libwayland = std.mem.eql(u8, args[1], "--libwayland");
-    if (libwayland) args = args[1..];
     const server_mode = std.mem.eql(u8, args[1], "--server");
     if (server_mode) args = args[1..];
     if (args.len < 3) return error.Usage;
@@ -476,7 +381,6 @@ pub fn main(init: std.process.Init) !void {
         const xml = try cwd.readFileAlloc(io, path, a, .limited(16 << 20));
         try parseXml(a, xml, &interfaces);
     }
-    if (libwayland) return cwd.writeFile(io, .{ .sub_path = args[1], .data = try emitLibwayland(a, interfaces.items) });
     if (server_mode) return cwd.writeFile(io, .{ .sub_path = args[1], .data = try emitServer(a, interfaces.items) });
     var known: std.StringHashMapUnmanaged(void) = .empty;
     for (interfaces.items) |iface| try known.put(a, iface.name, {});

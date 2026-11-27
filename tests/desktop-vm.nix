@@ -1,13 +1,7 @@
 { pkgs }:
-let
-  # The same boot, login and session on the wlroots-free compositor.
-  native = pkgs.desktopNativeCompositor or false;
-in
 pkgs.testers.runNixOSTest {
-  name = if native then "desktop-native" else "desktop";
+  name = "desktop";
   node.specialArgs.enableLightDesktop = true;
-  node.specialArgs.enableNvidia = false;
-  node.specialArgs.enableNativeCompositor = native;
   node.pkgsReadOnly = false;
 
   nodes.machine =
@@ -38,8 +32,6 @@ pkgs.testers.runNixOSTest {
           "video"
         ];
       };
-      systemd.services.desktop-display-manager.environment.WLR_RENDERER = "pixman";
-      environment.sessionVariables.WLR_RENDERER = "pixman";
       environment.systemPackages = with pkgs; [
         wtype
         wlrctl
@@ -49,8 +41,8 @@ pkgs.testers.runNixOSTest {
         wlr-randr
       ];
       fonts.packages = [ pkgs.dejavu_fonts ];
-      # Screenshots leave out the cursor plane; draw the native cursor into frames.
-      environment.sessionVariables.DESKTOP_CURSOR = lib.mkIf native "software";
+      # Screenshots leave out the cursor plane; draw the cursor into frames.
+      environment.sessionVariables.DESKTOP_CURSOR = "software";
       services.pipewire = {
         enable = true;
         pulse.enable = true;
@@ -158,12 +150,10 @@ pkgs.testers.runNixOSTest {
         machine.screenshot("desktop-sound-settings")
         machine.succeed(user("wlrctl toplevel close title:Settings"))
 
-    # wlroots leaves Ctrl+Alt+Fn to compositors, and the wlroots one never handled it.
-    if ${if native then "True" else "False"}:
-      with subtest("the native compositor composites on the GPU"):
+    with subtest("the compositor composites on the GPU"):
         machine.succeed("journalctl -b | grep -F 'compositor: rendering with GLES'")
         machine.fail("journalctl -b | grep -F 'compositor: no cursor'")
-      with subtest("GL clients get the linux-dmabuf format table"):
+    with subtest("GL clients get the linux-dmabuf format table"):
         print(machine.succeed(user("wayland-info -i zwp_linux_dmabuf_v1 | head -40")))
         machine.succeed(user("wayland-info -i zwp_linux_dmabuf_v1 | grep -i 'main device'"))
         machine.succeed(user("systemd-run --user --unit=gears es2gears_wayland"))
@@ -172,7 +162,7 @@ pkgs.testers.runNixOSTest {
         machine.screenshot("desktop-gl-client")
         machine.fail("journalctl -b | grep -F 'could not import'")
         machine.succeed(user("systemctl --user stop gears.service"))
-      with subtest("displays offer their modes and switch between them"):
+    with subtest("displays offer their modes and switch between them"):
         print(machine.succeed(user("wlr-randr")))
         machine.succeed(user("wlr-randr --output Virtual-1 --mode 1024x768"))
         machine.wait_until_succeeds("journalctl -b | grep -F 'compositor: Virtual-1 now 1024x768'")
@@ -193,7 +183,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed(user("wlr-randr | grep -F 'Adaptive Sync: disabled'"))
         machine.sleep(1)
 
-      with subtest("overview previews draw on the GPU and the panel turns opaque again"):
+    with subtest("overview previews draw on the GPU and the panel turns opaque again"):
         machine.succeed(user("desktop-zig settings"))
         machine.wait_until_succeeds(user("wlrctl toplevel find title:Settings"))
         machine.succeed(user("desktop-zig overview"))
@@ -203,7 +193,7 @@ pkgs.testers.runNixOSTest {
         machine.sleep(2)
         machine.screenshot("desktop-overview-closed")
         machine.succeed(user("wlrctl toplevel close title:Settings"))
-      with subtest("the session survives switching to another VT and back"):
+    with subtest("the session survives switching to another VT and back"):
         machine.send_key("ctrl-alt-f2")
         machine.wait_until_succeeds("test \"$(cat /sys/class/tty/tty0/active)\" = tty2")
         machine.send_key("ctrl-alt-f1")
@@ -222,14 +212,13 @@ pkgs.testers.runNixOSTest {
     with subtest("production lock authenticates using the VM's real PAM policy"):
         machine.succeed(user("systemd-run --user --unit=test-lock --setenv=WAYLAND_DEBUG=client desktop-zig lock"))
         machine.wait_until_succeeds("journalctl --no-pager _SYSTEMD_USER_UNIT=test-lock.service | grep -F '.locked()'")
-        if ${if native then "True" else "False"}:
-          # Displays turn off 10 s after the lock screen shows, and input wakes them.
-          machine.wait_until_succeeds("journalctl -b | grep -F 'compositor: displays off on the lock screen'", timeout=30)
-          machine.screenshot("desktop-lock-blanked")
-          machine.send_key("shift")
-          machine.wait_until_succeeds("journalctl -b | grep -F 'compositor: displays on'", timeout=10)
-          machine.sleep(1)
-          machine.screenshot("desktop-lock-woken")
+        # Displays turn off 10 s after the lock screen shows, and input wakes them.
+        machine.wait_until_succeeds("journalctl -b | grep -F 'compositor: displays off on the lock screen'", timeout=30)
+        machine.screenshot("desktop-lock-blanked")
+        machine.send_key("shift")
+        machine.wait_until_succeeds("journalctl -b | grep -F 'compositor: displays on'", timeout=10)
+        machine.sleep(1)
+        machine.screenshot("desktop-lock-woken")
         machine.succeed(user("wtype -d 10 incorrect -k Return"))
         machine.wait_until_succeeds("journalctl --no-pager | grep 'pam_unix(desktop-lock:auth): authentication failure'")
         machine.succeed(user("systemctl --user is-active test-lock.service"))

@@ -1,6 +1,5 @@
 { pkgs }:
 let
-  compositorLibraries = import ./desktop-compositor-libs.nix { inherit pkgs; };
   glLibraries = import ./desktop-gl-libs.nix { inherit pkgs; };
   audioLibraries = import ./desktop-audio-libs.nix { inherit pkgs; };
   pamLibraries = import ./desktop-pam-libs.nix { inherit pkgs; };
@@ -79,7 +78,6 @@ pkgs.stdenv.mkDerivation {
   nativeBuildInputs = [
     pkgs.zig_0_17
     pkgs.pkg-config
-    pkgs.wayland-scanner
     # xkbcli compiles the reference keymap for the native XKB tests.
     pkgs.libxkbcommon
     pkgs.removeReferencesTo
@@ -99,17 +97,13 @@ pkgs.stdenv.mkDerivation {
     # Text is matched, shaped, read and rasterized natively. HarfBuzz is the
     # reference the shaper is tested against.
     pkgs.harfbuzz
-    pkgs.wayland
-    pkgs.wayland-protocols
-    compositorLibraries
     inputLibraries
+    # Kernel DRM headers, the reference for desktop-drm.zig and the GL tests.
     pkgs.libdrm
-    pkgs.pixman
     # The native compositor composites with GLES through EGL on GBM buffers.
     glLibraries
     pkgs.libgbm
     pamLibraries
-    textLibraries.xkbcommon
     # Audio and screen video use PipeWire's native protocol. Its headers are
     # test references, and an independent libpipewire consumer is a fixture.
     audioLibraries.pipewire

@@ -138,7 +138,6 @@ import ./fixture.nix { inherit pkgs; } {
           XDG_CACHE_HOME=str(root / "cache"),
           WLR_BACKENDS="headless",
           WLR_HEADLESS_OUTPUTS="2",
-          WLR_RENDERER="pixman",
           WAYLAND_DISPLAY="wayland-0",
           GDK_BACKEND="wayland",
           GSETTINGS_BACKEND="memory",
@@ -374,7 +373,7 @@ import ./fixture.nix { inherit pkgs; } {
       env = dict(os.environ, XDG_RUNTIME_DIR=str(root / "runtime"),
                  XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"),
                  DBUS_SYSTEM_BUS_ADDRESS="unix:path=" + str(root / "no-system-bus"),
-                 WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1",
+                 WLR_BACKENDS="headless", WLR_HEADLESS_OUTPUTS="1",
                  GDK_BACKEND="wayland", GSETTINGS_BACKEND="memory")
       for name in ("DISPLAY", "WAYLAND_DISPLAY"):
           env.pop(name, None)

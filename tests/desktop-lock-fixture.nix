@@ -62,7 +62,7 @@ import ./fixture.nix { inherit pkgs; } {
           XDG_RUNTIME_DIR=str(root / "runtime"),
           XDG_CONFIG_HOME=str(root / "config-home"),
           XDG_CACHE_HOME=str(root / "cache"),
-          WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="2",
+          WLR_BACKENDS="headless", WLR_HEADLESS_OUTPUTS="2",
           WAYLAND_DEBUG="client",
           DBUS_SYSTEM_BUS_ADDRESS="unix:path=" + str(root / "no-system-bus"),
       )

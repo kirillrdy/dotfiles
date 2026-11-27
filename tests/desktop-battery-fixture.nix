@@ -40,7 +40,7 @@ import ./fixture.nix { inherit pkgs; } {
                  XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"), HOME=str(root / "home"),
                  DBUS_SYSTEM_BUS_ADDRESS=os.environ["DBUS_SESSION_BUS_ADDRESS"], G_DEBUG="fatal-criticals",
                  GSETTINGS_BACKEND="memory", GDK_BACKEND="wayland", NO_AT_BRIDGE="1", GTK_USE_PORTAL="0",
-                 GIO_USE_VFS="local", WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1")
+                 GIO_USE_VFS="local", WLR_BACKENDS="headless", WLR_HEADLESS_OUTPUTS="1")
       for key in ("DISPLAY", "WAYLAND_DISPLAY"):
           env.pop(key, None)
       context = GLib.MainContext.default()

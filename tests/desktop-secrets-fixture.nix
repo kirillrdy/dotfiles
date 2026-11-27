@@ -59,7 +59,7 @@ import ./fixture.nix { inherit pkgs; } {
           runtime = directory.parent / "runtime"
           runtime.mkdir(mode=0o700)
           os.environ.update(XDG_RUNTIME_DIR=str(runtime), GDK_BACKEND="wayland", WAYLAND_DISPLAY="wayland-0",
-              WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1",
+              WLR_BACKENDS="headless", WLR_HEADLESS_OUTPUTS="1",
               XDG_CACHE_HOME=str(directory.parent / "cache"), DESKTOP_SECRETS_FIXTURE_PROMPTS="accept")
           compositor = subprocess.Popen([args.compositor, "compositor-only"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
           for _ in range(150):

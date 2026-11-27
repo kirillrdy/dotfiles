@@ -146,7 +146,7 @@ fn copyZ(comptime N: usize, value: ?[*:0]const u8) [N:0]u8 {
     return out;
 }
 
-fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []const u8, wlr_renderer: ?[*:0]const u8) ?AuthResult {
+fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []const u8) ?AuthResult {
     const greeter_pw = libc.getpwnam("greeter") orelse {
         std.log.err("dm: user 'greeter' does not exist", .{});
         return null;
@@ -204,9 +204,6 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
             const saved_runtime = copyZ(128, runtime_dir_val orelse runtime_fallback.ptr);
             const saved_sid = copyZ(128, session_id_val);
             const saved_home = copyZ(256, greeter_home);
-            const saved_wlr = copyZ(64, wlr_renderer);
-            // The compositor choice reaches the greeter and session like the renderer.
-            const saved_compositor = copyZ(16, std.c.getenv("DESKTOP_COMPOSITOR"));
 
             _ = clearenv();
             _ = setenv("HOME", &saved_home, 1);
@@ -221,8 +218,6 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
             _ = setenv("XDG_SESSION_TYPE", "wayland", 1);
             _ = setenv("XCURSOR_THEME", "Adwaita", 1);
             _ = setenv("XCURSOR_SIZE", "24", 1);
-            if (saved_wlr[0] != 0) _ = setenv("WLR_RENDERER", &saved_wlr, 1);
-            if (saved_compositor[0] != 0) _ = setenv("DESKTOP_COMPOSITOR", &saved_compositor, 1);
 
             if (libc.initgroups("greeter", greeter_gid) != 0) libc._exit(1);
             if (libc.setgid(greeter_gid) != 0) libc._exit(1);
@@ -300,7 +295,7 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
     return auth_result;
 }
 
-fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8, wlr_renderer: ?[*:0]const u8) void {
+fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8) void {
     const username: [*:0]const u8 = &auth.username;
     const pw = libc.getpwnam(username) orelse {
         _ = pam.pam_end(auth.handle, pam.PAM_USER_UNKNOWN);
@@ -336,9 +331,6 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
 
             const saved_home = copyZ(256, home);
             const saved_shell = copyZ(256, shell);
-            const saved_wlr = copyZ(64, wlr_renderer);
-            // The compositor choice reaches the greeter and session like the renderer.
-            const saved_compositor = copyZ(16, std.c.getenv("DESKTOP_COMPOSITOR"));
 
             const pam_env = pam.pam_getenvlist(auth.handle);
             _ = clearenv();
@@ -370,8 +362,6 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
             const bus_addr = std.fmt.bufPrintSentinel(&bus_buf, "unix:path=/run/user/{d}/bus", .{uid}, 0) catch "";
             if (bus_addr.len > 0) _ = setenv("DBUS_SESSION_BUS_ADDRESS", bus_addr.ptr, 0);
             _ = setenv("PATH", "/run/wrappers/bin:/run/current-system/sw/bin", 0);
-            if (saved_wlr[0] != 0) _ = setenv("WLR_RENDERER", &saved_wlr, 1);
-            if (saved_compositor[0] != 0) _ = setenv("DESKTOP_COMPOSITOR", &saved_compositor, 1);
 
             if (libc.initgroups(username, gid) != 0) libc._exit(1);
             if (libc.setgid(gid) != 0) libc._exit(1);
@@ -383,7 +373,7 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
             const script =
                 \\set -e
                 \\[ -r /etc/profile ] && . /etc/profile
-                \\for v in XDG_SESSION_ID XDG_SEAT XDG_VTNR XDG_SESSION_TYPE XDG_SESSION_DESKTOP XDG_CURRENT_DESKTOP WLR_RENDERER DESKTOP_COMPOSITOR GI_TYPELIB_PATH GDK_PIXBUF_MODULE_FILE EDITOR NEOVIDE_FORK; do
+                \\for v in XDG_SESSION_ID XDG_SEAT XDG_VTNR XDG_SESSION_TYPE XDG_SESSION_DESKTOP XDG_CURRENT_DESKTOP GI_TYPELIB_PATH GDK_PIXBUF_MODULE_FILE EDITOR NEOVIDE_FORK; do
                 \\  eval "val=\${$v:-}"
                 \\  if [ -n "$val" ]; then systemctl --user import-environment "$v"; fi
                 \\done
@@ -420,12 +410,11 @@ pub fn run(a: std.mem.Allocator) !void {
     const vt_str = "1";
     const vt_num: c_int = 1;
     const tty_path: [:0]const u8 = "/dev/tty1";
-    const wlr_renderer = libc.getenv("WLR_RENDERER");
 
     while (dm_running.load(.acquire)) {
         activateVt(vt_num);
-        if (runGreeterRound(a, tty_path.ptr, vt_str, wlr_renderer)) |auth| {
-            runUserSession(auth, tty_path.ptr, vt_str, wlr_renderer);
+        if (runGreeterRound(a, tty_path.ptr, vt_str)) |auth| {
+            runUserSession(auth, tty_path.ptr, vt_str);
         } else if (dm_running.load(.acquire)) {
             sleepMs(500);
         }

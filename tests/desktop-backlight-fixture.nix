@@ -159,7 +159,6 @@ import ./fixture.nix { inherit pkgs; } {
           XDG_DATA_DIRS=env.get("XDG_DATA_DIRS", "/run/current-system/sw/share"),
           XDG_CACHE_HOME=str(root / "cache"),
           WLR_BACKENDS="headless",
-          WLR_RENDERER="pixman",
           WLR_HEADLESS_OUTPUTS="2",
           NO_AT_BRIDGE="1",
           GIO_USE_VFS="local",

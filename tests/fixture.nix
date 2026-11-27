@@ -24,8 +24,6 @@
 }:
 let
   inherit (pkgs) lib;
-  # Checks named *-native run the headless fixtures on the wlroots-free compositor.
-  nativeCompositor = pkgs.desktopNativeCompositor or false;
   desktop = import ../desktop-zig.nix { inherit pkgs; };
   pythonHelpers = pkgs.runCommand "test-python-helpers" { } ''
     mkdir -p "$out"
@@ -753,8 +751,7 @@ let
     mkdir -m 700 -p "$XDG_RUNTIME_DIR"
     # Absolute paths survive tests creating their own private runtime directories.
     export WAYLAND_DISPLAY="$XDG_RUNTIME_DIR/wayland-0" GDK_BACKEND=wayland
-    export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=1
-    ${lib.optionalString nativeCompositor "export DESKTOP_COMPOSITOR=native"}
+    export WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1
     ${desktop}/bin/desktop-zig compositor-only > "$TMPDIR/compositor.log" 2>&1 &
     fixture_compositor_pid=$!
     trap 'kill "$fixture_compositor_pid" 2>/dev/null || true' EXIT
@@ -795,10 +792,7 @@ let
     + body
   );
   setup =
-    lib.optionalString nativeCompositor ''
-      export DESKTOP_COMPOSITOR=native
-    ''
-    + lib.optionalString (pythonPkg != null) ''
+    lib.optionalString (pythonPkg != null) ''
       export PYTHONPATH=${pythonHelpers}
       export PYTHONDONTWRITEBYTECODE=1
     ''
@@ -866,7 +860,7 @@ if !vm then
     )
 else
   pkgs.testers.runNixOSTest {
-    name = if nativeCompositor then "${name}-native" else name;
+    inherit name;
     nodes.machine = {
       virtualisation.memorySize = 2048;
       virtualisation.cores = 2;

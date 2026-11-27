@@ -206,7 +206,7 @@ import ./fixture.nix { inherit pkgs; } {
       (root / "runtime").mkdir(mode=0o700)
       env.update(XDG_RUNTIME_DIR=str(root / "runtime"), GDK_BACKEND="wayland",
                  WAYLAND_DISPLAY=str(root / "runtime/wayland-0"), WLR_BACKENDS="headless",
-                 WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1")
+                 WLR_HEADLESS_OUTPUTS="1")
       env.pop("DISPLAY", None)
       compositor_log = open(root / "compositor.log", "w+")
       compositor = None

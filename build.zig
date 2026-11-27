@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    // Wayland clients use the native wire runtime; only the compositor links libwayland (server).
+    // Wayland clients and the compositor use the native wire runtime; nothing links libwayland.
     // PipeWire is spoken natively too: its headers only serve as test references.
     // Text is shaped, read and rasterized in Zig; HarfBuzz is only a test reference.
     desktop.linkSystemLibrary("pam", .{});
@@ -82,17 +82,11 @@ pub fn build(b: *std.Build) void {
     desktop.addImport("wayland-server-wire", wire_server);
     desktop.addImport("wayland-server", wayland_server);
     // The native compositor serves a keymap compiled at build time; it needs no xkbcommon at runtime.
-    // Physical keyboards use the default layout with Caps Lock off, as the wlroots compositor configured them.
+    // Physical keyboards use the default layout with Caps Lock off.
     const default_keymap = b.addSystemCommand(&.{ "xkbcli", "compile-keymap", "--layout", "us", "--options", "caps:none" });
     const default_keymap_files = b.addWriteFiles();
     _ = default_keymap_files.addCopyFile(default_keymap.captureStdOut(.{}), "us.xkb");
     desktop.addImport("default-keymap", b.createModule(.{ .root_source_file = default_keymap_files.add("default-keymap.zig", "pub const text = @embedFile(\"us.xkb\");\n") }));
-    // The compositor serves dotfiles_overview_v1 through libwayland-server's wl_interface metadata.
-    const server_command = b.addRunArtifact(wayland_generator);
-    server_command.addArg("--libwayland");
-    const server_source = server_command.addOutputFileArg("wayland-server-protocols.zig");
-    server_command.addFileArg(b.path("desktop-overview-v1.xml"));
-    desktop.addImport("wayland-server-protocols", b.createModule(.{ .root_source_file = server_source, .target = target, .optimize = optimize }));
     // Unicode case folding and normalization tables, generated from the UCD.
     const ucd = b.graph.environ_map.get("UNICODE_DATA_DIR") orelse "/usr/share/unicode";
     const unicode_generator = b.addExecutable(.{ .name = "unicode-tables", .root_module = b.createModule(.{ .root_source_file = b.path("tools/unicode-tables.zig"), .target = b.graph.host, .optimize = optimize }) });
@@ -117,22 +111,10 @@ pub fn build(b: *std.Build) void {
         options.addOption(?[]const u8, name, b.graph.environ_map.get(b.fmt("DESKTOP_RUNTIME_{s}", .{name})));
     }
     desktop.addOptions("options", options);
-    const compositor_headers = b.addWriteFiles();
-    const layer_header = b.addSystemCommand(&.{ "wayland-scanner", "server-header" });
-    const wlr_dir = b.graph.environ_map.get("WLR_PROTOCOLS_DIR") orelse "/usr/share/wlr-protocols";
-    layer_header.addFileArg(.{ .cwd_relative = b.fmt("{s}/unstable/wlr-layer-shell-unstable-v1.xml", .{wlr_dir}) });
-    _ = compositor_headers.addCopyFile(layer_header.addOutputFileArg("wlr-layer-shell-unstable-v1-protocol.h"), "wlr-layer-shell-unstable-v1-protocol.h");
-    const compositor = b.addTranslateC(.{ .root_source_file = b.path("desktop-compositor.h"), .target = target, .optimize = optimize });
-    compositor.addIncludePath(compositor_headers.getDirectory());
-    for ([_][]const u8{ "wlroots-0.20", "wayland-server", "xkbcommon", "libinput", "libdrm", "pixman-1" }) |name| {
-        compositor.linkSystemLibrary(name, .{});
-        desktop.linkSystemLibrary(name, .{});
-    }
-    // The native compositor reads input through libinput and hotplug through libudev.
-    desktop.linkSystemLibrary("libudev", .{});
+    // The compositor reads input through libinput and hotplug through libudev.
+    for ([_][]const u8{ "libinput", "libudev" }) |name| desktop.linkSystemLibrary(name, .{});
     // GPU compositing: GLES through EGL on GBM scanout buffers.
     for ([_][]const u8{ "egl", "glesv2", "gbm" }) |name| desktop.linkSystemLibrary(name, .{});
-    desktop.addImport("compositor-abi", compositor.createModule());
     const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = desktop });
     b.installArtifact(session);
     b.installDirectory(.{ .source_dir = b.path("desktop-icons"), .install_dir = .prefix, .install_subdir = "share/icons/hicolor/scalable/status" });

@@ -26,7 +26,6 @@
         {
           enableNvidia ? false,
           enableLightDesktop ? false,
-          enableNativeCompositor ? false,
         }:
         lib.nixosSystem {
           system = "x86_64-linux";
@@ -35,7 +34,6 @@
               hostName
               enableNvidia
               enableLightDesktop
-              enableNativeCompositor
               ;
           };
           modules = [ ./nixos.nix ];
@@ -107,8 +105,6 @@
         # Lenovo X1 gen13, lunarlake
         hagi = {
           enableLightDesktop = true;
-          # The wlroots-free compositor; it falls back to wlroots if it cannot start.
-          enableNativeCompositor = true;
         };
         # i7-13700K, raptorlake
         tsutenkaku = {

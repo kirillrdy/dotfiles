@@ -30,7 +30,7 @@ import ./fixture.nix { inherit pkgs; } {
       for key in ("DISPLAY", "WAYLAND_DISPLAY"):
           env.pop(key, None)
       env.update(XDG_RUNTIME_DIR=str(root / "runtime"), WLR_BACKENDS="headless",
-                 WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="2")
+                 WLR_HEADLESS_OUTPUTS="2")
 
 
       def run(command, check=True):

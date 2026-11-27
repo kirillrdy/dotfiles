@@ -44,7 +44,6 @@ import ./fixture.nix { inherit pkgs; } {
       parser.add_argument("--binary", required=True)
       parser.add_argument("--video-consumer", required=True)
       parser.add_argument("--pointer", required=True)
-      parser.add_argument("--renderer", choices=("pixman", "gles2"), default="pixman")
       args = parser.parse_args()
       root = Path(tempfile.mkdtemp(prefix="desktop-portal-capture-", dir="/tmp"))
       print(f"Artifacts: {root}", flush=True)
@@ -54,7 +53,7 @@ import ./fixture.nix { inherit pkgs; } {
       (root / "pipewire.conf").write_text(PW_CONFIG.replace("audio.convert.*", "video.convert.* = videoconvert/libspa-videoconvert audio.convert.*"))
       env = dict(os.environ, HOME=str(root / "home"), XDG_RUNTIME_DIR=str(root / "runtime"),
                  XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"),
-                 XDG_STATE_HOME=str(root / "state"), WLR_BACKENDS="headless", WLR_RENDERER=args.renderer, WLR_HEADLESS_OUTPUTS="1",
+                 XDG_STATE_HOME=str(root / "state"), WLR_BACKENDS="headless", WLR_HEADLESS_OUTPUTS="1",
                  NO_AT_BRIDGE="1", GTK_USE_PORTAL="0", GIO_USE_VFS="local",
                  GSETTINGS_BACKEND="memory", G_DEBUG="fatal-criticals", GDK_BACKEND="wayland", DESKTOP_PORTAL_FIXTURE_CAPTURE="1",
                  PIPEWIRE_REMOTE="pipewire-0")

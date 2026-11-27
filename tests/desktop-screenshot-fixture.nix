@@ -95,7 +95,6 @@ import ./fixture.nix { inherit pkgs; } {
           XDG_CONFIG_HOME=str(root / "config"),
           XDG_CACHE_HOME=str(root / "cache"),
           WLR_BACKENDS="headless",
-          WLR_RENDERER="pixman",
           WLR_HEADLESS_OUTPUTS="2",
           NO_AT_BRIDGE="1",
           GTK_USE_PORTAL="0",

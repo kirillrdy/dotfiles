@@ -68,7 +68,7 @@ import ./fixture.nix { inherit pkgs; } {
           XDG_CONFIG_HOME=str(root / "config-home"),
           XDG_CACHE_HOME=str(root / "cache"),
           GSETTINGS_BACKEND="memory", GDK_BACKEND="wayland",
-          WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="2",
+          WLR_BACKENDS="headless", WLR_HEADLESS_OUTPUTS="2",
           NO_AT_BRIDGE="1", GTK_USE_PORTAL="0",
           GIO_USE_VFS="local", WB_PANEL_DEMO="1", G_DEBUG="fatal-criticals",
           WAYLAND_DEBUG="client",
