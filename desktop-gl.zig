@@ -309,6 +309,7 @@ pub const Renderer = struct {
         errdefer _ = eglDestroyContext(display, context);
         // GL calls need a current context; surfaceless until a target is drawn.
         if (eglMakeCurrent(display, null, null, context) == 0) return error.NoContext;
+        errdefer _ = eglMakeCurrent(display, null, null, null);
         const program = try link();
         errdefer glDeleteProgram(program);
         const self = try allocator.create(Renderer);
@@ -446,14 +447,15 @@ pub const Renderer = struct {
         for (&self.transform, m) |*out, value| out.* = @floatCast(value);
         glViewport(0, 0, @intCast(target.width), @intCast(target.height));
         self.frame_clip = damage;
-        _ = self.scissor(null);
-        const channel = struct {
-            fn of(color: u32, shift: u5) f32 {
-                return @as(f32, @floatFromInt((color >> shift) & 0xff)) / 255.0;
-            }
-        };
-        glClearColor(channel.of(background, 16), channel.of(background, 8), channel.of(background, 0), 1);
-        glClear(gl.color_buffer_bit);
+        if (self.scissor(null)) {
+            const channel = struct {
+                fn of(color: u32, shift: u5) f32 {
+                    return @as(f32, @floatFromInt((color >> shift) & 0xff)) / 255.0;
+                }
+            };
+            glClearColor(channel.of(background, 16), channel.of(background, 8), channel.of(background, 0), 1);
+            glClear(gl.color_buffer_bit);
+        }
         glUseProgram(self.program);
         self.glUniformViewport();
         glEnable(gl.blend);
@@ -558,6 +560,7 @@ pub const Renderer = struct {
         for (formats[0..@intCast(count)]) |format| {
             var modifier_count: i32 = 0;
             _ = query_modifiers.?(self.display, format, 0, null, null, &modifier_count);
+            var usable = modifier_count == 0;
             if (modifier_count > 0) {
                 const modifiers = try allocator.alloc(u64, @intCast(modifier_count));
                 defer allocator.free(modifiers);
@@ -566,10 +569,13 @@ pub const Renderer = struct {
                 _ = query_modifiers.?(self.display, format, modifier_count, modifiers.ptr, external.ptr, &modifier_count);
                 for (modifiers[0..@intCast(modifier_count)], external[0..@intCast(modifier_count)]) |modifier, external_only| {
                     // External-only layouts cannot be sampled as GL_TEXTURE_2D.
-                    if (external_only == 0) try list.append(allocator, .{ .format = @bitCast(format), .modifier = modifier });
+                    if (external_only == 0) {
+                        usable = true;
+                        try list.append(allocator, .{ .format = @bitCast(format), .modifier = modifier });
+                    }
                 }
             }
-            try list.append(allocator, .{ .format = @bitCast(format), .modifier = modifier_invalid });
+            if (usable) try list.append(allocator, .{ .format = @bitCast(format), .modifier = modifier_invalid });
         }
         return list.toOwnedSlice(allocator);
     }

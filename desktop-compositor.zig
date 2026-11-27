@@ -215,7 +215,7 @@ const Surface = struct {
     /// wl_surface buffer transform, a wl_output.transform value.
     pending_transform: u32 = 0,
     transform: u32 = 0,
-    has_viewport: bool = false,
+    viewport: ?ws.wp_viewport = null,
     /// Damage collected for the next commit, in surface coordinates.
     pending_damage: ?Rect = null,
     fractional: ?ws.wp_fractional_scale_v1 = null,
@@ -545,6 +545,7 @@ const Surface = struct {
             self.pixels[0] = buffer.solid;
             self.width = 1;
             self.height = 1;
+            self.opaque_format = (buffer.solid >> 24) == 0xff;
             return;
         }
         const source = buffer.bytes() orelse {
@@ -590,6 +591,8 @@ const Surface = struct {
         for (comp.ime.texts.items) |text| if (text.entered == self) {
             text.entered = null;
         };
+        if (self.viewport) |viewport| viewport.setHandler(Compositor, comp, Compositor.inertViewportRequest, null);
+        if (self.fractional) |fractional| fractional.setHandler(Surface, self, null, null);
         // Feedback for a surface that goes away is discarded.
         var feedback = comp.presentations.items.len;
         while (feedback > 0) {
@@ -989,6 +992,9 @@ const XdgSurface = struct {
         if (self.toplevel) |toplevel| toplevel.xdg = null;
         if (self.popup) |popup| popup.xdg = null;
         if (self.surface) |surface| surface.xdg = null;
+        for (self.comp.popups.items) |popup| if (popup.parent == self) {
+            popup.parent = null;
+        };
         self.comp.a.destroy(self);
     }
 };
@@ -1232,7 +1238,7 @@ const Toplevel = struct {
 
     fn destroyed(self: *Toplevel, _: ws.xdg_toplevel) void {
         self.mapChanged(false);
-        for (self.comp.toplevels.items) |other| if (other.parent == self) {
+        for (self.comp.surfaces.items) |surface| if (surface.xdg) |xdg| if (xdg.toplevel) |other| if (other.parent == self) {
             other.parent = null;
         };
         if (self.xdg) |xdg| xdg.toplevel = null;
@@ -1404,6 +1410,7 @@ const Layer = struct {
         const vertical = cfg.anchor & (A.top | A.bottom) == A.top | A.bottom;
         if ((cfg.width == 0 and !horizontal) or (cfg.height == 0 and !vertical))
             return self.resource.postError(ws.zwlr_layer_surface_v1.Error.invalid_size, "zero size needs opposite anchors", .{});
+        const old_interactivity = self.current.interactivity;
         self.current = cfg;
         if (!self.initial_sent) {
             if (surface.mapped()) return self.resource.postError(ws.zwlr_layer_shell_v1.Error.already_constructed, "buffer attached before the first configure", .{});
@@ -1421,6 +1428,10 @@ const Layer = struct {
             // A layer that takes the keyboard gets it when it appears, as before.
             if (mapped and !self.comp.locked and self.current.interactivity != 0) self.comp.focused_layer = self;
             if (!mapped and self.comp.focused_layer == self) self.comp.focused_layer = null;
+            self.comp.updateKeyboardFocus();
+        } else if (mapped and old_interactivity != self.current.interactivity) {
+            if (self.current.interactivity == 0 and self.comp.focused_layer == self) self.comp.focused_layer = null;
+            if (self.current.interactivity != 0 and old_interactivity == 0 and !self.comp.locked) self.comp.focused_layer = self;
             self.comp.updateKeyboardFocus();
         }
     }
@@ -2816,7 +2827,10 @@ const CaptureFrame = struct {
             return resource.postError(ws.zwlr_screencopy_frame_v1.Error.invalid_buffer, "buffer does not match the frame", .{});
         // Show pending commits, as the next frame would.
         const output = self.output;
+        if (!output.enabled) return resource.sendFailed();
         output.capturePixels();
+        if (self.rect.x < 0 or self.rect.y < 0 or @as(usize, @intCast(self.rect.x)) + width > output.width or @as(usize, @intCast(self.rect.y)) + height > output.height or output.pixels.len < @as(usize, output.width) * output.height)
+            return resource.sendFailed();
         const size = buffer.offset + buffer.stride * height;
         const pool = buffer.pool orelse return resource.sendFailed();
         const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, pool.fd, 0) orelse return resource.sendFailed();
@@ -3089,12 +3103,22 @@ const OutputConfig = struct {
                     const base = size orelse if (head.output.display) |display| [2]u32{ display.width(), display.height() } else if (head.output.transform & 1 != 0) [2]u32{ head.output.height, head.output.width } else [2]u32{ head.output.width, head.output.height };
                     size = if (transform & 1 != 0) .{ base[1], base[0] } else base;
                 }
-                if (transform != head.output.transform) {
+                const transform_changed = transform != head.output.transform;
+                if (transform_changed) {
                     head.output.transform = transform;
                     // The cursor plane is not turned; rotated displays draw the cursor into frames.
                     if (comp.drm) |backend| backend.updateCursorHardware();
                 }
+                const prev_scale = head.output.scale;
+                const prev_w = head.output.width;
+                const prev_h = head.output.height;
+                const prev_x = head.output.x;
+                const prev_y = head.output.y;
                 head.output.configure(head.scale orelse head.output.scale, size, head.position);
+                if (transform_changed and head.output.scale == prev_scale and head.output.width == prev_w and head.output.height == prev_h and head.output.x == prev_x and head.output.y == prev_y) {
+                    head.output.announce();
+                    head.output.scheduleRepaint();
+                }
             }
             comp.outputChanged();
         }
@@ -3699,6 +3723,7 @@ const InputMethod = struct {
                 ime.placePopups();
             },
             .grab_keyboard => |args| {
+                if (self.grab) |old| old.setHandler(InputMethod, self, null, null);
                 const grab = args.keyboard;
                 grab.setHandler(InputMethod, self, null, grabGone);
                 self.grab = grab;
@@ -4433,7 +4458,6 @@ const Compositor = struct {
     /// Focuses the most recently used window on the active workspace.
     fn refocus(self: *Compositor) void {
         for (self.recent.items) |toplevel| if (toplevel.mapped and toplevel.workspace == self.workspace) {
-            self.focused = null;
             return self.focus(toplevel);
         };
         self.focus(null);
@@ -4732,18 +4756,14 @@ const Compositor = struct {
             box.x += dx;
             box.y += dy;
         } else {
-            if (grab.edges & Edge.left != 0) {
-                box.x += dx;
-                box.width -= dx;
-            }
+            if (grab.edges & Edge.left != 0) box.width -= dx;
             if (grab.edges & Edge.right != 0) box.width += dx;
-            if (grab.edges & Edge.top != 0) {
-                box.y += dy;
-                box.height -= dy;
-            }
+            if (grab.edges & Edge.top != 0) box.height -= dy;
             if (grab.edges & Edge.bottom != 0) box.height += dy;
             box.width = @max(toplevel.min_size[0], @max(64, box.width));
             box.height = @max(toplevel.min_size[1], @max(48, box.height));
+            if (grab.edges & Edge.left != 0) box.x = grab.box.x + (grab.box.width - box.width);
+            if (grab.edges & Edge.top != 0) box.y = grab.box.y + (grab.box.height - box.height);
         }
         toplevel.floating = box;
         toplevel.reconfigure(false);
@@ -5188,6 +5208,12 @@ const Compositor = struct {
                 self.cycle_origin = null;
                 self.cycle_selected = null;
                 self.super_alone = false;
+                self.grab = null;
+                if (self.drag) |drag| {
+                    self.dragLeave();
+                    if (drag.source) |source| source.cancel();
+                    self.endDrag();
+                }
                 self.dismissPopups();
                 if (self.show_ui) @import("desktop-switcher.zig").publish(self.a, .{});
                 self.seat.focusSurface(null);
@@ -5503,6 +5529,7 @@ const Compositor = struct {
         const drag = &(self.drag orelse return);
         if (drag.icon == surface) drag.icon = null;
         if (drag.focus == surface) {
+            if (drag.offer) |offer| offer.drag = false;
             drag.focus = null;
             drag.offer = null;
         }
@@ -5814,10 +5841,17 @@ const Compositor = struct {
             .destroy => {},
             .get_viewport => |args| {
                 const surface = args.surface.data(Surface) orelse return;
-                if (surface.has_viewport) return resource.postError(ws.wp_viewporter.Error.viewport_exists, "surface already has a viewport", .{});
-                surface.has_viewport = true;
+                if (surface.viewport != null) return resource.postError(ws.wp_viewporter.Error.viewport_exists, "surface already has a viewport", .{});
+                surface.viewport = args.id;
                 args.id.setHandler(Surface, surface, viewportRequest, viewportGone);
             },
+        }
+    }
+
+    fn inertViewportRequest(_: *Compositor, resource: ws.wp_viewport, request: ws.wp_viewport.Request) void {
+        switch (request) {
+            .destroy => {},
+            .set_source, .set_destination => resource.postError(ws.wp_viewport.Error.no_surface, "the wl_surface was destroyed", .{}),
         }
     }
 
@@ -5842,7 +5876,7 @@ const Compositor = struct {
     }
 
     fn viewportGone(surface: *Surface, _: ws.wp_viewport) void {
-        surface.has_viewport = false;
+        surface.viewport = null;
         surface.pending_destination = null;
         surface.pending_source = null;
     }
@@ -6034,6 +6068,14 @@ const Compositor = struct {
                     session.stop();
                 }
             }
+            var feedback = self.presentations.items.len;
+            while (feedback > 0) {
+                feedback -= 1;
+                const entry = self.presentations.items[feedback];
+                if (entry.in_frame != output) continue;
+                _ = self.presentations.swapRemove(feedback);
+                entry.resource.sendDiscarded();
+            }
             for (self.layers.items) |layer| if (layer.output == output) layer.close();
             for (self.surfaces.items) |surface| if (surface.entered == output) {
                 surface.entered = null;
@@ -6043,12 +6085,14 @@ const Compositor = struct {
                 toplevel.output = self.primary();
                 if (toplevel.output) |other| if (toplevel.xdg) |xdg| if (xdg.surface) |surface| other.enter(surface);
             };
+            if (self.drm) |backend| backend.updateCursorHardware();
             self.seat.clampPointer();
             self.updateKeyboardFocus();
             self.arrange();
             return;
         }
         output.global = self.server.createGlobal(&ws.wl_output.interface, 4, output, &Output.bind) catch null;
+        if (self.drm) |backend| backend.updateCursorHardware();
         self.seat.clampPointer();
         self.arrange();
         output.scheduleRepaint();
@@ -6278,6 +6322,10 @@ const DmabufParams = struct {
             .create => |args| {
                 const image = self.import(resource, args.width, args.height, args.format) orelse return resource.sendFailed();
                 const buffer_resource = resource.sendCreated();
+                if (!buffer_resource.alive()) {
+                    if (self.comp.drm) |backend| if (backend.renderer) |renderer| renderer.destroyImage(image);
+                    return;
+                }
                 self.wrap(buffer_resource, image, args.width, args.height, args.format);
             },
             .create_immed => |args| {
@@ -6637,9 +6685,12 @@ const Drm = struct {
         switch (seat.cursor_mode) {
             .hidden => self.card.setCursor(null, 0, .{ 0, 0 }),
             .surface => if (seat.cursor) |surface| {
-                if (!surface.mapped() or !surface.cpuReady()) return self.card.setCursor(null, 0, .{ 0, 0 });
-                const scale = @max(1, surface.scale);
-                self.card.setCursor(surface.pixels, surface.width, .{ seat.cursor_hotspot[0] * scale, seat.cursor_hotspot[1] * scale });
+                if (!surface.mapped() or !surface.cpuReady()) {
+                    self.card.setCursor(null, 0, .{ 0, 0 });
+                } else {
+                    const scale = @max(1, surface.scale);
+                    self.card.setCursor(surface.pixels, surface.width, .{ seat.cursor_hotspot[0] * scale, seat.cursor_hotspot[1] * scale });
+                }
             } else self.card.setCursor(null, 0, .{ 0, 0 }),
             .default => {
                 // XCURSOR_SIZE logical pixels at the scale of the output under the pointer.
@@ -7402,8 +7453,8 @@ pub const Handle = struct {
             const output = comp.outputs.items[0];
             const before = output.frames;
             server.dispatch(-1);
-            // Tests read frames back; displays do not need a copy of each.
-            if (output.frames != before and comp.drm == null) self.publish(output);
+            // Headless tests read frames back; displays and nested windows do not need a copy of each.
+            if (output.frames != before and comp.drm == null and comp.nested == null) self.publish(output);
             if (comp.nested) |nested| nested.flush();
             if (comp.drm) |display_backend| display_backend.idle();
         }
@@ -8696,4 +8747,119 @@ test "native compositor keeps physical wl_output mode size when rotated" {
     try std.testing.expectEqual(@as(i32, 720), state.mode_h);
     head_cfg.destroy();
     config.destroy();
+
+    // 180-degree rotation keeps the same dimensions and must still announce the new transform.
+    state.succeeded = false;
+    const config180 = state.manager.?.create_configuration(state.serial);
+    config180.listen(State, &state, State.configEvent);
+    const head180 = config180.enable_head(state.head.?);
+    head180.set_transform(2);
+    config180.apply();
+    try connection.roundtrip();
+    try std.testing.expect(state.succeeded);
+    try std.testing.expectEqual(@as(i32, 2), state.transform);
+    head180.destroy();
+    config180.destroy();
+}
+
+test "native compositor frees presentation feedback and handles out-of-order surface destruction" {
+    const client_wire = @import("wayland-wire");
+    const wl = @import("wayland-client");
+    const a = std.testing.allocator;
+    var runtime: [64]u8 = undefined;
+    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-lifetime-{d}", .{libc.getpid()}, 0);
+    _ = libc.mkdir(directory, 0o700);
+    defer _ = libc.rmdir(directory);
+    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
+    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
+    defer if (previous_runtime) |value| {
+        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
+    };
+    const handle = try Handle.startWith(a, .headless, .headless);
+    defer handle.stop();
+    const connection = try client_wire.Connection.connect(a);
+    defer connection.deinit();
+
+    const State = struct {
+        compositor: ?wl.wl_compositor = null,
+        shm: ?wl.wl_shm = null,
+        wm: ?wl.xdg_wm_base = null,
+        viewporter: ?wl.wp_viewporter = null,
+        fractional: ?wl.wp_fractional_scale_manager_v1 = null,
+        presentation: ?wl.wp_presentation = null,
+        configured: bool = false,
+        presented: usize = 0,
+        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+            switch (event) {
+                .global => |g| {
+                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 4);
+                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
+                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm = registry.bind(g.name, wl.xdg_wm_base, 2);
+                    if (std.mem.eql(u8, g.interface, "wp_viewporter")) self.viewporter = registry.bind(g.name, wl.wp_viewporter, 1);
+                    if (std.mem.eql(u8, g.interface, "wp_fractional_scale_manager_v1")) self.fractional = registry.bind(g.name, wl.wp_fractional_scale_manager_v1, 1);
+                    if (std.mem.eql(u8, g.interface, "wp_presentation")) self.presentation = registry.bind(g.name, wl.wp_presentation, 1);
+                },
+                .global_remove => {},
+            }
+        }
+        fn xdgEvent(self: *@This(), surface: wl.xdg_surface, event: wl.xdg_surface.Event) void {
+            if (event == .configure) {
+                surface.ack_configure(event.configure.serial);
+                self.configured = true;
+            }
+        }
+        fn feedbackEvent(self: *@This(), _: wl.wp_presentation_feedback, event: wl.wp_presentation_feedback.Event) void {
+            if (event == .presented) self.presented += 1;
+        }
+    };
+    var state: State = .{};
+    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
+    registry.listen(State, &state, State.global);
+    try connection.roundtrip();
+
+    // Destroy wl_surface before its wp_viewport and wp_fractional_scale_v1.
+    const doomed = state.compositor.?.create_surface();
+    const vp = state.viewporter.?.get_viewport(doomed);
+    const fs = state.fractional.?.get_fractional_scale(doomed);
+    doomed.destroy();
+    try connection.roundtrip();
+    vp.destroy();
+    fs.destroy();
+    try connection.roundtrip();
+
+    // Map a toplevel and submit presentation feedback across multiple commits.
+    const fd = std.c.memfd_create("desktop-pres-test", 0);
+    defer _ = std.c.close(fd);
+    const size: usize = 32 * 32 * 4;
+    try std.testing.expectEqual(@as(c_int, 0), libc.ftruncate(fd, size));
+    const pool = state.shm.?.create_pool(fd, size);
+    const buf = pool.create_buffer(0, 32, 32, 32 * 4, 0);
+    const surface = state.compositor.?.create_surface();
+    const xdg = state.wm.?.get_xdg_surface(surface);
+    xdg.listen(State, &state, State.xdgEvent);
+    const toplevel = xdg.get_toplevel();
+    surface.commit();
+    try connection.roundtrip();
+    try std.testing.expect(state.configured);
+    for (0..3) |_| {
+        const fb = state.presentation.?.feedback(surface);
+        fb.listen(State, &state, State.feedbackEvent);
+        surface.attach(buf, 0, 0);
+        surface.damage_buffer(0, 0, 32, 32);
+        surface.commit();
+        try connection.roundtrip();
+    }
+    const deadline = util.monotonicTime() + 500_000;
+    while (state.presented == 0 and util.monotonicTime() < deadline) {
+        var ts: std.c.timespec = .{ .sec = 0, .nsec = 5_000_000 };
+        _ = std.c.nanosleep(&ts, null);
+        try connection.roundtrip();
+    }
+    try std.testing.expect(state.presented >= 1);
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    buf.destroy();
+    pool.destroy();
+    try connection.roundtrip();
 }

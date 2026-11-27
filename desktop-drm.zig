@@ -440,13 +440,25 @@ pub const Display = struct {
             .prop_values_ptr = @intFromPtr(&values),
             .user_data = @intFromPtr(self),
         };
+        var used_cursor = with_cursor;
         if (!call(self.card.fd, ioctl.atomic, &request)) {
-            self.modeset = false;
-            return .failed;
+            if (with_cursor) {
+                // Retry the primary flip alone if the cursor plane rejected the commit.
+                used_cursor = false;
+                self.cursor_dirty = false;
+                request.count_objs = 1;
+                if (!call(self.card.fd, ioctl.atomic, &request)) {
+                    self.modeset = false;
+                    return .failed;
+                }
+            } else {
+                self.modeset = false;
+                return .failed;
+            }
         }
         self.flipping = true;
         self.cursor_commit = false;
-        if (with_cursor) {
+        if (used_cursor) {
             self.cursor_dirty = false;
             self.cursor_shown = want_visible;
             self.cursor_committed_fb = want_fb;
@@ -496,7 +508,10 @@ pub const Display = struct {
             .prop_values_ptr = @intFromPtr(&values),
             .user_data = @intFromPtr(self),
         };
-        if (!call(self.card.fd, ioctl.atomic, &request)) return;
+        if (!call(self.card.fd, ioctl.atomic, &request)) {
+            self.cursor_dirty = false;
+            return;
+        }
         self.flipping = true;
         self.cursor_commit = true;
         self.cursor_dirty = false;
@@ -518,6 +533,7 @@ pub const Display = struct {
     }
 
     fn flipped(self: *Display, event: *const VblankEvent) void {
+        if (!self.flipping) return;
         self.flip_time = .{ event.tv_sec, event.tv_usec };
         self.flip_sequence = event.sequence;
         self.flipping = false;
@@ -615,11 +631,22 @@ pub const Card = struct {
         defer a.free(encoders);
         resources = .{ .crtc_id_ptr = @intFromPtr(crtcs.ptr), .connector_id_ptr = @intFromPtr(connectors.ptr), .encoder_id_ptr = @intFromPtr(encoders.ptr), .count_crtcs = @intCast(crtcs.len), .count_connectors = @intCast(connectors.len), .count_encoders = @intCast(encoders.len) };
         if (!call(self.fd, ioctl.get_resources, &resources)) return error.DrmFailed;
-        for (connectors[0..@min(connectors.len, resources.count_connectors)]) |connector_id| {
+        const present = connectors[0..@min(connectors.len, resources.count_connectors)];
+        // Remove displays whose dynamic connector (e.g. DP MST) vanished from resources.
+        var existing = self.displays.items.len;
+        while (existing > 0) {
+            existing -= 1;
+            const display = self.displays.items[existing];
+            if (std.mem.indexOfScalar(u32, present, display.connector) == null) self.remove(display);
+        }
+        for (present) |connector_id| {
             const known = for (self.displays.items) |display| {
                 if (display.connector == connector_id) break display;
             } else null;
-            const info = self.connector(connector_id) orelse continue;
+            const info = self.connector(connector_id) orelse {
+                if (known) |display| self.remove(display);
+                continue;
+            };
             defer info.deinit(a);
             if (info.header.connection != connected or info.modes.len == 0) {
                 // A display that was unplugged.
@@ -636,11 +663,14 @@ pub const Card = struct {
             const planes = self.findPlanes(crtc.index);
             const display = try a.create(Display);
             errdefer a.destroy(display);
-            display.* = .{ .card = self, .connector = connector_id, .crtc = crtc.id, .primary_plane = planes.primary, .cursor_plane = planes.cursor, .mode = mode, .mm_width = info.header.mm_width, .mm_height = info.header.mm_height, .modes = try a.dupe(ModeInfo, info.modes) };
+            const modes = try a.dupe(ModeInfo, info.modes);
+            errdefer a.free(modes);
+            display.* = .{ .card = self, .connector = connector_id, .crtc = crtc.id, .primary_plane = planes.primary, .cursor_plane = planes.cursor, .mode = mode, .mm_width = info.header.mm_width, .mm_height = info.header.mm_height, .modes = modes };
             display.name_len = connectorName(&display.name_buffer, info.header.connector_type, info.header.connector_type_id).len;
             if (self.findProperty(connector_id, object_connector, "vrr_capable")) |property| display.vrr_capable = property.value != 0;
             if (self.findProperty(crtc.id, object_crtc, "VRR_ENABLED")) |property| display.vrr_enabled = property.value != 0;
             try self.displays.append(a, display);
+            errdefer _ = self.displays.pop();
             try added.append(a, display);
         }
     }
@@ -758,7 +788,7 @@ pub const Card = struct {
         var ids: [64]u32 = undefined;
         var values: [64]u64 = undefined;
         var request: ObjectProperties = .{ .props_ptr = @intFromPtr(&ids), .prop_values_ptr = @intFromPtr(&values), .count_props = ids.len, .obj_id = object, .obj_type = kind };
-        if (!call(self.fd, ioctl.object_properties, &request)) return null;
+        if (!call(self.fd, ioctl.object_properties, &request) or request.count_props > ids.len) return null;
         for (ids[0..@min(request.count_props, ids.len)], values[0..@min(request.count_props, ids.len)]) |id, value| {
             var property: Property = .{ .prop_id = id };
             if (!call(self.fd, ioctl.get_property, &property)) continue;

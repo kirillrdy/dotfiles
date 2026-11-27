@@ -41,7 +41,7 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, size: u32) !Image
         }
     }
     if (best == null) return error.NoCursorImage;
-    const chunk = best_position;
+    const chunk: usize = best_position;
     // Chunk header: size, type, subtype, version, then width, height, hotspot, delay.
     if ((read(bytes, chunk + 4) orelse return error.InvalidCursor) != image_type) return error.InvalidCursor;
     const width = read(bytes, chunk + 16) orelse return error.InvalidCursor;
@@ -49,7 +49,7 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, size: u32) !Image
     const xhot = read(bytes, chunk + 24) orelse return error.InvalidCursor;
     const yhot = read(bytes, chunk + 28) orelse return error.InvalidCursor;
     if (width == 0 or height == 0 or width > 0x7fff or height > 0x7fff or xhot > width or yhot > height) return error.InvalidCursor;
-    const start = @as(usize, chunk) + 36;
+    const start = chunk + 36;
     const length = @as(usize, width) * height;
     if (start + length * 4 > bytes.len) return error.InvalidCursor;
     const pixels = try allocator.alloc(u32, length);
@@ -146,7 +146,10 @@ fn readFile(allocator: std.mem.Allocator, path: [*:0]const u8) ?[]u8 {
             return null;
         }
     }
-    return list.toOwnedSlice(allocator) catch null;
+    return list.toOwnedSlice(allocator) catch {
+        list.deinit(allocator);
+        return null;
+    };
 }
 
 fn testFile(allocator: std.mem.Allocator, sizes: []const u32) ![]u8 {

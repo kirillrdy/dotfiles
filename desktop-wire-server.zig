@@ -135,6 +135,8 @@ pub const Request = struct {
 
     /// Decodes a request payload struct according to the request's signature.
     pub fn decode(self: *Request, comptime S: type, comptime signature: []const u8) Error!S {
+        const start_taken = self.taken;
+        errdefer self.taken = start_taken;
         var result: S = undefined;
         const info = @typeInfo(S).@"struct";
         var at: usize = 0;
@@ -343,7 +345,11 @@ pub const Client = struct {
     fn destroyObject(self: *Client, id: u32, notify: bool) void {
         const value = self.object(id) orelse return;
         const generation = value.generation;
-        if (value.destructor) |destructor| destructor(value.data, .{ .client = self, .id = id });
+        const destructor = value.destructor;
+        const data = value.data;
+        value.destructor = null;
+        value.handler = null;
+        if (destructor) |cb| cb(data, .{ .client = self, .id = id });
         // The destructor may have destroyed the object itself.
         const current = self.object(id) orelse return;
         if (current.generation != generation) return;
@@ -438,10 +444,12 @@ pub const Client = struct {
     /// Writes queued events; returns false when the socket would block.
     fn flush(self: *Client) bool {
         while (self.out.items.len > 0) {
-            var iov = [_]std.posix.iovec_const{.{ .base = self.out.items.ptr, .len = self.out.items.len }};
+            const fd_count = @min(self.out_fds.items.len, max_fds);
+            // Keep at least one byte queued when more than max_fds descriptors are pending so remaining FDs can still be carried.
+            const byte_len = if (self.out_fds.items.len > max_fds and self.out.items.len > 1) 1 else self.out.items.len;
+            var iov = [_]std.posix.iovec_const{.{ .base = self.out.items.ptr, .len = byte_len }};
             var control: [wire.cmsgSpace(max_fds)]u8 align(8) = @splat(0);
             var header: std.c.msghdr_const = .{ .name = null, .namelen = 0, .iov = &iov, .iovlen = 1, .control = null, .controllen = 0, .flags = 0 };
-            const fd_count = @min(self.out_fds.items.len, max_fds);
             if (fd_count > 0) {
                 wire.writeCmsg(&control, self.out_fds.items[0..fd_count]);
                 header.control = &control;
@@ -491,6 +499,13 @@ pub const Client = struct {
                 var at = offset + 16;
                 while (at + 4 <= offset + len) : (at += 4) {
                     const fd = std.mem.readInt(i32, control[at..][0..4], .little);
+                    if (self.in_fds.items.len >= 1024) {
+                        var rest = at;
+                        while (rest + 4 <= offset + len) : (rest += 4) {
+                            _ = std.c.close(std.mem.readInt(i32, control[rest..][0..4], .little));
+                        }
+                        return error.Protocol;
+                    }
                     self.in_fds.append(self.server.allocator, fd) catch {
                         // Close this fd and any remaining fds in the control message.
                         var rest = at;
@@ -510,16 +525,21 @@ pub const Client = struct {
     }
 
     fn dispatchPending(self: *Client) void {
-        while (!self.closing and self.in_len >= 8) {
-            const id = std.mem.readInt(u32, self.in[0..4], .little);
-            const word = std.mem.readInt(u32, self.in[4..8], .little);
+        var offset: usize = 0;
+        defer if (offset > 0) {
+            const remaining = self.in_len - offset;
+            if (remaining > 0) std.mem.copyForwards(u8, self.in[0..remaining], self.in[offset..self.in_len]);
+            self.in_len = remaining;
+        };
+        while (!self.closing and self.in_len - offset >= 8) {
+            const id = std.mem.readInt(u32, self.in[offset..][0..4], .little);
+            const word = std.mem.readInt(u32, self.in[offset + 4 ..][0..4], .little);
             const size: usize = word >> 16;
             if (size < 8 or size > max_message or size % 4 != 0) return self.fail(error.Protocol);
-            if (self.in_len < size) break;
+            if (self.in_len - offset < size) break;
             var message: [max_message]u8 = undefined;
-            @memcpy(message[0..size], self.in[0..size]);
-            std.mem.copyForwards(u8, self.in[0 .. self.in_len - size], self.in[size..self.in_len]);
-            self.in_len -= size;
+            @memcpy(message[0..size], self.in[offset..][0..size]);
+            offset += size;
             self.deliver(id, @intCast(word & 0xffff), message[8..size]);
         }
     }
@@ -891,7 +911,6 @@ pub const Server = struct {
     fn clientReady(data: ?*anyopaque, events: u32) void {
         const client: *Client = @ptrCast(@alignCast(data));
         if (events & linux.EPOLL.OUT != 0) {
-            client.writable_wait = false;
             client.server.dirty = true;
         }
         if (events & linux.EPOLL.IN != 0) {
@@ -926,23 +945,26 @@ pub const Server = struct {
 
     /// Sends queued events and closes clients that failed or were told to close.
     pub fn flushClients(self: *Server) void {
-        self.dirty = false;
-        var index: usize = 0;
-        while (index < self.clients.items.len) {
-            const client = self.clients.items[index];
-            const done = client.flush();
-            if (!done and !client.writable_wait) {
-                client.writable_wait = true;
-                if (self.sourceFor(client)) |source| self.loop.modify(source, linux.EPOLL.IN | linux.EPOLL.OUT | linux.EPOLL.RDHUP);
-            } else if (done and client.writable_wait) {
-                client.writable_wait = false;
-                if (self.sourceFor(client)) |source| self.loop.modify(source, linux.EPOLL.IN | linux.EPOLL.RDHUP);
+        while (true) {
+            self.dirty = false;
+            var index: usize = 0;
+            while (index < self.clients.items.len) {
+                const client = self.clients.items[index];
+                const done = client.flush();
+                if (!done and !client.writable_wait) {
+                    client.writable_wait = true;
+                    if (self.sourceFor(client)) |source| self.loop.modify(source, linux.EPOLL.IN | linux.EPOLL.OUT | linux.EPOLL.RDHUP);
+                } else if (done and client.writable_wait) {
+                    client.writable_wait = false;
+                    if (self.sourceFor(client)) |source| self.loop.modify(source, linux.EPOLL.IN | linux.EPOLL.RDHUP);
+                }
+                if (client.closing and (done or client.failure != null)) {
+                    self.disconnect(client);
+                    continue;
+                }
+                index += 1;
             }
-            if (client.closing and (done or client.failure != null)) {
-                self.disconnect(client);
-                continue;
-            }
-            index += 1;
+            if (!self.dirty) break;
         }
     }
 
@@ -1134,6 +1156,42 @@ test "server runtime binds globals, dispatches typed requests and recycles destr
     _ = std.c.write(fds[1], &request, len);
     server.dispatch(100);
     try std.testing.expectEqual(@as(usize, 0), server.clients.items.len);
+}
+
+test "server disarms EPOLL.OUT once a blocked client drains" {
+    const a = std.testing.allocator;
+    const server = try Server.create(a);
+    defer server.destroy();
+    var fds: [2]Fd = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), socketpair(1, 1 | 0o4000 | 0o2000000, 0, &fds));
+    defer _ = std.c.close(fds[1]);
+    const client = try server.addClient(fds[0]);
+    const display: Resource = .{ .client = client, .id = 1 };
+
+    // Fill the peer socket buffer until flush() hits EAGAIN and arms EPOLL.OUT.
+    var queued: usize = 0;
+    while (!client.writable_wait and queued < 8192) : (queued += 1) {
+        _ = display.send(1, display_interface.events[1], null, .{@as(u32, 999)});
+        server.flushClients();
+    }
+    try std.testing.expect(client.writable_wait);
+
+    // Drain the peer socket; the next dispatch must flush remaining bytes and clear writable_wait.
+    var sink: [4096]u8 = undefined;
+    while (std.c.read(fds[1], &sink, sink.len) > 0) {}
+    server.dispatch(100);
+    while (std.c.read(fds[1], &sink, sink.len) > 0) {}
+    server.dispatch(100);
+    try std.testing.expect(!client.writable_wait);
+
+    // With EPOLL.OUT disarmed and no traffic, iterate(20) must wait instead of spinning immediately.
+    var t0: std.c.timespec = undefined;
+    var t1: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &t0);
+    server.loop.iterate(20);
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &t1);
+    const elapsed_ms = (@as(i64, t1.sec) - t0.sec) * 1000 + @divTrunc(@as(i64, t1.nsec) - t0.nsec, 1_000_000);
+    try std.testing.expect(elapsed_ms >= 15);
 }
 
 extern "c" fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *[2]Fd) c_int;
