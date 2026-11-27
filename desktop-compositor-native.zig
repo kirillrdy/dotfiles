@@ -616,11 +616,45 @@ const Positioner = struct {
         return .{ .x = left + self.offset_x, .y = top + self.offset_y, .width = self.width, .height = self.height };
     }
 
-    /// Slides the popup into `bounds` (parent-relative) where the client allows it.
+    /// The positioner mirrored horizontally or vertically, for flipping.
+    fn flipped(self: Positioner, horizontal: bool) Positioner {
+        var result = self;
+        // Anchor and gravity share values: 1 top, 2 bottom, 3 left, 4 right,
+        // 5 top-left, 6 bottom-left, 7 top-right, 8 bottom-right.
+        const swap_x = [_]u32{ 0, 1, 2, 4, 3, 7, 8, 5, 6 };
+        const swap_y = [_]u32{ 0, 2, 1, 3, 4, 6, 5, 8, 7 };
+        const table = if (horizontal) swap_x else swap_y;
+        if (self.anchor < table.len) result.anchor = table[self.anchor];
+        if (self.gravity < table.len) result.gravity = table[self.gravity];
+        if (horizontal) result.offset_x = -self.offset_x else result.offset_y = -self.offset_y;
+        return result;
+    }
+
+    /// Fits the popup into `bounds` (parent-relative) as the client allows:
+    /// flipping, then sliding, then resizing, along each axis.
     fn constrain(self: Positioner, placed: Rect, bounds: Rect) Rect {
         var result = placed;
-        const slide_x = self.adjustment & ws.xdg_positioner.ConstraintAdjustment.slide_x != 0;
-        const slide_y = self.adjustment & ws.xdg_positioner.ConstraintAdjustment.slide_y != 0;
+        const CA = ws.xdg_positioner.ConstraintAdjustment;
+        const fits_x = struct {
+            fn check(r: Rect, b: Rect) bool {
+                return r.x >= b.x and r.x + r.width <= b.x + b.width;
+            }
+        }.check;
+        const fits_y = struct {
+            fn check(r: Rect, b: Rect) bool {
+                return r.y >= b.y and r.y + r.height <= b.y + b.height;
+            }
+        }.check;
+        if (!fits_x(result, bounds) and self.adjustment & CA.flip_x != 0) {
+            const candidate = self.flipped(true).place();
+            if (fits_x(candidate, bounds)) result.x = candidate.x;
+        }
+        if (!fits_y(result, bounds) and self.adjustment & CA.flip_y != 0) {
+            const candidate = self.flipped(false).place();
+            if (fits_y(candidate, bounds)) result.y = candidate.y;
+        }
+        const slide_x = self.adjustment & CA.slide_x != 0;
+        const slide_y = self.adjustment & CA.slide_y != 0;
         if (slide_x) {
             if (result.x + result.width > bounds.x + bounds.width) result.x = bounds.x + bounds.width - result.width;
             if (result.x < bounds.x) result.x = bounds.x;
@@ -628,6 +662,22 @@ const Positioner = struct {
         if (slide_y) {
             if (result.y + result.height > bounds.y + bounds.height) result.y = bounds.y + bounds.height - result.height;
             if (result.y < bounds.y) result.y = bounds.y;
+        }
+        if (self.adjustment & CA.resize_x != 0) {
+            const left = @max(result.x, bounds.x);
+            const right = @min(result.x + result.width, bounds.x + bounds.width);
+            if (right > left) {
+                result.x = left;
+                result.width = right - left;
+            }
+        }
+        if (self.adjustment & CA.resize_y != 0) {
+            const top = @max(result.y, bounds.y);
+            const bottom = @min(result.y + result.height, bounds.y + bounds.height);
+            if (bottom > top) {
+                result.y = top;
+                result.height = bottom - top;
+            }
         }
         return result;
     }
@@ -696,7 +746,13 @@ const XdgSurface = struct {
             return;
         }
         if (self.toplevel) |toplevel| toplevel.mapChanged(surface.mapped() and self.acked);
-        if (self.popup) |popup| popup.mapped = surface.mapped() and self.acked;
+        if (self.popup) |popup| {
+            const mapped = surface.mapped() and self.acked;
+            if (mapped != popup.mapped) {
+                popup.mapped = mapped;
+                if (popup.grabbed) self.comp.updateKeyboardFocus();
+            }
+        }
     }
 
     /// Window geometry, defaulting to the surface's own size.
@@ -708,7 +764,10 @@ const XdgSurface = struct {
 
     fn surfaceGone(self: *XdgSurface) void {
         if (self.toplevel) |toplevel| toplevel.mapChanged(false);
-        if (self.popup) |popup| popup.mapped = false;
+        if (self.popup) |popup| {
+            popup.mapped = false;
+            if (popup.grabbed) self.comp.updateKeyboardFocus();
+        }
         self.surface = null;
     }
 
@@ -967,10 +1026,13 @@ const Popup = struct {
     layer_parent: ?*Layer = null,
     rect: Rect = .{},
     mapped: bool = false,
+    /// Grabbing popups (menus) take the keyboard while shown.
+    grabbed: bool = false,
 
     fn handle(self: *Popup, _: ws.xdg_popup, request: ws.xdg_popup.Request) void {
         switch (request) {
-            .destroy, .grab => {},
+            .destroy => {},
+            .grab => self.grabbed = true,
             .reposition => |args| {
                 const positioner = args.positioner.data(Positioner) orelse return;
                 self.positioner = positioner.*;
@@ -1017,8 +1079,10 @@ const Popup = struct {
     fn destroyed(self: *Popup, _: ws.xdg_popup) void {
         removeItem(*Popup, &self.comp.popups, self);
         if (self.xdg) |xdg| xdg.popup = null;
+        const grabbed = self.grabbed;
         self.comp.scheduleRepaint();
         self.comp.a.destroy(self);
+        if (grabbed) self.comp.updateKeyboardFocus();
     }
 };
 
@@ -3792,6 +3856,19 @@ const Compositor = struct {
         if (target == null) if (self.focused) |toplevel| {
             if (toplevel.xdg) |xdg| target = xdg.surface;
         };
+        // The topmost grabbing popup of the focused client takes the keyboard.
+        if (target) |focused| {
+            var index = self.popups.items.len;
+            while (index > 0) {
+                index -= 1;
+                const popup = self.popups.items[index];
+                if (!popup.grabbed or !popup.mapped) continue;
+                const surface = (popup.xdg orelse continue).surface orelse continue;
+                if (surface.resource.client() != focused.resource.client()) continue;
+                target = surface;
+                break;
+            }
+        }
         if (target == self.seat.keyboard_focus) return;
         self.seat.focusSurface(target);
         self.sendSelection();
@@ -6368,4 +6445,26 @@ test "native compositor relays text input to an input method and its keyboard gr
     keyboard.release();
     try app.roundtrip();
     try ime.roundtrip();
+}
+
+test "popups flip, slide and shrink into the output as their positioner allows" {
+    const A = ws.xdg_positioner.Anchor;
+    const G = ws.xdg_positioner.Gravity;
+    const CA = ws.xdg_positioner.ConstraintAdjustment;
+    const bounds: Rect = .{ .x = 0, .y = 0, .width = 1000, .height = 600 };
+    // A submenu to the right of an item near the right edge opens to its left.
+    var menu: Positioner = .{ .width = 200, .height = 100, .anchor_rect = .{ .x = 850, .y = 100, .width = 100, .height = 20 }, .anchor = A.top_right, .gravity = G.bottom_right, .adjustment = CA.flip_x | CA.slide_y };
+    const flipped = menu.constrain(menu.place(), bounds);
+    try std.testing.expectEqual(@as(i32, 650), flipped.x);
+    try std.testing.expectEqual(@as(i32, 100), flipped.y);
+    // Without room either way, sliding keeps it on screen.
+    menu.adjustment = CA.slide_x;
+    try std.testing.expectEqual(@as(i32, 800), menu.constrain(menu.place(), bounds).x);
+    // A list taller than the output shrinks to fit below its anchor.
+    var list: Positioner = .{ .width = 300, .height = 900, .anchor_rect = .{ .x = 100, .y = 50, .width = 100, .height = 20 }, .anchor = A.bottom_left, .gravity = G.bottom_right, .adjustment = CA.resize_y };
+    const shrunk = list.constrain(list.place(), bounds);
+    try std.testing.expectEqual(@as(i32, 70), shrunk.y);
+    try std.testing.expectEqual(@as(i32, 530), shrunk.height);
+    list.adjustment = 0;
+    try std.testing.expectEqual(@as(i32, 900), list.constrain(list.place(), bounds).height);
 }
