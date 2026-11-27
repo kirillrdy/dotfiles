@@ -388,7 +388,11 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
                 \\  if [ -n "$val" ]; then systemctl --user import-environment "$v"; fi
                 \\done
                 \\trap 'systemctl --user stop desktop-zig.service 2>/dev/null || true' TERM INT HUP
-                \\systemctl --user start --wait desktop-zig.service
+                \\# Traps run only between commands, and `wait` is the one a signal interrupts:
+                \\# a foreground `start --wait` would hold off the trap until the session ends.
+                \\systemctl --user start --wait desktop-zig.service &
+                \\starter=$!
+                \\while kill -0 "$starter" 2>/dev/null; do wait "$starter" || true; done
             ;
             const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", script };
             _ = libc.execv("/bin/sh", @ptrCast(&argv));

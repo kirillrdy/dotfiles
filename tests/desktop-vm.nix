@@ -188,6 +188,12 @@ pkgs.testers.runNixOSTest {
         machine.screenshot("desktop-after-vt-switch")
         machine.succeed(user("systemctl --user is-active desktop-zig.service"))
 
+    with subtest("a configuration switch re-activating getty.target leaves the session running"):
+        machine.succeed("systemctl start getty.target")
+        machine.sleep(2)
+        machine.succeed("systemctl is-active desktop-display-manager.service")
+        machine.succeed(user("systemctl --user is-active desktop-zig.service"))
+
     with subtest("production lock authenticates using the VM's real PAM policy"):
         machine.succeed(user("systemd-run --user --unit=test-lock --setenv=WAYLAND_DEBUG=client desktop-zig lock"))
         machine.wait_until_succeeds("journalctl --no-pager _SYSTEMD_USER_UNIT=test-lock.service | grep -F '.locked()'")
@@ -201,5 +207,11 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("journalctl --no-pager _SYSTEMD_USER_UNIT=test-lock.service | grep unlock_and_destroy")
         machine.wait_until_fails(user("systemctl --user is-active test-lock.service"))
         machine.succeed(user("desktop-zig ping"))
+
+    with subtest("stopping the display manager ends the session instead of orphaning it"):
+        # Well under systemd's 90 s stop timeout, which used to expire.
+        machine.succeed("timeout 30 systemctl stop desktop-display-manager.service")
+        machine.wait_until_fails(user("systemctl --user is-active desktop-zig.service"), timeout=30)
+        machine.wait_until_fails("loginctl list-sessions --no-legend | grep -w tty1", timeout=30)
   '';
 }

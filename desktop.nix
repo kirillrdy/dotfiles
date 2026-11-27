@@ -108,6 +108,10 @@ lib.mkIf enableLightDesktop {
   };
   # Mesa's EGL and GBM drivers, for the native compositor and GL clients.
   hardware.graphics.enable = true;
+  # A switch re-activates getty.target; a getty on tty1 would conflict with and
+  # stop the display manager. NixOS' display-manager module disables it the same way.
+  systemd.services."autovt@tty1".enable = false;
+  systemd.services."getty@tty1".enable = false;
   networking.networkmanager.enable = true;
   services.power-profiles-daemon.enable = false;
   security.pam.services.desktop-lock = { };
