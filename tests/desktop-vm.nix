@@ -44,6 +44,8 @@ pkgs.testers.runNixOSTest {
         wtype
         wlrctl
         grim
+        wayland-utils
+        mesa-demos
       ];
       fonts.packages = [ pkgs.dejavu_fonts ];
       services.pipewire = {
@@ -157,6 +159,15 @@ pkgs.testers.runNixOSTest {
     if ${if native then "True" else "False"}:
       with subtest("the native compositor composites on the GPU"):
         machine.succeed("journalctl -b | grep -F 'compositor: rendering with GLES'")
+      with subtest("GL clients get the linux-dmabuf format table"):
+        print(machine.succeed(user("wayland-info -i zwp_linux_dmabuf_v1 | head -40")))
+        machine.succeed(user("wayland-info -i zwp_linux_dmabuf_v1 | grep -i 'main device'"))
+        machine.succeed(user("systemd-run --user --unit=gears es2gears_wayland"))
+        machine.sleep(4)
+        machine.succeed(user("systemctl --user is-active gears.service"))
+        machine.screenshot("desktop-gl-client")
+        machine.fail("journalctl -b | grep -F 'could not import'")
+        machine.succeed(user("systemctl --user stop gears.service"))
       with subtest("the session survives switching to another VT and back"):
         machine.send_key("ctrl-alt-f2")
         machine.wait_until_succeeds("test \"$(cat /sys/class/tty/tty0/active)\" = tty2")

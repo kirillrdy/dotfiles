@@ -65,6 +65,8 @@ const Buffer = struct {
     /// Shared memory, or null for a single-pixel buffer of `solid` colour.
     pool: ?*Pool,
     solid: u32 = 0,
+    /// A client's GPU buffer, imported for sampling; such buffers have no pool.
+    image: Gl.EGLImage = null,
     offset: usize,
     width: u32,
     height: u32,
@@ -163,6 +165,10 @@ const Surface = struct {
     /// The GPU copy of `pixels`, uploaded when the content changed.
     texture: u32 = 0,
     texture_stale: bool = true,
+    /// The client's GPU buffer being shown, released when replaced. `pixels`
+    /// then holds a CPU copy only once something needs one.
+    held: ?*Buffer = null,
+    cpu_stale: bool = false,
     scale: i32 = 1,
     frames: std.ArrayList(ws.wl_callback) = .empty,
     /// Subsurfaces drawn above this surface, bottom to top.
@@ -176,7 +182,54 @@ const Surface = struct {
     fractional: ?ws.wp_fractional_scale_v1 = null,
 
     fn mapped(self: *const Surface) bool {
-        return self.pixels.len > 0;
+        return self.width > 0 and (self.pixels.len > 0 or self.held != null);
+    }
+
+    /// Shows a GPU buffer; it stays the client's until the next one replaces it.
+    fn hold(self: *Surface, buffer: *Buffer) void {
+        if (self.held != buffer) self.releaseHeld();
+        self.held = buffer;
+        self.width = buffer.width;
+        self.height = buffer.height;
+        self.opaque_format = buffer.format == 0x34325258 or buffer.format == 0x34324258; // XRGB8888, XBGR8888
+        self.cpu_stale = true;
+    }
+
+    fn releaseHeld(self: *Surface) void {
+        const buffer = self.held orelse return;
+        self.held = null;
+        self.cpu_stale = false;
+        buffer.resource.sendRelease();
+    }
+
+    /// Makes `texture` show the current content: the GPU buffer, or uploaded pixels.
+    fn syncTexture(self: *Surface, renderer: *Gl.Renderer) void {
+        if (self.texture == 0) self.texture = Gl.Renderer.createTexture();
+        if (!self.texture_stale) return;
+        self.texture_stale = false;
+        if (self.held) |buffer| renderer.bindImage(self.texture, buffer.image) else renderer.upload(self.texture, self.pixels, self.width, self.height);
+    }
+
+    /// Whether `pixels` holds the content, reading a GPU buffer back if needed.
+    fn cpuReady(self: *Surface) bool {
+        if (self.held != null and self.cpu_stale) {
+            const renderer = (self.comp.drm orelse return false).renderer orelse return false;
+            const count = @as(usize, self.width) * self.height;
+            if (self.pixels.len != count) {
+                self.comp.a.free(self.pixels);
+                self.pixels = self.comp.a.alloc(u32, count) catch {
+                    self.pixels = &.{};
+                    return false;
+                };
+            }
+            self.syncTexture(renderer);
+            if (!renderer.readTexture(self.texture, self.width, self.height, self.pixels)) return false;
+            if (self.opaque_format) for (self.pixels) |*pixel| {
+                pixel.* |= 0xff000000;
+            };
+            self.cpu_stale = false;
+        }
+        return self.pixels.len == @as(usize, self.width) * self.height and self.pixels.len > 0;
     }
 
     /// Size in surface-local (logical) coordinates.
@@ -244,12 +297,18 @@ const Surface = struct {
             self.pending_attach = false;
             self.texture_stale = true;
             if (self.pending_buffer) |buffer| {
-                self.copy(buffer);
-                buffer.resource.sendRelease();
+                if (buffer.image != null) {
+                    self.hold(buffer);
+                } else {
+                    self.releaseHeld();
+                    self.copy(buffer);
+                    buffer.resource.sendRelease();
+                }
                 // Buffers are copied at commit, so release callbacks fire with it.
                 for (self.pending_releases.items) |callback| callback.sendDone(0);
                 self.pending_releases.clearRetainingCapacity();
             } else {
+                self.releaseHeld();
                 self.comp.a.free(self.pixels);
                 self.pixels = &.{};
                 self.width = 0;
@@ -355,6 +414,7 @@ const Surface = struct {
         self.frames.deinit(comp.a);
         self.pending_frames.deinit(comp.a);
         if (self.texture != 0) if (comp.drm) |backend| if (backend.renderer) |renderer| renderer.deleteTexture(self.texture);
+        self.releaseHeld();
         comp.a.free(self.pixels);
         removeItem(*Surface, &comp.surfaces, self);
         if (comp.seat.keyboard_focus == self) comp.seat.keyboard_focus = null;
@@ -1598,15 +1658,12 @@ const Canvas = union(enum) {
     fn surface(self: Canvas, source: *Surface, rect: Gl.Rect) void {
         switch (self) {
             .cpu => |target| {
+                if (!source.cpuReady()) return;
                 const content: raster.Image = .{ .pixels = std.mem.sliceAsBytes(source.pixels), .width = source.width, .height = source.height, .stride = source.width * 4, .format = .argb };
                 raster.blit(target, content, .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height }, null) catch {};
             },
             .gl => |renderer| {
-                if (source.texture == 0) source.texture = Gl.Renderer.createTexture();
-                if (source.texture_stale) {
-                    renderer.upload(source.texture, source.pixels, source.width, source.height);
-                    source.texture_stale = false;
-                }
+                source.syncTexture(renderer);
                 renderer.draw(source.texture, rect, null, 1, false);
             },
         }
@@ -3261,6 +3318,11 @@ const Compositor = struct {
     outputs: std.ArrayList(*Output) = .empty,
     nested: ?*Nested = null,
     drm: ?*Drm = null,
+    /// linux-dmabuf: the formats GPU buffers may use, shared as a sealed table.
+    dmabuf_formats: []Gl.FormatModifier = &.{},
+    dmabuf_table: i32 = -1,
+    /// The card's dev_t, as feedback main_device sends it.
+    dmabuf_device: [8]u8 = @splat(0),
     /// Set once start-up finished; later outputs are hotplugged.
     started: bool = false,
     seat: Seat = undefined,
@@ -3359,6 +3421,8 @@ const Compositor = struct {
     fn deinit(self: *Compositor) void {
         if (self.nested) |nested| nested.destroy();
         if (self.drm) |backend| backend.destroy();
+        self.a.free(self.dmabuf_formats);
+        if (self.dmabuf_table >= 0) _ = std.c.close(self.dmabuf_table);
         self.seat.deinit();
         self.ime.deinit();
         self.surfaces.deinit(self.a);
@@ -3910,9 +3974,11 @@ const Compositor = struct {
 
     fn bufferGone(buffer: *Buffer, _: ws.wl_buffer) void {
         const comp = buffer.comp;
-        for (comp.surfaces.items) |surface| if (surface.pending_buffer == buffer) {
-            surface.pending_buffer = null;
-        };
+        for (comp.surfaces.items) |surface| {
+            if (surface.pending_buffer == buffer) surface.pending_buffer = null;
+            if (surface.held == buffer) surface.held = null;
+        }
+        if (buffer.image != null) if (comp.drm) |backend| if (backend.renderer) |renderer| renderer.destroyImage(buffer.image);
         if (buffer.pool) |pool| pool.unref();
         comp.a.destroy(buffer);
     }
@@ -4177,6 +4243,64 @@ const Compositor = struct {
             },
             .destroy => {},
         }
+    }
+
+    /// Offers linux-dmabuf, so GL and Vulkan clients share GPU buffers.
+    fn enableDmabuf(self: *Compositor, renderer: *Gl.Renderer, major: u32, minor: u32) !void {
+        const formats = try renderer.dmabufFormats(self.a);
+        errdefer self.a.free(formats);
+        if (formats.len == 0 or formats.len > std.math.maxInt(u16)) return error.NoDmabufFormats;
+        // The table is a sealed memfd clients map read-only.
+        const fd = libc.memfd_create("dmabuf-formats", 0x0001 | 0x0002); // CLOEXEC | ALLOW_SEALING
+        if (fd < 0) return error.NoMemory;
+        errdefer _ = std.c.close(fd);
+        const bytes = std.mem.sliceAsBytes(formats);
+        if (std.c.write(fd, bytes.ptr, bytes.len) != @as(isize, @intCast(bytes.len))) return error.NoMemory;
+        // F_ADD_SEALS: no shrinking, growing or writing.
+        _ = std.c.fcntl(fd, 1033, @as(c_int, 0x0002 | 0x0004 | 0x0008));
+        const dev: u64 = (minor & 0xff) | ((@as(u64, major) & 0xfff) << 8) | ((@as(u64, minor) & ~@as(u64, 0xff)) << 12) | ((@as(u64, major) & ~@as(u64, 0xfff)) << 32);
+        self.dmabuf_device = @bitCast(dev);
+        self.dmabuf_formats = formats;
+        self.dmabuf_table = fd;
+        _ = try self.server.createGlobal(&ws.zwp_linux_dmabuf_v1.interface, 4, self, &bindDmabuf);
+        std.log.info("compositor: sharing GPU buffers in {d} formats and layouts", .{formats.len});
+    }
+
+    fn bindDmabuf(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        const dmabuf: ws.zwp_linux_dmabuf_v1 = .{ .resource = resource };
+        dmabuf.setHandler(Compositor, self, dmabufRequest, null);
+        // Before feedback (version 4), formats are announced on bind.
+        if (dmabuf.version() < 4) for (self.dmabuf_formats) |entry| {
+            if (dmabuf.version() >= 3) dmabuf.sendModifier(entry.format, @truncate(entry.modifier >> 32), @truncate(entry.modifier)) else if (entry.modifier == Gl.modifier_invalid) dmabuf.sendFormat(entry.format);
+        };
+    }
+
+    fn dmabufRequest(self: *Compositor, _: ws.zwp_linux_dmabuf_v1, request: ws.zwp_linux_dmabuf_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .create_params => |args| {
+                const params = create(DmabufParams, self, .{ .comp = self, .resource = args.params_id }) orelse return;
+                args.params_id.setHandler(DmabufParams, params, DmabufParams.handle, DmabufParams.destroyed);
+            },
+            .get_default_feedback => |args| self.sendFeedback(args.id),
+            .get_surface_feedback => |args| self.sendFeedback(args.id),
+        }
+    }
+
+    /// One tranche: every format, rendered by the card that scans out.
+    fn sendFeedback(self: *Compositor, feedback: ws.zwp_linux_dmabuf_feedback_v1) void {
+        feedback.setHandler(Compositor, self, null, null);
+        feedback.sendFormatTable(self.dmabuf_table, @intCast(self.dmabuf_formats.len * @sizeOf(Gl.FormatModifier)));
+        feedback.sendMainDevice(&self.dmabuf_device);
+        feedback.sendTrancheTargetDevice(&self.dmabuf_device);
+        const indices = self.a.alloc(u16, self.dmabuf_formats.len) catch return;
+        defer self.a.free(indices);
+        for (indices, 0..) |*index, position| index.* = @intCast(position);
+        feedback.sendTrancheFormats(std.mem.sliceAsBytes(indices));
+        feedback.sendTrancheFlags(0);
+        feedback.sendTrancheDone();
+        feedback.sendDone();
     }
 
     fn cursorChanged(self: *Compositor) void {
@@ -4670,6 +4794,100 @@ const Compositor = struct {
     }
 };
 
+// ------------------------------------------------------------------ GPU buffers
+
+/// zwp_linux_buffer_params_v1: the planes of a client's GPU buffer.
+const DmabufParams = struct {
+    comp: *Compositor,
+    resource: ws.zwp_linux_buffer_params_v1,
+    planes: [4]?Gl.Plane = .{ null, null, null, null },
+    used: bool = false,
+
+    const Error = ws.zwp_linux_buffer_params_v1.Error;
+
+    fn handle(self: *DmabufParams, resource: ws.zwp_linux_buffer_params_v1, request: ws.zwp_linux_buffer_params_v1.Request) void {
+        switch (request) {
+            .destroy, .set_sampling_device => {},
+            .add => |args| {
+                if (self.used) {
+                    _ = std.c.close(args.fd);
+                    return resource.postError(Error.already_used, "params already used", .{});
+                }
+                if (args.plane_idx >= self.planes.len) {
+                    _ = std.c.close(args.fd);
+                    return resource.postError(Error.plane_idx, "plane index out of range", .{});
+                }
+                if (self.planes[args.plane_idx] != null) {
+                    _ = std.c.close(args.fd);
+                    return resource.postError(Error.plane_set, "plane already set", .{});
+                }
+                self.planes[args.plane_idx] = .{ .fd = args.fd, .offset = args.offset, .stride = args.stride, .modifier = (@as(u64, args.modifier_hi) << 32) | args.modifier_lo };
+            },
+            .create => |args| {
+                const image = self.import(resource, args.width, args.height, args.format) orelse return resource.sendFailed();
+                const buffer_resource = resource.sendCreated();
+                self.wrap(buffer_resource, image, args.width, args.height, args.format);
+            },
+            .create_immed => |args| {
+                const image = self.import(resource, args.width, args.height, args.format) orelse
+                    return resource.postError(Error.invalid_wl_buffer, "buffer could not be imported", .{});
+                self.wrap(args.buffer_id, image, args.width, args.height, args.format);
+            },
+        }
+    }
+
+    /// Imports the planes; the descriptors are closed either way.
+    fn import(self: *DmabufParams, resource: ws.zwp_linux_buffer_params_v1, width: i32, height: i32, format: u32) Gl.EGLImage {
+        defer self.closePlanes();
+        if (self.used) {
+            resource.postError(Error.already_used, "params already used", .{});
+            return null;
+        }
+        self.used = true;
+        var count: usize = 0;
+        while (count < self.planes.len and self.planes[count] != null) count += 1;
+        for (self.planes[count..]) |plane| if (plane != null) {
+            resource.postError(Error.incomplete, "planes are not contiguous", .{});
+            return null;
+        };
+        if (count == 0) {
+            resource.postError(Error.incomplete, "no planes", .{});
+            return null;
+        }
+        if (width <= 0 or height <= 0) {
+            resource.postError(Error.invalid_dimensions, "invalid size", .{});
+            return null;
+        }
+        const renderer = (self.comp.drm orelse return null).renderer orelse return null;
+        var planes: [4]Gl.Plane = undefined;
+        for (0..count) |index| planes[index] = self.planes[index].?;
+        const image = renderer.importDmabuf(@intCast(width), @intCast(height), format, planes[0..count]);
+        if (image == null) std.log.warn("compositor: could not import a {d}x{d} GPU buffer of format {x}", .{ width, height, format });
+        return image;
+    }
+
+    fn wrap(self: *DmabufParams, resource: ws.wl_buffer, image: Gl.EGLImage, width: i32, height: i32, format: u32) void {
+        const comp = self.comp;
+        const buffer = create(Buffer, comp, .{ .comp = comp, .resource = resource, .pool = null, .image = image, .offset = 0, .width = @intCast(width), .height = @intCast(height), .stride = 0, .format = format }) orelse {
+            if (comp.drm) |backend| if (backend.renderer) |renderer| renderer.destroyImage(image);
+            return;
+        };
+        resource.setHandler(Buffer, buffer, Compositor.bufferRequest, Compositor.bufferGone);
+    }
+
+    fn closePlanes(self: *DmabufParams) void {
+        for (&self.planes) |*plane| if (plane.*) |value| {
+            _ = std.c.close(value.fd);
+            plane.* = null;
+        };
+    }
+
+    fn destroyed(self: *DmabufParams, _: ws.zwp_linux_buffer_params_v1) void {
+        self.closePlanes();
+        self.comp.a.destroy(self);
+    }
+};
+
 // ------------------------------------------------------------------ DRM backend
 
 /// Runs on the displays, as wlroots' DRM and libinput backends with a logind
@@ -4721,6 +4939,9 @@ const Drm = struct {
                 self.renderer = renderer;
                 std.log.info("compositor: rendering with GLES on {s}", .{renderer.name()});
                 for (comp.outputs.items) |output| self.attachTarget(output);
+                comp.enableDmabuf(renderer, self.card_device.major, self.card_device.minor) catch |err| {
+                    std.log.warn("compositor: GPU buffers are not shared ({s}); GL clients copy through memory", .{@errorName(err)});
+                };
             } else |err| std.log.warn("compositor: no GPU renderer ({s}); rendering on the CPU", .{@errorName(err)});
         }
         self.udev = li.udev_new() orelse return error.NoUdev;
@@ -4909,7 +5130,7 @@ const Drm = struct {
         switch (seat.cursor_mode) {
             .hidden => self.card.setCursor(null, 0, .{ 0, 0 }),
             .surface => if (seat.cursor) |surface| {
-                if (!surface.mapped()) return self.card.setCursor(null, 0, .{ 0, 0 });
+                if (!surface.mapped() or !surface.cpuReady()) return self.card.setCursor(null, 0, .{ 0, 0 });
                 const scale = @max(1, surface.scale);
                 self.card.setCursor(surface.pixels, surface.width, .{ seat.cursor_hotspot[0] * scale, seat.cursor_hotspot[1] * scale });
             } else self.card.setCursor(null, 0, .{ 0, 0 }),

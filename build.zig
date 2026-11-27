@@ -26,6 +26,7 @@ pub fn build(b: *std.Build) void {
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-output/xdg-output-unstable-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/stable/xdg-shell/xdg-shell.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/stable/viewporter/viewporter.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/stable/linux-dmabuf/linux-dmabuf-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/staging/fractional-scale/fractional-scale-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/xdg-foreign/xdg-foreign-unstable-v2.xml", .{protocol_dir}) },
@@ -159,7 +160,7 @@ pub fn build(b: *std.Build) void {
     test_module.addImport("harfbuzz-reference", bindings(b, target, optimize, "#include <hb.h>\n", &.{"harfbuzz"}));
     // The kernel DRM headers (through libdrm), as the reference for desktop-drm.zig.
     test_module.addImport("libinput-reference", bindings(b, target, optimize, "#include <libinput.h>\n", &.{"libinput"}));
-    test_module.addImport("gl-reference", bindings(b, target, optimize, "#include <EGL/egl.h>\n#include <EGL/eglext.h>\n#include <GLES2/gl2.h>\n#include <GLES2/gl2ext.h>\n#include <gbm.h>\n", &.{ "egl", "glesv2", "gbm" }));
+    test_module.addImport("gl-reference", bindings(b, target, optimize, "#include <EGL/egl.h>\n#include <EGL/eglext.h>\n#include <GLES2/gl2.h>\n#include <GLES2/gl2ext.h>\n#include <gbm.h>\n#include <drm_fourcc.h>\n", &.{ "egl", "glesv2", "gbm", "libdrm" }));
     test_module.addImport("drm-reference", bindings(b, target, optimize, "#include <drm.h>\n#include <drm_mode.h>\n", &.{"libdrm"}));
     test_module.addImport("pam-reference", bindings(b, target, optimize, "#include <security/pam_appl.h>\n#include <security/pam_modules.h>\n", &.{"pam"}));
     // PipeWire's headers, plus its private node activation record (src/pipewire/private.h

@@ -109,6 +109,11 @@ pub const gl = struct {
     pub const compile_status: u32 = 0x8B81;
     pub const link_status: u32 = 0x8B82;
     pub const unpack_alignment: u32 = 0x0CF5;
+    pub const pack_alignment: u32 = 0x0D05;
+    pub const framebuffer: u32 = 0x8D40;
+    pub const color_attachment0: u32 = 0x8CE0;
+    pub const framebuffer_complete: u32 = 0x8CD5;
+    pub const rgba: u32 = 0x1908;
     pub const renderer: u32 = 0x1F01;
     pub const extensions: u32 = 0x1F03;
 };
@@ -149,6 +154,24 @@ pub extern fn glDisable(cap: u32) void;
 pub extern fn glBlendFunc(source: u32, destination: u32) void;
 pub extern fn glDrawArrays(mode: u32, first: i32, count: i32) void;
 pub extern fn glFlush() void;
+pub extern fn glGenFramebuffers(count: i32, framebuffers: [*]u32) void;
+pub extern fn glDeleteFramebuffers(count: i32, framebuffers: [*]const u32) void;
+pub extern fn glBindFramebuffer(target: u32, framebuffer: u32) void;
+pub extern fn glFramebufferTexture2D(target: u32, attachment: u32, texture_target: u32, texture: u32, level: i32) void;
+pub extern fn glCheckFramebufferStatus(target: u32) u32;
+pub extern fn glReadPixels(x: i32, y: i32, width: i32, height: i32, format: u32, kind: u32, pixels: ?*anyopaque) void;
+
+/// eglQueryDmaBufFormatsEXT and eglQueryDmaBufModifiersEXT.
+const QueryFormats = *const fn (EGLDisplay, max: i32, formats: ?[*]i32, count: *i32) callconv(.c) u32;
+const QueryModifiers = *const fn (EGLDisplay, format: i32, max: i32, modifiers: ?[*]u64, external_only: ?[*]u32, count: *i32) callconv(.c) u32;
+
+/// A buffer format clients may share, with its layout modifier.
+pub const FormatModifier = extern struct { format: u32, pad: u32 = 0, modifier: u64 };
+/// DRM_FORMAT_MOD_INVALID: the driver's implicit layout.
+pub const modifier_invalid: u64 = 0x00ffffffffffffff;
+
+/// One plane of a dmabuf, as zwp_linux_buffer_params_v1.add describes it.
+pub const Plane = struct { fd: i32, offset: u32, stride: u32, modifier: u64 };
 
 /// glEGLImageTargetTexture2DOES, from GL_OES_EGL_image.
 const ImageTargetTexture = *const fn (target: u32, image: EGLImage) callconv(.c) void;
@@ -377,6 +400,111 @@ pub const Renderer = struct {
         self.draw(self.scratch, rect, clip, opacity, false);
     }
 
+    /// The formats and modifiers clients' GPU buffers may use: what EGL can
+    /// import into a 2D texture, plus each format's implicit layout.
+    pub fn dmabufFormats(self: *Renderer, allocator: std.mem.Allocator) ![]FormatModifier {
+        var list: std.ArrayList(FormatModifier) = .empty;
+        errdefer list.deinit(allocator);
+        if (!self.hasExtension("EGL_EXT_image_dma_buf_import")) return list.toOwnedSlice(allocator);
+        const query_formats: ?QueryFormats = if (eglGetProcAddress("eglQueryDmaBufFormatsEXT")) |p| @ptrCast(p) else null;
+        const query_modifiers: ?QueryModifiers = if (eglGetProcAddress("eglQueryDmaBufModifiersEXT")) |p| @ptrCast(p) else null;
+        if (query_formats == null or query_modifiers == null or !self.hasExtension("EGL_EXT_image_dma_buf_import_modifiers")) {
+            // Without modifiers, the common formats in their implicit layout.
+            for ([_]u32{ 0x34325241, 0x34325258, 0x34324241, 0x34324258 }) |format| try list.append(allocator, .{ .format = format, .modifier = modifier_invalid });
+            return list.toOwnedSlice(allocator);
+        }
+        var count: i32 = 0;
+        if (query_formats.?(self.display, 0, null, &count) == 0 or count <= 0) return list.toOwnedSlice(allocator);
+        const formats = try allocator.alloc(i32, @intCast(count));
+        defer allocator.free(formats);
+        _ = query_formats.?(self.display, count, formats.ptr, &count);
+        for (formats[0..@intCast(count)]) |format| {
+            var modifier_count: i32 = 0;
+            _ = query_modifiers.?(self.display, format, 0, null, null, &modifier_count);
+            if (modifier_count > 0) {
+                const modifiers = try allocator.alloc(u64, @intCast(modifier_count));
+                defer allocator.free(modifiers);
+                const external = try allocator.alloc(u32, @intCast(modifier_count));
+                defer allocator.free(external);
+                _ = query_modifiers.?(self.display, format, modifier_count, modifiers.ptr, external.ptr, &modifier_count);
+                for (modifiers[0..@intCast(modifier_count)], external[0..@intCast(modifier_count)]) |modifier, external_only| {
+                    // External-only layouts cannot be sampled as GL_TEXTURE_2D.
+                    if (external_only == 0) try list.append(allocator, .{ .format = @bitCast(format), .modifier = modifier });
+                }
+            }
+            try list.append(allocator, .{ .format = @bitCast(format), .modifier = modifier_invalid });
+        }
+        return list.toOwnedSlice(allocator);
+    }
+
+    fn hasExtension(self: *Renderer, extension: []const u8) bool {
+        const list = std.mem.span(eglQueryString(self.display, egl.extensions) orelse return false);
+        var names = std.mem.tokenizeScalar(u8, list, ' ');
+        while (names.next()) |candidate| if (std.mem.eql(u8, candidate, extension)) return true;
+        return false;
+    }
+
+    /// Imports a client's GPU buffer; null when the driver rejects it.
+    pub fn importDmabuf(self: *Renderer, width: u32, height: u32, format: u32, planes: []const Plane) EGLImage {
+        var attributes: [6 + 4 * 10 + 1]isize = undefined;
+        var count: usize = 0;
+        for ([_]isize{ egl.width, @intCast(width), egl.height, @intCast(height), egl.linux_drm_fourcc, @intCast(format) }) |value| {
+            attributes[count] = value;
+            count += 1;
+        }
+        for (planes, 0..) |plane, index| {
+            const names = egl.plane_attributes[index];
+            var values = [_]isize{ names[0], plane.fd, names[1], @intCast(plane.offset), names[2], @intCast(plane.stride) };
+            for (values) |value| {
+                attributes[count] = value;
+                count += 1;
+            }
+            if (plane.modifier != modifier_invalid) {
+                values = .{ names[3], @intCast(plane.modifier & 0xffffffff), names[4], @intCast(plane.modifier >> 32), 0, 0 };
+                for (values[0..4]) |value| {
+                    attributes[count] = value;
+                    count += 1;
+                }
+            }
+        }
+        attributes[count] = egl.none;
+        return eglCreateImage(self.display, null, egl.linux_dma_buf, null, &attributes);
+    }
+
+    pub fn destroyImage(self: *Renderer, image: EGLImage) void {
+        _ = eglDestroyImage(self.display, image);
+    }
+
+    /// Makes `texture` sample the client's buffer directly, without a copy.
+    pub fn bindImage(self: *Renderer, texture: u32, image: EGLImage) void {
+        const target = self.image_target orelse return;
+        glBindTexture(gl.texture_2d, texture);
+        target(gl.texture_2d, image);
+    }
+
+    /// Reads a texture back as premultiplied ARGB, for captures and previews.
+    pub fn readTexture(self: *Renderer, texture: u32, width: u32, height: u32, out: []u32) bool {
+        var framebuffer: u32 = 0;
+        glGenFramebuffers(1, @ptrCast(&framebuffer));
+        defer glDeleteFramebuffers(1, @ptrCast(&framebuffer));
+        glBindFramebuffer(gl.framebuffer, framebuffer);
+        // Drawing continues into the window surface afterwards.
+        defer {
+            glBindFramebuffer(gl.framebuffer, 0);
+            glViewport(0, 0, @intFromFloat(self.viewport[0]), @intFromFloat(self.viewport[1]));
+        }
+        glFramebufferTexture2D(gl.framebuffer, gl.color_attachment0, gl.texture_2d, texture, 0);
+        if (glCheckFramebufferStatus(gl.framebuffer) != gl.framebuffer_complete) return false;
+        glPixelStorei(gl.pack_alignment, 4);
+        glReadPixels(0, 0, @intCast(width), @intCast(height), gl.rgba, gl.unsigned_byte, out.ptr);
+        // RGBA bytes to ARGB words.
+        for (out[0 .. @as(usize, width) * height]) |*pixel| {
+            const value = pixel.*;
+            pixel.* = (value & 0xff00ff00) | ((value & 0xff) << 16) | ((value >> 16) & 0xff);
+        }
+        return true;
+    }
+
     /// Finishes the frame; returns the buffer to scan out, locked until released.
     pub fn finish(self: *Renderer, target: *Target) ?*GbmBo {
         if (eglSwapBuffers(self.display, target.surface) == 0) return null;
@@ -450,4 +578,10 @@ test "EGL, GLES and GBM constants match their headers" {
     try std.testing.expectEqual(@as(u32, c.GL_SCISSOR_TEST), gl.scissor_test);
     try std.testing.expectEqual(@as(u32, c.GL_UNPACK_ALIGNMENT), gl.unpack_alignment);
     try std.testing.expectEqual(@as(i32, c.GL_CLAMP_TO_EDGE), gl.clamp_to_edge);
+    try std.testing.expectEqual(@as(u32, c.GL_FRAMEBUFFER), gl.framebuffer);
+    try std.testing.expectEqual(@as(u32, c.GL_COLOR_ATTACHMENT0), gl.color_attachment0);
+    try std.testing.expectEqual(@as(u32, c.GL_FRAMEBUFFER_COMPLETE), gl.framebuffer_complete);
+    try std.testing.expectEqual(@as(u32, c.GL_PACK_ALIGNMENT), gl.pack_alignment);
+    // DRM_FORMAT_MOD_INVALID is fourcc_mod_code(NONE, DRM_FORMAT_RESERVED).
+    try std.testing.expectEqual(@as(u64, c.DRM_FORMAT_RESERVED), modifier_invalid);
 }
