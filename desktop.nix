@@ -4,6 +4,7 @@
   config ? null,
   enableLightDesktop ? false,
   enableNvidia ? false,
+  enableNativeCompositor ? false,
   ...
 }:
 let
@@ -84,9 +85,14 @@ lib.mkIf enableLightDesktop {
       "systemd-logind.service"
       "dbus.service"
     ];
-    environment = lib.optionalAttrs enableNvidia {
-      WLR_RENDERER = "vulkan";
-    };
+    environment =
+      lib.optionalAttrs enableNvidia {
+        WLR_RENDERER = "vulkan";
+      }
+      // lib.optionalAttrs enableNativeCompositor {
+        # Forwarded by the display manager to the greeter and the session.
+        DESKTOP_COMPOSITOR = "native";
+      };
     serviceConfig = {
       ExecStart = "${shell} dm";
       Restart = "always";
