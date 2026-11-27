@@ -137,6 +137,9 @@ test {
     _ = @import("desktop-opentype.zig");
     _ = @import("desktop-shape.zig");
     _ = @import("desktop-compositor-native.zig");
+    _ = @import("desktop-drm.zig");
+    _ = @import("desktop-logind.zig");
+    _ = @import("desktop-libinput.zig");
     _ = @import("tests/desktop-shape-reference.zig");
     _ = @import("desktop-switcher.zig");
     _ = @import("desktop-overview.zig");

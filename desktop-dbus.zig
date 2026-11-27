@@ -138,6 +138,15 @@ pub const Value = union(enum) {
         };
         return null;
     }
+
+    /// The `index`th member of a structure, unwrapping the variant.
+    pub fn lookupIndex(self: Value, index: usize) ?Value {
+        return switch (self) {
+            .variant => |inner| inner.lookupIndex(index),
+            .structure => |members| if (index < members.len) members[index] else null,
+            else => null,
+        };
+    }
 };
 
 fn isString(comptime T: type) bool {

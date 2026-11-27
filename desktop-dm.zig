@@ -205,6 +205,8 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
             const saved_sid = copyZ(128, session_id_val);
             const saved_home = copyZ(256, greeter_home);
             const saved_wlr = copyZ(64, wlr_renderer);
+            // The compositor choice reaches the greeter and session like the renderer.
+            const saved_compositor = copyZ(16, std.c.getenv("DESKTOP_COMPOSITOR"));
 
             _ = clearenv();
             _ = setenv("HOME", &saved_home, 1);
@@ -220,6 +222,7 @@ fn runGreeterRound(a: std.mem.Allocator, tty_path: [*:0]const u8, vt_str: []cons
             _ = setenv("XCURSOR_THEME", "Adwaita", 1);
             _ = setenv("XCURSOR_SIZE", "24", 1);
             if (saved_wlr[0] != 0) _ = setenv("WLR_RENDERER", &saved_wlr, 1);
+            if (saved_compositor[0] != 0) _ = setenv("DESKTOP_COMPOSITOR", &saved_compositor, 1);
 
             if (libc.initgroups("greeter", greeter_gid) != 0) libc._exit(1);
             if (libc.setgid(greeter_gid) != 0) libc._exit(1);
@@ -334,6 +337,8 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
             const saved_home = copyZ(256, home);
             const saved_shell = copyZ(256, shell);
             const saved_wlr = copyZ(64, wlr_renderer);
+            // The compositor choice reaches the greeter and session like the renderer.
+            const saved_compositor = copyZ(16, std.c.getenv("DESKTOP_COMPOSITOR"));
 
             const pam_env = pam.pam_getenvlist(auth.handle);
             _ = clearenv();
@@ -366,6 +371,7 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
             if (bus_addr.len > 0) _ = setenv("DBUS_SESSION_BUS_ADDRESS", bus_addr.ptr, 0);
             _ = setenv("PATH", "/run/wrappers/bin:/run/current-system/sw/bin", 0);
             if (saved_wlr[0] != 0) _ = setenv("WLR_RENDERER", &saved_wlr, 1);
+            if (saved_compositor[0] != 0) _ = setenv("DESKTOP_COMPOSITOR", &saved_compositor, 1);
 
             if (libc.initgroups(username, gid) != 0) libc._exit(1);
             if (libc.setgid(gid) != 0) libc._exit(1);
@@ -377,7 +383,7 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8,
             const script =
                 \\set -e
                 \\[ -r /etc/profile ] && . /etc/profile
-                \\for v in XDG_SESSION_ID XDG_SEAT XDG_VTNR XDG_SESSION_TYPE XDG_SESSION_DESKTOP XDG_CURRENT_DESKTOP WLR_RENDERER GI_TYPELIB_PATH GDK_PIXBUF_MODULE_FILE EDITOR NEOVIDE_FORK; do
+                \\for v in XDG_SESSION_ID XDG_SEAT XDG_VTNR XDG_SESSION_TYPE XDG_SESSION_DESKTOP XDG_CURRENT_DESKTOP WLR_RENDERER DESKTOP_COMPOSITOR GI_TYPELIB_PATH GDK_PIXBUF_MODULE_FILE EDITOR NEOVIDE_FORK; do
                 \\  eval "val=\${$v:-}"
                 \\  if [ -n "$val" ]; then systemctl --user import-environment "$v"; fi
                 \\done

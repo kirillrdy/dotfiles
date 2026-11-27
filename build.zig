@@ -78,7 +78,8 @@ pub fn build(b: *std.Build) void {
     desktop.addImport("wayland-server-wire", wire_server);
     desktop.addImport("wayland-server", wayland_server);
     // The native compositor serves a keymap compiled at build time; it needs no xkbcommon at runtime.
-    const default_keymap = b.addSystemCommand(&.{ "xkbcli", "compile-keymap", "--layout", "us" });
+    // Physical keyboards use the default layout with Caps Lock off, as the wlroots compositor configured them.
+    const default_keymap = b.addSystemCommand(&.{ "xkbcli", "compile-keymap", "--layout", "us", "--options", "caps:none" });
     const default_keymap_files = b.addWriteFiles();
     _ = default_keymap_files.addCopyFile(default_keymap.captureStdOut(.{}), "us.xkb");
     desktop.addImport("default-keymap", b.createModule(.{ .root_source_file = default_keymap_files.add("default-keymap.zig", "pub const text = @embedFile(\"us.xkb\");\n") }));
@@ -123,6 +124,8 @@ pub fn build(b: *std.Build) void {
         compositor.linkSystemLibrary(name, .{});
         desktop.linkSystemLibrary(name, .{});
     }
+    // The native compositor reads input through libinput and hotplug through libudev.
+    desktop.linkSystemLibrary("libudev", .{});
     desktop.addImport("compositor-abi", compositor.createModule());
     const session = b.addExecutable(.{ .name = "desktop-zig", .root_module = desktop });
     b.installArtifact(session);
@@ -152,6 +155,9 @@ pub fn build(b: *std.Build) void {
     test_module.addImport("xkb-reference", b.createModule(.{ .root_source_file = keymap_files.add("xkb-reference.zig", "pub const us_intl = @embedFile(\"us-intl.xkb\");\n") }));
     // HarfBuzz is the reference the native shaper is compared against; the desktop does not link it.
     test_module.addImport("harfbuzz-reference", bindings(b, target, optimize, "#include <hb.h>\n", &.{"harfbuzz"}));
+    // The kernel DRM headers (through libdrm), as the reference for desktop-drm.zig.
+    test_module.addImport("libinput-reference", bindings(b, target, optimize, "#include <libinput.h>\n", &.{"libinput"}));
+    test_module.addImport("drm-reference", bindings(b, target, optimize, "#include <drm.h>\n#include <drm_mode.h>\n", &.{"libdrm"}));
     test_module.addImport("pam-reference", bindings(b, target, optimize, "#include <security/pam_appl.h>\n#include <security/pam_modules.h>\n", &.{"pam"}));
     // PipeWire's headers, plus its private node activation record (src/pipewire/private.h
     // is not installed) restated over the public SPA types with its bitfield word named.

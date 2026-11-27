@@ -1,6 +1,10 @@
 { pkgs }:
+let
+  # The same boot, login and session on the wlroots-free compositor.
+  native = pkgs.desktopNativeCompositor or false;
+in
 pkgs.testers.runNixOSTest {
-  name = "desktop";
+  name = if native then "desktop-native" else "desktop";
   node.specialArgs.enableLightDesktop = true;
   node.specialArgs.enableNvidia = false;
   node.pkgsReadOnly = false;
@@ -34,6 +38,7 @@ pkgs.testers.runNixOSTest {
         ];
       };
       systemd.services.desktop-display-manager.environment.WLR_RENDERER = "pixman";
+      systemd.services.desktop-display-manager.environment.DESKTOP_COMPOSITOR = lib.mkIf native "native";
       environment.sessionVariables.WLR_RENDERER = "pixman";
       environment.systemPackages = with pkgs; [
         wtype
@@ -148,6 +153,18 @@ pkgs.testers.runNixOSTest {
         machine.screenshot("desktop-sound-settings")
         machine.succeed(user("wlrctl toplevel close title:Settings"))
 
+    # wlroots leaves Ctrl+Alt+Fn to compositors, and the wlroots one never handled it.
+    if ${if native then "True" else "False"}:
+      with subtest("the session survives switching to another VT and back"):
+        machine.send_key("ctrl-alt-f2")
+        machine.wait_until_succeeds("test \"$(cat /sys/class/tty/tty0/active)\" = tty2")
+        machine.send_key("ctrl-alt-f1")
+        machine.wait_until_succeeds("test \"$(cat /sys/class/tty/tty0/active)\" = tty1")
+        machine.succeed(user("desktop-zig ping"))
+        machine.sleep(1)
+        machine.screenshot("desktop-after-vt-switch")
+        machine.succeed(user("systemctl --user is-active desktop-zig.service"))
+
     with subtest("production lock authenticates using the VM's real PAM policy"):
         machine.succeed(user("systemd-run --user --unit=test-lock --setenv=WAYLAND_DEBUG=client desktop-zig lock"))
         machine.wait_until_succeeds("journalctl --no-pager _SYSTEMD_USER_UNIT=test-lock.service | grep -F '.locked()'")
@@ -156,7 +173,8 @@ pkgs.testers.runNixOSTest {
         machine.succeed(user("systemctl --user is-active test-lock.service"))
         # PAM's randomized failure delay precedes the lock client's own retry delay.
         machine.sleep(5)
-        machine.succeed(user("wtype -d 10 vm-password -k Return"))
+        # The physical keyboard still reaches clients after the VT round trip.
+        machine.send_chars("vm-password\n")
         machine.wait_until_succeeds("journalctl --no-pager _SYSTEMD_USER_UNIT=test-lock.service | grep unlock_and_destroy")
         machine.wait_until_fails(user("systemctl --user is-active test-lock.service"))
         machine.succeed(user("desktop-zig ping"))

@@ -37,12 +37,16 @@ pub const Handle = struct {
         self.* = .{ .allocator = allocator, .mode = mode };
         errdefer allocator.destroy(self);
         if (std.c.getenv("DESKTOP_COMPOSITOR")) |value| if (std.mem.eql(u8, std.mem.span(value), "native")) {
-            self.native = try native_compositor.Handle.start(allocator, switch (mode) {
+            // A display the native compositor cannot drive falls back to wlroots, so the
+            // display manager never loops on a black screen.
+            if (native_compositor.Handle.start(allocator, switch (mode) {
                 .session => .session,
                 .headless => .headless,
                 .greeter => .greeter,
-            });
-            return self;
+            })) |handle| {
+                self.native = handle;
+                return self;
+            } else |err| std.log.err("compositor: native compositor failed ({s}); using wlroots", .{@errorName(err)});
         };
         if (c.pipe2(&self.ready, c.O_CLOEXEC) != 0) return error.CompositorPipe;
         defer {

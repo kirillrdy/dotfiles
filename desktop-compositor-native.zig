@@ -270,6 +270,7 @@ const Surface = struct {
         for (self.comp.presentations.items) |entry| if (entry.surface == self) {
             entry.committed = true;
         };
+        if (self.comp.seat.cursor == self) self.comp.cursorChanged();
         self.comp.scheduleRepaint();
     }
 
@@ -1204,6 +1205,14 @@ const Output = struct {
     global: ?*wire.Global = null,
     /// The window showing this output, with the nested backend.
     nested: ?*Nested.Window = null,
+    /// The display showing this output, with the DRM backend.
+    display: ?*Drm.kms.Display = null,
+    /// A rendered frame waits for the display's previous flip.
+    unpresented: bool = false,
+    make: []const u8 = "Headless",
+    model: []const u8 = "Headless output",
+    refresh: i32 = 60000,
+    physical: [2]i32 = .{ 0, 0 },
 
     fn create(comp: *Compositor, index: usize, width: u32, height: u32) !*Output {
         const self = try comp.a.create(Output);
@@ -1228,6 +1237,16 @@ const Output = struct {
         return self.name_buffer[0..self.name_len];
     }
 
+    fn setName(self: *Output, text: []const u8) void {
+        const len = @min(text.len, self.name_buffer.len);
+        @memcpy(self.name_buffer[0..len], text[0..len]);
+        self.name_len = len;
+    }
+
+    fn present(self: *Output) void {
+        Drm.present(self);
+    }
+
     /// The output's area in global logical coordinates.
     fn box(self: *const Output) Rect {
         return .{ .x = self.x, .y = self.y, .width = self.logicalWidth(), .height = self.logicalHeight() };
@@ -1249,12 +1268,12 @@ const Output = struct {
     }
 
     fn describe(self: *Output, output: ws.wl_output) void {
-        output.sendGeometry(self.x, self.y, 0, 0, ws.wl_output.Subpixel.unknown, "Headless", "Headless output", ws.wl_output.Transform.normal);
-        output.sendMode(ws.wl_output.Mode.current | ws.wl_output.Mode.preferred, @intCast(self.width), @intCast(self.height), 60000);
+        output.sendGeometry(self.x, self.y, self.physical[0], self.physical[1], ws.wl_output.Subpixel.unknown, self.make, self.model, ws.wl_output.Transform.normal);
+        output.sendMode(ws.wl_output.Mode.current | ws.wl_output.Mode.preferred, @intCast(self.width), @intCast(self.height), self.refresh);
         if (output.version() >= 2) output.sendScale(self.bufferScale());
         if (output.version() >= 4) {
             output.sendName(self.name());
-            output.sendDescription("Headless output");
+            output.sendDescription(self.model);
         }
         if (output.version() >= 2) output.sendDone();
     }
@@ -1365,6 +1384,7 @@ const Output = struct {
             if (comp.lock) |lock| lock.acknowledge();
         }
         if (self.nested) |window| window.present();
+        if (self.display != null) self.present();
         comp.presented(self);
         self.frames += 1;
         const time = nowMs();
@@ -1548,6 +1568,9 @@ const Seat = struct {
     pointers: std.ArrayList(ws.wl_pointer) = .empty,
     keyboard_focus: ?*Surface = null,
     cursor: ?*Surface = null,
+    /// What the pointer shows: the client's cursor surface, the built-in arrow, or nothing.
+    cursor_mode: enum { default, surface, hidden } = .default,
+    cursor_hotspot: [2]i32 = .{ 0, 0 },
     default_keymap: Keymap = .{},
     /// The keymap clients last received; virtual keyboards bring their own.
     active_keymap: Keymap = .{},
@@ -1629,6 +1652,9 @@ const Seat = struct {
                     cursor.role = .cursor;
                 }
                 self.cursor = surface;
+                self.cursor_mode = if (surface != null) .surface else .hidden;
+                self.cursor_hotspot = .{ args.hotspot_x, args.hotspot_y };
+                self.comp.cursorChanged();
             },
             .release => {},
         }
@@ -1640,7 +1666,11 @@ const Seat = struct {
 
     fn surfaceGone(self: *Seat, surface: *Surface) void {
         if (self.keyboard_focus == surface) self.keyboard_focus = null;
-        if (self.cursor == surface) self.cursor = null;
+        if (self.cursor == surface) {
+            self.cursor = null;
+            self.cursor_mode = .default;
+            self.comp.cursorChanged();
+        }
         if (self.pointer_focus == surface) {
             self.pointer_focus = null;
             self.buttons = 0;
@@ -1753,6 +1783,10 @@ const Seat = struct {
         const target = if (found) |value| value.surface else null;
         if (found) |value| self.focus_origin = .{ @floor(self.pointer_x) - @as(f64, @floatFromInt(value.x)), @floor(self.pointer_y) - @as(f64, @floatFromInt(value.y)) };
         if (target == self.pointer_focus) return;
+        // The new client sets its own cursor on enter; the desktop shows the arrow.
+        self.cursor = null;
+        self.cursor_mode = .default;
+        self.comp.cursorChanged();
         if (self.pointer_focus) |old| for (self.pointers.items) |pointer| {
             if (pointer.client() != old.resource.client()) continue;
             pointer.sendLeave(server.nextSerial(), old.resource);
@@ -1779,6 +1813,7 @@ const Seat = struct {
         self.pointer_y = y;
         self.clampPointer();
         // An implicit grab keeps events on the pressed surface until release.
+        defer self.comp.cursorMoved();
         if (self.buttons == 0) self.updatePointerFocus();
         const surface = self.pointer_focus orelse return;
         for (self.pointers.items) |pointer| {
@@ -2096,12 +2131,12 @@ const HeadManager = struct {
         resource.setHandler(Head, head, Head.request, Head.gone);
         self.heads.append(self.comp.a, head) catch {};
         resource.sendName(output.name());
-        resource.sendDescription("Headless output");
+        resource.sendDescription(output.model);
         resource.sendPhysicalSize(0, 0);
         head.describe();
         if (resource.version() >= 2) {
-            resource.sendMake("Headless");
-            resource.sendModel("Headless output");
+            resource.sendMake(output.make);
+            resource.sendModel(output.model);
         }
     }
 
@@ -2177,6 +2212,8 @@ const OutputConfig = struct {
             const scale = head.scale orelse head.output.scale;
             if (!std.math.isFinite(scale) or scale < 0.5 or scale > 4) return resource.sendFailed();
             if (head.size) |size| if (size[0] == 0 or size[1] == 0 or size[0] > 8192 or size[1] > 8192) return resource.sendFailed();
+            // Displays keep the mode they were set up with.
+            if (head.size) |size| if (head.output.display) |display| if (size[0] != display.width() or size[1] != display.height()) return resource.sendFailed();
         }
         if (apply) {
             for (self.disabled.items) |output| comp.setOutputEnabled(output, false);
@@ -3148,6 +3185,9 @@ const Compositor = struct {
     greeter: bool = false,
     outputs: std.ArrayList(*Output) = .empty,
     nested: ?*Nested = null,
+    drm: ?*Drm = null,
+    /// Set once start-up finished; later outputs are hotplugged.
+    started: bool = false,
     seat: Seat = undefined,
     ime: Ime = undefined,
     surfaces: std.ArrayList(*Surface) = .empty,
@@ -3192,7 +3232,8 @@ const Compositor = struct {
     /// Creates `count` outputs side by side, as wlroots lays them out, shown by `backend`.
     fn init(self: *Compositor, backend: Backend, width: u32, height: u32, count: usize) !void {
         if (backend == .wayland) self.nested = try Nested.create(self);
-        for (0..count) |index| {
+        if (backend == .drm) self.drm = try Drm.create(self);
+        for (0..if (backend == .drm) 0 else count) |index| {
             const output = try Output.create(self, index, width, height);
             output.x = @intCast(index * width);
             output.usable = output.box();
@@ -3236,10 +3277,13 @@ const Compositor = struct {
         _ = try server.createGlobal(&ws.zwp_text_input_manager_v3.interface, 1, self, &bindTextInput);
         _ = try server.createGlobal(&ws.zwp_input_method_manager_v2.interface, 1, self, &bindInputMethod);
         for (self.outputs.items) |output| output.render();
+        self.cursorChanged();
+        self.started = true;
     }
 
     fn deinit(self: *Compositor) void {
         if (self.nested) |nested| nested.destroy();
+        if (self.drm) |backend| backend.destroy();
         self.seat.deinit();
         self.ime.deinit();
         self.surfaces.deinit(self.a);
@@ -3839,7 +3883,7 @@ const Compositor = struct {
                 xdg_output.sendLogicalSize(output.logicalWidth(), output.logicalHeight());
                 if (xdg_output.version() >= 2) {
                     xdg_output.sendName(output.name());
-                    xdg_output.sendDescription("Headless output");
+                    xdg_output.sendDescription(output.model);
                 }
                 if (xdg_output.version() < 3) xdg_output.sendDone();
                 // wl_output.done completes xdg_output state since version 3.
@@ -4049,11 +4093,30 @@ const Compositor = struct {
         (ws.wp_cursor_shape_manager_v1{ .resource = resource }).setHandler(Compositor, self, cursorShapeRequest, null);
     }
 
+    fn cursorShapeDevice(self: *Compositor, _: ws.wp_cursor_shape_device_v1, request: ws.wp_cursor_shape_device_v1.Request) void {
+        switch (request) {
+            .set_shape => {
+                self.seat.cursor = null;
+                self.seat.cursor_mode = .default;
+                self.cursorChanged();
+            },
+            .destroy => {},
+        }
+    }
+
+    fn cursorChanged(self: *Compositor) void {
+        if (self.drm) |backend| backend.updateCursor();
+    }
+
+    fn cursorMoved(self: *Compositor) void {
+        if (self.drm) |backend| backend.moveCursor();
+    }
+
     fn cursorShapeRequest(self: *Compositor, _: ws.wp_cursor_shape_manager_v1, request: ws.wp_cursor_shape_manager_v1.Request) void {
         // Shapes are accepted; cursors are drawn once outputs are real displays.
         switch (request) {
             .destroy => {},
-            .get_pointer => |args| args.cursor_shape_device.setHandler(Compositor, self, null, null),
+            .get_pointer => |args| args.cursor_shape_device.setHandler(Compositor, self, cursorShapeDevice, null),
             .get_tablet_tool_v2 => |args| args.cursor_shape_device.setHandler(Compositor, self, null, null),
         }
     }
@@ -4371,6 +4434,7 @@ const Compositor = struct {
         if (output.enabled == enabled) return;
         output.enabled = enabled;
         if (!enabled) {
+            if (output.display) |display| display.disable();
             if (output.global) |global| global.remove();
             output.global = null;
             var index = self.output_sessions.items.len;
@@ -4529,6 +4593,426 @@ const Compositor = struct {
             if (device.kind == .control or device.resource.client == focus_client) device.offer(source, is_primary);
         }
     }
+};
+
+// ------------------------------------------------------------------ DRM backend
+
+/// Runs on the displays, as wlroots' DRM and libinput backends with a logind
+/// session: software-composited frames are scanned out from dumb buffers.
+const Drm = struct {
+    const kms = @import("desktop-drm.zig");
+    const logind = @import("desktop-logind.zig");
+    const li = @import("desktop-libinput.zig");
+
+    comp: *Compositor,
+    session: *logind.Session,
+    card: *kms.Card,
+    card_device: logind.Device,
+    udev: *li.Udev,
+    monitor: ?*li.UdevMonitor = null,
+    input: ?*li.Libinput = null,
+    /// Input devices opened through the session, closed with it.
+    devices: std.ArrayList(logind.Device) = .empty,
+    sources: std.ArrayList(*wire.Loop.Source) = .empty,
+    active: bool = true,
+    /// The pointer image last sent to the cursor plane.
+    cursor_surface: ?*Surface = null,
+
+    const interface: li.Interface = .{ .open_restricted = openRestricted, .close_restricted = closeRestricted };
+
+    fn create(comp: *Compositor) !*Drm {
+        const a = comp.a;
+        const self = try a.create(Drm);
+        errdefer a.destroy(self);
+        self.* = .{ .comp = comp, .session = undefined, .card = undefined, .card_device = undefined, .udev = undefined };
+        self.session = logind.Session.open(a, .{ .context = self, .pause = paused, .@"resume" = resumed, .active = activeChanged }) catch |err| {
+            std.log.err("compositor: no logind session to take control of: {s}", .{@errorName(err)});
+            return err;
+        };
+        errdefer self.session.close();
+        try self.openCard();
+        errdefer {
+            self.card.deinit();
+            self.session.releaseDevice(self.card_device);
+        }
+        self.card.on_remove = unplugged;
+        self.card.remove_context = self;
+        self.udev = li.udev_new() orelse return error.NoUdev;
+        try self.watch(self.session.getFd(), sessionReadable);
+        try self.watch(self.card.fd, cardReadable);
+        // Display hotplug arrives as udev "change" events on the card.
+        if (li.udev_monitor_new_from_netlink(self.udev, "udev")) |monitor| {
+            _ = li.udev_monitor_filter_add_match_subsystem_devtype(monitor, "drm", null);
+            _ = li.udev_monitor_enable_receiving(monitor);
+            self.monitor = monitor;
+            try self.watch(li.udev_monitor_get_fd(monitor), hotplug);
+        }
+        if (li.libinput_udev_create_context(&interface, self, self.udev)) |input| {
+            const seat = std.c.getenv("XDG_SEAT") orelse "seat0";
+            if (li.libinput_udev_assign_seat(input, seat) == 0) {
+                self.input = input;
+                try self.watch(li.libinput_get_fd(input), inputReadable);
+            } else _ = li.libinput_unref(input);
+        }
+        if (self.input == null) std.log.warn("compositor: no input devices (libinput)", .{});
+        return self;
+    }
+
+    /// Takes the first card with a connected display.
+    fn openCard(self: *Drm) !void {
+        var path_buffer: [32]u8 = undefined;
+        for (0..16) |index| {
+            const path = std.fmt.bufPrintSentinel(&path_buffer, "/dev/dri/card{d}", .{index}, 0) catch unreachable;
+            if (std.c.access(path, 0) != 0) continue;
+            const device = self.session.takeDevice(path) catch continue;
+            const card = kms.Card.init(self.comp.a, device.fd) catch {
+                self.session.releaseDevice(device);
+                continue;
+            };
+            var added: std.ArrayList(*kms.Display) = .empty;
+            defer added.deinit(self.comp.a);
+            card.scan(&added) catch {};
+            if (added.items.len == 0) {
+                card.deinit();
+                self.session.releaseDevice(device);
+                continue;
+            }
+            self.card = card;
+            self.card_device = device;
+            for (added.items) |display| try self.addDisplay(display);
+            return;
+        }
+        std.log.err("compositor: no display connected to any /dev/dri card", .{});
+        return error.NoDisplays;
+    }
+
+    fn watch(self: *Drm, fd: i32, callback: *const fn (?*anyopaque, u32) void) !void {
+        try self.sources.append(self.comp.a, try self.comp.server.loop.add(fd, std.os.linux.EPOLL.IN, self, callback));
+    }
+
+    /// Shows a display as an output: a returning one gets its old output back.
+    fn addDisplay(self: *Drm, display: *kms.Display) !void {
+        const comp = self.comp;
+        display.on_flip = flipped;
+        for (comp.outputs.items) |output| if (output.display == null and std.mem.eql(u8, output.name(), display.name())) {
+            output.display = display;
+            display.context = output;
+            output.configure(output.scale, .{ display.width(), display.height() }, null);
+            comp.setOutputEnabled(output, true);
+            comp.outputChanged();
+            return;
+        };
+        const output = try Output.create(comp, comp.outputs.items.len, display.width(), display.height());
+        output.display = display;
+        display.context = output;
+        output.setName(display.name());
+        output.make = "Display";
+        output.refresh = @intCast(display.mode.refreshMilli());
+        output.physical = .{ @intCast(display.mm_width), @intCast(display.mm_height) };
+        // New displays go to the right of the others, as wlroots' auto layout places them.
+        var right: i32 = 0;
+        for (comp.outputs.items) |other| if (other.enabled) {
+            right = @max(right, other.x + other.logicalWidth());
+        };
+        output.x = right;
+        output.usable = output.box();
+        try comp.outputs.append(comp.a, output);
+        // Outputs created after start-up are announced like hotplugged ones.
+        if (comp.started) {
+            for (comp.head_managers.items) |manager| manager.announce(output);
+            comp.outputChanged();
+            comp.arrange();
+            output.scheduleRepaint();
+        }
+    }
+
+    fn unplugged(context: ?*anyopaque, display: *kms.Display) void {
+        const self: *Drm = @ptrCast(@alignCast(context));
+        for (self.comp.outputs.items) |output| if (output.display == display) {
+            output.display = null;
+            self.comp.setOutputEnabled(output, false);
+            self.comp.outputChanged();
+        };
+    }
+
+    fn flipped(context: ?*anyopaque) void {
+        const output: *Output = @ptrCast(@alignCast(context));
+        if (output.unpresented) output.present();
+    }
+
+    /// Presents an output's frame, or remembers to once the display is ready.
+    fn present(output: *Output) void {
+        const display = output.display orelse return;
+        output.unpresented = !display.present(output.pixels);
+    }
+
+    // ---------------------------------------------------------- Cursor
+
+    /// Sends the pointer image to the cursor plane: the client's cursor
+    /// surface, a built-in arrow, or nothing when the client hid it.
+    fn updateCursor(self: *Drm) void {
+        const seat = &self.comp.seat;
+        switch (seat.cursor_mode) {
+            .hidden => self.card.setCursor(null, 0, .{ 0, 0 }),
+            .surface => if (seat.cursor) |surface| {
+                if (!surface.mapped()) return self.card.setCursor(null, 0, .{ 0, 0 });
+                const scale = @max(1, surface.scale);
+                self.card.setCursor(surface.pixels, surface.width, .{ seat.cursor_hotspot[0] * scale, seat.cursor_hotspot[1] * scale });
+            } else self.card.setCursor(null, 0, .{ 0, 0 }),
+            .default => self.card.setCursor(&default_cursor.data, default_cursor.width_pixels, .{ 0, 0 }),
+        }
+        self.moveCursor();
+    }
+
+    fn moveCursor(self: *Drm) void {
+        const seat = &self.comp.seat;
+        for (self.comp.outputs.items) |output| if (output.display) |display| {
+            const x = (seat.pointer_x - @as(f64, @floatFromInt(output.x))) * output.scale;
+            const y = (seat.pointer_y - @as(f64, @floatFromInt(output.y))) * output.scale;
+            // The plane is placed by its top-left corner.
+            display.moveCursor(@as(i32, @intFromFloat(@floor(x))) - self.card.cursor_hotspot[0], @as(i32, @intFromFloat(@floor(y))) - self.card.cursor_hotspot[1]);
+        };
+    }
+
+    // ---------------------------------------------------------- Session
+
+    fn sessionReadable(data: ?*anyopaque, _: u32) void {
+        const self: *Drm = @ptrCast(@alignCast(data));
+        self.session.dispatch();
+    }
+
+    /// Handles signals that arrived during blocking session calls.
+    fn idle(self: *Drm) void {
+        if (self.session.backlog) self.session.dispatch();
+    }
+
+    fn paused(context: ?*anyopaque, major: u32, minor: u32) void {
+        const self: *Drm = @ptrCast(@alignCast(context));
+        std.log.info("compositor: session paused device {d}:{d}", .{ major, minor });
+        if (major == self.card_device.major and minor == self.card_device.minor) {
+            self.card.pause();
+            // The card pauses when the session is switched away, as wlroots' logind backend took it.
+            setActive(self, false);
+        }
+    }
+
+    fn resumed(context: ?*anyopaque, major: u32, minor: u32, fd: i32) void {
+        const self: *Drm = @ptrCast(@alignCast(context));
+        std.log.info("compositor: session resumed device {d}:{d}", .{ major, minor });
+        // The card keeps its descriptor; logind made it master again.
+        _ = std.c.close(fd);
+        if (major != self.card_device.major or minor != self.card_device.minor) return;
+        self.card.resumeWith(self.card.fd);
+        setActive(self, true);
+        for (self.comp.outputs.items) |output| if (output.display != null) {
+            output.unpresented = true;
+            output.scheduleRepaint();
+        };
+        self.updateCursor();
+    }
+
+    fn activeChanged(context: ?*anyopaque, active: bool) void {
+        setActive(@ptrCast(@alignCast(context)), active);
+    }
+
+    /// Switching VTs: input devices close with the session and reopen on return.
+    fn setActive(self: *Drm, active: bool) void {
+        if (self.active == active) return;
+        self.active = active;
+        std.log.info("compositor: session {s}", .{if (active) "active" else "inactive"});
+        const seat = &self.comp.seat;
+        if (self.input) |input| {
+            if (active) _ = li.libinput_resume(input) else li.libinput_suspend(input);
+        }
+        if (!active) {
+            // Keys held while switching away are released.
+            seat.held = @splat(0);
+            seat.setModifiers(seat.default_keymap, .{ 0, 0, seat.modifiers[2], seat.modifiers[3] });
+        }
+    }
+
+    // ---------------------------------------------------------- Displays
+
+    fn cardReadable(data: ?*anyopaque, _: u32) void {
+        const self: *Drm = @ptrCast(@alignCast(data));
+        self.card.dispatch();
+    }
+
+    fn hotplug(data: ?*anyopaque, _: u32) void {
+        const self: *Drm = @ptrCast(@alignCast(data));
+        const monitor = self.monitor orelse return;
+        while (li.udev_monitor_receive_device(monitor)) |device| _ = li.udev_device_unref(device);
+        var added: std.ArrayList(*kms.Display) = .empty;
+        defer added.deinit(self.comp.a);
+        self.card.scan(&added) catch return;
+        for (added.items) |display| self.addDisplay(display) catch {};
+        self.updateCursor();
+    }
+
+    // ---------------------------------------------------------- Input
+
+    fn openRestricted(path: [*:0]const u8, flags: c_int, user_data: ?*anyopaque) callconv(.c) c_int {
+        _ = flags;
+        const self: *Drm = @ptrCast(@alignCast(user_data));
+        const device = self.session.takeDevice(path) catch return -@as(c_int, @backingInt(std.os.linux.E.ACCES));
+        // libinput expects non-blocking descriptors.
+        const current = std.c.fcntl(device.fd, std.c.F.GETFL);
+        _ = std.c.fcntl(device.fd, std.c.F.SETFL, current | @as(c_int, @bitCast(std.c.O{ .NONBLOCK = true })));
+        self.devices.append(self.comp.a, device) catch {};
+        return device.fd;
+    }
+
+    fn closeRestricted(fd: c_int, user_data: ?*anyopaque) callconv(.c) void {
+        const self: *Drm = @ptrCast(@alignCast(user_data));
+        for (self.devices.items, 0..) |device, index| if (device.fd == fd) {
+            _ = self.devices.swapRemove(index);
+            self.session.releaseDevice(device);
+            return;
+        };
+        _ = std.c.close(fd);
+    }
+
+    fn inputReadable(data: ?*anyopaque, _: u32) void {
+        const self: *Drm = @ptrCast(@alignCast(data));
+        const input = self.input orelse return;
+        _ = li.libinput_dispatch(input);
+        var moved = false;
+        while (li.libinput_get_event(input)) |event| {
+            defer li.libinput_event_destroy(event);
+            moved = self.handleInput(event) or moved;
+        }
+        if (moved) self.comp.seat.frame();
+    }
+
+    /// Returns whether a pointer frame should follow.
+    fn handleInput(self: *Drm, event: *li.Event) bool {
+        const seat = &self.comp.seat;
+        const kind = li.libinput_event_get_type(event);
+        switch (kind) {
+            li.EventType.device_added => {
+                const device = li.libinput_event_get_device(event);
+                // Touchpads keep the desktop's settings: no tap to click, natural scrolling.
+                if (li.libinput_device_config_tap_get_finger_count(device) > 0) {
+                    _ = li.libinput_device_config_tap_set_enabled(device, li.tap_disabled);
+                    _ = li.libinput_device_config_scroll_set_natural_scroll_enabled(device, 1);
+                }
+            },
+            li.EventType.keyboard_key => {
+                const key = li.libinput_event_get_keyboard_event(event);
+                const code = li.libinput_event_keyboard_get_key(key);
+                const pressed = li.libinput_event_keyboard_get_key_state(key) == 1;
+                if (pressed and self.switchVt(code)) return false;
+                seat.key(seat.default_keymap, li.libinput_event_keyboard_get_time(key), code, @intFromBool(pressed), null);
+            },
+            li.EventType.pointer_motion => {
+                const pointer = li.libinput_event_get_pointer_event(event);
+                seat.moveTo(seat.pointer_x + li.libinput_event_pointer_get_dx(pointer), seat.pointer_y + li.libinput_event_pointer_get_dy(pointer), li.libinput_event_pointer_get_time(pointer));
+                return true;
+            },
+            li.EventType.pointer_motion_absolute => {
+                // Tablets and virtual machines' pointers span the whole layout.
+                const pointer = li.libinput_event_get_pointer_event(event);
+                const b = self.comp.layoutBox();
+                const x = li.libinput_event_pointer_get_absolute_x_transformed(pointer, @intCast(@max(1, b.width)));
+                const y = li.libinput_event_pointer_get_absolute_y_transformed(pointer, @intCast(@max(1, b.height)));
+                seat.moveTo(@as(f64, @floatFromInt(b.x)) + x, @as(f64, @floatFromInt(b.y)) + y, li.libinput_event_pointer_get_time(pointer));
+                return true;
+            },
+            li.EventType.pointer_button => {
+                const pointer = li.libinput_event_get_pointer_event(event);
+                seat.button(li.libinput_event_pointer_get_time(pointer), li.libinput_event_pointer_get_button(pointer), li.libinput_event_pointer_get_button_state(pointer) == 1);
+                return true;
+            },
+            li.EventType.pointer_scroll_wheel, li.EventType.pointer_scroll_finger, li.EventType.pointer_scroll_continuous => {
+                const pointer = li.libinput_event_get_pointer_event(event);
+                const time = li.libinput_event_pointer_get_time(pointer);
+                var scrolled = false;
+                for ([_]c_int{ li.axis_vertical, li.axis_horizontal }) |axis| {
+                    if (li.libinput_event_pointer_has_axis(pointer, axis) == 0) continue;
+                    const value = li.libinput_event_pointer_get_scroll_value(pointer, axis);
+                    var discrete: ?i32 = null;
+                    if (kind == li.EventType.pointer_scroll_wheel) {
+                        const v120 = li.libinput_event_pointer_get_scroll_value_v120(pointer, axis);
+                        if (@rem(v120, 120) == 0) discrete = @intFromFloat(v120 / 120);
+                    }
+                    seat.axis(time, @intCast(axis), value, discrete);
+                    scrolled = true;
+                }
+                return scrolled;
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    /// Ctrl+Alt+Fn switches virtual terminals.
+    fn switchVt(self: *Drm, code: u32) bool {
+        const seat = &self.comp.seat;
+        const map = seat.default_keymap.map orelse return false;
+        var state: xkb.State = .{ .keymap = map };
+        state.update(seat.modifiers[0], seat.modifiers[1], seat.modifiers[2], seat.modifiers[3]);
+        const sym = state.keysym(code + 8);
+        if (sym < keysyms.XF86Switch_VT_1 or sym > keysyms.XF86Switch_VT_12) return false;
+        if (code < seat.consumed.len) seat.consumed[code] = true;
+        self.session.switchTo(sym - keysyms.XF86Switch_VT_1 + 1);
+        return true;
+    }
+
+    fn destroy(self: *Drm) void {
+        const a = self.comp.a;
+        for (self.sources.items) |source| self.comp.server.loop.remove(source);
+        self.sources.deinit(a);
+        if (self.input) |input| _ = li.libinput_unref(input);
+        for (self.devices.items) |device| self.session.releaseDevice(device);
+        self.devices.deinit(a);
+        if (self.monitor) |monitor| _ = li.udev_monitor_unref(monitor);
+        _ = li.udev_unref(self.udev);
+        for (self.comp.outputs.items) |output| output.display = null;
+        self.card.deinit();
+        self.session.releaseDevice(self.card_device);
+        self.session.close();
+        a.destroy(self);
+    }
+};
+
+/// The pointer shown over the desktop and for cursor-shape clients: a
+/// white arrow with a black outline, premultiplied ARGB.
+const default_cursor = blk: {
+    const rows = [_][]const u8{
+        "X           ",
+        "XX          ",
+        "X.X         ",
+        "X..X        ",
+        "X...X       ",
+        "X....X      ",
+        "X.....X     ",
+        "X......X    ",
+        "X.......X   ",
+        "X........X  ",
+        "X.........X ",
+        "X......XXXXX",
+        "X...X..X    ",
+        "X..XX..X    ",
+        "X.X  X..X   ",
+        "XX   X..X   ",
+        "X     X..X  ",
+        "      X..X  ",
+        "       XX   ",
+    };
+    const width = 12;
+    var pixels: [width * rows.len]u32 = undefined;
+    for (rows, 0..) |row, y| for (row, 0..) |char, x| {
+        pixels[y * width + x] = switch (char) {
+            'X' => 0xff000000,
+            '.' => 0xffffffff,
+            else => 0,
+        };
+    };
+    const image: [pixels.len]u32 = pixels;
+    break :blk struct {
+        const data = image;
+        const width_pixels = width;
+    };
 };
 
 // ------------------------------------------------------------------ Nested backend
@@ -4922,6 +5406,7 @@ pub const Handle = struct {
             server.dispatch(-1);
             if (output.frames != before) self.publish(output);
             if (comp.nested) |nested| nested.flush();
+            if (comp.drm) |display_backend| display_backend.idle();
         }
         // A shortcut or failure that ends the compositor also ends the UI and the session.
         if (self.mode == .session and !self.stopping.load(.acquire)) _ = std.c.kill(libc.getpid(), std.c.SIG.TERM);
@@ -5125,6 +5610,8 @@ const keysyms = struct {
     const e: u32 = 0x65;
     const E: u32 = 0x45;
     const l: u32 = 0x6c;
+    const XF86Switch_VT_1: u32 = 0x1008fe01;
+    const XF86Switch_VT_12: u32 = 0x1008fe0c;
     const XF86MonBrightnessUp: u32 = 0x1008ff02;
     const XF86MonBrightnessDown: u32 = 0x1008ff03;
     const XF86AudioLowerVolume: u32 = 0x1008ff11;

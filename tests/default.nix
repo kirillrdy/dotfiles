@@ -1,6 +1,11 @@
 { pkgs }:
 {
   desktop = import ./desktop-vm.nix { inherit pkgs; };
+  desktop-native = import ./desktop-vm.nix {
+    pkgs = pkgs // {
+      desktopNativeCompositor = true;
+    };
+  };
 }
 // pkgs.lib.genAttrs [
   "audio"
