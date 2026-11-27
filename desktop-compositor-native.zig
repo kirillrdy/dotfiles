@@ -1470,6 +1470,8 @@ const Output = struct {
     fn render(self: *Output) void {
         const comp = self.comp;
         if (!self.enabled) return;
+        // A display turned off on the lock screen shows nothing until woken.
+        if (comp.blanked and self.display != null) return;
         if (self.target != null) if (self.display) |display| if (display.flipping or !display.card.active) {
             // The GPU draws the next frame once the last one is on screen.
             self.unpresented = true;
@@ -2683,6 +2685,7 @@ const Lock = struct {
                 if (!self.acknowledged) return resource.postError(ws.ext_session_lock_v1.Error.invalid_unlock, "unlock before locked", .{});
                 self.unlocked = true;
                 comp.locked = false;
+                comp.wakeDisplays(false);
                 comp.updateInhibition();
                 comp.refocus();
                 comp.updateKeyboardFocus();
@@ -3363,6 +3366,9 @@ const Compositor = struct {
     cursor_cache: std.ArrayList(struct { shape: u32, size: u32, image: ?Xcursor.Image }) = .empty,
     cursor_path: [4096]u8 = undefined,
     cursor_path_len: usize = 0,
+    /// Turns displays off while locked; set while they are off.
+    blank_timer: ?*wire.Loop.Source = null,
+    blanked: bool = false,
     /// Set once start-up finished; later outputs are hotplugged.
     started: bool = false,
     seat: Seat = undefined,
@@ -3419,6 +3425,7 @@ const Compositor = struct {
         }
         self.seat = .{ .comp = self };
         try self.seat.init();
+        self.blank_timer = try self.server.loop.timer(self, &blankTimeout);
         self.ime = .{ .comp = self };
         const server = self.server;
         _ = try server.createGlobal(&ws.wl_compositor.interface, 6, self, &bindCompositor);
@@ -4158,6 +4165,7 @@ const Compositor = struct {
                 if (self.lock != null) return args.id.sendFinished();
                 self.lock = lock;
                 self.locked = true;
+                self.armBlank();
                 self.updateInhibition();
                 self.lock_serial +%= 1;
                 self.cycling = false;
@@ -4176,6 +4184,39 @@ const Compositor = struct {
     /// User input resets idle timers.
     fn activity(self: *Compositor) void {
         for (self.idle_notifications.items) |notification| notification.activity();
+        // Input on the lock screen lights the displays for another while.
+        if (self.locked) self.wakeDisplays(true);
+    }
+
+    /// Displays turn off a while after the lock screen is up, as the wlroots
+    /// compositor did, until input or unlocking.
+    const lock_blank_ms = 10_000;
+
+    fn armBlank(self: *Compositor) void {
+        if (self.blank_timer) |timer| wire.Loop.arm(timer, lock_blank_ms);
+    }
+
+    fn blankTimeout(data: ?*anyopaque, _: u32) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        if (!self.locked) return;
+        const lock = self.lock orelse return;
+        // Not before the lock screen has been shown.
+        if (!lock.acknowledged) return self.armBlank();
+        self.blanked = true;
+        for (self.outputs.items) |output| if (output.display) |display| display.disable();
+        if (self.drm != null) std.log.info("compositor: displays off on the lock screen", .{});
+    }
+
+    fn wakeDisplays(self: *Compositor, rearm: bool) void {
+        if (self.blank_timer) |timer| wire.Loop.arm(timer, if (rearm) lock_blank_ms else 0);
+        if (!self.blanked) return;
+        self.blanked = false;
+        if (self.drm != null) std.log.info("compositor: displays on", .{});
+        for (self.outputs.items) |output| if (output.display != null) {
+            output.unpresented = false;
+            output.scheduleRepaint();
+        };
+        self.cursorChanged();
     }
 
     /// Idle is inhibited by a visible window's inhibitor, never while locked.

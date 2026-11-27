@@ -200,6 +200,14 @@ pkgs.testers.runNixOSTest {
     with subtest("production lock authenticates using the VM's real PAM policy"):
         machine.succeed(user("systemd-run --user --unit=test-lock --setenv=WAYLAND_DEBUG=client desktop-zig lock"))
         machine.wait_until_succeeds("journalctl --no-pager _SYSTEMD_USER_UNIT=test-lock.service | grep -F '.locked()'")
+        if ${if native then "True" else "False"}:
+          # Displays turn off 10 s after the lock screen shows, and input wakes them.
+          machine.wait_until_succeeds("journalctl -b | grep -F 'compositor: displays off on the lock screen'", timeout=30)
+          machine.screenshot("desktop-lock-blanked")
+          machine.send_key("shift")
+          machine.wait_until_succeeds("journalctl -b | grep -F 'compositor: displays on'", timeout=10)
+          machine.sleep(1)
+          machine.screenshot("desktop-lock-woken")
         machine.succeed(user("wtype -d 10 incorrect -k Return"))
         machine.wait_until_succeeds("journalctl --no-pager | grep 'pam_unix(desktop-lock:auth): authentication failure'")
         machine.succeed(user("systemctl --user is-active test-lock.service"))
