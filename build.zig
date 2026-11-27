@@ -36,8 +36,12 @@ pub fn build(b: *std.Build) void {
         .{ .cwd_relative = b.fmt("{s}/staging/ext-image-capture-source/ext-image-capture-source-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml", .{protocol_dir}) },
         b.path("desktop-overview-v1.xml"),
-        // From wlroots: neither wayland-protocols nor wlr-protocols ships it.
+        // From wlroots: neither wayland-protocols nor wlr-protocols ships these.
         b.path("virtual-keyboard-unstable-v1.xml"),
+        b.path("input-method-unstable-v2.xml"),
+        .{ .cwd_relative = b.fmt("{s}/unstable/primary-selection/primary-selection-unstable-v1.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/staging/single-pixel-buffer/single-pixel-buffer-v1.xml", .{protocol_dir}) },
+        .{ .cwd_relative = b.fmt("{s}/stable/presentation-time/presentation-time.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/staging/xdg-activation/xdg-activation-v1.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/unstable/text-input/text-input-unstable-v3.xml", .{protocol_dir}) },
         .{ .cwd_relative = b.fmt("{s}/staging/cursor-shape/cursor-shape-v1.xml", .{protocol_dir}) },

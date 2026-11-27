@@ -189,12 +189,6 @@ pub fn main(init: std.process.Init) !void {
     defer if (managed_session) sessionControl(a, init.io, &.{ "systemctl", "--user", "stop", "desktop-session.target" }) catch {};
     const verb: []const u8 = if (args.len >= 2) args[1] else "";
     // `session` is `compositor` started by the systemd user unit, which owns desktop-session.target.
-    // DESKTOP_COMPOSITOR=native serves headless sessions with the wlroots-free compositor.
-    if (std.mem.eql(u8, verb, "compositor-only")) if (std.c.getenv("DESKTOP_COMPOSITOR")) |value| if (std.mem.eql(u8, std.mem.span(value), "native")) {
-        const native = try @import("desktop-compositor-native.zig").Handle.start(a);
-        native.wait();
-        return;
-    };
     if (std.mem.eql(u8, verb, "compositor") or std.mem.eql(u8, verb, "session") or std.mem.eql(u8, verb, "compositor-only")) {
         compositor = try @import("desktop-compositor.zig").Handle.start(a, if (std.mem.eql(u8, verb, "compositor-only")) .headless else .session);
         if (std.mem.eql(u8, verb, "compositor-only")) {

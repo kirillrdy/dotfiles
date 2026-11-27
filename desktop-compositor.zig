@@ -17,6 +17,7 @@ comptime {
 }
 const hot_corner = @import("desktop-hot-corner.zig");
 const gsettings = @import("desktop-gsettings.zig");
+const native_compositor = @import("desktop-compositor-native.zig");
 
 pub const Mode = enum { session, headless, greeter };
 
@@ -28,11 +29,21 @@ pub const Handle = struct {
     mode: Mode = .headless,
     stopping: std.atomic.Value(bool) = .init(false),
     socket: [108:0]u8 = @splat(0),
+    /// DESKTOP_COMPOSITOR=native serves the session with the wlroots-free compositor instead.
+    native: ?*native_compositor.Handle = null,
 
     pub fn start(allocator: std.mem.Allocator, mode: Mode) !*Handle {
         const self = try allocator.create(Handle);
         self.* = .{ .allocator = allocator, .mode = mode };
         errdefer allocator.destroy(self);
+        if (std.c.getenv("DESKTOP_COMPOSITOR")) |value| if (std.mem.eql(u8, std.mem.span(value), "native")) {
+            self.native = try native_compositor.Handle.start(allocator, switch (mode) {
+                .session => .session,
+                .headless => .headless,
+                .greeter => .greeter,
+            });
+            return self;
+        };
         if (c.pipe2(&self.ready, c.O_CLOEXEC) != 0) return error.CompositorPipe;
         defer {
             _ = c.close(self.ready[0]);
@@ -58,6 +69,10 @@ pub const Handle = struct {
         return self;
     }
     pub fn stop(self: *Handle) void {
+        if (self.native) |handle| {
+            handle.stop();
+            return self.allocator.destroy(self);
+        }
         self.stopping.store(true, .release);
         _ = c.write(self.stop_pipe[1], "x", 1);
         _ = c.pthread_join(self.thread, null);
@@ -66,6 +81,10 @@ pub const Handle = struct {
         self.allocator.destroy(self);
     }
     pub fn wait(self: *Handle) void {
+        if (self.native) |handle| {
+            handle.wait();
+            return self.allocator.destroy(self);
+        }
         _ = c.pthread_join(self.thread, null);
         _ = c.close(self.stop_pipe[0]);
         _ = c.close(self.stop_pipe[1]);

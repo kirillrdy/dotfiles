@@ -61,7 +61,9 @@ const Pool = struct {
 const Buffer = struct {
     comp: *Compositor,
     resource: ws.wl_buffer,
-    pool: *Pool,
+    /// Shared memory, or null for a single-pixel buffer of `solid` colour.
+    pool: ?*Pool,
+    solid: u32 = 0,
     offset: usize,
     width: u32,
     height: u32,
@@ -72,7 +74,8 @@ const Buffer = struct {
     fn write(self: *Buffer, pixels: []const u32, opaque_pixels: bool) bool {
         if (self.bytes() == null) return false;
         const size = self.offset + self.stride * self.height;
-        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, self.pool.fd, 0) orelse return false;
+        const pool = self.pool orelse return false;
+        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, pool.fd, 0) orelse return false;
         if (memory == libc.MAP_FAILED) return false;
         defer _ = libc.munmap(memory, size);
         const target: [*]u8 = @ptrCast(memory);
@@ -87,11 +90,12 @@ const Buffer = struct {
     /// file behind the mapping must not make the compositor fault.
     fn bytes(self: *Buffer) ?[]const u8 {
         const size = self.stride * self.height;
-        if (self.offset + size > self.pool.map.len) return null;
+        const pool = self.pool orelse return null;
+        if (self.offset + size > pool.map.len) return null;
         // The file must still cover the buffer, or reading it would fault.
-        const end = std.os.linux.lseek(self.pool.fd, 0, std.os.linux.SEEK.END);
+        const end = std.os.linux.lseek(pool.fd, 0, std.os.linux.SEEK.END);
         if (std.os.linux.errno(end) != .SUCCESS or end < self.offset + size) return null;
-        return self.pool.map[self.offset..][0..size];
+        return pool.map[self.offset..][0..size];
     }
 };
 
@@ -127,7 +131,7 @@ const Region = struct {
     }
 };
 
-const Role = enum { none, toplevel, popup, subsurface, cursor, layer, lock };
+const Role = enum { none, toplevel, popup, subsurface, cursor, layer, lock, ime_popup };
 
 const Surface = struct {
     comp: *Compositor,
@@ -137,6 +141,7 @@ const Surface = struct {
     subsurface: ?*Subsurface = null,
     layer: ?*Layer = null,
     lock_surface: ?*LockSurface = null,
+    ime_popup: ?*ImePopup = null,
     /// Pending state, applied on commit.
     /// Input regions; null accepts input everywhere on the surface.
     pending_input: ?[]Region.Op = null,
@@ -261,10 +266,28 @@ const Surface = struct {
         if (self.xdg) |xdg| xdg.committed();
         if (self.layer) |layer| layer.committed();
         if (self.lock_surface) |lock_surface| lock_surface.committed();
+        if (self.ime_popup != null) self.comp.ime.placePopups();
+        for (self.comp.presentations.items) |entry| if (entry.surface == self) {
+            entry.committed = true;
+        };
         self.comp.scheduleRepaint();
     }
 
     fn copy(self: *Surface, buffer: *Buffer) void {
+        if (buffer.pool == null) {
+            // A single-pixel buffer stretches to the viewport destination.
+            if (self.pixels.len != 1) {
+                self.comp.a.free(self.pixels);
+                self.pixels = self.comp.a.alloc(u32, 1) catch {
+                    self.pixels = &.{};
+                    return;
+                };
+            }
+            self.pixels[0] = buffer.solid;
+            self.width = 1;
+            self.height = 1;
+            return;
+        }
         const source = buffer.bytes() orelse {
             self.resource.postError(ws.wl_shm.Error.invalid_fd, "buffer storage shrank", .{});
             return;
@@ -299,6 +322,20 @@ const Surface = struct {
         if (self.input) |ops| std.heap.c_allocator.free(ops);
         if (self.pending_input) |ops| std.heap.c_allocator.free(ops);
         comp.seat.surfaceGone(self);
+        if (self.ime_popup) |popup| popup.surface = null;
+        for (comp.ime.texts.items) |text| if (text.entered == self) {
+            text.entered = null;
+        };
+        // Feedback for a surface that goes away is discarded.
+        var feedback = comp.presentations.items.len;
+        while (feedback > 0) {
+            feedback -= 1;
+            const entry = comp.presentations.items[feedback];
+            if (entry.surface != self) continue;
+            entry.surface = null;
+            _ = comp.presentations.swapRemove(feedback);
+            entry.resource.sendDiscarded();
+        }
         for (comp.idle_inhibitors.items) |inhibitor| if (inhibitor.surface == self) {
             inhibitor.surface = null;
         };
@@ -809,6 +846,7 @@ const Toplevel = struct {
             if (comp.cycle_selected == self) comp.cycle(false, comp.cycle_app);
             if (comp.cycle_origin == self) comp.cycle_origin = null;
             removeItem(*Toplevel, &comp.recent, self);
+            if (comp.cycling) comp.showSwitcher();
             for (self.handles.items) |h| {
                 h.resource.sendClosed();
                 h.toplevel = null;
@@ -1324,6 +1362,7 @@ const Output = struct {
             self.lock_serial = comp.lock_serial;
             if (comp.lock) |lock| lock.acknowledge();
         }
+        comp.presented(self);
         self.frames += 1;
         const time = nowMs();
         for (comp.surfaces.items) |surface| {
@@ -1620,6 +1659,7 @@ const Seat = struct {
             keyboard.sendEnter(server.nextSerial(), new.resource, &.{});
             keyboard.sendModifiers(server.nextSerial(), self.modifiers[0], self.modifiers[1], self.modifiers[2], self.modifiers[3]);
         };
+        self.comp.ime.focusChanged();
     }
 
     /// Sends `keymap` to every keyboard unless clients already have it.
@@ -1627,6 +1667,7 @@ const Seat = struct {
         if (keymap.fd == self.active_keymap.fd) return;
         self.active_keymap = keymap;
         for (self.keyboards.items) |keyboard| keyboard.sendKeymap(ws.wl_keyboard.KeymapFormat.xkb_v1, keymap.fd, keymap.size);
+        if (self.comp.ime.method) |method| if (method.grab) |grab| grab.sendKeymap(ws.wl_keyboard.KeymapFormat.xkb_v1, keymap.fd, keymap.size);
         // Modifiers are re-read under the new keymap, as wlroots does when the seat changes keyboards.
         const surface = self.keyboard_focus orelse return;
         for (self.keyboards.items) |keyboard| {
@@ -1634,7 +1675,7 @@ const Seat = struct {
         }
     }
 
-    fn key(self: *Seat, keymap: Keymap, time: u32, code: u32, state: u32) void {
+    fn key(self: *Seat, keymap: Keymap, time: u32, code: u32, state: u32, source: ?*wire.Client) void {
         self.comp.activity();
         self.useKeymap(keymap);
         const pressed = state == ws.wl_keyboard.KeyState.pressed;
@@ -1654,6 +1695,10 @@ const Seat = struct {
                 self.consumed[code] = false;
             }
         }
+        if (!handled) if (self.comp.ime.grabFor(source)) |grab| {
+            grab.sendKey(self.comp.server.nextSerial(), time, code, state);
+            handled = true;
+        };
         if (!handled) if (self.keyboard_focus) |surface| for (self.keyboards.items) |keyboard| {
             if (keyboard.client() == surface.resource.client()) keyboard.sendKey(self.comp.server.nextSerial(), time, code, state);
         };
@@ -1683,6 +1728,7 @@ const Seat = struct {
     fn setModifiers(self: *Seat, keymap: Keymap, values: [4]u32) void {
         self.useKeymap(keymap);
         self.modifiers = values;
+        if (self.comp.ime.grabFor(null)) |grab| grab.sendModifiers(self.comp.server.nextSerial(), values[0], values[1], values[2], values[3]);
         // Releasing Alt or Super confirms the switcher selection.
         if (self.comp.cycling) if (keymap.map) |map| {
             var xkb_state: xkb.State = .{ .keymap = map };
@@ -1788,7 +1834,7 @@ const VirtualKeyboard = struct {
             },
             .key => |args| {
                 const keymap = self.keymap orelse return resource.postError(ws.zwp_virtual_keyboard_v1.Error.no_keymap, "no keymap set", .{});
-                seat.key(keymap, args.time, args.key, args.state);
+                seat.key(keymap, args.time, args.key, args.state, resource.client());
             },
             .modifiers => |args| {
                 const keymap = self.keymap orelse return resource.postError(ws.zwp_virtual_keyboard_v1.Error.no_keymap, "no keymap set", .{});
@@ -1928,7 +1974,8 @@ const CaptureFrame = struct {
         const output = self.output;
         output.flush();
         const size = buffer.offset + buffer.stride * height;
-        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, buffer.pool.fd, 0) orelse return resource.sendFailed();
+        const pool = buffer.pool orelse return resource.sendFailed();
+        const memory = libc.mmap(null, size, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, pool.fd, 0) orelse return resource.sendFailed();
         if (memory == libc.MAP_FAILED) return resource.sendFailed();
         defer _ = libc.munmap(memory, size);
         if (buffer.bytes() == null) return resource.sendFailed();
@@ -2214,6 +2261,7 @@ const ListHandle = struct {
 /// An ext_image_capture_source_v1 for one window.
 const CaptureSource = struct {
     toplevel: ?*Toplevel,
+    output: ?*Output = null,
 
     fn destroyed(self: *CaptureSource, _: ws.ext_image_capture_source_v1) void {
         std.heap.c_allocator.destroy(self);
@@ -2225,6 +2273,8 @@ const CaptureSession = struct {
     comp: *Compositor,
     resource: ws.ext_image_copy_capture_session_v1,
     toplevel: ?*Toplevel,
+    /// Set for output captures instead of `toplevel`.
+    output: ?*Output = null,
     width: u32 = 0,
     height: u32 = 0,
 
@@ -2238,8 +2288,7 @@ const CaptureSession = struct {
     }
 
     fn constraints(self: *CaptureSession) void {
-        const toplevel = self.toplevel orelse return;
-        const dimensions = size(toplevel);
+        const dimensions: [2]u32 = if (self.output) |output| .{ output.width, output.height } else if (self.toplevel) |toplevel| size(toplevel) else return;
         self.width = dimensions[0];
         self.height = dimensions[1];
         self.resource.sendBufferSize(self.width, self.height);
@@ -2261,10 +2310,12 @@ const CaptureSession = struct {
 
     fn stop(self: *CaptureSession) void {
         self.toplevel = null;
+        self.output = null;
         self.resource.sendStopped();
     }
 
     fn destroyed(self: *CaptureSession, _: ws.ext_image_copy_capture_session_v1) void {
+        removeItem(*CaptureSession, &self.comp.output_sessions, self);
         if (self.toplevel) |toplevel| removeItem(*CaptureSession, &toplevel.sessions, self);
         self.comp.a.destroy(self);
     }
@@ -2290,15 +2341,19 @@ const CopyFrame = struct {
     fn copy(self: *CopyFrame, resource: ws.ext_image_copy_capture_frame_v1) void {
         const Reason = ws.ext_image_copy_capture_frame_v1.FailureReason;
         const session = self.session orelse return resource.sendFailed(Reason.stopped);
-        const toplevel = session.toplevel orelse return resource.sendFailed(Reason.stopped);
         const buffer = self.buffer orelse return resource.sendFailed(Reason.buffer_constraints);
+        if (session.output == null and session.toplevel == null) return resource.sendFailed(Reason.stopped);
         if (buffer.width != session.width or buffer.height != session.height or buffer.stride < buffer.width * 4 or (buffer.format != ws.wl_shm.Format.argb8888 and buffer.format != ws.wl_shm.Format.xrgb8888))
             return resource.sendFailed(Reason.buffer_constraints);
         const comp = session.comp;
         const pixels = comp.a.alloc(u32, @as(usize, buffer.width) * buffer.height) catch return resource.sendFailed(Reason.unknown);
         defer comp.a.free(pixels);
         @memset(pixels, 0);
-        if (!toplevel.render(.{ .pixels = pixels, .width = buffer.width, .height = buffer.height })) return resource.sendFailed(Reason.unknown);
+        if (session.output) |output| {
+            output.flush();
+            if (output.pixels.len != pixels.len) return resource.sendFailed(Reason.buffer_constraints);
+            @memcpy(pixels, output.pixels);
+        } else if (!session.toplevel.?.render(.{ .pixels = pixels, .width = buffer.width, .height = buffer.height })) return resource.sendFailed(Reason.unknown);
         if (!buffer.write(pixels, buffer.format == ws.wl_shm.Format.xrgb8888)) return resource.sendFailed(Reason.unknown);
         resource.sendTransform(ws.wl_output.Transform.normal);
         resource.sendDamage(0, 0, @intCast(buffer.width), @intCast(buffer.height));
@@ -2545,13 +2600,309 @@ const IdleInhibitor = struct {
     }
 };
 
+// ------------------------------------------------------------------ Presentation
+
+/// A wp_presentation_feedback waiting for its surface's commit to be shown.
+const Presentation = struct {
+    comp: *Compositor,
+    resource: ws.wp_presentation_feedback,
+    surface: ?*Surface,
+    /// Set by the surface's next commit; earlier frames do not show it.
+    committed: bool = false,
+
+    fn destroyed(self: *Presentation, _: ws.wp_presentation_feedback) void {
+        removeItem(*Presentation, &self.comp.presentations, self);
+        self.comp.a.destroy(self);
+    }
+};
+
+// ------------------------------------------------------------------ Input method
+
+/// A zwp_text_input_v3 with its double-buffered state.
+const TextInput = struct {
+    comp: *Compositor,
+    resource: ws.zwp_text_input_v3,
+    pending: State = .{},
+    current: State = .{},
+    commits: u32 = 0,
+    /// The surface this text input was sent enter for.
+    entered: ?*Surface = null,
+
+    const State = struct {
+        enabled: bool = false,
+        surrounding: [4000]u8 = undefined,
+        surrounding_len: usize = 0,
+        has_surrounding: bool = false,
+        cursor: i32 = 0,
+        anchor: i32 = 0,
+        cause: u32 = 0,
+        hint: u32 = 0,
+        purpose: u32 = 0,
+        rect: Rect = .{},
+    };
+
+    fn handle(self: *TextInput, _: ws.zwp_text_input_v3, request: ws.zwp_text_input_v3.Request) void {
+        switch (request) {
+            // Enabling starts from a fresh state, as the protocol requires.
+            .enable => self.pending = .{ .enabled = true },
+            .disable => self.pending.enabled = false,
+            .set_surrounding_text => |args| {
+                const length = @min(args.text.len, self.pending.surrounding.len);
+                @memcpy(self.pending.surrounding[0..length], args.text[0..length]);
+                self.pending.surrounding_len = length;
+                self.pending.has_surrounding = true;
+                self.pending.cursor = args.cursor;
+                self.pending.anchor = args.anchor;
+            },
+            .set_text_change_cause => |args| self.pending.cause = args.cause,
+            .set_content_type => |args| {
+                self.pending.hint = args.hint;
+                self.pending.purpose = args.purpose;
+            },
+            .set_cursor_rectangle => |args| self.pending.rect = .{ .x = args.x, .y = args.y, .width = args.width, .height = args.height },
+            .commit => {
+                self.current = self.pending;
+                self.commits +%= 1;
+                self.comp.ime.sync();
+            },
+            .set_available_actions, .show_input_panel, .hide_input_panel, .destroy => {},
+        }
+    }
+
+    /// Sends enter or leave so the text input follows keyboard focus.
+    fn follow(self: *TextInput, focus: ?*Surface) void {
+        const target = if (focus) |surface| (if (surface.resource.client() == self.resource.client()) surface else null) else null;
+        if (target == self.entered) return;
+        if (self.entered) |old| self.resource.sendLeave(old.resource);
+        self.entered = target;
+        if (target) |surface| self.resource.sendEnter(surface.resource);
+    }
+
+    fn destroyed(self: *TextInput, _: ws.zwp_text_input_v3) void {
+        const ime = &self.comp.ime;
+        removeItem(*TextInput, &ime.texts, self);
+        if (ime.active == self) ime.active = null;
+        ime.sync();
+        self.comp.a.destroy(self);
+    }
+};
+
+/// The zwp_input_method_v2 of the seat, if an input method is running.
+const InputMethod = struct {
+    comp: *Compositor,
+    resource: ws.zwp_input_method_v2,
+    commit_text: ?[]u8 = null,
+    preedit: ?[]u8 = null,
+    preedit_begin: i32 = 0,
+    preedit_end: i32 = 0,
+    delete_before: u32 = 0,
+    delete_after: u32 = 0,
+    /// Whether the compositor told it activate.
+    active: bool = false,
+    done_count: u32 = 0,
+    grab: ?ws.zwp_input_method_keyboard_grab_v2 = null,
+
+    fn handle(self: *InputMethod, _: ws.zwp_input_method_v2, request: ws.zwp_input_method_v2.Request) void {
+        const a = self.comp.a;
+        const ime = &self.comp.ime;
+        switch (request) {
+            .commit_string => |args| {
+                if (self.commit_text) |old| a.free(old);
+                self.commit_text = a.dupe(u8, args.text) catch null;
+            },
+            .set_preedit_string => |args| {
+                if (self.preedit) |old| a.free(old);
+                self.preedit = a.dupe(u8, args.text) catch null;
+                self.preedit_begin = args.cursor_begin;
+                self.preedit_end = args.cursor_end;
+            },
+            .delete_surrounding_text => |args| {
+                self.delete_before = args.before_length;
+                self.delete_after = args.after_length;
+            },
+            .commit => |args| {
+                defer self.reset();
+                // Only a commit answering the latest done applies to the focused text input.
+                if (args.serial != self.done_count or !self.active) return;
+                const text = ime.active orelse return;
+                if (!text.current.enabled or text.entered != self.comp.seat.keyboard_focus) return;
+                text.resource.sendPreeditString(self.preedit, self.preedit_begin, self.preedit_end);
+                text.resource.sendCommitString(self.commit_text);
+                text.resource.sendDeleteSurroundingText(self.delete_before, self.delete_after);
+                text.resource.sendDone(text.commits);
+            },
+            .get_input_popup_surface => |args| {
+                const surface = args.surface.data(Surface) orelse return;
+                if (surface.role != .none) return args.surface.postError(ws.zwp_input_method_v2.Error.role, "surface already has a role", .{});
+                const popup = create(ImePopup, self.comp, .{ .comp = self.comp, .resource = args.id, .surface = surface }) orelse return;
+                surface.role = .ime_popup;
+                surface.ime_popup = popup;
+                ime.popups.append(a, popup) catch {};
+                args.id.setHandler(ImePopup, popup, null, ImePopup.destroyed);
+                ime.placePopups();
+            },
+            .grab_keyboard => |args| {
+                const grab = args.keyboard;
+                grab.setHandler(InputMethod, self, null, grabGone);
+                self.grab = grab;
+                const keymap = self.comp.seat.active_keymap;
+                grab.sendKeymap(ws.wl_keyboard.KeymapFormat.xkb_v1, keymap.fd, keymap.size);
+                grab.sendRepeatInfo(25, 600);
+                const m = self.comp.seat.modifiers;
+                grab.sendModifiers(self.comp.server.nextSerial(), m[0], m[1], m[2], m[3]);
+            },
+            .destroy => {},
+        }
+    }
+
+    fn reset(self: *InputMethod) void {
+        const a = self.comp.a;
+        if (self.commit_text) |old| a.free(old);
+        if (self.preedit) |old| a.free(old);
+        self.commit_text = null;
+        self.preedit = null;
+        self.preedit_begin = 0;
+        self.preedit_end = 0;
+        self.delete_before = 0;
+        self.delete_after = 0;
+    }
+
+    fn grabGone(self: *InputMethod, _: ws.zwp_input_method_keyboard_grab_v2) void {
+        self.grab = null;
+    }
+
+    fn done(self: *InputMethod) void {
+        self.resource.sendDone();
+        self.done_count +%= 1;
+    }
+
+    fn destroyed(self: *InputMethod, _: ws.zwp_input_method_v2) void {
+        const ime = &self.comp.ime;
+        if (ime.method == self) {
+            ime.method = null;
+            // The text input loses the composition in progress.
+            if (ime.active) |text| {
+                text.resource.sendPreeditString("", 0, 0);
+                text.resource.sendDone(text.commits);
+            }
+        }
+        if (self.grab) |grab| grab.setHandler(InputMethod, self, null, null);
+        self.reset();
+        self.comp.a.destroy(self);
+    }
+};
+
+/// A zwp_input_popup_surface_v2, shown at the text cursor of the active text input.
+const ImePopup = struct {
+    comp: *Compositor,
+    resource: ws.zwp_input_popup_surface_v2,
+    surface: ?*Surface,
+    x: i32 = 0,
+    y: i32 = 0,
+    visible: bool = false,
+
+    fn destroyed(self: *ImePopup, _: ws.zwp_input_popup_surface_v2) void {
+        removeItem(*ImePopup, &self.comp.ime.popups, self);
+        if (self.surface) |surface| {
+            surface.ime_popup = null;
+            surface.role = .none;
+        }
+        self.comp.scheduleRepaint();
+        self.comp.a.destroy(self);
+    }
+};
+
+/// Relays between text inputs and the input method, as desktop-ime.zig did with wlroots.
+const Ime = struct {
+    comp: *Compositor,
+    texts: std.ArrayList(*TextInput) = .empty,
+    popups: std.ArrayList(*ImePopup) = .empty,
+    method: ?*InputMethod = null,
+    active: ?*TextInput = null,
+
+    fn deinit(self: *Ime) void {
+        self.texts.deinit(self.comp.a);
+        self.popups.deinit(self.comp.a);
+    }
+
+    /// Keyboard focus moved: text inputs follow it, then the method is updated.
+    fn focusChanged(self: *Ime) void {
+        for (self.texts.items) |text| text.follow(self.comp.seat.keyboard_focus);
+        self.sync();
+    }
+
+    /// Activates the input method for the enabled text input on the focused surface.
+    fn sync(self: *Ime) void {
+        const focus = self.comp.seat.keyboard_focus;
+        var next: ?*TextInput = null;
+        for (self.texts.items) |text| if (text.current.enabled and text.entered != null and text.entered == focus) {
+            next = text;
+            break;
+        };
+        const previous = self.active;
+        self.active = next;
+        if (self.method) |method| {
+            if ((previous != next or next == null) and method.active) {
+                method.active = false;
+                method.resource.sendDeactivate();
+                method.done();
+            }
+            if (next) |text| {
+                if (!method.active) {
+                    method.active = true;
+                    method.resource.sendActivate();
+                }
+                const state = &text.current;
+                if (state.has_surrounding) method.resource.sendSurroundingText(state.surrounding[0..state.surrounding_len], @intCast(@max(0, state.cursor)), @intCast(@max(0, state.anchor)));
+                method.resource.sendTextChangeCause(state.cause);
+                method.resource.sendContentType(state.hint, state.purpose);
+                method.done();
+            }
+        }
+        self.placePopups();
+    }
+
+    /// The keyboard grab keys go to instead of the focused client, if any.
+    /// Keys from the input method's own virtual keyboard still reach the client.
+    fn grabFor(self: *Ime, source: ?*wire.Client) ?ws.zwp_input_method_keyboard_grab_v2 {
+        const method = self.method orelse return null;
+        if (self.active == null or !method.active) return null;
+        if (source) |client| if (client == method.resource.client()) return null;
+        return method.grab;
+    }
+
+    /// Positions popups below the text cursor, or above it when there is no room.
+    fn placePopups(self: *Ime) void {
+        for (self.popups.items) |popup| {
+            popup.visible = false;
+            const text = self.active orelse continue;
+            const surface = text.entered orelse continue;
+            const popup_surface = popup.surface orelse continue;
+            const origin = self.comp.surfacePosition(surface) orelse continue;
+            const box: Rect = .{ .x = origin[0], .y = origin[1], .width = surface.logicalWidth(), .height = surface.logicalHeight() };
+            const rect = text.current.rect;
+            const width = popup_surface.logicalWidth();
+            const height = popup_surface.logicalHeight();
+            popup.x = std.math.clamp(box.x + rect.x, box.x, @max(box.x, box.x + box.width - width));
+            popup.y = if (rect.y + rect.height + height <= box.height) box.y + rect.y + rect.height else @max(box.y, box.y + rect.y - height);
+            popup.visible = true;
+            popup.resource.sendTextInputRectangle(rect.x + box.x - popup.x, rect.y + box.y - popup.y, rect.width, rect.height);
+        }
+        self.comp.scheduleRepaint();
+    }
+};
+
 // ------------------------------------------------------------------ Clipboard
 
-/// A selection source from wl_data_device or wlr-data-control; both share the selection.
+/// Which protocol a clipboard object belongs to.
+const Clip = enum { core, control, primary };
+
+/// A selection source. Core and data-control sources may become the selection;
+/// primary-selection and data-control sources may become the primary selection.
 const DataSource = struct {
     comp: *Compositor,
     resource: wire.Resource,
-    control: bool,
+    kind: Clip,
     mimes: std.ArrayList([]u8) = .empty,
     /// Offers made from this source; they stop working when it goes away.
     offers: std.ArrayList(*Offer) = .empty,
@@ -2576,12 +2927,27 @@ const DataSource = struct {
         }
     }
 
+    fn primaryRequest(self: *DataSource, _: ws.zwp_primary_selection_source_v1, request: ws.zwp_primary_selection_source_v1.Request) void {
+        switch (request) {
+            .offer => |args| self.addMime(args.mime_type),
+            .destroy => {},
+        }
+    }
+
     fn send(self: *DataSource, mime_type: []const u8, fd: wire.Fd) void {
-        if (self.control) (ws.zwlr_data_control_source_v1{ .resource = self.resource }).sendSend(mime_type, fd) else (ws.wl_data_source{ .resource = self.resource }).sendSend(mime_type, fd);
+        switch (self.kind) {
+            .core => (ws.wl_data_source{ .resource = self.resource }).sendSend(mime_type, fd),
+            .control => (ws.zwlr_data_control_source_v1{ .resource = self.resource }).sendSend(mime_type, fd),
+            .primary => (ws.zwp_primary_selection_source_v1{ .resource = self.resource }).sendSend(mime_type, fd),
+        }
     }
 
     fn cancel(self: *DataSource) void {
-        if (self.control) (ws.zwlr_data_control_source_v1{ .resource = self.resource }).sendCancelled() else (ws.wl_data_source{ .resource = self.resource }).sendCancelled();
+        switch (self.kind) {
+            .core => (ws.wl_data_source{ .resource = self.resource }).sendCancelled(),
+            .control => (ws.zwlr_data_control_source_v1{ .resource = self.resource }).sendCancelled(),
+            .primary => (ws.zwp_primary_selection_source_v1{ .resource = self.resource }).sendCancelled(),
+        }
     }
 
     fn gone(self: *DataSource) void {
@@ -2590,15 +2956,18 @@ const DataSource = struct {
         self.offers.deinit(comp.a);
         for (self.mimes.items) |mime| comp.a.free(mime);
         self.mimes.deinit(comp.a);
-        if (comp.selection == self) comp.setSelection(null);
+        if (comp.selection == self) comp.setSelection(null, false);
+        if (comp.primary_selection == self) comp.setSelection(null, true);
         comp.a.destroy(self);
     }
 
     fn coreGone(self: *DataSource, _: ws.wl_data_source) void {
         self.gone();
     }
-
     fn controlGone(self: *DataSource, _: ws.zwlr_data_control_source_v1) void {
+        self.gone();
+    }
+    fn primaryGone(self: *DataSource, _: ws.zwp_primary_selection_source_v1) void {
         self.gone();
     }
 };
@@ -2628,6 +2997,13 @@ const Offer = struct {
         }
     }
 
+    fn primaryRequest(self: *Offer, _: ws.zwp_primary_selection_offer_v1, request: ws.zwp_primary_selection_offer_v1.Request) void {
+        switch (request) {
+            .receive => |args| self.receive(args.mime_type, args.fd),
+            .destroy => {},
+        }
+    }
+
     fn gone(self: *Offer) void {
         if (self.source) |source| removeItem(*Offer, &source.offers, self);
         self.comp.a.destroy(self);
@@ -2636,8 +3012,10 @@ const Offer = struct {
     fn coreGone(self: *Offer, _: ws.wl_data_offer) void {
         self.gone();
     }
-
     fn controlGone(self: *Offer, _: ws.zwlr_data_control_offer_v1) void {
+        self.gone();
+    }
+    fn primaryGone(self: *Offer, _: ws.zwp_primary_selection_offer_v1) void {
         self.gone();
     }
 
@@ -2652,36 +3030,46 @@ const Offer = struct {
     }
 };
 
-/// A wl_data_device or a wlr-data-control device.
+/// A wl_data_device, primary-selection device or wlr-data-control device.
 const DataDevice = struct {
     comp: *Compositor,
     resource: wire.Resource,
-    control: bool,
+    kind: Clip,
 
-    fn setSelection(self: *DataDevice, source: ?*DataSource) void {
+    fn replace(self: *DataDevice, source: ?*DataSource, primary: bool) void {
         const comp = self.comp;
-        if (comp.selection == source) return;
-        if (comp.selection) |old| old.cancel();
-        comp.setSelection(source);
+        const current = if (primary) comp.primary_selection else comp.selection;
+        if (current == source) return;
+        if (current) |old| old.cancel();
+        comp.setSelection(source, primary);
     }
 
     fn coreRequest(self: *DataDevice, _: ws.wl_data_device, request: ws.wl_data_device.Request) void {
         switch (request) {
-            .set_selection => |args| self.setSelection(if (args.source) |resource| resource.data(DataSource) else null),
+            .set_selection => |args| self.replace(if (args.source) |resource| resource.data(DataSource) else null, false),
             .start_drag, .release => {},
+        }
+    }
+
+    fn primaryRequest(self: *DataDevice, _: ws.zwp_primary_selection_device_v1, request: ws.zwp_primary_selection_device_v1.Request) void {
+        switch (request) {
+            .set_selection => |args| self.replace(if (args.source) |resource| resource.data(DataSource) else null, true),
+            .destroy => {},
         }
     }
 
     fn controlRequest(self: *DataDevice, resource: ws.zwlr_data_control_device_v1, request: ws.zwlr_data_control_device_v1.Request) void {
         switch (request) {
-            .set_selection => |args| {
-                const source = if (args.source) |s| s.data(DataSource) else null;
-                if (source) |value| if (value == self.comp.selection) return resource.postError(ws.zwlr_data_control_device_v1.Error.used_source, "source already used", .{});
-                self.setSelection(source);
-            },
-            .set_primary_selection => {},
+            .set_selection => |args| self.controlSet(resource, args.source, false),
+            .set_primary_selection => |args| self.controlSet(resource, args.source, true),
             .destroy => {},
         }
+    }
+
+    fn controlSet(self: *DataDevice, resource: ws.zwlr_data_control_device_v1, source_resource: ?ws.zwlr_data_control_source_v1, primary: bool) void {
+        const source = if (source_resource) |s| s.data(DataSource) else null;
+        if (source) |value| if (value == self.comp.selection or value == self.comp.primary_selection) return resource.postError(ws.zwlr_data_control_device_v1.Error.used_source, "source already used", .{});
+        self.replace(source, primary);
     }
 
     fn gone(self: *DataDevice) void {
@@ -2692,32 +3080,56 @@ const DataDevice = struct {
     fn coreGone(self: *DataDevice, _: ws.wl_data_device) void {
         self.gone();
     }
-
     fn controlGone(self: *DataDevice, _: ws.zwlr_data_control_device_v1) void {
         self.gone();
     }
+    fn primaryGone(self: *DataDevice, _: ws.zwp_primary_selection_device_v1) void {
+        self.gone();
+    }
 
-    /// Sends the current selection to this device's client.
-    fn offer(self: *DataDevice, source: ?*DataSource) void {
+    /// Whether this device reports the selection, or the primary selection.
+    fn carries(self: *const DataDevice, primary: bool) bool {
+        return switch (self.kind) {
+            .core => !primary,
+            .primary => primary,
+            .control => !primary or self.resource.version() >= 2,
+        };
+    }
+
+    /// Sends a selection to this device's client.
+    fn offer(self: *DataDevice, source: ?*DataSource, primary: bool) void {
         const comp = self.comp;
-        if (self.control) {
-            const device: ws.zwlr_data_control_device_v1 = .{ .resource = self.resource };
-            const current = source orelse return device.sendSelection(null);
-            const record = Offer.make(comp, current) orelse return;
-            const resource = device.sendDataOffer();
-            if (!resource.alive()) return record.gone();
-            resource.setHandler(Offer, record, Offer.controlRequest, Offer.controlGone);
-            for (current.mimes.items) |mime| resource.sendOffer(mime);
-            device.sendSelection(resource);
-        } else {
-            const device: ws.wl_data_device = .{ .resource = self.resource };
-            const current = source orelse return device.sendSelection(null);
-            const record = Offer.make(comp, current) orelse return;
-            const resource = device.sendDataOffer();
-            if (!resource.alive()) return record.gone();
-            resource.setHandler(Offer, record, Offer.coreRequest, Offer.coreGone);
-            for (current.mimes.items) |mime| resource.sendOffer(mime);
-            device.sendSelection(resource);
+        switch (self.kind) {
+            .control => {
+                const device: ws.zwlr_data_control_device_v1 = .{ .resource = self.resource };
+                const current = source orelse return if (primary) device.sendPrimarySelection(null) else device.sendSelection(null);
+                const record = Offer.make(comp, current) orelse return;
+                const resource = device.sendDataOffer();
+                if (!resource.alive()) return record.gone();
+                resource.setHandler(Offer, record, Offer.controlRequest, Offer.controlGone);
+                for (current.mimes.items) |mime| resource.sendOffer(mime);
+                if (primary) device.sendPrimarySelection(resource) else device.sendSelection(resource);
+            },
+            .core => {
+                const device: ws.wl_data_device = .{ .resource = self.resource };
+                const current = source orelse return device.sendSelection(null);
+                const record = Offer.make(comp, current) orelse return;
+                const resource = device.sendDataOffer();
+                if (!resource.alive()) return record.gone();
+                resource.setHandler(Offer, record, Offer.coreRequest, Offer.coreGone);
+                for (current.mimes.items) |mime| resource.sendOffer(mime);
+                device.sendSelection(resource);
+            },
+            .primary => {
+                const device: ws.zwp_primary_selection_device_v1 = .{ .resource = self.resource };
+                const current = source orelse return device.sendSelection(null);
+                const record = Offer.make(comp, current) orelse return;
+                const resource = device.sendDataOffer();
+                if (!resource.alive()) return record.gone();
+                resource.setHandler(Offer, record, Offer.primaryRequest, Offer.primaryGone);
+                for (current.mimes.items) |mime| resource.sendOffer(mime);
+                device.sendSelection(resource);
+            },
         }
     }
 };
@@ -2727,8 +3139,13 @@ const DataDevice = struct {
 const Compositor = struct {
     a: std.mem.Allocator,
     server: *wire.Server,
+    /// Session compositors publish the switcher UI and end the session when they stop.
+    show_ui: bool = false,
+    /// The greeter serves the login screen without desktop shortcuts.
+    greeter: bool = false,
     outputs: std.ArrayList(*Output) = .empty,
     seat: Seat = undefined,
+    ime: Ime = undefined,
     surfaces: std.ArrayList(*Surface) = .empty,
     /// Mapped toplevels, bottom to top.
     toplevels: std.ArrayList(*Toplevel) = .empty,
@@ -2755,9 +3172,15 @@ const Compositor = struct {
     /// A layer surface given keyboard focus by a click (on-demand interactivity).
     focused_layer: ?*Layer = null,
     selection: ?*DataSource = null,
+    primary_selection: ?*DataSource = null,
     data_devices: std.ArrayList(*DataDevice) = .empty,
     foreign_managers: std.ArrayList(ws.zwlr_foreign_toplevel_manager_v1) = .empty,
     head_managers: std.ArrayList(*HeadManager) = .empty,
+    output_sessions: std.ArrayList(*CaptureSession) = .empty,
+    activation_tokens: std.ArrayList([24]u8) = .empty,
+    next_token: u64 = 0,
+    presentations: std.ArrayList(*Presentation) = .empty,
+    frame_sequence: u64 = 0,
     /// Changes whenever the output configuration does.
     output_serial: u32 = 1,
     background: u32 = 0xff303030,
@@ -2772,6 +3195,7 @@ const Compositor = struct {
         }
         self.seat = .{ .comp = self };
         try self.seat.init();
+        self.ime = .{ .comp = self };
         const server = self.server;
         _ = try server.createGlobal(&ws.wl_compositor.interface, 6, self, &bindCompositor);
         _ = try server.createGlobal(&ws.wl_subcompositor.interface, 1, self, &bindSubcompositor);
@@ -2780,7 +3204,8 @@ const Compositor = struct {
         _ = try server.createGlobal(&ws.zxdg_output_manager_v1.interface, 3, self, &bindOutputManager);
         _ = try server.createGlobal(&ws.wl_seat.interface, 9, &self.seat, &Seat.bind);
         _ = try server.createGlobal(&ws.wl_data_device_manager.interface, 3, self, &bindDataDeviceManager);
-        _ = try server.createGlobal(&ws.zwlr_data_control_manager_v1.interface, 1, self, &bindDataControlManager);
+        _ = try server.createGlobal(&ws.zwlr_data_control_manager_v1.interface, 2, self, &bindDataControlManager);
+        _ = try server.createGlobal(&ws.zwp_primary_selection_device_manager_v1.interface, 1, self, &bindPrimarySelection);
         _ = try server.createGlobal(&ws.zwlr_layer_shell_v1.interface, 4, self, &bindLayerShell);
         _ = try server.createGlobal(&ws.zwp_virtual_keyboard_manager_v1.interface, 1, self, &bindVirtualKeyboardManager);
         _ = try server.createGlobal(&ws.zwlr_virtual_pointer_manager_v1.interface, 2, self, &bindVirtualPointerManager);
@@ -2797,11 +3222,19 @@ const Compositor = struct {
         _ = try server.createGlobal(&ws.wp_fractional_scale_manager_v1.interface, 1, self, &bindFractionalScale);
         _ = try server.createGlobal(&ws.ext_idle_notifier_v1.interface, 2, self, &bindIdleNotifier);
         _ = try server.createGlobal(&ws.zwp_idle_inhibit_manager_v1.interface, 1, self, &bindIdleInhibit);
+        _ = try server.createGlobal(&ws.ext_output_image_capture_source_manager_v1.interface, 1, self, &bindOutputSources);
+        _ = try server.createGlobal(&ws.wp_single_pixel_buffer_manager_v1.interface, 1, self, &bindSinglePixel);
+        _ = try server.createGlobal(&ws.wp_cursor_shape_manager_v1.interface, 1, self, &bindCursorShape);
+        _ = try server.createGlobal(&ws.xdg_activation_v1.interface, 1, self, &bindActivation);
+        _ = try server.createGlobal(&ws.wp_presentation.interface, 1, self, &bindPresentation);
+        _ = try server.createGlobal(&ws.zwp_text_input_manager_v3.interface, 1, self, &bindTextInput);
+        _ = try server.createGlobal(&ws.zwp_input_method_manager_v2.interface, 1, self, &bindInputMethod);
         for (self.outputs.items) |output| output.render();
     }
 
     fn deinit(self: *Compositor) void {
         self.seat.deinit();
+        self.ime.deinit();
         self.surfaces.deinit(self.a);
         self.toplevels.deinit(self.a);
         self.recent.deinit(self.a);
@@ -2814,6 +3247,9 @@ const Compositor = struct {
         self.data_devices.deinit(self.a);
         self.foreign_managers.deinit(self.a);
         self.head_managers.deinit(self.a);
+        self.output_sessions.deinit(self.a);
+        self.activation_tokens.deinit(self.a);
+        self.presentations.deinit(self.a);
         for (self.outputs.items) |output| output.destroy();
         self.outputs.deinit(self.a);
     }
@@ -2866,7 +3302,11 @@ const Compositor = struct {
     /// Offers the selection to the newly focused client, as wlroots does on focus.
     fn sendSelection(self: *Compositor) void {
         const surface = self.seat.keyboard_focus orelse return;
-        for (self.data_devices.items) |device| if (!device.control and device.resource.client == surface.resource.client()) device.offer(self.selection);
+        for (self.data_devices.items) |device| {
+            if (device.kind == .control or device.resource.client != surface.resource.client()) continue;
+            if (device.carries(false)) device.offer(self.selection, false);
+            if (device.carries(true)) device.offer(self.primary_selection, true);
+        }
     }
 
     fn focus(self: *Compositor, toplevel: ?*Toplevel) void {
@@ -2943,7 +3383,7 @@ const Compositor = struct {
 
     /// Handles a key before clients see it; returns whether it was consumed.
     fn shortcut(self: *Compositor, sym: u32, mods: Mods, pressed: bool) bool {
-        if (self.locked) return false;
+        if (self.locked or self.greeter) return false;
         if (sym == keysyms.Super_L) {
             if (pressed) self.super_alone = true else {
                 if (self.super_alone) launch(self.a, "overview");
@@ -2969,8 +3409,14 @@ const Compositor = struct {
             switch (sym) {
                 keysyms.Escape => self.finishCycle(true),
                 keysyms.Return, keysyms.KP_Enter => self.finishCycle(false),
-                keysyms.Down => self.cycle_app = true,
-                keysyms.Up => self.cycle_app = false,
+                keysyms.Down => {
+                    self.cycle_app = true;
+                    self.showSwitcher();
+                },
+                keysyms.Up => {
+                    self.cycle_app = false;
+                    self.showSwitcher();
+                },
                 keysyms.Left, keysyms.Right => self.cycle(sym == keysyms.Left, self.cycle_app),
                 else => return false,
             }
@@ -2987,7 +3433,8 @@ const Compositor = struct {
                 keysyms.l => launch(self.a, "lock --daemonize"),
                 keysyms.e, keysyms.E => {
                     if (!mods.shift) return false;
-                    self.server.quit = true;
+                    // The UI thread ends a session; a bare compositor stops its loop.
+                    if (self.show_ui) _ = std.c.kill(libc.getpid(), std.c.SIG.TERM) else self.server.quit = true;
                 },
                 keysyms.Left, keysyms.Right, keysyms.Up, keysyms.Down => if (self.focused) |toplevel| {
                     toplevel.tile = if (sym == keysyms.Left) .left else if (sym == keysyms.Right) .right else .none;
@@ -3040,9 +3487,34 @@ const Compositor = struct {
             if (!same_app and self.representative(candidate) != candidate) continue;
             if (same_app) if (selected) |origin| if (!sameApp(origin, candidate)) continue;
             self.cycle_selected = candidate;
+            self.showSwitcher();
             return;
         }
         if (same_app) self.cycle(reverse, false) else self.finishCycle(true);
+    }
+
+    /// Publishes the switcher's contents to the UI thread.
+    fn showSwitcher(self: *Compositor) void {
+        if (!self.show_ui) return;
+        const ui = @import("desktop-switcher.zig");
+        var snapshot: ui.Snapshot = .{ .visible = true, .window_selection = self.cycle_app };
+        if (self.focusedOutput()) |output| {
+            const b = output.box();
+            snapshot.output_x = b.x + @divTrunc(b.width, 2);
+            snapshot.output_y = b.y + @divTrunc(b.height, 2);
+        }
+        for (self.recent.items) |toplevel| {
+            if (!toplevel.mapped or toplevel.workspace != self.workspace or snapshot.len == snapshot.items.len) continue;
+            var item = &snapshot.items[snapshot.len];
+            const label = if (toplevel.title.len > 0) toplevel.title else toplevel.app_id;
+            const id = toplevel.identifier();
+            @memcpy(item.id[0..@min(id.len, 255)], id[0..@min(id.len, 255)]);
+            @memcpy(item.app_id[0..@min(toplevel.app_id.len, 255)], toplevel.app_id[0..@min(toplevel.app_id.len, 255)]);
+            @memcpy(item.title[0..@min(label.len, 255)], label[0..@min(label.len, 255)]);
+            item.selected = toplevel == self.cycle_selected;
+            snapshot.len += 1;
+        }
+        @import("desktop-switcher.zig").publish(self.a, snapshot);
     }
 
     fn finishCycle(self: *Compositor, cancel: bool) void {
@@ -3050,6 +3522,7 @@ const Compositor = struct {
         self.cycling = false;
         self.cycle_origin = null;
         self.cycle_selected = null;
+        if (self.show_ui) @import("desktop-switcher.zig").publish(self.a, .{});
         if (selected) |toplevel| if (toplevel.mapped) {
             self.focused_layer = null;
             self.focus(toplevel);
@@ -3145,6 +3618,7 @@ const Compositor = struct {
             const geometry = xdg.windowGeometry();
             add(out, &count, xdg.surface, origin[0] + popup.rect.x - geometry.x, origin[1] + popup.rect.y - geometry.y);
         }
+        for (self.ime.popups.items) |popup| if (popup.visible) add(out, &count, popup.surface, popup.x, popup.y);
         for (self.layers.items) |layer| {
             if (layer.mapped and layer.current.layer == 3) add(out, &count, layer.surface, layer.rect.x, layer.rect.y);
         }
@@ -3313,7 +3787,7 @@ const Compositor = struct {
         for (comp.surfaces.items) |surface| if (surface.pending_buffer == buffer) {
             surface.pending_buffer = null;
         };
-        buffer.pool.unref();
+        if (buffer.pool) |pool| pool.unref();
         comp.a.destroy(buffer);
     }
 
@@ -3454,6 +3928,7 @@ const Compositor = struct {
                 self.cycle_selected = null;
                 self.super_alone = false;
                 self.dismissPopups();
+                if (self.show_ui) @import("desktop-switcher.zig").publish(self.a, .{});
                 self.seat.focusSurface(null);
                 self.seat.updatePointerFocus();
                 self.scheduleRepaint();
@@ -3521,6 +3996,188 @@ const Compositor = struct {
                 self.idle_inhibitors.append(self.a, inhibitor) catch {};
                 self.updateInhibition();
             },
+        }
+    }
+
+    fn bindOutputSources(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.ext_output_image_capture_source_manager_v1{ .resource = resource }).setHandler(Compositor, self, outputSourceRequest, null);
+    }
+
+    fn outputSourceRequest(self: *Compositor, _: ws.ext_output_image_capture_source_manager_v1, request: ws.ext_output_image_capture_source_manager_v1.Request) void {
+        switch (request) {
+            .create_source => |args| {
+                const source = std.heap.c_allocator.create(CaptureSource) catch return;
+                source.* = .{ .toplevel = null, .output = self.findOutput(args.output) };
+                args.source.setHandler(CaptureSource, source, null, CaptureSource.destroyed);
+            },
+            .destroy => {},
+        }
+    }
+
+    fn bindSinglePixel(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.wp_single_pixel_buffer_manager_v1{ .resource = resource }).setHandler(Compositor, self, singlePixelRequest, null);
+    }
+
+    fn singlePixelRequest(self: *Compositor, _: ws.wp_single_pixel_buffer_manager_v1, request: ws.wp_single_pixel_buffer_manager_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .create_u32_rgba_buffer => |args| {
+                // Channels are premultiplied 32-bit values.
+                const channel = struct {
+                    fn f(value: u32) u32 {
+                        return value >> 24;
+                    }
+                }.f;
+                const solid = channel(args.a) << 24 | channel(args.r) << 16 | channel(args.g) << 8 | channel(args.b);
+                const buffer = create(Buffer, self, .{ .comp = self, .resource = args.id, .pool = null, .solid = solid, .offset = 0, .width = 1, .height = 1, .stride = 4, .format = ws.wl_shm.Format.argb8888 }) orelse return;
+                args.id.setHandler(Buffer, buffer, bufferRequest, bufferGone);
+            },
+        }
+    }
+
+    fn bindCursorShape(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.wp_cursor_shape_manager_v1{ .resource = resource }).setHandler(Compositor, self, cursorShapeRequest, null);
+    }
+
+    fn cursorShapeRequest(self: *Compositor, _: ws.wp_cursor_shape_manager_v1, request: ws.wp_cursor_shape_manager_v1.Request) void {
+        // Shapes are accepted; cursors are drawn once outputs are real displays.
+        switch (request) {
+            .destroy => {},
+            .get_pointer => |args| args.cursor_shape_device.setHandler(Compositor, self, null, null),
+            .get_tablet_tool_v2 => |args| args.cursor_shape_device.setHandler(Compositor, self, null, null),
+        }
+    }
+
+    fn bindActivation(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.xdg_activation_v1{ .resource = resource }).setHandler(Compositor, self, activationRequest, null);
+    }
+
+    fn activationRequest(self: *Compositor, _: ws.xdg_activation_v1, request: ws.xdg_activation_v1.Request) void {
+        switch (request) {
+            .destroy => {},
+            .get_activation_token => |args| args.id.setHandler(Compositor, self, activationTokenRequest, null),
+            .activate => |args| {
+                var known = false;
+                for (self.activation_tokens.items, 0..) |token, index| if (std.mem.eql(u8, std.mem.sliceTo(&token, 0), args.token)) {
+                    _ = self.activation_tokens.swapRemove(index);
+                    known = true;
+                    break;
+                };
+                if (!known) return;
+                // An activated window is focused, as with the wlroots compositor.
+                const surface = args.surface.data(Surface) orelse return;
+                const xdg = surface.xdg orelse return;
+                const toplevel = xdg.toplevel orelse return;
+                if (toplevel.mapped) {
+                    self.focused_layer = null;
+                    self.focus(toplevel);
+                }
+            },
+        }
+    }
+
+    fn activationTokenRequest(self: *Compositor, resource: ws.xdg_activation_token_v1, request: ws.xdg_activation_token_v1.Request) void {
+        switch (request) {
+            .commit => {
+                self.next_token +%= 1;
+                var token: [24]u8 = @splat(0);
+                _ = std.fmt.bufPrint(token[0..23], "native-{x}", .{self.next_token}) catch {};
+                // Unused tokens expire as newer ones arrive.
+                if (self.activation_tokens.items.len >= 64) _ = self.activation_tokens.orderedRemove(0);
+                self.activation_tokens.append(self.a, token) catch {};
+                resource.sendDone(std.mem.sliceTo(&token, 0));
+            },
+            .set_serial, .set_app_id, .set_surface, .destroy => {},
+        }
+    }
+
+    fn bindTextInput(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.zwp_text_input_manager_v3{ .resource = resource }).setHandler(Compositor, self, textInputRequest, null);
+    }
+
+    fn textInputRequest(self: *Compositor, _: ws.zwp_text_input_manager_v3, request: ws.zwp_text_input_manager_v3.Request) void {
+        switch (request) {
+            .destroy => {},
+            .get_text_input => |args| {
+                const text = create(TextInput, self, .{ .comp = self, .resource = args.id }) orelse return;
+                args.id.setHandler(TextInput, text, TextInput.handle, TextInput.destroyed);
+                self.ime.texts.append(self.a, text) catch {};
+                text.follow(self.seat.keyboard_focus);
+            },
+        }
+    }
+
+    fn bindInputMethod(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.zwp_input_method_manager_v2{ .resource = resource }).setHandler(Compositor, self, inputMethodRequest, null);
+    }
+
+    fn inputMethodRequest(self: *Compositor, _: ws.zwp_input_method_manager_v2, request: ws.zwp_input_method_manager_v2.Request) void {
+        switch (request) {
+            .destroy => {},
+            .get_input_method => |args| {
+                const method = create(InputMethod, self, .{ .comp = self, .resource = args.input_method }) orelse return;
+                args.input_method.setHandler(InputMethod, method, InputMethod.handle, InputMethod.destroyed);
+                // One input method per seat; later ones are told it is taken.
+                if (self.ime.method != null) return args.input_method.sendUnavailable();
+                self.ime.method = method;
+                self.ime.sync();
+            },
+        }
+    }
+
+    /// A surface's position on the output layout, if it is shown.
+    fn surfacePosition(self: *Compositor, target: *Surface) ?[2]i32 {
+        var roots: [256]Root = undefined;
+        for (self.stack(&roots)) |root| if (find(root.surface, target, root.x, root.y)) |found| return found;
+        return null;
+    }
+
+    fn find(surface: *Surface, target: *Surface, x: i32, y: i32) ?[2]i32 {
+        if (surface == target) return .{ x, y };
+        for (surface.children.items) |child| if (child.surface) |inner| if (find(inner, target, x + child.x, y + child.y)) |found| return found;
+        return null;
+    }
+
+    fn bindPresentation(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        const presentation: ws.wp_presentation = .{ .resource = resource };
+        presentation.setHandler(Compositor, self, presentationRequest, null);
+        presentation.sendClockId(1); // CLOCK_MONOTONIC
+    }
+
+    fn presentationRequest(self: *Compositor, _: ws.wp_presentation, request: ws.wp_presentation.Request) void {
+        switch (request) {
+            .destroy => {},
+            .feedback => |args| {
+                const entry = create(Presentation, self, .{ .comp = self, .resource = args.callback, .surface = args.surface.data(Surface) }) orelse return;
+                args.callback.setHandler(Presentation, entry, null, Presentation.destroyed);
+                self.presentations.append(self.a, entry) catch {};
+            },
+        }
+    }
+
+    /// Reports frames as presented once an output has drawn them.
+    fn presented(self: *Compositor, output: *Output) void {
+        self.frame_sequence +%= 1;
+        const now = util.monotonicTime();
+        const seconds: u64 = @intCast(@divTrunc(now, std.time.us_per_s));
+        const nanoseconds: u32 = @intCast(@mod(now, std.time.us_per_s) * 1000);
+        var index = self.presentations.items.len;
+        while (index > 0) {
+            index -= 1;
+            const entry = self.presentations.items[index];
+            const surface = entry.surface orelse continue;
+            if (!entry.committed) continue;
+            if (surface.entered != output) continue;
+            _ = self.presentations.swapRemove(index);
+            for (output.resources.items) |resource| if (resource.client() == entry.resource.client()) entry.resource.sendSyncOutput(resource);
+            entry.resource.sendPresented(@truncate(seconds >> 32), @truncate(seconds), nanoseconds, 16_666_666, @truncate(self.frame_sequence >> 32), @truncate(self.frame_sequence), 0);
         }
     }
 
@@ -3633,8 +4290,14 @@ const Compositor = struct {
             .create_session => |args| {
                 const source = args.source.data(CaptureSource);
                 const toplevel = if (source) |s| s.toplevel else null;
-                const session = create(CaptureSession, self, .{ .comp = self, .resource = args.session, .toplevel = toplevel }) orelse return;
+                const output = if (source) |s| s.output else null;
+                const session = create(CaptureSession, self, .{ .comp = self, .resource = args.session, .toplevel = toplevel, .output = output }) orelse return;
                 args.session.setHandler(CaptureSession, session, CaptureSession.handle, CaptureSession.destroyed);
+                if (output) |o| {
+                    if (!o.enabled) return session.stop();
+                    self.output_sessions.append(self.a, session) catch return session.stop();
+                    return session.constraints();
+                }
                 // A window that is gone, or still unknown, stops the session at once.
                 const owner = toplevel orelse return args.session.sendStopped();
                 if (!owner.mapped) return session.stop();
@@ -3703,6 +4366,15 @@ const Compositor = struct {
         if (!enabled) {
             if (output.global) |global| global.remove();
             output.global = null;
+            var index = self.output_sessions.items.len;
+            while (index > 0) {
+                index -= 1;
+                const session = self.output_sessions.items[index];
+                if (session.output == output) {
+                    _ = self.output_sessions.swapRemove(index);
+                    session.stop();
+                }
+            }
             for (self.layers.items) |layer| if (layer.output == output) layer.close();
             for (self.surfaces.items) |surface| if (surface.entered == output) {
                 surface.entered = null;
@@ -3772,17 +4444,35 @@ const Compositor = struct {
     fn dataDeviceManagerRequest(self: *Compositor, _: ws.wl_data_device_manager, request: ws.wl_data_device_manager.Request) void {
         switch (request) {
             .create_data_source => |args| {
-                const source = create(DataSource, self, .{ .comp = self, .resource = args.id.resource, .control = false }) orelse return;
+                const source = create(DataSource, self, .{ .comp = self, .resource = args.id.resource, .kind = .core }) orelse return;
                 args.id.setHandler(DataSource, source, DataSource.coreRequest, DataSource.coreGone);
             },
             .get_data_device => |args| {
-                const device = create(DataDevice, self, .{ .comp = self, .resource = args.id.resource, .control = false }) orelse return;
-                self.data_devices.append(self.a, device) catch {};
+                const device = self.dataDevice(args.id.resource, .core) orelse return;
                 args.id.setHandler(DataDevice, device, DataDevice.coreRequest, DataDevice.coreGone);
-                // A client that already has keyboard focus learns the selection at once.
-                if (self.seat.keyboard_focus) |surface| if (surface.resource.client() == args.id.client()) device.offer(self.selection);
+                self.offerToNewDevice(device);
             },
             .release => {},
+        }
+    }
+
+    fn bindPrimarySelection(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        (ws.zwp_primary_selection_device_manager_v1{ .resource = resource }).setHandler(Compositor, self, primarySelectionRequest, null);
+    }
+
+    fn primarySelectionRequest(self: *Compositor, _: ws.zwp_primary_selection_device_manager_v1, request: ws.zwp_primary_selection_device_manager_v1.Request) void {
+        switch (request) {
+            .create_source => |args| {
+                const source = create(DataSource, self, .{ .comp = self, .resource = args.id.resource, .kind = .primary }) orelse return;
+                args.id.setHandler(DataSource, source, DataSource.primaryRequest, DataSource.primaryGone);
+            },
+            .get_device => |args| {
+                const device = self.dataDevice(args.id.resource, .primary) orelse return;
+                args.id.setHandler(DataDevice, device, DataDevice.primaryRequest, DataDevice.primaryGone);
+                self.offerToNewDevice(device);
+            },
+            .destroy => {},
         }
     }
 
@@ -3794,34 +4484,54 @@ const Compositor = struct {
     fn dataControlManagerRequest(self: *Compositor, _: ws.zwlr_data_control_manager_v1, request: ws.zwlr_data_control_manager_v1.Request) void {
         switch (request) {
             .create_data_source => |args| {
-                const source = create(DataSource, self, .{ .comp = self, .resource = args.id.resource, .control = true }) orelse return;
+                const source = create(DataSource, self, .{ .comp = self, .resource = args.id.resource, .kind = .control }) orelse return;
                 args.id.setHandler(DataSource, source, DataSource.controlRequest, DataSource.controlGone);
             },
             .get_data_device => |args| {
-                const device = create(DataDevice, self, .{ .comp = self, .resource = args.id.resource, .control = true }) orelse return;
-                self.data_devices.append(self.a, device) catch {};
+                const device = self.dataDevice(args.id.resource, .control) orelse return;
                 args.id.setHandler(DataDevice, device, DataDevice.controlRequest, DataDevice.controlGone);
-                // Clipboard managers learn the selection whether or not they have focus.
-                device.offer(self.selection);
+                self.offerToNewDevice(device);
             },
             .destroy => {},
         }
     }
 
-    /// Replaces the selection and tells data-control clients and the focused client.
-    fn setSelection(self: *Compositor, source: ?*DataSource) void {
-        self.selection = source;
+    fn dataDevice(self: *Compositor, resource: wire.Resource, kind: Clip) ?*DataDevice {
+        const device = create(DataDevice, self, .{ .comp = self, .resource = resource, .kind = kind }) orelse return null;
+        self.data_devices.append(self.a, device) catch {
+            self.a.destroy(device);
+            return null;
+        };
+        return device;
+    }
+
+    /// Clipboard managers learn the selections at once; others when they have keyboard focus.
+    fn offerToNewDevice(self: *Compositor, device: *DataDevice) void {
+        const focused = if (self.seat.keyboard_focus) |surface| surface.resource.client() == device.resource.client else false;
+        if (device.kind != .control and !focused) return;
+        if (device.carries(false)) device.offer(self.selection, false);
+        if (device.carries(true)) device.offer(self.primary_selection, true);
+    }
+
+    /// Replaces a selection and tells data-control clients and the focused client.
+    fn setSelection(self: *Compositor, source: ?*DataSource, is_primary: bool) void {
+        if (is_primary) self.primary_selection = source else self.selection = source;
         const focus_client = if (self.seat.keyboard_focus) |surface| surface.resource.client() else null;
         for (self.data_devices.items) |device| {
-            if (device.control or device.resource.client == focus_client) device.offer(source);
+            if (!device.carries(is_primary)) continue;
+            if (device.kind == .control or device.resource.client == focus_client) device.offer(source, is_primary);
         }
     }
 };
 
 // ------------------------------------------------------------------ Thread
 
+pub const Mode = enum { session, headless, greeter };
+
 pub const Handle = struct {
     allocator: std.mem.Allocator,
+    mode: Mode = .headless,
+    stopping: std.atomic.Value(bool) = .init(false),
     thread: std.Thread = undefined,
     stop_fd: wire.Fd = -1,
     ready: [2]wire.Fd = .{ -1, -1 },
@@ -3835,10 +4545,10 @@ pub const Handle = struct {
     snapshot_frames: u64 = 0,
 
     /// Starts the compositor thread and sets WAYLAND_DISPLAY for clients.
-    pub fn start(allocator: std.mem.Allocator) !*Handle {
+    pub fn start(allocator: std.mem.Allocator, mode: Mode) !*Handle {
         const self = try allocator.create(Handle);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator };
+        self.* = .{ .allocator = allocator, .mode = mode };
         const opened = std.os.linux.eventfd(0, std.os.linux.EFD.CLOEXEC | std.os.linux.EFD.NONBLOCK);
         if (std.os.linux.errno(opened) != .SUCCESS) return error.CompositorPipe;
         const fd: wire.Fd = @intCast(opened);
@@ -3863,6 +4573,7 @@ pub const Handle = struct {
     }
 
     pub fn stop(self: *Handle) void {
+        self.stopping.store(true, .release);
         const one: u64 = 1;
         _ = std.c.write(self.stop_fd, std.mem.asBytes(&one), 8);
         self.wait();
@@ -3893,7 +4604,7 @@ pub const Handle = struct {
             return;
         };
         defer server.destroy();
-        var comp: Compositor = .{ .a = a, .server = server };
+        var comp: Compositor = .{ .a = a, .server = server, .show_ui = self.mode == .session, .greeter = self.mode == .greeter };
         comp.init(self.width, self.height, headlessOutputs()) catch {
             self.failed = true;
             self.signal();
@@ -3919,6 +4630,8 @@ pub const Handle = struct {
             server.dispatch(-1);
             if (output.frames != before) self.publish(output);
         }
+        // A shortcut or failure that ends the compositor also ends the UI and the session.
+        if (self.mode == .session and !self.stopping.load(.acquire)) _ = std.c.kill(libc.getpid(), std.c.SIG.TERM);
     }
 
     /// How many headless outputs to create; WLR_HEADLESS_OUTPUTS is honoured as with wlroots.
@@ -3962,7 +4675,7 @@ test "native compositor maps an xdg toplevel from shared memory and composites i
     defer if (previous_runtime) |value| {
         _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
     };
-    const handle = try Handle.start(a);
+    const handle = try Handle.start(a, .headless);
     defer handle.stop();
 
     const connection = try client_wire.Connection.connect(a);
@@ -4131,4 +4844,199 @@ test "bound keysyms match the names xkbcommon gives them" {
     inline for (@typeInfo(keysyms).@"struct".decl_names) |name| {
         try std.testing.expectEqual(@as(?u32, @field(keysyms, name)), xkb.keysymFromName(name));
     }
+}
+
+test "native compositor relays text input to an input method and its keyboard grab" {
+    const client_wire = @import("wayland-wire");
+    const wl = @import("wayland-client");
+    const a = std.testing.allocator;
+    var runtime: [64]u8 = undefined;
+    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-ime-{d}", .{libc.getpid()}, 0);
+    _ = libc.mkdir(directory, 0o700);
+    defer _ = libc.rmdir(directory);
+    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
+    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
+    defer if (previous_runtime) |value| {
+        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
+    };
+    const handle = try Handle.start(a, .headless);
+    defer handle.stop();
+
+    const Globals = struct {
+        compositor: ?wl.wl_compositor = null,
+        shm: ?wl.wl_shm = null,
+        wm_base: ?wl.xdg_wm_base = null,
+        seat: ?wl.wl_seat = null,
+        texts: ?wl.zwp_text_input_manager_v3 = null,
+        methods: ?wl.zwp_input_method_manager_v2 = null,
+        keyboards: ?wl.zwp_virtual_keyboard_manager_v1 = null,
+        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+            switch (event) {
+                .global => |g| {
+                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
+                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
+                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
+                    if (std.mem.eql(u8, g.interface, "wl_seat")) self.seat = registry.bind(g.name, wl.wl_seat, 9);
+                    if (std.mem.eql(u8, g.interface, "zwp_text_input_manager_v3")) self.texts = registry.bind(g.name, wl.zwp_text_input_manager_v3, 1);
+                    if (std.mem.eql(u8, g.interface, "zwp_input_method_manager_v2")) self.methods = registry.bind(g.name, wl.zwp_input_method_manager_v2, 1);
+                    if (std.mem.eql(u8, g.interface, "zwp_virtual_keyboard_manager_v1")) self.keyboards = registry.bind(g.name, wl.zwp_virtual_keyboard_manager_v1, 1);
+                },
+                .global_remove => {},
+            }
+        }
+    };
+    // The application: a focused window with an enabled text input.
+    const app = try client_wire.Connection.connect(a);
+    defer app.deinit();
+    var app_globals: Globals = .{};
+    const app_registry = (wl.wl_display{ .proxy = app.display() }).get_registry();
+    app_registry.listen(Globals, &app_globals, Globals.global);
+    try app.roundtrip();
+    // The input method, on its own connection.
+    const ime = try client_wire.Connection.connect(a);
+    defer ime.deinit();
+    var ime_globals: Globals = .{};
+    const ime_registry = (wl.wl_display{ .proxy = ime.display() }).get_registry();
+    ime_registry.listen(Globals, &ime_globals, Globals.global);
+    try ime.roundtrip();
+    try std.testing.expect(app_globals.texts != null and ime_globals.methods != null);
+
+    const App = struct {
+        entered: bool = false,
+        committed: [64]u8 = @splat(0),
+        committed_len: usize = 0,
+        done: u32 = 0,
+        keys: u32 = 0,
+        fn xdgSurface(_: *@This(), surface: wl.xdg_surface, event: wl.xdg_surface.Event) void {
+            surface.ack_configure(event.configure.serial);
+        }
+        fn text(self: *@This(), _: wl.zwp_text_input_v3, event: wl.zwp_text_input_v3.Event) void {
+            switch (event) {
+                .enter => self.entered = true,
+                .commit_string => |args| if (args.text) |value| {
+                    @memcpy(self.committed[0..value.len], value);
+                    self.committed_len = value.len;
+                },
+                .done => self.done += 1,
+                else => {},
+            }
+        }
+        fn keyboard(self: *@This(), _: wl.wl_keyboard, event: wl.wl_keyboard.Event) void {
+            switch (event) {
+                .keymap => |args| _ = std.c.close(args.fd),
+                .key => self.keys += 1,
+                else => {},
+            }
+        }
+    };
+    const Method = struct {
+        active: bool = false,
+        purpose: u32 = 0,
+        dones: u32 = 0,
+        grabbed_keys: u32 = 0,
+        fn method(self: *@This(), _: wl.zwp_input_method_v2, event: wl.zwp_input_method_v2.Event) void {
+            switch (event) {
+                .activate => self.active = true,
+                .deactivate => self.active = false,
+                .content_type => |args| self.purpose = args.purpose,
+                .done => self.dones += 1,
+                else => {},
+            }
+        }
+        fn grab(self: *@This(), _: wl.zwp_input_method_keyboard_grab_v2, event: wl.zwp_input_method_keyboard_grab_v2.Event) void {
+            switch (event) {
+                .keymap => |args| _ = std.c.close(args.fd),
+                .key => self.grabbed_keys += 1,
+                else => {},
+            }
+        }
+    };
+    var app_state: App = .{};
+    var method_state: Method = .{};
+    const pump = struct {
+        fn until(connections: []const *client_wire.Connection, flag: *const bool) !void {
+            const deadline = util.monotonicTime() + 3_000_000;
+            while (!flag.* and util.monotonicTime() < deadline) {
+                for (connections) |connection| _ = try connection.dispatchTimeout(20);
+            }
+        }
+    };
+
+    const keyboard = app_globals.seat.?.get_keyboard();
+    keyboard.listen(App, &app_state, App.keyboard);
+    const text = app_globals.texts.?.get_text_input(app_globals.seat.?);
+    text.listen(App, &app_state, App.text);
+    const method = ime_globals.methods.?.get_input_method(ime_globals.seat.?);
+    method.listen(Method, &method_state, Method.method);
+    try ime.roundtrip();
+
+    // Map a window so it gets keyboard focus, then enable text input on it.
+    const surface = app_globals.compositor.?.create_surface();
+    const xdg_surface = app_globals.wm_base.?.get_xdg_surface(surface);
+    xdg_surface.listen(App, &app_state, App.xdgSurface);
+    const toplevel = xdg_surface.get_toplevel();
+    surface.commit();
+    try app.roundtrip();
+    const fd = libc.memfd_create("buffer", 0x0001);
+    defer _ = std.c.close(fd);
+    _ = libc.ftruncate(fd, 4);
+    const pool = app_globals.shm.?.create_pool(fd, 4);
+    const buffer = pool.create_buffer(0, 1, 1, 4, 0);
+    pool.destroy();
+    surface.attach(buffer, 0, 0);
+    surface.commit();
+    try pump.until(&.{app}, &app_state.entered);
+    try std.testing.expect(app_state.entered);
+    text.enable();
+    text.set_content_type(0, 8); // ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_EMAIL
+    text.commit();
+    try app.roundtrip();
+    try pump.until(&.{ime}, &method_state.active);
+    try std.testing.expect(method_state.active);
+    try std.testing.expectEqual(@as(u32, 8), method_state.purpose);
+
+    // A commit answering the latest done reaches the application.
+    method.commit_string("日本");
+    method.commit(method_state.dones);
+    try ime.roundtrip();
+    var done = false;
+    const deadline = util.monotonicTime() + 3_000_000;
+    while (!done and util.monotonicTime() < deadline) {
+        _ = try app.dispatchTimeout(20);
+        done = app_state.committed_len > 0;
+    }
+    try std.testing.expectEqualStrings("日本", app_state.committed[0..app_state.committed_len]);
+
+    // With a keyboard grab, keys from another client's virtual keyboard go to the input method.
+    const grab = method.grab_keyboard();
+    grab.listen(Method, &method_state, Method.grab);
+    try ime.roundtrip();
+    const virtual = app_globals.keyboards.?.create_virtual_keyboard(app_globals.seat.?);
+    const keymap = keymapFile(keymap_text).?;
+    defer keymap.deinit();
+    virtual.keymap(1, keymap.fd, keymap.size);
+    virtual.key(0, 30, 1);
+    virtual.key(0, 30, 0);
+    try app.roundtrip();
+    var grabbed = false;
+    const grab_deadline = util.monotonicTime() + 3_000_000;
+    while (!grabbed and util.monotonicTime() < grab_deadline) {
+        _ = try ime.dispatchTimeout(20);
+        grabbed = method_state.grabbed_keys == 2;
+    }
+    try std.testing.expectEqual(@as(u32, 2), method_state.grabbed_keys);
+    try app.roundtrip();
+    try std.testing.expectEqual(@as(u32, 0), app_state.keys);
+
+    virtual.destroy();
+    grab.release();
+    method.destroy();
+    text.destroy();
+    buffer.destroy();
+    toplevel.destroy();
+    xdg_surface.destroy();
+    surface.destroy();
+    keyboard.release();
+    try app.roundtrip();
+    try ime.roundtrip();
 }
