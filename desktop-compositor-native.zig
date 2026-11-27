@@ -2155,6 +2155,12 @@ const Seat = struct {
     /// The focused surface's origin on the output.
     focus_origin: [2]f64 = .{ 0, 0 },
     buttons: u32 = 0,
+    /// Scrolling within a frame: whether its source was sent, and the
+    /// fraction of a wheel click per axis not yet sent as a whole click.
+    source_sent: bool = false,
+    scroll_remainder: [2]i32 = .{ 0, 0 },
+    /// The scroll source a virtual pointer set for its next axis events.
+    pending_source: ?u32 = null,
     /// Keys a shortcut consumed; their release is withheld from clients too.
     consumed: [256]bool = @splat(false),
     /// Modifiers held by each pressed key, from the keymap's modifier_map.
@@ -2382,6 +2388,7 @@ const Seat = struct {
     fn setModifiers(self: *Seat, keymap: Keymap, values: [4]u32) void {
         self.useKeymap(keymap);
         self.modifiers = values;
+        if (self.comp.drm) |backend| if (keymap.map) |map| backend.updateLeds(map, values[2]);
         if (self.comp.ime.grabFor(null)) |grab| grab.sendModifiers(self.comp.server.nextSerial(), values[0], values[1], values[2], values[3]);
         // Releasing Alt or Super confirms the switcher selection.
         if (self.comp.cycling) if (keymap.map) |map| {
@@ -2486,18 +2493,59 @@ const Seat = struct {
     }
 
     fn axis(self: *Seat, time: u32, which: u32, value: f64, discrete: ?i32) void {
+        self.scroll(.{ .time = time, .axis = which, .value = value, .value120 = if (discrete) |steps| steps * 120 else null });
+    }
+
+    const Scroll = struct {
+        time: u32,
+        axis: u32,
+        value: f64 = 0,
+        /// High-resolution wheel motion, 120 to a click.
+        value120: ?i32 = null,
+        /// wl_pointer.axis_source: wheel, finger, continuous or tilt.
+        source: ?u32 = null,
+        /// Natural scrolling: content follows the fingers.
+        inverted: bool = false,
+        /// Fingers left the touchpad: kinetic scrolling may start.
+        stop: bool = false,
+    };
+
+    /// Sends one axis of scrolling, as wlroots' seat passed it on: the source
+    /// once per frame, the direction, then a stop or the value with its
+    /// high-resolution or whole-click steps.
+    fn scroll(self: *Seat, event: Scroll) void {
         self.comp.activity();
         const surface = self.pointer_focus orelse return;
+        const index = @min(event.axis, 1);
+        // Clients before high-resolution scrolling get whole clicks as they add up.
+        var clicks: i32 = 0;
+        if (event.value120) |v120| {
+            self.scroll_remainder[index] += v120;
+            clicks = @divTrunc(self.scroll_remainder[index], 120);
+            self.scroll_remainder[index] -= clicks * 120;
+        }
+        const first_in_frame = !self.source_sent;
+        self.source_sent = true;
         for (self.pointers.items) |pointer| {
             if (pointer.client() != surface.resource.client()) continue;
-            if (discrete) |steps| {
-                if (pointer.version() >= 8) pointer.sendAxisValue120(which, steps * 120) else if (pointer.version() >= 5) pointer.sendAxisDiscrete(which, steps);
+            const version = pointer.version();
+            if (version >= 5) if (event.source) |source| if (first_in_frame) {
+                pointer.sendAxisSource(if (source == ws.wl_pointer.AxisSource.wheel_tilt and version < 6) ws.wl_pointer.AxisSource.wheel else source);
+            };
+            if (version >= 9) pointer.sendAxisRelativeDirection(event.axis, if (event.inverted) ws.wl_pointer.AxisRelativeDirection.inverted else ws.wl_pointer.AxisRelativeDirection.identical);
+            if (event.stop) {
+                if (version >= 5) pointer.sendAxisStop(event.time, event.axis);
+                continue;
             }
-            pointer.sendAxis(time, which, value);
+            if (event.value120) |v120| {
+                if (version >= 8) pointer.sendAxisValue120(event.axis, v120) else if (version >= 5 and clicks != 0) pointer.sendAxisDiscrete(event.axis, clicks);
+            }
+            pointer.sendAxis(event.time, event.axis, event.value);
         }
     }
 
     fn frame(self: *Seat) void {
+        self.source_sent = false;
         const surface = self.pointer_focus orelse return;
         for (self.pointers.items) |pointer| {
             if (pointer.client() == surface.resource.client() and pointer.version() >= 5) pointer.sendFrame();
@@ -2561,10 +2609,15 @@ const VirtualPointer = struct {
                 seat.moveToAbsolute(x, y, args.time);
             },
             .button => |args| seat.button(args.time, args.button, args.state != 0),
-            .axis => |args| seat.axis(args.time, args.axis, args.value, null),
-            .axis_discrete => |args| seat.axis(args.time, args.axis, args.value, args.discrete),
-            .frame => seat.frame(),
-            .axis_source, .axis_stop, .destroy => {},
+            .axis => |args| seat.scroll(.{ .time = args.time, .axis = args.axis, .value = args.value, .source = seat.pending_source }),
+            .axis_discrete => |args| seat.scroll(.{ .time = args.time, .axis = args.axis, .value = args.value, .value120 = args.discrete * 120, .source = seat.pending_source }),
+            .axis_source => |args| seat.pending_source = args.axis_source,
+            .axis_stop => |args| seat.scroll(.{ .time = args.time, .axis = args.axis, .source = seat.pending_source, .stop = true }),
+            .frame => {
+                seat.pending_source = null;
+                seat.frame();
+            },
+            .destroy => {},
         }
     }
 
@@ -6176,6 +6229,9 @@ const Drm = struct {
     input: ?*li.Libinput = null,
     /// Input devices opened through the session, closed with it.
     devices: std.ArrayList(logind.Device) = .empty,
+    /// Keyboards, whose LEDs follow Caps Lock and Num Lock.
+    keyboards: std.ArrayList(*li.Device) = .empty,
+    leds: c_int = 0,
     sources: std.ArrayList(*wire.Loop.Source) = .empty,
     active: bool = true,
     /// GLES on the card; null renders on the CPU into dumb buffers.
@@ -6636,8 +6692,23 @@ const Drm = struct {
         const seat = &self.comp.seat;
         const kind = li.libinput_event_get_type(event);
         switch (kind) {
+            li.EventType.device_removed => {
+                const device = li.libinput_event_get_device(event);
+                for (self.keyboards.items, 0..) |keyboard, index| if (keyboard == device) {
+                    _ = self.keyboards.swapRemove(index);
+                    _ = li.libinput_device_unref(device);
+                    break;
+                };
+            },
             li.EventType.device_added => {
                 const device = li.libinput_event_get_device(event);
+                // Keyboards show the lock state on their LEDs.
+                if (li.libinput_device_has_capability(device, li.capability_keyboard) != 0) {
+                    self.keyboards.append(self.comp.a, li.libinput_device_ref(device)) catch {
+                        _ = li.libinput_device_unref(device);
+                    };
+                    li.libinput_device_led_update(device, self.leds);
+                }
                 // Touchpads keep the desktop's settings: no tap to click, natural scrolling.
                 if (li.libinput_device_config_tap_get_finger_count(device) > 0) {
                     _ = li.libinput_device_config_tap_set_enabled(device, li.tap_disabled);
@@ -6674,15 +6745,15 @@ const Drm = struct {
                 const pointer = li.libinput_event_get_pointer_event(event);
                 const time = li.libinput_event_pointer_get_time(pointer);
                 var scrolled = false;
+                const Source = ws.wl_pointer.AxisSource;
+                const source = if (kind == li.EventType.pointer_scroll_wheel) Source.wheel else if (kind == li.EventType.pointer_scroll_finger) Source.finger else Source.continuous;
+                const inverted = li.libinput_device_config_scroll_get_natural_scroll_enabled(li.libinput_event_get_device(event)) != 0;
                 for ([_]c_int{ li.axis_vertical, li.axis_horizontal }) |axis| {
                     if (li.libinput_event_pointer_has_axis(pointer, axis) == 0) continue;
                     const value = li.libinput_event_pointer_get_scroll_value(pointer, axis);
-                    var discrete: ?i32 = null;
-                    if (kind == li.EventType.pointer_scroll_wheel) {
-                        const v120 = li.libinput_event_pointer_get_scroll_value_v120(pointer, axis);
-                        if (@rem(v120, 120) == 0) discrete = @intFromFloat(v120 / 120);
-                    }
-                    seat.axis(time, @intCast(axis), value, discrete);
+                    const value120: ?i32 = if (kind == li.EventType.pointer_scroll_wheel) @intFromFloat(li.libinput_event_pointer_get_scroll_value_v120(pointer, axis)) else null;
+                    // A zero from fingers or a continuous device ends the scroll.
+                    seat.scroll(.{ .time = time, .axis = @intCast(axis), .value = value, .value120 = value120, .source = source, .inverted = inverted, .stop = kind != li.EventType.pointer_scroll_wheel and value == 0 });
                     scrolled = true;
                 }
                 return scrolled;
@@ -6690,6 +6761,18 @@ const Drm = struct {
             else => {},
         }
         return false;
+    }
+
+    /// Lights Caps Lock and Num Lock as the locked modifiers say, as wlroots did.
+    fn updateLeds(self: *Drm, map: *const xkb.Keymap, locked: u32) void {
+        var state: xkb.State = .{ .keymap = map };
+        state.update(0, 0, locked, 0);
+        var leds: c_int = 0;
+        if (state.active("Lock")) leds |= li.led_caps_lock;
+        if (state.active("Mod2")) leds |= li.led_num_lock;
+        if (leds == self.leds) return;
+        self.leds = leds;
+        for (self.keyboards.items) |keyboard| li.libinput_device_led_update(keyboard, leds);
     }
 
     /// Ctrl+Alt+Fn switches virtual terminals.
@@ -6709,6 +6792,8 @@ const Drm = struct {
         const a = self.comp.a;
         for (self.sources.items) |source| self.comp.server.loop.remove(source);
         self.sources.deinit(a);
+        for (self.keyboards.items) |keyboard| _ = li.libinput_device_unref(keyboard);
+        self.keyboards.deinit(a);
         if (self.input) |input| _ = li.libinput_unref(input);
         for (self.devices.items) |device| self.session.releaseDevice(device);
         self.devices.deinit(a);
@@ -6790,6 +6875,10 @@ const Nested = struct {
     windows: std.ArrayList(*Window) = .empty,
     /// The window the parent pointer is over.
     hovered: ?*Window = null,
+    /// The parent's scroll details within a pointer frame.
+    scroll_source: ?u32 = null,
+    value120: [2]?i32 = .{ null, null },
+    inverted: [2]bool = .{ false, false },
     source: ?*wire.Loop.Source = null,
 
     const Window = struct {
@@ -6908,7 +6997,7 @@ const Nested = struct {
                     self.wm_base = base;
                 }
                 if (std.mem.eql(u8, g.interface, "wl_seat") and self.seat == null) {
-                    const seat = registry.bind(g.name, wl.wl_seat, @min(g.version, 5));
+                    const seat = registry.bind(g.name, wl.wl_seat, @min(g.version, 9));
                     seat.listen(Nested, self, seatEvent);
                     self.seat = seat;
                 }
@@ -6974,8 +7063,19 @@ const Nested = struct {
                 seat.moveTo(@as(f64, @floatFromInt(window.output.x)) + args.surface_x, @as(f64, @floatFromInt(window.output.y)) + args.surface_y, args.time);
             },
             .button => |args| seat.button(args.time, args.button, args.state == 1),
-            .axis => |args| seat.axis(args.time, args.axis, args.value, null),
-            .frame => seat.frame(),
+            // The parent session's scrolling passes through with its source and steps.
+            .axis => |args| seat.scroll(.{ .time = args.time, .axis = args.axis, .value = args.value, .value120 = self.value120[@min(args.axis, 1)], .source = self.scroll_source, .inverted = self.inverted[@min(args.axis, 1)] }),
+            .axis_source => |args| self.scroll_source = args.axis_source,
+            .axis_value120 => |args| self.value120[@min(args.axis, 1)] = args.value120,
+            .axis_discrete => |args| self.value120[@min(args.axis, 1)] = args.discrete * 120,
+            .axis_relative_direction => |args| self.inverted[@min(args.axis, 1)] = args.direction == 1,
+            .axis_stop => |args| seat.scroll(.{ .time = args.time, .axis = args.axis, .source = self.scroll_source, .stop = true }),
+            .frame => {
+                self.scroll_source = null;
+                self.value120 = .{ null, null };
+                self.inverted = .{ false, false };
+                seat.frame();
+            },
             else => {},
         }
     }
@@ -8113,5 +8213,133 @@ test "native compositor hides the panel over a fullscreen window" {
     surface.destroy();
     panel.destroy();
     panel_surface.destroy();
+    try connection.roundtrip();
+}
+
+test "native compositor passes scroll sources, stops and wheel steps to clients" {
+    const client_wire = @import("wayland-wire");
+    const wl = @import("wayland-client");
+    const a = std.testing.allocator;
+    var runtime: [64]u8 = undefined;
+    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-scroll-{d}", .{libc.getpid()}, 0);
+    _ = libc.mkdir(directory, 0o700);
+    defer _ = libc.rmdir(directory);
+    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
+    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
+    defer if (previous_runtime) |value| {
+        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
+    };
+    const handle = try Handle.startWith(a, .headless, .headless);
+    defer handle.stop();
+    const connection = try client_wire.Connection.connect(a);
+    defer connection.deinit();
+    const Globals = struct {
+        compositor: ?wl.wl_compositor = null,
+        shm: ?wl.wl_shm = null,
+        wm_base: ?wl.xdg_wm_base = null,
+        seat: ?wl.wl_seat = null,
+        pointers: ?wl.zwlr_virtual_pointer_manager_v1 = null,
+        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+            switch (event) {
+                .global => |g| {
+                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
+                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
+                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
+                    if (std.mem.eql(u8, g.interface, "wl_seat")) self.seat = registry.bind(g.name, wl.wl_seat, 9);
+                    if (std.mem.eql(u8, g.interface, "zwlr_virtual_pointer_manager_v1")) self.pointers = registry.bind(g.name, wl.zwlr_virtual_pointer_manager_v1, 2);
+                },
+                .global_remove => {},
+            }
+        }
+    };
+    var globals: Globals = .{};
+    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
+    registry.listen(Globals, &globals, Globals.global);
+    try connection.roundtrip();
+    const Events = struct {
+        entered: bool = false,
+        sources: u32 = 0,
+        finger: bool = false,
+        stops: u32 = 0,
+        axis_values: u32 = 0,
+        value120: i32 = 0,
+        frames: u32 = 0,
+        size: [2]i32 = .{ 0, 0 },
+        fn xdgSurface(_: *@This(), surface: wl.xdg_surface, event: wl.xdg_surface.Event) void {
+            surface.ack_configure(event.configure.serial);
+        }
+        fn toplevel(self: *@This(), _: wl.xdg_toplevel, event: wl.xdg_toplevel.Event) void {
+            switch (event) {
+                .configure => |args| if (args.width > 0) {
+                    self.size = .{ args.width, args.height };
+                },
+                else => {},
+            }
+        }
+        fn pointer(self: *@This(), _: wl.wl_pointer, event: wl.wl_pointer.Event) void {
+            switch (event) {
+                .enter => self.entered = true,
+                .axis_source => |args| {
+                    self.sources += 1;
+                    self.finger = args.axis_source == 1;
+                },
+                .axis_stop => self.stops += 1,
+                .axis => self.axis_values += 1,
+                .axis_value120 => |args| self.value120 += args.value120,
+                .frame => self.frames += 1,
+                else => {},
+            }
+        }
+    };
+    var events: Events = .{};
+    const pointer = globals.seat.?.get_pointer();
+    pointer.listen(Events, &events, Events.pointer);
+    const surface = globals.compositor.?.create_surface();
+    const xdg_surface = globals.wm_base.?.get_xdg_surface(surface);
+    xdg_surface.listen(Events, &events, Events.xdgSurface);
+    const toplevel = xdg_surface.get_toplevel();
+    toplevel.listen(Events, &events, Events.toplevel);
+    surface.commit();
+    try connection.roundtrip();
+    const width: usize = @intCast(events.size[0]);
+    const height: usize = @intCast(events.size[1]);
+    const fd = libc.memfd_create("buffer", 0x0001);
+    defer _ = std.c.close(fd);
+    try std.testing.expectEqual(@as(c_int, 0), libc.ftruncate(fd, @intCast(width * height * 4)));
+    const pool = globals.shm.?.create_pool(fd, @intCast(width * height * 4));
+    const buffer = pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), 0);
+    pool.destroy();
+    surface.attach(buffer, 0, 0);
+    surface.commit();
+    try connection.roundtrip();
+    const virtual = globals.pointers.?.create_virtual_pointer(globals.seat.?);
+    virtual.motion_absolute(0, 200, 200, 1280, 720);
+    virtual.frame();
+    const deadline = util.monotonicTime() + 3_000_000;
+    while (!events.entered and util.monotonicTime() < deadline) _ = try connection.dispatchTimeout(20);
+    try std.testing.expect(events.entered);
+    // Two fingers on a touchpad, both axes in one frame, then lifted.
+    virtual.axis_source(1);
+    virtual.axis(0, 0, 10);
+    virtual.axis(0, 1, 4);
+    virtual.frame();
+    virtual.axis_source(1);
+    virtual.axis_stop(1, 0);
+    virtual.frame();
+    // One wheel click.
+    virtual.axis_source(0);
+    virtual.axis_discrete(2, 0, 15, 1);
+    virtual.frame();
+    try connection.roundtrip();
+    try connection.roundtrip();
+    try std.testing.expectEqual(@as(u32, 3), events.sources);
+    try std.testing.expectEqual(@as(u32, 1), events.stops);
+    try std.testing.expectEqual(@as(u32, 3), events.axis_values);
+    try std.testing.expectEqual(@as(i32, 120), events.value120);
+    try std.testing.expect(!events.finger);
+    buffer.destroy();
+    toplevel.destroy();
+    xdg_surface.destroy();
+    surface.destroy();
     try connection.roundtrip();
 }

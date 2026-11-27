@@ -61,6 +61,13 @@ pub extern fn libinput_device_has_capability(*Device, capability: c_int) c_int;
 pub extern fn libinput_device_config_tap_get_finger_count(*Device) c_int;
 pub extern fn libinput_device_config_tap_set_enabled(*Device, enable: c_int) c_int;
 pub extern fn libinput_device_config_scroll_set_natural_scroll_enabled(*Device, enable: c_int) c_int;
+pub extern fn libinput_device_config_scroll_get_natural_scroll_enabled(*Device) c_int;
+pub extern fn libinput_device_led_update(*Device, leds: c_int) void;
+pub extern fn libinput_device_ref(*Device) *Device;
+pub extern fn libinput_device_unref(*Device) ?*Device;
+pub const led_num_lock: c_int = 1 << 0;
+pub const led_caps_lock: c_int = 1 << 1;
+pub const led_scroll_lock: c_int = 1 << 2;
 
 pub extern fn libinput_event_get_keyboard_event(*Event) *KeyboardEvent;
 pub extern fn libinput_event_keyboard_get_time(*KeyboardEvent) u32;
@@ -95,6 +102,9 @@ test "libinput constants match its header" {
     try std.testing.expectEqual(@as(c_int, c.LIBINPUT_DEVICE_CAP_KEYBOARD), capability_keyboard);
     try std.testing.expectEqual(@as(c_int, c.LIBINPUT_DEVICE_CAP_POINTER), capability_pointer);
     try std.testing.expectEqual(@as(c_int, c.LIBINPUT_CONFIG_TAP_DISABLED), tap_disabled);
+    try std.testing.expectEqual(@as(c_int, c.LIBINPUT_LED_NUM_LOCK), led_num_lock);
+    try std.testing.expectEqual(@as(c_int, c.LIBINPUT_LED_CAPS_LOCK), led_caps_lock);
+    try std.testing.expectEqual(@as(c_int, c.LIBINPUT_LED_SCROLL_LOCK), led_scroll_lock);
     try std.testing.expectEqual(@as(c_int, c.LIBINPUT_KEY_STATE_PRESSED), 1);
     try std.testing.expectEqual(@as(c_int, c.LIBINPUT_BUTTON_STATE_PRESSED), 1);
     // The interface is two function pointers in this order.
