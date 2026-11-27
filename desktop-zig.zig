@@ -231,11 +231,11 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "secrets-import")) {
         if (args.len != 2) return error.InvalidSecretsArguments;
-        return @import("desktop-secrets.zig").runImport(a);
+        return @import("desktop-secrets.zig").runImport(a, init.io);
     }
     if (std.mem.eql(u8, args[1], "secrets")) {
         if (args.len != 2) return error.InvalidSecretsArguments;
-        return @import("desktop-secrets.zig").run(a);
+        return @import("desktop-secrets.zig").run(a, init.io);
     }
     if (std.mem.eql(u8, args[1], "secrets-login")) {
         if (args.len != 2) return error.InvalidSecretsArguments;
@@ -271,7 +271,7 @@ pub fn main(init: std.process.Init) !void {
     if ((bus.connection.requestName(shell_name, 4) catch return error.NoSessionBus) != 1) return forward(a, args[1..]);
     var introspection = try dbus.Introspection.parse(a, shell_xml);
     defer introspection.deinit();
-    var session = Session{ .allocator = a, .bus = bus, .media = .init(a), .dialogs = .{ .allocator = a } };
+    var session = Session{ .allocator = a, .bus = bus, .media = .init(a), .dialogs = .{ .allocator = a, .io = init.io } };
     defer session.deinit();
     const exported = try bus.connection.exportObject(shell_path, &introspection.interfaces[0], &command, null, &session);
     defer bus.connection.unregister(exported);

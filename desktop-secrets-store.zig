@@ -1,11 +1,7 @@
 //! Versioned authenticated vault. Metadata is public; secret values are encrypted.
 //! Every allocation used for keys, KDF scratch, and decoded values is wiped on free.
 const std = @import("std");
-const p = @import("desktop-libc.zig");
 const Aead = std.crypto.aead.chacha_poly.XChaCha20Poly1305;
-pub fn wipe(bytes: []u8) void {
-    std.crypto.secureZero(u8, bytes);
-}
 pub const WipingAllocator = struct {
     parent: std.mem.Allocator,
     pub fn allocator(self: *WipingAllocator) std.mem.Allocator {
@@ -23,22 +19,13 @@ pub const WipingAllocator = struct {
     }
     fn free(ctx: *anyopaque, bytes: []u8, alignment: std.mem.Alignment, ret: usize) void {
         const self: *WipingAllocator = @ptrCast(@alignCast(ctx));
-        wipe(bytes);
+        std.crypto.secureZero(u8, bytes);
         self.parent.rawFree(bytes, alignment, ret);
     }
     const vtable = std.mem.Allocator.VTable{ .alloc = alloc, .resize = resize, .remap = remap, .free = free };
 };
-pub fn random(bytes: []u8) !void {
-    var n: usize = 0;
-    while (n < bytes.len) {
-        const count = p.getrandom(bytes[n..].ptr, bytes.len - n, 0);
-        if (count < 0) {
-            if (p.__errno_location().* == p.EINTR) continue;
-            return error.RandomFailed;
-        }
-        if (count == 0) return error.RandomFailed;
-        n += @intCast(count);
-    }
+pub fn random(io: std.Io, bytes: []u8) !void {
+    io.randomSecure(bytes) catch return error.RandomFailed;
 }
 pub const Attribute = struct { key: [:0]const u8, value: [:0]const u8 };
 pub const Collection = struct { id: u64, label: [:0]const u8, created: u64, modified: u64 };
@@ -49,8 +36,9 @@ pub const Value = struct { id: u64, bytes: []const u8, content_type: [:0]const u
 const Envelope = struct { version: u32 = 1, salt: [32]u8, nonce: [24]u8, tag: [16]u8, index: Index, ciphertext: []const u8 };
 pub const Vault = struct {
     a: std.mem.Allocator,
+    io: std.Io,
     directory: [:0]const u8,
-    lock_fd: c_int = -1,
+    lock_file: ?std.Io.File = null,
     index: Index = .{},
     values: []const Value = &.{},
     key: ?[32]u8 = null,
@@ -58,43 +46,41 @@ pub const Vault = struct {
     salt: [32]u8 = @splat(0),
     // Mutable metadata lives in this arena; secret values never do.
     arena: std.heap.ArenaAllocator,
-    pub fn init(a: std.mem.Allocator, directory: [:0]const u8) !Vault {
-        if (p.mkdir(directory, 0o700) != 0 and p.__errno_location().* != p.EEXIST) return error.CreateDirectory;
-        const linux = std.os.linux;
-        const stat_mask: linux.STATX = .{ .TYPE = true, .MODE = true, .UID = true, .SIZE = true };
-        var st: linux.Statx = undefined;
-        if (linux.errno(linux.statx(linux.AT.FDCWD, directory, linux.AT.SYMLINK_NOFOLLOW, stat_mask, &st)) != .SUCCESS or st.uid != p.getuid() or st.mode & linux.S.IFMT != linux.S.IFDIR or st.mode & 0o077 != 0) return error.UnsafeDirectory;
-        const lock_path = try std.fmt.allocPrintSentinel(a, "{s}/lock", .{directory}, 0);
-        defer a.free(lock_path);
-        const lock_fd = p.open(lock_path, p.O_CREAT | p.O_RDWR | p.O_CLOEXEC | p.O_NOFOLLOW, @as(c_uint, 0o600));
-        if (lock_fd < 0) return error.LockVault;
-        var owns_lock = true;
-        errdefer if (owns_lock) {
-            _ = p.close(lock_fd);
+    pub fn init(a: std.mem.Allocator, io: std.Io, directory: [:0]const u8) !Vault {
+        const dir_perms: std.Io.File.Permissions = if (comptime @hasDecl(std.Io.File.Permissions, "fromMode")) .fromMode(0o700) else .default_dir;
+        const file_perms: std.Io.File.Permissions = if (comptime @hasDecl(std.Io.File.Permissions, "fromMode")) .fromMode(0o600) else .default_file;
+        std.Io.Dir.cwd().createDir(io, directory, dir_perms) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return error.CreateDirectory,
         };
-        if (linux.errno(linux.statx(lock_fd, "", linux.AT.EMPTY_PATH, stat_mask, &st)) != .SUCCESS or st.uid != p.getuid() or st.mode & linux.S.IFMT != linux.S.IFREG or st.mode & 0o077 != 0) return error.UnsafeVault;
-        if (p.flock(lock_fd, p.LOCK_EX | p.LOCK_NB) != 0) return error.VaultInUse;
-        var result = Vault{ .a = a, .directory = directory, .lock_fd = lock_fd, .arena = .init(a) };
+        var dir = std.Io.Dir.cwd().openDir(io, directory, .{ .follow_symlinks = false }) catch return error.UnsafeDirectory;
+        defer dir.close(io);
+        const lock_file = dir.createFile(io, "lock", .{
+            .read = true,
+            .truncate = false,
+            .lock = .exclusive,
+            .lock_nonblocking = true,
+            .permissions = file_perms,
+        }) catch |err| switch (err) {
+            error.WouldBlock => return error.VaultInUse,
+            else => return error.LockVault,
+        };
+        var owns_lock = true;
+        errdefer if (owns_lock) lock_file.close(io);
+        var result = Vault{ .a = a, .io = io, .directory = directory, .lock_file = lock_file, .arena = .init(a) };
         owns_lock = false;
         errdefer result.deinit();
-        const path = try std.fmt.allocPrintSentinel(a, "{s}/vault.json", .{directory}, 0);
-        defer a.free(path);
-        const fd = p.open(path, p.O_RDONLY | p.O_CLOEXEC | p.O_NOFOLLOW, @as(c_uint, 0));
-        if (fd < 0) {
-            if (p.__errno_location().* == p.ENOENT) return result;
-            return error.ReadVault;
-        }
-        defer _ = p.close(fd);
-        if (linux.errno(linux.statx(fd, "", linux.AT.EMPTY_PATH, stat_mask, &st)) != .SUCCESS or st.uid != p.getuid() or st.mode & linux.S.IFMT != linux.S.IFREG or st.mode & 0o077 != 0 or st.size > 16 * 1024 * 1024) return error.UnsafeVault;
+        const vault_file = dir.openFile(io, "vault.json", .{ .follow_symlinks = false }) catch |err| switch (err) {
+            error.FileNotFound => return result,
+            else => return error.ReadVault,
+        };
+        defer vault_file.close(io);
+        const st = vault_file.stat(io) catch return error.ReadVault;
+        if (st.kind != .file or st.size > 16 * 1024 * 1024) return error.UnsafeVault;
         const bytes = try a.alloc(u8, @intCast(st.size));
         defer a.free(bytes);
-        var offset: usize = 0;
-        while (offset < bytes.len) {
-            const n = p.read(fd, bytes[offset..].ptr, bytes.len - offset);
-            if (n < 0 and p.__errno_location().* == p.EINTR) continue;
-            if (n <= 0) return error.ReadVault;
-            offset += @intCast(n);
-        }
+        const got = vault_file.readPositionalAll(io, bytes, 0) catch return error.ReadVault;
+        if (got != bytes.len) return error.ReadVault;
         const parsed = try std.json.parseFromSlice(Envelope, a, bytes, .{ .allocate = .alloc_always });
         result.envelope = parsed;
         if (parsed.value.version != 1) return error.UnsupportedVaultVersion;
@@ -106,15 +92,13 @@ pub const Vault = struct {
         self.lock();
         if (self.envelope) |*env| env.deinit();
         self.arena.deinit();
-        if (self.lock_fd >= 0) _ = p.close(self.lock_fd);
+        if (self.lock_file) |f| f.close(self.io);
     }
     pub fn lock(self: *Vault) void {
-        if (self.key) |*key| wipe(key);
+        if (self.key) |*key| std.crypto.secureZero(u8, key);
         self.key = null;
-        _ = p.munlock(&self.key, @sizeOf(@TypeOf(self.key)));
         for (self.values) |v| {
-            wipe(@constCast(v.bytes));
-            if (v.bytes.len != 0) _ = p.munlock(v.bytes.ptr, v.bytes.len);
+            std.crypto.secureZero(u8, @constCast(v.bytes));
             self.a.free(v.bytes);
             self.a.free(v.content_type);
         }
@@ -132,9 +116,9 @@ pub const Vault = struct {
     pub fn unlock(self: *Vault, password: []const u8) !void {
         if (self.key != null) return;
         if (password.len == 0 or password.len > 4096) return error.InvalidPassword;
-        if (self.envelope == null) try random(&self.salt);
+        if (self.envelope == null) try random(self.io, &self.salt);
         var key: [32]u8 = undefined;
-        defer wipe(&key);
+        defer std.crypto.secureZero(u8, &key);
         try std.crypto.pwhash.scrypt.kdf(self.a, &key, password, &self.salt, .owasp);
         try self.loadKey(key);
         if (self.envelope == null) self.save() catch |err| {
@@ -145,7 +129,6 @@ pub const Vault = struct {
     fn loadKey(self: *Vault, key: [32]u8) !void {
         self.key = key;
         errdefer self.lock();
-        if (p.mlock(&self.key, @sizeOf(@TypeOf(self.key))) != 0) return error.MemoryLockFailed;
         if (self.envelope) |env| {
             const aad = try std.json.Stringify.valueAlloc(self.a, env.value.index, .{});
             defer self.a.free(aad);
@@ -159,7 +142,7 @@ pub const Vault = struct {
     }
     pub fn save(self: *Vault) !void {
         var key = self.key orelse return error.IsLocked;
-        defer wipe(&key);
+        defer std.crypto.secureZero(u8, &key);
         const aad = try std.json.Stringify.valueAlloc(self.a, self.index, .{});
         defer self.a.free(aad);
         const plain = try std.json.Stringify.valueAlloc(self.a, self.values, .{});
@@ -167,7 +150,7 @@ pub const Vault = struct {
         const cipher = try self.a.alloc(u8, plain.len);
         defer self.a.free(cipher);
         var env = Envelope{ .salt = self.salt, .nonce = undefined, .tag = undefined, .index = self.index, .ciphertext = cipher };
-        try random(&env.nonce);
+        try random(self.io, &env.nonce);
         Aead.encrypt(cipher, &env.tag, plain, aad, env.nonce, key);
         const bytes = try std.json.Stringify.valueAlloc(self.a, env, .{});
         defer self.a.free(bytes);
@@ -196,18 +179,15 @@ pub const Vault = struct {
     pub fn setValue(self: *Vault, id: u64, bytes: []const u8, content_type: [:0]const u8) !void {
         if (self.key == null) return error.IsLocked;
         const data = try self.a.dupe(u8, bytes);
-        errdefer self.a.free(data);
-        if (data.len != 0 and p.mlock(data.ptr, data.len) != 0) return error.MemoryLockFailed;
-        errdefer if (data.len != 0) {
-            wipe(data);
-            _ = p.munlock(data.ptr, data.len);
-        };
+        errdefer {
+            std.crypto.secureZero(u8, data);
+            self.a.free(data);
+        }
         const kind = try self.a.dupeSentinel(u8, content_type, 0);
         errdefer self.a.free(kind);
         for (@constCast(self.values)) |*v| {
             if (v.id == id) {
-                wipe(@constCast(v.bytes));
-                if (v.bytes.len != 0) _ = p.munlock(v.bytes.ptr, v.bytes.len);
+                std.crypto.secureZero(u8, @constCast(v.bytes));
                 self.a.free(v.bytes);
                 self.a.free(v.content_type);
                 v.* = .{ .id = id, .bytes = data, .content_type = kind };
@@ -226,8 +206,7 @@ pub const Vault = struct {
                 const values = try self.a.alloc(Value, self.values.len - 1);
                 @memcpy(values[0..i], self.values[0..i]);
                 @memcpy(values[i..], self.values[i + 1 ..]);
-                wipe(@constCast(v.bytes));
-                if (v.bytes.len != 0) _ = p.munlock(v.bytes.ptr, v.bytes.len);
+                std.crypto.secureZero(u8, @constCast(v.bytes));
                 self.a.free(v.bytes);
                 self.a.free(v.content_type);
                 self.a.free(self.values);
@@ -239,7 +218,7 @@ pub const Vault = struct {
     pub fn restore(self: *Vault) !void {
         const was_unlocked = self.key != null;
         var key = self.key;
-        defer if (key) |*k| wipe(k);
+        defer if (key) |*k| std.crypto.secureZero(u8, k);
         self.lock();
         self.arena.deinit();
         self.arena = .init(self.a);
@@ -252,21 +231,16 @@ pub const Vault = struct {
 test "vault rejects wrong passwords and tampering; locking erases values; restart restores binary secrets" {
     var wa = WipingAllocator{ .parent = std.testing.allocator };
     const a = wa.allocator();
-    var pattern = "/tmp/desktop-secrets-test-XXXXXX".*;
-    const directory = p.mkdtemp(&pattern) orelse return error.TempDirectory;
-    const path = try std.fmt.allocPrintSentinel(a, "{s}/vault.json", .{directory}, 0);
-    defer a.free(path);
-    const lock_path = try std.fmt.allocPrintSentinel(a, "{s}/lock", .{directory}, 0);
-    defer a.free(lock_path);
-    defer {
-        _ = p.unlink(path);
-        _ = p.unlink(lock_path);
-        _ = p.rmdir(directory);
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    defer a.free(root);
+    const directory = try std.fmt.allocPrintSentinel(a, "{s}/vault", .{root}, 0);
+    defer a.free(directory);
     {
-        var v = try Vault.init(a, std.mem.span(directory));
+        var v = try Vault.init(a, std.testing.io, directory);
         defer v.deinit();
-        try std.testing.expectError(error.VaultInUse, Vault.init(a, std.mem.span(directory)));
+        try std.testing.expectError(error.VaultInUse, Vault.init(a, std.testing.io, directory));
         try v.unlock("vault-test-password");
         try v.setValue(1, "binary\x00secret\xff", "application/octet-stream");
         try v.save();
@@ -281,7 +255,7 @@ test "vault rejects wrong passwords and tampering; locking erases values; restar
         try std.testing.expectEqualSlices(u8, "binary\x00secret\xff", v.value(1).?.bytes);
     }
     {
-        var v = try Vault.init(a, std.mem.span(directory));
+        var v = try Vault.init(a, std.testing.io, directory);
         defer v.deinit();
         try v.unlock("vault-test-password");
         try std.testing.expectEqualSlices(u8, "binary\x00secret\xff", v.value(1).?.bytes);

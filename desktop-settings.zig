@@ -28,6 +28,7 @@ const Page = struct {
 };
 pub const Settings = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     mode: Mode = .network,
     sound: ?*Sound = null,
     form_input: input.Events = .{},
@@ -46,10 +47,10 @@ pub const Settings = struct {
     row_arena: std.heap.ArenaAllocator,
     dynamic_start: usize = 0,
     initial_page: bool = true,
-    pub fn create(a: std.mem.Allocator, mode: Mode) *Settings {
+    pub fn create(a: std.mem.Allocator, io: std.Io, mode: Mode) *Settings {
         const self = a.create(Settings) catch @panic("out of memory");
         const ui = native.Form.create(a, "Settings", self, &action, &fieldChanged) catch @panic("out of memory");
-        self.* = .{ .allocator = a, .row_arena = .init(a), .window = ui.window, .ui = ui, .audio_cancel = mainloop.Cancellable.create(), .message = undefined, .manual = undefined, .password = undefined };
+        self.* = .{ .allocator = a, .io = io, .row_arena = .init(a), .window = ui.window, .ui = ui, .audio_cancel = mainloop.Cancellable.create(), .message = undefined, .manual = undefined, .password = undefined };
         self.manual = self.add(.entry, "Wi-Fi network name", "Enter the hidden network’s name", false);
         self.password = self.add(.entry, "Password", "Leave empty for a saved or open network", true);
         self.message = ui.get(ui.addPinned(.label, "") catch @panic("out of memory"));
@@ -474,11 +475,11 @@ pub const Settings = struct {
             if (id == row.details) {
                 const client = self.network_client orelse return;
                 if (row.profile) |path| {
-                    _ = editor.Editor.create(self.window, client.state().profile(path) orelse return);
+                    _ = editor.Editor.create(self.window, self.io, client.state().profile(path) orelse return);
                 } else if (row.kind == .access_point) {
                     self.editAccessPoint(row.key);
                 } else {
-                    _ = editor.Editor.create(self.window, null);
+                    _ = editor.Editor.create(self.window, self.io, null);
                 }
                 return;
             }
@@ -492,20 +493,20 @@ pub const Settings = struct {
                 .profile => self.networkAction(if (row.connected) .{ .deactivate = row.key } else .{ .activate = row.key }),
                 .device => {
                     if (row.connected) self.networkAction(.{ .disconnect = row.key }) else if (row.profile) |path| self.networkAction(.{ .activate = path }) else {
-                        _ = editor.Editor.create(self.window, null);
+                        _ = editor.Editor.create(self.window, self.io, null);
                     }
                 },
             }
             return;
         }
         if (id == self.view.refresh) self.refresh() else if (id == self.view.new_connection) {
-            _ = editor.Editor.create(self.window, null);
+            _ = editor.Editor.create(self.window, self.io, null);
         }
     }
     fn editAccessPoint(self: *Settings, path: [:0]const u8) void {
         const client = self.network_client orelse return;
         const ap = client.state().ap(path) orelse return;
-        _ = editor.Editor.createWireless(self.window, ap);
+        _ = editor.Editor.createWireless(self.window, self.io, ap);
     }
     fn connectAccessPoint(self: *Settings, path: [:0]const u8) void {
         const client = self.network_client orelse return;
@@ -544,6 +545,7 @@ pub const Settings = struct {
 
 pub const Service = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     windows: std.ArrayList(*Settings) = .empty,
     pub fn show(self: *Service, mode: Mode) !void {
         self.reap();
@@ -555,7 +557,7 @@ pub const Service = struct {
             }
         }
         try self.windows.ensureUnusedCapacity(self.allocator, 1);
-        const settings = Settings.create(self.allocator, mode);
+        const settings = Settings.create(self.allocator, self.io, mode);
         self.windows.appendAssumeCapacity(settings);
     }
 

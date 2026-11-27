@@ -59,9 +59,9 @@ fn click(sound: *settings.Sound, row: usize, control: @import("desktop").setting
     sound.pointerButton(true, rect.x + rect.width / 2, rect.y + rect.height / 2);
     sound.pointerButton(false, rect.x + rect.width / 2, rect.y + rect.height / 2);
 }
-fn ui(service: *audio.Service) !void {
+fn ui(service: *audio.Service, io: std.Io) !void {
     const controls = quick.Controls.create(service.allocator, "true", "true");
-    var dialogs: settings.Service = .{ .allocator = service.allocator };
+    var dialogs: settings.Service = .{ .allocator = service.allocator, .io = io };
     defer {
         controls.deinit();
         dialogs.deinit();
@@ -197,7 +197,7 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "dispose")) return;
     try ready(service);
     if (std.mem.startsWith(u8, args[1], "preview")) {
-        const shell = settings.Settings.create(init.gpa, .sound);
+        const shell = settings.Settings.create(init.gpa, init.io, .sound);
         const sound = shell.sound.?;
         defer {
             shell.ui.close();
@@ -228,7 +228,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, args[1], "list")) return dump(service);
-    if (std.mem.eql(u8, args[1], "ui")) return ui(service);
+    if (std.mem.eql(u8, args[1], "ui")) return ui(service, init.io);
     if (std.mem.eql(u8, args[1], "burst")) {
         _ = try apply(service, .output, .{ .volume = 100 });
         for (0..12) |_| _ = try apply(service, .output, .{ .step = -5 });

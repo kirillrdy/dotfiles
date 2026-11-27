@@ -145,7 +145,7 @@ const Server = struct {
                 break;
             }
         }
-        if (o.key) |*key| store.wipe(key);
+        if (o.key) |*key| std.crypto.secureZero(u8, key);
         self.a.free(o.path);
         self.a.free(o.owner);
         if (o.label.len != 0) self.a.free(o.label);
@@ -273,7 +273,7 @@ const Server = struct {
         const v = self.vault.value(id) orelse return error.NoSuchObject;
         const iv = try a.alloc(u8, if (s.key != null) 16 else 0);
         const data = if (s.key) |key| blk: {
-            try store.random(iv);
+            try store.random(self.vault.io, iv);
             break :blk try transport.encode(a, key, iv[0..16].*, v.bytes);
         } else v.bytes;
         return .{ .{ .value = s.path }, .{ .value = iv }, .{ .value = data }, v.content_type };
@@ -425,7 +425,7 @@ const Server = struct {
             if (count >= 256 or owned >= 16) return error.LimitsExceeded;
             const args = try read(message, struct { []const u8, dbus.Value });
             var key: ?[16]u8 = null;
-            defer if (key) |*v| store.wipe(v);
+            defer if (key) |*v| std.crypto.secureZero(u8, v);
             var public: [128]u8 = undefined;
             var output: dbus.Value = undefined;
             if (eq(args[0], "plain")) {
@@ -435,7 +435,7 @@ const Server = struct {
                     .bytes => |value| value,
                     else => return error.InvalidArgs,
                 };
-                key = try transport.negotiate(input, &public);
+                key = try transport.negotiate(self.vault.io, input, &public);
                 output = .{ .bytes = &public };
             } else return error.NotSupported;
             const path = try std.fmt.allocPrintSentinel(a, root ++ "/session/s{d}", .{self.serial}, 0);
@@ -744,17 +744,17 @@ fn quit(self: *Server) bool {
     self.stopping = true;
     return true;
 }
-pub fn run(allocator: std.mem.Allocator) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     const base = @import("desktop-paths.zig").dataHome();
     @import("desktop-paths.zig").makeDirectories(base, 0o700) catch return error.CreateDirectory;
     const directory = try std.fmt.allocPrintSentinel(allocator, "{s}/desktop-secrets", .{base}, 0);
     defer allocator.free(directory);
-    return runAt(allocator, directory);
+    return runAt(allocator, io, directory);
 }
-pub fn runAt(allocator: std.mem.Allocator, directory: [:0]const u8) !void {
-    return runAtWithOptions(allocator, directory, .{});
+pub fn runAt(allocator: std.mem.Allocator, io: std.Io, directory: [:0]const u8) !void {
+    return runAtWithOptions(allocator, io, directory, .{});
 }
-pub fn runAtWithOptions(allocator: std.mem.Allocator, directory: [:0]const u8, options: Options) !void {
+pub fn runAtWithOptions(allocator: std.mem.Allocator, io: std.Io, directory: [:0]const u8, options: Options) !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
     var wa = store.WipingAllocator{ .parent = std.heap.page_allocator };
     const a = wa.allocator();
@@ -763,7 +763,7 @@ pub fn runAtWithOptions(allocator: std.mem.Allocator, directory: [:0]const u8, o
     const bus = source.connection;
     var introspection = try dbus.Introspection.parse(a, @embedFile("desktop-secrets.xml"));
     defer introspection.deinit();
-    var server = Server{ .ui_allocator = allocator, .a = a, .options = options, .vault = try store.Vault.init(a, directory), .bus = bus, .introspection = introspection };
+    var server = Server{ .ui_allocator = allocator, .a = a, .options = options, .vault = try store.Vault.init(a, io, directory), .bus = bus, .introspection = introspection };
     defer {
         while (server.objects.items.len != 0) server.remove(server.objects.items[server.objects.items.len - 1]);
         server.objects.deinit(a);
@@ -833,10 +833,10 @@ fn objectPaths(value: dbus.Value) ![]const dbus.Value {
 }
 /// Copy from a running, unlocked Secret Service into a new authenticated vault.
 /// Pin the unique bus owner for the entire import; never modify the source.
-pub fn importAt(directory: [:0]const u8, password: []const u8) !void {
+pub fn importAt(io: std.Io, directory: [:0]const u8, password: []const u8) !void {
     var wa = store.WipingAllocator{ .parent = std.heap.page_allocator };
     const a = wa.allocator();
-    var vault = try store.Vault.init(a, directory);
+    var vault = try store.Vault.init(a, io, directory);
     defer vault.deinit();
     if (vault.envelope != null and vault.index.collections.len != 0) return error.DestinationNotEmpty;
     // Replies can carry secrets; everything copied from them is wiped when freed.
@@ -903,7 +903,7 @@ pub fn importAt(directory: [:0]const u8, password: []const u8) !void {
     if (vault.index.collections.len != 0 and vault.index.aliases.len == 0) vault.index.aliases = try append(store.Alias, ma, vault.index.aliases, .{ .name = "default", .collection = vault.index.collections[0].id });
     try vault.save();
 }
-pub fn runImport(allocator: std.mem.Allocator) !void {
+pub fn runImport(allocator: std.mem.Allocator, io: std.Io) !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
     const a = allocator;
     const dialog = try createImportDialog(a);
@@ -917,7 +917,7 @@ pub fn runImport(allocator: std.mem.Allocator) !void {
     @import("desktop-paths.zig").makeDirectories(base, 0o700) catch return error.CreateDirectory;
     const directory = try std.fmt.allocPrintSentinel(a, "{s}/desktop-secrets", .{base}, 0);
     defer a.free(directory);
-    try importAt(directory, dialog.entry.?.buffer.value());
+    try importAt(io, directory, dialog.entry.?.buffer.value());
     std.debug.print("Imported Secret Service collections. The source keyring is unchanged.\n", .{});
 }
 pub fn createImportDialog(allocator: std.mem.Allocator) !*Dialog {

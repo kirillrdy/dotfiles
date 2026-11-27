@@ -55,7 +55,7 @@ fn pageInput(ui: *settings.Settings) !void {
 }
 pub fn main(init: std.process.Init) !void {
     for (0..8) |cycle| {
-        const ui = settings.Settings.create(init.gpa, if (cycle % 2 == 0) .network else .sound);
+        const ui = settings.Settings.create(init.gpa, init.io, if (cycle % 2 == 0) .network else .sound);
         try ui.ui.setText(ui.manual.id, "Cafe: Tokyo\\5G");
         const state = ui.network_client.?.state();
         ui.renderNetwork(state);

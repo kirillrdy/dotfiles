@@ -153,14 +153,14 @@ pub const Editor = struct {
     property_type: *native.Item,
     view: presentation.View = .{},
     presented_fields: std.ArrayList(presentation.Field) = .empty,
-    pub fn create(parent: *native.host.Window, profile: ?network.Profile) *Editor {
-        return createWithBase(parent, profile, null);
+    pub fn create(parent: *native.host.Window, io: std.Io, profile: ?network.Profile) *Editor {
+        return createWithBase(parent, io, profile, null);
     }
-    pub fn createWireless(parent: *native.host.Window, ap: network.AccessPoint) *Editor {
+    pub fn createWireless(parent: *native.host.Window, io: std.Io, ap: network.AccessPoint) *Editor {
         const a = parent.allocator;
-        const base = template(a, ap) catch @panic("out of memory");
+        const base = template(a, io, ap) catch @panic("out of memory");
         defer base.unref();
-        const self = createWithBase(parent, null, base);
+        const self = createWithBase(parent, io, null, base);
         self.view.strength = ap.strength;
         if (ap.security == .enterprise) self.view.page = .security;
         a.free(self.ui.title);
@@ -169,14 +169,14 @@ pub const Editor = struct {
         self.ui.relayout();
         return self;
     }
-    fn createWithBase(parent: *native.host.Window, profile: ?network.Profile, initial: ?*Settings) *Editor {
+    fn createWithBase(parent: *native.host.Window, io: std.Io, profile: ?network.Profile, initial: ?*Settings) *Editor {
         const a = parent.allocator;
         const self = a.create(Editor) catch @panic("out of memory");
         const ui = native.Form.create(a, if (profile) |p| p.title else "New Connection", self, &action, &fieldChanged) catch @panic("out of memory");
         const window = ui.window;
         window.parent = parent;
         // Rows borrow their original values from these settings for the editor's lifetime.
-        const base = if (initial) |value| value.ref() else if (profile) |p| p.base.ref() else template(a, null) catch @panic("out of memory");
+        const base = if (initial) |value| value.ref() else if (profile) |p| p.base.ref() else template(a, io, null) catch @panic("out of memory");
         self.* = .{ .allocator = a, .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = mainloop.Cancellable.create(), .path = if (profile) |p| z(a, p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(a, &changed, self) catch @panic("out of memory"), .base = base, .property_group = undefined, .property_key = undefined, .property_type = undefined };
         // Known fields first; every other property remains editable below them.
         for (fields) |field| {
@@ -527,11 +527,11 @@ pub const Editor = struct {
         self.ui.setText(self.message.id, message) catch {};
     }
 };
-fn template(a: std.mem.Allocator, ap: ?network.AccessPoint) !*Settings {
+fn template(a: std.mem.Allocator, io: std.Io, ap: ?network.AccessPoint) !*Settings {
     const out = try Settings.create(a);
     errdefer out.unref();
     try out.put("connection", "id", .{ .string = if (ap) |point| point.title else "New connection" });
-    try out.put("connection", "uuid", .{ .string = &uuid() });
+    try out.put("connection", "uuid", .{ .string = &uuid(io) });
     try out.put("connection", "type", .{ .string = if (ap != null) "802-11-wireless" else "802-3-ethernet" });
     try out.put("connection", "autoconnect", .{ .boolean = true });
     for ([_][]const u8{ "ipv4", "ipv6" }) |group| try out.put(group, "method", .{ .string = "auto" });
@@ -553,9 +553,9 @@ fn template(a: std.mem.Allocator, ap: ?network.AccessPoint) !*Settings {
     return out;
 }
 /// A random (version 4) UUID in its usual text form.
-fn uuid() [36]u8 {
+fn uuid(io: std.Io) [36]u8 {
     var raw: [16]u8 = undefined;
-    @import("desktop-secrets-store.zig").random(&raw) catch @panic("no randomness available");
+    @import("desktop-secrets-store.zig").random(io, &raw) catch @panic("no randomness available");
     raw[6] = (raw[6] & 0x0f) | 0x40;
     raw[8] = (raw[8] & 0x3f) | 0x80;
     var out: [36]u8 = undefined;

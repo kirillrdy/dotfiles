@@ -56,7 +56,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, args[1], "ui-parity")) {
-        const window = settings.Settings.create(init.gpa, .network);
+        const window = settings.Settings.create(init.gpa, init.io, .network);
         settle();
         try std.testing.expect(window.rows.items.len > 0);
         for (window.ui.items.items) |item| try std.testing.expect(item.kind != .choice);
@@ -105,7 +105,7 @@ pub fn main(init: std.process.Init) !void {
         window.ui.activate(window.view.refresh);
         try std.testing.expect(window.network_operations > 0);
         while (window.network_operations != 0) pump();
-        const properties = editor.Editor.create(window.window, state.profiles.items[0]);
+        const properties = editor.Editor.create(window.window, init.io, state.profiles.items[0]);
         settle();
         properties.ui.activate(properties.view.tabs[2]);
         try std.testing.expect(properties.view.page == .ipv4);
@@ -134,7 +134,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.startsWith(u8, args[1], "preview")) {
-        const window = settings.Settings.create(init.gpa, .network);
+        const window = settings.Settings.create(init.gpa, init.io, .network);
         if (std.mem.eql(u8, args[1], "preview-network")) window.showPage(.network);
         if (std.mem.eql(u8, args[1], "preview-search")) {
             window.ui.activate(window.view.search);
@@ -142,7 +142,7 @@ pub fn main(init: std.process.Init) !void {
             window.ui.changed(window.ui.context, window.view.query);
         }
         if (std.mem.startsWith(u8, args[1], "preview-editor")) {
-            const properties = editor.Editor.create(window.window, state.profiles.items[0]);
+            const properties = editor.Editor.create(window.window, init.io, state.profiles.items[0]);
             if (std.mem.endsWith(u8, args[1], "ipv4")) properties.view.page = .ipv4;
             if (std.mem.endsWith(u8, args[1], "security")) properties.view.page = .security;
             properties.ui.relayout();
@@ -159,7 +159,7 @@ pub fn main(init: std.process.Init) !void {
         const parent = try @import("desktop").window.Window.create(init.gpa, "Fixture parent", "fixture-parent", 620, 700, &Noop.paint, null);
         defer parent.destroy();
         const is_new = std.mem.eql(u8, args[1], "new");
-        const ui = editor.Editor.create(parent, if (is_new) null else state.profiles.items[0]);
+        const ui = editor.Editor.create(parent, init.io, if (is_new) null else state.profiles.items[0]);
         if (std.mem.eql(u8, args[1], "edit-cancel")) {
             try ui.setValue("802-11-wireless-security", "psk", "cancel-secret");
             ui.save();
@@ -201,7 +201,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "ui")) {
         const controls = quick.Controls.create(init.gpa, "true", "true");
-        const ui = settings.Settings.create(init.gpa, .network);
+        const ui = settings.Settings.create(init.gpa, init.io, .network);
         try std.testing.expect(ui.network_client.?.service == client.service);
         try std.testing.expect(controls.devices.network_client.?.service == client.service);
         settle();

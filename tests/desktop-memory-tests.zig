@@ -108,14 +108,14 @@ fn networkLifetime(settle: bool) !void {
         client.perform(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = "memory-secret" } }, cancel, &NetworkCompletion.done, &connected);
         while (!connected.finished and util.monotonicTime() < deadline) pump();
         try std.testing.expect(connected.finished and connected.succeeded);
-        const ui = settings.Settings.create(std.testing.allocator, .network);
+        const ui = settings.Settings.create(std.testing.allocator, std.testing.io, .network);
         objects.watch(ui.audio_cancel);
-        const connection_editor = editor.Editor.create(ui.window, client.state().profiles.items[0]);
+        const connection_editor = editor.Editor.create(ui.window, std.testing.io, client.state().profiles.items[0]);
         objects.watch(connection_editor.cancel);
         // A close during profile saving must release the editor after the reply.
         connection_editor.save();
         connection_editor.ui.close();
-        const new_connection = editor.Editor.create(ui.window, null);
+        const new_connection = editor.Editor.create(ui.window, std.testing.io, null);
         const new_settings = try new_connection.values();
         new_settings.unref();
         new_connection.ui.close();
@@ -136,7 +136,7 @@ fn networkLifetime(settle: bool) !void {
 }
 fn soundLifetime(settle: bool) !void {
     var objects = Objects{};
-    const shell = settings.Settings.create(std.testing.allocator, .sound);
+    const shell = settings.Settings.create(std.testing.allocator, std.testing.io, .sound);
     const sound = shell.sound.?;
     objects.watch(shell.audio_cancel);
     objects.watch(sound.cancel);
