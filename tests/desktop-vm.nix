@@ -48,6 +48,8 @@ pkgs.testers.runNixOSTest {
         mesa-demos
       ];
       fonts.packages = [ pkgs.dejavu_fonts ];
+      # Screenshots leave out the cursor plane; draw the native cursor into frames.
+      environment.sessionVariables.DESKTOP_CURSOR = lib.mkIf native "software";
       services.pipewire = {
         enable = true;
         pulse.enable = true;
@@ -159,6 +161,7 @@ pkgs.testers.runNixOSTest {
     if ${if native then "True" else "False"}:
       with subtest("the native compositor composites on the GPU"):
         machine.succeed("journalctl -b | grep -F 'compositor: rendering with GLES'")
+        machine.fail("journalctl -b | grep -F 'compositor: no cursor'")
       with subtest("GL clients get the linux-dmabuf format table"):
         print(machine.succeed(user("wayland-info -i zwp_linux_dmabuf_v1 | head -40")))
         machine.succeed(user("wayland-info -i zwp_linux_dmabuf_v1 | grep -i 'main device'"))

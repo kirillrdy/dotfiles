@@ -9,6 +9,7 @@ const std = @import("std");
 const wire = @import("wayland-server-wire");
 const ws = @import("wayland-server");
 const raster = @import("desktop-raster.zig");
+const Xcursor = @import("desktop-xcursor.zig");
 const Gl = @import("desktop-gl.zig");
 const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
@@ -1508,6 +1509,7 @@ const Output = struct {
             root.surface.draw(canvas, root.x - self.x, root.y - self.y, self.scale);
             if (root.surface.layer) |layer| if (layer.previews.items.len > 0 and layer.output == self) layer.drawPreviews(canvas, self.scale);
         }
+        if (self.display != null) if (self.comp.drm) |backend| backend.drawSoftwareCursor(self, canvas);
     }
 
     fn drawCpu(self: *Output) void {
@@ -1731,6 +1733,8 @@ const Seat = struct {
     /// What the pointer shows: the client's cursor surface, the built-in arrow, or nothing.
     cursor_mode: enum { default, surface, hidden } = .default,
     cursor_hotspot: [2]i32 = .{ 0, 0 },
+    /// The themed cursor shown in `.default` mode, a wp_cursor_shape_device_v1 shape.
+    cursor_shape: u32 = 1,
     default_keymap: Keymap = .{},
     /// The keymap clients last received; virtual keyboards bring their own.
     active_keymap: Keymap = .{},
@@ -1829,6 +1833,7 @@ const Seat = struct {
         if (self.cursor == surface) {
             self.cursor = null;
             self.cursor_mode = .default;
+            self.cursor_shape = 1;
             self.comp.cursorChanged();
         }
         if (self.pointer_focus == surface) {
@@ -1946,6 +1951,7 @@ const Seat = struct {
         // The new client sets its own cursor on enter; the desktop shows the arrow.
         self.cursor = null;
         self.cursor_mode = .default;
+        self.cursor_shape = 1;
         self.comp.cursorChanged();
         if (self.pointer_focus) |old| for (self.pointers.items) |pointer| {
             if (pointer.client() != old.resource.client()) continue;
@@ -3353,6 +3359,10 @@ const Compositor = struct {
     dmabuf_device: [8]u8 = @splat(0),
     /// The overview state last broadcast.
     overview_sent: bool = false,
+    /// Themed cursors by shape and size, and where themes are searched.
+    cursor_cache: std.ArrayList(struct { shape: u32, size: u32, image: ?Xcursor.Image }) = .empty,
+    cursor_path: [4096]u8 = undefined,
+    cursor_path_len: usize = 0,
     /// Set once start-up finished; later outputs are hotplugged.
     started: bool = false,
     seat: Seat = undefined,
@@ -3453,6 +3463,8 @@ const Compositor = struct {
         if (self.drm) |backend| backend.destroy();
         self.a.free(self.dmabuf_formats);
         if (self.dmabuf_table >= 0) _ = std.c.close(self.dmabuf_table);
+        for (self.cursor_cache.items) |entry| if (entry.image) |image| image.deinit(self.a);
+        self.cursor_cache.deinit(self.a);
         self.seat.deinit();
         self.ime.deinit();
         self.surfaces.deinit(self.a);
@@ -4269,9 +4281,11 @@ const Compositor = struct {
 
     fn cursorShapeDevice(self: *Compositor, _: ws.wp_cursor_shape_device_v1, request: ws.wp_cursor_shape_device_v1.Request) void {
         switch (request) {
-            .set_shape => {
+            .set_shape => |args| {
+                if (args.shape < 1 or args.shape >= cursor_names.len) return;
                 self.seat.cursor = null;
                 self.seat.cursor_mode = .default;
+                self.seat.cursor_shape = args.shape;
                 self.cursorChanged();
             },
             .destroy => {},
@@ -4334,6 +4348,25 @@ const Compositor = struct {
         feedback.sendTrancheFlags(0);
         feedback.sendTrancheDone();
         feedback.sendDone();
+    }
+
+    /// The themed cursor `shape` near `size` pixels, loaded once per size.
+    fn cursorImage(self: *Compositor, shape: u32, size: u32) ?*const Xcursor.Image {
+        for (self.cursor_cache.items) |*entry| if (entry.shape == shape and entry.size == size) return if (entry.image) |*image| image else null;
+        if (self.cursor_path_len == 0) self.cursor_path_len = Xcursor.searchPath(&self.cursor_path, @import("options").DATA_DIRS).len;
+        const theme = if (std.c.getenv("XCURSOR_THEME")) |value| std.mem.span(value) else "Adwaita";
+        const path = self.cursor_path[0..self.cursor_path_len];
+        var image = Xcursor.load(self.a, path, theme, cursor_names[shape], size);
+        // Themes without the CSS name may still have the default cursor.
+        if (image == null and shape != 1) image = Xcursor.load(self.a, path, theme, "default", size);
+        if (image == null) image = Xcursor.load(self.a, path, theme, "left_ptr", size);
+        if (image == null) std.log.warn("compositor: no cursor {s} in theme {s}; showing the built-in arrow", .{ cursor_names[shape], theme });
+        self.cursor_cache.append(self.a, .{ .shape = shape, .size = size, .image = image }) catch {
+            if (image) |value| value.deinit(self.a);
+            return null;
+        };
+        const entry = &self.cursor_cache.items[self.cursor_cache.items.len - 1];
+        return if (entry.image) |*value| value else null;
     }
 
     fn cursorChanged(self: *Compositor) void {
@@ -4943,6 +4976,10 @@ const Drm = struct {
     active: bool = true,
     /// GLES on the card; null renders on the CPU into dumb buffers.
     renderer: ?*Gl.Renderer = null,
+    /// The scale the cursor image was chosen for, and its copy for displays
+    /// without a cursor plane.
+    cursor_scale: f64 = 1,
+    software_cursor: []u32 = &.{},
     /// The pointer image last sent to the cursor plane.
     cursor_surface: ?*Surface = null,
 
@@ -4965,6 +5002,10 @@ const Drm = struct {
         }
         self.card.on_remove = unplugged;
         self.card.remove_context = self;
+        // DESKTOP_CURSOR=software draws the cursor into frames, as without a cursor plane.
+        if (std.c.getenv("DESKTOP_CURSOR")) |value| if (std.mem.eql(u8, std.mem.span(value), "software")) {
+            self.card.cursor_hardware = false;
+        };
         // DESKTOP_RENDERER=software keeps compositing on the CPU.
         const software = if (std.c.getenv("DESKTOP_RENDERER")) |value| std.mem.eql(u8, std.mem.span(value), "software") else false;
         if (!software) {
@@ -5167,13 +5208,61 @@ const Drm = struct {
                 const scale = @max(1, surface.scale);
                 self.card.setCursor(surface.pixels, surface.width, .{ seat.cursor_hotspot[0] * scale, seat.cursor_hotspot[1] * scale });
             } else self.card.setCursor(null, 0, .{ 0, 0 }),
-            .default => self.card.setCursor(&default_cursor.data, default_cursor.width_pixels, .{ 0, 0 }),
+            .default => {
+                // XCURSOR_SIZE logical pixels at the scale of the output under the pointer.
+                const base: f64 = if (std.c.getenv("XCURSOR_SIZE")) |value| std.fmt.parseFloat(f64, std.mem.span(value)) catch 24 else 24;
+                const output = self.comp.outputAt(seat.pointer_x, seat.pointer_y) orelse self.comp.primary();
+                const scale = if (output) |o| o.scale else 1;
+                const size: u32 = @intFromFloat(std.math.clamp(@round(base * scale), 8, 256));
+                if (self.comp.cursorImage(seat.cursor_shape, size)) |image| {
+                    self.card.setCursor(image.pixels, image.width, image.hotspot);
+                } else self.card.setCursor(&default_cursor.data, default_cursor.width_pixels, .{ 0, 0 });
+            },
         }
+        self.cursor_scale = if (self.comp.outputAt(seat.pointer_x, seat.pointer_y)) |o| o.scale else self.cursor_scale;
+        self.keepSoftwareCursor();
         self.moveCursor();
+    }
+
+    /// Without a cursor plane, the image is kept to be drawn into frames.
+    fn keepSoftwareCursor(self: *Drm) void {
+        if (self.card.cursor_hardware) return;
+        const a = self.comp.a;
+        a.free(self.software_cursor);
+        self.software_cursor = &.{};
+        if (!self.card.cursor_visible) return;
+        const memory = self.card.cursor.memory orelse return;
+        const width = self.card.cursor_size[0];
+        const height = self.card.cursor_size[1];
+        self.software_cursor = a.alloc(u32, @as(usize, width) * height) catch return;
+        for (0..height) |row| {
+            const line: [*]const u32 = @ptrCast(@alignCast(memory + row * self.card.cursor.pitch));
+            @memcpy(self.software_cursor[row * width ..][0..width], line[0..width]);
+        }
+    }
+
+    /// Draws the cursor into a frame where the display has no cursor plane.
+    fn drawSoftwareCursor(self: *Drm, output: *Output, canvas: Canvas) void {
+        if (self.card.cursor_hardware) return;
+        if (self.software_cursor.len == 0) self.keepSoftwareCursor();
+        if (self.software_cursor.len == 0) return;
+        const seat = &self.comp.seat;
+        if (!output.contains(seat.pointer_x, seat.pointer_y)) return;
+        const x = (seat.pointer_x - @as(f64, @floatFromInt(output.x))) * output.scale - @as(f64, @floatFromInt(self.card.cursor_hotspot[0]));
+        const y = (seat.pointer_y - @as(f64, @floatFromInt(output.y))) * output.scale - @as(f64, @floatFromInt(self.card.cursor_hotspot[1]));
+        const width = self.card.cursor_size[0];
+        const height = self.card.cursor_size[1];
+        canvas.image(self.software_cursor, width, height, .{ .x = @floor(x), .y = @floor(y), .width = @floatFromInt(width), .height = @floatFromInt(height) }, .{ .x = 0, .y = 0, .width = @intCast(output.width), .height = @intCast(output.height) }, 1);
     }
 
     fn moveCursor(self: *Drm) void {
         const seat = &self.comp.seat;
+        // Crossing to an output of another scale needs a cursor of its size.
+        if (self.comp.outputAt(seat.pointer_x, seat.pointer_y)) |output| if (output.scale != self.cursor_scale) return self.updateCursor();
+        if (!self.card.cursor_hardware) {
+            for (self.comp.outputs.items) |output| if (output.display != null) output.scheduleRepaint();
+            return;
+        }
         for (self.comp.outputs.items) |output| if (output.display) |display| {
             const x = (seat.pointer_x - @as(f64, @floatFromInt(output.x))) * output.scale;
             const y = (seat.pointer_y - @as(f64, @floatFromInt(output.y))) * output.scale;
@@ -5382,6 +5471,7 @@ const Drm = struct {
             output.display = null;
         }
         if (self.renderer) |renderer| renderer.deinit();
+        a.free(self.software_cursor);
         self.card.deinit();
         self.session.releaseDevice(self.card_device);
         self.session.close();
@@ -5389,7 +5479,10 @@ const Drm = struct {
     }
 };
 
-/// The pointer shown over the desktop and for cursor-shape clients: a
+/// Xcursor names of wp_cursor_shape_device_v1 shapes, by enum value.
+const cursor_names = [_][]const u8{ "default", "default", "context-menu", "help", "pointer", "progress", "wait", "cell", "crosshair", "text", "vertical-text", "alias", "copy", "move", "no-drop", "not-allowed", "grab", "grabbing", "e-resize", "n-resize", "ne-resize", "nw-resize", "s-resize", "se-resize", "sw-resize", "w-resize", "ew-resize", "ns-resize", "nesw-resize", "nwse-resize", "col-resize", "row-resize", "all-scroll", "zoom-in", "zoom-out", "dnd-ask", "all-resize" };
+
+/// The pointer shown when no cursor theme is installed: a
 /// white arrow with a black outline, premultiplied ARGB.
 const default_cursor = blk: {
     const rows = [_][]const u8{

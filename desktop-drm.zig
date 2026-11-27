@@ -350,7 +350,8 @@ pub const Display = struct {
             command.width = card.cursor_size[0];
             command.height = card.cursor_size[1];
         }
-        _ = call(card.fd, ioctl.cursor2, &command);
+        // Displays without a cursor plane get the cursor drawn into frames.
+        if (!call(card.fd, ioctl.cursor2, &command) and card.cursor_visible and self.modeset) card.cursor_hardware = false;
     }
 
     /// Turns the display off until the next frame sets its mode again.
@@ -385,6 +386,8 @@ pub const Card = struct {
     cursor_size: [2]u32 = .{ 64, 64 },
     cursor_hotspot: [2]i32 = .{ 0, 0 },
     cursor_visible: bool = false,
+    /// False once a display rejected the cursor plane.
+    cursor_hardware: bool = true,
     /// Called before a display that was unplugged is freed.
     on_remove: ?*const fn (?*anyopaque, *Display) void = null,
     remove_context: ?*anyopaque = null,
