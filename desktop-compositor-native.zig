@@ -3835,6 +3835,7 @@ const Compositor = struct {
         _ = try server.createGlobal(&ws.zwlr_screencopy_manager_v1.interface, 3, self, &bindScreencopy);
         _ = try server.createGlobal(&ws.zwlr_output_manager_v1.interface, 4, self, &bindOutputManagement);
         _ = try server.createGlobal(&ws.zxdg_decoration_manager_v1.interface, 1, self, &bindDecorationManager);
+        _ = try server.createGlobal(&ws.org_kde_kwin_server_decoration_manager.interface, 1, self, &bindKdeDecoration);
         _ = try server.createGlobal(&ws.ext_foreign_toplevel_list_v1.interface, 1, self, &bindToplevelList);
         _ = try server.createGlobal(&ws.ext_foreign_toplevel_image_capture_source_manager_v1.interface, 1, self, &bindCaptureSources);
         _ = try server.createGlobal(&ws.ext_image_copy_capture_manager_v1.interface, 1, self, &bindImageCopy);
@@ -5356,6 +5357,32 @@ const Compositor = struct {
             .destroy => {},
             // Mode requests before the first commit wait for its configure.
             .set_mode, .unset_mode => if (toplevel.xdg) |xdg| if (xdg.initial_sent) toplevel.configure(),
+        }
+    }
+
+    /// KDE's decoration protocol, for clients that only speak it: windows
+    /// draw their own decorations, as with xdg-decoration.
+    fn bindKdeDecoration(data: ?*anyopaque, resource: wire.Resource) void {
+        const self: *Compositor = @ptrCast(@alignCast(data));
+        const manager: ws.org_kde_kwin_server_decoration_manager = .{ .resource = resource };
+        manager.setHandler(Compositor, self, kdeDecorationRequest, null);
+        manager.sendDefaultMode(1); // Client
+    }
+
+    fn kdeDecorationRequest(self: *Compositor, _: ws.org_kde_kwin_server_decoration_manager, request: ws.org_kde_kwin_server_decoration_manager.Request) void {
+        switch (request) {
+            .create => |args| {
+                args.id.setHandler(Compositor, self, kdeDecoration, null);
+                args.id.sendMode(1);
+            },
+        }
+    }
+
+    fn kdeDecoration(_: *Compositor, resource: ws.org_kde_kwin_server_decoration, request: ws.org_kde_kwin_server_decoration.Request) void {
+        switch (request) {
+            .release => {},
+            // Every request is answered with client-side decoration.
+            .request_mode => resource.sendMode(1),
         }
     }
 
