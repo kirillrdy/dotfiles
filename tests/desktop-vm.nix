@@ -181,6 +181,13 @@ pkgs.testers.runNixOSTest {
         machine.succeed(user("wlr-randr | grep -F '1024x768' | grep -F current"))
         machine.succeed(user("wlr-randr --output Virtual-1 --mode 1280x800"))
         machine.wait_until_succeeds("journalctl -b | grep -F 'compositor: Virtual-1 now 1280x800'")
+        # Turned a quarter: the scene is portrait, drawn upright into the landscape mode.
+        machine.succeed(user("wlr-randr --output Virtual-1 --transform 90"))
+        machine.succeed(user("wlr-randr | grep -F 'Transform: 90'"))
+        machine.sleep(1)
+        machine.screenshot("desktop-transform-90")
+        machine.succeed(user("wlr-randr --output Virtual-1 --transform normal"))
+        machine.sleep(1)
         # virtio-gpu cannot vary its refresh rate, so turning it on is refused.
         machine.fail(user("wlr-randr --output Virtual-1 --adaptive-sync enabled"))
         machine.succeed(user("wlr-randr | grep -F 'Adaptive Sync: disabled'"))

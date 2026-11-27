@@ -137,6 +137,7 @@ pub extern fn glGetAttribLocation(program: u32, name: [*:0]const u8) i32;
 pub extern fn glUniform1i(location: i32, value: i32) void;
 pub extern fn glUniform1f(location: i32, value: f32) void;
 pub extern fn glUniform2f(location: i32, x: f32, y: f32) void;
+pub extern fn glUniform3f(location: i32, x: f32, y: f32, z: f32) void;
 pub extern fn glUniform4f(location: i32, x: f32, y: f32, z: f32, w: f32) void;
 pub extern fn glVertexAttribPointer(index: u32, size: i32, kind: u32, normalized: u8, stride: i32, pointer: ?*const anyopaque) void;
 pub extern fn glEnableVertexAttribArray(index: u32) void;
@@ -184,13 +185,17 @@ const vertex_source =
     \\attribute vec2 position;
     \\uniform vec4 rect;
     \\uniform vec2 viewport;
+    \\uniform vec3 out_x;
+    \\uniform vec3 out_y;
     \\uniform vec2 uv_origin;
     \\uniform vec2 uv_x;
     \\uniform vec2 uv_y;
     \\varying vec2 uv;
     \\void main() {
     \\    vec2 pixel = rect.xy + position * rect.zw;
-    \\    gl_Position = vec4(pixel.x / viewport.x * 2.0 - 1.0, 1.0 - pixel.y / viewport.y * 2.0, 0.0, 1.0);
+    \\    vec3 scene = vec3(pixel / viewport, 1.0);
+    \\    vec2 shown = vec2(dot(out_x, scene), dot(out_y, scene));
+    \\    gl_Position = vec4(shown.x * 2.0 - 1.0, 1.0 - shown.y * 2.0, 0.0, 1.0);
     \\    uv = uv_origin + position.x * uv_x + position.y * uv_y;
     \\}
 ;
@@ -213,6 +218,22 @@ const quad = [_]f32{ 0, 0, 1, 0, 0, 1, 1, 1 };
 /// A rectangle in output pixels, as raster.Rect.
 pub const Rect = struct { x: f64, y: f64, width: f64, height: f64 };
 pub const Clip = struct { x: i32, y: i32, width: i32, height: i32 };
+
+/// A wl_output transform as an affine map of normalized coordinates: the
+/// point q of the upright picture is at (a*qx + b*qy + c, d*qx + e*qy + f)
+/// of a buffer holding it turned counter-clockwise (flipping first).
+pub fn transformMatrix(transform: u32) [6]f64 {
+    return switch (transform) {
+        1 => .{ 0, 1, 0, -1, 0, 1 },
+        2 => .{ -1, 0, 1, 0, -1, 1 },
+        3 => .{ 0, -1, 1, 1, 0, 0 },
+        4 => .{ -1, 0, 1, 0, 1, 0 },
+        5 => .{ 0, 1, 0, 1, 0, 0 },
+        6 => .{ 1, 0, 0, 0, -1, 1 },
+        7 => .{ 0, -1, 1, -1, 0, 1 },
+        else => .{ 1, 0, 0, 0, 1, 0 },
+    };
+}
 
 /// Where the quad's corners sample the texture: the top-left corner samples
 /// `origin`, and moving right or down across the quad moves by `x` or `y`.
@@ -237,6 +258,10 @@ pub const Renderer = struct {
     opacity_location: i32,
     opaque_location: i32,
     uv_locations: [3]i32,
+    out_locations: [2]i32,
+    /// The scanout buffer's size, and how the scene maps onto it.
+    target_size: [2]f32 = .{ 1, 1 },
+    transform: [6]f32 = .{ 1, 0, 0, 0, 1, 0 },
     position: u32,
     /// A texture for images drawn once, such as overview previews.
     scratch: u32 = 0,
@@ -279,6 +304,7 @@ pub const Renderer = struct {
             .opacity_location = glGetUniformLocation(program, "opacity"),
             .opaque_location = glGetUniformLocation(program, "opaque"),
             .uv_locations = .{ glGetUniformLocation(program, "uv_origin"), glGetUniformLocation(program, "uv_x"), glGetUniformLocation(program, "uv_y") },
+            .out_locations = .{ glGetUniformLocation(program, "out_x"), glGetUniformLocation(program, "out_y") },
             .position = @intCast(@max(0, glGetAttribLocation(program, "position"))),
         };
         if (glGetString(gl.renderer)) |driver| {
@@ -386,9 +412,14 @@ pub const Renderer = struct {
     /// Starts drawing into `target`, cleared to opaque `background` (ARGB).
     /// With `damage`, only that part is cleared and drawn; the rest keeps
     /// the buffer's previous content.
-    pub fn begin(self: *Renderer, target: *Target, background: u32, damage: ?Clip) bool {
+    /// The scene is drawn upright and turned by `transform` (a wl_output
+    /// transform) into the buffer; quarter turns swap the scene's sides.
+    pub fn begin(self: *Renderer, target: *Target, background: u32, damage: ?Clip, transform: u32) bool {
         if (eglMakeCurrent(self.display, target.surface, target.surface, self.context) == 0) return false;
-        self.viewport = .{ @floatFromInt(target.width), @floatFromInt(target.height) };
+        self.target_size = .{ @floatFromInt(target.width), @floatFromInt(target.height) };
+        self.viewport = if (transform & 1 != 0) .{ self.target_size[1], self.target_size[0] } else self.target_size;
+        const m = transformMatrix(transform);
+        for (&self.transform, m) |*out, value| out.* = @floatCast(value);
         glViewport(0, 0, @intCast(target.width), @intCast(target.height));
         self.frame_clip = damage;
         _ = self.scissor(null);
@@ -441,14 +472,33 @@ pub const Renderer = struct {
             box = .{ .x = left, .y = top, .width = right - left, .height = bottom - top };
         };
         if (box.width <= 0 or box.height <= 0) return false;
+        // The scene box, turned into buffer pixels.
+        const m = self.transform;
+        var lo = [2]f32{ std.math.floatMax(f32), std.math.floatMax(f32) };
+        var hi = [2]f32{ -std.math.floatMax(f32), -std.math.floatMax(f32) };
+        for ([_][2]f32{ .{ @floatFromInt(box.x), @floatFromInt(box.y) }, .{ @floatFromInt(box.x + box.width), @floatFromInt(box.y + box.height) } }) |corner| {
+            const qx = corner[0] / self.viewport[0];
+            const qy = corner[1] / self.viewport[1];
+            const bx = (m[0] * qx + m[1] * qy + m[2]) * self.target_size[0];
+            const by = (m[3] * qx + m[4] * qy + m[5]) * self.target_size[1];
+            lo = .{ @min(lo[0], bx), @min(lo[1], by) };
+            hi = .{ @max(hi[0], bx), @max(hi[1], by) };
+        }
+        const x: i32 = @intFromFloat(@floor(lo[0]));
+        const y: i32 = @intFromFloat(@floor(lo[1]));
+        const w: i32 = @intFromFloat(@ceil(hi[0]) - @floor(lo[0]));
+        const h: i32 = @intFromFloat(@ceil(hi[1]) - @floor(lo[1]));
         glEnable(gl.scissor_test);
         // Scissor boxes count from the bottom row.
-        glScissor(box.x, @as(i32, @intFromFloat(self.viewport[1])) - box.y - box.height, box.width, box.height);
+        glScissor(x, @as(i32, @intFromFloat(self.target_size[1])) - y - h, w, h);
         return true;
     }
 
     fn glUniformViewport(self: *Renderer) void {
         glUniform2f(self.viewport_location, self.viewport[0], self.viewport[1]);
+        const m = self.transform;
+        glUniform3f(self.out_locations[0], m[0], m[1], m[2]);
+        glUniform3f(self.out_locations[1], m[3], m[4], m[5]);
     }
 
     /// Draws CPU pixels once, through the scratch texture.
@@ -548,7 +598,7 @@ pub const Renderer = struct {
         // Drawing continues into the window surface afterwards.
         defer {
             glBindFramebuffer(gl.framebuffer, 0);
-            glViewport(0, 0, @intFromFloat(self.viewport[0]), @intFromFloat(self.viewport[1]));
+            glViewport(0, 0, @intFromFloat(self.target_size[0]), @intFromFloat(self.target_size[1]));
         }
         glFramebufferTexture2D(gl.framebuffer, gl.color_attachment0, gl.texture_2d, texture, 0);
         if (glCheckFramebufferStatus(gl.framebuffer) != gl.framebuffer_complete) return false;

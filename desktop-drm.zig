@@ -385,7 +385,7 @@ pub const Display = struct {
     fn showCursor(self: *Display) void {
         const card = self.card;
         var command: CursorCommand = .{ .flags = cursor_set_image, .crtc_id = self.crtc, .hot_x = card.cursor_hotspot[0], .hot_y = card.cursor_hotspot[1] };
-        if (card.cursor_visible) {
+        if (card.cursor_visible and card.cursor_hardware) {
             command.handle = card.cursor.handle;
             command.width = card.cursor_size[0];
             command.height = card.cursor_size[1];
@@ -615,7 +615,8 @@ pub const Card = struct {
             self.cursor_hotspot = hotspot;
             self.cursor_visible = true;
         };
-        if (!self.active) return;
+        // Without the plane, the image is only kept for drawing into frames.
+        if (!self.active or !self.cursor_hardware) return;
         for (self.displays.items) |display| display.showCursor();
     }
 

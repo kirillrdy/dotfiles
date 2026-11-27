@@ -289,17 +289,7 @@ const Surface = struct {
             const h: f64 = @floatFromInt(shown[1]);
             crop = .{ source[0] * scale / w, source[1] * scale / h, source[2] * scale / w, source[3] * scale / h };
         };
-        // Buffer point b = (a*qx + b*qy + c, d*qx + e*qy + f) of displayed point q.
-        const m: [6]f64 = switch (self.transform) {
-            1 => .{ 0, 1, 0, -1, 0, 1 },
-            2 => .{ -1, 0, 1, 0, -1, 1 },
-            3 => .{ 0, -1, 1, 1, 0, 0 },
-            4 => .{ -1, 0, 1, 0, 1, 0 },
-            5 => .{ 0, 1, 0, 1, 0, 0 },
-            6 => .{ 1, 0, 0, 0, -1, 1 },
-            7 => .{ 0, -1, 1, -1, 0, 1 },
-            else => .{ 1, 0, 0, 0, 1, 0 },
-        };
+        const m = Gl.transformMatrix(self.transform);
         const origin = [2]f64{ m[0] * crop[0] + m[1] * crop[1] + m[2], m[3] * crop[0] + m[4] * crop[1] + m[5] };
         return .{
             .origin = .{ @floatCast(origin[0]), @floatCast(origin[1]) },
@@ -1479,6 +1469,9 @@ const Output = struct {
     damage_full: bool = true,
     damage_history: [4]?Gl.Clip = @splat(null),
     history_len: u32 = 0,
+    /// How the display is turned (a wl_output transform); `width` and
+    /// `height` are the upright scene's, swapped from the mode's by quarter turns.
+    transform: u32 = 0,
     /// The GPU scanout target, when the DRM backend renders with GLES.
     target: ?*Gl.Target = null,
     /// Whether `pixels` holds the latest frame; GPU frames are drawn again
@@ -1562,7 +1555,7 @@ const Output = struct {
     }
 
     fn describe(self: *Output, output: ws.wl_output) void {
-        output.sendGeometry(self.x, self.y, self.physical[0], self.physical[1], ws.wl_output.Subpixel.unknown, self.make, self.model, ws.wl_output.Transform.normal);
+        output.sendGeometry(self.x, self.y, self.physical[0], self.physical[1], ws.wl_output.Subpixel.unknown, self.make, self.model, @intCast(self.transform));
         output.sendMode(ws.wl_output.Mode.current | ws.wl_output.Mode.preferred, @intCast(self.width), @intCast(self.height), self.refresh);
         if (output.version() >= 2) output.sendScale(self.bufferScale());
         if (output.version() >= 4) {
@@ -1714,7 +1707,7 @@ const Output = struct {
             const backend = comp.drm.?;
             const renderer = backend.renderer.?;
             const region = self.takeDamage(renderer.bufferAge(target));
-            if (renderer.begin(target, self.backgroundColor(), region)) {
+            if (renderer.begin(target, self.backgroundColor(), region, self.transform)) {
                 self.drawScene(.{ .gl = renderer });
                 self.pixels_valid = false;
                 backend.showGpu(self, target);
@@ -2694,7 +2687,7 @@ const HeadManager = struct {
                 const enabled = if (output.display) |display| display.vrr_enabled else false;
                 head.sendAdaptiveSync(if (enabled) ws.zwlr_output_head_v1.AdaptiveSyncState.enabled else ws.zwlr_output_head_v1.AdaptiveSyncState.disabled);
             }
-            head.sendTransform(ws.wl_output.Transform.normal);
+            head.sendTransform(@intCast(output.transform));
             head.sendScale(output.scale);
         }
     };
@@ -2791,6 +2784,8 @@ const OutputConfig = struct {
             if (head.size) |size| if (size[0] == 0 or size[1] == 0 or size[0] > 8192 or size[1] > 8192) return resource.sendFailed();
             // Displays only take the modes their connector offers.
             if (head.size) |size| if (head.output.display) |display| if (findMode(display, size, head.refresh) == null) return resource.sendFailed();
+            // Displays drawn on the CPU cannot be turned.
+            if (head.transform) |transform| if (transform != 0 and head.output.display != null and head.output.target == null) return resource.sendFailed();
             // Variable refresh needs a display that supports it.
             if (head.adaptive_sync) |enabled| if (enabled) if (head.output.display == null or !head.output.display.?.vrr_capable) return resource.sendFailed();
         }
@@ -2804,7 +2799,19 @@ const OutputConfig = struct {
                 if (head.adaptive_sync) |enabled| if (head.output.display) |display| {
                     if (!display.setAdaptiveSync(enabled)) std.log.warn("compositor: {s}: variable refresh could not be {s}", .{ display.name(), if (enabled) "enabled" else "disabled" });
                 };
-                head.output.configure(head.scale orelse head.output.scale, head.size, head.position);
+                // The scene is the mode's size, its sides swapped by quarter turns.
+                const transform = head.transform orelse head.output.transform;
+                var size = head.size;
+                if (transform != head.output.transform or size != null) {
+                    const base = size orelse if (head.output.display) |display| [2]u32{ display.width(), display.height() } else if (head.output.transform & 1 != 0) [2]u32{ head.output.height, head.output.width } else [2]u32{ head.output.width, head.output.height };
+                    size = if (transform & 1 != 0) .{ base[1], base[0] } else base;
+                }
+                if (transform != head.output.transform) {
+                    head.output.transform = transform;
+                    // The cursor plane is not turned; such displays draw the cursor into frames.
+                    if (transform != 0) if (comp.drm) |backend| backend.useSoftwareCursor();
+                }
+                head.output.configure(head.scale orelse head.output.scale, size, head.position);
             }
             comp.outputChanged();
         }
@@ -2849,6 +2856,7 @@ const ConfigHead = struct {
     /// A mode that is no longer offered was chosen.
     stale: bool = false,
     adaptive_sync: ?bool = null,
+    transform: ?u32 = null,
     position: ?[2]i32 = null,
 
     fn handle(self: *ConfigHead, _: ws.zwlr_output_configuration_head_v1, request: ws.zwlr_output_configuration_head_v1.Request) void {
@@ -2865,7 +2873,7 @@ const ConfigHead = struct {
             },
             .set_position => |args| self.position = .{ args.x, args.y },
             .set_adaptive_sync => |args| self.adaptive_sync = args.state == ws.zwlr_output_head_v1.AdaptiveSyncState.enabled,
-            .set_transform => {},
+            .set_transform => |args| self.transform = if (args.transform >= 0 and args.transform <= 7) @intCast(args.transform) else null,
         }
     }
 
@@ -5886,7 +5894,8 @@ const Drm = struct {
         for (comp.outputs.items) |output| if (output.display == null and std.mem.eql(u8, output.name(), display.name())) {
             output.display = display;
             display.context = output;
-            output.configure(output.scale, .{ display.width(), display.height() }, null);
+            const upright: [2]u32 = if (output.transform & 1 != 0) .{ display.height(), display.width() } else .{ display.width(), display.height() };
+            output.configure(output.scale, upright, null);
             self.attachTarget(output);
             comp.setOutputEnabled(output, true);
             comp.outputChanged();
@@ -6047,6 +6056,13 @@ const Drm = struct {
         self.cursor_scale = if (self.comp.outputAt(seat.pointer_x, seat.pointer_y)) |o| o.scale else self.cursor_scale;
         self.keepSoftwareCursor();
         self.moveCursor();
+    }
+
+    fn useSoftwareCursor(self: *Drm) void {
+        if (!self.card.cursor_hardware) return;
+        self.card.setCursor(null, 0, .{ 0, 0 });
+        self.card.cursor_hardware = false;
+        self.updateCursor();
     }
 
     /// Without a cursor plane, the image is kept to be drawn into frames.
