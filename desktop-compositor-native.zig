@@ -135,7 +135,7 @@ const Region = struct {
     }
 };
 
-const Role = enum { none, toplevel, popup, subsurface, cursor, layer, lock, ime_popup };
+const Role = enum { none, toplevel, popup, subsurface, cursor, layer, lock, ime_popup, drag_icon };
 
 const Surface = struct {
     comp: *Compositor,
@@ -467,6 +467,7 @@ const Surface = struct {
         if (self.texture != 0) if (comp.drm) |backend| if (backend.renderer) |renderer| renderer.deleteTexture(self.texture);
         self.releaseHeld();
         comp.a.free(self.pixels);
+        comp.dragSurfaceGone(self);
         removeItem(*Surface, &comp.surfaces, self);
         if (comp.seat.keyboard_focus == self) comp.seat.keyboard_focus = null;
         if (comp.seat.cursor == self) comp.seat.cursor = null;
@@ -1625,6 +1626,10 @@ const Output = struct {
             root.surface.draw(canvas, root.x - self.x, root.y - self.y, self.scale);
             if (root.surface.layer) |layer| if (layer.previews.items.len > 0 and layer.output == self) layer.drawPreviews(canvas, self.scale);
         }
+        // The drag icon follows the pointer, above everything else.
+        if (self.comp.drag) |drag| if (drag.icon) |icon| if (self.contains(self.comp.seat.pointer_x, self.comp.seat.pointer_y)) {
+            icon.draw(canvas, @as(i32, @intFromFloat(@floor(self.comp.seat.pointer_x))) - self.x, @as(i32, @intFromFloat(@floor(self.comp.seat.pointer_y))) - self.y, self.scale);
+        };
         if (self.display != null) if (self.comp.drm) |backend| backend.drawSoftwareCursor(self, canvas);
     }
 
@@ -2105,8 +2110,9 @@ const Seat = struct {
         self.pointer_x = x;
         self.pointer_y = y;
         self.clampPointer();
-        // An implicit grab keeps events on the pressed surface until release.
         defer self.comp.cursorMoved();
+        if (self.comp.drag != null) return self.comp.dragMotion(time);
+        // An implicit grab keeps events on the pressed surface until release.
         if (self.buttons == 0) self.updatePointerFocus();
         const surface = self.pointer_focus orelse return;
         for (self.pointers.items) |pointer| {
@@ -2116,6 +2122,15 @@ const Seat = struct {
 
     fn button(self: *Seat, time: u32, code: u32, pressed: bool) void {
         self.comp.activity();
+        if (self.comp.drag != null) {
+            if (pressed) {
+                self.buttons += 1;
+            } else {
+                self.buttons -|= 1;
+                if (self.buttons == 0) self.comp.dragDrop();
+            }
+            return;
+        }
         if (pressed) {
             if (self.buttons == 0) {
                 self.updatePointerFocus();
@@ -3240,6 +3255,8 @@ const DataSource = struct {
     mimes: std.ArrayList([]u8) = .empty,
     /// Offers made from this source; they stop working when it goes away.
     offers: std.ArrayList(*Offer) = .empty,
+    /// Drag-and-drop actions the source supports (wl_data_device_manager.dnd_action).
+    actions: u32 = 0,
 
     fn addMime(self: *DataSource, mime_type: []const u8) void {
         for (self.mimes.items) |mime| if (std.mem.eql(u8, mime, mime_type)) return;
@@ -3250,7 +3267,11 @@ const DataSource = struct {
     fn coreRequest(self: *DataSource, _: ws.wl_data_source, request: ws.wl_data_source.Request) void {
         switch (request) {
             .offer => |args| self.addMime(args.mime_type),
-            .destroy, .set_actions => {},
+            .destroy => {},
+            .set_actions => |args| {
+                self.actions = args.dnd_actions;
+                self.comp.updateDragAction();
+            },
         }
     }
 
@@ -3286,6 +3307,10 @@ const DataSource = struct {
 
     fn gone(self: *DataSource) void {
         const comp = self.comp;
+        if (comp.drag) |*drag| if (drag.source == self) {
+            drag.source = null;
+            comp.endDrag();
+        };
         for (self.offers.items) |offer| offer.source = null;
         self.offers.deinit(comp.a);
         for (self.mimes.items) |mime| comp.a.free(mime);
@@ -3309,6 +3334,13 @@ const DataSource = struct {
 const Offer = struct {
     comp: *Compositor,
     source: ?*DataSource,
+    /// Drag-and-drop offers: whether the target accepts a type, and the
+    /// actions it supports and prefers.
+    drag: bool = false,
+    accepted: bool = false,
+    actions: u32 = 0,
+    preferred: u32 = 0,
+    resource: ?ws.wl_data_offer = null,
 
     fn receive(self: *Offer, mime_type: []const u8, fd: wire.Fd) void {
         defer _ = std.c.close(fd);
@@ -3320,7 +3352,20 @@ const Offer = struct {
     fn coreRequest(self: *Offer, _: ws.wl_data_offer, request: ws.wl_data_offer.Request) void {
         switch (request) {
             .receive => |args| self.receive(args.mime_type, args.fd),
-            .accept, .destroy, .finish, .set_actions => {},
+            .destroy => {},
+            .accept => |args| if (self.drag) {
+                self.accepted = args.mime_type != null;
+                if (self.source) |source| (ws.wl_data_source{ .resource = source.resource }).sendTarget(args.mime_type);
+            },
+            .set_actions => |args| if (self.drag) {
+                self.actions = args.dnd_actions;
+                self.preferred = args.preferred_action;
+                self.comp.updateDragAction();
+            },
+            .finish => if (self.drag) if (self.source) |source| {
+                const resource: ws.wl_data_source = .{ .resource = source.resource };
+                if (resource.version() >= 3) resource.sendDndFinished();
+            },
         }
     }
 
@@ -3339,6 +3384,9 @@ const Offer = struct {
     }
 
     fn gone(self: *Offer) void {
+        if (self.comp.drag) |*drag| if (drag.offer == self) {
+            drag.offer = null;
+        };
         if (self.source) |source| removeItem(*Offer, &source.offers, self);
         self.comp.a.destroy(self);
     }
@@ -3364,6 +3412,17 @@ const Offer = struct {
     }
 };
 
+/// A drag-and-drop operation, from start_drag until the button is released.
+const Drag = struct {
+    source: ?*DataSource,
+    origin: *Surface,
+    icon: ?*Surface,
+    /// The surface under the pointer that was sent enter, and its offer.
+    focus: ?*Surface = null,
+    offer: ?*Offer = null,
+    action: u32 = 0,
+};
+
 /// A wl_data_device, primary-selection device or wlr-data-control device.
 const DataDevice = struct {
     comp: *Compositor,
@@ -3381,7 +3440,8 @@ const DataDevice = struct {
     fn coreRequest(self: *DataDevice, _: ws.wl_data_device, request: ws.wl_data_device.Request) void {
         switch (request) {
             .set_selection => |args| self.replace(if (args.source) |resource| resource.data(DataSource) else null, false),
-            .start_drag, .release => {},
+            .start_drag => |args| self.comp.startDrag(self, args.source, args.origin, args.icon),
+            .release => {},
         }
     }
 
@@ -3491,6 +3551,8 @@ const Compositor = struct {
     cursor_cache: std.ArrayList(struct { shape: u32, size: u32, image: ?Xcursor.Image }) = .empty,
     cursor_path: [4096]u8 = undefined,
     cursor_path_len: usize = 0,
+    /// The drag-and-drop operation in progress.
+    drag: ?Drag = null,
     /// Turns displays off while locked; set while they are off.
     blank_timer: ?*wire.Loop.Source = null,
     blanked: bool = false,
@@ -4468,6 +4530,168 @@ const Compositor = struct {
                 self.cursorChanged();
             },
             .destroy => {},
+        }
+    }
+
+    // ---------------------------------------------------------- Drag and drop
+
+    /// Starts a drag from a button press on the requesting client's surface.
+    fn startDrag(self: *Compositor, device: *DataDevice, source_resource: ?ws.wl_data_source, origin_resource: ws.wl_surface, icon_resource: ?ws.wl_surface) void {
+        const source = if (source_resource) |resource| resource.data(DataSource) else null;
+        const origin = origin_resource.data(Surface) orelse return;
+        const pressed_on = self.seat.pointer_focus;
+        // Only during an implicit grab of this client's surface, as wlroots checks.
+        if (self.drag != null or self.seat.buttons == 0 or pressed_on == null or pressed_on.?.resource.client() != device.resource.client) {
+            if (source) |value| value.cancel();
+            return;
+        }
+        var icon: ?*Surface = null;
+        if (icon_resource) |resource| if (resource.data(Surface)) |surface| {
+            if (surface.role != .none and surface.role != .drag_icon) return resource.postError(ws.wl_data_device.Error.role, "surface already has a role", .{});
+            surface.role = .drag_icon;
+            icon = surface;
+        };
+        self.drag = .{ .source = source, .origin = origin, .icon = icon };
+        // The pointer leaves its surface while dragging; drag events take over.
+        if (self.seat.pointer_focus) |old| for (self.seat.pointers.items) |pointer| {
+            if (pointer.client() != old.resource.client()) continue;
+            pointer.sendLeave(self.server.nextSerial(), old.resource);
+            if (pointer.version() >= 5) pointer.sendFrame();
+        };
+        self.seat.pointer_focus = null;
+        self.dragMotion(nowMs());
+    }
+
+    /// Sends drag enter, leave and motion to the clients under the pointer.
+    fn dragMotion(self: *Compositor, time: u32) void {
+        const drag = &(self.drag orelse return);
+        const seat = &self.seat;
+        const hit = self.surfaceAt(seat.pointer_x, seat.pointer_y);
+        var target = if (hit) |value| value.surface else null;
+        // A drag without a source stays within its own client.
+        if (drag.source == null) if (target) |surface| if (surface.resource.client() != drag.origin.resource.client()) {
+            target = null;
+        };
+        if (target != drag.focus) {
+            self.dragLeave();
+            if (target) |surface| self.dragEnter(surface, seat.pointer_x - @as(f64, @floatFromInt(hit.?.x)), seat.pointer_y - @as(f64, @floatFromInt(hit.?.y)));
+        } else if (drag.focus) |surface| {
+            const x = seat.pointer_x - @as(f64, @floatFromInt(hit.?.x));
+            const y = seat.pointer_y - @as(f64, @floatFromInt(hit.?.y));
+            for (self.data_devices.items) |device| if (device.kind == .core and device.resource.client == surface.resource.client()) {
+                (ws.wl_data_device{ .resource = device.resource }).sendMotion(time, x, y);
+            };
+        }
+        if (drag.icon != null) self.scheduleRepaint();
+    }
+
+    fn dragEnter(self: *Compositor, surface: *Surface, x: f64, y: f64) void {
+        const drag = &(self.drag orelse return);
+        drag.focus = surface;
+        drag.action = 0;
+        const serial = self.server.nextSerial();
+        for (self.data_devices.items) |device| {
+            if (device.kind != .core or device.resource.client != surface.resource.client()) continue;
+            const data_device: ws.wl_data_device = .{ .resource = device.resource };
+            var offer_resource: ?ws.wl_data_offer = null;
+            if (drag.source) |source| {
+                const record = Offer.make(self, source) orelse continue;
+                const resource = data_device.sendDataOffer();
+                if (!resource.alive()) {
+                    record.gone();
+                    continue;
+                }
+                record.drag = true;
+                record.resource = resource;
+                resource.setHandler(Offer, record, Offer.coreRequest, Offer.coreGone);
+                for (source.mimes.items) |mime| resource.sendOffer(mime);
+                if (resource.version() >= 3) resource.sendSourceActions(source.actions);
+                drag.offer = record;
+                offer_resource = resource;
+            }
+            data_device.sendEnter(serial, surface.resource, x, y, offer_resource);
+        }
+    }
+
+    fn dragLeave(self: *Compositor) void {
+        const drag = &(self.drag orelse return);
+        const surface = drag.focus orelse return;
+        for (self.data_devices.items) |device| if (device.kind == .core and device.resource.client == surface.resource.client()) {
+            (ws.wl_data_device{ .resource = device.resource }).sendLeave();
+        };
+        // An offer that was left no longer reaches the source.
+        if (drag.offer) |offer| offer.drag = false;
+        drag.offer = null;
+        drag.focus = null;
+        drag.action = 0;
+    }
+
+    /// Agrees an action both sides support, preferring the target's choice.
+    fn updateDragAction(self: *Compositor) void {
+        const drag = &(self.drag orelse return);
+        const source = drag.source orelse return;
+        const offer = drag.offer orelse return;
+        const both = source.actions & offer.actions;
+        var action: u32 = 0;
+        if (both & offer.preferred != 0) {
+            action = offer.preferred;
+        } else if (both != 0) {
+            action = both & (~both +% 1);
+        }
+        if (action == drag.action) return;
+        drag.action = action;
+        if (offer.resource) |resource| if (resource.version() >= 3) resource.sendAction(action);
+        const source_resource: ws.wl_data_source = .{ .resource = source.resource };
+        if (source_resource.version() >= 3) source_resource.sendAction(action);
+    }
+
+    /// The button was released: drop on an accepting target, or cancel.
+    fn dragDrop(self: *Compositor) void {
+        const drag = &(self.drag orelse return);
+        var dropped = false;
+        if (drag.focus) |surface| {
+            const offer_ok = if (drag.source) |source| blk: {
+                const offer = drag.offer orelse break :blk false;
+                const version = (ws.wl_data_source{ .resource = source.resource }).version();
+                break :blk offer.accepted and (version < 3 or drag.action != 0);
+            } else true;
+            if (offer_ok) {
+                for (self.data_devices.items) |device| if (device.kind == .core and device.resource.client == surface.resource.client()) {
+                    (ws.wl_data_device{ .resource = device.resource }).sendDrop();
+                };
+                if (drag.source) |source| {
+                    const resource: ws.wl_data_source = .{ .resource = source.resource };
+                    if (resource.version() >= 3) resource.sendDndDropPerformed();
+                }
+                dropped = true;
+            }
+        }
+        if (!dropped) {
+            self.dragLeave();
+            if (drag.source) |source| source.cancel();
+        }
+        self.endDrag();
+    }
+
+    /// Ends the drag; the pointer goes back to the surface under it.
+    fn endDrag(self: *Compositor) void {
+        const drag = self.drag orelse return;
+        if (drag.icon) |icon| icon.role = .none;
+        self.drag = null;
+        self.seat.updatePointerFocus();
+        self.scheduleRepaint();
+    }
+
+    fn dragSurfaceGone(self: *Compositor, surface: *Surface) void {
+        const drag = &(self.drag orelse return);
+        if (drag.icon == surface) drag.icon = null;
+        if (drag.focus == surface) {
+            drag.focus = null;
+            drag.offer = null;
+        }
+        if (drag.origin == surface) {
+            if (drag.source) |source| source.cancel();
+            self.endDrag();
         }
     }
 
@@ -6560,4 +6784,191 @@ test "viewport crops and buffer transforms map to texture coordinates" {
     map = surface.uvMap();
     try std.testing.expectEqual([2]f32{ 1, 0 }, map.origin);
     try std.testing.expectEqual([2]f32{ -1, 0 }, map.x);
+}
+
+test "native compositor carries a drag from press to drop with negotiated actions" {
+    const client_wire = @import("wayland-wire");
+    const wl = @import("wayland-client");
+    const a = std.testing.allocator;
+    var runtime: [64]u8 = undefined;
+    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-dnd-{d}", .{libc.getpid()}, 0);
+    _ = libc.mkdir(directory, 0o700);
+    defer _ = libc.rmdir(directory);
+    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
+    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
+    defer if (previous_runtime) |value| {
+        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
+    };
+    const handle = try Handle.startWith(a, .headless, .headless);
+    defer handle.stop();
+
+    const connection = try client_wire.Connection.connect(a);
+    defer connection.deinit();
+    const Globals = struct {
+        compositor: ?wl.wl_compositor = null,
+        shm: ?wl.wl_shm = null,
+        wm_base: ?wl.xdg_wm_base = null,
+        seat: ?wl.wl_seat = null,
+        data: ?wl.wl_data_device_manager = null,
+        pointers: ?wl.zwlr_virtual_pointer_manager_v1 = null,
+        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+            switch (event) {
+                .global => |g| {
+                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
+                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
+                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
+                    if (std.mem.eql(u8, g.interface, "wl_seat")) self.seat = registry.bind(g.name, wl.wl_seat, 9);
+                    if (std.mem.eql(u8, g.interface, "wl_data_device_manager")) self.data = registry.bind(g.name, wl.wl_data_device_manager, 3);
+                    if (std.mem.eql(u8, g.interface, "zwlr_virtual_pointer_manager_v1")) self.pointers = registry.bind(g.name, wl.zwlr_virtual_pointer_manager_v1, 2);
+                },
+                .global_remove => {},
+            }
+        }
+    };
+    var globals: Globals = .{};
+    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
+    registry.listen(Globals, &globals, Globals.global);
+    try connection.roundtrip();
+    try std.testing.expect(globals.data != null and globals.pointers != null);
+
+    const Dnd = struct {
+        press_serial: u32 = 0,
+        pointer_entered: bool = false,
+        offer: ?wl.wl_data_offer = null,
+        offered_text: bool = false,
+        source_actions: u32 = 0,
+        enters: u32 = 0,
+        enter_serial: u32 = 0,
+        offer_action: u32 = 0,
+        source_action: u32 = 0,
+        target_text: bool = false,
+        dropped: bool = false,
+        drop_performed: bool = false,
+        finished: bool = false,
+        cancelled: bool = false,
+        fn xdgSurface(_: *@This(), surface: wl.xdg_surface, event: wl.xdg_surface.Event) void {
+            surface.ack_configure(event.configure.serial);
+        }
+        fn pointer(self: *@This(), _: wl.wl_pointer, event: wl.wl_pointer.Event) void {
+            switch (event) {
+                .enter => self.pointer_entered = true,
+                .button => |args| if (args.state == 1) {
+                    self.press_serial = args.serial;
+                },
+                else => {},
+            }
+        }
+        fn device(self: *@This(), _: wl.wl_data_device, event: wl.wl_data_device.Event) void {
+            switch (event) {
+                .data_offer => |args| {
+                    self.offer = args.id;
+                    args.id.listen(@This(), self, offerEvent);
+                },
+                .enter => |args| {
+                    self.enters += 1;
+                    self.enter_serial = args.serial;
+                },
+                .drop => self.dropped = true,
+                else => {},
+            }
+        }
+        fn offerEvent(self: *@This(), _: wl.wl_data_offer, event: wl.wl_data_offer.Event) void {
+            switch (event) {
+                .offer => |args| if (std.mem.eql(u8, args.mime_type, "text/plain")) {
+                    self.offered_text = true;
+                },
+                .source_actions => |args| self.source_actions = args.source_actions,
+                .action => |args| self.offer_action = args.dnd_action,
+            }
+        }
+        fn source(self: *@This(), _: wl.wl_data_source, event: wl.wl_data_source.Event) void {
+            switch (event) {
+                .target => |args| self.target_text = if (args.mime_type) |mime| std.mem.eql(u8, mime, "text/plain") else false,
+                .action => |args| self.source_action = args.dnd_action,
+                .dnd_drop_performed => self.drop_performed = true,
+                .dnd_finished => self.finished = true,
+                .cancelled => self.cancelled = true,
+                .send => |args| _ = std.c.close(args.fd),
+            }
+        }
+    };
+    var dnd: Dnd = .{};
+    const pointer = globals.seat.?.get_pointer();
+    pointer.listen(Dnd, &dnd, Dnd.pointer);
+    const device = globals.data.?.get_data_device(globals.seat.?);
+    device.listen(Dnd, &dnd, Dnd.device);
+    const surface = globals.compositor.?.create_surface();
+    const xdg_surface = globals.wm_base.?.get_xdg_surface(surface);
+    xdg_surface.listen(Dnd, &dnd, Dnd.xdgSurface);
+    const toplevel = xdg_surface.get_toplevel();
+    surface.commit();
+    try connection.roundtrip();
+    const width = 400;
+    const height = 300;
+    const fd = libc.memfd_create("buffer", 0x0001);
+    defer _ = std.c.close(fd);
+    try std.testing.expectEqual(@as(c_int, 0), libc.ftruncate(fd, width * height * 4));
+    const pool = globals.shm.?.create_pool(fd, width * height * 4);
+    const buffer = pool.create_buffer(0, width, height, width * 4, 0);
+    pool.destroy();
+    surface.attach(buffer, 0, 0);
+    surface.commit();
+    try connection.roundtrip();
+
+    const wait = struct {
+        fn until(conn: *client_wire.Connection, flag: *const bool) !void {
+            const deadline = util.monotonicTime() + 3_000_000;
+            while (!flag.* and util.monotonicTime() < deadline) _ = try conn.dispatchTimeout(50);
+            try std.testing.expect(flag.*);
+        }
+    };
+    // Press inside the window, then start dragging text from it.
+    const virtual = globals.pointers.?.create_virtual_pointer(globals.seat.?);
+    virtual.motion_absolute(0, 100, 100, 1280, 720);
+    virtual.frame();
+    try wait.until(connection, &dnd.pointer_entered);
+    virtual.button(0, 0x110, 1);
+    virtual.frame();
+    try connection.roundtrip();
+    var pressed = false;
+    const deadline = util.monotonicTime() + 3_000_000;
+    while (dnd.press_serial == 0 and util.monotonicTime() < deadline) _ = try connection.dispatchTimeout(50);
+    pressed = dnd.press_serial != 0;
+    try std.testing.expect(pressed);
+    const source = globals.data.?.create_data_source();
+    source.listen(Dnd, &dnd, Dnd.source);
+    source.offer("text/plain");
+    source.set_actions(wl.wl_data_device_manager.DndAction.copy | wl.wl_data_device_manager.DndAction.move);
+    device.start_drag(source, surface, null, dnd.press_serial);
+    try connection.roundtrip();
+    try connection.roundtrip();
+    try std.testing.expectEqual(@as(u32, 1), dnd.enters);
+    try std.testing.expect(dnd.offered_text);
+    try std.testing.expectEqual(@as(u32, 3), dnd.source_actions);
+
+    // The target accepts text and prefers moving it.
+    dnd.offer.?.accept(dnd.enter_serial, "text/plain");
+    dnd.offer.?.set_actions(wl.wl_data_device_manager.DndAction.copy | wl.wl_data_device_manager.DndAction.move, wl.wl_data_device_manager.DndAction.move);
+    try connection.roundtrip();
+    try connection.roundtrip();
+    try std.testing.expect(dnd.target_text);
+    try std.testing.expectEqual(@as(u32, 2), dnd.offer_action);
+    try std.testing.expectEqual(@as(u32, 2), dnd.source_action);
+
+    virtual.motion_absolute(0, 150, 120, 1280, 720);
+    virtual.button(0, 0x110, 0);
+    virtual.frame();
+    try wait.until(connection, &dnd.dropped);
+    try wait.until(connection, &dnd.drop_performed);
+    dnd.offer.?.finish();
+    try wait.until(connection, &dnd.finished);
+    try std.testing.expect(!dnd.cancelled);
+
+    dnd.offer.?.destroy();
+    source.destroy();
+    buffer.destroy();
+    toplevel.destroy();
+    xdg_surface.destroy();
+    surface.destroy();
+    try connection.roundtrip();
 }
