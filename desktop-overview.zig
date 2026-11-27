@@ -745,7 +745,9 @@ const Overview = struct {
         // Fractional outputs otherwise render at the next integer scale (for
         // example 2x buffers on a 1.625x display). Keep motion inexpensive, then
         // restore native text/icon detail on the final compositor-paced frame.
-        if (!self.apps_mode and self.launcher.searchText().len == 0 and (self.transition.active(now) or !self.transition.shown or now - self.workspace_started < 250000)) return 1;
+        // Workspace switches keep full scale: the search entry stays still, so
+        // a low-resolution frame would visibly change its text rendering.
+        if (!self.apps_mode and self.launcher.searchText().len == 0 and (self.transition.active(now) or !self.transition.shown)) return 1;
         return surface.output.scale;
     }
     fn outputAdded(data: ?*anyopaque, output: *wire.Output) void {
