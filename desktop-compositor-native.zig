@@ -1202,6 +1202,8 @@ const Output = struct {
     lock_serial: u32 = 0,
     enabled: bool = true,
     global: ?*wire.Global = null,
+    /// The window showing this output, with the nested backend.
+    nested: ?*Nested.Window = null,
 
     fn create(comp: *Compositor, index: usize, width: u32, height: u32) !*Output {
         const self = try comp.a.create(Output);
@@ -1362,6 +1364,7 @@ const Output = struct {
             self.lock_serial = comp.lock_serial;
             if (comp.lock) |lock| lock.acknowledge();
         }
+        if (self.nested) |window| window.present();
         comp.presented(self);
         self.frames += 1;
         const time = nowMs();
@@ -3144,6 +3147,7 @@ const Compositor = struct {
     /// The greeter serves the login screen without desktop shortcuts.
     greeter: bool = false,
     outputs: std.ArrayList(*Output) = .empty,
+    nested: ?*Nested = null,
     seat: Seat = undefined,
     ime: Ime = undefined,
     surfaces: std.ArrayList(*Surface) = .empty,
@@ -3185,13 +3189,15 @@ const Compositor = struct {
     output_serial: u32 = 1,
     background: u32 = 0xff303030,
 
-    /// Creates `count` headless outputs side by side, as wlroots lays them out.
-    fn init(self: *Compositor, width: u32, height: u32, count: usize) !void {
+    /// Creates `count` outputs side by side, as wlroots lays them out, shown by `backend`.
+    fn init(self: *Compositor, backend: Backend, width: u32, height: u32, count: usize) !void {
+        if (backend == .wayland) self.nested = try Nested.create(self);
         for (0..count) |index| {
             const output = try Output.create(self, index, width, height);
             output.x = @intCast(index * width);
             output.usable = output.box();
             try self.outputs.append(self.a, output);
+            if (self.nested) |nested| try nested.addOutput(output);
         }
         self.seat = .{ .comp = self };
         try self.seat.init();
@@ -3233,6 +3239,7 @@ const Compositor = struct {
     }
 
     fn deinit(self: *Compositor) void {
+        if (self.nested) |nested| nested.destroy();
         self.seat.deinit();
         self.ime.deinit();
         self.surfaces.deinit(self.a);
@@ -4524,14 +4531,292 @@ const Compositor = struct {
     }
 };
 
+// ------------------------------------------------------------------ Nested backend
+
+/// Runs the compositor as windows of another Wayland session, as wlroots'
+/// wayland backend: one window per output, with that session's keyboard and pointer.
+const Nested = struct {
+    const client_wire = @import("wayland-wire");
+    const wl = @import("wayland-client");
+
+    comp: *Compositor,
+    connection: *client_wire.Connection,
+    compositor: ?wl.wl_compositor = null,
+    shm: ?wl.wl_shm = null,
+    wm_base: ?wl.xdg_wm_base = null,
+    seat: ?wl.wl_seat = null,
+    pointer: ?wl.wl_pointer = null,
+    keyboard: ?wl.wl_keyboard = null,
+    keymap: ?Keymap = null,
+    windows: std.ArrayList(*Window) = .empty,
+    /// The window the parent pointer is over.
+    hovered: ?*Window = null,
+    source: ?*wire.Loop.Source = null,
+
+    const Window = struct {
+        nested: *Nested,
+        output: *Output,
+        surface: wl.wl_surface,
+        xdg_surface: wl.xdg_surface,
+        toplevel: wl.xdg_toplevel,
+        buffers: [2]Frame = .{ .{}, .{} },
+        configured: bool = false,
+
+        const Frame = struct {
+            buffer: ?wl.wl_buffer = null,
+            memory: ?[*]u8 = null,
+            length: usize = 0,
+            width: u32 = 0,
+            height: u32 = 0,
+            busy: bool = false,
+
+            fn release(self: *Frame, _: wl.wl_buffer, _: wl.wl_buffer.Event) void {
+                self.busy = false;
+            }
+
+            fn free(self: *Frame) void {
+                if (self.buffer) |buffer| buffer.destroy();
+                if (self.memory) |memory| _ = libc.munmap(memory, self.length);
+                self.* = .{};
+            }
+        };
+
+        fn xdgEvent(self: *Window, surface: wl.xdg_surface, event: wl.xdg_surface.Event) void {
+            surface.ack_configure(event.configure.serial);
+            self.configured = true;
+            self.output.scheduleRepaint();
+        }
+
+        fn toplevelEvent(self: *Window, _: wl.xdg_toplevel, event: wl.xdg_toplevel.Event) void {
+            switch (event) {
+                // The window's size is the output's mode.
+                .configure => |args| if (args.width > 0 and args.height > 0) {
+                    self.output.configure(self.output.scale, .{ @intCast(args.width), @intCast(args.height) }, null);
+                    self.nested.comp.outputChanged();
+                },
+                .close => self.nested.comp.server.quit = true,
+                else => {},
+            }
+        }
+
+        /// Shows a rendered frame in the window.
+        fn present(self: *Window) void {
+            if (!self.configured) return;
+            const output = self.output;
+            const frame = for (&self.buffers) |*candidate| {
+                if (!candidate.busy) break candidate;
+            } else return output.scheduleRepaint();
+            if (frame.buffer == null or frame.width != output.width or frame.height != output.height) {
+                frame.free();
+                self.allocate(frame, output.width, output.height) catch return;
+            }
+            const pixels: [*]u32 = @ptrCast(@alignCast(frame.memory.?));
+            @memcpy(pixels[0..output.pixels.len], output.pixels);
+            frame.busy = true;
+            self.surface.attach(frame.buffer.?, 0, 0);
+            self.surface.damage(0, 0, @intCast(output.width), @intCast(output.height));
+            self.surface.commit();
+        }
+
+        fn allocate(self: *Window, frame: *Frame, width: u32, height: u32) !void {
+            const shm = self.nested.shm orelse return error.NoShm;
+            const length = @as(usize, width) * height * 4;
+            const fd = libc.memfd_create("desktop-nested", 0x0001);
+            if (fd < 0) return error.NoMemory;
+            defer _ = std.c.close(fd);
+            if (libc.ftruncate(fd, @intCast(length)) != 0) return error.NoMemory;
+            const memory = libc.mmap(null, length, libc.PROT_READ | libc.PROT_WRITE, libc.MAP_SHARED, fd, 0) orelse return error.NoMemory;
+            if (memory == libc.MAP_FAILED) return error.NoMemory;
+            const pool = shm.create_pool(fd, @intCast(length));
+            const buffer = pool.create_buffer(0, @intCast(width), @intCast(height), @intCast(width * 4), wl.wl_shm.Format.xrgb8888);
+            pool.destroy();
+            frame.* = .{ .buffer = buffer, .memory = @ptrCast(memory), .length = length, .width = width, .height = height };
+            buffer.listen(Frame, frame, Frame.release);
+        }
+
+        fn destroy(self: *Window) void {
+            for (&self.buffers) |*frame| frame.free();
+            self.toplevel.destroy();
+            self.xdg_surface.destroy();
+            self.surface.destroy();
+        }
+    };
+
+    /// Connects to the session in WAYLAND_DISPLAY, before this compositor replaces it for clients.
+    fn create(comp: *Compositor) !*Nested {
+        const connection = client_wire.Connection.connect(comp.a) catch return error.NoParentDisplay;
+        errdefer connection.deinit();
+        const self = try comp.a.create(Nested);
+        errdefer comp.a.destroy(self);
+        self.* = .{ .comp = comp, .connection = connection };
+        const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
+        registry.listen(Nested, self, global);
+        try connection.roundtrip();
+        if (self.compositor == null or self.shm == null or self.wm_base == null) return error.MissingParentGlobals;
+        try connection.roundtrip();
+        self.source = try comp.server.loop.add(connection.getFd(), std.os.linux.EPOLL.IN, self, &readable);
+        return self;
+    }
+
+    fn global(self: *Nested, registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+        switch (event) {
+            .global => |g| {
+                if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 4);
+                if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
+                if (std.mem.eql(u8, g.interface, "xdg_wm_base")) {
+                    const base = registry.bind(g.name, wl.xdg_wm_base, 1);
+                    base.listen(Nested, self, ping);
+                    self.wm_base = base;
+                }
+                if (std.mem.eql(u8, g.interface, "wl_seat") and self.seat == null) {
+                    const seat = registry.bind(g.name, wl.wl_seat, @min(g.version, 5));
+                    seat.listen(Nested, self, seatEvent);
+                    self.seat = seat;
+                }
+            },
+            .global_remove => {},
+        }
+    }
+
+    fn ping(_: *Nested, base: wl.xdg_wm_base, event: wl.xdg_wm_base.Event) void {
+        base.pong(event.ping.serial);
+    }
+
+    fn seatEvent(self: *Nested, seat: wl.wl_seat, event: wl.wl_seat.Event) void {
+        switch (event) {
+            .capabilities => |args| {
+                if (args.capabilities & wl.wl_seat.Capability.pointer != 0 and self.pointer == null) {
+                    const pointer = seat.get_pointer();
+                    pointer.listen(Nested, self, pointerEvent);
+                    self.pointer = pointer;
+                }
+                if (args.capabilities & wl.wl_seat.Capability.keyboard != 0 and self.keyboard == null) {
+                    const keyboard = seat.get_keyboard();
+                    keyboard.listen(Nested, self, keyboardEvent);
+                    self.keyboard = keyboard;
+                }
+            },
+            .name => {},
+        }
+    }
+
+    /// Opens a window for an output.
+    fn addOutput(self: *Nested, output: *Output) !void {
+        const window = try self.comp.a.create(Window);
+        errdefer self.comp.a.destroy(window);
+        const surface = self.compositor.?.create_surface();
+        const xdg_surface = self.wm_base.?.get_xdg_surface(surface);
+        const toplevel = xdg_surface.get_toplevel();
+        window.* = .{ .nested = self, .output = output, .surface = surface, .xdg_surface = xdg_surface, .toplevel = toplevel };
+        xdg_surface.listen(Window, window, Window.xdgEvent);
+        toplevel.listen(Window, window, Window.toplevelEvent);
+        var title: [64]u8 = undefined;
+        toplevel.set_title(std.fmt.bufPrintSentinel(&title, "Desktop compositor — {s}", .{output.name()}, 0) catch "Desktop compositor");
+        toplevel.set_app_id("org.dotfiles.Compositor");
+        surface.commit();
+        try self.windows.append(self.comp.a, window);
+        output.nested = window;
+    }
+
+    fn windowFor(self: *Nested, surface: wl.wl_surface) ?*Window {
+        for (self.windows.items) |window| if (window.surface.proxy.id == surface.proxy.id) return window;
+        return null;
+    }
+
+    fn pointerEvent(self: *Nested, _: wl.wl_pointer, event: wl.wl_pointer.Event) void {
+        const seat = &self.comp.seat;
+        switch (event) {
+            .enter => |args| {
+                self.hovered = self.windowFor(args.surface);
+                if (self.hovered) |window| seat.moveTo(@as(f64, @floatFromInt(window.output.x)) + args.surface_x, @as(f64, @floatFromInt(window.output.y)) + args.surface_y, nowMs());
+            },
+            .leave => self.hovered = null,
+            .motion => |args| if (self.hovered) |window| {
+                seat.moveTo(@as(f64, @floatFromInt(window.output.x)) + args.surface_x, @as(f64, @floatFromInt(window.output.y)) + args.surface_y, args.time);
+            },
+            .button => |args| seat.button(args.time, args.button, args.state == 1),
+            .axis => |args| seat.axis(args.time, args.axis, args.value, null),
+            .frame => seat.frame(),
+            else => {},
+        }
+    }
+
+    fn keyboardEvent(self: *Nested, _: wl.wl_keyboard, event: wl.wl_keyboard.Event) void {
+        const seat = &self.comp.seat;
+        switch (event) {
+            // The parent session's keymap becomes this keyboard's.
+            .keymap => |args| {
+                if (self.keymap) |old| {
+                    if (seat.active_keymap.fd == old.fd) seat.useKeymap(seat.default_keymap);
+                    old.deinit();
+                }
+                self.keymap = clientKeymap(self.comp.a, args.fd, args.size);
+            },
+            .key => |args| if (self.keymap) |keymap| seat.key(keymap, args.time, args.key, args.state, null),
+            .modifiers => |args| if (self.keymap) |keymap| seat.setModifiers(keymap, .{ args.mods_depressed, args.mods_latched, args.mods_locked, args.group }),
+            // Keys held when focus leaves the window are released.
+            .leave => if (self.keymap) |keymap| {
+                seat.held = @splat(0);
+                seat.setModifiers(keymap, .{ 0, 0, seat.modifiers[2], seat.modifiers[3] });
+            },
+            .enter, .repeat_info => {},
+        }
+    }
+
+    fn readable(data: ?*anyopaque, _: u32) void {
+        const self: *Nested = @ptrCast(@alignCast(data));
+        self.connection.readAndDispatch() catch {
+            // The parent session went away.
+            self.comp.server.quit = true;
+        };
+    }
+
+    /// Sends requests queued while handling clients.
+    fn flush(self: *Nested) void {
+        self.connection.flush() catch {
+            self.comp.server.quit = true;
+        };
+    }
+
+    fn destroy(self: *Nested) void {
+        for (self.windows.items) |window| {
+            window.destroy();
+            self.comp.a.destroy(window);
+        }
+        self.windows.deinit(self.comp.a);
+        if (self.keymap) |keymap| keymap.deinit();
+        if (self.source) |source| self.comp.server.loop.remove(source);
+        self.connection.flush() catch {};
+        self.connection.deinit();
+        self.comp.a.destroy(self);
+    }
+};
+
 // ------------------------------------------------------------------ Thread
 
 pub const Mode = enum { session, headless, greeter };
+
+/// Where outputs are shown: memory only, windows of another session, or displays.
+pub const Backend = enum { headless, wayland, drm };
+
+/// Chooses the backend as wlroots does: WLR_BACKENDS, else nested when a
+/// session is running, else the displays.
+fn selectBackend() Backend {
+    if (std.c.getenv("WLR_BACKENDS")) |value| {
+        const text = std.mem.span(value);
+        if (std.mem.indexOf(u8, text, "headless") != null) return .headless;
+        if (std.mem.indexOf(u8, text, "wayland") != null) return .wayland;
+        return .drm;
+    }
+    return if (std.c.getenv("WAYLAND_DISPLAY") != null or std.c.getenv("WAYLAND_SOCKET") != null) .wayland else .drm;
+}
 
 pub const Handle = struct {
     allocator: std.mem.Allocator,
     mode: Mode = .headless,
     stopping: std.atomic.Value(bool) = .init(false),
+    /// Overrides the environment's backend choice; tests run headless.
+    backend: ?Backend = null,
     thread: std.Thread = undefined,
     stop_fd: wire.Fd = -1,
     ready: [2]wire.Fd = .{ -1, -1 },
@@ -4546,9 +4831,14 @@ pub const Handle = struct {
 
     /// Starts the compositor thread and sets WAYLAND_DISPLAY for clients.
     pub fn start(allocator: std.mem.Allocator, mode: Mode) !*Handle {
+        return startWith(allocator, mode, null);
+    }
+
+    /// Starts with a fixed backend instead of the environment's choice.
+    pub fn startWith(allocator: std.mem.Allocator, mode: Mode, backend: ?Backend) !*Handle {
         const self = try allocator.create(Handle);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .mode = mode };
+        self.* = .{ .allocator = allocator, .mode = mode, .backend = backend };
         const opened = std.os.linux.eventfd(0, std.os.linux.EFD.CLOEXEC | std.os.linux.EFD.NONBLOCK);
         if (std.os.linux.errno(opened) != .SUCCESS) return error.CompositorPipe;
         const fd: wire.Fd = @intCast(opened);
@@ -4605,7 +4895,9 @@ pub const Handle = struct {
         };
         defer server.destroy();
         var comp: Compositor = .{ .a = a, .server = server, .show_ui = self.mode == .session, .greeter = self.mode == .greeter };
-        comp.init(self.width, self.height, headlessOutputs()) catch {
+        const backend = self.backend orelse selectBackend();
+        comp.init(backend, self.width, self.height, if (backend == .headless) headlessOutputs() else 1) catch |err| {
+            std.log.err("compositor: {s} backend: {s}", .{ @tagName(backend), @errorName(err) });
             self.failed = true;
             self.signal();
             return;
@@ -4629,6 +4921,7 @@ pub const Handle = struct {
             const before = output.frames;
             server.dispatch(-1);
             if (output.frames != before) self.publish(output);
+            if (comp.nested) |nested| nested.flush();
         }
         // A shortcut or failure that ends the compositor also ends the UI and the session.
         if (self.mode == .session and !self.stopping.load(.acquire)) _ = std.c.kill(libc.getpid(), std.c.SIG.TERM);
@@ -4675,7 +4968,7 @@ test "native compositor maps an xdg toplevel from shared memory and composites i
     defer if (previous_runtime) |value| {
         _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
     };
-    const handle = try Handle.start(a, .headless);
+    const handle = try Handle.startWith(a, .headless, .headless);
     defer handle.stop();
 
     const connection = try client_wire.Connection.connect(a);
@@ -4859,7 +5152,7 @@ test "native compositor relays text input to an input method and its keyboard gr
     defer if (previous_runtime) |value| {
         _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
     };
-    const handle = try Handle.start(a, .headless);
+    const handle = try Handle.startWith(a, .headless, .headless);
     defer handle.stop();
 
     const Globals = struct {
