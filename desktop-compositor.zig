@@ -1570,6 +1570,8 @@ const Output = struct {
     display: ?*Drm.kms.Display = null,
     /// A rendered frame waits for the display's previous flip.
     unpresented: bool = false,
+    /// The pending repaint only answers frame callbacks: nothing on screen changed.
+    frame_only: bool = false,
     /// What changed since the last frame (output pixels), whether everything
     /// did, and the damage of recent frames for buffers that are reused.
     damage: ?Gl.Clip = null,
@@ -1785,12 +1787,37 @@ const Output = struct {
     }
 
     fn armRepaint(self: *Output) void {
-        if (self.scheduled or !self.enabled) return;
+        if (!self.enabled) return;
+        // Damage turns a pending frame-callback-only repaint into a real one, soon.
+        const was_frame_only = self.frame_only;
+        self.frame_only = false;
+        if (self.scheduled and !was_frame_only) return;
         self.scheduled = true;
         // Displays are paced by their page flips (a frame waits for the last one),
         // so draw almost at once and keep up with fast panels. Headless and
         // nested outputs composite at most once per 60 Hz frame.
         wire.Loop.arm(self.repaint, if (self.display != null) 1 else 16);
+    }
+
+    /// Answers frame callbacks at the display's next refresh, for commits that
+    /// changed nothing on screen. Clients such as Firefox pace themselves this
+    /// way, committing a frame request without new content.
+    fn scheduleFrame(self: *Output) void {
+        if (self.scheduled or !self.enabled) return;
+        self.scheduled = true;
+        self.frame_only = true;
+        wire.Loop.arm(self.repaint, self.msToRefresh());
+    }
+
+    /// Milliseconds until the display's next refresh, judged from its last flip.
+    fn msToRefresh(self: *const Output) u32 {
+        const refresh: i64 = if (self.refresh > 0) self.refresh else 60000;
+        const period = @divTrunc(1_000_000_000, refresh); // microseconds
+        const display = self.display orelse return @intCast(@divTrunc(period + 999, 1000));
+        const last = @as(i64, display.flip_time[0]) * std.time.us_per_s + display.flip_time[1];
+        const now = util.monotonicTime();
+        const until = if (last > 0 and now >= last) period - @mod(now - last, period) else period;
+        return @intCast(@max(1, @divTrunc(until + 999, 1000)));
     }
 
     /// Draws pending commits now, as a capture of the next frame would show them.
@@ -1811,6 +1838,11 @@ const Output = struct {
             self.unpresented = true;
             return;
         };
+        if (self.frame_only) {
+            self.frame_only = false;
+            self.sendFrameDone();
+            return;
+        }
         if (self.target) |target| {
             const backend = comp.drm.?;
             const renderer = backend.renderer.?;
@@ -1829,8 +1861,12 @@ const Output = struct {
         // Displays report when the frame is on screen, at its page flip.
         if (self.display != null and self.target != null) comp.drawnFor(self) else comp.presented(self);
         self.frames += 1;
+        self.sendFrameDone();
+    }
+
+    fn sendFrameDone(self: *Output) void {
         const time = nowMs();
-        for (comp.surfaces.items) |surface| {
+        for (self.comp.surfaces.items) |surface| {
             for (surface.frames.items) |callback| callback.sendDone(time);
             surface.frames.clearRetainingCapacity();
         }
@@ -4188,7 +4224,14 @@ const Compositor = struct {
 
     /// Redraws the part of the outputs a committed surface damaged.
     fn surfaceDamaged(self: *Compositor, surface: *Surface, damage: ?Rect) void {
-        const box = damage orelse return;
+        const box = damage orelse {
+            // A shown surface that asks for a frame without new content still
+            // gets its callback at the next refresh, as wlroots' scene does.
+            if (surface.frames.items.len > 0 and self.surfaceOrigin(surface) != null) {
+                for (self.outputs.items) |output| output.scheduleFrame();
+            }
+            return;
+        };
         // Previews and the drag icon show surfaces outside the stack.
         for (self.layers.items) |layer| if (layer.previews.items.len > 0) return self.scheduleRepaint();
         if (self.drag) |drag| if (drag.icon == surface) return self.scheduleRepaint();
