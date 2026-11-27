@@ -633,6 +633,13 @@ pub const Keymap = struct {
 
     /// The real modifiers a key sets through modifier_map, for compositors
     /// tracking modifier state from key presses.
+    /// How many layouts (groups) the keymap has.
+    pub fn groupCount(self: *const Keymap) u32 {
+        var count: usize = 1;
+        for (self.keys) |key| count = @max(count, key.groups.items.len);
+        return @intCast(count);
+    }
+
     pub fn modifierMask(self: *const Keymap, code: u32) u32 {
         return if (code < self.keys.len and self.keys[code].defined) self.keys[code].modmap else 0;
     }

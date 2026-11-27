@@ -245,6 +245,25 @@ lib.mkIf enableLightDesktop {
   ];
 
   environment.etc = {
+    # Physical keyboards on the native compositor use the system's XKB layout,
+    # compiled here so the compositor needs no XKB compiler at runtime.
+    "xdg/desktop-keymap.xkb".source =
+      let
+        xkb =
+          if config != null then
+            config.services.xserver.xkb
+          else
+            {
+              layout = "us";
+              variant = "";
+              options = "";
+              model = "";
+            };
+        flag = name: value: lib.optionalString (value != "") "--${name} ${lib.escapeShellArg value}";
+      in
+      pkgs.runCommand "desktop-keymap.xkb" { nativeBuildInputs = [ pkgs.libxkbcommon ]; } ''
+        xkbcli compile-keymap ${flag "model" xkb.model} ${flag "layout" xkb.layout} ${flag "variant" xkb.variant} ${flag "options" xkb.options} > $out
+      '';
     # Keep GTK clients and compositor-rendered Wayland cursors consistent.
     "xdg/gtk-3.0/settings.ini".text = gtkCursorSettings;
     "xdg/gtk-4.0/settings.ini".text = gtkCursorSettings;

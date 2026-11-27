@@ -1989,8 +1989,35 @@ const Seat = struct {
     held: [256]u32 = @splat(0),
 
     fn init(self: *Seat) !void {
-        self.default_keymap = keymapFile(keymap_text) orelse return error.Keymap;
+        self.default_keymap = self.configuredKeymap() orelse keymapFile(keymap_text) orelse return error.Keymap;
         self.active_keymap = self.default_keymap;
+    }
+
+    /// The system's layout: DESKTOP_KEYMAP or /etc/xdg/desktop-keymap.xkb,
+    /// compiled from services.xserver.xkb when the system was built.
+    fn configuredKeymap(self: *Seat) ?Keymap {
+        const path: [*:0]const u8 = std.c.getenv("DESKTOP_KEYMAP") orelse "/etc/xdg/desktop-keymap.xkb";
+        const fd = std.c.open(path, .{ .CLOEXEC = true });
+        if (fd < 0) return null;
+        defer _ = std.c.close(fd);
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(self.comp.a);
+        var chunk: [16384]u8 = undefined;
+        while (text.items.len < 4 * 1024 * 1024) {
+            const count = std.c.read(fd, &chunk, chunk.len);
+            if (count <= 0) break;
+            text.appendSlice(self.comp.a, chunk[0..@intCast(count)]) catch return null;
+        }
+        const keymap = keymapFile(text.items) orelse {
+            std.log.warn("compositor: {s} is not a keymap; using the built-in us layout", .{path});
+            return null;
+        };
+        if (keymap.map == null) {
+            keymap.deinit();
+            std.log.warn("compositor: cannot read the keymap in {s}; using the built-in us layout", .{path});
+            return null;
+        }
+        return keymap;
     }
 
     fn deinit(self: *Seat) void {
@@ -2144,6 +2171,25 @@ const Seat = struct {
     /// Derives modifier state from modifier keys, as xkbcommon does for SetMods
     /// and LockMods: held keys set depressed modifiers, lock keys toggle locked ones.
     fn trackModifiers(self: *Seat, keymap: Keymap, map: *const xkb.Keymap, code: u32, pressed: bool) void {
+        // Layout switching (grp:* options) locks another group, as LockGroup does.
+        if (pressed) {
+            var state: xkb.State = .{ .keymap = map };
+            state.update(self.modifiers[0], self.modifiers[1], self.modifiers[2], self.modifiers[3]);
+            const count = map.groupCount();
+            const group = self.modifiers[3] % count;
+            const next: ?u32 = switch (state.keysym(code + 8)) {
+                keysyms.ISO_Next_Group => (group + 1) % count,
+                keysyms.ISO_Prev_Group => (group + count - 1) % count,
+                keysyms.ISO_First_Group => 0,
+                keysyms.ISO_Last_Group => count - 1,
+                else => null,
+            };
+            if (next) |value| if (value != self.modifiers[3]) {
+                var values = self.modifiers;
+                values[3] = value;
+                self.setModifiers(keymap, values);
+            };
+        }
         const mask = map.modifierMask(code + 8);
         if (mask == 0 or code >= self.held.len) return;
         var values = self.modifiers;
@@ -6700,6 +6746,10 @@ const keysyms = struct {
     const F4: u32 = 0xffc1;
     const Super_L: u32 = 0xffeb;
     const Caps_Lock: u32 = 0xffe5;
+    const ISO_Next_Group: u32 = 0xfe08;
+    const ISO_Prev_Group: u32 = 0xfe0a;
+    const ISO_First_Group: u32 = 0xfe0c;
+    const ISO_Last_Group: u32 = 0xfe0e;
     const Num_Lock: u32 = 0xff7f;
     const Print: u32 = 0xff61;
     const a: u32 = 0x61;
@@ -7172,4 +7222,20 @@ test "outputs redraw the damage of the frames a reused buffer missed" {
     try std.testing.expectEqual(@as(?Gl.Clip, .{ .x = 990, .y = 0, .width = 10, .height = 5 }), output.takeDamage(1));
     output.scheduleRepaint();
     try std.testing.expectEqual(@as(?Gl.Clip, null), output.takeDamage(1));
+}
+
+test "keyboards switch layouts on the keymap's group keys" {
+    const keymap = keymapFile(@import("xkb-reference").us_ru) orelse return error.Keymap;
+    defer keymap.deinit();
+    const map = keymap.map orelse return error.Keymap;
+    try std.testing.expectEqual(@as(u32, 2), map.groupCount());
+    // With Alt held, Shift is the layout switch of grp:alt_shift_toggle.
+    var state: xkb.State = .{ .keymap = map };
+    state.update(map.modifierMask(56 + 8), 0, 0, 0);
+    try std.testing.expectEqual(keysyms.ISO_Next_Group, state.keysym(42 + 8));
+    // The second layout types Cyrillic: Q is й.
+    state.update(0, 0, 0, 1);
+    try std.testing.expectEqual(@as(u32, 0x6ca), state.keysym(16 + 8));
+    state.update(0, 0, 0, 0);
+    try std.testing.expectEqual(@as(u32, 'q'), state.keysym(16 + 8));
 }

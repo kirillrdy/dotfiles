@@ -155,7 +155,10 @@ pub fn build(b: *std.Build) void {
     const keymap = b.addSystemCommand(&.{ "xkbcli", "compile-keymap", "--layout", "us", "--variant", "intl" });
     const keymap_files = b.addWriteFiles();
     _ = keymap_files.addCopyFile(keymap.captureStdOut(.{}), "us-intl.xkb");
-    test_module.addImport("xkb-reference", b.createModule(.{ .root_source_file = keymap_files.add("xkb-reference.zig", "pub const us_intl = @embedFile(\"us-intl.xkb\");\n") }));
+    // Two layouts with Alt+Shift switching between them.
+    const layouts = b.addSystemCommand(&.{ "xkbcli", "compile-keymap", "--layout", "us,ru", "--options", "grp:alt_shift_toggle" });
+    _ = keymap_files.addCopyFile(layouts.captureStdOut(.{}), "us-ru.xkb");
+    test_module.addImport("xkb-reference", b.createModule(.{ .root_source_file = keymap_files.add("xkb-reference.zig", "pub const us_intl = @embedFile(\"us-intl.xkb\");\npub const us_ru = @embedFile(\"us-ru.xkb\");\n") }));
     // HarfBuzz is the reference the native shaper is compared against; the desktop does not link it.
     test_module.addImport("harfbuzz-reference", bindings(b, target, optimize, "#include <hb.h>\n", &.{"harfbuzz"}));
     // The kernel DRM headers (through libdrm), as the reference for desktop-drm.zig.
