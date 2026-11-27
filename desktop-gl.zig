@@ -284,6 +284,7 @@ pub const Renderer = struct {
     viewport: [2]f32 = .{ 1, 1 },
     /// The part of the frame being redrawn; drawing outside it is clipped.
     frame_clip: ?Clip = null,
+    blending: bool = false,
     buffer_age: bool = false,
     /// Fences shared with the kernel (EGL_ANDROID_native_fence_sync), and the
     /// fence of the last frame: released buffers signal when it does.
@@ -309,6 +310,7 @@ pub const Renderer = struct {
         // GL calls need a current context; surfaceless until a target is drawn.
         if (eglMakeCurrent(display, null, null, context) == 0) return error.NoContext;
         const program = try link();
+        errdefer glDeleteProgram(program);
         const self = try allocator.create(Renderer);
         self.* = .{
             .allocator = allocator,
@@ -453,7 +455,9 @@ pub const Renderer = struct {
         glClearColor(channel.of(background, 16), channel.of(background, 8), channel.of(background, 0), 1);
         glClear(gl.color_buffer_bit);
         glUseProgram(self.program);
+        self.glUniformViewport();
         glEnable(gl.blend);
+        self.blending = true;
         glBlendFunc(gl.one, gl.one_minus_src_alpha);
         glActiveTexture(gl.texture0);
         glVertexAttribPointer(self.position, 2, gl.float, 0, 0, &quad);
@@ -468,13 +472,17 @@ pub const Renderer = struct {
 
     /// Draws `texture` over `rect`, sampling it through `uv`.
     pub fn drawMapped(self: *Renderer, texture: u32, rect: Rect, uv: UvMap, clip: ?Clip, opacity: f32, opaque_alpha: bool) void {
+        if (!self.scissor(clip)) return;
+        const need_blend = !opaque_alpha or opacity < 1.0;
+        if (need_blend != self.blending) {
+            if (need_blend) glEnable(gl.blend) else glDisable(gl.blend);
+            self.blending = need_blend;
+        }
         glUniform2f(self.uv_locations[0], uv.origin[0], uv.origin[1]);
         glUniform2f(self.uv_locations[1], uv.x[0], uv.x[1]);
         glUniform2f(self.uv_locations[2], uv.y[0], uv.y[1]);
-        if (!self.scissor(clip)) return;
         glBindTexture(gl.texture_2d, texture);
         glUniform4f(self.rect_location, @floatCast(rect.x), @floatCast(rect.y), @floatCast(rect.width), @floatCast(rect.height));
-        glUniformViewport(self);
         glUniform1f(self.opacity_location, opacity);
         glUniform1f(self.opaque_location, if (opaque_alpha) 1 else 0);
         glDrawArrays(gl.triangle_strip, 0, 4);
@@ -678,6 +686,7 @@ pub const Renderer = struct {
         errdefer gbm_surface_destroy(surface);
         const egl_surface = eglCreatePlatformWindowSurface(self.display, self.config, surface, null);
         if (egl_surface == null) return error.NoSurface;
+        errdefer _ = eglDestroySurface(self.display, egl_surface);
         const target = try self.allocator.create(Target);
         target.* = .{ .renderer = self, .gbm_surface = surface, .surface = egl_surface, .width = width, .height = height };
         return target;

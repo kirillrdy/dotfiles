@@ -620,8 +620,7 @@ pub const Card = struct {
                 if (display.connector == connector_id) break display;
             } else null;
             const info = self.connector(connector_id) orelse continue;
-            defer a.free(info.modes);
-            defer a.free(info.encoders);
+            defer info.deinit(a);
             if (info.header.connection != connected or info.modes.len == 0) {
                 // A display that was unplugged.
                 if (known) |display| self.remove(display);
@@ -646,7 +645,18 @@ pub const Card = struct {
         }
     }
 
-    const ConnectorInfo = struct { header: Connector, modes: []ModeInfo, encoders: []u32 };
+    const ConnectorInfo = struct {
+        header: Connector,
+        modes_alloc: []ModeInfo,
+        encoders_alloc: []u32,
+        modes: []ModeInfo,
+        encoders: []u32,
+
+        fn deinit(self: ConnectorInfo, a: std.mem.Allocator) void {
+            a.free(self.modes_alloc);
+            a.free(self.encoders_alloc);
+        }
+    };
 
     fn connector(self: *Card, id: u32) ?ConnectorInfo {
         const a = self.allocator;
@@ -661,7 +671,7 @@ pub const Card = struct {
             };
             var full: Connector = .{ .connector_id = id, .modes_ptr = @intFromPtr(modes.ptr), .count_modes = @intCast(modes.len), .encoders_ptr = @intFromPtr(encoders.ptr), .count_encoders = @intCast(encoders.len) };
             if (call(self.fd, ioctl.get_connector, &full) and full.count_modes <= modes.len and full.count_encoders <= encoders.len) {
-                return .{ .header = full, .modes = modes[0..full.count_modes], .encoders = encoders[0..full.count_encoders] };
+                return .{ .header = full, .modes_alloc = modes, .encoders_alloc = encoders, .modes = modes[0..full.count_modes], .encoders = encoders[0..full.count_encoders] };
             }
             a.free(modes);
             a.free(encoders);

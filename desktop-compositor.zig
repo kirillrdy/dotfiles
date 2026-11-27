@@ -85,6 +85,17 @@ const Buffer = struct {
     height: u32,
     stride: usize,
     format: u32,
+    /// Kept alive while held by a surface even if the client destroys wl_buffer.
+    refs: u32 = 1,
+    alive: bool = true,
+
+    fn unref(self: *Buffer) void {
+        self.refs -= 1;
+        if (self.refs != 0) return;
+        if (self.image != null) if (self.comp.drm) |backend| if (backend.renderer) |renderer| renderer.destroyImage(self.image);
+        if (self.pool) |pool| pool.unref();
+        self.comp.a.destroy(self);
+    }
 
     /// Copies premultiplied ARGB into the buffer, as capture clients receive it.
     fn write(self: *Buffer, pixels: []const u32, opaque_pixels: bool) bool {
@@ -170,6 +181,7 @@ const Surface = struct {
     pending_scale: i32 = 1,
     pending_frames: std.ArrayList(ws.wl_callback) = .empty,
     pending_releases: std.ArrayList(ws.wl_callback) = .empty,
+    held_releases: std.ArrayList(ws.wl_callback) = .empty,
     /// Current content: premultiplied ARGB, buffer-sized.
     pixels: []u32 = &.{},
     width: u32 = 0,
@@ -221,8 +233,11 @@ const Surface = struct {
 
     /// Shows a GPU buffer; it stays the client's until the next one replaces it.
     fn hold(self: *Surface, buffer: *Buffer) void {
-        if (self.held != buffer) self.releaseHeld();
-        self.held = buffer;
+        if (self.held != buffer) {
+            self.releaseHeld();
+            buffer.refs += 1;
+            self.held = buffer;
+        }
         self.width = buffer.width;
         self.height = buffer.height;
         self.opaque_format = buffer.format == 0x34325258 or buffer.format == 0x34324258; // XRGB8888, XBGR8888
@@ -231,10 +246,13 @@ const Surface = struct {
 
     fn releaseHeld(self: *Surface) void {
         self.signalRelease();
+        for (self.held_releases.items) |callback| callback.sendDone(0);
+        self.held_releases.clearRetainingCapacity();
         const buffer = self.held orelse return;
         self.held = null;
         self.cpu_stale = false;
-        buffer.resource.sendRelease();
+        if (buffer.alive) buffer.resource.sendRelease();
+        buffer.unref();
     }
 
     /// Signals the held buffer's release point once the GPU is done with the
@@ -287,15 +305,16 @@ const Surface = struct {
         if (self.acquire_fence >= 0) _ = std.c.close(self.acquire_fence);
         self.acquire_fence = -1;
         const timeline = point.timeline.timeline;
-        // Clients normally submit before committing; the fence then exists already.
-        if (timeline.waitSubmitted(point.value, std.time.ns_per_s)) {
+        // Clients normally submit before committing; bound the wait so a stalled client cannot freeze the compositor.
+        const timeout_ns = 50 * std.time.ns_per_ms;
+        if (timeline.waitSubmitted(point.value, timeout_ns)) {
             if (timeline.exportPoint(point.value)) |fence| {
                 self.acquire_fence = fence;
                 return;
             }
         }
-        // Without a fence to hand the GPU, wait for the client's work here.
-        _ = timeline.waitSignalled(point.value, std.time.ns_per_s);
+        // Without a fence to hand the GPU, wait briefly for the client's work here.
+        _ = timeline.waitSignalled(point.value, timeout_ns);
     }
 
     /// Makes `texture` show the current content: the GPU buffer, or uploaded pixels.
@@ -468,14 +487,19 @@ const Surface = struct {
                     self.signalRelease();
                     self.release = points.release;
                     if (points.acquire) |acquire| self.useAcquirePoint(acquire);
+                    // GPU buffers stay held until replaced; release callbacks fire then.
+                    self.held_releases.appendSlice(self.comp.a, self.pending_releases.items) catch {
+                        for (self.pending_releases.items) |callback| callback.sendDone(0);
+                    };
+                    self.pending_releases.clearRetainingCapacity();
                 } else {
                     self.releaseHeld();
                     self.copy(buffer);
                     buffer.resource.sendRelease();
+                    // SHM buffers are copied at commit, so release callbacks fire with it.
+                    for (self.pending_releases.items) |callback| callback.sendDone(0);
+                    self.pending_releases.clearRetainingCapacity();
                 }
-                // Buffers are copied at commit, so release callbacks fire with it.
-                for (self.pending_releases.items) |callback| callback.sendDone(0);
-                self.pending_releases.clearRetainingCapacity();
             } else {
                 self.releaseHeld();
                 self.comp.a.free(self.pixels);
@@ -585,7 +609,10 @@ const Surface = struct {
         for (self.frames.items) |callback| callback.destroyResource();
         for (self.pending_frames.items) |callback| callback.destroyResource();
         for (self.pending_releases.items) |callback| callback.destroyResource();
+        for (self.held_releases.items) |callback| callback.destroyResource();
         self.pending_releases.deinit(comp.a);
+        self.held_releases.deinit(comp.a);
+        self.held_releases = .empty;
         self.frames.deinit(comp.a);
         self.pending_frames.deinit(comp.a);
         if (self.texture != 0) if (comp.drm) |backend| if (backend.renderer) |renderer| renderer.deleteTexture(self.texture);
@@ -627,7 +654,7 @@ const Surface = struct {
     fn drawGpu(self: *Surface, renderer: *Gl.Renderer, x: f64, y: f64, fx: f64, fy: f64, clip: Gl.Clip, opacity: f32) void {
         if (self.mapped()) {
             self.syncTexture(renderer);
-            renderer.drawMapped(self.texture, .{ .x = x, .y = y, .width = @as(f64, @floatFromInt(self.logicalWidth())) * fx, .height = @as(f64, @floatFromInt(self.logicalHeight())) * fy }, self.uvMap(), clip, opacity, false);
+            renderer.drawMapped(self.texture, .{ .x = x, .y = y, .width = @as(f64, @floatFromInt(self.logicalWidth())) * fx, .height = @as(f64, @floatFromInt(self.logicalHeight())) * fy }, self.uvMap(), clip, opacity, self.opaque_format);
         }
         for (self.children.items) |child| if (child.surface) |surface| surface.drawGpu(renderer, x + @as(f64, @floatFromInt(child.x)) * fx, y + @as(f64, @floatFromInt(child.y)) * fy, fx, fy, clip, opacity);
     }
@@ -991,6 +1018,7 @@ const Toplevel = struct {
     sent: ?struct { width: i32, height: i32, states: u32, activated: bool } = null,
     handles: std.ArrayList(*ForeignHandle) = .empty,
     list_handles: std.ArrayList(*ListHandle) = .empty,
+    sources: std.ArrayList(*CaptureSource) = .empty,
     sessions: std.ArrayList(*CaptureSession) = .empty,
     workspace: u32 = 0,
     /// Distinguishes windows in ext-foreign-toplevel-list and the overview protocol.
@@ -1135,6 +1163,8 @@ const Toplevel = struct {
         self.list_handles.clearRetainingCapacity();
         for (self.sessions.items) |session| session.stop();
         self.sessions.clearRetainingCapacity();
+        for (self.sources.items) |source| source.toplevel = null;
+        self.sources.clearRetainingCapacity();
     }
 
     fn identifier(self: *Toplevel) []const u8 {
@@ -1202,6 +1232,9 @@ const Toplevel = struct {
 
     fn destroyed(self: *Toplevel, _: ws.xdg_toplevel) void {
         self.mapChanged(false);
+        for (self.comp.toplevels.items) |other| if (other.parent == self) {
+            other.parent = null;
+        };
         if (self.xdg) |xdg| xdg.toplevel = null;
         if (self.comp.focused == self) self.comp.focused = null;
         if (self.comp.cycle_selected == self) self.comp.cycle_selected = null;
@@ -1212,6 +1245,7 @@ const Toplevel = struct {
         self.handles.deinit(self.comp.a);
         self.detachLists();
         self.list_handles.deinit(self.comp.a);
+        self.sources.deinit(self.comp.a);
         self.sessions.deinit(self.comp.a);
         if (self.decoration) |decoration| decoration.setHandler(Toplevel, self, null, null);
         self.comp.a.destroy(self);
@@ -1525,6 +1559,9 @@ const Layer = struct {
             surface.layer = null;
             surface.role = .none;
         }
+        if (self.preview_owner) |owner| if (owner.building == self) {
+            owner.building = null;
+        };
         if (comp.focused_layer == self) comp.focused_layer = null;
         comp.a.free(self.namespace);
         self.previews.deinit(comp.a);
@@ -1600,6 +1637,7 @@ const Output = struct {
         errdefer comp.a.free(self.pixels);
         self.name_len = (std.fmt.bufPrint(&self.name_buffer, "HEADLESS-{d}", .{index + 1}) catch unreachable).len;
         self.repaint = try comp.server.loop.timer(self, &repaintReady);
+        errdefer comp.server.loop.remove(self.repaint);
         self.global = try comp.server.createGlobal(&ws.wl_output.interface, 4, self, &bind);
         return self;
     }
@@ -1617,10 +1655,15 @@ const Output = struct {
         return self.name_buffer[0..self.name_len];
     }
 
+    /// The physical (untransformed) mode size in pixels.
+    fn physicalSize(self: *const Output) [2]u32 {
+        return if (self.transform & 1 != 0) .{ self.height, self.width } else .{ self.width, self.height };
+    }
+
     /// The modes output management offers: the connector's, or the current size.
     fn modeList(self: *const Output, buffer: []OutputMode) []OutputMode {
         const display = self.display orelse {
-            buffer[0] = .{ .size = .{ self.width, self.height }, .refresh = @intCast(self.refresh), .preferred = true };
+            buffer[0] = .{ .size = self.physicalSize(), .refresh = @intCast(self.refresh), .preferred = true };
             return buffer[0..1];
         };
         var count: usize = 0;
@@ -1663,8 +1706,9 @@ const Output = struct {
     }
 
     fn describe(self: *Output, output: ws.wl_output) void {
+        const size = self.physicalSize();
         output.sendGeometry(self.x, self.y, self.physical[0], self.physical[1], ws.wl_output.Subpixel.unknown, self.make, self.model, @intCast(self.transform));
-        output.sendMode(ws.wl_output.Mode.current | ws.wl_output.Mode.preferred, @intCast(self.width), @intCast(self.height), self.refresh);
+        output.sendMode(ws.wl_output.Mode.current | ws.wl_output.Mode.preferred, @intCast(size[0]), @intCast(size[1]), self.refresh);
         if (output.version() >= 2) output.sendScale(self.bufferScale());
         if (output.version() >= 4) {
             output.sendName(self.name());
@@ -1791,6 +1835,11 @@ const Output = struct {
         // Damage turns a pending frame-callback-only repaint into a real one, soon.
         const was_frame_only = self.frame_only;
         self.frame_only = false;
+        // While a page flip is in flight, draw right when it completes instead of waking a 1 ms timer.
+        if (self.display) |display| if (display.flipping) {
+            self.unpresented = true;
+            return;
+        };
         if (self.scheduled and !was_frame_only) return;
         self.scheduled = true;
         // Displays are paced by their page flips (a frame waits for the last one),
@@ -1838,6 +1887,10 @@ const Output = struct {
             self.unpresented = true;
             return;
         };
+        if (self.scheduled) {
+            self.scheduled = false;
+            wire.Loop.arm(self.repaint, 0);
+        }
         if (self.frame_only) {
             self.frame_only = false;
             self.sendFrameDone();
@@ -1866,10 +1919,26 @@ const Output = struct {
 
     fn sendFrameDone(self: *Output) void {
         const time = nowMs();
-        for (self.comp.surfaces.items) |surface| {
-            for (surface.frames.items) |callback| callback.sendDone(time);
-            surface.frames.clearRetainingCapacity();
+        const area = self.box();
+        const flushTree = struct {
+            fn f(surface: *Surface, t: u32) void {
+                for (surface.frames.items) |callback| callback.sendDone(t);
+                surface.frames.clearRetainingCapacity();
+                for (surface.children.items) |child| if (child.surface) |inner| f(inner, t);
+            }
+        }.f;
+        var roots: [256]Root = undefined;
+        for (self.comp.stack(&roots)) |root| {
+            const w = root.surface.logicalWidth();
+            const h = root.surface.logicalHeight();
+            const overlaps = root.x < area.x + area.width and root.y < area.y + area.height and root.x +| w > area.x and root.y +| h > area.y;
+            if (overlaps or root.surface.entered == self) flushTree(root.surface, time);
+            if (root.surface.layer) |layer| if (layer.output == self) for (layer.previews.items) |preview| {
+                if (self.comp.findWindow(preview.id[0..preview.id_len])) |toplevel| if (toplevel.xdg) |xdg| if (xdg.surface) |surface| flushTree(surface, time);
+            };
         }
+        if (self.comp.drag) |drag| if (drag.icon) |icon| if (self.contains(self.comp.seat.pointer_x, self.comp.seat.pointer_y)) flushTree(icon, time);
+        if (self.comp.seat.cursor) |cursor| if (self.contains(self.comp.seat.pointer_x, self.comp.seat.pointer_y)) flushTree(cursor, time);
     }
 
     fn backgroundColor(self: *const Output) u32 {
@@ -2137,7 +2206,7 @@ const Canvas = union(enum) {
             },
             .gl => |renderer| {
                 source.syncTexture(renderer);
-                renderer.drawMapped(source.texture, rect, source.uvMap(), null, 1, false);
+                renderer.drawMapped(source.texture, rect, source.uvMap(), null, 1, source.opaque_format);
             },
         }
     }
@@ -2283,9 +2352,11 @@ const Seat = struct {
         removeItem(ws.wl_keyboard, &self.keyboards, resource);
     }
 
-    fn pointerRequest(self: *Seat, _: ws.wl_pointer, request: ws.wl_pointer.Request) void {
+    fn pointerRequest(self: *Seat, resource: ws.wl_pointer, request: ws.wl_pointer.Request) void {
         switch (request) {
             .set_cursor => |args| {
+                const focused = self.pointer_focus orelse return;
+                if (focused.resource.client() != resource.client()) return;
                 const surface = if (args.surface) |s| s.data(Surface) else null;
                 if (surface) |cursor| {
                     if (cursor.role != .none and cursor.role != .cursor) return args.surface.?.postError(ws.wl_pointer.Error.role, "surface already has a role", .{});
@@ -2891,7 +2962,8 @@ const HeadManager = struct {
             head.sendEnabled(@intFromBool(output.enabled));
             if (!output.enabled) return;
             self.announceModes();
-            for (self.modes.items) |mode| if (!mode.finished and mode.size[0] == output.width and mode.size[1] == output.height and mode.refresh == @as(u32, @intCast(output.refresh))) {
+            const physical = output.physicalSize();
+            for (self.modes.items) |mode| if (!mode.finished and mode.size[0] == physical[0] and mode.size[1] == physical[1] and mode.refresh == @as(u32, @intCast(output.refresh))) {
                 head.sendCurrentMode(mode.resource);
                 break;
             };
@@ -3019,8 +3091,8 @@ const OutputConfig = struct {
                 }
                 if (transform != head.output.transform) {
                     head.output.transform = transform;
-                    // The cursor plane is not turned; such displays draw the cursor into frames.
-                    if (transform != 0) if (comp.drm) |backend| backend.useSoftwareCursor();
+                    // The cursor plane is not turned; rotated displays draw the cursor into frames.
+                    if (comp.drm) |backend| backend.updateCursorHardware();
                 }
                 head.output.configure(head.scale orelse head.output.scale, size, head.position);
             }
@@ -3132,11 +3204,13 @@ const ListHandle = struct {
 
 /// An ext_image_capture_source_v1 for one window.
 const CaptureSource = struct {
+    comp: *Compositor,
     toplevel: ?*Toplevel,
     output: ?*Output = null,
 
     fn destroyed(self: *CaptureSource, _: ws.ext_image_capture_source_v1) void {
-        std.heap.c_allocator.destroy(self);
+        if (self.toplevel) |toplevel| removeItem(*CaptureSource, &toplevel.sources, self);
+        self.comp.a.destroy(self);
     }
 };
 
@@ -3172,8 +3246,11 @@ const CaptureSession = struct {
     fn handle(self: *CaptureSession, _: ws.ext_image_copy_capture_session_v1, request: ws.ext_image_copy_capture_session_v1.Request) void {
         switch (request) {
             .create_frame => |args| {
-                const frame = std.heap.c_allocator.create(CopyFrame) catch return;
-                frame.* = .{ .session = self };
+                const frame = create(CopyFrame, self.comp, .{ .comp = self.comp, .session = self }) orelse return;
+                self.comp.copy_frames.append(self.comp.a, frame) catch {
+                    self.comp.a.destroy(frame);
+                    return;
+                };
                 args.frame.setHandler(CopyFrame, frame, CopyFrame.handle, CopyFrame.destroyed);
             },
             .destroy => {},
@@ -3187,6 +3264,9 @@ const CaptureSession = struct {
     }
 
     fn destroyed(self: *CaptureSession, _: ws.ext_image_copy_capture_session_v1) void {
+        for (self.comp.copy_frames.items) |frame| if (frame.session == self) {
+            frame.session = null;
+        };
         removeItem(*CaptureSession, &self.comp.output_sessions, self);
         if (self.toplevel) |toplevel| removeItem(*CaptureSession, &toplevel.sessions, self);
         self.comp.a.destroy(self);
@@ -3194,6 +3274,7 @@ const CaptureSession = struct {
 };
 
 const CopyFrame = struct {
+    comp: *Compositor,
     session: ?*CaptureSession,
     buffer: ?*Buffer = null,
     captured: bool = false,
@@ -3236,7 +3317,8 @@ const CopyFrame = struct {
     }
 
     fn destroyed(self: *CopyFrame, _: ws.ext_image_copy_capture_frame_v1) void {
-        std.heap.c_allocator.destroy(self);
+        removeItem(*CopyFrame, &self.comp.copy_frames, self);
+        self.comp.a.destroy(self);
     }
 };
 
@@ -4123,6 +4205,7 @@ const Compositor = struct {
     foreign_managers: std.ArrayList(ws.zwlr_foreign_toplevel_manager_v1) = .empty,
     head_managers: std.ArrayList(*HeadManager) = .empty,
     output_sessions: std.ArrayList(*CaptureSession) = .empty,
+    copy_frames: std.ArrayList(*CopyFrame) = .empty,
     activation_tokens: std.ArrayList([24]u8) = .empty,
     next_token: u64 = 0,
     presentations: std.ArrayList(*Presentation) = .empty,
@@ -4187,9 +4270,11 @@ const Compositor = struct {
     }
 
     fn deinit(self: *Compositor) void {
+        // Disconnect clients while compositor lists and the GPU renderer are still live.
+        self.server.disconnectAll();
         if (self.nested) |nested| nested.destroy();
         if (self.drm) |backend| backend.destroy();
-        // Clients' surfaces go after this; they must not reach the closed card.
+        // Clients' surfaces are already gone; clear pointers before freeing the rest.
         self.drm = null;
         self.sync_device = -1;
         self.a.free(self.dmabuf_formats);
@@ -4212,6 +4297,7 @@ const Compositor = struct {
         self.foreign_managers.deinit(self.a);
         self.head_managers.deinit(self.a);
         self.output_sessions.deinit(self.a);
+        self.copy_frames.deinit(self.a);
         self.activation_tokens.deinit(self.a);
         self.presentations.deinit(self.a);
         for (self.outputs.items) |output| output.destroy();
@@ -4955,13 +5041,14 @@ const Compositor = struct {
 
     fn bufferGone(buffer: *Buffer, _: ws.wl_buffer) void {
         const comp = buffer.comp;
+        buffer.alive = false;
         for (comp.surfaces.items) |surface| {
             if (surface.pending_buffer == buffer) surface.pending_buffer = null;
-            if (surface.held == buffer) surface.held = null;
         }
-        if (buffer.image != null) if (comp.drm) |backend| if (backend.renderer) |renderer| renderer.destroyImage(buffer.image);
-        if (buffer.pool) |pool| pool.unref();
-        comp.a.destroy(buffer);
+        for (comp.copy_frames.items) |frame| {
+            if (frame.buffer == buffer) frame.buffer = null;
+        }
+        buffer.unref();
     }
 
     fn bindWmBase(data: ?*anyopaque, resource: wire.Resource) void {
@@ -5214,8 +5301,7 @@ const Compositor = struct {
     fn outputSourceRequest(self: *Compositor, _: ws.ext_output_image_capture_source_manager_v1, request: ws.ext_output_image_capture_source_manager_v1.Request) void {
         switch (request) {
             .create_source => |args| {
-                const source = std.heap.c_allocator.create(CaptureSource) catch return;
-                source.* = .{ .toplevel = null, .output = self.findOutput(args.output) };
+                const source = create(CaptureSource, self, .{ .comp = self, .toplevel = null, .output = self.findOutput(args.output) }) orelse return;
                 args.source.setHandler(CaptureSource, source, null, CaptureSource.destroyed);
             },
             .destroy => {},
@@ -5249,9 +5335,11 @@ const Compositor = struct {
         (ws.wp_cursor_shape_manager_v1{ .resource = resource }).setHandler(Compositor, self, cursorShapeRequest, null);
     }
 
-    fn cursorShapeDevice(self: *Compositor, _: ws.wp_cursor_shape_device_v1, request: ws.wp_cursor_shape_device_v1.Request) void {
+    fn cursorShapeDevice(self: *Compositor, resource: ws.wp_cursor_shape_device_v1, request: ws.wp_cursor_shape_device_v1.Request) void {
         switch (request) {
             .set_shape => |args| {
+                const focused = self.seat.pointer_focus orelse return;
+                if (focused.resource.client() != resource.client()) return;
                 if (args.shape < 1 or args.shape >= cursor_names.len) return;
                 self.seat.cursor = null;
                 self.seat.cursor_mode = .default;
@@ -5809,12 +5897,15 @@ const Compositor = struct {
         (ws.ext_foreign_toplevel_image_capture_source_manager_v1{ .resource = resource }).setHandler(Compositor, self, captureSourceRequest, null);
     }
 
-    fn captureSourceRequest(_: *Compositor, _: ws.ext_foreign_toplevel_image_capture_source_manager_v1, request: ws.ext_foreign_toplevel_image_capture_source_manager_v1.Request) void {
+    fn captureSourceRequest(self: *Compositor, _: ws.ext_foreign_toplevel_image_capture_source_manager_v1, request: ws.ext_foreign_toplevel_image_capture_source_manager_v1.Request) void {
         switch (request) {
             .create_source => |args| {
                 const handle = args.toplevel_handle.data(ListHandle);
-                const source = std.heap.c_allocator.create(CaptureSource) catch return;
-                source.* = .{ .toplevel = if (handle) |h| h.toplevel else null };
+                const toplevel = if (handle) |h| h.toplevel else null;
+                const source = create(CaptureSource, self, .{ .comp = self, .toplevel = toplevel }) orelse return;
+                if (toplevel) |owner| owner.sources.append(self.a, source) catch {
+                    source.toplevel = null;
+                };
                 args.source.setHandler(CaptureSource, source, null, CaptureSource.destroyed);
             },
             .destroy => {},
@@ -5932,7 +6023,7 @@ const Compositor = struct {
         output.enabled = enabled;
         if (!enabled) {
             if (output.display) |display| display.disable();
-            if (output.global) |global| global.remove();
+            if (output.global) |global| global.destroy();
             output.global = null;
             var index = self.output_sessions.items.len;
             while (index > 0) {
@@ -6277,6 +6368,7 @@ const Drm = struct {
     /// The scale the cursor image was chosen for, and its copy for displays
     /// without a cursor plane.
     cursor_scale: f64 = 1,
+    cursor_force_software: bool = false,
     software_cursor: []u32 = &.{},
     /// A display rejecting GPU buffers is reported once.
     fb_warned: bool = false,
@@ -6304,6 +6396,7 @@ const Drm = struct {
         self.card.remove_context = self;
         // DESKTOP_CURSOR=software draws the cursor into frames, as without a cursor plane.
         if (std.c.getenv("DESKTOP_CURSOR")) |value| if (std.mem.eql(u8, std.mem.span(value), "software")) {
+            self.cursor_force_software = true;
             self.card.cursor_hardware = false;
         };
         // Displays are drawn by the GPU only: NVIDIA, or Intel and others through Mesa.
@@ -6323,6 +6416,13 @@ const Drm = struct {
         };
         if (comp.dmabuf_formats.len > 0) comp.enableExplicitSync(renderer, self.card.fd);
         self.udev = li.udev_new() orelse return error.NoUdev;
+        errdefer {
+            for (self.sources.items) |source| comp.server.loop.remove(source);
+            self.sources.deinit(a);
+            if (self.input) |input| _ = li.libinput_unref(input);
+            if (self.monitor) |monitor| _ = li.udev_monitor_unref(monitor);
+            _ = li.udev_unref(self.udev);
+        }
         try self.watch(self.session.getFd(), sessionReadable);
         try self.watch(self.card.fd, cardReadable);
         // Display hotplug arrives as udev "change" events on the card.
@@ -6557,10 +6657,16 @@ const Drm = struct {
         self.moveCursor();
     }
 
-    fn useSoftwareCursor(self: *Drm) void {
-        if (!self.card.cursor_hardware) return;
-        self.card.setCursor(null, 0, .{ 0, 0 });
-        self.card.cursor_hardware = false;
+    fn updateCursorHardware(self: *Drm) void {
+        var rotated = false;
+        for (self.comp.outputs.items) |output| if (output.enabled and output.transform != 0) {
+            rotated = true;
+            break;
+        };
+        const want_hardware = !self.cursor_force_software and !rotated;
+        if (self.card.cursor_hardware == want_hardware) return;
+        if (!want_hardware) self.card.setCursor(null, 0, .{ 0, 0 });
+        self.card.cursor_hardware = want_hardware;
         self.updateCursor();
     }
 
@@ -8379,4 +8485,215 @@ test "native compositor passes scroll sources, stops and wheel steps to clients"
     xdg_surface.destroy();
     surface.destroy();
     try connection.roundtrip();
+}
+
+test "native compositor shuts down cleanly with connected clients and stale capture objects" {
+    const client_wire = @import("wayland-wire");
+    const wl = @import("wayland-client");
+    const a = std.testing.allocator;
+    var runtime: [64]u8 = undefined;
+    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-teardown-{d}", .{libc.getpid()}, 0);
+    _ = libc.mkdir(directory, 0o700);
+    defer _ = libc.rmdir(directory);
+    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
+    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
+    defer if (previous_runtime) |value| {
+        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
+    };
+    const handle = try Handle.startWith(a, .headless, .headless);
+    // Stop compositor BEFORE closing client connection to exercise shutdown teardown order.
+    const connection = try client_wire.Connection.connect(a);
+    defer connection.deinit();
+    defer handle.stop();
+
+    const State = struct {
+        compositor: ?wl.wl_compositor = null,
+        shm: ?wl.wl_shm = null,
+        wm_base: ?wl.xdg_wm_base = null,
+        list: ?wl.ext_foreign_toplevel_list_v1 = null,
+        sources: ?wl.ext_foreign_toplevel_image_capture_source_manager_v1 = null,
+        copy: ?wl.ext_image_copy_capture_manager_v1 = null,
+        last_handle: ?wl.ext_foreign_toplevel_handle_v1 = null,
+        session_stopped: bool = false,
+        frame_failed: bool = false,
+        size: [2]i32 = .{ 0, 0 },
+        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+            switch (event) {
+                .global => |g| {
+                    if (std.mem.eql(u8, g.interface, "wl_compositor")) self.compositor = registry.bind(g.name, wl.wl_compositor, 6);
+                    if (std.mem.eql(u8, g.interface, "wl_shm")) self.shm = registry.bind(g.name, wl.wl_shm, 1);
+                    if (std.mem.eql(u8, g.interface, "xdg_wm_base")) self.wm_base = registry.bind(g.name, wl.xdg_wm_base, 6);
+                    if (std.mem.eql(u8, g.interface, "ext_foreign_toplevel_list_v1")) self.list = registry.bind(g.name, wl.ext_foreign_toplevel_list_v1, 1);
+                    if (std.mem.eql(u8, g.interface, "ext_foreign_toplevel_image_capture_source_manager_v1")) self.sources = registry.bind(g.name, wl.ext_foreign_toplevel_image_capture_source_manager_v1, 1);
+                    if (std.mem.eql(u8, g.interface, "ext_image_copy_capture_manager_v1")) self.copy = registry.bind(g.name, wl.ext_image_copy_capture_manager_v1, 1);
+                },
+                .global_remove => {},
+            }
+        }
+        fn listEvent(self: *@This(), _: wl.ext_foreign_toplevel_list_v1, event: wl.ext_foreign_toplevel_list_v1.Event) void {
+            switch (event) {
+                .toplevel => |args| self.last_handle = args.toplevel,
+                else => {},
+            }
+        }
+        fn xdgSurface(_: *@This(), surface: wl.xdg_surface, event: wl.xdg_surface.Event) void {
+            surface.ack_configure(event.configure.serial);
+        }
+        fn toplevel(self: *@This(), _: wl.xdg_toplevel, event: wl.xdg_toplevel.Event) void {
+            switch (event) {
+                .configure => |args| if (args.width > 0) {
+                    self.size = .{ args.width, args.height };
+                },
+                else => {},
+            }
+        }
+        fn sessionEvent(self: *@This(), _: wl.ext_image_copy_capture_session_v1, event: wl.ext_image_copy_capture_session_v1.Event) void {
+            if (event == .stopped) self.session_stopped = true;
+        }
+        fn frameEvent(self: *@This(), _: wl.ext_image_copy_capture_frame_v1, event: wl.ext_image_copy_capture_frame_v1.Event) void {
+            if (event == .failed) self.frame_failed = true;
+        }
+    };
+    var state: State = .{};
+    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
+    registry.listen(State, &state, State.global);
+    try connection.roundtrip();
+    state.list.?.listen(State, &state, State.listEvent);
+    try connection.roundtrip();
+
+    // Map first window, create a CaptureSource, then destroy the window before create_session.
+    const s1 = state.compositor.?.create_surface();
+    const x1 = state.wm_base.?.get_xdg_surface(s1);
+    x1.listen(State, &state, State.xdgSurface);
+    const t1 = x1.get_toplevel();
+    t1.listen(State, &state, State.toplevel);
+    s1.commit();
+    try connection.roundtrip();
+    const fd = libc.memfd_create("buffer", 0x0001);
+    defer _ = std.c.close(fd);
+    const w: usize = @intCast(@max(1, state.size[0]));
+    const h: usize = @intCast(@max(1, state.size[1]));
+    try std.testing.expectEqual(@as(c_int, 0), libc.ftruncate(fd, @intCast(w * h * 4)));
+    const pool = state.shm.?.create_pool(fd, @intCast(w * h * 4));
+    const buf1 = pool.create_buffer(0, @intCast(w), @intCast(h), @intCast(w * 4), 0);
+    s1.attach(buf1, 0, 0);
+    s1.commit();
+    try connection.roundtrip();
+    try std.testing.expect(state.last_handle != null);
+    const stale_source = state.sources.?.create_source(state.last_handle.?);
+    t1.destroy();
+    x1.destroy();
+    s1.destroy();
+    try connection.roundtrip();
+    const stopped_session = state.copy.?.create_session(stale_source, 0);
+    stopped_session.listen(State, &state, State.sessionEvent);
+    try connection.roundtrip();
+    try std.testing.expect(state.session_stopped);
+    stopped_session.destroy();
+    stale_source.destroy();
+
+    // Map second window, create a session & frame, destroy session & buffer before capture().
+    state.last_handle = null;
+    const s2 = state.compositor.?.create_surface();
+    const x2 = state.wm_base.?.get_xdg_surface(s2);
+    x2.listen(State, &state, State.xdgSurface);
+    const t2 = x2.get_toplevel();
+    t2.listen(State, &state, State.toplevel);
+    s2.commit();
+    try connection.roundtrip();
+    const buf2 = pool.create_buffer(0, @intCast(w), @intCast(h), @intCast(w * 4), 0);
+    s2.attach(buf2, 0, 0);
+    s2.commit();
+    try connection.roundtrip();
+    const src2 = state.sources.?.create_source(state.last_handle.?);
+    const sess2 = state.copy.?.create_session(src2, 0);
+    const frame2 = sess2.create_frame();
+    frame2.listen(State, &state, State.frameEvent);
+    const cap_buf = pool.create_buffer(0, @intCast(w), @intCast(h), @intCast(w * 4), 0);
+    frame2.attach_buffer(cap_buf);
+    cap_buf.destroy();
+    sess2.destroy();
+    frame2.capture();
+    try connection.roundtrip();
+    try std.testing.expect(state.frame_failed);
+    // Intentionally leave s2/x2/t2/buf1/buf2/pool/src2/frame2 live when handle.stop() runs.
+}
+
+test "native compositor keeps physical wl_output mode size when rotated" {
+    const client_wire = @import("wayland-wire");
+    const wl = @import("wayland-client");
+    const a = std.testing.allocator;
+    var runtime: [64]u8 = undefined;
+    const directory = try std.fmt.bufPrintSentinel(&runtime, "/tmp/desktop-native-rotate-{d}", .{libc.getpid()}, 0);
+    _ = libc.mkdir(directory, 0o700);
+    defer _ = libc.rmdir(directory);
+    const previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
+    _ = libc.setenv("XDG_RUNTIME_DIR", directory, 1);
+    defer if (previous_runtime) |value| {
+        _ = libc.setenv("XDG_RUNTIME_DIR", value, 1);
+    };
+    const handle = try Handle.startWith(a, .headless, .headless);
+    defer handle.stop();
+    const connection = try client_wire.Connection.connect(a);
+    defer connection.deinit();
+
+    const State = struct {
+        output: ?wl.wl_output = null,
+        manager: ?wl.zwlr_output_manager_v1 = null,
+        head: ?wl.zwlr_output_head_v1 = null,
+        serial: u32 = 0,
+        mode_w: i32 = 0,
+        mode_h: i32 = 0,
+        transform: i32 = 0,
+        succeeded: bool = false,
+        fn global(self: *@This(), registry: wl.wl_registry, event: wl.wl_registry.Event) void {
+            switch (event) {
+                .global => |g| {
+                    if (std.mem.eql(u8, g.interface, "wl_output")) self.output = registry.bind(g.name, wl.wl_output, 4);
+                    if (std.mem.eql(u8, g.interface, "zwlr_output_manager_v1")) self.manager = registry.bind(g.name, wl.zwlr_output_manager_v1, 4);
+                },
+                .global_remove => {},
+            }
+        }
+        fn outputEvent(self: *@This(), _: wl.wl_output, event: wl.wl_output.Event) void {
+            switch (event) {
+                .geometry => |args| self.transform = args.transform,
+                .mode => |args| {
+                    self.mode_w = args.width;
+                    self.mode_h = args.height;
+                },
+                else => {},
+            }
+        }
+        fn managerEvent(self: *@This(), _: wl.zwlr_output_manager_v1, event: wl.zwlr_output_manager_v1.Event) void {
+            switch (event) {
+                .head => |args| self.head = args.head,
+                .done => |args| self.serial = args.serial,
+                else => {},
+            }
+        }
+        fn configEvent(self: *@This(), _: wl.zwlr_output_configuration_v1, event: wl.zwlr_output_configuration_v1.Event) void {
+            if (event == .succeeded) self.succeeded = true;
+        }
+    };
+    var state: State = .{};
+    const registry = (wl.wl_display{ .proxy = connection.display() }).get_registry();
+    registry.listen(State, &state, State.global);
+    try connection.roundtrip();
+    state.output.?.listen(State, &state, State.outputEvent);
+    state.manager.?.listen(State, &state, State.managerEvent);
+    try connection.roundtrip();
+    try std.testing.expect(state.head != null);
+    const config = state.manager.?.create_configuration(state.serial);
+    config.listen(State, &state, State.configEvent);
+    const head_cfg = config.enable_head(state.head.?);
+    head_cfg.set_transform(1); // 90 degrees
+    config.apply();
+    try connection.roundtrip();
+    try std.testing.expect(state.succeeded);
+    try std.testing.expectEqual(@as(i32, 1), state.transform);
+    try std.testing.expectEqual(@as(i32, 1280), state.mode_w);
+    try std.testing.expectEqual(@as(i32, 720), state.mode_h);
+    head_cfg.destroy();
+    config.destroy();
 }

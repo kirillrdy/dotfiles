@@ -492,7 +492,11 @@ pub const Client = struct {
                 while (at + 4 <= offset + len) : (at += 4) {
                     const fd = std.mem.readInt(i32, control[at..][0..4], .little);
                     self.in_fds.append(self.server.allocator, fd) catch {
-                        _ = std.c.close(fd);
+                        // Close this fd and any remaining fds in the control message.
+                        var rest = at;
+                        while (rest + 4 <= offset + len) : (rest += 4) {
+                            _ = std.c.close(std.mem.readInt(i32, control[rest..][0..4], .little));
+                        }
                         return error.OutOfMemory;
                     };
                 }
@@ -775,8 +779,13 @@ pub const Server = struct {
         return self;
     }
 
-    pub fn destroy(self: *Server) void {
+    /// Disconnects every client, running their resource destructors while compositor state is still live.
+    pub fn disconnectAll(self: *Server) void {
         while (self.clients.items.len > 0) self.disconnect(self.clients.items[self.clients.items.len - 1]);
+    }
+
+    pub fn destroy(self: *Server) void {
+        self.disconnectAll();
         self.clients.deinit(self.allocator);
         for (self.globals.items) |global| self.allocator.destroy(global);
         self.globals.deinit(self.allocator);
