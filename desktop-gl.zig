@@ -182,11 +182,14 @@ const vertex_source =
     \\attribute vec2 position;
     \\uniform vec4 rect;
     \\uniform vec2 viewport;
+    \\uniform vec2 uv_origin;
+    \\uniform vec2 uv_x;
+    \\uniform vec2 uv_y;
     \\varying vec2 uv;
     \\void main() {
     \\    vec2 pixel = rect.xy + position * rect.zw;
     \\    gl_Position = vec4(pixel.x / viewport.x * 2.0 - 1.0, 1.0 - pixel.y / viewport.y * 2.0, 0.0, 1.0);
-    \\    uv = position;
+    \\    uv = uv_origin + position.x * uv_x + position.y * uv_y;
     \\}
 ;
 
@@ -209,6 +212,17 @@ const quad = [_]f32{ 0, 0, 1, 0, 0, 1, 1, 1 };
 pub const Rect = struct { x: f64, y: f64, width: f64, height: f64 };
 pub const Clip = struct { x: i32, y: i32, width: i32, height: i32 };
 
+/// Where the quad's corners sample the texture: the top-left corner samples
+/// `origin`, and moving right or down across the quad moves by `x` or `y`.
+/// It expresses a crop combined with any of the eight buffer transforms.
+pub const UvMap = struct {
+    origin: [2]f32 = .{ 0, 0 },
+    x: [2]f32 = .{ 1, 0 },
+    y: [2]f32 = .{ 0, 1 },
+
+    pub const identity: UvMap = .{};
+};
+
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
     gbm: *GbmDevice,
@@ -220,6 +234,7 @@ pub const Renderer = struct {
     viewport_location: i32,
     opacity_location: i32,
     opaque_location: i32,
+    uv_locations: [3]i32,
     position: u32,
     /// A texture for images drawn once, such as overview previews.
     scratch: u32 = 0,
@@ -258,6 +273,7 @@ pub const Renderer = struct {
             .viewport_location = glGetUniformLocation(program, "viewport"),
             .opacity_location = glGetUniformLocation(program, "opacity"),
             .opaque_location = glGetUniformLocation(program, "opaque"),
+            .uv_locations = .{ glGetUniformLocation(program, "uv_origin"), glGetUniformLocation(program, "uv_x"), glGetUniformLocation(program, "uv_y") },
             .position = @intCast(@max(0, glGetAttribLocation(program, "position"))),
         };
         if (glGetString(gl.renderer)) |driver| {
@@ -376,6 +392,14 @@ pub const Renderer = struct {
 
     /// Draws `texture` stretched over `rect`, optionally clipped and faded.
     pub fn draw(self: *Renderer, texture: u32, rect: Rect, clip: ?Clip, opacity: f32, opaque_alpha: bool) void {
+        self.drawMapped(texture, rect, UvMap.identity, clip, opacity, opaque_alpha);
+    }
+
+    /// Draws `texture` over `rect`, sampling it through `uv`.
+    pub fn drawMapped(self: *Renderer, texture: u32, rect: Rect, uv: UvMap, clip: ?Clip, opacity: f32, opaque_alpha: bool) void {
+        glUniform2f(self.uv_locations[0], uv.origin[0], uv.origin[1]);
+        glUniform2f(self.uv_locations[1], uv.x[0], uv.x[1]);
+        glUniform2f(self.uv_locations[2], uv.y[0], uv.y[1]);
         if (clip) |c| {
             if (c.width <= 0 or c.height <= 0) return;
             glEnable(gl.scissor_test);

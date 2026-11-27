@@ -179,6 +179,12 @@ const Surface = struct {
     /// wp_viewport destination size, which overrides buffer size / scale.
     pending_destination: ?[2]i32 = null,
     destination: ?[2]i32 = null,
+    /// wp_viewport source crop, in surface coordinates of the transformed buffer.
+    pending_source: ?[4]f64 = null,
+    source: ?[4]f64 = null,
+    /// wl_surface buffer transform, a wl_output.transform value.
+    pending_transform: u32 = 0,
+    transform: u32 = 0,
     has_viewport: bool = false,
     fractional: ?ws.wp_fractional_scale_v1 = null,
 
@@ -236,11 +242,49 @@ const Surface = struct {
     /// Size in surface-local (logical) coordinates.
     fn logicalWidth(self: *const Surface) i32 {
         if (self.destination) |size| return size[0];
-        return @divTrunc(@as(i32, @intCast(self.width)), @max(1, self.scale));
+        if (self.source) |crop| return @intFromFloat(@round(crop[2]));
+        return @divTrunc(@as(i32, @intCast(self.transformedSize()[0])), @max(1, self.scale));
     }
     fn logicalHeight(self: *const Surface) i32 {
         if (self.destination) |size| return size[1];
-        return @divTrunc(@as(i32, @intCast(self.height)), @max(1, self.scale));
+        if (self.source) |crop| return @intFromFloat(@round(crop[3]));
+        return @divTrunc(@as(i32, @intCast(self.transformedSize()[1])), @max(1, self.scale));
+    }
+
+    /// The buffer's size as displayed: quarter turns swap its sides.
+    fn transformedSize(self: *const Surface) [2]u32 {
+        return if (self.transform & 1 != 0) .{ self.height, self.width } else .{ self.width, self.height };
+    }
+
+    /// How the surface's texture is sampled: the source crop, then the
+    /// inverse of the buffer transform (the buffer holds content already
+    /// turned by it, counter-clockwise, flipping first).
+    fn uvMap(self: *const Surface) Gl.UvMap {
+        const shown = self.transformedSize();
+        var crop = [4]f64{ 0, 0, 1, 1 };
+        if (self.source) |source| if (shown[0] > 0 and shown[1] > 0) {
+            const scale: f64 = @floatFromInt(@max(1, self.scale));
+            const w: f64 = @floatFromInt(shown[0]);
+            const h: f64 = @floatFromInt(shown[1]);
+            crop = .{ source[0] * scale / w, source[1] * scale / h, source[2] * scale / w, source[3] * scale / h };
+        };
+        // Buffer point b = (a*qx + b*qy + c, d*qx + e*qy + f) of displayed point q.
+        const m: [6]f64 = switch (self.transform) {
+            1 => .{ 0, 1, 0, -1, 0, 1 },
+            2 => .{ -1, 0, 1, 0, -1, 1 },
+            3 => .{ 0, -1, 1, 1, 0, 0 },
+            4 => .{ -1, 0, 1, 0, 1, 0 },
+            5 => .{ 0, 1, 0, 1, 0, 0 },
+            6 => .{ 1, 0, 0, 0, -1, 1 },
+            7 => .{ 0, -1, 1, -1, 0, 1 },
+            else => .{ 1, 0, 0, 0, 1, 0 },
+        };
+        const origin = [2]f64{ m[0] * crop[0] + m[1] * crop[1] + m[2], m[3] * crop[0] + m[4] * crop[1] + m[5] };
+        return .{
+            .origin = .{ @floatCast(origin[0]), @floatCast(origin[1]) },
+            .x = .{ @floatCast(m[0] * crop[2]), @floatCast(m[3] * crop[2]) },
+            .y = .{ @floatCast(m[1] * crop[3]), @floatCast(m[4] * crop[3]) },
+        };
     }
 
     fn handle(self: *Surface, resource: ws.wl_surface, request: ws.wl_surface.Request) void {
@@ -275,7 +319,11 @@ const Surface = struct {
                 self.pending_input = if (args.region) |region| (if (region.data(Region)) |value| std.heap.c_allocator.dupe(Region.Op, value.ops.items) catch null else null) else null;
                 self.pending_input_set = true;
             },
-            .set_opaque_region, .set_buffer_transform => {},
+            .set_opaque_region => {},
+            .set_buffer_transform => |args| {
+                if (args.transform > 7) return resource.postError(ws.wl_surface.Error.invalid_transform, "invalid buffer transform", .{});
+                self.pending_transform = @intCast(args.transform);
+            },
             .set_buffer_scale => |args| {
                 if (args.scale < 1) return resource.postError(ws.wl_surface.Error.invalid_scale, "buffer scale must be positive", .{});
                 self.pending_scale = args.scale;
@@ -319,6 +367,8 @@ const Surface = struct {
         }
         self.scale = self.pending_scale;
         self.destination = self.pending_destination;
+        self.source = self.pending_source;
+        self.transform = self.pending_transform;
         if (self.pending_input_set) {
             self.pending_input_set = false;
             if (self.input) |ops| std.heap.c_allocator.free(ops);
@@ -450,7 +500,7 @@ const Surface = struct {
     fn drawGpu(self: *Surface, renderer: *Gl.Renderer, x: f64, y: f64, fx: f64, fy: f64, clip: Gl.Clip, opacity: f32) void {
         if (self.mapped()) {
             self.syncTexture(renderer);
-            renderer.draw(self.texture, .{ .x = x, .y = y, .width = @as(f64, @floatFromInt(self.logicalWidth())) * fx, .height = @as(f64, @floatFromInt(self.logicalHeight())) * fy }, clip, opacity, false);
+            renderer.drawMapped(self.texture, .{ .x = x, .y = y, .width = @as(f64, @floatFromInt(self.logicalWidth())) * fx, .height = @as(f64, @floatFromInt(self.logicalHeight())) * fy }, self.uvMap(), clip, opacity, false);
         }
         for (self.children.items) |child| if (child.surface) |surface| surface.drawGpu(renderer, x + @as(f64, @floatFromInt(child.x)) * fx, y + @as(f64, @floatFromInt(child.y)) * fy, fx, fy, clip, opacity);
     }
@@ -1755,12 +1805,23 @@ const Canvas = union(enum) {
         switch (self) {
             .cpu => |target| {
                 if (!source.cpuReady()) return;
-                const content: raster.Image = .{ .pixels = std.mem.sliceAsBytes(source.pixels), .width = source.width, .height = source.height, .stride = source.width * 4, .format = .argb };
+                var content: raster.Image = .{ .pixels = std.mem.sliceAsBytes(source.pixels), .width = source.width, .height = source.height, .stride = source.width * 4, .format = .argb };
+                // The CPU path crops to whole pixels and leaves transforms to the GPU.
+                if (source.source) |crop| if (source.transform == 0) {
+                    const scale: f64 = @floatFromInt(@max(1, source.scale));
+                    const x: u32 = @intFromFloat(@min(@round(crop[0] * scale), @as(f64, @floatFromInt(source.width - 1))));
+                    const y: u32 = @intFromFloat(@min(@round(crop[1] * scale), @as(f64, @floatFromInt(source.height - 1))));
+                    const w: u32 = @intFromFloat(@max(1, @min(@round(crop[2] * scale), @as(f64, @floatFromInt(source.width - x)))));
+                    const h: u32 = @intFromFloat(@max(1, @min(@round(crop[3] * scale), @as(f64, @floatFromInt(source.height - y)))));
+                    content.pixels = std.mem.sliceAsBytes(source.pixels[@as(usize, y) * source.width + x ..]);
+                    content.width = w;
+                    content.height = h;
+                };
                 raster.blit(target, content, .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height }, null) catch {};
             },
             .gl => |renderer| {
                 source.syncTexture(renderer);
-                renderer.draw(source.texture, rect, null, 1, false);
+                renderer.drawMapped(source.texture, rect, source.uvMap(), null, 1, false);
             },
         }
     }
@@ -4654,8 +4715,13 @@ const Compositor = struct {
     fn viewportRequest(surface: *Surface, resource: ws.wp_viewport, request: ws.wp_viewport.Request) void {
         switch (request) {
             .destroy => {},
-            // Cropping is accepted; the whole buffer is shown scaled to the destination.
-            .set_source => {},
+            .set_source => |args| {
+                if (args.x == -1 and args.y == -1 and args.width == -1 and args.height == -1) {
+                    surface.pending_source = null;
+                } else if (args.x < 0 or args.y < 0 or args.width <= 0 or args.height <= 0) {
+                    resource.postError(ws.wp_viewport.Error.bad_value, "invalid source rectangle", .{});
+                } else surface.pending_source = .{ args.x, args.y, args.width, args.height };
+            },
             .set_destination => |args| {
                 if (args.width == -1 and args.height == -1) {
                     surface.pending_destination = null;
@@ -4669,6 +4735,7 @@ const Compositor = struct {
     fn viewportGone(surface: *Surface, _: ws.wp_viewport) void {
         surface.has_viewport = false;
         surface.pending_destination = null;
+        surface.pending_source = null;
     }
 
     fn bindFractionalScale(data: ?*anyopaque, resource: wire.Resource) void {
@@ -6467,4 +6534,30 @@ test "popups flip, slide and shrink into the output as their positioner allows" 
     try std.testing.expectEqual(@as(i32, 530), shrunk.height);
     list.adjustment = 0;
     try std.testing.expectEqual(@as(i32, 900), list.constrain(list.place(), bounds).height);
+}
+
+test "viewport crops and buffer transforms map to texture coordinates" {
+    var surface: Surface = .{ .comp = undefined, .resource = undefined, .width = 200, .height = 100 };
+    // A crop of the right half, in a buffer of scale 1.
+    surface.source = .{ 100, 0, 100, 100 };
+    var map = surface.uvMap();
+    try std.testing.expectEqual([2]f32{ 0.5, 0 }, map.origin);
+    try std.testing.expectEqual([2]f32{ 0.5, 0 }, map.x);
+    try std.testing.expectEqual([2]f32{ 0, 1 }, map.y);
+    try std.testing.expectEqual(@as(i32, 100), surface.logicalWidth());
+    // A buffer turned a quarter counter-clockwise: the shown top-left is the
+    // buffer's bottom-left, and the sides swap.
+    surface.source = null;
+    surface.transform = 1;
+    map = surface.uvMap();
+    try std.testing.expectEqual([2]f32{ 0, 1 }, map.origin);
+    try std.testing.expectEqual([2]f32{ 0, -1 }, map.x);
+    try std.testing.expectEqual([2]f32{ 1, 0 }, map.y);
+    try std.testing.expectEqual(@as(i32, 100), surface.logicalWidth());
+    try std.testing.expectEqual(@as(i32, 200), surface.logicalHeight());
+    // Flipped: mirrored left to right.
+    surface.transform = 4;
+    map = surface.uvMap();
+    try std.testing.expectEqual([2]f32{ 1, 0 }, map.origin);
+    try std.testing.expectEqual([2]f32{ -1, 0 }, map.x);
 }
