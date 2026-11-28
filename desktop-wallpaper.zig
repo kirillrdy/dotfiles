@@ -6,7 +6,7 @@ const util = @import("desktop-util.zig");
 const decode = @import("desktop-decode.zig");
 const Image = decode.Image;
 
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 
 fn paint(target: native.Pixels, image: Image) void {
     raster.cover(target, image.view()) catch |err| std.log.err("wallpaper render: {s}", .{@errorName(err)});

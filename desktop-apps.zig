@@ -3,7 +3,7 @@ const std = @import("std");
 const keyboard = @import("desktop-keyboard.zig");
 const util = @import("desktop-util.zig");
 pub const KeyEvent = struct { state: u32 = 0, keyval: u32 };
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const wire = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const shaping = @import("desktop-text.zig");

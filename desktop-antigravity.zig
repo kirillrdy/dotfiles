@@ -17,24 +17,24 @@ fn unavailable(message: []const u8) usage.Report {
 
 /// Which shared window (0 = 5h, 1 = 7d) a quota bucket describes, if known.
 fn slot(bucket: std.json.Value) ?usize {
-    const window = u.get(bucket, "window");
+    const window = usage.jsonGet(bucket, "window");
     // A protobuf Duration ("18000s"), or an object with seconds.
     const seconds: ?f64 = switch (window) {
         .string => |s| if (s.len > 1 and s[s.len - 1] == 's') std.fmt.parseFloat(f64, s[0 .. s.len - 1]) catch null else null,
-        .object => u.number(u.get(window, "seconds")) orelse if (u.string(u.get(window, "seconds")).len > 0) std.fmt.parseFloat(f64, u.string(u.get(window, "seconds"))) catch null else null,
+        .object => u.number(usage.jsonGet(window, "seconds")) orelse if (usage.jsonString(usage.jsonGet(window, "seconds")).len > 0) std.fmt.parseFloat(f64, usage.jsonString(usage.jsonGet(window, "seconds"))) catch null else null,
         else => u.number(window),
     };
     if (seconds) |s| return if (s <= 86400) 0 else 1;
     // Otherwise go by the window, id or name text.
     for ([_][]const u8{ "window", "bucketId", "displayName" }) |key| {
         var buffer: [128]u8 = undefined;
-        const text = u.string(u.get(bucket, key));
+        const text = usage.jsonString(usage.jsonGet(bucket, key));
         const lower = std.ascii.lowerString(buffer[0..@min(text.len, buffer.len)], text[0..@min(text.len, buffer.len)]);
         for ([_][]const u8{ "week", "7d", "7 d", "seven", "day" }) |word| if (std.mem.indexOf(u8, lower, word) != null) return 1;
         for ([_][]const u8{ "hour", "5h", "5 h", "five", "session" }) |word| if (std.mem.indexOf(u8, lower, word) != null) return 0;
     }
     // Per-model buckets from `retrieveUserQuota` report the 5-hour quota.
-    if (u.string(u.get(bucket, "modelId")).len > 0) return 0;
+    if (usage.jsonString(usage.jsonGet(bucket, "modelId")).len > 0) return 0;
     return null;
 }
 
@@ -66,8 +66,8 @@ fn mentionsGemini(text: []const u8) bool {
 
 /// Whether a bucket (or the group holding it) belongs to the Gemini models.
 fn isGemini(group: std.json.Value, bucket: std.json.Value) bool {
-    if (mentionsGemini(u.string(u.get(group, "displayName")))) return true;
-    for ([_][]const u8{ "bucketId", "modelId" }) |key| if (mentionsGemini(u.string(u.get(bucket, key)))) return true;
+    if (mentionsGemini(usage.jsonString(usage.jsonGet(group, "displayName")))) return true;
+    for ([_][]const u8{ "bucketId", "modelId" }) |key| if (mentionsGemini(usage.jsonString(usage.jsonGet(bucket, key)))) return true;
     return false;
 }
 
@@ -83,13 +83,13 @@ pub fn parseUsage(data: std.json.Value) [2]?usage.Window {
     var lists: [65]std.json.Value = undefined;
     var owners: [65]std.json.Value = undefined;
     var count: usize = 0;
-    lists[count] = u.get(data, "buckets");
+    lists[count] = usage.jsonGet(data, "buckets");
     owners[count] = .null;
     count += 1;
-    const groups = u.get(data, "groups");
+    const groups = usage.jsonGet(data, "groups");
     if (groups == .array) for (groups.array.items) |group| {
         if (count == lists.len) break;
-        lists[count] = u.get(group, "buckets");
+        lists[count] = usage.jsonGet(group, "buckets");
         owners[count] = group;
         count += 1;
     };
@@ -104,9 +104,9 @@ pub fn parseUsage(data: std.json.Value) [2]?usage.Window {
         if (list != .array) continue;
         for (list.array.items) |bucket| {
             if (gemini_only and !isGemini(group, bucket)) continue;
-            if (u.get(bucket, "disabled") == .bool and u.get(bucket, "disabled").bool) continue;
-            const fraction = u.number(u.get(bucket, "remainingFraction")) orelse continue;
-            const window: usage.Window = .{ .used = (1 - std.math.clamp(fraction, 0, 1)) * 100, .reset_at = claude.parseTimestamp(u.string(u.get(bucket, "resetTime"))) };
+            if (usage.jsonGet(bucket, "disabled") == .bool and usage.jsonGet(bucket, "disabled").bool) continue;
+            const fraction = u.number(usage.jsonGet(bucket, "remainingFraction")) orelse continue;
+            const window: usage.Window = .{ .used = (1 - std.math.clamp(fraction, 0, 1)) * 100, .reset_at = claude.parseTimestamp(usage.jsonString(usage.jsonGet(bucket, "resetTime"))) };
             if (slot(bucket)) |i| {
                 windows[i] = tighter(windows[i], window);
                 continue;
@@ -134,13 +134,13 @@ pub fn parseToken(a: std.mem.Allocator, raw: []const u8, now: i64) !union(enum) 
         try std.base64.standard.Decoder.decode(decoded, encoded);
         text = decoded;
     }
-    const parsed = u.parse(a, text) catch return .{ .token = u.trim(text) };
-    const nested = u.get(parsed, "token");
+    const parsed = usage.parseJson(a, text) catch return .{ .token = std.mem.trim(u8, text, " \n\r\t") };
+    const nested = usage.jsonGet(parsed, "token");
     const token = if (nested == .object) nested else parsed;
-    const access = u.string(u.get(token, "access_token"));
-    const value = if (access.len > 0) access else u.string(u.get(token, "accessToken"));
+    const access = usage.jsonString(usage.jsonGet(token, "access_token"));
+    const value = if (access.len > 0) access else usage.jsonString(usage.jsonGet(token, "accessToken"));
     if (value.len == 0) return error.NoToken;
-    if (claude.parseTimestamp(u.string(u.get(token, "expiry")))) |expiry| if (expiry <= now) return .expired;
+    if (claude.parseTimestamp(usage.jsonString(usage.jsonGet(token, "expiry")))) |expiry| if (expiry <= now) return .expired;
     return .{ .token = value };
 }
 
@@ -199,10 +199,10 @@ fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
     // Never pass authorization through process arguments or log HTTP headers.
     if (std.mem.indexOfAny(u8, token, "\r\n") != null) return error.InvalidToken;
     const home = u.env("HOME") orelse return error.NoHome;
-    const project = u.trim(u.read(a, io, try u.fmt(a, "{s}/.gemini/antigravity-cli/cache/default_project_id.txt", .{home})) catch "");
-    const body = if (project.len > 0 and std.mem.indexOfAny(u8, project, "\"\\") == null) try u.fmt(a, "{{\"project\":\"{s}\"}}", .{project}) else "{}";
+    const project = std.mem.trim(u8, u.read(a, io, try std.fmt.allocPrint(a, "{s}/.gemini/antigravity-cli/cache/default_project_id.txt", .{home})) catch "", " \n\r\t");
+    const body = if (project.len > 0 and std.mem.indexOfAny(u8, project, "\"\\") == null) try std.fmt.allocPrint(a, "{{\"project\":\"{s}\"}}", .{project}) else "{}";
     const headers = [_]std.http.Header{
-        .{ .name = "Authorization", .value = try u.fmt(a, "Bearer {s}", .{token}) },
+        .{ .name = "Authorization", .value = try std.fmt.allocPrint(a, "Bearer {s}", .{token}) },
         .{ .name = "Content-Type", .value = "application/json" },
     };
     const response = try http.get(a, io, .{
@@ -215,6 +215,6 @@ fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
     });
     const status = @backingInt(response.status);
     if (status == 401 or status == 403) return unavailable("Antigravity login needs refreshing; run agy");
-    if (status != 200) return unavailable(try u.fmt(a, "Antigravity usage service returned HTTP {d}", .{status}));
-    return .{ .name = name, .windows = parseUsage(try u.parse(a, response.body)) };
+    if (status != 200) return unavailable(try std.fmt.allocPrint(a, "Antigravity usage service returned HTTP {d}", .{status}));
+    return .{ .name = name, .windows = parseUsage(try usage.parseJson(a, response.body)) };
 }

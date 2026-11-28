@@ -8,7 +8,7 @@ pub const password = @import("desktop-password-entry.zig");
 pub const Mode = native.Mode;
 pub const host = @import("desktop-window.zig");
 const wire = host.wire;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 pub const Dialog = struct {
     allocator: std.mem.Allocator,
     window: *host.Window,

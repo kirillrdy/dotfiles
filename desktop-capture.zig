@@ -9,7 +9,7 @@ const mainloop = @import("desktop-loop.zig");
 const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 pub const Image = @import("desktop-image.zig").Image;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const formats = wl.wl_shm.Format;
 pub const Rect = struct { x: f64 = 0, y: f64 = 0, w: f64 = 1, h: f64 = 1 };
 pub const Workspace = struct { name: [128:0]u8 = @splat(0) };

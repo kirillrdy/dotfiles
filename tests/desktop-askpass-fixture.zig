@@ -6,7 +6,7 @@ const mainloop = @import("desktop").mainloop;
 const util = @import("desktop").util;
 const libc = @import("desktop").libc;
 const assert = std.debug.assert;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const pump = @import("fixture-util.zig").pump;
 fn checkEditing(init: std.process.Init) !void {
     const dialog = try askpass.Dialog.create(init.gpa, init.io, .password, "Synthetic clipboard and editing checks");

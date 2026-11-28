@@ -10,7 +10,7 @@ const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const sc = @import("desktop-screenshot.zig");
 pub const Image = @import("desktop-image.zig").Image;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const portal_options = @import("desktop-portal-options.zig");
 const dbus = @import("dbus");
 const Options = portal_options.Options(error.InvalidScreenshotOptions);

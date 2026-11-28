@@ -11,7 +11,7 @@ const login = @import("desktop-login-ui.zig");
 const login_client = @import("desktop-login-client.zig");
 const raster = @import("desktop-raster.zig");
 
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const SecretBuffer = login.SecretBuffer;
 
 pub const Op = enum(u8) { auth = 1, power = 2 };

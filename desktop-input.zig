@@ -5,7 +5,7 @@ const util = @import("desktop-util.zig");
 const wl = @import("wayland-client");
 const native = @import("desktop-surface.zig");
 const keyboard = @import("desktop-keyboard.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 
 pub const TextState = struct { text: [:0]const u8, cursor: u32, anchor: u32, rect: @import("desktop-raster.zig").IntRect, private: bool = false };
 

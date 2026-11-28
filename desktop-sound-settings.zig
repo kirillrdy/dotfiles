@@ -5,7 +5,7 @@ const mainloop = @import("desktop-loop.zig");
 const util = @import("desktop-util.zig");
 const audio = @import("desktop-audio.zig");
 pub const native = @import("desktop-sound-view.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const host = @import("desktop-window.zig");
 const wire = host.wire;
 const Tooltip = @import("desktop-panel-view.zig").Tooltip;

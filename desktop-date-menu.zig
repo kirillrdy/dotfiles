@@ -5,7 +5,7 @@ const util = @import("desktop-util.zig");
 const wire = @import("desktop-surface.zig");
 const popup = @import("desktop-popup.zig");
 pub const native = @import("desktop-date-menu-view.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 pub const Callbacks = struct {
     context: ?*anyopaque,
     clear: *const fn (?*anyopaque) void,

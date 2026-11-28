@@ -18,7 +18,7 @@ const native = @import("desktop-quick-settings-view.zig");
 pub const Target = native.Target;
 const power_backend = @import("desktop-power.zig");
 // Test builds account for service state and asynchronous callback allocations.
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const Settings = @import("desktop-gsettings.zig").Settings;
 fn settings(a: std.mem.Allocator, io: std.Io, schema: []const u8) ?*Settings {
     return gsettings.Settings.open(a, io, schema, null);

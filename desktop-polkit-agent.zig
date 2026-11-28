@@ -12,7 +12,7 @@ const authority_path = "/org/freedesktop/PolicyKit1/Authority";
 const agent = name ++ ".AuthenticationAgent";
 const path = "/org/dotfiles/PolicyKit1/AuthenticationAgent";
 const xml = "<node><interface name='" ++ agent ++ "'><method name='BeginAuthentication'><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='a{ss}' direction='in'/><arg type='s' direction='in'/><arg type='a(sa{sv})' direction='in'/></method><method name='CancelAuthentication'><arg type='s' direction='in'/></method></interface></node>";
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const Details = dbus.Dict([]const u8, dbus.Value);
 /// A polkit subject or identity: a kind with typed details, `(sa{sv})`.
 const Identity = struct { []const u8, Details };

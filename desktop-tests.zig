@@ -68,7 +68,7 @@ test "usage renders remaining budget for both popup windows" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const windows = codex.parseUsage(try u.parse(a, "{\"rate_limit\":{\"primary_window\":{\"used_percent\":46},\"secondary_window\":{\"used_percent\":7}}}"));
+    const windows = codex.parseUsage(try usage.parseJson(a, "{\"rate_limit\":{\"primary_window\":{\"used_percent\":46},\"secondary_window\":{\"used_percent\":7}}}"));
     const out = try usage.update(a, .{ .name = "Codex", .windows = windows }, "icon", 1000);
     try strings("54%", out.items.?[0].text);
     try strings("icon", out.items.?[0].icon);
@@ -76,12 +76,12 @@ test "usage renders remaining budget for both popup windows" {
     try expect(std.mem.indexOf(u8, out.tooltip, "7d: 93% remaining") != null);
     try equal(@as(?f64, 54), out.windows[0].percent);
     try strings("", out.@"error");
-    const missing = try usage.update(a, .{ .name = "Codex", .windows = codex.parseUsage(try u.parse(a, "{\"rate_limit\":{\"secondary_window\":{\"used_percent\":7}}}")) }, "", 1000);
+    const missing = try usage.update(a, .{ .name = "Codex", .windows = codex.parseUsage(try usage.parseJson(a, "{\"rate_limit\":{\"secondary_window\":{\"used_percent\":7}}}")) }, "", 1000);
     try strings("—", missing.items.?[0].text);
     try equal(@as(?f64, null), missing.windows[0].percent);
     try equal(@as(?f64, 93), missing.windows[1].percent);
     for ([_][]const u8{ "null", "true", "\"50\"", "{}" }) |value| {
-        const invalid = try u.parse(a, try u.fmt(a, "{{\"rate_limit\":{{\"primary_window\":{{\"used_percent\":{s}}}}}}}", .{value}));
+        const invalid = try usage.parseJson(a, try std.fmt.allocPrint(a, "{{\"rate_limit\":{{\"primary_window\":{{\"used_percent\":{s}}}}}}}", .{value}));
         const out_invalid = try usage.update(a, .{ .name = "Codex", .windows = codex.parseUsage(invalid) }, "", 1000);
         try strings("Codex usage is unavailable", out_invalid.@"error");
         try equal(@as(usize, 0), out_invalid.windows.len);
@@ -95,8 +95,8 @@ test "usage reset countdown handles missing invalid and past timestamps" {
     try strings("Resets in 2h 15m", try usage.resetText(a, 1000 + 2 * 3600 + 15 * 60, 1000));
     try strings("Resets in now", try usage.resetText(a, 900, 1000));
     try strings("Resets: —", try usage.resetText(a, null, 1000));
-    for ([_]std.json.Value{ .null, .{ .bool = true }, u.str("1000"), u.num(std.math.nan(f64)), u.num(std.math.inf(f64)), u.num(1e13) }) |value| try equal(@as(?i64, null), usage.stamp(value));
-    try equal(@as(?i64, 1000), usage.stamp(u.num(1000.5)));
+    for ([_]std.json.Value{ .null, .{ .bool = true }, .{ .string = "1000" }, .{ .float = std.math.nan(f64) }, .{ .float = std.math.inf(f64) }, .{ .float = 1e13 } }) |value| try equal(@as(?i64, null), usage.stamp(value));
+    try equal(@as(?i64, 1000), usage.stamp(.{ .float = 1000.5 }));
 }
 
 test "disk usage uses fragment sizes and excludes free reserved blocks" {
@@ -244,16 +244,16 @@ test "Claude maps five-hour and weekly utilization onto the shared windows" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const windows = claude.parseUsage(try u.parse(a, "{\"five_hour\":{\"utilization\":46.0,\"resets_at\":\"1970-01-01T00:16:40+00:00\"},\"seven_day\":{\"utilization\":7,\"resets_at\":\"1970-01-03T03:16:40Z\"},\"seven_day_opus\":null}"));
+    const windows = claude.parseUsage(try usage.parseJson(a, "{\"five_hour\":{\"utilization\":46.0,\"resets_at\":\"1970-01-01T00:16:40+00:00\"},\"seven_day\":{\"utilization\":7,\"resets_at\":\"1970-01-03T03:16:40Z\"},\"seven_day_opus\":null}"));
     const out = try usage.update(a, .{ .name = "Claude", .windows = windows }, "", 1000);
     try strings("54%", out.items.?[0].text);
     try expect(std.mem.indexOf(u8, out.tooltip, "Claude allowance remaining") != null);
     try strings("Resets in 2d 3h", out.windows[1].reset);
     // An idle five-hour window is reported as null and means nothing is used.
-    const idle = claude.parseUsage(try u.parse(a, "{\"five_hour\":null,\"seven_day\":{\"utilization\":20}}"));
+    const idle = claude.parseUsage(try usage.parseJson(a, "{\"five_hour\":null,\"seven_day\":{\"utilization\":20}}"));
     try strings("100%", (try usage.update(a, .{ .name = "Claude", .windows = idle }, "", 1000)).items.?[0].text);
     for ([_][]const u8{ "{}", "{\"five_hour\":null,\"seven_day\":null}", "{\"error\":{}}" }) |value| {
-        const none = claude.parseUsage(try u.parse(a, value));
+        const none = claude.parseUsage(try usage.parseJson(a, value));
         try expect(none[0] == null and none[1] == null);
     }
 }
@@ -280,7 +280,7 @@ test "Antigravity reports the Gemini allowance, not the Claude/GPT one" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const windows = antigravity.parseUsage(try u.parse(a,
+    const windows = antigravity.parseUsage(try usage.parseJson(a,
         \\{"groups":[{"displayName":"Gemini","buckets":[
         \\  {"window":"18000s","remainingFraction":0.8,"resetTime":"1970-01-01T00:16:40Z"},
         \\  {"window":"604800s","remainingFraction":0.95,"resetTime":"1970-01-03T03:16:40Z"}]},
@@ -294,7 +294,7 @@ test "Antigravity reports the Gemini allowance, not the Claude/GPT one" {
     try strings("Resets in 2d 3h", out.windows[1].reset);
     try expect(@abs(out.windows[1].percent.? - 95) < 1e-9);
     // The live summary: a Gemini Models group and a Claude and GPT models group.
-    const summary = antigravity.parseUsage(try u.parse(a,
+    const summary = antigravity.parseUsage(try usage.parseJson(a,
         \\{"groups":[{"displayName":"Gemini Models","buckets":[
         \\  {"bucketId":"gemini-weekly","window":"weekly","resetTime":"1970-01-03T00:00:00Z","remainingFraction":0.70},
         \\  {"bucketId":"gemini-5h","window":"5h","resetTime":"1970-01-01T01:00:00Z","remainingFraction":0.94}]},
@@ -304,18 +304,18 @@ test "Antigravity reports the Gemini allowance, not the Claude/GPT one" {
     ));
     try expect(@abs(summary[0].?.used - 6) < 1e-9 and @abs(summary[1].?.used - 30) < 1e-9);
     // Per-model buckets: Claude models are ignored when Gemini ones exist.
-    const models = antigravity.parseUsage(try u.parse(a,
+    const models = antigravity.parseUsage(try usage.parseJson(a,
         \\{"buckets":[
         \\  {"modelId":"claude-opus-5-5-high","resetTime":"1970-01-01T03:00:00Z","remainingFraction":0.17},
         \\  {"modelId":"gemini-3.8-flash-high","resetTime":"1970-01-01T01:00:00Z","remainingFraction":0.93}]}
     ));
     try expect(@abs(models[0].?.used - 7) < 1e-6);
     // The live service labels windows "5h" and "weekly".
-    const live = antigravity.parseUsage(try u.parse(a, "{\"groups\":[{\"buckets\":[{\"bucketId\":\"3p-weekly\",\"window\":\"weekly\",\"resetTime\":\"1970-01-03T03:16:40Z\",\"remainingFraction\":0.9},{\"bucketId\":\"3p-5h\",\"window\":\"5h\",\"resetTime\":\"1970-01-01T00:16:40Z\",\"remainingFraction\":0.25}]}]}"));
+    const live = antigravity.parseUsage(try usage.parseJson(a, "{\"groups\":[{\"buckets\":[{\"bucketId\":\"3p-weekly\",\"window\":\"weekly\",\"resetTime\":\"1970-01-03T03:16:40Z\",\"remainingFraction\":0.9},{\"bucketId\":\"3p-5h\",\"window\":\"5h\",\"resetTime\":\"1970-01-01T00:16:40Z\",\"remainingFraction\":0.25}]}]}"));
     try expect(@abs(live[0].?.used - 75) < 1e-9 and @abs(live[1].?.used - 10) < 1e-9);
     // Per-model buckets from retrieveUserQuota populate only the 5h slot and
     // merge with weekly summary groups.
-    const per_model = antigravity.parseUsage(try u.parse(a,
+    const per_model = antigravity.parseUsage(try usage.parseJson(a,
         \\{"buckets":[
         \\  {"modelId":"tab_flash_lite_preview","remainingFraction":1},
         \\  {"modelId":"claude-opus-5-5-high","resetTime":"1970-01-01T05:00:00Z","remainingFraction":1},
@@ -323,17 +323,17 @@ test "Antigravity reports the Gemini allowance, not the Claude/GPT one" {
     ));
     try expect(@abs(per_model[0].?.used - 24) < 1e-9 and per_model[0].?.reset_at.? == 4 * 3600);
     try expect(per_model[1] == null);
-    const merged = antigravity.mergeWindows(per_model, antigravity.parseUsage(try u.parse(a,
+    const merged = antigravity.mergeWindows(per_model, antigravity.parseUsage(try usage.parseJson(a,
         \\{"groups":[{"buckets":[
         \\  {"bucketId":"3p-weekly","window":"weekly","resetTime":"1970-01-03T00:00:00Z","remainingFraction":1},
         \\  {"bucketId":"3p-5h","window":"5h","resetTime":"1970-01-01T05:00:00Z","remainingFraction":1}]}]}
     )));
     try expect(@abs(merged[0].?.used - 24) < 1e-9 and @abs(merged[1].?.used - 0) < 1e-9);
     // Unlabelled buckets are placed by reset time.
-    const ordered = antigravity.parseUsage(try u.parse(a, "{\"buckets\":[{\"remainingFraction\":0.5,\"resetTime\":\"1970-01-03T00:00:00Z\"},{\"remainingFraction\":0.25,\"resetTime\":\"1970-01-01T01:00:00Z\"}]}"));
+    const ordered = antigravity.parseUsage(try usage.parseJson(a, "{\"buckets\":[{\"remainingFraction\":0.5,\"resetTime\":\"1970-01-03T00:00:00Z\"},{\"remainingFraction\":0.25,\"resetTime\":\"1970-01-01T01:00:00Z\"}]}"));
     try expect(@abs(ordered[0].?.used - 75) < 1e-9 and @abs(ordered[1].?.used - 50) < 1e-9);
     for ([_][]const u8{ "{}", "{\"buckets\":[]}", "{\"groups\":[{\"buckets\":[{\"window\":\"18000s\"}]}]}" }) |value| {
-        const none = antigravity.parseUsage(try u.parse(a, value));
+        const none = antigravity.parseUsage(try usage.parseJson(a, value));
         try expect(none[0] == null and none[1] == null);
     }
 }

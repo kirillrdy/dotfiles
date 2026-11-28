@@ -8,7 +8,7 @@ const text = @import("desktop-text.zig");
 const input = @import("desktop-password-entry.zig");
 pub const host = @import("desktop-window.zig");
 const wire = host.wire;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 pub const Rect = raster.Rect;
 pub const Kind = enum { heading, label, entry, toggle, button, choice };
 pub const Option = struct { id: [:0]const u8, label: [:0]const u8 };

@@ -6,7 +6,7 @@ const backlight = @import("desktop").backlight;
 const osd = @import("desktop").osd;
 const quick = @import("desktop").quick;
 const assert = std.debug.assert;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const pump = @import("fixture-util.zig").pump;
 fn waitControls(io: std.Io, controls: *quick.Controls) void {
     const deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 8_000_000;

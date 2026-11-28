@@ -15,7 +15,7 @@ pub const native = @import("desktop-panel-view.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
 const notifications: dbus.Connection.Call = .{ .destination = "org.freedesktop.Notifications", .path = "/org/freedesktop/Notifications", .interface = "org.dotfiles.Notifications", .member = "" };
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 pub const Options = struct {
     name: [:0]const u8 = "",
     kind: [:0]const u8 = "indicator",

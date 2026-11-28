@@ -63,7 +63,7 @@ fn field(contents: []const u8, key: []const u8) []const u8 {
     var lines = std.mem.splitScalar(u8, contents, '\n');
     while (lines.next()) |line| {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-        if (u.eq(u.trim(line[0..colon]), key)) return u.trim(line[colon + 1 ..]);
+        if (std.mem.eql(u8, std.mem.trim(u8, line[0..colon], " \n\r\t"), key)) return std.mem.trim(u8, line[colon + 1 ..], " \n\r\t");
     }
     return "";
 }
@@ -85,7 +85,7 @@ fn networkCounters(a: std.mem.Allocator, io: std.Io) ![2]u64 {
     var lines = std.mem.splitScalar(u8, try u.read(a, io, "/proc/net/dev"), '\n');
     while (lines.next()) |line| {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-        if (!u.exists(io, try u.fmt(a, "/sys/class/net/{s}/device", .{u.trim(line[0..colon])}))) continue;
+        if (!u.exists(io, try std.fmt.allocPrint(a, "/sys/class/net/{s}/device", .{std.mem.trim(u8, line[0..colon], " \n\r\t")}))) continue;
         var words = std.mem.tokenizeAny(u8, line[colon + 1 ..], " \t");
         var i: usize = 0;
         while (words.next()) |word| : (i += 1) {
@@ -112,7 +112,7 @@ pub fn rateText(a: std.mem.Allocator, rate: f64) ![]const u8 {
         value /= 1024;
         unit = "GiB/s";
     }
-    return u.fmt(a, "{s}<span size=\"62.5%\" alpha=\"65%\"> {s}</span>", .{ try shortNumber(a, value), unit });
+    return std.fmt.allocPrint(a, "{s}<span size=\"62.5%\" alpha=\"65%\"> {s}</span>", .{ try shortNumber(a, value), unit });
 }
 pub const Monitor = struct {
     previous_cpu: [8]u64,
@@ -155,9 +155,9 @@ pub const Monitor = struct {
         }
         const percent = @round(self.cpu[0] + self.cpu[1] + self.cpu[2] + self.cpu[3] + self.cpu[4]);
         const graphs = try a.alloc(Graph, 3);
-        graphs[0] = .{ .values = try a.dupe(f64, &self.cpu), .colors = &cpu_colors, .sequence = @intCast(self.sequences[0]), .markup = try u.fmt(a, "{d:.0}<span size=\"62.5%\" alpha=\"65%\">%</span>", .{percent}), .tooltip = try u.fmt(a, "CPU: {d:.0}%", .{percent}), .maximum = 100 };
-        graphs[1] = .{ .values = try a.dupe(f64, &self.memory.values), .colors = &memory_colors, .sequence = @intCast(self.sequences[1]), .markup = try u.fmt(a, "{s} / {s}<span size=\"62.5%\" alpha=\"65%\"> GiB</span>", .{ try shortNumber(a, self.memory.used), try shortNumber(a, self.memory.total) }), .tooltip = try u.fmt(a, "Memory: {d:.0}% programs, {d:.0}% buffers, {d:.0}% cache", .{ self.memory.values[0], self.memory.values[1], self.memory.values[2] }), .maximum = 100 };
-        graphs[2] = .{ .values = try a.dupe(f64, &.{ self.down, 0, self.up, 0, 0 }), .colors = &network_colors, .sequence = @intCast(self.sequences[2]), .markup = try u.fmt(a, "{s}\n{s}", .{ try rateText(a, self.down), try rateText(a, self.up) }), .tooltip = try u.fmt(a, "Download: {d:.1} KiB/s\nUpload: {d:.1} KiB/s", .{ self.down / 1024, self.up / 1024 }) };
+        graphs[0] = .{ .values = try a.dupe(f64, &self.cpu), .colors = &cpu_colors, .sequence = @intCast(self.sequences[0]), .markup = try std.fmt.allocPrint(a, "{d:.0}<span size=\"62.5%\" alpha=\"65%\">%</span>", .{percent}), .tooltip = try std.fmt.allocPrint(a, "CPU: {d:.0}%", .{percent}), .maximum = 100 };
+        graphs[1] = .{ .values = try a.dupe(f64, &self.memory.values), .colors = &memory_colors, .sequence = @intCast(self.sequences[1]), .markup = try std.fmt.allocPrint(a, "{s} / {s}<span size=\"62.5%\" alpha=\"65%\"> GiB</span>", .{ try shortNumber(a, self.memory.used), try shortNumber(a, self.memory.total) }), .tooltip = try std.fmt.allocPrint(a, "Memory: {d:.0}% programs, {d:.0}% buffers, {d:.0}% cache", .{ self.memory.values[0], self.memory.values[1], self.memory.values[2] }), .maximum = 100 };
+        graphs[2] = .{ .values = try a.dupe(f64, &.{ self.down, 0, self.up, 0, 0 }), .colors = &network_colors, .sequence = @intCast(self.sequences[2]), .markup = try std.fmt.allocPrint(a, "{s}\n{s}", .{ try rateText(a, self.down), try rateText(a, self.up) }), .tooltip = try std.fmt.allocPrint(a, "Download: {d:.1} KiB/s\nUpload: {d:.1} KiB/s", .{ self.down / 1024, self.up / 1024 }) };
         self.tick += 1;
         return .{ .monitors = graphs };
     }
@@ -177,17 +177,17 @@ pub fn addNetwork(a: std.mem.Allocator, out: *Update, state: *const network.Stat
 pub fn batteryInfo(a: std.mem.Allocator, state: battery.State) !Status {
     var icon_buffer: [100]u8 = undefined;
     var time_buffer: [80]u8 = undefined;
-    return .{ .icon = try a.dupe(u8, try state.icon(&icon_buffer)), .label = try a.dupe(u8, try state.duration(&time_buffer)), .tooltip = try u.fmt(a, "Battery: {d:.0}% · {s}", .{ state.percent, state.description() }) };
+    return .{ .icon = try a.dupe(u8, try state.icon(&icon_buffer)), .label = try a.dupe(u8, try state.duration(&time_buffer)), .tooltip = try std.fmt.allocPrint(a, "Battery: {d:.0}% · {s}", .{ state.percent, state.description() }) };
 }
 pub fn addBattery(a: std.mem.Allocator, out: *Update, state: battery.State) !void {
     if (!state.visible()) return;
     const info = try batteryInfo(a, state);
-    try append(a, out, .{ .icon = info.icon, .text = info.label, .tooltip = try u.fmt(a, "{s} · Quick Settings", .{info.tooltip}) });
+    try append(a, out, .{ .icon = info.icon, .text = info.label, .tooltip = try std.fmt.allocPrint(a, "{s} · Quick Settings", .{info.tooltip}) });
 }
 pub fn addAudio(a: std.mem.Allocator, out: *Update, output: ?audio.State, input: ?audio.State) !void {
     if (output) |state| {
         const level = if (state.muted or state.percent == 0) "muted" else if (state.percent >= 66) "high" else if (state.percent >= 33) "medium" else "low";
-        try append(a, out, .{ .icon = try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), .tooltip = try u.fmt(a, "Volume: {d:.0}%", .{state.percent}), .command = "desktop-zig settings sound" });
+        try append(a, out, .{ .icon = try std.fmt.allocPrint(a, "audio-volume-{s}-symbolic", .{level}), .tooltip = try std.fmt.allocPrint(a, "Volume: {d:.0}%", .{state.percent}), .command = "desktop-zig settings sound" });
     }
     if (input) |state| if (state.muted) {
         try append(a, out, .{ .icon = "microphone-sensitivity-muted-symbolic", .tooltip = "Microphone muted" });
@@ -198,8 +198,8 @@ fn diskSize(a: std.mem.Allocator, bytes: u128) ![]const u8 {
     const units = "BKMGTPEZY";
     var unit: usize = 0;
     while (size >= 1024 and unit + 1 < units.len) : (unit += 1) size /= 1024;
-    if (unit > 0 and size < 10) return u.fmt(a, "{d:.1}{c}", .{ @ceil(size * 10) / 10, units[unit] });
-    return u.fmt(a, "{d:.0}{c}", .{ @ceil(size), units[unit] });
+    if (unit > 0 and size < 10) return std.fmt.allocPrint(a, "{d:.1}{c}", .{ @ceil(size * 10) / 10, units[unit] });
+    return std.fmt.allocPrint(a, "{d:.0}{c}", .{ @ceil(size), units[unit] });
 }
 
 pub fn diskUsageText(a: std.mem.Allocator, stats: libc.struct_statvfs) ![]const u8 {
@@ -207,38 +207,38 @@ pub fn diskUsageText(a: std.mem.Allocator, stats: libc.struct_statvfs) ![]const 
     const block_size: u128 = stats.f_frsize;
     const total = @as(u128, stats.f_blocks) * block_size;
     const used = @as(u128, stats.f_blocks -| stats.f_bfree) * block_size;
-    return u.fmt(a, "{s}/{s}", .{ try diskSize(a, used), try diskSize(a, total) });
+    return std.fmt.allocPrint(a, "{s}/{s}", .{ try diskSize(a, used), try diskSize(a, total) });
 }
 
 /// Sources shown as allowance usage indicators.
 pub fn isUsage(kind: []const u8) bool {
-    return u.eq(kind, "codex") or u.eq(kind, "claude") or u.eq(kind, "antigravity");
+    return std.mem.eql(u8, kind, "codex") or std.mem.eql(u8, kind, "claude") or std.mem.eql(u8, kind, "antigravity");
 }
 /// The usage indicator's display name, as used in its loading tooltip.
 pub fn usageName(kind: []const u8) [:0]const u8 {
-    return if (u.eq(kind, "claude")) "Claude" else if (u.eq(kind, "antigravity")) "Antigravity" else "Codex";
+    return if (std.mem.eql(u8, kind, "claude")) "Claude" else if (std.mem.eql(u8, kind, "antigravity")) "Antigravity" else "Codex";
 }
 
 pub fn usageIcon(kind: []const u8) []const u8 {
-    if (u.eq(kind, "claude")) return "claude-usage-symbolic";
-    if (u.eq(kind, "antigravity")) return "antigravity-usage-symbolic";
+    if (std.mem.eql(u8, kind, "claude")) return "claude-usage-symbolic";
+    if (std.mem.eql(u8, kind, "antigravity")) return "antigravity-usage-symbolic";
     return @import("desktop-runtime.zig").codex_icon orelse "";
 }
 
 /// One bounded update, suitable for a shared session worker.
 pub fn sample(a: std.mem.Allocator, io: std.Io, kind: []const u8, demo: bool) !Update {
-    if (u.eq(kind, "status")) return .{ .items = if (demo) &.{
+    if (std.mem.eql(u8, kind, "status")) return .{ .items = if (demo) &.{
         .{ .icon = "network-wireless-signal-excellent-symbolic", .tooltip = "Wi-Fi" },
         .{ .icon = "audio-volume-high-symbolic", .tooltip = "Volume" },
         .{ .icon = "battery-level-80-symbolic", .text = "5∶42", .tooltip = "Battery" },
     } else &.{} };
-    if (u.eq(kind, "disk")) {
+    if (std.mem.eql(u8, kind, "disk")) {
         const items = try a.alloc(Item, 1);
         var stats: libc.struct_statvfs = undefined;
         items[0] = .{ .text = if (libc.statvfs("/", &stats) == 0) try diskUsageText(a, stats) else "—/—", .tooltip = "Root filesystem usage" };
         return .{ .items = items };
     }
     const now = std.Io.Clock.real.now(io).toSeconds();
-    const report = if (demo) usage.demo(now) else if (u.eq(kind, "claude")) claude.read(a, io) else if (u.eq(kind, "antigravity")) antigravity.read(a, io) else codex.read(a, io);
+    const report = if (demo) usage.demo(now) else if (std.mem.eql(u8, kind, "claude")) claude.read(a, io) else if (std.mem.eql(u8, kind, "antigravity")) antigravity.read(a, io) else codex.read(a, io);
     return usage.update(a, report, usageIcon(kind), now);
 }

@@ -7,7 +7,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const mainloop = @import("desktop-loop.zig");
 const u = @import("desktop-util.zig");
-const cast = u.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 
 const RTM_NEWROUTE = 24;
 const RTM_DELROUTE = 25;

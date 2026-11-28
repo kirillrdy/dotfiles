@@ -3,8 +3,8 @@ const std = @import("std");
 const keyboard = @import("desktop-keyboard.zig");
 const mainloop = @import("desktop-loop.zig");
 const util = @import("desktop-util.zig");
-const cast = util.cast;
-const eq = util.eq;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
+fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
 const dbus = @import("dbus");
 const portal_options = @import("desktop-portal-options.zig");
 const Options = portal_options.Options(error.InvalidFileChooserOption);

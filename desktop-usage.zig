@@ -24,7 +24,7 @@ pub fn unavailable(name: []const u8, message: []const u8) Report {
 /// Validates a bearer token against header injection and formats an Authorization header.
 pub fn bearerHeader(a: std.mem.Allocator, token: []const u8) !std.http.Header {
     if (std.mem.indexOfAny(u8, token, "\r\n") != null) return error.InvalidToken;
-    return .{ .name = "Authorization", .value = try u.fmt(a, "Bearer {s}", .{token}) };
+    return .{ .name = "Authorization", .value = try std.fmt.allocPrint(a, "Bearer {s}", .{token}) };
 }
 
 /// Accepts JSON epoch seconds within a range that converts and formats safely.
@@ -32,13 +32,22 @@ pub fn stamp(value: std.json.Value) ?i64 {
     const n = u.number(value) orelse return null;
     return if (@abs(n) < 1e12) @intFromFloat(n) else null;
 }
+pub fn jsonGet(o: std.json.Value, key: []const u8) std.json.Value {
+    return if (o == .object) o.object.get(key) orelse .null else .null;
+}
+pub fn jsonString(v: std.json.Value) []const u8 {
+    return if (v == .string) v.string else "";
+}
+pub fn parseJson(a: std.mem.Allocator, s: []const u8) !std.json.Value {
+    return (try std.json.parseFromSlice(std.json.Value, a, s, .{ .allocate = .alloc_always })).value;
+}
 
 pub fn resetText(a: std.mem.Allocator, reset_at: ?i64, now: i64) ![]const u8 {
     const reset = reset_at orelse return "Resets: —";
     const m: u64 = @intCast(@max(0, @divFloor(reset - now, 60)));
-    if (m >= 1440) return u.fmt(a, "Resets in {d}d {d}h", .{ m / 1440, m / 60 % 24 });
-    if (m >= 60) return u.fmt(a, "Resets in {d}h {d}m", .{ m / 60, m % 60 });
-    return if (m > 0) u.fmt(a, "Resets in {d}m", .{m}) else "Resets in now";
+    if (m >= 1440) return std.fmt.allocPrint(a, "Resets in {d}d {d}h", .{ m / 1440, m / 60 % 24 });
+    if (m >= 60) return std.fmt.allocPrint(a, "Resets in {d}h {d}m", .{ m / 60, m % 60 });
+    return if (m > 0) std.fmt.allocPrint(a, "Resets in {d}m", .{m}) else "Resets in now";
 }
 
 /// Length of the 5h and 7d windows in seconds.
@@ -55,12 +64,12 @@ pub fn update(a: std.mem.Allocator, report: Report, icon: []const u8, now: i64) 
     const items = try a.alloc(panel.Item, 1);
     items[0] = .{ .icon = icon, .text = "—" };
     if (report.@"error".len != 0 or (report.windows[0] == null and report.windows[1] == null)) {
-        const message = if (report.@"error".len != 0) report.@"error" else try u.fmt(a, "{s} usage is unavailable", .{report.name});
+        const message = if (report.@"error".len != 0) report.@"error" else try std.fmt.allocPrint(a, "{s} usage is unavailable", .{report.name});
         return .{ .items = items, .tooltip = message, .@"error" = message };
     }
     const windows = try a.alloc(panel.Window, 2);
     var tooltip = std.array_list.Managed(u8).init(a);
-    try tooltip.appendSlice(try u.fmt(a, "{s} allowance remaining", .{report.name}));
+    try tooltip.appendSlice(try std.fmt.allocPrint(a, "{s} allowance remaining", .{report.name}));
     for (report.windows, [_][]const u8{ "5h", "7d" }, windows, 0..) |source, label, *window, i| {
         const w = source orelse {
             window.* = .{};
@@ -69,19 +78,19 @@ pub fn update(a: std.mem.Allocator, report: Report, icon: []const u8, now: i64) 
         const left = 100 - std.math.clamp(w.used, 0, 100);
         const expected = pace(w.reset_at, now, periods[i]);
         window.* = .{ .percent = left, .reset = try resetText(a, w.reset_at, now), .pace = expected };
-        if (i == 0) items[0].text = try u.fmt(a, "{d:.0}%", .{left});
-        try tooltip.appendSlice(try u.fmt(a, "\n{s}: {d:.0}% remaining", .{ label, left }));
+        if (i == 0) items[0].text = try std.fmt.allocPrint(a, "{d:.0}%", .{left});
+        try tooltip.appendSlice(try std.fmt.allocPrint(a, "\n{s}: {d:.0}% remaining", .{ label, left }));
         if (w.reset_at) |reset| try tooltip.appendSlice(u.localTime(a, reset, ", resets %a %H:%M") catch "");
         if (expected) |target| {
             const difference = left - target;
-            try tooltip.appendSlice(if (@round(difference) == 0) "\n    on pace" else try u.fmt(a, "\n    {d:.0} points {s} pace", .{ @abs(difference), if (difference > 0) "ahead of" else "behind" }));
+            try tooltip.appendSlice(if (@round(difference) == 0) "\n    on pace" else try std.fmt.allocPrint(a, "\n    {d:.0} points {s} pace", .{ @abs(difference), if (difference > 0) "ahead of" else "behind" }));
         }
     }
     var checked = try u.localTime(a, report.checked orelse now, "Checked: %H:%M:%S");
     if (report.retry_at) |retry_at| {
         const retry = try u.localTime(a, retry_at, "%H:%M");
-        try tooltip.appendSlice(try u.fmt(a, "\nRate limited; retrying at {s}", .{retry}));
-        checked = try u.fmt(a, "Checked {s} · retry {s}", .{ try u.localTime(a, report.checked orelse now, "%H:%M"), retry });
+        try tooltip.appendSlice(try std.fmt.allocPrint(a, "\nRate limited; retrying at {s}", .{retry}));
+        checked = try std.fmt.allocPrint(a, "Checked {s} · retry {s}", .{ try u.localTime(a, report.checked orelse now, "%H:%M"), retry });
     }
     return .{ .items = items, .tooltip = try tooltip.toOwnedSlice(), .windows = windows, .checked = checked };
 }

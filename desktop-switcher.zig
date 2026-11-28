@@ -7,7 +7,7 @@ const native = @import("desktop-surface.zig");
 const capture = @import("desktop-capture.zig");
 const raster = @import("desktop-raster.zig");
 const fonts = @import("desktop-text.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 pub const Item = struct {
     id: [256:0]u8 = @splat(0),
     app_id: [256:0]u8 = @splat(0),

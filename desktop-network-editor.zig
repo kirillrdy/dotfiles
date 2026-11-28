@@ -9,11 +9,11 @@ const network = @import("desktop-network.zig");
 const Settings = network.Settings;
 const presentation = @import("desktop-network-editor-view.zig");
 const raster = @import("desktop-raster.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 fn z(a: std.mem.Allocator, s: []const u8) [:0]u8 {
-    return util.dupeZ(a, s);
+    return a.dupeSentinel(u8, s, 0) catch @panic("out of memory");
 }
-const eq = util.eq;
+fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
 fn text(w: *native.Item) [:0]const u8 {
     return w.value();
 }

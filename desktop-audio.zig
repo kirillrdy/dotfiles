@@ -4,7 +4,7 @@ const mainloop = @import("desktop-loop.zig");
 const util = @import("desktop-util.zig");
 const Registry = @import("desktop-audio-registry.zig").Registry;
 // Test builds account for service state and asynchronous callback allocations.
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 pub const Class = enum { output, input, playback, recording };
 pub const State = struct { percent: f64, muted: bool = false };
 pub const Node = struct {

@@ -21,7 +21,7 @@ const screensaver_xml =
 const portal_name = "org.freedesktop.portal.Desktop";
 const portal_path = "/org/dotfiles/Portal";
 const portal_interface = "org.dotfiles.Portal";
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const Process = @import("desktop-process.zig").Process;
 
 pub const Options = struct {

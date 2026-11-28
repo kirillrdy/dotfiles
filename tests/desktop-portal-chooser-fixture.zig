@@ -10,7 +10,7 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectStrings = std.testing.expectEqualStrings;
 var io: std.Io = undefined;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const Dict = dbus.Dict([]const u8, dbus.Value);
 fn pump() void {
     while (mainloop.iteration(io, false)) {}

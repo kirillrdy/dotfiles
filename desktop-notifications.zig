@@ -8,7 +8,7 @@ const mainloop = @import("desktop-loop.zig");
 const util = @import("desktop-util.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const path = "/org/freedesktop/Notifications";
 const name = "org.freedesktop.Notifications";
 const control = "org.dotfiles.Notifications";

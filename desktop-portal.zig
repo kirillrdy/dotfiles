@@ -25,8 +25,8 @@ const idle_portal_xml =
     "<method name=\"IdleInhibited\"><arg type=\"b\" name=\"inhibited\" direction=\"out\"/></method>" ++
     "<signal name=\"IdleInhibitedChanged\"><arg type=\"b\" name=\"inhibited\"/></signal>" ++
     "</interface></node>";
-const cast = util.cast;
-const eq = util.eq;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
+fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
 const portal_options = @import("desktop-portal-options.zig");
 const Dict = portal_options.Dict;
 const dictionary = portal_options.fromValue;

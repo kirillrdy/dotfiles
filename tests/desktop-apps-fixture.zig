@@ -7,7 +7,7 @@ const keyboard = @import("desktop").keyboard;
 const mainloop = @import("desktop").mainloop;
 const util = @import("desktop").util;
 const assert = std.debug.assert;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const fixture_util = @import("fixture-util.zig");
 const eq = fixture_util.assertEq;
 fn pump(io: std.Io) void {

@@ -7,7 +7,7 @@ const mainloop = @import("desktop-loop.zig");
 const util = @import("desktop-util.zig");
 const paths = @import("desktop-paths.zig");
 const mime = @import("desktop-mime.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 
 pub const Entry = struct {
     name: [:0]const u8,

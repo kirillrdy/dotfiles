@@ -5,7 +5,7 @@ const util = @import("desktop-util.zig");
 const wire = @import("desktop-surface.zig");
 const raster = @import("desktop-raster.zig");
 const input = @import("desktop-input.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 
 pub const Host = struct {
     allocator: std.mem.Allocator,

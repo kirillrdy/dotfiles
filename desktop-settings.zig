@@ -13,10 +13,10 @@ const network_view = @import("desktop-network-view.zig");
 const wire = native.host.wire;
 const input = @import("desktop-input.zig");
 const raster = @import("desktop-raster.zig");
-const cast = util.cast;
-const eq = util.eq;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
+fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
 fn z(a: std.mem.Allocator, value: []const u8) [:0]u8 {
-    return util.dupeZ(a, value);
+    return a.dupeSentinel(u8, value, 0) catch @panic("out of memory");
 }
 pub const Mode = enum { sound, network };
 const Page = struct {

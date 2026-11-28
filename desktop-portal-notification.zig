@@ -6,7 +6,7 @@ const portal_options = @import("desktop-portal-options.zig");
 const paths = @import("desktop-paths.zig");
 const fdo = "org.freedesktop.Notifications";
 const object_path = "/org/freedesktop/Notifications";
-const eq = util.eq;
+fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
 const Dict = portal_options.Dict;
 const lookupValue = portal_options.lookupValue;
 /// An owned copy of a notification's `a{sv}` contents.

@@ -8,7 +8,7 @@ const spa = @import("desktop-spa.zig");
 const Pod = @import("desktop-audio-pod.zig");
 const pipewire = @import("desktop-pipewire-node.zig");
 const Capture = @import("desktop-portal-capture.zig").Capture;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const Image = @import("desktop-image.zig").Image;
 pub const Stream = struct {
     allocator: std.mem.Allocator,

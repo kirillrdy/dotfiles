@@ -11,7 +11,7 @@ pub const png = @import("desktop-png.zig");
 const raster = @import("desktop-raster.zig");
 const fonts = @import("desktop-text.zig");
 
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 
 pub const Rect = struct {
     x: i32 = 0,

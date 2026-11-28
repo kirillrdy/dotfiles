@@ -30,7 +30,7 @@ const login = @import("desktop-login-ui.zig");
 const raster = @import("desktop-raster.zig");
 const kb = @import("desktop-keyboard.zig");
 
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 
 pub const Pointer = union(enum) { enter, leave, motion, button: u32 };
 

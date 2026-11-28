@@ -6,7 +6,7 @@ const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const raster = @import("desktop-raster.zig");
 const text = @import("desktop-text.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 
 pub const Buffer = struct {
     pub const capacity = 4096;

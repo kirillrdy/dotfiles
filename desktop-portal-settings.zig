@@ -13,8 +13,8 @@ const schemas = [_][:0]const u8{
 };
 const appearance = "org.freedesktop.appearance";
 const fontconfig = "org.gnome.fontconfig";
-const eq = util.eq;
-const cast = util.cast;
+fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const Bundle = struct {
     service: *Service,
     name: [:0]const u8,

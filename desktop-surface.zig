@@ -8,7 +8,7 @@ const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
 const input = @import("desktop-input.zig");
 const raster = @import("desktop-raster.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 
 pub const top = 1;
 pub const bottom = 2;

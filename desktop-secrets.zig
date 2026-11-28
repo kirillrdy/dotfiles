@@ -25,8 +25,8 @@ fn iface(kind: Kind) []const u8 {
         .login => "org.dotfiles.Desktop.Secrets",
     };
 }
-const eq = util.eq;
-const cast = util.cast;
+fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 fn now(io: std.Io) u64 {
     return @intCast(@divTrunc(std.Io.Clock.real.now(io).toMicroseconds(), 1000000));
 }

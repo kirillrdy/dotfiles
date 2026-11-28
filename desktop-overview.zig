@@ -16,7 +16,7 @@ const gsettings = @import("desktop-gsettings.zig");
 const keyboard = @import("desktop-keyboard.zig");
 const mainloop = @import("desktop-loop.zig");
 const util = @import("desktop-util.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const Rect = capture.Rect;
 const Part = enum { search, grid, stage, strip, dash, tooltip };
 const Pointer = struct { x: f64, y: f64, button: u32 = 1 };

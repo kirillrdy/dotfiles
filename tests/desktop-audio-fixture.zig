@@ -8,7 +8,7 @@ const settings = @import("desktop").settings;
 const assert = std.debug.assert;
 var stopping = false;
 var watch = false;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 fn pump(io: std.Io) void {
     audio.dispatch(io);
     mainloop.sleep(1000);

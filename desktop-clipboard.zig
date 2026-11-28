@@ -5,7 +5,7 @@ const util = @import("desktop-util.zig");
 const libc = @import("desktop-libc.zig");
 const wl = @import("wayland-client");
 const input = @import("desktop-input.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const capacity = 4096;
 const utf8: [:0]const u8 = "text/plain;charset=utf-8";
 pub const Callback = *const fn (?*anyopaque, ?[]const u8) void;

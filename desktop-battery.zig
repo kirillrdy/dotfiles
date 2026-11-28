@@ -96,7 +96,7 @@ pub const Device = struct {
     time_full: i64 = 0,
     threshold: bool = false,
 };
-const eq = util.eq;
+fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
 fn validName(name: []const u8) bool {
     return name.len > 0 and name.len < 256 and name[0] != '.' and std.mem.indexOfAny(u8, name, "/\x00") == null;
 }

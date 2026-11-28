@@ -7,7 +7,7 @@ const mainloop = @import("desktop-loop.zig");
 const util = @import("desktop-util.zig");
 const audio = @import("desktop-audio.zig");
 const backlight = @import("desktop-backlight.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 
 pub const Kind = view.Kind;
 pub const Work = struct { kind: Kind, delta: i16 = 0 };

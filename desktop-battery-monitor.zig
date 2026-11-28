@@ -14,8 +14,8 @@ const iface = name ++ ".Device";
 const login = "org.freedesktop.login1";
 const login_path = "/org/freedesktop/login1";
 const login_iface = login ++ ".Manager";
-const cast = util.cast;
-const eq = util.eq;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
+fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
 
 pub const Policy = struct {
     since: ?i64 = null,

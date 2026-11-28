@@ -1,7 +1,7 @@
 //! Account information is released only after explicit consent in a native dialog.
 const std = @import("std");
 const util = @import("desktop-util.zig");
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const auth = @import("desktop-auth-dialog.zig");
 const portal_options = @import("desktop-portal-options.zig");
 const Options = portal_options.Options(error.InvalidAccountReason);

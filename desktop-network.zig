@@ -12,11 +12,11 @@ const wireless_iface = device_iface ++ ".Wireless";
 const ap_iface = name ++ ".AccessPoint";
 const profile_iface = name ++ ".Settings.Connection";
 const active_iface = name ++ ".Connection.Active";
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 fn z(a: std.mem.Allocator, value: []const u8) [:0]u8 {
-    return util.dupeZ(a, value);
+    return a.dupeSentinel(u8, value, 0) catch @panic("out of memory");
 }
-const eq = util.eq;
+fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
 /// An interface's cached properties, as mirrored from NetworkManager's ObjectManager.
 const Proxy = objects.Interface;
 fn text(a: std.mem.Allocator, proxy: *const Proxy, key: []const u8) [:0]u8 {

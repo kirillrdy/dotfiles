@@ -4,7 +4,7 @@ const desktop = @import("desktop");
 const mainloop = desktop.mainloop;
 const util = desktop.util;
 const wire = desktop.window.wire;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 const State = struct {
     painted: bool = false,
     focused: bool = false,

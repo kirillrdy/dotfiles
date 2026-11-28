@@ -3,7 +3,7 @@ const std = @import("std");
 const polkit = @import("desktop").polkit;
 const mainloop = @import("desktop").mainloop;
 const util = @import("desktop").util;
-const cast = util.cast;
+fn cast(comptime T: type, ptr: anytype) *T { return @ptrCast(@alignCast(ptr)); }
 
 const Reply = struct {
     count: usize = 0,

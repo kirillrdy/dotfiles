@@ -47,12 +47,12 @@ pub fn parseTimestamp(s: []const u8) ?i64 {
 pub fn parseUsage(data: std.json.Value) [2]?usage.Window {
     const keys = [_][]const u8{ "five_hour", "seven_day" };
     var windows: [2]?usage.Window = .{ null, null };
-    if (u.get(data, keys[0]) != .object and u.get(data, keys[1]) != .object) return windows;
+    if (usage.jsonGet(data, keys[0]) != .object and usage.jsonGet(data, keys[1]) != .object) return windows;
     for (&windows, keys) |*window, key| {
-        const source = u.get(data, key);
-        const utilization = u.get(source, "utilization");
+        const source = usage.jsonGet(data, key);
+        const utilization = usage.jsonGet(source, "utilization");
         const used = if (source == .null or (source == .object and utilization == .null)) 0 else u.number(utilization) orelse continue;
-        window.* = .{ .used = used, .reset_at = parseTimestamp(u.string(u.get(source, "resets_at"))) };
+        window.* = .{ .used = used, .reset_at = parseTimestamp(usage.jsonString(usage.jsonGet(source, "resets_at"))) };
     }
     return windows;
 }
@@ -70,7 +70,7 @@ fn unavailable(message: []const u8) usage.Report {
 /// Shows the last good report while rate limited, so a 429 does not blank
 /// the widget; without one, explains when the next request will be made.
 pub fn rateLimited(a: std.mem.Allocator, previous: ?usage.Report, until: i64) !usage.Report {
-    var report = previous orelse return unavailable(try u.fmt(a, "Claude usage is rate limited; retrying at {s}", .{try u.localTime(a, until, "%H:%M")}));
+    var report = previous orelse return unavailable(try std.fmt.allocPrint(a, "Claude usage is rate limited; retrying at {s}", .{try u.localTime(a, until, "%H:%M")}));
     report.retry_at = until;
     return report;
 }
@@ -86,13 +86,13 @@ fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
     // Manual refreshes land here too, so they also respect the back-off.
     const now = std.Io.Clock.real.now(io).toSeconds();
     if (now < backoff_until) return rateLimited(a, last, backoff_until);
-    const dir = u.env("CLAUDE_CONFIG_DIR") orelse try u.fmt(a, "{s}/.claude", .{u.env("HOME") orelse return error.NoHome});
-    const path = try u.fmt(a, "{s}/.credentials.json", .{dir});
+    const dir = u.env("CLAUDE_CONFIG_DIR") orelse try std.fmt.allocPrint(a, "{s}/.claude", .{u.env("HOME") orelse return error.NoHome});
+    const path = try std.fmt.allocPrint(a, "{s}/.credentials.json", .{dir});
     const raw = u.read(a, io, path) catch return unavailable("Sign in with claude to see account usage");
-    const oauth = u.get(try u.parse(a, raw), "claudeAiOauth");
-    const token = u.string(u.get(oauth, "accessToken"));
+    const oauth = usage.jsonGet(try usage.parseJson(a, raw), "claudeAiOauth");
+    const token = usage.jsonString(usage.jsonGet(oauth, "accessToken"));
     if (token.len == 0) return unavailable("Sign in with claude to see account usage");
-    if (u.number(u.get(oauth, "expiresAt"))) |expires| {
+    if (u.number(usage.jsonGet(oauth, "expiresAt"))) |expires| {
         if (expires / 1000 < @as(f64, @floatFromInt(now))) return unavailable("Claude login expired; run claude to refresh it");
     }
     const headers = [_]std.http.Header{
@@ -111,8 +111,8 @@ fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
         backoff_until = now + backoffSeconds(response.retry_after);
         return rateLimited(a, last, backoff_until);
     }
-    if (status != 200) return unavailable(try u.fmt(a, "Claude usage service returned HTTP {d}", .{status}));
-    const report: usage.Report = .{ .name = "Claude", .windows = parseUsage(try u.parse(a, response.body)), .checked = now };
+    if (status != 200) return unavailable(try std.fmt.allocPrint(a, "Claude usage service returned HTTP {d}", .{status}));
+    const report: usage.Report = .{ .name = "Claude", .windows = parseUsage(try usage.parseJson(a, response.body)), .checked = now };
     if (report.windows[0] != null or report.windows[1] != null) last = report;
     return report;
 }
