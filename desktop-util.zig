@@ -7,20 +7,6 @@ pub fn number(v: std.json.Value) ?f64 {
     };
     return if (std.math.isFinite(n)) n else null;
 }
-pub fn read(a: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
-    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
-    defer file.close(io);
-    // procfs/sysfs files can report size zero while still returning data.
-    var reader = file.readerStreaming(io, &.{});
-    return reader.interface.allocRemaining(a, .limited(4 * 1024 * 1024)) catch |err| switch (err) {
-        error.ReadFailed => return reader.err.?,
-        else => |e| return e,
-    };
-}
-pub fn exists(io: std.Io, path: []const u8) bool {
-    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
-    return true;
-}
 pub fn env(name: [:0]const u8) ?[:0]const u8 {
     const value = std.c.getenv(name) orelse return null;
     return std.mem.span(value);

@@ -82,10 +82,10 @@ pub fn memoryUsage(contents: []const u8) Memory {
 }
 fn networkCounters(a: std.mem.Allocator, io: std.Io) ![2]u64 {
     var result = @as([2]u64, @splat(0));
-    var lines = std.mem.splitScalar(u8, try u.read(a, io, "/proc/net/dev"), '\n');
+    var lines = std.mem.splitScalar(u8, try std.Io.Dir.cwd().readFileAlloc(io, "/proc/net/dev", a, .limited(4 * 1024 * 1024)), '\n');
     while (lines.next()) |line| {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-        if (!u.exists(io, try std.fmt.allocPrint(a, "/sys/class/net/{s}/device", .{std.mem.trim(u8, line[0..colon], " \n\r\t")}))) continue;
+        std.Io.Dir.cwd().access(io, try std.fmt.allocPrint(a, "/sys/class/net/{s}/device", .{std.mem.trim(u8, line[0..colon], " \n\r\t")}), .{}) catch continue;
         var words = std.mem.tokenizeAny(u8, line[colon + 1 ..], " \t");
         var i: usize = 0;
         while (words.next()) |word| : (i += 1) {
@@ -127,20 +127,20 @@ pub const Monitor = struct {
     tick: f64 = 0,
 
     pub fn init(a: std.mem.Allocator, io: std.Io) !Monitor {
-        return .{ .previous_cpu = cpuCounters(try u.read(a, io, "/proc/stat")), .previous_net = try networkCounters(a, io), .started = std.Io.Clock.awake.now(io) };
+        return .{ .previous_cpu = cpuCounters(try std.Io.Dir.cwd().readFileAlloc(io, "/proc/stat", a, .limited(4 * 1024 * 1024))), .previous_net = try networkCounters(a, io), .started = std.Io.Clock.awake.now(io) };
     }
 
     pub fn sample(self: *Monitor, a: std.mem.Allocator, io: std.Io, demo: bool) !Update {
         const now = @as(f64, @floatFromInt(self.started.untilNow(io, .awake).toNanoseconds())) / std.time.ns_per_s;
         if (demo or now - self.last[0] >= 1.5) {
-            const current = cpuCounters(try u.read(a, io, "/proc/stat"));
+            const current = cpuCounters(try std.Io.Dir.cwd().readFileAlloc(io, "/proc/stat", a, .limited(4 * 1024 * 1024)));
             self.cpu = if (demo) .{ 12 + 8 * @sin(self.tick / 9), 5, 0, 1, 0 } else cpuUsage(self.previous_cpu, current);
             self.previous_cpu = current;
             self.last[0] = now;
             self.sequences[0] += 1;
         }
         if (demo or now - self.last[1] >= 5) {
-            self.memory = if (demo) .{ .values = .{ 24 + 2 * @sin(self.tick / 18), 1, 32 }, .used = 7.65, .total = 31 } else memoryUsage(try u.read(a, io, "/proc/meminfo"));
+            self.memory = if (demo) .{ .values = .{ 24 + 2 * @sin(self.tick / 18), 1, 32 }, .used = 7.65, .total = 31 } else memoryUsage(try std.Io.Dir.cwd().readFileAlloc(io, "/proc/meminfo", a, .limited(4 * 1024 * 1024)));
             self.last[1] = now;
             self.sequences[1] += 1;
         }

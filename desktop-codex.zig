@@ -25,7 +25,7 @@ pub fn read(a: std.mem.Allocator, io: std.Io) usage.Report {
 }
 fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
     const dir = u.env("CODEX_HOME") orelse try std.fmt.allocPrint(a, "{s}/.codex", .{u.env("HOME") orelse return error.NoHome});
-    const auth = try usage.parseJson(a, try u.read(a, io, try std.fmt.allocPrint(a, "{s}/auth.json", .{dir})));
+    const auth = try usage.parseJson(a, try std.Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(a, "{s}/auth.json", .{dir}), a, .limited(4 * 1024 * 1024)));
     const nested = usage.jsonGet(auth, "tokens");
     const tokens = if (nested == .object) nested else auth;
     const token = usage.jsonString(usage.jsonGet(tokens, "access_token"));

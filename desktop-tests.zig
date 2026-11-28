@@ -22,12 +22,12 @@ test "integration: Linux virtual files are read despite reporting size zero" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
     if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const a = std.testing.allocator;
-    const stat = try u.read(a, std.testing.io, "/proc/stat");
+    const stat = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "/proc/stat", a, .limited(4 * 1024 * 1024));
     defer a.free(stat);
     try expect(std.mem.startsWith(u8, stat, "cpu "));
     const counters = panel.cpuCounters(stat);
     try expect(counters[0] + counters[2] + counters[3] > 0);
-    const meminfo = try u.read(a, std.testing.io, "/proc/meminfo");
+    const meminfo = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "/proc/meminfo", a, .limited(4 * 1024 * 1024));
     defer a.free(meminfo);
     try expect(panel.memoryUsage(meminfo).total > 0.001);
 }

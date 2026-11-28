@@ -199,7 +199,7 @@ fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
     // Never pass authorization through process arguments or log HTTP headers.
     if (std.mem.indexOfAny(u8, token, "\r\n") != null) return error.InvalidToken;
     const home = u.env("HOME") orelse return error.NoHome;
-    const project = std.mem.trim(u8, u.read(a, io, try std.fmt.allocPrint(a, "{s}/.gemini/antigravity-cli/cache/default_project_id.txt", .{home})) catch "", " \n\r\t");
+    const project = std.mem.trim(u8, std.Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(a, "{s}/.gemini/antigravity-cli/cache/default_project_id.txt", .{home}), a, .limited(4 * 1024 * 1024)) catch "", " \n\r\t");
     const body = if (project.len > 0 and std.mem.indexOfAny(u8, project, "\"\\") == null) try std.fmt.allocPrint(a, "{{\"project\":\"{s}\"}}", .{project}) else "{}";
     const headers = [_]std.http.Header{
         .{ .name = "Authorization", .value = try std.fmt.allocPrint(a, "Bearer {s}", .{token}) },

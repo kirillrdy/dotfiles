@@ -88,7 +88,7 @@ fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
     if (now < backoff_until) return rateLimited(a, last, backoff_until);
     const dir = u.env("CLAUDE_CONFIG_DIR") orelse try std.fmt.allocPrint(a, "{s}/.claude", .{u.env("HOME") orelse return error.NoHome});
     const path = try std.fmt.allocPrint(a, "{s}/.credentials.json", .{dir});
-    const raw = u.read(a, io, path) catch return unavailable("Sign in with claude to see account usage");
+    const raw = std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(4 * 1024 * 1024)) catch return unavailable("Sign in with claude to see account usage");
     const oauth = usage.jsonGet(try usage.parseJson(a, raw), "claudeAiOauth");
     const token = usage.jsonString(usage.jsonGet(oauth, "accessToken"));
     if (token.len == 0) return unavailable("Sign in with claude to see account usage");
