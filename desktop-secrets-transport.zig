@@ -1,6 +1,5 @@
 //! Secret Service's specified legacy DH/HKDF/AES-CBC transport, plus plain sessions.
 const std = @import("std");
-const store = @import("desktop-secrets-store.zig");
 const Hkdf = std.crypto.kdf.hkdf.HkdfSha256;
 pub const algorithm = "dh-ietf1024-sha256-aes128-cbc-pkcs7";
 const prime_hex = "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF";
@@ -18,7 +17,7 @@ pub fn negotiate(io: std.Io, encoded_peer: []const u8, public: *[128]u8) ![16]u8
     if (Fe.compare(y, g) == .lt or Fe.compare(y, m.sub(try Fe.fromPrimitive(u8, m, 0), m.one())) != .lt) return error.InvalidPublicKey;
     var exponent: [32]u8 = undefined;
     defer std.crypto.secureZero(u8, &exponent);
-    try store.random(io, &exponent);
+    try io.randomSecure(&exponent);
     const pubkey = try m.powWithEncodedExponent(g, &exponent, .big);
     try pubkey.toBytes(public, .big);
     var shared: [128]u8 = undefined;
@@ -66,8 +65,7 @@ pub fn decode(a: std.mem.Allocator, key: [16]u8, iv: []const u8, cipher: []const
     return a.dupe(u8, out[0 .. out.len - padding]);
 }
 test "CBC round trip and malformed inputs" {
-    var wa = store.WipingAllocator{ .parent = std.testing.allocator };
-    const a = wa.allocator();
+    const a = std.testing.allocator;
     for ([_][]const u8{ "", "binary\x00secret", "sixteen bytes!!!?", "a longer secret spanning more than one block" }) |plain| {
         const cipher = try encode(a, @splat(7), @splat(9), plain);
         defer a.free(cipher);

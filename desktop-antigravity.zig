@@ -8,7 +8,6 @@ const A = u.Allocator;
 const V = u.Value;
 const dbus = @import("dbus");
 const http = @import("desktop-http.zig");
-const store = @import("desktop-secrets-store.zig");
 const usage = @import("desktop-usage.zig");
 const claude = @import("desktop-claude.zig");
 
@@ -182,8 +181,7 @@ fn secret(a: A) ![]const u8 {
 }
 
 pub fn read(a: A) usage.Report {
-    var wiping = store.WipingAllocator{ .parent = std.heap.page_allocator };
-    var arena = std.heap.ArenaAllocator.init(wiping.allocator());
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const report = fetch(arena.allocator()) catch |err| switch (err) {
         error.NoToken => unavailable("Sign in with agy to see account usage"),

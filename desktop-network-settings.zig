@@ -2,7 +2,6 @@
 //! Shared by reference between state snapshots, editors and pending saves.
 const std = @import("std");
 const dbus = @import("dbus");
-const WipingAllocator = @import("desktop-secrets-store.zig").WipingAllocator;
 
 /// The wire form, as sent to and read from NetworkManager.
 pub const Wire = dbus.Dict([]const u8, Properties);
@@ -20,16 +19,14 @@ pub const Group = struct {
 };
 
 pub const Settings = struct {
-    /// Settings hold passwords and keys, so their memory is wiped when freed.
-    wiping: WipingAllocator,
+    allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     groups: std.ArrayList(Group) = .empty,
     refs: usize = 1,
 
     pub fn create(allocator: std.mem.Allocator) !*Settings {
         const self = try allocator.create(Settings);
-        self.* = .{ .wiping = .{ .parent = allocator }, .arena = undefined };
-        self.arena = .init(self.wiping.allocator());
+        self.* = .{ .allocator = allocator, .arena = .init(allocator) };
         return self;
     }
     /// Copies settings read from a message.
@@ -49,7 +46,7 @@ pub const Settings = struct {
     pub fn unref(self: *Settings) void {
         self.refs -= 1;
         if (self.refs > 0) return;
-        const allocator = self.wiping.parent;
+        const allocator = self.allocator;
         self.arena.deinit();
         allocator.destroy(self);
     }

@@ -555,7 +555,7 @@ fn template(a: std.mem.Allocator, io: std.Io, ap: ?network.AccessPoint) !*Settin
 /// A random (version 4) UUID in its usual text form.
 fn uuid(io: std.Io) [36]u8 {
     var raw: [16]u8 = undefined;
-    @import("desktop-secrets-store.zig").random(io, &raw) catch @panic("no randomness available");
+    io.randomSecure(&raw) catch @panic("no randomness available");
     raw[6] = (raw[6] & 0x0f) | 0x40;
     raw[8] = (raw[8] & 0x3f) | 0x80;
     var out: [36]u8 = undefined;

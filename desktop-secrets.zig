@@ -37,6 +37,16 @@ fn append(comptime T: type, a: std.mem.Allocator, old: []const T, value: T) ![]c
     out[old.len] = value;
     return out;
 }
+fn editEntry(comptime T: type, a: std.mem.Allocator, entries: *[]const T, id: u64) !*T {
+    for (entries.*, 0..) |entry, i| {
+        if (entry.id == id) {
+            const copy = try a.dupe(T, entries.*);
+            entries.* = copy;
+            return &copy[i];
+        }
+    }
+    return error.NoSuchObject;
+}
 fn without(comptime T: type, a: std.mem.Allocator, old: []const T, id: u64) ![]const T {
     var out: std.ArrayList(T) = .empty;
     for (old) |value| {
@@ -102,14 +112,14 @@ const Server = struct {
         }
         return null;
     }
-    fn collection(self: *Server, id: u64) ?*store.Collection {
-        for (@constCast(self.vault.index.collections)) |*col| {
+    fn collection(self: *Server, id: u64) ?*const store.Collection {
+        for (self.vault.index().collections) |*col| {
             if (col.id == id) return col;
         }
         return null;
     }
-    fn findItem(self: *Server, id: u64) ?*store.Item {
-        for (@constCast(self.vault.index.items)) |*item| {
+    fn findItem(self: *Server, id: u64) ?*const store.Item {
+        for (self.vault.index().items) |*item| {
             if (item.id == id) return item;
         }
         return null;
@@ -164,21 +174,21 @@ const Server = struct {
             };
             if (missing or (o.kind == .collection and std.mem.startsWith(u8, o.path, root ++ "/aliases/") and self.aliasId(o.path[(root ++ "/aliases/").len..]) != o.id)) self.remove(o) else i += 1;
         }
-        for (self.vault.index.collections) |col| {
+        for (self.vault.index().collections) |col| {
             if (eq(self.objectPath(.collection, col.id), "/")) {
                 const path = try std.fmt.allocPrintSentinel(self.a, root ++ "/collection/c{d}", .{col.id}, 0);
                 defer self.a.free(path);
                 _ = try self.register(.collection, col.id, path, "");
             }
         }
-        for (self.vault.index.items) |item| {
+        for (self.vault.index().items) |item| {
             if (eq(self.objectPath(.item, item.id), "/")) {
                 const path = try std.fmt.allocPrintSentinel(self.a, "{s}/i{d}", .{ self.objectPath(.collection, item.collection), item.id }, 0);
                 defer self.a.free(path);
                 _ = try self.register(.item, item.id, path, "");
             }
         }
-        for (self.vault.index.aliases) |alias| {
+        for (self.vault.index().aliases) |alias| {
             const path = try std.fmt.allocPrintSentinel(self.a, root ++ "/aliases/{s}", .{alias.name}, 0);
             defer self.a.free(path);
             if (self.object(path, .collection) == null) _ = try self.register(.collection, alias.collection, path, "");
@@ -218,35 +228,34 @@ const Server = struct {
         self.changed();
     }
     fn aliasId(self: *Server, alias: []const u8) u64 {
-        for (self.vault.index.aliases) |v| {
+        for (self.vault.index().aliases) |v| {
             if (eq(v.name, alias)) return v.collection;
         }
         return 0;
     }
-    fn setAlias(self: *Server, alias: [:0]const u8, id: u64) !void {
+    fn setAlias(a: std.mem.Allocator, index: *store.Index, alias: []const u8, id: u64) !void {
         if (alias.len == 0 or alias.len > 128) return error.InvalidArgs;
         for (alias) |ch| {
             if (!std.ascii.isAlphanumeric(ch) and ch != '_') return error.InvalidArgs;
         }
-        const a = self.vault.metadata();
         var out: std.ArrayList(store.Alias) = .empty;
-        for (self.vault.index.aliases) |v| {
+        for (index.aliases) |v| {
             if (!eq(v.name, alias)) try out.append(a, v);
         }
         if (id != 0) try out.append(a, .{ .name = try a.dupeSentinel(u8, alias, 0), .collection = id });
-        self.vault.index.aliases = try out.toOwnedSlice(a);
+        index.aliases = try out.toOwnedSlice(a);
     }
-    fn createCollection(self: *Server, label: [:0]const u8, alias: [:0]const u8) !u64 {
+    fn createCollection(self: *Server, a: std.mem.Allocator, label: [:0]const u8, alias: [:0]const u8) !u64 {
         if (self.vault.key == null) return error.IsLocked;
         const existing = self.aliasId(alias);
         if (existing != 0) return existing;
-        if (self.vault.index.collections.len >= 64) return error.LimitsExceeded;
-        const a = self.vault.metadata();
-        const id = self.vault.index.next_id;
-        self.vault.index.next_id += 1;
-        self.vault.index.collections = try append(store.Collection, a, self.vault.index.collections, .{ .id = id, .label = try a.dupeSentinel(u8, label, 0), .created = now(), .modified = now() });
-        if (alias.len != 0) try self.setAlias(alias, id);
-        try self.vault.save();
+        var index = self.vault.index();
+        if (index.collections.len >= 64) return error.LimitsExceeded;
+        const id = index.next_id;
+        index.next_id += 1;
+        index.collections = try append(store.Collection, a, index.collections, .{ .id = id, .label = label, .created = now(), .modified = now() });
+        if (alias.len != 0) try setAlias(a, &index, alias, id);
+        try self.vault.save(index);
         try self.reconcile();
         self.signal(root, .service, "CollectionCreated", self.objectPath(.collection, id));
         self.changed();
@@ -273,7 +282,7 @@ const Server = struct {
         const v = self.vault.value(id) orelse return error.NoSuchObject;
         const iv = try a.alloc(u8, if (s.key != null) 16 else 0);
         const data = if (s.key) |key| blk: {
-            try store.random(self.vault.io, iv);
+            try self.vault.io.randomSecure(iv);
             break :blk try transport.encode(a, key, iv[0..16].*, v.bytes);
         } else v.bytes;
         return .{ .{ .value = s.path }, .{ .value = iv }, .{ .value = data }, v.content_type };
@@ -312,7 +321,7 @@ const Server = struct {
     fn property(self: *Server, o: *Object, prop: []const u8, a: std.mem.Allocator) !?dbus.Value {
         if (o.kind == .service and eq(prop, "Collections")) {
             var list: std.ArrayList([]const u8) = .empty;
-            for (self.vault.index.collections) |col| try list.append(a, self.objectPath(.collection, col.id));
+            for (self.vault.index().collections) |col| try list.append(a, self.objectPath(.collection, col.id));
             return try paths(a, list.items);
         }
         const col = if (o.kind == .collection) self.collection(o.id) else null;
@@ -333,7 +342,7 @@ const Server = struct {
         }
         if (col != null and eq(prop, "Items")) {
             var list: std.ArrayList([]const u8) = .empty;
-            for (self.vault.index.items) |v| {
+            for (self.vault.index().items) |v| {
                 if (v.collection == o.id) try list.append(a, self.objectPath(.item, v.id));
             }
             return try paths(a, list.items);
@@ -391,7 +400,7 @@ const Server = struct {
             if (self.screen_locked or self.sleeping) return error.IsLocked;
             const password = (try read(message, struct { dbus.Bytes }))[0].value;
             try self.vault.unlock(password);
-            if (self.vault.index.collections.len == 0) _ = try self.createCollection("Login", "default");
+            if (self.vault.index().collections.len == 0) _ = try self.createCollection(a, "Login", "default");
             self.changed();
             return bus.reply(message, .{});
         }
@@ -453,8 +462,9 @@ const Server = struct {
             const args = try read(message, struct { []const u8, dbus.ObjectPath });
             const target = args[1].value;
             const id = if (eq(target, "/")) 0 else (self.object(target, .collection) orelse return error.NoSuchObject).id;
-            try self.setAlias(try a.dupeSentinel(u8, args[0], 0), id);
-            try self.vault.save();
+            var index = self.vault.index();
+            try setAlias(a, &index, args[0], id);
+            try self.vault.save(index);
             try self.reconcile();
             self.changed();
             return bus.reply(message, .{});
@@ -471,13 +481,13 @@ const Server = struct {
                 const prompt = try self.newPrompt(owner, true, label, alias, &.{});
                 return bus.reply(message, .{ dbus.ObjectPath{ .value = "/" }, dbus.ObjectPath{ .value = prompt.path } });
             }
-            const id = try self.createCollection(label, alias);
+            const id = try self.createCollection(a, label, alias);
             return bus.reply(message, .{ dbus.ObjectPath{ .value = self.objectPath(.collection, id) }, dbus.ObjectPath{ .value = "/" } });
         }
         if (eq(verb, "SearchItems")) {
             const query = try attributes(a, (try read(message, struct { Attributes }))[0]);
             var found: std.ArrayList(dbus.ObjectPath) = .empty;
-            for (self.vault.index.items) |item| {
+            for (self.vault.index().items) |item| {
                 if ((o.kind == .service or item.collection == o.id) and matches(item, query)) try found.append(a, .{ .value = self.objectPath(.item, item.id) });
             }
             if (o.kind == .collection) return bus.reply(message, .{@as([]const dbus.ObjectPath, found.items)});
@@ -514,17 +524,18 @@ const Server = struct {
         }
         if (self.vault.key == null) return error.IsLocked;
         if (eq(verb, "CreateItem")) {
-            if (self.vault.index.items.len >= 4096) return error.LimitsExceeded;
+            var index = self.vault.index();
+            if (index.items.len >= 4096) return error.LimitsExceeded;
             const args = try read(message, struct { Properties, Secret, bool });
             const label = switch (lookup(args[0], prefix ++ "Item.Label") orelse return error.InvalidArgs) {
                 .string => |value| value,
                 else => return error.InvalidArgs,
             };
             if (label.len > 4096) return error.LimitsExceeded;
-            const attrs = try attributes(self.vault.metadata(), try attributeValue(a, lookup(args[0], prefix ++ "Item.Attributes") orelse return error.InvalidArgs));
+            const attrs = try attributes(a, try attributeValue(a, lookup(args[0], prefix ++ "Item.Attributes") orelse return error.InvalidArgs));
             const decoded = try self.decode(args[1], owner, a);
             var id: u64 = 0;
-            if (args[2]) for (self.vault.index.items) |item| {
+            if (args[2]) for (index.items) |item| {
                 if (item.collection == o.id and item.attributes.len == attrs.len and matches(item, attrs)) {
                     id = item.id;
                     break;
@@ -532,14 +543,18 @@ const Server = struct {
             };
             const replacing = id != 0;
             if (!replacing) {
-                id = self.vault.index.next_id;
-                self.vault.index.next_id += 1;
+                id = index.next_id;
+                index.next_id += 1;
             }
-            const entry = store.Item{ .id = id, .collection = o.id, .label = try self.vault.metadata().dupeSentinel(u8, label, 0), .attributes = attrs, .created = if (self.findItem(id)) |item| item.created else now(), .modified = now() };
-            if (self.findItem(id)) |item| item.* = entry else self.vault.index.items = try append(store.Item, self.vault.metadata(), self.vault.index.items, entry);
+            const entry = store.Item{ .id = id, .collection = o.id, .label = try a.dupeSentinel(u8, label, 0), .attributes = attrs, .created = if (self.findItem(id)) |item| item.created else now(), .modified = now() };
+            if (replacing) {
+                (try editEntry(store.Item, a, &index.items, id)).* = entry;
+            } else {
+                index.items = try append(store.Item, a, index.items, entry);
+            }
+            (try editEntry(store.Collection, a, &index.collections, o.id)).modified = now();
             try self.vault.setValue(id, decoded.value, decoded.content_type);
-            self.collection(o.id).?.modified = now();
-            try self.vault.save();
+            try self.vault.save(index);
             try self.reconcile();
             self.signal(self.objectPath(.collection, o.id), .collection, if (replacing) "ItemChanged" else "ItemCreated", self.objectPath(.item, id));
             self.changed();
@@ -551,35 +566,38 @@ const Server = struct {
         }
         if (eq(verb, "SetSecret")) {
             const decoded = try self.decode((try read(message, struct { Secret }))[0], owner, a);
+            var index = self.vault.index();
+            const item = try editEntry(store.Item, a, &index.items, o.id);
+            item.modified = now();
             try self.vault.setValue(o.id, decoded.value, decoded.content_type);
-            self.findItem(o.id).?.modified = now();
-            try self.vault.save();
+            try self.vault.save(index);
             self.changed();
-            self.signal(self.objectPath(.collection, self.findItem(o.id).?.collection), .collection, "ItemChanged", o.path);
+            self.signal(self.objectPath(.collection, item.collection), .collection, "ItemChanged", o.path);
             return bus.reply(message, .{});
         }
         if (eq(verb, "Delete")) {
             const id = o.id;
             const path = try a.dupeSentinel(u8, o.path, 0);
+            var index = self.vault.index();
             if (o.kind == .item) {
                 const col = self.findItem(id).?.collection;
-                self.vault.index.items = try without(store.Item, self.vault.metadata(), self.vault.index.items, id);
+                index.items = try without(store.Item, a, index.items, id);
                 try self.vault.removeValue(id);
-                try self.vault.save();
+                try self.vault.save(index);
                 self.signal(self.objectPath(.collection, col), .collection, "ItemDeleted", path);
             } else {
                 var items: std.ArrayList(store.Item) = .empty;
-                for (self.vault.index.items) |item| {
-                    if (item.collection == id) try self.vault.removeValue(item.id) else try items.append(self.vault.metadata(), item);
+                for (index.items) |item| {
+                    if (item.collection == id) try self.vault.removeValue(item.id) else try items.append(a, item);
                 }
-                self.vault.index.items = try items.toOwnedSlice(self.vault.metadata());
-                self.vault.index.collections = try without(store.Collection, self.vault.metadata(), self.vault.index.collections, id);
+                index.items = items.items;
+                index.collections = try without(store.Collection, a, index.collections, id);
                 var aliases: std.ArrayList(store.Alias) = .empty;
-                for (self.vault.index.aliases) |alias| {
-                    if (alias.collection != id) try aliases.append(self.vault.metadata(), alias);
+                for (index.aliases) |alias| {
+                    if (alias.collection != id) try aliases.append(a, alias);
                 }
-                self.vault.index.aliases = try aliases.toOwnedSlice(self.vault.metadata());
-                try self.vault.save();
+                index.aliases = aliases.items;
+                try self.vault.save(index);
                 self.signal(root, .service, "CollectionDeleted", path);
             }
             try self.reconcile();
@@ -641,27 +659,32 @@ fn setProperty(data: ?*anyopaque, _: []const u8, _: []const u8, prop: []const u8
 fn setPropertyValue(o: *Object, prop: []const u8, value: dbus.Value) !void {
     const self = o.server;
     if (self.vault.key == null) return error.IsLocked;
+    var arena = std.heap.ArenaAllocator.init(self.a);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var index = self.vault.index();
     if (eq(prop, "Label")) {
         const text_value = switch (value) {
             .string => |v| v,
             else => return error.InvalidArgs,
         };
         if (text_value.len > 4096) return error.LimitsExceeded;
-        const label = try self.vault.metadata().dupeSentinel(u8, text_value, 0);
+        const label = try a.dupeSentinel(u8, text_value, 0);
         if (o.kind == .collection) {
-            self.collection(o.id).?.label = label;
-            self.collection(o.id).?.modified = now();
+            const col = try editEntry(store.Collection, a, &index.collections, o.id);
+            col.label = label;
+            col.modified = now();
         } else {
-            self.findItem(o.id).?.label = label;
-            self.findItem(o.id).?.modified = now();
+            const item = try editEntry(store.Item, a, &index.items, o.id);
+            item.label = label;
+            item.modified = now();
         }
     } else if (o.kind == .item and eq(prop, "Attributes")) {
-        var arena = std.heap.ArenaAllocator.init(self.a);
-        defer arena.deinit();
-        self.findItem(o.id).?.attributes = try Server.attributes(self.vault.metadata(), try attributeValue(arena.allocator(), value));
-        self.findItem(o.id).?.modified = now();
+        const item = try editEntry(store.Item, a, &index.items, o.id);
+        item.attributes = try Server.attributes(a, try attributeValue(a, value));
+        item.modified = now();
     } else return error.InvalidArgs;
-    try self.vault.save();
+    try self.vault.save(index);
 }
 fn promptResponse(data: ?*anyopaque, accepted: bool) void {
     const o = cast(Object, data);
@@ -685,23 +708,24 @@ fn promptResponse(data: ?*anyopaque, accepted: bool) void {
         return;
     };
     dialog.clear();
+    var arena = std.heap.ArenaAllocator.init(self.a);
+    defer arena.deinit();
+    const a = arena.allocator();
     if (o.create) {
-        const id = self.createCollection(o.label, o.alias) catch {
+        const id = self.createCollection(a, o.label, o.alias) catch {
             self.vault.restore() catch self.lock();
             self.complete(o, true, .{ .string = "" });
             return;
         };
         self.complete(o, false, .{ .object_path = self.objectPath(.collection, id) });
     } else {
-        var arena = std.heap.ArenaAllocator.init(self.a);
-        defer arena.deinit();
         var unlocked: std.ArrayList([]const u8) = .empty;
         for (o.targets) |target| {
             const exists = if (target.kind == .collection) self.collection(target.id) != null else self.findItem(target.id) != null;
-            if (exists) unlocked.append(arena.allocator(), self.objectPath(target.kind, target.id)) catch {};
+            if (exists) unlocked.append(a, self.objectPath(target.kind, target.id)) catch {};
         }
         self.changed();
-        self.complete(o, false, Server.paths(arena.allocator(), unlocked.items) catch .{ .array = .{ .element = "o", .items = &.{} } });
+        self.complete(o, false, Server.paths(a, unlocked.items) catch .{ .array = .{ .element = "o", .items = &.{} } });
     }
 }
 fn ownerChanged(data: ?*anyopaque, message: *const dbus.Message) void {
@@ -756,8 +780,7 @@ pub fn runAt(allocator: std.mem.Allocator, io: std.Io, directory: [:0]const u8) 
 }
 pub fn runAtWithOptions(allocator: std.mem.Allocator, io: std.Io, directory: [:0]const u8, options: Options) !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
-    var wa = store.WipingAllocator{ .parent = std.heap.page_allocator };
-    const a = wa.allocator();
+    const a = std.heap.page_allocator;
     const source = loop.acquire(a, .session) catch return error.NoSessionBus;
     defer loop.release(source);
     const bus = source.connection;
@@ -834,8 +857,7 @@ fn objectPaths(value: dbus.Value) ![]const dbus.Value {
 /// Copy from a running, unlocked Secret Service into a new authenticated vault.
 /// Pin the unique bus owner for the entire import; never modify the source.
 pub fn importAt(io: std.Io, directory: [:0]const u8, password: []const u8) !void {
-    var wa = store.WipingAllocator{ .parent = std.heap.page_allocator };
-    const a = wa.allocator();
+    const a = std.heap.page_allocator;
     var vault = try store.Vault.init(a, io, directory);
     defer vault.deinit();
     if (vault.envelope != null and vault.index.collections.len != 0) return error.DestinationNotEmpty;
