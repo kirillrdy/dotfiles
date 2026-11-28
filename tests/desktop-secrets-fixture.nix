@@ -152,10 +152,10 @@ import ./fixture.nix { inherit pkgs; } {
               completed, subscription = create_prompt()
               keys("unused-secret", "-k", "Tab", "unused-confirmation", "-k", "Escape")
               finish_prompt(completed, subscription, True)
-              assert not (directory / "vault.json").exists()
+              assert not (directory / "secrets.json").exists()
               completed, subscription = create_prompt()
               keys("first", "-k", "Tab", "different", "-k", "Return")
-              assert not completed and not (directory / "vault.json").exists()
+              assert not completed and not (directory / "secrets.json").exists()
               keys(password.decode(), "-k", "Tab", password.decode(), "-k", "Return")
               finish_prompt(completed, subscription, False)
               stop()
@@ -198,7 +198,7 @@ import ./fixture.nix { inherit pkgs; } {
           found = subprocess.check_output(tool + ["lookup", "desktop-test", "encrypted"], timeout=30)
           assert found.rstrip(b"\n") == b"libsecret-encrypted-value"
           subprocess.run(tool + ["clear", "desktop-test", "encrypted"], check=True, timeout=30)
-          before_failure = (directory / "vault.json").read_bytes()
+          before_failure = (directory / "secrets.json").read_bytes()
           directory.chmod(0o500)
           try:
               expect_error("Failed", item, prefix + "Item", "SetSecret", "((oayays))",
@@ -206,7 +206,7 @@ import ./fixture.nix { inherit pkgs; } {
           finally:
               directory.chmod(0o700)
           assert bytes(call(item, prefix + "Item", "GetSecret", "(o)", (session,))[0][2]) == b"replacement"
-          assert (directory / "vault.json").read_bytes() == before_failure
+          assert (directory / "secrets.json").read_bytes() == before_failure
           imported = directory.parent / "imported-vault"
           if args.compositor:
               destination = directory.parent / "import-ui"
@@ -214,7 +214,7 @@ import ./fixture.nix { inherit pkgs; } {
                   env=dict(os.environ, XDG_DATA_HOME=str(destination)))
               try:
                   keys("first", "-k", "Tab", "different", "-k", "Return")
-                  assert importer.poll() is None and not (destination / "desktop-secrets/vault.json").exists()
+                  assert importer.poll() is None and not (destination / "desktop-secrets/secrets.json").exists()
                   keys(password.decode(), "-k", "Tab", password.decode(), "-k", "Return")
                   assert importer.wait(timeout=30) == 0
               finally:
@@ -224,9 +224,7 @@ import ./fixture.nix { inherit pkgs; } {
               imported = destination / "desktop-secrets"
           else:
               subprocess.run([args.fixture, "import", str(imported)], check=True, timeout=30)
-          imported_data = json.loads((imported / "vault.json").read_text())
-          assert len(imported_data["index"]["items"]) == 1
-          assert b"replacement" not in (imported / "vault.json").read_bytes()
+          assert b"replacement" not in (imported / "secrets.json").read_bytes()
           call(root, prefix + "Service", "Lock", "(ao)", ([collection],))
           assert prop(item, prefix + "Item", "Locked")
           expect_error("IsLocked", item, prefix + "Item", "GetSecret", "(o)", (session,))
@@ -257,9 +255,9 @@ import ./fixture.nix { inherit pkgs; } {
           expect_error("IsLocked", root, "org.dotfiles.Desktop.Secrets", "LoginUnlock", "(ay)", (password,))
           call(root, "org.dotfiles.Desktop.Secrets", "SetScreenLocked", "(b)", (False,))
           call(root, "org.dotfiles.Desktop.Secrets", "LoginUnlock", "(ay)", (password,))
-          raw = (directory / "vault.json").read_bytes()
+          raw = (directory / "secrets.json").read_bytes()
           assert b"replacement" not in raw and b"libsecret-encrypted-value" not in raw
-          assert (directory / "vault.json").stat().st_mode & 0o077 == 0
+          assert (directory / "secrets.json").stat().st_mode & 0o077 == 0
           assert directory.stat().st_mode & 0o077 == 0
           stop()
           start()
@@ -306,13 +304,16 @@ import ./fixture.nix { inherit pkgs; } {
           original_directory = directory
           directory = imported
           start()
+          locked_items = call(root, prefix + "Service", "SearchItems", "(a{ss})", ({},))
+          assert locked_items[0] == [] and len(locked_items[1]) == 1
           call(root, "org.dotfiles.Desktop.Secrets", "LoginUnlock", "(ay)", (password,))
           assert subprocess.check_output(tool + ["lookup", "account", "alice"], timeout=30).rstrip(b"\n") == b"replacement"
           stop()
           directory = original_directory
-          damaged = json.loads((directory / "vault.json").read_text())
+          vault_file = directory / "secrets.json"
+          damaged = json.loads(vault_file.read_text())
           damaged["index"]["collections"][0]["label"] = "tampered"
-          (directory / "vault.json").write_text(json.dumps(damaged))
+          vault_file.write_text(json.dumps(damaged))
           start()
           expect_error("Failed", root, "org.dotfiles.Desktop.Secrets", "LoginUnlock", "(ay)", (password,))
           print("Secret Service: protocol, libsecret DH, persistence, locking, ownership, and tampering checks passed")

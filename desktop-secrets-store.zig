@@ -1,213 +1,188 @@
-//! Versioned authenticated vault. Metadata is public; secret values are encrypted.
+//! The vault rewrites one authenticated snapshot on every set.
 const std = @import("std");
 const Aead = std.crypto.aead.chacha_poly.XChaCha20Poly1305;
-pub const Attribute = struct { key: [:0]const u8, value: [:0]const u8 };
-pub const Collection = struct { id: u64, label: [:0]const u8, created: u64, modified: u64 };
-pub const Item = struct { id: u64, collection: u64, label: [:0]const u8, attributes: []const Attribute, created: u64, modified: u64 };
-pub const Alias = struct { name: [:0]const u8, collection: u64 };
+const file_name = "secrets.json";
+const max_size = 16 * 1024 * 1024;
+
+pub const Attribute = struct { key: []const u8, value: []const u8 };
+pub const Collection = struct { id: u64, label: []const u8, created: u64, modified: u64 };
+pub const Item = struct { id: u64, collection: u64, label: []const u8, attributes: []const Attribute, created: u64, modified: u64 };
+pub const Alias = struct { name: []const u8, collection: u64 };
 pub const Index = struct { next_id: u64 = 1, collections: []const Collection = &.{}, items: []const Item = &.{}, aliases: []const Alias = &.{} };
-pub const Value = struct {
-    id: u64,
-    bytes: []const u8,
-    content_type: [:0]const u8,
-    pub fn deinit(self: Value, allocator: std.mem.Allocator) void {
-        std.crypto.secureZero(u8, @constCast(self.bytes));
-        allocator.free(self.bytes);
-        allocator.free(self.content_type);
-    }
+pub const Value = struct { id: u64, bytes: []const u8, content_type: []const u8 };
+
+const File = struct {
+    salt: [32]u8,
+    nonce: [Aead.nonce_length]u8,
+    tag: [Aead.tag_length]u8,
+    index: Index,
+    ciphertext: []const u8,
 };
-const Envelope = struct { version: u32 = 1, salt: [32]u8, nonce: [24]u8, tag: [16]u8, index: Index, ciphertext: []const u8 };
+
 pub const Vault = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
-    directory: [:0]const u8,
+    dir: std.Io.Dir,
     lock_file: std.Io.File,
-    values: std.ArrayList(Value) = .empty,
     key: ?[32]u8 = null,
-    envelope: ?std.json.Parsed(Envelope) = null,
-    salt: [32]u8 = @splat(0),
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, directory: [:0]const u8) !Vault {
-        std.Io.Dir.cwd().createDir(io, directory, .fromMode(0o700)) catch |err| switch (err) {
+    saved: ?std.json.Parsed(File) = null,
+    values: ?std.json.Parsed([]const Value) = null,
+
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, directory: []const u8) !Vault {
+        const cwd = std.Io.Dir.cwd();
+        cwd.createDir(io, directory, .fromMode(0o700)) catch |err| switch (err) {
             error.PathAlreadyExists => {},
-            else => return error.CreateDirectory,
+            else => return err,
         };
-        var dir = std.Io.Dir.cwd().openDir(io, directory, .{ .follow_symlinks = false }) catch return error.UnsafeDirectory;
-        defer dir.close(io);
-        const lock_file = dir.createFile(io, "lock", .{
-            .read = true,
-            .truncate = false,
-            .lock = .exclusive,
-            .lock_nonblocking = true,
-            .permissions = .fromMode(0o600),
-        }) catch |err| switch (err) {
+        const dir = try cwd.openDir(io, directory, .{ .follow_symlinks = false });
+        errdefer dir.close(io);
+        const lock_file = dir.createFile(io, "lock", .{ .truncate = false, .lock = .exclusive, .lock_nonblocking = true, .permissions = .fromMode(0o600) }) catch |err| switch (err) {
             error.WouldBlock => return error.VaultInUse,
-            else => return error.LockVault,
+            else => return err,
         };
-        var result = Vault{ .allocator = allocator, .io = io, .directory = directory, .lock_file = lock_file };
-        errdefer result.deinit();
-        const vault_file = dir.openFile(io, "vault.json", .{ .follow_symlinks = false }) catch |err| switch (err) {
-            error.FileNotFound => return result,
-            else => return error.ReadVault,
+        errdefer lock_file.close(io);
+
+        var vault: Vault = .{ .allocator = allocator, .io = io, .dir = dir, .lock_file = lock_file };
+        const file = dir.openFile(io, file_name, .{ .follow_symlinks = false }) catch |err| switch (err) {
+            error.FileNotFound => return vault,
+            else => return err,
         };
-        defer vault_file.close(io);
-        const st = vault_file.stat(io) catch return error.ReadVault;
-        if (st.kind != .file or st.size > 16 * 1024 * 1024) return error.UnsafeVault;
-        const bytes = try allocator.alloc(u8, @intCast(st.size));
+        defer file.close(io);
+        const stat = try file.stat(io);
+        if (stat.kind != .file or stat.size > max_size) return error.InvalidVault;
+        const bytes = try allocator.alloc(u8, @intCast(stat.size));
         defer allocator.free(bytes);
-        const got = vault_file.readPositionalAll(io, bytes, 0) catch return error.ReadVault;
-        if (got != bytes.len) return error.ReadVault;
-        const parsed = try std.json.parseFromSlice(Envelope, allocator, bytes, .{ .allocate = .alloc_always });
-        result.envelope = parsed;
-        if (parsed.value.version != 1) return error.UnsupportedVaultVersion;
-        result.salt = parsed.value.salt;
-        return result;
+        if (try file.readPositionalAll(io, bytes, 0) != bytes.len) return error.InvalidVault;
+        vault.saved = try std.json.parseFromSlice(File, allocator, bytes, .{ .allocate = .alloc_always });
+        return vault;
     }
-    pub fn deinit(self: *Vault) void {
-        self.lock();
-        if (self.envelope) |*env| env.deinit();
-        self.lock_file.close(self.io);
-    }
-    pub fn lock(self: *Vault) void {
-        if (self.key) |*key| std.crypto.secureZero(u8, key);
-        self.key = null;
-        for (self.values.items) |v| v.deinit(self.allocator);
-        self.values.deinit(self.allocator);
-        self.values = .empty;
-    }
-    /// The committed metadata, valid until the next successful save or deinit.
+
     pub fn index(self: *const Vault) Index {
-        return if (self.envelope) |env| env.value.index else .{};
+        return if (self.saved) |saved| saved.value.index else .{};
     }
+
     pub fn unlock(self: *Vault, password: []const u8) !void {
         if (self.key != null) return;
         if (password.len == 0 or password.len > 4096) return error.InvalidPassword;
-        if (self.envelope == null) try self.io.randomSecure(&self.salt);
-        var key: [32]u8 = undefined;
-        defer std.crypto.secureZero(u8, &key);
-        try std.crypto.pwhash.scrypt.kdf(self.allocator, &key, password, &self.salt, .owasp);
-        try self.loadKey(key);
-        if (self.envelope == null) self.save(.{}) catch |err| {
-            self.lock();
-            return err;
-        };
-    }
-    fn loadKey(self: *Vault, key: [32]u8) !void {
-        self.key = key;
+        var salt: [32]u8 = undefined;
+        if (self.saved) |saved| salt = saved.value.salt else try self.io.randomSecure(&salt);
+        self.key = @splat(0);
         errdefer self.lock();
-        if (self.envelope) |env| {
-            const aad = try std.json.Stringify.valueAlloc(self.allocator, env.value.index, .{});
-            defer self.allocator.free(aad);
-            const plain = try self.allocator.alloc(u8, env.value.ciphertext.len);
-            defer self.allocator.free(plain);
-            try Aead.decrypt(plain, env.value.ciphertext, env.value.tag, aad, env.value.nonce, key);
-            const decoded = try std.json.parseFromSlice([]const Value, self.allocator, plain, .{ .allocate = .alloc_always });
-            defer decoded.deinit();
-            for (decoded.value) |v| try self.setValue(v.id, v.bytes, v.content_type);
-        }
+        try std.crypto.pwhash.scrypt.kdf(self.allocator, &self.key.?, password, &salt, .owasp);
+        const saved = self.saved orelse return self.write(.{}, &.{}, salt);
+        const metadata = try std.json.Stringify.valueAlloc(self.allocator, saved.value.index, .{});
+        defer self.allocator.free(metadata);
+        const plain = try self.allocator.alloc(u8, saved.value.ciphertext.len);
+        defer wipeFree(self.allocator, plain);
+        try Aead.decrypt(plain, saved.value.ciphertext, saved.value.tag, metadata, saved.value.nonce, self.key.?);
+        self.values = try std.json.parseFromSlice([]const Value, self.allocator, plain, .{ .allocate = .alloc_always });
     }
-    pub fn save(self: *Vault, next_index: Index) !void {
-        var key = self.key orelse return error.IsLocked;
-        defer std.crypto.secureZero(u8, &key);
-        const aad = try std.json.Stringify.valueAlloc(self.allocator, next_index, .{});
-        defer self.allocator.free(aad);
-        const plain = try std.json.Stringify.valueAlloc(self.allocator, self.values.items, .{});
-        defer self.allocator.free(plain);
-        const cipher = try self.allocator.alloc(u8, plain.len);
-        defer self.allocator.free(cipher);
-        var env = Envelope{ .salt = self.salt, .nonce = undefined, .tag = undefined, .index = next_index, .ciphertext = cipher };
-        try self.io.randomSecure(&env.nonce);
-        Aead.encrypt(cipher, &env.tag, plain, aad, env.nonce, key);
-        const bytes = try std.json.Stringify.valueAlloc(self.allocator, env, .{});
-        defer self.allocator.free(bytes);
-        if (bytes.len > 16 * 1024 * 1024) return error.VaultTooLarge;
-        // Parse before committing so an allocation failure cannot leave stale ciphertext in memory.
-        const parsed = try std.json.parseFromSlice(Envelope, self.allocator, bytes, .{ .allocate = .alloc_always });
-        errdefer parsed.deinit();
-        const path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/vault.json", .{self.directory}, 0);
-        defer self.allocator.free(path);
-        @import("desktop-paths.zig").writeFileAtomic(self.allocator, path, bytes, 0o600) catch return error.WriteVault;
-        if (self.envelope) |*old| old.deinit();
-        self.envelope = parsed;
+
+    pub fn get(self: *const Vault, id: u64) ?Value {
+        return find(if (self.values) |values| values.value else &.{}, id);
     }
-    pub fn value(self: *Vault, id: u64) ?Value {
-        for (self.values.items) |v| {
-            if (v.id == id) return v;
-        }
-        return null;
-    }
-    pub fn setValue(self: *Vault, id: u64, bytes: []const u8, content_type: [:0]const u8) !void {
+
+    /// Replaces the listed secrets and drops secrets whose items were deleted.
+    /// The index and values take effect together after the file is replaced.
+    pub fn set(self: *Vault, next_index: Index, updates: []const Value) !void {
         if (self.key == null) return error.IsLocked;
-        const data = try self.allocator.dupe(u8, bytes);
-        errdefer {
-            std.crypto.secureZero(u8, data);
-            self.allocator.free(data);
+        var values: std.ArrayList(Value) = .empty;
+        defer values.deinit(self.allocator);
+        for (next_index.items) |item| {
+            const value = find(updates, item.id) orelse self.get(item.id) orelse continue;
+            try values.append(self.allocator, value);
         }
-        const kind = try self.allocator.dupeSentinel(u8, content_type, 0);
-        errdefer self.allocator.free(kind);
-        for (self.values.items) |*v| {
-            if (v.id == id) {
-                v.deinit(self.allocator);
-                v.* = .{ .id = id, .bytes = data, .content_type = kind };
-                return;
-            }
-        }
-        try self.values.append(self.allocator, .{ .id = id, .bytes = data, .content_type = kind });
+        try self.write(next_index, values.items, self.saved.?.value.salt);
     }
-    pub fn removeValue(self: *Vault, id: u64) !void {
-        for (self.values.items, 0..) |v, i| {
-            if (v.id == id) {
-                self.values.swapRemove(i).deinit(self.allocator);
-                return;
-            }
-        }
+
+    fn write(self: *Vault, next_index: Index, values: []const Value, salt: [32]u8) !void {
+        const allocator = self.allocator;
+        const metadata = try std.json.Stringify.valueAlloc(allocator, next_index, .{});
+        defer allocator.free(metadata);
+        const plain = try std.json.Stringify.valueAlloc(allocator, values, .{});
+        defer wipeFree(allocator, plain);
+        const ciphertext = try allocator.alloc(u8, plain.len);
+        defer allocator.free(ciphertext);
+        var saved: File = .{ .salt = salt, .nonce = undefined, .tag = undefined, .index = next_index, .ciphertext = ciphertext };
+        try self.io.randomSecure(&saved.nonce);
+        Aead.encrypt(ciphertext, &saved.tag, plain, metadata, saved.nonce, self.key.?);
+        const bytes = try std.json.Stringify.valueAlloc(allocator, saved, .{});
+        defer allocator.free(bytes);
+        if (bytes.len > max_size) return error.VaultTooLarge;
+
+        const new_saved = try std.json.parseFromSlice(File, allocator, bytes, .{ .allocate = .alloc_always });
+        errdefer new_saved.deinit();
+        const new_values = try std.json.parseFromSlice([]const Value, allocator, plain, .{ .allocate = .alloc_always });
+        errdefer freeValues(new_values);
+        var file = self.dir.createFileAtomic(self.io, file_name, .{ .permissions = .fromMode(0o600), .replace = true }) catch return error.WriteVault;
+        defer file.deinit(self.io);
+        file.file.writeStreamingAll(self.io, bytes) catch return error.WriteVault;
+        file.file.sync(self.io) catch return error.WriteVault;
+        file.replace(self.io) catch return error.WriteVault;
+
+        if (self.saved) |old| old.deinit();
+        if (self.values) |old| freeValues(old);
+        self.saved = new_saved;
+        self.values = new_values;
     }
-    pub fn restore(self: *Vault) !void {
-        var key = self.key orelse return;
-        defer std.crypto.secureZero(u8, &key);
+
+    pub fn lock(self: *Vault) void {
+        if (self.key) |*key| std.crypto.secureZero(u8, key);
+        if (self.values) |values| freeValues(values);
+        self.key = null;
+        self.values = null;
+    }
+
+    pub fn deinit(self: *Vault) void {
         self.lock();
-        if (self.envelope != null) try self.loadKey(key);
+        if (self.saved) |saved| saved.deinit();
+        self.lock_file.close(self.io);
+        self.dir.close(self.io);
     }
 };
 
-test "vault rejects wrong passwords and tampering; locking erases values; restart restores binary secrets" {
+fn find(values: []const Value, id: u64) ?Value {
+    for (values) |value| {
+        if (value.id == id) return value;
+    }
+    return null;
+}
+
+fn wipeFree(allocator: std.mem.Allocator, bytes: []u8) void {
+    std.crypto.secureZero(u8, bytes);
+    allocator.free(bytes);
+}
+
+fn freeValues(values: std.json.Parsed([]const Value)) void {
+    for (values.value) |value| std.crypto.secureZero(u8, @constCast(value.bytes));
+    values.deinit();
+}
+
+test "set persists binary values and locking requires the password again" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
-    defer allocator.free(root);
-    const directory = try std.fmt.allocPrintSentinel(allocator, "{s}/vault", .{root}, 0);
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(directory);
+
     {
-        var v = try Vault.init(allocator, std.testing.io, directory);
-        defer v.deinit();
-        try std.testing.expectError(error.VaultInUse, Vault.init(allocator, std.testing.io, directory));
-        try v.unlock("vault-test-password");
-        try v.setValue(1, "binary\x00secret\xff", "application/octet-stream");
-        {
-            var label = "Login".*;
-            const collections = [_]Collection{.{ .id = 2, .label = &label, .created = 0, .modified = 0 }};
-            try v.save(.{ .next_id = 3, .collections = &collections });
-            label[0] = 'X';
-            try std.testing.expectEqualStrings("Login", v.index().collections[0].label);
-        }
-        v.lock();
-        try std.testing.expect(v.key == null and v.values.items.len == 0);
-        try std.testing.expectError(error.AuthenticationFailed, v.unlock("wrong-password"));
-        try std.testing.expect(v.key == null);
-        try v.unlock("vault-test-password");
-        try std.testing.expectEqualSlices(u8, "binary\x00secret\xff", v.value(1).?.bytes);
-        try v.setValue(1, "uncommitted", "text/plain");
-        try v.restore();
-        try std.testing.expectEqualSlices(u8, "binary\x00secret\xff", v.value(1).?.bytes);
+        var vault = try Vault.init(allocator, io, directory);
+        defer vault.deinit();
+        try std.testing.expectError(error.VaultInUse, Vault.init(allocator, io, directory));
+        try vault.unlock("password");
+        const items = [_]Item{.{ .id = 1, .collection = 1, .label = "Test", .attributes = &.{}, .created = 0, .modified = 0 }};
+        try vault.set(.{ .items = &items }, &.{.{ .id = 1, .bytes = "test\x00\xff", .content_type = "application/octet-stream" }});
     }
     {
-        var v = try Vault.init(allocator, std.testing.io, directory);
-        defer v.deinit();
-        try std.testing.expectEqualStrings("Login", v.index().collections[0].label);
-        try v.unlock("vault-test-password");
-        try std.testing.expectEqualSlices(u8, "binary\x00secret\xff", v.value(1).?.bytes);
-        v.lock();
-        v.envelope.?.value.tag[0] ^= 1;
-        try std.testing.expectError(error.AuthenticationFailed, v.unlock("vault-test-password"));
+        var vault = try Vault.init(allocator, io, directory);
+        defer vault.deinit();
+        try std.testing.expectEqualStrings("Test", vault.index().items[0].label);
+        try std.testing.expect(vault.get(1) == null);
+        try std.testing.expectError(error.AuthenticationFailed, vault.unlock("wrong"));
+        try vault.unlock("password");
+        try std.testing.expectEqualSlices(u8, "test\x00\xff", vault.get(1).?.bytes);
+        try vault.set(.{}, &.{});
+        try std.testing.expect(vault.get(1) == null);
     }
 }
