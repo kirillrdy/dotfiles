@@ -5,7 +5,6 @@ const util = @import("desktop-util.zig");
 const p = @import("desktop-libc.zig");
 const dbus = @import("dbus");
 const loop = @import("desktop-dbus-loop.zig");
-const store = @import("desktop-secrets-store.zig");
 const transport = @import("desktop-secrets-transport.zig");
 pub const Dialog = @import("desktop-auth-dialog.zig").Dialog;
 const root = "/org/freedesktop/secrets";
@@ -97,7 +96,7 @@ const Server = struct {
     allocator: std.mem.Allocator,
     options: Options = .{},
     io: std.Io,
-    vault: store.Vault,
+    vault: Vault,
     bus: *dbus.Connection,
     introspection: dbus.Introspection,
     objects: std.ArrayList(*Object) = .empty,
@@ -112,13 +111,13 @@ const Server = struct {
         }
         return null;
     }
-    fn collection(self: *Server, id: u64) ?*const store.Collection {
+    fn collection(self: *Server, id: u64) ?*const Collection {
         for (self.vault.index().collections) |*col| {
             if (col.id == id) return col;
         }
         return null;
     }
-    fn findItem(self: *Server, id: u64) ?*const store.Item {
+    fn findItem(self: *Server, id: u64) ?*const Item {
         for (self.vault.index().items) |*item| {
             if (item.id == id) return item;
         }
@@ -233,12 +232,12 @@ const Server = struct {
         }
         return 0;
     }
-    fn setAlias(allocator: std.mem.Allocator, index: *store.Index, alias: []const u8, id: u64) !void {
+    fn setAlias(allocator: std.mem.Allocator, index: *Index, alias: []const u8, id: u64) !void {
         if (alias.len == 0 or alias.len > 128) return error.InvalidArgs;
         for (alias) |ch| {
             if (!std.ascii.isAlphanumeric(ch) and ch != '_') return error.InvalidArgs;
         }
-        var out: std.ArrayList(store.Alias) = .empty;
+        var out: std.ArrayList(Alias) = .empty;
         for (index.aliases) |v| {
             if (!eq(v.name, alias)) try out.append(allocator, v);
         }
@@ -253,7 +252,7 @@ const Server = struct {
         if (index.collections.len >= 64) return error.LimitsExceeded;
         const id = index.next_id;
         index.next_id += 1;
-        index.collections = try append(store.Collection, allocator, index.collections, .{ .id = id, .label = label, .created = now(), .modified = now() });
+        index.collections = try append(Collection, allocator, index.collections, .{ .id = id, .label = label, .created = now(), .modified = now() });
         if (alias.len != 0) try setAlias(allocator, &index, alias, id);
         try self.vault.set(index, &.{});
         try self.reconcile();
@@ -287,9 +286,9 @@ const Server = struct {
         } else v.bytes;
         return .{ .{ .value = s.path }, .{ .value = iv }, .{ .value = data }, v.content_type };
     }
-    fn attributes(allocator: std.mem.Allocator, v: Attributes) ![]const store.Attribute {
+    fn attributes(allocator: std.mem.Allocator, v: Attributes) ![]const Attribute {
         if (v.entries.len > 256) return error.LimitsExceeded;
-        var out: std.ArrayList(store.Attribute) = .empty;
+        var out: std.ArrayList(Attribute) = .empty;
         for (v.entries) |entry| {
             if (entry.key.len > 4096 or entry.value.len > 16384) return error.LimitsExceeded;
             for (out.items) |old| {
@@ -299,7 +298,7 @@ const Server = struct {
         }
         return out.toOwnedSlice(allocator);
     }
-    fn matches(item: store.Item, query: []const store.Attribute) bool {
+    fn matches(item: Item, query: []const Attribute) bool {
         for (query) |q| {
             var found = false;
             for (item.attributes) |attr| {
@@ -547,13 +546,13 @@ const Server = struct {
                 index.next_id += 1;
             }
             const existing = self.findItem(id);
-            const entry = store.Item{ .id = id, .collection = o.id, .label = label, .attributes = attrs, .created = if (existing) |item| item.created else now(), .modified = now() };
+            const entry = Item{ .id = id, .collection = o.id, .label = label, .attributes = attrs, .created = if (existing) |item| item.created else now(), .modified = now() };
             if (existing != null) {
-                (try editEntry(store.Item, allocator, &index.items, id)).* = entry;
+                (try editEntry(Item, allocator, &index.items, id)).* = entry;
             } else {
-                index.items = try append(store.Item, allocator, index.items, entry);
+                index.items = try append(Item, allocator, index.items, entry);
             }
-            (try editEntry(store.Collection, allocator, &index.collections, o.id)).modified = now();
+            (try editEntry(Collection, allocator, &index.collections, o.id)).modified = now();
             try self.vault.set(index, &.{.{ .id = id, .bytes = decoded.value, .content_type = decoded.content_type }});
             try self.reconcile();
             self.signal(self.objectPath(.collection, o.id), .collection, if (replacing) "ItemChanged" else "ItemCreated", self.objectPath(.item, id));
@@ -567,7 +566,7 @@ const Server = struct {
         if (eq(verb, "SetSecret")) {
             const decoded = try self.decode((try read(message, struct { Secret }))[0], owner, allocator);
             var index = self.vault.index();
-            const item = try editEntry(store.Item, allocator, &index.items, o.id);
+            const item = try editEntry(Item, allocator, &index.items, o.id);
             item.modified = now();
             try self.vault.set(index, &.{.{ .id = o.id, .bytes = decoded.value, .content_type = decoded.content_type }});
             self.changed();
@@ -580,17 +579,17 @@ const Server = struct {
             var index = self.vault.index();
             if (o.kind == .item) {
                 const col = self.findItem(id).?.collection;
-                index.items = try without(store.Item, allocator, index.items, id);
+                index.items = try without(Item, allocator, index.items, id);
                 try self.vault.set(index, &.{});
                 self.signal(self.objectPath(.collection, col), .collection, "ItemDeleted", path);
             } else {
-                var items: std.ArrayList(store.Item) = .empty;
+                var items: std.ArrayList(Item) = .empty;
                 for (index.items) |item| {
                     if (item.collection != id) try items.append(allocator, item);
                 }
                 index.items = items.items;
-                index.collections = try without(store.Collection, allocator, index.collections, id);
-                var aliases: std.ArrayList(store.Alias) = .empty;
+                index.collections = try without(Collection, allocator, index.collections, id);
+                var aliases: std.ArrayList(Alias) = .empty;
                 for (index.aliases) |alias| {
                     if (alias.collection != id) try aliases.append(allocator, alias);
                 }
@@ -659,16 +658,16 @@ fn setPropertyValue(o: *Object, prop: []const u8, value: dbus.Value) !void {
         };
         if (text_value.len > 4096) return error.LimitsExceeded;
         if (o.kind == .collection) {
-            const col = try editEntry(store.Collection, allocator, &index.collections, o.id);
+            const col = try editEntry(Collection, allocator, &index.collections, o.id);
             col.label = text_value;
             col.modified = now();
         } else {
-            const item = try editEntry(store.Item, allocator, &index.items, o.id);
+            const item = try editEntry(Item, allocator, &index.items, o.id);
             item.label = text_value;
             item.modified = now();
         }
     } else if (o.kind == .item and eq(prop, "Attributes")) {
-        const item = try editEntry(store.Item, allocator, &index.items, o.id);
+        const item = try editEntry(Item, allocator, &index.items, o.id);
         item.attributes = try Server.attributes(allocator, try attributeValue(allocator, value));
         item.modified = now();
     } else return error.InvalidArgs;
@@ -772,7 +771,7 @@ pub fn runAtWithOptions(allocator: std.mem.Allocator, io: std.Io, directory: []c
     const bus = source.connection;
     var introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-secrets.xml"));
     defer introspection.deinit();
-    var server = Server{ .allocator = allocator, .options = options, .io = io, .vault = try store.Vault.init(allocator, io, directory), .bus = bus, .introspection = introspection };
+    var server = Server{ .allocator = allocator, .options = options, .io = io, .vault = try Vault.init(allocator, io, directory), .bus = bus, .introspection = introspection };
     defer {
         while (server.objects.items.len != 0) server.remove(server.objects.items[server.objects.items.len - 1]);
         server.objects.deinit(allocator);
@@ -820,7 +819,6 @@ pub fn loginUnlock(allocator: std.mem.Allocator, password: []const u8) !void {
 }
 test {
     _ = transport;
-    _ = store;
 }
 
 /// Calls the source service; the caller reads and releases the reply.
@@ -843,7 +841,7 @@ fn objectPaths(value: dbus.Value) ![]const dbus.Value {
 /// Copy from a running, unlocked Secret Service into a new authenticated vault.
 /// Pin the unique bus owner for the entire import; never modify the source.
 pub fn importAt(allocator: std.mem.Allocator, io: std.Io, directory: []const u8, password: []const u8) !void {
-    var saved = try store.Vault.init(allocator, io, directory);
+    var saved = try Vault.init(allocator, io, directory);
     defer saved.deinit();
     if (saved.index().collections.len != 0) return error.DestinationNotEmpty;
     // Replies can carry secrets; everything copied from them is wiped when freed.
@@ -875,7 +873,7 @@ pub fn importAt(allocator: std.mem.Allocator, io: std.Io, directory: []const u8,
     }
     try saved.unlock(password);
     var index = saved.index();
-    var values: std.ArrayList(store.Value) = .empty;
+    var values: std.ArrayList(Value) = .empty;
     defer for (values.items) |value| std.crypto.secureZero(u8, @constCast(value.bytes));
     for (collections) |path_value| {
         const path = path_value.object_path;
@@ -883,12 +881,12 @@ pub fn importAt(allocator: std.mem.Allocator, io: std.Io, directory: []const u8,
         if (label != .string) return error.InvalidSourceReply;
         const id = index.next_id;
         index.next_id += 1;
-        index.collections = try append(store.Collection, scratch, index.collections, .{ .id = id, .label = label.string, .created = now(), .modified = now() });
+        index.collections = try append(Collection, scratch, index.collections, .{ .id = id, .label = label.string, .created = now(), .modified = now() });
         for ([_][]const u8{ "default", "login" }) |alias| {
             const reply = try sourceCall(bus, owner, root, iface(.service), "ReadAlias", .{alias});
             defer reply.deinit();
             const target = (reply.message().read(struct { dbus.ObjectPath }) catch return error.InvalidSourceReply)[0].value;
-            if (eq(target, path)) index.aliases = try append(store.Alias, scratch, index.aliases, .{ .name = alias, .collection = id });
+            if (eq(target, path)) index.aliases = try append(Alias, scratch, index.aliases, .{ .name = alias, .collection = id });
         }
         const items = try objectPaths(try sourceProperty(scratch, bus, owner, path, .collection, "Items"));
         for (items) |item_value| {
@@ -904,14 +902,14 @@ pub fn importAt(allocator: std.mem.Allocator, io: std.Io, directory: []const u8,
             if (secret[2].value.len > 1024 * 1024) return error.LimitsExceeded;
             const item_id = index.next_id;
             index.next_id += 1;
-            index.items = try append(store.Item, scratch, index.items, .{ .id = item_id, .collection = id, .label = item_label.string, .attributes = try Server.attributes(scratch, attrs), .created = now(), .modified = now() });
+            index.items = try append(Item, scratch, index.items, .{ .id = item_id, .collection = id, .label = item_label.string, .attributes = try Server.attributes(scratch, attrs), .created = now(), .modified = now() });
             const content_type = try scratch.dupe(u8, secret[3]);
             const value = try values.addOne(scratch);
             value.* = .{ .id = item_id, .bytes = &.{}, .content_type = content_type };
             value.bytes = try scratch.dupe(u8, secret[2].value);
         }
     }
-    if (index.collections.len != 0 and index.aliases.len == 0) index.aliases = try append(store.Alias, scratch, index.aliases, .{ .name = "default", .collection = index.collections[0].id });
+    if (index.collections.len != 0 and index.aliases.len == 0) index.aliases = try append(Alias, scratch, index.aliases, .{ .name = "default", .collection = index.collections[0].id });
     try saved.set(index, values.items);
 }
 pub fn runImport(allocator: std.mem.Allocator, io: std.Io) !void {
@@ -937,4 +935,192 @@ pub fn createImportDialog(allocator: std.mem.Allocator) !*Dialog {
         .accept = "Continue",
         .confirmation = true,
     });
+}
+
+// The vault rewrites one authenticated snapshot on every set.
+const Aead = std.crypto.aead.chacha_poly.XChaCha20Poly1305;
+const file_name = "secrets.json";
+const max_size = 16 * 1024 * 1024;
+
+const Attribute = struct { key: []const u8, value: []const u8 };
+const Collection = struct { id: u64, label: []const u8, created: u64, modified: u64 };
+const Item = struct { id: u64, collection: u64, label: []const u8, attributes: []const Attribute, created: u64, modified: u64 };
+const Alias = struct { name: []const u8, collection: u64 };
+const Index = struct { next_id: u64 = 1, collections: []const Collection = &.{}, items: []const Item = &.{}, aliases: []const Alias = &.{} };
+const Value = struct { id: u64, bytes: []const u8, content_type: []const u8 };
+
+const File = struct {
+    salt: [32]u8,
+    nonce: [Aead.nonce_length]u8,
+    tag: [Aead.tag_length]u8,
+    index: Index,
+    ciphertext: []const u8,
+};
+
+const Vault = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    lock_file: std.Io.File,
+    key: ?[32]u8 = null,
+    saved: ?std.json.Parsed(File) = null,
+    values: ?std.json.Parsed([]const Value) = null,
+
+    fn init(allocator: std.mem.Allocator, io: std.Io, directory: []const u8) !Vault {
+        const cwd = std.Io.Dir.cwd();
+        cwd.createDir(io, directory, .fromMode(0o700)) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+        const dir = try cwd.openDir(io, directory, .{ .follow_symlinks = false });
+        errdefer dir.close(io);
+        const lock_file = dir.createFile(io, "lock", .{ .truncate = false, .lock = .exclusive, .lock_nonblocking = true, .permissions = .fromMode(0o600) }) catch |err| switch (err) {
+            error.WouldBlock => return error.VaultInUse,
+            else => return err,
+        };
+        errdefer lock_file.close(io);
+
+        var vault: Vault = .{ .allocator = allocator, .io = io, .dir = dir, .lock_file = lock_file };
+        const file = dir.openFile(io, file_name, .{ .follow_symlinks = false }) catch |err| switch (err) {
+            error.FileNotFound => return vault,
+            else => return err,
+        };
+        defer file.close(io);
+        const stat = try file.stat(io);
+        if (stat.kind != .file or stat.size > max_size) return error.InvalidVault;
+        const bytes = try allocator.alloc(u8, @intCast(stat.size));
+        defer allocator.free(bytes);
+        if (try file.readPositionalAll(io, bytes, 0) != bytes.len) return error.InvalidVault;
+        vault.saved = try std.json.parseFromSlice(File, allocator, bytes, .{ .allocate = .alloc_always });
+        return vault;
+    }
+
+    fn index(self: *const Vault) Index {
+        return if (self.saved) |saved| saved.value.index else .{};
+    }
+
+    fn unlock(self: *Vault, password: []const u8) !void {
+        if (self.key != null) return;
+        if (password.len == 0 or password.len > 4096) return error.InvalidPassword;
+        var salt: [32]u8 = undefined;
+        if (self.saved) |saved| salt = saved.value.salt else try self.io.randomSecure(&salt);
+        self.key = @splat(0);
+        errdefer self.lock();
+        try std.crypto.pwhash.scrypt.kdf(self.allocator, &self.key.?, password, &salt, .owasp);
+        const saved = self.saved orelse return self.write(.{}, &.{}, salt);
+        const metadata = try std.json.Stringify.valueAlloc(self.allocator, saved.value.index, .{});
+        defer self.allocator.free(metadata);
+        const plain = try self.allocator.alloc(u8, saved.value.ciphertext.len);
+        defer wipeFree(self.allocator, plain);
+        try Aead.decrypt(plain, saved.value.ciphertext, saved.value.tag, metadata, saved.value.nonce, self.key.?);
+        self.values = try std.json.parseFromSlice([]const Value, self.allocator, plain, .{ .allocate = .alloc_always });
+    }
+
+    fn get(self: *const Vault, id: u64) ?Value {
+        return find(if (self.values) |values| values.value else &.{}, id);
+    }
+
+    /// Replaces the listed secrets and drops secrets whose items were deleted.
+    /// The index and values take effect together after the file is replaced.
+    fn set(self: *Vault, next_index: Index, updates: []const Value) !void {
+        if (self.key == null) return error.IsLocked;
+        var values: std.ArrayList(Value) = .empty;
+        defer values.deinit(self.allocator);
+        for (next_index.items) |item| {
+            const value = find(updates, item.id) orelse self.get(item.id) orelse continue;
+            try values.append(self.allocator, value);
+        }
+        try self.write(next_index, values.items, self.saved.?.value.salt);
+    }
+
+    fn write(self: *Vault, next_index: Index, values: []const Value, salt: [32]u8) !void {
+        const allocator = self.allocator;
+        const metadata = try std.json.Stringify.valueAlloc(allocator, next_index, .{});
+        defer allocator.free(metadata);
+        const plain = try std.json.Stringify.valueAlloc(allocator, values, .{});
+        defer wipeFree(allocator, plain);
+        const ciphertext = try allocator.alloc(u8, plain.len);
+        defer allocator.free(ciphertext);
+        var saved: File = .{ .salt = salt, .nonce = undefined, .tag = undefined, .index = next_index, .ciphertext = ciphertext };
+        try self.io.randomSecure(&saved.nonce);
+        Aead.encrypt(ciphertext, &saved.tag, plain, metadata, saved.nonce, self.key.?);
+        const bytes = try std.json.Stringify.valueAlloc(allocator, saved, .{});
+        defer allocator.free(bytes);
+        if (bytes.len > max_size) return error.VaultTooLarge;
+
+        const new_saved = try std.json.parseFromSlice(File, allocator, bytes, .{ .allocate = .alloc_always });
+        errdefer new_saved.deinit();
+        const new_values = try std.json.parseFromSlice([]const Value, allocator, plain, .{ .allocate = .alloc_always });
+        errdefer freeValues(new_values);
+        var file = self.dir.createFileAtomic(self.io, file_name, .{ .permissions = .fromMode(0o600), .replace = true }) catch return error.WriteVault;
+        defer file.deinit(self.io);
+        file.file.writeStreamingAll(self.io, bytes) catch return error.WriteVault;
+        file.file.sync(self.io) catch return error.WriteVault;
+        file.replace(self.io) catch return error.WriteVault;
+
+        if (self.saved) |old| old.deinit();
+        if (self.values) |old| freeValues(old);
+        self.saved = new_saved;
+        self.values = new_values;
+    }
+
+    fn lock(self: *Vault) void {
+        if (self.key) |*key| std.crypto.secureZero(u8, key);
+        if (self.values) |values| freeValues(values);
+        self.key = null;
+        self.values = null;
+    }
+
+    fn deinit(self: *Vault) void {
+        self.lock();
+        if (self.saved) |saved| saved.deinit();
+        self.lock_file.close(self.io);
+        self.dir.close(self.io);
+    }
+};
+
+fn find(values: []const Value, id: u64) ?Value {
+    for (values) |value| {
+        if (value.id == id) return value;
+    }
+    return null;
+}
+
+fn wipeFree(allocator: std.mem.Allocator, bytes: []u8) void {
+    std.crypto.secureZero(u8, bytes);
+    allocator.free(bytes);
+}
+
+fn freeValues(values: std.json.Parsed([]const Value)) void {
+    for (values.value) |value| std.crypto.secureZero(u8, @constCast(value.bytes));
+    values.deinit();
+}
+
+test "set persists binary values and locking requires the password again" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+
+    {
+        var vault = try Vault.init(allocator, io, directory);
+        defer vault.deinit();
+        try std.testing.expectError(error.VaultInUse, Vault.init(allocator, io, directory));
+        try vault.unlock("password");
+        const items = [_]Item{.{ .id = 1, .collection = 1, .label = "Test", .attributes = &.{}, .created = 0, .modified = 0 }};
+        try vault.set(.{ .items = &items }, &.{.{ .id = 1, .bytes = "test\x00\xff", .content_type = "application/octet-stream" }});
+    }
+    {
+        var vault = try Vault.init(allocator, io, directory);
+        defer vault.deinit();
+        try std.testing.expectEqualStrings("Test", vault.index().items[0].label);
+        try std.testing.expect(vault.get(1) == null);
+        try std.testing.expectError(error.AuthenticationFailed, vault.unlock("wrong"));
+        try vault.unlock("password");
+        try std.testing.expectEqualSlices(u8, "test\x00\xff", vault.get(1).?.bytes);
+        try vault.set(.{}, &.{});
+        try std.testing.expect(vault.get(1) == null);
+    }
 }
