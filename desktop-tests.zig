@@ -116,7 +116,7 @@ test "integration: disk panel queries the root filesystem without commands" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const result = try panel.sample(arena.allocator(), "disk", false);
+    const result = try panel.sample(arena.allocator(), std.testing.io, "disk", false);
     const entry = result.items.?[0];
     const label = entry.text;
     try expect(!std.mem.eql(u8, label, "—/—"));
@@ -226,10 +226,10 @@ test "integration: monitor updates retain their sampled values across later samp
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var monitor = try panel.Monitor.init(alloc);
-    const first = try monitor.sample(alloc, true);
+    var monitor = try panel.Monitor.init(alloc, std.testing.io);
+    const first = try monitor.sample(alloc, std.testing.io, true);
     const original = first.monitors.?[0].values[0];
-    const second = try monitor.sample(alloc, true);
+    const second = try monitor.sample(alloc, std.testing.io, true);
     try equal(original, first.monitors.?[0].values[0]);
     try expect(second.monitors.?[0].values[0] != original);
 }
