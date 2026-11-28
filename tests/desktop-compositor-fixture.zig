@@ -67,6 +67,6 @@ pub fn main(init: std.process.Init) !void {
     }
     client.refresh();
     client.connection.roundtrip() catch return error.Disconnected;
-    d.util.printOut("workspace {d}/{d}\n", .{ client.current, client.count });
-    for (client.windows.items) |window| d.util.printOut("window {s} workspace {d} size {d}x{d} captured {d}\n", .{ std.mem.span(window.title), window.workspace, @as(u32, @intFromFloat(window.geometry.w)), @as(u32, @intFromFloat(window.geometry.h)), @as(u32, @intFromBool(window.image != null)) });
+    @import("fixture-util.zig").printOut(init.io, "workspace {d}/{d}\n", .{ client.current, client.count });
+    for (client.windows.items) |window| @import("fixture-util.zig").printOut(init.io, "window {s} workspace {d} size {d}x{d} captured {d}\n", .{ std.mem.span(window.title), window.workspace, @as(u32, @intFromFloat(window.geometry.w)), @as(u32, @intFromFloat(window.geometry.h)), @as(u32, @intFromBool(window.image != null)) });
 }

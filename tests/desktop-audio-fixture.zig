@@ -28,7 +28,7 @@ fn dump(service: *audio.Service) !void {
     for (service.nodes.items, nodes) |*entry, *view| view.* = .{ .id = entry.id, .class = entry.class, .name = std.mem.sliceTo(&entry.name, 0), .state = entry.state, .is_default = entry.is_default };
     const json = try std.json.Stringify.valueAlloc(arena.allocator(), .{ .ready = service.ready, .nodes = nodes }, .{});
     const text = try arena.allocator().dupeSentinel(u8, json, 0);
-    @import("desktop").util.printOut("{s}\n", .{text});
+    @import("fixture-util.zig").printOut(service.io, "{s}\n", .{text});
 }
 const Completion = struct {
     result: ?audio.Result = null,
@@ -174,7 +174,7 @@ fn ui(service: *audio.Service, io: std.Io) !void {
     sound.close();
     while (!sound.closed) pump(io);
     assert(sound.closed and sound.timer == 0);
-    @import("desktop").util.printOut("PASS native sound pointer, keyboard, volume, mute, defaults and pending-close controls\n", .{});
+    @import("fixture-util.zig").printOut(io, "PASS native sound pointer, keyboard, volume, mute, defaults and pending-close controls\n", .{});
 }
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(init.gpa);
@@ -224,7 +224,7 @@ pub fn main(init: std.process.Init) !void {
         player.play(path); // Repeated volume keys keep the existing sound.
         while (std.Io.Clock.awake.now(init.io).toMicroseconds() < start_time + 2_300_000) pump(init.io);
         assert(!player.playing());
-        @import("desktop").util.printOut("PASS native event-sound playback without overlap\n", .{});
+        @import("fixture-util.zig").printOut(init.io, "PASS native event-sound playback without overlap\n", .{});
         return;
     }
     if (std.mem.eql(u8, args[1], "list")) return dump(service);
@@ -233,7 +233,7 @@ pub fn main(init: std.process.Init) !void {
         _ = try apply(init.io, service, .output, .{ .volume = 100 });
         for (0..12) |_| _ = try apply(init.io, service, .output, .{ .step = -5 });
         assert(@abs(service.state(.output).?.percent - 40) < 0.01);
-        @import("desktop").util.printOut("PASS serialized native volume steps preserve every key press\n", .{});
+        @import("fixture-util.zig").printOut(init.io, "PASS serialized native volume steps preserve every key press\n", .{});
         return;
     }
     if (std.mem.eql(u8, args[1], "cancel")) {
@@ -245,12 +245,12 @@ pub fn main(init: std.process.Init) !void {
         const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 6_000_000;
         while (completion.result == null and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump(init.io);
         assert(completion.result != null and completion.result.? == .failure);
-        @import("desktop").util.printOut("PASS pending native audio cancellation\n", .{});
+        @import("fixture-util.zig").printOut(init.io, "PASS pending native audio cancellation\n", .{});
         return;
     }
     if (args.len < 4) return error.ExpectedTargetAndChange;
     const target = try audio.target(args[2]);
     const change: audio.Change = if (std.mem.eql(u8, args[3], "volume") and args.len == 5) .{ .volume = try std.fmt.parseFloat(f64, args[4]) } else if (std.mem.eql(u8, args[3], "step") and args.len == 5) .{ .step = try std.fmt.parseInt(i16, args[4], 10) } else if (std.mem.eql(u8, args[3], "mute") and args.len == 5) .{ .mute = std.mem.eql(u8, args[4], "1") } else if (std.mem.eql(u8, args[3], "toggle")) .toggle else if (std.mem.eql(u8, args[3], "default")) .default else return error.InvalidChange;
     const result = try apply(init.io, service, target, change);
-    @import("desktop").util.printOut("{d:.3} {d}\n", .{ result.percent, @intFromBool(result.muted) });
+    @import("fixture-util.zig").printOut(init.io, "{d:.3} {d}\n", .{ result.percent, @intFromBool(result.muted) });
 }

@@ -73,5 +73,5 @@ pub fn main(init: std.process.Init) !void {
             mainloop.sleep(1000);
         }
     }
-    @import("desktop").util.printOut("desktop-settings: page switching, pointer and keyboard routing, focus, preserved fields and pending-close teardown passed\n", .{});
+    @import("fixture-util.zig").printOut(init.io, "desktop-settings: page switching, pointer and keyboard routing, focus, preserved fields and pending-close teardown passed\n", .{});
 }

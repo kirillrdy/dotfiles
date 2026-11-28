@@ -23,8 +23,8 @@ fn stop(_: void) bool {
     stopping = true;
     return true;
 }
-fn report(allocator: *const std.mem.Allocator) bool {
-    const a = allocator.*;
+fn report(context: *const AlertContext) bool {
+    const a = context.allocator;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -52,12 +52,12 @@ fn report(allocator: *const std.mem.Allocator) bool {
         if (last) |old| a.free(old);
         last = a.dupe(u8, json) catch unreachable;
         const terminated = alloc.dupeSentinel(u8, json, 0) catch unreachable;
-        @import("desktop").util.printOut("{s}\n", .{terminated});
+        @import("fixture-util.zig").printOut(context.io, "{s}\n", .{terminated});
     }
     return true;
 }
 pub fn main(init: std.process.Init) !void {
-    var allocator = init.gpa;
+    const allocator = init.gpa;
     const a = allocator;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
@@ -66,9 +66,10 @@ pub fn main(init: std.process.Init) !void {
     if (args.len != 3) return error.ExpectedModeAndFixtureRoot;
     const root = try arena.allocator().dupeSentinel(u8, args[2], 0);
     const options = battery.Options{ .backend = .{ .root = root }, .poll_ms = 100, .events = false };
+    var alert_context: AlertContext = .{ .allocator = allocator, .io = init.io };
     if (std.mem.eql(u8, args[1], "--read")) {
         latest = options.backend.read();
-        _ = report(&allocator);
+        _ = report(&alert_context);
         return;
     }
     if (std.mem.eql(u8, args[1], "--monitor")) {
@@ -80,7 +81,6 @@ pub fn main(init: std.process.Init) !void {
     }
     controls = quick.Controls.create(init.gpa, init.io, "true", "true");
     controls.?.monitorBattery(options);
-    var alert_context: AlertContext = .{ .allocator = allocator, .io = init.io };
     const service = try battery.Service.createWithOptions(allocator, init.io, options, &changed, &alert_context);
     if (std.mem.eql(u8, args[1], "--dispose")) {
         controls.?.deinit();
@@ -92,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
         }
         return;
     }
-    const timer = mainloop.timeout(init.io, 20, &allocator, report);
+    const timer = mainloop.timeout(init.io, 20, &alert_context, report);
     const term = mainloop.signal(init.io, mainloop.SIGTERM, {}, stop);
     while (!stopping) _ = mainloop.iteration(init.io, true);
     _ = mainloop.remove(init.io, timer);

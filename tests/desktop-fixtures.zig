@@ -38,7 +38,7 @@ const entries = [_]Entry{
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     if (args.len == 2 and std.mem.eql(u8, args[1], "--list")) {
-        for (entries) |entry| @import("desktop").util.printOut("{s}\n", .{entry.name});
+        for (entries) |entry| @import("fixture-util.zig").printOut(init.io, "{s}\n", .{entry.name});
         return;
     }
     const prog = if (args.len > 0) std.fs.path.basename(args[0]) else "";
