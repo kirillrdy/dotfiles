@@ -29,9 +29,9 @@ pub fn negotiate(io: std.Io, encoded_peer: []const u8, public: *[128]u8) ![16]u8
     Hkdf.expand(&key, &.{}, prk);
     return key;
 }
-pub fn encode(a: std.mem.Allocator, key: [16]u8, iv: [16]u8, plain: []const u8) ![]u8 {
+pub fn encode(allocator: std.mem.Allocator, key: [16]u8, iv: [16]u8, plain: []const u8) ![]u8 {
     const padding: u8 = @intCast(16 - plain.len % 16);
-    const out = try a.alloc(u8, plain.len + padding);
+    const out = try allocator.alloc(u8, plain.len + padding);
     @memcpy(out[0..plain.len], plain);
     @memset(out[plain.len..], padding);
     var previous = iv;
@@ -44,10 +44,10 @@ pub fn encode(a: std.mem.Allocator, key: [16]u8, iv: [16]u8, plain: []const u8) 
     }
     return out;
 }
-pub fn decode(a: std.mem.Allocator, key: [16]u8, iv: []const u8, cipher: []const u8) ![]u8 {
+pub fn decode(allocator: std.mem.Allocator, key: [16]u8, iv: []const u8, cipher: []const u8) ![]u8 {
     if (iv.len != 16 or cipher.len == 0 or cipher.len % 16 != 0) return error.InvalidCiphertext;
-    const out = try a.alloc(u8, cipher.len);
-    defer a.free(out);
+    const out = try allocator.alloc(u8, cipher.len);
+    defer allocator.free(out);
     var previous = iv[0..16].*;
     const aes = std.crypto.core.aes.Aes128.initDec(key);
     var i: usize = 0;
@@ -62,16 +62,16 @@ pub fn decode(a: std.mem.Allocator, key: [16]u8, iv: []const u8, cipher: []const
         if (j < padding) invalid |= out[out.len - 1 - j] ^ padding;
     }
     if (invalid != 0) return error.InvalidPadding;
-    return a.dupe(u8, out[0 .. out.len - padding]);
+    return allocator.dupe(u8, out[0 .. out.len - padding]);
 }
 test "CBC round trip and malformed inputs" {
-    const a = std.testing.allocator;
+    const allocator = std.testing.allocator;
     for ([_][]const u8{ "", "binary\x00secret", "sixteen bytes!!!?", "a longer secret spanning more than one block" }) |plain| {
-        const cipher = try encode(a, @splat(7), @splat(9), plain);
-        defer a.free(cipher);
-        const decoded = try decode(a, @splat(7), &@as([16]u8, @splat(9)), cipher);
-        defer a.free(decoded);
+        const cipher = try encode(allocator, @splat(7), @splat(9), plain);
+        defer allocator.free(cipher);
+        const decoded = try decode(allocator, @splat(7), &@as([16]u8, @splat(9)), cipher);
+        defer allocator.free(decoded);
         try std.testing.expectEqualSlices(u8, plain, decoded);
     }
-    try std.testing.expectError(error.InvalidCiphertext, decode(a, @splat(0), &.{}, &.{}));
+    try std.testing.expectError(error.InvalidCiphertext, decode(allocator, @splat(0), &.{}, &.{}));
 }

@@ -5,23 +5,34 @@ const c = @import("desktop").libc;
 const pam = @import("desktop").pam;
 const Handle = pam.pam_handle_t;
 const Cached = struct { length: usize, password: [4096]u8 };
+const CacheAllocation = struct {
+    // Give mlock and munlock whole pages dedicated to the cached token.
+    token: Cached align(std.heap.page_size_max),
+    allocator: std.mem.Allocator,
+};
 fn cleanup(_: ?*Handle, data: ?*anyopaque, _: c_int) callconv(.c) void {
     if (data) |ptr| {
         const cache: *Cached = @ptrCast(@alignCast(ptr));
-        std.crypto.secureZero(u8, std.mem.asBytes(cache));
-        _ = c.munlock(cache, @sizeOf(Cached));
-        std.heap.page_allocator.destroy(cache);
+        const allocation: *CacheAllocation = @alignCast(@fieldParentPtr("token", cache));
+        const allocator = allocation.allocator;
+        std.crypto.secureZero(u8, std.mem.asBytes(allocation));
+        _ = c.munlock(allocation, @sizeOf(CacheAllocation));
+        allocator.destroy(allocation);
     }
 }
 export fn pam_sm_authenticate(handle: ?*Handle, _: c_int, _: c_int, _: [*c][*c]const u8) c_int {
+    return cacheToken(std.heap.c_allocator, handle);
+}
+fn cacheToken(allocator: std.mem.Allocator, handle: ?*Handle) c_int {
     var token: ?*const anyopaque = null;
     if (pam.pam_get_item(handle, 6, &token) != 0 or token == null) return 25; // PAM_IGNORE; PAM_AUTHTOK
     const password = std.mem.span(@as([*:0]const u8, @ptrCast(token.?)));
     if (password.len == 0 or password.len > 4096) return 25;
-    const cached = std.heap.page_allocator.create(Cached) catch return 25;
-    cached.* = .{ .length = password.len, .password = @splat(0) };
+    const allocation = allocator.create(CacheAllocation) catch return 25;
+    allocation.* = .{ .allocator = allocator, .token = .{ .length = password.len, .password = @splat(0) } };
+    const cached = &allocation.token;
     @memcpy(cached.password[0..password.len], password);
-    if (c.mlock(cached, @sizeOf(Cached)) != 0) {
+    if (c.mlock(allocation, @sizeOf(CacheAllocation)) != 0) {
         cleanup(handle, cached, 0);
         return 25;
     }
@@ -35,6 +46,9 @@ export fn pam_sm_close_session(_: ?*Handle, _: c_int, _: c_int, _: [*c][*c]const
     return 25;
 }
 export fn pam_sm_open_session(handle: ?*Handle, _: c_int, argc: c_int, argv: [*c][*c]const u8) c_int {
+    return openSession(std.heap.c_allocator, handle, argc, argv);
+}
+fn openSession(allocator: std.mem.Allocator, handle: ?*Handle, argc: c_int, argv: [*c][*c]const u8) c_int {
     var raw: ?*const anyopaque = null;
     if (pam.pam_get_data(handle, "desktop-secrets-token", &raw) != 0 or raw == null) return 25;
     const cached: *Cached = @ptrCast(@alignCast(@constCast(raw.?)));
@@ -55,13 +69,13 @@ export fn pam_sm_open_session(handle: ?*Handle, _: c_int, argc: c_int, argv: [*c
         if (std.mem.startsWith(u8, option, "helper=/")) helper = @ptrCast(argv[i] + 7);
     }
     const executable = helper orelse return 25;
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const a = arena.allocator();
-    const home = std.fmt.allocPrintSentinel(a, "HOME={s}", .{user.*.pw_dir}, 0) catch return 25;
-    const runtime = std.fmt.allocPrintSentinel(a, "XDG_RUNTIME_DIR=/run/user/{d}", .{user.*.pw_uid}, 0) catch return 25;
-    const bus = std.fmt.allocPrintSentinel(a, "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{d}/bus", .{user.*.pw_uid}, 0) catch return 25;
-    const session = std.fmt.allocPrintSentinel(a, "XDG_SESSION_ID={s}", .{pam.pam_getenv(handle, "XDG_SESSION_ID") orelse ""}, 0) catch return 25;
+    const scratch = arena.allocator();
+    const home = std.fmt.allocPrintSentinel(scratch, "HOME={s}", .{user.*.pw_dir}, 0) catch return 25;
+    const runtime = std.fmt.allocPrintSentinel(scratch, "XDG_RUNTIME_DIR=/run/user/{d}", .{user.*.pw_uid}, 0) catch return 25;
+    const bus = std.fmt.allocPrintSentinel(scratch, "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{d}/bus", .{user.*.pw_uid}, 0) catch return 25;
+    const session = std.fmt.allocPrintSentinel(scratch, "XDG_SESSION_ID={s}", .{pam.pam_getenv(handle, "XDG_SESSION_ID") orelse ""}, 0) catch return 25;
     const env = [_:null]?[*:0]const u8{ home, runtime, bus, session };
     const args = [_:null]?[*:0]const u8{ executable, "secrets-login" };
     var fds: [2]c_int = undefined;

@@ -251,7 +251,7 @@ pub fn main(init: std.process.Init) !void {
             length += @intCast(n);
         }
         if (length == 0 or length > 4096) return error.InvalidPassword;
-        return @import("desktop-secrets.zig").loginUnlock(password[0..length]);
+        return @import("desktop-secrets.zig").loginUnlock(a, password[0..length]);
     }
     if (std.mem.eql(u8, args[1], "battery-monitor")) {
         if (args.len != 2) return error.InvalidBatteryMonitorArguments;

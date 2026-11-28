@@ -6,15 +6,15 @@ fn converse(_: c_int, _: [*c][*c]const pam.pam_message, _: [*c][*c]pam.pam_respo
     return pam.PAM_CONV_ERR;
 }
 pub fn main(init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = std.heap.ArenaAllocator.init(init.gpa);
     defer arena.deinit();
-    const a = arena.allocator();
-    const args = try init.minimal.args.toSlice(a);
+    const allocator = arena.allocator();
+    const args = try init.minimal.args.toSlice(allocator);
     if (args.len != 2) return error.ExpectedPrivatePolicy;
     const conversation = pam.pam_conv{ .conv = &converse, .appdata_ptr = null };
     var handle: ?*pam.pam_handle_t = null;
     const user = libc.getpwuid(libc.getuid()) orelse return error.NoUser;
-    try std.testing.expectEqual(@as(c_int, 0), pam.pam_start_confdir("greetd-test", user.*.pw_name, &conversation, (try a.dupeSentinel(u8, args[1], 0)).ptr, &handle));
+    try std.testing.expectEqual(@as(c_int, 0), pam.pam_start_confdir("greetd-test", user.*.pw_name, &conversation, (try allocator.dupeSentinel(u8, args[1], 0)).ptr, &handle));
     defer _ = pam.pam_end(handle, 0);
     const authenticated = pam.pam_authenticate(handle, 0);
     std.debug.print("private PAM authentication: {d}\n", .{authenticated});

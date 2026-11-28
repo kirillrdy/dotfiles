@@ -31,28 +31,28 @@ const cast = util.cast;
 fn now() u64 {
     return @intCast(@divTrunc(util.realTime(), 1000000));
 }
-fn append(comptime T: type, a: std.mem.Allocator, old: []const T, value: T) ![]const T {
-    const out = try a.alloc(T, old.len + 1);
+fn append(comptime T: type, allocator: std.mem.Allocator, old: []const T, value: T) ![]const T {
+    const out = try allocator.alloc(T, old.len + 1);
     @memcpy(out[0..old.len], old);
     out[old.len] = value;
     return out;
 }
-fn editEntry(comptime T: type, a: std.mem.Allocator, entries: *[]const T, id: u64) !*T {
+fn editEntry(comptime T: type, allocator: std.mem.Allocator, entries: *[]const T, id: u64) !*T {
     for (entries.*, 0..) |entry, i| {
         if (entry.id == id) {
-            const copy = try a.dupe(T, entries.*);
+            const copy = try allocator.dupe(T, entries.*);
             entries.* = copy;
             return &copy[i];
         }
     }
     return error.NoSuchObject;
 }
-fn without(comptime T: type, a: std.mem.Allocator, old: []const T, id: u64) ![]const T {
+fn without(comptime T: type, allocator: std.mem.Allocator, old: []const T, id: u64) ![]const T {
     var out: std.ArrayList(T) = .empty;
     for (old) |value| {
-        if (value.id != id) try out.append(a, value);
+        if (value.id != id) try out.append(allocator, value);
     }
-    return out.toOwnedSlice(a);
+    return out.toOwnedSlice(allocator);
 }
 /// A transferred secret: session, parameters, value and content type (`(oayays)`).
 const Secret = struct { dbus.ObjectPath, dbus.Bytes, dbus.Bytes, []const u8 };
@@ -68,13 +68,13 @@ fn lookup(properties: Properties, key: []const u8) ?dbus.Value {
     return null;
 }
 /// An `a{ss}` property value as attributes.
-fn attributeValue(a: std.mem.Allocator, value: dbus.Value) !Attributes {
+fn attributeValue(allocator: std.mem.Allocator, value: dbus.Value) !Attributes {
     const array = switch (value) {
         .array => |array| array,
         else => return error.InvalidArgs,
     };
     if (!eq(array.element, "{ss}")) return error.InvalidArgs;
-    const entries = try a.alloc(Attributes.Entry, array.items.len);
+    const entries = try allocator.alloc(Attributes.Entry, array.items.len);
     for (entries, array.items) |*entry, item| entry.* = .{ .key = item.dict_entry[0].string, .value = item.dict_entry[1].string };
     return .{ .entries = entries };
 }
@@ -94,8 +94,7 @@ const Object = struct {
     targets: []const Target = &.{},
 };
 const Server = struct {
-    ui_allocator: std.mem.Allocator,
-    a: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     options: Options = .{},
     vault: store.Vault,
     bus: *dbus.Connection,
@@ -131,17 +130,17 @@ const Server = struct {
         return "/";
     }
     fn register(self: *Server, kind: Kind, id: u64, path: [:0]const u8, owner: [:0]const u8) !*Object {
-        const o = try self.a.create(Object);
-        errdefer self.a.destroy(o);
-        const copy = try self.a.dupeSentinel(u8, path, 0);
-        errdefer self.a.free(copy);
-        const who = try self.a.dupeSentinel(u8, owner, 0);
-        errdefer self.a.free(who);
+        const o = try self.allocator.create(Object);
+        errdefer self.allocator.destroy(o);
+        const copy = try self.allocator.dupeSentinel(u8, path, 0);
+        errdefer self.allocator.free(copy);
+        const who = try self.allocator.dupeSentinel(u8, owner, 0);
+        errdefer self.allocator.free(who);
         o.* = .{ .server = self, .kind = kind, .id = id, .path = copy, .owner = who };
         o.registration = self.bus.exportWritable(o.path, self.introspection.find(iface(kind)).?, &methodCall, &getProperty, &setProperty, o) catch 0;
         if (o.registration == 0) return error.RegistrationFailed;
         errdefer self.bus.unregister(o.registration);
-        try self.objects.append(self.a, o);
+        try self.objects.append(self.allocator, o);
         return o;
     }
     fn remove(self: *Server, o: *Object) void {
@@ -156,12 +155,12 @@ const Server = struct {
             }
         }
         if (o.key) |*key| std.crypto.secureZero(u8, key);
-        self.a.free(o.path);
-        self.a.free(o.owner);
-        if (o.label.len != 0) self.a.free(o.label);
-        if (o.alias.len != 0) self.a.free(o.alias);
-        if (o.targets.len != 0) self.a.free(o.targets);
-        self.a.destroy(o);
+        self.allocator.free(o.path);
+        self.allocator.free(o.owner);
+        if (o.label.len != 0) self.allocator.free(o.label);
+        if (o.alias.len != 0) self.allocator.free(o.alias);
+        if (o.targets.len != 0) self.allocator.free(o.targets);
+        self.allocator.destroy(o);
     }
     fn reconcile(self: *Server) !void {
         var i: usize = 0;
@@ -176,21 +175,21 @@ const Server = struct {
         }
         for (self.vault.index().collections) |col| {
             if (eq(self.objectPath(.collection, col.id), "/")) {
-                const path = try std.fmt.allocPrintSentinel(self.a, root ++ "/collection/c{d}", .{col.id}, 0);
-                defer self.a.free(path);
+                const path = try std.fmt.allocPrintSentinel(self.allocator, root ++ "/collection/c{d}", .{col.id}, 0);
+                defer self.allocator.free(path);
                 _ = try self.register(.collection, col.id, path, "");
             }
         }
         for (self.vault.index().items) |item| {
             if (eq(self.objectPath(.item, item.id), "/")) {
-                const path = try std.fmt.allocPrintSentinel(self.a, "{s}/i{d}", .{ self.objectPath(.collection, item.collection), item.id }, 0);
-                defer self.a.free(path);
+                const path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/i{d}", .{ self.objectPath(.collection, item.collection), item.id }, 0);
+                defer self.allocator.free(path);
                 _ = try self.register(.item, item.id, path, "");
             }
         }
         for (self.vault.index().aliases) |alias| {
-            const path = try std.fmt.allocPrintSentinel(self.a, root ++ "/aliases/{s}", .{alias.name}, 0);
-            defer self.a.free(path);
+            const path = try std.fmt.allocPrintSentinel(self.allocator, root ++ "/aliases/{s}", .{alias.name}, 0);
+            defer self.allocator.free(path);
             if (self.object(path, .collection) == null) _ = try self.register(.collection, alias.collection, path, "");
         }
     }
@@ -198,7 +197,7 @@ const Server = struct {
         self.bus.emit(path, iface(kind), member, .{dbus.ObjectPath{ .value = target }}) catch {};
     }
     fn changed(self: *Server) void {
-        var arena = std.heap.ArenaAllocator.init(self.a);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         for (self.objects.items) |o| {
             if (o.kind != .collection and o.kind != .item and o.kind != .service) continue;
@@ -233,19 +232,19 @@ const Server = struct {
         }
         return 0;
     }
-    fn setAlias(a: std.mem.Allocator, index: *store.Index, alias: []const u8, id: u64) !void {
+    fn setAlias(allocator: std.mem.Allocator, index: *store.Index, alias: []const u8, id: u64) !void {
         if (alias.len == 0 or alias.len > 128) return error.InvalidArgs;
         for (alias) |ch| {
             if (!std.ascii.isAlphanumeric(ch) and ch != '_') return error.InvalidArgs;
         }
         var out: std.ArrayList(store.Alias) = .empty;
         for (index.aliases) |v| {
-            if (!eq(v.name, alias)) try out.append(a, v);
+            if (!eq(v.name, alias)) try out.append(allocator, v);
         }
-        if (id != 0) try out.append(a, .{ .name = try a.dupeSentinel(u8, alias, 0), .collection = id });
-        index.aliases = try out.toOwnedSlice(a);
+        if (id != 0) try out.append(allocator, .{ .name = try allocator.dupeSentinel(u8, alias, 0), .collection = id });
+        index.aliases = try out.toOwnedSlice(allocator);
     }
-    fn createCollection(self: *Server, a: std.mem.Allocator, label: [:0]const u8, alias: [:0]const u8) !u64 {
+    fn createCollection(self: *Server, allocator: std.mem.Allocator, label: [:0]const u8, alias: [:0]const u8) !u64 {
         if (self.vault.key == null) return error.IsLocked;
         const existing = self.aliasId(alias);
         if (existing != 0) return existing;
@@ -253,8 +252,8 @@ const Server = struct {
         if (index.collections.len >= 64) return error.LimitsExceeded;
         const id = index.next_id;
         index.next_id += 1;
-        index.collections = try append(store.Collection, a, index.collections, .{ .id = id, .label = label, .created = now(), .modified = now() });
-        if (alias.len != 0) try setAlias(a, &index, alias, id);
+        index.collections = try append(store.Collection, allocator, index.collections, .{ .id = id, .label = label, .created = now(), .modified = now() });
+        if (alias.len != 0) try setAlias(allocator, &index, alias, id);
         try self.vault.save(index);
         try self.reconcile();
         self.signal(root, .service, "CollectionCreated", self.objectPath(.collection, id));
@@ -266,28 +265,28 @@ const Server = struct {
         if (!eq(o.owner, owner)) return error.NoSession;
         return o;
     }
-    fn decode(self: *Server, secret: Secret, owner: []const u8, a: std.mem.Allocator) !struct { value: []const u8, content_type: [:0]const u8 } {
+    fn decode(self: *Server, secret: Secret, owner: []const u8, allocator: std.mem.Allocator) !struct { value: []const u8, content_type: [:0]const u8 } {
         const s = try self.session(secret[0].value, owner);
         const parameters = secret[1].value;
         const value = secret[2].value;
         if (value.len > 1024 * 1024) return error.LimitsExceeded;
-        const data = if (s.key) |key| try transport.decode(a, key, parameters, value) else blk: {
+        const data = if (s.key) |key| try transport.decode(allocator, key, parameters, value) else blk: {
             if (parameters.len != 0) return error.InvalidArgs;
-            break :blk try a.dupe(u8, value);
+            break :blk try allocator.dupe(u8, value);
         };
-        return .{ .value = data, .content_type = try a.dupeSentinel(u8, secret[3], 0) };
+        return .{ .value = data, .content_type = try allocator.dupeSentinel(u8, secret[3], 0) };
     }
-    fn encode(self: *Server, id: u64, s: *Object, a: std.mem.Allocator) !Secret {
+    fn encode(self: *Server, id: u64, s: *Object, allocator: std.mem.Allocator) !Secret {
         if (self.vault.key == null) return error.IsLocked;
         const v = self.vault.value(id) orelse return error.NoSuchObject;
-        const iv = try a.alloc(u8, if (s.key != null) 16 else 0);
+        const iv = try allocator.alloc(u8, if (s.key != null) 16 else 0);
         const data = if (s.key) |key| blk: {
             try self.vault.io.randomSecure(iv);
-            break :blk try transport.encode(a, key, iv[0..16].*, v.bytes);
+            break :blk try transport.encode(allocator, key, iv[0..16].*, v.bytes);
         } else v.bytes;
         return .{ .{ .value = s.path }, .{ .value = iv }, .{ .value = data }, v.content_type };
     }
-    fn attributes(a: std.mem.Allocator, v: Attributes) ![]const store.Attribute {
+    fn attributes(allocator: std.mem.Allocator, v: Attributes) ![]const store.Attribute {
         if (v.entries.len > 256) return error.LimitsExceeded;
         var out: std.ArrayList(store.Attribute) = .empty;
         for (v.entries) |entry| {
@@ -295,9 +294,9 @@ const Server = struct {
             for (out.items) |old| {
                 if (eq(old.key, entry.key)) return error.InvalidArgs;
             }
-            try out.append(a, .{ .key = try a.dupeSentinel(u8, entry.key, 0), .value = try a.dupeSentinel(u8, entry.value, 0) });
+            try out.append(allocator, .{ .key = try allocator.dupeSentinel(u8, entry.key, 0), .value = try allocator.dupeSentinel(u8, entry.value, 0) });
         }
-        return out.toOwnedSlice(a);
+        return out.toOwnedSlice(allocator);
     }
     fn matches(item: store.Item, query: []const store.Attribute) bool {
         for (query) |q| {
@@ -312,17 +311,17 @@ const Server = struct {
         }
         return true;
     }
-    fn paths(a: std.mem.Allocator, list: []const []const u8) !dbus.Value {
-        const items = try a.alloc(dbus.Value, list.len);
+    fn paths(allocator: std.mem.Allocator, list: []const []const u8) !dbus.Value {
+        const items = try allocator.alloc(dbus.Value, list.len);
         for (items, list) |*item, path| item.* = .{ .object_path = path };
         return .{ .array = .{ .element = "o", .items = items } };
     }
-    /// A property's current value, allocated from `a`; null for unknown properties.
-    fn property(self: *Server, o: *Object, prop: []const u8, a: std.mem.Allocator) !?dbus.Value {
+    /// A property's current value, allocated from `allocator`; null for unknown properties.
+    fn property(self: *Server, o: *Object, prop: []const u8, allocator: std.mem.Allocator) !?dbus.Value {
         if (o.kind == .service and eq(prop, "Collections")) {
             var list: std.ArrayList([]const u8) = .empty;
-            for (self.vault.index().collections) |col| try list.append(a, self.objectPath(.collection, col.id));
-            return try paths(a, list.items);
+            for (self.vault.index().collections) |col| try list.append(allocator, self.objectPath(.collection, col.id));
+            return try paths(allocator, list.items);
         }
         const col = if (o.kind == .collection) self.collection(o.id) else null;
         const item = if (o.kind == .item) self.findItem(o.id) else null;
@@ -332,9 +331,9 @@ const Server = struct {
         if (eq(prop, "Created")) return .{ .uint64 = if (col) |v| v.created else item.?.created };
         if (eq(prop, "Modified")) return .{ .uint64 = if (col) |v| v.modified else item.?.modified };
         if (item != null and eq(prop, "Attributes")) {
-            const entries = try a.alloc(dbus.Value, item.?.attributes.len);
+            const entries = try allocator.alloc(dbus.Value, item.?.attributes.len);
             for (entries, item.?.attributes) |*entry, attr| {
-                const pair = try a.create([2]dbus.Value);
+                const pair = try allocator.create([2]dbus.Value);
                 pair.* = .{ .{ .string = attr.key }, .{ .string = attr.value } };
                 entry.* = .{ .dict_entry = pair };
             }
@@ -343,9 +342,9 @@ const Server = struct {
         if (col != null and eq(prop, "Items")) {
             var list: std.ArrayList([]const u8) = .empty;
             for (self.vault.index().items) |v| {
-                if (v.collection == o.id) try list.append(a, self.objectPath(.item, v.id));
+                if (v.collection == o.id) try list.append(allocator, self.objectPath(.item, v.id));
             }
-            return try paths(a, list.items);
+            return try paths(allocator, list.items);
         }
         return null;
     }
@@ -355,15 +354,15 @@ const Server = struct {
             if (o.kind == .prompt) count += 1;
         }
         if (count >= 16) return error.LimitsExceeded;
-        const path = try std.fmt.allocPrintSentinel(self.a, root ++ "/prompt/p{d}", .{self.serial}, 0);
-        defer self.a.free(path);
+        const path = try std.fmt.allocPrintSentinel(self.allocator, root ++ "/prompt/p{d}", .{self.serial}, 0);
+        defer self.allocator.free(path);
         self.serial += 1;
         const o = try self.register(.prompt, 0, path, owner);
         errdefer self.remove(o);
         o.create = create;
-        if (label.len != 0) o.label = try self.a.dupeSentinel(u8, label, 0);
-        if (alias.len != 0) o.alias = try self.a.dupeSentinel(u8, alias, 0);
-        if (targets.len != 0) o.targets = try self.a.dupe(Target, targets);
+        if (label.len != 0) o.label = try self.allocator.dupeSentinel(u8, label, 0);
+        if (alias.len != 0) o.alias = try self.allocator.dupeSentinel(u8, alias, 0);
+        if (targets.len != 0) o.targets = try self.allocator.dupe(Target, targets);
         return o;
     }
     /// Ends a prompt; `result` is sent as the variant of Completed.
@@ -377,7 +376,7 @@ const Server = struct {
         o.started = true;
         // The service can start before Wayland; only prompts open a connection.
         const creating = self.vault.envelope == null;
-        const dialog = try Dialog.createWithOptions(self.ui_allocator, .password, if (creating) "Choose a password for your new password vault." else "Enter your password to unlock saved passwords.", .{
+        const dialog = try Dialog.createWithOptions(self.allocator, .password, if (creating) "Choose a password for your new password vault." else "Enter your password to unlock saved passwords.", .{
             .title = if (creating) "Create Password Vault" else "Unlock Passwords",
             .role = "desktop-secrets",
             .accept = if (creating) "Create" else "Unlock",
@@ -388,7 +387,7 @@ const Server = struct {
         dialog.response_context = o;
         if (self.options.prompt_ready) |ready| ready(dialog);
     }
-    fn method(self: *Server, o: *Object, owner: [:0]const u8, verb: []const u8, message: *const dbus.Message, a: std.mem.Allocator) !void {
+    fn method(self: *Server, o: *Object, owner: [:0]const u8, verb: []const u8, message: *const dbus.Message, allocator: std.mem.Allocator) !void {
         const bus = self.bus;
         if (o.owner.len != 0 and !eq(o.owner, owner)) return error.AccessDenied;
         if (o.kind == .login) {
@@ -400,7 +399,7 @@ const Server = struct {
             if (self.screen_locked or self.sleeping) return error.IsLocked;
             const password = (try read(message, struct { dbus.Bytes }))[0].value;
             try self.vault.unlock(password);
-            if (self.vault.index().collections.len == 0) _ = try self.createCollection(a, "Login", "default");
+            if (self.vault.index().collections.len == 0) _ = try self.createCollection(allocator, "Login", "default");
             self.changed();
             return bus.reply(message, .{});
         }
@@ -447,7 +446,7 @@ const Server = struct {
                 key = try transport.negotiate(self.vault.io, input, &public);
                 output = .{ .bytes = &public };
             } else return error.NotSupported;
-            const path = try std.fmt.allocPrintSentinel(a, root ++ "/session/s{d}", .{self.serial}, 0);
+            const path = try std.fmt.allocPrintSentinel(allocator, root ++ "/session/s{d}", .{self.serial}, 0);
             self.serial += 1;
             const s = try self.register(.session, 0, path, owner);
             s.key = key;
@@ -463,7 +462,7 @@ const Server = struct {
             const target = args[1].value;
             const id = if (eq(target, "/")) 0 else (self.object(target, .collection) orelse return error.NoSuchObject).id;
             var index = self.vault.index();
-            try setAlias(a, &index, args[0], id);
+            try setAlias(allocator, &index, args[0], id);
             try self.vault.save(index);
             try self.reconcile();
             self.changed();
@@ -472,23 +471,23 @@ const Server = struct {
         if (eq(verb, "CreateCollection")) {
             const args = try read(message, struct { Properties, []const u8 });
             const label = switch (lookup(args[0], prefix ++ "Collection.Label") orelse return error.InvalidArgs) {
-                .string => |value| try a.dupeSentinel(u8, value, 0),
+                .string => |value| try allocator.dupeSentinel(u8, value, 0),
                 else => return error.InvalidArgs,
             };
-            const alias = try a.dupeSentinel(u8, args[1], 0);
+            const alias = try allocator.dupeSentinel(u8, args[1], 0);
             if (label.len > 4096) return error.LimitsExceeded;
             if (self.vault.key == null) {
                 const prompt = try self.newPrompt(owner, true, label, alias, &.{});
                 return bus.reply(message, .{ dbus.ObjectPath{ .value = "/" }, dbus.ObjectPath{ .value = prompt.path } });
             }
-            const id = try self.createCollection(a, label, alias);
+            const id = try self.createCollection(allocator, label, alias);
             return bus.reply(message, .{ dbus.ObjectPath{ .value = self.objectPath(.collection, id) }, dbus.ObjectPath{ .value = "/" } });
         }
         if (eq(verb, "SearchItems")) {
-            const query = try attributes(a, (try read(message, struct { Attributes }))[0]);
+            const query = try attributes(allocator, (try read(message, struct { Attributes }))[0]);
             var found: std.ArrayList(dbus.ObjectPath) = .empty;
             for (self.vault.index().items) |item| {
-                if ((o.kind == .service or item.collection == o.id) and matches(item, query)) try found.append(a, .{ .value = self.objectPath(.item, item.id) });
+                if ((o.kind == .service or item.collection == o.id) and matches(item, query)) try found.append(allocator, .{ .value = self.objectPath(.item, item.id) });
             }
             if (o.kind == .collection) return bus.reply(message, .{@as([]const dbus.ObjectPath, found.items)});
             const none: []const dbus.ObjectPath = &.{};
@@ -501,8 +500,8 @@ const Server = struct {
             var found: std.ArrayList(dbus.ObjectPath) = .empty;
             for (requested) |path| {
                 const target = self.object(path.value, .collection) orelse self.object(path.value, .item) orelse continue;
-                try ids.append(a, .{ .kind = target.kind, .id = target.id });
-                if (eq(verb, "Lock") or self.vault.key != null) try found.append(a, .{ .value = target.path });
+                try ids.append(allocator, .{ .kind = target.kind, .id = target.id });
+                if (eq(verb, "Lock") or self.vault.key != null) try found.append(allocator, .{ .value = target.path });
             }
             var prompt_path: [:0]const u8 = "/";
             if (eq(verb, "Lock")) {
@@ -518,7 +517,7 @@ const Server = struct {
             var secrets: std.ArrayList(SecretMap.Entry) = .empty;
             if (self.vault.key != null) for (args[0]) |path| {
                 const item = self.object(path.value, .item) orelse continue;
-                try secrets.append(a, .{ .key = .{ .value = item.path }, .value = try self.encode(item.id, s, a) });
+                try secrets.append(allocator, .{ .key = .{ .value = item.path }, .value = try self.encode(item.id, s, allocator) });
             };
             return bus.reply(message, .{SecretMap{ .entries = secrets.items }});
         }
@@ -532,8 +531,8 @@ const Server = struct {
                 else => return error.InvalidArgs,
             };
             if (label.len > 4096) return error.LimitsExceeded;
-            const attrs = try attributes(a, try attributeValue(a, lookup(args[0], prefix ++ "Item.Attributes") orelse return error.InvalidArgs));
-            const decoded = try self.decode(args[1], owner, a);
+            const attrs = try attributes(allocator, try attributeValue(allocator, lookup(args[0], prefix ++ "Item.Attributes") orelse return error.InvalidArgs));
+            const decoded = try self.decode(args[1], owner, allocator);
             var id: u64 = 0;
             if (args[2]) for (index.items) |item| {
                 if (item.collection == o.id and item.attributes.len == attrs.len and matches(item, attrs)) {
@@ -546,13 +545,14 @@ const Server = struct {
                 id = index.next_id;
                 index.next_id += 1;
             }
-            const entry = store.Item{ .id = id, .collection = o.id, .label = try a.dupeSentinel(u8, label, 0), .attributes = attrs, .created = if (self.findItem(id)) |item| item.created else now(), .modified = now() };
-            if (replacing) {
-                (try editEntry(store.Item, a, &index.items, id)).* = entry;
+            const existing = self.findItem(id);
+            const entry = store.Item{ .id = id, .collection = o.id, .label = try allocator.dupeSentinel(u8, label, 0), .attributes = attrs, .created = if (existing) |item| item.created else now(), .modified = now() };
+            if (existing != null) {
+                (try editEntry(store.Item, allocator, &index.items, id)).* = entry;
             } else {
-                index.items = try append(store.Item, a, index.items, entry);
+                index.items = try append(store.Item, allocator, index.items, entry);
             }
-            (try editEntry(store.Collection, a, &index.collections, o.id)).modified = now();
+            (try editEntry(store.Collection, allocator, &index.collections, o.id)).modified = now();
             try self.vault.setValue(id, decoded.value, decoded.content_type);
             try self.vault.save(index);
             try self.reconcile();
@@ -562,12 +562,12 @@ const Server = struct {
         }
         if (eq(verb, "GetSecret")) {
             const s = try self.session((try read(message, struct { dbus.ObjectPath }))[0].value, owner);
-            return bus.reply(message, .{try self.encode(o.id, s, a)});
+            return bus.reply(message, .{try self.encode(o.id, s, allocator)});
         }
         if (eq(verb, "SetSecret")) {
-            const decoded = try self.decode((try read(message, struct { Secret }))[0], owner, a);
+            const decoded = try self.decode((try read(message, struct { Secret }))[0], owner, allocator);
             var index = self.vault.index();
-            const item = try editEntry(store.Item, a, &index.items, o.id);
+            const item = try editEntry(store.Item, allocator, &index.items, o.id);
             item.modified = now();
             try self.vault.setValue(o.id, decoded.value, decoded.content_type);
             try self.vault.save(index);
@@ -577,24 +577,24 @@ const Server = struct {
         }
         if (eq(verb, "Delete")) {
             const id = o.id;
-            const path = try a.dupeSentinel(u8, o.path, 0);
+            const path = try allocator.dupeSentinel(u8, o.path, 0);
             var index = self.vault.index();
             if (o.kind == .item) {
                 const col = self.findItem(id).?.collection;
-                index.items = try without(store.Item, a, index.items, id);
+                index.items = try without(store.Item, allocator, index.items, id);
                 try self.vault.removeValue(id);
                 try self.vault.save(index);
                 self.signal(self.objectPath(.collection, col), .collection, "ItemDeleted", path);
             } else {
                 var items: std.ArrayList(store.Item) = .empty;
                 for (index.items) |item| {
-                    if (item.collection == id) try self.vault.removeValue(item.id) else try items.append(a, item);
+                    if (item.collection == id) try self.vault.removeValue(item.id) else try items.append(allocator, item);
                 }
                 index.items = items.items;
-                index.collections = try without(store.Collection, a, index.collections, id);
+                index.collections = try without(store.Collection, allocator, index.collections, id);
                 var aliases: std.ArrayList(store.Alias) = .empty;
                 for (index.aliases) |alias| {
-                    if (alias.collection != id) try aliases.append(a, alias);
+                    if (alias.collection != id) try aliases.append(allocator, alias);
                 }
                 index.aliases = aliases.items;
                 try self.vault.save(index);
@@ -623,11 +623,11 @@ fn errorName(err: anyerror) [:0]const u8 {
 fn methodCall(data: ?*anyopaque, message: *const dbus.Message) void {
     const o = cast(Object, data);
     const self = o.server;
-    var arena = std.heap.ArenaAllocator.init(self.a);
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
     defer arena.deinit();
     const owner = arena.allocator().dupeSentinel(u8, message.sender orelse "", 0) catch return;
     self.method(o, owner, message.member orelse "", message, arena.allocator()) catch |err| {
-        // Restore the last committed version after any rejected mutation.
+        // Restore the committed secret values after any rejected mutation.
         self.vault.restore() catch {
             self.lock();
             self.stopping = true;
@@ -659,9 +659,9 @@ fn setProperty(data: ?*anyopaque, _: []const u8, _: []const u8, prop: []const u8
 fn setPropertyValue(o: *Object, prop: []const u8, value: dbus.Value) !void {
     const self = o.server;
     if (self.vault.key == null) return error.IsLocked;
-    var arena = std.heap.ArenaAllocator.init(self.a);
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
     defer arena.deinit();
-    const a = arena.allocator();
+    const allocator = arena.allocator();
     var index = self.vault.index();
     if (eq(prop, "Label")) {
         const text_value = switch (value) {
@@ -669,19 +669,19 @@ fn setPropertyValue(o: *Object, prop: []const u8, value: dbus.Value) !void {
             else => return error.InvalidArgs,
         };
         if (text_value.len > 4096) return error.LimitsExceeded;
-        const label = try a.dupeSentinel(u8, text_value, 0);
+        const label = try allocator.dupeSentinel(u8, text_value, 0);
         if (o.kind == .collection) {
-            const col = try editEntry(store.Collection, a, &index.collections, o.id);
+            const col = try editEntry(store.Collection, allocator, &index.collections, o.id);
             col.label = label;
             col.modified = now();
         } else {
-            const item = try editEntry(store.Item, a, &index.items, o.id);
+            const item = try editEntry(store.Item, allocator, &index.items, o.id);
             item.label = label;
             item.modified = now();
         }
     } else if (o.kind == .item and eq(prop, "Attributes")) {
-        const item = try editEntry(store.Item, a, &index.items, o.id);
-        item.attributes = try Server.attributes(a, try attributeValue(a, value));
+        const item = try editEntry(store.Item, allocator, &index.items, o.id);
+        item.attributes = try Server.attributes(allocator, try attributeValue(allocator, value));
         item.modified = now();
     } else return error.InvalidArgs;
     try self.vault.save(index);
@@ -708,11 +708,11 @@ fn promptResponse(data: ?*anyopaque, accepted: bool) void {
         return;
     };
     dialog.clear();
-    var arena = std.heap.ArenaAllocator.init(self.a);
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
     defer arena.deinit();
-    const a = arena.allocator();
+    const allocator = arena.allocator();
     if (o.create) {
-        const id = self.createCollection(a, o.label, o.alias) catch {
+        const id = self.createCollection(allocator, o.label, o.alias) catch {
             self.vault.restore() catch self.lock();
             self.complete(o, true, .{ .string = "" });
             return;
@@ -722,10 +722,10 @@ fn promptResponse(data: ?*anyopaque, accepted: bool) void {
         var unlocked: std.ArrayList([]const u8) = .empty;
         for (o.targets) |target| {
             const exists = if (target.kind == .collection) self.collection(target.id) != null else self.findItem(target.id) != null;
-            if (exists) unlocked.append(a, self.objectPath(target.kind, target.id)) catch {};
+            if (exists) unlocked.append(allocator, self.objectPath(target.kind, target.id)) catch {};
         }
         self.changed();
-        self.complete(o, false, Server.paths(a, unlocked.items) catch .{ .array = .{ .element = "o", .items = &.{} } });
+        self.complete(o, false, Server.paths(allocator, unlocked.items) catch .{ .array = .{ .element = "o", .items = &.{} } });
     }
 }
 fn ownerChanged(data: ?*anyopaque, message: *const dbus.Message) void {
@@ -780,18 +780,17 @@ pub fn runAt(allocator: std.mem.Allocator, io: std.Io, directory: [:0]const u8) 
 }
 pub fn runAtWithOptions(allocator: std.mem.Allocator, io: std.Io, directory: [:0]const u8, options: Options) !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
-    const a = std.heap.page_allocator;
-    const source = loop.acquire(a, .session) catch return error.NoSessionBus;
+    const source = loop.acquire(allocator, .session) catch return error.NoSessionBus;
     defer loop.release(source);
     const bus = source.connection;
-    var introspection = try dbus.Introspection.parse(a, @embedFile("desktop-secrets.xml"));
+    var introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-secrets.xml"));
     defer introspection.deinit();
-    var server = Server{ .ui_allocator = allocator, .a = a, .options = options, .vault = try store.Vault.init(a, io, directory), .bus = bus, .introspection = introspection };
+    var server = Server{ .allocator = allocator, .options = options, .vault = try store.Vault.init(allocator, io, directory), .bus = bus, .introspection = introspection };
     defer {
         while (server.objects.items.len != 0) server.remove(server.objects.items[server.objects.items.len - 1]);
-        server.objects.deinit(a);
+        server.objects.deinit(allocator);
         server.vault.deinit();
-        if (server.logind) |v| a.free(v);
+        if (server.logind) |v| allocator.free(v);
     }
     _ = try server.register(.service, 0, root, "");
     _ = try server.register(.login, 0, root, "");
@@ -811,7 +810,7 @@ pub fn runAtWithOptions(allocator: std.mem.Allocator, io: std.Io, directory: [:0
         const connection = held.connection;
         if (connection.callBlocking(.{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1", .interface = "org.freedesktop.login1.Manager", .member = "GetSessionByPID" }, .{@as(u32, @intCast(p.getpid()))}, 3000)) |reply| {
             defer reply.deinit();
-            if (reply.message().read(struct { dbus.ObjectPath })) |args| server.logind = try a.dupeSentinel(u8, args[0].value, 0) else |_| {}
+            if (reply.message().read(struct { dbus.ObjectPath })) |args| server.logind = try allocator.dupeSentinel(u8, args[0].value, 0) else |_| {}
         } else |_| {}
         subscriptions[0] = try connection.subscribe("org.freedesktop.login1", "org.freedesktop.login1.Session", null, null, &sessionSignal, &server);
         subscriptions[1] = try connection.subscribe("org.freedesktop.login1", "org.freedesktop.DBus.Properties", "PropertiesChanged", null, &sessionSignal, &server);
@@ -826,8 +825,8 @@ pub fn runAtWithOptions(allocator: std.mem.Allocator, io: std.Io, directory: [:0
     while (!server.stopping and !bus.closed) _ = mainloop.iteration(true);
 }
 /// Called by PAM's dropped-privilege helper. Passwords travel through stdin, never argv or environment.
-pub fn loginUnlock(password: []const u8) !void {
-    const bus = dbus.Connection.open(std.heap.page_allocator, .session) catch return error.NoSessionBus;
+pub fn loginUnlock(allocator: std.mem.Allocator, password: []const u8) !void {
+    const bus = dbus.Connection.open(allocator, .session) catch return error.NoSessionBus;
     defer bus.close();
     const reply = bus.callBlocking(.{ .destination = name, .path = root, .interface = "org.dotfiles.Desktop.Secrets", .member = "LoginUnlock" }, .{dbus.Bytes{ .value = password }}, 30000) catch return error.UnlockFailed;
     reply.deinit();
@@ -841,12 +840,12 @@ test {
 fn sourceCall(bus: *dbus.Connection, owner: []const u8, path: []const u8, interface: []const u8, verb: []const u8, args: anytype) !dbus.Connection.Owned {
     return bus.callBlocking(.{ .destination = owner, .path = path, .interface = interface, .member = verb, .no_auto_start = true }, args, 30000) catch error.SourceUnavailable;
 }
-/// A property of the source service, copied into `a`.
-fn sourceProperty(a: std.mem.Allocator, bus: *dbus.Connection, owner: []const u8, path: []const u8, kind: Kind, prop: []const u8) !dbus.Value {
+/// A property of the source service, copied into `allocator`.
+fn sourceProperty(allocator: std.mem.Allocator, bus: *dbus.Connection, owner: []const u8, path: []const u8, kind: Kind, prop: []const u8) !dbus.Value {
     const reply = try sourceCall(bus, owner, path, "org.freedesktop.DBus.Properties", "Get", .{ @as([]const u8, iface(kind)), prop });
     defer reply.deinit();
     const value = (reply.message().read(struct { dbus.Value }) catch return error.InvalidSourceReply)[0];
-    return value.clone(a);
+    return value.clone(allocator);
 }
 fn objectPaths(value: dbus.Value) ![]const dbus.Value {
     return switch (value) {
@@ -856,16 +855,15 @@ fn objectPaths(value: dbus.Value) ![]const dbus.Value {
 }
 /// Copy from a running, unlocked Secret Service into a new authenticated vault.
 /// Pin the unique bus owner for the entire import; never modify the source.
-pub fn importAt(io: std.Io, directory: [:0]const u8, password: []const u8) !void {
-    const a = std.heap.page_allocator;
-    var vault = try store.Vault.init(a, io, directory);
+pub fn importAt(allocator: std.mem.Allocator, io: std.Io, directory: [:0]const u8, password: []const u8) !void {
+    var vault = try store.Vault.init(allocator, io, directory);
     defer vault.deinit();
-    if (vault.envelope != null and vault.index.collections.len != 0) return error.DestinationNotEmpty;
+    if (vault.index().collections.len != 0) return error.DestinationNotEmpty;
     // Replies can carry secrets; everything copied from them is wiped when freed.
-    var arena = std.heap.ArenaAllocator.init(a);
+    var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    const bus = dbus.Connection.open(a, .session) catch return error.NoSessionBus;
+    const bus = dbus.Connection.open(allocator, .session) catch return error.NoSessionBus;
     defer bus.close();
     const owner = blk: {
         const reply = sourceCall(bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", .{@as([]const u8, name)}) catch return error.NoSourceService;
@@ -889,23 +887,23 @@ pub fn importAt(io: std.Io, directory: [:0]const u8, password: []const u8) !void
         if (locked.boolean) return error.SourceLocked;
     }
     try vault.unlock(password);
-    const ma = vault.metadata();
+    var index = vault.index();
     for (collections) |path_value| {
         const path = path_value.object_path;
         const label = try sourceProperty(scratch, bus, owner, path, .collection, "Label");
         if (label != .string) return error.InvalidSourceReply;
-        const id = vault.index.next_id;
-        vault.index.next_id += 1;
-        vault.index.collections = try append(store.Collection, ma, vault.index.collections, .{ .id = id, .label = try ma.dupeSentinel(u8, label.string, 0), .created = now(), .modified = now() });
+        const id = index.next_id;
+        index.next_id += 1;
+        index.collections = try append(store.Collection, scratch, index.collections, .{ .id = id, .label = try scratch.dupeSentinel(u8, label.string, 0), .created = now(), .modified = now() });
         for ([_][:0]const u8{ "default", "login" }) |alias| {
             const reply = try sourceCall(bus, owner, root, iface(.service), "ReadAlias", .{@as([]const u8, alias)});
             defer reply.deinit();
             const target = (reply.message().read(struct { dbus.ObjectPath }) catch return error.InvalidSourceReply)[0].value;
-            if (eq(target, path)) vault.index.aliases = try append(store.Alias, ma, vault.index.aliases, .{ .name = try ma.dupeSentinel(u8, alias, 0), .collection = id });
+            if (eq(target, path)) index.aliases = try append(store.Alias, scratch, index.aliases, .{ .name = alias, .collection = id });
         }
         const items = try objectPaths(try sourceProperty(scratch, bus, owner, path, .collection, "Items"));
         for (items) |item_value| {
-            if (vault.index.items.len >= 4096) return error.LimitsExceeded;
+            if (index.items.len >= 4096) return error.LimitsExceeded;
             const item_path = item_value.object_path;
             const item_label = try sourceProperty(scratch, bus, owner, item_path, .item, "Label");
             if (item_label != .string) return error.InvalidSourceReply;
@@ -915,20 +913,19 @@ pub fn importAt(io: std.Io, directory: [:0]const u8, password: []const u8) !void
             const secret = (reply.message().read(struct { Secret }) catch return error.InvalidSourceSecret)[0];
             if (secret[1].value.len != 0 or !eq(secret[0].value, session)) return error.InvalidSourceSecret;
             if (secret[2].value.len > 1024 * 1024) return error.LimitsExceeded;
-            const item_id = vault.index.next_id;
-            vault.index.next_id += 1;
-            vault.index.items = try append(store.Item, ma, vault.index.items, .{ .id = item_id, .collection = id, .label = try ma.dupeSentinel(u8, item_label.string, 0), .attributes = try Server.attributes(ma, attrs), .created = now(), .modified = now() });
+            const item_id = index.next_id;
+            index.next_id += 1;
+            index.items = try append(store.Item, scratch, index.items, .{ .id = item_id, .collection = id, .label = try scratch.dupeSentinel(u8, item_label.string, 0), .attributes = try Server.attributes(scratch, attrs), .created = now(), .modified = now() });
             const content_type = try scratch.dupeSentinel(u8, secret[3], 0);
             try vault.setValue(item_id, secret[2].value, content_type);
         }
     }
-    if (vault.index.collections.len != 0 and vault.index.aliases.len == 0) vault.index.aliases = try append(store.Alias, ma, vault.index.aliases, .{ .name = "default", .collection = vault.index.collections[0].id });
-    try vault.save();
+    if (index.collections.len != 0 and index.aliases.len == 0) index.aliases = try append(store.Alias, scratch, index.aliases, .{ .name = "default", .collection = index.collections[0].id });
+    try vault.save(index);
 }
 pub fn runImport(allocator: std.mem.Allocator, io: std.Io) !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
-    const a = allocator;
-    const dialog = try createImportDialog(a);
+    const dialog = try createImportDialog(allocator);
     defer dialog.destroy();
     while (true) {
         dialog.run();
@@ -937,9 +934,9 @@ pub fn runImport(allocator: std.mem.Allocator, io: std.Io) !void {
     }
     const base = @import("desktop-paths.zig").dataHome();
     @import("desktop-paths.zig").makeDirectories(base, 0o700) catch return error.CreateDirectory;
-    const directory = try std.fmt.allocPrintSentinel(a, "{s}/desktop-secrets", .{base}, 0);
-    defer a.free(directory);
-    try importAt(io, directory, dialog.entry.?.buffer.value());
+    const directory = try std.fmt.allocPrintSentinel(allocator, "{s}/desktop-secrets", .{base}, 0);
+    defer allocator.free(directory);
+    try importAt(allocator, io, directory, dialog.entry.?.buffer.value());
     std.debug.print("Imported Secret Service collections. The source keyring is unchanged.\n", .{});
 }
 pub fn createImportDialog(allocator: std.mem.Allocator) !*Dialog {

@@ -74,12 +74,12 @@ fn checkDialogs(allocator: std.mem.Allocator) !void {
     std.debug.print("Secret Service dialogs: creation/import confirmation, focus, Unicode edits, mismatch and cancellation clearing passed\n", .{});
 }
 pub fn main(init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = std.heap.ArenaAllocator.init(init.gpa);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
     if (args.len == 2 and std.mem.eql(u8, args[1], "dialogs")) return checkDialogs(init.gpa);
     if (args.len == 3 and std.mem.eql(u8, args[1], "import")) {
-        return secrets.importAt(init.io, try arena.allocator().dupeSentinel(u8, args[2], 0), "integration-vault-password");
+        return secrets.importAt(init.gpa, init.io, try arena.allocator().dupeSentinel(u8, args[2], 0), "integration-vault-password");
     }
     if (args.len != 2) return error.ExpectedDirectory;
     const mode = std.c.getenv("DESKTOP_SECRETS_FIXTURE_PROMPTS");
