@@ -11,6 +11,7 @@ const intervals = [_]u32{ 1, 10, 10, 240, 240, 240 }; // Half-second ticks.
 
 pub const Service = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     panel: *panel.Service,
     sources: [kinds.len]Source = undefined,
     timer: u32 = 0,
@@ -98,10 +99,10 @@ const Source = struct {
         const demo = std.mem.eql(u8, u.env("WB_PANEL_DEMO") orelse "", "1");
         const result = blk: {
             if (self.index == 0) {
-                if (self.monitor == null) self.monitor = data.Monitor.init(alloc) catch break :blk null;
-                break :blk self.monitor.?.sample(alloc, demo) catch null;
+                if (self.monitor == null) self.monitor = data.Monitor.init(alloc, self.owner.io) catch break :blk null;
+                break :blk self.monitor.?.sample(alloc, self.owner.io, demo) catch null;
             }
-            break :blk data.sample(alloc, kinds[self.index], demo) catch null;
+            break :blk data.sample(alloc, self.owner.io, kinds[self.index], demo) catch null;
         };
         // Transfer the arena and its typed update to the main thread.
         if (result) |value| {

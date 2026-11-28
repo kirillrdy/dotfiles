@@ -37,14 +37,14 @@ fn append(comptime T: type, allocator: std.mem.Allocator, old: []const T, value:
     return out;
 }
 fn editEntry(comptime T: type, allocator: std.mem.Allocator, entries: *[]const T, id: u64) !*T {
-    for (entries.*, 0..) |entry, i| {
-        if (entry.id == id) {
-            const copy = try allocator.dupe(T, entries.*);
-            entries.* = copy;
-            return &copy[i];
-        }
-    }
-    return error.NoSuchObject;
+    const i = positionOfId(T, entries.*, id) orelse return error.NoSuchObject;
+    const copy = try allocator.dupe(T, entries.*);
+    entries.* = copy;
+    return &copy[i];
+}
+fn positionOfId(comptime T: type, entries: []const T, id: u64) ?usize {
+    for (entries, 0..) |entry, i| if (entry.id == id) return i;
+    return null;
 }
 fn without(comptime T: type, allocator: std.mem.Allocator, old: []const T, id: u64) ![]const T {
     var out: std.ArrayList(T) = .empty;
@@ -57,6 +57,7 @@ fn without(comptime T: type, allocator: std.mem.Allocator, old: []const T, id: u
 const Secret = struct { dbus.ObjectPath, dbus.Bytes, dbus.Bytes, []const u8 };
 const SecretMap = dbus.Dict(dbus.ObjectPath, Secret);
 const Attributes = dbus.Dict([]const u8, []const u8);
+const Attribute = Attributes.Entry;
 const Properties = dbus.Dict([]const u8, dbus.Value);
 /// Arguments of the expected signature, or InvalidArgs.
 fn read(message: *const dbus.Message, comptime T: type) !T {
@@ -67,15 +68,26 @@ fn lookup(properties: Properties, key: []const u8) ?dbus.Value {
     return null;
 }
 /// An `a{ss}` property value as attributes.
-fn attributeValue(allocator: std.mem.Allocator, value: dbus.Value) !Attributes {
+fn attributeValue(allocator: std.mem.Allocator, value: dbus.Value) ![]const Attribute {
     const array = switch (value) {
         .array => |array| array,
         else => return error.InvalidArgs,
     };
     if (!eq(array.element, "{ss}")) return error.InvalidArgs;
-    const entries = try allocator.alloc(Attributes.Entry, array.items.len);
+    if (array.items.len > 256) return error.LimitsExceeded;
+    const entries = try allocator.alloc(Attribute, array.items.len);
     for (entries, array.items) |*entry, item| entry.* = .{ .key = item.dict_entry[0].string, .value = item.dict_entry[1].string };
-    return .{ .entries = entries };
+    try validateAttributes(entries);
+    return entries;
+}
+fn validateAttributes(entries: []const Attribute) !void {
+    if (entries.len > 256) return error.LimitsExceeded;
+    for (entries, 0..) |entry, i| {
+        if (entry.key.len > 4096 or entry.value.len > 16384) return error.LimitsExceeded;
+        for (entries[0..i]) |old| {
+            if (eq(old.key, entry.key)) return error.InvalidArgs;
+        }
+    }
 }
 const Object = struct {
     server: *Server,
@@ -112,16 +124,12 @@ const Server = struct {
         return null;
     }
     fn collection(self: *Server, id: u64) ?*const Collection {
-        for (self.vault.index().collections) |*col| {
-            if (col.id == id) return col;
-        }
-        return null;
+        const collections = self.vault.index().collections;
+        return &collections[positionOfId(Collection, collections, id) orelse return null];
     }
     fn findItem(self: *Server, id: u64) ?*const Item {
-        for (self.vault.index().items) |*item| {
-            if (item.id == id) return item;
-        }
-        return null;
+        const items = self.vault.index().items;
+        return &items[positionOfId(Item, items, id) orelse return null];
     }
     fn objectPath(self: *Server, kind: Kind, id: u64) []const u8 {
         for (self.objects.items) |o| {
@@ -250,8 +258,7 @@ const Server = struct {
         if (existing != 0) return existing;
         var index = self.vault.index();
         if (index.collections.len >= 64) return error.LimitsExceeded;
-        const id = index.next_id;
-        index.next_id += 1;
+        const id = index.takeId();
         index.collections = try append(Collection, allocator, index.collections, .{ .id = id, .label = label, .created = now(), .modified = now() });
         if (alias.len != 0) try setAlias(allocator, &index, alias, id);
         try self.vault.set(index, &.{});
@@ -286,18 +293,6 @@ const Server = struct {
         } else v.bytes;
         return .{ .{ .value = s.path }, .{ .value = iv }, .{ .value = data }, v.content_type };
     }
-    fn attributes(allocator: std.mem.Allocator, v: Attributes) ![]const Attribute {
-        if (v.entries.len > 256) return error.LimitsExceeded;
-        var out: std.ArrayList(Attribute) = .empty;
-        for (v.entries) |entry| {
-            if (entry.key.len > 4096 or entry.value.len > 16384) return error.LimitsExceeded;
-            for (out.items) |old| {
-                if (eq(old.key, entry.key)) return error.InvalidArgs;
-            }
-            try out.append(allocator, .{ .key = entry.key, .value = entry.value });
-        }
-        return out.toOwnedSlice(allocator);
-    }
     fn matches(item: Item, query: []const Attribute) bool {
         for (query) |q| {
             var found = false;
@@ -311,17 +306,13 @@ const Server = struct {
         }
         return true;
     }
-    fn paths(allocator: std.mem.Allocator, list: []const []const u8) !dbus.Value {
-        const items = try allocator.alloc(dbus.Value, list.len);
-        for (items, list) |*item, path| item.* = .{ .object_path = path };
-        return .{ .array = .{ .element = "o", .items = items } };
-    }
     /// A property's current value, allocated from `allocator`; null for unknown properties.
     fn property(self: *Server, o: *Object, prop: []const u8, allocator: std.mem.Allocator) !?dbus.Value {
         if (o.kind == .service and eq(prop, "Collections")) {
-            var list: std.ArrayList([]const u8) = .empty;
-            for (self.vault.index().collections) |col| try list.append(allocator, self.objectPath(.collection, col.id));
-            return try paths(allocator, list.items);
+            const collections = self.vault.index().collections;
+            const paths = try allocator.alloc(dbus.Value, collections.len);
+            for (paths, collections) |*path, col| path.* = .{ .object_path = self.objectPath(.collection, col.id) };
+            return .{ .array = .{ .element = "o", .items = paths } };
         }
         const col = if (o.kind == .collection) self.collection(o.id) else null;
         const item = if (o.kind == .item) self.findItem(o.id) else null;
@@ -340,11 +331,11 @@ const Server = struct {
             return .{ .array = .{ .element = "{ss}", .items = entries } };
         }
         if (col != null and eq(prop, "Items")) {
-            var list: std.ArrayList([]const u8) = .empty;
+            var paths: std.ArrayList(dbus.Value) = .empty;
             for (self.vault.index().items) |v| {
-                if (v.collection == o.id) try list.append(allocator, self.objectPath(.item, v.id));
+                if (v.collection == o.id) try paths.append(allocator, .{ .object_path = self.objectPath(.item, v.id) });
             }
-            return try paths(allocator, list.items);
+            return .{ .array = .{ .element = "o", .items = paths.items } };
         }
         return null;
     }
@@ -484,7 +475,8 @@ const Server = struct {
             return bus.reply(message, .{ dbus.ObjectPath{ .value = self.objectPath(.collection, id) }, dbus.ObjectPath{ .value = "/" } });
         }
         if (eq(verb, "SearchItems")) {
-            const query = try attributes(allocator, (try read(message, struct { Attributes }))[0]);
+            const query = (try read(message, struct { Attributes }))[0].entries;
+            try validateAttributes(query);
             var found: std.ArrayList(dbus.ObjectPath) = .empty;
             for (self.vault.index().items) |item| {
                 if ((o.kind == .service or item.collection == o.id) and matches(item, query)) try found.append(allocator, .{ .value = self.objectPath(.item, item.id) });
@@ -495,20 +487,20 @@ const Server = struct {
             return if (self.vault.key == null) bus.reply(message, .{ none, @as([]const dbus.ObjectPath, found.items) }) else bus.reply(message, .{ @as([]const dbus.ObjectPath, found.items), none });
         }
         if (eq(verb, "Lock") or eq(verb, "Unlock")) {
+            const locking = eq(verb, "Lock");
             const requested = (try read(message, struct { []const dbus.ObjectPath }))[0];
-            var ids: std.ArrayList(Target) = .empty;
+            var pending: std.ArrayList(Target) = .empty;
             var found: std.ArrayList(dbus.ObjectPath) = .empty;
             for (requested) |path| {
                 const target = self.object(path.value, .collection) orelse self.object(path.value, .item) orelse continue;
-                try ids.append(allocator, .{ .kind = target.kind, .id = target.id });
-                if (eq(verb, "Lock") or self.vault.key != null) try found.append(allocator, .{ .value = target.path });
+                if (locking or self.vault.key != null) {
+                    try found.append(allocator, .{ .value = target.path });
+                } else {
+                    try pending.append(allocator, .{ .kind = target.kind, .id = target.id });
+                }
             }
-            var prompt_path: []const u8 = "/";
-            if (eq(verb, "Lock")) {
-                if (ids.items.len != 0) self.lock();
-            } else if (ids.items.len != 0 and self.vault.key == null) {
-                prompt_path = (try self.newPrompt(owner, false, "", "", ids.items)).path;
-            }
+            if (locking and found.items.len != 0) self.lock();
+            const prompt_path = if (pending.items.len == 0) "/" else (try self.newPrompt(owner, false, "", "", pending.items)).path;
             return bus.reply(message, .{ @as([]const dbus.ObjectPath, found.items), dbus.ObjectPath{ .value = prompt_path } });
         }
         if (eq(verb, "GetSecrets")) {
@@ -531,7 +523,7 @@ const Server = struct {
                 else => return error.InvalidArgs,
             };
             if (label.len > 4096) return error.LimitsExceeded;
-            const attrs = try attributes(allocator, try attributeValue(allocator, lookup(args[0], prefix ++ "Item.Attributes") orelse return error.InvalidArgs));
+            const attrs = try attributeValue(allocator, lookup(args[0], prefix ++ "Item.Attributes") orelse return error.InvalidArgs);
             const decoded = try self.decode(args[1], owner, allocator);
             var id: u64 = 0;
             if (args[2]) for (index.items) |item| {
@@ -541,10 +533,7 @@ const Server = struct {
                 }
             };
             const replacing = id != 0;
-            if (!replacing) {
-                id = index.next_id;
-                index.next_id += 1;
-            }
+            if (!replacing) id = index.takeId();
             const existing = self.findItem(id);
             const entry = Item{ .id = id, .collection = o.id, .label = label, .attributes = attrs, .created = if (existing) |item| item.created else now(), .modified = now() };
             if (existing != null) {
@@ -575,13 +564,10 @@ const Server = struct {
         }
         if (eq(verb, "Delete")) {
             const id = o.id;
-            const path = try allocator.dupe(u8, o.path);
             var index = self.vault.index();
+            const collection_path = if (o.kind == .item) self.objectPath(.collection, self.findItem(id).?.collection) else root;
             if (o.kind == .item) {
-                const col = self.findItem(id).?.collection;
                 index.items = try without(Item, allocator, index.items, id);
-                try self.vault.set(index, &.{});
-                self.signal(self.objectPath(.collection, col), .collection, "ItemDeleted", path);
             } else {
                 var items: std.ArrayList(Item) = .empty;
                 for (index.items) |item| {
@@ -594,8 +580,12 @@ const Server = struct {
                     if (alias.collection != id) try aliases.append(allocator, alias);
                 }
                 index.aliases = aliases.items;
-                try self.vault.set(index, &.{});
-                self.signal(root, .service, "CollectionDeleted", path);
+            }
+            try self.vault.set(index, &.{});
+            if (o.kind == .item) {
+                self.signal(collection_path, .collection, "ItemDeleted", o.path);
+            } else {
+                self.signal(root, .service, "CollectionDeleted", o.path);
             }
             try self.reconcile();
             self.changed();
@@ -668,7 +658,7 @@ fn setPropertyValue(o: *Object, prop: []const u8, value: dbus.Value) !void {
         }
     } else if (o.kind == .item and eq(prop, "Attributes")) {
         const item = try editEntry(Item, allocator, &index.items, o.id);
-        item.attributes = try Server.attributes(allocator, try attributeValue(allocator, value));
+        item.attributes = try attributeValue(allocator, value);
         item.modified = now();
     } else return error.InvalidArgs;
     try self.vault.set(index, &.{});
@@ -705,13 +695,13 @@ fn promptResponse(data: ?*anyopaque, accepted: bool) void {
         };
         self.complete(o, false, .{ .object_path = self.objectPath(.collection, id) });
     } else {
-        var unlocked: std.ArrayList([]const u8) = .empty;
+        var unlocked: std.ArrayList(dbus.Value) = .empty;
         for (o.targets) |target| {
             const exists = if (target.kind == .collection) self.collection(target.id) != null else self.findItem(target.id) != null;
-            if (exists) unlocked.append(allocator, self.objectPath(target.kind, target.id)) catch {};
+            if (exists) unlocked.append(allocator, .{ .object_path = self.objectPath(target.kind, target.id) }) catch {};
         }
         self.changed();
-        self.complete(o, false, Server.paths(allocator, unlocked.items) catch .{ .array = .{ .element = "o", .items = &.{} } });
+        self.complete(o, false, .{ .array = .{ .element = "o", .items = unlocked.items } });
     }
 }
 fn ownerChanged(data: ?*anyopaque, message: *const dbus.Message) void {
@@ -873,24 +863,28 @@ pub fn importAt(allocator: std.mem.Allocator, io: std.Io, directory: []const u8,
     }
     try saved.unlock(password);
     var index = saved.index();
+    var imported_collections: std.ArrayList(Collection) = .empty;
+    var imported_items: std.ArrayList(Item) = .empty;
+    var imported_aliases: std.ArrayList(Alias) = .empty;
+    try imported_items.appendSlice(scratch, index.items);
+    try imported_aliases.appendSlice(scratch, index.aliases);
     var values: std.ArrayList(Value) = .empty;
     defer for (values.items) |value| std.crypto.secureZero(u8, @constCast(value.bytes));
     for (collections) |path_value| {
         const path = path_value.object_path;
         const label = try sourceProperty(scratch, bus, owner, path, .collection, "Label");
         if (label != .string) return error.InvalidSourceReply;
-        const id = index.next_id;
-        index.next_id += 1;
-        index.collections = try append(Collection, scratch, index.collections, .{ .id = id, .label = label.string, .created = now(), .modified = now() });
+        const id = index.takeId();
+        try imported_collections.append(scratch, .{ .id = id, .label = label.string, .created = now(), .modified = now() });
         for ([_][]const u8{ "default", "login" }) |alias| {
             const reply = try sourceCall(bus, owner, root, iface(.service), "ReadAlias", .{alias});
             defer reply.deinit();
             const target = (reply.message().read(struct { dbus.ObjectPath }) catch return error.InvalidSourceReply)[0].value;
-            if (eq(target, path)) index.aliases = try append(Alias, scratch, index.aliases, .{ .name = alias, .collection = id });
+            if (eq(target, path)) try imported_aliases.append(scratch, .{ .name = alias, .collection = id });
         }
         const items = try objectPaths(try sourceProperty(scratch, bus, owner, path, .collection, "Items"));
         for (items) |item_value| {
-            if (index.items.len >= 4096) return error.LimitsExceeded;
+            if (imported_items.items.len >= 4096) return error.LimitsExceeded;
             const item_path = item_value.object_path;
             const item_label = try sourceProperty(scratch, bus, owner, item_path, .item, "Label");
             if (item_label != .string) return error.InvalidSourceReply;
@@ -900,16 +894,20 @@ pub fn importAt(allocator: std.mem.Allocator, io: std.Io, directory: []const u8,
             const secret = (reply.message().read(struct { Secret }) catch return error.InvalidSourceSecret)[0];
             if (secret[1].value.len != 0 or !eq(secret[0].value, session)) return error.InvalidSourceSecret;
             if (secret[2].value.len > 1024 * 1024) return error.LimitsExceeded;
-            const item_id = index.next_id;
-            index.next_id += 1;
-            index.items = try append(Item, scratch, index.items, .{ .id = item_id, .collection = id, .label = item_label.string, .attributes = try Server.attributes(scratch, attrs), .created = now(), .modified = now() });
+            const item_id = index.takeId();
+            try imported_items.append(scratch, .{ .id = item_id, .collection = id, .label = item_label.string, .attributes = attrs, .created = now(), .modified = now() });
             const content_type = try scratch.dupe(u8, secret[3]);
             const value = try values.addOne(scratch);
             value.* = .{ .id = item_id, .bytes = &.{}, .content_type = content_type };
             value.bytes = try scratch.dupe(u8, secret[2].value);
         }
     }
-    if (index.collections.len != 0 and index.aliases.len == 0) index.aliases = try append(Alias, scratch, index.aliases, .{ .name = "default", .collection = index.collections[0].id });
+    if (imported_collections.items.len != 0 and imported_aliases.items.len == 0) {
+        try imported_aliases.append(scratch, .{ .name = "default", .collection = imported_collections.items[0].id });
+    }
+    index.collections = imported_collections.items;
+    index.items = imported_items.items;
+    index.aliases = imported_aliases.items;
     try saved.set(index, values.items);
 }
 pub fn runImport(allocator: std.mem.Allocator, io: std.Io) !void {
@@ -942,11 +940,21 @@ const Aead = std.crypto.aead.chacha_poly.XChaCha20Poly1305;
 const file_name = "secrets.json";
 const max_size = 16 * 1024 * 1024;
 
-const Attribute = struct { key: []const u8, value: []const u8 };
 const Collection = struct { id: u64, label: []const u8, created: u64, modified: u64 };
 const Item = struct { id: u64, collection: u64, label: []const u8, attributes: []const Attribute, created: u64, modified: u64 };
 const Alias = struct { name: []const u8, collection: u64 };
-const Index = struct { next_id: u64 = 1, collections: []const Collection = &.{}, items: []const Item = &.{}, aliases: []const Alias = &.{} };
+const Index = struct {
+    next_id: u64 = 1,
+    collections: []const Collection = &.{},
+    items: []const Item = &.{},
+    aliases: []const Alias = &.{},
+
+    fn takeId(self: *Index) u64 {
+        const id = self.next_id;
+        self.next_id += 1;
+        return id;
+    }
+};
 const Value = struct { id: u64, bytes: []const u8, content_type: []const u8 };
 
 const File = struct {
@@ -1080,10 +1088,7 @@ const Vault = struct {
 };
 
 fn find(values: []const Value, id: u64) ?Value {
-    for (values) |value| {
-        if (value.id == id) return value;
-    }
-    return null;
+    return values[positionOfId(Value, values, id) orelse return null];
 }
 
 fn wipeFree(allocator: std.mem.Allocator, bytes: []u8) void {

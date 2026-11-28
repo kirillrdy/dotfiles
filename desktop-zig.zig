@@ -24,6 +24,7 @@ var current: ?*Session = null;
 
 const Session = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     /// The shared session connection that owns org.dotfiles.Desktop.
     bus: *loop.Source,
     devices: ?*device_service.Service = null,
@@ -65,7 +66,7 @@ const Session = struct {
             std.log.warn("PolicyKit agent: {s}; will retry", .{@errorName(err)});
             break :blk null;
         };
-        self.data = .{ .allocator = self.allocator, .devices = self.devices.?, .panel = self.panels.? };
+        self.data = .{ .allocator = self.allocator, .io = self.io, .devices = self.devices.?, .panel = self.panels.? };
         self.data.start();
         self.data_started = true;
         self.inactivity = try idle.Service.create(self.allocator, .{ .session_inhibit = true, .wallpaper = self.image.? });
@@ -172,7 +173,6 @@ fn dispatch(self: *Session, args: []const []const u8) !void {
 pub fn main(init: std.process.Init) !void {
     const a = init.gpa;
     try @import("desktop-runtime.zig").setup(a);
-    @import("desktop-util.zig").io = init.io;
     const arguments = init.arena.allocator();
     var args = try init.minimal.args.toSlice(arguments);
     var managed_session = false;
@@ -207,7 +207,7 @@ pub fn main(init: std.process.Init) !void {
     }
     const name = std.fs.path.basename(args[0]);
     // Executable aliases implement the portal and SSH askpass protocols.
-    if (std.mem.eql(u8, name, "xdg-desktop-portal")) return @import("desktop-portal.zig").run(a);
+    if (std.mem.eql(u8, name, "xdg-desktop-portal")) return @import("desktop-portal.zig").run(a, init.io);
     if (std.mem.eql(u8, name, "desktop-askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args));
     if (std.mem.eql(u8, name, "grim") or std.mem.eql(u8, name, "slurp")) {
         const forwarded = try arguments.dupe([]const u8, args);
@@ -221,7 +221,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "dm")) {
         if (args.len != 2) return error.InvalidDmArguments;
-        return @import("desktop-dm.zig").run(a);
+        return @import("desktop-dm.zig").run(a, init.io);
     }
     if (std.mem.eql(u8, args[1], "greeter")) {
         // The display manager passes the descriptor of its control socket.
@@ -257,7 +257,7 @@ pub fn main(init: std.process.Init) !void {
         if (args.len != 2) return error.InvalidBatteryMonitorArguments;
         return @import("desktop-battery-monitor.zig").run(a);
     }
-    if (std.mem.eql(u8, args[1], "portal")) return @import("desktop-portal.zig").run(a);
+    if (std.mem.eql(u8, args[1], "portal")) return @import("desktop-portal.zig").run(a, init.io);
     if (std.mem.eql(u8, args[1], "power")) return @import("desktop-power.zig").runArgs(init, args[1..]);
     if (std.mem.eql(u8, args[1], "askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args[1..]));
     if (std.mem.eql(u8, args[1], "screenshot")) return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, args[1..]));
@@ -271,7 +271,7 @@ pub fn main(init: std.process.Init) !void {
     if ((bus.connection.requestName(shell_name, 4) catch return error.NoSessionBus) != 1) return forward(a, args[1..]);
     var introspection = try dbus.Introspection.parse(a, shell_xml);
     defer introspection.deinit();
-    var session = Session{ .allocator = a, .bus = bus, .media = .init(a), .dialogs = .{ .allocator = a, .io = init.io } };
+    var session = Session{ .allocator = a, .io = init.io, .bus = bus, .media = .init(a), .dialogs = .{ .allocator = a, .io = init.io } };
     defer session.deinit();
     const exported = try bus.connection.exportObject(shell_path, &introspection.interfaces[0], &command, null, &session);
     defer bus.connection.unregister(exported);

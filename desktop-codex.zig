@@ -9,7 +9,7 @@ fn unavailable(message: []const u8) usage.Report {
 }
 
 /// Reads `rate_limit.{primary,secondary}_window` from the usage response.
-pub fn parseUsage(data: u.Value) [2]?usage.Window {
+pub fn parseUsage(data: std.json.Value) [2]?usage.Window {
     const limits = u.get(data, "rate_limit");
     var windows: [2]?usage.Window = .{ null, null };
     for (&windows, [_][]const u8{ "primary_window", "secondary_window" }) |*window, key| {
@@ -20,12 +20,12 @@ pub fn parseUsage(data: u.Value) [2]?usage.Window {
     return windows;
 }
 
-pub fn read(a: u.Allocator) usage.Report {
-    return fetch(a) catch unavailable("Codex usage is unavailable; check login and network");
+pub fn read(a: std.mem.Allocator, io: std.Io) usage.Report {
+    return fetch(a, io) catch unavailable("Codex usage is unavailable; check login and network");
 }
-fn fetch(a: u.Allocator) !usage.Report {
+fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
     const dir = u.env("CODEX_HOME") orelse try u.fmt(a, "{s}/.codex", .{u.env("HOME") orelse return error.NoHome});
-    const auth = try u.parse(a, try u.read(a, try u.fmt(a, "{s}/auth.json", .{dir})));
+    const auth = try u.parse(a, try u.read(a, io, try u.fmt(a, "{s}/auth.json", .{dir})));
     const nested = u.get(auth, "tokens");
     const tokens = if (nested == .object) nested else auth;
     const token = u.string(u.get(tokens, "access_token"));
@@ -36,7 +36,7 @@ fn fetch(a: u.Allocator) !usage.Report {
         try usage.bearerHeader(a, token),
         .{ .name = "ChatGPT-Account-Id", .value = account },
     };
-    const response = try http.get(a, u.io, .{
+    const response = try http.get(a, io, .{
         .url = "https://chatgpt.com/backend-api/wham/usage",
         .headers = headers[0..if (account.len > 0) 2 else 1],
     });

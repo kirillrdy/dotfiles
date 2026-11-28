@@ -4,7 +4,6 @@
 const std = @import("std");
 const u = @import("desktop-util.zig");
 const panel = @import("desktop-panel-data.zig");
-const A = u.Allocator;
 
 pub const Window = struct { used: f64, reset_at: ?i64 = null };
 pub const Report = struct {
@@ -23,18 +22,18 @@ pub fn unavailable(name: []const u8, message: []const u8) Report {
 }
 
 /// Validates a bearer token against header injection and formats an Authorization header.
-pub fn bearerHeader(a: A, token: []const u8) !std.http.Header {
+pub fn bearerHeader(a: std.mem.Allocator, token: []const u8) !std.http.Header {
     if (std.mem.indexOfAny(u8, token, "\r\n") != null) return error.InvalidToken;
     return .{ .name = "Authorization", .value = try u.fmt(a, "Bearer {s}", .{token}) };
 }
 
 /// Accepts JSON epoch seconds within a range that converts and formats safely.
-pub fn stamp(value: u.Value) ?i64 {
+pub fn stamp(value: std.json.Value) ?i64 {
     const n = u.number(value) orelse return null;
     return if (@abs(n) < 1e12) @intFromFloat(n) else null;
 }
 
-pub fn resetText(a: A, reset_at: ?i64, now: i64) ![]const u8 {
+pub fn resetText(a: std.mem.Allocator, reset_at: ?i64, now: i64) ![]const u8 {
     const reset = reset_at orelse return "Resets: —";
     const m: u64 = @intCast(@max(0, @divFloor(reset - now, 60)));
     if (m >= 1440) return u.fmt(a, "Resets in {d}d {d}h", .{ m / 1440, m / 60 % 24 });
@@ -52,7 +51,7 @@ pub fn pace(reset_at: ?i64, now: i64, period: i64) ?f64 {
     return std.math.clamp(left / @as(f64, @floatFromInt(period)) * 100, 0, 100);
 }
 
-pub fn update(a: A, report: Report, icon: []const u8, now: i64) !panel.Update {
+pub fn update(a: std.mem.Allocator, report: Report, icon: []const u8, now: i64) !panel.Update {
     const items = try a.alloc(panel.Item, 1);
     items[0] = .{ .icon = icon, .text = "—" };
     if (report.@"error".len != 0 or (report.windows[0] == null and report.windows[1] == null)) {

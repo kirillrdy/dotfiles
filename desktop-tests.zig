@@ -22,12 +22,12 @@ test "integration: Linux virtual files are read despite reporting size zero" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
     if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const a = std.testing.allocator;
-    const stat = try u.read(a, "/proc/stat");
+    const stat = try u.read(a, std.testing.io, "/proc/stat");
     defer a.free(stat);
     try expect(std.mem.startsWith(u8, stat, "cpu "));
     const counters = panel.cpuCounters(stat);
     try expect(counters[0] + counters[2] + counters[3] > 0);
-    const meminfo = try u.read(a, "/proc/meminfo");
+    const meminfo = try u.read(a, std.testing.io, "/proc/meminfo");
     defer a.free(meminfo);
     try expect(panel.memoryUsage(meminfo).total > 0.001);
 }
@@ -95,7 +95,7 @@ test "usage reset countdown handles missing invalid and past timestamps" {
     try strings("Resets in 2h 15m", try usage.resetText(a, 1000 + 2 * 3600 + 15 * 60, 1000));
     try strings("Resets in now", try usage.resetText(a, 900, 1000));
     try strings("Resets: —", try usage.resetText(a, null, 1000));
-    for ([_]u.Value{ .null, .{ .bool = true }, u.str("1000"), u.num(std.math.nan(f64)), u.num(std.math.inf(f64)), u.num(1e13) }) |value| try equal(@as(?i64, null), usage.stamp(value));
+    for ([_]std.json.Value{ .null, .{ .bool = true }, u.str("1000"), u.num(std.math.nan(f64)), u.num(std.math.inf(f64)), u.num(1e13) }) |value| try equal(@as(?i64, null), usage.stamp(value));
     try equal(@as(?i64, 1000), usage.stamp(u.num(1000.5)));
 }
 

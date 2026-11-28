@@ -1,10 +1,6 @@
 const std = @import("std");
-pub const Value = std.json.Value;
-pub const Allocator = std.mem.Allocator;
-// Executables provide their process I/O implementation; tests use the runner's.
-pub var io: std.Io = if (@import("builtin").is_test) std.testing.io else undefined;
 pub const libc = @import("desktop-libc.zig");
-pub fn sleep(nanoseconds: u64) void {
+pub fn sleep(io: std.Io, nanoseconds: u64) void {
     io.sleep(.fromNanoseconds(nanoseconds), .awake) catch {};
 }
 fn micros(clock: std.c.clockid_t) i64 {
@@ -20,40 +16,40 @@ pub fn monotonicTime() i64 {
 pub fn realTime() i64 {
     return micros(.REALTIME);
 }
-pub fn timestamp() i64 {
+pub fn timestamp(io: std.Io) i64 {
     return std.Io.Clock.real.now(io).toSeconds();
 }
 pub const Timer = struct {
     started: std.Io.Timestamp,
-    pub fn start() Timer {
+    pub fn start(io: std.Io) Timer {
         return .{ .started = std.Io.Clock.awake.now(io) };
     }
-    pub fn read(self: Timer) u64 {
+    pub fn read(self: Timer, io: std.Io) u64 {
         return @intCast(self.started.untilNow(io, .awake).toNanoseconds());
     }
 };
-pub fn object() Value {
+pub fn object() std.json.Value {
     return .{ .object = .empty };
 }
-pub fn array(a: Allocator) Value {
-    return .{ .array = std.array_list.Managed(Value).init(a) };
+pub fn array(a: std.mem.Allocator) std.json.Value {
+    return .{ .array = std.array_list.Managed(std.json.Value).init(a) };
 }
-pub fn put(a: Allocator, o: *Value, key: []const u8, value: Value) !void {
+pub fn put(a: std.mem.Allocator, o: *std.json.Value, key: []const u8, value: std.json.Value) !void {
     try o.object.put(a, key, value);
 }
-pub fn str(s: []const u8) Value {
+pub fn str(s: []const u8) std.json.Value {
     return .{ .string = s };
 }
-pub fn num(n: f64) Value {
+pub fn num(n: f64) std.json.Value {
     return .{ .float = n };
 }
-pub fn get(o: Value, key: []const u8) Value {
+pub fn get(o: std.json.Value, key: []const u8) std.json.Value {
     return if (o == .object) o.object.get(key) orelse .null else .null;
 }
-pub fn string(v: Value) []const u8 {
+pub fn string(v: std.json.Value) []const u8 {
     return if (v == .string) v.string else "";
 }
-pub fn number(v: Value) ?f64 {
+pub fn number(v: std.json.Value) ?f64 {
     const n: f64 = switch (v) {
         .integer => |n| @floatFromInt(n),
         .float => |n| n,
@@ -61,10 +57,10 @@ pub fn number(v: Value) ?f64 {
     };
     return if (std.math.isFinite(n)) n else null;
 }
-pub fn fmt(a: Allocator, comptime format: []const u8, args: anytype) ![]const u8 {
+pub fn fmt(a: std.mem.Allocator, comptime format: []const u8, args: anytype) ![]const u8 {
     return std.fmt.allocPrint(a, format, args);
 }
-pub fn read(a: Allocator, path: []const u8) ![]const u8 {
+pub fn read(a: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
     const file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
     // procfs/sysfs files can report size zero while still returning data.
@@ -74,7 +70,7 @@ pub fn read(a: Allocator, path: []const u8) ![]const u8 {
         else => |e| return e,
     };
 }
-pub fn exists(path: []const u8) bool {
+pub fn exists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
@@ -126,10 +122,10 @@ pub fn eq(a: []const u8, b: []const u8) bool {
 pub fn trim(s: []const u8) []const u8 {
     return std.mem.trim(u8, s, " \n\r\t");
 }
-pub fn parse(a: Allocator, s: []const u8) !Value {
-    return (try std.json.parseFromSlice(Value, a, s, .{ .allocate = .alloc_always })).value;
+pub fn parse(a: std.mem.Allocator, s: []const u8) !std.json.Value {
+    return (try std.json.parseFromSlice(std.json.Value, a, s, .{ .allocate = .alloc_always })).value;
 }
-pub fn localTime(a: Allocator, stamp: i64, comptime format: [:0]const u8) ![]const u8 {
+pub fn localTime(a: std.mem.Allocator, stamp: i64, comptime format: [:0]const u8) ![]const u8 {
     const value = @import("desktop-datetime.zig").DateTime.fromUnix(stamp) catch return error.InvalidTime;
     var buffer: [128]u8 = undefined;
     return a.dupe(u8, value.format(&buffer, format) catch return error.InvalidTime);

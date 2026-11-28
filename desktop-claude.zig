@@ -2,8 +2,6 @@
 //! only read; Claude Code itself owns refreshing and rotating it.
 const std = @import("std");
 const u = @import("desktop-util.zig");
-const A = u.Allocator;
-const V = u.Value;
 const http = @import("desktop-http.zig");
 const usage = @import("desktop-usage.zig");
 
@@ -46,7 +44,7 @@ pub fn parseTimestamp(s: []const u8) ?i64 {
 /// Reads the OAuth usage response. A null window means no usage has started it
 /// yet; at least one window object is required so an unexpected response is
 /// not shown as a full budget.
-pub fn parseUsage(data: V) [2]?usage.Window {
+pub fn parseUsage(data: std.json.Value) [2]?usage.Window {
     const keys = [_][]const u8{ "five_hour", "seven_day" };
     var windows: [2]?usage.Window = .{ null, null };
     if (u.get(data, keys[0]) != .object and u.get(data, keys[1]) != .object) return windows;
@@ -71,7 +69,7 @@ fn unavailable(message: []const u8) usage.Report {
 
 /// Shows the last good report while rate limited, so a 429 does not blank
 /// the widget; without one, explains when the next request will be made.
-pub fn rateLimited(a: A, previous: ?usage.Report, until: i64) !usage.Report {
+pub fn rateLimited(a: std.mem.Allocator, previous: ?usage.Report, until: i64) !usage.Report {
     var report = previous orelse return unavailable(try u.fmt(a, "Claude usage is rate limited; retrying at {s}", .{try u.localTime(a, until, "%H:%M")}));
     report.retry_at = until;
     return report;
@@ -81,16 +79,16 @@ pub fn rateLimited(a: A, previous: ?usage.Report, until: i64) !usage.Report {
 var backoff_until: i64 = 0;
 var last: ?usage.Report = null;
 
-pub fn read(a: A) usage.Report {
-    return fetch(a) catch unavailable("Claude usage is unavailable; check login and network");
+pub fn read(a: std.mem.Allocator, io: std.Io) usage.Report {
+    return fetch(a, io) catch unavailable("Claude usage is unavailable; check login and network");
 }
-fn fetch(a: A) !usage.Report {
+fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
     // Manual refreshes land here too, so they also respect the back-off.
-    const now = u.timestamp();
+    const now = u.timestamp(io);
     if (now < backoff_until) return rateLimited(a, last, backoff_until);
     const dir = u.env("CLAUDE_CONFIG_DIR") orelse try u.fmt(a, "{s}/.claude", .{u.env("HOME") orelse return error.NoHome});
     const path = try u.fmt(a, "{s}/.credentials.json", .{dir});
-    const raw = u.read(a, path) catch return unavailable("Sign in with claude to see account usage");
+    const raw = u.read(a, io, path) catch return unavailable("Sign in with claude to see account usage");
     const oauth = u.get(try u.parse(a, raw), "claudeAiOauth");
     const token = u.string(u.get(oauth, "accessToken"));
     if (token.len == 0) return unavailable("Sign in with claude to see account usage");
@@ -101,7 +99,7 @@ fn fetch(a: A) !usage.Report {
         try usage.bearerHeader(a, token),
         .{ .name = "anthropic-beta", .value = "oauth-2025-04-20" },
     };
-    const response = try http.get(a, u.io, .{
+    const response = try http.get(a, io, .{
         .url = "https://api.anthropic.com/api/oauth/usage",
         .headers = &headers,
         .user_agent = "claude-code",

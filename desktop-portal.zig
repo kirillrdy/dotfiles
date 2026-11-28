@@ -75,6 +75,7 @@ const Session = struct {
 };
 const Server = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     connection: *dbus.Connection,
     introspection: dbus.Introspection,
     idle_introspection: ?dbus.Introspection = null,
@@ -606,7 +607,7 @@ fn network(server: *Server, client_info: *Client, method: []const u8, args: []co
             request.destroy();
             return err;
         };
-        request.reach = netmon.Reach.start(server.allocator, server.network, host, @intCast(number), &Request.networkFinished, request) catch |err| {
+        request.reach = netmon.Reach.start(server.allocator, server.io, server.network, host, @intCast(number), &Request.networkFinished, request) catch |err| {
             request.destroy();
             return err;
         };
@@ -704,18 +705,18 @@ fn quit(self: *Server) bool {
     self.quitting = true;
     return true;
 }
-pub fn run(allocator: std.mem.Allocator) !void {
-    return runWithAllocator(allocator);
+pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
+    return runWithAllocator(allocator, io);
 }
 /// The broker owns a single GLib main context; fixtures supply a checked allocator.
-pub fn runWithAllocator(allocator: std.mem.Allocator) !void {
+pub fn runWithAllocator(allocator: std.mem.Allocator, io: std.Io) !void {
     // Applications launched for clients must not route back through this portal.
     _ = libc.setenv("GIO_USE_PORTALS", "0", 1);
     _ = libc.setenv("GTK_USE_PORTAL", "0", 1);
     const source = loop.acquire(allocator, .session) catch return error.SessionBusUnavailable;
     defer loop.release(source);
     const connection = source.connection;
-    var server = Server{ .allocator = allocator, .connection = connection, .introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-portal.xml")) };
+    var server = Server{ .allocator = allocator, .io = io, .connection = connection, .introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-portal.xml")) };
     defer server.introspection.deinit();
     defer server.deinit();
     try server.start();

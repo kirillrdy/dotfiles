@@ -4,8 +4,6 @@
 //! before the report is returned.
 const std = @import("std");
 const u = @import("desktop-util.zig");
-const A = u.Allocator;
-const V = u.Value;
 const dbus = @import("dbus");
 const http = @import("desktop-http.zig");
 const usage = @import("desktop-usage.zig");
@@ -18,7 +16,7 @@ fn unavailable(message: []const u8) usage.Report {
 }
 
 /// Which shared window (0 = 5h, 1 = 7d) a quota bucket describes, if known.
-fn slot(bucket: V) ?usize {
+fn slot(bucket: std.json.Value) ?usize {
     const window = u.get(bucket, "window");
     // A protobuf Duration ("18000s"), or an object with seconds.
     const seconds: ?f64 = switch (window) {
@@ -67,7 +65,7 @@ fn mentionsGemini(text: []const u8) bool {
 }
 
 /// Whether a bucket (or the group holding it) belongs to the Gemini models.
-fn isGemini(group: V, bucket: V) bool {
+fn isGemini(group: std.json.Value, bucket: std.json.Value) bool {
     if (mentionsGemini(u.string(u.get(group, "displayName")))) return true;
     for ([_][]const u8{ "bucketId", "modelId" }) |key| if (mentionsGemini(u.string(u.get(bucket, key)))) return true;
     return false;
@@ -79,11 +77,11 @@ fn isGemini(group: V, bucket: V) bool {
 /// Claude/GPT allowance does not hide the Gemini one. The tightest bucket of
 /// each window wins. Buckets without a recognisable window fill the 5h slot
 /// by earliest reset and the 7d slot by latest.
-pub fn parseUsage(data: V) [2]?usage.Window {
+pub fn parseUsage(data: std.json.Value) [2]?usage.Window {
     var windows: [2]?usage.Window = .{ null, null };
     var unknown: [2]?usage.Window = .{ null, null };
-    var lists: [65]V = undefined;
-    var owners: [65]V = undefined;
+    var lists: [65]std.json.Value = undefined;
+    var owners: [65]std.json.Value = undefined;
     var count: usize = 0;
     lists[count] = u.get(data, "buckets");
     owners[count] = .null;
@@ -127,7 +125,7 @@ pub fn parseUsage(data: V) [2]?usage.Window {
 }
 
 /// agy stores a Go `oauth2.Token` as JSON, optionally base64 encoded by go-keyring.
-pub fn parseToken(a: A, raw: []const u8, now: i64) !union(enum) { token: []const u8, expired } {
+pub fn parseToken(a: std.mem.Allocator, raw: []const u8, now: i64) !union(enum) { token: []const u8, expired } {
     var text = raw;
     const prefix = "go-keyring-base64:";
     if (std.mem.startsWith(u8, text, prefix)) {
@@ -155,7 +153,7 @@ fn call(bus: *dbus.Connection, path: []const u8, interface: []const u8, member: 
 }
 
 /// The raw keyring value for service=gemini, username=antigravity.
-fn secret(a: A) ![]const u8 {
+fn secret(a: std.mem.Allocator) ![]const u8 {
     const bus = dbus.Connection.open(a, .session) catch return error.NoSessionBus;
     defer bus.close();
     const item = blk: {
@@ -180,10 +178,10 @@ fn secret(a: A) ![]const u8 {
     return a.dupe(u8, value[2].value);
 }
 
-pub fn read(a: A) usage.Report {
+pub fn read(a: std.mem.Allocator, io: std.Io) usage.Report {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const report = fetch(arena.allocator()) catch |err| switch (err) {
+    const report = fetch(arena.allocator(), io) catch |err| switch (err) {
         error.NoToken => unavailable("Sign in with agy to see account usage"),
         error.Locked => unavailable("Unlock the keyring to see Antigravity usage"),
         else => unavailable("Antigravity usage is unavailable; check login and network"),
@@ -192,8 +190,8 @@ pub fn read(a: A) usage.Report {
     copy.@"error" = a.dupe(u8, report.@"error") catch "Antigravity usage is unavailable";
     return copy;
 }
-fn fetch(a: A) !usage.Report {
-    const now = u.timestamp();
+fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
+    const now = u.timestamp(io);
     const token = switch (try parseToken(a, try secret(a), now)) {
         .token => |value| value,
         .expired => return unavailable("Antigravity login expired; run agy to refresh it"),
@@ -201,13 +199,13 @@ fn fetch(a: A) !usage.Report {
     // Never pass authorization through process arguments or log HTTP headers.
     if (std.mem.indexOfAny(u8, token, "\r\n") != null) return error.InvalidToken;
     const home = u.env("HOME") orelse return error.NoHome;
-    const project = u.trim(u.read(a, try u.fmt(a, "{s}/.gemini/antigravity-cli/cache/default_project_id.txt", .{home})) catch "");
+    const project = u.trim(u.read(a, io, try u.fmt(a, "{s}/.gemini/antigravity-cli/cache/default_project_id.txt", .{home})) catch "");
     const body = if (project.len > 0 and std.mem.indexOfAny(u8, project, "\"\\") == null) try u.fmt(a, "{{\"project\":\"{s}\"}}", .{project}) else "{}";
     const headers = [_]std.http.Header{
         .{ .name = "Authorization", .value = try u.fmt(a, "Bearer {s}", .{token}) },
         .{ .name = "Content-Type", .value = "application/json" },
     };
-    const response = try http.get(a, u.io, .{
+    const response = try http.get(a, io, .{
         .url = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
         .headers = &headers,
         .body = body,

@@ -275,6 +275,7 @@ pub const Monitor = struct {
 /// runs exactly once, on the main loop, after `start` returns.
 pub const Reach = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     monitor: ?*const Monitor,
     host: []u8,
     port: u16,
@@ -287,10 +288,10 @@ pub const Reach = struct {
     refs: u8 = 1,
 
     /// With no monitor, every host is reachable, like GIO's fallback monitor.
-    pub fn start(a: std.mem.Allocator, monitor: ?*const Monitor, host: []const u8, port: u16, done: *const fn (?*anyopaque, bool) void, context: ?*anyopaque) !*Reach {
+    pub fn start(a: std.mem.Allocator, io: std.Io, monitor: ?*const Monitor, host: []const u8, port: u16, done: *const fn (?*anyopaque, bool) void, context: ?*anyopaque) !*Reach {
         const self = try a.create(Reach);
         errdefer a.destroy(self);
-        self.* = .{ .allocator = a, .monitor = monitor, .host = try a.dupe(u8, host), .port = port, .done = done, .context = context };
+        self.* = .{ .allocator = a, .io = io, .monitor = monitor, .host = try a.dupe(u8, host), .port = port, .done = done, .context = context };
         errdefer a.free(self.host);
         const thread = try std.Thread.spawn(.{}, work, .{self});
         thread.detach();
@@ -318,8 +319,8 @@ pub const Reach = struct {
             var results: [32]std.Io.net.HostName.LookupResult = undefined;
             var queue: std.Io.Queue(std.Io.net.HostName.LookupResult) = .init(&results);
             // With room for at least 16 results, lookup never blocks on the queue.
-            if (name.lookup(u.io, &queue, .{ .port = self.port })) |_| {
-                while (queue.getOneUncancelable(u.io)) |result| switch (result) {
+            if (name.lookup(self.io, &queue, .{ .port = self.port })) |_| {
+                while (queue.getOneUncancelable(self.io)) |result| switch (result) {
                     .address => |address| if (self.count < self.addresses.len) {
                         self.addresses[self.count] = Address.fromIp(address);
                         self.count += 1;

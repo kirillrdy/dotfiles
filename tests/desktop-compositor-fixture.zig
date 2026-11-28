@@ -8,7 +8,6 @@ fn changed(data: ?*anyopaque) void {
     count.* += 1;
 }
 pub fn main(init: std.process.Init) !void {
-    d.util.io = init.io;
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     if (args.len < 2) return error.ExpectedOperation;
     var changes: usize = 0;
@@ -30,8 +29,8 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "capture")) {
         client.visible(true);
-        const timer = d.util.Timer.start();
-        while (timer.read() < 5 * std.time.ns_per_s) {
+        const timer = d.util.Timer.start(init.io);
+        while (timer.read(init.io) < 5 * std.time.ns_per_s) {
             client.tick();
             while (mainloop.iteration(false)) {}
             var complete = client.windows.items.len > 0;
@@ -40,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
                 break;
             };
             if (complete) break;
-            d.util.sleep(10 * std.time.ns_per_ms);
+            d.util.sleep(init.io, 10 * std.time.ns_per_ms);
         }
         for (client.windows.items) |window| if (window.image == null) return error.MissingCapture;
         var before: u64 = 0;
@@ -58,11 +57,11 @@ pub fn main(init: std.process.Init) !void {
         try std.testing.expectEqual(before, after);
         const previous = changes;
         client.visible(true);
-        const resumed = d.util.Timer.start();
-        while (changes == previous and resumed.read() < 5 * std.time.ns_per_s) {
+        const resumed = d.util.Timer.start(init.io);
+        while (changes == previous and resumed.read(init.io) < 5 * std.time.ns_per_s) {
             client.tick();
             while (mainloop.iteration(false)) {}
-            d.util.sleep(10 * std.time.ns_per_ms);
+            d.util.sleep(init.io, 10 * std.time.ns_per_ms);
         }
         if (changes == previous) return error.CaptureDidNotResume;
     }

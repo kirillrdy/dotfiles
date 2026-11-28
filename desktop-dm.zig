@@ -392,7 +392,7 @@ fn runUserSession(auth: AuthResult, tty_path: [*:0]const u8, vt_str: []const u8)
     waitChild(session_pid);
 }
 
-pub fn run(a: std.mem.Allocator) !void {
+pub fn run(a: std.mem.Allocator, io: std.Io) !void {
     _ = signal(SIGPIPE, @ptrFromInt(1));
     _ = signal(SIGTERM, &handleSignal);
     _ = signal(SIGINT, &handleSignal);
@@ -408,7 +408,7 @@ pub fn run(a: std.mem.Allocator) !void {
         if (runGreeterRound(a, tty_path.ptr, vt_str)) |auth| {
             runUserSession(auth, tty_path.ptr, vt_str);
         } else if (dm_running.load(.acquire)) {
-            util.sleep(500 * std.time.ns_per_ms);
+            util.sleep(io, 500 * std.time.ns_per_ms);
         }
     }
 }

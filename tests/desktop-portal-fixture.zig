@@ -28,7 +28,7 @@ fn method(_: ?*anyopaque, message: *const dbus.Message) void {
     for (background.?.surfaces.items) |surface| surface.redraw();
     connection.reply(message, .{}) catch {};
 }
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var allocator: std.heap.DebugAllocator(.{}) = .init;
     defer if (allocator.deinit() == .leak) @panic("portal allocation leak");
     // The portal shares this connection, so tests reach the fixture at the portal's unique name.
@@ -46,5 +46,5 @@ pub fn main() !void {
         if (registration != 0) source.connection.unregister(registration);
     }
     defer if (background) |client| client.destroy();
-    try desktop.portal.runWithAllocator(allocator.allocator());
+    try desktop.portal.runWithAllocator(allocator.allocator(), init.io);
 }

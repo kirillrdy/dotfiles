@@ -8,7 +8,6 @@ const codex = @import("desktop-codex.zig");
 const claude = @import("desktop-claude.zig");
 const antigravity = @import("desktop-antigravity.zig");
 const usage = @import("desktop-usage.zig");
-const A = u.Allocator;
 pub const Item = struct {
     icon: []const u8 = "",
     text: []const u8 = "",
@@ -80,12 +79,12 @@ pub fn memoryUsage(contents: []const u8) Memory {
     for ([_]u64{ used, buffers, cache }, &values) |value, *out| out.* = @as(f64, @floatFromInt(value)) * 100 / @as(f64, @floatFromInt(total));
     return .{ .values = values, .used = @as(f64, @floatFromInt(used)) / 1048576, .total = @as(f64, @floatFromInt(total)) / 1048576 };
 }
-fn networkCounters(a: A) ![2]u64 {
+fn networkCounters(a: std.mem.Allocator, io: std.Io) ![2]u64 {
     var result = @as([2]u64, @splat(0));
-    var lines = std.mem.splitScalar(u8, try u.read(a, "/proc/net/dev"), '\n');
+    var lines = std.mem.splitScalar(u8, try u.read(a, io, "/proc/net/dev"), '\n');
     while (lines.next()) |line| {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-        if (!u.exists(try u.fmt(a, "/sys/class/net/{s}/device", .{u.trim(line[0..colon])}))) continue;
+        if (!u.exists(io, try u.fmt(a, "/sys/class/net/{s}/device", .{u.trim(line[0..colon])}))) continue;
         var words = std.mem.tokenizeAny(u8, line[colon + 1 ..], " \t");
         var i: usize = 0;
         while (words.next()) |word| : (i += 1) {
@@ -95,13 +94,13 @@ fn networkCounters(a: A) ![2]u64 {
     return result;
 }
 // Three significant digits, matching the compact GNOME graph labels.
-pub fn shortNumber(a: A, value: f64) ![]const u8 {
+pub fn shortNumber(a: std.mem.Allocator, value: f64) ![]const u8 {
     var buffer: [64]u8 = undefined;
     const len = u.libc.snprintf(&buffer, buffer.len, "%.3g", value);
     if (len < 0 or len >= buffer.len) return error.InvalidNumber;
     return a.dupe(u8, buffer[0..@intCast(len)]);
 }
-pub fn rateText(a: A, rate: f64) ![]const u8 {
+pub fn rateText(a: std.mem.Allocator, rate: f64) ![]const u8 {
     var value = @max(0, rate) / 1024;
     var unit: []const u8 = "KiB/s";
     if (value >= 1024) {
@@ -126,26 +125,26 @@ pub const Monitor = struct {
     up: f64 = 0,
     tick: f64 = 0,
 
-    pub fn init(a: A) !Monitor {
-        return .{ .previous_cpu = cpuCounters(try u.read(a, "/proc/stat")), .previous_net = try networkCounters(a), .timer = u.Timer.start() };
+    pub fn init(a: std.mem.Allocator, io: std.Io) !Monitor {
+        return .{ .previous_cpu = cpuCounters(try u.read(a, io, "/proc/stat")), .previous_net = try networkCounters(a, io), .timer = u.Timer.start(io) };
     }
 
-    pub fn sample(self: *Monitor, a: A, demo: bool) !Update {
-        const now = @as(f64, @floatFromInt(self.timer.read())) / std.time.ns_per_s;
+    pub fn sample(self: *Monitor, a: std.mem.Allocator, io: std.Io, demo: bool) !Update {
+        const now = @as(f64, @floatFromInt(self.timer.read(io))) / std.time.ns_per_s;
         if (demo or now - self.last[0] >= 1.5) {
-            const current = cpuCounters(try u.read(a, "/proc/stat"));
+            const current = cpuCounters(try u.read(a, io, "/proc/stat"));
             self.cpu = if (demo) .{ 12 + 8 * @sin(self.tick / 9), 5, 0, 1, 0 } else cpuUsage(self.previous_cpu, current);
             self.previous_cpu = current;
             self.last[0] = now;
             self.sequences[0] += 1;
         }
         if (demo or now - self.last[1] >= 5) {
-            self.memory = if (demo) .{ .values = .{ 24 + 2 * @sin(self.tick / 18), 1, 32 }, .used = 7.65, .total = 31 } else memoryUsage(try u.read(a, "/proc/meminfo"));
+            self.memory = if (demo) .{ .values = .{ 24 + 2 * @sin(self.tick / 18), 1, 32 }, .used = 7.65, .total = 31 } else memoryUsage(try u.read(a, io, "/proc/meminfo"));
             self.last[1] = now;
             self.sequences[1] += 1;
         }
         if (demo or now - self.last[2] >= 1) {
-            const current = try networkCounters(a);
+            const current = try networkCounters(a, io);
             const elapsed = @max(0.001, now - @max(0, self.last[2]));
             self.down = if (demo) 12000 + 8000 * @sin(self.tick / 8) else @as(f64, @floatFromInt(current[0] -| self.previous_net[0])) / elapsed;
             self.up = if (demo) 3000 + 1500 * @sin(self.tick / 5) else @as(f64, @floatFromInt(current[1] -| self.previous_net[1])) / elapsed;
@@ -163,28 +162,28 @@ pub const Monitor = struct {
     }
 };
 pub const Status = struct { icon: []const u8, label: []const u8 = "", tooltip: []const u8 };
-fn append(a: A, out: *Update, value: Item) !void {
+fn append(a: std.mem.Allocator, out: *Update, value: Item) !void {
     const old = out.items orelse return;
     const items = try a.alloc(Item, old.len + 1);
     @memcpy(items[0..old.len], old);
     items[old.len] = value;
     out.items = items;
 }
-pub fn addNetwork(a: A, out: *Update, state: *const network.State) !void {
+pub fn addNetwork(a: std.mem.Allocator, out: *Update, state: *const network.State) !void {
     const info = state.indicator();
     try append(a, out, .{ .icon = info.icon, .tooltip = info.title, .command = "desktop-zig settings network" });
 }
-pub fn batteryInfo(a: A, state: battery.State) !Status {
+pub fn batteryInfo(a: std.mem.Allocator, state: battery.State) !Status {
     var icon_buffer: [100]u8 = undefined;
     var time_buffer: [80]u8 = undefined;
     return .{ .icon = try a.dupe(u8, try state.icon(&icon_buffer)), .label = try a.dupe(u8, try state.duration(&time_buffer)), .tooltip = try u.fmt(a, "Battery: {d:.0}% · {s}", .{ state.percent, state.description() }) };
 }
-pub fn addBattery(a: A, out: *Update, state: battery.State) !void {
+pub fn addBattery(a: std.mem.Allocator, out: *Update, state: battery.State) !void {
     if (!state.visible()) return;
     const info = try batteryInfo(a, state);
     try append(a, out, .{ .icon = info.icon, .text = info.label, .tooltip = try u.fmt(a, "{s} · Quick Settings", .{info.tooltip}) });
 }
-pub fn addAudio(a: A, out: *Update, output: ?audio.State, input: ?audio.State) !void {
+pub fn addAudio(a: std.mem.Allocator, out: *Update, output: ?audio.State, input: ?audio.State) !void {
     if (output) |state| {
         const level = if (state.muted or state.percent == 0) "muted" else if (state.percent >= 66) "high" else if (state.percent >= 33) "medium" else "low";
         try append(a, out, .{ .icon = try u.fmt(a, "audio-volume-{s}-symbolic", .{level}), .tooltip = try u.fmt(a, "Volume: {d:.0}%", .{state.percent}), .command = "desktop-zig settings sound" });
@@ -193,7 +192,7 @@ pub fn addAudio(a: A, out: *Update, output: ?audio.State, input: ?audio.State) !
         try append(a, out, .{ .icon = "microphone-sensitivity-muted-symbolic", .tooltip = "Microphone muted" });
     };
 }
-fn diskSize(a: A, bytes: u128) ![]const u8 {
+fn diskSize(a: std.mem.Allocator, bytes: u128) ![]const u8 {
     var size: f64 = @floatFromInt(bytes);
     const units = "BKMGTPEZY";
     var unit: usize = 0;
@@ -202,7 +201,7 @@ fn diskSize(a: A, bytes: u128) ![]const u8 {
     return u.fmt(a, "{d:.0}{c}", .{ @ceil(size), units[unit] });
 }
 
-pub fn diskUsageText(a: A, stats: u.libc.struct_statvfs) ![]const u8 {
+pub fn diskUsageText(a: std.mem.Allocator, stats: u.libc.struct_statvfs) ![]const u8 {
     // f_bfree includes reserved blocks; f_bavail would count them as used.
     const block_size: u128 = stats.f_frsize;
     const total = @as(u128, stats.f_blocks) * block_size;
@@ -226,7 +225,7 @@ pub fn usageIcon(kind: []const u8) []const u8 {
 }
 
 /// One bounded update, suitable for a shared session worker.
-pub fn sample(a: A, kind: []const u8, demo: bool) !Update {
+pub fn sample(a: std.mem.Allocator, io: std.Io, kind: []const u8, demo: bool) !Update {
     if (u.eq(kind, "status")) return .{ .items = if (demo) &.{
         .{ .icon = "network-wireless-signal-excellent-symbolic", .tooltip = "Wi-Fi" },
         .{ .icon = "audio-volume-high-symbolic", .tooltip = "Volume" },
@@ -238,7 +237,7 @@ pub fn sample(a: A, kind: []const u8, demo: bool) !Update {
         items[0] = .{ .text = if (u.libc.statvfs("/", &stats) == 0) try diskUsageText(a, stats) else "—/—", .tooltip = "Root filesystem usage" };
         return .{ .items = items };
     }
-    const now = u.timestamp();
-    const report = if (demo) usage.demo(now) else if (u.eq(kind, "claude")) claude.read(a) else if (u.eq(kind, "antigravity")) antigravity.read(a) else codex.read(a);
+    const now = u.timestamp(io);
+    const report = if (demo) usage.demo(now) else if (u.eq(kind, "claude")) claude.read(a, io) else if (u.eq(kind, "antigravity")) antigravity.read(a, io) else codex.read(a, io);
     return usage.update(a, report, usageIcon(kind), now);
 }
