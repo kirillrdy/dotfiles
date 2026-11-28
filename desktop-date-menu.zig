@@ -90,7 +90,7 @@ pub const Controls = struct {
             self.requestHide();
             return;
         }
-        if (self.view.minute != @divTrunc(util.realTime(self.io), 60_000_000)) self.redraw();
+        if (self.view.minute != @divTrunc(std.Io.Clock.real.now(self.io).toMicroseconds(), 60_000_000)) self.redraw();
     }
     fn redraw(self: *Controls) void {
         self.popup.redraw();

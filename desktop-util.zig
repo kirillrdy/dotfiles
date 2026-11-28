@@ -1,15 +1,4 @@
 const std = @import("std");
-fn micros(io: std.Io, clock: std.Io.Clock) i64 {
-    return clock.now(io).toMicroseconds();
-}
-/// CLOCK_MONOTONIC in microseconds, matching g_get_monotonic_time().
-pub fn monotonicTime(io: std.Io) i64 {
-    return micros(io, .awake);
-}
-/// CLOCK_REALTIME in microseconds, matching g_get_real_time().
-pub fn realTime(io: std.Io) i64 {
-    return micros(io, .real);
-}
 pub const Timer = struct {
     started: std.Io.Timestamp,
     pub fn start(io: std.Io) Timer {

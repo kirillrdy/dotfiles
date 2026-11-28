@@ -781,8 +781,8 @@ test "integration: frame callbacks coalesce redraws, finish animation and cancel
     surface.render_scale = &State.scale;
     try client.start();
     try surface.show();
-    const deadline = util.monotonicTime(std.testing.io) + 2_000_000;
-    while (state.paints == 0 and util.monotonicTime(std.testing.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 2_000_000;
+    while (state.paints == 0 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
         while (mainloop.iteration(std.testing.io, false)) {}
         mainloop.sleep(1000);
     }
@@ -791,7 +791,7 @@ test "integration: frame callbacks coalesce redraws, finish animation and cancel
     for (0..20) |_| surface.redraw();
     try std.testing.expectEqual(paints, state.paints);
     try std.testing.expect(surface.pending);
-    while ((state.frames < 4 or surface.frame_callback != null or surface.pending) and util.monotonicTime(std.testing.io) < deadline) {
+    while ((state.frames < 4 or surface.frame_callback != null or surface.pending) and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
         while (mainloop.iteration(std.testing.io, false)) {}
         mainloop.sleep(1000);
     }

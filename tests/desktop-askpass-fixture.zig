@@ -15,8 +15,8 @@ fn checkEditing(init: std.process.Init) !void {
     const clipboard = entry.clipboard().?;
     clipboard.copy("paste-東京");
     entry.paste();
-    var deadline = util.monotonicTime(init.io) + 3_000_000;
-    while (entry.refs > 1 and util.monotonicTime(init.io) < deadline) pump(init.io);
+    var deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 3_000_000;
+    while (entry.refs > 1 and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump(init.io);
     try std.testing.expectEqualStrings("paste-東京", entry.buffer.value());
     try std.testing.expect(dialog.handleKey('a', keyboard.control));
     try entry.insert("replacement");
@@ -35,20 +35,20 @@ fn checkEditing(init: std.process.Init) !void {
     };
     var receipt: Receipt = .{};
     clipboard.paste(&Receipt.received, &receipt);
-    while (!receipt.done and util.monotonicTime(init.io) < deadline) pump(init.io);
+    while (!receipt.done and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump(init.io);
     try std.testing.expect(receipt.matches);
     try std.testing.expectEqualStrings("replacement", entry.buffer.value());
     // A late clipboard response must neither use the destroyed dialog nor
     // repopulate the password after clear/cancellation.
     entry.paste();
     dialog.clear();
-    while (entry.refs > 1 and util.monotonicTime(init.io) < deadline) pump(init.io);
+    while (entry.refs > 1 and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump(init.io);
     try std.testing.expectEqualStrings("", entry.buffer.value());
     entry.paste();
     dialog.destroy();
     // Drain the outstanding clipboard request after the owner has been freed.
-    deadline = util.monotonicTime(init.io) + 100_000;
-    while (util.monotonicTime(init.io) < deadline) pump(init.io);
+    deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 100_000;
+    while (std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump(init.io);
 }
 const Trigger = enum { response, enter, escape, allow_key, accept_click, cancel_click, term, interrupt };
 const Response = struct {

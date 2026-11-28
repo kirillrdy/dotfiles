@@ -9,8 +9,8 @@ const assert = std.debug.assert;
 const cast = util.cast;
 const pump = @import("fixture-util.zig").pump;
 fn waitControls(io: std.Io, controls: *quick.Controls) void {
-    const deadline = util.monotonicTime(io) + 8_000_000;
-    while ((controls.brightness_busy or controls.brightness_timer != 0) and util.monotonicTime(io) < deadline) pump(io);
+    const deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 8_000_000;
+    while ((controls.brightness_busy or controls.brightness_timer != 0) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
     assert(!controls.brightness_busy and controls.brightness_timer == 0);
 }
 fn controlsTest(init: std.process.Init, backend: backlight.Backend, empty: bool, denied: bool) !void {
@@ -28,8 +28,8 @@ fn controlsTest(init: std.process.Init, backend: backlight.Backend, empty: bool,
         assert(controls.view.model.brightness != null);
         assert(@abs(controls.view.model.brightness.? - 20) < 0.01);
         controls.setSlider(.brightness, 75);
-        const deadline = util.monotonicTime(init.io) + 3_000_000;
-        while (!controls.brightness_busy and util.monotonicTime(init.io) < deadline) pump(init.io);
+        const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 3_000_000;
+        while (!controls.brightness_busy and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump(init.io);
         assert(controls.brightness_busy);
         controls.setSlider(.brightness, 38);
         waitControls(init.io, controls);
@@ -40,8 +40,8 @@ fn controlsTest(init: std.process.Init, backend: backlight.Backend, empty: bool,
         controls.refresh(); // Exercise disposal while a native read is in flight.
     }
     controls.deinit();
-    const deadline = util.monotonicTime(init.io) + 250_000;
-    while (util.monotonicTime(init.io) < deadline) pump(init.io);
+    const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 250_000;
+    while (std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump(init.io);
 }
 const Completion = struct {
     result: ?backlight.Result = null,

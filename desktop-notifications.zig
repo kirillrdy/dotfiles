@@ -276,7 +276,7 @@ const Server = struct {
     }
     fn notify(self: *Server, sender: []const u8, args: NotifyArgs) !u32 {
         const notice = try self.allocator.create(Notice);
-        notice.* = .{ .allocator = self.allocator, .arena = std.heap.ArenaAllocator.init(self.allocator), .id = 0, .app = "", .title = "", .body = "", .icon = "", .sender = "", .actions = &.{}, .created = @divTrunc(util.realTime(self.io), 1000000) };
+        notice.* = .{ .allocator = self.allocator, .arena = std.heap.ArenaAllocator.init(self.allocator), .id = 0, .app = "", .title = "", .body = "", .icon = "", .sender = "", .actions = &.{}, .created = @divTrunc(std.Io.Clock.real.now(self.io).toMicroseconds(), 1000000) };
         errdefer notice.destroy();
         const a = notice.arena.allocator();
         notice.app = try clip(a, args[0], 150);

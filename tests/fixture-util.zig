@@ -10,8 +10,8 @@ pub fn pump(io: std.Io) void {
 }
 
 pub fn pumpFor(io: std.Io, duration_us: i64) void {
-    const deadline = util.monotonicTime(io) + duration_us;
-    while (util.monotonicTime(io) < deadline) pump(io);
+    const deadline = std.Io.Clock.awake.now(io).toMicroseconds() + duration_us;
+    while (std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
 }
 
 pub fn assertEq(actual: [*c]const u8, expected: []const u8) void {

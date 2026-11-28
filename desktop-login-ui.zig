@@ -23,7 +23,7 @@ pub const max_dots: usize = (@as(usize, @intFromFloat(entry_width)) - 24) / dot_
 /// Monotonic spinner rotation in radians (800 ms period).
 pub fn spinPhase(io: std.Io) f64 {
     const period = 800 * std.time.us_per_ms;
-    const phase: f64 = @floatFromInt(@mod(u.monotonicTime(io), period));
+    const phase: f64 = @floatFromInt(@mod(std.Io.Clock.awake.now(io).toMicroseconds(), period));
     return phase / period * 2 * std.math.pi;
 }
 

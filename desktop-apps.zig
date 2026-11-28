@@ -433,7 +433,7 @@ pub fn motion(self: *Launcher, part: Part, x: f64, y: f64) void {
 }
 pub fn scroll(self: *Launcher, amount: f64) void {
     if (self.searchMode()) return;
-    const time: u32 = @truncate(@as(u64, @intCast(@divTrunc(util.monotonicTime(self.io), 1000))));
+    const time: u32 = @truncate(@as(u64, @intCast(@divTrunc(std.Io.Clock.awake.now(self.io).toMicroseconds(), 1000))));
     if (time -% self.wheel_time > 200) self.wheel = 0;
     self.wheel_time = time;
     self.wheel += amount;

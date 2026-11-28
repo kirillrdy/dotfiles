@@ -13,7 +13,7 @@ fn registryEvent(_: *u8, registry: wl.wl_registry, event: wl.wl_registry.Event) 
     }
 }
 fn milliseconds(io: std.Io) u32 {
-    return @truncate(@as(u64, @intCast(@divTrunc(desktop.util.monotonicTime(io), 1000))));
+    return @truncate(@as(u64, @intCast(@divTrunc(std.Io.Clock.awake.now(io).toMicroseconds(), 1000))));
 }
 pub fn main(init: std.process.Init) !void {
     const connection = wire.Connection.connect(std.heap.page_allocator) catch return error.NoWaylandDisplay;

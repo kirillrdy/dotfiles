@@ -59,8 +59,8 @@ pub fn main(init: std.process.Init) !void {
     surface.close = &State.close;
     try client.start();
     try surface.show();
-    const deadline = util.monotonicTime(init.io) + 8_000_000;
-    while (!state.closed and util.monotonicTime(init.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 8_000_000;
+    while (!state.closed and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) {
         while (mainloop.iteration(init.io, false)) {}
         try init.io.sleep(.fromMilliseconds(5), .awake);
     }
@@ -81,8 +81,8 @@ fn idle(init: std.process.Init) !void {
             @memset(pixels.pixels, 0xff245b98);
         }
         fn pump(io: std.Io, milliseconds: i64) !void {
-            const until = util.monotonicTime(io) + milliseconds * 1000;
-            while (util.monotonicTime(io) < until) {
+            const until = std.Io.Clock.awake.now(io).toMicroseconds() + milliseconds * 1000;
+            while (std.Io.Clock.awake.now(io).toMicroseconds() < until) {
                 while (mainloop.iteration(io, false)) {}
                 try io.sleep(.fromMilliseconds(1), .awake);
             }
@@ -139,8 +139,8 @@ fn frames(init: std.process.Init) !void {
     surface.next_frame = &Animation.next;
     try client.start();
     try surface.show();
-    const deadline = util.monotonicTime(init.io) + 5_000_000;
-    while (animation.frames < 60 and util.monotonicTime(init.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 5_000_000;
+    while (animation.frames < 60 and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) {
         while (mainloop.iteration(init.io, false)) {}
         try init.io.sleep(.fromMilliseconds(1), .awake);
     }
@@ -160,8 +160,8 @@ fn consent(init: std.process.Init) !void {
     defer if (allocator.deinit() == .leak) @panic("native consent allocation leak");
     const dialog = try desktop.auth_dialog.Dialog.createWithOptions(allocator.allocator(), init.io, .confirm, "An application requests your account information.\nName: 日本語", .{ .title = "Native consent fixture", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .response_context = &done, .responded = &Done.completed });
     defer dialog.destroy();
-    const deadline = util.monotonicTime(init.io) + 8_000_000;
-    while (done.accepted == null and util.monotonicTime(init.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 8_000_000;
+    while (done.accepted == null and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) {
         while (mainloop.iteration(init.io, false)) {}
         try init.io.sleep(.fromMilliseconds(5), .awake);
     }
@@ -200,14 +200,14 @@ fn forms(init: std.process.Init) !void {
     try external.start();
     const device = form.get(field).entry.?.clipboard().?;
     external.seats.items[0].clipboard.?.copy("Text from another client");
-    const clipboard_deadline = util.monotonicTime(init.io) + 2_000_000;
-    while ((device.source != null or device.selection == null) and util.monotonicTime(init.io) < clipboard_deadline) {
+    const clipboard_deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 2_000_000;
+    while ((device.source != null or device.selection == null) and std.Io.Clock.awake.now(init.io).toMicroseconds() < clipboard_deadline) {
         _ = mainloop.iteration(init.io, false);
         mainloop.sleep(1000);
     }
     try form.setText(field, "");
     form.get(field).entry.?.paste();
-    while (device.requests.items.len != 0 and util.monotonicTime(init.io) < clipboard_deadline) {
+    while (device.requests.items.len != 0 and std.Io.Clock.awake.now(init.io).toMicroseconds() < clipboard_deadline) {
         _ = mainloop.iteration(init.io, false);
         mainloop.sleep(1000);
     }
@@ -219,14 +219,14 @@ fn forms(init: std.process.Init) !void {
     try std.testing.expectEqualStrings("", dialog.entry.?.buffer.value());
     dialog.entry.?.paste();
     dialog.clear();
-    while (device.requests.items.len != 0 and util.monotonicTime(init.io) < clipboard_deadline) {
+    while (device.requests.items.len != 0 and std.Io.Clock.awake.now(init.io).toMicroseconds() < clipboard_deadline) {
         _ = mainloop.iteration(init.io, false);
         mainloop.sleep(1000);
     }
     try std.testing.expectEqualStrings("", dialog.entry.?.buffer.value());
     form.show();
-    const deadline = util.monotonicTime(init.io) + 2_000_000;
-    while (!form.window.surface.?.configured and util.monotonicTime(init.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 2_000_000;
+    while (!form.window.surface.?.configured and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) {
         _ = mainloop.iteration(init.io, false);
         mainloop.sleep(1000);
     }

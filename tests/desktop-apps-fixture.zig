@@ -188,8 +188,8 @@ pub fn main(init: std.process.Init) !void {
     defer success.unref();
     assert(launcher.launch(success));
     assert(!launcher.visible_window);
-    const deadline = @divTrunc(util.monotonicTime(init.io), 1000) + 5000;
-    while (@divTrunc(util.monotonicTime(init.io), 1000) < deadline) {
+    const deadline = @divTrunc(std.Io.Clock.awake.now(init.io).toMicroseconds(), 1000) + 5000;
+    while (@divTrunc(std.Io.Clock.awake.now(init.io).toMicroseconds(), 1000) < deadline) {
         if (std.Io.Dir.openFileAbsolute(init.io, marker, .{})) |file| {
             file.close(init.io);
             break;

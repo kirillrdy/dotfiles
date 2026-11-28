@@ -57,7 +57,7 @@ fn dndSubtitle(buffer: []u8, deadline: i64, now: i64) []const u8 {
     return end.format(buffer, if (end.sameDay(today)) "Until %H:%M" else "Until %a %H:%M") catch "";
 }
 fn unixNow(io: std.Io) i64 {
-    return @divFloor(util.realTime(io), std.time.us_per_s);
+    return @divFloor(std.Io.Clock.real.now(io).toMicroseconds(), std.time.us_per_s);
 }
 pub const Controls = struct {
     allocator: std.mem.Allocator,

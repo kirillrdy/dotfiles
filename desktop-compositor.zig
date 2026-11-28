@@ -44,7 +44,7 @@ fn removeItem(comptime T: type, list: *std.ArrayList(T), value: T) void {
 }
 
 fn nowMs(io: std.Io) u32 {
-    return @truncate(@as(u64, @intCast(@divTrunc(util.monotonicTime(io), 1000))));
+    return @truncate(@as(u64, @intCast(@divTrunc(std.Io.Clock.awake.now(io).toMicroseconds(), 1000))));
 }
 
 // ------------------------------------------------------------------ Buffers
@@ -1869,7 +1869,7 @@ const Output = struct {
         const period = @divTrunc(1_000_000_000, refresh); // microseconds
         const display = self.display orelse return @intCast(@divTrunc(period + 999, 1000));
         const last = @as(i64, display.flip_time[0]) * std.time.us_per_s + display.flip_time[1];
-        const now = util.monotonicTime(self.comp.io);
+        const now = std.Io.Clock.awake.now(self.comp.io).toMicroseconds();
         const until = if (last > 0 and now >= last) period - @mod(now - last, period) else period;
         return @intCast(@max(1, @divTrunc(until + 999, 1000)));
     }
@@ -2829,7 +2829,7 @@ const CaptureFrame = struct {
             return resource.sendFailed();
         resource.sendFlags(0);
         if (damage) resource.sendDamage(0, 0, width, height);
-        const now = util.monotonicTime(self.comp.io);
+        const now = std.Io.Clock.awake.now(self.comp.io).toMicroseconds();
         const seconds: u64 = @intCast(@divTrunc(now, std.time.us_per_s));
         resource.sendReady(@truncate(seconds >> 32), @truncate(seconds), @intCast(@mod(now, std.time.us_per_s) * 1000));
     }
@@ -3330,7 +3330,7 @@ const CopyFrame = struct {
         if (!buffer.write(pixels, buffer.format == ws.wl_shm.Format.xrgb8888)) return resource.sendFailed(Reason.unknown);
         resource.sendTransform(ws.wl_output.Transform.normal);
         resource.sendDamage(0, 0, @intCast(buffer.width), @intCast(buffer.height));
-        const now = util.monotonicTime(self.comp.io);
+        const now = std.Io.Clock.awake.now(self.comp.io).toMicroseconds();
         const seconds: u64 = @intCast(@divTrunc(now, std.time.us_per_s));
         resource.sendPresentationTime(@truncate(seconds >> 32), @truncate(seconds), @intCast(@mod(now, std.time.us_per_s) * 1000));
         resource.sendReady();
@@ -5707,7 +5707,7 @@ const Compositor = struct {
 
     fn presented(self: *Compositor, output: *Output) void {
         self.frame_sequence +%= 1;
-        const now = util.monotonicTime(self.io);
+        const now = std.Io.Clock.awake.now(self.io).toMicroseconds();
         const seconds: u64 = @intCast(@divTrunc(now, std.time.us_per_s));
         const nanoseconds: u32 = @intCast(@mod(now, std.time.us_per_s) * 1000);
         var index = self.presentations.items.len;
@@ -6490,7 +6490,7 @@ const Drm = struct {
                 // A mode set shows the frame at once, without a flip event.
                 target.pending = bo;
                 target.flipped();
-                const now = util.monotonicTime(self.comp.io);
+                const now = std.Io.Clock.awake.now(self.comp.io).toMicroseconds();
                 display.flip_time = .{ @intCast(@divTrunc(now, std.time.us_per_s)), @intCast(@mod(now, std.time.us_per_s)) };
                 self.comp.drawnFor(output);
                 self.comp.flipPresented(output, display);
@@ -7537,15 +7537,15 @@ test "native compositor maps an xdg toplevel from shared memory and composites i
     const callback = surface.frame();
     callback.listen(Window, &window, Window.frame);
     surface.commit();
-    var deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-    while (!window.frame_done and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(100);
+    var deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+    while (!window.frame_done and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) _ = try client.conn.dispatchTimeout(100);
     try std.testing.expect(window.frame_done);
     try std.testing.expect(window.released);
     try std.testing.expect(window.activated);
     try std.testing.expect(window.entered);
     // Windows open maximized; this one draws less than it was offered, from the corner.
-    deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-    while (env.handle.pixel(50, 25).value != 0xffff0000 and util.monotonicTime(std.testing.io) < deadline) {
+    deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+    while (env.handle.pixel(50, 25).value != 0xffff0000 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
         std.testing.io.sleep(.fromMilliseconds(10), .awake) catch {};
     }
     try std.testing.expectEqual(@as(u32, 0xffff0000), env.handle.pixel(50, 25).value);
@@ -7684,8 +7684,8 @@ test "native compositor relays text input to an input method and its keyboard gr
     var method_state: Method = .{};
     const pump = struct {
         fn until(connections: []const *client_wire.Connection, flag: *const bool) !void {
-            const deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-            while (!flag.* and util.monotonicTime(std.testing.io) < deadline) {
+            const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+            while (!flag.* and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
                 for (connections) |connection| _ = try connection.dispatchTimeout(20);
             }
         }
@@ -7724,8 +7724,8 @@ test "native compositor relays text input to an input method and its keyboard gr
     method.commit(method_state.dones);
     try ime.conn.roundtrip();
     var done = false;
-    const deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-    while (!done and util.monotonicTime(std.testing.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+    while (!done and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
         _ = try app.conn.dispatchTimeout(20);
         done = app_state.committed_len > 0;
     }
@@ -7743,8 +7743,8 @@ test "native compositor relays text input to an input method and its keyboard gr
     virtual.key(0, 30, 0);
     try app.conn.roundtrip();
     var grabbed = false;
-    const grab_deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-    while (!grabbed and util.monotonicTime(std.testing.io) < grab_deadline) {
+    const grab_deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+    while (!grabbed and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < grab_deadline) {
         _ = try ime.conn.dispatchTimeout(20);
         grabbed = method_state.grabbed_keys == 2;
     }
@@ -7906,8 +7906,8 @@ test "native compositor carries a drag from press to drop with negotiated action
 
     const wait = struct {
         fn until(conn: *client_wire.Connection, flag: *const bool) !void {
-            const deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-            while (!flag.* and util.monotonicTime(std.testing.io) < deadline) _ = try conn.dispatchTimeout(50);
+            const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+            while (!flag.* and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) _ = try conn.dispatchTimeout(50);
             try std.testing.expect(flag.*);
         }
     };
@@ -7919,8 +7919,8 @@ test "native compositor carries a drag from press to drop with negotiated action
     virtual.button(0, 0x110, 1);
     virtual.frame();
     try client.conn.roundtrip();
-    const deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-    while (dnd.press_serial == 0 and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(50);
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+    while (dnd.press_serial == 0 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) _ = try client.conn.dispatchTimeout(50);
     try std.testing.expect(dnd.press_serial != 0);
     const source = client.data.?.create_data_source();
     source.listen(Dnd, &dnd, Dnd.source);
@@ -8063,8 +8063,8 @@ test "native compositor moves a window dragged by its title bar" {
     surface.attach(buffer, 0, 0);
     surface.commit();
     try client.conn.roundtrip();
-    var deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-    while (env.handle.pixel(50, 50).value != 0xffff0000 and util.monotonicTime(std.testing.io) < deadline) {
+    var deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+    while (env.handle.pixel(50, 50).value != 0xffff0000 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
         _ = try client.conn.dispatchTimeout(20);
     }
     try std.testing.expectEqual(@as(u32, 0xffff0000), env.handle.pixel(50, 50).value);
@@ -8073,8 +8073,8 @@ test "native compositor moves a window dragged by its title bar" {
     virtual.motion_absolute(0, 100, 100, 1280, 720);
     virtual.button(0, 0x110, 1);
     virtual.frame();
-    deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-    while (window.press_serial == 0 and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(50);
+    deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+    while (window.press_serial == 0 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) _ = try client.conn.dispatchTimeout(50);
     try std.testing.expect(window.press_serial != 0);
     toplevel.move(client.seat.?, window.press_serial);
     try client.conn.roundtrip();
@@ -8082,8 +8082,8 @@ test "native compositor moves a window dragged by its title bar" {
     virtual.frame();
     try client.conn.roundtrip();
     // The window keeps its size and follows the pointer; its old corner shows the background.
-    deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-    while ((env.handle.pixel(50, 50).value != 0xff303030 or env.handle.pixel(250, 200).value != 0xffff0000) and util.monotonicTime(std.testing.io) < deadline) {
+    deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+    while ((env.handle.pixel(50, 50).value != 0xff303030 or env.handle.pixel(250, 200).value != 0xffff0000) and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
         _ = try client.conn.dispatchTimeout(20);
     }
     try std.testing.expectEqual(@as(u32, 0xff303030), env.handle.pixel(50, 50).value);
@@ -8158,14 +8158,14 @@ test "native compositor hides the panel over a fullscreen window" {
     surface.attach(buffer, 0, 0);
     surface.commit();
     try client.conn.roundtrip();
-    var deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-    while (env.handle.pixel(10, 10).value != 0xffff0000 and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(20);
+    var deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+    while (env.handle.pixel(10, 10).value != 0xffff0000 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) _ = try client.conn.dispatchTimeout(20);
     try std.testing.expectEqual(@as(u32, 0xffff0000), env.handle.pixel(10, 10).value);
     // Leaving fullscreen brings the panel back over the maximized window.
     toplevel.unset_fullscreen();
     try client.conn.roundtrip();
-    deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-    while (env.handle.pixel(10, 10).value != 0xff0000ff and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(20);
+    deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+    while (env.handle.pixel(10, 10).value != 0xff0000ff and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) _ = try client.conn.dispatchTimeout(20);
     try std.testing.expectEqual(@as(u32, 0xff0000ff), env.handle.pixel(10, 10).value);
 
     buffer.destroy();
@@ -8240,8 +8240,8 @@ test "native compositor passes scroll sources, stops and wheel steps to clients"
     const virtual = client.pointers.?.create_virtual_pointer(client.seat.?);
     virtual.motion_absolute(0, 200, 200, 1280, 720);
     virtual.frame();
-    const deadline = util.monotonicTime(std.testing.io) + 3_000_000;
-    while (!events.entered and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(20);
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 3_000_000;
+    while (!events.entered and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) _ = try client.conn.dispatchTimeout(20);
     try std.testing.expect(events.entered);
     // Two fingers on a touchpad, both axes in one frame, then lifted.
     virtual.axis_source(1);
@@ -8479,8 +8479,8 @@ test "native compositor frees presentation feedback and handles out-of-order sur
         surface.commit();
         try client.conn.roundtrip();
     }
-    const deadline = util.monotonicTime(std.testing.io) + 500_000;
-    while (state.presented == 0 and util.monotonicTime(std.testing.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 500_000;
+    while (state.presented == 0 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
         std.testing.io.sleep(.fromMilliseconds(5), .awake) catch {};
         try client.conn.roundtrip();
     }

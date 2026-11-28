@@ -156,7 +156,7 @@ pub const View = struct {
         const content_width = self.width - 48 - @as(u32, if (self.notice.image != null) 60 else 0);
         self.masks[1] = try self.label(self.notice.title, content_width, true, false, scale);
         self.masks[2] = try self.label(self.notice.body, content_width, false, true, scale);
-        const age = @max(0, @divTrunc(util.realTime(self.io), 1000000) - self.notice.created);
+        const age = @max(0, @divTrunc(std.Io.Clock.real.now(self.io).toMicroseconds(), 1000000) - self.notice.created);
         var buffer: [64]u8 = undefined;
         const age_text: [:0]const u8 = if (age < 60) "Just now" else if (age < 3600) std.fmt.bufPrintSentinel(&buffer, "{d}m ago", .{@divTrunc(age, 60)}, 0) catch unreachable else std.fmt.bufPrintSentinel(&buffer, "{d}h ago", .{@divTrunc(age, 3600)}, 0) catch unreachable;
         self.masks[6] = try self.renderer.renderLayout(self.allocator, age_text, .{ .size = 12 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = 65 * scale, .ellipsize = true, .origin = .top });
@@ -316,7 +316,7 @@ test "integration: native notification expansion wraps markup and keeps action h
 test "integration: GNOME header keeps the age beside the source and reserves button space" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
     for ([_]u32{ 1, 2 }) |scale| {
-        var card = View.init(std.testing.allocator, std.testing.io, .{ .id = 1, .app = "Terminal", .title = "Build complete", .body = "All checks passed. Your desktop is ready.", .created = @divTrunc(util.realTime(std.testing.io), 1000000) }, .{}, 529);
+        var card = View.init(std.testing.allocator, std.testing.io, .{ .id = 1, .app = "Terminal", .title = "Build complete", .body = "All checks passed. Your desktop is ready.", .created = @divTrunc(std.Io.Clock.real.now(std.testing.io).toMicroseconds(), 1000000) }, .{}, 529);
         defer card.deinit();
         try card.prepare(scale);
         try std.testing.expectEqual(@as(u32, 118), card.height);
@@ -336,7 +336,7 @@ test "integration: expanded banner matches GNOME's measured line and action geom
     if (!@import("options").integration_tests) return error.SkipZigTest;
     const actions = [_]data.Action{ .{ .key = "open", .label = "Open Settings" }, .{ .key = "later", .label = "Later" } };
     for ([_]u32{ 1, 2 }) |scale| {
-        var card = View.init(std.testing.allocator, std.testing.io, .{ .id = 1, .app = "Terminal", .title = "A longer notification title that should fit on one line", .body = "This notification contains a longer message that wraps onto multiple lines. Expand it to read the complete notification and choose an action.", .created = @divTrunc(util.realTime(std.testing.io), 1000000), .actions = &actions }, .{}, 529);
+        var card = View.init(std.testing.allocator, std.testing.io, .{ .id = 1, .app = "Terminal", .title = "A longer notification title that should fit on one line", .body = "This notification contains a longer message that wraps onto multiple lines. Expand it to read the complete notification and choose an action.", .created = @divTrunc(std.Io.Clock.real.now(std.testing.io).toMicroseconds(), 1000000), .actions = &actions }, .{}, 529);
         defer card.deinit();
         try card.prepare(scale);
         card.toggle();

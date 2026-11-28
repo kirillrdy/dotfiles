@@ -3,7 +3,7 @@ const std = @import("std");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
 fn milliseconds(io: std.Io) i64 {
-    return @divTrunc(@import("desktop-util.zig").monotonicTime(io), 1000);
+    return @divTrunc(std.Io.Clock.awake.now(io).toMicroseconds(), 1000);
 }
 
 pub const Options = struct { name: []const u8, scale: i32 };

@@ -209,7 +209,7 @@ pub const View = struct {
         self.ensureFocusVisible();
     }
     pub fn prepare(self: *View, scale: u32) !void {
-        const minute = @divTrunc(@import("desktop-util.zig").realTime(self.io), 60_000_000);
+        const minute = @divTrunc(std.Io.Clock.real.now(self.io).toMicroseconds(), 60_000_000);
         if (minute != self.minute) {
             self.minute = minute;
             self.invalidate();

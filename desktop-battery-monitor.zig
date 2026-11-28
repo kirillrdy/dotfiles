@@ -139,8 +139,8 @@ const Server = struct {
         if (self.stopping) return;
         const was_present = self.state.present;
         self.state = value;
-        self.update_time = @intCast(@divTrunc(util.realTime(self.io), 1000000));
-        _ = self.policy.update(value, util.monotonicTime(self.io), self.options.action_delay_us);
+        self.update_time = @intCast(@divTrunc(std.Io.Clock.real.now(self.io).toMicroseconds(), 1000000));
+        _ = self.policy.update(value, std.Io.Clock.awake.now(self.io).toMicroseconds(), self.options.action_delay_us);
         self.connection.emitPropertiesChanged(root, name) catch {};
         self.connection.emitPropertiesChanged(display, iface) catch {};
         self.connection.emitPropertiesChanged(device, iface) catch {};
@@ -155,11 +155,11 @@ const Server = struct {
                 self.connection.emitPropertiesChanged(root, name) catch {};
             }
         }
-        if (self.policy.update(self.state, util.monotonicTime(self.io), self.options.action_delay_us)) {
+        if (self.policy.update(self.state, std.Io.Clock.awake.now(self.io).toMicroseconds(), self.options.action_delay_us)) {
             self.policy.done = true;
             Job.start(self, null) catch {
                 self.policy.done = false;
-                self.policy.retry_at = util.monotonicTime(self.io) + 60 * 1000000;
+                self.policy.retry_at = std.Io.Clock.awake.now(self.io).toMicroseconds() + 60 * 1000000;
             };
         }
         return true;
@@ -219,7 +219,7 @@ const Job = struct {
             if (success) server.connection.answer(invocation, .{actions[self.index]}) catch {} else server.connection.answerError(invocation, "org.freedesktop.UPower.Error.NotSupported", "No critical power action is available") catch {};
         } else if (!success and self.current()) {
             server.policy.done = false;
-            server.policy.retry_at = util.monotonicTime(server.io) + 60 * 1000000;
+            server.policy.retry_at = std.Io.Clock.awake.now(server.io).toMicroseconds() + 60 * 1000000;
             std.log.warn("battery: critical power action unavailable; retrying in one minute", .{});
         }
         for (server.jobs.items, 0..) |job, i| if (job == self) {

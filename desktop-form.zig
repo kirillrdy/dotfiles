@@ -572,7 +572,7 @@ pub const Form = struct {
                 self.relayout();
                 return;
             };
-            const now = util.monotonicTime(self.window.io);
+            const now = std.Io.Clock.awake.now(self.window.io).toMicroseconds();
             const double = self.last_item == id and now - self.last_click < 400_000 and @abs(x - self.last_x) < 5 and @abs(screen_y - self.last_y) < 5;
             self.last_item = id;
             self.last_click = now;
@@ -805,8 +805,8 @@ test "integration: native forms preserve selections, isolate passwords and navig
     try form.setText(name, "");
     form.focusItem(name);
     try std.testing.expect(form.handleKey('v', keyboard.control));
-    const deadline = util.monotonicTime(std.testing.io) + 2_000_000;
-    while (form.get(name).value().len == 0 and util.monotonicTime(std.testing.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 2_000_000;
+    while (form.get(name).value().len == 0 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
         _ = mainloop.iteration(std.testing.io, false);
         mainloop.sleep(1000);
     }
@@ -887,8 +887,8 @@ test "integration: native form children share their parent connection and close 
     try std.testing.expectEqual(parent.window.surface.?.client, child.window.surface.?.client);
     try std.testing.expect(parent.window.blocked());
     parent.close();
-    const deadline = util.monotonicTime(std.testing.io) + 2_000_000;
-    while (owner.closes != 2 and util.monotonicTime(std.testing.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 2_000_000;
+    while (owner.closes != 2 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
         _ = mainloop.iteration(std.testing.io, false);
         mainloop.sleep(1000);
     }

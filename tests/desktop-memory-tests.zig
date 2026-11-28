@@ -27,8 +27,8 @@ const Objects = struct {
         self.live -= 1;
     }
     fn wait(self: *Objects, timeout_us: i64) !void {
-        const deadline = util.monotonicTime(std.testing.io) + timeout_us;
-        while (self.live != 0 and util.monotonicTime(std.testing.io) < deadline) pump();
+        const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + timeout_us;
+        while (self.live != 0 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump();
         if (self.live != 0) {
             std.debug.print("memory: {d} cancellables were not finalized\n", .{self.live});
             return error.RetainedObjects;
@@ -38,8 +38,8 @@ const Objects = struct {
 fn audioChanged(_: ?*anyopaque, _: *audio.Service) void {}
 fn batteryChanged(_: ?*anyopaque, _: battery.State) void {}
 fn ready(service: *audio.Service) !void {
-    const deadline = util.monotonicTime(std.testing.io) + 15_000_000;
-    while ((!service.ready or service.state(.output) == null) and util.monotonicTime(std.testing.io) < deadline) pump();
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 15_000_000;
+    while ((!service.ready or service.state(.output) == null) and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump();
     if (!service.ready or service.state(.output) == null) return error.PrivateAudioNotReady;
 }
 const Completion = struct {
@@ -73,8 +73,8 @@ fn batteryLifetime(settle: bool) !void {
     var objects = Objects{};
     const service = try battery.Service.create(std.testing.allocator, std.testing.io, &batteryChanged, null);
     if (settle) {
-        const deadline = util.monotonicTime(std.testing.io) + 15_000_000;
-        while (service.pending and util.monotonicTime(std.testing.io) < deadline) pump();
+        const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 15_000_000;
+        while (service.pending and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump();
         try std.testing.expect(!service.pending);
     }
     objects.watch(service.cancel);
@@ -100,8 +100,8 @@ fn networkLifetime(settle: bool) !void {
     objects.watch(second.cancel);
     var activation = NetworkCompletion{};
     if (settle) {
-        const deadline = util.monotonicTime(std.testing.io) + 15_000_000;
-        while ((!client.state().available or client.state().profiles.items.len == 0) and util.monotonicTime(std.testing.io) < deadline) pump();
+        const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 15_000_000;
+        while ((!client.state().available or client.state().profiles.items.len == 0) and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump();
         try std.testing.expect(client.state().available and client.state().profiles.items.len != 0);
         const cancel = mainloop.Cancellable.create(std.testing.io);
         defer cancel.unref();
@@ -109,7 +109,7 @@ fn networkLifetime(settle: bool) !void {
         var connected = NetworkCompletion{};
         const ap = client.state().access_points.items[0];
         client.perform(.{ .connect = .{ .ssid = ap.ssid, .access_point = ap.path, .password = "memory-secret" } }, cancel, &NetworkCompletion.done, &connected);
-        while (!connected.finished and util.monotonicTime(std.testing.io) < deadline) pump();
+        while (!connected.finished and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump();
         try std.testing.expect(connected.finished and connected.succeeded);
         const ui = settings.Settings.create(std.testing.allocator, std.testing.io, .network);
         objects.watch(ui.audio_cancel);
@@ -129,7 +129,7 @@ fn networkLifetime(settle: bool) !void {
         while (ui.network_operations != 0) pump();
         ui.destroy();
         client.perform(.{ .activate = client.state().profiles.items[0].path }, cancel, &NetworkCompletion.done, &activation);
-        while (!activation.finished and client.service.waiting.items.len == 0 and util.monotonicTime(std.testing.io) < deadline) pump();
+        while (!activation.finished and client.service.waiting.items.len == 0 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump();
         try std.testing.expect(activation.finished or client.service.waiting.items.len != 0);
     }
     second.destroy();
@@ -146,15 +146,15 @@ fn soundLifetime(settle: bool) !void {
     if (sound.service) |service| {
         if (settle) {
             try ready(service);
-            const deadline = util.monotonicTime(std.testing.io) + 15_000_000;
-            while (sound.view.rows.items.len == 0 and util.monotonicTime(std.testing.io) < deadline) pump();
+            const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 15_000_000;
+            while (sound.view.rows.items.len == 0 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump();
             try std.testing.expect(sound.view.rows.items.len != 0);
         }
     }
     sound.close();
     while (!sound.closed) pump();
-    const deadline = util.monotonicTime(std.testing.io) + 15_000_000;
-    while ((sound.operations != 0 or shell.network_operations != 0) and util.monotonicTime(std.testing.io) < deadline) pump();
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 15_000_000;
+    while ((sound.operations != 0 or shell.network_operations != 0) and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump();
     try std.testing.expect(sound.operations == 0 and shell.network_operations == 0);
     try std.testing.expect(shell.closed);
     shell.destroy();
@@ -171,8 +171,8 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         if (controls.devices.battery_service) |service| objects.watch(service.cancel);
         for (0..2) |cycle| {
             try controls.show(320, 32);
-            const deadline = util.monotonicTime(std.testing.io) + 5_000_000;
-            while (!controls.popup.surface.?.configured and util.monotonicTime(std.testing.io) < deadline) pump();
+            const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 5_000_000;
+            while (!controls.popup.surface.?.configured and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump();
             try std.testing.expect(controls.popup.surface.?.configured);
             if (cycle == 0) controls.hide() else _ = controls.handleKey(0xff1b, 0);
         }
@@ -180,8 +180,8 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
     if (module.usage_menu) |menu| {
         for (0..2) |cycle| {
             try menu.show(320, 32);
-            const deadline = util.monotonicTime(std.testing.io) + 5_000_000;
-            while (!menu.popup.surface.?.configured and util.monotonicTime(std.testing.io) < deadline) pump();
+            const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 5_000_000;
+            while (!menu.popup.surface.?.configured and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump();
             try std.testing.expect(menu.popup.surface.?.configured);
             if (cycle == 0) menu.hide() else _ = menu.handleKey(0xff1b);
         }
@@ -191,8 +191,8 @@ fn widgetLifetime(name: [:0]const u8, kind: [:0]const u8, source: [:0]const u8) 
         // with a dismissal still queued rather than merely freeing its model.
         for (0..2) |cycle| {
             try controls.show(320, 32);
-            const deadline = util.monotonicTime(std.testing.io) + 5_000_000;
-            while (!controls.popup.surface.?.configured and util.monotonicTime(std.testing.io) < deadline) pump();
+            const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 5_000_000;
+            while (!controls.popup.surface.?.configured and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump();
             try std.testing.expect(controls.popup.surface.?.configured);
             if (cycle == 0) controls.hide() else _ = controls.handleKey(0xff1b, 0);
         }

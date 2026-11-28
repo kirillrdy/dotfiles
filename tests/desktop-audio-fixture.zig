@@ -41,8 +41,8 @@ fn apply(io: std.Io, service: *audio.Service, target: audio.Target, change: audi
     defer cancel.unref();
     var completion = Completion{};
     service.apply(target, change, cancel, &Completion.done, &completion);
-    const deadline = util.monotonicTime(io) + 6_000_000;
-    while (completion.result == null and util.monotonicTime(io) < deadline) pump(io);
+    const deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 6_000_000;
+    while (completion.result == null and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
     const result = completion.result orelse return error.AudioOperationHung;
     return switch (result) {
         .value => |value| value,
@@ -50,8 +50,8 @@ fn apply(io: std.Io, service: *audio.Service, target: audio.Target, change: audi
     };
 }
 fn ready(io: std.Io, service: *audio.Service) !void {
-    const deadline = util.monotonicTime(io) + 8_000_000;
-    while ((!service.ready or service.nodes.items.len < 3 or service.state(.output) == null or service.state(.input) == null) and util.monotonicTime(io) < deadline) pump(io);
+    const deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 8_000_000;
+    while ((!service.ready or service.nodes.items.len < 3 or service.state(.output) == null or service.state(.input) == null) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
     if (!service.ready or service.state(.output) == null or service.state(.input) == null) return error.AudioNeverReady;
 }
 fn click(sound: *settings.Sound, row: usize, control: @import("desktop").settings.SoundControl) void {
@@ -78,25 +78,25 @@ fn ui(service: *audio.Service, io: std.Io) !void {
     try dialogs.show(.network);
     try dialogs.show(.sound);
     assert(dialogs.windows.items.len == 1 and shell.window == sound.window);
-    var deadline = util.monotonicTime(io) + 8_000_000;
-    while ((controls.devices.audio_service == null or controls.devices.audio_service.?.state(.output) == null or sound.view.rows.items.len < 5) and util.monotonicTime(io) < deadline) pump(io);
+    var deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 8_000_000;
+    while ((controls.devices.audio_service == null or controls.devices.audio_service.?.state(.output) == null or sound.view.rows.items.len < 5) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
     assert(sound.view.rows.items.len >= 5);
     assert(controls.view.model.volume != null);
     controls.setSlider(.volume, 63);
-    deadline = util.monotonicTime(io) + 5_000_000;
-    while ((controls.volume_timer != 0 or @abs((service.state(.output) orelse return error.NoOutput).percent - 63) > 0.01) and util.monotonicTime(io) < deadline) pump(io);
+    deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 5_000_000;
+    while ((controls.volume_timer != 0 or @abs((service.state(.output) orelse return error.NoOutput).percent - 63) > 0.01) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
     assert(@abs(service.state(.output).?.percent - 63) < 0.01);
     // Rows survive volume-only changes, so dragging cannot target a freed row.
     const row = sound.view.rows.items.ptr;
     sound.setVolume(0, 47);
-    deadline = util.monotonicTime(io) + 5_000_000;
-    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.output).?.percent - 47) > 0.01) and util.monotonicTime(io) < deadline) pump(io);
+    deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 5_000_000;
+    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.output).?.percent - 47) > 0.01) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
     assert(sound.view.rows.items.ptr == row);
     assert(@abs(service.state(.output).?.percent - 47) < 0.01);
     assert(@abs(controls.view.model.volume.? - 47) < 0.01);
     click(sound, 1, .mute);
-    deadline = util.monotonicTime(io) + 5_000_000;
-    while ((!service.state(.input).?.muted or sound.operations != 0) and util.monotonicTime(io) < deadline) pump(io);
+    deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 5_000_000;
+    while ((!service.state(.input).?.muted or sound.operations != 0) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
     assert(service.state(.input).?.muted);
     const previous = service.node(.output).?.id;
     var selected: ?u32 = null;
@@ -114,11 +114,11 @@ fn ui(service: *audio.Service, io: std.Io) !void {
         }
     }
     assert(selected != null);
-    deadline = util.monotonicTime(io) + 5_000_000;
-    while ((service.node(.output).?.id != selected.? or sound.operations != 0) and util.monotonicTime(io) < deadline) pump(io);
+    deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 5_000_000;
+    while ((service.node(.output).?.id != selected.? or sound.operations != 0) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
     assert(service.node(.output).?.id == selected.?);
-    deadline = util.monotonicTime(io) + 5_000_000;
-    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.{ .id = previous }).?.percent - 52) > 0.01) and util.monotonicTime(io) < deadline) pump(io);
+    deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 5_000_000;
+    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.{ .id = previous }).?.percent - 52) > 0.01) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
     assert(@abs(service.state(.{ .id = previous }).?.percent - 52) < 0.01);
     assert(sound.view.expanded == null);
     // The device selector also opens, navigates and dismisses through the keyboard.
@@ -138,13 +138,13 @@ fn ui(service: *audio.Service, io: std.Io) !void {
         application_classes |= if (candidate.class == .playback) @as(u8, 1) else 2;
         const id = candidate.target.id;
         click(sound, index, .volume);
-        deadline = util.monotonicTime(io) + 5_000_000;
-        while ((sound.operations != 0 or @abs((service.state(.{ .id = id }) orelse return error.MissingStream).percent - 50) > 0.01) and util.monotonicTime(io) < deadline) pump(io);
+        deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 5_000_000;
+        while ((sound.operations != 0 or @abs((service.state(.{ .id = id }) orelse return error.MissingStream).percent - 50) > 0.01) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
         assert(@abs(service.state(.{ .id = id }).?.percent - 50) < 0.01);
         const muted = service.state(.{ .id = id }).?.muted;
         click(sound, index, .mute);
-        deadline = util.monotonicTime(io) + 5_000_000;
-        while ((sound.operations != 0 or service.state(.{ .id = id }).?.muted == muted) and util.monotonicTime(io) < deadline) pump(io);
+        deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 5_000_000;
+        while ((sound.operations != 0 or service.state(.{ .id = id }).?.muted == muted) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
         assert(service.state(.{ .id = id }).?.muted != muted);
     }
     assert(application_classes == 3);
@@ -156,13 +156,13 @@ fn ui(service: *audio.Service, io: std.Io) !void {
     assert(sound.view.focus.?.row == 0 and sound.view.focus.?.control == .volume);
     assert(sound.handleKey(0xff50, 0)); // Home clamps to zero.
     assert(sound.handleKey(0xff53, 0)); // Right increases by five.
-    deadline = util.monotonicTime(io) + 5_000_000;
-    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.output).?.percent - 5) > 0.01) and util.monotonicTime(io) < deadline) pump(io);
+    deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 5_000_000;
+    while ((sound.timer != 0 or sound.operations != 0 or @abs(service.state(.output).?.percent - 5) > 0.01) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
     assert(@abs(service.state(.output).?.percent - 5) < 0.01);
     // A pointer press/release on the track sets volume through native hit testing.
     click(sound, 0, .volume);
-    deadline = util.monotonicTime(io) + 5_000_000;
-    while ((sound.operations != 0 or @abs(service.state(.output).?.percent - 50) > 0.01) and util.monotonicTime(io) < deadline) pump(io);
+    deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 5_000_000;
+    while ((sound.operations != 0 or @abs(service.state(.output).?.percent - 50) > 0.01) and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump(io);
     assert(@abs(service.state(.output).?.percent - 50) < 0.01);
     click(sound, 0, .test_sound);
     assert(sound.feedback.playing());
@@ -205,8 +205,8 @@ pub fn main(init: std.process.Init) !void {
             while (sound.operations != 0 or shell.network_operations != 0) pump(init.io);
             shell.destroy();
         }
-        const deadline = util.monotonicTime(init.io) + 5_000_000;
-        while ((sound.service == null or sound.service.?.state(.output) == null) and util.monotonicTime(init.io) < deadline) pump(init.io);
+        const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 5_000_000;
+        while ((sound.service == null or sound.service.?.state(.output) == null) and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump(init.io);
         if (std.mem.eql(u8, args[1], "preview-levels")) sound.showPage(.levels);
         if (std.mem.eql(u8, args[1], "preview-devices")) sound.activate(.{ .control = .device });
         while (!sound.closed) _ = mainloop.iteration(init.io, true);
@@ -218,11 +218,11 @@ pub fn main(init: std.process.Init) !void {
         const path = try arena.allocator().dupeSentinel(u8, args[2], 0);
         player.play(path);
         assert(player.playing());
-        const start_time = util.monotonicTime(init.io);
-        while (util.monotonicTime(init.io) < start_time + 600_000) pump(init.io);
+        const start_time = std.Io.Clock.awake.now(init.io).toMicroseconds();
+        while (std.Io.Clock.awake.now(init.io).toMicroseconds() < start_time + 600_000) pump(init.io);
         assert(player.playing()); // The two-second stream is still delivering audio.
         player.play(path); // Repeated volume keys keep the existing sound.
-        while (util.monotonicTime(init.io) < start_time + 2_300_000) pump(init.io);
+        while (std.Io.Clock.awake.now(init.io).toMicroseconds() < start_time + 2_300_000) pump(init.io);
         assert(!player.playing());
         @import("desktop").util.printOut("PASS native event-sound playback without overlap\n", .{});
         return;
@@ -242,8 +242,8 @@ pub fn main(init: std.process.Init) !void {
         var completion = Completion{};
         service.apply(.output, .{ .volume = 25 }, cancel, &Completion.done, &completion);
         cancel.cancel();
-        const deadline = util.monotonicTime(init.io) + 6_000_000;
-        while (completion.result == null and util.monotonicTime(init.io) < deadline) pump(init.io);
+        const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 6_000_000;
+        while (completion.result == null and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump(init.io);
         assert(completion.result != null and completion.result.? == .failure);
         @import("desktop").util.printOut("PASS pending native audio cancellation\n", .{});
         return;

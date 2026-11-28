@@ -58,7 +58,7 @@ pub const Feedback = struct {
     pub fn playing(self: *Feedback) bool {
         const node = self.node orelse return false;
         return switch (node.state.load(.acquire)) {
-            .connecting, .paused, .streaming => util.monotonicTime(self.io) < self.deadline,
+            .connecting, .paused, .streaming => std.Io.Clock.awake.now(self.io).toMicroseconds() < self.deadline,
             .failed, .finished => false,
         };
     }
@@ -105,7 +105,7 @@ pub const Feedback = struct {
         stream_builder.identifier(spa.SPA_FORMAT_AUDIO_format, spa.SPA_AUDIO_FORMAT_F32P) catch unreachable;
         stream_builder.integer(spa.SPA_FORMAT_AUDIO_channels, 2) catch unreachable;
         stream_builder.ids(spa.SPA_FORMAT_AUDIO_position, &.{ spa.SPA_AUDIO_CHANNEL_FL, spa.SPA_AUDIO_CHANNEL_FR }) catch unreachable;
-        self.deadline = util.monotonicTime(self.io) + 5_000_000 + @as(i64, @intCast(self.wave.samples.len * 1_000_000 / (self.wave.rate * self.wave.channels * 2)));
+        self.deadline = std.Io.Clock.awake.now(self.io).toMicroseconds() + 5_000_000 + @as(i64, @intCast(self.wave.samples.len * 1_000_000 / (self.wave.rate * self.wave.channels * 2)));
         self.node = pipewire.Node.create(self.allocator, .{
             .properties = &.{
                 .{ "media.type", "Audio" },

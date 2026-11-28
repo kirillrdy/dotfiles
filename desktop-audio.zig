@@ -235,7 +235,7 @@ pub const Service = struct {
             return;
         };
         const call = self.allocator.create(Call) catch @panic("out of memory");
-        call.* = .{ .service = self, .epoch = self.epoch, .target = .{ .id = item.id }, .ticket = ticket, .expected = expected, .default_class = if (change == .default) item.class else null, .callback = callback, .data = data, .parent = cancel.ref(), .deadline = util.monotonicTime(self.io) + 4_000_000 };
+        call.* = .{ .service = self, .epoch = self.epoch, .target = .{ .id = item.id }, .ticket = ticket, .expected = expected, .default_class = if (change == .default) item.class else null, .callback = callback, .data = data, .parent = cancel.ref(), .deadline = std.Io.Clock.awake.now(self.io).toMicroseconds() + 4_000_000 };
         self.refs += 1;
         self.calls.append(self.allocator, call) catch @panic("out of memory");
         call.wake();
@@ -270,7 +270,7 @@ const Call = struct {
             self.finish(.{ .failure = error.AudioDisconnected });
             return false;
         }
-        if (util.monotonicTime(self.service.io) >= self.deadline) {
+        if (std.Io.Clock.awake.now(self.service.io).toMicroseconds() >= self.deadline) {
             self.finish(.{ .failure = error.AudioTimedOut });
             return false;
         }

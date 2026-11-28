@@ -471,8 +471,8 @@ test "watched processes report status, standard error, descriptors and cancellat
     sleeper.cancel();
     try std.testing.expect(stopped.wait().cancelled);
     // The cancelled child is still reaped once it exits.
-    const deadline = util.monotonicTime(std.testing.io) + 2 * std.time.us_per_s;
-    while (util.monotonicTime(std.testing.io) < deadline) _ = mainloop.iteration(std.testing.io, false);
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 2 * std.time.us_per_s;
+    while (std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) _ = mainloop.iteration(std.testing.io, false);
 
     try std.testing.expectError(error.FileNotFound, Process.spawn(a, std.testing.io, &.{"desktop-process-test-missing-program"}, .{}, &Outcome.done, &stopped));
 }

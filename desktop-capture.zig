@@ -592,8 +592,8 @@ test "thumbnail workers publish owned pixels and discard captures detached on hi
     window.length = 16;
     const source: @import("desktop-raster.zig").Image = .{ .pixels = @as([*]const u8, @ptrCast(mapping))[0..16], .width = 2, .height = 2, .stride = 8, .format = .xrgb };
     Thumbnail.start(&window, source);
-    const deadline = util.monotonicTime(std.testing.io) + 2_000_000;
-    while (window.thumbnail != null and util.monotonicTime(std.testing.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 2_000_000;
+    while (window.thumbnail != null and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
         while (mainloop.iteration(std.testing.io, false)) {}
         mainloop.sleep(1000);
     }

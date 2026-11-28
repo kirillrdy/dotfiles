@@ -85,8 +85,8 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "--dispose")) {
         controls.?.deinit();
         service.destroy();
-        const deadline = util.monotonicTime(init.io) + 500000;
-        while (util.monotonicTime(init.io) < deadline) {
+        const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 500000;
+        while (std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) {
             while (mainloop.iteration(init.io, false)) {}
             mainloop.sleep(1000);
         }
@@ -101,8 +101,8 @@ pub fn main(init: std.process.Init) !void {
     while (service.pending) _ = mainloop.iteration(init.io, true);
     service.destroy();
     controls.?.deinit();
-    const deadline = util.monotonicTime(init.io) + 250000;
-    while (util.monotonicTime(init.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 250000;
+    while (std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) {
         while (mainloop.iteration(init.io, false)) {}
         mainloop.sleep(1000);
     }

@@ -120,9 +120,9 @@ test "directory changes, deletion and late creation are reported" {
             self.value += 1;
         }
         fn wait(self: *@This(), io: std.Io, above: usize, seconds: i64) !void {
-            const deadline = @import("desktop-util.zig").monotonicTime(io) + seconds * std.time.us_per_s;
+            const deadline = std.Io.Clock.awake.now(io).toMicroseconds() + seconds * std.time.us_per_s;
             while (self.value <= above) {
-                if (@import("desktop-util.zig").monotonicTime(io) > deadline) return error.Timeout;
+                if (std.Io.Clock.awake.now(io).toMicroseconds() > deadline) return error.Timeout;
                 _ = mainloop.iteration(io, false);
                 std.Thread.yield() catch {};
             }

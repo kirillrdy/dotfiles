@@ -39,15 +39,15 @@ pub fn main(init: std.process.Init) !void {
         client.destroy();
         settle();
     }
-    const limit = util.monotonicTime(init.io) + 5_000_000;
-    while ((!client.state().available or client.state().profiles.items.len == 0) and util.monotonicTime(init.io) < limit) pump();
+    const limit = std.Io.Clock.awake.now(init.io).toMicroseconds() + 5_000_000;
+    while ((!client.state().available or client.state().profiles.items.len == 0) and std.Io.Clock.awake.now(init.io).toMicroseconds() < limit) pump();
     try std.testing.expect(client.state().available);
     const state = client.state();
     if (std.mem.eql(u8, args[1], "events")) {
         watching = true;
         changed(null, client);
-        const deadline = util.monotonicTime(init.io) + 8_000_000;
-        while (util.monotonicTime(init.io) < deadline) pump();
+        const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 8_000_000;
+        while (std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump();
         watching = false;
         return;
     }
@@ -193,8 +193,8 @@ pub fn main(init: std.process.Init) !void {
         const cancel = mainloop.Cancellable.create(init.io);
         defer cancel.unref();
         client.perform(.{ .save = .{ .path = ui.path, .settings = values, .version = ui.version } }, cancel, &done, null);
-        const deadline = util.monotonicTime(init.io) + 8_000_000;
-        while (!complete and util.monotonicTime(init.io) < deadline) pump();
+        const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 8_000_000;
+        while (!complete and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump();
         ui.ui.close();
         settle();
         try std.testing.expect(complete);
@@ -257,8 +257,8 @@ pub fn main(init: std.process.Init) !void {
     } else .{ .connect = .{ .ssid = args[2], .password = if (args.len > 3) args[3] else "", .hidden = true } };
     client.perform(action, cancel, &done, null);
     if (std.mem.eql(u8, command, "cancel")) cancel.cancel();
-    const deadline = util.monotonicTime(init.io) + 8_000_000;
-    while (!complete and util.monotonicTime(init.io) < deadline) pump();
+    const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 8_000_000;
+    while (!complete and std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) pump();
     try std.testing.expect(complete);
     if (std.mem.eql(u8, command, "cancel")) try std.testing.expect(!success) else try std.testing.expect(success);
 }

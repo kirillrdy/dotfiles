@@ -112,7 +112,7 @@ const State = struct {
 
     pub fn key(self: *State, seat: *Seat, code: u32, symbol: u32) void {
         if (!self.locked) return;
-        self.last_activity = u.monotonicTime(self.client.io);
+        self.last_activity = std.Io.Clock.awake.now(self.client.io).toMicroseconds();
         if (self.stage == .clock) {
             // Like GNOME, any key raises the prompt and a printable one starts the password.
             self.stage = .prompt;
@@ -167,7 +167,7 @@ const State = struct {
 
     /// Once a second: advance the clock and retire an unattended prompt.
     pub fn tick(self: *State) void {
-        if (self.stage == .prompt and !self.client.busy and u.monotonicTime(self.client.io) - self.last_activity > prompt_timeout_us) {
+        if (self.stage == .prompt and !self.client.busy and std.Io.Clock.awake.now(self.client.io).toMicroseconds() - self.last_activity > prompt_timeout_us) {
             _ = self.view.tick();
             self.showClock();
         } else if (self.view.tick() and self.stage == .clock) self.render();
@@ -197,7 +197,7 @@ const State = struct {
 
     fn click(self: *State) void {
         if (self.client.busy or !self.locked or self.client.done) return;
-        self.last_activity = u.monotonicTime(self.client.io);
+        self.last_activity = std.Io.Clock.awake.now(self.client.io).toMicroseconds();
         if (self.stage == .clock) {
             self.stage = .prompt;
             self.render();

@@ -110,7 +110,7 @@ fn add(io: std.Io, source: Source) u32 {
 /// Calls `callback(context)` every `ms` milliseconds until it returns false.
 pub fn timeout(io: std.Io, ms: u32, context: anytype, comptime callback: anytype) u32 {
     const interval: i64 = @as(i64, ms) * std.time.us_per_ms;
-    return add(io, .{ .id = 0, .kind = .{ .timeout = .{ .interval_us = interval, .deadline = util.monotonicTime(io) + interval } }, .callback = plain(@TypeOf(context), callback), .data = toData(context) });
+    return add(io, .{ .id = 0, .kind = .{ .timeout = .{ .interval_us = interval, .deadline = std.Io.Clock.awake.now(io).toMicroseconds() + interval } }, .callback = plain(@TypeOf(context), callback), .data = toData(context) });
 }
 
 pub fn timeoutSeconds(io: std.Io, seconds: u32, context: anytype, comptime callback: anytype) u32 {
@@ -205,7 +205,7 @@ pub fn iteration(io: std.Io, may_block: bool) bool {
 
     mutex.lock(io);
     var wait_ms: i32 = if (may_block) -1 else 0;
-    const now = util.monotonicTime(io);
+    const now = std.Io.Clock.awake.now(io).toMicroseconds();
     for (sources.items) |source| {
         if (source.removed or source.in_call) continue;
         switch (source.kind) {
@@ -236,7 +236,7 @@ pub fn iteration(io: std.Io, may_block: bool) bool {
     var ready: std.ArrayList(Ready) = .empty;
     defer ready.deinit(allocator);
     mutex.lock(io);
-    const after = util.monotonicTime(io);
+    const after = std.Io.Clock.awake.now(io).toMicroseconds();
     if (poll_ok) for (pollfds.items[1..], owners.items[1..]) |entry, id| {
         if (entry.revents != 0) ready.append(allocator, .{ .id = id, .conditions = @intCast(entry.revents) }) catch {};
     };
@@ -292,7 +292,7 @@ fn dispatch(io: std.Io, item: Ready) bool {
         };
         allocator.destroy(source);
     } else if (source.kind == .timeout) {
-        source.kind.timeout.deadline = util.monotonicTime(io) + source.kind.timeout.interval_us;
+        source.kind.timeout.deadline = std.Io.Clock.awake.now(io).toMicroseconds() + source.kind.timeout.interval_us;
     }
     mutex.unlock(io);
     if (restore) |signum| restoreSignal(signum);

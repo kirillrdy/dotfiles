@@ -64,8 +64,8 @@ const Done = struct {
         self.result = .{ .entries = entries };
     }
     fn accept(self: *Done, dialog: *Dialog) !void {
-        const deadline = util.monotonicTime(io) + 5_000_000;
-        while (self.code == null and util.monotonicTime(io) < deadline) {
+        const deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 5_000_000;
+        while (self.code == null and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) {
             pump();
             dialog.accept();
         }
@@ -73,8 +73,8 @@ const Done = struct {
     }
 };
 fn loaded(dialog: *Dialog) !void {
-    const deadline = util.monotonicTime(io) + 5_000_000;
-    while (dialog.pending != null and util.monotonicTime(io) < deadline) pump();
+    const deadline = std.Io.Clock.awake.now(io).toMicroseconds() + 5_000_000;
+    while (dialog.pending != null and std.Io.Clock.awake.now(io).toMicroseconds() < deadline) pump();
     try expect(dialog.pending == null and dialog.listing != null);
 }
 fn select(dialog: *Dialog, paths: []const [:0]const u8) !void {

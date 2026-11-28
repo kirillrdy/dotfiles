@@ -510,8 +510,8 @@ test "disposing an in-flight sysfs scan releases ownership without publishing af
     service.refs += 1;
     service.refresh();
     service.destroy();
-    const deadline = util.monotonicTime(std.testing.io) + 5000000;
-    while (service.pending and util.monotonicTime(std.testing.io) < deadline) {
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 5000000;
+    while (service.pending and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) {
         while (mainloop.iteration(std.testing.io, false)) {}
         mainloop.sleep(1000);
     }

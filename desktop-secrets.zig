@@ -28,7 +28,7 @@ fn iface(kind: Kind) []const u8 {
 const eq = util.eq;
 const cast = util.cast;
 fn now(io: std.Io) u64 {
-    return @intCast(@divTrunc(util.realTime(io), 1000000));
+    return @intCast(@divTrunc(std.Io.Clock.real.now(io).toMicroseconds(), 1000000));
 }
 fn append(comptime T: type, allocator: std.mem.Allocator, old: []const T, value: T) ![]const T {
     const out = try allocator.alloc(T, old.len + 1);

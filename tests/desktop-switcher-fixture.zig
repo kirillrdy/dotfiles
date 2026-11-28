@@ -23,7 +23,7 @@ const State = struct {
     }
     fn focus(ptr: ?*anyopaque, _: *wire.Surface, active: bool) void {
         const self = cast(State, ptr);
-        if (active) @import("desktop").util.printOut("{d} {s}\n", .{ util.monotonicTime(self.io), self.title });
+        if (active) @import("desktop").util.printOut("{d} {s}\n", .{ std.Io.Clock.awake.now(self.io).toMicroseconds(), self.title });
     }
     fn animate(self: *State) bool {
         self.frame +%= 0x00030507;

@@ -90,7 +90,7 @@ test "session: private logind actions and quick-settings lifecycle" {
     try std.testing.expectEqualStrings("1", env("DESKTOP_SESSION_TEST_RUN"));
     try std.testing.expect(env("DBUS_SYSTEM_BUS_ADDRESS").len != 0);
     const scenario = env("SESSION_CASE");
-    const deadline = util.monotonicTime(std.testing.io) + 8_000_000;
+    const deadline = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 8_000_000;
     if (std.mem.startsWith(u8, scenario, "ui-")) {
         const controls = quick.Controls.create(std.testing.allocator, std.testing.io, "true", "true");
         var live = true;
@@ -119,12 +119,12 @@ test "session: private logind actions and quick-settings lifecycle" {
         pump(std.testing.io);
         controls.sessionAction(.reboot); // A pending action must prevent duplicate requests.
         if (std.mem.eql(u8, scenario, "ui-denied")) {
-            while (controls.session_busy and util.monotonicTime(std.testing.io) < deadline) pump(std.testing.io);
+            while (controls.session_busy and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump(std.testing.io);
             try std.testing.expect(!controls.session_busy);
             try std.testing.expect(std.mem.indexOf(u8, controls.view.model.message.slice(), "denied") != null);
         } else {
-            const ready = util.monotonicTime(std.testing.io) + 100_000;
-            while (util.monotonicTime(std.testing.io) < ready) pump(std.testing.io);
+            const ready = std.Io.Clock.awake.now(std.testing.io).toMicroseconds() + 100_000;
+            while (std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < ready) pump(std.testing.io);
             try std.testing.expect(controls.session_busy);
         }
         // A shown native dialog must release its reference during shutdown.
@@ -135,7 +135,7 @@ test "session: private logind actions and quick-settings lifecycle" {
         controls.deinit();
         // Device workers retain their own cancellation objects after Controls
         // is freed. Drain their completion callbacks before the allocator audit.
-        while ((live or battery_live or network.live_services != 0) and util.monotonicTime(std.testing.io) < deadline) pump(std.testing.io);
+        while ((live or battery_live or network.live_services != 0) and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump(std.testing.io);
         try std.testing.expect(!live and !battery_live and network.live_services == 0);
         return;
     }
@@ -146,7 +146,7 @@ test "session: private logind actions and quick-settings lifecycle" {
     session.perform(std.testing.allocator, action, cancel, &Completion.done, &completion);
     if (std.mem.eql(u8, scenario, "cancel-immediate")) cancel.cancel();
     if (std.mem.startsWith(u8, scenario, "cancel-delayed")) _ = mainloop.timeout(std.testing.io, 100, cancel, cancelLater);
-    while (completion.count == 0 and util.monotonicTime(std.testing.io) < deadline) pump(std.testing.io);
+    while (completion.count == 0 and std.Io.Clock.awake.now(std.testing.io).toMicroseconds() < deadline) pump(std.testing.io);
     try std.testing.expectEqual(@as(usize, 1), completion.count);
     const expected = env("SESSION_EXPECT");
     if (std.mem.eql(u8, expected, "success")) {

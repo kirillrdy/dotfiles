@@ -67,8 +67,8 @@ pub fn main(init: std.process.Init) !void {
         while (!ui.closed) _ = mainloop.iteration(init.io, true);
         while (ui.network_operations != 0 or ui.sound.?.operations != 0) _ = mainloop.iteration(init.io, true);
         ui.destroy();
-        const deadline = util.monotonicTime(init.io) + 100000;
-        while (util.monotonicTime(init.io) < deadline) {
+        const deadline = std.Io.Clock.awake.now(init.io).toMicroseconds() + 100000;
+        while (std.Io.Clock.awake.now(init.io).toMicroseconds() < deadline) {
             while (mainloop.iteration(init.io, false)) {}
             mainloop.sleep(1000);
         }
