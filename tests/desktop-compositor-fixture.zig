@@ -39,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
                 break;
             };
             if (complete) break;
-            d.util.sleep(init.io, 10 * std.time.ns_per_ms);
+            init.io.sleep(.fromMilliseconds(10), .awake) catch {};
         }
         for (client.windows.items) |window| if (window.image == null) return error.MissingCapture;
         var before: u64 = 0;
@@ -61,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
         while (changes == previous and resumed.read(init.io) < 5 * std.time.ns_per_s) {
             client.tick();
             while (mainloop.iteration(false)) {}
-            d.util.sleep(init.io, 10 * std.time.ns_per_ms);
+            init.io.sleep(.fromMilliseconds(10), .awake) catch {};
         }
         if (changes == previous) return error.CaptureDidNotResume;
     }

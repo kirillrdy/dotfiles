@@ -8,7 +8,6 @@ const libc = @import("desktop-libc.zig");
 const dbus = @import("dbus");
 const greeter = @import("desktop-greeter.zig");
 const pam_auth = @import("desktop-lock-auth.zig");
-const util = @import("desktop-util.zig");
 
 const PamHandle = ?*pam.pam_handle_t;
 extern "c" fn ioctl(c_int, c_ulong, ...) c_int;
@@ -408,7 +407,7 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
         if (runGreeterRound(a, tty_path.ptr, vt_str)) |auth| {
             runUserSession(auth, tty_path.ptr, vt_str);
         } else if (dm_running.load(.acquire)) {
-            util.sleep(io, 500 * std.time.ns_per_ms);
+            io.sleep(.fromMilliseconds(500), .awake) catch {};
         }
     }
 }

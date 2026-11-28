@@ -7543,7 +7543,9 @@ test "native compositor maps an xdg toplevel from shared memory and composites i
     try std.testing.expect(window.entered);
     // Windows open maximized; this one draws less than it was offered, from the corner.
     deadline = util.monotonicTime() + 3_000_000;
-    while (env.handle.pixel(50, 25).value != 0xffff0000 and util.monotonicTime() < deadline) util.sleep(std.testing.io, 10 * std.time.ns_per_ms);
+    while (env.handle.pixel(50, 25).value != 0xffff0000 and util.monotonicTime() < deadline) {
+        std.testing.io.sleep(.fromMilliseconds(10), .awake) catch {};
+    }
     try std.testing.expectEqual(@as(u32, 0xffff0000), env.handle.pixel(50, 25).value);
     try std.testing.expectEqual(@as(u32, 0xff303030), env.handle.pixel(640, 360).value);
     buffer.destroy();
@@ -8477,7 +8479,7 @@ test "native compositor frees presentation feedback and handles out-of-order sur
     }
     const deadline = util.monotonicTime() + 500_000;
     while (state.presented == 0 and util.monotonicTime() < deadline) {
-        util.sleep(std.testing.io, 5 * std.time.ns_per_ms);
+        std.testing.io.sleep(.fromMilliseconds(5), .awake) catch {};
         try client.conn.roundtrip();
     }
     try std.testing.expect(state.presented >= 1);

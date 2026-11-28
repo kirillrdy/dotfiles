@@ -1,8 +1,5 @@
 const std = @import("std");
 pub const libc = @import("desktop-libc.zig");
-pub fn sleep(io: std.Io, nanoseconds: u64) void {
-    io.sleep(.fromNanoseconds(nanoseconds), .awake) catch {};
-}
 fn micros(clock: std.c.clockid_t) i64 {
     var now: std.c.timespec = undefined;
     _ = std.c.clock_gettime(clock, &now);
