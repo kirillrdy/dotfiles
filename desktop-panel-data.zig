@@ -117,7 +117,7 @@ pub fn rateText(a: std.mem.Allocator, rate: f64) ![]const u8 {
 pub const Monitor = struct {
     previous_cpu: [8]u64,
     previous_net: [2]u64,
-    timer: u.Timer,
+    started: std.Io.Timestamp,
     last: [3]f64 = @splat(-10),
     sequences: [3]u64 = @splat(0),
     cpu: [5]f64 = @splat(0),
@@ -127,11 +127,11 @@ pub const Monitor = struct {
     tick: f64 = 0,
 
     pub fn init(a: std.mem.Allocator, io: std.Io) !Monitor {
-        return .{ .previous_cpu = cpuCounters(try u.read(a, io, "/proc/stat")), .previous_net = try networkCounters(a, io), .timer = u.Timer.start(io) };
+        return .{ .previous_cpu = cpuCounters(try u.read(a, io, "/proc/stat")), .previous_net = try networkCounters(a, io), .started = std.Io.Clock.awake.now(io) };
     }
 
     pub fn sample(self: *Monitor, a: std.mem.Allocator, io: std.Io, demo: bool) !Update {
-        const now = @as(f64, @floatFromInt(self.timer.read(io))) / std.time.ns_per_s;
+        const now = @as(f64, @floatFromInt(self.started.untilNow(io, .awake).toNanoseconds())) / std.time.ns_per_s;
         if (demo or now - self.last[0] >= 1.5) {
             const current = cpuCounters(try u.read(a, io, "/proc/stat"));
             self.cpu = if (demo) .{ 12 + 8 * @sin(self.tick / 9), 5, 0, 1, 0 } else cpuUsage(self.previous_cpu, current);

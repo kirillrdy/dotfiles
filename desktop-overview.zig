@@ -249,7 +249,7 @@ const Overview = struct {
         var separated = favorites.len == 0;
         if (self.client) |client| for (client.windows.items, 0..) |window, i| {
             var duplicate = false;
-            for (client.windows.items[0..i]) |previous| if (util.strEql(previous.app_id, window.app_id)) {
+            for (client.windows.items[0..i]) |previous| if (std.mem.orderZ(u8, previous.app_id, window.app_id) == .eq) {
                 duplicate = true;
                 break;
             };
@@ -457,7 +457,7 @@ const Overview = struct {
             self.toggleApps();
             return;
         }
-        if (item.window_id) |id| if (self.client) |client| for (client.windows.items) |window| if (util.strEql(window.id, id)) {
+        if (item.window_id) |id| if (self.client) |client| for (client.windows.items) |window| if (std.mem.orderZ(u8, window.id, id) == .eq) {
             client.activate(window);
             self.launcher.hide();
             return;

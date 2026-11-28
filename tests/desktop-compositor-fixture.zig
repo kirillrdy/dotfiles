@@ -29,8 +29,8 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "capture")) {
         client.visible(true);
-        const timer = d.util.Timer.start(init.io);
-        while (timer.read(init.io) < 5 * std.time.ns_per_s) {
+        const timer = std.Io.Clock.awake.now(init.io);
+        while (timer.untilNow(init.io, .awake).toNanoseconds() < 5 * std.time.ns_per_s) {
             client.tick();
             while (mainloop.iteration(init.io, false)) {}
             var complete = client.windows.items.len > 0;
@@ -57,8 +57,8 @@ pub fn main(init: std.process.Init) !void {
         try std.testing.expectEqual(before, after);
         const previous = changes;
         client.visible(true);
-        const resumed = d.util.Timer.start(init.io);
-        while (changes == previous and resumed.read(init.io) < 5 * std.time.ns_per_s) {
+        const resumed = std.Io.Clock.awake.now(init.io);
+        while (changes == previous and resumed.untilNow(init.io, .awake).toNanoseconds() < 5 * std.time.ns_per_s) {
             client.tick();
             while (mainloop.iteration(init.io, false)) {}
             init.io.sleep(.fromMilliseconds(10), .awake) catch {};

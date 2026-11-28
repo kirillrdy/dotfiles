@@ -362,7 +362,7 @@ fn workspace(self: *Client, index: u32, name: [:0]const u8, active: u32) void {
         self.pending_count = 0;
         self.pending_stacking = 0;
     }
-    if (!util.strEql(&self.workspaces[index].name, name.ptr)) {
+    if (!std.mem.eql(u8, std.mem.sliceTo(&self.workspaces[index].name, 0), name)) {
         const slot = &self.workspaces[index].name;
         const len = @min(name.len, slot.len - 1);
         @memcpy(slot[0..len], name[0..len]);
@@ -375,7 +375,7 @@ fn workspace(self: *Client, index: u32, name: [:0]const u8, active: u32) void {
 fn placement(self: *Client, id: [:0]const u8, index: u32, x: i32, y: i32, width: i32, height: i32, sticky: u32) void {
     const stacking = self.pending_stacking;
     self.pending_stacking += 1;
-    for (self.windows.items) |w| if (util.strEql(w.id, id.ptr)) {
+    for (self.windows.items) |w| if (std.mem.eql(u8, std.mem.span(w.id), id)) {
         if (w.stacking != stacking) {
             w.stacking = stacking;
             self.snapshot_dirty = true;

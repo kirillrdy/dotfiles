@@ -463,7 +463,7 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
         update_power(m);
         m.power_timer = mainloop.timeoutSeconds(m.io, 2, m, refresh_power);
         connect_session(m);
-    } else if (util.strEql(options.kind.ptr, "clock")) {
+    } else if (std.mem.eql(u8, options.kind, "clock")) {
         make_calendar(m);
         connect_session(m);
         _ = update_clock(m);

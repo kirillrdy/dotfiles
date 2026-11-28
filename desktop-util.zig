@@ -1,13 +1,4 @@
 const std = @import("std");
-pub const Timer = struct {
-    started: std.Io.Timestamp,
-    pub fn start(io: std.Io) Timer {
-        return .{ .started = std.Io.Clock.awake.now(io) };
-    }
-    pub fn read(self: Timer, io: std.Io) u64 {
-        return @intCast(self.started.untilNow(io, .awake).toNanoseconds());
-    }
-};
 pub fn number(v: std.json.Value) ?f64 {
     const n: f64 = switch (v) {
         .integer => |n| @floatFromInt(n),
@@ -60,11 +51,6 @@ pub fn Lazy(comptime T: type, comptime compute: fn () T) type {
             return &value;
         }
     };
-}
-/// Equality of optional C strings: two nulls are equal.
-pub fn strEql(left: [*c]const u8, right: [*c]const u8) bool {
-    if (left == null or right == null) return left == right;
-    return std.mem.orderZ(u8, left, right) == .eq;
 }
 pub fn localTime(a: std.mem.Allocator, stamp: i64, comptime format: [:0]const u8) ![]const u8 {
     const value = @import("desktop-datetime.zig").DateTime.fromUnix(stamp) catch return error.InvalidTime;
