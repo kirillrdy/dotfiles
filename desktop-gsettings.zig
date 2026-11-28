@@ -54,21 +54,22 @@ const Store = struct {
     subscription: u32 = 0,
     write_cancel: ?*mainloop.Cancellable = null,
     pending_writes: usize = 0,
+    io: std.Io = undefined,
 };
 var mutex: Mutex = .{};
 var store: Store = .{};
 
 /// Releases the process-wide settings cache after all settings handles close.
-pub fn deinit() void {
+pub fn deinit(io: std.Io) void {
     if (store.write_cancel) |cancel| {
         cancel.cancel();
-        while (store.pending_writes != 0) _ = mainloop.iteration(true);
+        while (store.pending_writes != 0) _ = mainloop.iteration(io, true);
         cancel.unref();
     }
-    mutex.lock();
-    defer mutex.unlock();
+    mutex.lock(io);
+    defer mutex.unlock(io);
     if (!store.loaded) return;
-    if (store.keyfile_watch != 0) _ = mainloop.remove(store.keyfile_watch);
+    if (store.keyfile_watch != 0) _ = mainloop.remove(io, store.keyfile_watch);
     if (store.keyfile_fd >= 0) _ = std.c.close(store.keyfile_fd);
     if (store.bus) |bus| {
         if (store.subscription != 0) bus.connection.unsubscribe(store.subscription);
@@ -82,9 +83,10 @@ pub fn deinit() void {
 }
 
 /// Loads the schema sources and the dconf profile once. Call with the mutex held.
-fn load(allocator: std.mem.Allocator) void {
+fn load(allocator: std.mem.Allocator, io: std.Io) void {
     if (store.loaded) return;
     store.loaded = true;
+    store.io = io;
     store.arena = .init(allocator);
     store.keyfile_arena = .init(allocator);
     const a = store.arena.allocator();
@@ -174,9 +176,9 @@ fn loadKeyfile() void {
     }
 }
 /// Rewrites the keyfile with one value changed, atomically like g_file_set_contents.
-fn writeKeyfile(path: []const u8, value: Value) !void {
-    mutex.lock();
-    defer mutex.unlock();
+fn writeKeyfile(io: std.Io, path: []const u8, value: Value) !void {
+    mutex.lock(io);
+    defer mutex.unlock(io);
     const a = store.keyfile_arena.allocator();
     const text = try @import("desktop-dbus-text.zig").print(a, value);
     const owned = if (store.keyfile.getKey(path)) |existing| existing else try a.dupe(u8, path);
@@ -245,7 +247,7 @@ fn watchKeyfile() void {
         _ = std.c.close(fd);
         return;
     }
-    store.keyfile_watch = mainloop.watch(fd, mainloop.IN, {}, keyfileChanged);
+    store.keyfile_watch = mainloop.watch(store.io, fd, mainloop.IN, {}, keyfileChanged);
     if (store.keyfile_watch == 0) {
         _ = std.c.close(fd);
     } else {
@@ -259,8 +261,8 @@ fn keyfileChanged(_: void, fd: c_int, _: u32) bool {
     defer arena.deinit();
     var changed_paths: std.ArrayList([]const u8) = .empty;
     {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lock(store.io);
+        defer mutex.unlock(store.io);
         var previous: std.StringHashMapUnmanaged([]const u8) = .empty;
         var it = store.keyfile.iterator();
         while (it.next()) |entry| previous.put(arena.allocator(), arena.allocator().dupe(u8, entry.key_ptr.*) catch continue, arena.allocator().dupe(u8, entry.value_ptr.*) catch continue) catch {};
@@ -323,6 +325,7 @@ fn stored(arena: std.mem.Allocator, path: []const u8, signature: []const u8) ?Va
 
 pub const Settings = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     id: []const u8,
     schema: Schema,
     path: []const u8,
@@ -331,15 +334,15 @@ pub const Settings = struct {
 
     /// Opens an installed schema; with `required_key`, only if it has that key.
     /// The first allocator also backs the shared cache and must outlive it.
-    pub fn open(allocator: std.mem.Allocator, id: []const u8, required_key: ?[]const u8) ?*Settings {
-        mutex.lock();
-        defer mutex.unlock();
-        load(allocator);
+    pub fn open(allocator: std.mem.Allocator, io: std.Io, id: []const u8, required_key: ?[]const u8) ?*Settings {
+        mutex.lock(io);
+        defer mutex.unlock(io);
+        load(allocator, io);
         const schema = findSchema(id) orelse return null;
         // Relocatable schemas need a path, which no caller supplies.
         const path = schema.path orelse return null;
         const self = allocator.create(Settings) catch return null;
-        self.* = .{ .allocator = allocator, .id = id, .schema = schema, .path = path };
+        self.* = .{ .allocator = allocator, .io = io, .id = id, .schema = schema, .path = path };
         if (required_key) |key| if (!self.hasKeyLocked(key)) {
             allocator.destroy(self);
             return null;
@@ -357,14 +360,14 @@ pub const Settings = struct {
         return (self.schema.table.value(scratch.allocator(), key) catch null) != null;
     }
     pub fn hasKey(self: *Settings, key: []const u8) bool {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lock(self.io);
+        defer mutex.unlock(self.io);
         return self.hasKeyLocked(key);
     }
     /// The schema's keys, allocated from `arena`.
     pub fn keys(self: *Settings, arena: std.mem.Allocator) ![]const []const u8 {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lock(self.io);
+        defer mutex.unlock(self.io);
         var out: std.ArrayList([]const u8) = .empty;
         for (try self.schema.table.names(arena)) |name| {
             if (name.len > 0 and name[0] != '.') try out.append(arena, name);
@@ -381,8 +384,8 @@ pub const Settings = struct {
     }
     /// The key's current value, allocated from `arena`; null for unknown keys.
     pub fn get(self: *Settings, arena: std.mem.Allocator, key: []const u8) ?Value {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lock(self.io);
+        defer mutex.unlock(self.io);
         return self.getLocked(arena, key);
     }
     /// Schema and database decoding uses a private arena, so `arena` only has to
@@ -435,8 +438,8 @@ pub const Settings = struct {
         var arena: std.heap.ArenaAllocator = .init(self.allocator);
         defer arena.deinit();
         const fields = blk: {
-            mutex.lock();
-            defer mutex.unlock();
+            mutex.lock(self.io);
+            defer mutex.unlock(self.io);
             break :blk self.info(arena.allocator(), key) orelse return 0;
         };
         const nick = switch (self.get(arena.allocator(), key) orelse return 0) {
@@ -461,8 +464,8 @@ pub const Settings = struct {
         defer arena.deinit();
         const path = try std.fmt.allocPrint(arena.allocator(), "{s}{s}", .{ self.path, key });
         {
-            mutex.lock();
-            defer mutex.unlock();
+            mutex.lock(self.io);
+            defer mutex.unlock(self.io);
             const fields = self.info(arena.allocator(), key) orelse return error.UnknownKey;
             var expected: [256]u8 = undefined;
             var actual: [256]u8 = undefined;
@@ -476,7 +479,7 @@ pub const Settings = struct {
         }
         switch (store.backend) {
             .dconf => try writeDconf(self.allocator, arena.allocator(), path, value),
-            .keyfile => try writeKeyfile(path, value),
+            .keyfile => try writeKeyfile(self.io, path, value),
             .memory => {},
         }
         notify(path);
@@ -485,8 +488,8 @@ pub const Settings = struct {
     pub fn watch(self: *Settings, handler: Handler, context: ?*anyopaque) !void {
         self.handler = handler;
         self.context = context;
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lock(self.io);
+        defer mutex.unlock(self.io);
         try store.watchers.append(store.arena.allocator(), self);
         switch (store.backend) {
             .dconf => if (store.bus == null) subscribe(),
@@ -495,8 +498,8 @@ pub const Settings = struct {
         }
     }
     fn unwatch(self: *Settings) void {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lock(self.io);
+        defer mutex.unlock(self.io);
         for (store.watchers.items, 0..) |item, i| if (item == self) {
             _ = store.watchers.swapRemove(i);
             break;
@@ -537,9 +540,9 @@ fn writeDconf(allocator: std.mem.Allocator, arena: std.mem.Allocator, path: []co
     const loop = @import("desktop-dbus-loop.zig");
     const changeset = try gvariant.encodeChangeset(arena, &.{.{ .key = path, .value = value }});
     const object = try std.fmt.allocPrint(arena, "/ca/desrt/dconf/Writer/{s}", .{database});
-    if (store.write_cancel == null) store.write_cancel = mainloop.Cancellable.create();
+    if (store.write_cancel == null) store.write_cancel = mainloop.Cancellable.create(store.io);
     store.pending_writes += 1;
-    loop.request(allocator, .session, .{ .destination = writer_name, .path = object, .interface = writer_interface, .member = "Change" }, .{dbus.Bytes{ .value = changeset }}, 25000, store.write_cancel, &writeFinished, null);
+    loop.request(allocator, store.io, .session, .{ .destination = writer_name, .path = object, .interface = writer_interface, .member = "Change" }, .{dbus.Bytes{ .value = changeset }}, 25000, store.write_cancel, &writeFinished, null);
 }
 fn writeFinished(_: ?*anyopaque, reply: dbus.Reply) void {
     store.pending_writes -= 1;
@@ -552,7 +555,7 @@ fn writeFinished(_: ?*anyopaque, reply: dbus.Reply) void {
 }
 fn subscribe() void {
     const loop = @import("desktop-dbus-loop.zig");
-    const bus = loop.acquire(store.arena.child_allocator, .session) catch return;
+    const bus = loop.acquire(store.arena.child_allocator, store.io, .session) catch return;
     store.bus = bus;
     store.subscription = bus.connection.subscribe(null, writer_interface, "Notify", null, &changed, null) catch 0;
 }
@@ -560,8 +563,8 @@ fn subscribe() void {
 fn changed(_: ?*anyopaque, message: *const dbus.Message) void {
     const args = message.read(struct { []const u8, []const []const u8, []const u8 }) catch return;
     {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lock(store.io);
+        defer mutex.unlock(store.io);
         reloadDatabases();
     }
     if (args[1].len == 0) return notify(args[0]);
@@ -570,8 +573,8 @@ fn changed(_: ?*anyopaque, message: *const dbus.Message) void {
         const path = std.fmt.bufPrint(&buffer, "{s}{s}", .{ args[0], change }) catch continue;
         {
             // The database now holds what this process wrote.
-            mutex.lock();
-            defer mutex.unlock();
+            mutex.lock(store.io);
+            defer mutex.unlock(store.io);
             _ = store.values.remove(path);
         }
         notify(path);
@@ -584,8 +587,8 @@ fn notify(path: []const u8) void {
     const Call = struct { settings: *Settings, key: []const u8 };
     var calls: std.ArrayList(Call) = .empty;
     {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lock(store.io);
+        defer mutex.unlock(store.io);
         for (store.watchers.items) |settings| {
             if (std.mem.endsWith(u8, path, "/")) {
                 if (!std.mem.startsWith(u8, settings.path, path) and !std.mem.startsWith(u8, path, settings.path)) continue;
@@ -603,8 +606,8 @@ fn notify(path: []const u8) void {
     // Handlers run unlocked; they may read settings or close their watcher.
     for (calls.items) |call| {
         const still_watching = blk: {
-            mutex.lock();
-            defer mutex.unlock();
+            mutex.lock(store.io);
+            defer mutex.unlock(store.io);
             for (store.watchers.items) |item| if (item == call.settings) break :blk true;
             break :blk false;
         };
@@ -613,13 +616,13 @@ fn notify(path: []const u8) void {
 }
 
 test "settings read schema defaults and keep memory-backend writes" {
-    defer deinit();
+    defer deinit(std.testing.io);
     if (getenv("GSETTINGS_SCHEMA_DIR") == null) return error.SkipZigTest;
     if (!std.mem.eql(u8, getenv("GSETTINGS_BACKEND") orelse "", "memory")) return error.SkipZigTest;
-    const settings = Settings.open(std.testing.allocator, "org.gnome.desktop.interface", "color-scheme") orelse return error.SkipZigTest;
+    const settings = Settings.open(std.testing.allocator, std.testing.io, "org.gnome.desktop.interface", "color-scheme") orelse return error.SkipZigTest;
     defer settings.close();
-    try std.testing.expect(Settings.open(std.testing.allocator, "org.gnome.desktop.interface", "no-such-key") == null);
-    try std.testing.expect(Settings.open(std.testing.allocator, "org.example.Missing", null) == null);
+    try std.testing.expect(Settings.open(std.testing.allocator, std.testing.io, "org.gnome.desktop.interface", "no-such-key") == null);
+    try std.testing.expect(Settings.open(std.testing.allocator, std.testing.io, "org.example.Missing", null) == null);
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings("default", settings.string(arena.allocator(), "color-scheme"));
@@ -644,12 +647,12 @@ test "settings read schema defaults and keep memory-backend writes" {
 const Mutex = @import("desktop-util.zig").Mutex;
 
 test "settings opened twice share memory-backend writes" {
-    defer deinit();
+    defer deinit(std.testing.io);
     if (getenv("GSETTINGS_SCHEMA_DIR") == null) return error.SkipZigTest;
     if (!std.mem.eql(u8, getenv("GSETTINGS_BACKEND") orelse "", "memory")) return error.SkipZigTest;
-    const first = Settings.open(std.testing.allocator, "org.gnome.desktop.notifications", null) orelse return error.SkipZigTest;
+    const first = Settings.open(std.testing.allocator, std.testing.io, "org.gnome.desktop.notifications", null) orelse return error.SkipZigTest;
     defer first.close();
-    const second = Settings.open(std.testing.allocator, "org.gnome.desktop.notifications", null).?;
+    const second = Settings.open(std.testing.allocator, std.testing.io, "org.gnome.desktop.notifications", null).?;
     defer second.close();
     const before = first.boolean("show-banners");
     try first.setBoolean("show-banners", !before);
@@ -659,9 +662,9 @@ test "settings opened twice share memory-backend writes" {
 }
 
 test "small result buffers only need to hold the value" {
-    defer deinit();
+    defer deinit(std.testing.io);
     if (getenv("GSETTINGS_SCHEMA_DIR") == null) return error.SkipZigTest;
-    const settings = Settings.open(std.testing.allocator, "org.gnome.desktop.interface", "color-scheme") orelse return error.SkipZigTest;
+    const settings = Settings.open(std.testing.allocator, std.testing.io, "org.gnome.desktop.interface", "color-scheme") orelse return error.SkipZigTest;
     defer settings.close();
     // The key's schema info, with its enum table, is far larger than this.
     var buffer: [64]u8 = undefined;
@@ -670,13 +673,13 @@ test "small result buffers only need to hold the value" {
 }
 
 test "dconf writes reach the database and notify watchers" {
-    defer deinit();
+    defer deinit(std.testing.io);
     // Opt-in: needs a running dconf service. Point DCONF_PROFILE at a profile
     // whose user database is a throwaway one, never the real `user` database.
     const profile = getenv("DESKTOP_GSETTINGS_DCONF_TEST_PROFILE") orelse return error.SkipZigTest;
     if (getenv("GSETTINGS_BACKEND") != null) return error.SkipZigTest;
     _ = profile;
-    const settings = Settings.open(std.testing.allocator, "org.gnome.desktop.interface", "color-scheme") orelse return error.SkipZigTest;
+    const settings = Settings.open(std.testing.allocator, std.testing.io, "org.gnome.desktop.interface", "color-scheme") orelse return error.SkipZigTest;
     defer settings.close();
     try std.testing.expect(store.writable != null and !std.mem.eql(u8, store.writable.?, "user"));
     const Seen = struct {
@@ -693,14 +696,14 @@ test "dconf writes reach the database and notify watchers" {
     // Once immediately, again when dconf's Notify arrives.
     var tries: usize = 0;
     while (Seen.count < 2 and tries < 300) : (tries += 1) {
-        _ = mainloop.iteration(false);
+        _ = mainloop.iteration(std.testing.io, false);
         std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
     }
     try std.testing.expect(Seen.count >= 2);
     // The value now comes from the database file, not this process's pending write.
     {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lock(std.testing.io);
+        defer mutex.unlock(std.testing.io);
         try std.testing.expect(store.values.count() == 0);
     }
     try std.testing.expectEqualStrings(next, settings.string(arena.allocator(), "color-scheme"));

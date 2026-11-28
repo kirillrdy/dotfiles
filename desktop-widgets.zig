@@ -26,6 +26,7 @@ pub const Options = struct {
 };
 pub const Module = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     refs: c_int = 1,
     dead: c_int = 0,
     monitors: c_int = 0,
@@ -63,6 +64,7 @@ pub const UsagePopup = struct {
         self.* = .{ .module = module };
         self.popup = .{
             .allocator = module.allocator,
+            .io = module.io,
             .context = self,
             .namespace = "desktop-usage",
             .partial = true, // Draws only through blit.
@@ -233,7 +235,7 @@ fn select_power(m: *Module, id: [*c]const u8) void {
         return;
     }
     const argv = [_][:0]const u8{ pkexec.?, helper.?, "power", "set", std.mem.span(id) };
-    m.power_process = Process.spawn(m.allocator, &argv, .{ .capture_stderr = true, .silence_stdout = true }, &power_set_ready, m) catch {
+    m.power_process = Process.spawn(m.allocator, m.io, &argv, .{ .capture_stderr = true, .silence_stdout = true }, &power_set_ready, m) catch {
         set_power_message(m, "Could not start the power profile helper");
         return;
     };
@@ -254,7 +256,7 @@ pub fn update_clock(m: *Module) bool {
     return true;
 }
 pub fn make_calendar(m: *Module) callconv(.c) void {
-    m.date_controls = date_menu.Controls.create(m.allocator, .{
+    m.date_controls = date_menu.Controls.create(m.allocator, m.io, .{
         .context = m,
         .clear = &history_clear,
         .dismiss = &history_dismiss,
@@ -405,7 +407,7 @@ test "monitor polling updates tooltips without repainting unchanged graph sample
         }
     };
     var redraws: usize = 0;
-    var module: Module = .{ .allocator = std.testing.allocator, .monitors = 1, .view = .{ .monitors = true }, .on_redraw = &Counter.redraw, .redraw_context = &redraws };
+    var module: Module = .{ .allocator = std.testing.allocator, .io = std.testing.io, .monitors = 1, .view = .{ .monitors = true }, .on_redraw = &Counter.redraw, .redraw_context = &redraws };
     defer module.view.deinit(std.testing.allocator);
     defer if (module.tooltip) |text| std.testing.allocator.free(text);
     var graph: panel_data.Graph = .{ .values = &.{10}, .sequence = 1, .maximum = 100, .tooltip = "first" };
@@ -429,7 +431,7 @@ fn device_changed(data: ?*anyopaque, _: *const dbus.Message) void {
 }
 /// Joins the shared session bus; without one the module works, minus live history and device updates.
 fn connect_session(m: *Module) void {
-    const bus = loop.acquire(m.allocator, .session) catch |err| {
+    const bus = loop.acquire(m.allocator, m.io, .session) catch |err| {
         std.log.warn("panel: session bus unavailable: {s}", .{@errorName(err)});
         return;
     };
@@ -454,26 +456,27 @@ fn initCommon(m: *Module, options: Options, devices: ?*@import("desktop-devices.
         m.usage.checked.set(m.allocator, "Loading…");
         make_usage_menu(m);
     } else if (m.status != 0) {
-        m.quick = quick.Controls.createWithDevices(m.allocator, if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
+        m.quick = quick.Controls.createWithDevices(m.allocator, m.io, if (options.network_settings_command) |command| command.ptr else options.sound_settings_command.ptr, options.sound_settings_command.ptr, devices);
         const controls = m.quick.?;
         controls.profile_context = m;
         controls.profile_selected = &native_profile_selected;
         update_power(m);
-        m.power_timer = mainloop.timeoutSeconds(2, m, refresh_power);
+        m.power_timer = mainloop.timeoutSeconds(m.io, 2, m, refresh_power);
         connect_session(m);
     } else if (util.strEql(options.kind.ptr, "clock")) {
         make_calendar(m);
         connect_session(m);
         _ = update_clock(m);
-        m.clock_timer = mainloop.timeoutSeconds(1, m, update_clock);
+        m.clock_timer = mainloop.timeoutSeconds(m.io, 1, m, update_clock);
     }
     resize(m);
     m.source = options.source.ptr;
 }
-pub fn init(allocator: std.mem.Allocator, options: Options, devices: ?*@import("desktop-devices.zig").Service, on_redraw: ?*const fn (?*anyopaque) void, redraw_context: ?*anyopaque) *Module {
+pub fn init(allocator: std.mem.Allocator, io: std.Io, options: Options, devices: ?*@import("desktop-devices.zig").Service, on_redraw: ?*const fn (?*anyopaque) void, redraw_context: ?*anyopaque) *Module {
     const m = allocator.create(Module) catch @panic("out of memory");
     m.* = .{
         .allocator = allocator,
+        .io = io,
         .monitors = @intFromBool(std.mem.eql(u8, options.kind, "monitors")),
         .status = @intFromBool(std.mem.eql(u8, options.name, "gnome-status")),
         .view = .{ .monitors = std.mem.eql(u8, options.kind, "monitors"), .status = std.mem.eql(u8, options.name, "gnome-status"), .activities = std.mem.eql(u8, options.kind, "activities"), .usage = std.mem.eql(u8, options.name, "gnome-codex") or std.mem.eql(u8, options.name, "gnome-claude") or std.mem.eql(u8, options.name, "gnome-antigravity"), .disk = std.mem.eql(u8, options.name, "gnome-disk") },
@@ -485,9 +488,9 @@ pub fn init(allocator: std.mem.Allocator, options: Options, devices: ?*@import("
 }
 
 test "usage indicators are visible before either collector returns" {
-    const codex = init(std.testing.allocator, .{ .name = "gnome-codex", .source = "codex" }, null, null, null);
+    const codex = init(std.testing.allocator, std.testing.io, .{ .name = "gnome-codex", .source = "codex" }, null, null, null);
     defer deinit(codex);
-    const claude = init(std.testing.allocator, .{ .name = "gnome-claude", .source = "claude" }, null, null, null);
+    const claude = init(std.testing.allocator, std.testing.io, .{ .name = "gnome-claude", .source = "claude" }, null, null, null);
     defer deinit(claude);
 
     update(claude, .{ .items = &.{.{ .text = "72%" }} });
@@ -527,14 +530,14 @@ pub fn deinit(m: *Module) void {
         loop.release(bus);
     }
     if (m.clock_timer != 0) {
-        _ = mainloop.remove(m.clock_timer);
+        _ = mainloop.remove(m.io, m.clock_timer);
     }
     if (m.date_controls) |controls| controls.destroy();
     m.date_controls = null;
     if (m.usage_menu) |menu| menu.destroy();
     m.usage_menu = null;
     if (m.quick) |controls| controls.deinit();
-    if (m.power_timer != 0) _ = mainloop.remove(m.power_timer);
+    if (m.power_timer != 0) _ = mainloop.remove(m.io, m.power_timer);
     if (m.power_process) |child| child.cancel();
     unref_module(m);
 }

@@ -261,7 +261,7 @@ const State = struct {
             .username_text = self.custom_username.slice(),
             .typed = self.client.typed,
             .caps_lock = self.client.caps_lock,
-            .spin = login.spinPhase(),
+            .spin = login.spinPhase(self.client.io),
             .power_menu_open = self.power_menu_open,
             .hover = self.hover,
         };
@@ -424,12 +424,12 @@ fn onSignal(self: *LoginClient) bool {
 }
 
 /// `dm_fd` is the display manager control socket, or -1 when run standalone.
-pub fn run(a: std.mem.Allocator, dm_fd: c_int) !void {
+pub fn run(a: std.mem.Allocator, io: std.Io, dm_fd: c_int) !void {
     if (libc.prctl(libc.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
     const own_compositor = libc.getenv("WAYLAND_DISPLAY") == null;
     var compositor: ?*@import("desktop-compositor.zig").Handle = null;
     if (own_compositor) {
-        compositor = try @import("desktop-compositor.zig").Handle.start(a, .greeter);
+        compositor = try @import("desktop-compositor.zig").Handle.start(a, io, .greeter);
     }
     defer if (compositor) |handle| handle.stop();
 
@@ -462,7 +462,7 @@ pub fn run(a: std.mem.Allocator, dm_fd: c_int) !void {
     defer connection.deinit();
 
     var state: State = .{
-        .client = .{ .allocator = a, .connection = connection, .password = password },
+        .client = .{ .allocator = a, .io = io, .connection = connection, .password = password },
         .view = &greeter_view,
         .users = users,
         .dm_fd = dm_fd,
@@ -475,10 +475,10 @@ pub fn run(a: std.mem.Allocator, dm_fd: c_int) !void {
     state.client.attachAll();
     connection.roundtrip() catch return error.WaylandDisconnected;
 
-    const term = mainloop.signal(mainloop.SIGTERM, &state.client, onSignal);
-    const interrupt = mainloop.signal(mainloop.SIGINT, &state.client, onSignal);
-    defer _ = mainloop.remove(term);
-    defer _ = mainloop.remove(interrupt);
+    const term = mainloop.signal(io, mainloop.SIGTERM, &state.client, onSignal);
+    const interrupt = mainloop.signal(io, mainloop.SIGINT, &state.client, onSignal);
+    defer _ = mainloop.remove(io, term);
+    defer _ = mainloop.remove(io, interrupt);
 
     state.client.run();
     if (!state.accepted) return error.NotAuthenticated;

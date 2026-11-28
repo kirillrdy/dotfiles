@@ -83,12 +83,12 @@ const Overview = struct {
     workspace_rect: Rect = .{},
     monitor: raster.IntRect = .{ .x = 0, .y = 0, .width = 1728, .height = 1080 },
 
-    fn create(a: std.mem.Allocator, path: [*:0]const u8) *Overview {
+    fn create(a: std.mem.Allocator, io: std.Io, path: [*:0]const u8) *Overview {
         const self = a.create(Overview) catch @panic("out of memory");
-        const native = wire.Client.createInteractive(a, .{ .added = &outputAdded, .removed = &outputRemoved }, self) catch @panic("native overview connection");
+        const native = wire.Client.createInteractive(a, io, .{ .added = &outputAdded, .removed = &outputRemoved }, self) catch @panic("native overview connection");
         if (native.outputs.items.len == 0) @panic("overview needs an output");
         const wallpaper = decode.file(a, path, null);
-        self.* = .{ .allocator = a, .dash_view = .{ .allocator = a }, .launcher = apps.Launcher.init(a), .native = native, .surface = null, .wallpaper = wallpaper };
+        self.* = .{ .allocator = a, .dash_view = .{ .allocator = a }, .launcher = apps.Launcher.init(a, io), .native = native, .surface = null, .wallpaper = wallpaper };
         self.gpu_previews = native.enablePreviews();
         self.surface = self.createSurface(native.outputs.items[0]) catch @panic("native overview surface");
         if (self.gpu_previews) self.background = self.createBackground(native.outputs.items[0]) catch @panic("overview background");
@@ -101,14 +101,14 @@ const Overview = struct {
         self.launcher.on_search = &searchChanged;
         self.launcher.search_context = self;
         self.launcher.overview_search = true;
-        self.client = capture.Client.create(self.allocator, self, &changed) catch null;
+        self.client = capture.Client.create(self.allocator, io, self, &changed) catch null;
         native.start() catch @panic("native overview input");
         return self;
     }
     fn destroy(self: *Overview) void {
-        if (self.repaint_source != 0) _ = mainloop.remove(self.repaint_source);
+        if (self.repaint_source != 0) _ = mainloop.remove(self.native.io, self.repaint_source);
         self.repaint_source = 0;
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.native.io, self.timer);
         self.timer = 0;
         if (self.client) |client| client.destroy();
         self.client = null;
@@ -174,15 +174,15 @@ const Overview = struct {
         if (self.surface == null) return;
         if (self.launcher.visible_window) {
             if (!self.transition.shown) {
-                self.transition.setShown(true, util.monotonicTime());
+                self.transition.setShown(true, util.monotonicTime(self.native.io));
                 if (self.client) |client| client.visible(!self.gpu_previews);
                 self.focusPart(.stage);
                 self.redrawSelf();
             }
             return;
         }
-        if (self.timer == 0) self.timer = mainloop.timeout(33, self, tick);
-        if (self.client == null) self.client = capture.Client.create(self.allocator, self, &changed) catch null;
+        if (self.timer == 0) self.timer = mainloop.timeout(self.native.io, 33, self, tick);
+        if (self.client == null) self.client = capture.Client.create(self.allocator, self.native.io, self, &changed) catch null;
         const output = self.surface.?.output;
         self.monitor = .{ .x = output.x, .y = output.y, .width = output.width(), .height = output.height() };
         self.apps_mode = false;
@@ -203,8 +203,8 @@ const Overview = struct {
             self.selected = top orelse 0;
             if (!self.gpu_previews) client.captureMissing();
         }
-        self.transition.setShown(true, util.monotonicTime());
-        self.activation_time = util.monotonicTime();
+        self.transition.setShown(true, util.monotonicTime(self.native.io));
+        self.activation_time = util.monotonicTime(self.native.io);
         self.rebuildDash();
         self.launcher.visible_window = true;
         self.updateMode();
@@ -229,7 +229,7 @@ const Overview = struct {
         var favorites_arena = std.heap.ArenaAllocator.init(self.allocator);
         defer favorites_arena.deinit();
         var favorites: []const [:0]const u8 = &.{};
-        if (gsettings.Settings.open(self.allocator, "org.gnome.shell", "favorite-apps")) |settings| {
+        if (gsettings.Settings.open(self.allocator, self.native.io, "org.gnome.shell", "favorite-apps")) |settings| {
             defer settings.close();
             const names = settings.strings(favorites_arena.allocator(), "favorite-apps");
             const owned: [][:0]const u8 = favorites_arena.allocator().alloc([:0]const u8, names.len) catch &.{};
@@ -282,7 +282,7 @@ const Overview = struct {
         self.dash_view.add(std.mem.span(title), app, if (window) |w| @ptrCast(w.id) else null, if (window) |w| w.icon else null) catch @panic("out of memory");
     }
     fn hideTooltip(self: *Overview) void {
-        if (self.tooltip_timer != 0) _ = mainloop.remove(self.tooltip_timer);
+        if (self.tooltip_timer != 0) _ = mainloop.remove(self.native.io, self.tooltip_timer);
         self.tooltip_timer = 0;
         self.tooltip_visible = false;
     }
@@ -324,14 +324,14 @@ const Overview = struct {
         if (index != self.dash_view.hover) {
             self.hideTooltip();
             self.dash_view.hover = index;
-            if (index != null) self.tooltip_timer = mainloop.timeout(300, self, showTooltip);
+            if (index != null) self.tooltip_timer = mainloop.timeout(self.native.io, 300, self, showTooltip);
             self.redrawSelf();
         }
     }
     fn dashLeave(self: *Overview) void {
         self.hideTooltip();
         self.dash_view.hover = null;
-        if (self.dash_view.keyboard_focus) self.tooltip_timer = mainloop.timeout(300, self, showTooltip);
+        if (self.dash_view.keyboard_focus) self.tooltip_timer = mainloop.timeout(self.native.io, 300, self, showTooltip);
         self.redrawSelf();
     }
 
@@ -342,7 +342,7 @@ const Overview = struct {
             if (client.current != self.workspace_target) {
                 self.workspace_from = self.workspacePosition();
                 self.workspace_target = client.current;
-                self.workspace_started = util.monotonicTime();
+                self.workspace_started = util.monotonicTime(self.native.io);
             }
             if (self.drag) |drag| {
                 var found = false;
@@ -378,7 +378,7 @@ const Overview = struct {
         if (!self.launcher.visible_window) return true;
         // Existing previews are sufficient during the short transition. Avoid
         // capture readbacks competing with high-refresh animation frames.
-        const now = util.monotonicTime();
+        const now = util.monotonicTime(self.native.io);
         if (self.previewsPaused(now)) {
             if (self.client) |client| client.streaming = false;
             return true;
@@ -397,7 +397,7 @@ const Overview = struct {
         const self = cast(Overview, data);
         // App-grid/search transitions are separate from the window picker.
         if (self.apps_mode or self.launcher.searchText().len != 0 or self.surface == null or self.surface.?.role == null) return false;
-        const now = util.monotonicTime();
+        const now = util.monotonicTime(self.native.io);
         if (!self.transition.shown) return self.transition.active(now);
         if (self.transition.value(now) == 0) return false;
         self.transition.setShown(false, now);
@@ -414,15 +414,15 @@ const Overview = struct {
     }
     fn hidden(data: ?*anyopaque) void {
         const self = cast(Overview, data);
-        self.transition.setShown(false, util.monotonicTime());
+        self.transition.setShown(false, util.monotonicTime(self.native.io));
         self.transition.finish();
         self.hideTooltip();
         self.dash_view.hover = null;
         self.dash_view.pressed = null;
         self.dash_view.keyboard_focus = false;
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.native.io, self.timer);
         self.timer = 0;
-        if (self.repaint_source != 0) _ = mainloop.remove(self.repaint_source);
+        if (self.repaint_source != 0) _ = mainloop.remove(self.native.io, self.repaint_source);
         self.repaint_source = 0;
         if (self.client) |client| client.visible(false);
         if (self.native.preview_control) |control| {
@@ -483,7 +483,7 @@ const Overview = struct {
             } else self.focusPart(.search);
             if (self.focus_part == .dash) {
                 self.hideTooltip();
-                self.tooltip_timer = mainloop.timeout(300, self, showTooltip);
+                self.tooltip_timer = mainloop.timeout(self.native.io, 300, self, showTooltip);
             }
             self.redrawSelf();
             return true;
@@ -507,7 +507,7 @@ const Overview = struct {
             }
             self.hideTooltip();
             if (self.dash_view.keyboard_focus and self.focus_part == .dash)
-                self.tooltip_timer = mainloop.timeout(300, self, showTooltip);
+                self.tooltip_timer = mainloop.timeout(self.native.io, 300, self, showTooltip);
             self.redrawSelf();
             return true;
         }
@@ -741,7 +741,7 @@ const Overview = struct {
     }
     fn renderScale(data: ?*anyopaque, surface: *wire.Surface) u32 {
         const self = cast(Overview, data);
-        const now = util.monotonicTime();
+        const now = util.monotonicTime(self.native.io);
         // Fractional outputs otherwise render at the next integer scale (for
         // example 2x buffers on a 1.625x display). Keep motion inexpensive, then
         // restore native text/icon detail on the final compositor-paced frame.
@@ -759,7 +759,7 @@ const Overview = struct {
         const self = cast(Overview, data);
         const surface = self.surface orelse return;
         if (surface.output != output) return;
-        self.transition.setShown(false, util.monotonicTime());
+        self.transition.setShown(false, util.monotonicTime(self.native.io));
         self.transition.finish();
         self.launcher.hide();
         for (self.native.outputs.items) |candidate| if (candidate != output) {
@@ -777,11 +777,11 @@ const Overview = struct {
         cast(Overview, data).redrawSelf();
     }
     fn redrawSelf(self: *Overview) void {
-        if (self.previewsPaused(util.monotonicTime())) if (self.client) |client| {
+        if (self.previewsPaused(util.monotonicTime(self.native.io))) if (self.client) |client| {
             client.streaming = false;
         };
         for (self.native.seats.items) |seat| if (seat.text_input) |value| value.update();
-        if (!self.painting and self.launcher.visible_window and self.repaint_source == 0) self.repaint_source = mainloop.idle(self, repaint);
+        if (!self.painting and self.launcher.visible_window and self.repaint_source == 0) self.repaint_source = mainloop.idle(self.native.io, self, repaint);
     }
     fn repaint(self: *Overview) bool {
         self.repaint_source = 0;
@@ -964,7 +964,7 @@ const Overview = struct {
     fn paint(data: ?*anyopaque, target: wire.Pixels) void {
         const self = cast(Overview, data);
         self.painting = true;
-        self.progress = self.transition.value(util.monotonicTime());
+        self.progress = self.transition.value(util.monotonicTime(self.native.io));
         self.animating = self.progress != (if (self.transition.shown) @as(f64, 1) else 0);
         defer self.painting = false;
         const scale = self.surface.?.buffer_scale;
@@ -1033,7 +1033,7 @@ const Overview = struct {
     }
     fn paintStrip(self: *Overview, canvas: raster.Canvas, width: f64) void {
         const client = self.client orelse return;
-        const now = util.monotonicTime();
+        const now = util.monotonicTime(self.native.io);
         const animated = self.transition.active(now) or !self.transition.shown or now - self.workspace_started < 250000;
         const geom = self.stripGeometry(width, client.count);
         const work_w: f64 = @floatFromInt(self.monitor.width);
@@ -1100,7 +1100,7 @@ const Overview = struct {
         };
     }
     fn workspacePosition(self: *const Overview) f64 {
-        const t = std.math.clamp(@as(f64, @floatFromInt(util.monotonicTime() - self.workspace_started)) / 250000, 0, 1);
+        const t = std.math.clamp(@as(f64, @floatFromInt(util.monotonicTime(self.native.io) - self.workspace_started)) / 250000, 0, 1);
         const ease = 1 - (1 - t) * (1 - t) * (1 - t);
         return self.workspace_from + (@as(f64, @floatFromInt(self.workspace_target)) - self.workspace_from) * ease;
     }
@@ -1245,8 +1245,8 @@ fn pixelRect(rect: Rect) raster.Rect {
 }
 
 pub const State = struct { overview: ?*Overview = null, wallpaper: [*:0]const u8 };
-pub fn activate(a: std.mem.Allocator, state: *State) void {
-    if (state.overview == null) state.overview = Overview.create(a, state.wallpaper);
+pub fn activate(a: std.mem.Allocator, io: std.Io, state: *State) void {
+    if (state.overview == null) state.overview = Overview.create(a, io, state.wallpaper);
     const self = state.overview.?;
     if (self.launcher.visible_window and self.transition.shown) self.launcher.hide() else self.present();
 }
@@ -1255,13 +1255,13 @@ pub fn deinit(state: *State) void {
     state.overview = null;
 }
 
-pub fn activateCorner(a: std.mem.Allocator, state: *State) void {
+pub fn activateCorner(a: std.mem.Allocator, io: std.Io, state: *State) void {
     if (state.overview) |self| {
-        const now = util.monotonicTime();
+        const now = util.monotonicTime(self.native.io);
         // overview.js shouldToggleByCornerOrButton(): don't interrupt an
         // animation or drag, and debounce for 500 ms after opening.
         if (self.transition.active(now) or self.dragging or self.drag != null) return;
         if (self.activation_time != 0 and now - self.activation_time <= 500_000) return;
     }
-    activate(a, state);
+    activate(a, io, state);
 }

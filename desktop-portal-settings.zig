@@ -22,18 +22,19 @@ const Bundle = struct {
 };
 pub const Service = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     connection: *dbus.Connection,
     bundles: std.ArrayList(*Bundle) = .empty,
     fonts: ?*@import("desktop-watch.zig").Watcher = null,
     serial: i32 = 0,
     timer: u32 = 0,
 
-    pub fn create(allocator: std.mem.Allocator, connection: *dbus.Connection) !*Service {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io, connection: *dbus.Connection) !*Service {
         const self = try allocator.create(Service);
-        self.* = .{ .allocator = allocator, .connection = connection };
+        self.* = .{ .allocator = allocator, .io = io, .connection = connection };
         errdefer self.destroy();
         for (schemas) |name| {
-            const settings = Settings.open(allocator, name, null) orelse continue;
+            const settings = Settings.open(allocator, io, name, null) orelse continue;
             const bundle = allocator.create(Bundle) catch |err| {
                 settings.close();
                 return err;
@@ -47,7 +48,7 @@ pub const Service = struct {
             try settings.watch(&changed, bundle);
         }
         // Font changes invalidate fontconfig caches in clients.
-        if (@import("desktop-watch.zig").Watcher.create(allocator, &fontsChanged, self)) |watcher| {
+        if (@import("desktop-watch.zig").Watcher.create(allocator, io, &fontsChanged, self)) |watcher| {
             self.fonts = watcher;
             try watcher.watch("/etc/fonts");
             if (std.c.getenv("HOME")) |home| {
@@ -62,7 +63,7 @@ pub const Service = struct {
         return self;
     }
     pub fn destroy(self: *Service) void {
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
         if (self.fonts) |watcher| watcher.destroy();
         for (self.bundles.items) |bundle| {
             bundle.settings.close();
@@ -85,7 +86,7 @@ pub const Service = struct {
     }
     fn fontsChanged(data: ?*anyopaque) void {
         const self = cast(Service, data);
-        if (self.timer == 0) self.timer = mainloop.timeout(100, self, fontsSettled);
+        if (self.timer == 0) self.timer = mainloop.timeout(self.io, 100, self, fontsSettled);
     }
     fn fontsSettled(self: *Service) bool {
         self.timer = 0;

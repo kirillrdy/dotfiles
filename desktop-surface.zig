@@ -37,6 +37,7 @@ pub const Callbacks = struct {
 
 pub const Client = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     connection: *wire.Connection,
     registry: wl.wl_registry,
     compositor: ?wl.wl_compositor = null,
@@ -62,18 +63,18 @@ pub const Client = struct {
     running: bool = false,
     failed: bool = false,
 
-    pub fn create(a: std.mem.Allocator, callbacks: Callbacks, data: ?*anyopaque) !*Client {
-        return createWithInput(a, callbacks, data, false);
+    pub fn create(a: std.mem.Allocator, io: std.Io, callbacks: Callbacks, data: ?*anyopaque) !*Client {
+        return createWithInput(a, io, callbacks, data, false);
     }
-    pub fn createInteractive(a: std.mem.Allocator, callbacks: Callbacks, data: ?*anyopaque) !*Client {
-        return createWithInput(a, callbacks, data, true);
+    pub fn createInteractive(a: std.mem.Allocator, io: std.Io, callbacks: Callbacks, data: ?*anyopaque) !*Client {
+        return createWithInput(a, io, callbacks, data, true);
     }
-    fn createWithInput(a: std.mem.Allocator, callbacks: Callbacks, data: ?*anyopaque, enabled: bool) !*Client {
+    fn createWithInput(a: std.mem.Allocator, io: std.Io, callbacks: Callbacks, data: ?*anyopaque, enabled: bool) !*Client {
         const self = try a.create(Client);
         errdefer a.destroy(self);
         const connection = wire.Connection.connect(a) catch return error.WaylandConnection;
         const display: wl.wl_display = .{ .proxy = connection.display() };
-        self.* = .{ .allocator = a, .connection = connection, .registry = display.get_registry(), .callbacks = callbacks, .data = data, .input_enabled = enabled };
+        self.* = .{ .allocator = a, .io = io, .connection = connection, .registry = display.get_registry(), .callbacks = callbacks, .data = data, .input_enabled = enabled };
         errdefer self.clear();
         self.registry.listen(Client, self, registryEvent);
         connection.roundtrip() catch return error.WaylandDispatch;
@@ -85,7 +86,7 @@ pub const Client = struct {
         return self;
     }
     pub fn start(self: *Client) !void {
-        self.source = mainloop.watch(self.connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
+        self.source = mainloop.watch(self.io, self.connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
         if (self.source == 0) return error.WaylandEventSource;
         self.running = true;
         for (self.outputs.items) |output| {
@@ -102,7 +103,7 @@ pub const Client = struct {
     fn clear(self: *Client) void {
         self.running = false;
         self.failed = true;
-        if (self.source != 0) _ = mainloop.remove(self.source);
+        if (self.source != 0) _ = mainloop.remove(self.io, self.source);
         while (self.surfaces.items.len > 0) self.surfaces.items[0].destroy();
         for (self.seats.items) |seat| seat.destroy();
         self.seats.deinit(self.allocator);
@@ -740,7 +741,7 @@ test "integration: passive clients do not bind input seats or accept interactive
         fn output(_: ?*anyopaque, _: *Output) void {}
         fn paint(_: ?*anyopaque, _: Pixels) void {}
     };
-    const client = try Client.create(std.testing.allocator, .{ .added = &Noop.output, .removed = &Noop.output }, null);
+    const client = try Client.create(std.testing.allocator, std.testing.io, .{ .added = &Noop.output, .removed = &Noop.output }, null);
     defer client.destroy();
     try std.testing.expectEqual(@as(usize, 0), client.seats.items.len);
     try std.testing.expect(!client.hasInput());
@@ -773,16 +774,16 @@ test "integration: frame callbacks coalesce redraws, finish animation and cancel
         }
     };
     var state: State = .{};
-    const client = try Client.create(std.testing.allocator, .{ .added = &State.output, .removed = &State.output }, &state);
+    const client = try Client.create(std.testing.allocator, std.testing.io, .{ .added = &State.output, .removed = &State.output }, &state);
     defer client.destroy();
     const surface = try Surface.createPixels(client.outputs.items[0], .{ .namespace = "frame-pacing-test", .layer = 3, .width = 32, .height = 32 }, &State.paint, &state);
     surface.next_frame = &State.next;
     surface.render_scale = &State.scale;
     try client.start();
     try surface.show();
-    const deadline = util.monotonicTime() + 2_000_000;
-    while (state.paints == 0 and util.monotonicTime() < deadline) {
-        while (mainloop.iteration(false)) {}
+    const deadline = util.monotonicTime(std.testing.io) + 2_000_000;
+    while (state.paints == 0 and util.monotonicTime(std.testing.io) < deadline) {
+        while (mainloop.iteration(std.testing.io, false)) {}
         mainloop.sleep(1000);
     }
     try std.testing.expect(surface.frame_callback != null);
@@ -790,8 +791,8 @@ test "integration: frame callbacks coalesce redraws, finish animation and cancel
     for (0..20) |_| surface.redraw();
     try std.testing.expectEqual(paints, state.paints);
     try std.testing.expect(surface.pending);
-    while ((state.frames < 4 or surface.frame_callback != null or surface.pending) and util.monotonicTime() < deadline) {
-        while (mainloop.iteration(false)) {}
+    while ((state.frames < 4 or surface.frame_callback != null or surface.pending) and util.monotonicTime(std.testing.io) < deadline) {
+        while (mainloop.iteration(std.testing.io, false)) {}
         mainloop.sleep(1000);
     }
     try std.testing.expectEqual(@as(usize, 4), state.frames);

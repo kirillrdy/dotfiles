@@ -13,7 +13,7 @@ var io: std.Io = undefined;
 const cast = util.cast;
 const Dict = dbus.Dict([]const u8, dbus.Value);
 fn pump() void {
-    while (mainloop.iteration(false)) {}
+    while (mainloop.iteration(io, false)) {}
     io.sleep(.fromMilliseconds(5), .awake) catch {};
 }
 /// A value from its GVariant text form.
@@ -64,8 +64,8 @@ const Done = struct {
         self.result = .{ .entries = entries };
     }
     fn accept(self: *Done, dialog: *Dialog) !void {
-        const deadline = util.monotonicTime() + 5_000_000;
-        while (self.code == null and util.monotonicTime() < deadline) {
+        const deadline = util.monotonicTime(io) + 5_000_000;
+        while (self.code == null and util.monotonicTime(io) < deadline) {
             pump();
             dialog.accept();
         }
@@ -73,8 +73,8 @@ const Done = struct {
     }
 };
 fn loaded(dialog: *Dialog) !void {
-    const deadline = util.monotonicTime() + 5_000_000;
-    while (dialog.pending != null and util.monotonicTime() < deadline) pump();
+    const deadline = util.monotonicTime(io) + 5_000_000;
+    while (dialog.pending != null and util.monotonicTime(io) < deadline) pump();
     try expect(dialog.pending == null and dialog.listing != null);
 }
 fn select(dialog: *Dialog, paths: []const [:0]const u8) !void {
@@ -124,7 +124,7 @@ pub fn main(init: std.process.Init) !void {
         b.put("current_filter", current);
         b.put("choices", parse(data_allocator, "a(ssa(ss)s)", "[('encoding', 'Encoding', [('utf8', 'UTF-8'), ('raw', 'Raw')], 'raw'), ('remember', 'Remember', [], 'true')]"));
         var done: Done = .{ .allocator = data_allocator };
-        const dialog = try Dialog.create(a, "OpenFile", "", "Open fixture", b.dict(), &Done.completed, &done);
+        const dialog = try Dialog.create(a, io, "OpenFile", "", "Open fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.multiple);
         try expectStrings("Text", dialog.currentFilter().?.name);
@@ -148,7 +148,7 @@ pub fn main(init: std.process.Init) !void {
         var b = Builder.init(data_allocator, root);
         b.put("current_name", .{ .string = "native-save.txt" });
         var done: Done = .{ .allocator = data_allocator };
-        const dialog = try Dialog.create(a, "SaveFile", "", "Save fixture", b.dict(), &Done.completed, &done);
+        const dialog = try Dialog.create(a, io, "SaveFile", "", "Save fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.method == .save);
         try done.accept(dialog);
@@ -160,7 +160,7 @@ pub fn main(init: std.process.Init) !void {
         var b = Builder.init(data_allocator, root);
         b.put("files", parse(data_allocator, "aay", "[b'report.txt', b'report.txt']"));
         var done: Done = .{ .allocator = data_allocator };
-        const dialog = try Dialog.create(a, "SaveFiles", "", "Save files fixture", b.dict(), &Done.completed, &done);
+        const dialog = try Dialog.create(a, io, "SaveFiles", "", "Save files fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.directory);
         try loaded(dialog);
@@ -174,7 +174,7 @@ pub fn main(init: std.process.Init) !void {
     }
     {
         var done: Done = .{ .allocator = data_allocator };
-        const dialog = try Dialog.create(a, "OpenFile", "", "Cancel fixture", options(data_allocator, "{'directory': <true>}"), &Done.completed, &done);
+        const dialog = try Dialog.create(a, io, "OpenFile", "", "Cancel fixture", options(data_allocator, "{'directory': <true>}"), &Done.completed, &done);
         defer dialog.destroy();
         try expect(dialog.directory);
         dialog.cancel();
@@ -186,7 +186,7 @@ pub fn main(init: std.process.Init) !void {
         var b = Builder.init(data_allocator, root);
         b.put("current_name", .{ .string = "report.txt" });
         var done: Done = .{ .allocator = data_allocator };
-        const dialog = try Dialog.create(a, "SaveFile", "", "Overwrite fixture", b.dict(), &Done.completed, &done);
+        const dialog = try Dialog.create(a, io, "SaveFile", "", "Overwrite fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try loaded(dialog);
         dialog.accept();
@@ -213,7 +213,7 @@ pub fn main(init: std.process.Init) !void {
         b.put("directory", .{ .boolean = true });
         b.put("multiple", .{ .boolean = true });
         var done: Done = .{ .allocator = data_allocator };
-        const dialog = try Dialog.create(a, "OpenFile", "", "Multiple folders fixture", b.dict(), &Done.completed, &done);
+        const dialog = try Dialog.create(a, io, "OpenFile", "", "Multiple folders fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try loaded(dialog);
         try dialog.selectPath(left);
@@ -234,7 +234,7 @@ pub fn main(init: std.process.Init) !void {
         }
         const b = Builder.init(data_allocator, root);
         var done: Done = .{ .allocator = data_allocator };
-        const dialog = try Dialog.create(a, "OpenFile", "", "Scrolling fixture", b.dict(), &Done.completed, &done);
+        const dialog = try Dialog.create(a, io, "OpenFile", "", "Scrolling fixture", b.dict(), &Done.completed, &done);
         defer dialog.destroy();
         try loaded(dialog);
         try expect(dialog.view.count > 600);
@@ -277,7 +277,7 @@ pub fn main(init: std.process.Init) !void {
         var done: Done = .{ .allocator = data_allocator };
         // Both scans may finish after the dialog has been destroyed. Neither
         // may touch its controls or deliver a portal response.
-        const dialog = try Dialog.create(a, "OpenFile", "", "Cancelled scan fixture", b.dict(), &Done.completed, &done);
+        const dialog = try Dialog.create(a, io, "OpenFile", "", "Cancelled scan fixture", b.dict(), &Done.completed, &done);
         try dialog.navigate(root);
         dialog.destroy();
         for (0..100) |_| pump();
@@ -285,9 +285,9 @@ pub fn main(init: std.process.Init) !void {
     }
     {
         var done: Done = .{ .allocator = data_allocator };
-        try std.testing.expectError(error.InvalidFileName, Dialog.create(a, "OpenFile", "", "Invalid", options(data_allocator, "{'current_folder': <[byte 47, 116, 109, 112]>}"), &Done.completed, &done));
-        try std.testing.expectError(error.InvalidFileFilter, Dialog.create(a, "OpenFile", "", "Invalid", options(data_allocator, "{'filters': <[('Invalid', [(uint32 2, '*')])]>}"), &Done.completed, &done));
-        try std.testing.expectError(error.InvalidFileChoice, Dialog.create(a, "OpenFile", "", "Invalid", options(data_allocator, "{'choices': <[('same', 'First', @a(ss) [], 'true'), ('same', 'Second', @a(ss) [], 'false')]>}"), &Done.completed, &done));
+        try std.testing.expectError(error.InvalidFileName, Dialog.create(a, io, "OpenFile", "", "Invalid", options(data_allocator, "{'current_folder': <[byte 47, 116, 109, 112]>}"), &Done.completed, &done));
+        try std.testing.expectError(error.InvalidFileFilter, Dialog.create(a, io, "OpenFile", "", "Invalid", options(data_allocator, "{'filters': <[('Invalid', [(uint32 2, '*')])]>}"), &Done.completed, &done));
+        try std.testing.expectError(error.InvalidFileChoice, Dialog.create(a, io, "OpenFile", "", "Invalid", options(data_allocator, "{'choices': <[('same', 'First', @a(ss) [], 'true'), ('same', 'Second', @a(ss) [], 'false')]>}"), &Done.completed, &done));
     }
     // Drain cancelled asynchronous enumeration before the leak assertion.
     for (0..30) |_| pump();

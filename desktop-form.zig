@@ -100,12 +100,12 @@ pub const Form = struct {
     closed: bool = false,
     renderer: text.Renderer = .{},
     title_mask: ?text.Mask = null,
-    pub fn create(a: std.mem.Allocator, title: [:0]const u8, context: ?*anyopaque, action: *const fn (?*anyopaque, usize) void, changed: *const fn (?*anyopaque, usize) void) !*Form {
+    pub fn create(a: std.mem.Allocator, io: std.Io, title: [:0]const u8, context: ?*anyopaque, action: *const fn (?*anyopaque, usize) void, changed: *const fn (?*anyopaque, usize) void) !*Form {
         const self = try a.create(Form);
         errdefer a.destroy(self);
         const owned_title = try a.dupeSentinel(u8, title, 0);
         errdefer a.free(owned_title);
-        const window = try host.Window.create(a, owned_title, "desktop-form", 620, 700, &draw, self);
+        const window = try host.Window.create(a, io, owned_title, "desktop-form", 620, 700, &draw, self);
         self.* = .{ .allocator = a, .window = window, .title = owned_title, .context = context, .action = action, .changed = changed };
         window.context = self;
         window.closed = &destroyed;
@@ -117,7 +117,7 @@ pub const Form = struct {
     }
     pub fn deinit(self: *Form) void {
         self.closed = true;
-        if (self.action_idle != 0) _ = mainloop.remove(self.action_idle);
+        if (self.action_idle != 0) _ = mainloop.remove(self.window.io, self.action_idle);
         self.actions.deinit(self.allocator);
         for (self.items.items) |item| {
             if (item.entry) |entry| entry.destroy();
@@ -147,7 +147,7 @@ pub const Form = struct {
         errdefer self.allocator.free(owned_hint);
         item.* = .{ .owner = self, .id = self.items.items.len, .kind = kind, .title = owned_title, .hint = owned_hint };
         if (kind == .entry) {
-            item.entry = try input.Entry.create(self.allocator, &entryChanged, item);
+            item.entry = try input.Entry.create(self.allocator, self.window.io, &entryChanged, item);
             item.entry.?.client = self.window.surface.?.client;
             if (!secret) item.entry.?.makePublic();
         }
@@ -175,7 +175,7 @@ pub const Form = struct {
         std.debug.assert(count <= self.items.items.len);
         // IDs in the dynamic suffix may be reused by the next listing.
         self.actions.clearRetainingCapacity();
-        if (self.action_idle != 0) _ = mainloop.remove(self.action_idle);
+        if (self.action_idle != 0) _ = mainloop.remove(self.window.io, self.action_idle);
         self.action_idle = 0;
         if (self.focus) |id| if (id >= count) {
             self.focus = null;
@@ -398,7 +398,7 @@ pub const Form = struct {
                         self.close();
                         return;
                     };
-                    if (self.action_idle == 0) self.action_idle = mainloop.idle(self, deliverAction);
+                    if (self.action_idle == 0) self.action_idle = mainloop.idle(self.window.io, self, deliverAction);
                 } else self.action(self.context, id);
             },
             .toggle => {
@@ -524,7 +524,7 @@ pub const Form = struct {
     fn deliverAction(self: *Form) bool {
         self.action_idle = 0;
         const id = self.actions.orderedRemove(0);
-        if (self.actions.items.len != 0) self.action_idle = mainloop.idle(self, deliverAction);
+        if (self.actions.items.len != 0) self.action_idle = mainloop.idle(self.window.io, self, deliverAction);
         if (!self.closed and id < self.items.items.len) self.activate(id);
         return false;
     }
@@ -572,7 +572,7 @@ pub const Form = struct {
                 self.relayout();
                 return;
             };
-            const now = util.monotonicTime();
+            const now = util.monotonicTime(self.window.io);
             const double = self.last_item == id and now - self.last_click < 400_000 and @abs(x - self.last_x) < 5 and @abs(screen_y - self.last_y) < 5;
             self.last_item = id;
             self.last_click = now;
@@ -779,7 +779,7 @@ test "integration: native forms preserve selections, isolate passwords and navig
         }
     };
     var callbacks: Callbacks = .{};
-    const form = try Form.create(std.testing.allocator, "Native form", &callbacks, &Callbacks.action, &Callbacks.changed);
+    const form = try Form.create(std.testing.allocator, std.testing.io, "Native form", &callbacks, &Callbacks.action, &Callbacks.changed);
     defer form.deinit();
     const name = try form.add(.entry, "Network name", "", false);
     const secret = try form.add(.entry, "Password", "", true);
@@ -805,9 +805,9 @@ test "integration: native forms preserve selections, isolate passwords and navig
     try form.setText(name, "");
     form.focusItem(name);
     try std.testing.expect(form.handleKey('v', keyboard.control));
-    const deadline = util.monotonicTime() + 2_000_000;
-    while (form.get(name).value().len == 0 and util.monotonicTime() < deadline) {
-        _ = mainloop.iteration(false);
+    const deadline = util.monotonicTime(std.testing.io) + 2_000_000;
+    while (form.get(name).value().len == 0 and util.monotonicTime(std.testing.io) < deadline) {
+        _ = mainloop.iteration(std.testing.io, false);
         mainloop.sleep(1000);
     }
     try std.testing.expectEqualStrings("Cafe 東京", form.get(name).value());
@@ -859,7 +859,7 @@ test "integration: native forms preserve selections, isolate passwords and navig
     const previous_actions = callbacks.actions;
     form.activate(button);
     try std.testing.expectEqual(previous_actions, callbacks.actions);
-    while (!form.closed) _ = mainloop.iteration(true);
+    while (!form.closed) _ = mainloop.iteration(std.testing.io, true);
     try std.testing.expect(form.closed);
 }
 
@@ -875,9 +875,9 @@ test "integration: native form children share their parent connection and close 
         }
     };
     var owner: Owner = .{};
-    const parent = try Form.create(std.testing.allocator, "Parent form", &owner, &Owner.action, &Owner.changed);
+    const parent = try Form.create(std.testing.allocator, std.testing.io, "Parent form", &owner, &Owner.action, &Owner.changed);
     defer parent.deinit();
-    const child = try Form.create(std.testing.allocator, "Child form", &owner, &Owner.action, &Owner.changed);
+    const child = try Form.create(std.testing.allocator, std.testing.io, "Child form", &owner, &Owner.action, &Owner.changed);
     defer child.deinit();
     parent.close_callback = &Owner.closed;
     child.close_callback = &Owner.closed;
@@ -887,9 +887,9 @@ test "integration: native form children share their parent connection and close 
     try std.testing.expectEqual(parent.window.surface.?.client, child.window.surface.?.client);
     try std.testing.expect(parent.window.blocked());
     parent.close();
-    const deadline = util.monotonicTime() + 2_000_000;
-    while (owner.closes != 2 and util.monotonicTime() < deadline) {
-        _ = mainloop.iteration(false);
+    const deadline = util.monotonicTime(std.testing.io) + 2_000_000;
+    while (owner.closes != 2 and util.monotonicTime(std.testing.io) < deadline) {
+        _ = mainloop.iteration(std.testing.io, false);
         mainloop.sleep(1000);
     }
     try std.testing.expectEqual(@as(usize, 2), owner.closes);

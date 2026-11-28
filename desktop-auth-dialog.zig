@@ -31,8 +31,8 @@ pub const Dialog = struct {
     choice_context: ?*anyopaque = null,
     choice_selected: ?*const fn (?*anyopaque, usize) void = null,
 
-    pub fn create(alloc: std.mem.Allocator, mode: Mode, prompt_text: [:0]const u8) !*Dialog {
-        return createWithOptions(alloc, mode, prompt_text, .{});
+    pub fn create(alloc: std.mem.Allocator, io: std.Io, mode: Mode, prompt_text: [:0]const u8) !*Dialog {
+        return createWithOptions(alloc, io, mode, prompt_text, .{});
     }
     pub const Options = struct {
         title: [:0]const u8 = "SSH Authentication",
@@ -46,7 +46,7 @@ pub const Dialog = struct {
         response_context: ?*anyopaque = null,
         responded: ?*const fn (?*anyopaque, bool) void = null,
     };
-    pub fn createWithOptions(alloc: std.mem.Allocator, mode: Mode, prompt_text: [:0]const u8, options: Options) !*Dialog {
+    pub fn createWithOptions(alloc: std.mem.Allocator, io: std.Io, mode: Mode, prompt_text: [:0]const u8, options: Options) !*Dialog {
         if (options.choices.len > 3 or (options.choices.len != 0 and mode != .information)) return error.InvalidChoices;
         if (options.confirmation and mode != .password) return error.InvalidConfirmationMode;
         const self = try alloc.create(Dialog);
@@ -63,7 +63,7 @@ pub const Dialog = struct {
         view.title = options.title;
         view.accept_label = options.accept;
         try view.prepare(alloc, prompt, 1);
-        const window = try host.Window.create(alloc, options.title, options.role, view.width, view.height, &draw, self);
+        const window = try host.Window.create(alloc, io, options.title, options.role, view.width, view.height, &draw, self);
         errdefer window.destroy();
         if (parent) |value| if (window.surface) |surface| {
             surface.options.parent = value;
@@ -72,9 +72,9 @@ pub const Dialog = struct {
         window.closed = &closed;
         window.surface.?.close = &closeRequested;
         window.surface.?.input = .{ .button = &button, .motion = &motion, .leave = &leave, .scroll = &scroll, .symbol = &key, .text = &commit, .commit = &commit, .preedit = &preedit, .surrounding = &surrounding, .focus = &focusChanged };
-        if (mode == .password) self.entry = try password.Entry.create(alloc, &changed, self);
+        if (mode == .password) self.entry = try password.Entry.create(alloc, io, &changed, self);
         errdefer if (self.entry) |entry| entry.destroy();
-        if (options.confirmation) self.confirmation = try password.Entry.create(alloc, &changed, self);
+        if (options.confirmation) self.confirmation = try password.Entry.create(alloc, io, &changed, self);
         errdefer if (self.confirmation) |entry| entry.destroy();
         if (self.entry) |entry| entry.client = window.surface.?.client;
         if (self.confirmation) |entry| entry.client = window.surface.?.client;
@@ -141,7 +141,7 @@ pub const Dialog = struct {
     pub fn destroy(self: *Dialog) void {
         if (self.confirmation) |entry| entry.destroy();
         if (self.entry) |entry| entry.destroy();
-        if (self.response_idle != 0) _ = mainloop.remove(self.response_idle);
+        if (self.response_idle != 0) _ = mainloop.remove(self.window.io, self.response_idle);
         self.window.destroy();
         self.allocator.free(self.image);
         self.view.deinit(self.allocator);
@@ -358,7 +358,7 @@ pub const Dialog = struct {
         if (self.response != null and accepted) return;
         self.response = accepted;
         if (self.response_idle != 0) return;
-        self.response_idle = mainloop.idle(self, deliverResponse);
+        self.response_idle = mainloop.idle(self.window.io, self, deliverResponse);
     }
     fn deliverResponse(self: *Dialog) bool {
         self.response_idle = 0;
@@ -383,10 +383,10 @@ pub const Dialog = struct {
             self.accepted = false;
             return;
         }
-        const term = mainloop.signal(mainloop.SIGTERM, self, cancel);
-        defer _ = mainloop.remove(term);
-        const interrupt = mainloop.signal(mainloop.SIGINT, self, cancel);
-        defer _ = mainloop.remove(interrupt);
+        const term = mainloop.signal(self.window.io, mainloop.SIGTERM, self, cancel);
+        defer _ = mainloop.remove(self.window.io, term);
+        const interrupt = mainloop.signal(self.window.io, mainloop.SIGINT, self, cancel);
+        defer _ = mainloop.remove(self.window.io, interrupt);
         self.accepted = false;
         self.window.show() catch {
             self.failed = true;
@@ -402,7 +402,7 @@ pub const Dialog = struct {
             self.responded = previous_callback;
             self.response_context = previous_context;
         }
-        while (!done) _ = mainloop.iteration(true);
+        while (!done) _ = mainloop.iteration(self.window.io, true);
     }
     fn runCompleted(ptr: ?*anyopaque, _: bool) void {
         cast(bool, ptr).* = true;

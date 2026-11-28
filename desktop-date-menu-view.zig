@@ -45,6 +45,7 @@ const Snapshot = struct {
 };
 pub const View = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     selected: DateTime,
     days: [42]?DateTime = @splat(null),
     snapshot: Snapshot,
@@ -67,8 +68,8 @@ pub const View = struct {
     /// Bumped whenever labels are re-rendered (date, minute, scale).
     generation: u64 = 0,
 
-    pub fn init(a: std.mem.Allocator) !View {
-        return .{ .allocator = a, .selected = try DateTime.now(), .snapshot = .{ .arena = std.heap.ArenaAllocator.init(a) } };
+    pub fn init(a: std.mem.Allocator, io: std.Io) !View {
+        return .{ .allocator = a, .io = io, .selected = try DateTime.now(), .snapshot = .{ .arena = std.heap.ArenaAllocator.init(a) } };
     }
     pub fn deinit(self: *View) void {
         self.invalidate();
@@ -184,7 +185,7 @@ pub const View = struct {
                     try actions.append(a, .{ .key = try jsonString(a, action.object.get("key")), .label = try jsonString(a, action.object.get("label")) });
                 }
             };
-            var view = banner.View.init(self.allocator, .{
+            var view = banner.View.init(self.allocator, self.io, .{
                 .id = id,
                 .created = created.integer,
                 .app = try jsonString(a, item.object.get("app")),
@@ -208,7 +209,7 @@ pub const View = struct {
         self.ensureFocusVisible();
     }
     pub fn prepare(self: *View, scale: u32) !void {
-        const minute = @divTrunc(@import("desktop-util.zig").realTime(), 60_000_000);
+        const minute = @divTrunc(@import("desktop-util.zig").realTime(self.io), 60_000_000);
         if (minute != self.minute) {
             self.minute = minute;
             self.invalidate();
@@ -512,7 +513,7 @@ fn jsonString(a: std.mem.Allocator, value: ?std.json.Value) ![:0]const u8 {
 }
 
 test "native calendar navigates leap days and years with keyboard focus at both scales" {
-    var view = try View.init(std.testing.allocator);
+    var view = try View.init(std.testing.allocator, std.testing.io);
     defer view.deinit();
     for ([_]u32{ 1, 2 }) |scale| {
         view.setDate(try DateTime.local(2024, 2, 29, 12, 0, 0));
@@ -558,7 +559,7 @@ test "integration: native history preserves expansion and focus across snapshots
         \\ {"id":2,"created":2,"app":"Second","title":"Middle","body":"Two"},
         \\ {"id":3,"created":3,"app":"Messages 東京","title":"مرحبا <&>","body":"<b>Long body</b> &amp; 東京 long long long long long long long long long long long long long long long long long long long long long long long long long long", "actions":[{"key":"default","label":"Open"},{"key":"reply","label":"Reply"},{"key":"archive","label":"Archive"}]}]
     ;
-    var view = try View.init(std.testing.allocator);
+    var view = try View.init(std.testing.allocator, std.testing.io);
     defer view.deinit();
     try view.prepare(1);
     try view.load(test_history);
@@ -610,7 +611,7 @@ test "integration: native history preserves expansion and focus across snapshots
     try std.testing.expectEqual(@as(usize, 1), view.count());
 }
 test "cached calendar chrome and cards paint the same pixels as a full repaint while scrolling, hovering and expanding" {
-    var view = try View.init(std.testing.allocator);
+    var view = try View.init(std.testing.allocator, std.testing.io);
     defer view.deinit();
     try view.prepare(1);
     try view.load(

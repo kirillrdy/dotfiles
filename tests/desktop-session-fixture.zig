@@ -80,19 +80,19 @@ fn checkPowerDialog(controls: *quick.Controls) !void {
     try std.testing.expectEqual(@as(usize, 2), profiles.calls);
     try std.testing.expectEqual(@as(usize, 1), profiles.index);
     try std.testing.expect(dialog.handleKey(0xff1b, 0));
-    pump();
+    pump(std.testing.io);
     try std.testing.expect(controls.dialog == null);
 }
 
 test "session: private logind actions and quick-settings lifecycle" {
-    defer @import("desktop").gsettings.deinit();
+    defer @import("desktop").gsettings.deinit(std.testing.io);
     defer @import("desktop").window.deinit();
     try std.testing.expectEqualStrings("1", env("DESKTOP_SESSION_TEST_RUN"));
     try std.testing.expect(env("DBUS_SYSTEM_BUS_ADDRESS").len != 0);
     const scenario = env("SESSION_CASE");
-    const deadline = util.monotonicTime() + 8_000_000;
+    const deadline = util.monotonicTime(std.testing.io) + 8_000_000;
     if (std.mem.startsWith(u8, scenario, "ui-")) {
-        const controls = quick.Controls.create(std.testing.allocator, "true", "true");
+        const controls = quick.Controls.create(std.testing.allocator, std.testing.io, "true", "true");
         var live = true;
         controls.cancel.onFinalize(&live, finalized);
         var battery_live = controls.battery_service != null;
@@ -109,22 +109,22 @@ test "session: private logind actions and quick-settings lifecycle" {
         try std.testing.expectEqual(@import("desktop").askpass.native.Target.accept, controls.dialog.?.view.focus);
         try std.testing.expect(std.mem.indexOf(u8, controls.dialog.?.prompt, "60 seconds") != null);
         try std.testing.expect(controls.dialog.?.handleKey(0xff1b, 0));
-        pump();
+        pump(std.testing.io);
         try std.testing.expect(controls.dialog == null and !controls.session_busy and controls.end_session_timer == 0);
         // Suspend has no confirmation in GNOME and sends exactly one action.
         controls.view.submenu = .power;
         controls.redraw();
         controls.activate(.suspend_action);
         try std.testing.expect(controls.dialog == null);
-        pump();
+        pump(std.testing.io);
         controls.sessionAction(.reboot); // A pending action must prevent duplicate requests.
         if (std.mem.eql(u8, scenario, "ui-denied")) {
-            while (controls.session_busy and util.monotonicTime() < deadline) pump();
+            while (controls.session_busy and util.monotonicTime(std.testing.io) < deadline) pump(std.testing.io);
             try std.testing.expect(!controls.session_busy);
             try std.testing.expect(std.mem.indexOf(u8, controls.view.model.message.slice(), "denied") != null);
         } else {
-            const ready = util.monotonicTime() + 100_000;
-            while (util.monotonicTime() < ready) pump();
+            const ready = util.monotonicTime(std.testing.io) + 100_000;
+            while (util.monotonicTime(std.testing.io) < ready) pump(std.testing.io);
             try std.testing.expect(controls.session_busy);
         }
         // A shown native dialog must release its reference during shutdown.
@@ -135,18 +135,18 @@ test "session: private logind actions and quick-settings lifecycle" {
         controls.deinit();
         // Device workers retain their own cancellation objects after Controls
         // is freed. Drain their completion callbacks before the allocator audit.
-        while ((live or battery_live or network.live_services != 0) and util.monotonicTime() < deadline) pump();
+        while ((live or battery_live or network.live_services != 0) and util.monotonicTime(std.testing.io) < deadline) pump(std.testing.io);
         try std.testing.expect(!live and !battery_live and network.live_services == 0);
         return;
     }
     const action = std.meta.stringToEnum(session.Action, env("SESSION_ACTION")) orelse return error.UnknownAction;
-    const cancel = mainloop.Cancellable.create();
+    const cancel = mainloop.Cancellable.create(std.testing.io);
     defer cancel.unref();
     var completion: Completion = .{};
     session.perform(std.testing.allocator, action, cancel, &Completion.done, &completion);
     if (std.mem.eql(u8, scenario, "cancel-immediate")) cancel.cancel();
-    if (std.mem.startsWith(u8, scenario, "cancel-delayed")) _ = mainloop.timeout(100, cancel, cancelLater);
-    while (completion.count == 0 and util.monotonicTime() < deadline) pump();
+    if (std.mem.startsWith(u8, scenario, "cancel-delayed")) _ = mainloop.timeout(std.testing.io, 100, cancel, cancelLater);
+    while (completion.count == 0 and util.monotonicTime(std.testing.io) < deadline) pump(std.testing.io);
     try std.testing.expectEqual(@as(usize, 1), completion.count);
     const expected = env("SESSION_EXPECT");
     if (std.mem.eql(u8, expected, "success")) {

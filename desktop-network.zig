@@ -168,6 +168,7 @@ var shared: ?*Service = null;
 pub var live_services: usize = 0;
 pub const Service = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     source: ?*loop.Source = null,
     manager: ?*objects.Manager = null,
     /// GetSettings calls awaiting replies; each holds a reference on the service.
@@ -207,11 +208,11 @@ pub const Service = struct {
     }
     fn start(self: *Service) void {
         self.connectBus();
-        self.timer = mainloop.timeoutSeconds(5, self, maintain);
+        self.timer = mainloop.timeoutSeconds(self.io, 5, self, maintain);
     }
     fn connectBus(self: *Service) void {
         if (self.stopped or self.manager != null) return;
-        const source = loop.acquire(self.allocator, .system) catch return;
+        const source = loop.acquire(self.allocator, self.io, .system) catch return;
         self.source = source;
         self.manager = objects.Manager.create(self.allocator, source.connection, name, "/org/freedesktop", &event, self) catch {
             self.dropManager();
@@ -241,8 +242,8 @@ pub const Service = struct {
     fn stop(self: *Service) void {
         self.stopped = true;
         if (shared == self) shared = null;
-        if (self.idle != 0) _ = mainloop.remove(self.idle);
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.idle != 0) _ = mainloop.remove(self.io, self.idle);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
         self.idle = 0;
         self.timer = 0;
         self.ref();
@@ -272,7 +273,7 @@ pub const Service = struct {
         self.schedule();
     }
     fn schedule(self: *Service) void {
-        if (!self.stopped and self.idle == 0) self.idle = mainloop.timeout(0, self, updated);
+        if (!self.stopped and self.idle == 0) self.idle = mainloop.timeout(self.io, 0, self, updated);
     }
     fn updated(self: *Service) bool {
         self.idle = 0;
@@ -445,18 +446,18 @@ pub const Client = struct {
     cancel: *mainloop.Cancellable,
     refs: usize = 1,
     dead: bool = false,
-    pub fn create(a: std.mem.Allocator, callback: *const fn (?*anyopaque, *Client) void, data: ?*anyopaque) !*Client {
+    pub fn create(a: std.mem.Allocator, io: std.Io, callback: *const fn (?*anyopaque, *Client) void, data: ?*anyopaque) !*Client {
         const self = try a.create(Client);
         errdefer a.destroy(self);
         const service = shared orelse blk: {
             const value = try a.create(Service);
-            value.* = .{ .allocator = a };
+            value.* = .{ .allocator = a, .io = io };
             live_services += 1;
             break :blk value;
         };
         service.ref();
         errdefer service.unref();
-        self.* = .{ .allocator = a, .service = service, .callback = callback, .data = data, .cancel = mainloop.Cancellable.create() };
+        self.* = .{ .allocator = a, .service = service, .callback = callback, .data = data, .cancel = mainloop.Cancellable.create(io) };
         errdefer self.cancel.unref();
         try service.clients.append(service.allocator, self);
         if (shared == null) {
@@ -503,7 +504,7 @@ pub const Client = struct {
         }
         const call = self.allocator.create(Call) catch @panic("out of memory");
         self.refs += 1;
-        call.* = .{ .client = self, .callback = callback, .data = data, .cancel = mainloop.Cancellable.create(), .parent = cancel.ref() };
+        call.* = .{ .client = self, .callback = callback, .data = data, .cancel = mainloop.Cancellable.create(self.service.io), .parent = cancel.ref() };
         call.parent_signal = cancel.listen(call, Call.cancelled);
         call.client_signal = self.cancel.listen(call, Call.cancelled);
         call.begin(action) catch |err| {
@@ -634,7 +635,7 @@ const Call = struct {
     /// Calls NetworkManager on a request connection, so cancelling still completes the call once.
     fn send(self: *Call, path: []const u8, iface: []const u8, method: []const u8, args: anytype) void {
         self.pending += 1;
-        loop.request(self.client.allocator, .system, .{ .destination = name, .path = path, .interface = iface, .member = method }, args, 30000, self.cancel, &done, self);
+        loop.request(self.client.allocator, self.cancel.io, .system, .{ .destination = name, .path = path, .interface = iface, .member = method }, args, 30000, self.cancel, &done, self);
     }
     /// Sends settings, which are encoded before this returns.
     fn sendSettings(self: *Call, path: []const u8, iface: []const u8, method: []const u8, settings: *Settings, rest: anytype) void {
@@ -707,7 +708,7 @@ const Call = struct {
                 else => return self.finish(.{ .failure = "InvalidReply" }),
             });
             self.client.service.waiting.append(self.client.service.allocator, self) catch @panic("out of memory");
-            self.activation_timer = mainloop.timeout(30000, self, activationTimeout);
+            self.activation_timer = mainloop.timeout(self.client.service.io, 30000, self, activationTimeout);
             self.client.service.schedule();
             return;
         }
@@ -732,7 +733,7 @@ const Call = struct {
     }
     fn finish(self: *Call, result: Result) void {
         const client = self.client;
-        if (self.activation_timer != 0) _ = mainloop.remove(self.activation_timer);
+        if (self.activation_timer != 0) _ = mainloop.remove(client.service.io, self.activation_timer);
         if (self.active) |path| {
             for (client.service.waiting.items, 0..) |value, i| if (value == self) {
                 _ = client.service.waiting.orderedRemove(i);

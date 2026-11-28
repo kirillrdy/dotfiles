@@ -11,7 +11,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     if (args.len < 2) return error.ExpectedOperation;
     var changes: usize = 0;
-    const client = try capture.Client.create(init.gpa, &changes, &changed);
+    const client = try capture.Client.create(init.gpa, init.io, &changes, &changed);
     defer client.destroy();
     client.refresh();
     client.connection.roundtrip() catch return error.Disconnected;
@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
         const timer = d.util.Timer.start(init.io);
         while (timer.read(init.io) < 5 * std.time.ns_per_s) {
             client.tick();
-            while (mainloop.iteration(false)) {}
+            while (mainloop.iteration(init.io, false)) {}
             var complete = client.windows.items.len > 0;
             for (client.windows.items) |window| if (window.image == null) {
                 complete = false;
@@ -60,7 +60,7 @@ pub fn main(init: std.process.Init) !void {
         const resumed = d.util.Timer.start(init.io);
         while (changes == previous and resumed.read(init.io) < 5 * std.time.ns_per_s) {
             client.tick();
-            while (mainloop.iteration(false)) {}
+            while (mainloop.iteration(init.io, false)) {}
             init.io.sleep(.fromMilliseconds(10), .awake) catch {};
         }
         if (changes == previous) return error.CaptureDidNotResume;

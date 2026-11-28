@@ -16,6 +16,7 @@ pub const Callbacks = struct {
 
 pub const Controls = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     popup: popup.Host = undefined,
     view: native.View,
     callbacks: Callbacks,
@@ -23,15 +24,16 @@ pub const Controls = struct {
     pointer_y: f64 = 0,
     scroll_grab: ?f64 = null,
 
-    pub fn create(a: std.mem.Allocator, callbacks: Callbacks) !*Controls {
+    pub fn create(a: std.mem.Allocator, io: std.Io, callbacks: Callbacks) !*Controls {
         const self = try a.create(Controls);
         errdefer a.destroy(self);
-        var view = try native.View.init(a);
+        var view = try native.View.init(a, io);
         errdefer view.deinit();
         try view.prepare(1);
-        self.* = .{ .allocator = a, .view = view, .callbacks = callbacks };
+        self.* = .{ .allocator = a, .io = io, .view = view, .callbacks = callbacks };
         self.popup = .{
             .allocator = a,
+            .io = io,
             .context = self,
             .namespace = "desktop-date-menu",
             .partial = true, // Draws only through blit.
@@ -88,7 +90,7 @@ pub const Controls = struct {
             self.requestHide();
             return;
         }
-        if (self.view.minute != @divTrunc(util.realTime(), 60_000_000)) self.redraw();
+        if (self.view.minute != @divTrunc(util.realTime(self.io), 60_000_000)) self.redraw();
     }
     fn redraw(self: *Controls) void {
         self.popup.redraw();

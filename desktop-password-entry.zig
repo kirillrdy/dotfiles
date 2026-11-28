@@ -121,6 +121,7 @@ pub const Buffer = struct {
 pub const Rect = raster.Rect;
 pub const Entry = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     buffer: *Buffer,
     client: ?*@import("desktop-surface.zig").Client = null,
     changed: *const fn (?*anyopaque) void,
@@ -150,10 +151,10 @@ pub const Entry = struct {
     revision: u64 = 0,
     dead: bool = false,
 
-    pub fn create(a: std.mem.Allocator, changed: *const fn (?*anyopaque) void, data: ?*anyopaque) !*Entry {
+    pub fn create(a: std.mem.Allocator, io: std.Io, changed: *const fn (?*anyopaque) void, data: ?*anyopaque) !*Entry {
         const self = try a.create(Entry);
         errdefer a.destroy(self);
-        self.* = .{ .allocator = a, .buffer = try Buffer.create(), .changed = changed, .data = data };
+        self.* = .{ .allocator = a, .io = io, .buffer = try Buffer.create(), .changed = changed, .data = data };
         return self;
     }
     pub fn makePublic(self: *Entry) void {
@@ -188,11 +189,11 @@ pub const Entry = struct {
         if (self.focused == focused or self.dead) return;
         self.focused = focused;
         if (focused) {
-            self.blink = mainloop.timeout(500, self, tick);
+            self.blink = mainloop.timeout(self.io, 500, self, tick);
         } else {
             self.resetComposition();
             self.dragging = false;
-            if (self.blink != 0) _ = mainloop.remove(self.blink);
+            if (self.blink != 0) _ = mainloop.remove(self.io, self.blink);
             self.blink = 0;
         }
         self.notify();
@@ -429,7 +430,7 @@ pub const Entry = struct {
     pub fn destroy(self: *Entry) void {
         self.dead = true;
         self.clear();
-        if (self.blink != 0) _ = mainloop.remove(self.blink);
+        if (self.blink != 0) _ = mainloop.remove(self.io, self.blink);
         self.release();
     }
     fn release(self: *Entry) void {
@@ -476,7 +477,7 @@ test "native password pixels depend on character count rather than plaintext" {
     const Callback = struct {
         fn changed(_: ?*anyopaque) void {}
     };
-    const entry = try Entry.create(std.testing.allocator, &Callback.changed, null);
+    const entry = try Entry.create(std.testing.allocator, std.testing.io, &Callback.changed, null);
     defer entry.destroy();
     entry.focus(true);
     for ([_]u32{ 1, 2 }) |scale| {
@@ -523,7 +524,7 @@ test "public entries shape Adwaita text and place the caret using proportional a
     const Callback = struct {
         fn changed(_: ?*anyopaque) void {}
     };
-    const entry = try Entry.create(std.testing.allocator, &Callback.changed, null);
+    const entry = try Entry.create(std.testing.allocator, std.testing.io, &Callback.changed, null);
     defer entry.destroy();
     entry.makePublic();
     entry.rect = .{ .x = 20, .y = 10, .width = 360, .height = 42 };
@@ -575,7 +576,7 @@ test "native search composes without changing the committed query and validates 
     const Observer = struct {
         fn changed(_: ?*anyopaque) void {}
     };
-    const entry = try Entry.create(std.testing.allocator, &Observer.changed, null);
+    const entry = try Entry.create(std.testing.allocator, std.testing.io, &Observer.changed, null);
     defer entry.destroy();
     entry.makePublic();
     try entry.insert("日本語");

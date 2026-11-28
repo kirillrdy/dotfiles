@@ -66,11 +66,11 @@ pub const Dialog = struct {
     // Only visible rows and a small look-ahead window own form controls.
     const window_items = 512;
 
-    pub fn create(allocator: std.mem.Allocator, method: []const u8, parent: [:0]const u8, title: [:0]const u8, options: portal_options.Dict, callback: Completion, data: ?*anyopaque) !*Dialog {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io, method: []const u8, parent: [:0]const u8, title: [:0]const u8, options: portal_options.Dict, callback: Completion, data: ?*anyopaque) !*Dialog {
         const kind: @FieldType(Dialog, "method") = if (eq(method, "OpenFile")) .open else if (eq(method, "SaveFile")) .save else if (eq(method, "SaveFiles")) .save_files else return error.InvalidFileChooserMethod;
         const self = try allocator.create(Dialog);
         errdefer allocator.destroy(self);
-        const ui = try form.Form.create(allocator, title, self, &action, &changed);
+        const ui = try form.Form.create(allocator, io, title, self, &action, &changed);
         self.* = .{ .allocator = allocator, .arena = .init(allocator), .window = ui.window, .ui = ui, .options = portal_options.empty, .method = kind, .directory = kind == .save_files, .multiple = false, .callback = callback, .data = data };
         errdefer {
             ui.deinit();
@@ -225,7 +225,7 @@ pub const Dialog = struct {
     pub fn destroy(self: *Dialog) void {
         if (self.dead) return;
         self.dead = true;
-        if (self.finish_idle != 0) _ = mainloop.remove(self.finish_idle);
+        if (self.finish_idle != 0) _ = mainloop.remove(self.window.io, self.finish_idle);
         if (self.pending) |pending| pending.cancel();
         self.ui.deinit();
         if (self.pending_count == 0) self.release();
@@ -339,7 +339,7 @@ pub const Dialog = struct {
         try self.ui.setText(self.path_item, if (std.unicode.utf8ValidateSlice(copy)) copy else "");
         try self.ui.setText(self.view.query, "");
         if (!self.history_navigation) try self.history.ensureUnusedCapacity(self.arena.allocator(), 1);
-        const scan = try files.Scan.start(self.allocator, copy, self, &scanned);
+        const scan = try files.Scan.start(self.allocator, self.window.io, copy, self, &scanned);
         if (self.pending) |previous| previous.cancel();
         self.pending = scan;
         self.pending_count += 1;
@@ -783,7 +783,7 @@ pub const Dialog = struct {
         if (self.ui.dispatching) {
             self.finish_code = code;
             self.finish_result = result orelse portal_options.empty;
-            self.finish_idle = mainloop.idle(self, deliverFinish);
+            self.finish_idle = mainloop.idle(self.window.io, self, deliverFinish);
         } else self.callback(self.data, code, result orelse portal_options.empty);
     }
     fn deliverFinish(self: *Dialog) bool {

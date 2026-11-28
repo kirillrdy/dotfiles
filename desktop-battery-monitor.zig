@@ -64,6 +64,7 @@ fn lidState(directory: [:0]const u8) Lid {
 }
 const Server = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     options: Options,
     connection: *dbus.Connection,
     service: ?*battery.Service = null,
@@ -138,8 +139,8 @@ const Server = struct {
         if (self.stopping) return;
         const was_present = self.state.present;
         self.state = value;
-        self.update_time = @intCast(@divTrunc(util.realTime(), 1000000));
-        _ = self.policy.update(value, util.monotonicTime(), self.options.action_delay_us);
+        self.update_time = @intCast(@divTrunc(util.realTime(self.io), 1000000));
+        _ = self.policy.update(value, util.monotonicTime(self.io), self.options.action_delay_us);
         self.connection.emitPropertiesChanged(root, name) catch {};
         self.connection.emitPropertiesChanged(display, iface) catch {};
         self.connection.emitPropertiesChanged(device, iface) catch {};
@@ -154,11 +155,11 @@ const Server = struct {
                 self.connection.emitPropertiesChanged(root, name) catch {};
             }
         }
-        if (self.policy.update(self.state, util.monotonicTime(), self.options.action_delay_us)) {
+        if (self.policy.update(self.state, util.monotonicTime(self.io), self.options.action_delay_us)) {
             self.policy.done = true;
             Job.start(self, null) catch {
                 self.policy.done = false;
-                self.policy.retry_at = util.monotonicTime() + 60 * 1000000;
+                self.policy.retry_at = util.monotonicTime(self.io) + 60 * 1000000;
             };
         }
         return true;
@@ -181,9 +182,9 @@ const Server = struct {
         }
         if (self.service) |service| {
             service.stop();
-            while (service.pending or self.jobs.items.len > 0) _ = mainloop.iteration(true);
+            while (service.pending or self.jobs.items.len > 0) _ = mainloop.iteration(self.io, true);
             service.destroy();
-        } else while (self.jobs.items.len > 0) _ = mainloop.iteration(true);
+        } else while (self.jobs.items.len > 0) _ = mainloop.iteration(self.io, true);
         self.jobs.deinit(self.allocator);
         self.cancel.unref();
     }
@@ -218,7 +219,7 @@ const Job = struct {
             if (success) server.connection.answer(invocation, .{actions[self.index]}) catch {} else server.connection.answerError(invocation, "org.freedesktop.UPower.Error.NotSupported", "No critical power action is available") catch {};
         } else if (!success and self.current()) {
             server.policy.done = false;
-            server.policy.retry_at = util.monotonicTime() + 60 * 1000000;
+            server.policy.retry_at = util.monotonicTime(server.io) + 60 * 1000000;
             std.log.warn("battery: critical power action unavailable; retrying in one minute", .{});
         }
         for (server.jobs.items, 0..) |job, i| if (job == self) {
@@ -252,7 +253,7 @@ const Job = struct {
         if (eq(status[0], "yes")) {
             if (self.invocation != null) return self.finish(true);
             // Re-read AC and every battery after capability negotiation, before acting.
-            mainloop.background(self, validateWork, validated);
+            mainloop.background(self.server.io, self, validateWork, validated);
             return;
         }
         self.index += 1;
@@ -274,34 +275,34 @@ fn quit(self: *Server) bool {
     self.stopping = true;
     return true;
 }
-pub fn run(allocator: std.mem.Allocator) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     if (libc.geteuid() != 0) return error.RequiresRoot;
-    return runWithOptions(.{}, allocator);
+    return runWithOptions(.{}, allocator, io);
 }
-pub fn runWithOptions(options: Options, allocator: std.mem.Allocator) !void {
+pub fn runWithOptions(options: Options, allocator: std.mem.Allocator, io: std.Io) !void {
     var introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-battery.xml"));
     defer introspection.deinit();
-    const source = loop.Source.open(allocator, .system) catch return error.NoSystemBus;
+    const source = loop.Source.open(allocator, io, .system) catch return error.NoSystemBus;
     defer source.destroy();
     const connection = source.connection;
-    var server = Server{ .allocator = allocator, .options = options, .connection = connection, .cancel = mainloop.Cancellable.create(), .lid = lidState(options.lid_root) };
+    var server = Server{ .allocator = allocator, .io = io, .options = options, .connection = connection, .cancel = mainloop.Cancellable.create(io), .lid = lidState(options.lid_root) };
     defer server.deinit();
     const manager = introspection.find(name) orelse return error.InvalidXml;
     const device_info = introspection.find(iface) orelse return error.InvalidXml;
     _ = try connection.exportObject(root, manager, &Server.methodCall, &Server.getProperty, &server);
     _ = try connection.exportObject(display, device_info, &Server.methodCall, &Server.getProperty, &server);
     _ = try connection.exportObject(device, device_info, &Server.methodCall, &Server.getProperty, &server);
-    server.service = try battery.Service.createWithOptions(allocator, options.source, &Server.changed, &server);
+    server.service = try battery.Service.createWithOptions(allocator, io, options.source, &Server.changed, &server);
     if ((connection.requestName(name, 4) catch return error.NameUnavailable) != 1) return error.NameUnavailable;
-    const timer = mainloop.timeout(250, &server, Server.tick);
-    const term = mainloop.signal(mainloop.SIGTERM, &server, quit);
-    const interrupt = mainloop.signal(mainloop.SIGINT, &server, quit);
+    const timer = mainloop.timeout(io, 250, &server, Server.tick);
+    const term = mainloop.signal(io, mainloop.SIGTERM, &server, quit);
+    const interrupt = mainloop.signal(io, mainloop.SIGINT, &server, quit);
     defer {
-        _ = mainloop.remove(timer);
-        _ = mainloop.remove(term);
-        _ = mainloop.remove(interrupt);
+        _ = mainloop.remove(io, timer);
+        _ = mainloop.remove(io, term);
+        _ = mainloop.remove(io, interrupt);
     }
-    while (!server.stopping and !connection.closed) _ = mainloop.iteration(true);
+    while (!server.stopping and !connection.closed) _ = mainloop.iteration(io, true);
     if (!server.stopping) return error.SystemBusDisconnected;
 }
 

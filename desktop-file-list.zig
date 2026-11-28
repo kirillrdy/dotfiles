@@ -79,6 +79,7 @@ fn matchFrom(pattern: []const u8, name: []const u21) bool {
 /// still invokes completion, so callers can release their asynchronous reference.
 pub const Scan = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     arena: std.heap.ArenaAllocator,
     entries: std.ArrayList(Entry) = .empty,
     path: [:0]const u8,
@@ -87,10 +88,10 @@ pub const Scan = struct {
     context: ?*anyopaque,
     completed: *const fn (?*anyopaque, *Scan, ?anyerror) void,
 
-    pub fn start(allocator: std.mem.Allocator, path: [:0]const u8, context: ?*anyopaque, completed: *const fn (?*anyopaque, *Scan, ?anyerror) void) !*Scan {
+    pub fn start(allocator: std.mem.Allocator, io: std.Io, path: [:0]const u8, context: ?*anyopaque, completed: *const fn (?*anyopaque, *Scan, ?anyerror) void) !*Scan {
         const self = try allocator.create(Scan);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .arena = .init(allocator), .path = undefined, .context = context, .completed = completed };
+        self.* = .{ .allocator = allocator, .io = io, .arena = .init(allocator), .path = undefined, .context = context, .completed = completed };
         errdefer self.arena.deinit();
         self.path = try self.arena.allocator().dupeSentinel(u8, path, 0);
         const thread = try std.Thread.spawn(.{}, work, .{self});
@@ -111,7 +112,7 @@ pub const Scan = struct {
         self.failure = if (self.read()) |_| null else |err| err;
         if (self.cancelled.load(.acquire)) self.failure = error.DirectoryUnavailable;
         if (self.failure == null) std.mem.sort(Entry, self.entries.items, {}, less);
-        _ = mainloop.idle(self, deliver);
+        _ = mainloop.idle(self.io, self, deliver);
     }
 
     fn deliver(self: *Scan) bool {

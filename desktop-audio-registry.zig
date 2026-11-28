@@ -193,6 +193,7 @@ pub const Object = struct {
 
 pub const Registry = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     callback: *const fn (?*anyopaque) void,
     data: ?*anyopaque,
     connection: ?*wire.Connection = null,
@@ -206,9 +207,9 @@ pub const Registry = struct {
     ready: bool = false,
     failed: bool = false,
 
-    pub fn create(a: std.mem.Allocator, callback: *const fn (?*anyopaque) void, data: ?*anyopaque) !*Registry {
+    pub fn create(a: std.mem.Allocator, io: std.Io, callback: *const fn (?*anyopaque) void, data: ?*anyopaque) !*Registry {
         const self = try a.create(Registry);
-        self.* = .{ .allocator = a, .callback = callback, .data = data };
+        self.* = .{ .allocator = a, .io = io, .callback = callback, .data = data };
         errdefer self.destroy();
         const connection = wire.Connection.connect(a, &.{ .{ "application.name", "desktop-zig" }, .{ "media.category", "Manager" } }) catch return error.AudioDisconnected;
         self.connection = connection;
@@ -218,11 +219,11 @@ pub const Registry = struct {
         message.uint(self.proxy);
         _ = connection.end(spa.PW_ID_CORE, spa.PW_CORE_METHOD_GET_REGISTRY) catch return error.AudioRegistryUnavailable;
         self.initial = self.sync() orelse return error.AudioSyncFailed;
-        self.source = mainloop.watch(connection.fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
+        self.source = mainloop.watch(io, connection.fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
         return self;
     }
     pub fn destroy(self: *Registry) void {
-        if (self.source != 0) _ = mainloop.remove(self.source);
+        if (self.source != 0) _ = mainloop.remove(self.io, self.source);
         for (self.objects.items) |object| object.destroy();
         self.objects.deinit(self.allocator);
         self.barriers.deinit(self.allocator);
@@ -441,7 +442,7 @@ test "unrelated parameter changes preserve Props while serial changes invalidate
 }
 test "core barriers complete only matching round trips and release earlier tickets" {
     const a = std.testing.allocator;
-    var registry = Registry{ .allocator = a, .callback = undefined, .data = null, .ready = true };
+    var registry = Registry{ .allocator = a, .io = std.testing.io, .callback = undefined, .data = null, .ready = true };
     defer registry.barriers.deinit(a);
     try registry.barriers.append(a, .{ .sequence = 100, .ticket = 1 });
     try registry.barriers.append(a, .{ .sequence = 101, .ticket = 2 });

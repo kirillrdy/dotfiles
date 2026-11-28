@@ -33,6 +33,7 @@ pub const Rect = raster.Rect;
 
 pub const View = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     notice: data.Data,
     theme: Theme,
     width: u32 = 529,
@@ -56,8 +57,8 @@ pub const View = struct {
     /// Bumped whenever masks, icon or layout are dropped, so cached pixels go stale.
     generation: u64 = 0,
 
-    pub fn init(a: std.mem.Allocator, notice: data.Data, theme: Theme, width: u32) View {
-        var self: View = .{ .allocator = a, .notice = notice, .theme = theme, .width = @max(160, width) };
+    pub fn init(a: std.mem.Allocator, io: std.Io, notice: data.Data, theme: Theme, width: u32) View {
+        var self: View = .{ .allocator = a, .io = io, .notice = notice, .theme = theme, .width = @max(160, width) };
         for (notice.actions) |action| {
             if (std.mem.eql(u8, action.key, "default") or self.action_count == 3) continue;
             self.action_keys[self.action_count] = action.key;
@@ -155,7 +156,7 @@ pub const View = struct {
         const content_width = self.width - 48 - @as(u32, if (self.notice.image != null) 60 else 0);
         self.masks[1] = try self.label(self.notice.title, content_width, true, false, scale);
         self.masks[2] = try self.label(self.notice.body, content_width, false, true, scale);
-        const age = @max(0, @divTrunc(util.realTime(), 1000000) - self.notice.created);
+        const age = @max(0, @divTrunc(util.realTime(self.io), 1000000) - self.notice.created);
         var buffer: [64]u8 = undefined;
         const age_text: [:0]const u8 = if (age < 60) "Just now" else if (age < 3600) std.fmt.bufPrintSentinel(&buffer, "{d}m ago", .{@divTrunc(age, 60)}, 0) catch unreachable else std.fmt.bufPrintSentinel(&buffer, "{d}h ago", .{@divTrunc(age, 3600)}, 0) catch unreachable;
         self.masks[6] = try self.renderer.renderLayout(self.allocator, age_text, .{ .size = 12 * @as(f64, @floatFromInt(scale)), .dpi = 96 * @as(f64, @floatFromInt(scale)), .width = 65 * scale, .ellipsize = true, .origin = .top });
@@ -277,7 +278,7 @@ test "integration: native notification expansion wraps markup and keeps action h
     if (!@import("options").integration_tests) return error.SkipZigTest;
     const actions = [_]data.Action{ .{ .key = "default", .label = "Open" }, .{ .key = "reply", .label = "Reply" }, .{ .key = "archive", .label = "Archive" } };
     for ([_]u32{ 1, 2 }) |scale| {
-        var card = View.init(std.testing.allocator, .{ .id = 1, .app = "Messages", .title = "東京 — مرحبا", .body = "<b>A long notification</b> with wrapping text. This message includes enough words to occupy several lines when expanded. It should wrap naturally and preserve bold markup, while the collapsed card displays just one line. More text ensures the action row moves down with the expanded body.", .created = 0, .actions = &actions }, .{}, 529);
+        var card = View.init(std.testing.allocator, std.testing.io, .{ .id = 1, .app = "Messages", .title = "東京 — مرحبا", .body = "<b>A long notification</b> with wrapping text. This message includes enough words to occupy several lines when expanded. It should wrap naturally and preserve bold markup, while the collapsed card displays just one line. More text ensures the action row moves down with the expanded body.", .created = 0, .actions = &actions }, .{}, 529);
         defer card.deinit();
         try card.prepare(scale);
         const collapsed_height = card.height;
@@ -315,7 +316,7 @@ test "integration: native notification expansion wraps markup and keeps action h
 test "integration: GNOME header keeps the age beside the source and reserves button space" {
     if (!@import("options").integration_tests) return error.SkipZigTest;
     for ([_]u32{ 1, 2 }) |scale| {
-        var card = View.init(std.testing.allocator, .{ .id = 1, .app = "Terminal", .title = "Build complete", .body = "All checks passed. Your desktop is ready.", .created = @divTrunc(util.realTime(), 1000000) }, .{}, 529);
+        var card = View.init(std.testing.allocator, std.testing.io, .{ .id = 1, .app = "Terminal", .title = "Build complete", .body = "All checks passed. Your desktop is ready.", .created = @divTrunc(util.realTime(std.testing.io), 1000000) }, .{}, 529);
         defer card.deinit();
         try card.prepare(scale);
         try std.testing.expectEqual(@as(u32, 118), card.height);
@@ -335,7 +336,7 @@ test "integration: expanded banner matches GNOME's measured line and action geom
     if (!@import("options").integration_tests) return error.SkipZigTest;
     const actions = [_]data.Action{ .{ .key = "open", .label = "Open Settings" }, .{ .key = "later", .label = "Later" } };
     for ([_]u32{ 1, 2 }) |scale| {
-        var card = View.init(std.testing.allocator, .{ .id = 1, .app = "Terminal", .title = "A longer notification title that should fit on one line", .body = "This notification contains a longer message that wraps onto multiple lines. Expand it to read the complete notification and choose an action.", .created = @divTrunc(util.realTime(), 1000000), .actions = &actions }, .{}, 529);
+        var card = View.init(std.testing.allocator, std.testing.io, .{ .id = 1, .app = "Terminal", .title = "A longer notification title that should fit on one line", .body = "This notification contains a longer message that wraps onto multiple lines. Expand it to read the complete notification and choose an action.", .created = @divTrunc(util.realTime(std.testing.io), 1000000), .actions = &actions }, .{}, 529);
         defer card.deinit();
         try card.prepare(scale);
         card.toggle();

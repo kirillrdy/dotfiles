@@ -27,8 +27,8 @@ fn iface(kind: Kind) []const u8 {
 }
 const eq = util.eq;
 const cast = util.cast;
-fn now() u64 {
-    return @intCast(@divTrunc(util.realTime(), 1000000));
+fn now(io: std.Io) u64 {
+    return @intCast(@divTrunc(util.realTime(io), 1000000));
 }
 fn append(comptime T: type, allocator: std.mem.Allocator, old: []const T, value: T) ![]const T {
     const out = try allocator.alloc(T, old.len + 1);
@@ -259,7 +259,7 @@ const Server = struct {
         var index = self.vault.index();
         if (index.collections.len >= 64) return error.LimitsExceeded;
         const id = index.takeId();
-        index.collections = try append(Collection, allocator, index.collections, .{ .id = id, .label = label, .created = now(), .modified = now() });
+        index.collections = try append(Collection, allocator, index.collections, .{ .id = id, .label = label, .created = now(self.io), .modified = now(self.io) });
         if (alias.len != 0) try setAlias(allocator, &index, alias, id);
         try self.vault.set(index, &.{});
         try self.reconcile();
@@ -367,7 +367,7 @@ const Server = struct {
         o.started = true;
         // The service can start before Wayland; only prompts open a connection.
         const creating = self.vault.saved == null;
-        const dialog = try Dialog.createWithOptions(self.allocator, .password, if (creating) "Choose a password for your new password vault." else "Enter your password to unlock saved passwords.", .{
+        const dialog = try Dialog.createWithOptions(self.allocator, self.io, .password, if (creating) "Choose a password for your new password vault." else "Enter your password to unlock saved passwords.", .{
             .title = if (creating) "Create Password Vault" else "Unlock Passwords",
             .role = "desktop-secrets",
             .accept = if (creating) "Create" else "Unlock",
@@ -535,13 +535,13 @@ const Server = struct {
             const replacing = id != 0;
             if (!replacing) id = index.takeId();
             const existing = self.findItem(id);
-            const entry = Item{ .id = id, .collection = o.id, .label = label, .attributes = attrs, .created = if (existing) |item| item.created else now(), .modified = now() };
+            const entry = Item{ .id = id, .collection = o.id, .label = label, .attributes = attrs, .created = if (existing) |item| item.created else now(self.io), .modified = now(self.io) };
             if (existing != null) {
                 (try editEntry(Item, allocator, &index.items, id)).* = entry;
             } else {
                 index.items = try append(Item, allocator, index.items, entry);
             }
-            (try editEntry(Collection, allocator, &index.collections, o.id)).modified = now();
+            (try editEntry(Collection, allocator, &index.collections, o.id)).modified = now(self.io);
             try self.vault.set(index, &.{.{ .id = id, .bytes = decoded.value, .content_type = decoded.content_type }});
             try self.reconcile();
             self.signal(self.objectPath(.collection, o.id), .collection, if (replacing) "ItemChanged" else "ItemCreated", self.objectPath(.item, id));
@@ -556,7 +556,7 @@ const Server = struct {
             const decoded = try self.decode((try read(message, struct { Secret }))[0], owner, allocator);
             var index = self.vault.index();
             const item = try editEntry(Item, allocator, &index.items, o.id);
-            item.modified = now();
+            item.modified = now(self.io);
             try self.vault.set(index, &.{.{ .id = o.id, .bytes = decoded.value, .content_type = decoded.content_type }});
             self.changed();
             self.signal(self.objectPath(.collection, item.collection), .collection, "ItemChanged", o.path);
@@ -650,16 +650,16 @@ fn setPropertyValue(o: *Object, prop: []const u8, value: dbus.Value) !void {
         if (o.kind == .collection) {
             const col = try editEntry(Collection, allocator, &index.collections, o.id);
             col.label = text_value;
-            col.modified = now();
+            col.modified = now(self.io);
         } else {
             const item = try editEntry(Item, allocator, &index.items, o.id);
             item.label = text_value;
-            item.modified = now();
+            item.modified = now(self.io);
         }
     } else if (o.kind == .item and eq(prop, "Attributes")) {
         const item = try editEntry(Item, allocator, &index.items, o.id);
         item.attributes = try attributeValue(allocator, value);
-        item.modified = now();
+        item.modified = now(self.io);
     } else return error.InvalidArgs;
     try self.vault.set(index, &.{});
 }
@@ -756,7 +756,7 @@ pub fn runAt(allocator: std.mem.Allocator, io: std.Io, directory: []const u8) !v
 }
 pub fn runAtWithOptions(allocator: std.mem.Allocator, io: std.Io, directory: []const u8, options: Options) !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
-    const source = loop.acquire(allocator, .session) catch return error.NoSessionBus;
+    const source = loop.acquire(allocator, io, .session) catch return error.NoSessionBus;
     defer loop.release(source);
     const bus = source.connection;
     var introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-secrets.xml"));
@@ -776,7 +776,7 @@ pub fn runAtWithOptions(allocator: std.mem.Allocator, io: std.Io, directory: []c
     if ((bus.requestName(name, 4) catch return error.NameUnavailable) != 1) return error.NameUnavailable;
     const owners = try bus.subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", &ownerChanged, &server);
     defer bus.unsubscribe(owners);
-    const system: ?*loop.Source = loop.acquire(allocator, .system) catch null;
+    const system: ?*loop.Source = loop.acquire(allocator, io, .system) catch null;
     var subscriptions: [3]u32 = .{ 0, 0, 0 };
     defer if (system) |held| {
         for (subscriptions) |id| if (id != 0) held.connection.unsubscribe(id);
@@ -792,13 +792,13 @@ pub fn runAtWithOptions(allocator: std.mem.Allocator, io: std.Io, directory: []c
         subscriptions[1] = try connection.subscribe("org.freedesktop.login1", "org.freedesktop.DBus.Properties", "PropertiesChanged", null, &sessionSignal, &server);
         subscriptions[2] = try connection.subscribe("org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep", "/org/freedesktop/login1", &sessionSignal, &server);
     }
-    const term = mainloop.signal(mainloop.SIGTERM, &server, quit);
-    const interrupt = mainloop.signal(mainloop.SIGINT, &server, quit);
+    const term = mainloop.signal(io, mainloop.SIGTERM, &server, quit);
+    const interrupt = mainloop.signal(io, mainloop.SIGINT, &server, quit);
     defer {
-        _ = mainloop.remove(term);
-        _ = mainloop.remove(interrupt);
+        _ = mainloop.remove(io, term);
+        _ = mainloop.remove(io, interrupt);
     }
-    while (!server.stopping and !bus.closed) _ = mainloop.iteration(true);
+    while (!server.stopping and !bus.closed) _ = mainloop.iteration(io, true);
 }
 /// Called by PAM's dropped-privilege helper. Passwords travel through stdin, never argv or environment.
 pub fn loginUnlock(allocator: std.mem.Allocator, password: []const u8) !void {
@@ -875,7 +875,7 @@ pub fn importAt(allocator: std.mem.Allocator, io: std.Io, directory: []const u8,
         const label = try sourceProperty(scratch, bus, owner, path, .collection, "Label");
         if (label != .string) return error.InvalidSourceReply;
         const id = index.takeId();
-        try imported_collections.append(scratch, .{ .id = id, .label = label.string, .created = now(), .modified = now() });
+        try imported_collections.append(scratch, .{ .id = id, .label = label.string, .created = now(io), .modified = now(io) });
         for ([_][]const u8{ "default", "login" }) |alias| {
             const reply = try sourceCall(bus, owner, root, iface(.service), "ReadAlias", .{alias});
             defer reply.deinit();
@@ -895,7 +895,7 @@ pub fn importAt(allocator: std.mem.Allocator, io: std.Io, directory: []const u8,
             if (secret[1].value.len != 0 or !eq(secret[0].value, session)) return error.InvalidSourceSecret;
             if (secret[2].value.len > 1024 * 1024) return error.LimitsExceeded;
             const item_id = index.takeId();
-            try imported_items.append(scratch, .{ .id = item_id, .collection = id, .label = item_label.string, .attributes = attrs, .created = now(), .modified = now() });
+            try imported_items.append(scratch, .{ .id = item_id, .collection = id, .label = item_label.string, .attributes = attrs, .created = now(io), .modified = now(io) });
             const content_type = try scratch.dupe(u8, secret[3]);
             const value = try values.addOne(scratch);
             value.* = .{ .id = item_id, .bytes = &.{}, .content_type = content_type };
@@ -912,7 +912,7 @@ pub fn importAt(allocator: std.mem.Allocator, io: std.Io, directory: []const u8,
 }
 pub fn runImport(allocator: std.mem.Allocator, io: std.Io) !void {
     if (p.prctl(p.PR_SET_DUMPABLE, @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.PrctlFailed;
-    const dialog = try createImportDialog(allocator);
+    const dialog = try createImportDialog(allocator, io);
     defer dialog.destroy();
     while (true) {
         dialog.run();
@@ -926,8 +926,8 @@ pub fn runImport(allocator: std.mem.Allocator, io: std.Io) !void {
     try importAt(allocator, io, directory, dialog.entry.?.buffer.value());
     std.debug.print("Imported Secret Service collections. The source keyring is unchanged.\n", .{});
 }
-pub fn createImportDialog(allocator: std.mem.Allocator) !*Dialog {
-    return Dialog.createWithOptions(allocator, .password, "Choose the destination vault password. Use your login password for automatic unlock.", .{
+pub fn createImportDialog(allocator: std.mem.Allocator, io: std.Io) !*Dialog {
+    return Dialog.createWithOptions(allocator, io, .password, "Choose the destination vault password. Use your login password for automatic unlock.", .{
         .title = "Import Saved Passwords",
         .role = "desktop-secrets-import",
         .accept = "Continue",

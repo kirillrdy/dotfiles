@@ -26,7 +26,7 @@ pub const Service = struct {
         self.subscription = .{ .context = self, .changed = &deviceChanged };
         self.devices.subscribe(&self.subscription);
         _ = tick(self);
-        self.timer = mainloop.timeout(500, self, tick);
+        self.timer = mainloop.timeout(self.io, 500, self, tick);
     }
 
     pub fn refresh(self: *Service, kind: []const u8) void {
@@ -52,15 +52,15 @@ pub const Service = struct {
     fn deviceChanged(ptr: ?*anyopaque, service: *devices.Service, event: devices.Event) void {
         const self: *Service = @ptrCast(@alignCast(ptr));
         if (self.dead) return;
-        if (event == .battery) if (self.battery_alerts.update(service.battery_state)) |level| battery.notifyWarning(self.allocator, level);
+        if (event == .battery) if (self.battery_alerts.update(service.battery_state)) |level| battery.notifyWarning(self.allocator, self.io, level);
         self.sources[1].publish("status");
     }
     pub fn deinit(self: *Service) void {
         self.dead = true;
         self.devices.unsubscribe(&self.subscription);
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
         for (&self.sources) |*source| {
-            while (source.busy) _ = mainloop.iteration(true);
+            while (source.busy) _ = mainloop.iteration(self.io, true);
             if (source.cached) |output| output.destroy();
         }
     }
@@ -89,7 +89,7 @@ const Source = struct {
     fn launch(self: *Source) void {
         self.busy = true;
         self.remaining = intervals[self.index];
-        mainloop.background(self, work, done);
+        mainloop.background(self.owner.io, self, work, done);
     }
 
     fn work(self: *Source) ?*Output {

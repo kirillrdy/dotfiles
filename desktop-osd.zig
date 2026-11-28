@@ -93,13 +93,13 @@ pub const Server = struct {
     hide_timer: u32 = 0,
     feedback_player: audio.Feedback,
 
-    pub fn init(allocator: std.mem.Allocator) Server {
-        return .{ .allocator = allocator, .feedback_player = .{ .allocator = allocator } };
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) Server {
+        return .{ .allocator = allocator, .feedback_player = .{ .allocator = allocator, .io = io } };
     }
 
     pub fn start(self: *Server) !void {
         self.theme = .{};
-        self.client = try native.Client.create(self.allocator, .{ .added = &added, .removed = &removed, .changed = &changed }, self);
+        self.client = try native.Client.create(self.allocator, self.feedback_player.io, .{ .added = &added, .removed = &removed, .changed = &changed }, self);
         errdefer {
             for (self.overlays.items) |overlay| overlay.destroy();
             self.overlays.clearRetainingCapacity();
@@ -107,7 +107,7 @@ pub const Server = struct {
             self.client = null;
         }
         try self.client.?.start();
-        self.audio_service = try audio.Service.create(self.allocator, &audioChanged, self);
+        self.audio_service = try audio.Service.create(self.allocator, self.feedback_player.io, &audioChanged, self);
         self.ready = true;
     }
 
@@ -155,7 +155,7 @@ pub const Server = struct {
         self.active = self.queue.orderedRemove(0);
         if (self.active.?.kind == .brightness) {
             self.brightness_busy = true;
-            self.cancel = mainloop.Cancellable.create();
+            self.cancel = mainloop.Cancellable.create(self.feedback_player.io);
             self.backlight_backend.start(self.allocator, .{ .step = self.active.?.delta }, self.cancel.?, &brightnessDone, self);
             return;
         }
@@ -163,7 +163,7 @@ pub const Server = struct {
             self.finish();
             return;
         };
-        self.cancel = mainloop.Cancellable.create();
+        self.cancel = mainloop.Cancellable.create(self.feedback_player.io);
         self.audio_busy = true;
         const work = self.active.?;
         service.apply(if (work.kind == .microphone) .input else .output, if (work.delta == 0) .toggle else .{ .step = work.delta }, self.cancel.?, &audioDone, self);
@@ -199,8 +199,8 @@ pub const Server = struct {
         self.last_kind = kind;
         self.last_state = state;
         for (self.overlays.items) |overlay| overlay.show(kind, state);
-        if (self.hide_timer != 0) _ = mainloop.remove(self.hide_timer);
-        self.hide_timer = mainloop.timeout(1500, self, hide);
+        if (self.hide_timer != 0) _ = mainloop.remove(self.feedback_player.io, self.hide_timer);
+        self.hide_timer = mainloop.timeout(self.feedback_player.io, 1500, self, hide);
         if (kind == .volume and self.active.?.delta != 0 and !state.muted and state.percent > 0) self.feedback();
     }
 
@@ -222,12 +222,12 @@ pub const Server = struct {
 
     pub fn deinit(self: *Server) void {
         self.dead = true;
-        if (self.hide_timer != 0) _ = mainloop.remove(self.hide_timer);
+        if (self.hide_timer != 0) _ = mainloop.remove(self.feedback_player.io, self.hide_timer);
         if (self.cancel) |cancel| cancel.cancel();
         if (self.audio_service) |service| service.destroy();
         self.audio_service = null;
         self.feedback_player.deinit();
-        while (self.audio_busy or self.brightness_busy) _ = mainloop.iteration(true);
+        while (self.audio_busy or self.brightness_busy) _ = mainloop.iteration(self.feedback_player.io, true);
         for (self.overlays.items) |overlay| overlay.destroy();
         self.overlays.deinit(self.allocator);
         if (self.client) |client| client.destroy();
@@ -252,7 +252,7 @@ test "integration: native OSD paints on the output, coalesces buffers, and resto
     const Callbacks = struct {
         fn nothing(_: ?*anyopaque, _: *native.Output) void {}
     };
-    const client = try native.Client.create(std.testing.allocator, .{ .added = &Callbacks.nothing, .removed = &Callbacks.nothing }, null);
+    const client = try native.Client.create(std.testing.allocator, std.testing.io, .{ .added = &Callbacks.nothing, .removed = &Callbacks.nothing }, null);
     defer client.destroy();
     try client.start();
     const theme: view.Theme = .{};

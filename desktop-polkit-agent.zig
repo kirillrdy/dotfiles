@@ -24,17 +24,17 @@ pub const Options = struct {
 };
 pub const Service = struct {
     state: *State,
-    pub fn init(a: std.mem.Allocator) !Service {
-        return initWithOptions(a, .{});
+    pub fn init(a: std.mem.Allocator, io: std.Io) !Service {
+        return initWithOptions(a, io, .{});
     }
-    pub fn initWithOptions(a: std.mem.Allocator, options: Options) !Service {
-        const source = loop.Source.open(a, .system) catch return error.PolicyKitUnavailable;
+    pub fn initWithOptions(a: std.mem.Allocator, io: std.Io, options: Options) !Service {
+        const source = loop.Source.open(a, io, .system) catch return error.PolicyKitUnavailable;
         errdefer source.destroy();
         var introspection = dbus.Introspection.parse(a, xml) catch unreachable;
         errdefer introspection.deinit();
         const self = try a.create(State);
         errdefer a.destroy(self);
-        self.* = .{ .allocator = a, .options = options, .source = source, .introspection = introspection };
+        self.* = .{ .allocator = a, .io = io, .options = options, .source = source, .introspection = introspection };
         errdefer if (self.owner) |owner| a.free(owner);
         try self.subject.find(source.connection);
         const connection = source.connection;
@@ -43,15 +43,15 @@ pub const Service = struct {
         self.subscription = try connection.subscribeArg0("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", name, &State.ownerChanged, self);
         errdefer connection.unsubscribe(self.subscription);
         try self.register();
-        self.timer = mainloop.timeoutSeconds(2, self, State.maintain);
+        self.timer = mainloop.timeoutSeconds(io, 2, self, State.maintain);
         return .{ .state = self };
     }
     pub fn deinit(self: *Service) void {
         const state = self.state;
         const connection = state.source.connection;
         state.stopping = true;
-        if (state.advance_source != 0) _ = mainloop.remove(state.advance_source);
-        _ = mainloop.remove(state.timer);
+        if (state.advance_source != 0) _ = mainloop.remove(state.io, state.advance_source);
+        _ = mainloop.remove(state.io, state.timer);
         connection.unsubscribe(state.subscription);
         state.cancelAll();
         if (state.registered and state.owner != null) {
@@ -125,6 +125,7 @@ const Subject = struct {
 
 const State = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     options: Options,
     source: *loop.Source,
     introspection: dbus.Introspection,
@@ -260,7 +261,7 @@ const Auth = struct {
         return self;
     }
     fn start(self: *Auth) void {
-        self.dialog = Dialog.create(self.state.allocator, self.action, self.message, self.username) catch {
+        self.dialog = Dialog.create(self.state.allocator, self.state.io, self.action, self.message, self.username) catch {
             self.complete(false, false, "Could not create authentication dialog");
             return;
         };
@@ -269,8 +270,8 @@ const Auth = struct {
         self.restart();
     }
     fn closeTransport(self: *Auth) void {
-        if (self.source != 0) _ = mainloop.remove(self.source);
-        if (self.write_source != 0) _ = mainloop.remove(self.write_source);
+        if (self.source != 0) _ = mainloop.remove(self.state.io, self.source);
+        if (self.write_source != 0) _ = mainloop.remove(self.state.io, self.write_source);
         self.source = 0;
         self.write_source = 0;
         if (self.fd >= 0) _ = libc.close(self.fd);
@@ -304,7 +305,7 @@ const Auth = struct {
             self.complete(false, false, "Authentication helper has an unexpected owner");
             return;
         }
-        self.source = mainloop.watch(self.fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
+        self.source = mainloop.watch(self.state.io, self.fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
         const bytes = std.fmt.bufPrint(&self.output, "{s}\n{s}\n", .{ self.username, self.cookie }) catch {
             self.complete(false, false, "Authentication request is too large");
             return;
@@ -319,7 +320,7 @@ const Auth = struct {
                 const err = libc.__errno_location().*;
                 if (err == libc.EINTR) continue;
                 if (err == 11) {
-                    if (self.write_source == 0) self.write_source = mainloop.watch(self.fd, mainloop.OUT | mainloop.ERR | mainloop.HUP, self, writable);
+                    if (self.write_source == 0) self.write_source = mainloop.watch(self.state.io, self.fd, mainloop.OUT | mainloop.ERR | mainloop.HUP, self, writable);
                     return true;
                 }
                 self.complete(false, false, "Could not contact authentication helper");
@@ -451,7 +452,7 @@ const Auth = struct {
         const connection = state.source.connection;
         if (success) connection.answer(&self.invocation, .{}) catch {} else connection.answerError(&self.invocation, if (cancelled) name ++ ".Error.Cancelled" else name ++ ".Error.Failed", std.mem.span(message)) catch {};
         self.destroy();
-        if (!state.stopping and !state.cancelling and state.requests.items.len > 0 and state.advance_source == 0) state.advance_source = mainloop.idle(state, State.advance);
+        if (!state.stopping and !state.cancelling and state.requests.items.len > 0 and state.advance_source == 0) state.advance_source = mainloop.idle(state.io, state, State.advance);
     }
     fn destroy(self: *Auth) void {
         self.closeTransport();

@@ -4,14 +4,14 @@ const desktop = @import("desktop");
 const mainloop = desktop.mainloop;
 const util = desktop.util;
 
-pub fn pump() void {
-    while (mainloop.iteration(false)) {}
+pub fn pump(io: std.Io) void {
+    while (mainloop.iteration(io, false)) {}
     mainloop.sleep(1000);
 }
 
-pub fn pumpFor(duration_us: i64) void {
-    const deadline = util.monotonicTime() + duration_us;
-    while (util.monotonicTime() < deadline) pump();
+pub fn pumpFor(io: std.Io, duration_us: i64) void {
+    const deadline = util.monotonicTime(io) + duration_us;
+    while (util.monotonicTime(io) < deadline) pump(io);
 }
 
 pub fn assertEq(actual: [*c]const u8, expected: []const u8) void {

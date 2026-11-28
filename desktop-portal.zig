@@ -103,9 +103,9 @@ const Server = struct {
         self.idle_introspection = try dbus.Introspection.parse(self.allocator, idle_portal_xml);
         try self.registrations.append(self.allocator, try self.connection.exportObject(idle_portal_path, &self.idle_introspection.?.interfaces[0], &idlePortalCall, null, self));
         try self.subscriptions.append(self.allocator, try self.connection.subscribe(bus, bus, "NameOwnerChanged", bus_path, &ownerChanged, self));
-        self.settings = try Settings.create(self.allocator, self.connection);
+        self.settings = try Settings.create(self.allocator, self.io, self.connection);
         self.notifications = try Notifications.create(self.allocator, self.connection);
-        self.network = netmon.Monitor.create(self.allocator, &networkChanged, self) catch null;
+        self.network = netmon.Monitor.create(self.allocator, self.io, &networkChanged, self) catch null;
     }
     fn deinit(self: *Server) void {
         self.quitting = true;
@@ -115,7 +115,7 @@ const Server = struct {
         self.network = null;
         for (self.subscriptions.items) |id| self.connection.unsubscribe(id);
         self.cancelRequests(null);
-        while (self.requests.items.len > 0) _ = mainloop.iteration(true);
+        while (self.requests.items.len > 0) _ = mainloop.iteration(self.io, true);
         while (self.sessions.items.len > 0) self.closeSession(self.sessions.items[0]);
         for (self.registrations.items) |id| self.connection.unregister(id);
         if (self.idle_introspection) |*idle| idle.deinit();
@@ -279,7 +279,7 @@ const Request = struct {
         if (count >= 32) return error.TooManyClientRequests;
         const item = try server.allocator.create(Request);
         errdefer server.allocator.destroy(item);
-        item.* = .{ .server = server, .arena = std.heap.ArenaAllocator.init(server.allocator), .owner = undefined, .app = undefined, .handle = undefined, .interface = undefined, .method = undefined, .cancel = mainloop.Cancellable.create(), .kind = kind };
+        item.* = .{ .server = server, .arena = std.heap.ArenaAllocator.init(server.allocator), .owner = undefined, .app = undefined, .handle = undefined, .interface = undefined, .method = undefined, .cancel = mainloop.Cancellable.create(server.io), .kind = kind };
         errdefer {
             item.arena.deinit();
             item.cancel.unref();
@@ -337,7 +337,7 @@ const Request = struct {
         const server = self.server;
         const had_idle = self.inhibit_idle;
         self.inhibit_idle = false;
-        if (self.idle != 0) _ = mainloop.remove(self.idle);
+        if (self.idle != 0) _ = mainloop.remove(self.server.io, self.idle);
         if (self.picker) |picker| picker.destroy();
         if (self.session_handle) |handle| if (self.server.session(handle, self.owner)) |session_info| {
             if (session_info.pending == self) session_info.pending = null;
@@ -380,7 +380,7 @@ const Request = struct {
         if (chosen) |output| {
             session_info.width = output.width;
             session_info.height = output.height;
-            session_info.stream = Video.Stream.create(self.server.allocator, output.name, session_info.cursor, &streamReady, session_info) catch {
+            session_info.stream = Video.Stream.create(self.server.allocator, self.server.io, output.name, session_info.cursor, &streamReady, session_info) catch {
                 streamReady(session_info, null);
                 return;
             };
@@ -456,7 +456,7 @@ const Request = struct {
     }
     /// Opens `uri` with its default handler and answers the request when it has started.
     fn launchUri(self: *Request, uri: []const u8, activation_token: ?[]const u8) void {
-        appinfo.launchDefaultForUri(self.server.allocator, uri, .{ .activation_token = activation_token, .cancellable = self.cancel }, &uriFinished, self) catch uriFinished(self, false);
+        appinfo.launchDefaultForUri(self.server.allocator, self.server.io, uri, .{ .activation_token = activation_token, .cancellable = self.cancel }, &uriFinished, self) catch uriFinished(self, false);
     }
 };
 
@@ -486,11 +486,11 @@ fn screencast(server: *Server, client_info: *Client, method: []const u8, args: [
     request.session_handle = try request.arena.allocator().dupeSentinel(u8, session_info.handle, 0);
     session_info.pending = request;
     if (eq(method, "Start")) {
-        request.picker = try Capture.Picker.create(server.allocator, client_info.app, try cstring(message, args[1]), "Share your screen", false, &Request.picked, request);
+        request.picker = try Capture.Picker.create(server.allocator, server.io, client_info.app, try cstring(message, args[1]), "Share your screen", false, &Request.picked, request);
         session_info.state = .starting;
     } else {
         session_info.state = if (eq(method, "CreateSession")) .creating else .selecting;
-        request.idle = mainloop.idle(request, Request.nativeFinished);
+        request.idle = mainloop.idle(request.server.io, request, Request.nativeFinished);
     }
     replyHandle(server, message, request.handle);
 }
@@ -498,21 +498,21 @@ fn screenshot(server: *Server, client_info: *Client, method: []const u8, args: [
     const options = try dictionary(message.arena, args[1]);
     const request = try Request.create(server, client_info, "Screenshot", method, options, .dialog);
     errdefer request.destroy();
-    request.screenshot = try Capture.Operation.create(server.allocator, client_info.app, try cstring(message, args[0]), method, options, &Request.dialogFinished, request);
+    request.screenshot = try Capture.Operation.create(server.allocator, server.io, client_info.app, try cstring(message, args[0]), method, options, &Request.dialogFinished, request);
     replyHandle(server, message, request.handle);
 }
 fn chooseFile(server: *Server, client_info: *Client, method: []const u8, args: []const dbus.Value, message: *const dbus.Message) !void {
     const options = try dictionary(message.arena, args[2]);
     const request = try Request.create(server, client_info, "FileChooser", method, options, .dialog);
     errdefer request.destroy();
-    request.dialog = try FileChooser.create(server.allocator, method, try cstring(message, args[0]), try cstring(message, args[1]), options, &Request.dialogFinished, request);
+    request.dialog = try FileChooser.create(server.allocator, server.io, method, try cstring(message, args[0]), try cstring(message, args[1]), options, &Request.dialogFinished, request);
     replyHandle(server, message, request.handle);
 }
 fn userInformation(server: *Server, client_info: *Client, args: []const dbus.Value, message: *const dbus.Message) !void {
     const options = try dictionary(message.arena, args[1]);
     const request = try Request.create(server, client_info, "Account", "GetUserInformation", options, .dialog);
     errdefer request.destroy();
-    request.account = try Account.create(server.allocator, client_info.app, try cstring(message, args[0]), options, &Request.dialogFinished, request);
+    request.account = try Account.create(server.allocator, server.io, client_info.app, try cstring(message, args[0]), options, &Request.dialogFinished, request);
     replyHandle(server, message, request.handle);
 }
 fn openRemote(server: *Server, client_info: *Client, args: []const dbus.Value, message: *const dbus.Message) !void {
@@ -594,7 +594,7 @@ fn inhibit(server: *Server, client_info: *Client, args: []const dbus.Value, mess
     request.inhibit_idle = flags & 8 != 0;
     replyHandle(server, message, request.handle);
     server.updateIdleInhibition();
-    loop.request(server.allocator, .system, .{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1", .interface = "org.freedesktop.login1.Manager", .member = "Inhibit" }, .{ buffer[0..used], @as([]const u8, request.app), why, "block" }, 10000, request.cancel, &Request.inhibitorFinished, request);
+    loop.request(server.allocator, server.io, .system, .{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1", .interface = "org.freedesktop.login1.Manager", .member = "Inhibit" }, .{ buffer[0..used], @as([]const u8, request.app), why, "block" }, 10000, request.cancel, &Request.inhibitorFinished, request);
 }
 fn network(server: *Server, client_info: *Client, method: []const u8, args: []const dbus.Value, message: *const dbus.Message) !void {
     if (eq(method, "CanReach")) {
@@ -713,7 +713,7 @@ pub fn runWithAllocator(allocator: std.mem.Allocator, io: std.Io) !void {
     // Applications launched for clients must not route back through this portal.
     _ = libc.setenv("GIO_USE_PORTALS", "0", 1);
     _ = libc.setenv("GTK_USE_PORTAL", "0", 1);
-    const source = loop.acquire(allocator, .session) catch return error.SessionBusUnavailable;
+    const source = loop.acquire(allocator, io, .session) catch return error.SessionBusUnavailable;
     defer loop.release(source);
     const connection = source.connection;
     var server = Server{ .allocator = allocator, .io = io, .connection = connection, .introspection = try dbus.Introspection.parse(allocator, @embedFile("desktop-portal.xml")) };
@@ -721,11 +721,11 @@ pub fn runWithAllocator(allocator: std.mem.Allocator, io: std.Io) !void {
     defer server.deinit();
     try server.start();
     if ((connection.requestName("org.freedesktop.portal.Desktop", 4) catch return error.PortalNameUnavailable) != 1) return error.PortalNameUnavailable;
-    const term = mainloop.signal(mainloop.SIGTERM, &server, quit);
-    const interrupt = mainloop.signal(mainloop.SIGINT, &server, quit);
+    const term = mainloop.signal(io, mainloop.SIGTERM, &server, quit);
+    const interrupt = mainloop.signal(io, mainloop.SIGINT, &server, quit);
     defer {
-        _ = mainloop.remove(term);
-        _ = mainloop.remove(interrupt);
+        _ = mainloop.remove(io, term);
+        _ = mainloop.remove(io, interrupt);
     }
-    while (!server.quitting and !connection.closed) _ = mainloop.iteration(true);
+    while (!server.quitting and !connection.closed) _ = mainloop.iteration(io, true);
 }

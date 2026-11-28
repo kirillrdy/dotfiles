@@ -40,6 +40,7 @@ pub fn Client(comptime App: type) type {
         const OutputData = if (@hasDecl(App, "OutputData")) App.OutputData else struct {};
 
         allocator: std.mem.Allocator,
+        io: std.Io,
         connection: *wire.Connection,
         password: *login.SecretBuffer,
         compositor: ?wl.wl_compositor = null,
@@ -302,8 +303,8 @@ pub fn Client(comptime App: type) type {
             self.busy = true;
             self.failed = false;
             self.render();
-            if (self.spinner == 0) self.spinner = mainloop.timeout(50, self, spin);
-            mainloop.background(self, authWork, authDone);
+            if (self.spinner == 0) self.spinner = mainloop.timeout(self.io, 50, self, spin);
+            mainloop.background(self.io, self, authWork, authDone);
         }
 
         fn authWork(self: *Self) bool {
@@ -322,7 +323,7 @@ pub fn Client(comptime App: type) type {
                 self.failed = true;
                 if (!self.done) {
                     self.busy = true;
-                    _ = mainloop.timeout(App.retry_ms, self, retry);
+                    _ = mainloop.timeout(self.io, App.retry_ms, self, retry);
                     self.render();
                 }
             }
@@ -436,21 +437,21 @@ pub fn Client(comptime App: type) type {
         /// Runs the GLib loop until done or stopped, then lets a pending
         /// authentication finish so the worker never outlives its secrets.
         pub fn run(self: *Self) void {
-            const source = mainloop.watch(self.connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
-            defer _ = mainloop.remove(source);
-            const clock = mainloop.timeoutSeconds(1, self, tick);
-            defer _ = mainloop.remove(clock);
+            const source = mainloop.watch(self.io, self.connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
+            defer _ = mainloop.remove(self.io, source);
+            const clock = mainloop.timeoutSeconds(self.io, 1, self, tick);
+            defer _ = mainloop.remove(self.io, clock);
             defer if (self.spinner != 0) {
-                _ = mainloop.remove(self.spinner);
+                _ = mainloop.remove(self.io, self.spinner);
             };
             while (!self.done and !self.stopped) {
                 self.connection.flush() catch {
                     self.fatal();
                     break;
                 };
-                _ = mainloop.iteration(true);
+                _ = mainloop.iteration(self.io, true);
             }
-            while (self.busy) _ = mainloop.iteration(true);
+            while (self.busy) _ = mainloop.iteration(self.io, true);
         }
 
         pub fn deinit(self: *Self) void {

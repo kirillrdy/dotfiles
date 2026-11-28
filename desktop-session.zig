@@ -26,7 +26,7 @@ pub fn perform(a: std.mem.Allocator, action: Action, cancel: *mainloop.Cancellab
     _ = cancel.ref();
     job.cancel_handler = cancel.connect(job, Job.cancelled);
     // Connect from the main loop, so a cancellation right after `perform` sends nothing.
-    job.idle = mainloop.idle(job, Job.start);
+    job.idle = mainloop.idle(cancel.io, job, Job.start);
 }
 
 const Job = struct {
@@ -44,7 +44,7 @@ const Job = struct {
     message: [512:0]u8 = @splat(0),
 
     fn finish(self: *Job, result: Result) void {
-        if (self.idle != 0) _ = mainloop.remove(self.idle);
+        if (self.idle != 0) _ = mainloop.remove(self.cancel.io, self.idle);
         self.cancel.disconnect(self.cancel_handler);
         if (self.source) |source| {
             source.connection.cancel(self.serial);
@@ -61,8 +61,8 @@ const Job = struct {
     }
     /// Runs in the cancelling thread; disconnecting there could deadlock, so finish from the loop.
     fn cancelled(self: *Job) void {
-        if (self.idle != 0) _ = mainloop.remove(self.idle);
-        self.idle = mainloop.idle(self, finishCancelled);
+        if (self.idle != 0) _ = mainloop.remove(self.cancel.io, self.idle);
+        self.idle = mainloop.idle(self.cancel.io, self, finishCancelled);
     }
     fn finishCancelled(self: *Job) bool {
         self.idle = 0;
@@ -71,7 +71,7 @@ const Job = struct {
     }
     fn start(self: *Job) bool {
         self.idle = 0;
-        self.source = loop.Source.open(self.allocator, .system) catch |err| {
+        self.source = loop.Source.open(self.allocator, self.cancel.io, .system) catch |err| {
             self.fail("Could not connect to the system bus: {s}", .{@errorName(err)});
             return false;
         };

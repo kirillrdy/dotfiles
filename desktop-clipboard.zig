@@ -87,8 +87,8 @@ pub const Device = struct {
         };
         offer.proxy.receive(mime, fds[1]);
         _ = libc.close(fds[1]);
-        request.source = mainloop.watch(fds[0], mainloop.IN | mainloop.HUP | mainloop.ERR, request, Request.read);
-        request.timer = mainloop.timeout(5000, request, Request.timeout);
+        request.source = mainloop.watch(self.seat.client.io, fds[0], mainloop.IN | mainloop.HUP | mainloop.ERR, request, Request.read);
+        request.timer = mainloop.timeout(self.seat.client.io, 5000, request, Request.timeout);
         self.seat.client.flush();
     }
     fn deviceEvent(self: *Device, _: wl.zwlr_data_control_device_v1, event: wl.zwlr_data_control_device_v1.Event) void {
@@ -214,8 +214,8 @@ const Request = struct {
     }
     fn finish(self: *Request, value: ?[]const u8) void {
         const a = self.device.seat.client.allocator;
-        if (self.source != 0) _ = mainloop.remove(self.source);
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.source != 0) _ = mainloop.remove(self.device.seat.client.io, self.source);
+        if (self.timer != 0) _ = mainloop.remove(self.device.seat.client.io, self.timer);
         _ = libc.close(self.fd);
         for (self.device.requests.items, 0..) |request, index| if (request == self) {
             _ = self.device.requests.orderedRemove(index);

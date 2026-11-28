@@ -10,10 +10,14 @@ var latest: battery.State = .{};
 var controls: ?*quick.Controls = null;
 var last: ?[]u8 = null;
 var alerts = battery.Alerts{};
+const AlertContext = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+};
 fn changed(data_ptr: ?*anyopaque, state: battery.State) void {
-    const allocator: *const std.mem.Allocator = @ptrCast(@alignCast(data_ptr));
+    const context: *const AlertContext = @ptrCast(@alignCast(data_ptr));
     latest = state;
-    if (alerts.update(state)) |level| battery.notifyWarning(allocator.*, level);
+    if (alerts.update(state)) |level| battery.notifyWarning(context.allocator, context.io, level);
 }
 fn stop(_: void) bool {
     stopping = true;
@@ -71,34 +75,35 @@ pub fn main(init: std.process.Init) !void {
         var checked: std.heap.DebugAllocator(.{}) = .init;
         defer if (checked.deinit() == .leak) @panic("battery monitor allocation leak");
         const lid = try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/../lid", .{root}, 0);
-        try @import("desktop").battery_monitor.runWithOptions(.{ .source = options, .lid_root = lid, .action_delay_us = 750000 }, checked.allocator());
+        try @import("desktop").battery_monitor.runWithOptions(.{ .source = options, .lid_root = lid, .action_delay_us = 750000 }, checked.allocator(), init.io);
         return;
     }
-    controls = quick.Controls.create(init.gpa, "true", "true");
+    controls = quick.Controls.create(init.gpa, init.io, "true", "true");
     controls.?.monitorBattery(options);
-    const service = try battery.Service.createWithOptions(allocator, options, &changed, &allocator);
+    var alert_context: AlertContext = .{ .allocator = allocator, .io = init.io };
+    const service = try battery.Service.createWithOptions(allocator, init.io, options, &changed, &alert_context);
     if (std.mem.eql(u8, args[1], "--dispose")) {
         controls.?.deinit();
         service.destroy();
-        const deadline = util.monotonicTime() + 500000;
-        while (util.monotonicTime() < deadline) {
-            while (mainloop.iteration(false)) {}
+        const deadline = util.monotonicTime(init.io) + 500000;
+        while (util.monotonicTime(init.io) < deadline) {
+            while (mainloop.iteration(init.io, false)) {}
             mainloop.sleep(1000);
         }
         return;
     }
-    const timer = mainloop.timeout(20, &allocator, report);
-    const term = mainloop.signal(mainloop.SIGTERM, {}, stop);
-    while (!stopping) _ = mainloop.iteration(true);
-    _ = mainloop.remove(timer);
-    _ = mainloop.remove(term);
+    const timer = mainloop.timeout(init.io, 20, &allocator, report);
+    const term = mainloop.signal(init.io, mainloop.SIGTERM, {}, stop);
+    while (!stopping) _ = mainloop.iteration(init.io, true);
+    _ = mainloop.remove(init.io, timer);
+    _ = mainloop.remove(init.io, term);
     service.stop();
-    while (service.pending) _ = mainloop.iteration(true);
+    while (service.pending) _ = mainloop.iteration(init.io, true);
     service.destroy();
     controls.?.deinit();
-    const deadline = util.monotonicTime() + 250000;
-    while (util.monotonicTime() < deadline) {
-        while (mainloop.iteration(false)) {}
+    const deadline = util.monotonicTime(init.io) + 250000;
+    while (util.monotonicTime(init.io) < deadline) {
+        while (mainloop.iteration(init.io, false)) {}
         mainloop.sleep(1000);
     }
 }

@@ -86,7 +86,7 @@ const Job = struct {
     failure: ?anyerror = null,
     written: bool = false,
     fn read(self: *Job) void {
-        mainloop.background(self, readWork, readDone);
+        mainloop.background(self.cancel.io, self, readWork, readDone);
     }
     fn readWork(self: *Job) void {
         self.device = (if (self.written) self.backend.readDevice(std.mem.sliceTo(&self.device.name, 0)) else self.backend.discover()) catch |err| {
@@ -104,7 +104,7 @@ const Job = struct {
         };
         const level = self.device.level(percent) catch |err| return self.finish(.{ .failure = err });
         const name: []const u8 = std.mem.sliceTo(&self.device.name, 0);
-        @import("desktop-dbus-loop.zig").request(self.allocator, .system, .{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1/session/auto", .interface = "org.freedesktop.login1.Session", .member = "SetBrightness" }, .{ "backlight", name, level }, 2000, self.cancel, &writeDone, self);
+        @import("desktop-dbus-loop.zig").request(self.allocator, self.cancel.io, .system, .{ .destination = "org.freedesktop.login1", .path = "/org/freedesktop/login1/session/auto", .interface = "org.freedesktop.login1.Session", .member = "SetBrightness" }, .{ "backlight", name, level }, 2000, self.cancel, &writeDone, self);
     }
     fn writeDone(data: ?*anyopaque, reply: dbus.Reply) void {
         const self: *Job = @ptrCast(@alignCast(data));

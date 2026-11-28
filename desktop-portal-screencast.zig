@@ -12,6 +12,7 @@ const cast = util.cast;
 const Image = @import("desktop-image.zig").Image;
 pub const Stream = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     name: [:0]u8,
     cursor: bool,
     capture: ?*Capture = null,
@@ -30,15 +31,15 @@ pub const Stream = struct {
     /// Set on the node thread when a frame does not fit its buffer.
     broken: std.atomic.Value(bool) = .init(false),
 
-    pub fn create(allocator: std.mem.Allocator, name: []const u8, cursor: bool, callback: *const fn (?*anyopaque, ?u32) void, data: ?*anyopaque) !*Stream {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io, name: []const u8, cursor: bool, callback: *const fn (?*anyopaque, ?u32) void, data: ?*anyopaque) !*Stream {
         const self = try allocator.create(Stream);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .name = try allocator.dupeSentinel(u8, name, 0), .cursor = cursor, .callback = callback, .data = data };
-        self.timer = mainloop.timeout(10, self, tick);
+        self.* = .{ .allocator = allocator, .io = io, .name = try allocator.dupeSentinel(u8, name, 0), .cursor = cursor, .callback = callback, .data = data };
+        self.timer = mainloop.timeout(io, 10, self, tick);
         return self;
     }
     pub fn destroy(self: *Stream) void {
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
         if (self.capture) |capture| capture.destroy();
         if (self.node) |node| node.destroy();
         if (self.image) |image| image.deinit(self.allocator);
@@ -56,10 +57,10 @@ pub const Stream = struct {
             self.failed = true;
             return;
         }
-        self.mutex.lock();
+        self.mutex.lock(self.io);
         const old = self.image;
         self.image = value;
-        self.mutex.unlock();
+        self.mutex.unlock(self.io);
         if (old) |previous| previous.deinit(self.allocator);
         if (self.node == null) {
             self.width = value.width;
@@ -91,7 +92,7 @@ pub const Stream = struct {
     fn tick(self: *Stream) bool {
         self.ticks +%= 1;
         if (self.capture == null and self.ticks >= 15) {
-            self.capture = Capture.create(self.allocator, self.name, self.cursor, &captured, self) catch null;
+            self.capture = Capture.create(self.allocator, self.io, self.name, self.cursor, &captured, self) catch null;
             if (self.capture == null) self.failed = true;
         }
         const state: pipewire.State = if (self.node) |node| node.state.load(.acquire) else .connecting;
@@ -133,8 +134,8 @@ pub const Stream = struct {
     fn process(context: *anyopaque, cycle: *pipewire.Cycle) void {
         const self: *Stream = @ptrCast(@alignCast(context));
         const buffer = cycle.buffers[0] orelse return;
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lock(self.io);
+        defer self.mutex.unlock(self.io);
         const image = self.image orelse return;
         const row = self.width * 4;
         const size = row * self.height;

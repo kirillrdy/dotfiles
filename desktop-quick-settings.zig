@@ -20,11 +20,11 @@ const power_backend = @import("desktop-power.zig");
 // Test builds account for service state and asynchronous callback allocations.
 const cast = util.cast;
 const Settings = @import("desktop-gsettings.zig").Settings;
-fn settings(a: std.mem.Allocator, schema: []const u8) ?*Settings {
-    return gsettings.Settings.open(a, schema, null);
+fn settings(a: std.mem.Allocator, io: std.Io, schema: []const u8) ?*Settings {
+    return gsettings.Settings.open(a, io, schema, null);
 }
-pub fn bannersEnabled(a: std.mem.Allocator) bool {
-    const prefs = settings(a, "org.gnome.desktop.notifications") orelse return true;
+pub fn bannersEnabled(a: std.mem.Allocator, io: std.Io) bool {
+    const prefs = settings(a, io, "org.gnome.desktop.notifications") orelse return true;
     defer prefs.close();
     return prefs.boolean("show-banners");
 }
@@ -56,11 +56,12 @@ fn dndSubtitle(buffer: []u8, deadline: i64, now: i64) []const u8 {
     const today = DateTime.fromUnix(now) catch return "";
     return end.format(buffer, if (end.sameDay(today)) "Until %H:%M" else "Until %a %H:%M") catch "";
 }
-fn unixNow() i64 {
-    return @divFloor(util.realTime(), std.time.us_per_s);
+fn unixNow(io: std.Io) i64 {
+    return @divFloor(util.realTime(io), std.time.us_per_s);
 }
 pub const Controls = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     popup: popup.Host = undefined,
     tooltip: Tooltip = .{},
     view: native.View = .{},
@@ -147,7 +148,7 @@ pub const Controls = struct {
             .screenshot => {
                 self.hide();
                 self.refs += 1;
-                _ = mainloop.timeout(200, self, screenshot);
+                _ = mainloop.timeout(self.io, 200, self, screenshot);
             },
             .power_settings => self.powerSettings(),
             .network0, .network1, .network2, .network3, .network4, .network5, .network6, .network7 => self.connectNetwork(@backingInt(target) - @backingInt(native.Target.network0)),
@@ -175,13 +176,13 @@ pub const Controls = struct {
         switch (target) {
             .volume => {
                 self.view.model.volume = percent;
-                if (self.volume_timer != 0) _ = mainloop.remove(self.volume_timer);
-                self.volume_timer = mainloop.timeout(75, self, writeVolume);
+                if (self.volume_timer != 0) _ = mainloop.remove(self.io, self.volume_timer);
+                self.volume_timer = mainloop.timeout(self.io, 75, self, writeVolume);
             },
             .brightness => {
                 self.view.model.brightness = percent;
-                if (self.brightness_timer != 0) _ = mainloop.remove(self.brightness_timer);
-                self.brightness_timer = mainloop.timeout(75, self, writeBrightness);
+                if (self.brightness_timer != 0) _ = mainloop.remove(self.io, self.brightness_timer);
+                self.brightness_timer = mainloop.timeout(self.io, 75, self, writeBrightness);
             },
             else => return,
         }
@@ -206,7 +207,7 @@ pub const Controls = struct {
     }
     pub fn pointerButton(self: *Controls, pressed: bool, x: f64, y: f64) void {
         if (self.dead) return;
-        self.tooltip.hide();
+        self.tooltip.hide(self.io);
         if (pressed) {
             self.view.keyboard_focus = false;
             self.view.hover = self.view.hit(x, y);
@@ -247,7 +248,7 @@ pub const Controls = struct {
         const previous_hover = self.view.hover;
         const tooltip_was_visible = self.tooltip.visible;
         // Pointer motion can repaint synchronously when the hovered control changes.
-        self.tooltip.hide();
+        self.tooltip.hide(self.io);
         const local = self.popup.point(x, y);
         if (self.popup.contains(x, y) or native.View.slider(self.view.pressed)) {
             self.pointerMotion(local.x, local.y);
@@ -272,13 +273,13 @@ pub const Controls = struct {
             .dnd_menu => "Pause Notifications",
             else => null,
         };
-        self.tooltip.update(self.allocator, x, y, tooltip, !native.View.slider(self.view.pressed), self, showTooltip);
+        self.tooltip.update(self.allocator, self.io, x, y, tooltip, !native.View.slider(self.view.pressed), self, showTooltip);
         if (tooltip_was_visible and previous_hover == self.view.hover) self.redraw();
     }
     fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
         const self = cast(Controls, ptr);
         self.view.hover = .none;
-        self.tooltip.hide();
+        self.tooltip.hide(self.io);
         self.redraw();
     }
     fn key(ptr: ?*anyopaque, _: *wire.Surface, symbol: u32, modifiers: u32, pressed: bool) bool {
@@ -286,7 +287,7 @@ pub const Controls = struct {
     }
     pub fn handleKey(self: *Controls, symbol: u32, modifiers: u32) bool {
         if (self.dead or self.popup.close_idle != 0) return false;
-        self.tooltip.hide();
+        self.tooltip.hide(self.io);
         self.view.pressed = .none;
         if (symbol == 0xff1b) {
             if (self.view.submenu != .none) {
@@ -322,14 +323,15 @@ pub const Controls = struct {
         self.setSlider(target, value - (amount / 12) * 5);
     }
 
-    pub fn create(a: std.mem.Allocator, network_command: [*:0]const u8, sound_command: [*:0]const u8) *Controls {
-        return createWithDevices(a, network_command, sound_command, null);
+    pub fn create(a: std.mem.Allocator, io: std.Io, network_command: [*:0]const u8, sound_command: [*:0]const u8) *Controls {
+        return createWithDevices(a, io, network_command, sound_command, null);
     }
-    pub fn createWithDevices(a: std.mem.Allocator, network_command: [*:0]const u8, sound_command: [*:0]const u8, shared: ?*devices.Service) *Controls {
+    pub fn createWithDevices(a: std.mem.Allocator, io: std.Io, network_command: [*:0]const u8, sound_command: [*:0]const u8, shared: ?*devices.Service) *Controls {
         const self = a.create(Controls) catch @panic("out of memory");
-        self.* = .{ .allocator = a, .devices = shared orelse (devices.Service.create(a) catch @panic("out of memory")), .owns_devices = shared == null, .network_settings = a.dupeSentinel(u8, std.mem.span(network_command), 0) catch @panic("out of memory"), .sound_settings = a.dupeSentinel(u8, std.mem.span(sound_command), 0) catch @panic("out of memory"), .interface = settings(a, "org.gnome.desktop.interface"), .notifications = settings(a, "org.gnome.desktop.notifications"), .cancel = mainloop.Cancellable.create() };
+        self.* = .{ .allocator = a, .io = io, .devices = shared orelse (devices.Service.create(a, io) catch @panic("out of memory")), .owns_devices = shared == null, .network_settings = a.dupeSentinel(u8, std.mem.span(network_command), 0) catch @panic("out of memory"), .sound_settings = a.dupeSentinel(u8, std.mem.span(sound_command), 0) catch @panic("out of memory"), .interface = settings(a, io, "org.gnome.desktop.interface"), .notifications = settings(a, io, "org.gnome.desktop.notifications"), .cancel = mainloop.Cancellable.create(io) };
         self.popup = .{
             .allocator = a,
+            .io = io,
             .context = self,
             .namespace = "desktop-quick-settings",
             .paint = &draw,
@@ -344,7 +346,7 @@ pub const Controls = struct {
         self.expireDnd();
         self.subscription = .{ .context = self, .changed = &deviceChanged };
         self.devices.subscribe(&self.subscription);
-        self.timer = mainloop.timeoutSeconds(5, self, refreshTimer);
+        self.timer = mainloop.timeoutSeconds(io, 5, self, refreshTimer);
         self.redraw();
         return self;
     }
@@ -361,7 +363,7 @@ pub const Controls = struct {
             saveDndDeadline(self.allocator, 0);
         }
         var buffer: [64]u8 = undefined;
-        self.view.model.dnd_subtitle.set(if (self.dnd_until != 0) dndSubtitle(&buffer, self.dnd_until, unixNow()) else "");
+        self.view.model.dnd_subtitle.set(if (self.dnd_until != 0) dndSubtitle(&buffer, self.dnd_until, unixNow(self.io)) else "");
         self.view.model.dark_sensitive = self.interface != null;
         self.view.model.dnd_sensitive = self.notifications != null;
         self.redraw();
@@ -369,14 +371,14 @@ pub const Controls = struct {
     /// Turns Do Not Disturb on for `duration` seconds (null: until turned off) or off.
     fn setDnd(self: *Controls, enabled: bool, duration: ?i64) void {
         const prefs = self.notifications orelse return;
-        self.dnd_until = if (enabled) if (duration) |seconds| unixNow() + seconds else 0 else 0;
+        self.dnd_until = if (enabled) if (duration) |seconds| unixNow(self.io) + seconds else 0 else 0;
         saveDndDeadline(self.allocator, self.dnd_until);
         prefs.setBoolean("show-banners", !enabled) catch {};
         self.syncPreferences();
     }
     /// Checked against the wall clock, so time spent suspended counts.
     fn expireDnd(self: *Controls) void {
-        if (self.dnd_until != 0 and unixNow() >= self.dnd_until) self.setDnd(false, null);
+        if (self.dnd_until != 0 and unixNow(self.io) >= self.dnd_until) self.setDnd(false, null);
     }
     fn preferencesChanged(ptr: ?*anyopaque, _: []const u8) void {
         const self = cast(Controls, ptr);
@@ -404,7 +406,7 @@ pub const Controls = struct {
         }
         self.syncPowerDialog();
         self.hide();
-        const dialog = auth.Dialog.createWithOptions(self.allocator, .information, "Choose a power mode.", .{
+        const dialog = auth.Dialog.createWithOptions(self.allocator, self.io, .information, "Choose a power mode.", .{
             .title = "Power Mode",
             .role = "desktop-power-settings",
             .choices = &self.power_choices,
@@ -429,7 +431,7 @@ pub const Controls = struct {
         self.dialog = null;
         self.dialog_power = false;
         self.end_session = null;
-        if (self.end_session_timer != 0) _ = mainloop.remove(self.end_session_timer);
+        if (self.end_session_timer != 0) _ = mainloop.remove(self.io, self.end_session_timer);
         self.end_session_timer = 0;
         dialog.destroy();
         if (self.dialog_value) |value| self.allocator.free(value);
@@ -455,7 +457,7 @@ pub const Controls = struct {
         try self.popup.show();
     }
     pub fn hide(self: *Controls) void {
-        self.tooltip.hide();
+        self.tooltip.hide(self.io);
         self.view.submenu = .none;
         self.view.pressed = .none;
         self.view.hover = .none;
@@ -638,7 +640,7 @@ pub const Controls = struct {
     }
     pub fn monitorBattery(self: *Controls, options: battery_backend.Options) void {
         if (self.battery_service) |service| service.destroy();
-        self.battery_service = battery_backend.Service.createWithOptions(self.allocator, options, &batteryChanged, self) catch null;
+        self.battery_service = battery_backend.Service.createWithOptions(self.allocator, self.io, options, &batteryChanged, self) catch null;
     }
     fn batteryChanged(ptr: ?*anyopaque, state: battery_backend.State) void {
         const self = cast(Controls, ptr);
@@ -664,7 +666,7 @@ pub const Controls = struct {
             return;
         }
         self.hide();
-        const dialog = auth.Dialog.createWithOptions(self.allocator, .password, ap.title, .{
+        const dialog = auth.Dialog.createWithOptions(self.allocator, self.io, .password, ap.title, .{
             .title = "Authentication Required",
             .role = "desktop-network-auth",
             .accept = "Connect",
@@ -696,7 +698,7 @@ pub const Controls = struct {
 
     fn screenshot(self: *Controls) bool {
         if (!self.dead) {
-            @import("desktop-command.zig").launch(self.allocator, "Screenshot", &.{ @import("desktop-runtime.zig").executable, "screenshot" });
+            @import("desktop-command.zig").launch(self.allocator, self.io, "Screenshot", &.{ @import("desktop-runtime.zig").executable, "screenshot" });
         }
         self.release();
         return false;
@@ -730,7 +732,7 @@ pub const Controls = struct {
         self.hide();
         var buffer: [96]u8 = undefined;
         const title = endSessionTitle(action);
-        const dialog = auth.Dialog.createWithOptions(self.allocator, .confirm, endSessionDescription(&buffer, action, end_session_timeout), .{
+        const dialog = auth.Dialog.createWithOptions(self.allocator, self.io, .confirm, endSessionDescription(&buffer, action, end_session_timeout), .{
             .title = title,
             .role = "desktop-session-confirm",
             .accept = title,
@@ -742,7 +744,7 @@ pub const Controls = struct {
         self.dialog = dialog;
         self.end_session = action;
         self.end_session_seconds = end_session_timeout;
-        self.end_session_timer = mainloop.timeout(1000, self, endSessionTick);
+        self.end_session_timer = mainloop.timeout(self.io, 1000, self, endSessionTick);
         self.refs += 1;
         // GNOME focuses the action button so Enter confirms.
         dialog.focus(.accept);
@@ -772,14 +774,14 @@ pub const Controls = struct {
     pub fn deinit(self: *Controls) void {
         self.dead = true;
         self.popup.deinit();
-        self.tooltip.hide();
+        self.tooltip.hide(self.io);
         if (self.battery_service) |service| service.destroy();
         self.devices.unsubscribe(&self.subscription);
         if (self.owns_devices) self.devices.destroy();
         if (self.dialog) |dialog| dialog.respond(false);
-        _ = mainloop.remove(self.timer);
-        if (self.volume_timer != 0) _ = mainloop.remove(self.volume_timer);
-        if (self.brightness_timer != 0) _ = mainloop.remove(self.brightness_timer);
+        _ = mainloop.remove(self.io, self.timer);
+        if (self.volume_timer != 0) _ = mainloop.remove(self.io, self.volume_timer);
+        if (self.brightness_timer != 0) _ = mainloop.remove(self.io, self.brightness_timer);
         self.cancel.cancel();
         if (self.interface) |prefs| prefs.close();
         if (self.notifications) |prefs| prefs.close();
@@ -789,7 +791,7 @@ pub const Controls = struct {
         self.refs -= 1;
         if (self.refs == 0) {
             self.clearNetworks();
-            self.tooltip.deinit(self.allocator);
+            self.tooltip.deinit(self.allocator, self.io);
             self.view.deinit(self.allocator);
             self.cancel.unref();
             self.allocator.free(self.network_settings);
@@ -813,7 +815,7 @@ test "timed Do Not Disturb subtitles name the weekday only past today" {
     var buffer: [64]u8 = undefined;
     // Local noon keeps both instants on one day in any time zone.
     const noon = try DateTime.now();
-    const start = unixNow() - @as(i64, noon.second) + 12 * 3600;
+    const start = unixNow(std.testing.io) - @as(i64, noon.second) + 12 * 3600;
     try std.testing.expectEqualStrings("Until 13:30", dndSubtitle(&buffer, start + 90 * 60, start));
     const later = dndSubtitle(&buffer, start + 24 * 3600, start);
     try std.testing.expect(std.mem.startsWith(u8, later, "Until ") and later.len > "Until 12:00".len);

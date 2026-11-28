@@ -70,8 +70,8 @@ pub fn main(init: std.process.Init) !void {
     const methods: *const p.spa_loop_control_methods = @ptrCast(@alignCast(iface.cb.funcs));
     methods.enter.?(iface.cb.data);
     defer methods.leave.?(iface.cb.data);
-    const deadline = util.monotonicTime() + 15 * 1000000;
-    while (!consumer.failed and (consumer.red < 2 or consumer.blue < 2) and util.monotonicTime() < deadline) {
+    const deadline = util.monotonicTime(init.io) + 15 * 1000000;
+    while (!consumer.failed and (consumer.red < 2 or consumer.blue < 2) and util.monotonicTime(init.io) < deadline) {
         if (methods.iterate.?(iface.cb.data, 50) < 0) break;
     }
     if (consumer.failed or consumer.red < 2 or consumer.blue < 2) return error.MissingVideoFrames;

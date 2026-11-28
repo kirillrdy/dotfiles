@@ -277,6 +277,7 @@ pub const Done = *const fn (?*anyopaque, *const Result) void;
 /// main loop's thread, and only until `done` runs.
 pub const Process = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     pid: linux.pid_t,
     pidfd: linux.fd_t,
     stderr_fd: linux.fd_t = -1,
@@ -287,7 +288,7 @@ pub const Process = struct {
     done: Done,
     context: ?*anyopaque,
 
-    pub fn spawn(gpa: std.mem.Allocator, args: []const [:0]const u8, options: Options, done: Done, context: ?*anyopaque) SpawnError!*Process {
+    pub fn spawn(gpa: std.mem.Allocator, io: std.Io, args: []const [:0]const u8, options: Options, done: Done, context: ?*anyopaque) SpawnError!*Process {
         var arena = std.heap.ArenaAllocator.init(gpa);
         defer arena.deinit();
         const exec = try Exec.prepare(arena.allocator(), args, options);
@@ -325,12 +326,12 @@ pub const Process = struct {
             _ = linux.close(@intCast(opened));
             return err;
         };
-        self.* = .{ .allocator = gpa, .pid = pid, .pidfd = @intCast(opened), .stderr_fd = stderr_pipe[0], .done = done, .context = context };
+        self.* = .{ .allocator = gpa, .io = io, .pid = pid, .pidfd = @intCast(opened), .stderr_fd = stderr_pipe[0], .done = done, .context = context };
         stderr_pipe[0] = -1;
         // Spawning may happen on any thread; the main loop may deliver and free
         // the process as soon as the exit watch is attached, so it goes last.
-        if (self.stderr_fd >= 0) _ = mainloop.watch(self.stderr_fd, mainloop.IN | mainloop.HUP | mainloop.ERR, self, readable);
-        _ = mainloop.watch(self.pidfd, mainloop.IN, self, exited);
+        if (self.stderr_fd >= 0) _ = mainloop.watch(io, self.stderr_fd, mainloop.IN | mainloop.HUP | mainloop.ERR, self, readable);
+        _ = mainloop.watch(io, self.pidfd, mainloop.IN, self, exited);
         return self;
     }
 
@@ -338,7 +339,7 @@ pub const Process = struct {
     /// keeps running and is still reaped when it exits.
     pub fn cancel(self: *Process) void {
         if (self.delivered or self.cancel_idle != 0) return;
-        self.cancel_idle = mainloop.idle(self, cancelled);
+        self.cancel_idle = mainloop.idle(self.io, self, cancelled);
     }
 
     fn cancelled(self: *Process) bool {
@@ -398,7 +399,7 @@ pub const Process = struct {
 
     fn finishIfDone(self: *Process) void {
         if (self.status == null or self.stderr_fd >= 0 or !self.delivered) return;
-        if (self.cancel_idle != 0) _ = mainloop.remove(self.cancel_idle);
+        if (self.cancel_idle != 0) _ = mainloop.remove(self.io, self.cancel_idle);
         _ = linux.close(self.pidfd);
         self.output.deinit(self.allocator);
         self.allocator.destroy(self);
@@ -443,12 +444,12 @@ test "watched processes report status, standard error, descriptors and cancellat
             self.result = copy;
         }
         fn wait(self: *@This()) Result {
-            while (self.result == null) _ = mainloop.iteration(true);
+            while (self.result == null) _ = mainloop.iteration(std.testing.io, true);
             return self.result.?;
         }
     };
     var failing: Outcome = .{};
-    _ = try Process.spawn(a, &.{ "sh", "-c", "echo broken >&2; exit 3" }, .{ .capture_stderr = true, .silence_stdout = true }, &Outcome.done, &failing);
+    _ = try Process.spawn(a, std.testing.io, &.{ "sh", "-c", "echo broken >&2; exit 3" }, .{ .capture_stderr = true, .silence_stdout = true }, &Outcome.done, &failing);
     const failed = failing.wait();
     try std.testing.expectEqual(@as(?u8, 3), failed.code);
     try std.testing.expectEqualStrings("broken\n", failed.stderr);
@@ -457,7 +458,7 @@ test "watched processes report status, standard error, descriptors and cancellat
     var report: [2]linux.fd_t = undefined;
     try std.testing.expect(linux.errno(linux.pipe2(&report, .{ .CLOEXEC = true })) == .SUCCESS);
     var passing: Outcome = .{};
-    _ = try Process.spawn(a, &.{ "sh", "-c", "printf ready >&3" }, .{ .fds = &.{.{ .source = report[1], .target = 3 }} }, &Outcome.done, &passing);
+    _ = try Process.spawn(a, std.testing.io, &.{ "sh", "-c", "printf ready >&3" }, .{ .fds = &.{.{ .source = report[1], .target = 3 }} }, &Outcome.done, &passing);
     _ = linux.close(report[1]);
     try std.testing.expect(passing.wait().successful());
     var buffer: [16]u8 = undefined;
@@ -466,12 +467,12 @@ test "watched processes report status, standard error, descriptors and cancellat
     try std.testing.expectEqualStrings("ready", buffer[0..got]);
 
     var stopped: Outcome = .{};
-    const sleeper = try Process.spawn(a, &.{ "sleep", "0.2" }, .{}, &Outcome.done, &stopped);
+    const sleeper = try Process.spawn(a, std.testing.io, &.{ "sleep", "0.2" }, .{}, &Outcome.done, &stopped);
     sleeper.cancel();
     try std.testing.expect(stopped.wait().cancelled);
     // The cancelled child is still reaped once it exits.
-    const deadline = util.monotonicTime() + 2 * std.time.us_per_s;
-    while (util.monotonicTime() < deadline) _ = mainloop.iteration(false);
+    const deadline = util.monotonicTime(std.testing.io) + 2 * std.time.us_per_s;
+    while (util.monotonicTime(std.testing.io) < deadline) _ = mainloop.iteration(std.testing.io, false);
 
-    try std.testing.expectError(error.FileNotFound, Process.spawn(a, &.{"desktop-process-test-missing-program"}, .{}, &Outcome.done, &stopped));
+    try std.testing.expectError(error.FileNotFound, Process.spawn(a, std.testing.io, &.{"desktop-process-test-missing-program"}, .{}, &Outcome.done, &stopped));
 }

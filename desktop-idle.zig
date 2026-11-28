@@ -138,12 +138,13 @@ pub const Service = struct {
     audio_inhibited: bool = false,
     last_inhibited: bool = false,
     cancel: *mainloop.Cancellable,
+    io: std.Io,
     process: ?*Process = null,
     ready_fd: c_int = -1,
     ready_source: u32 = 0,
     lock_ready: bool = false,
 
-    pub fn create(a: std.mem.Allocator, options: Options) !*Service {
+    pub fn create(a: std.mem.Allocator, io: std.Io, options: Options) !*Service {
         const path = if (options.lock_executable) |path| try a.dupeSentinel(u8, path, 0) else blk: {
             break :blk @import("desktop-paths.zig").readLink(a, "/proc/self/exe") catch return error.ExecutablePathUnavailable;
         };
@@ -151,16 +152,16 @@ pub const Service = struct {
         const wallpaper = if (options.wallpaper) |value| try a.dupeSentinel(u8, value, 0) else null;
         errdefer if (wallpaper) |value| a.free(value);
         const self = try a.create(Service);
-        self.* = .{ .allocator = a, .timeout_ms = options.timeout_ms, .executable = path, .wallpaper = wallpaper, .session_inhibit = options.session_inhibit, .cancel = mainloop.Cancellable.create() };
+        self.* = .{ .allocator = a, .io = io, .timeout_ms = options.timeout_ms, .executable = path, .wallpaper = wallpaper, .session_inhibit = options.session_inhibit, .cancel = mainloop.Cancellable.create(io) };
         self.connectWayland();
         self.connectBus();
         self.connectSessionBus();
-        self.timer = mainloop.timeoutSeconds(5, self, maintain);
+        self.timer = mainloop.timeoutSeconds(io, 5, self, maintain);
         return self;
     }
     pub fn destroy(self: *Service) void {
         self.stopped = true;
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
         self.disconnectWayland();
         self.disconnectBus();
         self.disconnectSessionBus();
@@ -253,11 +254,11 @@ pub const Service = struct {
         connection.roundtrip() catch return self.disconnectWayland();
         connection.roundtrip() catch return self.disconnectWayland();
         if (self.notifier == null) std.log.warn("idle: ext-idle-notify unavailable", .{});
-        self.wayland_source = mainloop.watch(connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
+        self.wayland_source = mainloop.watch(self.io, connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
         self.flushWayland();
     }
     fn disconnectWayland(self: *Service) void {
-        if (self.wayland_source != 0) _ = mainloop.remove(self.wayland_source);
+        if (self.wayland_source != 0) _ = mainloop.remove(self.io, self.wayland_source);
         self.wayland_source = 0;
         while (self.seats) |seat| {
             self.seats = seat.next;
@@ -357,7 +358,7 @@ pub const Service = struct {
     }
     fn connectBus(self: *Service) void {
         if (self.stopped) return;
-        const source = loop.acquire(self.allocator, .system) catch {
+        const source = loop.acquire(self.allocator, self.io, .system) catch {
             std.log.warn("idle: system bus unavailable; will retry", .{});
             return;
         };
@@ -452,7 +453,7 @@ pub const Service = struct {
     }
     fn connectSessionBus(self: *Service) void {
         if (!self.session_inhibit or self.stopped) return;
-        const source = loop.acquire(self.allocator, .session) catch {
+        const source = loop.acquire(self.allocator, self.io, .session) catch {
             std.log.warn("idle: session bus unavailable; will retry", .{});
             return;
         };
@@ -631,7 +632,7 @@ pub const Service = struct {
         const with_wallpaper = [_][:0]const u8{ self.executable, "lock", "--ready-fd", "3", "--wallpaper", self.wallpaper orelse "" };
         const argv = if (self.wallpaper != null) with_wallpaper[0..] else with_wallpaper[0..4];
         // The child receives the pipe's write end as descriptor 3.
-        const spawned = Process.spawn(self.allocator, argv, .{ .fds = &.{.{ .source = fds[1], .target = 3 }} }, &exited, self);
+        const spawned = Process.spawn(self.allocator, self.io, argv, .{ .fds = &.{.{ .source = fds[1], .target = 3 }} }, &exited, self);
         _ = libc.close(fds[1]);
         self.process = spawned catch {
             _ = libc.close(fds[0]);
@@ -640,11 +641,11 @@ pub const Service = struct {
         };
         self.lock_ready = false;
         self.ready_fd = fds[0];
-        self.ready_source = mainloop.watch(self.ready_fd, mainloop.IN | mainloop.HUP | mainloop.ERR, self, ready);
+        self.ready_source = mainloop.watch(self.io, self.ready_fd, mainloop.IN | mainloop.HUP | mainloop.ERR, self, ready);
         self.refs += 1;
     }
     fn closeReady(self: *Service) void {
-        if (self.ready_source != 0) _ = mainloop.remove(self.ready_source);
+        if (self.ready_source != 0) _ = mainloop.remove(self.io, self.ready_source);
         self.ready_source = 0;
         if (self.ready_fd >= 0) _ = libc.close(self.ready_fd);
         self.ready_fd = -1;
@@ -682,7 +683,7 @@ pub const Service = struct {
 
 test "ScreenSaver inhibitors track senders and enforce ownership" {
     const a = std.testing.allocator;
-    var service = Service{ .allocator = a, .timeout_ms = 600_000, .executable = try a.dupeSentinel(u8, "/bin/false", 0), .session_inhibit = true, .cancel = mainloop.Cancellable.create() };
+    var service = Service{ .allocator = a, .io = std.testing.io, .timeout_ms = 600_000, .executable = try a.dupeSentinel(u8, "/bin/false", 0), .session_inhibit = true, .cancel = mainloop.Cancellable.create(std.testing.io) };
     defer {
         service.stopped = true;
         service.clearScreenSaverInhibitors();

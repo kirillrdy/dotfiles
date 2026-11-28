@@ -205,7 +205,7 @@ pub const Seat = struct {
             self.stopRepeat();
             if (self.repeat_rate > 0 and self.xkb.repeats(code)) {
                 self.repeat_code = code;
-                self.repeat_source = mainloop.timeout(self.repeat_delay, self, repeatBegin);
+                self.repeat_source = mainloop.timeout(self.client.io, self.repeat_delay, self, repeatBegin);
             }
         } else if (self.repeat_code == code) self.stopRepeat();
         self.dispatchKey(code, pressed);
@@ -227,14 +227,14 @@ pub const Seat = struct {
         if (surface.input.key) |callback| callback(surface.data, surface, code, pressed);
     }
     fn stopRepeat(self: *Seat) void {
-        if (self.repeat_source != 0) _ = mainloop.remove(self.repeat_source);
+        if (self.repeat_source != 0) _ = mainloop.remove(self.client.io, self.repeat_source);
         self.repeat_source = 0;
         self.repeat_code = null;
     }
     fn repeatBegin(self: *Seat) bool {
         self.repeat_source = 0;
         const code = self.repeat_code orelse return false;
-        self.repeat_source = mainloop.timeout(@max(1, 1000 / self.repeat_rate), self, repeatTick);
+        self.repeat_source = mainloop.timeout(self.client.io, @max(1, 1000 / self.repeat_rate), self, repeatTick);
         self.dispatchKey(code, true);
         return false;
     }

@@ -8,15 +8,15 @@ const libc = @import("desktop").libc;
 const assert = std.debug.assert;
 const cast = util.cast;
 const pump = @import("fixture-util.zig").pump;
-fn checkEditing(allocator: std.mem.Allocator) !void {
-    const dialog = try askpass.Dialog.create(allocator, .password, "Synthetic clipboard and editing checks");
+fn checkEditing(init: std.process.Init) !void {
+    const dialog = try askpass.Dialog.create(init.gpa, init.io, .password, "Synthetic clipboard and editing checks");
     const entry = dialog.entry.?;
     entry.focus(true);
     const clipboard = entry.clipboard().?;
     clipboard.copy("paste-東京");
     entry.paste();
-    var deadline = util.monotonicTime() + 3_000_000;
-    while (entry.refs > 1 and util.monotonicTime() < deadline) pump();
+    var deadline = util.monotonicTime(init.io) + 3_000_000;
+    while (entry.refs > 1 and util.monotonicTime(init.io) < deadline) pump(init.io);
     try std.testing.expectEqualStrings("paste-東京", entry.buffer.value());
     try std.testing.expect(dialog.handleKey('a', keyboard.control));
     try entry.insert("replacement");
@@ -35,20 +35,20 @@ fn checkEditing(allocator: std.mem.Allocator) !void {
     };
     var receipt: Receipt = .{};
     clipboard.paste(&Receipt.received, &receipt);
-    while (!receipt.done and util.monotonicTime() < deadline) pump();
+    while (!receipt.done and util.monotonicTime(init.io) < deadline) pump(init.io);
     try std.testing.expect(receipt.matches);
     try std.testing.expectEqualStrings("replacement", entry.buffer.value());
     // A late clipboard response must neither use the destroyed dialog nor
     // repopulate the password after clear/cancellation.
     entry.paste();
     dialog.clear();
-    while (entry.refs > 1 and util.monotonicTime() < deadline) pump();
+    while (entry.refs > 1 and util.monotonicTime(init.io) < deadline) pump(init.io);
     try std.testing.expectEqualStrings("", entry.buffer.value());
     entry.paste();
     dialog.destroy();
     // Drain the outstanding clipboard request after the owner has been freed.
-    deadline = util.monotonicTime() + 100_000;
-    while (util.monotonicTime() < deadline) pump();
+    deadline = util.monotonicTime(init.io) + 100_000;
+    while (util.monotonicTime(init.io) < deadline) pump(init.io);
 }
 const Trigger = enum { response, enter, escape, allow_key, accept_click, cancel_click, term, interrupt };
 const Response = struct {
@@ -77,14 +77,14 @@ const Response = struct {
 };
 fn check(init: std.process.Init, root: []const u8, mode: askpass.Mode, accepted: bool, expected: []const u8, status: u8, trigger: Trigger) !void {
     const prompt = "Enter passphrase for <test-key> at 100%: 東京";
-    const dialog = try askpass.Dialog.create(init.gpa, mode, prompt);
+    const dialog = try askpass.Dialog.create(init.gpa, init.io, mode, prompt);
     defer dialog.destroy();
     try std.testing.expectEqualStrings(prompt, dialog.prompt);
     if (dialog.entry) |entry| {
         try entry.insert("test-secret:$()\\ 東京");
     } else assert(mode != .password);
     var reply = Response{ .dialog = dialog, .accepted = accepted, .trigger = trigger };
-    _ = mainloop.timeout(25, &reply, Response.send);
+    _ = mainloop.timeout(init.io, 25, &reply, Response.send);
     dialog.run();
     const path = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/answer", .{root});
     defer std.heap.page_allocator.free(path);
@@ -107,7 +107,7 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
-    try checkEditing(init.gpa);
+    try checkEditing(init);
     const root = try @import("desktop").paths.createTemporaryDirectory(arena.allocator(), "desktop-askpass-");
     defer std.Io.Dir.cwd().deleteTree(init.io, root) catch {};
     try std.testing.expectEqual(askpass.Mode.confirm, askpass.Mode.fromHint("confirm"));

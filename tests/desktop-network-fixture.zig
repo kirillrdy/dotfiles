@@ -24,28 +24,30 @@ fn done(_: ?*anyopaque, result: network.Result) void {
     complete = true;
 }
 const fixture_util = @import("fixture-util.zig");
-const pump = fixture_util.pump;
+fn pump() void {
+    fixture_util.pump(fixture_io);
+}
 fn settle() void {
-    fixture_util.pumpFor(100_000);
+    fixture_util.pumpFor(fixture_io, 100_000);
 }
 pub fn main(init: std.process.Init) !void {
+    fixture_io = init.io;
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     defer std.heap.page_allocator.free(args);
-    const client = try network.Client.create(init.gpa, &changed, null);
+    const client = try network.Client.create(init.gpa, init.io, &changed, null);
     defer {
         client.destroy();
         settle();
     }
-    const limit = util.monotonicTime() + 5_000_000;
-    while ((!client.state().available or client.state().profiles.items.len == 0) and util.monotonicTime() < limit) pump();
+    const limit = util.monotonicTime(init.io) + 5_000_000;
+    while ((!client.state().available or client.state().profiles.items.len == 0) and util.monotonicTime(init.io) < limit) pump();
     try std.testing.expect(client.state().available);
     const state = client.state();
     if (std.mem.eql(u8, args[1], "events")) {
-        fixture_io = init.io;
         watching = true;
         changed(null, client);
-        const deadline = util.monotonicTime() + 8_000_000;
-        while (util.monotonicTime() < deadline) pump();
+        const deadline = util.monotonicTime(init.io) + 8_000_000;
+        while (util.monotonicTime(init.io) < deadline) pump();
         watching = false;
         return;
     }
@@ -147,7 +149,7 @@ pub fn main(init: std.process.Init) !void {
             if (std.mem.endsWith(u8, args[1], "security")) properties.view.page = .security;
             properties.ui.relayout();
         }
-        while (!window.closed) _ = mainloop.iteration(true);
+        while (!window.closed) _ = mainloop.iteration(init.io, true);
         while (window.network_operations != 0 or (window.sound != null and window.sound.?.operations != 0)) pump();
         window.destroy();
         return;
@@ -156,7 +158,7 @@ pub fn main(init: std.process.Init) !void {
         const Noop = struct {
             fn paint(_: ?*anyopaque, _: @import("desktop").window.wire.Pixels) void {}
         };
-        const parent = try @import("desktop").window.Window.create(init.gpa, "Fixture parent", "fixture-parent", 620, 700, &Noop.paint, null);
+        const parent = try @import("desktop").window.Window.create(init.gpa, init.io, "Fixture parent", "fixture-parent", 620, 700, &Noop.paint, null);
         defer parent.destroy();
         const is_new = std.mem.eql(u8, args[1], "new");
         const ui = editor.Editor.create(parent, init.io, if (is_new) null else state.profiles.items[0]);
@@ -188,11 +190,11 @@ pub fn main(init: std.process.Init) !void {
         }
         const values = try ui.values();
         defer values.unref();
-        const cancel = mainloop.Cancellable.create();
+        const cancel = mainloop.Cancellable.create(init.io);
         defer cancel.unref();
         client.perform(.{ .save = .{ .path = ui.path, .settings = values, .version = ui.version } }, cancel, &done, null);
-        const deadline = util.monotonicTime() + 8_000_000;
-        while (!complete and util.monotonicTime() < deadline) pump();
+        const deadline = util.monotonicTime(init.io) + 8_000_000;
+        while (!complete and util.monotonicTime(init.io) < deadline) pump();
         ui.ui.close();
         settle();
         try std.testing.expect(complete);
@@ -200,7 +202,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, args[1], "ui")) {
-        const controls = quick.Controls.create(init.gpa, "true", "true");
+        const controls = quick.Controls.create(init.gpa, init.io, "true", "true");
         const ui = settings.Settings.create(init.gpa, init.io, .network);
         try std.testing.expect(ui.network_client.?.service == client.service);
         try std.testing.expect(controls.devices.network_client.?.service == client.service);
@@ -214,7 +216,7 @@ pub fn main(init: std.process.Init) !void {
         ui.ui.activate(ui.view.connect);
         try std.testing.expectEqualStrings("", ui.password.value());
         ui.ui.close();
-        while (!ui.closed) _ = mainloop.iteration(true);
+        while (!ui.closed) _ = mainloop.iteration(init.io, true);
         while (ui.network_operations != 0) pump();
         ui.destroy();
         controls.view.submenu = .network;
@@ -246,7 +248,7 @@ pub fn main(init: std.process.Init) !void {
         settle();
         return;
     }
-    const cancel = mainloop.Cancellable.create();
+    const cancel = mainloop.Cancellable.create(init.io);
     defer cancel.unref();
     const command = args[1];
     const action: network.Action = if (std.mem.eql(u8, command, "scan") or std.mem.eql(u8, command, "cancel")) .scan else if (std.mem.eql(u8, command, "wifi")) .{ .wifi = std.mem.eql(u8, args[2], "on") } else if (std.mem.eql(u8, command, "activate")) .{ .activate = args[2] } else if (std.mem.eql(u8, command, "deactivate")) .{ .deactivate = args[2] } else if (std.mem.eql(u8, command, "forget")) .{ .forget = args[2] } else if (std.mem.eql(u8, command, "disconnect")) .{ .disconnect = args[2] } else if (std.mem.eql(u8, command, "connect-ap")) blk: {
@@ -255,8 +257,8 @@ pub fn main(init: std.process.Init) !void {
     } else .{ .connect = .{ .ssid = args[2], .password = if (args.len > 3) args[3] else "", .hidden = true } };
     client.perform(action, cancel, &done, null);
     if (std.mem.eql(u8, command, "cancel")) cancel.cancel();
-    const deadline = util.monotonicTime() + 8_000_000;
-    while (!complete and util.monotonicTime() < deadline) pump();
+    const deadline = util.monotonicTime(init.io) + 8_000_000;
+    while (!complete and util.monotonicTime(init.io) < deadline) pump();
     try std.testing.expect(complete);
     if (std.mem.eql(u8, command, "cancel")) try std.testing.expect(!success) else try std.testing.expect(success);
 }

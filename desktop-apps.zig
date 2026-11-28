@@ -32,6 +32,7 @@ pub const Entry = struct {
 
 pub const Launcher = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     host: ?*Host = null,
     visible_window: bool = false,
     owner: ?*anyopaque = null,
@@ -63,12 +64,12 @@ pub const Launcher = struct {
     wheel: f64 = 0,
     wheel_time: u32 = 0,
 
-    pub fn init(allocator: std.mem.Allocator) Launcher {
-        return .{ .allocator = allocator, .entries = .init(allocator), .visible = .init(allocator), .query = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory"), .status = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory") };
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) Launcher {
+        return .{ .allocator = allocator, .io = io, .entries = .init(allocator), .visible = .init(allocator), .query = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory"), .status = allocator.dupeSentinel(u8, "", 0) catch @panic("out of memory") };
     }
     pub fn bind(self: *Launcher) void {
         if (self.search_input == null) {
-            self.search_input = input.Entry.create(self.allocator, &inputChanged, self) catch @panic("out of memory");
+            self.search_input = input.Entry.create(self.allocator, self.io, &inputChanged, self) catch @panic("out of memory");
             self.search_input.?.makePublic();
         }
     }
@@ -237,7 +238,7 @@ pub const Launcher = struct {
         self.redraw();
     }
     pub fn launch(self: *Launcher, info: *App) bool {
-        info.launch(self.allocator, .{}, null, null) catch |err| {
+        info.launch(self.allocator, self.io, .{}, null, null) catch |err| {
             var buffer: [512]u8 = undefined;
             const reason: []const u8 = switch (err) {
                 error.FileNotFound => "No such file or directory",
@@ -432,7 +433,7 @@ pub fn motion(self: *Launcher, part: Part, x: f64, y: f64) void {
 }
 pub fn scroll(self: *Launcher, amount: f64) void {
     if (self.searchMode()) return;
-    const time: u32 = @truncate(@as(u64, @intCast(@divTrunc(util.monotonicTime(), 1000))));
+    const time: u32 = @truncate(@as(u64, @intCast(@divTrunc(util.monotonicTime(self.io), 1000))));
     if (time -% self.wheel_time > 200) self.wheel = 0;
     self.wheel_time = time;
     self.wheel += amount;
@@ -494,9 +495,9 @@ pub fn paint(l: *Launcher, part: Part, target: raster.Buffer, scale: u32) void {
         }
     }
 }
-pub fn activate(allocator: std.mem.Allocator, state: *?Launcher) void {
+pub fn activate(allocator: std.mem.Allocator, io: std.Io, state: *?Launcher) void {
     if (state.* == null) {
-        state.* = Launcher.init(allocator);
+        state.* = Launcher.init(allocator, io);
         state.*.?.bind();
     }
     const self = &state.*.?;
@@ -589,7 +590,7 @@ pub const Host = struct {
         const allocator = launcher.allocator;
         const self = try allocator.create(Host);
         errdefer allocator.destroy(self);
-        const client = try wire.Client.createInteractive(allocator, .{ .added = &added, .removed = &removed }, self);
+        const client = try wire.Client.createInteractive(allocator, launcher.io, .{ .added = &added, .removed = &removed }, self);
         errdefer client.destroy();
         if (client.outputs.items.len == 0) return error.DisplayUnavailable;
         self.* = .{ .launcher = launcher, .client = client, .surface = null };
@@ -760,7 +761,7 @@ test "launcher owners can defer hiding until an exit animation completes" {
         }
     };
     var state: State = .{};
-    var launcher = Launcher.init(std.testing.allocator);
+    var launcher = Launcher.init(std.testing.allocator, std.testing.io);
     defer launcher.deinit();
     launcher.bind();
     launcher.owner = &state;
@@ -775,7 +776,7 @@ test "launcher owners can defer hiding until an exit animation completes" {
 }
 
 test "overview search navigates results from the end of the query" {
-    var launcher = Launcher.init(std.testing.allocator);
+    var launcher = Launcher.init(std.testing.allocator, std.testing.io);
     defer launcher.deinit();
     launcher.bind();
     launcher.overview_search = true;

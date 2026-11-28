@@ -64,12 +64,12 @@ pub fn main(init: std.process.Init) !void {
         try pageInput(ui);
         try std.testing.expectEqualStrings("Cafe: Tokyo\\5G", ui.manual.value());
         ui.ui.close();
-        while (!ui.closed) _ = mainloop.iteration(true);
-        while (ui.network_operations != 0 or ui.sound.?.operations != 0) _ = mainloop.iteration(true);
+        while (!ui.closed) _ = mainloop.iteration(init.io, true);
+        while (ui.network_operations != 0 or ui.sound.?.operations != 0) _ = mainloop.iteration(init.io, true);
         ui.destroy();
-        const deadline = util.monotonicTime() + 100000;
-        while (util.monotonicTime() < deadline) {
-            while (mainloop.iteration(false)) {}
+        const deadline = util.monotonicTime(init.io) + 100000;
+        while (util.monotonicTime(init.io) < deadline) {
+            while (mainloop.iteration(init.io, false)) {}
             mainloop.sleep(1000);
         }
     }

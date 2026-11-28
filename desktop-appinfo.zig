@@ -200,11 +200,11 @@ pub const App = struct {
     /// terminal when Terminal is set. Errors that are known at once are
     /// returned; otherwise `done`, when given, later receives the outcome on
     /// the main loop.
-    pub fn launch(self: *const App, gpa: std.mem.Allocator, options: LaunchOptions, done: ?Done, context: ?*anyopaque) !void {
+    pub fn launch(self: *const App, gpa: std.mem.Allocator, io: std.Io, options: LaunchOptions, done: ?Done, context: ?*anyopaque) !void {
         var arena = std.heap.ArenaAllocator.init(gpa);
         defer arena.deinit();
         const a = arena.allocator();
-        if (self.dbus_activatable) if (busName(self.id)) |name| return activate(gpa, name, options, done, context);
+        if (self.dbus_activatable) if (busName(self.id)) |name| return activate(gpa, io, name, options, done, context);
         const directory = if (self.path) |value| (if (value.len > 0) value else null) else null;
         var environment: std.ArrayList([:0]const u8) = .empty;
         if (options.activation_token) |token| {
@@ -221,7 +221,7 @@ pub const App = struct {
             });
             if (remaining.len == 0) break;
         }
-        if (done) |callback| Completion.later(gpa, callback, context, true);
+        if (done) |callback| Completion.later(gpa, io, callback, context, true);
     }
 
     /// The arguments `launch` executes without URIs.
@@ -259,10 +259,10 @@ const Completion = struct {
     context: ?*anyopaque,
     ok: bool,
 
-    fn later(gpa: std.mem.Allocator, done: Done, context: ?*anyopaque, ok: bool) void {
+    fn later(gpa: std.mem.Allocator, io: std.Io, done: Done, context: ?*anyopaque, ok: bool) void {
         const self = gpa.create(Completion) catch return done(context, ok);
         self.* = .{ .allocator = gpa, .done = done, .context = context, .ok = ok };
-        _ = mainloop.idle(self, deliver);
+        _ = mainloop.idle(io, self, deliver);
     }
 
     fn deliver(self: *Completion) bool {
@@ -303,7 +303,7 @@ fn busName(id: []const u8) ?[]const u8 {
 
 /// org.freedesktop.Application Activate, or Open with URIs, on the
 /// application's well-known name, without waiting for the reply.
-fn activate(gpa: std.mem.Allocator, name: []const u8, options: LaunchOptions, done: ?Done, context: ?*anyopaque) !void {
+fn activate(gpa: std.mem.Allocator, io: std.Io, name: []const u8, options: LaunchOptions, done: ?Done, context: ?*anyopaque) !void {
     const dbus = @import("dbus");
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
@@ -332,9 +332,9 @@ fn activate(gpa: std.mem.Allocator, name: []const u8, options: LaunchOptions, do
     }
     const loop = @import("desktop-dbus-loop.zig");
     if (options.uris.len > 0)
-        loop.request(gpa, .session, target, .{ options.uris, platform_data }, 25000, options.cancellable, handler, state)
+        loop.request(gpa, io, .session, target, .{ options.uris, platform_data }, 25000, options.cancellable, handler, state)
     else
-        loop.request(gpa, .session, target, .{platform_data}, 25000, options.cancellable, handler, state);
+        loop.request(gpa, io, .session, target, .{platform_data}, 25000, options.cancellable, handler, state);
 }
 
 /// GThemedIcon names drop image suffixes; absolute paths are files.
@@ -734,7 +734,7 @@ pub fn uriScheme(uri: []const u8) ?[]const u8 {
 
 /// Opens a URI with its default handler, as g_app_info_launch_default_for_uri:
 /// the scheme's handler, or for a local file the handler of its content type.
-pub fn launchDefaultForUri(gpa: std.mem.Allocator, uri: []const u8, options: LaunchOptions, done: ?Done, context: ?*anyopaque) !void {
+pub fn launchDefaultForUri(gpa: std.mem.Allocator, io: std.Io, uri: []const u8, options: LaunchOptions, done: ?Done, context: ?*anyopaque) !void {
     const scheme = uriScheme(uri) orelse return error.InvalidUri;
     const app = defaultForScheme(gpa, scheme) orelse blk: {
         if (!std.ascii.eqlIgnoreCase(scheme, "file")) return error.NoHandler;
@@ -747,7 +747,7 @@ pub fn launchDefaultForUri(gpa: std.mem.Allocator, uri: []const u8, options: Lau
     var launch_options = options;
     const list = [_][]const u8{uri};
     launch_options.uris = &list;
-    try app.launch(gpa, launch_options, done, context);
+    try app.launch(gpa, io, launch_options, done, context);
 }
 
 test "key files and locales" {

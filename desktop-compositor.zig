@@ -43,8 +43,8 @@ fn removeItem(comptime T: type, list: *std.ArrayList(T), value: T) void {
     };
 }
 
-fn nowMs() u32 {
-    return @truncate(@as(u64, @intCast(@divTrunc(util.monotonicTime(), 1000))));
+fn nowMs(io: std.Io) u32 {
+    return @truncate(@as(u64, @intCast(@divTrunc(util.monotonicTime(io), 1000))));
 }
 
 // ------------------------------------------------------------------ Buffers
@@ -1869,7 +1869,7 @@ const Output = struct {
         const period = @divTrunc(1_000_000_000, refresh); // microseconds
         const display = self.display orelse return @intCast(@divTrunc(period + 999, 1000));
         const last = @as(i64, display.flip_time[0]) * std.time.us_per_s + display.flip_time[1];
-        const now = util.monotonicTime();
+        const now = util.monotonicTime(self.comp.io);
         const until = if (last > 0 and now >= last) period - @mod(now - last, period) else period;
         return @intCast(@max(1, @divTrunc(until + 999, 1000)));
     }
@@ -1928,7 +1928,7 @@ const Output = struct {
     }
 
     fn sendFrameDone(self: *Output) void {
-        const time = nowMs();
+        const time = nowMs(self.comp.io);
         const area = self.box();
         const flushTree = struct {
             fn f(surface: *Surface, t: u32) void {
@@ -2829,7 +2829,7 @@ const CaptureFrame = struct {
             return resource.sendFailed();
         resource.sendFlags(0);
         if (damage) resource.sendDamage(0, 0, width, height);
-        const now = util.monotonicTime();
+        const now = util.monotonicTime(self.comp.io);
         const seconds: u64 = @intCast(@divTrunc(now, std.time.us_per_s));
         resource.sendReady(@truncate(seconds >> 32), @truncate(seconds), @intCast(@mod(now, std.time.us_per_s) * 1000));
     }
@@ -3330,7 +3330,7 @@ const CopyFrame = struct {
         if (!buffer.write(pixels, buffer.format == ws.wl_shm.Format.xrgb8888)) return resource.sendFailed(Reason.unknown);
         resource.sendTransform(ws.wl_output.Transform.normal);
         resource.sendDamage(0, 0, @intCast(buffer.width), @intCast(buffer.height));
-        const now = util.monotonicTime();
+        const now = util.monotonicTime(self.comp.io);
         const seconds: u64 = @intCast(@divTrunc(now, std.time.us_per_s));
         resource.sendPresentationTime(@truncate(seconds >> 32), @truncate(seconds), @intCast(@mod(now, std.time.us_per_s) * 1000));
         resource.sendReady();
@@ -4150,6 +4150,7 @@ const DataDevice = struct {
 
 const Compositor = struct {
     a: std.mem.Allocator,
+    io: std.Io,
     server: *wire.Server,
     /// Session compositors publish the switcher UI and end the session when they stop.
     show_ui: bool = false,
@@ -4240,7 +4241,7 @@ const Compositor = struct {
         }
         try self.seat.init();
         self.blank_timer = try self.server.loop.timer(self, &blankTimeout);
-        if (self.show_ui) self.corner_settings = @import("desktop-gsettings.zig").Settings.open(self.a, "org.gnome.desktop.interface", "enable-hot-corners");
+        if (self.show_ui) self.corner_settings = @import("desktop-gsettings.zig").Settings.open(self.a, self.io, "org.gnome.desktop.interface", "enable-hot-corners");
         const server = self.server;
         try self.expose(ws.wl_compositor, 6, compositorRequest);
         try self.expose(ws.wl_subcompositor, 1, subcompositorRequest);
@@ -4496,7 +4497,7 @@ const Compositor = struct {
         if (self.locked or self.greeter) return false;
         if (sym == keysyms.Super_L) {
             if (pressed) self.super_alone = true else {
-                if (self.super_alone) launch(self.a, "overview");
+                if (self.super_alone) launch(self.a, self.io, "overview");
                 self.super_alone = false;
             }
             return true;
@@ -4538,9 +4539,9 @@ const Compositor = struct {
         }
         if (mods.logo) {
             switch (sym) {
-                keysyms.Return => launchTerminal(self.a),
-                keysyms.d, keysyms.a => launch(self.a, "overview"),
-                keysyms.l => launch(self.a, "lock --daemonize"),
+                keysyms.Return => launchTerminal(self.a, self.io),
+                keysyms.d, keysyms.a => launch(self.a, self.io, "overview"),
+                keysyms.l => launch(self.a, self.io, "lock --daemonize"),
                 keysyms.e, keysyms.E => {
                     if (!mods.shift) return false;
                     // The UI thread ends a session; a bare compositor stops its loop.
@@ -4556,13 +4557,13 @@ const Compositor = struct {
             return true;
         }
         switch (sym) {
-            keysyms.XF86AudioRaiseVolume => launch(self.a, "volume up"),
-            keysyms.XF86AudioLowerVolume => launch(self.a, "volume down"),
-            keysyms.XF86AudioMute => launch(self.a, "volume mute"),
-            keysyms.XF86AudioMicMute => launch(self.a, "microphone mute"),
-            keysyms.XF86MonBrightnessUp => launch(self.a, "brightness up"),
-            keysyms.XF86MonBrightnessDown => launch(self.a, "brightness down"),
-            keysyms.Print => launch(self.a, "screenshot"),
+            keysyms.XF86AudioRaiseVolume => launch(self.a, self.io, "volume up"),
+            keysyms.XF86AudioLowerVolume => launch(self.a, self.io, "volume down"),
+            keysyms.XF86AudioMute => launch(self.a, self.io, "volume mute"),
+            keysyms.XF86AudioMicMute => launch(self.a, self.io, "microphone mute"),
+            keysyms.XF86MonBrightnessUp => launch(self.a, self.io, "brightness up"),
+            keysyms.XF86MonBrightnessDown => launch(self.a, self.io, "brightness down"),
+            keysyms.Print => launch(self.a, self.io, "screenshot"),
             else => return false,
         }
         return true;
@@ -4624,7 +4625,7 @@ const Compositor = struct {
             item.selected = toplevel == self.cycle_selected;
             snapshot.len += 1;
         }
-        @import("desktop-switcher.zig").publish(self.a, snapshot);
+        @import("desktop-switcher.zig").publish(self.a, self.io, snapshot);
     }
 
     fn finishCycle(self: *Compositor, cancel: bool) void {
@@ -4632,7 +4633,7 @@ const Compositor = struct {
         self.cycling = false;
         self.cycle_origin = null;
         self.cycle_selected = null;
-        if (self.show_ui) @import("desktop-switcher.zig").publish(self.a, .{});
+        if (self.show_ui) @import("desktop-switcher.zig").publish(self.a, self.io, .{});
         if (selected) |toplevel| if (toplevel.mapped) {
             self.focused_layer = null;
             self.focus(toplevel);
@@ -4820,7 +4821,7 @@ const Compositor = struct {
             const fullscreen = if (self.frontToplevel(output)) |front| front.fullscreen else false;
             if (triggered and (!fullscreen or in_overview)) toggle = true;
         }
-        if (toggle) launch(self.a, "overview-corner");
+        if (toggle) launch(self.a, self.io, "overview-corner");
         return .{ next_x, next_y };
     }
 
@@ -5164,7 +5165,7 @@ const Compositor = struct {
                     self.endDrag();
                 }
                 self.dismissPopups();
-                if (self.show_ui) @import("desktop-switcher.zig").publish(self.a, .{});
+                if (self.show_ui) @import("desktop-switcher.zig").publish(self.a, self.io, .{});
                 self.seat.focusSurface(null);
                 self.seat.updatePointerFocus();
                 self.scheduleRepaint();
@@ -5326,7 +5327,7 @@ const Compositor = struct {
             if (pointer.version() >= 5) pointer.sendFrame();
         };
         self.seat.pointer_focus = null;
-        self.dragMotion(nowMs());
+        self.dragMotion(nowMs(self.io));
     }
 
     /// Sends drag enter, leave and motion to the clients under the pointer.
@@ -5706,7 +5707,7 @@ const Compositor = struct {
 
     fn presented(self: *Compositor, output: *Output) void {
         self.frame_sequence +%= 1;
-        const now = util.monotonicTime();
+        const now = util.monotonicTime(self.io);
         const seconds: u64 = @intCast(@divTrunc(now, std.time.us_per_s));
         const nanoseconds: u32 = @intCast(@mod(now, std.time.us_per_s) * 1000);
         var index = self.presentations.items.len;
@@ -6489,7 +6490,7 @@ const Drm = struct {
                 // A mode set shows the frame at once, without a flip event.
                 target.pending = bo;
                 target.flipped();
-                const now = util.monotonicTime();
+                const now = util.monotonicTime(self.comp.io);
                 display.flip_time = .{ @intCast(@divTrunc(now, std.time.us_per_s)), @intCast(@mod(now, std.time.us_per_s)) };
                 self.comp.drawnFor(output);
                 self.comp.flipPresented(output, display);
@@ -7114,7 +7115,7 @@ const Nested = struct {
         switch (event) {
             .enter => |args| {
                 self.hovered = self.windowFor(args.surface);
-                if (self.hovered) |window| seat.moveTo(@as(f64, @floatFromInt(window.output.x)) + args.surface_x, @as(f64, @floatFromInt(window.output.y)) + args.surface_y, nowMs());
+                if (self.hovered) |window| seat.moveTo(@as(f64, @floatFromInt(window.output.x)) + args.surface_x, @as(f64, @floatFromInt(window.output.y)) + args.surface_y, nowMs(self.comp.io));
             },
             .leave => self.hovered = null,
             .motion => |args| if (self.hovered) |window| {
@@ -7210,6 +7211,7 @@ fn selectBackend() Backend {
 
 pub const Handle = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     mode: Mode = .headless,
     stopping: std.atomic.Value(bool) = .init(false),
     /// Overrides the environment's backend choice; tests run headless.
@@ -7227,15 +7229,15 @@ pub const Handle = struct {
     snapshot_frames: u64 = 0,
 
     /// Starts the compositor thread and sets WAYLAND_DISPLAY for clients.
-    pub fn start(allocator: std.mem.Allocator, mode: Mode) !*Handle {
-        return startWith(allocator, mode, null);
+    pub fn start(allocator: std.mem.Allocator, io: std.Io, mode: Mode) !*Handle {
+        return startWith(allocator, io, mode, null);
     }
 
     /// Starts with a fixed backend instead of the environment's choice.
-    pub fn startWith(allocator: std.mem.Allocator, mode: Mode, backend: ?Backend) !*Handle {
+    pub fn startWith(allocator: std.mem.Allocator, io: std.Io, mode: Mode, backend: ?Backend) !*Handle {
         const self = try allocator.create(Handle);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .mode = mode, .backend = backend };
+        self.* = .{ .allocator = allocator, .io = io, .mode = mode, .backend = backend };
         const opened = std.os.linux.eventfd(0, std.os.linux.EFD.CLOEXEC | std.os.linux.EFD.NONBLOCK);
         if (std.os.linux.errno(opened) != .SUCCESS) return error.CompositorPipe;
         const fd: wire.Fd = @intCast(opened);
@@ -7291,7 +7293,7 @@ pub const Handle = struct {
             return;
         };
         defer server.destroy();
-        var comp: Compositor = .{ .a = a, .server = server, .show_ui = self.mode == .session, .greeter = self.mode == .greeter };
+        var comp: Compositor = .{ .a = a, .io = self.io, .server = server, .show_ui = self.mode == .session, .greeter = self.mode == .greeter };
         comp.seat = .{ .comp = &comp };
         comp.ime = .{ .comp = &comp };
         defer comp.deinit();
@@ -7335,8 +7337,8 @@ pub const Handle = struct {
     }
 
     fn publish(self: *Handle, output: *Output) void {
-        self.snapshot_lock.lock();
-        defer self.snapshot_lock.unlock();
+        self.snapshot_lock.lock(self.io);
+        defer self.snapshot_lock.unlock(self.io);
         if (self.snapshot.len != output.pixels.len) {
             self.allocator.free(self.snapshot);
             self.snapshot = self.allocator.alloc(u32, output.pixels.len) catch &.{};
@@ -7347,8 +7349,8 @@ pub const Handle = struct {
 
     /// The pixel at (x, y) of the most recent frame, and how many frames were rendered.
     pub fn pixel(self: *Handle, x: u32, y: u32) struct { value: u32, frames: u64 } {
-        self.snapshot_lock.lock();
-        defer self.snapshot_lock.unlock();
+        self.snapshot_lock.lock(self.io);
+        defer self.snapshot_lock.unlock(self.io);
         if (self.snapshot.len == 0) return .{ .value = 0, .frames = 0 };
         return .{ .value = self.snapshot[@as(usize, y) * self.width + x], .frames = self.snapshot_frames };
     }
@@ -7368,7 +7370,7 @@ const TestEnv = struct {
         _ = libc.mkdir(dir, 0o700);
         self.previous_runtime = std.c.getenv("XDG_RUNTIME_DIR");
         _ = libc.setenv("XDG_RUNTIME_DIR", dir, 1);
-        self.handle = try Handle.startWith(a, .headless, .headless);
+        self.handle = try Handle.startWith(a, std.testing.io, .headless, .headless);
     }
 
     fn stop(self: *TestEnv) void {
@@ -7535,15 +7537,15 @@ test "native compositor maps an xdg toplevel from shared memory and composites i
     const callback = surface.frame();
     callback.listen(Window, &window, Window.frame);
     surface.commit();
-    var deadline = util.monotonicTime() + 3_000_000;
-    while (!window.frame_done and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(100);
+    var deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+    while (!window.frame_done and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(100);
     try std.testing.expect(window.frame_done);
     try std.testing.expect(window.released);
     try std.testing.expect(window.activated);
     try std.testing.expect(window.entered);
     // Windows open maximized; this one draws less than it was offered, from the corner.
-    deadline = util.monotonicTime() + 3_000_000;
-    while (env.handle.pixel(50, 25).value != 0xffff0000 and util.monotonicTime() < deadline) {
+    deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+    while (env.handle.pixel(50, 25).value != 0xffff0000 and util.monotonicTime(std.testing.io) < deadline) {
         std.testing.io.sleep(.fromMilliseconds(10), .awake) catch {};
     }
     try std.testing.expectEqual(@as(u32, 0xffff0000), env.handle.pixel(50, 25).value);
@@ -7559,12 +7561,12 @@ fn sameApp(a: *const Toplevel, b: *const Toplevel) bool {
     return a == b or (a.app_id.len > 0 and std.mem.eql(u8, a.app_id, b.app_id));
 }
 
-fn launch(a: std.mem.Allocator, comptime command: [:0]const u8) void {
-    @import("desktop-command.zig").commandLine(a, command, "/proc/self/exe " ++ command);
+fn launch(a: std.mem.Allocator, io: std.Io, comptime command: [:0]const u8) void {
+    @import("desktop-command.zig").commandLine(a, io, command, "/proc/self/exe " ++ command);
 }
 
-fn launchTerminal(a: std.mem.Allocator) void {
-    @import("desktop-command.zig").commandLine(a, "Terminal", "ghostty");
+fn launchTerminal(a: std.mem.Allocator, io: std.Io) void {
+    @import("desktop-command.zig").commandLine(a, io, "Terminal", "ghostty");
 }
 
 /// Keysyms the compositor binds, from xkbcommon-keysyms.h.
@@ -7682,8 +7684,8 @@ test "native compositor relays text input to an input method and its keyboard gr
     var method_state: Method = .{};
     const pump = struct {
         fn until(connections: []const *client_wire.Connection, flag: *const bool) !void {
-            const deadline = util.monotonicTime() + 3_000_000;
-            while (!flag.* and util.monotonicTime() < deadline) {
+            const deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+            while (!flag.* and util.monotonicTime(std.testing.io) < deadline) {
                 for (connections) |connection| _ = try connection.dispatchTimeout(20);
             }
         }
@@ -7722,8 +7724,8 @@ test "native compositor relays text input to an input method and its keyboard gr
     method.commit(method_state.dones);
     try ime.conn.roundtrip();
     var done = false;
-    const deadline = util.monotonicTime() + 3_000_000;
-    while (!done and util.monotonicTime() < deadline) {
+    const deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+    while (!done and util.monotonicTime(std.testing.io) < deadline) {
         _ = try app.conn.dispatchTimeout(20);
         done = app_state.committed_len > 0;
     }
@@ -7741,8 +7743,8 @@ test "native compositor relays text input to an input method and its keyboard gr
     virtual.key(0, 30, 0);
     try app.conn.roundtrip();
     var grabbed = false;
-    const grab_deadline = util.monotonicTime() + 3_000_000;
-    while (!grabbed and util.monotonicTime() < grab_deadline) {
+    const grab_deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+    while (!grabbed and util.monotonicTime(std.testing.io) < grab_deadline) {
         _ = try ime.conn.dispatchTimeout(20);
         grabbed = method_state.grabbed_keys == 2;
     }
@@ -7904,8 +7906,8 @@ test "native compositor carries a drag from press to drop with negotiated action
 
     const wait = struct {
         fn until(conn: *client_wire.Connection, flag: *const bool) !void {
-            const deadline = util.monotonicTime() + 3_000_000;
-            while (!flag.* and util.monotonicTime() < deadline) _ = try conn.dispatchTimeout(50);
+            const deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+            while (!flag.* and util.monotonicTime(std.testing.io) < deadline) _ = try conn.dispatchTimeout(50);
             try std.testing.expect(flag.*);
         }
     };
@@ -7917,8 +7919,8 @@ test "native compositor carries a drag from press to drop with negotiated action
     virtual.button(0, 0x110, 1);
     virtual.frame();
     try client.conn.roundtrip();
-    const deadline = util.monotonicTime() + 3_000_000;
-    while (dnd.press_serial == 0 and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(50);
+    const deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+    while (dnd.press_serial == 0 and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(50);
     try std.testing.expect(dnd.press_serial != 0);
     const source = client.data.?.create_data_source();
     source.listen(Dnd, &dnd, Dnd.source);
@@ -8061,8 +8063,8 @@ test "native compositor moves a window dragged by its title bar" {
     surface.attach(buffer, 0, 0);
     surface.commit();
     try client.conn.roundtrip();
-    var deadline = util.monotonicTime() + 3_000_000;
-    while (env.handle.pixel(50, 50).value != 0xffff0000 and util.monotonicTime() < deadline) {
+    var deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+    while (env.handle.pixel(50, 50).value != 0xffff0000 and util.monotonicTime(std.testing.io) < deadline) {
         _ = try client.conn.dispatchTimeout(20);
     }
     try std.testing.expectEqual(@as(u32, 0xffff0000), env.handle.pixel(50, 50).value);
@@ -8071,8 +8073,8 @@ test "native compositor moves a window dragged by its title bar" {
     virtual.motion_absolute(0, 100, 100, 1280, 720);
     virtual.button(0, 0x110, 1);
     virtual.frame();
-    deadline = util.monotonicTime() + 3_000_000;
-    while (window.press_serial == 0 and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(50);
+    deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+    while (window.press_serial == 0 and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(50);
     try std.testing.expect(window.press_serial != 0);
     toplevel.move(client.seat.?, window.press_serial);
     try client.conn.roundtrip();
@@ -8080,8 +8082,8 @@ test "native compositor moves a window dragged by its title bar" {
     virtual.frame();
     try client.conn.roundtrip();
     // The window keeps its size and follows the pointer; its old corner shows the background.
-    deadline = util.monotonicTime() + 3_000_000;
-    while ((env.handle.pixel(50, 50).value != 0xff303030 or env.handle.pixel(250, 200).value != 0xffff0000) and util.monotonicTime() < deadline) {
+    deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+    while ((env.handle.pixel(50, 50).value != 0xff303030 or env.handle.pixel(250, 200).value != 0xffff0000) and util.monotonicTime(std.testing.io) < deadline) {
         _ = try client.conn.dispatchTimeout(20);
     }
     try std.testing.expectEqual(@as(u32, 0xff303030), env.handle.pixel(50, 50).value);
@@ -8156,14 +8158,14 @@ test "native compositor hides the panel over a fullscreen window" {
     surface.attach(buffer, 0, 0);
     surface.commit();
     try client.conn.roundtrip();
-    var deadline = util.monotonicTime() + 3_000_000;
-    while (env.handle.pixel(10, 10).value != 0xffff0000 and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(20);
+    var deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+    while (env.handle.pixel(10, 10).value != 0xffff0000 and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(20);
     try std.testing.expectEqual(@as(u32, 0xffff0000), env.handle.pixel(10, 10).value);
     // Leaving fullscreen brings the panel back over the maximized window.
     toplevel.unset_fullscreen();
     try client.conn.roundtrip();
-    deadline = util.monotonicTime() + 3_000_000;
-    while (env.handle.pixel(10, 10).value != 0xff0000ff and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(20);
+    deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+    while (env.handle.pixel(10, 10).value != 0xff0000ff and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(20);
     try std.testing.expectEqual(@as(u32, 0xff0000ff), env.handle.pixel(10, 10).value);
 
     buffer.destroy();
@@ -8238,8 +8240,8 @@ test "native compositor passes scroll sources, stops and wheel steps to clients"
     const virtual = client.pointers.?.create_virtual_pointer(client.seat.?);
     virtual.motion_absolute(0, 200, 200, 1280, 720);
     virtual.frame();
-    const deadline = util.monotonicTime() + 3_000_000;
-    while (!events.entered and util.monotonicTime() < deadline) _ = try client.conn.dispatchTimeout(20);
+    const deadline = util.monotonicTime(std.testing.io) + 3_000_000;
+    while (!events.entered and util.monotonicTime(std.testing.io) < deadline) _ = try client.conn.dispatchTimeout(20);
     try std.testing.expect(events.entered);
     // Two fingers on a touchpad, both axes in one frame, then lifted.
     virtual.axis_source(1);
@@ -8477,8 +8479,8 @@ test "native compositor frees presentation feedback and handles out-of-order sur
         surface.commit();
         try client.conn.roundtrip();
     }
-    const deadline = util.monotonicTime() + 500_000;
-    while (state.presented == 0 and util.monotonicTime() < deadline) {
+    const deadline = util.monotonicTime(std.testing.io) + 500_000;
+    while (state.presented == 0 and util.monotonicTime(std.testing.io) < deadline) {
         std.testing.io.sleep(.fromMilliseconds(5), .awake) catch {};
         try client.conn.roundtrip();
     }

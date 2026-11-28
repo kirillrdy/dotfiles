@@ -32,7 +32,7 @@ pub fn capture() !Frame {
 }
 pub fn pump() void {
     for (0..20) |_| {
-        while (mainloop.iteration(false)) {}
+        while (mainloop.iteration(std.testing.io, false)) {}
         _ = libc.poll(null, 0, 10);
     }
 }

@@ -94,58 +94,58 @@ fn wake() void {
     _ = linux.write(fd, std.mem.asBytes(&one), 8);
 }
 
-fn add(source: Source) u32 {
+fn add(io: std.Io, source: Source) u32 {
     const owned = allocator.create(Source) catch @panic("out of memory");
-    mutex.lock();
+    mutex.lock(io);
     owned.* = source;
     owned.id = next_id;
     next_id +%= 1;
     if (next_id == 0) next_id = 1;
     sources.append(allocator, owned) catch @panic("out of memory");
-    mutex.unlock();
+    mutex.unlock(io);
     wake();
     return owned.id;
 }
 
 /// Calls `callback(context)` every `ms` milliseconds until it returns false.
-pub fn timeout(ms: u32, context: anytype, comptime callback: anytype) u32 {
+pub fn timeout(io: std.Io, ms: u32, context: anytype, comptime callback: anytype) u32 {
     const interval: i64 = @as(i64, ms) * std.time.us_per_ms;
-    return add(.{ .id = 0, .kind = .{ .timeout = .{ .interval_us = interval, .deadline = util.monotonicTime() + interval } }, .callback = plain(@TypeOf(context), callback), .data = toData(context) });
+    return add(io, .{ .id = 0, .kind = .{ .timeout = .{ .interval_us = interval, .deadline = util.monotonicTime(io) + interval } }, .callback = plain(@TypeOf(context), callback), .data = toData(context) });
 }
 
-pub fn timeoutSeconds(seconds: u32, context: anytype, comptime callback: anytype) u32 {
-    return timeout(seconds *| 1000, context, callback);
+pub fn timeoutSeconds(io: std.Io, seconds: u32, context: anytype, comptime callback: anytype) u32 {
+    return timeout(io, seconds *| 1000, context, callback);
 }
 
 /// Calls `callback(context)` whenever nothing else is ready, until it returns false.
-pub fn idle(context: anytype, comptime callback: anytype) u32 {
-    return add(.{ .id = 0, .kind = .idle, .callback = plain(@TypeOf(context), callback), .data = toData(context) });
+pub fn idle(io: std.Io, context: anytype, comptime callback: anytype) u32 {
+    return add(io, .{ .id = 0, .kind = .idle, .callback = plain(@TypeOf(context), callback), .data = toData(context) });
 }
 
 /// Calls `callback(context, fd, conditions)` when `fd` reports any of `events`,
 /// or an error or hangup, until it returns false.
-pub fn watch(fd: c_int, events: u32, context: anytype, comptime callback: anytype) u32 {
+pub fn watch(io: std.Io, fd: c_int, events: u32, context: anytype, comptime callback: anytype) u32 {
     const Context = @TypeOf(context);
     const thunk = &struct {
         fn call(data: ?*anyopaque, descriptor: c_int, conditions: u32) bool {
             return callback(fromData(Context, data), descriptor, conditions);
         }
     }.call;
-    return add(.{ .id = 0, .kind = .{ .fd = .{ .fd = fd, .events = events } }, .callback = thunk, .data = toData(context) });
+    return add(io, .{ .id = 0, .kind = .{ .fd = .{ .fd = fd, .events = events } }, .callback = thunk, .data = toData(context) });
 }
 
 /// Calls `callback(context)` on the loop after the process receives `signum`.
-pub fn signal(signum: u6, context: anytype, comptime callback: anytype) u32 {
+pub fn signal(io: std.Io, signum: u6, context: anytype, comptime callback: anytype) u32 {
     _ = wakeFd();
-    mutex.lock();
+    mutex.lock(io);
     signal_refs[signum] += 1;
     const first = signal_refs[signum] == 1;
-    mutex.unlock();
+    mutex.unlock(io);
     if (first) {
         var action: linux.Sigaction = .{ .handler = .{ .handler = &caught }, .mask = linux.sigemptyset(), .flags = linux.SA.RESTART | linux.SA.NOCLDSTOP };
         _ = linux.sigaction(@fromBackingInt(@intCast(signum)), &action, null);
     }
-    return add(.{ .id = 0, .kind = .{ .signal = signum }, .callback = plain(@TypeOf(context), callback), .data = toData(context) });
+    return add(io, .{ .id = 0, .kind = .{ .signal = signum }, .callback = plain(@TypeOf(context), callback), .data = toData(context) });
 }
 
 fn caught(sig: linux.SIG) callconv(.c) void {
@@ -159,12 +159,12 @@ fn caught(sig: linux.SIG) callconv(.c) void {
 }
 
 /// Removes a source; returns whether it existed. Safe from inside its own callback.
-pub fn remove(id: u32) bool {
-    mutex.lock();
+pub fn remove(io: std.Io, id: u32) bool {
+    mutex.lock(io);
     const index = for (sources.items, 0..) |source, i| {
         if (source.id == id and !source.removed) break i;
     } else {
-        mutex.unlock();
+        mutex.unlock(io);
         return false;
     };
     const source = sources.items[index];
@@ -174,7 +174,7 @@ pub fn remove(id: u32) bool {
         _ = sources.swapRemove(index);
         allocator.destroy(source);
     }
-    mutex.unlock();
+    mutex.unlock(io);
     if (restore) |signum| restoreSignal(signum);
     wake();
     return true;
@@ -194,7 +194,7 @@ fn restoreSignal(signum: u6) void {
 const Ready = struct { id: u32, conditions: u32 = 0 };
 
 /// Waits for and dispatches ready sources once; returns whether any callback ran.
-pub fn iteration(may_block: bool) bool {
+pub fn iteration(io: std.Io, may_block: bool) bool {
     var pollfds: std.ArrayList(linux.pollfd) = .empty;
     defer pollfds.deinit(allocator);
     var owners: std.ArrayList(u32) = .empty;
@@ -203,9 +203,9 @@ pub fn iteration(may_block: bool) bool {
     pollfds.append(allocator, .{ .fd = wake_descriptor, .events = linux.POLL.IN, .revents = 0 }) catch return false;
     owners.append(allocator, 0) catch return false;
 
-    mutex.lock();
+    mutex.lock(io);
     var wait_ms: i32 = if (may_block) -1 else 0;
-    const now = util.monotonicTime();
+    const now = util.monotonicTime(io);
     for (sources.items) |source| {
         if (source.removed or source.in_call) continue;
         switch (source.kind) {
@@ -224,7 +224,7 @@ pub fn iteration(may_block: bool) bool {
             },
         }
     }
-    mutex.unlock();
+    mutex.unlock(io);
 
     const polled = linux.poll(pollfds.items.ptr, @intCast(pollfds.items.len), wait_ms);
     const poll_ok = linux.errno(polled) == .SUCCESS;
@@ -235,8 +235,8 @@ pub fn iteration(may_block: bool) bool {
 
     var ready: std.ArrayList(Ready) = .empty;
     defer ready.deinit(allocator);
-    mutex.lock();
-    const after = util.monotonicTime();
+    mutex.lock(io);
+    const after = util.monotonicTime(io);
     if (poll_ok) for (pollfds.items[1..], owners.items[1..]) |entry, id| {
         if (entry.revents != 0) ready.append(allocator, .{ .id = id, .conditions = @intCast(entry.revents) }) catch {};
     };
@@ -254,33 +254,33 @@ pub fn iteration(may_block: bool) bool {
     if (ready.items.len == 0) for (sources.items) |source| {
         if (source.kind == .idle and !source.removed and !source.in_call) ready.append(allocator, .{ .id = source.id }) catch {};
     };
-    mutex.unlock();
+    mutex.unlock(io);
 
     var dispatched = false;
     for (ready.items) |item| {
-        if (dispatch(item)) dispatched = true;
+        if (dispatch(io, item)) dispatched = true;
     }
     return dispatched;
 }
 
-fn dispatch(item: Ready) bool {
-    mutex.lock();
+fn dispatch(io: std.Io, item: Ready) bool {
+    mutex.lock(io);
     const source = for (sources.items) |candidate| {
         if (candidate.id == item.id) break candidate;
     } else {
-        mutex.unlock();
+        mutex.unlock(io);
         return false;
     };
     if (source.removed or source.in_call) {
-        mutex.unlock();
+        mutex.unlock(io);
         return false;
     }
     source.in_call = true;
-    mutex.unlock();
+    mutex.unlock(io);
 
     const keep = source.callback(source.data, if (source.kind == .fd) source.kind.fd.fd else -1, item.conditions);
 
-    mutex.lock();
+    mutex.lock(io);
     source.in_call = false;
     var restore: ?u6 = null;
     if (source.removed or !keep) {
@@ -292,9 +292,9 @@ fn dispatch(item: Ready) bool {
         };
         allocator.destroy(source);
     } else if (source.kind == .timeout) {
-        source.kind.timeout.deadline = util.monotonicTime() + source.kind.timeout.interval_us;
+        source.kind.timeout.deadline = util.monotonicTime(io) + source.kind.timeout.interval_us;
     }
-    mutex.unlock();
+    mutex.unlock(io);
     if (restore) |signum| restoreSignal(signum);
     return true;
 }
@@ -313,6 +313,7 @@ pub fn sleep(microseconds: u64) void {
 /// A reference-counted cancellation flag with callbacks: callbacks run on the
 /// cancelling thread, and connecting to a cancelled one runs the callback at once.
 pub const Cancellable = struct {
+    io: std.Io,
     refs: std.atomic.Value(u32) = .init(1),
     cancelled: std.atomic.Value(bool) = .init(false),
     /// Guarded by `handler_mutex`.
@@ -325,9 +326,9 @@ pub const Cancellable = struct {
     var handler_mutex: Mutex = .{};
     var next_handler: u64 = 1;
 
-    pub fn create() *Cancellable {
+    pub fn create(io: std.Io) *Cancellable {
         const self = allocator.create(Cancellable) catch @panic("out of memory");
-        self.* = .{};
+        self.* = .{ .io = io };
         return self;
     }
 
@@ -352,9 +353,9 @@ pub const Cancellable = struct {
         if (self.cancelled.swap(true, .acq_rel)) return;
         _ = self.ref();
         defer self.unref();
-        handler_mutex.lock();
+        handler_mutex.lock(self.io);
         const copy = allocator.dupe(Entry, self.handlers.items) catch &.{};
-        handler_mutex.unlock();
+        handler_mutex.unlock(self.io);
         defer allocator.free(copy);
         for (copy) |entry| entry.call(entry.data);
     }
@@ -371,8 +372,8 @@ pub const Cancellable = struct {
 
     /// Calls `handler(context)` on a later cancellation only.
     pub fn listen(self: *Cancellable, context: anytype, comptime handler: anytype) u64 {
-        handler_mutex.lock();
-        defer handler_mutex.unlock();
+        handler_mutex.lock(self.io);
+        defer handler_mutex.unlock(self.io);
         const id = next_handler;
         next_handler += 1;
         self.handlers.append(allocator, makeEntry(id, context, handler)) catch @panic("out of memory");
@@ -381,8 +382,8 @@ pub const Cancellable = struct {
 
     pub fn disconnect(self: *Cancellable, id: u64) void {
         if (id == 0) return;
-        handler_mutex.lock();
-        defer handler_mutex.unlock();
+        handler_mutex.lock(self.io);
+        defer handler_mutex.unlock(self.io);
         for (self.handlers.items, 0..) |item, i| if (item.id == id) {
             _ = self.handlers.orderedRemove(i);
             return;
@@ -392,8 +393,8 @@ pub const Cancellable = struct {
     /// Calls `callback(context)` when the last reference is released; used by
     /// lifecycle tests to observe that a cancellable is freed.
     pub fn onFinalize(self: *Cancellable, context: anytype, comptime callback: anytype) void {
-        handler_mutex.lock();
-        defer handler_mutex.unlock();
+        handler_mutex.lock(self.io);
+        defer handler_mutex.unlock(self.io);
         self.finalizers.append(allocator, makeEntry(0, context, callback)) catch @panic("out of memory");
     }
 
@@ -409,15 +410,16 @@ pub const Cancellable = struct {
 
 /// Runs `work(context)` on its own thread, then `done(context, result)` on the
 /// loop; `done(context)` when `work` returns nothing.
-pub fn background(context: anytype, comptime work: anytype, comptime done: anytype) void {
+pub fn background(io: std.Io, context: anytype, comptime work: anytype, comptime done: anytype) void {
     const Context = @TypeOf(context);
     const Result = @typeInfo(@TypeOf(work)).@"fn".return_type.?;
     const Job = struct {
+        io: std.Io,
         context: Context,
         result: Result = undefined,
         fn run(job: *@This()) void {
             job.result = work(job.context);
-            _ = idle(job, complete);
+            _ = idle(job.io, job, complete);
         }
         fn complete(job: *@This()) bool {
             defer allocator.destroy(job);
@@ -426,13 +428,14 @@ pub fn background(context: anytype, comptime work: anytype, comptime done: anyty
         }
     };
     const job = allocator.create(Job) catch @panic("out of memory");
-    job.* = .{ .context = context };
+    job.* = .{ .io = io, .context = context };
     // Without a thread the work runs here, still completing on the loop.
     const thread = std.Thread.spawn(.{}, Job.run, .{job}) catch return Job.run(job);
     thread.detach();
 }
 
 test "timeouts, idles, descriptors, removal and nested iteration" {
+    const io = std.testing.io;
     const State = struct {
         ticks: u32 = 0,
         idles: u32 = 0,
@@ -447,7 +450,7 @@ test "timeouts, idles, descriptors, removal and nested iteration" {
             // A nested iteration must not dispatch this source again.
             if (!self.nested) {
                 self.nested = true;
-                _ = iteration(false);
+                _ = iteration(io, false);
             }
             return false;
         }
@@ -463,20 +466,20 @@ test "timeouts, idles, descriptors, removal and nested iteration" {
         }
     };
     var state: State = .{};
-    _ = timeout(5, &state, State.tick);
-    _ = idle(&state, State.idled);
-    const doomed = timeout(1, {}, State.never);
-    try std.testing.expect(remove(doomed));
-    try std.testing.expect(!remove(doomed));
+    _ = timeout(io, 5, &state, State.tick);
+    _ = idle(io, &state, State.idled);
+    const doomed = timeout(io, 1, {}, State.never);
+    try std.testing.expect(remove(io, doomed));
+    try std.testing.expect(!remove(io, doomed));
     var pipe: [2]linux.fd_t = undefined;
     _ = linux.pipe2(&pipe, .{ .CLOEXEC = true, .NONBLOCK = true });
     defer _ = linux.close(pipe[0]);
     defer _ = linux.close(pipe[1]);
-    const reader = watch(pipe[0], IN, &state, State.readable);
+    const reader = watch(io, pipe[0], IN, &state, State.readable);
     _ = linux.write(pipe[1], "x", 1);
-    while (state.ticks < 3 or state.reads == 0 or state.idles == 0) _ = iteration(true);
+    while (state.ticks < 3 or state.reads == 0 or state.idles == 0) _ = iteration(io, true);
     try std.testing.expectEqual(@as(u32, 1), state.idles);
-    try std.testing.expect(remove(reader));
+    try std.testing.expect(remove(io, reader));
     // Sources added from another thread wake a blocked iteration.
     const Wake = struct {
         fn fire(flag: *bool) bool {
@@ -485,16 +488,17 @@ test "timeouts, idles, descriptors, removal and nested iteration" {
         }
         fn later(flag: *bool) void {
             sleep(20 * std.time.us_per_ms);
-            _ = idle(flag, fire);
+            _ = idle(io, flag, fire);
         }
     };
     var woken = false;
     const thread = try std.Thread.spawn(.{}, Wake.later, .{&woken});
-    while (!woken) _ = iteration(true);
+    while (!woken) _ = iteration(io, true);
     thread.join();
 }
 
 test "signals, cancellation and background work" {
+    const io = std.testing.io;
     const Flags = struct {
         signalled: bool = false,
         cancelled: u32 = 0,
@@ -521,12 +525,12 @@ test "signals, cancellation and background work" {
         }
     };
     var flags: Flags = .{};
-    const id = signal(@intCast(@backingInt(linux.SIG.USR1)), &flags, Flags.onSignal);
+    const id = signal(io, @intCast(@backingInt(linux.SIG.USR1)), &flags, Flags.onSignal);
     _ = linux.kill(linux.getpid(), .USR1);
-    while (!flags.signalled) _ = iteration(true);
-    try std.testing.expect(remove(id));
+    while (!flags.signalled) _ = iteration(io, true);
+    try std.testing.expect(remove(io, id));
 
-    const cancellable = Cancellable.create();
+    const cancellable = Cancellable.create(io);
     cancellable.onFinalize(&flags, Flags.onFinalize);
     _ = cancellable.connect(&flags, Flags.onCancel);
     const gone = cancellable.connect(&flags, Flags.onCancel);
@@ -539,7 +543,7 @@ test "signals, cancellation and background work" {
     cancellable.unref();
     try std.testing.expect(flags.finalized);
 
-    background(&flags, Flags.work, Flags.done);
-    while (!flags.finished) _ = iteration(true);
+    background(io, &flags, Flags.work, Flags.done);
+    while (!flags.finished) _ = iteration(io, true);
     try std.testing.expect(flags.result);
 }

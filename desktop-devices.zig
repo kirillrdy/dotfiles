@@ -16,12 +16,12 @@ pub const Service = struct {
     battery_state: battery.State = .{},
     subscribers: std.ArrayList(*Subscriber) = .empty,
 
-    pub fn create(a: std.mem.Allocator) !*Service {
+    pub fn create(a: std.mem.Allocator, io: std.Io) !*Service {
         const self = try a.create(Service);
         self.* = .{ .allocator = a };
-        self.audio_service = audio.Service.create(a, &audioChanged, self) catch null;
-        self.battery_service = battery.Service.create(a, &batteryChanged, self) catch null;
-        self.network_client = network.Client.create(a, &networkChanged, self) catch null;
+        self.audio_service = audio.Service.create(a, io, &audioChanged, self) catch null;
+        self.battery_service = battery.Service.create(a, io, &batteryChanged, self) catch null;
+        self.network_client = network.Client.create(a, io, &networkChanged, self) catch null;
         return self;
     }
     pub fn destroy(self: *Service) void {

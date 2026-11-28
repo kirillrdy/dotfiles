@@ -15,6 +15,7 @@ pub fn deinit() void {
 
 pub const Window = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     surface: ?*wire.Surface,
     context: ?*anyopaque,
     closed: ?*const fn (?*anyopaque) void = null,
@@ -22,11 +23,11 @@ pub const Window = struct {
     closing: bool = false,
     idle: u32 = 0,
 
-    pub fn create(a: std.mem.Allocator, title: [:0]const u8, namespace: [:0]const u8, width: u32, height: u32, paint: wire.PixelPaint, context: ?*anyopaque) !*Window {
+    pub fn create(a: std.mem.Allocator, io: std.Io, title: [:0]const u8, namespace: [:0]const u8, width: u32, height: u32, paint: wire.PixelPaint, context: ?*anyopaque) !*Window {
         const self = try a.create(Window);
         errdefer a.destroy(self);
         const fresh = connection == null;
-        if (fresh) connection = try wire.Client.createInteractive(a, .{ .added = &added, .removed = &removed }, null);
+        if (fresh) connection = try wire.Client.createInteractive(a, io, .{ .added = &added, .removed = &removed }, null);
         const client = connection.?;
         errdefer if (fresh) {
             client.destroy();
@@ -36,7 +37,7 @@ pub const Window = struct {
         const output = client.outputs.items[0];
         const surface = try wire.Surface.createPixels(output, .{ .namespace = namespace, .title = title, .role = .toplevel, .width = width, .height = @min(height, @as(u32, @intCast(@max(120, output.height() - 60)))), .interactive = true, .cursor = .arrow }, paint, context);
         errdefer surface.destroy();
-        self.* = .{ .allocator = a, .surface = surface, .context = context };
+        self.* = .{ .allocator = a, .io = io, .surface = surface, .context = context };
         try windows.append(client.allocator, self);
         errdefer {
             _ = windows.pop();
@@ -104,7 +105,7 @@ pub const Window = struct {
         self.closing = true;
         for (windows.items) |child| if (child.parent == self) child.close();
         if (self.surface) |surface| if (!surface.rendering) surface.hide();
-        self.idle = mainloop.idle(self, deliverClose);
+        self.idle = mainloop.idle(self.io, self, deliverClose);
     }
     fn deliverClose(self: *Window) bool {
         self.idle = 0;
@@ -113,7 +114,7 @@ pub const Window = struct {
         return false;
     }
     pub fn destroy(self: *Window) void {
-        if (self.idle != 0) _ = mainloop.remove(self.idle);
+        if (self.idle != 0) _ = mainloop.remove(self.io, self.idle);
         for (windows.items) |child| if (child.parent == self) {
             child.parent = null;
             child.close();

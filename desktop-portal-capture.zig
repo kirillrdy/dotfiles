@@ -19,6 +19,7 @@ pub const Completion = portal_options.Completion;
 /// A private Wayland connection keeps capture traffic off the main event queue.
 pub const Capture = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     client: sc.WaylandClient,
     frame: ?sc.FrameCapture = null,
     source: u32 = 0,
@@ -27,10 +28,10 @@ pub const Capture = struct {
     callback: *const fn (?*anyopaque, ?Image) void,
     data: ?*anyopaque,
 
-    pub fn create(allocator: std.mem.Allocator, name: []const u8, cursor: bool, callback: *const fn (?*anyopaque, ?Image) void, data: ?*anyopaque) !*Capture {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io, name: []const u8, cursor: bool, callback: *const fn (?*anyopaque, ?Image) void, data: ?*anyopaque) !*Capture {
         const self = try allocator.create(Capture);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .client = undefined, .callback = callback, .data = data };
+        self.* = .{ .allocator = allocator, .io = io, .client = undefined, .callback = callback, .data = data };
         try self.client.init(allocator);
         errdefer self.client.deinit();
         try self.next(name, cursor);
@@ -51,23 +52,23 @@ pub const Capture = struct {
         };
         self.frame.?.listen();
         self.client.connection.flush() catch return error.CaptureFailed;
-        self.source = mainloop.watch(self.client.connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
-        self.timeout = mainloop.timeoutSeconds(10, self, expired);
+        self.source = mainloop.watch(self.io, self.client.connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
+        self.timeout = mainloop.timeoutSeconds(self.io, 10, self, expired);
     }
     fn clearFrame(self: *Capture) void {
         if (self.frame) |*frame| frame.deinit();
         self.frame = null;
     }
     pub fn destroy(self: *Capture) void {
-        if (self.source != 0) _ = mainloop.remove(self.source);
-        if (self.timeout != 0) _ = mainloop.remove(self.timeout);
+        if (self.source != 0) _ = mainloop.remove(self.io, self.source);
+        if (self.timeout != 0) _ = mainloop.remove(self.io, self.timeout);
         self.clearFrame();
         self.client.deinit();
         self.allocator.destroy(self);
     }
     fn expired(self: *Capture) bool {
         self.timeout = 0;
-        if (self.source != 0) _ = mainloop.remove(self.source);
+        if (self.source != 0) _ = mainloop.remove(self.io, self.source);
         self.source = 0;
         self.callback(self.data, null);
         return false;
@@ -77,7 +78,7 @@ pub const Capture = struct {
         const frame = &self.frame.?;
         if (ok and !frame.done and !frame.failed) return true;
         self.source = 0;
-        if (self.timeout != 0) _ = mainloop.remove(self.timeout);
+        if (self.timeout != 0) _ = mainloop.remove(self.io, self.timeout);
         self.timeout = 0;
         const result = if (ok and frame.done and !frame.failed) image(self.allocator, frame) catch null else null;
         // Ownership passes to the callback, which may destroy this capture.
@@ -113,7 +114,7 @@ pub const Picker = struct {
     callback: *const fn (?*anyopaque, ?Picked, bool) void,
     data: ?*anyopaque,
 
-    pub fn create(allocator: std.mem.Allocator, app: [:0]const u8, parent: [:0]const u8, title: [:0]const u8, interactive: bool, callback: *const fn (?*anyopaque, ?Picked, bool) void, data: ?*anyopaque) !*Picker {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io, app: [:0]const u8, parent: [:0]const u8, title: [:0]const u8, interactive: bool, callback: *const fn (?*anyopaque, ?Picked, bool) void, data: ?*anyopaque) !*Picker {
         // Check capture support before displaying a consent window. This probe
         // is synchronous; the form's native connection tracks live outputs.
         var probe: sc.WaylandClient = undefined;
@@ -124,7 +125,7 @@ pub const Picker = struct {
         errdefer allocator.destroy(self);
         const owned_parent = try allocator.dupeSentinel(u8, parent, 0);
         errdefer allocator.free(owned_parent);
-        const ui = try form.Form.create(allocator, title, self, &action, &changed);
+        const ui = try form.Form.create(allocator, io, title, self, &action, &changed);
         errdefer ui.deinit();
         _ = try ui.add(.label, app, "", false);
         const output = try ui.add(.choice, "Screen", "", false);
@@ -198,6 +199,7 @@ pub const Picker = struct {
 
 pub const Operation = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     picker: ?*Picker = null,
     capture: ?*Capture = null,
     overlay_client: ?*native.Client = null,
@@ -220,17 +222,17 @@ pub const Operation = struct {
     callback: Completion,
     data: ?*anyopaque,
 
-    pub fn create(allocator: std.mem.Allocator, app: [:0]const u8, parent: [:0]const u8, method: []const u8, options: portal_options.Dict, callback: Completion, data: ?*anyopaque) !*Operation {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io, app: [:0]const u8, parent: [:0]const u8, method: []const u8, options: portal_options.Dict, callback: Completion, data: ?*anyopaque) !*Operation {
         const interactive = try Options.boolean(options, "interactive", false);
         _ = try Options.boolean(options, "modal", true);
         const self = try allocator.create(Operation);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .point = std.mem.eql(u8, method, "PickColor"), .callback = callback, .data = data };
-        self.picker = try Picker.create(allocator, app, parent, if (self.point) "Pick a color" else "Share a screenshot", interactive and !self.point, &picked, self);
+        self.* = .{ .allocator = allocator, .io = io, .point = std.mem.eql(u8, method, "PickColor"), .callback = callback, .data = data };
+        self.picker = try Picker.create(allocator, io, app, parent, if (self.point) "Pick a color" else "Share a screenshot", interactive and !self.point, &picked, self);
         return self;
     }
     pub fn destroy(self: *Operation) void {
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
         if (self.capture) |capture| capture.destroy();
         if (self.picker) |picker| picker.destroy();
         if (self.overlay_client) |client| client.destroy();
@@ -246,12 +248,12 @@ pub const Operation = struct {
         self.width = chosen.width;
         self.height = chosen.height;
         if (area or self.point) {
-            self.overlay_client = native.Client.createInteractive(self.allocator, .{ .added = &outputAdded, .removed = &outputRemoved }, self) catch return self.finish(2, null);
+            self.overlay_client = native.Client.createInteractive(self.allocator, self.io, .{ .added = &outputAdded, .removed = &outputRemoved }, self) catch return self.finish(2, null);
             self.overlay_client.?.start() catch return self.finish(2, null);
             if (self.overlay == null) return self.finish(2, null);
             // Completion runs outside Wayland dispatch: callbacks can destroy
             // the operation, its input seats, and the private connection.
-            self.timer = mainloop.timeout(16, self, selectionFinished);
+            self.timer = mainloop.timeout(self.io, 16, self, selectionFinished);
         } else self.schedule();
     }
     fn outputAdded(data: ?*anyopaque, output: *native.Output) void {
@@ -355,11 +357,11 @@ pub const Operation = struct {
         return false;
     }
     fn schedule(self: *Operation) void {
-        self.timer = mainloop.timeout(150, self, startCapture);
+        self.timer = mainloop.timeout(self.io, 150, self, startCapture);
     }
     fn startCapture(self: *Operation) bool {
         self.timer = 0;
-        self.capture = Capture.create(self.allocator, self.name.?, false, &captured, self) catch {
+        self.capture = Capture.create(self.allocator, self.io, self.name.?, false, &captured, self) catch {
             self.finish(2, null);
             return false;
         };
@@ -477,6 +479,7 @@ test "portal selection clips reverse drags and ignores input queued after cancel
     };
     var operation: Operation = .{
         .allocator = std.testing.allocator,
+        .io = std.testing.io,
         .point = false,
         .callback = &Callback.complete,
         .data = null,

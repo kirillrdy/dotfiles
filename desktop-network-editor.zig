@@ -172,12 +172,12 @@ pub const Editor = struct {
     fn createWithBase(parent: *native.host.Window, io: std.Io, profile: ?network.Profile, initial: ?*Settings) *Editor {
         const a = parent.allocator;
         const self = a.create(Editor) catch @panic("out of memory");
-        const ui = native.Form.create(a, if (profile) |p| p.title else "New Connection", self, &action, &fieldChanged) catch @panic("out of memory");
+        const ui = native.Form.create(a, io, if (profile) |p| p.title else "New Connection", self, &action, &fieldChanged) catch @panic("out of memory");
         const window = ui.window;
         window.parent = parent;
         // Rows borrow their original values from these settings for the editor's lifetime.
         const base = if (initial) |value| value.ref() else if (profile) |p| p.base.ref() else template(a, io, null) catch @panic("out of memory");
-        self.* = .{ .allocator = a, .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = mainloop.Cancellable.create(), .path = if (profile) |p| z(a, p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(a, &changed, self) catch @panic("out of memory"), .base = base, .property_group = undefined, .property_key = undefined, .property_type = undefined };
+        self.* = .{ .allocator = a, .window = window, .ui = ui, .message = undefined, .save_button = undefined, .cancel = mainloop.Cancellable.create(io), .path = if (profile) |p| z(a, p.path) else null, .version = if (profile) |p| p.version else 0, .client = network.Client.create(a, io, &changed, self) catch @panic("out of memory"), .base = base, .property_group = undefined, .property_key = undefined, .property_type = undefined };
         // Known fields first; every other property remains editable below them.
         for (fields) |field| {
             if (base.group(field.group) != null or eq(field.group, "connection")) self.addRow(field, base.get(field.group, field.key));

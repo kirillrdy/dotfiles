@@ -41,10 +41,10 @@ var preview_width: i32 = 0;
 var preview_height: i32 = 0;
 
 // GLib's idle queue is thread safe; presentation stays on the main thread.
-pub fn publish(a: std.mem.Allocator, snapshot: Snapshot) void {
+pub fn publish(a: std.mem.Allocator, io: std.Io, snapshot: Snapshot) void {
     const pending = a.create(Update) catch return;
-    pending.* = .{ .allocator = a, .snapshot = snapshot };
-    _ = mainloop.idle(pending, update);
+    pending.* = .{ .allocator = a, .io = io, .snapshot = snapshot };
+    _ = mainloop.idle(io, pending, update);
 }
 pub fn deinit(a: std.mem.Allocator) void {
     stopPreviews(a);
@@ -83,15 +83,15 @@ fn outputRemoved(_: ?*anyopaque, output: *native.Output) void {
     monitor = null;
 }
 fn outputChanged(_: ?*anyopaque, output: *native.Output) void {
-    if (monitor == output and latest.visible) present(output.client.allocator, &latest) catch |err| std.log.warn("switcher layout: {s}", .{@errorName(err)});
+    if (monitor == output and latest.visible) present(output.client.allocator, output.client.io, &latest) catch |err| std.log.warn("switcher layout: {s}", .{@errorName(err)});
 }
-const Update = struct { allocator: std.mem.Allocator, snapshot: Snapshot };
+const Update = struct { allocator: std.mem.Allocator, io: std.Io, snapshot: Snapshot };
 fn update(pending: *Update) bool {
     defer pending.allocator.destroy(pending);
-    present(pending.allocator, &pending.snapshot) catch |err| std.log.warn("switcher: {s}", .{@errorName(err)});
+    present(pending.allocator, pending.io, &pending.snapshot) catch |err| std.log.warn("switcher: {s}", .{@errorName(err)});
     return false;
 }
-fn present(allocator: std.mem.Allocator, snapshot: *const Snapshot) !void {
+fn present(allocator: std.mem.Allocator, io: std.Io, snapshot: *const Snapshot) !void {
     const a = if (connection) |existing| existing.allocator else allocator;
     if (!snapshot.visible or snapshot.len == 0) {
         stopPreviews(a);
@@ -100,7 +100,7 @@ fn present(allocator: std.mem.Allocator, snapshot: *const Snapshot) !void {
         return;
     }
     if (connection == null) {
-        const value = try native.Client.create(a, .{ .added = &outputAdded, .removed = &outputRemoved, .changed = &outputChanged }, null);
+        const value = try native.Client.create(a, io, .{ .added = &outputAdded, .removed = &outputRemoved, .changed = &outputChanged }, null);
         errdefer value.destroy();
         try value.start();
         connection = value;
@@ -151,7 +151,7 @@ fn present(allocator: std.mem.Allocator, snapshot: *const Snapshot) !void {
     try window.?.show();
     if (changed_app or leaving_windows) {
         stopPreviews(a);
-        if (changed_app) delay = mainloop.timeout(500, {}, reveal);
+        if (changed_app) delay = mainloop.timeout(connection.?.io, 500, {}, reveal);
     }
     if (snapshot.window_selection) showing_previews = true;
     if (showing_previews) try showPreviews();
@@ -242,8 +242,8 @@ fn draw(_: ?*anyopaque, buffer: native.Pixels) void {
 }
 fn stopPreviews(a: std.mem.Allocator) void {
     clearPreviewLabels(a);
-    if (delay != 0) _ = mainloop.remove(delay);
-    if (ticker != 0) _ = mainloop.remove(ticker);
+    if (delay != 0) _ = mainloop.remove(connection.?.io, delay);
+    if (ticker != 0) _ = mainloop.remove(connection.?.io, ticker);
     delay = 0;
     ticker = 0;
     showing_previews = false;
@@ -287,12 +287,12 @@ fn showPreviews() !void {
     if (preview_window == null) preview_window = try native.Surface.createPixels(output, .{ .namespace = "desktop-switcher-windows", .layer = 3, .anchors = native.top | native.left, .width = @intCast(panel_width), .height = @intCast(panel_height) }, &drawPreviews, null);
     preview_window.?.setLayout(@intCast(panel_width), @intCast(panel_height), @max(0, @min(panel_y, screen_height - panel_height)), @max(0, @min(x, screen_width - panel_width)));
     try preview_window.?.show();
-    if (client == null) client = capture.Client.create(a, null, &captureChanged) catch null;
+    if (client == null) client = capture.Client.create(a, connection.?.io, null, &captureChanged) catch null;
     if (client) |value| {
         value.refresh();
         value.visible(true);
         value.tick();
-        if (ticker == 0) ticker = mainloop.timeout(100, {}, captureTick);
+        if (ticker == 0) ticker = mainloop.timeout(connection.?.io, 100, {}, captureTick);
     }
 }
 fn captureChanged(_: ?*anyopaque) void {
@@ -479,7 +479,7 @@ test "window preview rendering fits the captured image without stretching" {
     defer image.deinit(std.testing.allocator);
     var source: capture.Window = .{ .client = undefined, .handle = undefined, .id = @constCast("test-window"), .image = image };
     var sources = [_]*capture.Window{&source};
-    var fake: capture.Client = .{ .allocator = std.testing.allocator, .connection = undefined, .registry = undefined, .context = null, .changed = &captureChanged };
+    var fake: capture.Client = .{ .allocator = std.testing.allocator, .io = std.testing.io, .connection = undefined, .registry = undefined, .context = null, .changed = &captureChanged };
     fake.windows.items = &sources;
     fake.windows.capacity = 1;
     client = &fake;

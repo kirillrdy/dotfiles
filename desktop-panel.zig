@@ -45,7 +45,7 @@ const Panel = struct {
 
     fn appendGroup(self: *Panel, options: []const widgets.Options) usize {
         for (options) |option| {
-            const module = widgets.init(self.app.allocator, option, self.app.devices, &onModuleRedraw, self);
+            const module = widgets.init(self.app.allocator, self.app.io, option, self.app.devices, &onModuleRedraw, self);
             self.slots.append(self.app.allocator, .{ .module = module, .on_click = option.on_click }) catch @panic("out of memory");
         }
         return options.len;
@@ -154,7 +154,7 @@ const Panel = struct {
     }
 
     fn hideTooltip(self: *Panel) void {
-        if (self.tooltip_timer != 0) _ = mainloop.remove(self.tooltip_timer);
+        if (self.tooltip_timer != 0) _ = mainloop.remove(self.app.io, self.tooltip_timer);
         self.tooltip_timer = 0;
         if (self.tooltip_surface) |surface| surface.hide();
         self.clearTooltipText();
@@ -242,7 +242,7 @@ const Panel = struct {
                 self.tooltip_text = self.app.allocator.dupeSentinel(u8, text, 0) catch return;
                 self.tooltip_owned = true;
                 self.tooltip_x = @intFromFloat(@round(x));
-                self.tooltip_timer = mainloop.timeout(500, self, onTooltipTimer);
+                self.tooltip_timer = mainloop.timeout(self.app.io, 500, self, onTooltipTimer);
             } else {
                 self.tooltip_x = @intFromFloat(@round(x));
             }
@@ -338,6 +338,7 @@ const Panel = struct {
 
 const App = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     devices: *@import("desktop-devices.zig").Service,
     config: Config,
     client: *wire.Client = undefined,
@@ -441,7 +442,7 @@ pub const Service = struct {
     arena: std.heap.ArenaAllocator,
     app: App,
 
-    pub fn create(allocator: std.mem.Allocator, config_path: [:0]const u8, devices: *@import("desktop-devices.zig").Service) !*Service {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io, config_path: [:0]const u8, devices: *@import("desktop-devices.zig").Service) !*Service {
         const self = try allocator.create(Service);
         errdefer allocator.destroy(self);
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -450,8 +451,8 @@ pub const Service = struct {
         const contents = @import("desktop-paths.zig").readFile(arena.allocator(), config_path, 1 << 20) catch return error.InvalidConfig;
         const parsed = try std.json.parseFromSlice(Config, arena.allocator(), contents, .{});
         if (parsed.value.height == 0) return error.InvalidConfig;
-        self.* = .{ .arena = arena, .app = .{ .allocator = allocator, .config = parsed.value, .devices = devices } };
-        const client = try wire.Client.createInteractive(allocator, .{
+        self.* = .{ .arena = arena, .app = .{ .allocator = allocator, .io = io, .config = parsed.value, .devices = devices } };
+        const client = try wire.Client.createInteractive(allocator, io, .{
             .added = &App.onOutputAdded,
             .removed = &App.onOutputRemoved,
             .changed = &App.onOutputChanged,

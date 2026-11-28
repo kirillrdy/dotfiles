@@ -47,6 +47,7 @@ const quantum_limit = 8192;
 
 pub const Feedback = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     node: ?*pipewire.Node = null,
     bytes: ?[]u8 = null,
     wave: Wave = undefined,
@@ -57,7 +58,7 @@ pub const Feedback = struct {
     pub fn playing(self: *Feedback) bool {
         const node = self.node orelse return false;
         return switch (node.state.load(.acquire)) {
-            .connecting, .paused, .streaming => util.monotonicTime() < self.deadline,
+            .connecting, .paused, .streaming => util.monotonicTime(self.io) < self.deadline,
             .failed, .finished => false,
         };
     }
@@ -104,7 +105,7 @@ pub const Feedback = struct {
         stream_builder.identifier(spa.SPA_FORMAT_AUDIO_format, spa.SPA_AUDIO_FORMAT_F32P) catch unreachable;
         stream_builder.integer(spa.SPA_FORMAT_AUDIO_channels, 2) catch unreachable;
         stream_builder.ids(spa.SPA_FORMAT_AUDIO_position, &.{ spa.SPA_AUDIO_CHANNEL_FL, spa.SPA_AUDIO_CHANNEL_FR }) catch unreachable;
-        self.deadline = util.monotonicTime() + 5_000_000 + @as(i64, @intCast(self.wave.samples.len * 1_000_000 / (self.wave.rate * self.wave.channels * 2)));
+        self.deadline = util.monotonicTime(self.io) + 5_000_000 + @as(i64, @intCast(self.wave.samples.len * 1_000_000 / (self.wave.rate * self.wave.channels * 2)));
         self.node = pipewire.Node.create(self.allocator, .{
             .properties = &.{
                 .{ "media.type", "Audio" },
@@ -124,7 +125,7 @@ pub const Feedback = struct {
     pub fn deinit(self: *Feedback) void {
         if (self.node) |node| node.destroy();
         if (self.bytes) |bytes| self.allocator.free(bytes);
-        self.* = .{ .allocator = self.allocator };
+        self.* = .{ .allocator = self.allocator, .io = self.io };
     }
 
     fn format_buffers(_: *anyopaque, _: u32, _: []const u8, out: []align(8) u8) ?[]const u8 {
@@ -200,7 +201,7 @@ test "PCM WAV validates chunks, format, and complete frames" {
 test "feedback resamples to the graph rate and finishes after a silent quantum" {
     var samples: [8]u8 = undefined;
     for (0..4) |index| std.mem.writeInt(i16, samples[index * 2 ..][0..2], @intCast(index * 8192), .little);
-    var player = Feedback{ .allocator = std.testing.allocator, .wave = .{ .samples = &samples, .rate = 24000, .channels = 1 } };
+    var player = Feedback{ .allocator = std.testing.allocator, .io = std.testing.io, .wave = .{ .samples = &samples, .rate = 24000, .channels = 1 } };
     var left: [8]f32 = undefined;
     var right: [8]f32 = undefined;
     var chunks: [2]spa.spa_chunk = undefined;

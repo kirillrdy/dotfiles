@@ -9,5 +9,5 @@ pub fn main(init: std.process.Init) !void {
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
     const start: usize = if (args.len > 1 and std.mem.eql(u8, args[1], "lock")) 2 else 1;
-    try @import("desktop").lock.runWithAuthenticator(init.gpa, args[start..], authenticate);
+    try @import("desktop").lock.runWithAuthenticator(init.gpa, init.io, args[start..], authenticate);
 }

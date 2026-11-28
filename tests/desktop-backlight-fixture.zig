@@ -8,40 +8,40 @@ const quick = @import("desktop").quick;
 const assert = std.debug.assert;
 const cast = util.cast;
 const pump = @import("fixture-util.zig").pump;
-fn waitControls(controls: *quick.Controls) void {
-    const deadline = util.monotonicTime() + 8_000_000;
-    while ((controls.brightness_busy or controls.brightness_timer != 0) and util.monotonicTime() < deadline) pump();
+fn waitControls(io: std.Io, controls: *quick.Controls) void {
+    const deadline = util.monotonicTime(io) + 8_000_000;
+    while ((controls.brightness_busy or controls.brightness_timer != 0) and util.monotonicTime(io) < deadline) pump(io);
     assert(!controls.brightness_busy and controls.brightness_timer == 0);
 }
-fn controlsTest(allocator: std.mem.Allocator, backend: backlight.Backend, empty: bool, denied: bool) !void {
-    const controls = quick.Controls.create(allocator, "true", "true");
+fn controlsTest(init: std.process.Init, backend: backlight.Backend, empty: bool, denied: bool) !void {
+    const controls = quick.Controls.create(init.gpa, init.io, "true", "true");
     controls.backlight_backend = backend;
     controls.refresh();
-    waitControls(controls);
+    waitControls(init.io, controls);
     if (empty) {
         assert(controls.view.model.brightness == null);
     } else if (denied) {
         controls.setSlider(.brightness, 75);
-        waitControls(controls);
+        waitControls(init.io, controls);
         assert(@abs(controls.view.model.brightness.? - 20) < 0.01);
     } else {
         assert(controls.view.model.brightness != null);
         assert(@abs(controls.view.model.brightness.? - 20) < 0.01);
         controls.setSlider(.brightness, 75);
-        const deadline = util.monotonicTime() + 3_000_000;
-        while (!controls.brightness_busy and util.monotonicTime() < deadline) pump();
+        const deadline = util.monotonicTime(init.io) + 3_000_000;
+        while (!controls.brightness_busy and util.monotonicTime(init.io) < deadline) pump(init.io);
         assert(controls.brightness_busy);
         controls.setSlider(.brightness, 38);
-        waitControls(controls);
+        waitControls(init.io, controls);
         assert(@abs(controls.view.model.brightness.? - 38) < 0.01);
         controls.setSlider(.brightness, 0);
-        waitControls(controls);
+        waitControls(init.io, controls);
         assert(@abs(controls.view.model.brightness.? - 1) < 0.01);
         controls.refresh(); // Exercise disposal while a native read is in flight.
     }
     controls.deinit();
-    const deadline = util.monotonicTime() + 250_000;
-    while (util.monotonicTime() < deadline) pump();
+    const deadline = util.monotonicTime(init.io) + 250_000;
+    while (util.monotonicTime(init.io) < deadline) pump(init.io);
 }
 const Completion = struct {
     result: ?backlight.Result = null,
@@ -57,13 +57,13 @@ pub fn main(init: std.process.Init) !void {
     const backend = backlight.Backend{ .root = std.mem.span(root) };
     if (args.len < 2) return error.ExpectedMode;
     if (std.mem.eql(u8, args[1], "serve") or osd.parseCommand(args[1..]) != null) return runOsd(init, backend);
-    if (std.mem.startsWith(u8, args[1], "controls")) return controlsTest(init.gpa, backend, std.mem.eql(u8, args[1], "controls-empty"), std.mem.eql(u8, args[1], "controls-denied"));
+    if (std.mem.startsWith(u8, args[1], "controls")) return controlsTest(init, backend, std.mem.eql(u8, args[1], "controls-empty"), std.mem.eql(u8, args[1], "controls-denied"));
     const action: backlight.Action = if (std.mem.eql(u8, args[1], "read")) .read else if (std.mem.eql(u8, args[1], "set") and args.len == 3) .{ .set = try std.fmt.parseFloat(f64, args[2]) } else if (std.mem.eql(u8, args[1], "step") and args.len == 3) .{ .step = try std.fmt.parseInt(i16, args[2], 10) } else return error.InvalidMode;
-    const cancel = mainloop.Cancellable.create();
+    const cancel = mainloop.Cancellable.create(init.io);
     defer cancel.unref();
     var completion = Completion{};
     backend.start(init.gpa, action, cancel, &Completion.done, &completion);
-    while (completion.result == null) _ = mainloop.iteration(true);
+    while (completion.result == null) _ = mainloop.iteration(init.io, true);
     switch (completion.result.?) {
         .failure => |err| return err,
         .value => |device| {
@@ -118,26 +118,26 @@ fn runOsd(init: std.process.Init, backend: backlight.Backend) !void {
     const forwarded = try arena.allocator().alloc([]const u8, args.len - 1);
     for (forwarded, args[1..]) |*out, arg| out.* = arg;
     if (!serve) return loop.forwardCommand(init.gpa, "desktop-osd", osd_name, osd_path, forwarded);
-    const bus = try loop.acquire(init.gpa, .session);
+    const bus = try loop.acquire(init.gpa, init.io, .session);
     defer loop.release(bus);
     if (try bus.connection.requestName(osd_name, 4) != 1) return loop.forwardCommand(init.gpa, "desktop-osd", osd_name, osd_path, forwarded);
     var introspection = try dbus.Introspection.parse(std.heap.page_allocator, loop.commandXml(osd_name));
     defer introspection.deinit();
-    var server = osd.Server.init(init.gpa);
+    var server = osd.Server.init(init.gpa, init.io);
     server.backlight_backend = backend;
     server.connection = bus.connection;
     defer server.deinit();
     var instance: Instance = .{ .server = &server, .connection = bus.connection };
     const exported = try bus.connection.exportObject(osd_path, &introspection.interfaces[0], &Instance.command, null, &instance);
     defer bus.connection.unregister(exported);
-    const term = mainloop.signal(mainloop.SIGTERM, {}, quit);
-    const interrupt = mainloop.signal(mainloop.SIGINT, {}, quit);
-    defer _ = mainloop.remove(term);
-    defer _ = mainloop.remove(interrupt);
+    const term = mainloop.signal(init.io, mainloop.SIGTERM, {}, quit);
+    const interrupt = mainloop.signal(init.io, mainloop.SIGINT, {}, quit);
+    defer _ = mainloop.remove(init.io, term);
+    defer _ = mainloop.remove(init.io, interrupt);
     const failure = try run(&server, forwarded);
     if (failure.len > 0) {
         std.debug.print("desktop-osd: {s}\n", .{failure});
         return error.CommandFailed;
     }
-    while (running and !bus.connection.closed) _ = mainloop.iteration(true);
+    while (running and !bus.connection.closed) _ = mainloop.iteration(init.io, true);
 }

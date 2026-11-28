@@ -59,21 +59,21 @@ pub const Tooltip = struct {
     x: f64 = 0,
     y: f64 = 0,
 
-    pub fn deinit(self: *Tooltip, a: std.mem.Allocator) void {
-        self.hide();
+    pub fn deinit(self: *Tooltip, a: std.mem.Allocator, io: std.Io) void {
+        self.hide(io);
         self.label.deinit(a);
     }
-    pub fn hide(self: *Tooltip) void {
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+    pub fn hide(self: *Tooltip, io: std.Io) void {
+        if (self.timer != 0) _ = mainloop.remove(io, self.timer);
         self.timer = 0;
         self.visible = false;
     }
-    pub fn update(self: *Tooltip, a: std.mem.Allocator, x: f64, y: f64, value: ?[:0]const u8, active: bool, context: anytype, comptime callback: anytype) void {
+    pub fn update(self: *Tooltip, a: std.mem.Allocator, io: std.Io, x: f64, y: f64, value: ?[:0]const u8, active: bool, context: anytype, comptime callback: anytype) void {
         self.x = x;
         self.y = y;
-        self.hide();
+        self.hide(io);
         self.label.set(a, value orelse "");
-        if (active and value != null) self.timer = mainloop.timeout(500, context, callback);
+        if (active and value != null) self.timer = mainloop.timeout(io, 500, context, callback);
     }
     pub fn show(self: *Tooltip) void {
         self.timer = 0;

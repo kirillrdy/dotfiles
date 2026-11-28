@@ -5,12 +5,12 @@ const commands = desktop.commands;
 const mainloop = desktop.mainloop;
 const libc = desktop.libc;
 
-fn work(allocator: std.mem.Allocator, binary: [:0]const u8) void {
-    commands.launch(allocator, "Successful command", &.{ binary, "success" });
-    commands.launch(allocator, "Nonzero command", &.{ binary, "failure" });
-    commands.launch(allocator, "Signaled command", &.{ binary, "signal" });
-    commands.commandLine(allocator, "Missing command", "/nonexistent/desktop-command-fixture");
-    commands.commandLine(allocator, "Invalid command", "'");
+fn work(allocator: std.mem.Allocator, io: std.Io, binary: [:0]const u8) void {
+    commands.launch(allocator, io, "Successful command", &.{ binary, "success" });
+    commands.launch(allocator, io, "Nonzero command", &.{ binary, "failure" });
+    commands.launch(allocator, io, "Signaled command", &.{ binary, "signal" });
+    commands.commandLine(allocator, io, "Missing command", "/nonexistent/desktop-command-fixture");
+    commands.commandLine(allocator, io, "Invalid command", "'");
 }
 
 fn stop(done: *bool) bool {
@@ -30,9 +30,9 @@ pub fn main(init: std.process.Init) !void {
         }
         return;
     }
-    const thread = try std.Thread.spawn(.{}, work, .{ init.gpa, args[0] });
+    const thread = try std.Thread.spawn(.{}, work, .{ init.gpa, init.io, args[0] });
     thread.join();
     var done = false;
-    _ = mainloop.timeout(1500, &done, stop);
-    while (!done) _ = mainloop.iteration(true);
+    _ = mainloop.timeout(init.io, 1500, &done, stop);
+    while (!done) _ = mainloop.iteration(init.io, true);
 }

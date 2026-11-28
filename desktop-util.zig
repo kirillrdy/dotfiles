@@ -1,17 +1,14 @@
 const std = @import("std");
-pub const libc = @import("desktop-libc.zig");
-fn micros(clock: std.c.clockid_t) i64 {
-    var now: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(clock, &now);
-    return @as(i64, now.sec) * std.time.us_per_s + @divTrunc(@as(i64, now.nsec), std.time.ns_per_us);
+fn micros(io: std.Io, clock: std.Io.Clock) i64 {
+    return clock.now(io).toMicroseconds();
 }
 /// CLOCK_MONOTONIC in microseconds, matching g_get_monotonic_time().
-pub fn monotonicTime() i64 {
-    return micros(.MONOTONIC);
+pub fn monotonicTime(io: std.Io) i64 {
+    return micros(io, .awake);
 }
 /// CLOCK_REALTIME in microseconds, matching g_get_real_time().
-pub fn realTime() i64 {
-    return micros(.REALTIME);
+pub fn realTime(io: std.Io) i64 {
+    return micros(io, .real);
 }
 pub const Timer = struct {
     started: std.Io.Timestamp,
@@ -69,17 +66,17 @@ pub fn exists(io: std.Io, path: []const u8) bool {
     return true;
 }
 pub fn env(name: [:0]const u8) ?[:0]const u8 {
-    const value = libc.getenv(name);
-    return if (value == null) null else std.mem.span(value);
+    const value = std.c.getenv(name) orelse return null;
+    return std.mem.span(value);
 }
-/// A libc mutex: usable from any thread without a std.Io instance.
+/// A mutex usable with a std.Io instance.
 pub const Mutex = struct {
-    inner: std.c.pthread_mutex_t = .{},
-    pub fn lock(self: *Mutex) void {
-        _ = std.c.pthread_mutex_lock(&self.inner);
+    inner: std.Io.Mutex = .init,
+    pub fn lock(self: *Mutex, io: std.Io) void {
+        self.inner.lockUncancelable(io);
     }
-    pub fn unlock(self: *Mutex) void {
-        _ = std.c.pthread_mutex_unlock(&self.inner);
+    pub fn unlock(self: *Mutex, io: std.Io) void {
+        self.inner.unlock(io);
     }
 };
 /// A value computed once on first use, from any thread.

@@ -14,7 +14,7 @@ pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
     const text = try allocator.dupeSentinel(u8, if (args.len > 1) args[1] else "Enter your SSH passphrase:", 0);
     defer allocator.free(text);
     const hint = std.c.getenv("SSH_ASKPASS_PROMPT");
-    const dialog = Dialog.create(allocator, Mode.fromHint(if (hint) |h| std.mem.span(h) else null), text) catch return 1;
+    const dialog = Dialog.create(allocator, init.io, Mode.fromHint(if (hint) |h| std.mem.span(h) else null), text) catch return 1;
     defer dialog.destroy();
     dialog.run();
     return dialog.writeAnswer(init.io, std.Io.File.stdout());

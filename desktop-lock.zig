@@ -112,7 +112,7 @@ const State = struct {
 
     pub fn key(self: *State, seat: *Seat, code: u32, symbol: u32) void {
         if (!self.locked) return;
-        self.last_activity = u.monotonicTime();
+        self.last_activity = u.monotonicTime(self.client.io);
         if (self.stage == .clock) {
             // Like GNOME, any key raises the prompt and a printable one starts the password.
             self.stage = .prompt;
@@ -167,7 +167,7 @@ const State = struct {
 
     /// Once a second: advance the clock and retire an unattended prompt.
     pub fn tick(self: *State) void {
-        if (self.stage == .prompt and !self.client.busy and u.monotonicTime() - self.last_activity > prompt_timeout_us) {
+        if (self.stage == .prompt and !self.client.busy and u.monotonicTime(self.client.io) - self.last_activity > prompt_timeout_us) {
             _ = self.view.tick();
             self.showClock();
         } else if (self.view.tick() and self.stage == .clock) self.render();
@@ -183,7 +183,7 @@ const State = struct {
             .status = self.client.status(),
             .typed = self.client.typed,
             .caps_lock = self.client.caps_lock,
-            .spin = login.spinPhase(),
+            .spin = login.spinPhase(self.client.io),
         };
     }
 
@@ -197,7 +197,7 @@ const State = struct {
 
     fn click(self: *State) void {
         if (self.client.busy or !self.locked or self.client.done) return;
-        self.last_activity = u.monotonicTime();
+        self.last_activity = u.monotonicTime(self.client.io);
         if (self.stage == .clock) {
             self.stage = .prompt;
             self.render();
@@ -228,12 +228,12 @@ const State = struct {
     }
 };
 
-pub fn run(a: std.mem.Allocator, args: []const []const u8) !void {
-    return runWithAuthenticator(a, args, auth.authenticate);
+pub fn run(a: std.mem.Allocator, io: std.Io, args: []const []const u8) !void {
+    return runWithAuthenticator(a, io, args, auth.authenticate);
 }
 
 /// Isolated protocol tests supply an authenticator without changing the module graph.
-pub fn runWithAuthenticator(a: std.mem.Allocator, args: []const []const u8, authenticator: *const fn ([*:0]const u8, [*:0]const u8) bool) !void {
+pub fn runWithAuthenticator(a: std.mem.Allocator, io: std.Io, args: []const []const u8, authenticator: *const fn ([*:0]const u8, [*:0]const u8) bool) !void {
     var daemonize = false;
     var ready_fd: c_int = -1;
     var wallpaper: ?[]const u8 = null;
@@ -311,7 +311,7 @@ pub fn runWithAuthenticator(a: std.mem.Allocator, args: []const []const u8, auth
     });
     defer lock_view.deinit();
     var state = State{
-        .client = .{ .allocator = a, .connection = connection, .password = password },
+        .client = .{ .allocator = a, .io = io, .connection = connection, .password = password },
         .view = &lock_view,
         .user = username.ptr,
         .authenticator = authenticator,

@@ -237,14 +237,15 @@ fn read(a: std.mem.Allocator, path: []const u8) ?[]u8 {
 // The desktop shares icon lookup metadata for the lifetime of the UI.
 const Cache = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     resolver: ?Resolver = null,
     settings: ?*@import("desktop-gsettings.zig").Settings = null,
 };
 var cache: ?Cache = null;
 
-pub fn init(allocator: std.mem.Allocator) void {
+pub fn init(allocator: std.mem.Allocator, io: std.Io) void {
     std.debug.assert(cache == null);
-    cache = .{ .allocator = allocator };
+    cache = .{ .allocator = allocator, .io = io };
 }
 
 pub fn deinit() void {
@@ -289,7 +290,7 @@ pub fn load(a: std.mem.Allocator, name: [:0]const u8, size: u32, scale: u32, tin
     if (size == 0 or size > 4096 or scale == 0 or scale > 8) return null;
     if (std.fs.path.isAbsolute(name)) return loadPath(a, name, size * scale, tint);
     if (cache) |*value| {
-        if (value.settings == null) if (gsettings.Settings.open(value.allocator, "org.gnome.desktop.interface", null)) |settings| {
+        if (value.settings == null) if (gsettings.Settings.open(value.allocator, value.io, "org.gnome.desktop.interface", null)) |settings| {
             value.settings = settings;
             settings.watch(&themeChanged, null) catch {};
         };
@@ -513,8 +514,8 @@ test "symbolic PNG palettes and icon files decode to premultiplied images" {
 
 test "native icon lookup renders installed Adwaita symbols at both output scales" {
     try @import("desktop-runtime.zig").setup(std.testing.allocator);
-    init(std.testing.allocator);
-    defer @import("desktop-gsettings.zig").deinit();
+    init(std.testing.allocator, std.testing.io);
+    defer @import("desktop-gsettings.zig").deinit(std.testing.io);
     defer deinit();
     for ([_][:0]const u8{ "view-app-grid-symbolic", "view-refresh-symbolic", "audio-volume-high-symbolic", "battery-level-50-symbolic", "dark-mode-symbolic" }) |name| {
         for ([_]u32{ 1, 2 }) |scale| {

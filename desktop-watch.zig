@@ -14,6 +14,7 @@ const missing_poll_ms = 4000;
 
 pub const Watcher = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     fd: linux.fd_t,
     source: c_uint = 0,
     poll: c_uint = 0,
@@ -24,21 +25,21 @@ pub const Watcher = struct {
     const Directory = struct { path: [:0]u8, wd: ?i32 = null };
 
     /// `changed` runs on the main loop after directory contents change.
-    pub fn create(a: std.mem.Allocator, changed: *const fn (?*anyopaque) void, context: ?*anyopaque) !*Watcher {
+    pub fn create(a: std.mem.Allocator, io: std.Io, changed: *const fn (?*anyopaque) void, context: ?*anyopaque) !*Watcher {
         const opened = linux.inotify_init1(linux.IN.NONBLOCK | linux.IN.CLOEXEC);
         if (linux.errno(opened) != .SUCCESS) return error.WatchUnavailable;
         const self = a.create(Watcher) catch |err| {
             _ = linux.close(@intCast(opened));
             return err;
         };
-        self.* = .{ .allocator = a, .fd = @intCast(opened), .changed = changed, .context = context };
-        self.source = mainloop.watch(self.fd, mainloop.IN, self, readable);
+        self.* = .{ .allocator = a, .io = io, .fd = @intCast(opened), .changed = changed, .context = context };
+        self.source = mainloop.watch(io, self.fd, mainloop.IN, self, readable);
         return self;
     }
 
     pub fn destroy(self: *Watcher) void {
-        if (self.source != 0) _ = mainloop.remove(self.source);
-        if (self.poll != 0) _ = mainloop.remove(self.poll);
+        if (self.source != 0) _ = mainloop.remove(self.io, self.source);
+        if (self.poll != 0) _ = mainloop.remove(self.io, self.poll);
         _ = linux.close(self.fd);
         for (self.directories.items) |directory| self.allocator.free(directory.path);
         self.directories.deinit(self.allocator);
@@ -62,7 +63,7 @@ pub const Watcher = struct {
     }
 
     fn pollMissing(self: *Watcher) void {
-        if (self.poll == 0) self.poll = mainloop.timeout(missing_poll_ms, self, checkMissing);
+        if (self.poll == 0) self.poll = mainloop.timeout(self.io, missing_poll_ms, self, checkMissing);
     }
 
     fn checkMissing(self: *Watcher) bool {
@@ -118,17 +119,17 @@ test "directory changes, deletion and late creation are reported" {
             const self: *@This() = @ptrCast(@alignCast(data));
             self.value += 1;
         }
-        fn wait(self: *@This(), above: usize, seconds: i64) !void {
-            const deadline = @import("desktop-util.zig").monotonicTime() + seconds * std.time.us_per_s;
+        fn wait(self: *@This(), io: std.Io, above: usize, seconds: i64) !void {
+            const deadline = @import("desktop-util.zig").monotonicTime(io) + seconds * std.time.us_per_s;
             while (self.value <= above) {
-                if (@import("desktop-util.zig").monotonicTime() > deadline) return error.Timeout;
-                _ = mainloop.iteration(false);
+                if (@import("desktop-util.zig").monotonicTime(io) > deadline) return error.Timeout;
+                _ = mainloop.iteration(io, false);
                 std.Thread.yield() catch {};
             }
         }
     };
     var count: Count = .{};
-    const watcher = try Watcher.create(a, &Count.changed, &count);
+    const watcher = try Watcher.create(a, std.testing.io, &Count.changed, &count);
     defer watcher.destroy();
     const base = try std.fmt.allocPrintSentinel(a, "{s}/desktop-watch-test-{d}", .{ paths.runtimeDir(), linux.getpid() }, 0);
     defer a.free(base);
@@ -141,10 +142,10 @@ test "directory changes, deletion and late creation are reported" {
     defer a.free(file);
     const created = linux.openat(linux.AT.FDCWD, file, .{ .ACCMODE = .WRONLY, .CREAT = true, .CLOEXEC = true }, 0o600);
     _ = linux.close(@intCast(created));
-    try count.wait(0, 2);
+    try count.wait(std.testing.io, 0, 2);
     const before = count.value;
     try paths.makeDirectories(missing, 0o700);
-    try count.wait(before, 6);
+    try count.wait(std.testing.io, before, 6);
     _ = linux.unlinkat(linux.AT.FDCWD, file, 0);
     _ = linux.unlinkat(linux.AT.FDCWD, missing, linux.AT.REMOVEDIR);
     _ = linux.unlinkat(linux.AT.FDCWD, base, linux.AT.REMOVEDIR);

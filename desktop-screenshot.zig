@@ -468,13 +468,13 @@ pub const SelectionOverlay = struct {
     selected: ?Result = null,
     done: bool = false,
 
-    pub fn run(allocator: std.mem.Allocator) ?Rect {
-        const result = runForOutput(allocator, null) orelse return null;
+    pub fn run(allocator: std.mem.Allocator, io: std.Io) ?Rect {
+        const result = runForOutput(allocator, io, null) orelse return null;
         return result.globalRect();
     }
-    pub fn runForOutput(allocator: std.mem.Allocator, requested: ?[]const u8) ?Result {
+    pub fn runForOutput(allocator: std.mem.Allocator, io: std.Io, requested: ?[]const u8) ?Result {
         var self: SelectionOverlay = .{ .allocator = allocator, .requested = requested };
-        const client = native.Client.createInteractive(allocator, .{ .added = &added, .removed = &removed }, &self) catch |err| {
+        const client = native.Client.createInteractive(allocator, io, .{ .added = &added, .removed = &removed }, &self) catch |err| {
             std.log.err("screenshot selection: {s}", .{@errorName(err)});
             return null;
         };
@@ -488,7 +488,7 @@ pub const SelectionOverlay = struct {
             client.roundtrip();
         }
         client.start() catch return null;
-        while (!self.done and !client.failed and client.hasInput() and self.hasLayers()) _ = mainloop.iteration(true);
+        while (!self.done and !client.failed and client.hasInput() and self.hasLayers()) _ = mainloop.iteration(io, true);
         return self.selected;
     }
     fn hasLayers(self: *SelectionOverlay) bool {
@@ -683,7 +683,7 @@ pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
     defer arena.deinit();
 
     if (opt.slurp_mode) {
-        if (SelectionOverlay.runForOutput(init.gpa, opt.output_name)) |selection| {
+        if (SelectionOverlay.runForOutput(init.gpa, init.io, opt.output_name)) |selection| {
             const rect = selection.globalRect() orelse return 1;
             var buf: [64]u8 = undefined;
             const text = std.fmt.bufPrint(&buf, "{d},{d} {d}x{d}\n", .{ rect.x, rect.y, rect.w, rect.h }) catch return 1;
@@ -695,7 +695,7 @@ pub fn runArgs(init: std.process.Init, args: []const []const u8) !u8 {
     }
 
     if (opt.interactive) {
-        const selection = SelectionOverlay.runForOutput(init.gpa, opt.output_name) orelse return 0; // Cancelled.
+        const selection = SelectionOverlay.runForOutput(init.gpa, init.io, opt.output_name) orelse return 0; // Cancelled.
         opt.geometry = selection.rect;
         opt.output_name = try arena.allocator().dupe(u8, std.mem.sliceTo(&selection.output_name, 0));
     }

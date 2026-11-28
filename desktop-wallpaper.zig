@@ -93,7 +93,7 @@ test "integration: background layer paints wallpaper pixels on the desktop" {
     defer decode.free(std.testing.allocator, image);
     @memset(std.mem.bytesAsSlice(u32, image.pixels), 0xff142850);
     var app: App = .{ .allocator = std.testing.allocator, .image = image };
-    const native_client = try native.Client.create(std.testing.allocator, .{ .added = &App.add, .removed = &App.remove }, &app);
+    const native_client = try native.Client.create(std.testing.allocator, std.testing.io, .{ .added = &App.add, .removed = &App.remove }, &app);
     defer native_client.destroy();
     defer {
         for (app.backgrounds.items) |background| background.destroy();
@@ -125,13 +125,13 @@ pub const Service = struct {
     app: App,
     client: *native.Client,
 
-    pub fn create(allocator: std.mem.Allocator, path: [:0]const u8) !*Service {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io, path: [:0]const u8) !*Service {
         const image = decode.file(allocator, path, null) orelse return error.InvalidImage;
         errdefer decode.free(allocator, image);
         const self = try allocator.create(Service);
         self.* = .{ .app = .{ .allocator = allocator, .image = image }, .client = undefined };
         errdefer allocator.destroy(self);
-        self.client = try native.Client.create(allocator, .{ .added = &App.add, .removed = &App.remove }, &self.app);
+        self.client = try native.Client.create(allocator, io, .{ .added = &App.add, .removed = &App.remove }, &self.app);
         errdefer self.client.destroy();
         if (self.client.shell == null) return error.LayerShellUnavailable;
         try self.client.start();

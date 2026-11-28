@@ -304,6 +304,7 @@ pub fn powerSupplyEvent(payload: []const u8, sender_pid: u32) bool {
 
 pub const Service = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     callback: *const fn (?*anyopaque, State) void,
     data: ?*anyopaque,
     backend: Backend,
@@ -322,17 +323,17 @@ pub const Service = struct {
     next: State = .{},
     sent: bool = false,
 
-    pub fn create(a: std.mem.Allocator, callback: *const fn (?*anyopaque, State) void, data: ?*anyopaque) !*Service {
-        return createWithOptions(a, .{}, callback, data);
+    pub fn create(a: std.mem.Allocator, io: std.Io, callback: *const fn (?*anyopaque, State) void, data: ?*anyopaque) !*Service {
+        return createWithOptions(a, io, .{}, callback, data);
     }
-    pub fn createWithOptions(a: std.mem.Allocator, options: Options, callback: *const fn (?*anyopaque, State) void, data: ?*anyopaque) !*Service {
+    pub fn createWithOptions(a: std.mem.Allocator, io: std.Io, options: Options, callback: *const fn (?*anyopaque, State) void, data: ?*anyopaque) !*Service {
         if (options.poll_ms == 0) return error.InvalidPollInterval;
         const self = try a.create(Service);
         errdefer a.destroy(self);
         const root = try a.dupeSentinel(u8, options.backend.root, 0);
-        self.* = .{ .allocator = a, .callback = callback, .data = data, .backend = .{ .root = root }, .root = root, .cancel = mainloop.Cancellable.create(), .events = options.events };
+        self.* = .{ .allocator = a, .io = io, .callback = callback, .data = data, .backend = .{ .root = root }, .root = root, .cancel = mainloop.Cancellable.create(io), .events = options.events };
         if (self.events) self.connectEvents();
-        self.timer = mainloop.timeout(options.poll_ms, self, poll);
+        self.timer = mainloop.timeout(io, options.poll_ms, self, poll);
         self.refresh();
         return self;
     }
@@ -342,8 +343,8 @@ pub const Service = struct {
     }
     pub fn stop(self: *Service) void {
         self.stopped = true;
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
-        if (self.debounce != 0) _ = mainloop.remove(self.debounce);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
+        if (self.debounce != 0) _ = mainloop.remove(self.io, self.debounce);
         self.disconnectEvents();
         self.timer = 0;
         self.debounce = 0;
@@ -365,7 +366,7 @@ pub const Service = struct {
         }
         self.pending = true;
         self.refs += 1;
-        mainloop.background(self, readWork, readDone);
+        mainloop.background(self.io, self, readWork, readDone);
     }
     fn readWork(self: *Service) void {
         self.next = self.backend.read();
@@ -398,10 +399,10 @@ pub const Service = struct {
             return;
         }
         self.event_fd = fd;
-        self.event_source = mainloop.watch(fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, eventReady);
+        self.event_source = mainloop.watch(self.io, fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, eventReady);
     }
     fn disconnectEvents(self: *Service) void {
-        if (self.event_source != 0) _ = mainloop.remove(self.event_source);
+        if (self.event_source != 0) _ = mainloop.remove(self.io, self.event_source);
         self.event_source = 0;
         if (self.event_fd >= 0) _ = libc.close(self.event_fd);
         self.event_fd = -1;
@@ -423,7 +424,7 @@ pub const Service = struct {
                 if (libc.__errno_location().* == 105) self.refresh(); // ENOBUFS: recover a lost event by reading sysfs.
                 break;
             }
-            if (size >= @sizeOf(@TypeOf(sender)) and count < buffer.len and powerSupplyEvent(buffer[0..@intCast(count)], sender.nl_pid) and self.debounce == 0) self.debounce = mainloop.timeout(100, self, eventRefresh);
+            if (size >= @sizeOf(@TypeOf(sender)) and count < buffer.len and powerSupplyEvent(buffer[0..@intCast(count)], sender.nl_pid) and self.debounce == 0) self.debounce = mainloop.timeout(self.io, 100, self, eventRefresh);
         }
         return true;
     }
@@ -487,14 +488,14 @@ test "only complete kernel power-supply events trigger a scan" {
 }
 
 /// Session-only warnings; the system monitor never connects to a user bus.
-pub fn notifyWarning(a: std.mem.Allocator, level: Warning) void {
+pub fn notifyWarning(a: std.mem.Allocator, io: std.Io, level: Warning) void {
     const title: []const u8 = switch (level) {
         .low => "Battery Low",
         .critical => "Battery Critically Low",
         .action => "Battery Almost Empty",
         else => return,
     };
-    @import("desktop-dbus-loop.zig").notify(a, "desktop-zig", "battery-caution-symbolic", title, "Connect a power source.", if (level == .low) 1 else 2);
+    @import("desktop-dbus-loop.zig").notify(a, io, "desktop-zig", "battery-caution-symbolic", title, "Connect a power source.", if (level == .low) 1 else 2);
 }
 
 test "disposing an in-flight sysfs scan releases ownership without publishing after destruction" {
@@ -504,14 +505,14 @@ test "disposing an in-flight sysfs scan releases ownership without publishing af
         }
     };
     var delivered = false;
-    const service = try Service.createWithOptions(std.testing.allocator, .{ .backend = .{ .root = "/nonexistent/desktop-battery-test" }, .events = false }, &Callback.changed, &delivered);
+    const service = try Service.createWithOptions(std.testing.allocator, std.testing.io, .{ .backend = .{ .root = "/nonexistent/desktop-battery-test" }, .events = false }, &Callback.changed, &delivered);
     // Retain one observer reference while the worker's cancellation callback drains.
     service.refs += 1;
     service.refresh();
     service.destroy();
-    const deadline = util.monotonicTime() + 5000000;
-    while (service.pending and util.monotonicTime() < deadline) {
-        while (mainloop.iteration(false)) {}
+    const deadline = util.monotonicTime(std.testing.io) + 5000000;
+    while (service.pending and util.monotonicTime(std.testing.io) < deadline) {
+        while (mainloop.iteration(std.testing.io, false)) {}
         mainloop.sleep(1000);
     }
     const pending = service.pending;

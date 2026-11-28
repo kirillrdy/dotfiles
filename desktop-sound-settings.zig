@@ -30,14 +30,14 @@ pub const Sound = struct {
     // The settings shell owns window lifetime, drawing, and input dispatch.
     pub fn create(a: std.mem.Allocator, window: *host.Window, context: ?*anyopaque, navigate: *const fn (?*anyopaque, native.Control) void) !*Sound {
         const self = try a.create(Sound);
-        self.* = .{ .allocator = a, .feedback = .{ .allocator = a }, .window = window, .navigation_context = context, .navigate = navigate, .cancel = mainloop.Cancellable.create() };
+        self.* = .{ .allocator = a, .feedback = .{ .allocator = a, .io = window.io }, .window = window, .navigation_context = context, .navigate = navigate, .cancel = mainloop.Cancellable.create(window.io) };
         self.view.test_enabled = @import("desktop-runtime.zig").sound_file != null;
-        self.service = audio.Service.create(a, &changed, self) catch null;
+        self.service = audio.Service.create(a, window.io, &changed, self) catch null;
         self.refresh() catch self.renderFailure();
         return self;
     }
     pub fn deactivate(self: *Sound) void {
-        self.tooltip.hide();
+        self.tooltip.hide(self.window.io);
         self.flushVolumes();
         self.view.focus = null;
         self.view.hover = null;
@@ -46,7 +46,7 @@ pub const Sound = struct {
     }
     pub fn destroy(self: *Sound) void {
         std.debug.assert(self.closed and self.operations == 0);
-        self.tooltip.deinit(self.allocator);
+        self.tooltip.deinit(self.allocator, self.window.io);
         self.cancel.unref();
         self.view.deinit(self.allocator);
         if (self.message) |message| self.allocator.free(message);
@@ -58,9 +58,9 @@ pub const Sound = struct {
     pub fn shutdown(self: *Sound) void {
         if (self.closed) return;
         self.closed = true;
-        self.tooltip.hide();
+        self.tooltip.hide(self.window.io);
         self.cancel.cancel();
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.window.io, self.timer);
         self.timer = 0;
         self.feedback.deinit();
         if (self.service) |service| service.destroy();
@@ -142,8 +142,8 @@ pub const Sound = struct {
         const node = service.node(self.view.rows.items[index].target) orelse return;
         self.view.rows.items[index].pending_target = .{ .id = node.id };
         self.view.rows.items[index].pending = @round(std.math.clamp(value, 0, 100));
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
-        self.timer = mainloop.timeout(150, self, volumeTimeout);
+        if (self.timer != 0) _ = mainloop.remove(self.window.io, self.timer);
+        self.timer = mainloop.timeout(self.window.io, 150, self, volumeTimeout);
         self.window.redraw();
     }
     fn volumeTimeout(self: *Sound) bool {
@@ -152,7 +152,7 @@ pub const Sound = struct {
         return false;
     }
     fn flushVolumes(self: *Sound) void {
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.window.io, self.timer);
         self.timer = 0;
         // Rejected writes may complete synchronously; keep row storage stable.
         self.flushing = true;
@@ -239,7 +239,7 @@ pub const Sound = struct {
             .value => {
                 // Panels refresh their device menus from this signal.
                 const loop = @import("desktop-dbus-loop.zig");
-                if (loop.acquire(self.allocator, .session)) |bus| {
+                if (loop.acquire(self.allocator, self.window.io, .session)) |bus| {
                     defer loop.release(bus);
                     bus.connection.emit("/org/dotfiles/DesktopSettings", "org.dotfiles.DesktopSettings", "DeviceChanged", .{}) catch {};
                 } else |_| {}
@@ -275,7 +275,7 @@ pub const Sound = struct {
     }
     pub fn pointerButton(self: *Sound, pressed: bool, x: f64, y: f64) void {
         if (self.closed or self.window.closing) return;
-        self.tooltip.hide();
+        self.tooltip.hide(self.window.io);
         if (!pressed) {
             const previous = self.view.pressed;
             self.view.pressed = null;
@@ -328,14 +328,14 @@ pub const Sound = struct {
             .network_nav => "Network",
             .sound_nav => "Sound",
         } else null;
-        self.tooltip.update(self.allocator, x, y, tooltip, self.view.pressed == null, self, showTooltip);
+        self.tooltip.update(self.allocator, self.window.io, x, y, tooltip, self.view.pressed == null, self, showTooltip);
         if (self.view.pressed) |target| if (target.control == .volume) self.setVolume(target.row, self.view.percent(target, x));
         self.window.redraw();
     }
     pub fn leave(ptr: ?*anyopaque, _: *wire.Surface) void {
         const self = cast(Sound, ptr);
         self.view.hover = null;
-        self.tooltip.hide();
+        self.tooltip.hide(self.window.io);
         self.window.redraw();
     }
     pub fn focusChanged(ptr: ?*anyopaque, _: *wire.Surface, focused: bool) void {
@@ -343,7 +343,7 @@ pub const Sound = struct {
         if (!focused) {
             self.view.pressed = null;
             self.view.keyboard_focus = false;
-            self.tooltip.hide();
+            self.tooltip.hide(self.window.io);
             self.window.redraw();
         }
     }
@@ -352,7 +352,7 @@ pub const Sound = struct {
     }
     pub fn handleKey(self: *Sound, symbol: u32, modifiers: keyboard.Modifiers) bool {
         if (self.closed or self.window.closing) return false;
-        self.tooltip.hide();
+        self.tooltip.hide(self.window.io);
         if (self.view.expanded != null) {
             switch (symbol) {
                 0xff1b, 0xff09, 0xfe20 => self.view.expanded = null,
@@ -398,7 +398,7 @@ pub const Sound = struct {
     pub fn scrolled(ptr: ?*anyopaque, _: *wire.Surface, axis: u32, amount: f64) void {
         const self = cast(Sound, ptr);
         if (self.closed or self.window.closing or axis != 0) return;
-        self.tooltip.hide();
+        self.tooltip.hide(self.window.io);
         const delta = amount * 4;
         if (self.view.expanded != null) {
             if (delta > 0 and self.view.optionAt(self.view.option_cursor + 1) != null) self.view.option_cursor += 1 else if (delta < 0) self.view.option_cursor -|= 1;

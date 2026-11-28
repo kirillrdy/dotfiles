@@ -159,6 +159,7 @@ pub const Window = struct {
 
 pub const Client = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     connection: *wire.Connection,
     registry: wl.wl_registry,
     shm: ?wl.wl_shm = null,
@@ -182,24 +183,24 @@ pub const Client = struct {
     context: ?*anyopaque,
     changed: *const fn (?*anyopaque) void,
 
-    pub fn create(a: std.mem.Allocator, context: ?*anyopaque, changed: *const fn (?*anyopaque) void) !*Client {
+    pub fn create(a: std.mem.Allocator, io: std.Io, context: ?*anyopaque, changed: *const fn (?*anyopaque) void) !*Client {
         const connection = wire.Connection.connect(a) catch return error.NoWaylandDisplay;
         const self = a.create(Client) catch |err| {
             connection.deinit();
             return err;
         };
         const display: wl.wl_display = .{ .proxy = connection.display() };
-        self.* = .{ .allocator = a, .connection = connection, .registry = display.get_registry(), .context = context, .changed = changed };
+        self.* = .{ .allocator = a, .io = io, .connection = connection, .registry = display.get_registry(), .context = context, .changed = changed };
         errdefer self.destroy();
         self.registry.listen(Client, self, registryEvent);
         connection.roundtrip() catch return error.WaylandDisconnected;
         connection.roundtrip() catch return error.WaylandDisconnected;
         if (self.shm == null or self.list == null or self.sources == null or self.captures == null or self.control == null) return error.OverviewProtocolUnavailable;
-        self.fd_source = mainloop.watch(connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
+        self.fd_source = mainloop.watch(io, connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, dispatch);
         return self;
     }
     pub fn destroy(self: *Client) void {
-        if (self.fd_source != 0) _ = mainloop.remove(self.fd_source);
+        if (self.fd_source != 0) _ = mainloop.remove(self.io, self.fd_source);
         self.connected = false;
         for (self.windows.items) |window| window.stop();
         self.drainThumbnails();
@@ -215,7 +216,7 @@ pub const Client = struct {
         self.allocator.destroy(self);
     }
     fn drainThumbnails(self: *Client) void {
-        while (self.thumbnails != 0) _ = mainloop.iteration(true);
+        while (self.thumbnails != 0) _ = mainloop.iteration(self.io, true);
     }
     pub fn visible(self: *Client, active: bool) void {
         self.active = active;
@@ -256,7 +257,7 @@ pub const Client = struct {
     }
     fn disconnect(self: *Client) void {
         self.connected = false;
-        if (self.fd_source != 0) _ = mainloop.remove(self.fd_source);
+        if (self.fd_source != 0) _ = mainloop.remove(self.io, self.fd_source);
         self.fd_source = 0;
     }
     pub fn activate(self: *Client, window: *Window) void {
@@ -430,7 +431,7 @@ const Thumbnail = struct {
         self.* = .{ .client = client, .owner = window, .source = source };
         window.thumbnail = self;
         client.thumbnails += 1;
-        mainloop.background(self, work, completed);
+        mainloop.background(client.io, self, work, completed);
     }
 
     fn work(self: *Thumbnail) void {
@@ -540,7 +541,7 @@ test "overview snapshots track focus stacking changes without changing picker or
         }
     };
     var state: State = .{};
-    var client: Client = .{ .allocator = std.testing.allocator, .connection = undefined, .registry = undefined, .context = &state, .changed = &State.change };
+    var client: Client = .{ .allocator = std.testing.allocator, .io = std.testing.io, .connection = undefined, .registry = undefined, .context = &state, .changed = &State.change };
     var older: Window = .{ .client = &client, .handle = undefined, .id = @constCast("older") };
     var newer: Window = .{ .client = &client, .handle = undefined, .id = @constCast("newer") };
     defer client.windows.deinit(std.testing.allocator);
@@ -572,7 +573,7 @@ test "thumbnail workers publish owned pixels and discard captures detached on hi
         }
     };
     var state: State = .{};
-    var client: Client = .{ .allocator = std.testing.allocator, .connection = undefined, .registry = undefined, .context = &state, .changed = &State.change };
+    var client: Client = .{ .allocator = std.testing.allocator, .io = std.testing.io, .connection = undefined, .registry = undefined, .context = &state, .changed = &State.change };
     var window: Window = .{ .client = &client, .handle = undefined };
     defer {
         window.stop();
@@ -591,9 +592,9 @@ test "thumbnail workers publish owned pixels and discard captures detached on hi
     window.length = 16;
     const source: @import("desktop-raster.zig").Image = .{ .pixels = @as([*]const u8, @ptrCast(mapping))[0..16], .width = 2, .height = 2, .stride = 8, .format = .xrgb };
     Thumbnail.start(&window, source);
-    const deadline = util.monotonicTime() + 2_000_000;
-    while (window.thumbnail != null and util.monotonicTime() < deadline) {
-        while (mainloop.iteration(false)) {}
+    const deadline = util.monotonicTime(std.testing.io) + 2_000_000;
+    while (window.thumbnail != null and util.monotonicTime(std.testing.io) < deadline) {
+        while (mainloop.iteration(std.testing.io, false)) {}
         mainloop.sleep(1000);
     }
     try std.testing.expect(window.thumbnail == null and state.changed);

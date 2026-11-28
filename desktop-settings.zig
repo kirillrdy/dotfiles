@@ -49,8 +49,8 @@ pub const Settings = struct {
     initial_page: bool = true,
     pub fn create(a: std.mem.Allocator, io: std.Io, mode: Mode) *Settings {
         const self = a.create(Settings) catch @panic("out of memory");
-        const ui = native.Form.create(a, "Settings", self, &action, &fieldChanged) catch @panic("out of memory");
-        self.* = .{ .allocator = a, .io = io, .row_arena = .init(a), .window = ui.window, .ui = ui, .audio_cancel = mainloop.Cancellable.create(), .message = undefined, .manual = undefined, .password = undefined };
+        const ui = native.Form.create(a, io, "Settings", self, &action, &fieldChanged) catch @panic("out of memory");
+        self.* = .{ .allocator = a, .io = io, .row_arena = .init(a), .window = ui.window, .ui = ui, .audio_cancel = mainloop.Cancellable.create(io), .message = undefined, .manual = undefined, .password = undefined };
         self.manual = self.add(.entry, "Wi-Fi network name", "Enter the hidden network’s name", false);
         self.password = self.add(.entry, "Password", "Leave empty for a saved or open network", true);
         self.message = ui.get(ui.addPinned(.label, "") catch @panic("out of memory"));
@@ -83,7 +83,7 @@ pub const Settings = struct {
         ui.scrolled = &scroll;
         ui.shortcut = &shortcut;
         ui.reveal = &reveal;
-        self.network_client = network.Client.create(a, &networkChanged, self) catch null;
+        self.network_client = network.Client.create(a, io, &networkChanged, self) catch null;
         ui.close_callback = &destroyed;
         self.form_input = ui.window.surface.?.input;
         self.page = self.networkPage();
@@ -424,7 +424,7 @@ pub const Settings = struct {
     fn forget(self: *Settings, key: [:0]const u8) void {
         const owned_key = z(self.allocator, key);
         defer self.allocator.free(owned_key);
-        const dialog = auth.Dialog.createWithOptions(self.allocator, .confirm, "Forget the selected connection and its saved credentials?", .{ .title = "Forget Connection", .role = "desktop-network-forget", .accept = "Forget", .cancel = "Cancel" }) catch return;
+        const dialog = auth.Dialog.createWithOptions(self.allocator, self.io, .confirm, "Forget the selected connection and its saved credentials?", .{ .title = "Forget Connection", .role = "desktop-network-forget", .accept = "Forget", .cancel = "Cancel" }) catch return;
         defer dialog.destroy();
         dialog.window.parent = self.window;
         // Hold the controller across the nested dialog loop, even if its parent closes.
@@ -525,7 +525,7 @@ pub const Settings = struct {
         }
         const owned_path = z(self.allocator, path);
         defer self.allocator.free(owned_path);
-        const dialog = auth.Dialog.createWithOptions(self.allocator, .password, ap.title, .{ .title = "Authentication Required", .role = "desktop-network-auth", .accept = "Connect", .cancel = "Cancel" }) catch return;
+        const dialog = auth.Dialog.createWithOptions(self.allocator, self.io, .password, ap.title, .{ .title = "Authentication Required", .role = "desktop-network-auth", .accept = "Connect", .cancel = "Cancel" }) catch return;
         defer dialog.destroy();
         dialog.window.parent = self.window;
         self.network_operations += 1;
@@ -576,7 +576,7 @@ pub const Service = struct {
         for (self.windows.items) |settings| if (!settings.closed) settings.ui.close();
         while (self.windows.items.len > 0) {
             self.reap();
-            if (self.windows.items.len > 0) _ = mainloop.iteration(true);
+            if (self.windows.items.len > 0) _ = mainloop.iteration(self.io, true);
         }
         self.windows.deinit(self.allocator);
     }

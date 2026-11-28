@@ -1,5 +1,6 @@
 //! Typed panel updates. Each worker result owns a bounded arena.
 const std = @import("std");
+const libc = @import("desktop-libc.zig");
 const network = @import("desktop-network.zig");
 const u = @import("desktop-util.zig");
 const audio = @import("desktop-audio.zig");
@@ -96,7 +97,7 @@ fn networkCounters(a: std.mem.Allocator, io: std.Io) ![2]u64 {
 // Three significant digits, matching the compact GNOME graph labels.
 pub fn shortNumber(a: std.mem.Allocator, value: f64) ![]const u8 {
     var buffer: [64]u8 = undefined;
-    const len = u.libc.snprintf(&buffer, buffer.len, "%.3g", value);
+    const len = libc.snprintf(&buffer, buffer.len, "%.3g", value);
     if (len < 0 or len >= buffer.len) return error.InvalidNumber;
     return a.dupe(u8, buffer[0..@intCast(len)]);
 }
@@ -201,7 +202,7 @@ fn diskSize(a: std.mem.Allocator, bytes: u128) ![]const u8 {
     return u.fmt(a, "{d:.0}{c}", .{ @ceil(size), units[unit] });
 }
 
-pub fn diskUsageText(a: std.mem.Allocator, stats: u.libc.struct_statvfs) ![]const u8 {
+pub fn diskUsageText(a: std.mem.Allocator, stats: libc.struct_statvfs) ![]const u8 {
     // f_bfree includes reserved blocks; f_bavail would count them as used.
     const block_size: u128 = stats.f_frsize;
     const total = @as(u128, stats.f_blocks) * block_size;
@@ -233,8 +234,8 @@ pub fn sample(a: std.mem.Allocator, io: std.Io, kind: []const u8, demo: bool) !U
     } else &.{} };
     if (u.eq(kind, "disk")) {
         const items = try a.alloc(Item, 1);
-        var stats: u.libc.struct_statvfs = undefined;
-        items[0] = .{ .text = if (u.libc.statvfs("/", &stats) == 0) try diskUsageText(a, stats) else "—/—", .tooltip = "Root filesystem usage" };
+        var stats: libc.struct_statvfs = undefined;
+        items[0] = .{ .text = if (libc.statvfs("/", &stats) == 0) try diskUsageText(a, stats) else "—/—", .tooltip = "Root filesystem usage" };
         return .{ .items = items };
     }
     const now = std.Io.Clock.real.now(io).toSeconds();

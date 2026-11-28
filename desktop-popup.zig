@@ -9,6 +9,7 @@ const cast = util.cast;
 
 pub const Host = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     context: ?*anyopaque,
     namespace: [:0]const u8,
     paint: wire.PixelPaint,
@@ -43,7 +44,7 @@ pub const Host = struct {
     }
     pub fn prepare(self: *Host, global_x: i32, global_y: i32) !void {
         if (self.client == null) {
-            self.client = try wire.Client.createInteractive(self.allocator, .{ .added = &added, .removed = &removed, .changed = &changed }, self);
+            self.client = try wire.Client.createInteractive(self.allocator, self.io, .{ .added = &added, .removed = &removed, .changed = &changed }, self);
             errdefer {
                 self.client.?.destroy();
                 self.client = null;
@@ -147,12 +148,12 @@ pub const Host = struct {
         }
     }
     fn cancelHide(self: *Host) void {
-        if (self.close_idle != 0) _ = mainloop.remove(self.close_idle);
+        if (self.close_idle != 0) _ = mainloop.remove(self.io, self.close_idle);
         self.close_idle = 0;
     }
     pub fn requestHide(self: *Host) void {
         // Dismissal may destroy the owner and client; leave Wayland dispatch first.
-        if (self.close_idle == 0) self.close_idle = mainloop.idle(self, hideIdle);
+        if (self.close_idle == 0) self.close_idle = mainloop.idle(self.io, self, hideIdle);
     }
     fn hideIdle(self: *Host) bool {
         self.close_idle = 0;
@@ -239,7 +240,7 @@ test "popup dismissal coalesces and hide or destruction cancels queued callbacks
         }
     };
     var owner: Owner = .{};
-    var host: Host = .{ .allocator = std.testing.allocator, .context = &owner, .namespace = "test-popup", .paint = &Owner.paint, .input = .{}, .resized = &Owner.resized, .dismiss = &Owner.dismiss };
+    var host: Host = .{ .allocator = std.testing.allocator, .io = std.testing.io, .context = &owner, .namespace = "test-popup", .paint = &Owner.paint, .input = .{}, .resized = &Owner.resized, .dismiss = &Owner.dismiss };
     defer host.deinit();
     host.visible = true;
     host.requestHide();
@@ -248,18 +249,18 @@ test "popup dismissal coalesces and hide or destruction cancels queued callbacks
     try std.testing.expect(pending != 0);
     try std.testing.expectEqual(pending, host.close_idle);
     try std.testing.expectEqual(@as(usize, 0), owner.calls);
-    while (host.close_idle != 0) _ = mainloop.iteration(false);
+    while (host.close_idle != 0) _ = mainloop.iteration(std.testing.io, false);
     try std.testing.expectEqual(@as(usize, 1), owner.calls);
 
     host.requestHide();
     host.hide();
     try std.testing.expect(!host.visible and host.close_idle == 0);
-    while (mainloop.iteration(false)) {}
+    while (mainloop.iteration(std.testing.io, false)) {}
     try std.testing.expectEqual(@as(usize, 1), owner.calls);
 
     host.requestHide();
     host.deinit();
-    while (mainloop.iteration(false)) {}
+    while (mainloop.iteration(std.testing.io, false)) {}
     try std.testing.expectEqual(@as(usize, 1), owner.calls);
 }
 
@@ -275,10 +276,10 @@ test "popup dismissal callback can destroy its owner" {
         }
     };
     const owner = try std.testing.allocator.create(Owner);
-    owner.* = .{ .host = .{ .allocator = std.testing.allocator, .context = owner, .namespace = "test-popup", .paint = &Owner.paint, .input = .{}, .resized = &Owner.resized, .dismiss = &Owner.dismiss } };
+    owner.* = .{ .host = .{ .allocator = std.testing.allocator, .io = std.testing.io, .context = owner, .namespace = "test-popup", .paint = &Owner.paint, .input = .{}, .resized = &Owner.resized, .dismiss = &Owner.dismiss } };
     owner.host.requestHide();
     // The callback frees owner; dispatch must never read its host afterward.
-    _ = mainloop.iteration(false);
+    _ = mainloop.iteration(std.testing.io, false);
 }
 
 test "popup placement fits output edges and small screens in logical coordinates" {

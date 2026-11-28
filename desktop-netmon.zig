@@ -160,6 +160,7 @@ pub const Routes = struct {
 
 pub const Monitor = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     fd: linux.fd_t,
     routes: Routes = .{},
     watch: u32 = 0,
@@ -168,7 +169,7 @@ pub const Monitor = struct {
     context: ?*anyopaque,
 
     /// Reads the current routes and then watches for changes on the GLib loop.
-    pub fn create(a: std.mem.Allocator, changed: *const fn (?*anyopaque) void, context: ?*anyopaque) !*Monitor {
+    pub fn create(a: std.mem.Allocator, io: std.Io, changed: *const fn (?*anyopaque) void, context: ?*anyopaque) !*Monitor {
         const opened = linux.socket(linux.AF.NETLINK, linux.SOCK.RAW | linux.SOCK.CLOEXEC, linux.NETLINK.ROUTE);
         if (linux.errno(opened) != .SUCCESS) return error.NetlinkUnavailable;
         const fd: linux.fd_t = @intCast(opened);
@@ -177,18 +178,18 @@ pub const Monitor = struct {
         if (linux.errno(linux.bind(fd, @ptrCast(&local), @sizeOf(linux.sockaddr.nl))) != .SUCCESS) return error.NetlinkUnavailable;
         const self = try a.create(Monitor);
         errdefer a.destroy(self);
-        self.* = .{ .allocator = a, .fd = fd, .changed = changed, .context = context };
+        self.* = .{ .allocator = a, .io = io, .fd = fd, .changed = changed, .context = context };
         errdefer self.routes.deinit(a);
         try self.dump();
         const flags = linux.fcntl(fd, linux.F.GETFL, 0);
         _ = linux.fcntl(fd, linux.F.SETFL, flags | @as(usize, @as(u32, @bitCast(linux.O{ .NONBLOCK = true }))));
-        self.watch = mainloop.watch(fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
+        self.watch = mainloop.watch(io, fd, mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
         return self;
     }
 
     pub fn destroy(self: *Monitor) void {
-        if (self.watch != 0) _ = mainloop.remove(self.watch);
-        if (self.idle != 0) _ = mainloop.remove(self.idle);
+        if (self.watch != 0) _ = mainloop.remove(self.io, self.watch);
+        if (self.idle != 0) _ = mainloop.remove(self.io, self.idle);
         _ = linux.close(self.fd);
         self.routes.deinit(self.allocator);
         self.allocator.destroy(self);
@@ -260,7 +261,7 @@ pub const Monitor = struct {
 
     /// Coalesces a burst of route changes into one notification, as GIO does.
     fn queueChanged(self: *Monitor) void {
-        if (self.idle == 0) self.idle = mainloop.idle(self, notify);
+        if (self.idle == 0) self.idle = mainloop.idle(self.io, self, notify);
     }
 
     fn notify(self: *Monitor) bool {
@@ -302,7 +303,7 @@ pub const Reach = struct {
     pub fn cancel(self: *Reach) void {
         if (self.delivered) return;
         self.refs += 1;
-        _ = mainloop.idle(self, cancelled);
+        _ = mainloop.idle(self.io, self, cancelled);
     }
 
     /// Never calls `done`, for a caller that goes away first.
@@ -329,7 +330,7 @@ pub const Reach = struct {
                 } else |_| {}
             } else |_| {}
         } else |_| {}
-        _ = mainloop.idle(self, resolved);
+        _ = mainloop.idle(self.io, self, resolved);
     }
 
     fn resolved(self: *Reach) bool {

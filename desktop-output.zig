@@ -2,8 +2,8 @@
 const std = @import("std");
 const wl = @import("wayland-client");
 const wire = @import("wayland-wire");
-fn milliseconds() i64 {
-    return @divTrunc(@import("desktop-util.zig").monotonicTime(), 1000);
+fn milliseconds(io: std.Io) i64 {
+    return @divTrunc(@import("desktop-util.zig").monotonicTime(io), 1000);
 }
 
 pub const Options = struct { name: []const u8, scale: i32 };
@@ -80,20 +80,20 @@ const Client = struct {
     fn synced(self: *Client, _: wl.wl_callback, _: wl.wl_callback.Event) void {
         self.listed = true;
     }
-    fn wait(self: *Client, connection: *wire.Connection, deadline: i64, snapshot: bool) !void {
+    fn wait(self: *Client, io: std.Io, connection: *wire.Connection, deadline: i64, snapshot: bool) !void {
         while (true) {
             if (self.failure) |err| return err;
             if (if (snapshot) self.serial != null else self.result != .pending) return;
             // Once the registry sync completes, a missing manager will never appear.
             if (snapshot and self.listed and self.manager == null) return error.OutputManagerUnavailable;
-            const remaining = deadline - milliseconds();
+            const remaining = deadline - milliseconds(io);
             if (remaining <= 0) return error.OutputConfigurationTimedOut;
             _ = connection.dispatchTimeout(@intCast(remaining)) catch return error.WaylandDisconnected;
         }
     }
 };
 
-pub fn run(a: std.mem.Allocator, args: []const []const u8) !void {
+pub fn run(a: std.mem.Allocator, io: std.Io, args: []const []const u8) !void {
     const options = try parse(args);
     const connection = wire.Connection.connect(a) catch return error.WaylandUnavailable;
     defer connection.deinit();
@@ -113,11 +113,11 @@ pub fn run(a: std.mem.Allocator, args: []const []const u8) !void {
     const registry = display.get_registry();
     defer registry.destroy();
     registry.listen(Client, &client, Client.registryEvent);
-    const deadline = milliseconds() + 5000;
+    const deadline = milliseconds(io) + 5000;
     // This sync follows registry enumeration, so a missing protocol fails promptly,
     // and a silent compositor still hits the deadline.
     display.sync().listen(Client, &client, Client.synced);
-    try client.wait(connection, deadline, true);
+    try client.wait(io, connection, deadline, true);
     var selected: ?*Head = null;
     for (client.heads.items) |item| {
         if (item.alive and item.name != null and std.mem.eql(u8, item.name.?, options.name)) selected = item;
@@ -139,7 +139,7 @@ pub fn run(a: std.mem.Allocator, args: []const []const u8) !void {
         if (item == target) head_configuration.set_scale(@as(f64, @floatFromInt(options.scale)) / 256);
     }
     configuration.apply();
-    try client.wait(connection, deadline, false);
+    try client.wait(io, connection, deadline, false);
     switch (client.result) {
         .succeeded => {},
         .failed => return error.OutputConfigurationRejected,

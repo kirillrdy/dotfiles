@@ -8,6 +8,7 @@ const dbus = @import("dbus");
 
 pub const Source = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     connection: *dbus.Connection,
     watch: u32 = 0,
     timer: u32 = 0,
@@ -19,15 +20,15 @@ pub const Source = struct {
     dying: bool = false,
 
     /// Connects to `bus` (blocking for authentication and Hello) and attaches to the default context.
-    pub fn open(allocator: std.mem.Allocator, bus: dbus.Bus) !*Source {
+    pub fn open(allocator: std.mem.Allocator, io: std.Io, bus: dbus.Bus) !*Source {
         const connection = try dbus.Connection.open(allocator, bus);
         errdefer connection.close();
         const self = try allocator.create(Source);
-        self.* = .{ .allocator = allocator, .connection = connection };
+        self.* = .{ .allocator = allocator, .io = io, .connection = connection };
         connection.on_schedule = &scheduled;
         connection.on_backlog = &backlogged;
         connection.schedule_context = self;
-        self.watch = mainloop.watch(connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
+        self.watch = mainloop.watch(io, connection.getFd(), mainloop.IN | mainloop.ERR | mainloop.HUP, self, readable);
         return self;
     }
 
@@ -39,9 +40,9 @@ pub const Source = struct {
         self.finalize();
     }
     fn finalize(self: *Source) void {
-        if (self.watch != 0) _ = mainloop.remove(self.watch);
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
-        if (self.backlog != 0) _ = mainloop.remove(self.backlog);
+        if (self.watch != 0) _ = mainloop.remove(self.io, self.watch);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
+        if (self.backlog != 0) _ = mainloop.remove(self.io, self.backlog);
         self.connection.close();
         self.allocator.destroy(self);
     }
@@ -71,7 +72,7 @@ pub const Source = struct {
 
     fn backlogged(data: ?*anyopaque) void {
         const self: *Source = @ptrCast(@alignCast(data));
-        if (self.backlog == 0 and !self.dying) self.backlog = mainloop.idle(self, drain);
+        if (self.backlog == 0 and !self.dying) self.backlog = mainloop.idle(self.io, self, drain);
     }
     fn drain(self: *Source) bool {
         self.backlog = 0;
@@ -91,10 +92,10 @@ pub const Source = struct {
     }
     /// Re-arms the timer for the earliest call deadline.
     fn arm(self: *Source) void {
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
         self.timer = 0;
         const remaining = self.connection.nextTimeout() orelse return;
-        self.timer = mainloop.timeout(@intCast(@min(remaining + 1, std.math.maxInt(c_uint))), self, expired);
+        self.timer = mainloop.timeout(self.io, @intCast(@min(remaining + 1, std.math.maxInt(c_uint))), self, expired);
     }
     fn expired(self: *Source) bool {
         self.timer = 0;
@@ -116,14 +117,14 @@ var shared: [2]?*Source = .{ null, null };
 /// Returns the shared connection to `bus`, connecting on first use. Pair with `release`.
 /// Holders must cancel their pending calls and unsubscribe before releasing.
 /// The allocator used to create the connection must remain valid until its last release.
-pub fn acquire(allocator: std.mem.Allocator, bus: dbus.Bus) !*Source {
+pub fn acquire(allocator: std.mem.Allocator, io: std.Io, bus: dbus.Bus) !*Source {
     const slot = &shared[@backingInt(bus)];
     if (slot.*) |source| if (!source.connection.closed) {
         source.refs += 1;
         return source;
     };
     // A broken connection stays with its current holders; new callers get a fresh one.
-    const source = try Source.open(allocator, bus);
+    const source = try Source.open(allocator, io, bus);
     slot.* = source;
     return source;
 }
@@ -139,24 +140,25 @@ pub fn release(source: *Source) void {
 /// A single method call on a private connection that closes once the reply arrives.
 /// The handler always runs later from the main loop, exactly once, unless the
 /// request was cancelled, in which case it receives a failure named `Cancelled`.
-pub fn request(allocator: std.mem.Allocator, bus: dbus.Bus, target: dbus.Connection.Call, args: anytype, timeout_ms: u32, cancel: ?*mainloop.Cancellable, handler: dbus.ReplyHandler, context: ?*anyopaque) void {
+pub fn request(allocator: std.mem.Allocator, io: std.Io, bus: dbus.Bus, target: dbus.Connection.Call, args: anytype, timeout_ms: u32, cancel: ?*mainloop.Cancellable, handler: dbus.ReplyHandler, context: ?*anyopaque) void {
     const self = allocator.create(Request) catch {
         // Without memory there is no way to defer; failing synchronously is the only option.
         return handler(context, .{ .failed = .{ .name = "org.freedesktop.DBus.Error.NoMemory", .text = "Out of memory" } });
     };
-    self.* = .{ .allocator = allocator, .handler = handler, .context = context, .cancel = cancel };
+    self.* = .{ .allocator = allocator, .io = io, .handler = handler, .context = context, .cancel = cancel };
     if (cancel) |value| {
         _ = value.ref();
         if (value.isCancelled()) return self.later(.cancelled);
         self.cancel_handler = value.connect(self, Request.cancelled);
     }
-    const source = Source.open(allocator, bus) catch return self.later(.unreachable_bus);
+    const source = Source.open(allocator, io, bus) catch return self.later(.unreachable_bus);
     self.source = source;
     self.serial = source.connection.call(target, args, timeout_ms, &Request.replied, self) catch return self.later(.send_failed);
 }
 
 const Request = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     handler: dbus.ReplyHandler,
     context: ?*anyopaque,
     cancel: ?*mainloop.Cancellable,
@@ -168,7 +170,7 @@ const Request = struct {
 
     fn later(self: *Request, outcome: @TypeOf(self.outcome)) void {
         self.outcome = outcome;
-        if (self.idle == 0) self.idle = mainloop.idle(self, deferred);
+        if (self.idle == 0) self.idle = mainloop.idle(self.io, self, deferred);
     }
     fn deferred(self: *Request) bool {
         self.idle = 0;
@@ -181,7 +183,7 @@ const Request = struct {
     }
     /// Runs in the cancelling thread; disconnecting there could deadlock, so finish from the loop.
     fn cancelled(self: *Request) void {
-        if (self.idle != 0) _ = mainloop.remove(self.idle);
+        if (self.idle != 0) _ = mainloop.remove(self.io, self.idle);
         self.idle = 0;
         self.later(.cancelled);
     }
@@ -192,7 +194,7 @@ const Request = struct {
         self.finish(reply);
     }
     fn finish(self: *Request, reply: dbus.Reply) void {
-        if (self.idle != 0) _ = mainloop.remove(self.idle);
+        if (self.idle != 0) _ = mainloop.remove(self.io, self.idle);
         if (self.cancel) |value| {
             value.disconnect(self.cancel_handler);
         }
@@ -211,11 +213,11 @@ pub fn ignore(_: ?*anyopaque, _: dbus.Reply) void {}
 
 /// Sends a desktop notification and ignores the outcome: a missing
 /// notification daemon must never affect the caller.
-pub fn notify(allocator: std.mem.Allocator, app_name: []const u8, icon: []const u8, summary: []const u8, body: []const u8, urgency: ?u8) void {
+pub fn notify(allocator: std.mem.Allocator, io: std.Io, app_name: []const u8, icon: []const u8, summary: []const u8, body: []const u8, urgency: ?u8) void {
     const Hints = dbus.Dict([]const u8, dbus.Value);
     const entries = [_]Hints.Entry{.{ .key = "urgency", .value = .{ .byte = urgency orelse 1 } }};
     const hints: Hints = .{ .entries = if (urgency != null) &entries else &.{} };
-    request(allocator, .session, .{ .destination = "org.freedesktop.Notifications", .path = "/org/freedesktop/Notifications", .interface = "org.freedesktop.Notifications", .member = "Notify" }, .{ app_name, @as(u32, 0), icon, summary, body, @as([]const []const u8, &.{}), hints, @as(i32, -1) }, 3000, null, &ignore, null);
+    request(allocator, io, .session, .{ .destination = "org.freedesktop.Notifications", .path = "/org/freedesktop/Notifications", .interface = "org.freedesktop.Notifications", .member = "Notify" }, .{ app_name, @as(u32, 0), icon, summary, body, @as([]const []const u8, &.{}), hints, @as(i32, -1) }, 3000, null, &ignore, null);
 }
 
 /// Introspection XML for a single-instance service's `Command(as)` method.

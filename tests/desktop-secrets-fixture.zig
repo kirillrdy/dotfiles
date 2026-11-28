@@ -18,7 +18,7 @@ fn checkPrompt(dialog: *secrets.Dialog) !void {
     try dialog.entry.?.insert("wrong-password");
     if (dialog.confirmation) |entry| try entry.insert("different-password");
     dialog.respond(true);
-    while (dialog.response_idle != 0) _ = mainloop.iteration(true);
+    while (dialog.response_idle != 0) _ = mainloop.iteration(dialog.window.io, true);
     try cleared(dialog);
     try std.testing.expect(dialog.view.status_error);
     try std.testing.expectEqual(@import("desktop").askpass.native.Target.entry, dialog.view.focus);
@@ -27,8 +27,8 @@ fn checkPrompt(dialog: *secrets.Dialog) !void {
     // The successful response is delivered after this callback returns.
     _ = dialog.handleKey(0xff0d, 0);
 }
-fn checkDialogs(allocator: std.mem.Allocator) !void {
-    const dialog = try secrets.createImportDialog(allocator);
+fn checkDialogs(init: std.process.Init) !void {
+    const dialog = try secrets.createImportDialog(init.gpa, init.io);
     defer dialog.destroy();
     try dialog.entry.?.insert("private-surrounding-text");
     dialog.focus(.entry);
@@ -43,7 +43,7 @@ fn checkDialogs(allocator: std.mem.Allocator) !void {
     dialog.clear();
     dialog.window.setSize(560, dialog.view.height);
     for (0..100) |_| {
-        while (mainloop.iteration(false)) {}
+        while (mainloop.iteration(init.io, false)) {}
         mainloop.sleep(1000);
     }
     try std.testing.expectEqual(dialog.window.surface.?.width, dialog.view.width);
@@ -77,7 +77,7 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(init.gpa);
     defer arena.deinit();
     const args = try init.minimal.args.toSlice(arena.allocator());
-    if (args.len == 2 and std.mem.eql(u8, args[1], "dialogs")) return checkDialogs(init.gpa);
+    if (args.len == 2 and std.mem.eql(u8, args[1], "dialogs")) return checkDialogs(init);
     if (args.len == 3 and std.mem.eql(u8, args[1], "import")) {
         return secrets.importAt(init.gpa, init.io, args[2], "integration-vault-password");
     }

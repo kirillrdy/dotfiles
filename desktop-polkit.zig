@@ -11,8 +11,8 @@ pub const Dialog = struct {
     user: ?[:0]const u8,
     prompt: ?[:0]u8 = null,
 
-    pub fn create(a: std.mem.Allocator, action: ?[:0]const u8, message: [:0]const u8, user: ?[:0]const u8) !Dialog {
-        const native = try auth.Dialog.createWithOptions(a, .password, message, .{
+    pub fn create(a: std.mem.Allocator, io: std.Io, action: ?[:0]const u8, message: [:0]const u8, user: ?[:0]const u8) !Dialog {
+        const native = try auth.Dialog.createWithOptions(a, io, .password, message, .{
             .title = "Authentication Required",
             .role = "desktop-polkit",
             .accept = "Authenticate",

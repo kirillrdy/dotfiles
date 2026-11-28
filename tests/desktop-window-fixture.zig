@@ -46,12 +46,12 @@ pub fn main(init: std.process.Init) !void {
     defer desktop.form.host.deinit();
     const args = try init.minimal.args.toSlice(std.heap.page_allocator);
     defer std.heap.page_allocator.free(args);
-    if (args.len == 2 and std.mem.eql(u8, args[1], "forms")) return forms(init.gpa);
+    if (args.len == 2 and std.mem.eql(u8, args[1], "forms")) return forms(init);
     if (args.len == 2 and std.mem.eql(u8, args[1], "consent")) return consent(init);
     if (args.len == 2 and std.mem.eql(u8, args[1], "frames")) return frames(init);
     if (args.len == 2 and std.mem.eql(u8, args[1], "idle")) return idle(init);
     var state: State = .{};
-    const client = try wire.Client.createInteractive(init.gpa, .{ .added = &State.output, .removed = &State.output }, &state);
+    const client = try wire.Client.createInteractive(init.gpa, init.io, .{ .added = &State.output, .removed = &State.output }, &state);
     defer client.destroy();
     if (client.outputs.items.len == 0) return error.NoOutputs;
     const surface = try wire.Surface.createPixels(client.outputs.items[0], .{ .namespace = "desktop-native-fixture", .title = "Native Wayland fixture", .role = .toplevel, .width = 480, .height = 320, .interactive = true, .cursor = .arrow }, &State.paint, &state);
@@ -59,9 +59,9 @@ pub fn main(init: std.process.Init) !void {
     surface.close = &State.close;
     try client.start();
     try surface.show();
-    const deadline = util.monotonicTime() + 8_000_000;
-    while (!state.closed and util.monotonicTime() < deadline) {
-        while (mainloop.iteration(false)) {}
+    const deadline = util.monotonicTime(init.io) + 8_000_000;
+    while (!state.closed and util.monotonicTime(init.io) < deadline) {
+        while (mainloop.iteration(init.io, false)) {}
         try init.io.sleep(.fromMilliseconds(5), .awake);
     }
     if (!state.closed or !state.painted) {
@@ -81,15 +81,15 @@ fn idle(init: std.process.Init) !void {
             @memset(pixels.pixels, 0xff245b98);
         }
         fn pump(io: std.Io, milliseconds: i64) !void {
-            const until = util.monotonicTime() + milliseconds * 1000;
-            while (util.monotonicTime() < until) {
-                while (mainloop.iteration(false)) {}
+            const until = util.monotonicTime(io) + milliseconds * 1000;
+            while (util.monotonicTime(io) < until) {
+                while (mainloop.iteration(io, false)) {}
                 try io.sleep(.fromMilliseconds(1), .awake);
             }
         }
     };
     var probe: Probe = .{};
-    const client = try wire.Client.create(init.gpa, .{ .added = &Probe.output, .removed = &Probe.output }, null);
+    const client = try wire.Client.create(init.gpa, init.io, .{ .added = &Probe.output, .removed = &Probe.output }, null);
     defer client.destroy();
     try client.start();
     const output = client.outputs.items[0];
@@ -133,15 +133,15 @@ fn frames(init: std.process.Init) !void {
         }
     };
     var animation: Animation = .{};
-    const client = try wire.Client.create(init.gpa, .{ .added = &Animation.output, .removed = &Animation.output }, &animation);
+    const client = try wire.Client.create(init.gpa, init.io, .{ .added = &Animation.output, .removed = &Animation.output }, &animation);
     defer client.destroy();
     const surface = try wire.Surface.createPixels(client.outputs.items[0], .{ .namespace = "desktop-frame-fixture", .layer = 3, .width = 32, .height = 32 }, &Animation.paint, &animation);
     surface.next_frame = &Animation.next;
     try client.start();
     try surface.show();
-    const deadline = util.monotonicTime() + 5_000_000;
-    while (animation.frames < 60 and util.monotonicTime() < deadline) {
-        while (mainloop.iteration(false)) {}
+    const deadline = util.monotonicTime(init.io) + 5_000_000;
+    while (animation.frames < 60 and util.monotonicTime(init.io) < deadline) {
+        while (mainloop.iteration(init.io, false)) {}
         try init.io.sleep(.fromMilliseconds(1), .awake);
     }
     try std.testing.expectEqual(@as(u32, 60), animation.frames);
@@ -158,30 +158,31 @@ fn consent(init: std.process.Init) !void {
     var done: Done = .{};
     var allocator: std.heap.DebugAllocator(.{}) = .init;
     defer if (allocator.deinit() == .leak) @panic("native consent allocation leak");
-    const dialog = try desktop.auth_dialog.Dialog.createWithOptions(allocator.allocator(), .confirm, "An application requests your account information.\nName: 日本語", .{ .title = "Native consent fixture", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .response_context = &done, .responded = &Done.completed });
+    const dialog = try desktop.auth_dialog.Dialog.createWithOptions(allocator.allocator(), init.io, .confirm, "An application requests your account information.\nName: 日本語", .{ .title = "Native consent fixture", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .response_context = &done, .responded = &Done.completed });
     defer dialog.destroy();
-    const deadline = util.monotonicTime() + 8_000_000;
-    while (done.accepted == null and util.monotonicTime() < deadline) {
-        while (mainloop.iteration(false)) {}
+    const deadline = util.monotonicTime(init.io) + 8_000_000;
+    while (done.accepted == null and util.monotonicTime(init.io) < deadline) {
+        while (mainloop.iteration(init.io, false)) {}
         try init.io.sleep(.fromMilliseconds(5), .awake);
     }
     if (done.accepted == null) return error.ConsentNotExercised;
     std.debug.print("PASS GTK-free consent accepted={}\n", .{done.accepted.?});
 }
 
-fn forms(allocator: std.mem.Allocator) !void {
+fn forms(init: std.process.Init) !void {
+    const allocator = init.gpa;
     const Owner = struct {
         fn action(_: ?*anyopaque, _: usize) void {}
         fn changed(_: ?*anyopaque, _: usize) void {}
     };
-    const previous = try desktop.form.Form.create(allocator, "Clipboard owner", null, &Owner.action, &Owner.changed);
+    const previous = try desktop.form.Form.create(allocator, init.io, "Clipboard owner", null, &Owner.action, &Owner.changed);
     const previous_field = try previous.add(.entry, "Name", "", false);
     try previous.setText(previous_field, "Clipboard after window close");
     previous.focusItem(previous_field);
     try std.testing.expect(previous.handleKey('a', 4));
     try std.testing.expect(previous.handleKey('c', 4));
     previous.deinit();
-    const form = try desktop.form.Form.create(allocator, "Native form fixture", null, &Owner.action, &Owner.changed);
+    const form = try desktop.form.Form.create(allocator, init.io, "Native form fixture", null, &Owner.action, &Owner.changed);
     defer form.deinit();
     const field = try form.add(.entry, "Name", "", false);
     form.focusItem(field);
@@ -194,43 +195,43 @@ fn forms(allocator: std.mem.Allocator) !void {
     try form.setText(field, "");
     try std.testing.expect(form.handleKey('v', 4));
     try std.testing.expectEqualStrings("日本語 clipboard", form.get(field).value());
-    const external = try wire.Client.createInteractive(allocator, .{ .added = &State.output, .removed = &State.output }, null);
+    const external = try wire.Client.createInteractive(allocator, init.io, .{ .added = &State.output, .removed = &State.output }, null);
     defer external.destroy();
     try external.start();
     const device = form.get(field).entry.?.clipboard().?;
     external.seats.items[0].clipboard.?.copy("Text from another client");
-    const clipboard_deadline = util.monotonicTime() + 2_000_000;
-    while ((device.source != null or device.selection == null) and util.monotonicTime() < clipboard_deadline) {
-        _ = mainloop.iteration(false);
+    const clipboard_deadline = util.monotonicTime(init.io) + 2_000_000;
+    while ((device.source != null or device.selection == null) and util.monotonicTime(init.io) < clipboard_deadline) {
+        _ = mainloop.iteration(init.io, false);
         mainloop.sleep(1000);
     }
     try form.setText(field, "");
     form.get(field).entry.?.paste();
-    while (device.requests.items.len != 0 and util.monotonicTime() < clipboard_deadline) {
-        _ = mainloop.iteration(false);
+    while (device.requests.items.len != 0 and util.monotonicTime(init.io) < clipboard_deadline) {
+        _ = mainloop.iteration(init.io, false);
         mainloop.sleep(1000);
     }
     try std.testing.expectEqualStrings("Text from another client", form.get(field).value());
-    const dialog = try desktop.auth_dialog.Dialog.create(allocator, .password, "Native authentication fixture");
+    const dialog = try desktop.auth_dialog.Dialog.create(allocator, init.io, .password, "Native authentication fixture");
     defer dialog.destroy();
     try dialog.entry.?.insert("synthetic-password");
     try std.testing.expect(dialog.handleKey(0xff1b, 0));
     try std.testing.expectEqualStrings("", dialog.entry.?.buffer.value());
     dialog.entry.?.paste();
     dialog.clear();
-    while (device.requests.items.len != 0 and util.monotonicTime() < clipboard_deadline) {
-        _ = mainloop.iteration(false);
+    while (device.requests.items.len != 0 and util.monotonicTime(init.io) < clipboard_deadline) {
+        _ = mainloop.iteration(init.io, false);
         mainloop.sleep(1000);
     }
     try std.testing.expectEqualStrings("", dialog.entry.?.buffer.value());
     form.show();
-    const deadline = util.monotonicTime() + 2_000_000;
-    while (!form.window.surface.?.configured and util.monotonicTime() < deadline) {
-        _ = mainloop.iteration(false);
+    const deadline = util.monotonicTime(init.io) + 2_000_000;
+    while (!form.window.surface.?.configured and util.monotonicTime(init.io) < deadline) {
+        _ = mainloop.iteration(init.io, false);
         mainloop.sleep(1000);
     }
     try std.testing.expect(form.window.surface.?.configured);
     form.close();
-    while (!form.closed) _ = mainloop.iteration(true);
+    while (!form.closed) _ = mainloop.iteration(init.io, true);
     std.debug.print("PASS GTK-free production forms, clipboard and authentication\n", .{});
 }

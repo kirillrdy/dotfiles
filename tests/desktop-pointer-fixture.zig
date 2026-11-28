@@ -12,8 +12,8 @@ fn registryEvent(_: *u8, registry: wl.wl_registry, event: wl.wl_registry.Event) 
         .global_remove => {},
     }
 }
-fn milliseconds() u32 {
-    return @truncate(@as(u64, @intCast(@divTrunc(desktop.util.monotonicTime(), 1000))));
+fn milliseconds(io: std.Io) u32 {
+    return @truncate(@as(u64, @intCast(@divTrunc(desktop.util.monotonicTime(io), 1000))));
 }
 pub fn main(init: std.process.Init) !void {
     const connection = wire.Connection.connect(std.heap.page_allocator) catch return error.NoWaylandDisplay;
@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, command, "relative")) {
             const dx = try std.fmt.parseInt(i32, tokens.next() orelse return error.MissingValue, 10);
             const dy = try std.fmt.parseInt(i32, tokens.next() orelse return error.MissingValue, 10);
-            pointer.motion(milliseconds(), @floatFromInt(dx), @floatFromInt(dy));
+            pointer.motion(milliseconds(init.io), @floatFromInt(dx), @floatFromInt(dy));
         } else {
             const x = try std.fmt.parseInt(u32, tokens.next() orelse return error.MissingValue, 10);
             if (std.mem.eql(u8, command, "move")) {

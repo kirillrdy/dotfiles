@@ -10,8 +10,8 @@ const assert = std.debug.assert;
 const cast = util.cast;
 const fixture_util = @import("fixture-util.zig");
 const eq = fixture_util.assertEq;
-fn pump() void {
-    fixture_util.pumpFor(100_000);
+fn pump(io: std.Io) void {
+    fixture_util.pumpFor(io, 100_000);
 }
 fn firstName(launcher: *apps.Launcher) [*c]const u8 {
     return launcher.first().?.name;
@@ -73,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
     const svg = icons.load(init.gpa, "desktop-apps-fixture-icon", 96, 1, null).?;
     defer decode.free(init.gpa, svg);
     assert(svg.width == 96 and svg.height == 96);
-    var launcher = apps.Launcher.init(init.gpa);
+    var launcher = apps.Launcher.init(init.gpa, init.io);
     defer launcher.deinit();
     launcher.bind();
     try launcher.load();
@@ -85,7 +85,7 @@ pub fn main(init: std.process.Init) !void {
     }
     assert(fixture_count == 4);
     launcher.present();
-    pump();
+    pump(init.io);
     try launcher.setSearch("EDITOR");
     eq(firstName(&launcher), "A Text Editor");
     try launcher.setSearch("text");
@@ -100,7 +100,7 @@ pub fn main(init: std.process.Init) !void {
         assert(launcher.visible.items.len == 0);
     }
     launcher.present();
-    pump();
+    pump(init.io);
     assert(launcher.visible.items.len > 0);
     eq(launcher.searchText(), "");
 
@@ -113,10 +113,10 @@ pub fn main(init: std.process.Init) !void {
         info.unref();
     }
     try launcher.setSearch("Paged fixture");
-    pump();
+    pump(init.io);
     try std.testing.expectEqual(@as(usize, 30), launcher.visible.items.len);
     launcher.focusGrid();
-    pump();
+    pump(init.io);
     var navigation = apps.KeyEvent{ .state = 0, .keyval = 0xff56 };
     assert(apps.keyPress(&launcher, &navigation));
     try std.testing.expectEqual(@as(usize, 1), launcher.page);
@@ -133,7 +133,7 @@ pub fn main(init: std.process.Init) !void {
     try launcher.setSearch("Paged fixture 29");
     assert(launcher.page == 0 and launcher.visible.items.len == 1);
     launcher.present();
-    pump();
+    pump(init.io);
     // A headless compositor may have no keyboard device/focus yet.
     launcher.search_input.?.focus(true);
     launcher.search_input.?.preedit("とうきょう", 15);
@@ -143,7 +143,7 @@ pub fn main(init: std.process.Init) !void {
     assert(launcher.visible.items.len == 0);
     try launcher.reload();
     launcher.present();
-    pump();
+    pump(init.io);
 
     // Verify desktop Exec quoting/field expansion for terminal applications.
     const data = "[Desktop Entry]\nType=Application\nName=Terminal Fixture\nIcon=utilities-terminal\nTerminal=true\nExec=/proc/self/exe \"two words\" %c %i %% %F %u\n";
@@ -167,13 +167,13 @@ pub fn main(init: std.process.Init) !void {
     assert(!launcher.visible_window);
     var state: ?apps.Launcher = null;
     defer if (state) |*instance| instance.deinit();
-    apps.activate(init.gpa, &state);
+    apps.activate(init.gpa, init.io, &state);
     const window = state.?.host.?.surface.?;
     assert(state.?.visible_window);
     try state.?.setSearch("stale");
-    apps.activate(init.gpa, &state);
+    apps.activate(init.gpa, init.io, &state);
     assert(!state.?.visible_window);
-    apps.activate(init.gpa, &state);
+    apps.activate(init.gpa, init.io, &state);
     assert(state.?.host.?.surface.? == window and state.?.visible_window);
     eq(state.?.searchText(), "");
     state.?.hide();
@@ -188,13 +188,13 @@ pub fn main(init: std.process.Init) !void {
     defer success.unref();
     assert(launcher.launch(success));
     assert(!launcher.visible_window);
-    const deadline = @divTrunc(util.monotonicTime(), 1000) + 5000;
-    while (@divTrunc(util.monotonicTime(), 1000) < deadline) {
+    const deadline = @divTrunc(util.monotonicTime(init.io), 1000) + 5000;
+    while (@divTrunc(util.monotonicTime(init.io), 1000) < deadline) {
         if (std.Io.Dir.openFileAbsolute(init.io, marker, .{})) |file| {
             file.close(init.io);
             break;
         } else |_| {}
-        pump();
+        pump(init.io);
     }
     const recorded = try std.Io.Dir.cwd().readFileAlloc(init.io, marker, a, .limited(1024));
     eq((try a.dupeSentinel(u8, recorded, 0)).ptr, "launched");
@@ -202,7 +202,7 @@ pub fn main(init: std.process.Init) !void {
     // Render a screenshot when explicitly requested for visual inspection.
     if (std.c.getenv("DESKTOP_APPS_SCREENSHOT")) |path| {
         launcher.present();
-        pump();
+        pump(init.io);
         const host = launcher.host.?;
         const scale = host.surface.?.output.scale;
         const width = host.surface.?.width * scale;

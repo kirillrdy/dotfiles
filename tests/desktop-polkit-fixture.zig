@@ -14,8 +14,8 @@ const Reply = struct {
         self.accepted = accepted;
     }
 };
-fn checkDialog(allocator: std.mem.Allocator) !void {
-    var dialog = try polkit.Dialog.create(allocator, "org.dotfiles.test<&>", "Authentication is required: 東京", "test<&>");
+fn checkDialog(allocator: std.mem.Allocator, io: std.Io) !void {
+    var dialog = try polkit.Dialog.create(allocator, io, "org.dotfiles.test<&>", "Authentication is required: 東京", "test<&>");
     defer dialog.destroy();
     var reply: Reply = .{};
     dialog.native.responded = &Reply.response;
@@ -47,18 +47,18 @@ fn checkDialog(allocator: std.mem.Allocator) !void {
     for (dialog.native.entry.?.buffer.bytes) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
     try dialog.native.entry.?.insert("123456");
     try std.testing.expect(dialog.native.handleKey(0xff0d, 0));
-    while (reply.count < 1) _ = mainloop.iteration(true);
+    while (reply.count < 1) _ = mainloop.iteration(io, true);
     try std.testing.expect(reply.accepted);
     dialog.clear();
     dialog.setEnabled(false);
     try std.testing.expect(dialog.native.handleKey('x', 0));
     try std.testing.expectEqualStrings("", dialog.answer());
     try std.testing.expect(dialog.native.handleKey(0xff1b, 0));
-    while (reply.count < 2) _ = mainloop.iteration(true);
+    while (reply.count < 2) _ = mainloop.iteration(io, true);
     try std.testing.expect(!reply.accepted);
     try std.testing.expectEqual(@as(usize, 2), reply.count);
 }
 pub fn main(init: std.process.Init) !void {
-    try checkDialog(init.gpa);
+    try checkDialog(init.gpa, init.io);
     std.debug.print("desktop-polkit: native labels, locked entry, helper wait, status, MFA clearing and cancellation passed\n", .{});
 }

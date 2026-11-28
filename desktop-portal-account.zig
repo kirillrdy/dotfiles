@@ -18,7 +18,7 @@ pub const Dialog = struct {
     data: ?*anyopaque,
     finished: bool = false,
 
-    pub fn create(allocator: std.mem.Allocator, app: [:0]const u8, parent: [:0]const u8, options: portal_options.Dict, callback: Completion, data: ?*anyopaque) !*Dialog {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io, app: [:0]const u8, parent: [:0]const u8, options: portal_options.Dict, callback: Completion, data: ?*anyopaque) !*Dialog {
         const reason = try Options.string(options, "reason") orelse "";
         const self = try allocator.create(Dialog);
         self.* = .{
@@ -39,7 +39,7 @@ pub const Dialog = struct {
         const face = try std.fmt.allocPrint(a, "{s}/.face", .{files.home()});
         if (files.kind(face) == .file) self.image = try files.fileUri(a, face);
         const prompt = try std.fmt.allocPrintSentinel(a, "{s} wants to access your account information.\n{s}\nName: {s}\nUser name: {s}\n{s}", .{ app, reason, self.name, self.id, if (self.image.len > 0) "Your account picture will also be shared." else "" }, 0);
-        self.host = try auth.Dialog.createWithOptions(allocator, .confirm, prompt, .{ .title = "Share account information", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .parent = parent, .response_context = self, .responded = &responded });
+        self.host = try auth.Dialog.createWithOptions(allocator, io, .confirm, prompt, .{ .title = "Share account information", .role = "desktop-consent", .accept = "Share", .cancel = "Cancel", .parent = parent, .response_context = self, .responded = &responded });
         return self;
     }
     pub fn destroy(self: *Dialog) void {

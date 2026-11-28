@@ -57,6 +57,7 @@ const Notice = struct {
 };
 const Server = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     /// The shared session connection, once the service has registered its objects.
     connection: ?*dbus.Connection = null,
     registrations: [2]u32 = .{ 0, 0 },
@@ -73,7 +74,7 @@ const Server = struct {
     calendar_open: bool = false,
 
     fn start(self: *Server) !void {
-        self.client = try native.Client.createInteractive(self.allocator, .{ .added = &outputAdded, .removed = &outputRemoved, .changed = &outputChanged }, self);
+        self.client = try native.Client.createInteractive(self.allocator, self.io, .{ .added = &outputAdded, .removed = &outputRemoved, .changed = &outputChanged }, self);
         errdefer {
             self.client.?.destroy();
             self.client = null;
@@ -108,7 +109,7 @@ const Server = struct {
     }
     fn map(self: *Server, output: *native.Output) !void {
         const notice = self.active orelse return;
-        if (self.card == null) self.card = banner.View.init(self.allocator, notice.data(), self.theme, 529);
+        if (self.card == null) self.card = banner.View.init(self.allocator, self.io, notice.data(), self.theme, 529);
         const surface = try native.Surface.createPixels(output, .{
             .namespace = "desktop-notifications",
             .layer = 3,
@@ -149,7 +150,7 @@ const Server = struct {
             surface.redraw();
         }
         self.hovered = true;
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
         self.timer = 0;
     }
     fn button(data: ?*anyopaque, surface: *native.Surface, code: u32, pressed: bool, x: f64, y: f64) void {
@@ -189,7 +190,7 @@ const Server = struct {
         if (self.connection) |connection| connection.emit(path, control, "Changed", .{}) catch {};
     }
     fn hide(self: *Server) void {
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
         self.timer = 0;
         self.active = null;
         if (self.surface) |surface| surface.destroy();
@@ -210,7 +211,7 @@ const Server = struct {
         notice.pending = false;
         self.active = notice;
         self.present() catch |err| std.log.err("notification banner: {s}", .{@errorName(err)});
-        if (!notice.critical) self.timer = mainloop.timeout(4000, self, expired);
+        if (!notice.critical) self.timer = mainloop.timeout(self.io, 4000, self, expired);
     }
     fn close(self: *Server, id: u32, reason: u32) void {
         for (self.notices.items, 0..) |notice, i| if (notice.id == id) {
@@ -258,8 +259,8 @@ const Server = struct {
     fn resetHover(self: *Server) void {
         self.hovered = false;
         if (self.active) |notice| if (!notice.critical) {
-            if (self.timer != 0) _ = mainloop.remove(self.timer);
-            self.timer = mainloop.timeout(200, self, expired);
+            if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
+            self.timer = mainloop.timeout(self.io, 200, self, expired);
         };
     }
     fn deinit(self: *Server) void {
@@ -275,7 +276,7 @@ const Server = struct {
     }
     fn notify(self: *Server, sender: []const u8, args: NotifyArgs) !u32 {
         const notice = try self.allocator.create(Notice);
-        notice.* = .{ .allocator = self.allocator, .arena = std.heap.ArenaAllocator.init(self.allocator), .id = 0, .app = "", .title = "", .body = "", .icon = "", .sender = "", .actions = &.{}, .created = @divTrunc(util.realTime(), 1000000) };
+        notice.* = .{ .allocator = self.allocator, .arena = std.heap.ArenaAllocator.init(self.allocator), .id = 0, .app = "", .title = "", .body = "", .icon = "", .sender = "", .actions = &.{}, .created = @divTrunc(util.realTime(self.io), 1000000) };
         errdefer notice.destroy();
         const a = notice.arena.allocator();
         notice.app = try clip(a, args[0], 150);
@@ -310,7 +311,7 @@ const Server = struct {
                 break;
             };
             old.destroy();
-            if (self.calendar_open or (!notice.critical and !@import("desktop-quick-settings.zig").bannersEnabled(self.allocator))) notice.pending = false;
+            if (self.calendar_open or (!notice.critical and !@import("desktop-quick-settings.zig").bannersEnabled(self.allocator, self.io))) notice.pending = false;
             self.changed();
             self.showNext();
             return notice.id;
@@ -320,7 +321,7 @@ const Server = struct {
         self.next_id +%= 1;
         if (self.notices.items.len >= 100) self.close(self.notices.items[0].id, 1);
         try self.notices.append(self.allocator, notice);
-        if (self.calendar_open or (!notice.critical and !@import("desktop-quick-settings.zig").bannersEnabled(self.allocator))) notice.pending = false;
+        if (self.calendar_open or (!notice.critical and !@import("desktop-quick-settings.zig").bannersEnabled(self.allocator, self.io))) notice.pending = false;
         if (notice.critical and self.active != null and !self.active.?.critical) self.hide();
         self.changed();
         self.showNext();
@@ -473,18 +474,18 @@ pub const Service = struct {
     source: ?*loop.Source = null,
     lost_subscription: u32 = 0,
 
-    pub fn create(allocator: std.mem.Allocator) !*Service {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io) !*Service {
         const self = try allocator.create(Service);
         errdefer allocator.destroy(self);
         var introspection = try dbus.Introspection.parse(allocator, xml);
         errdefer introspection.deinit();
-        self.* = .{ .server = .{ .allocator = allocator }, .introspection = introspection };
+        self.* = .{ .server = .{ .allocator = allocator, .io = io }, .introspection = introspection };
         errdefer {
             self.server.deinit();
             if (self.source) |source| loop.release(source);
         }
         try self.server.start();
-        const source = loop.acquire(allocator, .session) catch return error.NoSessionBus;
+        const source = loop.acquire(allocator, io, .session) catch return error.NoSessionBus;
         self.source = source;
         const connection = source.connection;
         self.server.connection = connection;

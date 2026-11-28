@@ -48,6 +48,7 @@ fn isActiveRecording(item: Node) bool {
 const Mixer = @import("desktop-audio-mixer.zig");
 pub const Service = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     callback: *const fn (?*anyopaque, *Service) void,
     data: ?*anyopaque,
     registry: ?*Registry = null,
@@ -60,16 +61,16 @@ pub const Service = struct {
     ready: bool = false,
     stopped: bool = false,
 
-    pub fn create(a: std.mem.Allocator, callback: *const fn (?*anyopaque, *Service) void, data: ?*anyopaque) !*Service {
+    pub fn create(a: std.mem.Allocator, io: std.Io, callback: *const fn (?*anyopaque, *Service) void, data: ?*anyopaque) !*Service {
         const self = try a.create(Service);
-        self.* = .{ .allocator = a, .callback = callback, .data = data };
+        self.* = .{ .allocator = a, .io = io, .callback = callback, .data = data };
         self.connect();
-        self.timer = mainloop.timeoutSeconds(5, self, maintain);
+        self.timer = mainloop.timeoutSeconds(io, 5, self, maintain);
         return self;
     }
     pub fn destroy(self: *Service) void {
         self.stopped = true;
-        _ = mainloop.remove(self.timer);
+        _ = mainloop.remove(self.io, self.timer);
         self.reset();
         self.unref();
     }
@@ -84,7 +85,7 @@ pub const Service = struct {
     fn reset(self: *Service) void {
         self.epoch +%= 1;
         self.ready = false;
-        if (self.idle != 0) _ = mainloop.remove(self.idle);
+        if (self.idle != 0) _ = mainloop.remove(self.io, self.idle);
         self.idle = 0;
         if (self.registry) |registry| registry.destroy();
         self.registry = null;
@@ -96,13 +97,13 @@ pub const Service = struct {
         return true;
     }
     fn connect(self: *Service) void {
-        self.registry = Registry.create(self.allocator, &changed, self) catch null;
+        self.registry = Registry.create(self.allocator, self.io, &changed, self) catch null;
     }
     fn changed(data: ?*anyopaque) void {
         cast(Service, data).schedule();
     }
     fn schedule(self: *Service) void {
-        if (!self.stopped and self.idle == 0) self.idle = mainloop.timeout(0, self, updated);
+        if (!self.stopped and self.idle == 0) self.idle = mainloop.timeout(self.io, 0, self, updated);
     }
     fn updated(self: *Service) bool {
         self.idle = 0;
@@ -234,7 +235,7 @@ pub const Service = struct {
             return;
         };
         const call = self.allocator.create(Call) catch @panic("out of memory");
-        call.* = .{ .service = self, .epoch = self.epoch, .target = .{ .id = item.id }, .ticket = ticket, .expected = expected, .default_class = if (change == .default) item.class else null, .callback = callback, .data = data, .parent = cancel.ref(), .deadline = util.monotonicTime() + 4_000_000 };
+        call.* = .{ .service = self, .epoch = self.epoch, .target = .{ .id = item.id }, .ticket = ticket, .expected = expected, .default_class = if (change == .default) item.class else null, .callback = callback, .data = data, .parent = cancel.ref(), .deadline = util.monotonicTime(self.io) + 4_000_000 };
         self.refs += 1;
         self.calls.append(self.allocator, call) catch @panic("out of memory");
         call.wake();
@@ -253,11 +254,11 @@ const Call = struct {
     source: u32 = 0,
     deadline: i64,
     fn wake(self: *Call) void {
-        if (self.source != 0) _ = mainloop.remove(self.source);
-        self.source = mainloop.idle(self, poll);
+        if (self.source != 0) _ = mainloop.remove(self.service.io, self.source);
+        self.source = mainloop.idle(self.service.io, self, poll);
     }
     fn again(self: *Call) void {
-        self.source = mainloop.timeout(5, self, poll);
+        self.source = mainloop.timeout(self.service.io, 5, self, poll);
     }
     fn poll(self: *Call) bool {
         self.source = 0;
@@ -269,7 +270,7 @@ const Call = struct {
             self.finish(.{ .failure = error.AudioDisconnected });
             return false;
         }
-        if (util.monotonicTime() >= self.deadline) {
+        if (util.monotonicTime(self.service.io) >= self.deadline) {
             self.finish(.{ .failure = error.AudioTimedOut });
             return false;
         }
@@ -307,8 +308,8 @@ const Call = struct {
 };
 
 /// Drive callbacks for the legacy standalone JSON stream.
-pub fn dispatch() void {
-    while (mainloop.iteration(false)) {}
+pub fn dispatch(io: std.Io) void {
+    while (mainloop.iteration(io, false)) {}
 }
 
 pub const Feedback = @import("desktop-feedback.zig").Feedback;

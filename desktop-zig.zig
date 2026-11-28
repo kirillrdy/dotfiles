@@ -56,20 +56,20 @@ const Session = struct {
         defer temporary.deinit();
         const alloc = temporary.allocator();
         const config = try alloc.dupeSentinel(u8, if (args.len > 1) args[1] else "/etc/xdg/desktop-panel/config.json", 0);
-        self.background = try wallpaper.Service.create(self.allocator, self.image.?);
-        self.devices = try device_service.Service.create(self.allocator);
-        self.panels = try panel.Service.create(self.allocator, config, self.devices.?);
-        self.notices = try notifications.Service.create(self.allocator);
+        self.background = try wallpaper.Service.create(self.allocator, self.io, self.image.?);
+        self.devices = try device_service.Service.create(self.allocator, self.io);
+        self.panels = try panel.Service.create(self.allocator, self.io, config, self.devices.?);
+        self.notices = try notifications.Service.create(self.allocator, self.io);
         try self.media.start();
         self.media.connection = self.bus.connection;
-        self.agent = polkit.Service.init(self.allocator) catch |err| blk: {
+        self.agent = polkit.Service.init(self.allocator, self.io) catch |err| blk: {
             std.log.warn("PolicyKit agent: {s}; will retry", .{@errorName(err)});
             break :blk null;
         };
         self.data = .{ .allocator = self.allocator, .io = self.io, .devices = self.devices.?, .panel = self.panels.? };
         self.data.start();
         self.data_started = true;
-        self.inactivity = try idle.Service.create(self.allocator, .{ .session_inhibit = true, .wallpaper = self.image.? });
+        self.inactivity = try idle.Service.create(self.allocator, self.io, .{ .session_inhibit = true, .wallpaper = self.image.? });
         self.device_subscription = .{ .context = self, .changed = &devicesChanged };
         self.devices.?.subscribe(&self.device_subscription);
         self.device_subscribed = true;
@@ -77,7 +77,7 @@ const Session = struct {
         self.serving = true;
         current = self;
         widgets.refresh_source = &refresh;
-        self.timer = mainloop.timeoutSeconds(5, self, maintain);
+        self.timer = mainloop.timeoutSeconds(self.io, 5, self, maintain);
     }
 
     fn devicesChanged(ptr: ?*anyopaque, source: *device_service.Service, event: device_service.Event) void {
@@ -93,7 +93,7 @@ const Session = struct {
 
     fn maintain(self: *Session) bool {
         self.dialogs.reap();
-        if (self.agent == null) self.agent = polkit.Service.init(self.allocator) catch null;
+        if (self.agent == null) self.agent = polkit.Service.init(self.allocator, self.io) catch null;
         return true;
     }
 
@@ -101,7 +101,7 @@ const Session = struct {
         self.stopping = true;
         current = null;
         widgets.refresh_source = null;
-        if (self.timer != 0) _ = mainloop.remove(self.timer);
+        if (self.timer != 0) _ = mainloop.remove(self.io, self.timer);
         if (self.device_subscribed) self.devices.?.unsubscribe(&self.device_subscription);
         self.device_subscribed = false;
         if (self.inactivity) |inactivity| inactivity.destroy();
@@ -115,7 +115,7 @@ const Session = struct {
         if (self.notices) |notices| notices.destroy();
         if (self.background) |background| background.destroy();
         // Drain cancelled widget reads while their reference-counted states survive.
-        while (mainloop.iteration(false)) {}
+        while (mainloop.iteration(self.io, false)) {}
         if (self.image) |image| self.allocator.free(image);
     }
 };
@@ -147,9 +147,9 @@ fn dispatch(self: *Session, args: []const []const u8) !void {
     if (std.mem.eql(u8, verb, "serve")) return self.start(args[1..]);
     if (!self.serving) return error.SessionNotRunning;
     if (std.mem.eql(u8, verb, "overview") and args.len == 1) {
-        overview.activate(self.allocator, &self.activities);
+        overview.activate(self.allocator, self.io, &self.activities);
     } else if (std.mem.eql(u8, verb, "overview-corner") and args.len == 1) {
-        overview.activateCorner(self.allocator, &self.activities);
+        overview.activateCorner(self.allocator, self.io, &self.activities);
     } else if (std.mem.eql(u8, verb, "settings") and (args.len == 1 or args.len == 2)) {
         const mode: settings.Mode = if (args.len == 1)
             .network
@@ -177,20 +177,20 @@ pub fn main(init: std.process.Init) !void {
     var args = try init.minimal.args.toSlice(arguments);
     var managed_session = false;
     var compositor: ?*@import("desktop-compositor.zig").Handle = null;
-    @import("desktop-icons.zig").init(a);
+    @import("desktop-icons.zig").init(a, init.io);
     defer {
         if (compositor) |handle| handle.stop();
-        while (mainloop.iteration(false)) {}
+        while (mainloop.iteration(init.io, false)) {}
         @import("desktop-switcher.zig").deinit(a);
         window.deinit();
         @import("desktop-icons.zig").deinit();
-        @import("desktop-gsettings.zig").deinit();
+        @import("desktop-gsettings.zig").deinit(init.io);
     }
     defer if (managed_session) sessionControl(a, init.io, &.{ "systemctl", "--user", "stop", "desktop-session.target" }) catch {};
     const verb: []const u8 = if (args.len >= 2) args[1] else "";
     // `session` is `compositor` started by the systemd user unit, which owns desktop-session.target.
     if (std.mem.eql(u8, verb, "compositor") or std.mem.eql(u8, verb, "session") or std.mem.eql(u8, verb, "compositor-only")) {
-        compositor = try @import("desktop-compositor.zig").Handle.start(a, if (std.mem.eql(u8, verb, "compositor-only")) .headless else .session);
+        compositor = try @import("desktop-compositor.zig").Handle.start(a, init.io, if (std.mem.eql(u8, verb, "compositor-only")) .headless else .session);
         if (std.mem.eql(u8, verb, "compositor-only")) {
             compositor.?.wait();
             compositor = null;
@@ -227,7 +227,7 @@ pub fn main(init: std.process.Init) !void {
         // The display manager passes the descriptor of its control socket.
         if (args.len > 3) return error.InvalidGreeterArguments;
         const dm_fd: c_int = if (args.len == 3) std.fmt.parseInt(c_int, args[2], 10) catch return error.InvalidGreeterArguments else -1;
-        return @import("desktop-greeter.zig").run(a, dm_fd);
+        return @import("desktop-greeter.zig").run(a, init.io, dm_fd);
     }
     if (std.mem.eql(u8, args[1], "secrets-import")) {
         if (args.len != 2) return error.InvalidSecretsArguments;
@@ -255,33 +255,33 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, args[1], "battery-monitor")) {
         if (args.len != 2) return error.InvalidBatteryMonitorArguments;
-        return @import("desktop-battery-monitor.zig").run(a);
+        return @import("desktop-battery-monitor.zig").run(a, init.io);
     }
     if (std.mem.eql(u8, args[1], "portal")) return @import("desktop-portal.zig").run(a, init.io);
     if (std.mem.eql(u8, args[1], "power")) return @import("desktop-power.zig").runArgs(init, args[1..]);
     if (std.mem.eql(u8, args[1], "askpass")) return helperStatus(try @import("desktop-askpass.zig").runArgs(init, args[1..]));
     if (std.mem.eql(u8, args[1], "screenshot")) return helperStatus(try @import("desktop-screenshot.zig").runArgs(init, args[1..]));
-    if (std.mem.eql(u8, args[1], "output")) return @import("desktop-output.zig").run(a, args[2..]);
-    if (std.mem.eql(u8, args[1], "lock")) return @import("desktop-lock.zig").run(a, args[2..]);
+    if (std.mem.eql(u8, args[1], "output")) return @import("desktop-output.zig").run(a, init.io, args[2..]);
+    if (std.mem.eql(u8, args[1], "lock")) return @import("desktop-lock.zig").run(a, init.io, args[2..]);
     // Every command but serve goes to the running shell.
     if (!std.mem.eql(u8, args[1], "serve")) return forward(a, args[1..]);
-    const bus = loop.acquire(a, .session) catch return error.NoSessionBus;
+    const bus = loop.acquire(a, init.io, .session) catch return error.NoSessionBus;
     defer loop.release(bus);
     // A second serve must not create another shell: forwarded, the running one rejects it.
     if ((bus.connection.requestName(shell_name, 4) catch return error.NoSessionBus) != 1) return forward(a, args[1..]);
     var introspection = try dbus.Introspection.parse(a, shell_xml);
     defer introspection.deinit();
-    var session = Session{ .allocator = a, .io = init.io, .bus = bus, .media = .init(a), .dialogs = .{ .allocator = a, .io = init.io } };
+    var session = Session{ .allocator = a, .io = init.io, .bus = bus, .media = .init(a, init.io), .dialogs = .{ .allocator = a, .io = init.io } };
     defer session.deinit();
     const exported = try bus.connection.exportObject(shell_path, &introspection.interfaces[0], &command, null, &session);
     defer bus.connection.unregister(exported);
     notifications.on_lost = &stop;
-    const term = mainloop.signal(mainloop.SIGTERM, {}, quit);
-    const interrupt = mainloop.signal(mainloop.SIGINT, {}, quit);
-    defer _ = mainloop.remove(term);
-    defer _ = mainloop.remove(interrupt);
+    const term = mainloop.signal(init.io, mainloop.SIGTERM, {}, quit);
+    const interrupt = mainloop.signal(init.io, mainloop.SIGINT, {}, quit);
+    defer _ = mainloop.remove(init.io, term);
+    defer _ = mainloop.remove(init.io, interrupt);
     try dispatch(&session, args[1..]);
-    while (running and !bus.connection.closed) _ = mainloop.iteration(true);
+    while (running and !bus.connection.closed) _ = mainloop.iteration(init.io, true);
     if (running) return error.SessionBusDisconnected;
     if (session.serving and !session.notices.?.isOwned()) return error.NotificationNameUnavailable;
 }

@@ -22,7 +22,7 @@ fn method(_: ?*anyopaque, message: *const dbus.Message) void {
     const args = message.read(struct { f64, f64, f64 }) catch return connection.replyError(message, "org.freedesktop.DBus.Error.InvalidArgs", "Expected (ddd)") catch {};
     color = .{ args[0], args[1], args[2] };
     if (background == null) {
-        background = wire.Client.create(bus.?.allocator, .{ .added = &added, .removed = &removed }, null) catch @panic("background client");
+        background = wire.Client.create(bus.?.allocator, bus.?.io, .{ .added = &added, .removed = &removed }, null) catch @panic("background client");
         background.?.start() catch @panic("background dispatch");
     }
     for (background.?.surfaces.items) |surface| surface.redraw();
@@ -32,11 +32,11 @@ pub fn main(init: std.process.Init) !void {
     var allocator: std.heap.DebugAllocator(.{}) = .init;
     defer if (allocator.deinit() == .leak) @panic("portal allocation leak");
     // The portal shares this connection, so tests reach the fixture at the portal's unique name.
-    desktop.icons.init(allocator.allocator());
-    defer desktop.gsettings.deinit();
+    desktop.icons.init(allocator.allocator(), init.io);
+    defer desktop.gsettings.deinit(init.io);
     defer desktop.icons.deinit();
     defer desktop.window.deinit();
-    const source = try loop.acquire(allocator.allocator(), .session);
+    const source = try loop.acquire(allocator.allocator(), init.io, .session);
     bus = source;
     defer loop.release(source);
     var introspection = try dbus.Introspection.parse(allocator.allocator(), "<node><interface name='org.dotfiles.CaptureFixture'><method name='Color'><arg type='d' direction='in'/><arg type='d' direction='in'/><arg type='d' direction='in'/></method></interface></node>");
