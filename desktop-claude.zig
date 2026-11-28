@@ -84,7 +84,7 @@ pub fn read(a: std.mem.Allocator, io: std.Io) usage.Report {
 }
 fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
     // Manual refreshes land here too, so they also respect the back-off.
-    const now = u.timestamp(io);
+    const now = std.Io.Clock.real.now(io).toSeconds();
     if (now < backoff_until) return rateLimited(a, last, backoff_until);
     const dir = u.env("CLAUDE_CONFIG_DIR") orelse try u.fmt(a, "{s}/.claude", .{u.env("HOME") orelse return error.NoHome});
     const path = try u.fmt(a, "{s}/.credentials.json", .{dir});

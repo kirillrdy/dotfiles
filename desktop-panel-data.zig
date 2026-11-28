@@ -237,7 +237,7 @@ pub fn sample(a: std.mem.Allocator, io: std.Io, kind: []const u8, demo: bool) !U
         items[0] = .{ .text = if (u.libc.statvfs("/", &stats) == 0) try diskUsageText(a, stats) else "—/—", .tooltip = "Root filesystem usage" };
         return .{ .items = items };
     }
-    const now = u.timestamp(io);
+    const now = std.Io.Clock.real.now(io).toSeconds();
     const report = if (demo) usage.demo(now) else if (u.eq(kind, "claude")) claude.read(a, io) else if (u.eq(kind, "antigravity")) antigravity.read(a, io) else codex.read(a, io);
     return usage.update(a, report, usageIcon(kind), now);
 }

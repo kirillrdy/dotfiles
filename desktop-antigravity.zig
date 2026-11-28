@@ -191,7 +191,7 @@ pub fn read(a: std.mem.Allocator, io: std.Io) usage.Report {
     return copy;
 }
 fn fetch(a: std.mem.Allocator, io: std.Io) !usage.Report {
-    const now = u.timestamp(io);
+    const now = std.Io.Clock.real.now(io).toSeconds();
     const token = switch (try parseToken(a, try secret(a), now)) {
         .token => |value| value,
         .expired => return unavailable("Antigravity login expired; run agy to refresh it"),

@@ -13,9 +13,6 @@ pub fn monotonicTime() i64 {
 pub fn realTime() i64 {
     return micros(.REALTIME);
 }
-pub fn timestamp(io: std.Io) i64 {
-    return std.Io.Clock.real.now(io).toSeconds();
-}
 pub const Timer = struct {
     started: std.Io.Timestamp,
     pub fn start(io: std.Io) Timer {
